@@ -41,7 +41,8 @@
 | 已收口 | 集成断言进程内化 | `cli-integration.js` 已改为进程内调用（见 CHANGELOG） | 目录可整删 | `.review/20260925-集成断言进程内化/` |
 | 已收口 | `scripts/_*.txt` 草稿清理 | 草稿已移出 `scripts/`（见 CHANGELOG「落盘治理三层」） | 目录可整删 | `.review/20260925-scripts草稿清理/` |
 | 已收口 | 文档架构图 | 图已产出（`.review/20260926-文档架构图/文档架构图.png`） | 目录可整删 | `.review/20260926-文档架构图/` |
-| **外部阻塞** | Git 解锁（获得版本回滚能力） | 需企业侧为 `.git/objects` 加排除规则（见 `docs/INCIDENTS.md`）；在此之前工程**零回滚能力** | 等待外部处理；期间唯一兜底是把项目 `export-json` 导到**工程外**（`npm run verify` 每次会打印备份新鲜度） | `docs/INCIDENTS.md` |
+| 已收口 | 本地 Git 回滚能力 | **已获得**：EDR 对 `.git/objects` 的拦截已解除（实测 `git hash-object -w` 成功），同日做了首次提交 `5888f90`（174 文件，工作区干净） | 之后按需 `git commit`；异地备份仍建议保留 `export-json` | `docs/INCIDENTS.md` |
+| **外部阻塞** | 推送到 GitHub（远程备份） | 本地已就绪：`origin` = `github.com/tfygfh336-pixel/AIMindMap`、分支 `master`、提交 `5888f90`；**网络策略代理拒绝到 github.com 的连接**（`CONNECT tunnel failed, response 403`）—— 与 git/凭据无关 | 需要策略侧放行 `github.com:443`；放行后一条命令即可：`git push -u origin master` | `docs/INCIDENTS.md` |
 
 > **L3（基线差率）的触发条件**：出现一次「布局回归在**全绿**下溜过」的真实事故，即重新评估并落地。
 > 按 `docs/RULES.md` M1 裁决：**无据不做** —— 它是"延后 + 触发条件"，**不是欠账**。
