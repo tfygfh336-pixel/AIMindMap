@@ -3022,12 +3022,7 @@
                                 "expanded": true,
                                 "children": [],
                                 "detail": "<p>创建一个名为<code>proc_example.c</code>的文件，并添加以下代码：</p>\n<pre><code>#include &lt;linux/module.h&gt;\n#include &lt;linux/proc_fs.h&gt;\n#include &lt;linux/uaccess.h&gt; // for copy_to_user\n\n#define PROC_NAME &quot;helloworld&quot;\n#define MESSAGE &quot;Hello, World!\\n&quot;\n\nssize_t proc_read(struct file *file, char __user *usr_buf, size_t count, loff_t *pos);\n\nstatic struct proc_ops proc_ops = {\n    .proc_read = proc_read,\n};\n\nstatic int __init proc_init(void) {\n    proc_create(PROC_NAME, 0666, NULL, &amp;proc_ops);\n    printk(KERN_INFO &quot;/proc/%s created\\n&quot;, PROC_NAME);\n    return 0;\n}\n\nstatic void __exit proc_exit(void) {\n    remove_proc_entry(PROC_NAME, NULL);\n    printk(KERN_INFO &quot;/proc/%s removed\\n&quot;, PROC_NAME);\n}\n\nssize_t proc_read(struct file *file, char __user *usr_buf, size_t count, loff_t *pos) {\n    int rv = 0;\n    char buffer[128];\n    static int completed = 0;\n\n    if (completed) {\n        completed = 0;\n        return 0;\n    }\n\n    completed = 1;\n    rv = sprintf(buffer, MESSAGE);\n\n    // Copy data to user space\n    if (copy_to_user(usr_buf, buffer, rv)) {\n        rv = -EFAULT;\n    }\n\n    return rv;\n}\n\nmodule_init(proc_init);\nmodule_exit(proc_exit);\n\nMODULE_LICENSE(&quot;GPL&quot;);\nMODULE_DESCRIPTION(&quot;Hello World Proc Module&quot;);\nMODULE_AUTHOR(&quot;Your Name&quot;);</code></pre>",
-                                "images": [
-                                  {
-                                    "file": "data:image/gif;base64,R0lGODlhAQABAPABAP///wAAACH5BAEKAAAALAAAAAABAAEAAAICRAEAOw==",
-                                    "caption": "点击并拖拽以移动"
-                                  }
-                                ]
+                                "images": []
                               },
                               {
                                 "id": "n-mumusu581jda",
@@ -3035,16 +3030,7 @@
                                 "expanded": true,
                                 "children": [],
                                 "detail": "<p>创建一个<code>Makefile</code>来编译这个模块：</p>\n<pre><code>obj-m += proc_example.o\n\nall:\n\tmake -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules\n\nclean:\n\tmake -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean</code></pre>\n<p>在终端中运行以下命令来编译模块：</p>\n<pre><code>make</code></pre>",
-                                "images": [
-                                  {
-                                    "file": "data:image/gif;base64,R0lGODlhAQABAPABAP///wAAACH5BAEKAAAALAAAAAABAAEAAAICRAEAOw==",
-                                    "caption": "点击并拖拽以移动"
-                                  },
-                                  {
-                                    "file": "data:image/gif;base64,R0lGODlhAQABAPABAP///wAAACH5BAEKAAAALAAAAAABAAEAAAICRAEAOw==",
-                                    "caption": "点击并拖拽以移动"
-                                  }
-                                ]
+                                "images": []
                               },
                               {
                                 "id": "n-mumusu59i9fg",
@@ -3052,24 +3038,7 @@
                                 "expanded": true,
                                 "children": [],
                                 "detail": "<p>加载模块：</p>\n<pre><code>sudo insmod proc_example.ko</code></pre>\n<p>查看<code>/proc/helloworld</code>文件：</p>\n<pre><code>cat /proc/helloworld</code></pre>\n<p>您应该看到输出：</p>\n<pre><code>Hello, World!</code></pre>\n<p>卸载模块：</p>\n<pre><code>sudo rmmod proc_example</code></pre>",
-                                "images": [
-                                  {
-                                    "file": "data:image/gif;base64,R0lGODlhAQABAPABAP///wAAACH5BAEKAAAALAAAAAABAAEAAAICRAEAOw==",
-                                    "caption": "点击并拖拽以移动"
-                                  },
-                                  {
-                                    "file": "data:image/gif;base64,R0lGODlhAQABAPABAP///wAAACH5BAEKAAAALAAAAAABAAEAAAICRAEAOw==",
-                                    "caption": "点击并拖拽以移动"
-                                  },
-                                  {
-                                    "file": "data:image/gif;base64,R0lGODlhAQABAPABAP///wAAACH5BAEKAAAALAAAAAABAAEAAAICRAEAOw==",
-                                    "caption": "点击并拖拽以移动"
-                                  },
-                                  {
-                                    "file": "data:image/gif;base64,R0lGODlhAQABAPABAP///wAAACH5BAEKAAAALAAAAAABAAEAAAICRAEAOw==",
-                                    "caption": "点击并拖拽以移动"
-                                  }
-                                ]
+                                "images": []
                               }
                             ]
                           },
