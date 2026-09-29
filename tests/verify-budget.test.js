@@ -159,3 +159,42 @@ describe('P0-2 交接：用例数由链上传来，不重跑 vitest', () => {
     expect(src).toMatch(/unitTestsSource/); // 来源必须打印出来（该被看见的事实）
   });
 });
+
+/* ------------------------------------------------------------
+ * 兜底提示：**两个兜底互相替代不了**
+ *
+ * 真实背景：这条提示原先写的是「本工程 Git 零提交 ⇒ export-json 到工程外是**唯一**回滚手段」。
+ * 2026-09-29 本地 Git 解锁后，那个前提**已经过时**。而反过来写（"有 Git 了 ⇒ 不用备份"）
+ * 更危险：`.git` 与工程同盘，盘/整个目录丢了就一起没。
+ * ⇒ 组文那一半抽成纯函数，这里把四种组合都钉住，防止它随某一次改动又倒向一边。
+ * ------------------------------------------------------------ */
+describe('兜底备份提示：本地 Git 与工程外备份各自独立', () => {
+  it('无工程外备份 + 有本地提交 ⇒ 既说"已提交的可回滚"，也明说"救不了盘丢失"', () => {
+    const t = verify.backupHintText(null, 3);
+    expect(t).toContain('未找到工程外备份');
+    expect(t).toContain('3 条提交');
+    expect(t).toContain('救不了');
+  });
+
+  it('无工程外备份 + 零提交 ⇒ 不许出现"可回滚"这种话（那会让人以为没事）', () => {
+    const t = verify.backupHintText(null, 0);
+    expect(t).toContain('零提交');
+    expect(t).not.toContain('可回滚');
+  });
+
+  it('取不到 git 状态 ⇒ 如实说"取不到"，不假装成零提交', () => {
+    expect(verify.backupHintText(null, null)).toContain('取不到');
+    expect(verify.backupHintText(null, null)).not.toContain('零提交');
+  });
+
+  it('有工程外备份 ⇒ 报新鲜度，且**仍然**带上本地 Git 状态（两条信息一起说）', () => {
+    const t = verify.backupHintText({ days: 2 }, 5);
+    expect(t).toContain('2 天前');
+    expect(t).toContain('5 条提交');
+  });
+
+  it('gitCommitCount：返回非负数字或 null，绝不抛（仓库可能还没有提交 / 机器可能没装 git）', () => {
+    const n = verify.gitCommitCount();
+    expect(n === null || (typeof n === 'number' && n >= 0)).toBe(true);
+  });
+});

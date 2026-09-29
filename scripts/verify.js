@@ -65,11 +65,27 @@ function writeLastVerify(run) {
 }
 
 /* ---------------- 兜底备份的新鲜度（只提示，不判红） ----------------
- * 为什么需要：本工程 Git **零提交**（`.git/objects` 被 EDR 拦），`export-json` 到**工程外**是
- * 唯一兜底。实测：文档里指定的 `D:/backup/ai-mind-map/` **不存在**，`backups/` 最新一份是
- * 7 天前的、而且**就在工程内（同一块盘）** —— 规则写在文档里，却没有任何东西提醒它已失效。
+ * 为什么需要：**两件互相替代不了的事**必须都看着 ——
+ *   ① **本地回滚**（本地 Git 有没有提交）：改了能回去；
+ *   ② **工程外备份**（`D:/backup/...` 有没有东西）：磁盘/整个目录丢了还能起。
+ * 2026-09-29 起 ① 已具备（`.git/objects` 的 EDR 拦截解除，见 `docs/INCIDENTS.md`），但 ② 仍然缺 ——
+ * 而**本地提交救不了磁盘丢失**（`.git` 就在同一块盘上）。所以这条提示不能因为"有 Git 了"就删掉，
+ * 只能把"零提交"那句**已经过时的前提**改对（它原先是"Git 零提交 ⇒ export-json 是唯一手段"，
+ * 现在两者是**两个独立的兜底**，各自都要看）。
  * 这里只做"提醒"，因为"该不该现在备份"是人的判断（M1：损害高但动作可具体描述 ⇒ 提示 + 约定）。 */
 const BACKUP_DIRS = ['D:/backup/ai-mind-map', 'D:/backup'];
+
+/** 本地 Git 有几条提交。0 = 没有可用历史；null = 取不到（没装 git / 不是仓库 / 超时） */
+function gitCommitCount() {
+  try {
+    // stdio 用管道是安全的：这里只为读数，且不经过被测脚本（与文件头①那条"别用管道收集被测进程输出"无关）
+    const r = spawnSync('git', ['rev-list', '--count', 'HEAD'],
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000 });
+    if (r.status !== 0) return 0;
+    const n = parseInt(String(r.stdout || '').trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  } catch (e) { return null; }
+}
 
 function checkBackupFreshness() {
   let newest = 0;
@@ -310,24 +326,43 @@ function pkgVersion() {
   catch (e) { return null; }
 }
 
+/**
+ * 兜底备份提示的**文本**（纯函数，便于单测）。
+ *
+ * 这段文案的要害是：**两个兜底互相替代不了**。写成"有 Git 了 ⇒ 不用备份"是危险的
+ * （`.git` 与工程同盘，盘/目录丢了就一起没），写成"没备份 ⇒ 一切都完了"又忽略了
+ * 本地提交已经把"改错能回去"解决了。所以两条信息**永远一起说**。
+ *
+ * @param {{days:number}|null} b 工程外备份的新鲜度（null = 没找到）
+ * @param {number|null} n 本地提交数（null = 取不到，如没装 git / 不是仓库）
+ */
+function backupHintText(b, n) {
+  const where = BACKUP_DIRS.join(' 或 ');
+  const local = n === null ? '本地 Git 状态取不到（没装 git / 不是仓库）'
+    : n > 0 ? '本地 Git 已有 ' + n + ' 条提交（**已提交**的内容可回滚）'
+      : '本地 Git **零提交**（改错了回不去）';
+  if (!b) {
+    return 'ℹ️ 兜底备份：**未找到工程外备份**（查找 ' + where + '）｜' + local
+      + '。⚠️ 本地提交**救不了**盘/目录丢失（`.git` 与工程同盘）—— 大改前建议 '
+      + '`git bundle create <工程外路径> --all`（带完整历史）或 `node cli/mm-cli.js export-json`（只带当前数据）。';
+  }
+  if (b.days > 7) {
+    return 'ℹ️ 兜底备份：最新一份在 ' + b.days + ' 天前（' + where + '）｜' + local
+      + '—— 距上次备份已久，大改前建议再备一份。';
+  }
+  return 'ℹ️ 兜底备份：最新一份在 ' + (b.days === 0 ? '今天' : b.days + ' 天前') + '（' + where + '）｜' + local + '。';
+}
+
 /** 打印兜底备份新鲜度（只提示，不影响退出码） */
 function backupHint() {
-  const b = checkBackupFreshness();
-  const where = BACKUP_DIRS.join(' 或 ');
-  if (!b) {
-    console.log('ℹ️ 兜底备份：**未找到工程外导出**（查找 ' + where + '）—— 本工程 Git 零提交，'
-      + '`export-json` 到工程外是唯一回滚手段（工程内 `backups/` 与工程同盘，不算兜底）。');
-  } else if (b.days > 7) {
-    console.log('ℹ️ 兜底备份：最新一份在 ' + b.days + ' 天前（' + where + '）—— 距上次导出已久，'
-      + '大改前建议先 `node cli/mm-cli.js export-json` 一份。');
-  } else {
-    console.log('ℹ️ 兜底备份：最新一份在 ' + (b.days === 0 ? '今天' : b.days + ' 天前') + '（' + where + '）。');
-  }
+  console.log(backupHintText(checkBackupFreshness(), gitCommitCount()));
 }
 
 module.exports = {
   STEPS, TOTAL_BUDGET_MS, TEST_RESULTS, checkBudgets, readUnitTests,
-  LAST_VERIFY, readLastVerify, checkBackupFreshness, BACKUP_DIRS
+  LAST_VERIFY, readLastVerify, checkBackupFreshness, BACKUP_DIRS,
+  // 兜底提示的两半：取数（I/O）与组文（纯函数）分开，便于单测组文那一半
+  gitCommitCount, backupHintText
 };
 
 if (require.main === module) main();
