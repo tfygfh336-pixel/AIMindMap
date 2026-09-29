@@ -1361,6 +1361,42 @@ function runSubprocess(args) {
     'in=' + a.code + '/' + a.out.length + 'B  sub=' + b.code + '/' + b.out.length + 'B');
 }
 
+/* ---------------- 44. localPath（节点 ↔ 本机文件夹） ----------------
+ * 为什么单开一节：这条能力**真的漏过一次**。当初 `--local-path` 只接进了 `add` / `edit`，
+ * 而建树时根节点是用 `add-root` 建的（它是独立实现）—— 结果整棵树唯一的根**没有文件夹链接**，
+ * 而根恰恰是最该有链接的那个。所以这里把三个入口全钉一遍，谁再漏一个就判红。
+ * （形状校验的边界由 tests/schema.test.js 覆盖：只校验形状、不校验存在性。） */
+{
+  const HOME = os.homedir();                       // 一定存在的绝对路径（不假设有 E: 盘）
+  // 44.1 add --local-path
+  r = run(['add', PROJ, 'a', '--topic', '带文件夹的节点', '--id', 'lp-node', '--local-path', HOME]);
+  const got1 = run(['get', PROJ, 'lp-node', '--json']);
+  let lp1 = null;
+  try { lp1 = JSON.parse(got1.out).localPath; } catch (e) { /* 解析失败即为 null，断言会判红 */ }
+  check('add --local-path 落盘且读视图可见', ok(r.out) && lp1 === HOME,
+    '设置=' + ok(r.out) + ' 读回=' + JSON.stringify(lp1));
+
+  // 44.2 add-root --local-path（曾经漏掉的那个入口）
+  r = run(['add-root', PROJ, '--topic', '带文件夹的顶层主题', '--id', 'lp-root', '--local-path', HOME]);
+  const got2 = run(['get', PROJ, 'lp-root', '--json']);
+  let lp2 = null;
+  try { lp2 = JSON.parse(got2.out).localPath; } catch (e) { /* 同上 */ }
+  check('add-root --local-path 落盘且读视图可见', ok(r.out) && lp2 === HOME,
+    '设置=' + ok(r.out) + ' 读回=' + JSON.stringify(lp2));
+
+  // 44.3 相对路径必须被拒（相对路径会随工作目录漂移，而点击打开的是操作系统）
+  r = run(['edit', PROJ, 'lp-node', '--local-path', 'markdown/M1']);
+  check('--local-path 拒绝相对路径', r.code !== 0 && /绝对路径/.test(r.out), r.out.trim().slice(0, 80));
+
+  // 44.4 --clear-local-path 能清掉
+  r = run(['edit', PROJ, 'lp-node', '--clear-local-path']);
+  const got3 = run(['get', PROJ, 'lp-node', '--json']);
+  let lp3 = 'unset';
+  try { lp3 = JSON.parse(got3.out).localPath; } catch (e) { /* 同上 */ }
+  check('--clear-local-path 清得掉', ok(r.out) && lp3 === undefined,
+    '清除=' + ok(r.out) + ' 读回=' + JSON.stringify(lp3));
+}
+
 /* ---------------- 清理 ---------------- */
 run(['remove', PROJ2, 'root']);
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ6), { recursive: true, force: true }); } catch (e) {}

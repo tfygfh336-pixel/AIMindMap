@@ -33,7 +33,7 @@
 | `related` | related <项目> <id> [--json] [--depth 2] |
 | `theme-layout` | theme-layout <项目> [--left a,b] [--right c,d] [--clear] |
 | `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] |
-| `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] |
+| `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] |
 | `edit` | edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false] |
 | `move` | move <项目> <id> <新父id> [--index n] |
 | `remove` | remove <项目> <id> [--clean-assoc] [--clean-links] |
@@ -164,7 +164,7 @@ node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html 
 新增顶层主题（不选父节点，直接挂在根节点下）—— 一个项目里可放多个不同方面的笔记
 
 ```
-node cli/mm-cli.js add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown]
+node cli/mm-cli.js add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径]
 ```
 
 ### edit

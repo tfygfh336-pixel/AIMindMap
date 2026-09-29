@@ -94,6 +94,10 @@ module.exports = {
     const topic = ctx.args.topic;
     if (!topic) ctx.error('缺少 --topic 标题');
     const detail = detailFromArgs(ctx);
+    const lp = localPathFromArgs(ctx);           // 顶层主题同样可挂本机文件夹（建树时根节点最需要它）
+    if (lp.set && lp.value && !fs.existsSync(lp.value)) {
+      ctx.out('⚠ 这个路径当前不存在（仍已记录，点击时会报错）：' + lp.value);
+    }
     let addedId = null, alreadyThemed = false;
     ctx.mutate((data) => {
       const rootNode = ctx.tree.find(data.data, 'root');
@@ -102,6 +106,7 @@ module.exports = {
       if (ctx.tree.find(data.data, id)) ctx.error('id 已存在: ' + id);
       const node = { id, topic, expanded: true, children: [] };
       if (detail) node.detail = detail;
+      if (lp.set && lp.value) node.localPath = lp.value;
       rootNode.children = (rootNode.children || []).concat(node);
       data.meta = data.meta || {};
       alreadyThemed = data.meta.rootMode === 'themes';
