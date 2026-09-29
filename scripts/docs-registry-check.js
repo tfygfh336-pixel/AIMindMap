@@ -850,14 +850,17 @@ function main() {
         const p = path.join(projDir, d);
         if (!fs.statSync(p).isDirectory()) continue;
         for (const x of fs.readdirSync(p)) {
-          if (/\.json$/.test(x) || x === 'assets' || x === 'attachments') continue;
+          // 合法名字：`<name>.json`、`.ui-state.json`、`.changes.jsonl`（后两者是运行时协调信号与变更日志，
+          // §5 已声明）。原先只放行 /\.json$/，把 `.changes.jsonl` 误报成"契约未声明的项"——
+          // 属于检查自己的白名单过期（会让人去查一个早已声明的东西）。
+          if (/\.jsonl?$/.test(x) || x === 'assets' || x === 'attachments') continue;
           odd.push('projects/' + d + '/' + x);
         }
       }
       if (odd.length) {
         console.log('ℹ️ 数据目录里有契约未声明的项（' + odd.length + ' 个）：' + odd.slice(0, 5).join('、')
-          + ' —— `docs/DATA-FORMAT.md` §5 只声明 `<name>.json` / `assets/` / `attachments/`；'
-          + '请确认它们的来历（工作产物请移到 `.review/`）。');
+          + ' —— `docs/DATA-FORMAT.md` §5 声明的是 `<name>.json` / `.ui-state.json` / `.changes.jsonl`'
+          + ' / `assets/` / `attachments/`；请确认它们的来历（工作产物请移到 `.review/`）。');
       }
     }
   } catch (e) { /* 数据目录不可读不影响门禁 */ }

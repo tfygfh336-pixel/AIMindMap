@@ -77,7 +77,7 @@
 | 字段 | 必填 | 类型 | 规则 |
 |------|------|------|------|
 | id | ✓ | string | 小写字母/数字/连字符（`^[a-z0-9][a-z0-9-]*$`），全树唯一，根为 `root` |
-| topic | ✓ | string | 节点标题（非空） |
+| topic | ✓ | string | 节点标题（非空）。可含**行内 Markdown**（`**加粗**`、`` `代码` ``）——界面渲染时转成 `<strong>`/`<code>`，**数据里仍是原文**（不写回 HTML，见下） |
 | expanded | - | bool | 默认 true；false 表示收起 |
 | detail | - | string | **HTML 片段**（见 §2.5）。渲染层以 `innerHTML` 注入，故必须写 HTML 标签才会呈现格式 |
 | tags | - | array | 字符串数组；**每项必须是非空字符串**。用于分类与 `search --tag` |

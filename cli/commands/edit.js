@@ -146,6 +146,46 @@ module.exports = {
     ctx.out('已更新: ' + id);
   },
 
+  /** 按深度**规范化展开状态**（持久化到数据）。
+   *
+   *  为什么需要：展开状态是**数据里的字段**（`expanded`），而渲染层已经不再无条件展开
+   *  （见 renderer/app-core.js 的 renderMind）⇒ 数据说展开就展开、说收起就收起。
+   *  但历史上 CLI 建树/早期导入一律写 `expanded: true`，于是"打开就是一片全展开、要滚很久"。
+   *  本命令把一棵（子）树按深度统一成"前 N 层展开、更深的收起"，**一次原子写**完成
+   *  —— 逐节点 `edit --expanded false` 要写几百次盘，那是另一种毛病（写放大）。
+   *  方向可逆：`--depth 0` 全收起，`--depth` 给足够大的值就是全展开。
+   */
+  expandDepth(ctx) {
+    const proj = ctx.args._[0];
+    if (!proj) ctx.error('缺少项目名');
+    const raw = ctx.args.depth;
+    const keep = raw === undefined ? 2 : Number(raw);
+    if (!Number.isInteger(keep) || keep < 0) ctx.error('--depth 必须是非负整数（0 = 全收起）');
+    const subId = ctx.args.id;
+    let changed = 0, seen = 0, targetId = null;
+    ctx.mutate((data) => {
+      const target = subId ? ctx.tree.find(data.data, subId) : ctx.tree.find(data.data, 'root');
+      if (!target) ctx.error('节点不存在: ' + (subId || 'root'));
+      targetId = target.id;
+      const walk = (n, d) => {
+        if (!n) return;
+        const kids = n.children || [];
+        if (kids.length) {
+          seen++;
+          const want = d < keep;
+          if ((n.expanded !== false) !== want) { n.expanded = want; changed++; }
+        }
+        kids.forEach((c) => walk(c, d + 1));
+      };
+      // 深度从**目标节点的子节点**算起（目标自身记 -1）：容器根 root 在主题模式下是隐藏的，
+      // 若把它算作第 0 层，"--depth 2" 实际只展开到第 1 层，与"前两层展开"的说法不符（实测踩到）。
+      walk(target, -1);
+      return data;
+    });
+    ctx.out('已按 --depth ' + keep + ' 规范化展开状态（子树根 ' + targetId + '）：'
+      + '检查 ' + seen + ' 个带子节点的节点，改写 ' + changed + ' 个');
+  },
+
   move(ctx) {
     const id = ctx.args._[1];
     const parent = ctx.args._[2];

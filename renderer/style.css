@@ -143,8 +143,38 @@ body.mm-dragmode.mm-dragging #mindmap-container * { cursor: grabbing !important;
 .file-card .fc-name { color: #86909c; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-card .fc-open { flex: 0 0 auto; color: #1664ff; font-size: 11.5px; }
 
-/* ---------------- 文件预览层（md/pdf 内预览） ---------------- */
-#file-preview { display: flex; flex-direction: column; background: #fff; }
+/* ---------------- 节点展开/收起按钮（jsMind 默认 11×11px / 字号 10px，太小按不准） ----------------
+ * 尺寸与外观在这层覆盖：jsMind 用**内联 left/top** 定位（不受这里影响），
+ * 只改宽高会让按钮往右下"长"，所以配 margin 把它拉回原来的视觉中心（19-11=8 → 各 4px）。
+ * 注意 vendor/jsmind.css 里 `jmnodes.theme-* jmexpander` 都是空规则，基类 `jmexpander` 即唯一对手，
+ * 而 style.css 在其后加载 ⇒ 同选择器靠后即生效，不需要 !important。 */
+jmexpander {
+  width: 19px; height: 19px; line-height: 16px;
+  margin: -4px 0 0 -4px;
+  font-size: 14px; font-weight: 700; font-family: Consolas, "Courier New", monospace;
+  color: #1664ff; background: #fff;
+  border: 1.5px solid #1664ff; border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(22, 100, 255, 0.28);
+  cursor: pointer; user-select: none;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease;
+}
+jmexpander:hover { background: #1664ff; color: #fff; border-color: #1664ff; transform: scale(1.1); }
+/* 收起态的「+」用实心强调，展开态的「−」保持描边 —— 一眼能看出哪边还有内容 */
+jmnode[isroot="false"] ~ jmexpander { border-color: #1664ff; }
+
+/* ---------------- 文件预览层（md/pdf 内预览） ----------------
+ * ⚠️ 这里**必须**显式给尺寸：原先只写 display:flex，于是落回 .dialog-box 的 480px 宽 ——
+ * 表现为"PDF 预览只有一条窄缝、默认画面很小"（实测用户反馈）。改成大画布。 */
+#file-preview {
+  display: flex; flex-direction: column; background: #fff;
+  width: 92vw; max-width: 1560px; height: 90vh; max-height: 92vh;
+  border-radius: 10px; overflow: hidden; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.28);
+  /* ⚠️ 必须显式 stretch：本元素同时挂着 `.overlay` 类，而 `.overlay` 是
+   * `align-items:center` —— 那是给"弹窗在遮罩里居中"用的，但它**同时**作用于本元素
+   * 自己的子元素（它自己也是 flex 容器），于是 #fp-body 被收缩成内容宽（实测 300px，
+   * 即 iframe 的默认宽度），表现为"PDF 只有中间一条窄缝"。这条覆盖就是修它。 */
+  align-items: stretch;
+}
 #fp-head {
   flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
   padding: 8px 14px; border-bottom: 1px solid #e4e7ec;
@@ -158,8 +188,8 @@ body.mm-dragmode.mm-dragging #mindmap-container * { cursor: grabbing !important;
 #fp-head button:hover { background: #f0f4ff; border-color: #1664ff; color: #1664ff; }
 #fp-body { flex: 1; min-height: 0; display: flex; }
 #fp-md {
-  flex: 1; overflow: auto; padding: 18px 24px;
-  font-size: 14px; line-height: 1.75; color: #1f2329;
+  flex: 1; overflow: auto; padding: 22px 32px;
+  font-size: 15px; line-height: 1.8; color: #1f2329;
 }
 #fp-md h1 { font-size: 22px; border-bottom: 1px solid #e4e7ec; padding-bottom: 8px; }
 #fp-md h2 { font-size: 18px; }

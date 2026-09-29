@@ -87,7 +87,11 @@
 
     function openNode(topic, level) {
       flushSeg();
-      const node = { id: g(topic), topic, expanded: true, children: [] };
+      // 展开状态的默认值：**只让前两层展开，更深的收起**。
+      // 为什么：导入的笔记/目录树动辄上百节点，若一律写 expanded:true，打开项目就是一片全展开、
+      // 要滚很久才找到东西；而"展开某个节点时，它的子节点应当是收起的"也是明确期望（用户反馈）。
+      // 单源：渲染层不再兜底展开（app-core.js 的 renderMind 去掉了 expand_to_depth(3)），数据说啥就是啥。
+      const node = { id: g(topic), topic, expanded: level <= 2, children: [] };
       // 调整栈深度：level-1 层为父
       while (stack.length > level) stack.pop();
       while (stack.length < level) {

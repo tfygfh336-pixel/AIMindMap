@@ -89,8 +89,10 @@
       $('#fp-md').innerHTML = '';
       $('#fp-pdf').style.display = 'block';
       $('#file-preview').style.display = 'flex';
-      // Chromium 内置 PDF viewer 直接内嵌 file:// PDF（借鉴 Electron Web Embeds）
-      $('#fp-pdf').src = abs ? ('file://' + abs) : '';
+      // Chromium 内置 PDF viewer 直接内嵌 file:// PDF（借鉴 Electron Web Embeds）。
+      // ⚠️ 必须带 `#zoom=page-width`：不加时 viewer 按 100% 显示，在大预览框里也只是一小页，
+      // 看着"默认画面太小"（用户反馈）。page-width = 页宽自适应，配合上面 #file-preview 的 90vh 大画布。
+      $('#fp-pdf').src = abs ? ('file://' + abs + '#zoom=page-width') : '';
     } else {
       // 其他类型：系统默认应用打开（XMind 附件交互模式）
       if (abs) window.desktop.app.openFile(abs);
@@ -132,7 +134,9 @@
         if (!p || p === state.project.name) {
           // 同项目：选中并开一个详情框（未锁定的框会被复用，锁定框保留）
           const jm = state.jm;
-          jm.expand_to_depth(20);
+          // 只展开该节点的祖先链：原先 expand_to_depth(20) 会把整棵树摊开，用户的折叠状态就此丢失
+          //（单源见 app-actions.js 的 expandAncestors）。
+          if (MM.expandAncestors) MM.expandAncestors(jm, nid);
           const nn = jm.get_node(nid);
           if (nn) { jm.select_node(nid); showDetail(nn); }
           else setStatus('节点不在当前视图：' + nid);

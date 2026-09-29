@@ -36,6 +36,7 @@
 | `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] |
 | `edit` | edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false] |
 | `move` | move <项目> <id> <新父id> [--index n] |
+| `expand-depth` | expand-depth <项目> [--depth N] [--id 子树根id] |
 | `remove` | remove <项目> <id> [--clean-assoc] [--clean-links] |
 | `clone` | clone <项目> <源id> <新父id> [--deep] |
 | `import-md` | import-md <项目> <md文件> [--parent id] |
@@ -181,6 +182,14 @@ node cli/mm-cli.js edit <项目> <id> [--topic 标题] [--detail html | --detail
 
 ```
 node cli/mm-cli.js move <项目> <id> <新父id> [--index n]
+```
+
+### expand-depth
+
+按深度规范化展开状态（默认前 2 层展开、更深的收起；--depth 0 = 全收起），一次原子写
+
+```
+node cli/mm-cli.js expand-depth <项目> [--depth N] [--id 子树根id]
 ```
 
 ### remove

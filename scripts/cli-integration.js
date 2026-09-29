@@ -1397,6 +1397,37 @@ function runSubprocess(args) {
     '清除=' + ok(r.out) + ' 读回=' + JSON.stringify(lp3));
 }
 
+/* ---------------- 45. expand-depth（按深度规范化展开状态） ----------------
+ * 这条命令存在的理由：展开状态是**数据**（`expanded`），而渲染层已不再无条件展开
+ * （见 renderer/app-core.js 的 renderMind）⇒ 历史上"一律 true"的数据需要一次收口。
+ * 判据用 `get --json` 读回展开状态（唯一真源是数据文件本身，不经任何视图层）。 */
+{
+  const P = PROJ;                                  // 复用本套断言的临时项目
+  run(['add', P, 'a', '--topic', 'D2', '--id', 'd2']);
+  run(['add', P, 'd2', '--topic', 'D3', '--id', 'd3']);
+  run(['add', P, 'd3', '--topic', 'D4', '--id', 'd4']);
+  const expandedOf = (id) => {
+    try { const j = JSON.parse(run(['get', P, id, '--json']).out); return j.expanded !== false; }
+    catch (e) { return null; }
+  };
+  r = run(['expand-depth', P, '--depth', '2']);
+  const okMsg = ok(r.out) && /改写 \d+/.test(r.out);
+  check('expand-depth 默认前两层展开：浅层 true、深层 false', okMsg && expandedOf('d2') === true && expandedOf('d3') === false,
+    'D2=' + expandedOf('d2') + ' D3=' + expandedOf('d3'));
+
+  r = run(['expand-depth', P, '--depth', '0']);
+  check('expand-depth --depth 0 全收起', ok(r.out) && expandedOf('d2') === false, 'D2=' + expandedOf('d2'));
+
+  r = run(['expand-depth', P, '--depth', '9']);
+  check('expand-depth 给大值 = 全展开（方向可逆，不需要第二条命令）', ok(r.out) && expandedOf('d3') === true, 'D3=' + expandedOf('d3'));
+
+  r = run(['expand-depth', P, '--depth', '-1']);
+  check('expand-depth 拒绝负深度', r.code !== 0 && /非负整数/.test(r.out), r.out.trim().slice(0, 60));
+
+  r = run(['expand-depth', P, '--id', 'no-such-node']);
+  check('expand-depth 对不存在的子树报错', r.code !== 0 && /节点不存在/.test(r.out), r.out.trim().slice(0, 60));
+}
+
 /* ---------------- 清理 ---------------- */
 run(['remove', PROJ2, 'root']);
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ6), { recursive: true, force: true }); } catch (e) {}

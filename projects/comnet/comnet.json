@@ -2722,7 +2722,7 @@
               {
                 "id": "md-m1-week1",
                 "topic": "Week1",
-                "expanded": true,
+                "expanded": false,
                 "children": [
                   {
                     "id": "md-m1-week1-asserts",
@@ -2737,17 +2737,17 @@
               {
                 "id": "md-m1-week2",
                 "topic": "Week2",
-                "expanded": true,
+                "expanded": false,
                 "children": [
                   {
                     "id": "md-m1-week2-day3",
                     "topic": "day3内核和应用层通信",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m1-week2-day3-01-proc",
                         "topic": "01-proc文件系统",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "code-01-proc-example-c",
@@ -2769,7 +2769,7 @@
                       {
                         "id": "md-m1-week2-day3-02-sysfs",
                         "topic": "02-sysfs文件系统",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "code-02-sysfs-example-c",
@@ -2791,7 +2791,7 @@
                       {
                         "id": "md-m1-week2-day3-03-netlink",
                         "topic": "03-netlink套接字",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "code-03-netlink-example-c",
@@ -2820,7 +2820,7 @@
                       {
                         "id": "md-m1-week2-day3-04-ioctl",
                         "topic": "04-ioctl",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "code-04-ioctl-example-c",
@@ -2849,7 +2849,7 @@
                       {
                         "id": "md-m1-week2-day3-05",
                         "topic": "05-字符设备",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "code-05-char-device-example-c",
@@ -2871,7 +2871,7 @@
                       {
                         "id": "md-m1-week2-day3-06",
                         "topic": "06-块设备",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "code-06-block-device-example-c",
@@ -2893,7 +2893,7 @@
                       {
                         "id": "md-m1-week2-day3-07-mmap",
                         "topic": "07-mmap内存映射",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "code-07-mmap-kernel-example-c",
@@ -2922,7 +2922,7 @@
                       {
                         "id": "md-m1-week2-day3-08",
                         "topic": "08-信号",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "code-08-signal-kernel-example-c",
@@ -2951,7 +2951,7 @@
                       {
                         "id": "md-m1-week2-day3-09-inotify",
                         "topic": "09-inotify和fanotify",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "code-09-fanotify-example-c",
@@ -2973,7 +2973,7 @@
                       {
                         "id": "linux-mumupmkrsclg",
                         "topic": "Linux内核和应用层常见的通信方式",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "system-calls-mumupmks6u1f",
@@ -2985,7 +2985,7 @@
                           {
                             "id": "proc-mumupmks0d5f",
                             "topic": "**proc文件系统**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmksox2y",
@@ -3007,7 +3007,7 @@
                           {
                             "id": "proc-helloworld-mumupmktmkcv",
                             "topic": "编写内核模块/proc/helloworld",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmkt6rwn",
@@ -3045,12 +3045,12 @@
                           {
                             "id": "sysfs-mumupmktfcss",
                             "topic": "**sysfs文件系统**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "sysfs-mumupmktub13",
                                 "topic": "编写sysfs文件系统例子",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmktqpkd",
@@ -3092,12 +3092,12 @@
                           {
                             "id": "netlink-mumupmktzi4d",
                             "topic": "**Netlink套接字**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "netlink-mumupmkt2vnf",
                                 "topic": "Netlink示例",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmktg7li",
@@ -3139,12 +3139,12 @@
                           {
                             "id": "ioctl-mumupmkud70g",
                             "topic": "**ioctl**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "ioctl-mumupmku1c7v",
                                 "topic": "使用`ioctl`控制字符设备",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkuuyf5",
@@ -3185,12 +3185,12 @@
                           {
                             "id": "n-mumupmkuxfbx",
                             "topic": "**字符设备和块设备接口**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmkuj7in",
                                 "topic": "创建一个简单的字符设备驱动程序",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkuxp1a",
@@ -3236,7 +3236,7 @@
                               {
                                 "id": "n-mumupmkunm4n",
                                 "topic": "创建一个简单的块设备驱动程序",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkuhz2q",
@@ -3285,12 +3285,12 @@
                           {
                             "id": "mmap-mumupmkvls0p",
                             "topic": "**内存映射（mmap）**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmkvfefu",
                                 "topic": "内核模块部分",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkv6pmg",
@@ -3332,12 +3332,12 @@
                           {
                             "id": "signals-mumupmkva86k",
                             "topic": "**信号（Signals）**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmkvol1b",
                                 "topic": "内核模块部分",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkv4kzm",
@@ -3379,12 +3379,12 @@
                           {
                             "id": "n-mumupmkvg8ed",
                             "topic": "**消息队列**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmkv7hd1",
                                 "topic": "用户空间程序示例",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkvvho0",
@@ -3457,12 +3457,12 @@
                           {
                             "id": "n-mumupmkvyk8t",
                             "topic": "**信号量**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmkvgzre",
                                 "topic": "内核模块部分",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkv2tas",
@@ -3478,7 +3478,7 @@
                               {
                                 "id": "n-mumupmkwi4qc",
                                 "topic": "用户空间程序部分",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkw33dg",
@@ -3509,7 +3509,7 @@
                               {
                                 "id": "semaphore-mumupmkwddp0",
                                 "topic": "信号量（Semaphore）进程间通信例子",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkwy8uc",
@@ -3558,7 +3558,7 @@
                           {
                             "id": "system-v-ipc-mumupmkwojxf",
                             "topic": "**共享内存（System V IPC）**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmkwgbc1",
@@ -3570,7 +3570,7 @@
                               {
                                 "id": "system-v-mumupmkw15wr",
                                 "topic": "使用System V共享内存",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkw15d8",
@@ -3616,7 +3616,7 @@
                               {
                                 "id": "n-mumupmkw51dw",
                                 "topic": "内核模块部分",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "n-mumupmkwmxtb",
@@ -3657,12 +3657,12 @@
                           {
                             "id": "inotify-fanotify-mumupmkw68ht",
                             "topic": "**内核事件通知机制（如inotify、fanotify）**",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "inotify-mumupmkw4g04",
                                 "topic": "使用 `inotify` 监控文件系统事件",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "inotify-mumupmkwxnie",
@@ -3686,7 +3686,7 @@
                               {
                                 "id": "fanotify-mumupmkw3hwr",
                                 "topic": "使用 `fanotify` 监控文件系统事件",
-                                "expanded": true,
+                                "expanded": false,
                                 "children": [
                                   {
                                     "id": "fanotify-mumupmkwngzw",
@@ -3722,7 +3722,7 @@
                       {
                         "id": "linux-mumupmmb6mmz",
                         "topic": "Linux内核与应用层通信方式学习验证 — 开发日志",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "n-mumupmmbj57o",
@@ -3734,7 +3734,7 @@
                           {
                             "id": "1-mumupmmb3zom",
                             "topic": "1. 任务背景",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "1-1-mumupmmbmudi",
@@ -3756,7 +3756,7 @@
                           {
                             "id": "2-mumupmmc1obe",
                             "topic": "2. 环境准备",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "2-1-mumupmmck1sc",
@@ -3784,7 +3784,7 @@
                           {
                             "id": "3-01-proc-mumupmmcuj7y",
                             "topic": "3. 01-proc文件系统",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "3-1-mumupmmci2bv",
@@ -3833,7 +3833,7 @@
                           {
                             "id": "4-02-sysfs-mumupmmcewcu",
                             "topic": "4. 02-sysfs文件系统",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "4-1-mumupmmcd7u6",
@@ -3889,7 +3889,7 @@
                           {
                             "id": "5-03-netlink-mumupmmchqpy",
                             "topic": "5. 03-netlink套接字",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "5-1-mumupmmcdzkw",
@@ -3945,7 +3945,7 @@
                           {
                             "id": "6-04-ioctl-mumupmmcvlud",
                             "topic": "6. 04-ioctl",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "6-1-mumupmmc9hqa",
@@ -3994,7 +3994,7 @@
                           {
                             "id": "7-05-mumupmmdg1cx",
                             "topic": "7. 05-字符设备",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "7-1-mumupmmdbask",
@@ -4043,7 +4043,7 @@
                           {
                             "id": "8-06-mumupmmdl6wo",
                             "topic": "8. 06-块设备",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "8-1-mumupmmd8rl9",
@@ -4099,7 +4099,7 @@
                           {
                             "id": "9-07-mmap-mumupmmdnuhs",
                             "topic": "9. 07-mmap内存映射",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "9-1-mumupmmd5bqy",
@@ -4148,7 +4148,7 @@
                           {
                             "id": "10-08-signals-mumupmmd1ggc",
                             "topic": "10. 08-信号（Signals）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "10-1-mumupmmd3tz8",
@@ -4198,7 +4198,7 @@
                           {
                             "id": "11-09-inotify-fanotify-mumupmmej6nt",
                             "topic": "11. 09-inotify和fanotify",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "11-1-mumupmmehjd6",
@@ -4277,12 +4277,12 @@
                   {
                     "id": "md-m1-week2-day4",
                     "topic": "day4进程间通信",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m1-week2-day4-01-pipe-and-fifo",
                         "topic": "01-pipe-and-fifo",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "fifo-reader-c-mumunw6m2hv3",
@@ -4318,7 +4318,7 @@
                       {
                         "id": "md-m1-week2-day4-02-unix-domain-socket",
                         "topic": "02-unix-domain-socket",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "makefile-mumunyabli2h",
@@ -4347,7 +4347,7 @@
                       {
                         "id": "md-m1-week2-day4-03-tcp-socket",
                         "topic": "03-tcp-socket",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "makefile-mumuo0dpe1zh",
@@ -4376,7 +4376,7 @@
                       {
                         "id": "md-m1-week2-day4-04-mmap",
                         "topic": "04-mmap",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "makefile-mumuo2ji4h45",
@@ -4405,7 +4405,7 @@
                       {
                         "id": "md-m1-week2-day4-05-posix-shm",
                         "topic": "05-posix-shm",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "makefile-mumuo4ofzgm2",
@@ -4434,7 +4434,7 @@
                       {
                         "id": "md-m1-week2-day4-06-memfd",
                         "topic": "06-memfd",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "makefile-mumuo6dbt371",
@@ -4456,7 +4456,7 @@
                       {
                         "id": "md-m1-week2-day4-07-system-v-shm",
                         "topic": "07-system-v-shm",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "makefile-mumuo8ewub1p",
@@ -4485,7 +4485,7 @@
                       {
                         "id": "md-m1-week2-day4-08-posix-message-queue",
                         "topic": "08-posix-message-queue",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "makefile-mumuoaj5qa1m",
@@ -4514,7 +4514,7 @@
                       {
                         "id": "md-m1-week2-day4-09-system-v-message-queue",
                         "topic": "09-system-v-message-queue",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "makefile-mumuocpjosmc",
@@ -4543,7 +4543,7 @@
                       {
                         "id": "md-m1-week2-day4-10-signal",
                         "topic": "10-signal",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "makefile-mumunmzkp83x",
@@ -4572,7 +4572,7 @@
                       {
                         "id": "linux-ipc-mumupmnzqefy",
                         "topic": "Linux 进程间通信（IPC）学习验证 — 开发日志",
-                        "expanded": true,
+                        "expanded": false,
                         "children": [
                           {
                             "id": "n-mumupmnzqi43",
@@ -4584,7 +4584,7 @@
                           {
                             "id": "1-fifo-anonymous-pipe-named-pipe-mumupmnzhgqs",
                             "topic": "1. 匿名管道 & 命名管道 FIFO（Anonymous Pipe & Named Pipe）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmnz39nj",
@@ -4626,7 +4626,7 @@
                           {
                             "id": "2-unix-unix-domain-socket-mumupmnz2jzn",
                             "topic": "2. UNIX 域套接字（UNIX Domain Socket）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmnz9wjq",
@@ -4668,7 +4668,7 @@
                           {
                             "id": "3-tcp-tcp-socket-mumupmo0uugt",
                             "topic": "3. TCP 套接字（TCP Socket）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmo06pxc",
@@ -4710,7 +4710,7 @@
                           {
                             "id": "4-file-backed-mmap-mumupmo0edi7",
                             "topic": "4. 文件内存映射（File-backed mmap）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmo0579g",
@@ -4752,7 +4752,7 @@
                           {
                             "id": "5-posix-posix-shared-memory-mumupmo0gb6f",
                             "topic": "5. POSIX 共享内存（POSIX Shared Memory）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmo0erdl",
@@ -4794,7 +4794,7 @@
                           {
                             "id": "6-memfd-memfd-create-mumupmo03djn",
                             "topic": "6. 匿名内存文件 memfd（memfd_create）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmo0jc72",
@@ -4836,7 +4836,7 @@
                           {
                             "id": "7-system-v-system-v-shared-memory-mumupmo01g3g",
                             "topic": "7. System V 共享内存（System V Shared Memory）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmo04dot",
@@ -4878,7 +4878,7 @@
                           {
                             "id": "8-posix-posix-message-queue-mumupmo18smp",
                             "topic": "8. POSIX 消息队列（POSIX Message Queue）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmo1qnpx",
@@ -4920,7 +4920,7 @@
                           {
                             "id": "9-system-v-system-v-message-queue-mumupmo1rlbp",
                             "topic": "9. System V 消息队列（System V Message Queue）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmo1u401",
@@ -4962,7 +4962,7 @@
                           {
                             "id": "10-signal-mumupmo12key",
                             "topic": "10. 信号（Signal）",
-                            "expanded": true,
+                            "expanded": false,
                             "children": [
                               {
                                 "id": "n-mumupmo1ywfm",
@@ -5023,7 +5023,7 @@
                   {
                     "id": "md-m1-week2-task3-day4patch",
                     "topic": "Task3-day4patch",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m1-week2-task3-day4patch-packages",
@@ -5045,7 +5045,7 @@
                   {
                     "id": "md-m1-week2-task4-day1filetype",
                     "topic": "Task4-day1filetype",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m1-week2-task4-day1filetype-filetypev1",
@@ -5108,12 +5108,12 @@
               {
                 "id": "md-m2-qos",
                 "topic": "QOS",
-                "expanded": true,
+                "expanded": false,
                 "children": [
                   {
                     "id": "md-m2-qos-docs",
                     "topic": "DOCS",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m2-qos-docs-hh505n-qos",
@@ -5131,12 +5131,12 @@
               {
                 "id": "md-m2-task",
                 "topic": "Task",
-                "expanded": true,
+                "expanded": false,
                 "children": [
                   {
                     "id": "md-m2-task-task5",
                     "topic": "Task5",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m2-task-task5-crashdemo",
@@ -5165,7 +5165,7 @@
                   {
                     "id": "md-m2-task-task6",
                     "topic": "Task6",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m2-task-task6-image",
@@ -5180,7 +5180,7 @@
                   {
                     "id": "md-m2-task-task7",
                     "topic": "Task7",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m2-task-task7-crashdemo",
@@ -5209,7 +5209,7 @@
                   {
                     "id": "md-m2-task-task8",
                     "topic": "Task8",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m2-task-task8-gpio-demo-fi",
@@ -5241,7 +5241,7 @@
               {
                 "id": "md-m2-week1-2",
                 "topic": "Week1-2",
-                "expanded": true,
+                "expanded": false,
                 "children": [
                   {
                     "id": "md-m2-week1-2-0",
@@ -5253,7 +5253,7 @@
                   {
                     "id": "md-m2-week1-2-1",
                     "topic": "1-错误类型",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m2-week1-2-1-md",
@@ -5268,7 +5268,7 @@
                   {
                     "id": "md-m2-week1-2-2",
                     "topic": "2-分析工具",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m2-week1-2-2-md",
@@ -5297,7 +5297,7 @@
                   {
                     "id": "md-m2-week1-2-5",
                     "topic": "5-源代码等",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m2-week1-2-5-task5",
@@ -5329,12 +5329,12 @@
               {
                 "id": "md-m2-week3-4",
                 "topic": "Week3-4",
-                "expanded": true,
+                "expanded": false,
                 "children": [
                   {
                     "id": "md-m2-week3-4-wireshark",
                     "topic": "Wireshark抓包",
-                    "expanded": true,
+                    "expanded": false,
                     "children": [
                       {
                         "id": "md-m2-week3-4-wireshark-markdown",

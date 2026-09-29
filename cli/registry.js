@@ -60,6 +60,7 @@ function init() {
   register({ name: 'add-root', usage: 'add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径]', desc: '新增顶层主题（不选父节点，直接挂在根节点下）—— 一个项目里可放多个不同方面的笔记', fn: loadFile('edit').addRoot });
   register({ name: 'edit', usage: 'edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false]', desc: '编辑节点字段（--detail HTML / --detail-md Markdown；--tags 覆盖设置标签，逗号分隔；--local-path 记录本机文件夹供界面点击打开）', fn: loadFile('edit').edit });
   register({ name: 'move', usage: 'move <项目> <id> <新父id> [--index n]', desc: '移动节点到新父节点', fn: loadFile('edit').move });
+  register({ name: 'expand-depth', usage: 'expand-depth <项目> [--depth N] [--id 子树根id]', desc: '按深度规范化展开状态（默认前 2 层展开、更深的收起；--depth 0 = 全收起），一次原子写', fn: loadFile('edit').expandDepth });
   register({ name: 'remove', aliases: ['rm'], usage: 'remove <项目> <id> [--clean-assoc] [--clean-links]', desc: '删除节点（含子树）；被关联/链接引用时需 --clean-assoc / --clean-links', fn: loadFile('edit').remove });
   register({ name: 'clone', usage: 'clone <项目> <源id> <新父id> [--deep]', desc: '复制节点到新父节点（--deep 含子树）', fn: loadFile('edit').clone });
 

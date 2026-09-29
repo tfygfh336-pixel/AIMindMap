@@ -85,7 +85,8 @@
         if (!p || p === selfProject) {
           const jm = getState() && getState().jm;
           if (!jm) return;
-          jm.expand_to_depth(20);
+          // 只展开该节点的祖先链（同 app-media.js：跳转不该摊开整棵树）
+          if (MM.expandAncestors) MM.expandAncestors(jm, nid);
           const nn = jm.get_node(nid);
           if (nn) { jm.select_node(nid); MM.showDetail(nn); }
           else setStatus('节点不在当前视图：' + nid);

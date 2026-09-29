@@ -62,10 +62,25 @@
     if (closeBtn) closeBtn.addEventListener('click', () => { el.style.display = 'none'; });
   }
 
+  /** 只展开目标节点的**祖先链**，而不是整棵树。
+   *  原先这里用 `expand_to_depth(20)` 把所有节点一次性展开：跳到一个搜索结果后，
+   *  整张图的折叠状态就没了（用户 2026-09-29 反馈"子节点应该是折叠状态"）。
+   *  折叠状态是**存在数据里**的（`expanded`），导航动作不该越权把它全改掉。
+   *  注：展开祖先链本身会把这条链的 expanded 置为 true（jsMind 的语义）——这是必要的，
+   *  否则目标节点在视图里看不见；但它只影响这条链，不再是"全树"。 */
+  function expandAncestors(jm, id) {
+    const n = jm && jm.get_node(id);
+    if (!n) return false;
+    const chain = [];
+    for (let p = n.parent; p; p = p.parent) chain.push(p);
+    chain.reverse().forEach((a) => { try { jm.expand_node(a.id); } catch (e) { /* 容器根不支持展开 */ } });
+    return true;
+  }
+
   function jumpToNode(id) {
     const jm = state.jm;
     if (!jm || !id) return;
-    jm.expand_to_depth(20);
+    expandAncestors(jm, id);
     const n = jm.get_node(id);
     if (n) { jm.select_node(id); showDetail(n); }
     else setStatus('节点不在当前视图：' + id);
@@ -76,7 +91,7 @@
     await openProject(name);
     if (selectId) {
       const jm = state.jm;
-      jm.expand_to_depth(20);
+      expandAncestors(jm, selectId);
       const n = jm.get_node(selectId);
       if (n) { jm.select_node(selectId); showDetail(jm.get_selected_node()); }
     }
@@ -487,6 +502,7 @@
   MM.renderSearchResults = renderSearchResults;
   MM.jumpToNode = jumpToNode;
   MM.switchProject = switchProject;
+  MM.expandAncestors = expandAncestors;   // 单源：跳转到某节点的三个入口（搜索/关联/媒体）共用
   MM.save = save;
   MM.resolveConflict = resolveConflict;
   MM.hasPendingConflict = hasPendingConflict;

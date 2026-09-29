@@ -97,6 +97,37 @@
   }
 
   /* ================= 渲染 ================= */
+  /* ================= 节点标题的行内 Markdown =================
+   * 源笔记的标题常带 `**加粗**`（如 `## **sysfs文件系统**`），导入后 topic 里就是**字面量** ——
+   * 直接显示成 `**sysfs文件系统**` 既难看又占宽。这里做**渲染期**的行内转换（加粗 / 行内代码）。
+   *
+   * ⚠️ 转换只发生在 DOM 层，**绝不写回数据**：
+   *   `serializeTree()` 读的是 jsMind 节点的 topic（原文）—— 若把 `<strong>` 塞进 jsMind 数据，
+   *   界面一保存就会把 HTML 写进 topic（静默污染数据）。所以这里改的是渲染出来的 `jmnode` 元素。
+   * 幂等：转换后再读 `textContent` 已不含标记（`<strong>x</strong>` 的 textContent 是 `x`），
+   *   重复调用不会二次转义；jsMind 重建该节点元素时会重新写回原文，下次调用再转一次。
+   * 顺带修好一类老问题：topic 里含 `<`/`&` 的字面文本（支持 HTML 的模式下本来会被当标签解析），
+   *   现在统一先整体转义再还原两种行内语法。 */
+  const TOPIC_INLINE_RE = /\*\*[^*\n]+\*\*|`[^`\n]+`/;
+  function topicMarkup(text) {
+    return String(text == null ? '' : text)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  }
+  function applyTopicMarkup(jm) {
+    const host = (jm && jm.view && jm.view.e_panel) || document.getElementById('jsmind_container');
+    if (!host) return 0;
+    let n = 0;
+    host.querySelectorAll('jmnode').forEach((el) => {
+      const plain = el.textContent;
+      if (!plain || !TOPIC_INLINE_RE.test(plain)) return;
+      el.innerHTML = topicMarkup(plain);
+      n++;
+    });
+    return n;
+  }
+
   function renderMind(data) {
     // 「关联笔记」随项目数据一起进来，在这里统一接管（renderMind 是打开项目与
     // undo/redo 两条路径的唯一入口，故这一处即可覆盖两者）。
@@ -153,7 +184,11 @@
     // 未列出的主题保持默认右侧。方向唯一真源是 meta.layout（序列化不带 direction）。
     applyThemeLayout(data);
     jm.show(data);
-    jm.expand_to_depth(3);
+    // 展开状态**以数据为准**（节点的 `expanded` 字段）。原先这里是无条件 `expand_to_depth(3)`：
+    // 后果一是"在界面收起的节点，下次打开又被强制展开"（用户的折叠白做了），
+    // 后果二是导入的大树一打开就是一片全展开、要滚很久才找到东西（用户反馈）。
+    // 现在不再在渲染层兜底展开；数据本身的默认值由导入器（前两层展开）与一棵树的规范化负责。
+    applyTopicMarkup(jm);
     state.jm = jm;
     applyRootMode(jm, data);
     bindViewportControls(); // 视口滚轮缩放 / 中键平移 / 滚动吸收（全局只绑一次）
@@ -298,6 +333,8 @@
   MM.renderMind = renderMind;
   MM.rebuildFromJson = rebuildFromJson;
   MM.escHtml = escHtml;
+  MM.topicMarkup = topicMarkup;          // 单源：行内 Markdown → HTML（供详情框标题等复用）
+  MM.applyTopicMarkup = applyTopicMarkup;
   MM.nodeImages = nodeImages;
   MM.nodeFiles = nodeFiles;
   MM.setStatus = setStatus;

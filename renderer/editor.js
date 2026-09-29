@@ -53,6 +53,9 @@
     // 记录快照后修改
     const jm = app().getState().jm;
     if (node.topic !== topic) jm.update_node(node.id, topic);
+    // 标题里若含行内 Markdown（`**加粗**` / 反引号代码），在这里补一次渲染期转换 ——
+    // jsMind 刚把原文写进节点元素，是唯一需要重转的时机（详见 app-core.js 的 applyTopicMarkup）。
+    if (window.MM && window.MM.applyTopicMarkup) window.MM.applyTopicMarkup(jm);
     node.data = node.data || {};
     node.data.detail = detail;
     if (tags.length) node.data.tags = tags; else delete node.data.tags;
