@@ -1,0 +1,43 @@
+# electron-builder 打包配置 —— 生成 Windows 安装包(NSIS) / 绿色免安装版(portable)
+appId: com.doubao.aimindmap
+productName: AI MindMap
+directories:
+  output: build
+files:
+  - main.js
+  - main-dsh-sidebar.js
+  - preload.js
+  - renderer/**
+  - src/**
+  - projects/**
+  - cli/**
+  # scripts/ 必须打包：main.js 的 --smoke 会 require('./scripts/smoke-assertions.js')，
+  # 缺它则打包产物执行 --smoke 直接 MODULE_NOT_FOUND（与"打包后冒烟一次"的约定冲突）。
+  - scripts/**
+  - package.json
+# DSH 独立运行包：extraResources 落到 resources/dsh（真实文件、不进 asar ——
+# 捆绑 node.exe 需要真实路径执行；完整性由包内 manifest.json 哈希清单锁定）。
+extraResources:
+  - from: vendor/dsh
+    to: dsh
+    filter: ['**/*']
+# 本机策略代理拦 CONNECT 隧道（@electron/get 校验 SHASUMS256.txt 必 403）。
+# electron zip 已缓存在 %LOCALAPPDATA%/electron/Cache 且**已人工核对**官方
+# SHASUMS256（26bf9a61…，2026-09-24 核对），故跳过下载校验不影响产物完整性。
+electronDownload:
+  unsafelyDisableChecksums: true
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: AI MindMap
+  artifactName: AIMindMap-${version}-setup.${ext}
+portable:
+  artifactName: AIMindMap-${version}-portable.${ext}

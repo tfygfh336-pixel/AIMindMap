@@ -1,0 +1,510 @@
+/* ============================================================
+ * AI MindMap — 编辑操作与数据访问（app-actions.js）
+ * ------------------------------------------------------------
+ * 拆分自 renderer/app.js（拆分前所有函数同处一个 IIFE 闭包）。
+ * 职责：
+ *   1) 保存闸门 save（经 desktop.project.save → 主进程 CLI validate）
+ *   2) 快照式撤销/重做：snapshot / recordHistory / undo / redo / updateHistoryButtons
+ *   3) 编辑操作：addNode / addSiblingNode / addTopic / editNode / deleteNode
+ *   4) 全文搜索：runSearch / renderSearchResults / jumpToNode
+ *   5) 项目加载与切换：loadProjects / openProject / switchProject
+ *   6) Markdown 导入导出入口：importMarkdown / exportMarkdown
+ * 边界（本文件不负责）：
+ *   · 序列化与渲染 → app-core.js；视图缩放/主题模式 → app-view.js
+ *   · 详情框 → app-detail*.js；灯箱与预览 → app-media.js；UI 接线 → app.js
+ * 所有搬迁的函数体与拆分前逐字相同；本文件只新增顶部转发声明与 MM.x 导出行。
+ * ============================================================ */
+(function () {
+  'use strict';
+  const MM = window.MM || (window.MM = {});
+
+  const $ = MM.$;
+  const state = MM.state;
+  const UndoStack = MM.UndoStack;
+
+  /* ================= 全文搜索（标题/详情/图片备注/标签） ================= */
+  async function runSearch(keyword) {
+    const project = state.project;
+    if (!project) { setStatus('请先打开项目'); return; }
+    const kw = keyword || $('#search-box').value.trim();
+    if (!kw) return;
+    try {
+      const r = await window.desktop.app.search(project.name, kw);
+      renderSearchResults(r);
+    } catch (err) {
+      setStatus('搜索失败：' + ((err && err.message) || err), true);
+    }
+  }
+
+  function renderSearchResults(r) {
+    const el = $('#search-results');
+    const hits = (r && r.hits) || [];
+    let html = '<div class="sr-head"><span>搜索「' + escHtml(r.keyword || '') + '」共 ' + hits.length + ' 个结果</span><button class="sr-close" id="sr-close" title="关闭">✕</button></div>';
+    if (!hits.length) {
+      html += '<div class="sr-empty">无匹配节点（搜索范围：标题/详情/图片备注/标签）</div>';
+    }
+    hits.forEach((h) => {
+      html += '<div class="sr-item" data-id="' + escHtml(h.id) + '">'
+        + '<div class="sr-topic">' + escHtml(h.topic) + '</div>'
+        + (h.matchIn ? '<div class="sr-meta">匹配：' + escHtml(h.matchIn) + '</div>' : '')
+        + (h.snippet ? '<div class="sr-snippet">…' + escHtml(h.snippet) + '…</div>' : '')
+        + '</div>';
+    });
+    el.innerHTML = html;
+    el.style.display = 'block';
+    el.querySelectorAll('.sr-item').forEach((item) => {
+      item.addEventListener('click', () => {
+        jumpToNode(item.dataset.id);
+        el.style.display = 'none';
+      });
+    });
+    const closeBtn = document.getElementById('sr-close');
+    if (closeBtn) closeBtn.addEventListener('click', () => { el.style.display = 'none'; });
+  }
+
+  function jumpToNode(id) {
+    const jm = state.jm;
+    if (!jm || !id) return;
+    jm.expand_to_depth(20);
+    const n = jm.get_node(id);
+    if (n) { jm.select_node(id); showDetail(n); }
+    else setStatus('节点不在当前视图：' + id);
+  }
+
+  async function switchProject(name, selectId) {
+    if (!name || name === state.project.name) return;
+    await openProject(name);
+    if (selectId) {
+      const jm = state.jm;
+      jm.expand_to_depth(20);
+      const n = jm.get_node(selectId);
+      if (n) { jm.select_node(selectId); showDetail(jm.get_selected_node()); }
+    }
+  }
+
+  /* ================= 保存 =================
+   * 「未保存改动」用**快照比对**判定，而不是到处埋 dirty 标记：
+   * 只要当前序列化结果与上次落盘/载入时不同，就是有未保存改动。
+   * 这样增删改、编辑详情、补链接……任何路径都自动被覆盖，不会漏挂标记点。
+   */
+  let lastSavedSnapshot = null;
+
+  function isDirty() {
+    if (!state.jm || lastSavedSnapshot === null) return false;
+    return snapshot() !== lastSavedSnapshot;
+  }
+
+  /** 未决的并发冲突：等用户选择（headless 下没人能选 ⇒ 只报状态、不弹模态框） */
+  let pendingConflict = null;
+  const conflictWho = (res) => ((res.detail && res.detail.length)
+    ? res.detail.join('、') : (res.conflicts || []).join('、') || '（未指名）');
+
+  /**
+   * 保存。`opts.onConflict === 'theirs'` 用于"用磁盘上的版本"这个选择（见 `resolveConflict`）。
+   *
+   * 并发（多路同时编辑）时分三种：
+   *   · 两边改的对象**不相交** ⇒ 主进程**自动合并**，这里把内存同步到"实际落盘的那份"；
+   *   · **相交** ⇒ 主进程不写盘、回报冲突对象名 ⇒ **记下未决冲突**并报状态；
+   *     交互环境再弹一次确认让用户二选一（**只丢弃冲突对象上的改动**，或干脆不保存）；
+   *   · 保存期间又被插队 ⇒ 主进程未写盘（`RACE_RETRY`），让用户再点一次。
+   * 关键：**不再"一律拒绝并要求重开项目"** —— 那会把用户的全部未保存改动一起丢掉。
+   *
+   * ⚠️ **headless（冒烟/自动化）下绝不弹 `window.confirm`**：模态框没人回答会**把整轮卡死**
+   * （实测踩过：`SMOKE GUARD TIMEOUT — force exit`）。所以主进程会回一个 `headless` 标志。
+   */
+  async function save(opts) {
+    const data = serializeTree();
+    if (!data) return false;
+    try {
+      const res = await window.desktop.project.save(state.project.file, data, opts);
+      if (res && res.ok === false) {
+        if (res.code === 'MERGE_CONFLICT') {
+          pendingConflict = res;
+          const who = conflictWho(res);
+          if (res.headless) {         // 没人能回答 ⇒ 只报状态（用 resolveConflict 程序化选择）
+            setStatus('并发冲突：已拦下未写盘（冲突对象：' + who + '）', true);
+            return false;
+          }
+          const useDisk = window.confirm(
+            '保存被拦下：这些对象在磁盘上已被其他写入者（很可能就是侧栏 AI 或另一个会话）改过 ——\n\n'
+            + '  · ' + who + '\n\n'
+            + '点「确定」= 用**磁盘上的版本**（只丢弃你在这些对象上的改动，你的其他改动照常写入）\n'
+            + '点「取消」= 保留你的改动，本次不保存（盘上未变；可先把内容复制出去再重开项目）');
+          if (!useDisk) { setStatus('已保留你的改动，未保存（冲突：' + who + '）', true); return false; }
+          return await save(Object.assign({}, opts, { onConflict: 'theirs' }));
+        }
+        setStatus('保存失败：' + ((res && res.message) || '未知原因'), true);
+        return false;
+      }
+      pendingConflict = null;
+      if (res && res.merged) {
+        // 内存必须跟上**实际落盘的那份**（合并后，冲突对象上取的是盘上版本）
+        if (res.data) rebuildFromJson(res.data);
+        lastSavedSnapshot = snapshot();
+        setStatus('已保存 ' + new Date().toLocaleTimeString() + '（已与外部改动自动合并）');
+      } else {
+        lastSavedSnapshot = JSON.stringify(data);
+        setStatus('已保存 ' + new Date().toLocaleTimeString());
+      }
+      reportUiState(); // 保存 = dirty 归零，必须让侧栏 AI 知道（否则它会一直以为界面脏着）
+      return true;
+    } catch (err) {
+      setStatus('保存失败：' + ((err && err.message) || err), true);
+      return false;
+    }
+  }
+
+  /**
+   * 解决未决的并发冲突 —— 界面按钮与冒烟断言都走它（同一份语义）。
+   *   `'theirs'` ⇒ 用磁盘上的版本重试保存（冲突对象取盘上那份，**其它改动照样落盘**）；
+   *   其它值     ⇒ 保留我的改动，本次不保存（清掉未决状态）。
+   */
+  async function resolveConflict(choice) {
+    if (!pendingConflict) return false;
+    if (choice !== 'theirs') {
+      setStatus('已保留你的改动，未保存', true);
+      pendingConflict = null;
+      return false;
+    }
+    return await save({ onConflict: 'theirs' });
+  }
+  function hasPendingConflict() { return !!pendingConflict; }
+
+  /** 有未保存改动时询问用户；返回 false 表示用户选择取消 */
+  function confirmDiscardIfDirty(actionLabel) {
+    if (!isDirty()) return true;
+    // Electron 渲染层可用同步 confirm（本项目无对话框封装，且这是打断性确认，同步更简单可靠）
+    return window.confirm('当前有未保存的改动，' + (actionLabel || '继续') + '将丢失这些改动。\n\n要放弃改动吗？\n（点「取消」返回并先保存）');
+  }
+
+  /* ================= 撤销/重做（快照式） =================
+   * 语义：每次结构修改**之后**把新状态压入历史栈（push 修改后快照）；
+   * undo() 弹出栈顶返回"上一个状态"，redo() 从重做栈恢复。
+   */
+  function snapshot() { return JSON.stringify(serializeTree()); }
+
+  function recordHistory() { state.history.push(snapshot()); updateHistoryButtons(); }
+
+  function undo() {
+    const prev = state.history.undo();
+    if (prev !== null) { rebuildFromJson(JSON.parse(prev)); updateHistoryButtons(); setStatus('已撤销'); }
+  }
+  function redo() {
+    const next = state.history.redo();
+    if (next !== null) { rebuildFromJson(JSON.parse(next)); updateHistoryButtons(); setStatus('已重做'); }
+  }
+  function updateHistoryButtons() {
+    $('#btn-undo').disabled = !state.history.canUndo();
+    $('#btn-redo').disabled = !state.history.canRedo();
+    reportUiState();
+  }
+
+  /* ================= 界面状态上报（v0.16.6「写前协调」的可执行版本） =================
+   * 侧栏 AI 没有 Electron 桥，唯一能力面是 shell —— 所以"界面有没有未保存编辑"
+   * 这个信号必须落到它能读的地方：主进程把它写成 projects/<项目>/.ui-state.json，
+   * 侧栏 AI 用 `node cli/mm-cli.js ui-state --json` 读（src/ui-state.js 有完整来龙去脉）。
+   *
+   * 上报口径：只在**结论变化**时推（项目名或 dirty 变化）。dirty 本身要 snapshot()
+   * 全量序列化一次，逐次编辑都上报会把序列化翻倍；而调用点 updateHistoryButtons()
+   * 已经覆盖了所有会改变结论的路径（编辑→recordHistory、保存、撤销重做、开项目、
+   * 外部磁盘变更重读）。 */
+  let lastReportedUiState = null;
+  function reportUiState() {
+    if (!state.project) return;
+    const dirty = isDirty();
+    const key = state.project.name + '|' + dirty;
+    if (key === lastReportedUiState) return;
+    lastReportedUiState = key;
+    if (window.desktop && window.desktop.app && window.desktop.app.uiState) {
+      window.desktop.app.uiState({ project: state.project.name, dirty });
+    }
+  }
+
+  /* ================= 编辑操作（供 editor.js / 菜单调用） ================= */
+  function addNode(parentId) {
+    const jm = state.jm;
+    const parent = parentId ? jm.get_node(parentId) : jm.get_selected_node();
+    if (!parent) { setStatus('请先选中一个节点作为父节点'); return; }
+    const id = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    jm.add_node(parent.id, id, '新节点', { detail: '' });
+    recordHistory(); // 修改后压入快照（撤销时恢复修改前状态）
+    jm.select_node(id);
+    window.MMEditor && window.MMEditor.editNode(id);
+  }
+
+  function addSiblingNode(id) {
+    const jm = state.jm;
+    const sel = id ? jm.get_node(id) : jm.get_selected_node();
+    if (!sel) { setStatus('请先选中要插入的节点'); return; }
+    if (sel.id === 'root') { setStatus('根节点无法新增同级'); return; }
+    const newId = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    jm.add_node(sel.parent.id, newId, '新节点', { detail: '' }, undefined, sel.index + 1);
+    recordHistory();
+    jm.select_node(newId);
+    window.MMEditor && window.MMEditor.editNode(newId);
+  }
+
+  /** 新增顶层主题：「凭空」加一个不选父节点的节点，直接挂在根节点下。
+   *  同时开启主题模式 —— 于是它与其它顶层主题互相独立（容器根隐藏、连线跳过）。 */
+  function addTopic() {
+    const jm = state.jm;
+    const root = jm && jm.get_node('root');
+    if (!root) { setStatus('导图尚未就绪'); return; }
+    if (state.rootMode !== 'themes') {
+      state.rootMode = 'themes'; // 顶层主题 = 独立主题
+      applyRootModeVisual(jm, true);
+    }
+    const id = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    jm.add_node('root', id, '新主题', { detail: '' });
+    recordHistory();
+    jm.select_node(id);
+    window.MMEditor && window.MMEditor.editNode(id);
+  }
+
+  function editNode(id) {
+    const jm = state.jm;
+    const node = id ? jm.get_node(id) : jm.get_selected_node();
+    if (!node) { setStatus('请先选中要编辑的节点'); return; }
+    window.MMEditor && window.MMEditor.editNode(node.id);
+  }
+
+  /** 收集一棵 jsMind 子树里的全部节点 id（删除时要用它找出被引用的关联成员/链接目标） */
+  function subtreeIds(node) {
+    const out = [];
+    (function walk(n) { if (!n) return; out.push(n.id); (n.children || []).forEach(walk); })(node);
+    return out;
+  }
+
+  /** 同项目里指向这些节点的链接（谁指向我）。数据在树里，读一下即可；
+   *  真正的"清理"仍由 CLI 决定与执行，这里只为确认框给出准确的影响面。 */
+  function inboundLinks(ids, proj) {
+    const out = [];
+    const walk = (n) => {
+      if (!n) return;
+      (n.links || []).forEach((l) => {
+        if (l && l.project === proj && ids.indexOf(l.id) >= 0) out.push({ node: n.id, target: l.project + '/' + l.id, caption: l.caption });
+      });
+      (n.children || []).forEach(walk);
+    };
+    walk(state.jm.get_root());
+    return out;
+  }
+
+  function deleteNode(id) {
+    const jm = state.jm;
+    const node = id ? jm.get_node(id) : jm.get_selected_node();
+    if (!node) { setStatus('请先选中要删除的节点'); return; }
+    if (node.id === 'root') { setStatus('根节点不可删除'); return; }
+
+    const finish = () => {
+      jm.remove_node(node.id);
+      recordHistory(); // 修改后压入快照
+      setStatus('已删除：' + node.topic);
+    };
+
+    // 关联笔记：被删（子）树可能是关联成员。若照原样保存，落盘数据就带"悬挂成员"，
+    // 而 project:save 是**校验闸门**（写盘前跑 CLI validate）→ 保存会被拒；
+    // 界面又没有改成员的入口，等于把用户卡死。所以先问一句。
+    //
+    // 关键：清理必须**在磁盘上**做（走 IPC → CLI assoc-prune），不能在内存里剪完
+    // 指望保存一起写回 —— `project:save` 在载荷里没有 assoc 时会从磁盘取回
+    // （那是为了防止 AI 刚写的笔记被界面保存抹掉），于是内存里剪掉的成员会**原地复活**，
+    // 悬挂成员依旧存在、保存照样被拒（实测）。assoc 的作者是 CLI，写就只经 CLI。
+    const proj = state.project && state.project.name;
+    if (!proj || !(window.desktop.app && window.desktop.app.assoc && window.desktop.app.assocPrune)) {
+      finish();
+      return;
+    }
+
+    window.desktop.app.assoc(proj).then((r) => {
+      const list = (r && r.raw) || [];
+      state.assoc = list;                    // 顺带与磁盘对齐（assoc 的真值在磁盘）
+      const ids = subtreeIds(node);
+      const affected = list.filter((a) => (a.members || []).some((m) => m && m.project === proj && ids.indexOf(m.id) >= 0));
+      const inLinks = inboundLinks(ids, proj);
+      if (!affected.length && !inLinks.length) { finish(); return; }
+
+      const lines = ['「' + node.topic + '」被别处引用：'];
+      if (affected.length) lines.push('· ' + affected.length + ' 篇关联笔记：' + affected.map((a) => a.title || a.id).join('、'));
+      if (inLinks.length) lines.push('· ' + inLinks.length + ' 条指向它的链接：' + inLinks.map((x) => x.node).join('、'));
+      lines.push('');
+      lines.push('删除节点会留下悬空引用（保存会被校验闸门拒绝），故需一并清理'
+        + (affected.length ? '（清到只剩一个成员的关联会整篇删除）' : '') + '。');
+      lines.push('要一起清理吗？点「取消」则先不删。');
+      if (!window.confirm(lines.join('\n'))) {
+        setStatus('已取消删除：「' + node.topic + '」被 ' + (affected.length + inLinks.length) + ' 处引用');
+        return;
+      }
+
+      // 先清理磁盘，成功后再删节点。清理失败就不删 —— 否则会留下保存不了的坏状态。
+      window.desktop.app.assocPrune(proj, ids).then((p) => {
+        if (!p || !p.ok) {
+          setStatus('引用清理失败，已取消删除：' + ((p && p.text) || '未知错误')
+            + '（也可在命令行执行 assoc-prune / links-prune ' + proj + ' --nodes ' + ids.join(',') + '）', true);
+          return;
+        }
+        if (Array.isArray(p.raw)) state.assoc = p.raw;   // 用磁盘结果同步内存
+        // 同步**内存树**里的链接（与 app-audit.js 补链后的同步是同一个道理，方向相反）：
+        // 节点树由渲染层拥有，磁盘上刚被 CLI 剪掉的链接若不从内存里也剪掉，
+        // 下一次 `save()`（serializeTree 写内存树）会把悬挂链接原样写回磁盘 ——
+        // 保存又被校验闸门拒绝（实测）。只删内存里指向被删节点的链接，不碰其他。
+        const dead = new Set(ids);
+        const stripInbound = (n) => {
+          if (!n) return;
+          if (Array.isArray(n.data && n.data.links) && n.data.links.length) {
+            const kept = n.data.links.filter((l) => !(l && l.project === proj && dead.has(l.id)));
+            if (kept.length !== n.data.links.length) {
+              if (kept.length) n.data.links = kept; else delete n.data.links;
+            }
+          }
+          (n.children || []).forEach(stripInbound);
+        };
+        stripInbound(state.jm.get_root());
+        finish();
+        setStatus('已删除：' + node.topic + '（并清理 ' + affected.length + ' 篇关联 / '
+          + inLinks.length + ' 条链接的引用）');
+      }).catch((err) => {
+        setStatus('引用清理失败，已取消删除：' + ((err && err.message) || err), true);
+      });
+    }).catch((err) => {
+      // 关联读不出来就不敢删：磁盘上可能有引用，删了会留下保存不了的坏状态
+      setStatus('关联笔记读取失败，已取消删除：' + ((err && err.message) || err)
+        + '（若确认无引用，可用 remove ' + proj + ' ' + node.id + ' --clean-assoc --clean-links）', true);
+    });
+  }
+
+  /* ================= 项目加载 ================= */
+  async function loadProjects() {
+    try {
+      const projects = await window.desktop.projects();
+      const sel = $('#project-select');
+      sel.innerHTML = '';
+      projects.forEach((p) => {
+        const opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = p.name + (p.meta && p.meta.name ? '（' + p.meta.name + '）' : '');
+        sel.appendChild(opt);
+      });
+      if (projects.length) {
+        sel.value = projects[0].name;
+        await openProject(projects[0].name);
+      } else {
+        $('#empty-hint').style.display = 'flex';
+      }
+    } catch (err) {
+      setStatus('项目加载失败：' + ((err && err.message) || err), true);
+    }
+  }
+
+  async function openProject(name) {
+    // 打开**另一个**项目会从磁盘重建内存树 + 重置撤销栈 → 未保存的改动会丢。
+    // 守卫放在这里而不是 switchProject：工具栏下拉框是直接调 openProject 的，
+    // 只守一个入口会漏掉另一个（两条路径都必须过这道确认）。
+    if (state.project && state.project.name !== name && isDirty()) {
+      if (!confirmDiscardIfDirty('切换项目')) {
+        const sel = $('#project-select');
+        if (sel) sel.value = state.project.name;   // 选择框回退，避免界面与实际不一致
+        return false;
+      }
+    }
+    try {
+      const r = await window.desktop.project.read(name);
+      state.project = { name, file: r.file };
+      state.history = new UndoStack(50);
+      renderMind(r.data);
+      state.history.push(snapshot()); // 初始状态入栈（撤销栈基座）
+      lastSavedSnapshot = snapshot();  // 刚载入 = 与磁盘一致（未保存改动基线）
+      updateHistoryButtons();
+      // 命令面板缓存的是「上一个项目的节点清单」，切项目必须失效，
+      // 否则会搜到已关闭项目的节点、点了也定位不到（跨项目缓存错配）。
+      if (MM.invalidatePaletteCache) MM.invalidatePaletteCache();
+      // 同步工具栏下拉框（程序化打开时保持界面一致）
+      const sel = $('#project-select');
+      if (sel && Array.prototype.some.call(sel.options, (o) => o.value === name)) sel.value = name;
+      // 「边聊边编辑」：订阅该项目文件的磁盘变更（侧栏 AI 经 CLI 改盘后实时感知）
+      if (window.desktop && window.desktop.project && window.desktop.project.watch) {
+        window.desktop.project.watch(r.file);
+      }
+      return true;
+    } catch (err) {
+      setStatus('打开失败：' + ((err && err.message) || err), true);
+      return false;
+    }
+  }
+
+  /* ================= 外部编辑实时感知（v0.16.1「边聊边编辑」） =================
+   * 侧栏 AI 经 CLI 改盘上 JSON → 主进程 fs.watch 防抖通知 → 这里重读。
+   * 冲突规则（数据安全第一）：
+   *   · 界面**无**未保存改动 → 静默重读重建（AI 的编辑实时出现在导图上）；
+   *   · 界面**有**未保存改动 → 绝不覆盖人的编辑，只提示「外部已修改」，
+   *     由人决定（保存=覆盖外部 / 还原视图手动重开=采纳外部）。 */
+  let reloadingFromDisk = false;
+  async function onProjectDiskChange(filename) {
+    if (!state.project || !state.jm) return;
+    if (filename && !String(filename).includes(state.project.name)) return; // 只关心当前项目
+    if (isDirty()) {
+      setStatus('⚠ 笔记已被外部（侧栏 AI）修改，但你有未保存的编辑 —— 保存将覆盖外部改动', true);
+      return;
+    }
+    if (reloadingFromDisk) return;
+    reloadingFromDisk = true;
+    try {
+      const r = await window.desktop.project.read(state.project.name);
+      renderMind(r.data);
+      state.history = new UndoStack(50);
+      state.history.push(snapshot());
+      lastSavedSnapshot = snapshot();
+      updateHistoryButtons();
+      if (MM.invalidatePaletteCache) MM.invalidatePaletteCache();
+      setStatus('已同步外部修改（侧栏 AI 编辑已出现在导图上）');
+    } catch (err) {
+      setStatus('同步外部修改失败：' + ((err && err.message) || err), true);
+    } finally {
+      reloadingFromDisk = false;
+    }
+  }
+
+  /* ================= 导入/导出 Markdown ================= */
+  async function importMarkdown() {
+    // 主进程弹出文件选择 → 渲染层用路径交给 CLI（经主进程）
+    // 简化：通过 menu:import-md 事件 → editor.js 处理文件选择
+    window.MMEditor && window.MMEditor.pickAndImportMd();
+  }
+  async function exportMarkdown() {
+    window.MMEditor && window.MMEditor.pickExportMd();
+  }
+
+  /* —— 只转发「定义在其他文件」的函数（其他模块后加载，故用包装函数而非解构）—— */
+  const setStatus = (text, isErr) => MM.setStatus(text, isErr);  const escHtml = (s) => MM.escHtml(s);
+  const serializeTree = () => MM.serializeTree();
+  const rebuildFromJson = (json) => MM.rebuildFromJson(json);
+  const renderMind = (data) => MM.renderMind(data);
+  const applyRootModeVisual = (jm, themed) => MM.applyRootModeVisual(jm, themed);
+  const showDetail = (node) => MM.showDetail(node);
+
+  /* —— 本文件定义的东西挂到共享命名空间 —— */
+  MM.runSearch = runSearch;
+  MM.renderSearchResults = renderSearchResults;
+  MM.jumpToNode = jumpToNode;
+  MM.switchProject = switchProject;
+  MM.save = save;
+  MM.resolveConflict = resolveConflict;
+  MM.hasPendingConflict = hasPendingConflict;
+  MM.snapshot = snapshot;
+  MM.recordHistory = recordHistory;
+  MM.undo = undo;
+  MM.redo = redo;
+  MM.updateHistoryButtons = updateHistoryButtons;
+  MM.addNode = addNode;
+  MM.addSiblingNode = addSiblingNode;
+  MM.addTopic = addTopic;
+  MM.editNode = editNode;
+  MM.deleteNode = deleteNode;
+  MM.loadProjects = loadProjects;
+  MM.openProject = openProject;
+  MM.isDirty = isDirty;
+  MM.confirmDiscardIfDirty = confirmDiscardIfDirty;
+  MM.onProjectDiskChange = onProjectDiskChange;
+  MM.importMarkdown = importMarkdown;
+  MM.exportMarkdown = exportMarkdown;
+})();

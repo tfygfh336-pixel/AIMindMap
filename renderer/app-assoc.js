@@ -1,0 +1,228 @@
+/* ============================================================
+ * AI MindMap — 「关联笔记」二级页面（app-assoc.js）
+ * ------------------------------------------------------------
+ * 这是一个**关联（N 元实体）的页面**，不是节点详情：
+ *   · 只能从节点详情的「相关知识点」区进入（它不是节点、不在树里、命令面板也搜不到）
+ *   · 界面与节点详情**完全一致**（复用同一个浮动详情框组件）→ 拖动 / 四边四角改大小 /
+ *     📌 小锁 / 🖥 大锁 / 多框并存 / 随导图缩放，全部与节点详情相同
+ *   · 内容 = 作者专门写的「这些节点之间是什么关系」的笔记
+ *
+ * 版式复用详情框模板的既有区块，语义映射如下：
+ *   .fd-title            「关联笔记：<标题>」
+ *   .fd-tags             成员数徽标（N 方）
+ *   .fd-detail-content   笔记正文（HTML；空则提示尚未写）
+ *   .fd-images-content   固定为空（关联没有图片）
+ *   .fd-assoc            固定为空（不在此页再列关联入口，避免自指）
+ *   .fd-related          **成员列表**：这一页涉及哪些节点，点击即跳过去看那个节点
+ *   .fd-files-content    操作区：编辑笔记
+ * 边界：定位/锁定/拖动由 app-detail.js 与 app-detail-drag.js 负责；本文件只管内容。
+ * ============================================================ */
+(function () {
+  'use strict';
+  const MM = window.MM || (window.MM = {});
+
+  // 跨模块转发（**必须写显式形参**：箭头函数没有自己的 arguments）
+  const fdQ = (box, sel) => MM.fdQ(box, sel);
+  const escHtml = (s) => MM.escHtml(s);
+  const setStatus = (text, isErr) => MM.setStatus(text, isErr);
+  const jumpToNode = (id) => MM.jumpToNode(id);
+  const positionFdBox = (box) => MM.positionFdBox(box);
+  const getState = () => MM.getState();
+
+  /** 成员的可读标签：优先已解析的 topic，回退 项目/id */
+  function labelOf(m) {
+    return m.topic || (m.project + '/' + m.id);
+  }
+
+  /** 渲染关联页面（box.kind === 'assoc'） */
+  function renderAssocPage(box, assoc, anchorNode) {
+    const st = getState();
+    const selfProject = (st && st.project && st.project.name) || '';
+    const members = Array.isArray(assoc.members) ? assoc.members : [];
+    const title = assoc.effectiveTitle || assoc.title || ('关联 ' + assoc.id);
+
+    fdQ(box, '.fd-title').textContent = '关联笔记：' + title;
+
+    // 成员数徽标（复用 tags 区）
+    const tc = fdQ(box, '.fd-tags');
+    tc.innerHTML = '<span class="tag-chip">' + members.length + ' 方关联</span>'
+      + '<span class="tag-chip" title="关联 id（CLI 里用它引用）">' + escHtml(assoc.id) + '</span>';
+
+    // 笔记正文（与节点 detail 同约定：HTML）
+    const dc = fdQ(box, '.fd-detail-content');
+    const note = assoc.note || '';
+    dc.innerHTML = note.trim()
+      ? '<div class="assoc-note">' + note + '</div>'
+      : '<span class="placeholder">这篇关联笔记还没有内容。点下方「编辑笔记」写入，'
+        + '或用 CLI：<code>assoc-edit ' + escHtml(selfProject) + ' ' + escHtml(assoc.id)
+        + ' --note-md "…"</code></span>';
+
+    // 关联没有图片
+    fdQ(box, '.fd-images-content').innerHTML = '';
+
+    // 不在此页再列"关联入口"（避免自指）
+    fdQ(box, '.fd-assoc').innerHTML = '';
+
+    // 成员列表（这一页涉及哪些节点）
+    const rl = fdQ(box, '.fd-related');
+    let html = '<div class="bl-title">关联的节点（' + members.length + '）</div>';
+    members.forEach((m) => {
+      const isAnchor = anchorNode && m.project === selfProject && m.id === anchorNode.id;
+      const ext = m.project && m.project !== selfProject;
+      html += '<div class="bl-item" data-node="' + escHtml(m.id) + '" data-project="' + escHtml(m.project) + '"'
+        + ' title="' + (ext ? '在项目 ' + escHtml(m.project) + ' 中打开该节点' : '打开该节点详情') + '">'
+        + '<span class="bl-dir">' + (isAnchor ? '◎' : '·') + '</span>'
+        + escHtml(labelOf(m))
+        + (ext ? ' <span class="bl-caption">[' + escHtml(m.project) + ']</span>' : '')
+        + (isAnchor ? ' <span class="bl-caption">— 当前节点</span>' : '')
+        + '</div>';
+    });
+    rl.innerHTML = html;
+    rl.querySelectorAll('.bl-item[data-node]').forEach((item) => {
+      item.addEventListener('click', () => {
+        const p = item.dataset.project;
+        const nid = item.dataset.node;
+        if (!p || p === selfProject) {
+          const jm = getState() && getState().jm;
+          if (!jm) return;
+          jm.expand_to_depth(20);
+          const nn = jm.get_node(nid);
+          if (nn) { jm.select_node(nid); MM.showDetail(nn); }
+          else setStatus('节点不在当前视图：' + nid);
+        } else {
+          MM.switchProject(p, nid);
+        }
+      });
+    });
+
+    // 操作区：编辑笔记（写操作走 CLI，见 app-assoc 的 saveAssocNote）
+    const fc = fdQ(box, '.fd-files-content');
+    fc.innerHTML = '<div class="assoc-actions">'
+      + '<button class="assoc-edit-btn">编辑笔记</button>'
+      + '<span class="fd-hint">写操作经 CLI（校验闸门 + 原子写）；保存后本页与磁盘一致。</span>'
+      + '</div>';
+    const btn = fc.querySelector('.assoc-edit-btn');
+    if (btn) btn.addEventListener('click', () => openAssocEditor(assoc, box));
+
+    positionFdBox(box);
+  }
+
+  /** 在「相关知识点」区渲染关联入口（这是进入二级页面的**唯一**入口） */
+  function renderAssocEntries(el, res, node) {
+    const items = (res && res.items) || [];
+    if (!items.length) { el.innerHTML = ''; return; }
+    let html = '<div class="bl-title">关联笔记（' + items.length + '）</div>';
+    items.forEach((a, i) => {
+      const title = a.effectiveTitle || a.title || a.id;
+      html += '<div class="assoc-entry" data-i="' + i + '" title="打开这篇关联笔记（介绍这些节点之间的关系）">'
+        + '<span class="ae-icon">📝</span>'
+        + '<span class="ae-title">' + escHtml(title) + '</span>'
+        + '<span class="bl-caption">' + (a.members || []).length + ' 方'
+        + (a.hasNote ? '' : ' · 尚未写') + '</span>'
+        + '</div>';
+    });
+    el.innerHTML = html;
+    el.querySelectorAll('.assoc-entry').forEach((row) => {
+      row.addEventListener('click', (e) => {
+        e.preventDefault();
+        const a = items[Number(row.getAttribute('data-i'))];
+        if (a) MM.showAssocPage(a, node);
+      });
+    });
+  }
+
+  /* ================= 编辑笔记 =================
+   * 复用编辑对话框的交互习惯（标题 + 正文 + 取消/保存），但写入走 CLI：
+   * 渲染层不直接改盘，也不自己拼 HTML —— Markdown→HTML 的转换在 CLI 侧（--note-md）。
+   */
+  let editing = null;   // { assoc, box }
+
+  function openAssocEditor(assoc, box) {
+    editing = { assoc: assoc, box: box };
+    const dlg = document.getElementById('assoc-dialog');
+    if (!dlg) return;
+    document.getElementById('assoc-title').value = assoc.title || '';
+    document.getElementById('assoc-note').value = noteToEditable(assoc.note || '');
+    dlg.style.display = 'flex';
+    const t = document.getElementById('assoc-title');
+    if (t) t.focus();
+  }
+
+  function closeAssocEditor() {
+    editing = null;
+    const dlg = document.getElementById('assoc-dialog');
+    if (dlg) dlg.style.display = 'none';
+  }
+
+  /** 把已存的 HTML 笔记转成可编辑文本。
+   *  存储是 HTML，但人写的时候更想要纯文本/Markdown —— 用 HTML→Markdown 还原
+   *  （src/convert.js 已在页面加载，与导出 md 用的是同一个转换，行为一致）。 */
+  function noteToEditable(html) {
+    if (!html) return '';
+    try {
+      if (window.MMConvert && window.MMConvert.htmlToMarkdown) {
+        return window.MMConvert.htmlToMarkdown(html) || '';
+      }
+    } catch (e) { /* 转换失败就退化为原样给用户看 */ }
+    return String(html);
+  }
+
+  /** 保存：经 IPC → CLI `assoc-edit`（校验闸门 + 原子写），成功后同步内存并重绘本页 */
+  async function saveAssocEditor() {
+    if (!editing) return;
+    const st = getState();
+    if (!st || !st.project) { setStatus('请先打开项目', true); return; }
+    const title = document.getElementById('assoc-title').value.trim();
+    const noteMd = document.getElementById('assoc-note').value;
+    const id = editing.assoc.id;
+    const box = editing.box;
+    try {
+      const r = await window.desktop.app.assocEdit(st.project.name, id, title, noteMd);
+      if (!r || !r.ok) { setStatus('保存关联笔记失败：' + ((r && r.text) || '未知错误'), true); return; }
+      // **同步内存**（与"补链接"同一原则）：磁盘已由 CLI 写好，内存必须跟上，
+      // 否则之后任何一次界面保存都会把刚写的笔记覆盖掉。
+      // 用 CLI 回读的那份为准（它带 HTML 形式与解析后的成员标题），避免自己拼。
+      const fresh = r.assoc;
+      if (fresh) {
+        if (!Array.isArray(st.assoc)) st.assoc = [];
+        const i = st.assoc.findIndex((a) => a && a.id === id);
+        if (i >= 0) st.assoc[i] = fresh; else st.assoc.push(fresh);
+      }
+      closeAssocEditor();
+      setStatus('关联笔记已保存');
+      // 重绘本页（用回读到的数据）
+      if (box && box.el && box.el.parentElement) {
+        const cur = fresh || (st.assoc || []).find((a) => a && a.id === id) || editing.assoc;
+        box.assoc = cur;
+        renderAssocPage(box, cur, box.node);
+      }
+      // 刷新锚定节点详情里的入口（可能从"尚未写"变成已写）
+      if (box && box.node && MM.refreshNodeDetailBox) MM.refreshNodeDetailBox(box.node.id);
+    } catch (err) {
+      setStatus('保存关联笔记失败：' + ((err && err.message) || err), true);
+    }
+  }
+
+  /** 绑定编辑对话框（只绑一次） */
+  let bound = false;
+  function bindAssocDialog() {
+    const dlg = document.getElementById('assoc-dialog');
+    if (!dlg || bound) return;
+    bound = true;
+    const ok = document.getElementById('assoc-ok');
+    const cancel = document.getElementById('assoc-cancel');
+    if (ok) ok.addEventListener('click', () => { saveAssocEditor(); });
+    if (cancel) cancel.addEventListener('click', closeAssocEditor);
+    dlg.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); closeAssocEditor(); }
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveAssocEditor(); }
+    });
+  }
+
+  MM.renderAssocPage = renderAssocPage;
+  MM.renderAssocEntries = renderAssocEntries;
+  MM.openAssocEditor = openAssocEditor;
+  MM.closeAssocEditor = closeAssocEditor;
+  MM.saveAssocEditor = saveAssocEditor;
+  MM.bindAssocDialog = bindAssocDialog;
+})();

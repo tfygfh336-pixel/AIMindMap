@@ -1,0 +1,400 @@
+/* ============================================================
+ * AI MindMap — 渲染层样式
+ * ============================================================ */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; font-size: 14px; }
+body { display: flex; flex-direction: column; background: #f5f6f8; color: #1f2329; }
+
+/* ---------------- 工具栏 ---------------- */
+/* flex-wrap：侧栏拖宽挤压空间时按钮自动换到下一行（不被遮挡）；
+ * 右对齐组（撤销/重做/展开…）在换行后仍保持成组 */
+#toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px 12px; background: #ffffff; border-bottom: 1px solid #e4e7ec;
+  flex: 0 0 auto; row-gap: 6px;
+}
+#app-title { font-weight: 700; font-size: 15px; color: #1664ff; margin-right: 4px; white-space: nowrap; }
+#toolbar select, #toolbar button {
+  font-size: 13px; padding: 4px 10px; border: 1px solid #d5d9e0; border-radius: 4px;
+  background: #fff; color: #1f2329; cursor: pointer; white-space: nowrap;
+}
+#toolbar button:hover { background: #f0f4ff; border-color: #1664ff; color: #1664ff; }
+#toolbar .spacer { flex: 1; }
+#status-text { font-size: 12px; color: #86909c; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------- 工具栏搜索框 ---------------- */
+#search-box {
+  width: 190px; height: 26px; padding: 0 8px;
+  border: 1px solid #d5d9e0; border-radius: 4px; font-size: 13px; outline: none;
+}
+#search-box:focus { border-color: #1664ff; }
+
+/* ---------------- 搜索结果面板 ---------------- */
+#search-results {
+  position: absolute; top: 46px; left: 14px; z-index: 40;
+  width: 430px; max-height: 60%; overflow: auto;
+  background: #fff; border: 1px solid #e4e7ec; border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.12); font-size: 13px;
+}
+#search-results .sr-head {
+  padding: 8px 12px; font-weight: 600; border-bottom: 1px solid #f0f2f5;
+  display: flex; align-items: center; justify-content: space-between;
+}
+#search-results .sr-close { background: none; border: none; cursor: pointer; font-size: 14px; color: #86909c; }
+#search-results .sr-item { padding: 8px 12px; border-bottom: 1px solid #f7f8fa; cursor: pointer; }
+#search-results .sr-item:hover { background: #f5f8ff; }
+#search-results .sr-item .sr-topic { font-weight: 600; color: #1f2329; }
+#search-results .sr-item .sr-meta { color: #86909c; font-size: 12px; margin-top: 2px; }
+#search-results .sr-item .sr-snippet { color: #4e5969; font-size: 12px; margin-top: 2px; }
+#search-results .sr-empty { padding: 12px; color: #86909c; }
+
+/* ---------------- 标签 chips ---------------- */
+.fd-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.tag-chip {
+  display: inline-block; padding: 1px 8px; font-size: 12px;
+  border-radius: 10px; background: #eef3ff; color: #1664ff;
+  cursor: pointer; border: 1px solid #d6e4ff;
+}
+.tag-chip:hover { background: #d6e4ff; }
+
+body.panning { user-select: none; }
+body.panning * { cursor: grabbing !important; }
+
+/* ---------------- DSH 侧边栏让位（v0.16） ----------------
+ * WebContentsView 覆盖在主窗口右侧（不参与 DOM 布局）；
+ * 主进程经 dsh-sidebar:layout 事件通知宽度，body class + CSS 变量让位，
+ * 工具栏与导图容器都不会被遮住。宽度可拖拽（主进程 beginWidthDrag）。 */
+body.dsh-sidebar-on { --dsh-sidebar-width: 420px; }
+body:not(.dsh-sidebar-on) { --dsh-sidebar-width: 0px; }
+body.dsh-sidebar-on #toolbar { padding-right: calc(var(--dsh-sidebar-width) + 8px); }
+body.dsh-sidebar-on #main { margin-right: var(--dsh-sidebar-width); }
+
+/* 折叠后的重展开圆钮（主界面右缘中部，v0.16.3） */
+#dsh-restore-fab {
+  position: fixed; right: 10px; top: 50%; transform: translateY(-50%);
+  width: 40px; height: 40px; border-radius: 50%;
+  border: 1px solid #d6e4ff; background: #ffffff; cursor: pointer;
+  font-size: 18px; z-index: 60; display: none; align-items: center; justify-content: center;
+  box-shadow: 0 2px 10px rgba(22, 100, 255, .18);
+}
+#dsh-restore-fab:hover { border-color: #1664ff; background: #f0f4ff; }
+
+/* 框选实时预览：拖动过程中"当前会命中"的节点加蓝色虚线包裹（松手由选区框接管）。
+ * 注意：**不改背景色** —— 主题节点是蓝底白字，覆写背景会让白字落在浅底上不可见；
+ * 用 outline（外圈虚线）+ 外发光（box-shadow，不影响节点内部对比度）。 */
+jmnode.mm-rubber-hit {
+  outline: 2px dashed #1664ff;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(22, 100, 255, .18);
+}
+
+/* 仅侧边栏模式（v0.16.5，迭代期用）：隐藏思维导图页面，窗口只剩 DSH 侧边栏。
+ * 由菜单「视图 → 仅 DSH 侧边栏」切换；此模式下侧栏「—」= 最小化窗口到任务栏。 */
+body.dsh-only #toolbar,
+body.dsh-only #main { display: none !important; }
+
+/* ---------------- 拖动树模式（v0.15） ---------------- */
+/* 进入拖动模式：整个画布区域光标恒为 grab（用户反馈③）；拖动中（mm-dragging）变 grabbing */
+body.mm-dragmode { user-select: none; }
+body.mm-dragmode #mindmap-container,
+body.mm-dragmode #mindmap-container * { cursor: grab !important; }
+body.mm-dragmode.mm-dragging #mindmap-container,
+body.mm-dragmode.mm-dragging #mindmap-container * { cursor: grabbing !important; }
+/* 虚线框：框住被选中的整棵树（pointer-events:none 纯视觉，不挡任何操作） */
+#tree-drag-outline {
+  position: absolute; z-index: 999; pointer-events: none; box-sizing: border-box;
+  border: 2px dashed #1664ff; border-radius: 12px;
+  background: rgba(22, 100, 255, 0.06);
+}
+
+/* ---------------- 附件（文件）卡片 ---------------- */
+.fd-files-content { margin-top: 8px; }
+.fd-files-content .files-title { font-size: 12px; color: #86909c; font-weight: 600; margin-bottom: 4px; }
+.file-card {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; margin-bottom: 4px;
+  border: 1px solid #e4e7ec; border-radius: 6px; background: #fafbfc;
+  cursor: pointer; font-size: 12.5px;
+}
+.file-card:hover { background: #f0f4ff; border-color: #1664ff; }
+.file-card .fc-icon {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: #fff; background: #86909c;
+}
+.file-card .fc-icon.k-md { background: #1664ff; }
+.file-card .fc-icon.k-pdf { background: #f53f3f; }
+.file-card .fc-body { flex: 1; min-width: 0; }
+.file-card .fc-caption { font-weight: 600; color: #1f2329; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-card .fc-name { color: #86909c; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-card .fc-open { flex: 0 0 auto; color: #1664ff; font-size: 11.5px; }
+
+/* ---------------- 文件预览层（md/pdf 内预览） ---------------- */
+#file-preview { display: flex; flex-direction: column; background: #fff; }
+#fp-head {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; border-bottom: 1px solid #e4e7ec;
+}
+#fp-title { font-weight: 700; font-size: 14px; color: #1f2329; }
+#fp-caption { flex: 1; color: #86909c; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#fp-head button {
+  font-size: 12.5px; padding: 3px 10px; border: 1px solid #d5d9e0; border-radius: 4px;
+  background: #fff; cursor: pointer;
+}
+#fp-head button:hover { background: #f0f4ff; border-color: #1664ff; color: #1664ff; }
+#fp-body { flex: 1; min-height: 0; display: flex; }
+#fp-md {
+  flex: 1; overflow: auto; padding: 18px 24px;
+  font-size: 14px; line-height: 1.75; color: #1f2329;
+}
+#fp-md h1 { font-size: 22px; border-bottom: 1px solid #e4e7ec; padding-bottom: 8px; }
+#fp-md h2 { font-size: 18px; }
+#fp-md h3 { font-size: 16px; }
+#fp-md pre, #fp-md code { background: #f5f6f8; border-radius: 4px; font-family: Consolas, monospace; }
+#fp-md pre { padding: 10px; overflow: auto; }
+#fp-md blockquote { border-left: 3px solid #1664ff; margin: 8px 0; padding: 4px 12px; color: #4e5969; background: #f7f9ff; }
+#fp-md table { border-collapse: collapse; }
+#fp-md th, #fp-md td { border: 1px solid #e4e7ec; padding: 4px 10px; }
+#fp-md img { max-width: 100%; }
+#fp-pdf { flex: 1; width: 100%; border: none; background: #525659; }
+
+/* ---------------- 相关知识点区（我引用谁 + 谁引用我） ---------------- */
+.fd-related { margin-top: 8px; }
+.fd-related .bl-title { font-size: 12px; color: #86909c; font-weight: 600; margin-bottom: 4px; }
+.fd-related .bl-item {
+  padding: 4px 6px; font-size: 12.5px; color: #4e5969;
+  cursor: pointer; border-radius: 4px;
+}
+.fd-related .bl-item:hover { background: #f5f8ff; color: #1664ff; }
+.fd-related .bl-item .bl-dir { color: #86909c; font-weight: 600; margin-right: 2px; }
+.fd-related .bl-item .bl-caption { color: #86909c; }
+
+/* ---------------- 主体 ---------------- */
+#main { flex: 1; display: flex; min-height: 0; }
+#mindmap-container { flex: 1; position: relative; background: #ffffff; border-right: 1px solid #e4e7ec; overflow: hidden; }
+
+/* 导图区不保留滚动条：平移完全靠中键拖动、缩放靠滚轮。
+ * 滚动条只会白白占位（并让"缩放/平移后显示不全"更像故障），jsMind 内部的
+ * scrollLeft/Top 仍可用（overflow:hidden 元素照样可编程滚动），故缩放锚点不受影响。 */
+#mindmap-container .jsmind-inner { overflow: hidden; scrollbar-width: none; }
+#mindmap-container .jsmind-inner::-webkit-scrollbar { width: 0; height: 0; display: none; }
+#empty-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #86909c; }
+
+/* 主题模式：隐藏"容器根"节点（jsMind 是单根树，把根当容器用），
+ * 它的标题改以左上角角标显示，于是各顶层分支看起来是互不相连的独立主题。 */
+jmnode.mm-container-root { visibility: hidden !important; }
+#mm-root-label {
+  position: absolute; left: 12px; top: 10px; z-index: 30;
+  font-size: 12px; color: #4e5969; background: #f7f8fa;
+  border: 1px solid #e4e7ec; border-radius: 4px; padding: 2px 8px;
+  pointer-events: none; max-width: 40%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+
+/* ---------------- 浮动详情（选中节点上方） ---------------- */
+.float-detail {
+  position: absolute; z-index: 50;
+  width: 380px; max-width: 560px; max-height: 560px;
+  display: flex; flex-direction: column;
+  background: #ffffff; border: 1px solid #d5d9e0; border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+  transform-origin: 0 0;   /* 随导图缩放的锚点：左上角 */
+  overflow: hidden;
+  transition: opacity 0.12s;
+}
+.float-detail .fd-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 7px 18px 7px 12px; background: #f7f8fa; border-bottom: 1px solid #e4e7ec;
+  font-size: 13px; font-weight: 600; color: #4e5969;
+  cursor: move; user-select: none;   /* 标题栏即拖动把手（右侧留 18px 给 NE 角把手） */
+}
+.fd-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; }
+.float-detail .fd-head-btns { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; }
+.float-detail .fd-head-btns button {
+  border: none; background: none; font-size: 12px; line-height: 1;
+  color: #86909c; cursor: pointer; padding: 3px 5px; border-radius: 4px;
+}
+.float-detail .fd-head-btns button:hover { background: #e8ecf3; color: #1664ff; }
+.float-detail .fd-head-btns button.active { background: #d6e4ff; color: #1664ff; }
+.float-detail.dragging { transition: none; }
+.fd-close { font-size: 14px; }
+.fd-close:hover { color: #f53f3f; }
+.fd-scroll { overflow-y: auto; padding: 10px 12px; flex: 1 1 auto; min-height: 0; }
+
+/* ---------------- 改大小把手（四边 + 四角，类 Windows 窗口） ---------------- */
+.float-detail .fd-rs { position: absolute; z-index: 3; }
+.float-detail .fd-rs-n { top: 0; left: 16px; right: 16px; height: 6px; cursor: ns-resize; }
+.float-detail .fd-rs-s { bottom: 0; left: 16px; right: 16px; height: 6px; cursor: ns-resize; }
+.float-detail .fd-rs-w { left: 0; top: 16px; bottom: 16px; width: 6px; cursor: ew-resize; }
+.float-detail .fd-rs-e { right: 0; top: 16px; bottom: 16px; width: 6px; cursor: ew-resize; }
+.float-detail .fd-rs-nw { left: 0; top: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+.float-detail .fd-rs-ne { right: 0; top: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+.float-detail .fd-rs-sw { left: 0; bottom: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+.float-detail .fd-rs-se { right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+.float-detail.resizing { transition: none; user-select: none; }
+.fd-detail-content { font-size: 13px; line-height: 1.7; word-break: break-word; }
+.fd-detail-content h1, .fd-detail-content h2, .fd-detail-content h3 { margin: 8px 0 4px; }
+.fd-detail-content ul, .fd-detail-content ol { padding-left: 20px; }
+.fd-detail-content p { margin: 4px 0; }
+.fd-detail-content code { background: #f2f3f5; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+.fd-detail-content img { max-width: 100%; border-radius: 4px; }
+
+.fd-images-content { margin-top: 8px; border-top: 1px dashed #e4e7ec; padding-top: 8px; }
+.fd-images-content img {
+  max-width: 100%; border-radius: 6px; margin-bottom: 8px; display: block;
+  cursor: zoom-in; border: 1px solid transparent;
+}
+.fd-images-content img:hover { border-color: #1664ff; }
+.fd-images-content .img-block { margin-bottom: 12px; }
+.fd-images-content .img-caption { font-size: 12px; color: #4e5969; background: #f2f3f5; border-radius: 4px; padding: 4px 8px; margin-top: 4px; }
+.fd-images-content .img-src { font-size: 11px; color: #86909c; margin-top: 2px; }
+.fd-images-content .img-remove { font-size: 12px; color: #f53f3f; background: none; border: none; cursor: pointer; padding: 0; margin-top: 2px; }
+.fd-images-content .fd-hint { font-size: 11px; color: #c9cdd4; margin-top: 4px; }
+
+/* ---------------- 图片悬停提示（跟随鼠标显示"双击浏览"） ---------------- */
+#fd-img-tip {
+  position: fixed; z-index: 400; display: none;
+  padding: 3px 8px; border-radius: 4px;
+  background: rgba(31, 35, 41, 0.92); color: #fff;
+  font-size: 12px; line-height: 1.5; white-space: nowrap; pointer-events: none;
+}
+
+/* ---------------- 图片灯箱（双击放大预览，滚轮缩放） ---------------- */
+#lightbox { position: fixed; inset: 0; background: rgba(10, 14, 20, 0.88); z-index: 300; overflow: hidden; }
+#lightbox-stage {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+}
+#lightbox-img {
+  max-width: 92vw; max-height: 88vh; border-radius: 4px;
+  transform-origin: center center; user-select: none;
+  box-shadow: 0 12px 60px rgba(0,0,0,0.5);
+}
+#lightbox-hint {
+  position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+  color: #ffffffcc; font-size: 12px; background: rgba(0,0,0,0.35);
+  padding: 4px 12px; border-radius: 20px; pointer-events: none;
+}
+
+/* ---------------- 右键菜单 ---------------- */
+.ctx-menu {
+  position: fixed; z-index: 200; min-width: 168px;
+  background: #fff; border: 1px solid #e4e7ec; border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.16); padding: 5px 0;
+  user-select: none;
+}
+.ctx-item {
+  padding: 7px 16px; font-size: 13px; color: #1f2329; cursor: pointer;
+  display: flex; align-items: center; white-space: nowrap;
+}
+.ctx-item:hover { background: #f0f4ff; color: #1664ff; }
+.ctx-item.ctx-danger { color: #f53f3f; }
+.ctx-item.ctx-danger:hover { background: #fff1f0; color: #f53f3f; }
+.ctx-sep { height: 1px; background: #e4e7ec; margin: 5px 0; }
+
+/* ---------------- 对话框 ---------------- */
+.overlay {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+}
+.dialog-box {
+  width: 480px; max-width: 90vw; max-height: 85vh; overflow-y: auto;
+  background: #fff; border-radius: 10px; padding: 18px 20px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+}
+.dialog-box h3 { margin-bottom: 12px; font-size: 16px; }
+.dialog-box label { display: block; margin-bottom: 10px; font-size: 13px; color: #4e5969; }
+.dialog-box input[type=text], .dialog-box textarea {
+  width: 100%; margin-top: 4px; padding: 6px 8px; border: 1px solid #d5d9e0; border-radius: 4px;
+  font-size: 13px; font-family: inherit; resize: vertical;
+}
+.dialog-box .chk { display: flex; align-items: center; gap: 6px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.dialog-actions button {
+  padding: 6px 16px; border-radius: 4px; border: 1px solid #d5d9e0; background: #fff; cursor: pointer; font-size: 13px;
+}
+.dialog-actions button.primary { background: #1664ff; color: #fff; border-color: #1664ff; }
+.dialog-actions button.primary:hover { background: #0e50d4; }
+
+/* ---------------- 关系审计面板（app-audit.js） ---------------- */
+.audit-card {
+  width: 720px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column;
+  background: #fff; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.18); overflow: hidden;
+}
+.audit-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid #eef0f3;
+}
+.audit-title { font-weight: 600; font-size: 15px; }
+#audit-close { background: none; border: none; cursor: pointer; font-size: 15px; color: #86909c; }
+#audit-body { padding: 12px 16px 18px; overflow-y: auto; }
+#audit-body h3 { font-size: 13px; color: #1f2329; margin: 14px 0 4px; }
+#audit-body h3:first-child { margin-top: 0; }
+.audit-hint { color: #86909c; font-size: 12px; margin: 0 0 8px; }
+.audit-empty { color: #86909c; padding: 8px 0; font-size: 13px; }
+.audit-note { color: #86909c; font-size: 12px; margin-top: 8px; }
+.audit-list { list-style: none; margin: 0; padding: 0; }
+.audit-list li { padding: 6px 8px; border-bottom: 1px solid #f7f8fa; font-size: 13px; }
+.audit-list li[data-node] { cursor: pointer; }
+.audit-list li[data-node]:hover { background: #f5f8ff; }
+.audit-id { color: #86909c; font-family: ui-monospace, Consolas, monospace; font-size: 12px; margin-right: 8px; }
+.audit-topic { color: #1f2329; }
+.audit-tag { color: #86909c; font-size: 12px; margin-left: 8px; }
+.audit-mention { display: flex; align-items: baseline; gap: 8px; }
+.audit-pair { color: #1f2329; }
+.audit-snippet { color: #4e5969; font-size: 12px; margin: 3px 0 0 62px; }
+.audit-link-btn {
+  flex: 0 0 auto; padding: 2px 10px; border-radius: 4px; border: 1px solid #1664ff;
+  background: #f5f8ff; color: #1664ff; cursor: pointer; font-size: 12px;
+}
+.audit-link-btn:hover { background: #1664ff; color: #fff; }
+
+/* ---------------- 命令面板（app-palette.js） ---------------- */
+.palette-overlay { align-items: flex-start; padding-top: 12vh; }
+.palette-card {
+  width: 560px; max-width: 92vw; background: #fff; border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.22); overflow: hidden;
+}
+#palette-input {
+  width: 100%; border: none; border-bottom: 1px solid #eef0f3; outline: none;
+  padding: 13px 16px; font-size: 15px; font-family: inherit;
+}
+#palette-list { max-height: 52vh; overflow-y: auto; }
+.palette-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 8px 16px; cursor: pointer; font-size: 13.5px;
+}
+.palette-item.on { background: #f0f5ff; }
+.palette-item:hover { background: #f5f8ff; }
+.palette-label { color: #1f2329; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-hint { color: #86909c; font-size: 12px; flex: 0 0 auto; }
+.palette-empty { padding: 14px 16px; color: #86909c; font-size: 13px; }
+
+/* ---------------- 关联笔记：入口 + 二级页面（app-assoc.js） ---------------- */
+/* 入口行（在节点详情的「相关知识点」上方，是进入二级页面的唯一入口） */
+.assoc-entry {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 5px 8px; margin: 2px 0; border-radius: 5px; cursor: pointer;
+  background: #f5f8ff; border: 1px solid #d6e4ff; font-size: 13px;
+}
+.assoc-entry:hover { background: #e8f0ff; }
+.assoc-entry .ae-icon { flex: 0 0 auto; }
+.assoc-entry .ae-title { color: #1f2329; font-weight: 600; }
+/* 二级页面里的笔记正文 */
+.assoc-note { font-size: 13px; color: #1f2329; }
+.assoc-note p { margin: 0 0 8px; }
+.assoc-note ul, .assoc-note ol { margin: 0 0 8px; padding-left: 20px; }
+.assoc-note code { background: #eff2f5; padding: 0 4px; border-radius: 3px; }
+.assoc-note pre { background: #eff2f5; padding: 8px; border-radius: 5px; overflow: auto; }
+.assoc-note table { border-collapse: collapse; }
+.assoc-note th, .assoc-note td { border: 1px solid #d0d7de; padding: 3px 8px; }
+/* 二级页面底部操作区 */
+.assoc-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.assoc-edit-btn {
+  padding: 4px 12px; border-radius: 4px; border: 1px solid #1664ff;
+  background: #f5f8ff; color: #1664ff; cursor: pointer; font-size: 12px;
+}
+.assoc-edit-btn:hover { background: #1664ff; color: #fff; }
+
+/* ---------------- jsMind 观感微调 ---------------- */
+#jsmind_container { width: 100%; height: 100%; }
+.jm-node .jm-node-content { border-radius: 6px; }

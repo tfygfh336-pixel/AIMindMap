@@ -1,0 +1,2923 @@
+{
+  "meta": {
+    "name": "comnet",
+    "author": "",
+    "version": "0.15.0",
+    "formatVersion": 2,
+    "rootMode": "themes",
+    "layout": {
+      "left": [
+        "comp-net"
+      ]
+    }
+  },
+  "format": "node_tree",
+  "data": {
+    "id": "root",
+    "topic": "网络笔记",
+    "expanded": true,
+    "detail": "<h3>这份笔记的范围</h3>\n<p>覆盖《计算机网络：自顶向下方法》第 1–8 章，采用自顶向下五层视角（应用 → 传输 → 网络 → 链路 → 物理），并在第 1 章补充了教材未展开的物理层通信基础。</p>\n<h3>三种「关系」怎么用</h3>\n<ul>\n<li><b>节点树</b>：章 → 小节 → 知识点的层次归属，回答「这个知识属于哪里」。</li>\n<li><b>links 与「相关知识点」区</b>：节点之间的<b>有向关联</b>（谁指向谁），回答「这个知识接下来看什么」。</li>\n<li><b>关联笔记</b>：专门讲<b>多个节点之间关系</b>的独立笔记，从任一成员的「相关知识点」区都能进入，回答「这几件事合起来是什么」。</li>\n</ul>\n<h3>约定</h3>\n<ul>\n<li>小节节点写「本节要点」，其子节点是该节的知识点详解。</li>\n<li>「易错」标注常见误区；「补充」标注教材之外的延伸。</li>\n<li>标签用于跨章节检索：分层 / 概念 / 协议 / 机制 / 对比 / 计算 / 补充。</li>\n</ul>",
+    "children": [
+      {
+        "id": "comp-net",
+        "topic": "计算机网络（自顶向下方法）",
+        "expanded": true,
+        "detail": "<h3>总览</h3>\n<p>本笔记依据 <b>Kurose &amp; Ross《计算机网络：自顶向下方法》（第 8 版）</b> 组织，章节结构与该书<b>目录逐节对齐</b>。</p>\n<ul>\n<li>学习顺序沿用<b>自顶向下</b>：从应用层出发，向下逐层理解“应用如何把数据交给网络，网络如何把数据送到对端”。</li>\n<li>每章先看<b>思维框架图</b>（右侧详情），再下钻到节与具体协议的<b>逻辑框图与详细笔记</b>。</li>\n<li>核心问题：<b>做什么服务？报文长什么样？状态机如何运转？和相邻层如何交互？</b></li>\n<li>教材未覆盖的知识点（FTP、编码与信道容量等）集中放在对应章下的<b>「补充」</b>节。</li>\n</ul>\n<p>目录：1 计算机网络和因特网 / 2 应用层 / 3 传输层 / 4 网络层：数据平面 / 5 网络层：控制平面 / 6 链路层和局域网 / 7 无线网络和移动网络 / 8 网络安全。</p>",
+        "tags": [
+          "分层"
+        ],
+        "images": [
+          {
+            "file": "assets/layer-stack.png",
+            "caption": "五层协议栈总览信息图：自顶向下五层色块（应用/传输/网络/链路/物理），右侧展示报文→段→数据报→帧→比特的封装过程；建立全栈整体认知时引用"
+          }
+        ],
+        "children": [
+          {
+            "id": "overview",
+            "topic": "1. 计算机网络和因特网",
+            "expanded": true,
+            "detail": "<h3>计算机网络是什么</h3>\n<p>由硬件、软件、链路互连的自治系统集合，核心任务是<b>主机间的分组交换</b>。</p>\n<h4>两种交换范式</h4>\n<ul>\n<li><b>电路交换</b>：通话前建立端到端通路（TDM/FDM 时分/频分复用），独占资源——传统电话网。</li>\n<li><b>分组交换</b>：报文拆成分组，每分组独立路由、统计复用——Internet 的核心。</li>\n</ul>\n<h4>时延与性能</h4>\n<ul>\n<li>总时延 =  nodal 处理 + 排队 + 传输 + 传播（d_proc + d_queue + d_trans + d_prop）。</li>\n<li>吞吐率受<b>瓶颈链路</b>限制；丢包发生在队列满时。</li>\n</ul>",
+            "tags": [
+              "分层"
+            ],
+            "links": [
+              {
+                "project": "comnet",
+                "id": "osi-layers",
+                "caption": "概述进入协议分层"
+              },
+              {
+                "project": "comnet",
+                "id": "packet-switch",
+                "caption": "交换方式是核心概念之一"
+              }
+            ],
+            "children": [
+              {
+                "id": "s-1-1",
+                "topic": "1.1 什么是因特网",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li><b>两种描述视角</b>：具体构成（端系统 + 通信链路 + 分组交换机 + ISP + 协议）与服务描述（为分布式应用提供通信基础设施）。</li>\n<li>因特网是<b>网络的网络</b>：无数 ISP 按层次互联（接入 ISP → 区域 ISP → 一级 ISP），并在 IXP 处对等交换流量。</li>\n<li><b>协议</b>是通信规则：定义报文的格式与次序，以及收发报文时应采取的动作。</li>\n<li>端系统之间交换的是<b>分组</b>：把数据切块，经链路与分组交换机逐跳转发。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "s-1-2",
+                "topic": "1.2 网络边缘",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>端系统（主机）位于<b>网络边缘</b>；网络核心只负责为边缘转发分组。</li>\n<li><b>接入网</b>把端系统接入：DSL（电话线，频分复用）、HFC（光纤 + 同轴）、FTTH、5G 固定无线、企业网/WiFi。</li>\n<li><b>物理媒体</b>分导引型（双绞线约 100 m、同轴、光纤）与非导引型（无线电）；光纤带宽高、抗电磁干扰。</li>\n<li>无线、HFC 属<b>共享介质</b>，需要多址接入协调（第 6、7 章展开）。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "children": [
+                  {
+                    "id": "media",
+                    "topic": "传输介质",
+                    "expanded": true,
+                    "detail": "<h3>常见介质</h3>\n<ul>\n<li><b>双绞线</b>：Cat5e/Cat6，100m，便宜——以太网主流。</li>\n<li><b>光纤</b>：单模长距高带宽、多模短距；抗电磁干扰。</li>\n<li><b>无线</b>：2.4/5 GHz，受环境影响大，共享介质。</li>\n</ul>",
+                    "tags": [
+                      "概念"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "encoding",
+                        "caption": "介质之上做编码"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-1-3",
+                "topic": "1.3 网络核心",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>网络核心 = 互联的<b>分组交换机</b>（路由器、链路层交换机）构成的网状结构。</li>\n<li><b>分组交换</b>：统计复用、按需占用带宽，适合突发流量；代价是排队时延与丢包。</li>\n<li><b>电路交换</b>：通话期间独占时隙/频段（TDM/FDM），时延稳定但空闲也浪费，呼叫还可能被拒绝。</li>\n<li>分组交换的关键动作是<b>存储转发</b>：整包收完再转发，端到端时延随跳数累加。</li>\n<li>ISP 分层、IXP 对等、内容提供商自建骨干 —— 「网络的网络」的现实形态。</li>\n</ul>",
+                "tags": [
+                  "对比"
+                ],
+                "children": [
+                  {
+                    "id": "packet-switch",
+                    "topic": "分组交换 vs 电路交换",
+                    "expanded": true,
+                    "detail": "<h3>对比</h3>\n<table border=\"1\" cellpadding=\"4\">\n<tr><th>维度</th><th>电路交换</th><th>分组交换</th></tr>\n<tr><td>资源占用</td><td>通话期间独占时隙/频段</td><td>统计复用，按需占用</td></tr>\n<tr><td>建立连接</td><td>需呼叫建立</td><td>无连接即发</td></tr>\n<tr><td>拥塞表现</td><td>呼叫被拒绝</td><td>排队、丢包</td></tr>\n<tr><td>突发流量</td><td>浪费资源</td><td>效率高</td></tr>\n</table>",
+                    "tags": [
+                      "对比",
+                      "概念"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "delay",
+                        "caption": "分组交换的代价是时延抖动"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-1-4",
+                "topic": "1.4 分组交换网中的时延、丢包和吞吐量",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>单跳时延 = 处理 + 排队 + 传输 + 传播，即 d_proc + d_queue + L/R + d/s。</li>\n<li>易错：升级带宽只缩短<b>传输时延</b>（把比特推上链路更快），不改变<b>传播时延</b>（电磁波速率 ≈ 2×10⁸ m/s）。</li>\n<li><b>排队时延</b>随流量强度 La/R 趋近 1 而急剧上升；缓冲溢出即丢包。</li>\n<li>端到端吞吐量由路径上的<b>瓶颈链路</b>决定 —— 吞吐量与时延是两件事。</li>\n</ul>",
+                "tags": [
+                  "计算"
+                ],
+                "children": [
+                  {
+                    "id": "delay",
+                    "topic": "四种时延模型",
+                    "expanded": true,
+                    "detail": "<h3>单跳时延</h3>\n<ul>\n<li><b>处理时延 d_proc</b>：查表、差错校验，微秒级。</li>\n<li><b>排队时延 d_queue</b>：在输出队列等待，变化大，是拥塞的主因。</li>\n<li><b>传输时延 d_trans = L/R</b>：比特推上链路所需时间，L=分组长度，R=链路带宽。</li>\n<li><b>传播时延 d_prop = d/s</b>：信号在介质中传播距离/速率，与带宽无关。</li>\n</ul>\n<p><b>易错</b>：高速链路缩短的是<b>传输时延</b>（把比特推上去更快），不是<b>传播时延</b>（电磁波速率≈2×10⁸ m/s）。</p>",
+                    "tags": [
+                      "概念",
+                      "计算"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "packet-switch",
+                        "caption": "时延模型源于分组交换"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-1-5",
+                "topic": "1.5 协议分层及其服务模型",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>分层的理由：把复杂系统拆成可独立演进的层，每层只依赖下层提供的<b>服务</b>。</li>\n<li><b>封装</b>：每层给上层 PDU 加上自己的首部 —— 报文 → 段/数据报 → 分组 → 帧 → 比特。</li>\n<li>因特网五层（自顶向下）：应用、传输、网络、链路、物理；OSI 七层另有表示层与会话层。</li>\n<li>易错：分层是<b>设计抽象</b>，实现中并不严格隔离（如 NAT 改写端口、TLS 夹在应用与传输之间）。</li>\n</ul>",
+                "tags": [
+                  "分层"
+                ],
+                "children": [
+                  {
+                    "id": "osi-layers",
+                    "topic": "协议分层与封装",
+                    "expanded": true,
+                    "detail": "<h3>分层与封装</h3>\n<p>每层为上层提供服务，同时把上层协议数据单元(PDU)加上自己的首部(header)。</p>\n<ul>\n<li>应用层报文 (message) → 传输层加端口 → 段(segment) / 用户数据报(datagram)</li>\n<li>网络层加 IP 首部 → 数据报(packet)；链路层加帧头帧尾 → 帧(frame)；物理层变比特。</li>\n<li>OSI 七层 vs TCP/IP 五层：本笔记采用自顶向下五层视角。</li>\n</ul>",
+                    "tags": [
+                      "分层",
+                      "概念"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "ip",
+                        "caption": "分层的一个具体实例"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-1-6",
+                "topic": "1.6 面对攻击的网络",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li><b>恶意软件</b>：病毒需用户触发，蠕虫可自主传播。</li>\n<li><b>拒绝服务（DoS/DDoS）</b>：耗尽带宽、连接或主机资源。</li>\n<li><b>分组嗅探</b>：共享介质与无线链路上可被动窃听（如 Wireshark）。</li>\n<li><b>IP 欺骗</b>：伪造源地址以隐藏身份、放大攻击。</li>\n<li>防御思路：鉴别、机密性、完整性、访问控制、防火墙 —— 第 8 章展开。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "sec-fw",
+                    "caption": "用防火墙等手段防御攻击"
+                  }
+                ]
+              },
+              {
+                "id": "s-1-7",
+                "topic": "1.7 计算机网络和因特网的历史",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>1961–1972：分组交换思想成形（Kleinrock、Baran、Davies），ARPANET 于 1969 年连通四个节点。</li>\n<li>1972–1980：走向<b>网络互联</b>，TCP/IP 协议族成型（Cerf &amp; Kahn）；以太网、ALOHAnet 出现。</li>\n<li>1980–1990：DNS、NSFNET、TCP 拥塞控制；联网主机数激增。</li>\n<li>1990 年代：Web 与 HTTP、图形浏览器，商业化与 ISP 竞争。</li>\n<li>2000 年代至今：宽带与移动接入（WiFi/4G/5G）、云计算与内容分发网。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "s-1-supp-physical",
+                "topic": "补充：物理层基础（编码与调制）",
+                "expanded": false,
+                "detail": "<h3>为什么单独列这一节</h3>\n<p>教材按自顶向下组织，<b>没有独立的“物理层”章</b>（物理媒体在 1.2.2 讨论）。这里把原“物理层”笔记中教材未展开的通信基础收拢到第 1 章，作为补充。</p>\n<ul>\n<li><b>传输介质</b>已归入 1.2 网络边缘（对应教材 1.2.2 物理媒体）。</li>\n<li><b>编码与信道容量</b>（奈奎斯特、香农定理、曼彻斯特编码）教材未展开，属于物理层/通信原理的补充知识。</li>\n</ul>",
+                "tags": [
+                  "补充"
+                ],
+                "images": [
+                  {
+                    "file": "assets/physical-overview.png",
+                    "caption": "物理层思维导图：中心为物理层，分出传输介质、编码与调制、带宽与速率三大分支；讲解物理层基础概念时引用"
+                  }
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "media",
+                    "caption": "物理层落到具体介质"
+                  }
+                ],
+                "children": [
+                  {
+                    "id": "encoding",
+                    "topic": "编码与香农定理",
+                    "expanded": true,
+                    "detail": "<h3>奈奎斯特 vs 香农</h3>\n<ul>\n<li><b>奈奎斯特</b>：无噪声、带宽 B，最大码元速率 = 2B 波特；M 电平则数据率 = 2B·log₂M。</li>\n<li><b>香农</b>：有噪声信道容量 C = B·log₂(1 + S/N)，与电平数无关。</li>\n<li>编码目标：接收方能从波形恢复时钟与数据；曼彻斯特每位中间跳变，直流平衡。</li>\n</ul>",
+                    "tags": [
+                      "概念",
+                      "计算"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "app",
+            "topic": "2. 应用层",
+            "expanded": true,
+            "detail": "<h3>应用层总览</h3>\n<p>应用层是网络的\"业务入口\"——开发者唯一直接编程的层。核心决策：<b>用什么传输协议？进程间如何寻址？用客户端-服务器还是 P2P？</b></p>\n<ul>\n<li><b>网络应用体系结构</b>：C/S（服务器固定 IP、总是监听）、P2P（无 always-on 服务器）、混合式。</li>\n<li><b>进程寻址</b>：IP 地址定位主机 + 端口号定位进程；传输层提供多路复用/分解。</li>\n<li><b>传输服务需求</b>：可靠数据？时延敏感？带宽保障？→ 决定选 TCP 还是 UDP。</li>\n</ul>\n<p>下图为本层思维框架，右侧各协议节点为下钻细节。</p>",
+            "tags": [
+              "分层"
+            ],
+            "images": [
+              {
+                "file": "assets/app-overview.png",
+                "caption": "应用层思维导图：中心为应用层，辐射体系结构、Socket接口、应用协议（DNS/HTTP/FTP/邮件/P2P/CDN）、关键概念四分支；讲解应用层全景时引用"
+              }
+            ],
+            "links": [
+              {
+                "project": "comnet",
+                "id": "socket",
+                "caption": "应用层唯一直接编程的接口"
+              }
+            ],
+            "children": [
+              {
+                "id": "s-2-1",
+                "topic": "2.1 网络应用原理",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>应用层是开发者唯一直接编程的层；三个核心决策：用哪种传输协议、进程如何寻址、用什么体系结构。</li>\n<li><b>三种体系结构</b>：C/S（服务器固定地址、可集群扩展）、P2P（peer 既作客户也作服务器、自扩展）、混合式（索引用服务器、媒体走 P2P）。</li>\n<li>进程通信靠 <b>Socket</b>，由 (IP, 端口) 标识；应用只能选用传输层提供的服务，不能自造。</li>\n<li>传输层能给什么：TCP 提供可靠、面向连接、流量与拥塞控制，但<b>不保证</b>时延与带宽；UDP 不可靠、无连接、开销小。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "children": [
+                  {
+                    "id": "app-paradigm",
+                    "topic": "应用体系结构",
+                    "expanded": true,
+                    "detail": "<h3>三种结构</h3>\n<ul>\n<li><b>C/S</b>：服务器固定地址、可扩展集群；客户端不直接通信。Web、邮件、DNS。</li>\n<li><b>P2P</b>：任意两节点直接互连，每个 peer 既是客户也是服务器；自扩展性好，但需处理 churn。BitTorrent。</li>\n<li><b>混合式</b>：如 Skype——索引用服务器、媒体流走 P2P。</li>\n</ul>",
+                    "tags": [
+                      "概念",
+                      "对比"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "p2p",
+                        "caption": "P2P 是三种体系结构之一"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-2-2",
+                "topic": "2.2 Web 和 HTTP",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>HTTP 是<b>无状态</b>的请求-响应协议，运行在 TCP 80 上：1.0 非持久连接 → 1.1 持久连接与管线化 → 2 多路复用 → 3 基于 QUIC/UDP。</li>\n<li>报文 = 请求行/状态行 + 首部；常用方法 GET/POST/PUT/DELETE/HEAD，常见状态码 200/301/302/404/500。</li>\n<li><b>Cookie</b> 为无状态协议补上会话记忆；<b>条件 GET</b>（If-Modified-Since / ETag）配合 304 实现缓存。</li>\n<li><b>HTTPS = HTTP over TLS</b>：在 TCP 之上提供加密、完整性与身份认证（证书链）。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "http",
+                    "topic": "HTTP/HTTPS",
+                    "expanded": true,
+                    "detail": "<h3>HTTP：Web 的应用层协议</h3>\n<p>无状态、请求-响应、运行在 TCP 80 端口上。HTTP/1.0 非持久连接；HTTP/1.1 持久连接 + 管线化；HTTP/2 多路复用；HTTP/3 基于 QUIC/UDP。</p>\n<h4>报文格式</h4>\n<ul>\n<li><b>请求行</b>：方法(GET/POST/PUT/DELETE/HEAD) + URL + 版本。</li>\n<li><b>请求头</b>：Host、User-Agent、Cookie、Accept、If-Modified-Since…</li>\n<li><b>状态行</b>：版本 + 状态码（200/301/302/404/500…）+ 短语。</li>\n</ul>\n<h4>关键机制</h4>\n<ul>\n<li><b>Cookie</b>：让无状态 HTTP 具备会话记忆（Set-Cookie → Cookie 头）。</li>\n<li><b>缓存</b>：Conditional GET（If-Modified-Since / ETag），304 Not Modified 表示未变。</li>\n<li><b>HTTPS</b> = HTTP over TLS：TLS 1.3 在 TCP 之上提供加密、完整性、身份认证（证书链）。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ],
+                    "images": [
+                      {
+                        "file": "assets/http-request-response.png",
+                        "caption": "HTTP请求-响应时序图：TCP连接→请求报文(方法/头)→响应报文(状态码/头/实体)；讲解HTTP无状态模型时引用"
+                      }
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "tcp-basics",
+                        "caption": "HTTP 承载于 TCP"
+                      },
+                      {
+                        "project": "comnet",
+                        "id": "socket",
+                        "caption": "HTTP 客户端经 Socket 编程"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-2-3",
+                "topic": "2.3 因特网中的电子邮件",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>易错：<b>SMTP 是推（push）协议</b>（发送方→服务器、服务器间中继），而 POP3/IMAP 与 HTTP 是拉（pull）。</li>\n<li>SMTP 只传 7-bit ASCII，附件靠 <b>MIME</b> 扩展编码。</li>\n<li><b>POP3</b>：下载后通常删除，无服务器侧文件夹；<b>IMAP</b>：邮件留在服务器，支持文件夹、在线状态与部分下载。</li>\n<li>一次投递的路径：用户代理 →（SMTP）发送方邮件服务器 →（SMTP 中继）→ 接收方邮件服务器 →（POP3/IMAP）用户代理。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "email",
+                    "topic": "电子邮件：SMTP / IMAP / POP3",
+                    "expanded": true,
+                    "detail": "<h3>邮件协议三件套</h3>\n<table border=\"1\" cellpadding=\"4\">\n<tr><th>协议</th><th>方向</th><th>端口</th><th>作用</th></tr>\n<tr><td>SMTP</td><td>发送端→邮件服务器 / 服务器间中继</td><td>25/587( submission)</td><td>推送邮件，文本为 7-bit ASCII；MIME 扩展支持附件</td></tr>\n<tr><td>POP3</td><td>邮件服务器→接收端</td><td>110</td><td>下载后通常删除，无服务器侧文件夹同步</td></tr>\n<tr><td>IMAP</td><td>接收端↔服务器</td><td>143</td><td>邮件留在服务器，支持文件夹、在线状态、部分下载</td></tr>\n</table>\n<p><b>易错</b>：SMTP 是<b>推(push)</b>协议；HTTP、POP3、IMAP 是<b>拉(pull)</b>协议。</p>",
+                    "tags": [
+                      "协议"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "tcp-basics",
+                        "caption": "邮件传输基于 TCP"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-2-4",
+                "topic": "2.4 DNS：因特网的目录服务",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>DNS 把主机名解析为 IP，是<b>分布式层级数据库</b>：根 → TLD → 权威，另有本地 DNS 充当代理缓存。</li>\n<li>查询方式：主机到本地 DNS 通常是<b>递归</b>，本地 DNS 到根/TLD/权威通常是<b>迭代</b>；TTL 决定缓存时长。</li>\n<li>常用记录类型：A（IPv4）、AAAA（IPv6）、CNAME（别名）、MX（邮件）、NS（指明权威）。</li>\n<li>易错：DNS 查询主要走 <b>UDP 53</b>（查询短、快），但响应超过 512 字节或区域传送时改用 TCP。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "ipv6",
+                    "caption": "AAAA 记录解析到 IPv6 地址"
+                  }
+                ],
+                "children": [
+                  {
+                    "id": "dns",
+                    "topic": "DNS 域名系统",
+                    "expanded": true,
+                    "detail": "<h3>DNS：互联网的电话簿</h3>\n<p>把<b>主机名解析为 IP 地址</b>。分布式层级数据库，运行在 UDP 53 端口（区域传送用 TCP）。</p>\n<h4>为什么要分层？</h4>\n<ul>\n<li>单点服务器无法承受全球查询量；集中式维护困难；需要地理分布。</li>\n</ul>\n<h4>层级结构</h4>\n<ul>\n<li><b>根域名服务器</b>：13 组逻辑根（任播），指向 TLD。</li>\n<li><b>顶级域服务器 TLD</b>：.com / .cn / .org…</li>\n<li><b>权威域名服务器</b>：具体域名的记录持有者（如企业自建或 Cloudflare）。</li>\n<li><b>本地 DNS 服务器</b>：ISP 或学校提供，充当代理缓存。</li>\n</ul>\n<h4>解析过程（迭代 vs 递归）</h4>\n<ul>\n<li><b>递归查询</b>：本地 DNS 替客户端一路问到底（常见于\"主机→本地 DNS\"）。</li>\n<li><b>迭代查询</b>：每台服务器回答\"我不知道，去问它\"（常见于\"本地 DNS→根→TLD→权威\"）。</li>\n<li>缓存加速：TTL 控制记录在本地 DNS 保留时长。</li>\n</ul>\n<h4>记录类型</h4>\n<ul>\n<li><b>A</b>：域名→IPv4；<b>AAAA</b>：→IPv6；<b>CNAME</b>：别名；<b>MX</b>：邮件服务器；<b>NS</b>：指明权威服务器。</li>\n</ul>\n<p><b>易错</b>：DNS 主要走 UDP（查询短、快），但响应超过 512 字节或区域传送时切 TCP。</p>",
+                    "tags": [
+                      "协议"
+                    ],
+                    "images": [
+                      {
+                        "file": "assets/dns-resolution.png",
+                        "caption": "DNS递归+迭代解析流程图：主机到本地DNS为递归查询，本地DNS依次向根/TLD/权威迭代查询，IP沿原路返回；讲解DNS解析过程时引用"
+                      }
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "udp",
+                        "caption": "DNS 查询默认走 UDP 53"
+                      },
+                      {
+                        "project": "comnet",
+                        "id": "ipv6",
+                        "caption": "AAAA 记录把域名解析到 IPv6 地址"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-2-5",
+                "topic": "2.5 P2P 应用",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>P2P 的<b>自扩展性</b>：peer 越多，总上传带宽越大 —— 与 C/S 中服务器成为瓶颈恰好相反。</li>\n<li>BitTorrent：文件切成 piece（常见 256 KB），tracker 维护 peer 列表，每个 peer 与一组邻居交换 piece。</li>\n<li><b>tit-for-tat</b>：优先给上传快的邻居上传以抑制搭便车，并周期性随机试探可能更优的邻居。</li>\n<li>代价：peer 频繁加入/离开（churn）使一致性维护复杂 —— 这也是混合式结构存在的原因。</li>\n</ul>",
+                "tags": [
+                  "对比"
+                ],
+                "children": [
+                  {
+                    "id": "p2p",
+                    "topic": "P2P 与 BitTorrent",
+                    "expanded": true,
+                    "detail": "<h3>P2P 文件分发</h3>\n<ul>\n<li><b>自扩展性</b>：peer 越多，上传总带宽越大（与 C/S 中服务器瓶颈相反）。</li>\n<li><b>BitTorrent</b>：文件被切为 piece（通常 256KB）；tracker 维护 peers 列表；每个 peer 与一组 neighbor 交换 piece。</li>\n<li><b>tit-for-tat</b>：优先给上传快的 peer 上传，抑制搭便车；定期随机试探优化者。</li>\n</ul>",
+                    "tags": [
+                      "机制",
+                      "协议"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "cdn",
+                        "caption": "与 CDN 的分发范式对比"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-2-6",
+                "topic": "2.6 视频流和内容分发网",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>CDN 的核心思路：把内容<b>复制到离用户最近</b>的边缘集群（Enter Park 覆盖广，Bring Home 深入 ISP 内部）。</li>\n<li>如何把用户导向最优节点：<b>DNS 重定向</b>返回就近边缘节点的 IP，或使用 anycast 地址。</li>\n<li>流媒体用 <b>DASH/HLS</b>：视频切成多码率分片，客户端按实时带宽自适应切换码率。</li>\n<li>与 P2P 的分工：CDN 靠「就近复制」降时延，P2P 靠「用户互传」省带宽。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "cdn",
+                    "topic": "CDN 内容分发网络",
+                    "expanded": true,
+                    "detail": "<h3>把内容推到离用户最近的地方</h3>\n<ul>\n<li><b>部署</b>：Enter Park（边缘小集群，覆盖广）vs Bring Home（深度缓存，靠近 ISP）。</li>\n<li><b>路由策略</b>：DNS 劫持返回最优边缘节点 IP；anycast IP。</li>\n<li><b>视频流媒体</b>：DASH/HLS 把视频切成多码率 chunk，客户端按带宽自适应切换码率。</li>\n</ul>",
+                    "tags": [
+                      "机制",
+                      "概念"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "dns",
+                        "caption": "CDN 依赖 DNS 重定向调度"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-2-7",
+                "topic": "2.7 套接字编程",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>Socket 是「应用 ↔ 传输层」的<b>编程接口</b>（API），本身不是协议。</li>\n<li><b>UDP</b>：sendto() 每包自带目的地址、无连接，像寄挂号信；<b>TCP</b>：先 connect() 再 read()/write()，字节流服务，像打电话。</li>\n<li>端口号 0–65535，知名端口 0–1023（HTTP 80、HTTPS 443、DNS 53、SSH 22）。</li>\n<li>一个 TCP 连接由<b>四元组</b>（源 IP、源端口、目的 IP、目的端口）唯一标识 —— 这正是第 3 章「多路分解」的依据。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "children": [
+                  {
+                    "id": "socket",
+                    "topic": "Socket 编程接口",
+                    "expanded": true,
+                    "detail": "<h3>进程↔网络的 API</h3>\n<p>应用层通过 <b>Socket</b> 把数据交给传输层，是\"应用编程接口\"而非协议。</p>\n<ul>\n<li><b>UDP Socket</b>：sendto() 每包自带目的地址，无连接，像寄挂号信。</li>\n<li><b>TCP Socket</b>：先 connect()，再 read()/write()，字节流服务，像打电话。</li>\n<li>端口号 0-65535；知名端口 0-1023（HTTP 80、HTTPS 443、DNS 53、SSH 22）。</li>\n</ul>",
+                    "tags": [
+                      "概念"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "multiplex",
+                        "caption": "Socket 经端口号做多路分解"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-2-supp-ftp",
+                "topic": "补充：FTP 文件传输",
+                "expanded": false,
+                "detail": "<h3>为什么单独列这一节</h3>\n<p>教材第 2 章只讲 Web/HTTP、电子邮件、DNS、P2P、视频与 CDN、套接字编程，<b>未收录 FTP</b>。FTP 属于经典的因特网应用层协议，故作为补充保留在本章。</p>",
+                "tags": [
+                  "补充"
+                ],
+                "children": [
+                  {
+                    "id": "ftp",
+                    "topic": "FTP 文件传输协议",
+                    "expanded": true,
+                    "detail": "<h3>FTP：带两条连接的文件传输</h3>\n<ul>\n<li><b>控制连接</b>：TCP 21，贯穿会话全程，传命令。</li>\n<li><b>数据连接</b>：TCP 20（主动模式）或高端口（被动模式 PASV），每次传输新建，传完关闭。</li>\n<li>控制与数据分离——典型的\"带外控制\"。</li>\n<li>命令是 ASCII（USER/PASS/LIST/RETR/STOR），数据可以是 ASCII 或二进制模式。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "tcp-basics",
+                        "caption": "FTP 控制连接基于 TCP"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "transport",
+            "topic": "3. 传输层",
+            "expanded": true,
+            "detail": "<h3>传输层总览</h3>\n<p>传输层提供<b>进程到进程</b>的通信。它是\"端系统上的最后一跳\"——只在主机内核实现，路由器不处理。</p>\n<ul>\n<li><b>多路复用/分解</b>：发送端把多进程数据加上端口号汇成一个段；接收端按端口号分发到对应 Socket。</li>\n<li><b>两种服务模型</b>：UDP——不可靠、无连接、开销小；TCP——可靠、面向连接、拥塞/流量控制。</li>\n<li><b>核心问题</b>：IP 只提供尽最大努力(best-effort)，传输层必须在不可靠网络上造出可靠字节流。</li>\n</ul>",
+            "tags": [
+              "分层"
+            ],
+            "images": [
+              {
+                "file": "assets/transport-overview.png",
+                "caption": "传输层思维导图：中心为传输层，分出多路复用、UDP（无连接/不可靠）、TCP（连接管理/可靠传输/流量控制/拥塞控制）三大分支；讲解传输层服务模型时引用"
+              }
+            ],
+            "links": [
+              {
+                "project": "comnet",
+                "id": "multiplex",
+                "caption": "传输层的进程到进程定位基础"
+              }
+            ],
+            "children": [
+              {
+                "id": "s-3-1",
+                "topic": "3.1 传输层服务概述",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>传输层提供<b>进程到进程</b>（端到端）的通信，网络层只提供主机到主机；多出来的这一层就是「端口 + 复用/分解」。</li>\n<li>因特网只提供两种：<b>TCP</b>（可靠、面向连接、流量与拥塞控制）与 <b>UDP</b>（不可靠、无连接、尽力而为）。</li>\n<li>传输层只在<b>端系统</b>（主机内核）实现，路由器不处理传输层首部。</li>\n<li>传输层能提供的服务受限于网络层：网络层不保证时延与带宽，传输层只能靠重传与窗口「营造」可靠，无法凭空保证性能。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "s-3-2",
+                "topic": "3.2 多路复用与分解",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li><b>多路复用</b>：发送端把多个进程的数据加上端口号汇成一个段；<b>分解</b>：接收端按端口把段交给正确的 Socket。</li>\n<li><b>UDP</b> 按 (目的 IP, 目的端口) 分发（无连接，不区分来源）；<b>TCP</b> 用完整<b>四元组</b>唯一标识一条连接。</li>\n<li>端口号 16 bit，0–1023 为知名端口。</li>\n<li>易错：同一目的端口上可以并存多条 TCP 连接（靠源 IP/端口区分），而一个 UDP Socket 只能按目的端口收。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "multiplex",
+                    "topic": "多路复用与分解",
+                    "expanded": true,
+                    "detail": "<h3>端口号如何定位进程</h3>\n<ul>\n<li>UDP/TCP 首部含<b>源端口、目的端口</b>各 16 bit。</li>\n<li>接收端用 <b>(目的IP, 目的端口, 协议)</b> 四元组把段交给正确 Socket。</li>\n<li>TCP 连接用完整四元组 <b>(源IP, 源端口, 目的IP, 目的端口)</b> 唯一区分；UDP 无连接，按目的端口分发。</li>\n</ul>",
+                    "tags": [
+                      "机制",
+                      "概念"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "udp",
+                        "caption": "无连接的多路复用/分解"
+                      },
+                      {
+                        "project": "comnet",
+                        "id": "tcp-basics",
+                        "caption": "面向连接的多路复用/分解"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-3-3",
+                "topic": "3.3 无连接传输：UDP",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>首部仅 <b>8 字节</b>（源端口、目的端口、长度、校验和）；不握手、不重传、无流量控制、无拥塞控制。</li>\n<li>为什么用 UDP：应用自己控制发送时机；<b>无连接建立时延</b>；首部小；不会被拥塞控制降速 —— 适合实时音视频、游戏、DNS。</li>\n<li><b>校验和</b>覆盖伪首部（含 IP 地址）+ UDP 首部 + 数据，按 16 bit 反码求和：只能检测差错，不能纠正。</li>\n<li>易错：「不可靠」是设计选择而非缺陷；需要可靠性的应用要在<b>应用层</b>自己实现（如 QUIC）。</li>\n</ul>",
+                "tags": [
+                  "对比"
+                ],
+                "children": [
+                  {
+                    "id": "udp",
+                    "topic": "UDP 用户数据报",
+                    "expanded": true,
+                    "detail": "<h3>UDP：极简、不可靠、无连接</h3>\n<p>首部仅 8 字节（源端口、目的端口、长度、校验和）。不握手、不重传、不拥塞控制。</p>\n<h4>为什么用 UDP？</h4>\n<ul>\n<li>应用自己控制何时发、发什么——实时音视频、游戏、DNS。</li>\n<li>无连接建立时延；首部小，不挤占报文；无拥塞控制不会被降速。</li>\n</ul>\n<h4>校验和</h4>\n<p>覆盖伪首部（含 IP 地址）+ UDP 首部 + 数据，按 16-bit 反码求和。只能检测差错，不纠正。</p>",
+                    "tags": [
+                      "协议"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "ip",
+                        "caption": "UDP 数据报交由 IP 承载"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-3-4",
+                "topic": "3.4 可靠数据传输原理",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>可靠传输要解决三件事：<b>比特差错</b>、<b>丢包</b>、<b>乱序</b>；手段是确认（ACK/NAK）、序号与定时器重传。</li>\n<li>演进脉络：rdt1.0（理想信道）→ rdt2.x（比特差错：停等 + 序号防重）→ rdt3.0（信道丢包：超时重传）→ <b>流水线</b>（GBN / SR）。</li>\n<li><b>GBN</b>：累计确认 + 单一计时器，出错就重传整个窗口；<b>SR</b>：逐包确认 + 每包计时器，只重传丢的那个包，代价是接收方要缓存乱序包。</li>\n<li>共同前提：必须用<b>序号</b>区分「新包」与「重传包」，且序号空间要足够大（否则会把重传误判成新数据）。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ]
+              },
+              {
+                "id": "s-3-5",
+                "topic": "3.5 面向连接的传输：TCP",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>TCP 段首部 20 字节（不含选项）；<b>序号按字节编号</b>（不是按报文），确认号表示「期望收到的下一字节」。</li>\n<li>TCP 的<b>四大职责</b>：可靠数据传输、流量控制、拥塞控制、连接管理 —— 对应本节的四个子节点。</li>\n<li>连接由<b>四元组</b>唯一标识；建立与释放分别是三次握手、四次挥手。</li>\n<li>实际发送窗口 = min(cwnd, rwnd)：既不能压垮接收方，也不能压垮网络。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "tcp-basics",
+                    "topic": "TCP 概述与段结构",
+                    "expanded": true,
+                    "detail": "<h3>TCP 段结构</h3>\n<ul>\n<li>20 字节首部（不含选项）：源端口、目的端口、序号、确认号、标志位(ACK/SYN/FIN/RST/PSH/URG)、窗口、校验和、紧急指针。</li>\n<li><b>序号</b>：按字节编号（不是按报文）；<b>确认号</b>：期望收到的下一字节。</li>\n</ul>\n<h4>TCP 的四大职责</h4>\n<ul>\n<li>可靠数据传输（序号+ACK+重传）</li>\n<li>流量控制（接收方告诉发送方还能收多少）</li>\n<li>拥塞控制（感知网络状况，自我降速）</li>\n<li>连接管理（三次握手、四次挥手）</li>\n</ul>",
+                    "tags": [
+                      "协议",
+                      "概念"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "tcp-handshake",
+                        "caption": "建连是 TCP 的第一步"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "tcp-reliable",
+                    "topic": "TCP 可靠数据传输",
+                    "expanded": true,
+                    "detail": "<h3>GBN 与 SR 的工程折衷</h3>\n<ul>\n<li><b>累计确认</b>：ACK n 表示 n 之前所有字节都收到了。</li>\n<li><b>超时重传</b>：RTT 自适应（SRTT、RTTVAR、超时 = SRTT + 4·RTTVAR）。</li>\n<li><b>快重传</b>：收到 3 个重复 ACK 立即重传，不等超时。</li>\n</ul>\n<p>TCP 实际更接近 SR：接收方缓存乱序段，但发送方用累计 ACK，配合快重传。</p>",
+                    "tags": [
+                      "机制",
+                      "对比"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "tcp-flow",
+                        "caption": "可靠传输叠加流量控制"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "tcp-flow",
+                    "topic": "TCP 流量控制",
+                    "expanded": true,
+                    "detail": "<h3>接收方告诉发送方\"我还能收多少\"</h3>\n<ul>\n<li>首部<b>接收窗口 rwnd</b>字段：接收方通告自己空闲接收缓冲。</li>\n<li>发送方维护 rwnd，使在途字节数 ≤ rwnd，防止接收方缓冲区溢出。</li>\n<li><b>零窗口探测</b>：当 rwnd=0，发送方周期性发 1 字节探测包，唤醒接收方通告新窗口。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "tcp-congestion",
+                        "caption": "流控与拥塞控制的区别"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "tcp-handshake",
+                    "topic": "TCP 连接管理",
+                    "expanded": true,
+                    "detail": "<h3>三次握手（建立）</h3>\n<ul>\n<li>1. 客户端 → 服务器：SYN, seq=x</li>\n<li>2. 服务器 → 客户端：SYN+ACK, seq=y, ack=x+1</li>\n<li>3. 客户端 → 服务器：ACK, ack=y+1</li>\n</ul>\n<p><b>为什么三次？</b>防止已失效的连接请求突然到达服务器，让服务器误以为客户端要建立连接而白等。</p>\n<h3>四次挥手（释放）</h3>\n<ul>\n<li>1. 主动方 → 被动方：FIN, seq=u</li>\n<li>2. 被动方 → 主动方：ACK, ack=u+1（被动方进入 CLOSE_WAIT，可能还有数据要发）</li>\n<li>3. 被动方 → 主动方：FIN, seq=w</li>\n<li>4. 主动方 → 被动方：ACK, ack=w+1；主动方进入 TIME_WAIT 2MSL。</li>\n</ul>\n<p><b>TIME_WAIT=2MSL</b>：确保最后一个 ACK 能到达；让旧连接的迟到报文在网络中消亡。</p>",
+                    "images": [
+                      {
+                        "file": "assets/tcp-handshake.png",
+                        "caption": "TCP三次握手与四次挥手时序图：上半部分SYN/SYN+ACK/ACK三步建连，下半部分FIN/ACK/FIN/ACK四步断连，TIME_WAIT=2MSL；讲解TCP连接管理时引用"
+                      }
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "tcp-reliable",
+                        "caption": "建连后才谈可靠传输"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-3-6",
+                "topic": "3.6 拥塞控制原理",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>拥塞 = 网络中<b>聚合需求超过可用容量</b>；表现为排队时延剧增与丢包。</li>\n<li>代价不止「丢掉的那个包」：上游为腾缓冲而做的重传浪费带宽，在多跳路径上成倍放大。</li>\n<li>两大类方法：<b>端到端</b>（网络不帮忙，靠超时/丢包推断，TCP 走这条）与<b>网络辅助</b>（路由器直接反馈，如 ATM ABR、ECN）。</li>\n<li>公平性目标：多条流共享同一瓶颈时，应趋向各自均分带宽。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "s-3-7",
+                "topic": "3.7 TCP 拥塞控制",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>发送窗口 = min(cwnd, rwnd)：<b>cwnd 管网络</b>，<b>rwnd 管接收方</b>。</li>\n<li>四个状态：<b>慢启动</b>（cwnd 指数增长）、<b>拥塞避免</b>（线性增长）、<b>超时</b>（ssthresh=cwnd/2，cwnd=1，判为严重拥塞）、<b>快恢复</b>（3 个重复 ACK：ssthresh=cwnd/2，cwnd=ssthresh）。</li>\n<li>判据的轻重不同：<b>超时</b>比<b>三个重复 ACK</b> 严重 —— 后者说明网络仍在送包（只丢了一个），故不必回到 1。</li>\n<li>多条 TCP 流靠 <b>AIMD</b>（加性增、乘性减）趋向公平地均分瓶颈带宽。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "tcp-congestion",
+                    "topic": "TCP 拥塞控制",
+                    "expanded": true,
+                    "detail": "<h3>感知网络拥塞，自我降速</h3>\n<p>发送窗口 cwnd 由网络状态决定；实际发送窗口 = min(cwnd, rwnd)。</p>\n<h4>四个状态</h4>\n<ul>\n<li><b>慢启动</b>：cwnd 从 1 MSS 开始，每收到一个 ACK cwnd++，指数增长。</li>\n<li><b>拥塞避免</b>：cwnd 到 ssthresh 后，每 RTT 增加 1 MSS，线性增长。</li>\n<li><b>超时</b>：判为严重拥塞，ssthresh=cwnd/2，cwnd=1，重回慢启动。</li>\n<li><b>3 个重复 ACK（快恢复）</b>：ssthresh=cwnd/2，cwnd=ssthresh（不回到 1），直接进拥塞避免。</li>\n</ul>\n<p><b>带宽均分</b>：多个 TCP 流通过 AIMD（加性增、乘性减）趋向公平。</p>",
+                    "tags": [
+                      "机制"
+                    ],
+                    "images": [
+                      {
+                        "file": "assets/tcp-congestion.png",
+                        "caption": "TCP拥塞控制cwnd随RTT变化曲线：慢启动指数增长→拥塞避免线性增长→3重复ACK快恢复→超时回慢启动；讲解AIMD机制时引用"
+                      }
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "router",
+                        "caption": "拥塞源于路由器缓冲区溢出"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-3-8",
+                "topic": "3.8 传输层功能的演进",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>传输层演进困难：中间盒（NAT、防火墙）只认 TCP/UDP，新协议难以部署（协议僵化）。</li>\n<li>拥塞控制从「丢包即拥塞」演进到<b>基于时延/带宽估计</b>（如 CUBIC、BBR），在长肥管道上更高效。</li>\n<li><b>QUIC</b>：把可靠传输与 TLS 搬到<b>用户态、基于 UDP</b>，因而能快速演进，并原生支持多路复用与 0-RTT 建连。</li>\n<li>趋势：功能从内核上移到用户态/应用层，以绕开部署僵化。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "sec-fw",
+                    "caption": "中间盒（防火墙/NAT）只认 TCP/UDP，导致协议僵化"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "network",
+            "topic": "4. 网络层：数据平面",
+            "expanded": true,
+            "detail": "<h3>网络层总览</h3>\n<p>网络层实现<b>主机到主机</b>的分组传输。它有两个完全解耦的平面：</p>\n<ul>\n<li><b>数据平面（转发）</b>：每收到一个分组，查转发表决定从哪个接口出去——本地、逐包、硬件高速。</li>\n<li><b>控制平面（路由）</b>：全网协同计算\"转发表应该长什么样\"——分布式路由协议或集中式 SDN 控制器。</li>\n</ul>\n<p>核心协议：IP（寻址与分片）、ICMP（差错与控制）、RIP/OSPF/BGP（路由）、NAT、SDN。</p>",
+            "tags": [
+              "分层"
+            ],
+            "images": [
+              {
+                "file": "assets/network-overview.png",
+                "caption": "网络层思维导图：左侧数据平面（IP/ICMP/路由器/NAT），右侧控制平面（RIP/OSPF/BGP/SDN），中间以转发表连接；讲解数据平面与控制平面分离时引用"
+              }
+            ],
+            "children": [
+              {
+                "id": "s-4-1",
+                "topic": "4.1 网络层概述",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>网络层的任务是把分组从<b>发送主机搬到接收主机</b>（主机到主机），提供的是<b>尽力而为</b>服务：不保证送达、顺序与时延。</li>\n<li>两个平面：<b>数据平面</b>（转发，逐包查表，纳秒级、硬件实现）与<b>控制平面</b>（路由，全网协同算表，秒级、软件/协议）。</li>\n<li>数据平面的三种路线：传统（每台路由器自己算表）→ <b>SDN</b>（远程控制器下发）→ 通用转发（match + action 抽象）。</li>\n<li>易错：<b>转发</b>是单台设备的本地动作，<b>路由</b>是全网协同的全局过程 —— 二者常被混为一谈。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "s-4-2",
+                "topic": "4.2 路由器内部",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>四大部件：输入端口（线速查表，CAM/TCAM）、<b>交换结构</b>（内存 / 总线 / 互联网络 crossbar）、输出端口（排队与调度）、路由处理器（运行控制平面协议）。</li>\n<li>排队发生在输入/输出端口，是<b>拥塞与丢包的物理位置</b>：缓冲过小易丢包，过大则时延膨胀。</li>\n<li>输入端有<b>队头阻塞（HOL）</b>：队首分组等不到出口会拖住后面的分组，靠并行调度缓解。</li>\n<li>输出端调度决定公平性：FIFO / 优先级 / <b>WFQ</b>；<b>RED</b> 用提前随机丢弃来预告拥塞。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "router",
+                    "topic": "路由器结构",
+                    "expanded": true,
+                    "detail": "<h3>路由器四大部件</h3>\n<ul>\n<li><b>输入端口</b>：查表、线速查找（CAM/TCAM）。</li>\n<li><b>交换结构</b>：内存交换 / 总线交换 / 互联网络（crossbar）。</li>\n<li><b>输出端口</b>：排队、调度（WFQ/RED）。</li>\n<li><b>路由处理器</b>：运行控制平面协议（OSPF/BGP），生成转发表。</li>\n</ul>\n<p>排队是拥塞点；输出端口用缓冲+调度策略，输入端口 HOL 队头阻塞需并行调度。</p>",
+                    "tags": [
+                      "概念"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "ip",
+                        "caption": "路由器按 IP 转发"
+                      },
+                      {
+                        "project": "comnet",
+                        "id": "sdn",
+                        "caption": "传统控制平面 vs 集中式控制器"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-4-3",
+                "topic": "4.3 网际协议 IP：IPv4、编址、IPv6",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>IPv4 首部关键字段：TTL（每跳减 1，防环）、协议号（TCP=6、UDP=17、ICMP=1）、标识/标志/片偏移（分片重组）。</li>\n<li><b>分片</b>：分组超过链路 MTU 时切片，片偏移以 8 字节为单位，且<b>只有目的主机重组</b>。</li>\n<li>编址用 <b>CIDR</b>（a.b.c.d/n），转发表按<b>最长前缀匹配</b>；私有地址为 10/8、172.16/12、192.168/16。</li>\n<li><b>NAT</b> 让多台内网主机共享一个公网 IP（改写源地址与端口），缓解地址枯竭却破坏了端到端模型。</li>\n<li><b>IPv6</b>：128 位地址、固定 40 字节首部、去掉首部校验和与分片字段（路由器处理更快）；不兼容 IPv4，靠双栈或隧道过渡。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "ip",
+                    "topic": "IPv4 与 IP 数据报",
+                    "expanded": true,
+                    "detail": "<h3>IPv4 首部关键字段</h3>\n<ul>\n<li><b>版本(4)、IHL(4)、总长度(16)、标识/标志/片偏移</b>（分片重组用）。</li>\n<li><b>TTL(8)</b>：每跳减 1，到 0 丢弃并回 ICMP——防止环路。</li>\n<li><b>协议(8)</b>：上层协议号（TCP=6, UDP=17, ICMP=1, OSPF=89）。</li>\n<li><b>源IP、目的IP</b>：各 32 bit。</li>\n</ul>\n<h4>分片与重组</h4>\n<p>当分组 > MTU，路由器按 MF=1 / DF=0 切片；只有目的主机重组。片偏移以 8 字节为单位。</p>",
+                    "tags": [
+                      "协议"
+                    ],
+                    "images": [
+                      {
+                        "file": "assets/ip-fragmentation.png",
+                        "caption": "IP分片示意图：4000字节数据报按MTU=1500切成3片，MF标志与片偏移标注，目的主机重组；讲解IP分片机制时引用"
+                      }
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "ipaddr",
+                        "caption": "IP 地址是数据报转发的依据"
+                      },
+                      {
+                        "project": "comnet",
+                        "id": "ipv6",
+                        "caption": "IPv4 的继任者"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "ipaddr",
+                    "topic": "IP 地址与子网划分（CIDR）",
+                    "expanded": true,
+                    "detail": "<h3>点分十进制 + 前缀长度</h3>\n<ul>\n<li>IP = 网络号 + 主机号；CIDR 记法 <code>a.b.c.d/n</code>，n 为网络前缀长度。</li>\n<li><b>最长前缀匹配</b>：路由表有多个条目匹配时，选前缀最长的。</li>\n<li><b>子网划分</b>：借主机位当子网位；<b>子网掩码</b>与 IP 与运算得网络地址。</li>\n<li>特殊地址：网络地址（主机位全 0）、广播（主机位全 1）、环回 127.0.0.0/8、私有地址 10/8、172.16/12、192.168/16。</li>\n</ul>",
+                    "tags": [
+                      "概念",
+                      "计算"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "nat",
+                        "caption": "NAT 建立在地址/端口之上"
+                      },
+                      {
+                        "project": "comnet",
+                        "id": "mac",
+                        "caption": "ARP 由 IP 地址解析出 MAC"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "nat",
+                    "topic": "NAT 网络地址转换",
+                    "expanded": true,
+                    "detail": "<h3>让多台内网主机共享一个公网 IP</h3>\n<ul>\n<li>家用路由器维护<b>NAT 转换表</b>：(内网IP, 端口) ↔ (公网IP, 端口)。</li>\n<li>出站包重写源地址为路由器公网 IP、源端口为新端口；入站包按表反查。</li>\n<li>缓解 IPv4 地址枯竭，但破坏了\"端到端\"模型——P2P、入站连接需打洞。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "ipaddr",
+                        "caption": "NAT 转换表依赖地址映射"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "ipv6",
+                    "topic": "IPv6",
+                    "expanded": true,
+                    "detail": "<h3>为什么从 IPv4 升级到 IPv6</h3>\n<ul>\n<li>32 位地址不够用；128 位地址空间近乎无限。</li>\n<li>固定 40 字节首部，去掉校验和、分片字段——路由器处理更快。</li>\n<li>扩展首部链式可选；内置流标签(flow label)支持 QoS。</li>\n<li>不向后兼容 IPv4：通过双栈或隧道过渡。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-4-4",
+                "topic": "4.4 通用转发与 SDN",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li><b>通用转发</b>把各类网络设备统一为「<b>match + action</b>」：匹配首部字段（可跨层），再执行转发、丢弃、改写或泛洪。</li>\n<li><b>SDN</b> 的核心：把控制平面从设备里抽出来交给<b>远程控制器</b>，设备只保留控制器下发的流表。</li>\n<li>好处是全网视角的集中决策、可编程、易演进；代价是控制器的可扩展性与可靠性成为新的关键点。</li>\n<li>OpenFlow 是 match+action 流表的代表协议；它与第 5 章的分布式路由（OSPF/BGP 各自算表）是两条不同路线。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "s-4-6",
+                "topic": "4.6 中间盒",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>中间盒 = 位于源与目的之间、<b>不以标准路由转发</b>方式干预流量的设备：NAT、防火墙、负载均衡、代理、深度包检测。</li>\n<li>共同问题：只认固定的首部字段（TCP/UDP 端口），因此<b>阻碍传输层/应用层协议演进</b>（协议僵化）。</li>\n<li>常被指违反分层：NAT 改写传输层端口，DPI 窥探应用层内容。</li>\n<li>现实态度：中间盒已无法移除，设计新协议时要么兼容其假设，要么把它们纳入演进路径（如 QUIC 封装在 UDP 之上）。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "sec-fw",
+                    "caption": "防火墙是典型的中间盒"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "ch5-control-plane",
+            "topic": "5. 网络层：控制平面",
+            "expanded": true,
+            "detail": "<h3>控制平面总览</h3>\n<p>控制平面回答“<b>转发表应该长什么样</b>”——它由全网协同计算，而不是单台路由器的本地动作。</p>\n<ul>\n<li><b>传统方式</b>：每台路由器运行<b>分布式路由协议</b>（RIP/OSPF/BGP），互相交换路由信息、各算各的表。</li>\n<li><b>SDN 方式</b>：控制逻辑集中到<b>远程控制器</b>，由控制器用 OpenFlow 向交换机下发流表。</li>\n<li>两大基本算法：<b>链路状态 LS</b>（全局视图、Dijkstra）与<b>距离向量 DV</b>（分布式迭代、Bellman-Ford）。</li>\n<li>ICMP 为控制平面提供差错与探测报文；网络管理（SNMP、NETCONF/YANG）负责配置与监控。</li>\n</ul>",
+            "tags": [
+              "分层"
+            ],
+            "images": [
+              {
+                "file": "assets/routing-compare.png",
+                "caption": "RIP/OSPF/BGP路由协议对比表：协议类型/度量/范围/更新方式/算法/适用场景六维对比；讲解路由协议选型时引用"
+              }
+            ],
+            "links": [
+              {
+                "project": "comnet",
+                "id": "switch",
+                "caption": "SDN 控制器用 OpenFlow 向交换机下发流表"
+              }
+            ],
+            "children": [
+              {
+                "id": "s-5-1",
+                "topic": "5.1 概述",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>控制平面回答「<b>转发表应该长什么样</b>」—— 它是全网协同的结果，不是单台设备的本地动作。</li>\n<li>两种实现路线：<b>每路由器分布式协议</b>（RIP/OSPF/BGP，各自交换信息、各算各的表）与 <b>SDN 集中式控制器</b>（统一下发流表）。</li>\n<li>选路目标不只是最短路径，还要考虑策略、负载与商业关系。</li>\n<li>分工：AS <b>内部</b>（RIP/OSPF）求「最短」，AS <b>之间</b>（BGP）求「可达 + 符合商业策略」。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "s-5-2",
+                "topic": "5.2 路由选择算法",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>两大类算法：<b>链路状态（LS）</b>——每台路由器洪泛自己的链路状态，人人掌握全网拓扑，各自跑 Dijkstra；<b>距离向量（DV）</b>——只与邻居交换「到各目的地的距离」，靠 Bellman-Ford 迭代。</li>\n<li>LS 收敛快、开销大（洪泛 + 存储全网拓扑）；DV 开销小，但<b>坏消息传得慢</b>（计数到无穷）。</li>\n<li>DV 的补救手段：水平分割、毒性逆转、触发更新；限制最大跳数是最简单粗暴的兜底。</li>\n<li>易错：两者都必须全网一致才稳定，路径振荡（flapping）是共同风险。</li>\n</ul>",
+                "tags": [
+                  "对比"
+                ],
+                "children": [
+                  {
+                    "id": "rip",
+                    "topic": "RIP 距离向量",
+                    "expanded": true,
+                    "detail": "<h3>跳数为度量，每 30 秒广播</h3>\n<ul>\n<li>距离向量协议：每个路由器只知道\"到每个目的地的最短距离\"和\"下一跳\"，不了解全网拓扑。</li>\n<li>度量 = 跳数，最大 15（16 视为不可达）——限制了网络规模。</li>\n<li>每 30 秒向邻居发送整张路由表；Bellman-Ford 算法。</li>\n<li><b>坏消息传得慢</b>：计数到无穷问题；用水平分割/毒性逆转缓解。</li>\n</ul>",
+                    "tags": [
+                      "协议",
+                      "机制"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "router",
+                        "caption": "距离向量路由运行在路由器上"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-5-3",
+                "topic": "5.3 AS 内部的路由选择：OSPF",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>OSPF 是<b>链路状态</b>协议：向本 AS 内洪泛链路状态通告（LSA），每台路由器用 <b>Dijkstra</b> 以自己为根算最短路径树。</li>\n<li>直接用 <b>IP 协议号 89</b> 承载（不跑在 TCP/UDP 之上）；收敛快，代价是 CPU 与内存开销大。</li>\n<li>支持<b>区域（area）分层</b>以限制洪泛范围，并支持等价多路径（ECMP）与认证。</li>\n<li>适用位置：企业网与 ISP 的 <b>AS 内部</b> —— 与 BGP 形成「内部求最优、外部求可达」的分工。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "ospf",
+                    "topic": "OSPF 链路状态",
+                    "expanded": true,
+                    "detail": "<h3>每台路由器掌握全网拓扑</h3>\n<ul>\n<li>向<b>所有</b>洪泛链路状态通告(LSA)：直连链路状态、代价。</li>\n<li>每台路由器用 <b>Dijkstra 最短路径算法</b>独立计算以自己为根的最短路径树。</li>\n<li>支持区域(area)分层、等价多路径、认证；基于 IP 协议号 89。</li>\n<li>收敛快，但 CPU/内存开销大——企业内网首选。</li>\n</ul>",
+                    "tags": [
+                      "协议",
+                      "机制"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "router",
+                        "caption": "链路状态路由运行在路由器上"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-5-4",
+                "topic": "5.4 ISP 之间的路由选择：BGP",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>BGP 是 AS 之间的<b>路径向量</b>协议：交换「可达性 + 完整 AS 路径」，而不是单纯的距离度量。</li>\n<li><b>eBGP</b> 连接不同 AS 的边界路由器；<b>iBGP</b> 把外部路由在 AS 内部传播。</li>\n<li>选路依据是<b>策略</b>（商业关系、出口偏好）而非最短路径 —— 这是它与其他路由协议最根本的差异。</li>\n<li>代价：BGP 表达百万级前缀，是 Internet 的骨干路由表；一处配置错误可能引发全球性事故。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "bgp",
+                    "topic": "BGP 边界网关协议",
+                    "expanded": true,
+                    "detail": "<h3>AS 之间的\"路径向量\"协议</h3>\n<ul>\n<li>BGP 在自治系统(AS)之间交换<b>可达性 + 完整 AS 路径</b>，而不是单纯度量。</li>\n<li>eBGP 连接不同 AS 的边界路由器；iBGP 在 AS 内部传播路由。</li>\n<li>选路基于策略（商业关系、出口偏好）而非最短路径——\"可达性 + 策略\"。</li>\n<li>BGP 表巨大（百万级前缀），是 Internet 的\"骨架路由表\"。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "ospf",
+                        "caption": "域间路由 vs 域内路由"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-5-5",
+                "topic": "5.5 SDN 控制平面",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>核心是<b>控制平面与数据平面彻底分离</b>：控制器集中掌握全网视图，交换机只做 match-action。</li>\n<li>控制器通过南向接口（<b>OpenFlow</b>）下发流表，通过北向接口向上提供可编程 API。</li>\n<li>优势：全局优化、灵活编程、便于试验新协议；劣势：控制器成为单点，南北向接口可能成为瓶颈。</li>\n<li>典型落地：数据中心与云厂商网络 —— 集中控制带来的运维简化在这里价值最高。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "switch",
+                    "caption": "SDN 把流表下发给交换机，交换机只做 match-action"
+                  }
+                ],
+                "children": [
+                  {
+                    "id": "sdn",
+                    "topic": "SDN 软件定义网络",
+                    "expanded": true,
+                    "detail": "<h3>控制平面与数据平面彻底分离</h3>\n<ul>\n<li>控制平面集中到<b>SDN 控制器</b>（如 ONOS/ODL），用 OpenFlow 协议向交换机下发流表。</li>\n<li>交换机只做简单匹配-动作（match-action），不再跑路由协议。</li>\n<li>优势：集中视图、全局优化、灵活编程、快速实验；劣势：控制器单点、南北向接口性能。</li>\n<li>数据中心网络、云厂商广泛使用。</li>\n</ul>",
+                    "tags": [
+                      "概念",
+                      "机制"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "router",
+                        "caption": "控制平面与数据平面分离"
+                      },
+                      {
+                        "project": "comnet",
+                        "id": "switch",
+                        "caption": "控制器向交换机下发流表"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-5-6",
+                "topic": "5.6 ICMP：因特网控制报文协议",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>ICMP 是网络层的<b>报错与问路</b>机制，封装在 IP 数据报中（协议号 1）。</li>\n<li>常用类型：3 目的不可达、11 TTL 超时、8/0 回显请求与应答（<b>ping</b>）。</li>\n<li><b>traceroute</b> 正是靠它工作：依次发送 TTL=1,2,3… 的探测包，每跳路由器回一个 ICMP TTL 超时。</li>\n<li>易错：ICMP 虽由 IP 承载，但属于<b>网络层</b>；许多防火墙会过滤它，于是 ping/traceroute 失效并不等于网络不通。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "sec-fw",
+                    "caption": "ICMP 常被防火墙过滤，ping/traceroute 因此失效"
+                  }
+                ],
+                "children": [
+                  {
+                    "id": "icmp",
+                    "topic": "ICMP 互联网控制报文协议",
+                    "expanded": true,
+                    "detail": "<h3>网络层的\"报错与问路\"</h3>\n<ul>\n<li>类型 3：目的不可达（网络/主机/端口/协议不可达）；类型 11：TTL 超时（traceroute 利用它）。</li>\n<li>类型 8/0：回显请求/应答（ping）。</li>\n<li>ICMP 封装在 IP 数据报中（协议号 1），但属于网络层。</li>\n<li><b>traceroute 原理</b>：依次发 TTL=1,2,3… 的 UDP 包，每跳路由器回 ICMP TTL 超时，拿到各跳 RTT。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "ip",
+                        "caption": "ICMP 报文封装在 IP 数据报中"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-5-7",
+                "topic": "5.7 网络管理、SNMP 与 NETCONF/YANG",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>网络管理的四要素：管理服务器、被管设备（含代理）、管理协议、管理信息库（MIB）。</li>\n<li><b>SNMP</b>：请求-响应 + 陷阱（trap），用 SMI/MIB 定义被管对象 —— 擅长<b>监控</b>，配置能力弱。</li>\n<li><b>NETCONF/YANG</b>：面向<b>配置</b>的现代方案，用 YANG 建模、NETCONF 事务化下发，支持原子提交与回滚。</li>\n<li>趋势：从「逐设备命令式配置」走向「声明式、模型驱动」的自动化运维 —— 与 SDN 的集中控制思路一致。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "link",
+            "topic": "6. 链路层和局域网",
+            "expanded": true,
+            "detail": "<h3>链路层总览</h3>\n<p>链路层实现<b>相邻节点之间</b>（同一广播域/同一段链路）的帧传输。它在每个节点（主机或路由器）的网卡上实现。</p>\n<ul>\n<li><b>成帧</b>：把网络层 datagram 封装成 frame，加帧定界。</li>\n<li><b>差错检测</b>：CRC 等。</li>\n<li><b>多路访问</b>：共享介质（总线/无线）时谁能发？——信道划分、随机访问、令牌传递。</li>\n<li><b>交换</b>：交换机根据 MAC 地址表转发帧；VLAN 隔离广播域。</li>\n</ul>",
+            "tags": [
+              "分层"
+            ],
+            "images": [
+              {
+                "file": "assets/link-overview.png",
+                "caption": "数据链路层思维导图：中心为链路层，分出成帧、差错检测、多路访问协议、交换与寻址、以太网/WiFi五大分支；讲解链路层全景时引用"
+              }
+            ],
+            "links": [
+              {
+                "project": "comnet",
+                "id": "mac",
+                "caption": "链路层寻址依赖 MAC 地址"
+              }
+            ],
+            "children": [
+              {
+                "id": "s-6-1",
+                "topic": "6.1 链路层概述",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>链路层负责<b>相邻节点</b>之间（同一段链路/同一广播域）的帧传输，在每个节点（主机或路由器）的<b>网卡</b>上实现。</li>\n<li>基本服务：<b>成帧</b>、<b>差错检测</b>、<b>可靠交付</b>（可选）、<b>多址接入</b>（共享介质时）、流量控制。</li>\n<li>链路层<b>逐跳</b>独立工作：数据报穿过不同网络时，各段链路可以用完全不同的链路层协议（以太网 → WiFi → 光纤）。</li>\n<li>易错：网络层是「端到端」（IP 头全程不变），链路层是「逐跳」（每换一段链路就换一次 MAC 头）。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "s-6-2",
+                "topic": "6.2 差错检测与纠正技术",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>三种检错手段强度递增：<b>奇偶校验</b>（只能查少量位错）→ <b>校验和</b>（传输层用，较弱）→ <b>CRC</b>（链路层用，很强）。</li>\n<li><b>CRC</b>：发送方按生成多项式 G(x) 做模 2 除法，余数附在帧尾；接收方再除一次，余数非 0 即判错。</li>\n<li>CRC-32 能检出所有奇数位错与所有 ≤32 位的突发错 —— 比传输层校验和强得多。</li>\n<li>链路层通常<b>只检错、不纠错</b>（重传交给上层）；WiFi 的链路层 ACK 与重传是常见例外。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "crc",
+                    "topic": "差错检测：CRC",
+                    "expanded": true,
+                    "detail": "<h3>多项式除法检错</h3>\n<ul>\n<li>发送方按生成多项式 G(x) 对数据做模 2 除法，余数作为 CRC 校验附在帧尾。</li>\n<li>接收方用同样的 G(x) 除，如果余数≠0 则判错丢弃。</li>\n<li>CRC-32 可检测所有奇数位错、所有 ≤32 位的突发错。比校验和强得多。</li>\n</ul>\n<p>链路层只检错不纠错（ARQ 留给上层）；WiFi 的链路层 ACK 是例外。</p>",
+                    "tags": [
+                      "机制",
+                      "计算"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "encoding",
+                        "caption": "物理层编码之上的检错"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-6-3",
+                "topic": "6.3 多路访问链路和协议",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>要解决的问题：共享介质上多个节点同时发送会<b>碰撞</b>，必须有一套仲裁规则。</li>\n<li>三大类：<b>信道划分</b>（TDMA/FDMA，固定分配、无冲突但对突发流量浪费）、<b>随机访问</b>（ALOHA → 时隙 ALOHA → CSMA → CSMA/CD、CSMA/CA）、<b>轮流传递</b>（令牌环，有序但有延迟且怕单点故障）。</li>\n<li><b>CSMA</b> 的核心直觉：先听后发（载波监听）能减少碰撞，却无法消除 —— 传播时延会让节点「听不到」别人已经开始。</li>\n<li><b>CSMA/CD</b> 用于有线（边发边听，碰撞即退避）；<b>CSMA/CA</b> 用于无线（无法边发边听，改为主动避免 + 确认）。</li>\n</ul>",
+                "tags": [
+                  "对比"
+                ],
+                "children": [
+                  {
+                    "id": "csma",
+                    "topic": "多路访问协议",
+                    "expanded": true,
+                    "detail": "<h3>共享介质怎么不打架</h3>\n<ul>\n<li><b>信道划分</b>：TDMA（时分）/ FDMA（频分）——固定分配，无冲突但对突发流量浪费。</li>\n<li><b>随机访问</b>：ALOHO → 时隙 ALOHA → CSMA → CSMA/CD（以太网）→ CSMA/CA（WiFi）。</li>\n<li><b>轮流传递</b>：令牌环——有序但有单点与延迟。</li>\n</ul>",
+                    "tags": [
+                      "机制",
+                      "对比"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "ethernet",
+                        "caption": "多路访问协议的典型落地"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-6-4",
+                "topic": "6.4 交换局域网",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li><b>MAC 地址</b> 48 bit、烧录在网卡且不随位置变化；跨网时目的 MAC 只指<b>下一跳</b>，而 IP 地址始终指向最终目的。</li>\n<li><b>ARP</b> 在同一广播域内把下一跳 IP 解析为 MAC（广播请求、单播应答、带 TTL 缓存）—— 易错：跨路由器要逐跳解析。</li>\n<li><b>以太网</b>：CSMA/CD + 帧格式（目的 MAC 6 + 源 MAC 6 + 类型 2 + 数据 46~1500 + CRC 4）；全双工交换下碰撞基本不再发生。</li>\n<li><b>交换机</b>自学习 MAC 表、目的未知则泛洪：隔离冲突域，但默认所有端口仍属同一个<b>广播域</b>。</li>\n<li><b>VLAN</b>（802.1Q 插入 4 字节标签，12 bit VLAN ID）把一个物理交换机切成多个逻辑广播域；跨 VLAN 必须经过路由器。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "mac",
+                    "topic": "MAC 地址与 ARP",
+                    "expanded": true,
+                    "detail": "<h3>MAC：网卡的永久身份</h3>\n<ul>\n<li>48 bit，烧录在网卡（可改），如 <code>AA:BB:CC:DD:EE:FF</code>；烧录地址不随网络位置变化。</li>\n<li>局域网内帧的源/目的 MAC 决定下一跳；跨网时目的 MAC 始终是下一跳路由器的 MAC。</li>\n</ul>\n<h4>ARP：IP → MAC 的解析</h4>\n<ul>\n<li>同一 LAN 内，主机知道下一跳 IP 但不知道 MAC，发 <b>ARP 广播请求</b>，目标主机<b>单播回复</b>。</li>\n<li>结果缓存在 ARP 表（有 TTL）。</li>\n<li><b>易错</b>：ARP 只在<b>同一广播域</b>工作；跨路由器需要逐跳解析下一跳 MAC。</li>\n</ul>",
+                    "tags": [
+                      "概念",
+                      "协议"
+                    ]
+                  },
+                  {
+                    "id": "ethernet",
+                    "topic": "以太网与 CSMA/CD",
+                    "expanded": true,
+                    "detail": "<h3>有线局域网的事实标准</h3>\n<ul>\n<li><b>CSMA/CD</b>：发送前先听（载波监听），边发边听（碰撞检测）；冲突后随机退避（二进制指数退避）。</li>\n<li>退避：冲突 k 次后，从 {0,1,…,2^k-1} 随机选 r，等待 r·512 位时间；k≥10 封顶 1023。</li>\n<li>帧格式：目的MAC(6) + 源MAC(6) + 类型(2) + 数据(46~1500) + CRC(4)。</li>\n<li>现代交换机全双工、无冲突，CSMA/CD 实际上已不触发，但协议仍保留。</li>\n</ul>",
+                    "tags": [
+                      "协议",
+                      "机制"
+                    ],
+                    "images": [
+                      {
+                        "file": "assets/csma-cd.png",
+                        "caption": "CSMA/CD碰撞检测流程图：先听后发、边发边听、碰撞后干扰信号+二进制指数退避；讲解以太网随机访问机制时引用"
+                      }
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "csma",
+                        "caption": "以太网采用 CSMA/CD"
+                      },
+                      {
+                        "project": "comnet",
+                        "id": "switch",
+                        "caption": "交换机组网承载以太网帧"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "switch",
+                    "topic": "交换机",
+                    "expanded": true,
+                    "detail": "<h3>二层帧转发</h3>\n<ul>\n<li>交换机维护 <b>MAC 地址表</b>：(MAC, 接口)——自学习：收到帧时把源 MAC 与入接口记入表。</li>\n<li>收到目的 MAC：查表已知 → 单播到指定口；未知 → 泛洪(flood)到所有其他口。</li>\n<li>即插即用、自学习、无配置；比集线器(Hub)隔离冲突域、全双工。</li>\n<li>交换机的每个端口是一个<b>冲突域</b>，但所有端口默认同属一个<b>广播域</b>。</li>\n</ul>",
+                    "tags": [
+                      "概念"
+                    ],
+                    "images": [
+                      {
+                        "file": "assets/switch-learning.png",
+                        "caption": "交换机自学习与转发流程图：收到帧记源MAC→入接口，查目的MAC决定单播/泛洪；讲解二层交换机工作原理时引用"
+                      }
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "vlan",
+                        "caption": "VLAN 在交换机上划分广播域"
+                      },
+                      {
+                        "project": "comnet",
+                        "id": "mac",
+                        "caption": "交换机自学 MAC 地址表"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "vlan",
+                    "topic": "VLAN 虚拟局域网",
+                    "expanded": true,
+                    "detail": "<h3>把一个交换机物理端口切成多个逻辑广播域</h3>\n<ul>\n<li>802.1Q 在以太网帧插入 4 字节 VLAN 标签，含 12 bit VLAN ID。</li>\n<li>同一 VLAN 内可直接通信；跨 VLAN 必须经过路由器（三层设备）。</li>\n<li>trunk 链路跨多交换机承载多 VLAN 流量，按标签区分。</li>\n<li>隔离广播、安全分段、灵活重组工位。</li>\n</ul>",
+                    "tags": [
+                      "协议",
+                      "概念"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "switch",
+                        "caption": "VLAN 在交换机上把物理端口切成多个广播域"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-6-5",
+                "topic": "6.5 链路虚拟化：网络作为链路层",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>「网络作为链路层」：把一整个网络当成一条<b>逻辑链路</b>提供给它上面的层使用。</li>\n<li><b>MPLS</b>：给分组打上短标签，按标签转发（标签交换），便于做流量工程与 VPN。</li>\n<li><b>隧道</b>（VXLAN、GRE、IP-in-IP）：把原帧封装进外层协议穿越中间网络，到出口再解封装。</li>\n<li>价值：复用成熟网络、解耦拓扑与地址 —— 数据中心覆盖网络与移动 IP 都依赖它。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "mpls",
+                    "caption": "MPLS 用标签转发，把一整个网络变成一条逻辑链路"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "tunnel",
+                    "caption": "隧道封装是链路虚拟化的另一条实现路径"
+                  }
+                ],
+                "children": [
+                  {
+                    "id": "mpls",
+                    "topic": "MPLS 多协议标签交换",
+                    "expanded": true,
+                    "detail": "<h3>MPLS：用短标签替代 IP 查表转发</h3>\n<p>在<b>链路层帧头与网络层 IP 头之间</b>插入一个固定 32 bit 的标签（shim header）：入口<b>压标签</b>、核心<b>只看标签转发</b>、出口<b>弹标签</b>。因为夹在二三层之间，常被称为「<b>第 2.5 层</b>」。</p>\n<h4>标签的 32 bit 怎么分</h4>\n<ul>\n<li><b>20 bit 标签</b>：本地转发标识，<b>只对相邻设备有意义</b>。</li>\n<li><b>3 bit EXP</b>：流量类别，用于 QoS。</li>\n<li><b>1 bit S</b>：栈底标志 —— 支持<b>多层标签</b>：外层做隧道、内层区分 VPN。</li>\n<li><b>8 bit TTL</b>：与 IP 的 TTL 同理，防环。</li>\n</ul>\n<h4>三种设备与三个动作</h4>\n<ul>\n<li><b>LER</b>（边缘路由器）：入方向 <b>push</b>、出方向 <b>pop</b>。</li>\n<li><b>LSR</b>（核心路由器）：<b>swap</b>（换标签）后转发，<b>完全不看 IP 头</b>。</li>\n<li>标签分配给 <b>FEC</b>（转发等价类）：一组被同等对待的分组，而不是单个流。</li>\n</ul>\n<h4>一个包怎么走（转发全过程）</h4>\n<p>拓扑：<b>主机 H → PE1 → P1 → P2 → PE2 → 服务器 S</b>（PE = 边缘，P = 核心）。</p>\n<ul>\n<li><b>H → PE1</b>：普通 IP 帧，还没有标签 —— <code>| MAC | 0x0800 | IP | 载荷 |</code></li>\n<li><b>PE1</b>：查出该目的地属于一条 LSP，<b>push 标签 21</b> —— <code>| MAC | 0x8847 | [21] | IP | 载荷 |</code>。EtherType 从 0x0800 变成 <b>0x8847</b>，等于告诉对端「IP 头前面还夹了一层 MPLS」。</li>\n<li><b>P1</b>：用<b>入标签 21</b> 查 <b>LFIB</b>，得到「出接口（朝 P2）+ 新标签 47」，<b>swap</b> —— <code>| MAC | 0x8847 | [47] | IP | 载荷 |</code></li>\n<li><b>P2</b>：入标签 47 → <b>swap 成 68</b>，继续转发</li>\n<li><b>PE2</b>：自己就是出口 → <b>pop</b>，变回普通 IP 包，再按 IP 转发给 S</li>\n</ul>\n<p>关键在于：<b>P1、P2 全程没有看过 IP 地址</b>，也不需要到目的地的路由 —— 它们只做「入标签 → 出标签 + 出接口」这一件事。这一步就叫<b>交换</b>（像 ATM / 帧中继的虚电路），而不是逐跳各自决策的<b>路由</b>。实际部署里常让<b>倒数第二跳</b>提前把标签弹掉（PHP），使出口 PE 直接收到普通 IP 包、少查一次表。</p>\n<h4>标签只有本地意义（最容易卡住的一点）</h4>\n<ul>\n<li>同一个数值 <code>21</code>：在 PE1 眼里是「去 P1 的那条 LSP」，在 P1 眼里完全可以代表另一条毫不相干的 LSP —— <b>入标签→出标签的映射只对相邻两台设备有效</b>，没有任何端到端含义。</li>\n<li>这一点与 IP 地址<b>正好相反</b>（目的 IP 端到端不变）；与 MAC 也不同（MAC 是身份，不表示路径）。</li>\n<li>所以标签不是「目的地编号」，而是「<b>我在哪条虚电路上</b>」的编号 —— 正因如此，<b>同一个目的地可以建多条 LSP、各给一个标签</b>：这条给语音、那条留作备份、另一条绕开拥塞链路。</li>\n</ul>\n<h4>标签怎么分发（表是谁填的）</h4>\n<p>转发之所以能这么「傻」（查个定长标签就走），是因为<b>建路这件事被提前做完了</b>：</p>\n<ul>\n<li><b>LDP</b>：邻居间互相通告「到某 FEC 我用标签 N」—— 跟随 IGP 最短路径，等价于「走同一条路，只换一种转发方式」。</li>\n<li><b>RSVP-TE</b>：源端<b>显式指定途经节点</b>并预留带宽 —— 可以不走最短路径，这是流量工程的本钱。</li>\n<li><b>MP-BGP</b>：为 L3VPN 分发 VPN 路由与标签，让不同客户的相同地址段共存。</li>\n</ul>\n<h4>价值</h4>\n<ul>\n<li><b>流量工程</b>：因为标签标识的是「路」而不是「目的地」，所以能给同一个目的地建多条 LSP 并分别调度 —— 纯 IP 只有一条最优路径（ECMP 也只能在多条<b>等价</b>路径间分摊）。</li>\n<li><b>标签栈 → 隧道与 VPN</b>：外层标签是「把我送到出口 PE2」、内层标签是「我是哪个客户」；中间路由器只看到外层，对客户地址一无所知，于是一个骨干能承载大量<b>地址可重叠</b>的客户专网。</li>\n<li><b>转发与 IP 解耦</b>：核心只按标签换标签，不必装全 Internet 路由表；标签之上装什么也不受限，故能承载以太帧（伪线 / VPLS）—— 这就是「多协议」的含义。</li>\n</ul>\n<h4>易错</h4>\n<ul>\n<li>「MPLS 更快」是它<b>早期</b>的理由：如今最长前缀匹配已由 TCAM 硬件化，速度不再是主因，真正的理由是<b>流量工程与 VPN</b>。</li>\n<li>它<b>不取代 IP</b>：转发的仍是 IP 分组，可达性照样由 IGP/BGP 算出。</li>\n<li>「多协议」指标签之上可承载 IPv4/IPv6/以太网等多种三层协议，<b>不是</b>指标签栈。</li>\n</ul>\n<p>演进：<b>Segment Routing</b>（SR-MPLS / SRv6）把标签栈直接当作路径指令下发，不再依赖 LDP/RSVP-TE 维护逐跳状态。</p>",
+                    "tags": [
+                      "协议"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "bgp",
+                        "caption": "L3VPN 用 MP-BGP 分发 VPN 路由与标签"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "tunnel",
+                    "topic": "隧道封装（VXLAN / GRE / IP-in-IP）",
+                    "expanded": true,
+                    "detail": "<h3>隧道：把一整个网络当成一条链路</h3>\n<p>把原始帧/分组<b>整个封装</b>进另一种协议的首部里，穿越中间网络后在对端解封装。中间网络只看见外层协议、对承载内容一无所知 —— 这正是「网络作为链路层」的实现手段。</p>\n<h4>三种常见隧道</h4>\n<ul>\n<li><b>IP-in-IP</b>：最简形式，外面再套一个 IP 头（RFC 2003）。开销小，但只能按外层地址转发。</li>\n<li><b>GRE</b>：通用路由封装，可承载多种协议，常与 IPsec 组合做 VPN。</li>\n<li><b>VXLAN</b>：把二层以太帧封装进 UDP，用 <b>24 bit VNI</b> 标识租户 —— 解决 VLAN 只有 12 bit（约 4000 个）不够用的问题。</li>\n</ul>\n<h4>为什么需要它</h4>\n<ul>\n<li><b>解耦拓扑与地址</b>：物理网络怎么变，覆盖网络里的地址与策略不受影响。</li>\n<li><b>突破规模限制</b>：VNI 的 24 bit 远大于 VLAN 的 12 bit，适配多租户数据中心。</li>\n<li><b>跨网互联</b>：移动 IP 用隧道把分组送到转交地址；数据中心用隧道把分散机架连成一个二层域。</li>\n</ul>\n<h4>易错</h4>\n<ul>\n<li>隧道<b>不加密</b>：它只是封装（换个外层头），要机密性必须叠加 IPsec/DTLS。</li>\n<li>封装会增加开销、减少可用 MTU，容易引发<b>分片</b> —— 隧道部署常见的坑。</li>\n<li>隧道把中间链路「藏」起来了：中间设备看不到内层首部，因此<b>无法对内层流量做策略</b>（与中间盒的可见性问题正好相反）。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-6-6",
+                "topic": "6.6 数据中心网络",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>典型层次：<b>边界路由器 → 汇聚交换机 → 机架顶交换机（TOR）→ 服务器</b>，一台 TOR 连数十台服务器。</li>\n<li>数据中心的主角是<b>东西向流量</b>（服务器之间），因此采用扁平的多层 <b>Clos（叶脊）</b>拓扑与等价多路径。</li>\n<li>关键技术：<b>负载均衡</b>（ECMP 或集中式调度）、虚拟化隔离（VLAN/VXLAN，多租户）、SDN 集中控制。</li>\n<li>设计取舍：用大量廉价交换机换带宽与冗余，靠软件层面的容错替代昂贵的专用设备。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "switch",
+                    "caption": "数据中心网络大量使用二层交换机与叶脊拓扑"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "tunnel",
+                    "caption": "数据中心用 VXLAN 等隧道把分散机架连成一个二层域"
+                  }
+                ]
+              },
+              {
+                "id": "s-6-7",
+                "topic": "6.7 回顾：Web 页面请求的一天",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>这一节把全书的层次串起来：一次 Web 请求同时用到 <b>DHCP、ARP、DNS、TCP、IP、以太网/WiFi、HTTP</b>。</li>\n<li>典型顺序：DHCP 取得 IP → ARP 找到网关 MAC → DNS 解析域名 → TCP 三次握手 → HTTP 请求与响应 → 四次挥手。</li>\n<li>关键观察：<b>每下一层都要重新封装</b>；跨网络时 IP 地址端到端不变，而 MAC 地址逐跳更换。</li>\n<li>配合「关联笔记：一次 Web 请求穿过的四层」一起看 —— 那篇把本节与 HTTP / DNS / TCP / IP / MAC 各节点的相互位置讲清楚了。</li>\n</ul>",
+                "tags": [
+                  "分层"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "ch7-wireless",
+            "topic": "7. 无线网络和移动网络",
+            "expanded": true,
+            "detail": "<h3>无线与移动总览</h3>\n<p>本章讲两件常被混淆的事：<b>无线</b>（用无线链路替代有线链路，问题主要落在链路层与物理层）与<b>移动</b>（主机在网络之间漫游，问题主要落在网络层）。</p>\n<ul>\n<li><b>无线链路特征</b>：路径损耗、多径衰落、干扰导致信噪比波动大，误码率远高于有线；存在隐藏终端。</li>\n<li><b>802.11（WiFi）</b>：CSMA/CA + RTS/CTS 预约信道，AP 与 SSID，同一 IP 子网内移动。</li>\n<li><b>蜂窝网络</b>：4G LTE 与 5G，由基站与核心网承担无线接入与移动性管理。</li>\n<li><b>移动管理</b>：归属网络/拜访网络、永久地址与转交地址、间接与直接路由，以及移动 IP。</li>\n</ul>",
+            "tags": [
+              "分层"
+            ],
+            "children": [
+              {
+                "id": "s-7-1",
+                "topic": "7.1 概述",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li><b>无线 ≠ 移动</b>：无线主机可以不移动（家里的 WiFi 台式机）；移动主机也可以用有线（把笔记本带到别处插网线）。</li>\n<li>移动引入的核心问题：<b>如何把分组路由到一个不断更换接入点的节点</b>。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "s-7-2",
+                "topic": "7.2 无线链路和网络特征",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>无线链路三大特征：路径损耗、多径衰落、干扰；SNR 与 BER 的关系。</li>\n<li>隐藏终端问题——CSMA/CD 在无线不可用的根本原因。</li>\n<li>CDMA：正交码片序列区分用户。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "wl-char",
+                    "topic": "无线链路特征与信噪比",
+                    "expanded": true,
+                    "detail": "<h3>无线链路与有线的差别</h3>\n<ul>\n<li><b>路径损耗</b>：信号强度随距离衰减；<b>多径衰落</b>：反射波相位叠加，信号时强时弱。</li>\n<li><b>干扰</b>：同频段的其它设备（微波炉、蓝牙、邻居 AP）。</li>\n<li><b>信噪比 SNR</b> 波动大 → 比特差错率 BER 动态变化，必须靠 CRC 检错 + ARQ 重传兜底。</li>\n<li><b>隐藏终端</b>：A、C 都能与 B 通信却互相听不到，同时发送会在 B 处碰撞。</li>\n</ul>\n<p><b>易错</b>：无线<b>无法“边发边听”</b>——自身发射信号会淹没远处微弱的碰撞信号，所以不能照搬 CSMA/CD。</p>",
+                    "tags": [
+                      "概念"
+                    ]
+                  },
+                  {
+                    "id": "wl-cdma",
+                    "topic": "CDMA 码分多址",
+                    "expanded": true,
+                    "detail": "<h3>CDMA：用正交码区分用户</h3>\n<ul>\n<li>每个用户分配一个<b>码片序列</b>（chip sequence），不同用户的码序列两两<b>正交</b>。</li>\n<li>发送 1 时发码片本身、发送 0 时发码片反码；接收端用自己那把码片做内积，正交的他人信号结果为 0。</li>\n<li>与 FDMA（分频）/TDMA（分时）不同：CDMA <b>共享整个频段与全部时间</b>，靠编码区分用户，天然抗窄带干扰。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-7-3",
+                "topic": "7.3 无线局域网",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>802.11 体系结构：BSS、AP、SSID、信道、扫描与关联。</li>\n<li>802.11 MAC：CSMA/CA + RTS/CTS + 帧间间隔 + 确认。</li>\n<li>802.11 帧的四个地址字段；同一 IP 子网内的移动。</li>\n<li>蓝牙与个人区域网。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "wifi",
+                    "topic": "WiFi 与 CSMA/CA",
+                    "expanded": true,
+                    "detail": "<h3>无线为什么不能用 CSMA/CD</h3>\n<ul>\n<li>无线信号动态范围大，发自己信号时盖过了远处的微弱碰撞信号——<b>无法边发边听</b>。</li>\n<li>存在<b>隐藏终端</b>：A 和 C 都能听到 B 但互相听不到，同时发会在 B 处碰撞。</li>\n</ul>\n<h4>CSMA/CA 的对策</h4>\n<ul>\n<li>RTS/CTS 短帧握手预约信道；DIFS/SIFS 帧间间隔区分优先级；接收方收到帧回 ACK。</li>\n<li>二进制指数退避避免冲突后立即再撞。</li>\n</ul>",
+                    "tags": [
+                      "协议",
+                      "对比"
+                    ],
+                    "links": [
+                      {
+                        "project": "comnet",
+                        "id": "csma",
+                        "caption": "CSMA/CA 与 CSMA/CD 的差别"
+                      },
+                      {
+                        "project": "comnet",
+                        "id": "ethernet",
+                        "caption": "无线与有线的介质差异"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "wl-80211-arch",
+                    "topic": "802.11 体系结构与 AP",
+                    "expanded": true,
+                    "detail": "<h3>802.11 的基本构件</h3>\n<ul>\n<li><b>BSS</b>（基本服务集）= 一个 AP 及其关联的无线站点；AP 通过<b>分布系统</b>接入有线网。</li>\n<li><b>SSID</b> 标识网络名；2.4/5/6 GHz 频段被划成多个<b>信道</b>，相邻 AP 应选互不重叠的信道。</li>\n<li><b>扫描与关联</b>：<b>被动扫描</b>听 AP 周期性广播的信标帧（Beacon）；<b>主动扫描</b>发探测请求帧（Probe）。选定 AP 后需<b>关联</b>才能收发数据。</li>\n<li>同一子网内移动：站点换 AP 但 IP 不变，靠链路层重关联完成切换。</li>\n</ul>",
+                    "tags": [
+                      "概念"
+                    ]
+                  },
+                  {
+                    "id": "wl-80211-frame",
+                    "topic": "802.11 帧结构",
+                    "expanded": true,
+                    "detail": "<h3>802.11 数据帧的关键字段</h3>\n<ul>\n<li><b>四个地址字段</b>（Address 1/2/3/4）：分别表示接收 AP/站点、发送 AP/站点、以及上层的源或目的——因为经过 AP 时一帧要带上两个链路层地址。</li>\n<li><b>Duration/ID</b>：RTS/CTS 中声明的信道预约时长，其它站点据此设置 <b>NAV</b> 退避计时器。</li>\n<li><b>Seq Ctrl</b>：序号与分片号，用于确认与重传。</li>\n<li>帧族：管理帧（Beacon/Probe/Association）、控制帧（RTS/CTS/ACK）、数据帧。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  },
+                  {
+                    "id": "wl-bluetooth",
+                    "topic": "蓝牙与个人区域网",
+                    "expanded": true,
+                    "detail": "<h3>蓝牙（IEEE 802.15.1）</h3>\n<ul>\n<li>短距离、低功耗的<b>个人区域网</b>（WPAN），典型覆盖 10 m 量级。</li>\n<li><b>主从结构</b>：一个微微网（piconet）中主设备最多带 7 个从设备，用 TDM 轮询避免冲突。</li>\n<li>工作在 2.4 GHz 无需授权频段，采用<b>跳频</b>降低与 WiFi 的相互干扰。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-7-4",
+                "topic": "7.4 蜂窝网络：4G 与 5G",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>蜂窝网络架构：基站 + 核心网（MME / S-GW / P-GW / HSS）。</li>\n<li>4G LTE 的接入与核心网；5G 的三大场景与关键技术。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "children": [
+                  {
+                    "id": "wl-cellular",
+                    "topic": "蜂窝网络架构与 4G LTE",
+                    "expanded": true,
+                    "detail": "<h3>蜂窝网络的组成</h3>\n<ul>\n<li><b>基站（eNodeB）</b>负责无线接入；<b>核心网 EPC</b> 负责移动性管理与分组转发。</li>\n<li>关键网元：<b>MME</b>（移动性管理）、<b>S-GW / P-GW</b>（分组网关，衔接互联网）、<b>HSS</b>（用户签约数据库）。</li>\n<li>与 WiFi 最本质的差别：<b>移动性由网络侧管理</b>——网络始终知道你在哪个基站，因此同一运营商内跨基站切换对上层几乎透明。</li>\n</ul>",
+                    "tags": [
+                      "概念"
+                    ]
+                  },
+                  {
+                    "id": "wl-5g",
+                    "topic": "5G 的关键技术",
+                    "expanded": true,
+                    "detail": "<h3>5G 的目标与手段</h3>\n<ul>\n<li>三大场景：增强移动宽带 <b>eMBB</b>、海量机器通信 <b>mMTC</b>、超可靠低时延 <b>URLLC</b>。</li>\n<li>毫米波 + 大规模天线（Massive MIMO）+ 更宽信道 → 峰值速率大幅提升，但覆盖距离变短，需要密集组网。</li>\n<li>核心网<b>服务化（SBA）</b>：把网元拆成可编排的网络功能，思路与 SDN/NFV 一致。</li>\n</ul>",
+                    "tags": [
+                      "概念"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-7-5",
+                "topic": "7.5 移动管理：原理",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>归属网络/拜访网络、永久地址/转交地址——身份与位置解耦。</li>\n<li>间接路由（经归属代理）与直接路由（经通信者代理）的取舍。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "mob-principle",
+                    "topic": "移动管理的核心概念",
+                    "expanded": true,
+                    "detail": "<h3>术语与核心矛盾</h3>\n<ul>\n<li><b>归属网络</b>（home network）与<b>归属代理</b>：节点的“户籍”所在，负责记录它当前在哪。</li>\n<li><b>拜访网络</b>（visited network）与<b>外部代理</b>：节点当前所在的网络。</li>\n<li><b>永久地址</b>（home address）标识<b>身份</b>，永不改变；<b>转交地址</b>（care-of address）标识<b>位置</b>，随漫游改变。</li>\n<li>核心矛盾：路由是按<b>地址前缀</b>转发的，而移动会改变前缀 → 必须把<b>身份与位置解耦</b>。</li>\n</ul>",
+                    "tags": [
+                      "概念"
+                    ]
+                  },
+                  {
+                    "id": "mob-routing",
+                    "topic": "对移动设备的间接与直接路由",
+                    "expanded": true,
+                    "detail": "<h3>两种路由方式</h3>\n<ul>\n<li><b>间接路由</b>：通信者把分组发给移动节点的<b>归属网络</b> → 归属代理用隧道把分组封装后送到转交地址（外部代理）→ 外部代理解封装后交付。优点：通信者无需改动；缺点：<b>三角路由</b>，路径变长。</li>\n<li><b>直接路由</b>：通信者先通过<b>通信者代理</b>查到转交地址，之后直接发给移动节点。优点：路径短；缺点：需要通信者侧配合，且流量路径非对称。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-7-6",
+                "topic": "7.6 移动管理实践",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>4G/5G 中由网络侧管理的移动性（MME 与网关协同切换）。</li>\n<li>移动 IP 的注册与隧道转发，以及它的局限。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "mob-4g5g",
+                    "topic": "4G/5G 中的移动管理",
+                    "expanded": true,
+                    "detail": "<h3>网络侧管理的移动性</h3>\n<ul>\n<li>移动节点在 4G 中同时持有两个地址：<b>永久 IP</b>（归属网络分配）与<b>本地 IP</b>（当前网关分配）。</li>\n<li>基站间切换由 <b>MME 协同网关</b>完成：先建立到新基站的新路径，再释放旧路径，数据流平滑迁移。</li>\n<li>与移动 IP 的差别：隧道端点在<b>网关</b>而不是外部代理，因而不需要“外部代理”这一角色。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  },
+                  {
+                    "id": "mob-ip",
+                    "topic": "移动 IP（Mobile IP）",
+                    "expanded": true,
+                    "detail": "<h3>移动 IP 的要点</h3>\n<ul>\n<li>身份与位置分离：<b>永久地址</b>保持不变，<b>转交地址</b>随所在网络变化。</li>\n<li>三步流程：代理通告/请求 → <b>注册</b>（移动节点把转交地址登记到归属代理）→ 隧道转发。</li>\n<li>局限：三角路由开销、需要在网络中部署归属代理与外部代理、上下行流量路径非对称。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-7-7",
+                "topic": "7.7 无线和移动对上层协议的影响",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>无线误码导致的丢包会被 TCP 误判为拥塞。</li>\n<li>移动切换的时延抖动对 RTT 估计与超时重传的影响。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "children": [
+                  {
+                    "id": "wl-higher",
+                    "topic": "无线与移动对上层协议的影响",
+                    "expanded": true,
+                    "detail": "<h3>为什么 TCP 在无线链路上表现不佳</h3>\n<ul>\n<li>TCP 把<b>丢包当作拥塞信号</b>而减小拥塞窗口；但无线丢包多由<b>误码/干扰</b>造成，并非拥塞 → 导致无谓降速。</li>\n<li>常见对策：链路层<b>本地重传（ARQ）</b>把误码“藏”起来；或使用显式拥塞通知 ECN、分裂连接方案。</li>\n<li>移动切换带来的<b>时延抖动</b>会使 RTT 估计偏高，触发不必要的超时重传。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "ch8-security",
+            "topic": "8. 网络安全",
+            "expanded": true,
+            "detail": "<h3>网络安全总览</h3>\n<p>安全的核心目标可概括为 <b>CIA + 鉴别</b>：机密性（Confidentiality）、完整性（Integrity）、可用性（Availability），以及通信双方的身份鉴别。</p>\n<ul>\n<li><b>密码学工具</b>：对称密钥（AES，快）与公开密钥（RSA，便于分发与签名）。</li>\n<li><b>完整性</b>：密码散列函数 → 报文鉴别码 MAC → 数字签名，逐级增强。</li>\n<li><b>协议落地</b>：TLS 保护传输层、IPsec 保护网络层、PGP 保护电子邮件、WPA 保护无线链路。</li>\n<li><b>边界防护</b>：防火墙与入侵检测系统。</li>\n</ul>",
+            "tags": [
+              "分层"
+            ],
+            "children": [
+              {
+                "id": "s-8-1",
+                "topic": "8.1 什么是网络安全",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>安全目标：机密性、完整性、可用性、端点鉴别。</li>\n<li>攻击分类：窃听、伪装、篡改、重放、拒绝服务。</li>\n</ul>",
+                "tags": [
+                  "概念"
+                ],
+                "children": [
+                  {
+                    "id": "sec-what",
+                    "topic": "网络安全的目标与攻击类型",
+                    "expanded": true,
+                    "detail": "<h3>四类基本攻击</h3>\n<ul>\n<li><b>窃听（被动攻击）</b>：监听链路内容，难以察觉 → 靠加密对抗。</li>\n<li><b>伪装</b>：冒充他人身份发起通信 → 靠端点鉴别对抗。</li>\n<li><b>报文篡改</b>：插入/删除/改写报文内容 → 靠完整性校验对抗。</li>\n<li><b>拒绝服务 DoS/DDoS</b>：耗尽带宽、连接或计算资源 → 靠限速、流量清洗对抗。</li>\n</ul>\n<p>分析安全方案时要先明确攻击者能力：能否<b>窃听链路</b>、能否<b>改包</b>、能否<b>接入网络</b>、能否<b>发送任意分组</b>。</p>",
+                    "tags": [
+                      "概念"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-8-2",
+                "topic": "8.2 密码学原理",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>对称密钥：DES → 3DES → AES；密钥分发是难点。</li>\n<li>公开密钥：RSA 与 Diffie-Hellman；慢，用于协商与签名。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "sec-sym",
+                    "topic": "对称密钥加密",
+                    "expanded": true,
+                    "detail": "<h3>对称密钥</h3>\n<ul>\n<li>收发双方共享同一把密钥 K，解密是加密的逆运算。<b>DES</b>（56 位，已不安全）→ <b>3DES</b> → <b>AES</b>（128/192/256 位，现行标准）。</li>\n<li>优点：加解密快，适合大流量数据。缺点：<b>密钥分发</b>困难——n 方两两通信需要 n(n−1)/2 把密钥。</li>\n<li>分组密码工作模式：<b>CBC</b> 把前一块密文与当前明文块异或，使相同明文块产生不同密文，避免模式泄露。</li>\n</ul>",
+                    "tags": [
+                      "协议",
+                      "机制"
+                    ]
+                  },
+                  {
+                    "id": "sec-pub",
+                    "topic": "公开密钥加密",
+                    "expanded": true,
+                    "detail": "<h3>公开密钥（非对称）</h3>\n<ul>\n<li>每人一对密钥：<b>公钥</b>公开、<b>私钥</b>自留。公钥加密只能由私钥解开；私钥签名只能由公钥验证。</li>\n<li><b>RSA</b> 基于大整数分解困难；<b>Diffie-Hellman</b> 让双方在公开信道上协商出共享密钥。</li>\n<li>速度比对称慢 100~1000 倍 → 实际协议中只用于<b>协商会话密钥</b>与<b>签名</b>，大数据仍走对称加密。</li>\n</ul>",
+                    "tags": [
+                      "协议",
+                      "机制"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-8-3",
+                "topic": "8.3 报文完整性与数字签名",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>密码散列函数：MD5 / SHA 系列，抗碰撞性。</li>\n<li>报文鉴别码 MAC（HMAC）提供完整性与鉴别。</li>\n<li>数字签名：私钥签名、公钥验证，兼具完整性与不可否认性。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "sec-hash",
+                    "topic": "密码散列函数",
+                    "expanded": true,
+                    "detail": "<h3>散列函数</h3>\n<ul>\n<li>把任意长报文映射为<b>固定长度</b>指纹（MD5 128 位、SHA-1 160 位、SHA-256 256 位）。</li>\n<li>要求：<b>单向性</b>（难以由散列值反推报文）与<b>抗碰撞性</b>（难以找到两个不同报文散列相同）。</li>\n<li>MD5 与 SHA-1 已被证明可构造碰撞，新系统应使用 <b>SHA-256 及以上</b>。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  },
+                  {
+                    "id": "sec-mac",
+                    "topic": "报文鉴别码（MAC / HMAC）",
+                    "expanded": true,
+                    "detail": "<h3>报文鉴别码</h3>\n<ul>\n<li>需求：既要确认报文<b>未被篡改</b>，又要确认它<b>确实来自持有密钥的一方</b>。</li>\n<li>做法：<b>MAC = H(报文 + 共享密钥)</b>，随报文一起发送；接收方用同一密钥重算并比对。</li>\n<li>只用散列而不带密钥（如 H(报文)）<b>不提供鉴别</b>——任何人都能重算，中间人可一并篡改。</li>\n<li>实践中最常用 <b>HMAC</b>：把密钥与散列函数以标准方式组合，规避前缀长度扩展等攻击。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  },
+                  {
+                    "id": "sec-sign",
+                    "topic": "数字签名",
+                    "expanded": true,
+                    "detail": "<h3>数字签名</h3>\n<ul>\n<li>签名：发送方用<b>私钥</b>对报文（通常先求散列）签名；验证：任何人用其<b>公钥</b>验签。</li>\n<li>同时保证<b>完整性</b>（改了内容验不过）与<b>不可否认性</b>（签名只有私钥持有者能产生）。</li>\n<li>不保证<b>机密性</b>——报文仍可被读到，需要加密时另行处理。</li>\n<li>实践：只对报文的<b>散列值</b>签名（高效且长度固定）；验证者用公钥解出散列并与自己算的比对。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-8-4",
+                "topic": "8.4 端点鉴别",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>端点鉴别协议：基于 nonce 的挑战-应答。</li>\n<li>重放攻击与中间人攻击的防范要点。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "sec-auth",
+                    "topic": "端点鉴别与中间人攻击",
+                    "expanded": true,
+                    "detail": "<h3>端点鉴别</h3>\n<ul>\n<li>目标：让对方<b>当场证明</b>“我确实是我”，而不仅仅是知道口令。</li>\n<li>核心手段是 <b>nonce</b>（一次性随机数）＋挑战-应答：每次挑战不同，重放的旧应答无效；口令本身<b>不应在网络上传输</b>。</li>\n<li>只靠“加密口令”仍挡不住<b>重放攻击</b>；也挡不住<b>中间人攻击</b>——对方可以分别与两边建立会话。</li>\n<li>根治中间人：需要<b>可信第三方</b>与<b>证书</b>，把公钥与身份绑定（见 8.6 TLS）。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-8-5",
+                "topic": "8.5 保护电子邮件",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>安全电子邮件的四项需求。</li>\n<li>“先签名后加密”的组合用法；PGP 与信任网模型。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "sec-email",
+                    "topic": "安全电子邮件与 PGP",
+                    "expanded": true,
+                    "detail": "<h3>安全电子邮件</h3>\n<ul>\n<li>需要四件事：<b>机密性</b>（加密正文）、<b>鉴别</b>（确认发件人）、<b>完整性</b>（未被篡改）、<b>不可否认性</b>。</li>\n<li>典型做法：<b>先签名后加密</b>——用发送方私钥签名以满足鉴别与不可否认，再用接收方公钥加密正文以保密。</li>\n<li>对称加密正文、公钥只用于加密会话密钥，兼顾效率与安全。</li>\n<li><b>PGP</b> 是广泛使用的实现，采用<b>信任网</b>（Web of Trust）模型而非严格的 CA 层级，适合个人间通信。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-8-6",
+                "topic": "8.6 保护 TCP 连接：TLS",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>TLS 的分层：握手协议 + 记录协议。</li>\n<li>会话密钥协商、证书与 CA 信任链如何阻断中间人。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "sec-tls",
+                    "topic": "TLS / SSL",
+                    "expanded": true,
+                    "detail": "<h3>TLS（SSL 的演进版本）</h3>\n<ul>\n<li>位置：位于<b>应用层与传输层之间</b>，为 HTTP、SMTP 等提供加密、完整性与鉴别（HTTPS = HTTP over TLS）。</li>\n<li><b>握手阶段</b>：协商密码套件 → 服务器出示<b>证书</b>（由 CA 签发，把公钥与域名绑定）→ 客户端验证证书链 → 双方协商出<b>会话密钥</b>。</li>\n<li><b>记录阶段</b>：用会话密钥进行对称加密 + HMAC 完整性保护，并带序号防重放。</li>\n<li>握手阶段之所以安全，是因为<b>证书把公钥与身份绑定</b>，从而阻断中间人。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-8-7",
+                "topic": "8.7 网络层安全：IPsec 与 VPN",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>IPsec 的 AH / ESP 两种协议与传输/隧道两种模式。</li>\n<li>安全关联 SA、IKE 密钥管理；VPN 的构建方式。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "sec-ipsec",
+                    "topic": "IPsec 与 VPN",
+                    "expanded": true,
+                    "detail": "<h3>IPsec</h3>\n<ul>\n<li>在网络层提供安全，因而<b>对所有上层协议透明</b>（任何应用都自动受保护）。</li>\n<li>两种协议：<b>AH</b>（鉴别与完整性，不加密）与 <b>ESP</b>（加密，通常同时提供完整性）。</li>\n<li>两种模式：<b>传输模式</b>（保护 IP 载荷，主机到主机）与<b>隧道模式</b>（整个 IP 数据报被封装进新数据报，网关到网关）。</li>\n<li><b>安全关联 SA</b>：由 (SPI, 目的地址, 协议) 唯一标识，规定用哪种算法与密钥；密钥由 <b>IKE</b> 协商。</li>\n<li><b>VPN</b>：用 IPsec 隧道模式把远程主机/分支机构的流量安全地穿过公共互联网接入内网。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-8-8",
+                "topic": "8.8 保护无线局域网与 4G/5G",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>802.11 的鉴别与密钥协商（WPA/WPA2 的四次握手）。</li>\n<li>4G/5G 蜂窝网的鉴别与密钥协商（SIM/AKA）。</li>\n</ul>",
+                "tags": [
+                  "协议"
+                ],
+                "children": [
+                  {
+                    "id": "sec-wlan",
+                    "topic": "无线与蜂窝网络的安全",
+                    "expanded": true,
+                    "detail": "<h3>802.11 的安全</h3>\n<ul>\n<li>WEP 早已被破解；现行标准是 <b>WPA/WPA2/WPA3</b>。</li>\n<li>过程：鉴别与密钥协商分两步——先做双向鉴别（家庭网络用预共享密钥 PSK，企业网络用 802.1X/认证服务器），再通过<b>四次握手</b>导出每条会话的加密密钥。</li>\n<li>要点：会话密钥<b>每次连接都不同</b>，避免用同一密钥加密全部流量。</li>\n</ul>\n<h3>4G/5G 的安全</h3>\n<ul>\n<li>移动节点与网络之间基于 <b>SIM 中的共享密钥</b>做双向鉴别与密钥协商（AKA）。</li>\n<li>无线接入段加密，并在核心网内继续用隧道保护用户面数据。</li>\n</ul>",
+                    "tags": [
+                      "协议"
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "s-8-9",
+                "topic": "8.9 运行安全：防火墙与入侵检测",
+                "expanded": false,
+                "detail": "<h3>本节要点</h3>\n<ul>\n<li>防火墙：分组过滤、状态检测、应用网关。</li>\n<li>入侵检测：特征检测与异常检测；IDS 与 IPS 的区别。</li>\n</ul>",
+                "tags": [
+                  "机制"
+                ],
+                "children": [
+                  {
+                    "id": "sec-fw",
+                    "topic": "防火墙",
+                    "expanded": true,
+                    "detail": "<h3>三类防火墙</h3>\n<ul>\n<li><b>分组过滤</b>：按五元组（源/目的 IP、源/目的端口、协议）允许或丢弃，简单但无法识别应用语义。</li>\n<li><b>状态检测</b>：跟踪连接状态，只放行属于已建立连接的回包，弥补纯过滤的漏洞。</li>\n<li><b>应用网关 / 代理</b>：在应用层代答与转发，可做内容级管控，代价是性能与配置复杂度。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  },
+                  {
+                    "id": "sec-ids",
+                    "topic": "入侵检测系统",
+                    "expanded": true,
+                    "detail": "<h3>IDS / IPS</h3>\n<ul>\n<li><b>特征检测</b>：与已知攻击特征库比对，误报低但只能发现已知攻击。</li>\n<li><b>异常检测</b>：先建立正常流量基线，偏离即告警，可发现新攻击但误报率较高。</li>\n<li>部署形态：<b>IDS</b> 只旁路告警；<b>IPS</b> 串接在路径上可直接阻断。</li>\n</ul>",
+                    "tags": [
+                      "机制"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "wlan-book",
+        "topic": "802.11 无线网络",
+        "expanded": true,
+        "detail": "<p>《802.11 无线网络权威指南》第二版（Matthew S. Gast 著，O'Reilly）是本树内容的主要参考书，但本树<strong>按知识主题组织，不是书的目录</strong>：网络架构 → 介质访问控制（MAC）→ 帧格式 → 连接与漫游 → 电源管理 → 物理层 → 安全。</p>\n<ul><li><strong>定位</strong>：协议工程视角的深度知识树；与项目里《计算机网络·自顶向下》第 7 章（无线网络概要）互为补充——本树负责 802.11 的细节，教材负责网络全景。</li><li><strong>阅读顺序</strong>：按知识链 架构 → MAC → 帧 → 连接 → 节能 → 物理 → 安全，或按需直达任一主题。</li><li><strong>术语</strong>：STA（工作站）、AP（接入点）、BSS/IBSS/ESS、CSMA/CA、NAV、IFS、TIM/DTIM、WEP/WPA/802.11i。</li></ul>",
+        "tags": [
+          "读书笔记",
+          "无线",
+          "802.11"
+        ],
+        "children": [
+          {
+            "id": "wlan-01",
+            "topic": "无线网络概述与 802.11 演进",
+            "expanded": true,
+            "detail": "<p>介绍无线网络的分类与 802.11 的定位：无线不等于移动，先分清要解决什么问题再选技术。</p>\n<ul><li><strong>四种移动性</strong>（原书第 1 章）：固定（台式）、游牧（笔记本移动后重连）、便携（移动中不断连）、移动（跨小区无缝切换）。</li><li><strong>无线网络类型</strong>：无线局域网（WLAN，802.11）、无线个人区域网（WPAN，蓝牙）、无线城域网（WMAN，WiMAX）、无线广域网（WWAN，蜂窝）。</li><li><strong>802.11 的承诺</strong>：在 2.4/5 GHz 频段、无执照（ISM）频段提供&quot;看起来像以太网&quot;的局域网接入——对上层表现为一条无线链路。</li></ul>",
+            "tags": [
+              "802.11",
+              "概念"
+            ],
+            "children": [
+              {
+                "id": "wlan-why",
+                "topic": "无线网络分类与选择",
+                "expanded": false,
+                "detail": "<p>无线网络按覆盖范围与移动性分四类，选型先看移动性与速率需求。</p>\n<ul><li><strong>WLAN（802.11）</strong>：覆盖楼宇级（约 100 m），移动性弱，速率高（本书记载时代 1-54 Mbps，802.11n 后数百 Mbps）。</li><li><strong>WPAN（蓝牙/802.15）</strong>：覆盖个人级（约 10 m），低功耗低速。</li><li><strong>WMAN（WiMAX/802.16）</strong>：城域级，曾与 4G 竞争，后边缘化。</li><li><strong>WWAN（蜂窝 4G/5G）</strong>：广域覆盖，移动性最强。</li><li><strong>易错点</strong>：802.11 是&quot;无线<strong>局域网</strong>&quot;，与蜂窝（广域网）的架构哲学完全不同：WLAN 假设&quot;AP 即插即用、频谱免费&quot;，蜂窝假设&quot;运营商集中管理、频谱授权&quot;。</li></ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "wlan-family",
+                "topic": "802.11 协议族演进",
+                "expanded": false,
+                "detail": "<p>802.11 家族是同一套 MAC 上叠加不同物理层的演进史（原书第 1 章 + 后续各物理层章节）。</p>\n<ul><li><strong>802.11（1997 原始）</strong>：1-2 Mbps，物理层可选 FHSS / DSSS / 红外。</li><li><strong>802.11b（1999）</strong>：HR/DSSS，2.4 GHz，最高 11 Mbps（CCK）。</li><li><strong>802.11a（1999）</strong>：OFDM，5 GHz，最高 54 Mbps（先于 b 定稿但后普及）。</li><li><strong>802.11g（2003）</strong>：ERP，2.4 GHz，OFDM 移植，最高 54 Mbps，兼容 b。</li><li><strong>802.11n（2009）</strong>：HT，MIMO + 40 MHz + 帧聚合，理论最高 600 Mbps。</li><li><strong>记忆点</strong>：<strong>MAC 层基本不变，变的只是物理层</strong>——所以学懂&quot;MAC + 帧&quot;一次，物理层各章只需看差异。</li></ul>",
+                "tags": [
+                  "802.11",
+                  "概念"
+                ]
+              },
+              {
+                "id": "wlan-org",
+                "topic": "802.11 标准组织与命名",
+                "expanded": false,
+                "detail": "<p>802.11 由 IEEE 802 委员会下属的 802.11 工作组制定，名称后缀字母表任务。</p>\n<ul><li><strong>IEEE 802</strong>：局域网/城域网标准委员会；802.3 = 以太网、802.11 = 无线局域网。</li><li><strong>命名</strong>：802.11 后加字母表示修订/任务组，如 b/a/g/n/ac/ax；字母不代表发布时间顺序。</li><li><strong>Wi-Fi 联盟</strong>：产业认证组织，负责互操作认证（&quot;Wi-Fi 认证&quot;）与营销名（Wi-Fi 4/5/6 对应 n/ac/ax）。</li><li><strong>易错点</strong>：802.11 是 IEEE 标准名，Wi-Fi 是联盟商标，二者常混用；&quot;802.11x&quot;是泛指不是某个具体标准。</li></ul>",
+                "tags": [
+                  "概念"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "wlan-02",
+            "topic": "802.11 网络架构",
+            "expanded": true,
+            "detail": "<p>802.11 的最小网络单元是<strong>基本服务集（BSS）</strong>：一组工作站与（可选）一个接入点。</p>\n<ul><li><strong>两种拓扑</strong>：独立基本服务集（IBSS，无 AP，Ad Hoc）与基础架构 BSS（有 AP，所有帧经 AP 转发）。</li><li><strong>分布系统（DS）</strong>：把多个 BSS 连成扩展服务集（ESS）的骨干（通常是以太网）。</li><li><strong>关键设计</strong>：MAC 层不区分&quot;无线链路&quot;与&quot;DS&quot;——对上层（LLC）看起来就是一条以太网似的链路。</li><li><strong>移动性三态</strong>：不迁移（固定）、BSS 迁移（漫游换 AP）、ESS 迁移（跨 DS，802.11 只保证尽力而为）。</li></ul>",
+            "tags": [
+              "802.11",
+              "概念"
+            ],
+            "children": [
+              {
+                "id": "wlan-sta",
+                "topic": "STA 工作站",
+                "expanded": false,
+                "detail": "<p>工作站（Station，STA）= 装有无线网卡并接入 802.11 网络的任何设备（笔记本、手机、IoT）。</p>\n<ul><li><strong>组成</strong>：主控（CPU/操作系统） + 无线网卡（含射频收发与 MAC 固件）。</li><li><strong>每个 STA 有 48 位 MAC 地址</strong>，与以太网地址同构（OUI + 厂商分配），是帧寻址的基础。</li><li><strong>状态机</strong>：未认证/未关联 → 已认证/未关联 → 已认证/已关联；只有关联后才能收发数据帧。</li><li><strong>易错点</strong>：STA 的 MAC 地址既是&quot;身份&quot;也是&quot;寻址&quot;，与 IP 地址（位置寻址）职责分离——这是理解 802.11 地址字段的关键。</li></ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "wlan-ap",
+                "topic": "AP 接入点与 DS 分布系统",
+                "expanded": false,
+                "detail": "<p>接入点（Access Point，AP）：基础架构模式下的&quot;无线集线器+网桥&quot;，既是 STA 又是 DS 的入口。</p>\n<ul><li><strong>双重身份</strong>：AP 是一个特殊的 STA（有自己的 MAC 地址），额外提供&quot;把无线帧桥接到 DS（通常以太网）&quot;的能力。</li><li><strong>DS（Distribution System）</strong>：连接各 AP 的骨干网络，帧在 AP 之间经 DS 转发实现 BSS 间通信。</li><li><strong>转发模型</strong>：基础架构 BSS 中，STA 之间<strong>不直接通信</strong>——A→B 的帧先到 AP，再由 AP 转发（哪怕两者在同一 BSS）。</li><li><strong>易错点</strong>：AP 不是&quot;无线交换机&quot;，802.11 帧到 AP 后可能被重新封装/寻址（地址字段变化，见 04 章）。</li></ul>",
+                "tags": [
+                  "概念"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wl-80211-arch",
+                    "caption": "AP/DS 的教材视角"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-bss",
+                "topic": "BSS 基本服务集",
+                "expanded": false,
+                "detail": "<p>基本服务集（Basic Service Set，BSS）：802.11 的基本覆盖单元 = 一个 AP 及其关联的 STA 集合。</p>\n<ul><li><strong>BSSID</strong>：标识 BSS 的 48 位地址，基础架构模式下 = AP 的 MAC 地址（通常）。</li><li><strong>覆盖范围</strong>：BSS 的无线范围即&quot;基本服务区&quot;（BSA），边界由物理层与天线决定，不是规则的圆。</li><li><strong>基础架构 BSS</strong>：有 AP，所有帧经 AP 转发，支持集中管理（节能、漫游、安全）。</li><li><strong>成员关系</strong>：STA 通过&quot;关联&quot;加入 BSS；离开（掉线/去关联）即退出。</li><li><strong>记忆点</strong>：BSSID 之于 BSS ≈ MAC 之于设备，是帧里区分&quot;哪个小区&quot;的钥匙。</li></ul>",
+                "tags": [
+                  "概念"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wl-80211-arch",
+                    "caption": "BSS 是教材 AP 体系的基础单元"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-ibss",
+                "topic": "IBSS 独立基本服务集（Ad Hoc）",
+                "expanded": false,
+                "detail": "<p>独立基本服务集（Independent BSS，IBSS）：无 AP、设备直接互联的 Ad Hoc 网络。</p>\n<ul><li><strong>组成</strong>：≥2 个 STA，互相直接通信，无中心节点、无 DS。</li><li><strong>BSSID</strong>：由发起者随机生成（本地管理位为 1 的 48 位地址），不是任何设备的 MAC。</li><li><strong>时间同步</strong>：无 AP 广播 Beacon，STA 轮值发 Beacon（竞争产生）维持同步。</li><li><strong>适用</strong>：临时会议、文件互传；不可靠（无集中管理、无节能协调）。</li><li><strong>对比</strong>：基础架构 BSS 适合需要管理/互联网接入的场景；IBSS 适合临时对等通信。现在&quot;Wi-Fi Direct&quot;是其商用化演进。</li></ul>",
+                "tags": [
+                  "概念",
+                  "对比"
+                ]
+              },
+              {
+                "id": "wlan-ess",
+                "topic": "ESS 扩展服务集与漫游",
+                "expanded": false,
+                "detail": "<p>扩展服务集（Extended Service Set，ESS）：多个 BSS 经 DS 互联成的&quot;逻辑单个无线局域网&quot;。</p>\n<ul><li><strong>一个 ESSID（网络名）</strong>：所有 BSS 共享同一 SSID，对上层像一个网段（链路层可达）。</li><li><strong>漫游（BSS 迁移）</strong>：STA 在 BSS 间移动时通过<strong>重关联</strong>切换 AP，DS 保证帧转发（尽力而为，不保证无中断）。</li><li><strong>DS 的职责</strong>：把发往&quot;目标不在本地 BSS&quot;的帧转给目标所在 AP（类似以太网交换的转发表）。</li><li><strong>易错点</strong>：ESS 不保证无缝（切换有延迟、可能丢帧）；802.11 里&quot;移动性&quot;是 AP 层的事，路由层（IP）不感知。</li></ul>",
+                "tags": [
+                  "概念"
+                ]
+              },
+              {
+                "id": "wlan-ssid",
+                "topic": "SSID / BSSID / ESSID",
+                "expanded": false,
+                "detail": "<p>三个&quot;名字&quot;要分清：SSID 是给人看的网络名，BSSID 是给机器寻址的小区地址，ESSID 是扩展服务集的 SSID。</p>\n<ul><li><strong>SSID</strong>：0-32 字节的标识符（通常是 ASCII 字符串），在 Beacon 里广播，用于&quot;挑网络&quot;。</li><li><strong>BSSID</strong>：48 位 MAC 地址，标识具体 BSS（基础架构 = AP MAC；IBSS = 随机）。</li><li><strong>ESSID</strong>：ESS 的 SSID，多个 BSS 共用同一个 ESSID 即属同一扩展服务集。</li><li><strong>过滤</strong>：客户端按 SSID 选择网络；可以隐藏 SSID（Beacon 不广播）但<strong>不是安全机制</strong>（探针帧仍泄露）。</li><li><strong>易错点</strong>：同名 SSID 的多个 BSS 是&quot;一个网络多个小区&quot;，靠 BSSID 区分；别把 SSID 当身份认证。</li></ul>",
+                "tags": [
+                  "概念"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wifi",
+                    "caption": "SSID 是教材 7.3 的网络名概念"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "wlan-03",
+            "topic": "介质访问控制（MAC）",
+            "expanded": true,
+            "detail": "<p>802.11 MAC 解决&quot;多台无线设备如何共享同一无线信道&quot;。核心矛盾：<strong>无线是半双工、且无法边发边听</strong>（发送时收不到自己信号），所以以太网式&quot;先听后发 + 冲突检测&quot;（CSMA/CD）不可行。</p>\n<ul><li><strong>方案</strong>：<strong>CSMA/CA</strong>（带冲突避免的载波侦听多路访问）—— 先听后发 + 随机退避 + 确认（ACK）。</li><li><strong>两种协调功能</strong>：DCF（分布式，默认、必选）与 PCF（集中式，可选、几乎未部署）。</li><li><strong>载波侦听 = 物理侦听（能量/解调） + 虚拟侦听（NAV，由 Duration 字段广播预约）</strong>。</li><li><strong>可靠性</strong>：单播帧收方必须回 ACK，发方在 SIFS 内未收到即重传（上层才需要，MAC 自带）。</li><li><strong>教材对照</strong>：自顶向下教材 7.3 的&quot;CSMA/CA&quot;即本 DCF 的概要。</li></ul>",
+            "tags": [
+              "802.11",
+              "机制"
+            ],
+            "children": [
+              {
+                "id": "wlan-dcf",
+                "topic": "DCF 与 CSMA/CA",
+                "expanded": false,
+                "detail": "<p>分布式协调功能（DCF）是 802.11 的默认接入机制，实现 CSMA/CA：<strong>先听后发、退避避让、确认重传</strong>。</p>\n<ul><li><strong>过程</strong>（单播数据帧）：</li></ul>\n<p>1. 侦听信道空闲 ≥ DIFS；</p>\n<p>2. 再等一个随机退避（0~CW 个时隙，每时隙递减）—— 减小碰撞窗口；</p>\n<p>3. 发送数据帧；</p>\n<p>4. 收方在 SIFS 后回 ACK；发方未收到则 CW 翻倍重试。</p>\n<ul><li><strong>为什么不用 CSMA/CD</strong>：无线无法边发边听（自己发送的信号淹没收信机），冲突只能靠&quot;避免+确认&quot;检测。</li><li><strong>隐藏终端</strong>：A 发 B 收时，C 听不到 A（在 A 范围外）仍会发送 → 冲突。靠 RTS/CTS/NAV 缓解。</li><li><strong>对比 CSMA/CD（以太网）</strong>：CD 检测冲突后立即停发并回退；CA 无法检测，只能&quot;尽量错开 + 确认兜底&quot;。</li></ul>",
+                "tags": [
+                  "机制",
+                  "对比"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wifi",
+                    "caption": "教材 7.3 的 CSMA/CA 概要"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "ethernet",
+                    "caption": "CSMA/CD vs CSMA/CA 对比"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-rtscts",
+                    "caption": "RTS/CTS 是 DCF 的隐藏终端解法"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-nav",
+                    "caption": "NAV 是 CSMA/CA 的虚拟侦听"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-ifs",
+                "topic": "帧间间隔 IFS：SIFS/PIFS/DIFS/EIFS",
+                "expanded": false,
+                "detail": "<p>帧间间隔（IFS，InterFrame Space）是 802.11 的<strong>优先级机制</strong>：间隔越短，优先级越高。值随物理层不同（标准参数，本书第 3 章）：</p>\n<ul><li><strong>SIFS</strong>（Short IFS）：最短，留给最高优先级的&quot;对上一帧的直接响应&quot;——ACK、CTS、分片响应。DSSS/HR-DSSS（b/g）为 <strong>10 µs</strong>，OFDM（a）为 <strong>16 µs</strong>。</li><li><strong>PIFS</strong>（PCF IFS）= SIFS + 1 时隙：留给 PCF 轮询（无竞争期起始）。</li><li><strong>DIFS</strong>（DCF IFS）= SIFS + 2 时隙：普通数据帧发送前的最短等待。</li><li><strong>EIFS</strong>（Extended IFS）：收到坏帧后等待更长，避免在&quot;别人可能正在发&quot;时插话。</li><li><strong>时隙（Slot）</strong>：DSSS 20 µs、OFDM 9 µs（退避计数单位，见退避节点）。</li></ul>\n<p><strong>记忆点</strong>：SIFS &lt; PIFS &lt; DIFS &lt; EIFS；ACK 用 SIFS 所以总插队成功——这是&quot;ACK 永远最先回&quot;的机制保证。</p>",
+                "tags": [
+                  "机制",
+                  "计算"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-dcf",
+                    "caption": "IFS 是 DCF 的接入门槛"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-backoff",
+                    "caption": "时隙与退避同属接入时序"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-backoff",
+                "topic": "二进制指数退避",
+                "expanded": false,
+                "detail": "<p>退避（Backoff）：DCF 在信道空闲 DIFS 后仍需等一段随机时间，避免多个站同时发送再次碰撞。</p>\n<ul><li><strong>时隙（Slot Time）</strong>：一次退避计数的单位，物理层相关（DSSS 20 µs，OFDM 9 µs）。</li><li><strong>过程</strong>：随机从 [0, CW] 取一个数，信道空闲一个时隙减 1，忙则冻结计数；减到 0 发送。</li><li><strong>竞争窗口 CW</strong>：初始 CWmin（DSSS 31），发送失败则 CW = 2×CW+1 直至 CWmax（DSSS 1023）；成功后可重置回 CWmin。</li><li><strong>类比</strong>：以太网退避也是指数增长，但 802.11 退避在<strong>发送前</strong>（避免），以太网在<strong>冲突后</strong>（检测）。</li><li><strong>易错点</strong>：退避只在&quot;信道由忙转闲后重新等待&quot;时执行；连续发多帧也需要每帧间退避（除非用分片突发）。</li></ul>",
+                "tags": [
+                  "机制",
+                  "计算"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "ethernet",
+                    "caption": "指数退避：以太网 vs 802.11"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-dcf",
+                    "caption": "退避是 DCF 的冲突避免"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-nav",
+                "topic": "虚拟载波侦听与 NAV",
+                "expanded": false,
+                "detail": "<p>NAV（Network Allocation Vector，网络分配向量）：用<strong>帧头 Duration 字段</strong>预告&quot;信道将被占用多久&quot;，让其他站&quot;假装忙&quot;。</p>\n<ul><li><strong>原理</strong>：每个站维护一个递减计数器 NAV；收到帧（即使不是给自己的）也读 Duration，若大于当前 NAV 则更新。NAV &gt; 0 视为信道忙（虚拟侦听）。</li><li><strong>与物理侦听互补</strong>：物理侦听 = 实际检测信号；虚拟侦听 = 逻辑上&quot;别人预约了&quot;，两相与才是&quot;信道忙&quot;。</li><li><strong>典型用法</strong>：RTS/CTS 握手里，RTS 的 Duration 覆盖 CTS+Data+ACK 全程，CTS 再覆盖 Data+ACK——让<strong>隐藏终端</strong>也知道要等多久。</li><li><strong>记忆点</strong>：NAV 是&quot;借 Duration 字段做分布式预约&quot;，这是 CSMA/CA 解决隐藏终端的关键机制。</li></ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-rtscts",
+                    "caption": "NAV 由 RTS/CTS 的 Duration 设置"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-rtscts",
+                "topic": "RTS/CTS 与隐藏/暴露终端",
+                "expanded": false,
+                "detail": "<p>RTS/CTS 四步握手（RTS → CTS → Data → ACK）用于缓解<strong>隐藏终端</strong>问题，代价是额外开销。</p>\n<ul><li><strong>隐藏终端</strong>：C 在 A 的侦听范围外、但在 B 的范围内。A→B 发送时 C 感知不到，照发 → 在 B 处冲突。A、C 互为&quot;隐藏终端&quot;。</li><li><strong>解决</strong>：A 发 RTS（含 Duration）；B 回 CTS（也含 Duration）；<strong>C 能听到 CTS</strong> → 设置 NAV 等待 A 的整段发送完成。</li><li><strong>暴露终端</strong>（副作用）：C 能听到 A 的 RTS、但听不到 B 的 CTS 时，它被 RTS 吓住不敢发——虽不与本次通信冲突。RTS/CTS 无法完美解决暴露终端。</li><li><strong>阈值</strong>：帧长 ≥ RTS 阈值（默认 2347 字节附近）才用 RTS/CTS；短帧直接发。</li><li><strong>易错点</strong>：RTS/CTS 是&quot;缓解&quot;不是&quot;消除&quot;隐藏终端；且只在 AP 部署协调（分布式下效果打折）。</li></ul>",
+                "tags": [
+                  "机制",
+                  "对比"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-nav",
+                    "caption": "RTS/CTS 预约 NAV"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-pcf",
+                "topic": "PCF 点协调功能",
+                "expanded": false,
+                "detail": "<p>点协调功能（PCF）：可选的<strong>无竞争</strong>接入模式，由 AP（点协调器）集中轮询，保证低时延。</p>\n<ul><li><strong>原理</strong>：AP 周期性进入&quot;无竞争期&quot;（CFP），用 PIFS（短于 DIFS）抢占信道，然后逐个轮询（CF-Poll）已登记 STA；被轮询站用 SIFS 回数据。</li><li><strong>与 DCF 共存</strong>：无竞争期与竞争期交替（Beacon 帧标记 CFP 起点）。</li><li><strong>为什么几乎没部署</strong>：实现复杂、与 DCF 互操作难、轮询效率低；实际产品基本只用 DCF。</li><li><strong>后续</strong>：真正的 QoS 保证由 802.11e（EDCA/HCCA）实现，PCF 已是历史。</li><li><strong>记忆点</strong>：DCF = 民主（各站争抢），PCF = 独裁（AP 点名）；现实中民主获胜。</li></ul>",
+                "tags": [
+                  "机制"
+                ]
+              },
+              {
+                "id": "wlan-frag",
+                "topic": "分段与重组",
+                "expanded": false,
+                "detail": "<p>分段：把高层帧（MSDU）拆成若干小的 MAC 帧（MPDU）分开发，降低单帧在噪声信道上的失败代价。</p>\n<ul><li><strong>动机</strong>：无线误码率高，帧越长失败概率越高；短帧重传成本低。</li><li><strong>触发</strong>：MSDU 超过<strong>分段阈值</strong>（默认 2346 字节，802.11b 常设 512/256）且无 QoS 时拆分。</li><li><strong>过程</strong>：各分片按序发送，每片都要 ACK；分片间用 SIFS 连续传输（信道不释放给他人）。</li><li><strong>重组</strong>：收方按 Sequence Control 的&quot;分片号 + 更多分片位&quot;重组为完整 MSDU 上交。</li><li><strong>易错点</strong>：分片是 MAC 层对 MAC 层（对上层透明）；RTS/CTS 也可保护整组分片（Duration 覆盖全部）。</li></ul>",
+                "tags": [
+                  "机制"
+                ]
+              },
+              {
+                "id": "wlan-tsf",
+                "topic": "时钟同步（TSF）",
+                "expanded": false,
+                "detail": "<p><strong>TSF（Time Synchronization Function）</strong>：BSS 内所有 STA 共享同一个 64 位微秒级定时器，是无线网络中一切&quot;时间对齐&quot;的基础。</p>\n<ul><li><strong>基础架构模式</strong>：AP 在 Beacon 帧里携带自己的 TSF 时间戳，STA 收到后校正本地时钟——全网以 AP 时钟为基准。</li><li><strong>IBSS 模式</strong>：无 AP，各 STA 竞争轮值发送 Beacon（谁先抢到窗口谁发），以&quot;最早到达的 Beacon 时间戳&quot;为准。</li><li><strong>用途</strong>：TIM/DTIM 周期对齐（省电站知道何时醒来）、分片与 SIFS 精确时序、Beacon 间隔维持、TKIP 等加密的防重放计数等。</li><li><strong>易错点</strong>：TSF 是 MAC 层<strong>分布式时钟同步</strong>，只负责&quot;无线网络内部对齐&quot;，不是 NTP——不负责墙上时钟。</li></ul>",
+                "tags": [
+                  "802.11",
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wl-80211-arch",
+                    "caption": "同步是 AP 体系运作基础"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-tim",
+                    "caption": "Beacon 时间戳支撑 TIM 周期"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-qos",
+                "topic": "802.11e 与 EDCA（QoS）",
+                "expanded": false,
+                "detail": "<p><strong>802.11e 增强分布式信道访问（EDCA）</strong>：给不同流量类型分配不同接入优先级，解决语音/视频与普通数据争抢同一信道的问题。</p>\n<ul><li><strong>四类访问类别（AC）</strong>：语音（AC_VO）＞视频（AC_VI）＞尽力而为（AC_BE）＞背景（AC_BK）。</li><li><strong>机制</strong>：每个 AC 独立队列与参数（AIFS、CWmin/CWmax、TXOP）——高优先级 AC 用更短的 AIFS、更小的竞争窗口，获得信道的机会更多。</li><li><strong>TXOP（传输机会）</strong>：一次获得信道后可连续发送多帧，减少反复退避的开销。</li><li><strong>帧承载</strong>：QoS 数据帧带 QoS Control 字段（TID 指示所属 AC）——见「数据帧」节点。</li><li><strong>与 DCF 关系</strong>：EDCA 是 DCF 的&quot;多队列扩展&quot;，仍是分布式竞争（不是 PCF 式集中轮询）；HCCA 是集中式 QoS（少见）。</li><li><strong>易错点</strong>：EDCA 提高的是<strong>优先接入概率</strong>，不是带宽保证；全网拥塞时高优先级也会排队。</li></ul>",
+                "tags": [
+                  "802.11",
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-dcf",
+                    "caption": "EDCA 是 DCF 的多队列扩展"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-f-data",
+                    "caption": "QoS 数据帧承载 TID"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "wlan-04",
+            "topic": "802.11 帧格式",
+            "expanded": true,
+            "detail": "<p>802.11 所有帧共用同一通用格式，类型靠 Frame Control 字段区分。理解帧格式 = 读懂 802.11 的一半。</p>\n<ul><li><strong>通用帧结构</strong>：MAC 头（Frame Control 2B + Duration/ID 2B + 地址 1-4 + Sequence Control 2B）+ 帧体（0-2312B）+ FCS（4B CRC-32）。</li><li><strong>三类帧</strong>：数据帧（Data）、控制帧（Control：RTS/CTS/ACK）、管理帧（Management：Beacon/Probe/Auth/Assoc 等）。</li><li><strong>地址字段的玄机</strong>：4 个地址字段 RA/TA/DA/SA/BSSID 按 ToDS/FromDS 组合取用——无线链路与 DS 的&quot;两跳寻址&quot;由此实现。</li><li><strong>关键字段</strong>：Duration（NAV 预约）、Sequence Control（序号+分片号，重排序/重组）、Frame Control 的 11 个子位。</li><li><strong>教材对照</strong>：自顶向下教材 7.3 的&quot;802.11 帧结构&quot;即本通用格式的简表。</li></ul>",
+            "tags": [
+              "802.11",
+              "机制"
+            ],
+            "children": [
+              {
+                "id": "wlan-frame",
+                "topic": "通用帧格式与 Frame Control",
+                "expanded": false,
+                "detail": "<p>Frame Control（2 字节）是每帧的第一个字段，11 个标志位决定帧的解读方式。</p>\n<ul><li><strong>协议版本</strong>（2 位）：恒为 0（兼容）。</li><li><strong>类型</strong>（2 位）+ <strong>子类型</strong>（4 位）：00=管理、01=控制、10=数据；子类型细分（如 Beacon=1000）。</li><li><strong>ToDS / FromDS</strong>（各 1 位）：指示帧是否&quot;发往/来自分布系统&quot;——决定 4 个地址字段的语义（见地址节点）。</li><li><strong>More Fragments</strong>：还有后续分片；<strong>Retry</strong>：重传帧（收方去重用）；<strong>Pwr Mgt</strong>：发方将进入省电模式；<strong>More Data</strong>：AP 还有缓存帧要发；<strong>Protected</strong>：帧体已加密（WEP/WPA）；<strong>Order</strong>：严格有序传输。</li><li><strong>记忆点</strong>：类型(2)+子类型(4) 组合 ≈ &quot;帧的名片&quot;，ToDS/FromDS 是&quot;寻址的开关&quot;。</li></ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wl-80211-frame",
+                    "caption": "教材帧结构简表"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-f-addr",
+                    "caption": "Frame Control 决定地址语义"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-f-addr",
+                "topic": "地址字段与 ToDS/FromDS",
+                "expanded": false,
+                "detail": "<p>帧头有 4 个 48 位地址字段，实际用几个、各代表谁，由 <strong>ToDS/FromDS 组合</strong>决定（地址 1 永远是&quot;接收者&quot;RA）。</p>\n<ul><li><strong>基础架构数据帧</strong>（ToDS=1, FromDS=0，STA→AP）：地址1=AP（BSSID）、地址2=发 STA（TA/SA）、地址3=目的 STA（DA）；地址4 不用。</li><li><strong>AP→STA</strong>（ToDS=0, FromDS=1）：地址1=收 STA（DA）、地址2=AP（BSSID/TA）、地址3=源 STA（SA）。</li><li><strong>AP↔AP 经 DS</strong>（ToDS=1, FromDS=1）：四个地址全用：RA(目的AP)、TA(源AP)、DA(最终目的)、SA(最终源)。</li><li><strong>控制/管理帧</strong>：无 DA/SA 概念（如 ACK 只有 RA=目标，CTS 只有 RA=本机）。</li><li><strong>易错点</strong>：<strong>每跳 MAC 地址都在变</strong>（RA/TA 每跳更新，DA/SA 端到端不变）——这就是 802.11 与以太网寻址最大的不同。</li></ul>",
+                "tags": [
+                  "机制",
+                  "计算"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wl-80211-frame",
+                    "caption": "四地址语义补教材简表"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-f-data",
+                    "caption": "数据帧按 ToDS/FromDS 寻址"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-f-data",
+                "topic": "数据帧",
+                "expanded": false,
+                "detail": "<p>数据帧承载 LLC 数据（IP 包）或承载上层管理（如 EAPOL）。</p>\n<ul><li><strong>结构</strong>：MAC 头 + 帧体（LLC/SNAP 封装，如 EtherType=IP）+ FCS；加密时 Protected 位置位、帧体加密。</li><li><strong>QoS 数据帧</strong>（802.11e 起）：Frame Control 复用子类型 1000/1001，额外带 2 字节 QoS Control（TID 流量标识 + 队列编号），支持 EDCA 分队列调度。</li><li><strong>Null 功能帧</strong>：空帧体数据帧，只用于<strong>通知 AP 自己将进入省电</strong>（Pwr Mgt 位置位）或保活。</li><li><strong>易错点</strong>：数据帧不一定是&quot;数据&quot;——Null 帧、QoS Null 都是数据帧子类型；判类型先看子类型再看帧体。</li></ul>",
+                "tags": [
+                  "机制"
+                ]
+              },
+              {
+                "id": "wlan-f-ctrl",
+                "topic": "控制帧：RTS/CTS/ACK",
+                "expanded": false,
+                "detail": "<p>控制帧辅助数据传输的进行（预约信道、确认收包），无帧体、无 DA/SA。</p>\n<ul><li><strong>RTS</strong>（20 字节）：RA=目标 STA、TA=本机、Duration=本段交换预计时长（含 CTS+Data+ACK）。预约信道。</li><li><strong>CTS</strong>（14 字节）：RA=发 RTS 者；Duration=RTS 的 Duration 减 SIFS+CTS 时间。通知隐藏终端等待。</li><li><strong>ACK</strong>（14 字节）：RA=上帧发送者；收对单播数据帧的确认。</li><li><strong>其他</strong>：PS-Poll（省电站取帧）、CF-End（结束无竞争期）等。</li><li><strong>记忆点</strong>：控制帧只有&quot;接收者地址&quot;，没有&quot;源地址&quot;——因为它的响应者身份由上下文（刚收到的帧）决定。</li></ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-rtscts",
+                    "caption": "RTS/CTS/ACK 是控制帧"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-nav",
+                    "caption": "控制帧的 Duration 设 NAV"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-f-mgmt",
+                "topic": "管理帧类型",
+                "expanded": false,
+                "detail": "<p>管理帧用于建立与维护连接（发现、认证、关联、电源管理），帧体为管理信息元素（IE）。</p>\n<ul><li><strong>Beacon</strong>：周期性广播，携带 SSID、支持速率、能力（含 TIM 字段用于省电）、BSSID——&quot;网络的名片&quot;。</li><li><strong>Probe Request / Response</strong>：主动扫描——客户端发 Probe 询问&quot;这里有网络吗&quot;，AP 回 Probe Response（含 Beacon 的信息）。</li><li><strong>Authentication</strong>（1-4）：开放系统（2 步）或共享密钥（4 步，WEP 时代）。</li><li><strong>Association / Reassociation</strong>（Req/Resp）：关联入 BSS / 漫游时切换 AP；帧内含支持速率、SSID 等。</li><li><strong>Deauthentication / Disassociation</strong>：终结认证/关联。</li><li><strong>记忆点</strong>：管理帧 = 无线连接的&quot;建立/拆除协议&quot;；Beacon/Probe 管发现，Auth/Assoc 管加入。</li></ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-scan",
+                    "caption": "Beacon/Probe 实现扫描"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-assoc",
+                    "caption": "关联请求是管理帧"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-tim",
+                    "caption": "TIM 携带在 Beacon 中"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-tsf",
+                    "caption": "Beacon 携带 TSF 时间戳"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "wlan-05",
+            "topic": "连接建立与漫游",
+            "expanded": true,
+            "detail": "<p>一个 STA 从&quot;开机&quot;到&quot;能上网&quot;要过三关：<strong>扫描（发现网络）→ 认证（身份确认）→ 关联（挂上 AP）</strong>。</p>\n<ul><li><strong>扫描</strong>：被动（听 Beacon）或主动（发 Probe 等回复），得到候选网络列表。</li><li><strong>认证</strong>：802.11 层面的认证（开放系统几乎不设防；共享密钥是 WEP 时代的选项；真正的安全靠 802.1X/802.11i，见第 8 章）。</li><li><strong>关联</strong>：向选定 AP 发 Association Request，AP 同意后进入&quot;已关联&quot;状态——此时才能收发数据。</li><li><strong>重关联</strong>：漫游时向新 AP 发 Reassociation Request（带旧 AP 地址），新 AP 经 DS 通知旧 AP 移交缓存帧。</li><li><strong>易错点</strong>：802.11 的&quot;认证&quot;≠ 用户身份认证（WPA2/企业认证在上层）；两个词同名不同义。</li></ul>",
+            "tags": [
+              "802.11",
+              "机制"
+            ],
+            "children": [
+              {
+                "id": "wlan-scan",
+                "topic": "扫描：被动与主动",
+                "expanded": false,
+                "detail": "<p>扫描 = 发现周围有哪些 BSS。两种方式：被动听、主动问。</p>\n<ul><li><strong>被动扫描</strong>：在每个信道上停留一段时间，监听 Beacon 帧（AP 默认 100 ms 一发的网络名片）。省电（收即可），但慢（要等 Beacon 周期）。</li><li><strong>主动扫描</strong>：发 Probe Request（广播地址），AP 收到回 Probe Response；可立即知道每个信道有没有网络。快，但多一次发送。</li><li><strong>信道列表</strong>：2.4 GHz 有 14 个信道（1-13 常用，14 日本专属）；5 GHz 更多；扫完再回工作信道。</li><li><strong>结果</strong>：候选 BSS 列表（SSID/BSSID/信号强度/支持速率），供用户或自动逻辑选择。</li><li><strong>对比</strong>：被动=被动等人招呼（适合守株待兔/省电），主动=敲门问有没有人（适合快速建连）。</li></ul>",
+                "tags": [
+                  "机制",
+                  "对比"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wifi",
+                    "caption": "连接流程是教材 7.3 概述的一部分"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-auth",
+                    "caption": "扫描后进入认证"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-auth",
+                "topic": "认证：开放系统与共享密钥",
+                "expanded": false,
+                "detail": "<p>802.11 的&quot;认证&quot;是<strong>链路层接入许可</strong>，不是身份验证。两种老机制：</p>\n<ul><li><strong>开放系统认证（Open System）</strong>：2 步——STA 发 Auth 请求，AP 回 Auth 响应（默认成功）。<strong>零防护</strong>，只是形式。</li><li><strong>共享密钥认证（Shared Key）</strong>：4 步——AP 发挑战文本（128 字节随机），STA 用 WEP 密钥加密回传，AP 解密比对。看似强，实则比开放系统<strong>更不安全</strong>（暴露了明文-密文对，助破解 WEP）。</li><li><strong>现代真相</strong>：真实安全靠 802.1X/EAP（企业）或 PSK+802.11i 四次握手（个人）——本节的 Auth 只是&quot;能不能接入无线链路&quot;的前置握手。</li><li><strong>易错点</strong>：看到&quot;已认证但未关联&quot;别惊讶——认证与关联是两回事（认证通过 ≠ 能传数据）。</li></ul>",
+                "tags": [
+                  "机制",
+                  "对比"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-assoc",
+                    "caption": "认证先于关联"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-sec-8021x",
+                    "caption": "链路认证 vs 802.1X 真认证"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-assoc",
+                "topic": "关联与重关联",
+                "expanded": false,
+                "detail": "<p>关联（Association）= 把 STA 挂到一个 BSS 上，AP 为其分配资源、开始转发帧。关联成功前不能发数据。</p>\n<ul><li><strong>Association Request</strong>：STA → AP，携带 SSID、支持速率、能力位。</li><li><strong>Association Response</strong>：AP → STA，带关联 ID（AID，1-2007）与结果；成功后 STA 加入 BSS。</li><li><strong>Reassociation</strong>：STA 移到新 AP 覆盖时用——Request 里带<strong>旧 AP 地址</strong>；新 AP 通知旧 AP（经 DS）把该 STA 的缓存帧转过来，实现平滑迁移。</li><li><strong>状态迁移</strong>：未认证/未关联 → 已认证/未关联 → 已认证/已关联。数据帧只在&quot;已关联&quot;后收发。</li><li><strong>记忆点</strong>：关联 ≈ &quot;登录 AP 的会话建立&quot;；重关联 ≈ &quot;换 AP 的会话移交&quot;。</li></ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-roam",
+                    "caption": "重关联实现漫游"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-roam",
+                "topic": "漫游过程",
+                "expanded": false,
+                "detail": "<p>漫游（Roaming）= STA 在多个 AP 覆盖间移动时，从旧 AP 切换到新 AP，保持（尽力而为的）连接。</p>\n<ul><li><strong>触发</strong>：信号变差（或 AP 负载/管理策略）→ 触发扫描/重关联。</li><li><strong>过程</strong>：扫描找新 AP → 认证 → <strong>重关联（带旧 AP 地址）</strong> → 新 AP 经 DS 让旧 AP 移交数据 → 继续收发。</li><li><strong>透明性</strong>：对上层（IP）透明——MAC 地址不变，IP 地址不变；但切换期间可能丢帧/延迟（毫秒到百毫秒级）。</li><li><strong>边界</strong>：跨 ESS（不同 DS/不同子网）时 802.11 不管 IP 层移动性（那是移动 IP / 网络层的事）。</li><li><strong>易错点</strong>：漫游是&quot;BSS 迁移&quot;，别与 IBSS/蜂窝切换混为一谈；802.11 只保证链路层尽力而为。</li></ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "mob-principle",
+                    "caption": "漫游是 BSS 级移动管理"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "wlan-06",
+            "topic": "电源管理",
+            "expanded": true,
+            "detail": "<p>无线设备多为电池供电，802.11 的省电核心：<strong>让 STA 大部分时间睡觉，AP 替它收帧缓存，睡醒再取</strong>。</p>\n<ul><li><strong>基本思想</strong>：STA 告诉 AP&quot;我要睡了&quot;（Pwr Mgt 位置位的 Null 帧）；AP 缓存发给它的单播帧；STA 周期性醒来听 Beacon 里的 TIM，有货就 PS-Poll 取。</li><li><strong>多播/广播</strong>：AP 按 DTIM 周期发送，睡眠站需在 DTIM Beacon 后醒来接收。</li><li><strong>代价</strong>：省电 = 增加时延（等下一个 Beacon/TIM）；低时延应用可关掉省电（Always Awake）。</li><li><strong>机制关键</strong>：TIM（单播指示位图）与 DTIM（广播指示）都在 Beacon 里广播，STA 只需醒那一刻听 Beacon。</li></ul>",
+            "tags": [
+              "802.11",
+              "机制"
+            ],
+            "children": [
+              {
+                "id": "wlan-psm",
+                "topic": "电源管理模式（PSM）",
+                "expanded": false,
+                "detail": "<p>电源管理（Power Save Mode，PSM）：STA 主动休眠，由 AP 暂存发往它的帧。</p>\n<ul><li><strong>进入省电</strong>：STA 发一帧 Pwr Mgt=1 的（Null）数据帧通知 AP；AP 收到后开始缓存该 STA 的单播帧，并在 TIM 里置位。</li><li><strong>休眠</strong>：STA 关闭射频（Doze），按 Beacon 间隔周期性醒来听 Beacon。</li><li><strong>TIM 检查</strong>：Beacon 里的 TIM（Traffic Indication Map）是位图，第 i 位 = AID=i 的 STA 有缓存帧。</li><li><strong>取帧</strong>：有货 → STA 发 PS-Poll → AP 回一帧（More Data 位指示是否还有）。</li><li><strong>易错点</strong>：省电只省&quot;射频收发&quot;，醒来听 Beacon 本身也耗电；TIM 位图是&quot;有没有货&quot;不是&quot;货在哪个帧&quot;。</li></ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-tim",
+                    "caption": "省电靠 TIM 唤醒"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-tim",
+                "topic": "Beacon 与 TIM/DTIM",
+                "expanded": false,
+                "detail": "<p>Beacon 帧是省电的&quot;闹钟与邮箱指示器&quot;，TIM/DTIM 是其中两个关键信息元素。</p>\n<ul><li><strong>Beacon 周期</strong>：AP 每 100 ms（可配）广播一次，含时间戳、SSID、能力、<strong>TIM 元素</strong>。</li><li><strong>TIM（Traffic Indication Map）</strong>：位图，标记哪些省电 STA 有缓存单播帧（按 AID 位索引）。</li><li><strong>DTIM（Delivery TIM）</strong>：TIM 的一种特殊周期（如每 3 个 Beacon 一次），DTIM Beacon 后 AP 会发送<strong>缓存的广播/多播帧</strong>——省电站必须在 DTIM 周期醒来接收广播。</li><li><strong>监听间隔（Listen Interval）</strong>：STA 关联时上报&quot;每 N 个 Beacon 醒来一次&quot;；AP 据此决定缓存时长（缓存超时会丢帧）。</li><li><strong>记忆点</strong>：TIM=单播有货清单；DTIM=广播投递时刻表；Beacon=载体。</li></ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-ps-poll",
+                    "caption": "TIM 有货后 PS-Poll 取帧"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-ps-poll",
+                "topic": "PS-Poll 取帧过程",
+                "expanded": false,
+                "detail": "<p>PS-Poll 是省电站从 AP 取回缓存单播帧的控制帧。</p>\n<ul><li><strong>时序</strong>：STA 醒来发现 TIM 置位 → 发 PS-Poll（RA=AP）→ AP 在 SIFS 后回<strong>一帧</strong>缓存数据（More Data=0 表示取完）。</li><li><strong>逐帧取</strong>：一帧一取；还有货（More Data=1）则 STA 再发 PS-Poll（或 AP 用 ACK+立即发送优化——802.11e 起有 Unscheduled Automatic Power Save Delivery，U-APSD 更高效）。</li><li><strong>边界</strong>：AP 在缓存期间若 STA 没按监听间隔来取，缓存帧可能被丢弃（上层重传兜底）。</li><li><strong>记忆点</strong>：PS-Poll = &quot;我有货吗？有就发我第一件&quot;——确认式按需拉取，不是 AP 主动推。</li></ul>",
+                "tags": [
+                  "机制"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "wlan-07",
+            "topic": "物理层技术",
+            "expanded": true,
+            "detail": "<p>物理层决定&quot;比特如何在无线电波上传输&quot;。802.11 各代的主要差异全在物理层，MAC 层基本不变。</p>\n<ul><li><strong>频段</strong>：2.4 GHz（ISM，全球可用，干扰多）与 5 GHz（U-NII，频段宽干扰少）。</li><li><strong>扩频家族</strong>：FHSS（跳频）、DSSS（直接序列）、HR/DSSS（CCK）、OFDM（多载波）、ERP（2.4G 上的 OFDM）、HT（MIMO+40MHz）。</li><li><strong>核心概念</strong>：调制（BPSK/QPSK/16-QAM/64-QAM）、编码率（1/2~3/4）、信道带宽（20/40 MHz）、每符号比特数——速率 = 符号率 × 每符号比特 × 编码率。</li><li><strong>速率进化</strong>：1-2（FHSS/DSSS）→ 11（b）→ 54（a/g）→ 600（n 理论）。</li><li><strong>易错点</strong>：标称速率是物理层&quot;峰值&quot;，实际吞吐约一半（MAC 开销、退避、确认）。</li></ul>",
+            "tags": [
+              "802.11",
+              "概念"
+            ],
+            "children": [
+              {
+                "id": "wlan-phy-basic",
+                "topic": "射频与扩频基础",
+                "expanded": false,
+                "detail": "<p>射频基础 + 为什么用扩频：让无执照频段的无线通信抗干扰、抗多径。</p>\n<ul><li><strong>ISM 频段</strong>：2.4 GHz 无需授权，微波炉/蓝牙/无线电话同频共存——802.11 必须能&quot;在噪声里活下来&quot;。</li><li><strong>扩频动机</strong>：把窄带信号扩展到宽带，增益抗窄带干扰、抗多径衰落（书第 9 章原理）。</li><li><strong>三类扩频</strong>：跳频（FHSS，频率跳跃）、直接序列（DSSS，码片扩展）、正交频分复用（OFDM，多子载波并行）。</li><li><strong>天线基础</strong>：增益、方向性；分集（多天线选优）为 MIMO 铺垫。</li><li><strong>记忆点</strong>：2.4 GHz 是&quot;公共频段&quot;，所以 802.11 物理层设计的出发点之一 = 抗干扰与共存。</li></ul>",
+                "tags": [
+                  "概念"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wl-char",
+                    "caption": "无线链路特征（SNR/多径）"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-phy-fhss",
+                "topic": "FHSS 跳频扩频（1/2 Mbps）",
+                "expanded": false,
+                "detail": "<p>跳频扩频（Frequency-Hopping Spread Spectrum，FHSS）：按伪随机序列在 79 个 1 MHz 信道上快速跳变。</p>\n<ul><li><strong>参数</strong>（802.11 原始）：2.4 GHz 频段分 79 个 1 MHz 信道，跳频速率 2.5 跳/秒（每信道停留 400 ms），GFSK 调制，速率 1/2 Mbps。</li><li><strong>抗干扰</strong>：窄带干扰只影响部分跳频信道；多径不易同时衰落所有信道。</li><li><strong>共存</strong>：不同跳频序列可并行（同频段多网），但吞吐随跳频冲突下降。</li><li><strong>衰落</strong>：速率低，随后被 DSSS 取代；蓝牙沿用 FHSS 思想。</li><li><strong>易错点</strong>：FHSS 的&quot;扩频增益&quot;来自跳变不是带宽展宽；它和 DSSS 不能共存于同一信道规划（本可，但实现上分离）。</li></ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-phy-dsss",
+                    "caption": "两套扩频方案对比"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-phy-dsss",
+                "topic": "DSSS 直接序列扩频（1/2 Mbps）",
+                "expanded": false,
+                "detail": "<p>直接序列扩频（Direct-Sequence Spread Spectrum，DSSS）：每个数据比特用 11 个码片（Barker 码）展宽传输。</p>\n<ul><li><strong>码片</strong>：<strong>11 Mchip/s 码片率</strong>，1 数据比特 → 11 码片（Barker 序列 10110111000），占用带宽约 22 MHz。</li><li><strong>调制</strong>：1 Mbps = DBPSK（每符号 1 比特），2 Mbps = DQPSK（每符号 2 比特）——码片率不变，靠每符号比特数翻倍提速。</li><li><strong>抗干扰</strong>：处理增益约 10.4 dB（11 倍展宽），窄带干扰被摊薄。</li><li><strong>信道</strong>：2.4 GHz 划分 14 个信道（间隔 5 MHz，实际只有 1/6/11 互不重叠）。</li><li><strong>易错点</strong>：DSSS 的&quot;1/2 Mbps&quot;是 11 Mchip/s 码片率下 DBPSK/DQPSK 的数据率；与 FHSS 是两套独立物理层，不可混用。</li></ul>",
+                "tags": [
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wl-cdma",
+                    "caption": "扩频思想：DSSS 与 CDMA 同源"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-phy-cck",
+                    "caption": "CCK 是 DSSS 的高速演进"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-phy-cck",
+                "topic": "HR/DSSS（802.11b：CCK 11 Mbps）",
+                "expanded": false,
+                "detail": "<p>高速率 DSSS（HR/DSSS，802.11b）：把码片从 Barker 换成 CCK 补码键控，2.4 GHz 速率提到 5.5/11 Mbps。</p>\n<ul><li><strong>CCK（Complementary Code Keying）</strong>：8 个码片组成的互补码字集；11 Mbps 用 64 个码字（每符号 8 比特，DQPSK 调制 2 比特相位 + 6 比特码字），5.5 Mbps 用 16 个码字。</li><li><strong>调制</strong>：QPSK/DQPSK + CCK；可选 PBCC（包二进制卷积码，厂家扩展）。</li><li><strong>速率集</strong>：1/2（Barker 回退）+ 5.5/11（CCK）。</li><li><strong>信道</strong>：仍 14 信道、1/6/11 不重叠；与前向兼容 DSSS 设备。</li><li><strong>易错点</strong>：11 Mbps 是&quot;每符号 8 比特 × 1.375 MS/s&quot;；b 的高速率靠码字集扩容，不是带宽翻倍。</li></ul>",
+                "tags": [
+                  "协议",
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-phy-erp",
+                    "caption": "11g 兼容 11b（保护机制）"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-phy-ofdm",
+                "topic": "OFDM（802.11a：54 Mbps @ 5 GHz）",
+                "expanded": false,
+                "detail": "<p>正交频分复用（OFDM，802.11a）：52 个正交子载波并行传输，5 GHz 频段实现最高 54 Mbps。</p>\n<ul><li><strong>子载波</strong>：20 MHz 信道分 64 个子载波，其中 52 个有效（48 数据 + 4 导频）；导频用于频偏校正。</li><li><strong>调制+编码率组合</strong>：BPSK(1/2,3/4) → QPSK(1/2,3/4) → 16-QAM(1/2,3/4) → 64-QAM(2/3,3/4)；速率 6/9/12/18/24/36/48/54 Mbps。</li><li><strong>OFDM 优势</strong>：多径衰落只影响个别子载波（可纠错吸收）；频谱利用率高。</li><li><strong>5 GHz 频段</strong>：U-NII 三个子频段，信道间隔 20 MHz；频段宽、干扰少（相对 2.4 GHz）。</li><li><strong>易错点</strong>：54 Mbps 是 64-QAM 3/4 编码率的峰值；多径鲁棒来自&quot;并行慢符号&quot;，不是更高的每载波速率。</li></ul>",
+                "tags": [
+                  "协议",
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wl-char",
+                    "caption": "OFDM 抗多径与教材 7.2"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-phy-erp",
+                    "caption": "11g 移植 OFDM 到 2.4 GHz"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-phy-ht",
+                    "caption": "HT 是 OFDM 的演进"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-phy-erp",
+                "topic": "ERP（802.11g：54 Mbps @ 2.4 GHz）",
+                "expanded": false,
+                "detail": "<p>扩展速率物理层（ERP，802.11g）：把 OFDM 搬到 2.4 GHz，同时向后兼容 b（CCK）设备。</p>\n<ul><li><strong>速率</strong>：保留 b 的 1/2/5.5/11（CCK/DSSS）+ 新增 a 的 OFDM 速率（最高 54 Mbps @ 2.4 GHz）。</li><li><strong>混合模式保护</strong>（关键）：b 设备听不懂 OFDM——g 网里混有 b 设备时，g AP 用两种机制保护 OFDM 传输：</li><li><strong>RTS/CTS 或 CTS-to-self</strong>：先发一个 b 听得懂的 RTS/CTS，把信道预约住（NAV），再传 OFDM 帧；</li><li><strong>ERP 信息元素</strong>：Beacon 里声明保护模式（Use Protection 位）。</li><li><strong>ERP-DSSS/CCK 与 ERP-OFDM</strong>：两种速率族共存于同一 BSS，靠保护机制调度。</li><li><strong>易错点</strong>：g 的&quot;54 Mbps&quot;在有 b 设备混合时会因保护开销大打折扣——纯 g 网络才能全速。</li></ul>",
+                "tags": [
+                  "协议",
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-phy-cck",
+                    "caption": "保护机制针对 b 设备"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-phy-ht",
+                "topic": "HT（802.11n：MIMO/40MHz/帧聚合）",
+                "expanded": false,
+                "detail": "<p>高吞吐量（HT，802.11n）：MIMO 空间复用 + 更宽信道 + 帧聚合，2.4/5 GHz 理论最高 600 Mbps。</p>\n<ul><li><strong>MIMO</strong>：多天线同时传多个空间流（最多 4×4）；用空间维并行，不改带宽——&quot;多流并行&quot;是吞吐翻倍主因。</li><li><strong>信道</strong>：可选 40 MHz（两个 20 MHz 绑定），子载波 52→108；短保护间隔 400 ns。</li><li><strong>帧聚合</strong>：<strong>A-MSDU</strong>（多个上层帧拼一个 MAC 帧）与 <strong>A-MPDU</strong>（多个 MAC 帧拼一个物理帧）——减少每帧的退避/确认/前导开销，这是实际吞吐提升的关键之一。</li><li><strong>速率表</strong>：空间流 × 调制 × 编码率 × 信道/GI 组合出几十档速率（MCS 索引）。</li><li><strong>兼容</strong>：混合模式（b/g/a 共存）靠保护机制与 HT 信息元素。</li><li><strong>易错点</strong>：600 Mbps 是 4 流 40MHz 短 GI 的理论值；单流 20MHz 实际约 65 Mbps 峰值。</li></ul>",
+                "tags": [
+                  "协议",
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-f-data",
+                    "caption": "帧聚合改变数据帧传输"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-qos",
+                    "caption": "聚合与 QoS 配合降低开销"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-channels",
+                "topic": "信道规划与部署实践",
+                "expanded": false,
+                "detail": "<p>部署多个 AP 时如何安排信道，减少同频干扰——2.4 GHz 与 5 GHz 规则完全不同。</p>\n<ul><li><strong>2.4 GHz</strong>：14 个信道（间隔 5 MHz），但每个 DSSS/CCK 信道实际占约 22 MHz——<strong>只有 1/6/11（或 2/7/12、3/8/13）三组互不重叠</strong>。</li><li><strong>5 GHz</strong>：OFDM 信道间隔 20 MHz，U-NII 各频段可用信道多，重叠问题小得多。</li><li><strong>规划原则</strong>：相邻 AP 用不重叠信道（1/6/11 三色法）；同频 AP 拉开距离或降低功率。</li><li><strong>干扰来源</strong>：邻近 AP 同频/邻频、蓝牙与微波炉（2.4 GHz 共存）、802.11n 的 40 MHz 绑定在 2.4 GHz 更易冲突。</li><li><strong>易错点</strong>：&quot;信道越多越好&quot;是误区——2.4 GHz 实际只有 3 个不重叠信道；带宽与信道宽度需权衡（40 MHz 吞吐高但邻网代价大）。</li></ul>",
+                "tags": [
+                  "802.11",
+                  "概念"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-phy-cck",
+                    "caption": "1/6/11 由 22MHz 信道宽度决定"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-phy-ofdm",
+                    "caption": "5 GHz 信道规划"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "wlan-08",
+            "topic": "无线网络安全",
+            "expanded": true,
+            "detail": "<p>无线安全演进：WEP（被打穿）→ WPA（过渡补丁）→ 802.11i/RSN（WPA2，现代基线）。</p>\n<ul><li><strong>攻击面</strong>：无线信道开放，任何人可窃听/注入/篡改；安全三目标 = 机密性（加密）、完整性（防篡改）、认证（防冒名）。</li><li><strong>WEP</strong>：RC4 流密码 + CRC-32 完整性；IV 重用与弱密钥使其可被数分钟破解——已废弃。</li><li><strong>WPA（TKIP）</strong>：RC4 保留 + 每包密钥 + 消息完整性码（Michael）+ 计数器防重放；是硬件约束下的过渡方案。</li><li><strong>802.11i/RSN（WPA2）</strong>：CCMP（AES-CTR + CBC-MAC）+ 802.1X/EAP（企业）或 PSK（个人）+ 四次握手派生密钥；现代 Wi-Fi 安全基线。</li><li><strong>后续</strong>：WPA3/SAE 是 RSN 的后继，本书（2005）未覆盖。</li></ul>",
+            "tags": [
+              "802.11",
+              "安全"
+            ],
+            "children": [
+              {
+                "id": "wlan-sec-wep",
+                "topic": "WEP：RC4 加密与弱点",
+                "expanded": false,
+                "detail": "<p>有线等效保密（Wired Equivalent Privacy，WEP）：第一代 802.11 加密，现已彻底废弃。</p>\n<ul><li><strong>组成</strong>：RC4 流密码加密帧体 + CRC-32（ICV）完整性校验；密钥 40 或 104 位。</li><li><strong>过程</strong>：24 位 IV + 密钥 → RC4 生成密钥流 → 明文⊕密钥流 → 密文；ICV 附在明文后一并加密。</li><li><strong>致命弱点</strong>：</li></ul>\n<p>1. <strong>IV 只有 24 位</strong>，高流量下必然重用 → 密钥流重用 → 可解出明文；</p>\n<p>2. <strong>RC4 弱密钥</strong>（IV 注入攻击，Fluhrer 等）→ 数分钟恢复密钥；</p>\n<p>3. <strong>CRC-32 是线性校验</strong>，不抗篡改（可翻转比特并修正 ICV）。</p>\n<ul><li><strong>结论</strong>：WEP 在 2001 年已被实证破解；共享密钥认证还额外泄露明文-密文对。</li><li><strong>记忆点</strong>：WEP 的三宗罪 = IV 太短、RC4 弱密钥、CRC 非密码学完整。</li></ul>",
+                "tags": [
+                  "安全",
+                  "协议"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "sec-wlan",
+                    "caption": "教材 8.8 的 WEP 概览"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-sec-wpa",
+                    "caption": "TKIP 是 WEP 的补丁"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-sec-8021x",
+                "topic": "802.1X 认证框架",
+                "expanded": false,
+                "detail": "<p>802.1X：端口级访问控制框架，把&quot;无线接入&quot;与&quot;用户认证&quot;分离——企业 Wi-Fi 的认证骨架。</p>\n<ul><li><strong>三方角色</strong>：请求者（STA/客户端）→ 认证者（AP，受控/未受控端口）→ 认证服务器（RADIUS）。</li><li><strong>EAP（Extensible Authentication Protocol）</strong>：认证方法在 EAP 里跑（EAP-TLS、PEAP、EAP-TTLS、EAP-MSCHAPv2 等），可换方法不换框架。</li><li><strong>端口模型</strong>：未受控端口只放行 EAP 帧；认证成功后才打开受控端口放行数据。</li><li><strong>密钥派生</strong>：认证成功后由 EAP 产生主密钥（MSK/PMK）供 802.11i 四次握手使用。</li><li><strong>易错点</strong>：802.1X 是&quot;框架+端口&quot;，不是某一种认证方法；RADIUS 是服务器协议不是 EAP 方法。</li></ul>",
+                "tags": [
+                  "安全",
+                  "机制"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "sec-auth",
+                    "caption": "链路认证框架 vs 端点鉴别"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-sec-rsn",
+                    "caption": "四次握手用 802.1X 派生 PMK"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-sec-wpa",
+                "topic": "WPA：TKIP 过渡方案",
+                "expanded": false,
+                "detail": "<p>Wi-Fi 保护接入（WPA）：在 WEP 硬件（RC4）之上打的&quot;安全补丁&quot;，作为 802.11i 定稿前的过渡。</p>\n<ul><li><strong>TKIP（Temporal Key Integrity Protocol）</strong>：</li><li><strong>每包密钥</strong>：RC4 密钥 = 基础密钥 + 每包混合（IV 与 MAC 地址混合）→ 消除 WEP 的密钥流重用；</li><li><strong>扩展 IV</strong>：48 位 IV + 计数器 → 防重放；</li><li><strong>MIC（Michael）</strong>：弱消息完整性码，防篡改（TKIP 下 WEP 的 CRC 完整性不足）。</li><li><strong>认证</strong>：PSK（个人，预共享密钥）或 802.1X/EAP（企业）→ 派生 PMK。</li><li><strong>地位</strong>：向下兼容 WEP 硬件的过渡方案；性能与安全仍受 RC4 限制。</li><li><strong>记忆点</strong>：TKIP = 给 WEP 的 RC4 装上了&quot;每包密钥 + 计数器 + MIC&quot;三件套。</li></ul>",
+                "tags": [
+                  "安全",
+                  "协议"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "sec-wlan",
+                    "caption": "教材 8.8 的 WPA 概览"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-sec-rsn",
+                    "caption": "WPA 是 802.11i 的过渡"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-sec-rsn",
+                "topic": "802.11i/RSN：CCMP 与四次握手",
+                "expanded": false,
+                "detail": "<p>健壮安全网络（Robust Security Network，RSN = 802.11i，实现为 WPA2）：现代 Wi-Fi 安全基线。</p>\n<ul><li><strong>CCMP（Counter Mode with CBC-MAC Protocol）</strong>：基于 <strong>AES</strong>——CTR 模式加密（机密性）+ CBC-MAC（完整性/认证），128 位密钥；替代 RC4+CRC。</li><li><strong>四次握手（4-Way Handshake）</strong>：STA 与 AP 从 <strong>PMK</strong>（PSK 或 802.1X 派生）经 4 条 EAPOL 消息协商出 <strong>PTK</strong>（单播会话密钥，含加密/完整性/KEK/KCK 四部分），并确认双方持有同一 PMK。</li><li><strong>组播</strong>：AP 再用 <strong>GTK</strong>（组播/广播密钥）经握手下发（含密钥更新）。</li><li><strong>角色</strong>：RSN 兼容 WEP（过渡时）；WPA2 认证 = RSN。</li><li><strong>易错点</strong>：PSK 模式下 PMK = PBKDF2(口令)——口令弱则握手可被离线字典攻击（这就是 WPA2-PSK 弱口令风险）；四次握手保护的是&quot;会话&quot;，口令强度决定安全上限。</li></ul>",
+                "tags": [
+                  "安全",
+                  "协议"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "sec-wlan",
+                    "caption": "教材 8.8 的 WPA2 概览"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "wlan-09",
+            "topic": "与教材衔接",
+            "expanded": true,
+            "detail": "<p>本树（权威指南视角）与项目内《计算机网络·自顶向下》第 7 章（教材视角）的衔接说明。</p>\n<ul><li><strong>教材 7.2/7.3</strong>：无线链路特征（信噪比/隐藏终端）与 802.11 体系结构概览——给出<strong>为什么</strong>（无线为什么难、CSMA/CA 为什么必要）。</li><li><strong>教材 7.3 的 CSMA/CA</strong>：对应本树 <strong>03 章 DCF</strong>（IFS/退避/ACK 的简化叙述）。</li><li><strong>教材 7.3 的帧结构</strong>：对应本树 <strong>04 章通用帧格式</strong>（教材只画了主要字段）。</li><li><strong>教材 8.8（保护无线局域网）</strong>：对应本树 <strong>08 章安全</strong>。</li><li><strong>分工</strong>：教材回答&quot;无线网络在网络全景中的位置&quot;，权威指南回答&quot;802.11 内部到底怎么工作&quot;。</li></ul>",
+            "tags": [
+              "802.11",
+              "对比"
+            ],
+            "children": [
+              {
+                "id": "wlan-vs-book",
+                "topic": "权威指南 vs 教材：深度对照",
+                "expanded": false,
+                "detail": "<p>两张知识地图的差异与互补，按知识点逐条对照。</p>\n<ul><li><strong>MAC 接入</strong>：教材&quot;CSMA/CA 三步走&quot;；本书 DCF 含 IFS 优先级、NAV 虚拟侦听、退避冻结、RTS/CTS 阈值——教材是速写，本书是工笔画。</li><li><strong>帧结构</strong>：教材给 6 字段简表；本书给 Frame Control 全部 11 位、ToDS/FromDS 四地址语义、管理/控制/数据三类帧细分。</li><li><strong>连接</strong>：教材一笔带过&quot;关联&quot;；本书 05 章完整给出扫描→认证→关联→漫游状态机。</li><li><strong>物理层</strong>：教材只讲&quot;多径/SNR 概念&quot;；本书 07 章逐代给出调制/速率/信道参数（可计算）。</li><li><strong>安全</strong>：教材 8.8 讲 WEP/WPA/WPA2 概览；本书 08 章讲清 WEP 弱点机理、TKIP 三件套、四次握手密钥派生。</li><li><strong>用法</strong>：考试/面试按教材搭框架，深究/工程实践翻本树对应章节。</li></ul>",
+                "tags": [
+                  "对比"
+                ],
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-03",
+                    "caption": "对照表看 MAC 深度"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-04",
+                    "caption": "对照表看帧格式"
+                  }
+                ]
+              },
+              {
+                "id": "wlan-glossary",
+                "topic": "802.11 术语速查",
+                "expanded": false,
+                "detail": "<p>高频术语一句话速查（本书贯穿全文的词汇）。</p>\n<ul><li><strong>STA / AP</strong>：工作站 / 接入点。</li><li><strong>BSS / IBSS / ESS</strong>：基本服务集 / 独立（Ad Hoc）基本服务集 / 扩展服务集。</li><li><strong>SSID / BSSID / ESSID</strong>：网络名（给人） / BSS 地址（机器寻址） / ESS 的网络名。</li><li><strong>DS</strong>：分布系统（AP 之间的骨干，通常以太网）。</li><li><strong>DCF / PCF</strong>：分布式协调功能（默认 CSMA/CA）/ 点协调功能（轮询，未普及）。</li><li><strong>IFS（SIFS/PIFS/DIFS/EIFS）</strong>：帧间间隔，优先级机制（越短越高）。</li><li><strong>NAV</strong>：网络分配向量（Duration 字段预约信道的虚拟侦听）。</li><li><strong>CW</strong>：竞争窗口（退避随机范围，指数增长）。</li><li><strong>TIM / DTIM</strong>：流量指示位图 / 递送 TIM（广播帧投递时刻）。</li><li><strong>PSM / PS-Poll</strong>：省电模式 / 取帧控制帧。</li><li><strong>MSDU / MPDU / A-MSDU / A-MPDU</strong>：上层帧 / MAC 帧 / 聚合上层帧 / 聚合 MAC 帧（802.11n）。</li><li><strong>MIMO / CCK / OFDM / ERP / HT</strong>：多入多出 / 补码键控 / 正交频分复用 / 扩展速率(11g) / 高吞吐(11n)。</li></ul>",
+                "tags": [
+                  "概念"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "assoc": [
+    {
+      "id": "a-tcp-roles",
+      "members": [
+        {
+          "project": "comnet",
+          "id": "tcp-basics"
+        },
+        {
+          "project": "comnet",
+          "id": "tcp-handshake"
+        },
+        {
+          "project": "comnet",
+          "id": "tcp-reliable"
+        },
+        {
+          "project": "comnet",
+          "id": "tcp-flow"
+        },
+        {
+          "project": "comnet",
+          "id": "tcp-congestion"
+        }
+      ],
+      "title": "TCP 四项职责如何配合",
+      "note": "<p>「TCP 概述与段结构」把 TCP 的职责拆成了四件事，但那四个节点各自只讲了一半。这篇笔记把它们之间的关系讲清楚。</p>\n<h2>谁依赖谁</h2>\n<ul><li><strong>连接管理</strong>（三次握手）是<strong>前提</strong>：序号与窗口的初始值在握手中交换，没有连接就谈不上后面三件事。</li><li><strong>可靠数据传输</strong>（序号 + ACK + 重传）是<strong>地基</strong>：它保证字节流不丢不乱，其余机制都建立在「字节流是可靠的」这条假设上。</li><li><strong>流量控制</strong>与<strong>拥塞控制</strong>是两个方向相反的约束，最终合并成同一个发送窗口。</li></ul>\n<h2>两个「窗口」不是一回事（最易混）</h2>\n<table><tr><th></th><th>流量控制 rwnd</th><th>拥塞控制 cwnd</th></tr><tr><td>保护对象</td><td><strong>接收方</strong>（别打爆它的缓冲区）</td><td><strong>网络</strong>（别让中间链路过载）</td></tr><tr><td>信息从哪来</td><td>接收方通过首部 rwnd 字段<strong>直接告知</strong></td><td>发送方<strong>推断</strong>（超时 / 3 个重复 ACK）</td></tr><tr><td>如何变化</td><td>由接收方缓冲空闲量决定</td><td>慢启动 → 拥塞避免 → 快恢复</td></tr></table>\n<p>实际发送窗口 = <strong>min(cwnd, rwnd)</strong>：谁更紧张就听谁的。</p>\n<h2>一个具体场景（下载大文件）</h2>\n<p>1. 三次握手建立连接 —— <strong>连接管理</strong>；</p>\n<p>2. 序号与累计 ACK 保证每个字节最终到达 —— <strong>可靠数据传输</strong>；</p>\n<p>3. 接收方应用读取慢 → rwnd 变小，发送方自动减速 —— <strong>流量控制</strong>；</p>\n<p>4. 中间链路出现瓶颈 → 丢包 → 发送方把 cwnd 减半 —— <strong>拥塞控制</strong>。</p>\n<p>四件事同时生效，缺一个都会出问题：少了连接管理会收到过期请求，少了可靠传输会丢数据，少了流量控制会压垮接收方，少了拥塞控制会压垮网络。</p>"
+    },
+    {
+      "id": "a-web-layers",
+      "members": [
+        {
+          "project": "comnet",
+          "id": "s-6-7"
+        },
+        {
+          "project": "comnet",
+          "id": "http"
+        },
+        {
+          "project": "comnet",
+          "id": "dns"
+        },
+        {
+          "project": "comnet",
+          "id": "tcp-basics"
+        },
+        {
+          "project": "comnet",
+          "id": "ip"
+        },
+        {
+          "project": "comnet",
+          "id": "mac"
+        }
+      ],
+      "title": "一次 Web 请求穿过的四层",
+      "note": "<p>「6.7 回顾：Web 页面请求的一天」要串起来的正是这件事：在地址栏敲一个网址，到底发生了什么。这里按分组<strong>自上而下</strong>走一遍，并说明为什么每一跳都要换一次链路层地址。</p>\n<h2>顺序（每一步属于不同的层）</h2>\n<p>1. <strong>DHCP</strong> 拿到自己的 IP、网关与 DNS 服务器地址（应用层协议，跑在 UDP 上）。</p>\n<p>2. <strong>DNS 查询</strong>把域名解析成 IP（应用层，主要走 UDP 53）。</p>\n<p>3. <strong>TCP 三次握手</strong>与服务器建立连接（传输层；端口由 HTTP/HTTPS 决定）。</p>\n<p>4. <strong>HTTP 请求与响应</strong>（应用层；HTTPS 还要先过 TLS）。</p>\n<p>5. <strong>IP 数据报</strong>逐跳转发（网络层）。</p>\n<p>6. 每一跳用<strong>以太网/WiFi 帧</strong>承载（链路层），靠 <strong>ARP</strong> 把下一跳 IP 解析成 MAC。</p>\n<h2>两条最容易记错的规则</h2>\n<ul><li><strong>IP 地址端到端不变</strong>：源/目的 IP 描述「谁在和谁通信」，全程一致。</li><li><strong>MAC 地址逐跳更换</strong>：帧的源/目的 MAC 只描述「这一段链路的两端」，每过一个路由器就换一组。</li></ul>\n<h2>为什么 DNS 不能被当成「Web 的一部分」</h2>\n<p>DNS 既是应用层协议（有自己的报文格式），又常被别的应用当作<strong>服务</strong>调用（HTTP 需要先解析域名）。它是所有应用共享的基础设施 —— 这也解释了为什么 DNS 一出问题，表现为「所有网站都打不开」，而不是某个服务不可用。</p>\n<h2>与「分层」节点的关系</h2>\n<p>分层不是纸上分类：这里每一层都在用下层提供的服务（HTTP 用 TCP、TCP 用 IP、IP 用以太网），并各自封装自己的首部。「协议分层与封装」的封装图在本节有了完整实例。</p>"
+    },
+    {
+      "id": "a-auth-layers",
+      "members": [
+        {
+          "project": "comnet",
+          "id": "s-8-3"
+        },
+        {
+          "project": "comnet",
+          "id": "s-8-4"
+        },
+        {
+          "project": "comnet",
+          "id": "s-8-6"
+        },
+        {
+          "project": "comnet",
+          "id": "s-8-7"
+        },
+        {
+          "project": "comnet",
+          "id": "s-8-8"
+        }
+      ],
+      "title": "鉴别与密钥协商：同一个骨架，四个层次的落地",
+      "note": "<p>第 8 章的安全机制散布在四个不同层次上，容易学成互不相干的一堆缩写。这篇笔记把它们对齐成同一个骨架。</p>\n<h2>同一个骨架：挑战 - 应答 - 派生密钥</h2>\n<p>1. <strong>挑战</strong>：一方发出一个不可预测的值（nonce）；</p>\n<p>2. <strong>应答</strong>：另一方用只有自己知道的秘密处理它（会话密钥、私钥、SIM 卡里的长期密钥）；</p>\n<p>3. <strong>验证并派生会话密钥</strong>：验证通过后协商出后续通信用的临时密钥。</p>\n<p>「不可预测」是关键 —— 可预测的挑战会被<strong>重放攻击</strong>直接复用。</p>\n<h2>四个层次的落地</h2>\n<table><tr><th>位置</th><th>机制</th><th>保护范围</th><th>凭据从哪来</th></tr><tr><td>应用与传输之间</td><td><strong>TLS</strong>（8.6）</td><td>一条 TCP 连接的字节流</td><td>证书链 + CA 信任</td></tr><tr><td>网络层</td><td><strong>IPsec</strong>（8.7）</td><td>主机到主机的 IP 分组（含隧道模式）</td><td>IKE 协商出的 SA</td></tr><tr><td>链路层（无线）</td><td><strong>WPA/WPA2 四次握手</strong>（8.8）</td><td>一段无线链路</td><td>预共享口令或 802.1X</td></tr><tr><td>接入网（蜂窝）</td><td><strong>4G/5G AKA</strong>（8.8）</td><td>手机与网络之间</td><td>SIM 卡内的长期密钥</td></tr></table>\n<h2>与工具节点的关系</h2>\n<ul><li><strong>报文完整性与数字签名</strong>（8.3）提供原材料：散列 + MAC + 数字签名 —— 上面每个方案都靠它们保证「消息没被改过」。</li><li><strong>端点鉴别</strong>（8.4）就是这个抽象骨架本身，TLS / IPsec / WPA / AKA 都是它的具体实例。</li><li><strong>保护电子邮件</strong>（8.5）是组合用法：PGP「先签名后加密」，把完整性与机密性拼在一起。</li></ul>\n<h2>一句话记忆</h2>\n<p><strong>层次越低，保护的用户越多、粒度越粗；层次越高，越贴近应用语义、也越容易被中间盒干扰。</strong></p>"
+    },
+    {
+      "id": "a-mac-family",
+      "members": [
+        {
+          "project": "comnet",
+          "id": "csma"
+        },
+        {
+          "project": "comnet",
+          "id": "ethernet"
+        },
+        {
+          "project": "comnet",
+          "id": "wifi"
+        },
+        {
+          "project": "comnet",
+          "id": "wl-cdma"
+        }
+      ],
+      "title": "共享介质怎么不打架：多址接入协议家族",
+      "note": "<p>「多路访问协议」「以太网与 CSMA/CD」「WiFi 与 CSMA/CA」「CDMA」这四个节点讲的是同一个问题的四种答案：<strong>多条链路共享一块介质时，谁来发、什么时候发</strong>。</p>\n<h2>三大类思路</h2>\n<ul><li><strong>信道划分</strong>（TDMA / FDMA / CDMA）：把时间、频率或码字切开，各自独占一份 —— 无冲突，但对突发流量浪费。</li><li><strong>随机访问</strong>（ALOHA → CSMA → CSMA/CD、CSMA/CA）：谁有数据谁就抢，冲突了再退避 —— 适合突发，效率高。</li><li><strong>轮流传递</strong>（令牌环）：按序轮流 —— 有序，但有延迟且怕单点故障。</li></ul>\n<h2>有线与无线为什么选了不同方案</h2>\n<table><tr><th></th><th>有线（以太网）</th><th>无线（WiFi）</th></tr><tr><td>能否边发边听</td><td>能 → <strong>CSMA/CD</strong> 直接检测冲突</td><td>不能（自己的信号会淹没对方）→ 只能<strong>避免</strong></td></tr><tr><td>隐藏终端</td><td>基本不存在</td><td>存在 → 需要 RTS/CTS 之类的握手</td></tr><tr><td>冲突代价</td><td>检测到就退避重发</td><td>发送本身就浪费了信道，故改为<strong>确认 + 退避</strong></td></tr><tr><td>方案</td><td>冲突<strong>检测</strong></td><td>冲突<strong>避免</strong>（CSMA/CA）</td></tr></table>\n<h2>CDMA 为什么是另一条路</h2>\n<p>CSMA 系是「抢时间」，<strong>CDMA 是「用正交码同时发」</strong>：不同节点使用不同码字扩频，接收方按码字分离信号。它以牺牲部分频谱效率换取「不需要协调」，是 3G 的基础。</p>\n<h2>一句话记忆</h2>\n<p><strong>有线能「听见冲突」，所以敢边发边听；无线听不见，只能先避免再确认；CDMA 干脆让大家同时说不同的语言。</strong></p>"
+    },
+    {
+      "id": "a-mobility-tcp",
+      "members": [
+        {
+          "project": "comnet",
+          "id": "s-7-5"
+        },
+        {
+          "project": "comnet",
+          "id": "s-7-6"
+        },
+        {
+          "project": "comnet",
+          "id": "s-7-7"
+        },
+        {
+          "project": "comnet",
+          "id": "tcp-reliable"
+        }
+      ],
+      "title": "移动与无线如何影响 TCP 的可靠性机制",
+      "note": "<p>「7.7 无线和移动对上层协议的影响」只给了结论，这里把<strong>无线/移动</strong>与<strong>TCP 可靠传输</strong>之间的冲突讲清楚 —— 双方各自都没错，放在一起就出问题。</p>\n<h2>冲突一：无线误码被当成拥塞</h2>\n<ul><li>TCP 判断拥塞的唯一信号是<strong>丢包</strong>（超时或 3 个重复 ACK）。</li><li>无线链路的丢包主要来自<strong>误码与干扰</strong>，与拥塞无关。</li><li>于是 TCP 会<strong>不必要地</strong>把 cwnd 减半，吞吐量无谓下降。</li><li>对策：链路层本地重传（802.11 的 ACK）、显式拥塞通知（ECN）、区分随机丢包与拥塞丢包。</li></ul>\n<h2>冲突二：切换抖动破坏 RTT 估计</h2>\n<ul><li>TCP 超时基于 <strong>SRTT + 4·RTTVAR</strong> 自适应。</li><li>移动切换会造成<strong>时延尖峰</strong>（可达数百毫秒甚至秒级），把 RTTVAR 拉大、超时估计变钝。</li><li>后果：真正的丢包要等更久才触发重传，恢复变慢。</li></ul>\n<h2>冲突三：换 IP 就等于换连接</h2>\n<ul><li>TCP 连接由<strong>四元组</strong>唯一标识；移动主机换了接入点就可能换 IP。</li><li>IP 一变，原连接<strong>无法继续</strong>（对端认不出这还是同一条连接）。</li><li>「移动管理：原理」给出的解法是把<strong>身份与位置解耦</strong>：永久地址标识身份、转交地址标识位置，靠<strong>归属代理 + 隧道</strong>间接转发。</li><li>「移动管理实践」进一步把这件事交给网络侧（MME 与网关协同切换），让上层尽量无感。</li></ul>\n<h2>与「可靠数据传输」节点的关系</h2>\n<p>TCP 的可靠性机制本身没有问题：序号、累计 ACK、快重传都是对的。<strong>问题出在它「丢包 = 拥塞」的推断模型</strong> —— 这个假设在有线网络成立，在无线/移动环境下失效。这也解释了传输层演进（3.8）为什么要引入基于时延与带宽估计的拥塞控制。</p>"
+    },
+    {
+      "id": "a-wlan-dcf",
+      "members": [
+        {
+          "project": "comnet",
+          "id": "wlan-dcf"
+        },
+        {
+          "project": "comnet",
+          "id": "wifi"
+        },
+        {
+          "project": "comnet",
+          "id": "wlan-nav"
+        }
+      ],
+      "title": "教材 7.3「WiFi 与 CSMA/CA」与权威指南 MAC 深度",
+      "note": "<p>教材 7.3 给出 CSMA/CA 的三步速写（侦听/退避/确认）；权威指南补全四层细节：IFS 优先级（SIFS&lt;PIFS&lt;DIFS）、NAV 虚拟载波侦听（Duration 预约）、退避冻结与指数增长、RTS/CTS 缓解隐藏终端。两篇合并 = 802.11 接入机制的完整图景。</p>"
+    },
+    {
+      "id": "a-wlan-frame",
+      "members": [
+        {
+          "project": "comnet",
+          "id": "wl-80211-frame"
+        },
+        {
+          "project": "comnet",
+          "id": "wlan-frame"
+        },
+        {
+          "project": "comnet",
+          "id": "wlan-f-addr"
+        }
+      ],
+      "title": "802.11 帧：教材简表 vs 权威指南四地址语义",
+      "note": "<p>教材只画了 802.11 帧的主要字段；权威指南给出 Frame Control 全部位、ToDS/FromDS 决定的四地址组合（RA/TA/DA/SA/BSSID 每跳变化）。读帧先看 Frame Control，再按 ToDS/FromDS 解地址。</p>"
+    },
+    {
+      "id": "a-wlan-sec",
+      "members": [
+        {
+          "project": "comnet",
+          "id": "wlan-sec-wep"
+        },
+        {
+          "project": "comnet",
+          "id": "wlan-sec-rsn"
+        },
+        {
+          "project": "comnet",
+          "id": "sec-wlan"
+        }
+      ],
+      "title": "无线安全：教材 8.8 概览 ↔ 权威指南机理",
+      "note": "<p>教材 8.8 讲 WEP/WPA/WPA2 的概览与动机；权威指南给出机理：WEP 的 RC4 弱密钥与 IV 重用、TKIP 的每包密钥三件套、802.11i 的 CCMP/AES 与四次握手密钥派生。两个视角合读 = 既懂&quot;为什么&quot;，又懂&quot;怎么破/怎么防&quot;。</p>"
+    },
+    {
+      "id": "a-wlan-phy",
+      "members": [
+        {
+          "project": "comnet",
+          "id": "wl-cdma"
+        },
+        {
+          "project": "comnet",
+          "id": "wlan-phy-dsss"
+        },
+        {
+          "project": "comnet",
+          "id": "wlan-phy-fhss"
+        }
+      ],
+      "title": "扩频思想：CDMA 与 DSSS 的两个视角",
+      "note": "<p>教材 7.2 的 CDMA 讲&quot;码分复用&quot;的信道共享思想；权威指南的 DSSS 讲&quot;直接序列扩频&quot;的抗干扰工程实现——两者共享扩频内核（用更宽频带换鲁棒性/共享度）。FHSS 则是另一种扩频路线（跳变频率而非展宽频谱）。对比读能打通&quot;扩频&quot;这一概念。</p>"
+    }
+  ]
+}

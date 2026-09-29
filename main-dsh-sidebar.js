@@ -1,0 +1,875 @@
+/* ============================================================
+ * main-dsh-sidebar.js — DSH 侧边栏（主进程模块，v0.16）
+ * ------------------------------------------------------------
+ * 职责（唯一管理者，不依赖外部 Start-DSH.ps1）：
+ *   1) 解析运行包（src/dsh-package.js：bundled / installed / active.json）
+ *   2) 以捆绑 Node 孵化独立 DSH web 实例：
+ *        <runtime>/node/node.exe <runtime>/app/lib/bin.js web
+ *        --host 127.0.0.1 --port 0 --no-open
+ *      env.DSH_HOME = <userData>/dsh-home（独立、持久，与全局实例互不可见）
+ *      运行锁 dsh-runtime.lock 持有期间服务存续（与维护操作互斥）
+ *   3) 从子进程 stdout 解析 loopback token URL（正则只认 127.0.0.1 + ?token=），
+ *      HTTP 探活（期望 401/200，即服务真实可达）后才加载
+ *   4) WebContentsView 停靠主窗口右侧；Ctrl+B / 菜单切换；resize 跟随；
+ *      侧栏恒可见（v0.16.1 移除过窄自动隐藏）
+ *
+ * 生命周期（v0.16.6 驻留语义，README 有对外承诺）：
+ *   · 孵化：detached + stdio 落文件（userData/dsh-service.log）→ 与孵化者彻底解耦；
+ *   · 主界面退出：**不收割已就绪的服务**，保留 dsh-service.json，下次启动接管
+ *     （「重启主界面而侧栏对话不中断」由此成立）；未就绪的服务照旧收割。
+ *   · 显式停止：菜单「视图 → 停止 DSH 服务」（任务管理器之外的唯一正门）。
+ *   · 运行锁 dsh-runtime.lock 的 pid 指向**服务进程**，维护互斥随服务生死。
+ *
+ * 安全边界：
+ *   · view 的 webPreferences：contextIsolation / sandbox 开，nodeIntegration 关，
+ *     无宿主 preload，独立 session partition —— 与 jsMind 渲染层零耦合。
+ *   · token 只进主进程内存与 loadURL，不进渲染层 IPC、不进日志。
+ *   · 子进程 env 清掉本应用注入的会话变量（AI_MINDMAP_PROJECTS_DIR 等），
+ *     避免冒烟沙箱之类的影响泄漏进 DSH。
+ *
+ * 数据契约（.review/dsh-implementation-contract.md）：
+ *   · 侧栏是纯视图容器 + 进程管理器；DSH 的 profile/插件/会话全部住在
+ *     独立 DSH_HOME 里，由 DSH 自己管理（插件支持 = profile 机制原样保留）。
+ *   · 更新/回滚走 scripts/dsh-maintenance.js（active.json 原子切换，
+ *     运行锁持有期间维护被拒）。
+ * ============================================================ */
+'use strict';
+
+const { app } = require('electron');
+const fs = require('fs');
+const path = require('path');
+const { spawn, spawnSync } = require('child_process');
+const http = require('http');
+const dshPackage = require('./src/dsh-package.js');
+const sidebarSkill = require('./src/dsh-sidebar-skill.js');
+
+const SIDEBAR_WIDTH = 420;
+const MIN_WIDTH = 280;
+const MAX_WIDTH = 720;
+
+/** 子进程 stdout 里带 token 的地址行（实测样例）：
+ *    dsh web: http://127.0.0.1:6218/?token=xxxxxxxx
+ *  只认 127.0.0.1 —— 防 stdout 里混进其他地址被误加载。 */
+const URL_RE = /https?:\/\/127\.0\.0\.1:(\d+)\/\?token=([A-Za-z0-9_\-]+)/;
+
+const state = {
+  win: null,            // 主窗口
+  view: null,           // WebContentsView（惰性创建）
+  handle: null,         // 拖宽分隔条 view
+  collapseBtn: null,    // 折叠按钮 view（侧栏右上角「—」）
+  proc: null,           // dsh web 子进程（本窗口孵化时才有）
+  procLock: null,       // 运行锁（dsh-runtime.lock）
+  url: null,            // 带 token 的地址（只在主进程内存）
+  visible: true,        // 侧栏是否显示（**默认打开**，loadPrefs 再覆盖）
+  width: SIDEBAR_WIDTH, // 侧栏宽度（可拖拽调节，持久化）
+  status: 'idle',       // idle|starting|running|stopping|error
+  lastError: null,
+  stdoutBuf: '',
+  logTimer: null,       // 启动日志轮询（stdio 落文件后用它抓 token URL）
+  logOffset: 0,         // 本轮启动的日志读取起点（避免读到上一轮服务的旧 URL）
+  startTimer: null,
+  healthTimer: null,
+  servicePid: null,     // 驻留服务的 pid（adopt 场景：proc 为 null 但服务活着）
+  dshOnly: false,       // 仅侧边栏模式（外部 AI 迭代主界面时开启；主 renderer 隐藏）
+  shuttingDown: false
+};
+
+function log(msg) { console.log('[dsh-sidebar] ' + msg); }
+
+/* ---------------- 路径 ---------------- */
+
+function userDataPath() { return app.getPath('userData'); }
+function dshHome() { return path.join(userDataPath(), 'dsh-home'); }
+/** 服务启动/运行日志（stdio 落这个文件而不是 pipe —— 见 startService 的说明） */
+function serviceLogFile() { return path.join(userDataPath(), 'dsh-service.log'); }
+
+/** bundled 运行包根：dev = <工程>/vendor/dsh；打包后 = resources/dsh */
+function bundledRoot() {
+  if (app.isPackaged) return path.join(process.resourcesPath, 'dsh');
+  return path.join(__dirname, 'vendor', 'dsh');
+}
+
+/** 工程根（dev = 本目录；打包后 = resources/app.asar 所在工程不可写，
+ *  笔记真源是用户数据里的工程 —— 打包场景由 extraResources 的工程副本承载，
+ *  这里统一取应用根：dev 下即 ai-mind-map/）。侧栏 AI 的会话 cwd 指向这里，
+ *  使 `node cli/mm-cli.js …` 直接可用。 */
+function projectRoot() {
+  return __dirname;
+}
+
+/* ---------------- 侧栏 AI 的操作能力注入 ----------------
+ * 设计初衷：内置 AI 一边对话一边编辑笔记。让侧栏 AI 具备操作能力只需两件事：
+ *   1) 会话 cwd = 工程根（spawn 的 WorkingDirectory，DSH 会话继承主进程 cwd）
+ *      → `node cli/mm-cli.js …` 直接可用；
+ *   2) DSH_HOME/skills/ai-mind-map/SKILL.md —— 指针型 skill（首次启动写入一次，
+ *      内容不随工程漂移：只写"真源在哪、先读什么"），侧栏 AI 的 skill 列表里
+ *      就会出现本工程的操作规范（dsh-skill-filesystem 扫描 $DSH_HOME/skills）。
+ * 笔记编辑走 CLI 校验闸门（validate-only，轻量）；改代码才需要全量 verify ——
+ * 这条分流写死在指针 skill 与 AI-GUIDE 里。 */
+
+const SKILL_DIR_NAME = 'ai-mind-map';
+
+/** 生成指针 skill 内容（真源路径注入；内容生成在 src/dsh-sidebar-skill.js 可单测） */
+function ensureSidebarSkill() {
+  try {
+    const dir = path.join(dshHome(), 'skills', SKILL_DIR_NAME);
+    const file = path.join(dir, 'SKILL.md');
+    const content = sidebarSkill.buildSidebarSkillContent(projectRoot()).content;
+    // 幂等：已存在且内容一致就不动（真源路径变了才重写）
+    let existing = null;
+    try { existing = fs.readFileSync(file, 'utf8'); } catch (e) { /* 不存在 */ }
+    if (existing !== content) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, content, 'utf8');
+      log('侧栏 skill 已注入: ' + file);
+    }
+  } catch (e) {
+    log('注入 skill 失败（不阻断启动）: ' + e.message);
+  }
+}
+
+/* ---------------- 子进程孵化 ---------------- */
+
+/** 清掉会干扰 DSH 的本应用环境变量（继承白名单之外的都删） */
+function buildEnv(runtimeRoot) {
+  const env = {};
+  const drop = /^(AI_MINDMAP_|DSH_|ELECTRON_RUN_AS_NODE|npm_)/i;
+  for (const k of Object.keys(process.env)) {
+    if (!drop.test(k)) env[k] = process.env[k];
+  }
+  env.DSH_HOME = dshHome();
+  // PATH 前置包内 bin（pnpm shim），保证 dsh plugin 命令可用
+  env.PATH = path.join(runtimeRoot, 'bin') + path.delimiter + (env.PATH || '');
+  return env;
+}
+
+function startService() {
+  if (state.status === 'starting' || state.status === 'running') return;
+  let runtime;
+  try {
+    runtime = dshPackage.resolveRuntime({
+      bundledRoot: bundledRoot(),
+      userDataPath: userDataPath(),
+      verifyHashes: false // 启动快路径；导入/维护时才全量校验
+    });
+  } catch (e) {
+    state.status = 'error';
+    state.lastError = '运行包不可用: ' + e.message;
+    log(state.lastError);
+    broadcastStatus();
+    return;
+  }
+  fs.mkdirSync(dshHome(), { recursive: true });
+  ensureSidebarSkill(); // 侧栏 AI 的操作能力注入（幂等）
+
+  // 运行锁（与维护互斥）。陈旧锁（持有进程已死）自动接管。
+  try {
+    state.procLock = dshPackage.acquireRuntimeLock(userDataPath(), { op: 'sidebar' }, 'run');
+  } catch (e) {
+    // 锁被活跃持有 = 已有驻留服务在跑（比如上一个主界面还没退干净，或用户
+    // 独立启动过）→ 尝试接管而不是报错（解耦的关键路径）
+    log('锁被持有，尝试接管驻留服务: ' + e.message);
+    if (adoptExistingService()) return;
+    state.status = 'error';
+    state.lastError = e.message;
+    broadcastStatus();
+    return;
+  }
+
+  state.status = 'starting';
+  state.lastError = null;
+  state.stdoutBuf = '';
+  broadcastStatus();
+
+  const args = [runtime.dsh, 'web', '--host', '127.0.0.1', '--port', '0', '--no-open'];
+  // stdio 落**文件**而不是 pipe（驻留语义的前提，v0.16.6）：
+  //   主界面退出后 pipe 的读端就没了，服务再往 stdout 写会 EPIPE —— 一个"退出主界面
+  //   反而把侧栏弄崩"的隐性风险。文件 fd 让服务与孵化者彻底解耦（scripts/dsh-resident-e2e.js
+  //   验证驻留用的就是这个配置，此前 main 里用 pipe 与之并不一致）。
+  const logPath = serviceLogFile();
+  let logFd = 'ignore';
+  // 起点 = 当前文件长度：只读本轮新增的字节。日志是**追加**的，不从末尾开始
+  // 就会读到上一轮服务留下的旧 token URL，对着一个已死的端口反复探活。
+  try { state.logOffset = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0; } catch (e) { state.logOffset = 0; }
+  try { logFd = fs.openSync(logPath, 'a'); } catch (e) { logFd = 'ignore'; }
+  const proc = spawn(runtime.node, args, {
+    env: buildEnv(runtime.root),
+    cwd: projectRoot(), // 会话 cwd = 工程根：侧栏 AI 打开即可 `node cli/mm-cli.js …`
+    windowsHide: true,
+    detached: true, // 脱离主进程 Job Object：主界面重启/退出不连带杀服务（实测验证）
+    stdio: ['ignore', logFd, logFd]
+  });
+  if (typeof logFd === 'number') { try { fs.closeSync(logFd); } catch (e) { /* 子进程已复制 fd */ } }
+  tailServiceLog();
+  proc.unref(); // 不阻止主进程退出（服务生命周期独立于本进程）
+  state.proc = proc;
+  state.servicePid = proc.pid;
+  // 运行锁改指服务进程：孵化者（本进程）随后可能退出，而服务还活着 ——
+  // 锁必须跟着**服务**的生死走，否则维护会在活服务脚下换运行包（见 dsh-package）。
+  if (state.procLock) {
+    const ok = dshPackage.retargetRuntimeLock(state.procLock, proc.pid);
+    log('运行锁改指服务 pid=' + proc.pid + (ok ? '（成功）' : '（失败：锁已被接管，维护互斥可能失效）'));
+  }
+  log('spawn pid=' + proc.pid + '（dsh ' + runtime.manifest.dshVersion + '，source=' + runtime.source
+    + '，cwd=' + projectRoot() + '，detached，日志=' + (logFd === 'ignore' ? '未接' : logPath) + '）');
+  // 服务信息落盘（本地 userData，仅本机）：先写 pid；URL 就绪后补全
+  writeServiceInfo(proc.pid);
+
+  // 启动超时（90s 内没见到 token URL 就收割并放弃，防白屏挂死；错误页可重试）
+  // 收割而不是放着：半启动的服务会占住运行锁，让下一次启动既接管不了也孵化不了。
+  state.startTimer = setTimeout(() => {
+    if (state.status === 'starting') {
+      state.lastError = 'DSH 启动超时（90s 未见就绪地址）';
+      log(state.lastError);
+      stopService();
+      state.status = 'error';
+      if (state.visible && state.view) showStatusPage(errorPageHtml(state.lastError));
+      broadcastStatus();
+    }
+  }, 90000);
+}
+
+/** 轮询服务日志抓 token URL（stdio 已落文件，不再有 stdout 事件）。
+ *  每 300ms 读新增字节，累积到 stdoutBuf 里匹配 URL_RE；就绪或终止即停。 */
+function tailServiceLog() {
+  if (state.logTimer) { clearTimeout(state.logTimer); state.logTimer = null; }
+  const tick = () => {
+    state.logTimer = null;
+    if (state.status !== 'starting') return;
+    try {
+      const size = fs.statSync(serviceLogFile()).size;
+      if (size > state.logOffset) {
+        const len = Math.min(size - state.logOffset, 65536);
+        const buf = Buffer.alloc(len);
+        const fd = fs.openSync(serviceLogFile(), 'r');
+        try { fs.readSync(fd, buf, 0, len, state.logOffset); } finally { fs.closeSync(fd); }
+        state.logOffset += len;
+        state.stdoutBuf += buf.toString('utf8');
+        if (state.stdoutBuf.length > 8192) state.stdoutBuf = state.stdoutBuf.slice(-8192);
+        const m = URL_RE.exec(state.stdoutBuf);
+        if (m) { probeThenLoad('http://127.0.0.1:' + m[1] + '/?token=' + m[2]); return; }
+      }
+    } catch (e) { /* 日志文件可能尚未创建 */ }
+    state.logTimer = setTimeout(tick, 300);
+  };
+  state.logTimer = setTimeout(tick, 300);
+}
+
+/** token URL 出现后先探活：服务真实可达才 loadURL。
+ *  实测（e2e 303 缺口）：带 token 首访 = 303 + Set-Cookie（会话引导）→ 200。
+ *  故 200/301/302/303/401 都视为"服务在线"；唯一例外 404/5xx 才判未就绪。
+ *  探活通过即置 running 并由调用方 loadURL（view 里带 token 的完整加载
+ *  由 Chromium 自己跟随 303 与 Cookie —— 浏览器请求天然带 cookie jar）。 */
+function probeThenLoad(url) {
+  const u = new URL(url);
+  http.get({ host: u.hostname, port: u.port, path: u.pathname + u.search, timeout: 5000 },
+    (res) => {
+      const ok = [200, 301, 302, 303, 401].includes(res.statusCode);
+      res.resume();
+      if (!ok) return; // 未就绪：等日志轮询重试或超时
+      clearTimeout(state.startTimer);
+      clearInterval(state.startTimer);
+      state.startTimer = null;
+      if (state.logTimer) { clearTimeout(state.logTimer); state.logTimer = null; }
+      state.url = url;
+      state.status = 'running';
+      log('服务就绪 ' + u.host);
+      writeServiceInfo(state.servicePid, url); // 服务信息含 token URL（仅本地磁盘）
+      if (state.visible) loadCurrentUrl();
+      broadcastStatus();
+      startHealthLoop();
+    }).on('error', (e) => {
+      log('探活失败（稍后由 stdout 重试）: ' + e.message);
+    }).on('timeout', function () { this.destroy(); });
+}
+
+/* ---------------- 服务驻留与接管（主界面重启不影响侧栏） ----------------
+ * 生命周期解耦：dsh web 是独立进程，它的存活不依赖任何 BrowserWindow。
+ *   · 孵化方把 { pid, url } 写进 service-info（userData 本地文件）；
+ *   · 新主界面启动 → adoptExistingService()：读文件 → pid 活性 + HTTP 探活
+ *     → 都通过则**接管**（proc=null、servicePid=pid、直接 loadURL）——
+ *     侧栏交互界面原样保留，只有导图主界面经历了重启；
+ *   · 健康循环每 5s 探活：服务死了 → 状态转 error（错误页带重试）。
+ * 安全边界：service-info 只落 userData 本地磁盘（127.0.0.1 + 单用户），
+ * 不跨网络、不进渲染层 IPC、不写日志。 */
+
+function serviceInfoFile() { return path.join(userDataPath(), 'dsh-service.json'); }
+
+function writeServiceInfo(pid, url) {
+  try {
+    fs.writeFileSync(serviceInfoFile(), JSON.stringify({
+      pid, url: url || null, since: new Date().toISOString()
+    }), 'utf8');
+  } catch (e) { log('service-info 写入失败: ' + e.message); }
+}
+
+function readServiceInfo() {
+  try {
+    const s = JSON.parse(fs.readFileSync(serviceInfoFile(), 'utf8'));
+    return (s && typeof s.pid === 'number') ? s : null;
+  } catch (e) { return null; }
+}
+
+function clearServiceInfo() {
+  try { fs.unlinkSync(serviceInfoFile()); } catch (e) { /* ignore */ }
+}
+
+function pidAlive(pid) {
+  if (!pid || typeof pid !== 'number') return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return false; }
+}
+
+/** HTTP 快速探活：任何响应（含 401/303）= 端口上有活的 DSH web */
+function httpAlive(url, timeoutMs) {
+  return new Promise((resolve) => {
+    try {
+      const u = new URL(url);
+      const req = http.get({ host: u.hostname, port: u.port, path: '/', timeout: timeoutMs },
+        (res) => { res.resume(); resolve(true); });
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.on('error', () => resolve(false));
+    } catch (e) { resolve(false); }
+  });
+}
+
+/** 尝试接管既有驻留服务。成功返回 true 并置 running。 */
+async function adoptExistingService() {
+  const info = readServiceInfo();
+  if (!info || !info.url) return false;
+  if (!pidAlive(info.pid)) { clearServiceInfo(); return false; }
+  const alive = await httpAlive(info.url, 3000);
+  if (!alive) { clearServiceInfo(); return false; }
+  // 接管：不抢锁（原持有者还活着）、不孵化进程，只接 URL 与 pid 记录
+  state.proc = null;
+  state.procLock = null;
+  state.servicePid = info.pid;
+  state.url = info.url;
+  state.status = 'running';
+  state.lastError = null;
+  log('已接管驻留服务 pid=' + info.pid);
+  if (state.visible && state.view) loadCurrentUrl();
+  broadcastStatus();
+  startHealthLoop();
+  return true;
+}
+
+/** init 时的入口决策：先试接管，接管不了才孵化 */
+async function adoptOrStart() {
+  if (await adoptExistingService()) return;
+  startService();
+}
+
+/** 健康循环：detached 服务没有 exit 事件可听，用轮询补齐死亡感知（pid + HTTP 双探）*/
+function startHealthLoop() {
+  if (state.healthTimer) return;
+  state.healthTimer = setInterval(async () => {
+    if (state.status !== 'running') return;
+    const pidOk = state.servicePid && pidAlive(state.servicePid);
+    const httpOk = state.url ? await httpAlive(state.url, 2500) : false;
+    if (!pidOk && !httpOk) {
+      log('服务失联（pid 与 HTTP 都不可达）');
+      state.status = 'error';
+      state.lastError = 'DSH 服务已退出';
+      state.proc = null;
+      state.servicePid = null;
+      state.url = null;
+      clearServiceInfo();
+      if (state.procLock) { try { state.procLock.release(); } catch (e) { /* ignore */ } state.procLock = null; }
+      if (state.visible && state.view) showStatusPage(errorPageHtml(state.lastError));
+      broadcastStatus();
+    }
+  }, 5000);
+}
+
+function stopService() {
+  if (state.startTimer) { clearInterval(state.startTimer); clearTimeout(state.startTimer); state.startTimer = null; }
+  if (state.logTimer) { clearTimeout(state.logTimer); state.logTimer = null; }
+  if (state.healthTimer) { clearInterval(state.healthTimer); state.healthTimer = null; }
+  // 收割目标：优先本进程孵化的 proc；**接管场景**（proc=null）也要按 servicePid 收割 ——
+  // 否则菜单「重启 DSH 服务」在接管实例上只会清掉 service-info，留下一个活着但
+  // 没人认领的服务占住运行锁，重启必然失败（驻留语义下"接管"是常态，必须支持）。
+  const pid = state.proc ? state.proc.pid : state.servicePid;
+  if (pid) {
+    log('停止服务 pid=' + pid + (state.proc ? '（本进程孵化）' : '（接管）'));
+    try {
+      // Windows：taskkill /T 收割整棵进程树（DSH 会孵化 runner 子进程）。
+      // **同步**执行：异步 spawn 的子进程会随宿主 Job 一起被终止 ——
+      // "点完停止立刻退出应用"时收割根本没发生（实测 dsh:resident 阶段 4 复现：
+      // 宿主退出后服务仍在）。收割必须在返回前落地。
+      if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
+      } else {
+        process.kill(pid, 'SIGTERM');
+      }
+    } catch (e) { log('kill 异常: ' + e.message); }
+  }
+  state.proc = null; // exit 回调里不会再重复处理
+  state.servicePid = null;
+  state.url = null;
+  clearServiceInfo();
+  // 锁：孵化方手里有锁 → 按 token 释放；接管场景（procLock 为 null）→ 锁在盘上
+  // 且 pid 指向刚被杀掉的服务，按 pid 精确清掉（否则留下一个假持有者挡维护）
+  if (state.procLock) {
+    try { state.procLock.release(); } catch (e) { /* ignore */ }
+    state.procLock = null;
+  } else if (pid) {
+    dshPackage.clearRuntimeLockFor(userDataPath(), pid);
+  }
+  if (state.status !== 'error') state.status = 'idle';
+}
+
+/* ---------------- 状态页（启动中 / 错误） ----------------
+ * 灰屏根因修复：启动期 view 是空白 WebContentsView（看起来"灰色没反应"）。
+ * 现在启动中显示占位页，失败显示错误页 + 可点击重试（data: 页面经
+ * console 消息回传重试意图 —— view 无 preload，这是唯一安全的反馈通道）。 */
+
+const PAGE_STARTING = 'data:text/html;charset=utf-8,' + encodeURIComponent(
+  '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+  + 'body{font-family:"Microsoft YaHei",sans-serif;display:flex;align-items:center;justify-content:center;'
+  + 'height:100vh;margin:0;background:#f5f6f8;color:#4e5969;flex-direction:column;gap:12px}'
+  + '.spin{width:28px;height:28px;border:3px solid #d6e4ff;border-top-color:#1664ff;border-radius:50%;'
+  + 'animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}'
+  + '</style></head><body><div class="spin"></div><div>DSH 侧边栏启动中…（首次约需几十秒）</div></body></html>');
+
+function errorPageHtml(msg) {
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    + 'body{font-family:"Microsoft YaHei",sans-serif;display:flex;align-items:center;justify-content:center;'
+    + 'height:100vh;margin:0;background:#f5f6f8;color:#86909c;flex-direction:column;gap:12px;padding:24px;text-align:center}'
+    + 'button{padding:6px 18px;border:1px solid #d5d9e0;border-radius:4px;background:#fff;cursor:pointer;font-size:13px}'
+    + 'button:hover{border-color:#1664ff;color:#1664ff}'
+    + '</style></head><body><div><b>DSH 侧边栏异常</b></div><div style="font-size:12px">'
+    + String(msg).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))
+    + '</div><button onclick="console.log(\'[dsh-retry]\')">重试启动</button></body></html>');
+}
+
+function showStatusPage(html) {
+  if (!state.view) return;
+  state.view.webContents.loadURL(html).catch((e) => log('状态页加载失败: ' + e.message));
+}
+
+/* ---------------- WebContentsView ---------------- */
+
+function ensureView() {
+  if (state.view) return state.view;
+  const { WebContentsView } = require('electron');
+  const view = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      session: require('electron').session.fromPartition('persist:dsh-sidebar')
+    }
+  });
+  // 外链交给系统浏览器（DSH 页面内的 github 链接等）
+  view.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) require('electron').shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  // 错误页的"重试"按钮经 console 消息回传（无 preload 的安全反馈通道）
+  view.webContents.on('console-message', (_e, _level, message) => {
+    if (message === '[dsh-retry]') {
+      log('错误页重试请求');
+      startService();
+      showStatusPage(PAGE_STARTING);
+    }
+  });
+  state.view = view;
+  return view;
+}
+
+function loadCurrentUrl() {
+  if (!state.view || !state.url) return;
+  state.view.webContents.loadURL(state.url).catch((e) => {
+    log('loadURL 失败: ' + e.message);
+  });
+}
+
+/* ---------------- 拖宽分隔条（类似 Windows 窗口边框的拖拽体验） ----------------
+ * 分隔条是主进程拥有的独立 WebContentsView（6px 热区，hover 高亮），盖在侧栏左缘。
+ * 拖拽协议（全部在分隔条页面内闭环，主进程只做几何）：
+ *   · 页面 mousedown → console '[dsh-drag-start]' → 主进程 beginWidthDrag()
+ *   · 拖动中主进程 16ms 轮询光标，**新宽度 = 窗口右缘(screenX) - 光标(screenX)**
+ *     （绝对定位：向左拖=加宽、向右拖=变窄，天然跟随鼠标方向，无符号/漂移问题）
+ *   · 分隔条每帧跟随光标 → 光标始终在分隔条上 → 页面 mouseup 必然触发
+ *     → '[dsh-drag-end]' → 主进程 endWidthDrag()（"松手即停"）
+ *   · 兜底：页面 mousemove 检测 e.buttons===0（丢 mouseup 的场景）也结束；
+ *     主渲染层 mouseup / Escape 同样结束（拖拽起点在渲染层边缘热区时） */
+const HANDLE_WIDTH = 6;
+let dragTimer = null;
+
+function handlePageHtml() {
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    + 'html,body{margin:0;height:100%;cursor:col-resize;background:transparent;overflow:hidden}'
+    + '#bar{position:absolute;top:0;bottom:0;left:2px;width:2px;background:#e4e7ec}'
+    + 'html:hover #bar{background:#1664ff}'
+    + 'html.dragging #bar{background:#1664ff}'
+    + '</style></head><body>'
+    + '<div id="bar"></div>'
+    + '<script>'
+    + 'var dragging=false;'
+    + 'document.addEventListener("mousedown",function(e){'
+    + '  if(e.button!==0)return;'
+    + '  dragging=true;document.documentElement.classList.add("dragging");'
+    + '  e.preventDefault();'
+    + '  console.log("[dsh-drag-start]");'
+    + '});'
+    + 'function end(){if(!dragging)return;dragging=false;'
+    + '  document.documentElement.classList.remove("dragging");'
+    + '  console.log("[dsh-drag-end]");}'
+    + 'document.addEventListener("mouseup",end);'
+    + 'document.addEventListener("mouseleave",function(){if(dragging&&event.buttons===0)end();});'
+    + 'document.addEventListener("mousemove",function(e){if(dragging&&e.buttons===0)end();});'
+    + 'document.addEventListener("keydown",function(e){if(e.key==="Escape")end();});'
+    + 'document.addEventListener("contextmenu",function(e){e.preventDefault();end();});'
+    + '</script></body></html>');
+}
+
+/** 开始拖宽：新宽度用光标屏幕坐标对窗口右缘的**绝对距离**计算 */
+function beginWidthDrag() {
+  if (dragTimer || !state.win) return;
+  const { screen } = require('electron');
+  log('开始拖宽（起始 ' + state.width + 'px）');
+  dragTimer = setInterval(() => {
+    if (!state.win || state.win.isDestroyed()) { endWidthDrag(); return; }
+    const cursor = screen.getCursorScreenPoint();
+    const bounds = state.win.getContentBounds(); // {x,y,width,height} 屏幕坐标（DIP）
+    const right = bounds.x + bounds.width;
+    setWidth(clampWidth(right - cursor.x)); // 向左拖=加宽，向右拖=变窄，绝对跟随
+  }, 16);
+}
+
+function endWidthDrag() {
+  if (!dragTimer) return;
+  clearInterval(dragTimer);
+  dragTimer = null;
+  savePrefs();
+  log('拖宽结束（当前 ' + state.width + 'px）');
+}
+
+function clampWidth(w) {
+  return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(w)));
+}
+
+/* ---------------- 几何 ---------------- */
+
+/** 侧栏几何：右侧 state.width 宽、全高，恒可见（宽度可拖拽调节）；
+ *  折叠按钮钉在侧栏右上角（必须在 view 之后 addChild 才盖在上面）；
+ *  dsh-only 模式下侧栏铺满全窗（主内容已隐藏）。 */
+function relayout() {
+  if (!state.win || !state.view) return;
+  const [w, h] = state.win.getContentSize();
+  state.width = clampWidth(state.width);
+  const vw = state.dshOnly ? w : Math.min(state.width, w);
+  const x = state.dshOnly ? 0 : Math.max(0, w - vw);
+  state.view.setBounds({ x, y: 0, width: vw, height: h });
+  if (state.handle && !state.dshOnly) {
+    state.handle.setBounds({ x: Math.max(0, x - HANDLE_WIDTH + 2), y: 0, width: HANDLE_WIDTH, height: h });
+  } else if (state.handle) {
+    state.handle.setBounds({ x: -HANDLE_WIDTH, y: 0, width: 0, height: h }); // dsh-only 无需分隔条
+  }
+  if (state.collapseBtn) {
+    state.collapseBtn.setBounds({
+      x: Math.max(0, x + vw - COLLAPSE_W - 6), y: 4,
+      width: COLLAPSE_W, height: COLLAPSE_H
+    });
+  }
+  notifyRenderer(state.visible);
+}
+
+function setWidth(w) {
+  state.width = clampWidth(w);
+  relayout();
+}
+
+/* ---------------- 对外 API（main.js 调用） ---------------- */
+
+/** init：接窗口 + 恢复上次可见性/宽度 + 尝试接管驻留服务。默认打开（用户要求）。 */
+function init(win) {
+  state.win = win;
+  win.on('resize', relayout);
+  win.on('closed', () => { state.win = null; });
+  loadPrefs();
+  // 服务启动 + 默认打开（异步不阻塞窗口创建）
+  setImmediate(async () => {
+    await adoptOrStart();
+    if (state.visible) show();
+  });
+}
+
+/** 主界面重启场景：新窗口接入既有 view（服务不重启，交互不中断） */
+function reattach(win) {
+  state.win = win;
+  win.on('resize', relayout);
+  win.on('closed', () => { state.win = null; });
+  if (state.view && state.visible && win.contentView) {
+    try { win.contentView.addChildView(state.view); } catch (e) { /* ignore */ }
+    if (state.handle && win.contentView) {
+      try { win.contentView.addChildView(state.handle); } catch (e) { /* ignore */ }
+    }
+    if (state.collapseBtn && win.contentView) {
+      try { win.contentView.addChildView(state.collapseBtn); } catch (e) { /* ignore */ }
+    }
+    relayout();
+  }
+}
+
+function show() {
+  if (!state.win) return;
+  ensureView();
+  ensureHandle();
+  ensureCollapseBtn();
+  if (state.win.contentView) {
+    // 顺序即 z 序：折叠按钮最后挂 → 盖在 DSH 页面上（右上角恒可点）
+    state.win.contentView.addChildView(state.view);
+    state.win.contentView.addChildView(state.handle);
+    state.win.contentView.addChildView(state.collapseBtn);
+  }
+  state.visible = true;
+  relayout();
+  if (state.status === 'running' && state.url) loadCurrentUrl();
+  else if (state.status === 'starting') showStatusPage(PAGE_STARTING);
+  else if (state.status === 'error') showStatusPage(errorPageHtml(state.lastError || '未知错误'));
+  else {
+    showStatusPage(PAGE_STARTING);
+    startService();
+  }
+  savePrefs();
+}
+
+function ensureHandle() {
+  if (state.handle) return state.handle;
+  const { WebContentsView } = require('electron');
+  const handle = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+  handle.setBackgroundColor('#00000000');
+  handle.webContents.loadURL(handlePageHtml()).catch(() => { /* ignore */ });
+  // 拖拽协议：分隔条页面内 mousedown/mouseup 经 console 消息回传
+  // （拖动中分隔条每帧跟手 → mouseup 必然落在本页 → 松手即停）
+  handle.webContents.on('console-message', (_e, _level, message) => {
+    if (message === '[dsh-drag-start]') beginWidthDrag();
+    else if (message === '[dsh-drag-end]') endWidthDrag();
+  });
+  state.handle = handle;
+  return handle;
+}
+
+/* ---------------- 折叠按钮（侧栏右上角「—」） ----------------
+ * 侧栏主体加载的是 DSH 网页（不能注入 UI），所以折叠按钮是**第三个
+ * WebContentsView**：30x24 小热区，钉在侧栏右上角、恒在 view 之上。
+ * 点击经 console 消息回传主进程 → hide()。展开走 Ctrl+B / 视图菜单。 */
+const COLLAPSE_W = 30;
+const COLLAPSE_H = 24;
+
+function collapsePageHtml() {
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    + 'html,body{margin:0;height:100%;background:rgba(245,246,248,.92);overflow:hidden;'
+    + 'user-select:none;-webkit-app-region:no-drag}'
+    + 'button{width:100%;height:100%;border:none;background:transparent;cursor:pointer;'
+    + 'font-size:13px;line-height:1;color:#4e5969;border-radius:0 0 0 6px}'
+    + 'button:hover{background:#e8eefc;color:#1664ff}'
+    + '</style></head><body>'
+    + '<button id="collapse" title="折叠侧边栏（Ctrl+B 可再展开）">—</button>'
+    + '<script>document.getElementById("collapse").addEventListener("click",function(){'
+    + 'console.log("[dsh-collapse]");});</' + 'script></body></html>');
+}
+
+function ensureCollapseBtn() {
+  if (state.collapseBtn) return state.collapseBtn;
+  const { WebContentsView } = require('electron');
+  const btn = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+  btn.setBackgroundColor('#00000000');
+  btn.webContents.loadURL(collapsePageHtml()).catch(() => { /* ignore */ });
+  btn.webContents.on('console-message', (_e, _level, message) => {
+    if (message !== '[dsh-collapse]') return;
+    if (state.dshOnly) {
+      // 仅侧边栏模式（主界面迭代中）：「—」= 最小化窗口到任务栏
+      // （服务驻留不受影响；任务栏图标点回来即可恢复）
+      if (state.win && !state.win.isDestroyed()) state.win.minimize();
+      return;
+    }
+    log('折叠按钮点击 → 隐藏侧栏');
+    hide();
+  });
+  state.collapseBtn = btn;
+  return btn;
+}
+
+function hide() {
+  if (!state.win) return;
+  if (state.view && state.win.contentView) {
+    try { state.win.contentView.removeChildView(state.view); } catch (e) { /* ignore */ }
+  }
+  if (state.handle && state.win.contentView) {
+    try { state.win.contentView.removeChildView(state.handle); } catch (e) { /* ignore */ }
+  }
+  if (state.collapseBtn && state.win.contentView) {
+    try { state.win.contentView.removeChildView(state.collapseBtn); } catch (e) { /* ignore */ }
+  }
+  state.visible = false;
+  notifyRenderer(false);
+  savePrefs();
+}
+
+function toggle() {
+  state.visible ? hide() : show();
+}
+
+function isVisible() { return state.visible; }
+function getStatus() {
+  return {
+    status: state.status, visible: state.visible, error: state.lastError,
+    width: state.width,
+    servicePid: state.proc ? state.proc.pid : state.servicePid || null,
+    // 本窗口是否**孵化**了这个服务（false = 接管来的驻留服务）；驻留语义下
+    // 这不影响可用性，只用于排查"谁该负责收割"
+    ownedByThisWindow: !!state.proc,
+    resident: state.status === 'running' && !!state.servicePid
+  };
+}
+
+/** 渲染层只需要知道「侧栏占多宽」来让位 —— 不给 url/token */
+function notifyRenderer(visibleFlag) {
+  if (state.win && !state.win.isDestroyed()) {
+    state.win.webContents.send('dsh-sidebar:layout', {
+      visible: !!visibleFlag,
+      width: visibleFlag ? state.width : 0
+    });
+  }
+}
+
+function broadcastStatus() {
+  if (state.win && !state.win.isDestroyed()) {
+    state.win.webContents.send('dsh-sidebar:status', getStatus());
+  }
+}
+
+/* ---------------- 偏好持久化（可见性 + 宽度，跨重启恢复） ---------------- */
+
+function prefsFile() { return path.join(userDataPath(), 'dsh-sidebar-prefs.json'); }
+
+function loadPrefs() {
+  try {
+    const p = JSON.parse(fs.readFileSync(prefsFile(), 'utf8'));
+    if (typeof p.width === 'number') state.width = clampWidth(p.width);
+    // 可见性**不跨启动记忆**（用户语义：每次启动默认打开；折叠只是当次会话状态）
+    state.visible = true;
+  } catch (e) {
+    state.visible = true; // 默认打开
+  }
+}
+
+function savePrefs() {
+  try {
+    // 只存宽度；visible 是会话状态，不持久化（启动永远默认打开）
+    fs.writeFileSync(prefsFile(), JSON.stringify({
+      width: state.width
+    }), 'utf8');
+  } catch (e) { /* 非致命 */ }
+}
+
+/** 应用退出（v0.16.6 驻留语义）：**不收割已就绪的服务**。
+ *
+ *  契约（README「服务驻留独立于主界面」）：重启/升级主界面时侧栏对话不中断 ——
+ *  要实现它，退出路径就不能杀掉服务：
+ *   · 服务 detached + stdio 落文件（无 EPIPE）→ 主界面退出后继续活着；
+ *   · `dsh-service.json` 保留 → 下次启动 adoptExistingService() 直接接管（无需冷启动）；
+ *   · 运行锁 pid 已改指服务（retargetRuntimeLock）→ 锁随服务生死，维护互斥仍成立。
+ *
+ *  唯一例外：服务**尚未就绪**（还在启动 / 启动超时）时退出 —— 此时没有对话可保，
+ *  且半启动进程会占住运行锁让下次启动既接管不了也孵化不了，故照旧收割。
+ *
+ *  想彻底停掉驻留进程：菜单「视图 → 停止 DSH 服务」。 */
+function destroy() {
+  state.shuttingDown = true;
+  endWidthDrag();
+  if (state.logTimer) { clearTimeout(state.logTimer); state.logTimer = null; }
+  if (state.healthTimer) { clearInterval(state.healthTimer); state.healthTimer = null; }
+  if (state.startTimer) { clearInterval(state.startTimer); clearTimeout(state.startTimer); state.startTimer = null; }
+  const resident = state.status === 'running' && !!state.url && !!state.servicePid;
+  if (resident) {
+    // 凭据已在盘上（probeThenLoad 写过）；这里再写一次保证 pid/url 成对且最新
+    writeServiceInfo(state.servicePid, state.url);
+    log('主界面退出：服务驻留 pid=' + state.servicePid + '（不收割，下次启动接管；'
+      + '如需彻底停止用菜单「停止 DSH 服务」）');
+    state.proc = null;      // 断开本进程引用，但**不** taskkill
+    state.procLock = null;  // 锁留给服务（pid=服务 pid），不 release
+  } else if (state.proc) {
+    log('主界面退出：服务尚未就绪 → 收割，避免半启动进程占住运行锁');
+    stopService();
+  } else if (state.procLock) {
+    try { state.procLock.release(); } catch (e) { /* ignore */ }
+    state.procLock = null;
+  }
+}
+
+/** 重启服务（菜单入口）：无论孵化还是接管，都完整收割旧服务并重新孵化。
+ *  驻留语义下"重启"是显式动作 —— 用户主动要求才杀服务。 */
+function restartService() {
+  log('菜单请求：重启 DSH 服务');
+  stopService();
+  state.shuttingDown = false; // stopService 不改它，这里显式复位
+  startService();
+  if (state.visible && state.view) showStatusPage(PAGE_STARTING);
+}
+
+/* ---------------- 仅侧边栏模式（v0.16.5） ----------------
+ * 用途：外部 AI 迭代主界面代码时，导图页面先下线、DSH 侧边栏继续可用。
+ *  · 进入：主 renderer 隐藏（body.dsh-only），侧栏占满全窗；
+ *    此时侧栏「—」= 窗口最小化到任务栏（任务栏图标可复原）；
+ *  · 关窗语义：dsh-only 下点 ✕ 不退出应用 —— 隐藏到托盘式后台
+ *    （窗口保留、服务驻留），任务栏图标可复原；再次进入 dsh-only 关窗同前；
+ *  · 退出：恢复主 renderer 显示（正常窗口）。
+ * 服务生命周期在本模式下完全不变（驻留语义照旧）。 */
+
+function setDshOnly(on) {
+  state.dshOnly = !!on;
+  if (state.win && !state.win.isDestroyed()) {
+    state.win.webContents.send('dsh-sidebar:dsh-only', state.dshOnly);
+    // 侧栏铺满：dsh-only 下让位宽度 = 全窗（渲染层 body.dsh-only 隐藏主内容）
+    notifyRenderer(state.visible);
+    relayout();
+  }
+  log('dsh-only 模式: ' + state.dshOnly);
+}
+
+function isDshOnly() { return state.dshOnly; }
+
+/** dsh-only 下主窗口被要求关闭 → 隐藏到后台（不退出应用、服务不动）。 */
+function hideWindowToBackground() {
+  if (!state.dshOnly) return false; // 非本模式不做拦截（正常退出）
+  if (state.win && !state.win.isDestroyed()) state.win.hide();
+  return true;
+}
+
+/** 从后台恢复窗口（任务栏/再次启动时调）。 */
+function restoreWindow() {
+  if (!state.win || state.win.isDestroyed()) return;
+  if (state.win.isMinimized()) state.win.restore();
+  state.win.show();
+  state.win.focus();
+}
+
+module.exports = {
+  init, reattach, toggle, show, hide, isVisible, getStatus,
+  destroy, startService, stopService, restartService,
+  // adoptOrStart 是对外生命周期入口（先接管后孵化）—— 导出供 headless 驻留测试
+  // scripts/dsh-resident-host.js 使用：没有窗口时也要能驱动同一套服务生命周期。
+  adoptOrStart,
+  beginWidthDrag, endWidthDrag, setWidth,
+  setDshOnly, isDshOnly, hideWindowToBackground, restoreWindow,
+  SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
+};

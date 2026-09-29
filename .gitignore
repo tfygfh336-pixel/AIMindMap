@@ -1,0 +1,50 @@
+# ============================================================
+# AI MindMap .gitignore（v0.11.0 引入本地 Git 仓库；0.13.0 更名）
+# 原则：源码、文档、笔记数据（projects/）入库；依赖与可再生产物忽略
+# ============================================================
+
+# 依赖与构建产物（可再生，clone 后 npm install 恢复）
+# 注意：gitignore 不支持行尾注释（# 只在行首才是注释），
+#       把说明写在同一行会让整行失效 —— build/ 曾因此未被忽略。
+#       build/ = electron-builder 输出（AIMindMap-*-setup.exe），885MB/2.6万文件
+node_modules/
+dist/
+dist-portable/
+build/
+*.log
+
+# 冒烟自检截图（每次 npm run smoke 重新生成）
+smoke-shot.png
+# 冒烟取景记录：分辨率/字节/sha256/像素统计（每次冒烟重写；阶段 2 取景确定性产出）
+smoke-frame.json
+# 冒烟输出重定向留下的日志（调试用，非源码）
+smoke-out.txt
+
+# 系统 / 编辑器杂项
+.DS_Store
+Thumbs.db
+
+# 临时工作目录与备份（本地过程产物，不应入库）
+# backups/ 含 export-json 备份包（单文件可达数 MB），.tmp-* 为脚本中间产物
+backups/
+.tmp-img/
+.tmp-svg/
+*.tmp
+
+# DSH 独立运行包（scripts/vendor-dsh.js 制作，含哈希清单；323MB/2.6万文件不入库）
+vendor/
+
+# 原子写残留（正常不会存在，异常退出时可能留下）
+projects/**/*.tmp
+
+# 变更日志（多路同时编辑的事前避让依据）：本机过程历史，不是笔记数据
+# 由唯一写盘出口顺带产生、有界、可随时删；不进 export-json ⇒ 也不该入库
+projects/**/.changes.jsonl
+
+# 「界面有未保存编辑」的运行时协调信号：**本机进程状态**（含界面 pid），不是数据。
+# 它的内容随界面开关变化，入库会变成恒定的噪音 diff；删掉没有任何损失（见 src/ui-state.js）
+projects/**/.ui-state.json
+
+# 工作产物区（AI 的分析稿/评审稿/读图记录/探针脚本；可随时整目录删除，不入库）
+# 落盘规矩的唯一杂物区 —— 见 SKILL.md 顶部「落盘规矩」与 docs/ARCHITECTURE.md §5
+.review/

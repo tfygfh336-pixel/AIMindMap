@@ -1,0 +1,1020 @@
+<!DOCTYPE html>
+<!-- ⚠️ 历史归档（2026-09 快照）：不是现状、勿据此改动。
+     归档规则见 docs/ARCHITECTURE.md §5（归档族：只增不改、不进 G6 扫描、勿作现状引用）；
+     本文原属工程根下的一次性分析稿，2026-09-25 归位至此；结论可能已被后续实现取代。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>大厂开源 AI 工具核实与 aimindmap 集成分析</title>
+<style>
+  :root {
+    --bg: #fafbfc;
+    --surface: #ffffff;
+    --border: #e1e4e8;
+    --text: #24292e;
+    --text-secondary: #586069;
+    --accent: #0366d6;
+    --accent-light: #f1f8ff;
+    --green: #28a745;
+    --green-bg: #dcffe4;
+    --orange: #e36209;
+    --orange-bg: #fff5b1;
+    --red: #d73a49;
+    --red-bg: #ffeef0;
+    --purple: #6f42c1;
+    --code-bg: #f6f8fa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  /* Header */
+  .report-header {
+    background: linear-gradient(135deg, #1a3a5c 0%, #2d5a87 100%);
+    color: #fff;
+    padding: 48px 40px;
+    border-radius: 12px;
+    margin-bottom: 36px;
+  }
+  .report-header h1 { font-size: 28px; font-weight: 700; margin-bottom: 12px; }
+  .report-header .subtitle { font-size: 16px; opacity: 0.85; margin-bottom: 20px; }
+  .report-header .meta { font-size: 13px; opacity: 0.7; display: flex; gap: 24px; flex-wrap: wrap; }
+
+  /* TOC */
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px 32px;
+    margin-bottom: 36px;
+  }
+  .toc h2 { font-size: 16px; margin-bottom: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+  .toc ol { padding-left: 20px; }
+  .toc li { margin-bottom: 6px; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+
+  /* Sections */
+  section { margin-bottom: 40px; }
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--accent);
+    margin-bottom: 20px;
+    color: var(--text);
+  }
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 24px 0 12px;
+    color: var(--text);
+  }
+  h4 { font-size: 15px; font-weight: 600; margin: 16px 0 8px; }
+  p { margin-bottom: 12px; }
+  ul, ol { padding-left: 24px; margin-bottom: 12px; }
+  li { margin-bottom: 4px; }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin-bottom: 16px;
+  }
+  .card-highlight {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-light);
+  }
+  .card-warning {
+    border-left: 4px solid var(--orange);
+    background: #fffbe6;
+  }
+  .card-danger {
+    border-left: 4px solid var(--red);
+    background: var(--red-bg);
+  }
+  .card-success {
+    border-left: 4px solid var(--green);
+    background: var(--green-bg);
+  }
+
+  /* Badges */
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .badge-green { background: var(--green-bg); color: var(--green); }
+  .badge-orange { background: var(--orange-bg); color: var(--orange); }
+  .badge-red { background: var(--red-bg); color: var(--red); }
+  .badge-blue { background: var(--accent-light); color: var(--accent); }
+  .badge-gray { background: #f1f3f5; color: var(--text-secondary); }
+  .badge-purple { background: #f3f0ff; color: var(--purple); }
+
+  /* Tables */
+  .table-wrap { overflow-x: auto; margin-bottom: 20px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    background: var(--surface);
+  }
+  th {
+    background: #f6f8fa;
+    text-align: left;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  td {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: #fafbfc; }
+  td a { color: var(--accent); text-decoration: none; }
+  td a:hover { text-decoration: underline; }
+
+  /* Code */
+  code {
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin-bottom: 16px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+
+  /* Priority matrix */
+  .priority-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .priority-col {
+    border-radius: 8px;
+    padding: 16px;
+    min-height: 120px;
+  }
+  .priority-col h4 { margin-top: 0; margin-bottom: 10px; font-size: 14px; }
+  .priority-col ul { padding-left: 18px; font-size: 13px; }
+  .priority-direct { background: var(--green-bg); border: 1px solid #b4e0b4; }
+  .priority-cost { background: var(--orange-bg); border: 1px solid #e0d0a0; }
+  .priority-no { background: var(--red-bg); border: 1px solid #e0b4b4; }
+
+  /* Architecture diagram */
+  .arch-diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin-bottom: 20px;
+    font-family: "SFMono-Regular", Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  .footnote { font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+  .source-tag { font-size: 11px; color: var(--text-secondary); font-style: italic; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- ===== HEADER ===== -->
+<div class="report-header">
+  <h1>大厂开源 AI 工具核实与 aimindmap 集成分析</h1>
+  <div class="subtitle">核实"大厂内部 AI 工具开源"说法 · 归纳真正好用的开源 AI 工具 · 分析融入 ai-mind-map 项目的可行性与路径</div>
+  <div class="meta">
+    <span>数据截至：2026-09-25</span>
+    <span>目标项目：ai-mind-map v0.15.0</span>
+    <span>调研方法：GitHub REST API 实时元数据 + 官方仓库 + 权威科技媒体交叉验证</span>
+  </div>
+</div>
+
+<!-- ===== TOC ===== -->
+<div class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#summary">执行摘要：核心结论一览</a></li>
+    <li><a href="#verify">第一部分：信息核实——大厂开源 AI 工具的真相</a></li>
+    <li><a href="#catalog">第二部分：真正好用的开源 AI 工具清单</a></li>
+    <li><a href="#arch">第三部分：aimindmap 架构接入点回顾</a></li>
+    <li><a href="#integration">第四部分：逐工具集成可行性分析</a></li>
+    <li><a href="#priority">第五部分：推荐优先级与实施路线</a></li>
+    <li><a href="#risks">第六部分：风险与注意事项</a></li>
+  </ol>
+</div>
+
+<!-- ===== 1. EXECUTIVE SUMMARY ===== -->
+<section id="summary">
+<h2>一、执行摘要：核心结论一览</h2>
+
+<div class="card card-highlight">
+<h3>核实结论（直接回答用户的疑问）</h3>
+<ol>
+  <li><strong>"大厂把内部代码审查 AI 工具开源"——基本不成立。</strong> 真正由大厂官方开源、定位就是"代码审查 agent"的只有 Google 的 <code>gemini-cli-extensions/code-review</code>（仅 530 stars，实验性质）。PR 上的 AI Code Review（Copilot Code Review、Amazon Q in GitHub、Gemini Code Assist）<strong>全部是闭云 SaaS</strong>，未开源。</li>
+  <li><strong>"Alibaba concat 上下文管理工具"——查无此物。</strong> 多轮精确搜索（含 GitHub org 遍历）均未找到阿里官方以此命名的开源仓库。最接近的是阿里 AgentScope 生态内的 <code>ReMe</code>（Agent 记忆管理组件）。</li>
+  <li><strong>字节跳动真正的上下文管理开源是 <code>OpenViking</code></strong>（火山引擎 VikingDB 团队出品），但需注意其许可证已从早期 Apache-2.0 转为 <strong>AGPL-3.0</strong>，商用自托管有传染性义务。</li>
+  <li><strong>大厂开源的主力是"编码 Agent CLI / SDK / 通用 Agent 框架 / RAG 检索库 / 模型权重"，而非专门的 code review 或上下文管理工具。</strong></li>
+</ol>
+</div>
+
+<div class="card card-success">
+<h3>集成建议优先级（详见第五部分）</h3>
+<div class="priority-grid">
+  <div class="priority-col priority-direct">
+    <h4>🟢 直接可融入</h4>
+    <ul>
+      <li>MCP 生态组合（文档级，零代码改动）</li>
+      <li>本地模型驱动离线 AI（复用 vendor 运行包模式）</li>
+    </ul>
+  </div>
+  <div class="priority-col priority-cost">
+    <h4>🟡 有成本可考虑</h4>
+    <ul>
+      <li>FAISS 语义检索（填补关键词搜索的空白）</li>
+      <li>GraphRAG 式社区摘要（利用已有图结构）</li>
+      <li>DeerFlow 作为批量任务 AI harness</li>
+      <li>Gemini CLI 作为侧栏 AI 备选</li>
+    </ul>
+  </div>
+  <div class="priority-col priority-no">
+    <h4>🔴 不适合</h4>
+    <ul>
+      <li>所有通用 Agent 框架（ADK/MAF/AgentScope/Eino/Strands）</li>
+      <li>代码审查工具（领域不匹配）</li>
+      <li>OpenViking（AGPL 许可证 + 重型依赖）</li>
+      <li>Copilot SDK/CLI（云端锁定，不可自托管）</li>
+    </ul>
+  </div>
+</div>
+</div>
+</section>
+
+<!-- ===== 2. VERIFICATION ===== -->
+<section id="verify">
+<h2>二、信息核实——大厂开源 AI 工具的真相</h2>
+
+<h3>2.1 代码审查工具：说法基本不成立</h3>
+<p>用户在网上刷到的"大厂开源代码审查工具"，经逐一核实后发现<strong>营销口径远大于实际开源</strong>：</p>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>产品/工具</th><th>大厂</th><th>真实状态</th><th>开源？</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>GitHub Copilot Code Review（PR 自动审查）</td>
+      <td>Microsoft/GitHub</td>
+      <td>纯闭源 SaaS，运行在 GitHub 服务器上。2026-07 GA 了 agent skills / MCP 支持，但产品本体不开源。</td>
+      <td><span class="badge badge-red">❌ 闭源</span></td>
+    </tr>
+    <tr>
+      <td>Amazon Q Developer in GitHub（PR 审查）</td>
+      <td>Amazon</td>
+      <td>闭云 SaaS，code review 跑在 AWS 后端。CLI 开源但审查 agent 本身不开源。</td>
+      <td><span class="badge badge-red">❌ 闭源</span></td>
+    </tr>
+    <tr>
+      <td>Google Gemini Code Assist（IDE 插件）</td>
+      <td>Google</td>
+      <td>闭源 SaaS，仅 CLI 和扩展开源。</td>
+      <td><span class="badge badge-red">❌ 闭源</span></td>
+    </tr>
+    <tr>
+      <td>Gemini Code Review 扩展</td>
+      <td>Google</td>
+      <td>Apache-2.0，是 Gemini CLI 的 extension，对 git diff 做审查输出评论。但仅 530 stars，最后更新 2026-03，官方实验性质。</td>
+      <td><span class="badge badge-green">✅ 真开源</span> <span class="badge badge-gray">小众</span></td>
+    </tr>
+    <tr>
+      <td>JetBrains Junie</td>
+      <td>JetBrains</td>
+      <td>闭源商用订阅，未开源。</td>
+      <td><span class="badge badge-red">❌ 闭源</span></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="card card-warning">
+<strong>关键澄清：GitHub Copilot CLI 不是开源。</strong> 虽然放在 <code>github/</code> org 下、源码可见、约 11k stars，但 LICENSE.md 是 GitHub 自定义专有协议：禁止修改、禁止独立再分发、必须作为"提供额外功能的应用"一部分打包，仍需 Copilot 订阅。这是 <strong>source-available</strong>，不是 OSI 认证开源。
+</div>
+
+<h3>2.2 上下文管理工具：Alibaba concat 不存在</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>传闻/工具</th><th>核实结果</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>"Alibaba concat" 上下文管理工具</strong></td>
+      <td><span class="badge badge-red">查无此物</span> 多轮精确搜索（<code>"concat" alibaba LLM context</code>、GitHub org 遍历）均未找到。唯一沾边的是 <code>alibaba/ROLL</code>（RL 训练库）里有个 <code>DataProto.concat()</code> 方法做 batch 维度训练数据拼接，与 LLM 上下文窗口管理无关。</td>
+    </tr>
+    <tr>
+      <td><strong>字节/TikTok 上下文管理开源</strong></td>
+      <td><span class="badge badge-orange">部分属实</span> 真正的项目是 <strong>OpenViking</strong>（火山引擎 VikingDB 团队，非 TikTok 名义），定位"Agent 原生上下文数据库"。但许可证已从 Apache-2.0 转为 <strong>AGPL-3.0</strong>，商用自托管有传染性义务。</td>
+    </tr>
+    <tr>
+      <td><strong>阿里 Agent 记忆管理</strong></td>
+      <td><span class="badge badge-green">存在</span> 阿里通义的 AgentScope 框架内置 <strong>AutoContextMemory</strong>（上下文压缩/卸载/摘要），并有独立组件 <strong>ReMe</strong>（Apache-2.0）。但属于框架内置能力，不能脱离 AgentScope 单独使用。</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3>2.3 真开源 vs 营销口径速判</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>类别</th><th>真开源·可自托管</th><th>源码可见但非开源 / 云端锁定</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>编码 Agent CLI</td>
+      <td>Gemini CLI（换本地模型后可完全自托管）</td>
+      <td>Copilot CLI（GitHub 专有协议）、Amazon Q CLI（需 AWS 后端）</td>
+    </tr>
+    <tr>
+      <td>Agent 框架</td>
+      <td>ADK、MAF、DeerFlow、AgentScope、Eino、Strands</td>
+      <td>Bedrock Agents 托管版（SDK 开源但运行时绑 AWS）</td>
+    </tr>
+    <tr>
+      <td>上下文/记忆</td>
+      <td>ReMe（Apache-2.0）</td>
+      <td>OpenViking（AGPL-3.0，需法务评估）</td>
+    </tr>
+    <tr>
+      <td>RAG/检索</td>
+      <td>FAISS（MIT）、GraphRAG（MIT）</td>
+      <td>Azure AI Search 托管版</td>
+    </tr>
+    <tr>
+      <td>模型权重</td>
+      <td>Qwen3.6（Apache-2.0）、DeepSeek（MIT）、GLM-5（MIT）、Muse Glimmer（Apache-2.0）</td>
+      <td>Llama 4（权重开放但非 OSI 开源，有月活限制条款）</td>
+    </tr>
+    <tr>
+      <td>代码审查</td>
+      <td>Gemini Code Review 扩展（小众实验）</td>
+      <td>Copilot Code Review、Amazon Q Review、Gemini Code Assist（全部闭云 SaaS）</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<!-- ===== 3. CATALOG ===== -->
+<section id="catalog">
+<h2>三、真正好用的开源 AI 工具清单</h2>
+<p class="footnote">以下 star 数、许可证、最近 push 均通过 GitHub REST API 实时查询仓库元数据得出（截至 2026-09-25），非二手转述。</p>
+
+<h3>3.1 编码 Agent CLI / SDK</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>工具</th><th>仓库</th><th>大厂</th><th>许可证</th><th>Stars</th><th>最近活跃</th><th>成熟度</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Gemini CLI</strong></td>
+      <td><a href="https://github.com/google-gemini/gemini-cli">google-gemini/gemini-cli</a></td>
+      <td>Google</td>
+      <td>Apache-2.0</td>
+      <td>~107k</td>
+      <td>2026-09-24</td>
+      <td><span class="badge badge-green">广泛验证</span></td>
+    </tr>
+    <tr>
+      <td><strong>GitHub Spec Kit</strong></td>
+      <td><a href="https://github.com/github/spec-kit">github/spec-kit</a></td>
+      <td>Microsoft/GitHub</td>
+      <td>MIT</td>
+      <td>~139k</td>
+      <td>2026-09-24</td>
+      <td><span class="badge badge-green">广泛验证</span></td>
+    </tr>
+    <tr>
+      <td><strong>GitHub Copilot SDK</strong></td>
+      <td><a href="https://github.com/github/copilot-sdk">github/copilot-sdk</a></td>
+      <td>Microsoft/GitHub</td>
+      <td>MIT</td>
+      <td>~10.5k</td>
+      <td>2026-09-24</td>
+      <td><span class="badge badge-orange">GA 但需订阅</span></td>
+    </tr>
+    <tr>
+      <td><strong>Qwen Code</strong></td>
+      <td><a href="https://github.com/QwenLM/qwen-code">QwenLM/qwen-code</a></td>
+      <td>阿里通义</td>
+      <td>开源</td>
+      <td>~17.4k</td>
+      <td>活跃</td>
+      <td><span class="badge badge-green">活跃</span></td>
+    </tr>
+    <tr>
+      <td>Amazon Q Developer CLI</td>
+      <td><a href="https://github.com/aws/amazon-q-developer-cli">aws/amazon-q-developer-cli</a></td>
+      <td>Amazon</td>
+      <td>Apache-2.0</td>
+      <td>~2k</td>
+      <td>2026-08</td>
+      <td><span class="badge badge-orange">需 AWS 后端</span></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="card">
+<h4>Gemini CLI——目前大厂最"真开源+真活跃"的编码 Agent</h4>
+<p>Google 2025-06 开源的终端 AI agent，Apache-2.0，107k stars。核心能力：在终端里读写文件、跑命令、规划多步任务，原生支持 MCP。CLI 本身开源，默认模型调用 Google Gemini API（需 API key），但可通过配置切换到本地 Ollama 等后端实现<strong>完全自托管</strong>。这是与 aimindmap 的 DSH 侧栏模式最接近的对标项目。</p>
+</div>
+
+<h3>3.2 通用 Agent 框架</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>工具</th><th>仓库</th><th>大厂</th><th>许可证</th><th>Stars</th><th>状态</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>DeerFlow</strong></td>
+      <td><a href="https://github.com/bytedance/deer-flow">bytedance/deer-flow</a></td>
+      <td>字节跳动</td>
+      <td>MIT</td>
+      <td>~82k</td>
+      <td><span class="badge badge-green">极活跃</span> v2.0, 2026-06</td>
+    </tr>
+    <tr>
+      <td><strong>Google ADK</strong></td>
+      <td><a href="https://github.com/google/adk-python">google/adk-python</a></td>
+      <td>Google</td>
+      <td>Apache-2.0</td>
+      <td>~21.6k</td>
+      <td><span class="badge badge-green">活跃</span> v2.9, 2026-09</td>
+    </tr>
+    <tr>
+      <td><strong>Microsoft MAF</strong></td>
+      <td><a href="https://github.com/microsoft/agent-framework">microsoft/agent-framework</a></td>
+      <td>Microsoft</td>
+      <td>MIT</td>
+      <td>~13.8k</td>
+      <td><span class="badge badge-green">活跃</span> 1.0 GA, 2026-04</td>
+    </tr>
+    <tr>
+      <td><strong>AgentScope</strong></td>
+      <td><a href="https://github.com/agentscope-ai/agentscope">agentscope-ai/agentscope</a></td>
+      <td>阿里通义</td>
+      <td>Apache-2.0</td>
+      <td>~22k</td>
+      <td><span class="badge badge-green">活跃</span> v2.0.6, 2026-09</td>
+    </tr>
+    <tr>
+      <td><strong>Eino</strong></td>
+      <td><a href="https://github.com/cloudwego/eino">cloudwego/eino</a></td>
+      <td>字节 CloudWeGo</td>
+      <td>Apache-2.0</td>
+      <td>~12k</td>
+      <td><span class="badge badge-green">活跃</span> Go 原生</td>
+    </tr>
+    <tr>
+      <td>AutoGen</td>
+      <td><a href="https://github.com/microsoft/autogen">microsoft/autogen</a></td>
+      <td>Microsoft</td>
+      <td>MIT</td>
+      <td>~61k</td>
+      <td><span class="badge badge-red">维护模式</span> 转向 MAF</td>
+    </tr>
+    <tr>
+      <td>Semantic Kernel</td>
+      <td><a href="https://github.com/microsoft/semantic-kernel">microsoft/semantic-kernel</a></td>
+      <td>Microsoft</td>
+      <td>MIT</td>
+      <td>~28.6k</td>
+      <td><span class="badge badge-red">维护模式</span> 转向 MAF</td>
+    </tr>
+    <tr>
+      <td>Strands Agents</td>
+      <td><a href="https://github.com/strands-agents/harness">strands-agents/harness</a></td>
+      <td>Amazon/AWS</td>
+      <td>Apache-2.0</td>
+      <td>~6.8k</td>
+      <td><span class="badge badge-green">活跃</span></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="card">
+<h4>DeerFlow——字节跳动最火的开源 Agent 项目</h4>
+<p>2026 年 2 月开源的"长周期 SuperAgent harness"，MIT，82k stars。定位是跑分钟到小时级复杂任务（研究、编码、创作），内置沙箱、持久记忆、子 Agent、技能系统、消息网关。可完全自托管。与 aimindmap 的关联点：它是一个<strong>独立的 AI harness 运行时</strong>，理论上可以像 DSH 一样作为 vendor 运行包嵌入，驱动复杂的笔记批量整理任务。</p>
+</div>
+
+<div class="card card-warning">
+<strong>微软框架格局已变：</strong>AutoGen（61k stars）和 Semantic Kernel（28.6k stars）官方均已进入 <strong>maintenance mode</strong>，微软已合并两者团队推出 <strong>Microsoft Agent Framework (MAF)</strong>，2026 年 4 月 1.0 GA。新项目应直接用 MAF，不要再选 AutoGen。
+</div>
+
+<h3>3.3 RAG / 检索工具</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>工具</th><th>仓库</th><th>大厂</th><th>许可证</th><th>Stars</th><th>定位</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>FAISS</strong></td>
+      <td><a href="https://github.com/facebookresearch/faiss">facebookresearch/faiss</a></td>
+      <td>Meta</td>
+      <td>MIT</td>
+      <td>~40k</td>
+      <td>向量检索事实标准，C++ 核心 + Python 绑定</td>
+    </tr>
+    <tr>
+      <td><strong>GraphRAG</strong></td>
+      <td><a href="https://github.com/microsoft/graphrag">microsoft/graphrag</a></td>
+      <td>Microsoft</td>
+      <td>MIT</td>
+      <td>~33k</td>
+      <td>知识图谱增强 RAG，解决全局问答</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="card">
+<h4>FAISS——与 aimindmap 最相关的检索基础设施</h4>
+<p>Meta 开源的高效相似度搜索库，MIT，40k stars，是绝大多数 RAG 系统的底层检索组件。支持 HNSW/PQ 等索引，向量不进内存也能搜。与 aimindmap 的关联：当前 <code>search</code> 命令是关键词匹配，FAISS 可实现<strong>语义检索</strong>（"找跟这段内容意思相近的笔记"），这是现有能力的真实空白。Node 生态有 <code>faiss-node</code> 绑定。</p>
+</div>
+
+<div class="card">
+<h4>GraphRAG——与 aimindmap 的图结构天然契合</h4>
+<p>微软研究院开源的图增强 RAG pipeline，MIT，33k stars。用 LLM 从非结构化文本抽取实体、建知识图谱、Leiden 聚类、生成社区摘要，解决朴素向量检索"只见树木不见森林"的全局问答问题。与 aimindmap 的关联：aimindmap <strong>本身就是知识图谱</strong>（节点树 + 跨项目链接 + assoc 关联实体），GraphRAG 的"社区摘要"概念可以直接映射到 aimindmap 的子树/关联簇，无需重新建图。</p>
+</div>
+
+<h3>3.4 可本地部署的开源模型（与集成相关）</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>模型</th><th>厂商</th><th>许可证</th><th>可自托管</th><th>备注</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Qwen3.6 系列</strong></td>
+      <td>阿里通义</td>
+      <td>Apache-2.0</td>
+      <td>✅ 完全可</td>
+      <td>商用最自由，CJK 强，GGUF 量化版可消费级跑</td>
+    </tr>
+    <tr>
+      <td><strong>DeepSeek R1/V4</strong></td>
+      <td>深度求索</td>
+      <td>MIT</td>
+      <td>✅ 完全可</td>
+      <td>推理/代码强，MIT 级宽松</td>
+    </tr>
+    <tr>
+      <td><strong>GLM-5.x 系列</strong></td>
+      <td>智谱 AI</td>
+      <td>MIT</td>
+      <td>✅ 完全可</td>
+      <td>长程 Agent 知识型，2026-06 起转 MIT</td>
+    </tr>
+    <tr>
+      <td>Muse Glimmer 30B</td>
+      <td>Meta</td>
+      <td>Apache-2.0</td>
+      <td>✅ 完全可</td>
+      <td>2026-08 发布，端侧 Agent 优化，128K 上下文</td>
+    </tr>
+    <tr>
+      <td>Llama 4</td>
+      <td>Meta</td>
+      <td>Llama 社区许可（非 OSI）</td>
+      <td>⚠️ 有条件</td>
+      <td>月活 7 亿用户上限条款，企业商用需法务审查</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3>3.5 MCP 生态</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>工具</th><th>仓库</th><th>维护方</th><th>许可证</th><th>用途</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>MCP Servers 官方参考集</strong></td>
+      <td><a href="https://github.com/modelcontextprotocol/servers">modelcontextprotocol/servers</a></td>
+      <td>Anthropic（现中立基金会）</td>
+      <td>MIT</td>
+      <td>Filesystem/Git/Fetch/Memory/Sequential Thinking/Time 参考实现</td>
+    </tr>
+    <tr>
+      <td>AWS MCP Servers</td>
+      <td><a href="https://github.com/awslabs/mcp">awslabs/mcp</a></td>
+      <td>Amazon</td>
+      <td>Apache-2.0</td>
+      <td>AWS 工具集成 MCP server，~9.7k stars</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+<div class="footnote">注意：早期 MCP 参考服务器里的 GitHub/Slack/Postgres/Brave Search 已归档，转为各自厂商官方维护；Anthropic 官方现在只维护核心 7 个。</div>
+</section>
+
+<!-- ===== 4. ARCHITECTURE ===== -->
+<section id="arch">
+<h2>四、aimindmap 架构接入点回顾</h2>
+<p>在做集成分析前，先明确 aimindmap 的架构约束和可用接入点——这决定了哪些工具能融、哪些不能。</p>
+
+<div class="arch-diagram">┌─────────────────────────────────────────────────────────────┐
+│  接入层（两种使用者，殊途同归）                                │
+│  A. 人 → Electron 界面（renderer/ + main.js + preload.js）   │
+│     └─ DSH 侧栏（main-dsh-sidebar.js + vendor/dsh 运行包）   │
+│  B. AI → CLI（cli/mm-cli.js）← MCP 包装（scripts/mcp-server）│
+├─────────────────────────────────────────────────────────────┤
+│  共享核心 src/（UMD：Node + 浏览器双端）                      │
+│  schema / markdown / convert / tree-utils / relations /       │
+│  mentions / assoc / links / export-html / query / data-store  │
+├─────────────────────────────────────────────────────────────┤
+│  数据层 projects/&lt;name&gt;/&lt;name&gt;.json + assets/（唯一事实来源）│
+└─────────────────────────────────────────────────────────────┘</div>
+
+<h3>4.1 核心架构约束（决定集成可行性的硬条件）</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>约束</th><th>内容</th><th>对集成的影响</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>零运行时依赖</strong></td>
+      <td>生产代码只用 Node 内置 + 本地 vendor；npm 依赖仅限 electron / jsmind / vitest(dev) / electron-builder(dev)</td>
+      <td>任何需要 npm install 第三方包的集成都违反此原则，除非作为 vendor 运行包隔离</td>
+    </tr>
+    <tr>
+      <td><strong>CLI 是唯一逻辑源</strong></td>
+      <td>业务逻辑只实现一次（src/），CLI 是唯一入口；MCP 只转发 CLI；渲染层不复制业务逻辑</td>
+      <td>新 AI 能力应封装为 CLI 命令 + MCP 工具透传，而不是在渲染层或侧栏里实现</td>
+    </tr>
+    <tr>
+      <td><strong>所有写操作过校验闸门</strong></td>
+      <td>写盘必经 CLI validate（结构 + id 规范 + 悬挂链接 + 悬挂关联成员），原子写盘</td>
+      <td>AI 工具生成的内容写入笔记时，必须走 CLI add/edit，不能直接写 JSON</td>
+    </tr>
+    <tr>
+      <td><strong>不做插件体系</strong></td>
+      <td>已决策不支持插件/主题/脚本扩展；"AI 就是扩展机制"——长尾需求由 AI 通过 CLI/MCP 组合现有原子能力动态完成</td>
+      <td>不应嵌入通用 Agent 框架（ADK/MAF 等），因为 aimindmap 的设计哲学是"暴露工具给外部 Agent"，而非"内部运行 Agent"</td>
+    </tr>
+    <tr>
+      <td><strong>数据是 JSON 节点树</strong></td>
+      <td>不是数据库，无服务端，单文件存储</td>
+      <td>需要数据库/服务端的工具（如 OpenViking）架构不匹配</td>
+    </tr>
+    <tr>
+      <td><strong>vendor 运行包模式已验证</strong></td>
+      <td>DSH 侧栏通过 vendor/dsh 独立运行包 + 哈希清单锁定 + 主进程子进程孵化实现嵌入</td>
+      <td>其他独立运行时（如 Gemini CLI、DeerFlow、本地模型推理引擎）可复用此模式嵌入</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3>4.2 现有 AI 相关能力盘点</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>能力</th><th>实现方式</th><th>局限</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>search</code> 全文检索</td><td>关键词匹配（src/query.js searchNodes）</td><td>无语义理解，同义词/近义词搜不到</td></tr>
+    <tr><td><code>related</code> 相关知识点</td><td>基于链接图的出边+入边双向合并</td><td>只看显式链接，不看内容相似度</td></tr>
+    <tr><td><code>mentions</code> 未链接提及</td><td>文本匹配（节点标题在其他节点详情中出现）</td><td>纯字符串匹配，无语义</td></tr>
+    <tr><td><code>backlinks</code> 反查</td><td>单向链接反查</td><td>只看显式链接</td></tr>
+    <tr><td>DSH 内嵌 AI 侧栏</td><td>vendor/dsh 运行包 + WebContentsView，AI 通过 CLI 操作笔记</td><td>依赖云端模型，无离线能力</td></tr>
+    <tr><td>MCP 服务器</td><td>34 个工具，全部 CLI 透传</td><td>只暴露笔记操作，无 AI 推理能力</td></tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<!-- ===== 5. INTEGRATION ANALYSIS ===== -->
+<section id="integration">
+<h2>五、逐工具集成可行性分析</h2>
+<p>以下对每个有潜在价值的工具，从<strong>接入层、改动量、许可证、与现有能力的关系</strong>四个维度分析。</p>
+
+<h3>5.1 🟢 直接可融入（低改动 / 高价值）</h3>
+
+<div class="card card-success">
+<h4>① MCP 生态组合——零代码改动，文档级集成</h4>
+<p><strong>工具：</strong>modelcontextprotocol/servers 官方参考集（Filesystem/Fetch/Memory/Git 等）</p>
+<p><strong>接入方式：</strong>无需修改 aimindmap 任何代码。在 MCP 客户端（如 DSH、Claude Desktop、Cursor）的配置中，同时加载 aimindmap 的 MCP 服务器和官方参考 MCP 服务器，AI agent 即可同时操作笔记和文件系统/网络。</p>
+<p><strong>示例配置：</strong></p>
+<pre><code>{
+  "mcpServers": {
+    "aimindmap": {
+      "command": "node",
+      "args": ["C:/path/to/ai-mind-map/scripts/mcp-server.js"]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/notes"]
+    },
+    "fetch": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"]
+    }
+  }
+}</code></pre>
+<p><strong>价值：</strong>AI 可以"抓取网页 → 总结 → 写入 aimindmap 节点"全链路自动化，这是用户高频需求（"总结此页面"）。</p>
+<p><strong>优先级：</strong><span class="badge badge-green">立即推荐</span> 仅需在文档中给出配置示例。</p>
+</div>
+
+<div class="card card-success">
+<h4>② 本地模型驱动离线 AI——复用 vendor 运行包模式</h4>
+<p><strong>工具：</strong>Qwen3.6-1.7B / 0.6B（GGUF 量化，Apache-2.0）+ llama.cpp Node 绑定</p>
+<p><strong>接入方式：</strong>复用 DSH 侧栏的 vendor 运行包模式，将 llama.cpp 推理引擎 + 小模型 GGUF 文件打包为 vendor 运行包（哈希清单锁定），主进程孵化子进程运行推理服务，通过本地 HTTP 或 stdio 调用。新增 CLI 命令如 <code>auto-tag</code>（自动打标签）、<code>summarize</code>（节点摘要）、<code>link-suggest</code>（链接建议），内部调用本地模型。</p>
+<p><strong>接入层：</strong>vendor/ 运行包 + CLI 新命令 + MCP 透传</p>
+<p><strong>改动量：</strong>中等。需新增 vendor 运行包管理逻辑（可复用 src/dsh-package.js 的模式）、CLI 命令 3-5 条、模型调用封装。</p>
+<p><strong>体积：</strong>Qwen3.6-0.6B Q4 量化约 400MB，1.7B Q4 约 1.1GB。可作为可选下载组件，不打入默认安装包。</p>
+<p><strong>与现有能力的关系：</strong><strong>互补</strong>。现有 search/related/mentions 都是规则/图算法，本地模型可提供语义理解能力（自动标签、摘要、语义链接建议），且不依赖云端。</p>
+<p><strong>优先级：</strong><span class="badge badge-green">推荐</span> 离线 AI 是 aimindmap 作为桌面笔记工具的天然差异化能力。</p>
+</div>
+
+<h3>5.2 🟡 有成本可考虑（中等改动 / 明确价值）</h3>
+
+<div class="card card-warning">
+<h4>③ FAISS 语义检索——填补关键词搜索的空白</h4>
+<p><strong>工具：</strong>FAISS（Meta，MIT，40k stars）+ Node 绑定（faiss-node）+ 本地嵌入模型</p>
+<p><strong>接入方式：</strong>新增 CLI 命令 <code>semantic-search &lt;项目&gt; &lt;查询文本&gt;</code>，内部维护一个向量索引文件（projects/&lt;项目&gt;/index.faiss），对节点详情做 embedding 后存入 FAISS HNSW 索引，查询时做语义相似度检索。索引在 <code>add/edit/remove</code> 时增量更新。</p>
+<p><strong>接入层：</strong>src/ 新增 semantic.js（纯逻辑）+ CLI 命令 + MCP 透传</p>
+<p><strong>改动量：</strong>较大。需引入 faiss-node 依赖（违反零运行时依赖原则，需作为可选 vendor 组件）、embedding 模型调用（可用本地小模型或 API）、索引文件管理、增量更新逻辑、与现有 search 命令的关系处理。</p>
+<p><strong>与现有能力的关系：</strong><strong>互补</strong>。现有 <code>search</code> 是关键词匹配，FAISS 语义搜索可找到"意思相近但用词不同"的笔记。可作为 <code>search</code> 的 <code>--semantic</code> 选项或独立命令。</p>
+<p><strong>风险：</strong>embedding 质量直接决定搜索效果；索引文件增大项目体积；零运行时依赖原则的突破需要评估。</p>
+<p><strong>优先级：</strong><span class="badge badge-orange">可考虑</span> 语义检索是真实需求，但实现成本不低，建议在本地模型能力落地后再做（复用同一个推理引擎）。</p>
+</div>
+
+<div class="card card-warning">
+<h4>④ GraphRAG 式社区摘要——利用已有图结构</h4>
+<p><strong>工具：</strong>GraphRAG（Microsoft，MIT，33k stars）的"社区摘要"概念，<strong>不直接引入 GraphRAG 本身</strong>（它是 Python pipeline，且需要重新建图）</p>
+<p><strong>接入方式：</strong>aimindmap 本身就是知识图谱（节点树 + 链接 + assoc），无需重新建图。可新增 CLI 命令 <code>cluster-summary &lt;项目&gt; [--depth N]</code>，对节点子树/关联簇调用 LLM 生成社区摘要，写入节点详情或 assoc 正文。这本质是"用 AI 给知识图谱的每个连通分量写摘要"。</p>
+<p><strong>接入层：</strong>CLI 新命令 + src/ 新增 cluster.js（图聚类纯逻辑，可基于已有 links/assoc 做连通分量计算）</p>
+<p><strong>改动量：</strong>中等。图聚类逻辑可复用 src/relations.js 和 src/assoc.js；LLM 调用可走 DSH 侧栏或本地模型；摘要写入走 CLI edit（过校验闸门）。</p>
+<p><strong>与现有能力的关系：</strong><strong>互补</strong>。现有 <code>related --depth 2</code> 可以看到两跳邻域的知识簇，但没有摘要；<code>orphans</code> 可以找到孤立节点。社区摘要填补了"给知识簇写概述"的空白。</p>
+<p><strong>优先级：</strong><span class="badge badge-orange">可考虑</span> 不需要引入重型依赖，核心是图聚类 + LLM 摘要，与 aimindmap 架构天然契合。</p>
+</div>
+
+<div class="card card-warning">
+<h4>⑤ DeerFlow 作为批量任务 AI harness</h4>
+<p><strong>工具：</strong>DeerFlow（字节，MIT，82k stars）——长周期 SuperAgent harness</p>
+<p><strong>接入方式：</strong>作为第二个 vendor 运行包（与 DSH 并列），主进程孵化 DeerFlow 子进程，通过其 CLI/API 驱动复杂的批量笔记任务（如"把这个项目里所有关于 OpenWrt 的节点整理成一篇综述"、"跨项目合并重复知识点"）。DeerFlow 内部通过 MCP 调用 aimindmap 的 CLI 操作笔记。</p>
+<p><strong>接入层：</strong>vendor/ 第二运行包 + main.js 子进程管理（复用 main-dsh-sidebar.js 的孵化/收割模式）</p>
+<p><strong>改动量：</strong>较大。需新增运行包管理、进程生命周期管理、与 DSH 侧栏的协调（避免两个 AI 同时写笔记造成冲突——现有 ui-state 命令可做写前协调）。</p>
+<p><strong>与现有能力的关系：</strong><strong>互补</strong>。DSH 侧栏是"对话式 AI"（人问一句 AI 做一步），DeerFlow 是"长周期任务 AI"（人给一个目标，AI 自主跑几十步）。两者定位不同，可并存。</p>
+<p><strong>风险：</strong>DeerFlow 是 Python 项目，运行时依赖较重；两个 AI harness 并存增加复杂度；长周期任务的中间状态管理。</p>
+<p><strong>优先级：</strong><span class="badge badge-orange">可考虑</span> 但建议在 DSH 侧栏模式稳定运行一段时间后再引入第二 harness。</p>
+</div>
+
+<div class="card card-warning">
+<h4>⑥ Gemini CLI 作为侧栏 AI 备选</h4>
+<p><strong>工具：</strong>Gemini CLI（Google，Apache-2.0，107k stars）</p>
+<p><strong>接入方式：</strong>与 DeerFlow 类似，作为 vendor 运行包嵌入。Gemini CLI 原生支持 MCP，可以直接配置 aimindmap 的 MCP 服务器。它比 DSH 更轻量（纯终端 agent，无 Web UI），适合作为"无 GUI 的后台 AI 操作器"。</p>
+<p><strong>接入层：</strong>vendor/ 运行包 + CLI 包装命令（如 <code>ai-run "任务描述"</code>，内部孵化 Gemini CLI 子进程）</p>
+<p><strong>改动量：</strong>中等。Gemini CLI 是 Go 编译的单二进制，嵌入比 Python 项目简单。需处理 API key 配置、MCP 配置注入、子进程输出解析。</p>
+<p><strong>与现有能力的关系：</strong><strong>部分重叠</strong>。与 DSH 侧栏功能重叠（都是 AI agent 操作笔记），但 Gemini CLI 更轻量、可完全自托管（换本地模型后）、无 Web UI 开销。</p>
+<p><strong>优先级：</strong><span class="badge badge-orange">可考虑</span> 作为 DSH 的轻量替代或补充，尤其适合离线/自托管场景。</p>
+</div>
+
+<h3>5.3 🔴 不适合（架构冲突 / 领域不匹配 / 许可证问题）</h3>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>工具</th><th>不适合的原因</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Google ADK / Microsoft MAF / AgentScope / Eino / Strands</strong></td>
+      <td><strong>设计哲学冲突。</strong> aimindmap 的核心决策是"AI 就是扩展机制"——不内嵌 Agent 框架，而是通过 CLI/MCP 暴露原子能力给外部 Agent。嵌入通用 Agent 框架等于在"暴露工具的工具"里再套一个"运行 Agent 的框架"，架构冗余且违反零运行时依赖原则。</td>
+    </tr>
+    <tr>
+      <td><strong>代码审查工具（Gemini Code Review 扩展等）</strong></td>
+      <td><strong>领域不匹配。</strong> aimindmap 是笔记工具，不是代码仓库管理工具。代码审查 agent 的能力（git diff 分析、PR 评论生成）对笔记操作无直接价值。</td>
+    </tr>
+    <tr>
+      <td><strong>OpenViking</strong></td>
+      <td><strong>许可证 + 架构双重冲突。</strong> (1) AGPL-3.0 许可证有传染性，若 aimindmap 通过网络调用它，理论上需要开源上层代码；(2) 它是一个需要服务端运行的"上下文数据库"，与 aimindmap 的"单文件 JSON、无服务端"架构不匹配；(3) Python 重型依赖违反零运行时依赖原则。</td>
+    </tr>
+    <tr>
+      <td><strong>GitHub Copilot SDK / Copilot CLI</strong></td>
+      <td><strong>云端锁定 + 许可证问题。</strong> SDK 虽 MIT 但推理必须走 GitHub 云端（需 Copilot 订阅），不可自托管；CLI 是 GitHub 自定义专有协议（非 OSI 开源），禁止修改和独立分发。</td>
+    </tr>
+    <tr>
+      <td><strong>Amazon Q Developer CLI</strong></td>
+      <td><strong>云端锁定。</strong> 代码虽 Apache-2.0，但推理必须走 AWS 后端，需 AWS 账号。脱离 AWS 无实际能力。</td>
+    </tr>
+    <tr>
+      <td><strong>ReMe / AgentScope AutoContextMemory</strong></td>
+      <td><strong>框架绑定。</strong> 这是 AgentScope 框架的内置组件，不能脱离 AgentScope 单独使用。而 aimindmap 不嵌入 Agent 框架（见上）。其"对话历史压缩/摘要"概念可借鉴，但不需要引入这个组件。</td>
+    </tr>
+    <tr>
+      <td><strong>GitHub Spec Kit</strong></td>
+      <td><strong>领域不匹配。</strong> Spec-driven development 工具包（spec → plan → tasks → implement），面向软件开发流程，与笔记工具无直接关联。</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<!-- ===== 6. PRIORITY & ROADMAP ===== -->
+<section id="priority">
+<h2>六、推荐优先级与实施路线</h2>
+
+<h3>6.1 优先级矩阵</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>优先级</th><th>工具/方案</th><th>接入层</th><th>改动量</th><th>核心价值</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="badge badge-green">P0 立即</span></td>
+      <td>MCP 生态组合配置文档</td>
+      <td>文档（零代码）</td>
+      <td>极小</td>
+      <td>AI 可同时操作笔记 + 文件系统 + 网络，全链路自动化</td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-green">P1 推荐</span></td>
+      <td>本地模型驱动离线 AI（auto-tag / summarize / link-suggest）</td>
+      <td>vendor 运行包 + CLI 命令 + MCP</td>
+      <td>中等</td>
+      <td>离线语义理解能力，不依赖云端，桌面笔记工具差异化</td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-orange">P2 可考虑</span></td>
+      <td>GraphRAG 式社区摘要（cluster-summary）</td>
+      <td>CLI 命令 + src/ 图聚类</td>
+      <td>中等</td>
+      <td>利用已有图结构生成知识簇摘要，无需重型依赖</td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-orange">P2 可考虑</span></td>
+      <td>FAISS 语义检索（semantic-search）</td>
+      <td>CLI 命令 + vendor 可选组件</td>
+      <td>较大</td>
+      <td>填补关键词搜索空白，找到意思相近的笔记</td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-orange">P3 远期</span></td>
+      <td>Gemini CLI 作为轻量 AI 操作器</td>
+      <td>vendor 运行包 + CLI 包装</td>
+      <td>中等</td>
+      <td>DSH 的轻量替代/补充，可完全自托管</td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-orange">P3 远期</span></td>
+      <td>DeerFlow 作为长周期任务 harness</td>
+      <td>vendor 第二运行包 + 主进程管理</td>
+      <td>较大</td>
+      <td>复杂批量笔记任务的自主执行</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3>6.2 推荐实施路线（分三阶段）</h3>
+
+<div class="card">
+<h4>阶段一：零成本快速赢（1-2 天）</h4>
+<ol>
+  <li><strong>编写 MCP 组合配置文档</strong>：在 docs/ 下新增 <code>MCP-CLIENTS.md</code>，给出 DSH / Claude Desktop / Cursor 等客户端同时加载 aimindmap MCP + 官方参考 MCP（filesystem/fetch/memory）的配置示例。</li>
+  <li><strong>验证"抓取网页 → 总结 → 写入笔记"全链路</strong>：用 DSH 侧栏 + fetch MCP + aimindmap MCP 实测一次，确认可行后写入文档。</li>
+</ol>
+<p><strong>产出：</strong>文档 + 验证记录，零代码改动。</p>
+</div>
+
+<div class="card">
+<h4>阶段二：离线 AI 核心能力（2-4 周）</h4>
+<ol>
+  <li><strong>建立 vendor AI 运行包框架</strong>：复用 src/dsh-package.js 的哈希清单 + 原子切换模式，新建 src/ai-runtime.js 管理本地推理引擎（llama.cpp 或类似）的安装/校验/回滚。</li>
+  <li><strong>嵌入小模型</strong>：Qwen3.6-0.6B Q4 GGUF（约 400MB）作为可选下载组件，不打入默认包。</li>
+  <li><strong>新增 CLI 命令</strong>：
+    <ul>
+      <li><code>auto-tag &lt;项目&gt; &lt;id&gt;</code> — 用本地模型为节点生成标签建议</li>
+      <li><code>summarize &lt;项目&gt; &lt;id&gt;</code> — 生成节点内容摘要</li>
+      <li><code>link-suggest &lt;项目&gt; &lt;id&gt;</code> — 基于内容语义推荐应建立链接的节点</li>
+    </ul>
+  </li>
+  <li><strong>MCP 透传</strong>：在 scripts/mcp-server.js 中为上述命令添加 MCP 工具。</li>
+  <li><strong>测试</strong>：cli-integration.js 加断言，验证模型输出写入时过校验闸门。</li>
+</ol>
+<p><strong>产出：</strong>离线 AI 能力 + 可选模型组件 + 文档。</p>
+</div>
+
+<div class="card">
+<h4>阶段三：语义检索与图摘要（4-8 周，可选）</h4>
+<ol>
+  <li><strong>FAISS 语义检索</strong>（依赖阶段二的推理引擎做 embedding）：
+    <ul>
+      <li>新增 src/semantic.js：embedding 生成 + FAISS 索引管理（增量更新）</li>
+      <li>新增 CLI 命令 <code>semantic-search &lt;项目&gt; &lt;查询&gt; --top-k N</code></li>
+      <li>索引文件存 projects/&lt;项目&gt;/index.faiss，随项目走</li>
+      <li>渲染层可在搜索框加"语义搜索"切换</li>
+    </ul>
+  </li>
+  <li><strong>GraphRAG 式社区摘要</strong>：
+    <ul>
+      <li>新增 src/cluster.js：基于 links + assoc 做连通分量/社区发现（可先用简单的连通分量，后续加 Leiden 聚类）</li>
+      <li>新增 CLI 命令 <code>cluster-summary &lt;项目&gt; [--depth N] [--write]</code>：生成每个知识簇的摘要，<code>--write</code> 时写入 assoc 正文或根节点详情</li>
+      <li>复用阶段二的本地模型或 DSH 侧栏做 LLM 调用</li>
+    </ul>
+  </li>
+</ol>
+<p><strong>产出：</strong>语义检索 + 知识簇摘要，aimindmap 从"结构化笔记"升级为"可语义查询的个人知识库"。</p>
+</div>
+</section>
+
+<!-- ===== 7. RISKS ===== -->
+<section id="risks">
+<h2>七、风险与注意事项</h2>
+
+<div class="card card-danger">
+<h4>许可证风险</h4>
+<ul>
+  <li><strong>OpenViking（AGPL-3.0）</strong>：若通过网络调用，AGPL 的传染性可能要求开源上层代码。<strong>建议不集成</strong>。</li>
+  <li><strong>Llama 4（Llama 社区许可）</strong>：非 OSI 开源，有月活 7 亿用户上限条款。若 aimindmap 未来用户量增长可能触发。<strong>建议优先选 Qwen3.6（Apache-2.0）或 DeepSeek（MIT）</strong>。</li>
+  <li><strong>GitHub Copilot CLI（GitHub 专有协议）</strong>：禁止修改和独立分发。<strong>不应作为依赖嵌入</strong>。</li>
+</ul>
+</div>
+
+<div class="card card-warning">
+<h4>架构原则风险</h4>
+<ul>
+  <li><strong>零运行时依赖原则</strong>：FAISS、本地模型推理引擎等都需要引入第三方依赖。建议将这些作为<strong>可选 vendor 组件</strong>（与 DSH 运行包同模式），不打入核心依赖，用户按需下载。核心 <code>npm install</code> 仍保持零运行时依赖。</li>
+  <li><strong>CLI 唯一逻辑源原则</strong>：所有 AI 生成的内容写入笔记时，必须走 CLI add/edit（过校验闸门），禁止 AI 工具直接写 JSON 文件。</li>
+  <li><strong>不嵌入 Agent 框架原则</strong>：不要因为"ADK/MAF 很火"就嵌入。aimindmap 的定位是"AI 可操作的笔记数据层"，不是"AI 应用运行时"。外部 Agent（DSH / Gemini CLI / DeerFlow）通过 MCP/CLI 操作笔记即可。</li>
+</ul>
+</div>
+
+<div class="card card-warning">
+<h4>数据安全风险</h4>
+<ul>
+  <li><strong>多 AI 并发写入</strong>：若同时运行 DSH 侧栏 + Gemini CLI + DeerFlow，多个 AI 可能同时写同一项目。现有 <code>ui-state</code> 命令可做写前协调（检查是否有未保存编辑），但需扩展为"AI 写入锁"机制，避免并发覆盖。</li>
+  <li><strong>本地模型输出质量</strong>：小模型（0.6B/1.7B）的标签建议/摘要质量可能不稳定，应设计为"建议 → 用户确认 → 写入"模式，而非自动写入。</li>
+  <li><strong>向量索引文件</strong>：FAISS 索引文件是二进制，不进 git。需在 .gitignore 中排除，并在文档中说明索引可重建（<code>semantic-search --rebuild</code>）。</li>
+</ul>
+</div>
+
+<div class="card">
+<h4>信息核实的局限性声明</h4>
+<ul>
+  <li>star 数和仓库元数据通过 GitHub REST API 查询于 2026-09-25，后续会变化。</li>
+  <li>"Alibaba concat 不存在"的结论基于多轮搜索和 GitHub org 遍历，但不能完全排除存在于非 GitHub 平台（如 GitLab、Gitee）或内部代码托管的可能性。</li>
+  <li>OpenViking 的许可证状态（AGPL-3.0）基于 PyPI 0.3.6+ 的标注和仓库 LICENSE 文件，早期版本（0.2.x）为 Apache-2.0，用户若需使用应锁定早期版本并自行评估。</li>
+  <li>大厂内部工具（如 Google Critique、Microsoft 内部 code review 系统）本身可能开源了基础组件（如 Gerrit），但 AI 审查插件层未开源，本报告聚焦 AI 工具层。</li>
+</ul>
+</div>
+</section>
+
+<!-- ===== FOOTER ===== -->
+<div style="text-align:center; color: var(--text-secondary); font-size: 13px; margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border);">
+  <p>大厂开源 AI 工具核实与 aimindmap 集成分析 · 数据截至 2026-09-25</p>
+  <p>调研方法：GitHub REST API 实时元数据 + 官方仓库核实 + 权威科技媒体交叉验证</p>
+</div>
+
+</div>
+</body>
+</html>

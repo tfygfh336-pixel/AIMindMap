@@ -1,0 +1,37 @@
+{
+  "name": "ai-mind-map",
+  "productName": "AI MindMap",
+  "version": "0.16.1",
+  "description": "面向 AI 与人协作的智能笔记工具：思维导图式笔记 + 人用界面 + AI 用 CLI/MCP（Electron + jsMind，AI MindMap）",
+  "main": "main.js",
+  "author": "Doubao",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "test": "vitest run --pool=threads",
+    "verify": "node scripts/verify.js",
+    "cli": "node cli/mm-cli.js",
+    "facts": "node scripts/doc-facts.js",
+    "facts:write": "node scripts/doc-facts.js --write",
+    "check:encoding": "node scripts/encoding-check.js",
+    "check:docs": "node scripts/docs-registry-check.js",
+    "check:rules": "node scripts/rules-consistency.js",
+    "docs:registry": "node scripts/docs-registry-check.js --write",
+    "dsh:e2e": "node scripts/dsh-e2e.js",
+    "dsh:resident": "node scripts/dsh-resident.js",
+    "dsh:vendor": "node scripts/vendor-dsh.js",
+    "dsh:maint": "node scripts/dsh-maintenance.js",
+    "dsh:ratio": "node scripts/dsh-token-ratio.js",
+    "dsh:probe": "node scripts/dsh-assembly-probe.js",
+    "dist": "electron-builder --win nsis",
+    "dist:portable": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^26.0.15",
+    "jsmind": "^0.9.1",
+    "vitest": "^5.0.0"
+  }
+}

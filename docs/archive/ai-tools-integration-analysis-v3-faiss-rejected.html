@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<!-- ⚠️ 历史归档（2026-09 快照）：不是现状、勿据此改动。
+     归档规则见 docs/ARCHITECTURE.md §5（归档族：只增不改、不进 G6 扫描、勿作现状引用）；
+     本文原属工程根下的一次性分析稿，2026-09-25 归位至此；结论可能已被后续实现取代。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>aimindmap 开源 AI 工具集成分析 v3——FAISS 剔除与语义检索轻量方案重审</title>
+<style>
+  :root {
+    --bg: #fafbfc; --surface: #fff; --border: #e1e4e8; --text: #24292e;
+    --text-secondary: #586069; --accent: #0366d6; --accent-light: #f1f8ff;
+    --green: #28a745; --green-bg: #dcffe4; --orange: #e36209; --orange-bg: #fff5b1;
+    --red: #d73a49; --red-bg: #ffeef0; --purple: #6f42c1; --code-bg: #f6f8fa;
+    --diff-add: #e6ffec; --diff-del: #ffebe9; --diff-change: #fff8c5;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; font-size: 15px; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  .report-header { background: linear-gradient(135deg, #1a3a5c 0%, #2d5a87 100%); color: #fff; padding: 40px; border-radius: 12px; margin-bottom: 32px; }
+  .report-header .version-badge { display: inline-block; background: #f0adb7; color: #8a1f2d; padding: 3px 12px; border-radius: 4px; font-size: 12px; font-weight: 700; margin-bottom: 12px; }
+  .report-header h1 { font-size: 25px; font-weight: 700; margin-bottom: 10px; }
+  .report-header .subtitle { font-size: 15px; opacity: 0.85; margin-bottom: 16px; }
+  .report-header .meta { font-size: 13px; opacity: 0.7; display: flex; gap: 24px; flex-wrap: wrap; }
+
+  .diff-banner { background: var(--diff-change); border: 1px solid #d4a72c; border-radius: 8px; padding: 16px 20px; margin-bottom: 32px; font-size: 14px; }
+  .diff-banner strong { color: #8a6d00; }
+
+  h2 { font-size: 21px; font-weight: 700; padding-bottom: 10px; border-bottom: 2px solid var(--accent); margin-bottom: 18px; margin-top: 36px; }
+  h3 { font-size: 17px; font-weight: 600; margin: 22px 0 10px; }
+  h4 { font-size: 15px; font-weight: 600; margin: 14px 0 8px; }
+  p { margin-bottom: 12px; }
+  ul, ol { padding-left: 24px; margin-bottom: 12px; }
+  li { margin-bottom: 4px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 18px 22px; margin-bottom: 14px; }
+  .card-highlight { border-left: 4px solid var(--accent); background: var(--accent-light); }
+  .card-warning { border-left: 4px solid var(--orange); background: #fffbe6; }
+  .card-danger { border-left: 4px solid var(--red); background: var(--red-bg); }
+  .card-success { border-left: 4px solid var(--green); background: var(--green-bg); }
+  .card-diff-add { border-left: 4px solid var(--green); background: var(--diff-add); }
+  .card-diff-del { border-left: 4px solid var(--red); background: var(--diff-del); }
+
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .badge-green { background: var(--green-bg); color: var(--green); }
+  .badge-orange { background: var(--orange-bg); color: var(--orange); }
+  .badge-red { background: var(--red-bg); color: var(--red); }
+  .badge-blue { background: var(--accent-light); color: var(--accent); }
+  .badge-gray { background: #f1f3f5; color: var(--text-secondary); }
+  .badge-purple { background: #f3f0ff; color: var(--purple); }
+  .badge-add { background: var(--diff-add); color: #1a7f37; border: 1px solid #aceebb; }
+  .badge-del { background: var(--diff-del); color: #cf222e; border: 1px solid #f0b7b7; }
+  .badge-change { background: var(--diff-change); color: #8a6d00; border: 1px solid #e0c94a; }
+
+  .table-wrap { overflow-x: auto; margin-bottom: 18px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--surface); }
+  th { background: #f6f8fa; text-align: left; padding: 10px 12px; border: 1px solid var(--border); font-weight: 600; white-space: nowrap; }
+  td { padding: 10px 12px; border: 1px solid var(--border); vertical-align: top; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  td a { color: var(--accent); text-decoration: none; }
+
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+  pre { background: var(--code-bg); padding: 14px; border-radius: 6px; overflow-x: auto; margin-bottom: 14px; font-size: 12.5px; line-height: 1.5; }
+  pre code { background: none; padding: 0; }
+
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+  .compare-col { border-radius: 8px; padding: 16px; }
+  .compare-col h4 { margin-top: 0; margin-bottom: 8px; font-size: 14px; }
+  .compare-col ul { padding-left: 18px; font-size: 13px; }
+  .compare-a { background: var(--accent-light); border: 1px solid #b0d4f1; }
+  .compare-b { background: var(--green-bg); border: 1px solid #b4e0b4; }
+  .compare-c { background: #f3f0ff; border: 1px solid #d0c4f0; }
+
+  .footnote { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+
+  .reason-block { background: var(--red-bg); border: 1px solid #f0b7b7; border-radius: 8px; padding: 16px 20px; margin-bottom: 12px; }
+  .reason-block h4 { color: var(--red); margin-top: 0; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- HEADER -->
+<div class="report-header">
+  <div class="version-badge">REVISION v3 · FAISS 剔除与语义检索轻量方案重审</div>
+  <h1>aimindmap 开源 AI 工具集成分析 v3</h1>
+  <div class="subtitle">推翻 v2"FAISS 提升为 P1 唯一真空白"的判断——量级不匹配 + 违背零依赖铁律 + embedding 来源自相矛盾，三重论证剔除 FAISS，归位为"语义检索能力"并给出轻量替代方案</div>
+  <div class="meta">
+    <span>数据截至：2026-09-25</span>
+    <span>目标项目：ai-mind-map v0.15.0（DSH 侧栏 v0.16.2）</span>
+    <span>v1：ai-tools-open-source-integration-analysis.html</span>
+    <span>v2：ai-tools-integration-analysis-v2-dsh-aware.html</span>
+  </div>
+</div>
+
+<!-- DIFF BANNER -->
+<div class="diff-banner">
+  <strong>⚠ v2 的核心误判：</strong>v2 把 FAISS 语义检索从 P2 提升为 P1，称其为"DSH 能力覆盖不到的唯一真实空白"。但经技术审视，这个判断在三个维度上站不住脚：(1) 个人笔记量级（几千~几万节点）下 FAISS 的 ANN 索引是过度设计；(2) FAISS 是 C++ 库，Node/Electron 集成违背零运行时依赖铁律；(3) FAISS 必须先有 embedding，走云端则与 DSH 重叠，走本地则绕回已被 v2 降级为 P3 的本地模型路线——v2 的两个结论自相矛盾。v3 在此基础上全部修正。
+</div>
+
+<!-- ===== 0. v2→v3 差异总览 ===== -->
+<section>
+<h2>零、v2 → v3 差异总览</h2>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>维度</th><th>v2 结论</th><th>v3 修正</th><th>变化</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>FAISS 语义检索</td>
+      <td>P1，"DSH 覆盖不到的唯一真空白"</td>
+      <td><strong>剔除，判为"过度设计，不适合"</strong>，写入不适合清单</td>
+      <td><span class="badge badge-del">剔除</span></td>
+    </tr>
+    <tr>
+      <td>语义检索能力</td>
+      <td>等同于 FAISS</td>
+      <td><strong>与 FAISS 解耦</strong>：语义检索是能力，FAISS 只是实现之一；给出三种轻量替代方案</td>
+      <td><span class="badge badge-change">修正</span></td>
+    </tr>
+    <tr>
+      <td>语义检索优先级</td>
+      <td>P1（默认要建）</td>
+      <td><strong>降级为"待验证/有条件"</strong>：先实测 DSH 读树定位能力，再决定是否建索引</td>
+      <td><span class="badge badge-del">降级</span></td>
+    </tr>
+    <tr>
+      <td>轻量替代方案</td>
+      <td>无（只提 FAISS）</td>
+      <td><strong>新增三方案对比</strong>：A 纯 JS 线性余弦、B 图传播、C 复用 DSH 读树</td>
+      <td><span class="badge badge-add">新增</span></td>
+    </tr>
+    <tr>
+      <td>"先验证后建设"门槛</td>
+      <td>无</td>
+      <td><strong>新增</strong>：语义检索建设前必须先过 DSH 读树实测验证门槛</td>
+      <td><span class="badge badge-add">新增</span></td>
+    </tr>
+    <tr>
+      <td>embedding 来源取舍</td>
+      <td>未正面回答（与本地模型降级矛盾）</td>
+      <td><strong>诚实表述</strong>：云端 API 与 DSH 重叠、本地小模型回到 P3 路线，两者各有代价，需在验证阶段实测决定</td>
+      <td><span class="badge badge-change">修正</span></td>
+    </tr>
+    <tr>
+      <td>其余结论（DSH 复用、本地模型 P3、DeerFlow P3、GraphRAG/Gemini CLI 砍掉）</td>
+      <td>—</td>
+      <td><strong>维持不变</strong></td>
+      <td><span class="badge badge-gray">不变</span></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<!-- ===== 1. FAISS 为什么不适合 ===== -->
+<section>
+<h2>一、FAISS 为什么不适合 aimindmap（三条论证）</h2>
+
+<div class="reason-block">
+<h4>理由一：量级不匹配——FAISS 是为百万~十亿级向量设计的</h4>
+<p>FAISS 的核心价值是<strong>近似最近邻（ANN）索引</strong>（IVF 倒排、HNSW 图、PQ 乘积量化），解决的是"向量太多、全量扫描太慢"的问题。它的典型应用场景是搜索引擎（数十亿文档向量）、推荐系统（数亿用户/物品向量）。</p>
+<p>aimindmap 是<strong>个人笔记工具</strong>，单项目节点数在几千到几万量级。即使取上限 10 万节点、每个节点 768 维 float32 向量，全量线性扫描的计算量是 10万 × 768 = 7680 万次浮点运算——在现代 CPU 上<strong>几毫秒</strong>即可完成。这还没算上：实际查询时可以先按标签/项目/层级过滤，候选集往往只有几百到几千节点。</p>
+<p>在这个量级下，FAISS 的 IVF/HNSW/PQ 索引<strong>纯属过度设计</strong>：索引构建需要聚类训练、增量更新复杂（HNSW 的删除是已知难题）、索引文件比原始向量还大。线性扫描反而更简单、更可靠、零维护。</p>
+</div>
+
+<div class="reason-block">
+<h4>理由二：违背"零运行时依赖"铁律——C++ 库在 Node/Electron 中的集成噩梦</h4>
+<p>aimindmap 的架构铁律（ARCHITECTURE.md §4 原则 4）明确规定：<strong>"生产代码只用 Node 内置 + 本地 vendor；npm 依赖仅限 electron / jsmind / vitest(dev) / electron-builder(dev)"</strong>。</p>
+<p>FAISS 是 C++ 库，在 Node/Electron 中集成只有两条路，两条都违背铁律：</p>
+<ul>
+  <li><strong>Native 编译绑定（faiss-node 等）</strong>：需要 prebuild 二进制或 node-gyp 现场编译。问题链：(1) prebuild 二进制与 Electron ABI 版本不匹配时需要 rebuild；(2) asar 打包时 native 模块需要 unpack 处理；(3) Windows/Linux/macOS 三平台各需一套 prebuild；(4) FAISS 本身依赖 OpenBLAS/MKL，进一步增加 native 依赖链。这与 DSH 的 vendor 自包含运行包模式<strong>完全不同</strong>——DSH 是预打包的完整运行时（哈希锁定、原子切换），而 faiss-node 是需要编译集成的 native 模块。</li>
+  <li><strong>起 Python 子进程</strong>：用 Python 的 faiss-cpu 做检索，Node 端通过 stdio/HTTP 调用。这直接引入 Python 运行时依赖，违背零运行时依赖原则，且增加进程管理、版本兼容、打包分发的复杂度。</li>
+</ul>
+</div>
+
+<div class="reason-block">
+<h4>理由三：embedding 来源与 v2 自身矛盾——"FAISS 升 P1"和"本地模型降 P3"打架</h4>
+<p>FAISS 只做向量相似度搜索，它<strong>不生成 embedding</strong>。要使用 FAISS，必须先有一个 embedding 模型把节点文本转为向量。embedding 来源只有两个选择，而两个选择都与 v2 的结论矛盾：</p>
+<ul>
+  <li><strong>走云端 embedding API</strong>（如豆包/OpenAI embedding 接口）：那么语义检索的"本地增强"意义丧失——每次搜索都要调云端 API，与直接让 DSH AI 读树做语义定位<strong>功能重叠</strong>（DSH 本身就是云端大模型，读整棵树做语义判断比 embedding 相似度更精准）。而且增加了 API 调用成本和延迟。</li>
+  <li><strong>走本地小 embedding 模型</strong>（如 Qwen embedding、bge-small）：这又绕回了 v2 已经降级为 P3 的"本地模型"路线。v2 明确说本地模型"仅离线/隐私/批量场景按需启用"，那么依赖本地 embedding 的 FAISS 语义检索也应该是 P3，而不是 P1。</li>
+</ul>
+<p><strong>结论：v2 的"FAISS 提升 P1"与"本地模型降级 P3"是互相矛盾的两个结论。</strong>如果本地模型是 P3，那么依赖 embedding 的语义检索（无论用 FAISS 还是别的索引）都不可能是 P1。</p>
+</div>
+
+<div class="card card-danger">
+<h4>FAISS 正式进入"不适合"清单</h4>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>工具</th><th>不适合的原因</th><th>严重程度</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>FAISS</strong></td>
+      <td>① 量级不匹配（几万节点线性扫描几毫秒，ANN 索引过度设计）；② 违背零运行时依赖铁律（C++ native 绑定或 Python 子进程）；③ embedding 来源自相矛盾（云端与 DSH 重叠，本地绕回 P3）</td>
+      <td><span class="badge badge-red">三条均成立，彻底剔除</span></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+</div>
+</section>
+
+<!-- ===== 2. 语义检索能力的轻量替代方案 ===== -->
+<section>
+<h2>二、语义检索能力的轻量替代方案（不依赖 FAISS）</h2>
+
+<p>剔除 FAISS 不等于否定"语义检索"这个能力。<strong>语义检索是能力，FAISS 只是实现之一</strong>。在个人笔记量级下，有三种更轻量的替代方案：</p>
+
+<div class="compare-grid">
+  <div class="compare-col compare-a">
+    <h4>方案 A：纯 JS 线性余弦</h4>
+    <ul>
+      <li><strong>原理</strong>：节点 embedding 存 JSON（与项目 JSON 同目录或独立 .embeddings.json），查询时计算查询向量与所有节点向量的余弦相似度，取 top-k</li>
+      <li><strong>索引</strong>：无索引，全量线性扫描</li>
+      <li><strong>依赖</strong>：零新依赖（纯 JS 数组运算，<code>Array.prototype.map/reduce</code> 即可）</li>
+      <li><strong>性能</strong>：10 万节点 × 768 维 ≈ 几毫秒（现代 CPU）</li>
+      <li><strong>增量更新</strong>：节点 add/edit 时更新对应向量，O(1)</li>
+      <li><strong>embedding 来源</strong>：仍需解决（见第四节）</li>
+    </ul>
+  </div>
+  <div class="compare-col compare-b">
+    <h4>方案 B：图传播</h4>
+    <ul>
+      <li><strong>原理</strong>：aimindmap 本身是知识图谱（节点树 + 跨项目链接 + assoc 关联实体）。从种子节点沿关联边（links/backlinks/assoc）扩散，按传播深度和边类型打分</li>
+      <li><strong>索引</strong>：无需向量，复用已有图结构</li>
+      <li><strong>依赖</strong>：零新依赖（复用 src/relations.js、src/links.js、src/assoc.js）</li>
+      <li><strong>性能</strong>：图遍历 O(节点数 × 平均度数)，极快</li>
+      <li><strong>增量更新</strong>：无需维护，图结构实时反映</li>
+      <li><strong>embedding 来源</strong>：不需要 embedding！纯结构语义</li>
+      <li><strong>局限</strong>：只能找到"有显式关联"的节点，找不到"内容相似但未建链接"的节点</li>
+    </ul>
+  </div>
+  <div class="compare-col compare-c">
+    <h4>方案 C：复用 DSH 读树</h4>
+    <ul>
+      <li><strong>原理</strong>：不建任何索引。DSH AI 通过 <code>read --brief</code> 读取项目结构（省 40%+ token），用云端大模型直接做语义定位——"找跟 TCP 三次握手相关的笔记"时，大模型读节点标题+摘要即可判断相关性</li>
+      <li><strong>索引</strong>：无</li>
+      <li><strong>依赖</strong>：零（复用已有 DSH + CLI）</li>
+      <li><strong>性能</strong>：受 token 限制，大树需分批读或先按标签/层级过滤</li>
+      <li><strong>增量更新</strong>：无需维护</li>
+      <li><strong>embedding 来源</strong>：不需要（大模型直接理解语义）</li>
+      <li><strong>局限</strong>：依赖云端、大树有 token 上限、每次搜索都要调 LLM</li>
+    </ul>
+  </div>
+</div>
+
+<h3>2.1 三方案对比矩阵</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>维度</th><th>A 纯 JS 线性余弦</th><th>B 图传播</th><th>C 复用 DSH 读树</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>新依赖</td><td><span class="badge badge-green">零</span></td><td><span class="badge badge-green">零</span></td><td><span class="badge badge-green">零</span></td></tr>
+    <tr><td>需要 embedding</td><td><span class="badge badge-red">是</span></td><td><span class="badge badge-green">否</span></td><td><span class="badge badge-green">否</span></td></tr>
+    <tr><td>语义理解深度</td><td>中（向量相似度）</td><td>低（仅结构关联）</td><td><span class="badge badge-green">高（大模型理解）</span></td></tr>
+    <tr><td>找到"未建链接但内容相似"的节点</td><td><span class="badge badge-green">能</span></td><td><span class="badge badge-red">不能</span></td><td><span class="badge badge-green">能</span></td></tr>
+    <tr><td>离线可用</td><td>取决于 embedding 来源</td><td><span class="badge badge-green">是</span></td><td><span class="badge badge-red">否</span></td></tr>
+    <tr><td>大树（>1万节点）表现</td><td><span class="badge badge-green">快（几毫秒）</span></td><td><span class="badge badge-green">快</span></td><td>受 token 限制，需分批</td></tr>
+    <tr><td>每次搜索成本</td><td>极低（本地计算）</td><td>极低（本地计算）</td><td>LLM 调用（token + 延迟）</td></tr>
+    <tr><td>实现复杂度</td><td>低（~100 行 JS）</td><td><span class="badge badge-green">极低（复用已有图逻辑）</span></td><td><span class="badge badge-green">零（已有）</span></td></tr>
+    <tr><td>与现有 related/backlinks 的关系</td><td>互补</td><td><strong>重叠</strong>（related --depth 2 已做两跳图传播）</td><td>互补（DSH 可组合 related/search/mentions）</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>2.2 方案 B 的关键发现：图传播与现有能力高度重叠</h3>
+<div class="card card-warning">
+<p>方案 B（图传播）听起来很美好，但仔细对照 aimindmap 现有能力会发现：<strong><code>related &lt;项目&gt; &lt;id&gt; --depth 2</code> 已经在做"从种子节点沿关联边扩散两跳"的事</strong>。它合并了出边+入边，标注了 out/in/both，本质就是图传播的一个实例。</p>
+<p>方案 B 能增加的价值仅限于：(1) 扩散到 N 跳（N>2）；(2) 按边类型（link vs assoc vs 同父节点）加权打分；(3) 跨项目传播。这些是 <code>related</code> 命令的增量增强，不需要新框架，在现有 src/relations.js 上扩展即可。</p>
+<p><strong>结论：方案 B 不应作为独立的"语义检索"方案，而应作为 <code>related</code> 命令的增强选项（如 <code>--depth N --weighted</code>）来考虑。</strong></p>
+</div>
+</section>
+
+<!-- ===== 3. 语义检索是不是真空白？ ===== -->
+<section>
+<h2>三、语义检索是不是真空白？——先验证后建设</h2>
+
+<h3>3.1 v2 的默认假设被推翻</h3>
+<p>v2 默认"语义检索是 DSH 覆盖不到的真空白"，因此直接把 FAISS 升为 P1。但这个假设<strong>未经实测验证</strong>。在个人笔记量级下，DSH 读整棵树 + 现有 related/backlinks/mentions 组合可能已经覆盖了大部分真实需求：</p>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>用户需求</th><th>现有能力能否覆盖</th><th>覆盖方式</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>"找跟这个节点相关的笔记"</td>
+      <td><span class="badge badge-green">已覆盖</span></td>
+      <td><code>related --depth 2</code>（两跳图邻域）+ <code>backlinks</code>（反查）</td>
+    </tr>
+    <tr>
+      <td>"找提到某个概念但没建链接的笔记"</td>
+      <td><span class="badge badge-green">已覆盖</span></td>
+      <td><code>mentions --cross</code>（未链接提及，跨项目）</td>
+    </tr>
+    <tr>
+      <td>"找包含关键词的笔记"</td>
+      <td><span class="badge badge-green">已覆盖</span></td>
+      <td><code>search</code>（全文关键词检索）+ <code>--tag</code> 按标签</td>
+    </tr>
+    <tr>
+      <td>"找意思相近但用词不同的笔记"（真语义）</td>
+      <td><span class="badge badge-orange">部分覆盖</span></td>
+      <td>DSH AI 读树 + 大模型语义判断，但受 token 限制且需调 LLM</td>
+    </tr>
+    <tr>
+      <td>"有内容但无人引用的孤立笔记"</td>
+      <td><span class="badge badge-green">已覆盖</span></td>
+      <td><code>orphans</code>（关系审计）</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3>3.2 "先验证后建设"门槛</h3>
+<div class="card card-highlight">
+<p><strong>v3 的核心方法论修正：语义检索建设前必须先过验证门槛，不得默认要建。</strong></p>
+<p>验证步骤（在投入任何语义索引开发之前）：</p>
+<ol>
+  <li><strong>实测 DSH 读树定位能力</strong>：用真实项目（节点数 ≥1000），让 DSH AI 执行 10 个典型语义查询（如"找跟 OpenWrt 固件编译相关的笔记""找所有关于电源管理的节点"），记录：(a) 能否找到目标节点；(b) 消耗的 token 数；(c) 响应延迟；(d) 误报/漏报率。</li>
+  <li><strong>实测 related --depth 2 + mentions 的覆盖率</strong>：对同样的 10 个查询，先用现有 related/mentions/search 组合，看能覆盖几个。</li>
+  <li><strong>定义"语义检索不可替代"的场景</strong>：只有当 DSH 读树 + 现有命令组合<strong>反复失败</strong>的场景（如"大树下快速找到意思相近但完全无链接的节点"）出现 ≥3 次，才证明需要独立的语义索引。</li>
+  <li><strong>通过门槛后再选方案</strong>：优先方案 A（纯 JS 线性余弦，零依赖），不考虑 FAISS。embedding 来源在第四节取舍。</li>
+</ol>
+</div>
+
+<h3>3.3 验证门槛通过后的优先级</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>阶段</th><th>条件</th><th>动作</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>验证期</strong></td>
+      <td>默认状态</td>
+      <td>实测 DSH 读树 + 现有命令的语义定位能力，记录失败案例</td>
+    </tr>
+    <tr>
+      <td><strong>增强期</strong></td>
+      <td>related 命令的图传播能力不足</td>
+      <td>扩展 <code>related --depth N --weighted</code>（方案 B 的增量增强），零新依赖</td>
+    </tr>
+    <tr>
+      <td><strong>建设期</strong></td>
+      <td>验证期发现 ≥3 个不可替代的语义检索场景</td>
+      <td>实施方案 A（纯 JS 线性余弦），embedding 来源按第四节取舍</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<!-- ===== 4. embedding 来源取舍 ===== -->
+<section>
+<h2>四、embedding 来源的诚实取舍</h2>
+
+<p>如果验证门槛通过、决定建设语义索引（方案 A），就必须面对 embedding 来源问题。v2 回避了这个问题，v3 给出诚实表述：</p>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>embedding 来源</th><th>优点</th><th>缺点</th><th>与其他结论的关系</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>云端 embedding API</strong>（豆包/OpenAI）</td>
+      <td>质量高、零本地依赖、无需维护模型</td>
+      <td>每次搜索/索引更新都要调 API（有成本和延迟）；语义检索失去"本地增强"意义；与 DSH 读树做语义定位<strong>功能重叠</strong>（DSH 本身就是云端大模型，直接读树判断比 embedding 相似度更精准）</td>
+      <td>与"复用 DSH"路线重叠，性价比低</td>
+    </tr>
+    <tr>
+      <td><strong>本地小 embedding 模型</strong>（bge-small / Qwen embedding，~100-500MB）</td>
+      <td>离线可用、零 API 成本、数据不出本机、检索延迟低（本地计算）</td>
+      <td>增加 ~100-500MB 体积；需要推理引擎（llama.cpp / ONNX Runtime）；小模型 embedding 质量有限；这又绕回了已降级为 P3 的"本地模型"路线</td>
+      <td>与"本地模型 P3"路线绑定，语义检索随本地模型一起降级</td>
+    </tr>
+    <tr>
+      <td><strong>不做 embedding（方案 B/C）</strong></td>
+      <td>零体积、零依赖、零维护</td>
+      <td>方案 B 只能找有显式关联的节点；方案 C 依赖云端且受 token 限制</td>
+      <td>与 v2/v3 的"复用 DSH + 零依赖"路线一致</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="card card-highlight">
+<h4>诚实结论</h4>
+<p><strong>在 aimindmap 当前的架构约束（零运行时依赖 + DSH 已内置 + 个人笔记量级）下，语义索引的性价比不高。</strong></p>
+<ul>
+  <li>走云端 embedding → 与 DSH 重叠，不如直接让 DSH 读树做语义定位。</li>
+  <li>走本地 embedding → 与本地模型路线绑定，应随本地模型一起作为 P3 按需启用，而不是独立的 P1。</li>
+  <li>不做 embedding → 用方案 B（related 增强）+ 方案 C（DSH 读树）覆盖大部分需求，零成本。</li>
+</ul>
+<p><strong>因此，语义检索（方案 A）的正确优先级是"待验证 + 有条件 P3"，而非 v2 的 P1。</strong>只有当验证门槛通过、且用户明确需要离线语义检索时，才随本地模型一起建设。</p>
+</div>
+</section>
+
+<!-- ===== 5. 更新后的优先级矩阵 ===== -->
+<section>
+<h2>五、更新后的推荐优先级与接入点（v3）</h2>
+
+<h3>5.1 优先级矩阵</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>优先级</th><th>方案</th><th>接入层</th><th>改动量</th><th>v2→v3 变化</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="badge badge-green">P0</span></td>
+      <td><strong>DSH 能力边界文档 + 指针 skill 优化</strong></td>
+      <td>docs/ + dsh-home/skills/</td>
+      <td>极小</td>
+      <td><span class="badge badge-gray">不变</span></td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-green">P0</span></td>
+      <td><strong>DSH 常用操作快捷指令（可选）</strong></td>
+      <td>renderer/ + IPC 注入 prompt</td>
+      <td>小</td>
+      <td><span class="badge badge-gray">不变</span></td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-green">P0</span></td>
+      <td><strong>DSH 读树语义定位实测验证</strong></td>
+      <td>无代码（实测记录）</td>
+      <td>极小</td>
+      <td><span class="badge badge-add">新增</span> 语义检索建设的前置门槛</td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-orange">P2</span></td>
+      <td><strong>related 命令增强（--depth N --weighted）</strong></td>
+      <td>src/relations.js + CLI + MCP</td>
+      <td>小</td>
+      <td><span class="badge badge-add">新增</span> 方案 B 的增量增强，零新依赖</td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-orange">P2</span></td>
+      <td><strong>实测 DSH MCP 客户端支持 + fetch skill</strong></td>
+      <td>dsh-home/skills/</td>
+      <td>小</td>
+      <td><span class="badge badge-gray">不变</span></td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-gray">待验证</span></td>
+      <td><strong>语义检索（纯 JS 线性余弦，非 FAISS）</strong></td>
+      <td>src/semantic.js + CLI + MCP</td>
+      <td>中</td>
+      <td><span class="badge badge-del">P1→待验证</span> 剔除 FAISS，先过验证门槛</td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-orange">P3</span></td>
+      <td><strong>本地模型（含 embedding，离线/隐私场景）</strong></td>
+      <td>vendor/ + CLI</td>
+      <td>大</td>
+      <td><span class="badge badge-gray">不变</span> 语义检索随此路线一起建设</td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-orange">P3</span></td>
+      <td><strong>DeerFlow 长周期任务 harness</strong></td>
+      <td>vendor/ 第二运行包</td>
+      <td>大</td>
+      <td><span class="badge badge-gray">不变</span></td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-red">不适合</span></td>
+      <td><strong>FAISS</strong></td>
+      <td>—</td>
+      <td>—</td>
+      <td><span class="badge badge-del">P1→剔除</span> 量级不匹配 + 违背零依赖 + embedding 矛盾</td>
+    </tr>
+    <tr>
+      <td><span class="badge badge-red">砍掉</span></td>
+      <td>GraphRAG 社区摘要（独立命令）、Gemini CLI 第二运行包</td>
+      <td>—</td>
+      <td>—</td>
+      <td><span class="badge badge-gray">不变</span></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3>5.2 不适合清单（v3 更新版）</h3>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>工具/方案</th><th>不适合的原因</th><th>首次列入版本</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>通用 Agent 框架（ADK/MAF/AgentScope/Eino/Strands）作为 npm 库</td><td>与已有 DSH 功能重叠 + 违反零运行时依赖</td><td>v1</td></tr>
+    <tr><td>代码审查工具（Gemini Code Review 等）</td><td>领域不匹配（笔记工具 vs 代码仓库）</td><td>v1</td></tr>
+    <tr><td>OpenViking</td><td>AGPL-3.0 传染性 + 需要服务端 + Python 重型依赖</td><td>v1</td></tr>
+    <tr><td>Copilot SDK/CLI</td><td>云端锁定 + 非 OSI 开源许可证</td><td>v1</td></tr>
+    <tr><td>Amazon Q Developer CLI</td><td>云端锁定（需 AWS 后端）</td><td>v1</td></tr>
+    <tr><td>GraphRAG 社区摘要（独立命令）</td><td>DSH 已能读树→调模型→写摘要，无需新命令</td><td>v2</td></tr>
+    <tr><td>Gemini CLI 第二运行包</td><td>与 DSH 高度重叠，差异点由本地模型路线覆盖</td><td>v2</td></tr>
+    <tr><td><strong>FAISS</strong></td><td><strong>量级不匹配 + 违背零运行时依赖 + embedding 来源自相矛盾</strong></td><td><span class="badge badge-add">v3 新增</span></td></tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<!-- ===== 6. 更新后的实施路线 ===== -->
+<section>
+<h2>六、更新后的实施路线（v3）</h2>
+
+<div class="card">
+<h4>阶段一：DSH 能力最大化 + 语义需求验证（1-2 周，零/低成本）</h4>
+<ol>
+  <li><strong>DSH 能力边界文档</strong>（docs/DSH-CAPABILITIES.md）：列出 DSH 已能做的 AI 操作，防止重复建设。</li>
+  <li><strong>优化指针 skill</strong>：增加常用 AI 操作模式示例。</li>
+  <li><strong>实测 DSH 读树语义定位</strong>（新增验证门槛）：用真实项目跑 10 个典型语义查询，记录 DSH 读树 + related/mentions/search 组合的覆盖率和失败案例。</li>
+  <li><strong>实测 DSH MCP 客户端支持</strong>：确认是否支持外部 MCP，若不支持写 fetch skill。</li>
+  <li><strong>（可选）侧栏快捷指令按钮</strong>：一键打标签/摘要/抓网页存笔记。</li>
+</ol>
+<p><strong>产出：</strong>文档 + skill 优化 + 语义需求验证报告。零新运行时，零新 CLI 命令。</p>
+</div>
+
+<div class="card">
+<h4>阶段二：related 命令增强（1 周，零新依赖）</h4>
+<ol>
+  <li>如果验证期发现"图传播深度不够"是主要痛点，扩展 <code>related --depth N --weighted</code>：支持 N 跳扩散、按边类型（link/assoc/同父节点）加权打分。</li>
+  <li>复用 src/relations.js，零新依赖。MCP 透传。cli-integration.js 加断言。</li>
+</ol>
+<p><strong>产出：</strong>更强大的图关联检索。这是方案 B 的正确落地方式。</p>
+</div>
+
+<div class="card">
+<h4>阶段三：按需建设（仅在验证门槛通过后，4-8 周）</h4>
+<ol>
+  <li><strong>语义检索（方案 A：纯 JS 线性余弦）</strong>：仅当阶段一验证发现 ≥3 个不可替代的语义检索场景时建设。embedding 来源随本地模型路线决定（云端则与 DSH 重叠不建议，本地则随 P3 一起）。</li>
+  <li><strong>本地模型（含 embedding）</strong>：仅离线/隐私/批量场景。嵌入 llama.cpp + Qwen embedding 小模型作为可选 vendor 组件。语义检索的 embedding 由此提供。</li>
+  <li><strong>DeerFlow</strong>：仅长周期批量场景。第二 vendor 运行包。</li>
+</ol>
+<p><strong>产出：</strong>按需启用的扩展能力。如果验证门槛不通过，此阶段可无限期推迟。</p>
+</div>
+</section>
+
+<!-- ===== 7. v1/v2/v3 三版对照 ===== -->
+<section>
+<h2>七、v1 / v2 / v3 三版关键结论对照</h2>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>议题</th><th>v1</th><th>v2</th><th>v3</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>核心判断</td>
+      <td>"不嵌入 Agent 框架，AI 是外部扩展"</td>
+      <td>"已嵌入 DSH，不嵌入的是 npm 库形式的 Agent 框架"</td>
+      <td><span class="badge badge-gray">同 v2</span></td>
+    </tr>
+    <tr>
+      <td>本地模型（auto-tag 等）</td>
+      <td>P1 推荐</td>
+      <td>P3 降级（DSH 已覆盖云端推理）</td>
+      <td><span class="badge badge-gray">同 v2</span></td>
+    </tr>
+    <tr>
+      <td>语义检索</td>
+      <td>P2（FAISS）</td>
+      <td>P1（FAISS，"唯一真空白"）</td>
+      <td><span class="badge badge-del">待验证/有条件</span> FAISS 剔除，先过 DSH 读树验证门槛</td>
+    </tr>
+    <tr>
+      <td>FAISS</td>
+      <td>P2 可考虑</td>
+      <td>P1 提升</td>
+      <td><span class="badge badge-red">剔除，不适合</span></td>
+    </tr>
+    <tr>
+      <td>语义检索实现方案</td>
+      <td>FAISS</td>
+      <td>FAISS</td>
+      <td><span class="badge badge-add">三方案对比</span> A 纯 JS 线性 / B 图传播(=related增强) / C DSH 读树</td>
+    </tr>
+    <tr>
+      <td>GraphRAG 社区摘要</td>
+      <td>P2</td>
+      <td>砍掉（DSH 已覆盖）</td>
+      <td><span class="badge badge-gray">同 v2</span></td>
+    </tr>
+    <tr>
+      <td>Gemini CLI 第二运行包</td>
+      <td>P3</td>
+      <td>砍掉（与 DSH 重叠）</td>
+      <td><span class="badge badge-gray">同 v2</span></td>
+    </tr>
+    <tr>
+      <td>DeerFlow</td>
+      <td>P3</td>
+      <td>P3（长周期场景）</td>
+      <td><span class="badge badge-gray">同 v2</span></td>
+    </tr>
+    <tr>
+      <td>"先验证后建设"门槛</td>
+      <td>无</td>
+      <td>无</td>
+      <td><span class="badge badge-add">新增</span> 语义检索建设前必须实测 DSH 读树能力</td>
+    </tr>
+    <tr>
+      <td>related 命令增强</td>
+      <td>未提及</td>
+      <td>未提及</td>
+      <td><span class="badge badge-add">新增 P2</span> 方案 B 的正确落地方式</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<!-- ===== 8. 风险 ===== -->
+<section>
+<h2>八、风险与注意事项（v3 更新）</h2>
+
+<div class="card card-danger">
+<h4>FAISS 剔除后的残留风险</h4>
+<ul>
+  <li><strong>如果未来项目规模突破 10 万节点</strong>：纯 JS 线性扫描的性能可能下降。但届时可以再评估是否需要引入更高效的索引（不一定是 FAISS，也可以是纯 JS 的 HNSW 实现如 <code>hnswlib-node</code>——但那同样是 native 模块，需重新评估零依赖原则）。当前个人笔记量级下不构成问题。</li>
+  <li><strong>embedding 质量的不确定性</strong>：如果验证门槛通过、决定建设方案 A，本地小 embedding 模型（bge-small 等）在中文笔记上的质量需要实测。可能出现"向量相似度不如关键词搜索准确"的情况。建议先在小数据集上对比 embedding 相似度 vs DSH 读树判断的准确率。</li>
+</ul>
+</div>
+
+<div class="card card-warning">
+<h4>验证门槛的执行风险</h4>
+<ul>
+  <li><strong>验证样本偏差</strong>：如果实测用的项目节点太少（<500）或领域太窄，结论可能不具代表性。建议用最大的真实项目（节点数 ≥1000）做验证。</li>
+  <li><strong>"不可替代场景"的定义主观性</strong>：≥3 个不可替代场景是经验阈值，不是硬指标。如果用户明确表达"我就是要离线语义搜索"，可以跳过验证门槛直接进入阶段三（但仍不建议用 FAISS）。</li>
+</ul>
+</div>
+
+<div class="card">
+<h4>继承自 v1/v2 的风险（不变）</h4>
+<ul>
+  <li>DSH 绑定豆包云端模型，路线 A（复用 DSH）依赖云端可用。</li>
+  <li>双 harness 并发写入风险（DeerFlow 场景）。</li>
+  <li>指针 skill 的脆弱性（DSH AI 可能不按 skill 操作，需强调必须用 mm-cli）。</li>
+  <li>DSH 是否支持 MCP 客户端未实测确认。</li>
+</ul>
+</div>
+</section>
+
+<!-- FOOTER -->
+<div style="text-align:center; color: var(--text-secondary); font-size: 13px; margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border);">
+  <p>aimindmap 开源 AI 工具集成分析 v3 · FAISS 剔除与语义检索轻量方案重审 · 2026-09-25</p>
+  <p>v1：ai-tools-open-source-integration-analysis.html · v2：ai-tools-integration-analysis-v2-dsh-aware.html</p>
+</div>
+
+</div>
+</body>
+</html>

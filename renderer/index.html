@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data:; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:; script-src 'self' file:">
+<title>AI MindMap — 智能笔记工具</title>
+<link rel="stylesheet" href="vendor/jsmind.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 顶部工具栏（flex-wrap：拖宽侧栏压缩空间时按钮自动换行，不被遮挡） -->
+  <div id="toolbar">
+    <span id="app-title">AI MindMap</span>
+    <select id="project-select" title="切换笔记项目"></select>
+    <input id="search-box" type="text" placeholder="全文搜索节点（Enter 搜索）" title="全文搜索：标题/详情/图片备注/标签">
+    <button id="btn-save" title="保存到磁盘（Ctrl+S）。未保存时标题栏会显示 ● —— 关闭窗口或切换项目前请先保存">💾 保存</button>
+    <span class="spacer"></span>
+    <button id="btn-undo" title="撤销（Ctrl+Z）">↶</button>
+    <button id="btn-redo" title="重做（Ctrl+Y）">↷</button>
+    <button id="btn-expand" title="展开全部">展开</button>
+    <button id="btn-collapse" title="收起全部">收起</button>
+    <button id="btn-reset-view" title="还原视图：把导图移回初始位置（根节点居中），防止把画布挪丢后找不到">还原视图</button>
+    <button id="btn-palette" title="命令面板（Ctrl+P）：一个框里搜节点与命令">⌘ 命令</button>
+    <span id="status-text" title="最近操作状态"></span>
+  </div>
+
+  <!-- 关系审计面板（app-audit.js 渲染内容） -->
+  <div id="audit-panel" class="overlay" style="display:none">
+    <div class="audit-card">
+      <div class="audit-head">
+        <span class="audit-title">关系审计</span>
+        <button id="audit-close" title="关闭">✕</button>
+      </div>
+      <div id="audit-body"></div>
+    </div>
+  </div>
+
+  <!-- 命令面板（app-palette.js 渲染内容） -->
+  <div id="palette" class="overlay palette-overlay" style="display:none">
+    <div class="palette-card">
+      <input id="palette-input" type="text" placeholder="输入以搜索节点或命令…（↑↓ 选择，Enter 执行，Esc 关闭）" autocomplete="off">
+      <div id="palette-list"></div>
+    </div>
+  </div>
+
+  <!-- 主体：导图全屏 + 节点上方浮动详情 -->
+  <div id="main">
+    <div id="mindmap-container">
+      <div id="jsmind_container"></div>
+      <div id="empty-hint" style="display:none">（暂无项目 — 在工具栏选择或导入）</div>
+      <!-- 浮动详情框模板：可同时存在多个（未锁定的被复用、小锁/屏幕锁的保留），拖动即自动上小锁。
+           由 app.js 克隆后挂在 #mindmap-container 内；尺寸随导图缩放同步缩放。 -->
+      <template id="fd-tpl">
+        <div class="float-detail" style="display:none">
+          <div class="fd-head">
+            <span class="fd-title">节点详情</span>
+            <span class="fd-head-btns">
+              <button class="fd-lock-map" title="小锁：锁定到导图位置，拖动导图时本框跟着移动（再点一次解除）">📌</button>
+              <button class="fd-lock-screen" title="大锁：锁定到屏幕位置，本框的大小和位置都不再变化（再点一次解除）">🖥</button>
+              <button class="fd-close" title="关闭本详情框">✕</button>
+            </span>
+          </div>
+          <div class="fd-scroll">
+            <div class="fd-tags"></div>
+            <div class="fd-detail-content"></div>
+            <div class="fd-images-content"></div>
+            <!-- 关联笔记入口（二级页面）；单独容器以免与「相关知识点」的异步渲染互相覆盖 -->
+            <div class="fd-assoc"></div>
+            <div class="fd-related"></div>
+            <div class="fd-files-content"></div>
+          </div>
+          <!-- 改大小把手：四边 + 四角（与 Windows 窗口一致） -->
+          <span class="fd-rs fd-rs-n" data-rs="n"></span>
+          <span class="fd-rs fd-rs-s" data-rs="s"></span>
+          <span class="fd-rs fd-rs-w" data-rs="w"></span>
+          <span class="fd-rs fd-rs-e" data-rs="e"></span>
+          <span class="fd-rs fd-rs-nw" data-rs="nw"></span>
+          <span class="fd-rs fd-rs-ne" data-rs="ne"></span>
+          <span class="fd-rs fd-rs-sw" data-rs="sw"></span>
+          <span class="fd-rs fd-rs-se" data-rs="se"></span>
+        </div>
+      </template>
+      <!-- 搜索结果面板（全文搜索） -->
+      <div id="search-results" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- 图片灯箱：双击图片放大预览，滚轮缩放 -->
+  <div id="lightbox" class="overlay" style="display:none">
+    <div id="lightbox-stage">
+      <img id="lightbox-img" alt="图片预览">
+      <div id="lightbox-hint">滚轮缩放 · 双击关闭</div>
+    </div>
+  </div>
+
+  <!-- 图片悬停提示（跟随鼠标，显示"双击浏览"） -->
+  <div id="fd-img-tip"></div>
+
+  <!-- 文件预览层：md 渲染为 HTML / pdf 内嵌 iframe（Chromium PDF viewer） -->
+  <div id="file-preview" class="overlay" style="display:none">
+    <div id="fp-head">
+      <span id="fp-title">文件预览</span>
+      <span id="fp-caption"></span>
+      <button id="fp-open" title="用系统默认应用打开">系统打开</button>
+      <button id="fp-close" title="关闭预览（Esc）">✕</button>
+    </div>
+    <div id="fp-body">
+      <div id="fp-md" style="display:none"></div>
+      <iframe id="fp-pdf" style="display:none"></iframe>
+    </div>
+  </div>
+
+  <!-- 编辑对话框（手动编辑核心：标题/详情/展开状态） -->
+  <div id="edit-dialog" class="overlay" style="display:none">
+    <div class="dialog-box">
+      <h3 id="edit-dialog-title">编辑节点</h3>
+      <label>标题 <input id="edit-topic" type="text"></label>
+      <label>标签（可选，逗号分隔）
+        <input id="edit-tags" type="text" placeholder="标签1,标签2">
+      </label>
+      <label>详情（HTML 标签，如 &lt;h3&gt; &lt;p&gt; &lt;ul&gt; &lt;b&gt; &lt;table&gt;；直接粘贴 HTML）
+        <textarea id="edit-detail" rows="8"></textarea>
+      </label>
+      <label class="chk"><input id="edit-expanded" type="checkbox"> 展开</label>
+      <div class="dialog-actions">
+        <button id="edit-cancel">取消</button>
+        <button id="edit-ok" class="primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 图片导入对话框 -->
+  <div id="image-dialog" class="overlay" style="display:none">
+    <div class="dialog-box">
+      <h3>添加图片</h3>
+      <label>图片文件 <input id="image-file" type="file" accept="image/*"></label>
+      <label>内容备注（AI 阅读时凭此理解图片）
+        <textarea id="image-caption" rows="3" placeholder="例如：整体结构示意图，重点看各模块之间的依赖关系"></textarea>
+      </label>
+      <label>出处（可选）<input id="image-source" type="text" placeholder="例如：某教材 图1-8 / 某网页链接"></label>
+      <label>标签（可选，逗号分隔）<input id="image-tags" type="text" placeholder="对比图,教材图"></label>
+      <div class="dialog-actions">
+        <button id="image-cancel">取消</button>
+        <button id="image-ok" class="primary">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 附件（文件）导入对话框：文件复制进项目 attachments/，随笔记一起保存/打包 -->
+  <div id="file-dialog" class="overlay" style="display:none">
+    <div class="dialog-box">
+      <h3>添加附件</h3>
+      <label>文件 <input id="file-file" type="file"></label>
+      <label>内容备注（AI 阅读时凭此理解附件用途）
+        <textarea id="file-caption" rows="3" placeholder="例如：某规范原文 PDF，关键定义与流程图见此文档"></textarea>
+      </label>
+      <label>出处（可选）<input id="file-source" type="text" placeholder="例如：某规范名称 / 文档链接"></label>
+      <div class="dialog-actions">
+        <button id="file-cancel">取消</button>
+        <button id="file-ok" class="primary">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 关联笔记编辑对话框（二级页面内「编辑笔记」）：
+       正文按 Markdown 写，保存经 IPC → CLI assoc-edit --note-md（转换与校验都在 CLI 侧） -->
+  <div id="assoc-dialog" class="overlay" style="display:none">
+    <div class="dialog-box">
+      <h3>编辑关联笔记</h3>
+      <label>标题（可选；留空则用成员主题拼接）
+        <input id="assoc-title" type="text" placeholder="例如：TCP 三件套之间的关系">
+      </label>
+      <label>笔记内容（Markdown；介绍这些节点之间的关联知识）
+        <textarea id="assoc-note" rows="12" placeholder="例如：&#10;- **建连**（三次握手）解决「双方都在线且序号对齐」，是可靠传输的前提&#10;- **可靠传输**在其上叠加确认与重传&#10;- **流量控制**再叠加接收窗口，避免打爆接收方"></textarea>
+      </label>
+      <div class="dialog-actions">
+        <span class="fd-hint" style="margin-right:auto">Ctrl/⌘+Enter 保存</span>
+        <button id="assoc-cancel">取消</button>
+        <button id="assoc-ok" class="primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 脚本：第三方库（本地 vendor）→ 共享核心（UMD）→ 应用 -->
+  <script src="vendor/jsmind.js"></script>
+  <script src="../src/history.js"></script>
+  <script src="../src/tree-utils.js"></script>
+  <script src="../src/schema.js"></script>
+  <script src="../src/convert.js"></script>
+  <script src="../src/config.js"></script>
+  <script src="../src/palette-rank.js"></script>
+  <!-- 应用模块（拆分自原 app.js，共享 window.MM；app-core.js 必须最先、app.js 必须最后） -->
+  <script src="app-core.js"></script>
+  <script src="app-view.js"></script>
+  <script src="app-detail.js"></script>
+  <script src="app-detail-drag.js"></script>
+  <script src="app-detail-content.js"></script>
+  <script src="app-media.js"></script>
+  <script src="app-actions.js"></script>
+  <script src="app-audit.js"></script>
+  <script src="app-palette.js"></script>
+  <script src="app-assoc.js"></script>
+  <script src="app.js"></script>
+  <script src="editor.js"></script>
+  <script src="contextmenu.js"></script>
+</body>
+</html>
