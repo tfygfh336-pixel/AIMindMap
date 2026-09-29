@@ -278,7 +278,8 @@ const SCHEMA_FIELDS = [
   ['meta.rootMode', false], ['meta.author', false], ['meta.version', false],
   ['format', true], ['data', true], ['assoc', true],
   ['id', true], ['topic', true], ['children', true], ['detail', true],
-  ['images', true], ['files', true], ['links', true], ['tags', true]
+  ['images', true], ['files', true], ['links', true], ['tags', true],
+  ['localPath', true], ['background', false]
 ];
 
 function checkContractCoverage(root) {
@@ -309,6 +310,25 @@ function checkContractCoverage(root) {
           + '但 `docs/DATA-FORMAT.md` 没写 —— 契约自述"只读本文档就能写出正确解析器"，'
           + '缺字段会让接手者漏掉它（`meta.layout` 就是这么漏掉的）' });
     }
+  });
+
+  /* ---- 反向：schema 里出现过的字段必须都在清单里 ----
+   * 上一条只做「清单 → schema/契约」单向，于是**新字段只要不写进清单就完全不被检查** ——
+   * 这正是本工程反复治过的"要求过窄"（判定存在但对新对象不生效）。
+   * 实测：`localPath` 加进 schema 后一路绿灯，直到做这次补强才发现它从未被覆盖；
+   * `background` 同样长期不在清单里。
+   * 口径：`src/schema.js` 里出现的 `node.<标识符>`，每一个都必须在 SCHEMA_FIELDS 里登记。
+   * 报错即教程：告诉人"加进 SCHEMA_FIELDS（并确认 DATA-FORMAT 也写了）"。 */
+  const fieldIds = new Set(SCHEMA_FIELDS.map(([f]) => f.split('.').pop()));
+  const seen = new Set();
+  for (const m of schema.matchAll(/\bnode\.([A-Za-z_][A-Za-z0-9_]*)/g)) seen.add(m[1]);
+  seen.forEach((f) => {
+    if (fieldIds.has(f)) return;
+    problems.push({ kind: 'contract-stale', rel: 'scripts/docs-registry-check.js',
+      msg: '字段清单检查表漏了新字段 `' + f + '`：它出现在 `src/schema.js`，但不在 `SCHEMA_FIELDS` 里 —— '
+        + '不登记就**永远不会被检查**（本条检查是"清单 → 契约"单向的）。'
+        + '请把它加进 `SCHEMA_FIELDS`（第二项标 true/false 表示 schema 是否校验它），'
+        + '并确认 `docs/DATA-FORMAT.md` 也写了它' });
   });
   return problems;
 }

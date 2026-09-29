@@ -67,6 +67,9 @@
         if (Array.isArray(n.data.files) && n.data.files.length) out.files = n.data.files;
         if (Array.isArray(n.data.links) && n.data.links.length) out.links = n.data.links;
         if (n.data.background) out.background = n.data.background;
+        // 本机文件夹路径：**必须在这里平铺**，否则界面保存（整树写回）会把这个字段丢掉 ——
+        // 与曾经"保存不丢 assoc"是同一类静默数据丢失（有专门的冒烟断言守着）。
+        if (n.data.localPath) out.localPath = n.data.localPath;
       }
       if (n.children && n.children.length) out.children = n.children.map(walk);
       return out;

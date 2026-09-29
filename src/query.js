@@ -63,6 +63,9 @@
         images: withImages && Array.isArray(n.images) && n.images.length ? n.images : undefined,
         files: withImages && Array.isArray(n.files) && n.files.length ? n.files : undefined,
         links: withLinks && Array.isArray(n.links) && n.links.length ? n.links : undefined,
+        // 本机文件夹路径（可选）：从文件夹结构建的树，每个结构节点挂一条。
+        // 与 tags/links 同一档：skeleton（最窄那档）才省掉它 —— AI 靠它知道"这个节点对应哪个真目录"。
+        localPath: withLinks && n.localPath ? n.localPath : undefined,
         children: (n.children || []).map((c) => ({
           id: c.id, topic: c.topic, children: (c.children || []).length
         }))
@@ -105,6 +108,7 @@
     if (o.images && Array.isArray(node.images) && node.images.length) out.images = node.images;
     if (node.files && node.files.length) out.files = node.files;
     if (node.links && node.links.length) out.links = node.links;
+    if (node.localPath) out.localPath = node.localPath;   // 本机文件夹路径（界面点击即打开该目录）
     out.path = tree.pathTo(root, id) || [id];
     return out;
   }

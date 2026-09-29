@@ -148,3 +148,68 @@ describe('treeToMarkdown', () => {
     expect(count).toBeGreaterThanOrEqual(8);           // 不再丢 L7/L8
   });
 });
+
+/* ------------------------------------------------------------
+ * 围栏代码块必须**整段原样**进 detail（不能当结构解析）
+ *
+ * 真实事故（2026-09-29，导入 day3/day4 的笔记与案例程序时暴露）：
+ *   `markdownToTree` 原先在**每个空行**都 flushSeg ⇒ 跨空行的围栏被切成多段、
+ *   各段独立送进 markdownToHtml ⇒ 只有第一段在 <pre><code> 里，其余变成 <p>/<li>；
+ *   缩进被 trim 掉，` * 中文注释` 变成列表项，`# 终端 A：…` 这种 shell 注释
+ *   **被当成标题新建了 8 个假节点**。
+ *   量化：day4 那篇笔记 47 个代码块里只有 8 个完整；Makefile 源 7 行 → detail 只剩 1 行。
+ *   属"静默损坏"类（不报错，只是内容悄悄变质），比抛异常危险得多。
+ * 这组断言把三种形态钉死：空行、井号注释行、列表/强调符号。
+ * ------------------------------------------------------------ */
+describe('markdown · 围栏代码块不被当结构解析（回归）', () => {
+  const F = '```';
+  const code = [
+    '#include <stdio.h>',
+    '',                        // ← 空行：旧实现在这里切断围栏
+    '/* 说明',
+    ' * 这一行以「空格+星号」开头（Markdown 会当列表项）',
+    ' */',
+    'int main(void) {',
+    '    printf("hi");',       // ← 4 空格缩进：旧实现被 trim 掉
+    '',                        // ← 第二个空行
+    '    return 0;',
+    '}'
+  ];
+  const md = ['# demo.c', '', F + 'c'].concat(code, [F, '', '结尾正文']).join('\n');
+
+  it('空行不切断围栏：整段代码只进一个节点的 detail，且逐字符保留', () => {
+    const r = markdownToTree(md, 'root');
+    const topics = [];
+    (function w(n) { if (!n) return; if (n.topic) topics.push(n.topic); (n.children || []).forEach(w); })(r.data);
+    expect(topics).toEqual(['demo.c']);                    // 只生成 1 个节点（旧实现会多出节点）
+    const node = r.data.children[0];
+    expect(node.detail).toContain('#include &lt;stdio.h&gt;');
+    expect(node.detail).toContain('\n\n/* 说明');           // 空行保留
+    expect(node.detail).toContain('    printf(&quot;hi&quot;);');  // 缩进保留
+    expect(node.detail).toContain(' * 这一行以「空格+星号」开头');
+    expect(node.detail).not.toContain('<li>');              // 「 * 」没被当列表
+    expect(node.detail).not.toContain('<em>');              // 没被当强调
+    expect(node.detail).toContain('<pre><code>');
+  });
+
+  it('围栏内以「# 」（井号+空格）开头的行**不能**变成节点标题', () => {
+    const bash = ['#!/bin/bash', '', '# 终端 A：启动服务', 'echo start', '', '# 终端 B：连接', 'echo connect'];
+    const m = ['# 导言', '', F + 'bash'].concat(bash, [F, '']).join('\n');
+    const r = markdownToTree(m, 'root');
+    const topics = [];
+    (function w(n) { if (!n) return; if (n.topic) topics.push(n.topic); (n.children || []).forEach(w); })(r.data);
+    expect(topics).toEqual(['导言']);                       // 旧实现会多出「终端 A：启动服务」等假节点
+    const root = r.data.children[0];
+    expect(root.detail).toContain('# 终端 A：启动服务');
+    expect(root.detail).toContain('# 终端 B：连接');
+    expect(root.detail).not.toContain('<pre><code></code></pre>');   // 不留空壳代码块
+  });
+
+  it('未闭合的围栏也不丢内容（EOF 时整段收进 detail）', () => {
+    const m = ['# x', '', F, 'line-1', '', 'line-2'].join('\n');
+    const r = markdownToTree(m, 'root');
+    const node = r.data.children[0];
+    expect(node.detail).toContain('line-1');
+    expect(node.detail).toContain('line-2');
+  });
+});

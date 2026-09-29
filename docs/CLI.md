@@ -32,9 +32,9 @@
 | `backlinks` | backlinks <项目> <id> [--json] |
 | `related` | related <项目> <id> [--json] [--depth 2] |
 | `theme-layout` | theme-layout <项目> [--left a,b] [--right c,d] [--clear] |
-| `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--expanded true|false] |
+| `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] |
 | `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] |
-| `edit` | edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--expanded true|false] |
+| `edit` | edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false] |
 | `move` | move <项目> <id> <新父id> [--index n] |
 | `remove` | remove <项目> <id> [--clean-assoc] [--clean-links] |
 | `clone` | clone <项目> <源id> <新父id> [--deep] |
@@ -153,10 +153,10 @@ node cli/mm-cli.js theme-layout <项目> [--left a,b] [--right c,d] [--clear]
 
 ### add
 
-在父节点下新增子节点（--detail 为 HTML；--detail-md 为 Markdown，命令内转 HTML）
+在父节点下新增子节点（--detail 为 HTML；--detail-md 为 Markdown，命令内转 HTML；--local-path 记录本机文件夹，界面点击即打开）
 
 ```
-node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--expanded true|false]
+node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false]
 ```
 
 ### add-root
@@ -169,10 +169,10 @@ node cli/mm-cli.js add-root <项目> --topic 标题 [--id id] [--detail html | -
 
 ### edit
 
-编辑节点字段（--detail HTML / --detail-md Markdown；--tags 覆盖设置标签，逗号分隔）
+编辑节点字段（--detail HTML / --detail-md Markdown；--tags 覆盖设置标签，逗号分隔；--local-path 记录本机文件夹供界面点击打开）
 
 ```
-node cli/mm-cli.js edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--expanded true|false]
+node cli/mm-cli.js edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false]
 ```
 
 ### move

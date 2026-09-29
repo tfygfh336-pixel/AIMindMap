@@ -103,8 +103,30 @@
       addedCount++;
     }
 
+    /* ⚠️ 围栏代码块必须**整段原样**收集，这里用 `inFence` 显式隔绝三件事：
+     *   ① 空行不得触发 flushSeg（否则跨空行的围栏被切成多段、各段独立转 HTML ⇒ 代码碎成 <p>/<li>）；
+     *   ② 围栏内的 `# 标题` / `- 列表` / 图片附件语法**一律不解读**（C 的 `#include`、shell 的 `# 注释`
+     *      都是代码，不是结构）；
+     *   ③ 缩进与 `>` 前缀不做任何加工（`kind:'text'` 不 strip）。
+     * 实测代价（本次导入 day3/day4 案例程序时才发现）：Makefile 源 7 行 → detail 只剩 1 行；
+     * netlink_user.c 143 行 → 6 行 —— 属"静默损坏"类，比报错危险得多。
+     * 收尾标记也要收进段里，`markdownToHtml` 才能把它渲染成 `<pre><code>`。 */
+    let inFence = false;
     for (const raw of rawLines) {
       const line = raw.replace(/\s+$/, '');
+      const trimmed = line.trim();
+      const isFence = /^```/.test(trimmed);
+      if (inFence) {
+        seg.lines.push(line);
+        if (isFence) { inFence = false; flushSeg(); }   // 收尾 ⇒ 整段立刻定格
+        continue;
+      }
+      if (isFence) {                                     // 开围栏
+        flushSeg();
+        seg = { kind: 'text', lines: [line] };
+        inFence = true;
+        continue;
+      }
       if (mode === 'heading') {
         const m = H_RE.exec(line);
         if (m) {

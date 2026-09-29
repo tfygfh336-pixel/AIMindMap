@@ -169,6 +169,16 @@
         if (typeof t !== 'string' || !t.trim()) err('tags[' + i + '] 必须是非空字符串', node.id);
       });
     }
+    // 本机文件夹路径（可选）：节点对应的目录在**本机**的绝对路径，界面点击后用系统文件管理器打开。
+    // 它是 `docs/DATA-FORMAT.md`「禁止绝对路径」的**明文例外**（见该文 §2.5）：
+    // 目录快捷方式天然是机器本地的（不像 assets/ 的相对引用要保证可移植）。
+    // ⚠️ **只校验形状，不校验存在性** —— 存在性依赖运行环境（盘可能没挂、目录可能还没建），
+    // 把它做成校验条件会让"换台机器打开就连 validate 都红"，那是把环境问题伪装成数据问题。
+    if (node.localPath !== undefined) {
+      if (typeof node.localPath !== 'string' || !node.localPath.trim()) err('localPath 必须是非空字符串', node.id);
+      else if (/[\r\n]/.test(node.localPath)) err('localPath 不能含换行', node.id);
+      else if (node.localPath.length > 500) err('localPath 过长（超过 500 字符）', node.id);
+    }
     if (node.images !== undefined) {
       if (!Array.isArray(node.images)) err('images 必须是数组', node.id);
       else node.images.forEach((img, i) => {

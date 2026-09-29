@@ -58,6 +58,19 @@ body { display: flex; flex-direction: column; background: #f5f6f8; color: #1f232
 }
 .tag-chip:hover { background: #d6e4ff; }
 
+/* ---------------- 本机文件夹链接（节点 localPath） ----------------
+ * 长得像链接（可点、hover 变色），但**不是 <a>**：动作是主进程 shell.openPath，
+ * 走 IPC 而非浏览器导航。路径可能很长 → 允许换行 + 单行内省略号，避免撑破详情框。 */
+.fd-localpath:empty { display: none; }
+.fd-localpath { margin-bottom: 6px; }
+.fd-localpath-link {
+  display: inline-block; max-width: 100%; padding: 1px 8px;
+  font-size: 12px; border-radius: 4px; background: #f2f6ff;
+  color: #1664ff; cursor: pointer; border: 1px solid #d6e4ff;
+  word-break: break-all;
+}
+.fd-localpath-link:hover { background: #d6e4ff; text-decoration: underline; }
+
 body.panning { user-select: none; }
 body.panning * { cursor: grabbing !important; }
 

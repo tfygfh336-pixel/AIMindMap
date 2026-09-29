@@ -119,6 +119,14 @@
       { label: '添加图片…', action: () => window.MMEditor && window.MMEditor.openImageDialog(nodeId) },
       { label: '添加附件文件…', action: () => window.MMEditor && window.MMEditor.openFileDialog(nodeId) }
     ];
+    // 本机文件夹（节点字段 localPath，见 docs/DATA-FORMAT.md §2.5）：有才显示这一项。
+    // 标签只放**末级目录名**（完整路径在详情框里，菜单项太长会横向撑爆）。
+    const lp = (node.data && node.data.localPath) || '';
+    if (lp) {
+      const leaf = String(lp).split(/[\\/]/).filter(Boolean).pop() || lp;
+      items.push('---');
+      items.push({ label: '📁 打开文件夹：' + leaf, action: () => app().openLocalPath(lp) });
+    }
     if (!isRoot) items.push({ label: '删除节点', danger: true, action: () => app().deleteNode(nodeId) });
     // 拖动树入口：root 无所属树（它是容器）→ 不显示；树内任意节点均拖其所属整棵树
     const dragItem = dragModeItem(nodeId);

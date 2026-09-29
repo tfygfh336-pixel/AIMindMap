@@ -208,3 +208,37 @@ describe('schema.validateProject(..., selfProject)', () => {
     expect(validateProject(pack, root, 'P').ok).toBe(true);
   });
 });
+
+/* ------------------------------------------------------------
+ * localPath（本机文件夹绝对路径，见 docs/DATA-FORMAT.md §2.1）
+ *
+ * 这是本格式里**唯一允许的绝对路径**（资源引用仍只准相对路径），而它的校验口径是
+ * **只校验形状、不校验存在性** —— 因为存在性依赖运行环境（盘没挂 / 目录还没建）。
+ * 这组断言就是钉住这条边界的：谁要是"顺手"加上 existsSync 校验，换台机器就会连 validate 都红。
+ * ------------------------------------------------------------ */
+describe('schema · localPath（本机文件夹路径）', () => {
+  const withLP = (lp) => wrap({ id: 'root', topic: 'R', children: [
+    Object.assign({ id: 'a', topic: 'A' }, lp === undefined ? {} : { localPath: lp })
+  ] });
+
+  it('合法的本机路径通过（带盘符 / UNC 都行）', () => {
+    expect(validateProject(withLP('E:\\markdown\\M1'), null).ok).toBe(true);
+    expect(validateProject(withLP('\\\\server\\share\\dir'), null).ok).toBe(true);
+  });
+
+  it('**不校验存在性**：路径不存在也合法（盘没挂 / 目录还没建都正常）', () => {
+    expect(validateProject(withLP('Z:\\绝不存在-' + Date.now()), null).ok).toBe(true);
+  });
+
+  it('空串 / 非字符串 / 含换行 / 过长 → 判红', () => {
+    expect(validateProject(withLP('   '), null).ok).toBe(false);
+    expect(validateProject(withLP(123), null).ok).toBe(false);
+    expect(validateProject(withLP('E:\\a\nb'), null).ok).toBe(false);
+    expect(validateProject(withLP('E:\\' + 'x'.repeat(600)), null).ok).toBe(false);
+  });
+
+  it('它是**可选**字段：没有它一切照旧（旧文件不需要迁移，formatVersion 仍为 2）', () => {
+    const v = validateProject(withLP(undefined), null);
+    expect(v.ok).toBe(true);
+  });
+});

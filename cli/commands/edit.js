@@ -3,6 +3,7 @@
  * ============================================================ */
 'use strict';
 
+const fs = require('fs');
 const markdown = require('../../src/markdown.js');
 const convert = require('../../src/convert.js');
 const assoc = require('../../src/assoc.js');
@@ -27,11 +28,42 @@ function detailFromArgs(ctx) {
   return html;
 }
 
+/**
+ * 取本次命令要写入的**本机文件夹路径**（`localPath`，见 docs/DATA-FORMAT.md §2.5）。
+ *
+ * 它是什么：节点对应的目录在本机的绝对路径，界面上点击即用系统文件管理器打开
+ * （从文件夹结构建树时，每个结构节点都挂一条，于是"导图 ↔ 真目录"随时互跳）。
+ * `--local-path <绝对路径>` 设置；`--clear-local-path` 清除；两者互斥。
+ *
+ * 为什么必须**绝对**：相对路径会随"当前工作目录"漂移，而点击打开的是操作系统，
+ * 它没有"项目根"这个概念 —— 放行相对路径只会得到一个看似合法、点了打不开的值。
+ * 为什么**不校验存在**：目标盘可能没挂载、目录可能还没建；存在性在**点击时**判（主进程 shell.openPath
+ * 会返回明确错误），而数据校验只管形状（否则换台机器连 validate 都红）。
+ */
+function localPathFromArgs(ctx) {
+  const p = ctx.args.localPath;
+  const clear = ctx.args.clearLocalPath;
+  if (p !== undefined && clear) ctx.error('--local-path 与 --clear-local-path 不能同时使用');
+  if (clear) return { set: true, value: undefined };
+  if (p === undefined) return { set: false };
+  const s = String(p).trim();
+  if (!s) ctx.error('--local-path 内容为空（要清除请用 --clear-local-path）');
+  if (!/^[A-Za-z]:[\\/]/.test(s) && !/^\\\\/.test(s)) {
+    ctx.error('--local-path 必须是**绝对路径**（如 E:\\markdown\\M1 或 \\\\服务器\\共享\\目录）：' + s);
+  }
+  return { set: true, value: s };
+}
+
 /** 通用：在指定父节点下新增一个子节点 */
 function addUnder(ctx, parent) {
   const topic = ctx.args.topic;
   if (!topic) ctx.error('缺少 --topic 标题');
   const detail = detailFromArgs(ctx);
+  const lp = localPathFromArgs(ctx);                    // 形状校验在写盘之前（错了就别动数据）
+  if (lp.set && lp.value && !fs.existsSync(lp.value)) {
+    // 只是**警告**：目标可能还没建 / 盘没挂。数据照写，让用户自己看到风险（不静默、也不武断拒绝）
+    ctx.out('⚠ 这个路径当前不存在（仍已记录，点击时会报错）：' + lp.value);
+  }
   let addedId = null;                                   // 闭包变量：报出**实际落盘**的 id（重放时可能是新生成的）
   ctx.mutate((data) => {                                // 多路同时编辑：冲突时自动重放到最新版
     const parentNode = ctx.tree.find(data.data, parent);
@@ -40,6 +72,7 @@ function addUnder(ctx, parent) {
     if (ctx.tree.find(data.data, id)) ctx.error('id 已存在: ' + id);
     const node = { id, topic, expanded: ctx.args.expanded !== 'false' && ctx.args.expanded !== false, children: [] };
     if (detail) node.detail = detail;
+    if (lp.set && lp.value) node.localPath = lp.value;
     parentNode.children = (parentNode.children || []).concat(node);
     addedId = id;
     return data;
@@ -84,6 +117,10 @@ module.exports = {
     if (!id) ctx.error('缺少节点 id');
     const detailGiven = ctx.args.detail !== undefined || ctx.args.detailMd !== undefined;
     const detail = detailGiven ? detailFromArgs(ctx) : undefined;
+    const lp = localPathFromArgs(ctx);
+    if (lp.set && lp.value && !fs.existsSync(lp.value)) {
+      ctx.out('⚠ 这个路径当前不存在（仍已记录，点击时会报错）：' + lp.value);
+    }
     ctx.mutate((data) => {
       const node = ctx.tree.find(data.data, id);
       if (!node) ctx.error('节点不存在: ' + id);
@@ -96,6 +133,8 @@ module.exports = {
         if (tags.length) node.tags = tags; else delete node.tags;
       }
       if (ctx.args.clearTags) delete node.tags;
+      // 本机文件夹路径：--local-path 设置；--clear-local-path 清除
+      if (lp.set) { if (lp.value) node.localPath = lp.value; else delete node.localPath; }
       if (ctx.args.expanded !== undefined) node.expanded = ctx.args.expanded !== 'false' && ctx.args.expanded !== false;
       return data;
     });

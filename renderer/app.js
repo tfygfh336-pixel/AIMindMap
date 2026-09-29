@@ -161,6 +161,8 @@
     //   resolveConflict('theirs') = 用磁盘上的版本（只丢冲突对象上的改动）；'mine' = 保留我的、本次不保存
     resolveConflict: (choice) => MM.resolveConflict(choice),
     hasPendingConflict: () => MM.hasPendingConflict(),
+    // 打开节点对应的本机文件夹（节点字段 localPath；详情框的链接与右键菜单都走它）
+    openLocalPath: (p) => MM.openLocalPath(p),
     addNode,
     addSiblingNode,
     addTopic,

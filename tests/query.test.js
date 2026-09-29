@@ -274,3 +274,40 @@ describe('buildReadView 喂子树（read --subtree 的契约）', () => {
     expect(subView().meta).toEqual({ name: 'x' });
   });
 });
+
+/* ------------------------------------------------------------
+ * localPath 必须**可见**：字段存下来但读视图不带，等于功能只做了一半 ——
+ * AI 永远看不见"这个节点对应哪个真目录"，也就没法据此去读源文件。
+ * 三档口径与 tags/links 一致：完整 / brief 带，skeleton（最窄那档）省。
+ * ------------------------------------------------------------ */
+describe('query · localPath 的读视图暴露', () => {
+  const withLP = () => ({
+    meta: { name: 'x' },
+    data: {
+      id: 'root', topic: '根',
+      children: [{ id: 'a', topic: 'A', localPath: 'E:\\markdown\\M1', children: [] }]
+    }
+  });
+
+  it('get 的节点视图带 localPath', () => {
+    const v = query.getNodeView(withLP().data, 'a', {});
+    expect(v.localPath).toBe('E:\\markdown\\M1');
+  });
+
+  it('read 的完整视图与 brief 都带', () => {
+    const full = query.buildReadView(withLP(), {});
+    const brief = query.buildReadView(withLP(), { brief: true });
+    expect(full.nodes.find((n) => n.id === 'a').localPath).toBe('E:\\markdown\\M1');
+    expect(brief.nodes.find((n) => n.id === 'a').localPath).toBe('E:\\markdown\\M1');
+  });
+
+  it('skeleton（最窄档）省掉它 —— 与 tags/links 同档', () => {
+    const sk = query.buildReadView(withLP(), { skeleton: true });
+    expect(sk.nodes.find((n) => n.id === 'a').localPath).toBeUndefined();
+  });
+
+  it('没有这个字段时不产生噪音键', () => {
+    const v = query.getNodeView(withLP().data, 'root', {});
+    expect('localPath' in v).toBe(false);
+  });
+});

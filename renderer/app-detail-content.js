@@ -102,6 +102,23 @@
       chip.addEventListener('click', () => { $('#search-box').value = '#' + t; runSearch(t); });
       tc.appendChild(chip);
     });
+    // 本机文件夹链接（可选字段 localPath，见 docs/DATA-FORMAT.md §2.5）：
+    // 点击 → 主进程 `shell.openPath` → 系统文件管理器打开该目录。
+    // 复用**既有的** `app:open-file` 通道（它本来就是 shell.openPath；目录同样适用），
+    // 不新造一条 IPC —— 同一件事一种写法（工程规矩）。
+    const lpc = fdQ(box, '.fd-localpath');
+    if (lpc) {
+      lpc.innerHTML = '';
+      const lp = node.localPath || (node.data && node.data.localPath) || '';
+      if (lp) {
+        const a = document.createElement('span');
+        a.className = 'fd-localpath-link';
+        a.textContent = '📁 ' + lp;
+        a.title = '点击用文件管理器打开这个文件夹';
+        a.addEventListener('click', (e) => { e.stopPropagation(); MM.openLocalPath(lp); });
+        lpc.appendChild(a);
+      }
+    }
     // 图片区
     // 这里**只放图片**：节点声明的 links 不再在此重复展示。
     // 原先此区还渲染一行「🔗 跳转到 <项目> / <id>」，但它对本项目内链接是**死链接**
@@ -268,8 +285,34 @@
     });
   };
 
+  /**
+   * 用系统文件管理器打开一个**本机目录**（节点字段 `localPath`）。
+   *
+   * 走主进程既有的 `app:open-file`（内部就是 `shell.openPath`）—— 目录同样适用，
+   * 且**失败必须让人看见**：路径不存在 / 盘没挂 / 权限不足时 `shell.openPath` 会返回错误串，
+   * 这里把它显示在状态栏（绝不"点了没反应"—— 那是本工程反复治过的"静默失效"）。
+   */
+  async function openLocalPath(p) {
+    if (!p) return;
+    if (!window.desktop || !window.desktop.app || !window.desktop.app.openFile) {
+      setStatus('当前环境不支持打开文件夹（无主进程通道）', true);
+      return;
+    }
+    try {
+      const r = await window.desktop.app.openFile(p);
+      if (!r || r.ok === false) {
+        setStatus('打不开这个文件夹：' + ((r && r.err) || '未知原因') + '｜' + p, true);
+      } else {
+        setStatus('已打开文件夹：' + p);
+      }
+    } catch (e) {
+      setStatus('打不开这个文件夹：' + ((e && e.message) || e) + '｜' + p, true);
+    }
+  }
+
   /* —— 本文件定义的东西挂到共享命名空间 —— */
   MM.bindContainerControls = bindContainerControls;
   MM.observeNodeLayer = observeNodeLayer;
   MM.renderFdBox = renderFdBox;
+  MM.openLocalPath = openLocalPath;
 })();

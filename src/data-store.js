@@ -60,12 +60,38 @@
       fs.fsyncSync(fd);          // 关键：先落盘，再 rename
       fs.closeSync(fd);
       fd = undefined;
-      fs.renameSync(tmp, file);
+      renameWithRetry(tmp, file);
     } catch (err) {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch (e) { /* ignore */ } }
       try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (e) { /* ignore */ }
       throw err;
     }
+  }
+
+  /**
+   * rename 带**有界重试**：Windows 上目标文件被另一个进程短暂打开时，rename 会以
+   * `EPERM` / `EBUSY` / `EACCES` 失败 —— 而"多个会话同时写同一个项目"是本工程的**常态**
+   * （多路同时编辑那套机制就是为它做的）。
+   * `[实测]` 一次真实并发导入里就出现过：`EPERM: operation not permitted, rename '…comnet.json.45304.…tmp' -> '…comnet.json'`，
+   * 调用方原样重跑才成功 —— 那本该由这里吸收掉。
+   * 只对**瞬时占用类**错误重试；其它错误立刻抛（不掩盖真问题）。重试次数与间隔都很小（约 100ms 上限），
+   * 因为争用窗口极短；重试用尽仍失败 ⇒ 抛出**原错误**（文案里带"已重试 N 次"便于诊断）。
+   */
+  function renameWithRetry(from, to, attempts) {
+    const max = attempts || 6;
+    let last = null;
+    for (let i = 0; i < max; i++) {
+      try { fs.renameSync(from, to); return; } catch (err) {
+        const code = err && err.code;
+        if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') throw err;
+        last = err;
+        // 忙等一小会儿（同步 API 场景下不便真睡；10ms 量级的自旋足够让占用方释放句柄）
+        const until = Date.now() + 10 * (i + 1);
+        while (Date.now() < until) { /* spin */ }
+      }
+    }
+    if (last) last.message = last.message + '（rename 已重试 ' + max + ' 次仍失败）';
+    throw last;
   }
 
   function createStore(rootDir, validate) {

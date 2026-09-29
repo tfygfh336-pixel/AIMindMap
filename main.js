@@ -586,8 +586,20 @@ function registerIpc() {
     } catch (err) { return { ok: false, err: err.message }; }
   });
 
-  // 系统默认应用打开附件（非 md/pdf 类型，XMind 附件交互模式）
+  // 系统默认应用打开附件（非 md/pdf 类型，XMind 附件交互模式）；
+  // 也用于打开节点对应的**本机文件夹**（节点字段 localPath —— 对目录 shell.openPath 会开文件管理器）。
   ipcMain.handle('app:open-file', async (e, absPath) => {
+    // ⚠️ headless（--smoke / 导出图）下**绝不真的打开**：那会在跑验证的机器上弹出文件管理器/默认应用，
+    // 每跑一次 verify 弹一次窗。但**判据照走**（路径可访问性），并把 headless 明确回报 ——
+    // 这不是"静默降级"：调用方拿到 headless:true 就知道"校验过了、只是没开"。
+    if (isSmoke) {
+      try {
+        const st = fs.statSync(absPath);
+        return { ok: true, headless: true, kind: st.isDirectory() ? 'dir' : 'file' };
+      } catch (err) {
+        return { ok: false, headless: true, err: '路径不可访问：' + err.message };
+      }
+    }
     try {
       const r = await shell.openPath(absPath);
       return { ok: !r, err: r || null };
