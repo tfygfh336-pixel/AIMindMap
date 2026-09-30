@@ -110,5 +110,9 @@ module.exports = {
     } else {
       ctx.out('窄宽适配: 尚未注入（原因: ' + (s.narrowSkip || '未调度') + '）');
     }
+    // 内核右栏 ⇄ 自动加宽（用户要求：点开右栏自动加宽侧栏、关掉还原）
+    ctx.out('内核右栏: ' + (s.rightbarOpen ? '开着' : '关着')
+      + '｜观察器 ' + (s.rightbarWatcher || '未装')
+      + '｜自动加宽 ' + (s.autoWide ? ('生效中（原宽度 ' + s.autoWide.prev + '，现 ' + s.actualWidth + '）') : '未生效'));
   }
 };

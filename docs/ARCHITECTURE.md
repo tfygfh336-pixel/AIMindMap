@@ -168,6 +168,15 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
   WebContentsView 停靠与让位通知（侧栏恒可见，窗口过窄仅做几何钳制）；
   **侧栏 AI 能力注入**（会话 cwd = 工程根 + 指针 skill 写入 `dsh-home/skills/`，
   让内嵌 AI 直接用 CLI 编辑笔记）。唯一管理者，不依赖外部脚本。
+  - **左侧原生控制栏**（拖宽热区 +「—」+「✕」合一，30px）：与 DSH 页面**零重叠** ⇒
+    插件 UI 永远不会被我们的按钮挡住；让位宽度用 `occupiedWidth()`（控制栏 + 内容 ✓）。
+  - **窄宽适配（应用侧注入）**：按内容宽加 `.dsh-narrow/-xs` + 注入通用防溢出规则 +
+    `--dsh-viewport-width`；每次页面加载后重注入（`insertCSS` 不跨导航保留 ✓），
+    并量出是否溢出记进 `status.narrow` ✓（改布局先读 `dsh-status`，别凭肉眼 ✗）。
+  - **内核右栏 ⇄ 自动加宽**：内核「打开侧边栏」在窄模式下要求 `view ≥ 756px`
+    （`available = view − 56 − 400 ≥ 300`，不足即把右栏宽算成 0 ✗）；检测到意图
+    （点按钮 / Ctrl+Shift+B ✓ —— **宽度不够时官方属性不变，只靠属性检测不到 ✗**）就把侧栏
+    加宽到 900 ✓，右栏关掉还原 ✓（只在我们仍处于自动宽度时还原 ✓）。
 - `preload.js`：contextBridge 暴露 `window.desktop`（projects/project.save/asset.import/
   app.exportMd/app.importMd/app.version/on/dsh.status/onProjectDiskChange）。渲染层**无 Node 权限**，只能走 IPC。
 - **保存闸门**：`project:save` 先把数据写临时文件 → 跑 `mm-cli validate` →

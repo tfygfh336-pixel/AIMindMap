@@ -93,8 +93,39 @@ module.exports = [
       const cssOk = ['min-width:0', '.dsh-narrow', '.dsh-narrow-xs', 'overflow-x:hidden']
         .every((k) => css.indexOf(k) >= 0);
 
+      // 右栏 ⇄ 自动加宽（用户要求）：几何状态机 + 注入契约
+      //   ① 状态机：需要就加宽到目标宽度、幂等、关掉还原（只在我们还在自动宽度时还原 ✓）
+      //   ② 注入契约：观察器脚本必须靠**官方属性**判事实、并且**必须有意图信号**
+      //      （宽度不够时官方属性不会变 ⇒ 光看属性检测不到用户点击 ✗ —— 这是实测踩到的坑）
+      sidebar.setWidth(694);
+      await sleep(200);
+      const wide1 = sidebar.ensureRightbarRoom();          // view 664 < 756 ⇒ 应加宽
+      await sleep(200);
+      const w1 = sidebar.getStatus().width;
+      const wide2 = sidebar.ensureRightbarRoom();          // 已在自动状态 ⇒ 幂等
+      await sleep(100);
+      const w2 = sidebar.getStatus().width;
+      const released = sidebar.releaseRightbarRoom();      // 关掉 ⇒ 还原
+      await sleep(200);
+      const w3 = sidebar.getStatus().width;
+      sidebar.setWidth(900);
+      await sleep(100);
+      const alreadyWide = sidebar.ensureRightbarRoom();    // 已经够宽 ⇒ 不动
+      await sleep(100);
+      await sidebar.releaseRightbarRoom();
+      const js = sidebar.RIGHTBAR_WATCHER_JS || '';
+      const watcherOk = ['data-rightbar-collapsed', 'dsh-rightbar-request', 'dsh-rightbar-open',
+        'dsh-rightbar-closed', 'Ctrl', 'Open sidebar'].every((k) => js.indexOf(k) >= 0)
+        && sidebar.RIGHTBAR_AUTO_WIDTH > sidebar.RIGHTBAR_PAGE_MIN;
+      const autoOk = wide1 === true && w1 === sidebar.RIGHTBAR_AUTO_WIDTH
+        && wide2 === false && w2 === w1                       // 幂等
+        && released === true && w3 === 694                    // 还原到用户原宽度
+        && alreadyWide === false;                             // 够宽就别动
+      sidebar.setWidth(694);
+      await sleep(200);
+
       return {
-        ok: noOverlap && sep && totalOk && domOk && cssOk
+        ok: noOverlap && sep && totalOk && domOk && cssOk && autoOk && watcherOk
           && onlyOn === true && onlyOff === false                      // 「⤢」点了真管用
           && closed.mainShown === true && closed.reserved === 0        // 主界面铺满（让位宽度归零）
           && before.reserved > 0                                       // 关之前确实让过位
@@ -109,6 +140,9 @@ module.exports = [
           + '｜【DOM】— ' + JSON.stringify(dom && dom.collapse) + ' ✕ ' + JSON.stringify(dom && dom.close)
           + '｜【⤢】进=' + onlyOn + ' 点击后=' + onlyOff
           + '｜【③ 注入规则】必备项齐全=' + cssOk
+          + '｜【右栏自动加宽】加宽=' + wide1 + '/' + w1 + ' 幂等=' + (wide2 === false)
+          + ' 还原=' + released + '/' + w3 + ' 已够宽不动=' + (alreadyWide === false)
+          + ' 契约=' + watcherOk
           + '｜【关后】主内容可见=' + closed.mainShown + ' 让位宽度=' + closed.reserved
           + ' visible=' + afterClose.visible
           + '｜【重开】visible=' + reopened.visible

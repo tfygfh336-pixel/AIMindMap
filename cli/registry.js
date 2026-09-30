@@ -96,7 +96,7 @@ function init() {
   register({
     name: 'dsh-status',
     usage: 'dsh-status [--json]',
-    desc: '**只读**诊断：侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出）。不改状态、不含 url/token',
+    desc: '**只读**诊断：侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出/内核右栏与自动加宽状态）。不改状态、不含 url/token',
     fn: loadFile('ui')['dsh-status']
   });
 

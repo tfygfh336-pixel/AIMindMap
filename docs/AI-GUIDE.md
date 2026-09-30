@@ -235,6 +235,12 @@ node cli/mm-cli.js dsh-status           # **只读**诊断：侧栏实况（可�
 - **窄宽适配的实况靠 `dsh-status` 读**（`narrow.mode` / `narrow.metrics.overflow`）——
   改侧栏布局前先读它，别凭肉眼 ✗（实测这条命令一路挖出两个真 bug：页面会把 `?token=` 抹掉
   导致 URL 比对永远失败、重试预算太小赶不上页面加载 ✓）。
+- **内核右栏（「打开侧边栏」）有硬宽度门槛**：`view ≥ 756px`（内核
+  `available = view − 56 − 400 ≥ 300` ⇒ 不足就把右栏宽算成 0 ⇒ 表现是"点一下就消失" ✗，
+  与我们的窄宽 CSS/控制栏无关 ✓）。侧栏**上限已提到 900** ✓，并且检测到你要开右栏时
+  **自动加宽到 900、关掉还原** ✓（`dsh-status` 里有 `rightbarOpen / autoWide / rightbarWatcher` 三个字段可读 ✓）。
+  改这块务必注意：**宽度不够时内核的 `data-rightbar-collapsed` 属性不会变** ✗ ⇒ 只靠属性
+  **检测不到用户点击**，必须同时挂"意图"信号（点按钮 / Ctrl+Shift+B ✓）。
 - 机制与取舍见 `src/control.js`（文件式通道：本机受限环境禁命名管道、网络要走代理）。
 
 **验证命令**（headless，按序执行，全绿才可交付）：

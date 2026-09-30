@@ -45,7 +45,14 @@ const sidebarSkill = require('./src/dsh-sidebar-skill.js');
 
 const SIDEBAR_WIDTH = 420;
 const MIN_WIDTH = 280;
-const MAX_WIDTH = 720;
+// 上限 720 → 900：内核右栏在窄模式（view < 1024）下需要
+// available = view − 56（左栏图标轨道）− 400（中间列保底）≥ 300 ⇒ **view ≥ 756px**，
+// 而 720 上限连 756 都够不着 ⇒「打开侧边栏」永远只会"点一下就消失" ✗（实测 694 时 available=238 ✗）。
+const MAX_WIDTH = 900;
+// 右栏自动加宽的目标（view = 900 − 30 控制栏 = 870 ⇒ available = 414 ≥ 300 ✓）
+const RIGHTBAR_AUTO_WIDTH = 900;
+// 页面（view）达到这个宽度，内核就会给出 ≥ 300px 的右栏（见上面推导）
+const RIGHTBAR_PAGE_MIN = 756;
 
 /** 子进程 stdout 里带 token 的地址行（实测样例）：
  *    dsh web: http://127.0.0.1:6218/?token=xxxxxxxx
@@ -471,6 +478,16 @@ function ensureView() {
       log('错误页重试请求');
       startService();
       showStatusPage(PAGE_STARTING);
+    } else if (message === '[dsh-rightbar-request]') {
+      // 用户点了「打开侧边栏」：若右栏**此时是开着的**，这一下就是"关" ⇒ 还原；否则加宽 ✓
+      if (state.rightbarOpen) releaseRightbarRoom();
+      else ensureRightbarRoom();
+    } else if (message === '[dsh-rightbar-open]') {
+      state.rightbarOpen = true;
+      ensureRightbarRoom();                     // 事实信号：确保空间够（幂等）
+    } else if (message === '[dsh-rightbar-closed]') {
+      state.rightbarOpen = false;
+      releaseRightbarRoom();
     }
   });
   // DSH 页面每次加载完成后重新注入窄宽适配（insertCSS 不跨导航保留）
@@ -646,6 +663,95 @@ function setWidth(w) {
   relayout();
 }
 
+/* ---------------- 内核右栏 ⇄ 侧栏自动加宽（用户要求） ----------------
+ * 为什么需要：内核在窄模式（view < 1024）下，右栏要求
+ *   available = view − 56 − 400 ≥ 300  ⇒  view ≥ 756px
+ * 而我们的侧栏上限是 720 ⇒ 那个面板**结构性打不开** ✗（表现为"点一下就消失"）。
+ * 现在的做法：检测到"用户要开右栏"就把侧栏自动加宽到 RIGHTBAR_AUTO_WIDTH ✓
+ * （= 让内核有空间真的把右栏渲染出来），右栏关掉再还原到用户原来的宽度 ✓。
+ * 两个信号缺一不可：
+ *   · **意图**（必须）：点官方按钮或 Ctrl+Shift+B —— 宽度不够时状态属性根本不会变 ✗；
+ *   · **事实**：官方 frame 的 `data-rightbar-collapsed` 属性（权威 ✓）。
+ * 安全：只在我们**处于自动加宽状态**且用户没手动改过宽度时才还原 ✓。
+ * 文档：docs/ARCHITECTURE.md、README「DSH 侧边栏」条、CHANGELOG。 */
+
+/** 注入到 DSH 页面里的观察器（每页只装一次，用页面上的标志位去重）。
+ *  只做两件事：报告"用户要开右栏"（意图）与"右栏真的开/关了"（事实）。
+ *  为什么要意图信号：内核在宽度不足时把右栏宽度算成 0，属性仍是"关" ✗。 */
+const RIGHTBAR_WATCHER_JS = `(function () {
+  if (window.__mmRightbarWatched) return 'already';
+  window.__mmRightbarWatched = true;
+  function report(tag) { try { console.log(tag); } catch (e) {} }
+  function frame() { var o = document.querySelector('[data-shell-overlay]'); return o ? o.parentElement : null; }
+  function state() { var f = frame(); return f ? !f.hasAttribute("data-rightbar-collapsed") : null; }
+  var seen = null;
+  function tick() {
+    var s = state();
+    if (s === null || s === seen) return;
+    seen = s;
+    report(s ? '[dsh-rightbar-open]' : '[dsh-rightbar-closed]');
+  }
+  function watch(el) { try { new MutationObserver(tick).observe(el, { attributes: true, attributeFilter: ["data-rightbar-collapsed"] }); } catch (e) {} }
+  var f = frame();
+  if (f) watch(f);
+  else new MutationObserver(function () { var g = frame(); if (g) { watch(g); tick(); } }).observe(document.documentElement, { childList: true, subtree: true });
+  tick();
+  // 意图信号一：点官方「打开侧边栏」（title / aria-label 两种语言都认）
+  var LABEL = /打开侧边栏|Open sidebar/i;
+  document.addEventListener('click', function (e) {
+    var el = e.target;
+    while (el && el !== document.body) {
+      var t = (el.getAttribute && (el.getAttribute('title') || el.getAttribute('aria-label') || '')) || '';
+      if (LABEL.test(t)) { report('[dsh-rightbar-request]'); break; }
+      el = el.parentElement;
+    }
+  }, true);
+  // 意图信号二：官方 tooltip 里写着的快捷键 Ctrl+Shift+B
+  document.addEventListener('keydown', function (e) {
+    if (e.ctrlKey && e.shiftKey && (e.key === 'B' || e.key === 'b')) report('[dsh-rightbar-request]');
+  }, true);
+  return 'installed';
+})()`;
+
+async function installRightbarWatcher() {
+  if (!state.view || !state.view.webContents) return false;
+  try {
+    const r = await state.view.webContents.executeJavaScript(RIGHTBAR_WATCHER_JS);
+    state.rightbarWatcher = r === "installed" ? "on" : "already";
+    return true;
+  } catch (e) {
+    state.rightbarWatcher = "error: " + String(e && e.message);
+    return false;
+  }
+}
+
+/** 需要就加宽（幂等）。返回 true 表示这次真的加宽了。 */
+function ensureRightbarRoom() {
+  const view = Math.max(0, state.width - RAIL_WIDTH);
+  if (view >= RIGHTBAR_PAGE_MIN) return false;          // 已经够宽，不用动
+  if (state.autoWide) return false;                     // 已在自动加宽状态
+  state.autoWide = { prev: state.width };
+  setWidth(RIGHTBAR_AUTO_WIDTH);
+  log('内核右栏需要空间 → 自动加宽侧栏 ' + state.autoWide.prev + ' → ' + RIGHTBAR_AUTO_WIDTH);
+  broadcastStatus();
+  return true;
+}
+
+/** 右栏关掉后还原（只在我们还在自动宽度、且用户没手动改过时还原 ✓）。 */
+function releaseRightbarRoom() {
+  const auto = state.autoWide;
+  if (!auto) return false;
+  state.autoWide = null;
+  if (state.width === RIGHTBAR_AUTO_WIDTH) {
+    setWidth(auto.prev);
+    log('内核右栏关闭 → 还原侧栏宽度 ' + auto.prev);
+    broadcastStatus();
+    return true;
+  }
+  log('内核右栏关闭：宽度已被手动改动（' + state.width + '），不还原');
+  return false;
+}
+
 /* ---------------- 对外 API（main.js 调用） ---------------- */
 
 /** init：接窗口 + 恢复上次可见性/宽度 + 尝试接管驻留服务。默认打开（用户要求）。 */
@@ -809,6 +915,10 @@ function getStatus() {
     narrow: state.narrow || null,
     // 为什么"尚未注入"——诊断要能回答它，否则只能靠猜 ✗
     narrowSkip: state.narrowSkip || null,
+    // 内核右栏 ⇄ 自动加宽（用户要求）的实况
+    rightbarOpen: !!state.rightbarOpen,
+    autoWide: state.autoWide || null,
+    rightbarWatcher: state.rightbarWatcher || null,
     servicePid: state.proc ? state.proc.pid : state.servicePid || null,
     // 本窗口是否**孵化**了这个服务（false = 接管来的驻留服务）；驻留语义下
     // 这不影响可用性，只用于排查"谁该负责收割"
@@ -934,7 +1044,10 @@ async function applyNarrowAdaptation() {
       + 'var sw=Math.max(d.scrollWidth,document.body?document.body.scrollWidth:0);'
       + 'return {innerWidth:window.innerWidth,scrollWidth:sw,overflow:sw>window.innerWidth+1};'
       + '})()');
-    state.narrow = { viewWidth: viewW, mode: mode, metrics: info, at: new Date().toISOString() };
+    // 每次成功注入都顺手装一次右栏观察器：页面**重载**会清掉页面内的标志位，
+    // 所以不能"只装一次"；页面内自带 __mmRightbarWatched 去重 ✓（成本极低 ✓）。
+state.narrow = { viewWidth: viewW, mode: mode, metrics: info, at: new Date().toISOString() };
+    installRightbarWatcher().catch(() => {});
     state.narrowSkip = null;
     log('窄宽适配: ' + mode + '（内容宽 ' + viewW + '）'
       + (info ? '，页面 ' + info.innerWidth + ' / 内容 ' + info.scrollWidth
@@ -1093,6 +1206,7 @@ module.exports = {
   setDshOnly, isDshOnly, hideWindowToBackground, hideToBackground, captureView, restoreWindow,
   // 只关一侧的两种能力（对外/给 AI 用；人类用界面上的两个 ✕）
   closeSidebar, buttonBounds, buttonProbe, clickButton, occupiedWidth,
-  NARROW_CSS,
+  NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN,
+  ensureRightbarRoom, releaseRightbarRoom,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
 };

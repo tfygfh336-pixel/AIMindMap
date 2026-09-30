@@ -14,6 +14,35 @@
 
 ## [Unreleased]
 
+### 内核「打开侧边栏」右栏：自动加宽侧栏、关掉还原（2026-09-30，用户提议）
+
+**症状**：内置 DSH 右上角「打开侧边栏」（Ctrl+Shift+B）点一下就消失 ✗ —— 面板里是
+「工作区文件 / 上下文 / 新建终端」三块 ✓。
+
+**根因**（读内核 `@deepseek-ai/dsh-client-ui-layout/lib/client.js` 得到，非插件 ✗ 非我们的窄宽 CSS ✗）：
+```js
+const s = sidebar === 0 ? 56 : clampWidth(sidebar, 264, 420);   // 左栏：展开 280 / 图标轨道 56
+const available = viewport - s - 400;                           // 中间列保底 400
+const r = rightbar === 0 || available < 300 ? 0 : …;            // 不足 300 就把右栏宽度算成 0 ✗
+const narrow = viewport < 1024;                                 // 窄模式下开右栏时左栏按 0（=56）算
+```
+⇒ 窄模式下需要 **view ≥ 56 + 400 + 300 = 756px**；而我们的侧栏上限是 **720** ⇒
+**这个面板以前也打不开** ✓（实测 694 时 available=238 ✗、720 时也只有 264 ✗）
+—— 用户感觉"以前能用"应是在铺满（仅侧栏模式）或全局 DSH 里点的 ✓。
+
+**实现**（用户提议：开右栏自动加宽、关掉还原）：
+- 侧栏上限 **720 → 900** ✓；自动加宽目标 `RIGHTBAR_AUTO_WIDTH = 900`（view 870 ⇒ available 414 ≥ 300 ✓）。
+- 注入观察器到 DSH 页面（每页装一次 ✓）：
+  · **事实**信号：官方 frame 的 `data-rightbar-collapsed` 属性（MutationObserver）⇒ `[dsh-rightbar-open|closed]`；
+  · **意图**信号（必须）：点官方「打开侧边栏」（title/aria-label 双语匹配）或 Ctrl+Shift+B ⇒ `[dsh-rightbar-request]`
+    —— 因为**宽度不够时内核属性根本不会变**，只靠属性检测不到用户点击 ✗（实测踩到的坑）。
+- 主进程：`ensureRightbarRoom()` / `releaseRightbarRoom()` —— 幂等、只在我们仍处于自动宽度时还原 ✓
+  （用户手动改过宽度就不动 ✓）。
+- `dsh-status` 新增 `rightbarOpen / autoWide / rightbarWatcher` 三个只读字段 ✓。
+
+**断言**（`scripts/smoke/24-*` 实测）：
+`【右栏自动加宽】加宽=true/900 幂等=true 还原=true/694 已够宽不动=true 契约=true` ✓
+
 ### ③ 窄宽适配的实测 + 只读诊断 `dsh-status`（2026-09-30，用户追问"做完了吗"）
 
 **为什么加这个命令**：窄宽适配（③）的效果原先只能靠肉眼看 ✗，而"改布局"必须有数字 ✓。
