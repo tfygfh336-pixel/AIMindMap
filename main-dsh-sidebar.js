@@ -55,9 +55,7 @@ const URL_RE = /https?:\/\/127\.0\.0\.1:(\d+)\/\?token=([A-Za-z0-9_\-]+)/;
 const state = {
   win: null,            // 主窗口
   view: null,           // WebContentsView（惰性创建）
-  handle: null,         // 拖宽分隔条 view
-  collapseBtn: null,    // 折叠按钮 view（侧栏右上角「—」）
-  closeBtn: null,       // 独立关闭按钮 view（「—」下方那个「✕」：只关侧栏这一半）
+  rail: null,           // 左侧原生控制栏 view（拖宽 + − / ✕）
   proc: null,           // dsh web 子进程（本窗口孵化时才有）
   procLock: null,       // 运行锁（dsh-runtime.lock）
   url: null,            // 带 token 的地址（只在主进程内存）
@@ -475,6 +473,10 @@ function ensureView() {
       showStatusPage(PAGE_STARTING);
     }
   });
+  // DSH 页面每次加载完成后重新注入窄宽适配（insertCSS 不跨导航保留）
+  view.webContents.on('did-finish-load', () => {
+    if (state.visible) scheduleNarrowAdaptation();
+  });
   state.view = view;
   return view;
 }
@@ -502,35 +504,93 @@ function loadCurrentUrl() {
  *     → '[dsh-drag-end]' → 主进程 endWidthDrag()（"松手即停"）
  *   · 兜底：页面 mousemove 检测 e.buttons===0（丢 mouseup 的场景）也结束；
  *     主渲染层 mouseup / Escape 同样结束（拖拽起点在渲染层边缘热区时） */
-const HANDLE_WIDTH = 6;
+/* 控制栏宽度：拖宽热区 + −/✕ 两个按钮都在这一条里（原先热区 6px、按钮浮在页面上 ✗） */
+const RAIL_WIDTH = 30;
 let dragTimer = null;
 
-function handlePageHtml() {
+/* ---------------- 左侧原生控制栏（把三个浮层并成一条） ----------------
+ * 由来（用户实测 + 设计分析）：原先 −/✕ 是**浮在 DSH 页面上方**的两个小热区，
+ * 而页面右上角正是 DSH 自己的头部与插件入口所在 ⇒ 必然互相遮挡（− 压住头部 UI，
+ * 以后装新 UI 插件还会再撞）✗。"把按钮往下挪"只是把冲突挪开，不能消除。
+ * 现在：拖宽热区与两个按钮合并为侧栏左缘一条 RAIL_WIDTH 宽的原生控制栏，
+ * DSH 页面从它右边开始排 ⇒ 与页面**零重叠** ✓。
+ * 代价：内容可视宽度少 RAIL_WIDTH（MIN_WIDTH 已相应上调）。 */
+function railPageHtml() {
+  // 按钮含义随模式变（仅侧栏模式下「−」= 恢复思维导图页 —— 那是唯一的回去的路）
+  const only = !!state.dshOnly;
+  const glyph = only ? '⤢' : '—';
+  const title = only ? '恢复思维导图页（关掉侧栏）' : '折叠侧边栏（Ctrl+B 可再展开）';
+  const msg = only ? '[dsh-restore]' : '[dsh-collapse]';
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(
     '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
-    + 'html,body{margin:0;height:100%;cursor:col-resize;background:transparent;overflow:hidden}'
-    + '#bar{position:absolute;top:0;bottom:0;left:2px;width:2px;background:#e4e7ec}'
-    + 'html:hover #bar{background:#1664ff}'
-    + 'html.dragging #bar{background:#1664ff}'
-    + '</style></head><body>'
-    + '<div id="bar"></div>'
-    + '<script>'
+    + 'html,body{margin:0;height:100%;background:rgba(245,246,248,.92);overflow:hidden;'
+    + 'user-select:none;-webkit-app-region:no-drag;cursor:col-resize}'
+    + '#rail{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center}'
+    + '#bar{position:absolute;top:0;bottom:0;right:0;width:2px;background:#e4e7ec}'
+    + 'html:hover #bar,html.dragging #bar{background:#1664ff}'
+    + 'button{width:24px;height:22px;margin-top:8px;border:none;border-radius:6px;'
+    + 'background:transparent;cursor:pointer;font-size:13px;line-height:1;color:#4e5969}'
+    + 'button:hover{background:#e8eefc;color:#1664ff}'
+    + '#close:hover{background:#fdecec;color:#d93026}'
+    + '</style></head><body><div id="bar"></div><div id="rail">'
+    + '<button id="collapse" title="' + title + '">' + glyph + '</button>'
+    + '<button id="close" title="关闭 DSH 侧栏（连服务一起停，思维导图继续用）">✕</button>'
+    + '</div><script>'
     + 'var dragging=false;'
+    // 按钮上的 mousedown 不能触发拖宽
+    + 'function stop(e){e.stopPropagation();}'
+    + 'document.getElementById("collapse").addEventListener("mousedown",stop);'
+    + 'document.getElementById("close").addEventListener("mousedown",stop);'
+    + 'document.getElementById("collapse").addEventListener("click",function(){console.log("' + msg + '");});'
+    + 'document.getElementById("close").addEventListener("click",function(){console.log("[dsh-close-sidebar]");});'
     + 'document.addEventListener("mousedown",function(e){'
-    + '  if(e.button!==0)return;'
-    + '  dragging=true;document.documentElement.classList.add("dragging");'
-    + '  e.preventDefault();'
-    + '  console.log("[dsh-drag-start]");'
-    + '});'
+    + '  if(e.button!==0)return;dragging=true;document.documentElement.classList.add("dragging");'
+    + '  e.preventDefault();console.log("[dsh-drag-start]");});'
     + 'function end(){if(!dragging)return;dragging=false;'
-    + '  document.documentElement.classList.remove("dragging");'
-    + '  console.log("[dsh-drag-end]");}'
+    + '  document.documentElement.classList.remove("dragging");console.log("[dsh-drag-end]");}'
     + 'document.addEventListener("mouseup",end);'
     + 'document.addEventListener("mouseleave",function(){if(dragging&&event.buttons===0)end();});'
     + 'document.addEventListener("mousemove",function(e){if(dragging&&e.buttons===0)end();});'
     + 'document.addEventListener("keydown",function(e){if(e.key==="Escape")end();});'
     + 'document.addEventListener("contextmenu",function(e){e.preventDefault();end();});'
     + '</script></body></html>');
+}
+
+/** 模式切换后刷新控制栏（─ 的字形/语义随模式变） */
+function refreshRail() {
+  if (!state.rail || !state.rail.webContents) return;
+  try { state.rail.webContents.loadURL(railPageHtml()).catch(() => {}); } catch (e) { /* ignore */ }
+}
+
+function ensureRail() {
+  if (state.rail) return state.rail;
+  const { WebContentsView } = require('electron');
+  const rail = new WebContentsView({
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+  });
+  rail.setBackgroundColor('#00000000');
+  rail.webContents.loadURL(railPageHtml()).catch(() => { /* ignore */ });
+  rail.webContents.on('console-message', (_e, _level, message) => {
+    if (message === '[dsh-drag-start]') beginWidthDrag();
+    else if (message === '[dsh-drag-end]') endWidthDrag();
+    else if (message === '[dsh-collapse]') {
+      if (state.dshOnly) {
+        // 仅侧栏模式（主界面迭代中）：「—」= 最小化到任务栏（服务驻留不动）
+        if (state.win && !state.win.isDestroyed()) state.win.minimize();
+        return;
+      }
+      log('折叠按钮点击 → 隐藏侧栏');
+      hide();
+    } else if (message === '[dsh-restore]') {
+      // ⚠️ 原先这个分支**不存在** ⇒ 仅侧栏模式下的「⤢ 恢复导图页」是和 ✕ 一样的死键 ✗
+      setDshOnly(false);
+    } else if (message === '[dsh-close-sidebar]') {
+      if (state.dshOnly) setDshOnly(false);   // 先让主界面回来，否则关完窗口是空的 ✗
+      closeSidebar();
+    }
+  });
+  state.rail = rail;
+  return rail;
 }
 
 /** 开始拖宽：新宽度用光标屏幕坐标对窗口右缘的**绝对距离**计算 */
@@ -569,26 +629,11 @@ function relayout() {
   const [w, h] = state.win.getContentSize();
   state.width = clampWidth(state.width);
   const vw = state.dshOnly ? w : Math.min(state.width, w);
-  const x = state.dshOnly ? 0 : Math.max(0, w - vw);
-  state.view.setBounds({ x, y: 0, width: vw, height: h });
-  if (state.handle && !state.dshOnly) {
-    state.handle.setBounds({ x: Math.max(0, x - HANDLE_WIDTH + 2), y: 0, width: HANDLE_WIDTH, height: h });
-  } else if (state.handle) {
-    state.handle.setBounds({ x: -HANDLE_WIDTH, y: 0, width: 0, height: h }); // dsh-only 无需分隔条
-  }
-  if (state.collapseBtn) {
-    state.collapseBtn.setBounds({
-      x: Math.max(0, x + vw - COLLAPSE_W - 6), y: BTN_TOP,
-      width: COLLAPSE_W, height: COLLAPSE_H
-    });
-  }
-  if (state.closeBtn) {
-    // ✕ 挂在「—」**下面**（用户要求：关侧栏的按钮就在折叠按钮下方）
-    state.closeBtn.setBounds({
-      x: Math.max(0, x + vw - COLLAPSE_W - 6), y: BTN_TOP + COLLAPSE_H + BTN_GAP,
-      width: COLLAPSE_W, height: COLLAPSE_H
-    });
-  }
+  const sbX = state.dshOnly ? 0 : Math.max(0, w - vw);        // 侧栏左缘
+  const railW = Math.min(RAIL_WIDTH, vw);                      // 极窄时先保内容
+  if (state.rail) state.rail.setBounds({ x: sbX, y: 0, width: railW, height: h });
+  state.view.setBounds({ x: sbX + railW, y: 0, width: Math.max(0, vw - railW), height: h });
+  scheduleNarrowAdaptation();                                  // ③ 窄宽适配（去抖）
   notifyRenderer(state.visible);
 }
 
@@ -622,11 +667,8 @@ function reattach(win) {
   win.on('closed', () => { state.win = null; });
   if (state.view && state.visible && win.contentView) {
     try { win.contentView.addChildView(state.view); } catch (e) { /* ignore */ }
-    if (state.handle && win.contentView) {
-      try { win.contentView.addChildView(state.handle); } catch (e) { /* ignore */ }
-    }
-    if (state.collapseBtn && win.contentView) {
-      try { win.contentView.addChildView(state.collapseBtn); } catch (e) { /* ignore */ }
+    if (state.rail && win.contentView) {
+      try { win.contentView.addChildView(state.rail); } catch (e) { /* ignore */ }
     }
     relayout();
   }
@@ -635,15 +677,12 @@ function reattach(win) {
 function show() {
   if (!state.win) return;
   ensureView();
-  ensureHandle();
-  ensureCollapseBtn();
-  ensureCloseBtn();
+  ensureRail();
   if (state.win.contentView) {
     // 顺序即 z 序：两个按钮最后挂 → 盖在 DSH 页面上（右上角恒可点）
+    // 顺序即 z 序：控制栏最后挂（它本来就不与页面重叠，这一层只是保险）
     state.win.contentView.addChildView(state.view);
-    state.win.contentView.addChildView(state.handle);
-    state.win.contentView.addChildView(state.collapseBtn);
-    state.win.contentView.addChildView(state.closeBtn);
+    state.win.contentView.addChildView(state.rail);
   }
   state.visible = true;
   relayout();
@@ -657,128 +696,6 @@ function show() {
   savePrefs();
 }
 
-function ensureHandle() {
-  if (state.handle) return state.handle;
-  const { WebContentsView } = require('electron');
-  const handle = new WebContentsView({
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
-    }
-  });
-  handle.setBackgroundColor('#00000000');
-  handle.webContents.loadURL(handlePageHtml()).catch(() => { /* ignore */ });
-  // 拖拽协议：分隔条页面内 mousedown/mouseup 经 console 消息回传
-  // （拖动中分隔条每帧跟手 → mouseup 必然落在本页 → 松手即停）
-  handle.webContents.on('console-message', (_e, _level, message) => {
-    if (message === '[dsh-drag-start]') beginWidthDrag();
-    else if (message === '[dsh-drag-end]') endWidthDrag();
-  });
-  state.handle = handle;
-  return handle;
-}
-
-/* ---------------- 折叠按钮（侧栏右上角「—」） ----------------
- * 侧栏主体加载的是 DSH 网页（不能注入 UI），所以折叠按钮是**第三个
- * WebContentsView**：30x24 小热区，钉在侧栏右上角、恒在 view 之上。
- * 点击经 console 消息回传主进程 → hide()。展开走 Ctrl+B / 视图菜单。 */
-const COLLAPSE_W = 30;
-const COLLAPSE_H = 24;
-// 按钮整体**下移**：原先钉在 y=4，会压住 DSH 页面自己的头部 UI（用户实测反馈）。
-// y=44 与两按钮间距 6 是"让开头部但不脱离右上角"的折中；改这两个值不影响别处。
-const BTN_TOP = 44;
-const BTN_GAP = 6;
-
-function collapsePageHtml() {
-  // 按钮含义随模式变：正常模式「—」= 折叠侧栏；仅侧栏模式「⤢」= **恢复思维导图页**
-  //（这是"只留侧栏"状态下唯一的回去的路 —— 没有它用户就卡在这一页了 ✗）
-  const only = !!state.dshOnly;
-  const glyph = only ? '⤢' : '—';
-  const title = only ? '恢复思维导图页（关掉侧栏）' : '折叠侧边栏（Ctrl+B 可再展开）';
-  const msg = only ? '[dsh-restore]' : '[dsh-collapse]';
-  return 'data:text/html;charset=utf-8,' + encodeURIComponent(
-    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
-    + 'html,body{margin:0;height:100%;background:rgba(245,246,248,.92);overflow:hidden;'
-    + 'user-select:none;-webkit-app-region:no-drag}'
-    + 'button{width:100%;height:100%;border:none;background:transparent;cursor:pointer;'
-    + 'font-size:13px;line-height:1;color:#4e5969;border-radius:0 0 0 6px}'
-    + 'button:hover{background:#e8eefc;color:#1664ff}'
-    + '</style></head><body>'
-    + '<button id="collapse" title="' + title + '">' + glyph + '</button>'
-    + '<script>document.getElementById("collapse").addEventListener("click",function(){'
-    + 'console.log("' + msg + '");});</' + 'script></body></html>');
-}
-
-/** 模式切换后刷新按钮外观（数据页重新加载，最省事也最不容易状态错位） */
-function refreshCollapseBtn() {
-  if (!state.collapseBtn || !state.collapseBtn.webContents) return;
-  try { state.collapseBtn.webContents.loadURL(collapsePageHtml()).catch(() => {}); } catch (e) { /* ignore */ }
-}
-
-function ensureCollapseBtn() {
-  if (state.collapseBtn) return state.collapseBtn;
-  const { WebContentsView } = require('electron');
-  const btn = new WebContentsView({
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
-    }
-  });
-  btn.setBackgroundColor('#00000000');
-  btn.webContents.loadURL(collapsePageHtml()).catch(() => { /* ignore */ });
-  btn.webContents.on('console-message', (_e, _level, message) => {
-    if (message !== '[dsh-collapse]') return;
-    if (state.dshOnly) {
-      // 仅侧边栏模式（主界面迭代中）：「—」= 最小化窗口到任务栏
-      // （服务驻留不受影响；任务栏图标点回来即可恢复）
-      if (state.win && !state.win.isDestroyed()) state.win.minimize();
-      return;
-    }
-    log('折叠按钮点击 → 隐藏侧栏');
-    hide();
-  });
-  state.collapseBtn = btn;
-  return btn;
-}
-
-/* ---------------- 独立关闭按钮（「—」下方那个「✕」） ----------------
- * 与「—」的分工（用户定的）：**「—」= 收起侧栏**（服务继续驻留，🤖 一点就回来）；
- * **「✕」= 关掉侧栏这一半**（连 DSH 服务一起停），主界面（思维导图）照常运行。
- * 这样"只改 DSH 那一侧"（插件/配置/运行包）时不必重启整个应用 ✓；
- * 反过来"只改主界面"则走导图页右上角那个 ✕（只留侧栏）✓。 */
-function closeSidebarPageHtml() {
-  return 'data:text/html;charset=utf-8,' + encodeURIComponent(
-    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
-    + 'html,body{margin:0;height:100%;background:rgba(245,246,248,.92);overflow:hidden;'
-    + 'user-select:none;-webkit-app-region:no-drag}'
-    + 'button{width:100%;height:100%;border:none;background:transparent;cursor:pointer;'
-    + 'font-size:12px;line-height:1;color:#4e5969;border-radius:0 0 0 6px}'
-    + 'button:hover{background:#fdecec;color:#d93026}'
-    + '</style></head><body>'
-    + '<button id="close" title="关闭 DSH 侧栏（连服务一起停，思维导图继续用）">✕</button>'
-    + '<script>document.getElementById("close").addEventListener("click",function(){'
-    + 'console.log("[dsh-close-sidebar]");});</' + 'script></body></html>');
-}
-
-function ensureCloseBtn() {
-  if (state.closeBtn) return state.closeBtn;
-  const { WebContentsView } = require('electron');
-  const btn = new WebContentsView({
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
-  });
-  btn.setBackgroundColor('#00000000');
-  btn.webContents.loadURL(closeSidebarPageHtml()).catch(() => { /* ignore */ });
-  btn.webContents.on('console-message', (_e, _level, message) => {
-    if (message !== '[dsh-close-sidebar]') return;
-    // 仅侧栏模式下先让主界面回来，否则关完侧栏窗口就空了 ✗
-    if (state.dshOnly) setDshOnly(false);
-    closeSidebar();
-  });
-  state.closeBtn = btn;
-  return btn;
-}
 
 /** 只关**侧栏那一半**：收起 view + 停掉 DSH 服务；主界面、应用进程、项目数据都不受影响。
  *  停服务是刻意的（用户要的"独立关掉侧栏 DSH"）—— 这样更新 DSH 那一侧时不必重启应用；
@@ -793,32 +710,66 @@ function closeSidebar(opts) {
   broadcastStatus();
 }
 
-/** 两个角标按钮的几何（给断言用：位置/是否重叠是"挡到页面 UI"这类问题的唯一机械判据）。 */
-function buttonBounds() {
-  const b = (v) => { try { return v ? v.getBounds() : null; } catch (e) { return null; } };
-  return { collapse: b(state.collapseBtn), close: b(state.closeBtn) };
+/** 侧栏**总占宽** = 控制栏 + 内容 view。让位宽度必须用它：
+ *  只报 view 宽度会少报 RAIL_WIDTH ⇒ 页面少让一条 ⇒ 又出现"侧栏隔壁的灰色背景" ✗。 */
+function occupiedWidth() {
+  let w = 0;
+  try { if (state.rail) w += state.rail.getBounds().width; } catch (e) { /* ignore */ }
+  try { if (state.view) w += state.view.getBounds().width; } catch (e) { /* ignore */ }
+  return w;
 }
 
-/** 两个角标按钮的**真实 DOM 事实**（给断言用）。
- *  为什么必须查 DOM 而不是查字符串：这类按钮是 data: URL 页面，属性写坏一个引号就会
- *  让整个 `<button>` 被吞进属性值里 —— 页面照样有底色、照样加载成功，但**没有按钮、
- *  点了没反应**（真机上就是这么坏的 ✗）。只有问 DOM 才能把这种错钉死。 */
-async function buttonProbe() {
-  const probe = async (v, id) => {
-    if (!v || !v.webContents) return null;
+/** 控制栏里两个按钮的几何（**屏幕坐标**，已把控制栏偏移算进去）+ 控制栏自身 bounds —— 断言用。
+ *  语义与旧版一致：✕ 必须在 − 下面、不重叠、且整体落在侧栏内（用总占宽比，不能用 view 宽度比 ✗）。 */
+async function buttonBounds() {
+  let rail = null;
+  try { rail = state.rail ? state.rail.getBounds() : null; } catch (e) { rail = null; }
+  let rects = null;
+  if (state.rail && state.rail.webContents) {
     try {
-      return await v.webContents.executeJavaScript(`(function () {
-        var el = document.getElementById(${JSON.stringify(id)});
-        return {
-          hasEl: !!el,
-          buttons: document.querySelectorAll('button').length,
-          text: el ? (el.textContent || '').trim() : '',
-          title: el ? (el.getAttribute('title') || '') : ''
-        };
-      })()`);
+      rects = await state.rail.webContents.executeJavaScript(
+        `(function(){var q=function(id){var el=document.getElementById(id);if(!el)return null;`
+        + `var r=el.getBoundingClientRect();return {x:Math.round(r.x),y:Math.round(r.y),`
+        + `width:Math.round(r.width),height:Math.round(r.height)};};`
+        + `return {collapse:q("collapse"),close:q("close")};})()`);
+    } catch (e) { rects = null; }
+  }
+  const abs = (r) => ((r && rail)
+    ? { x: rail.x + r.x, y: rail.y + r.y, width: r.width, height: r.height } : null);
+  return {
+    rail: rail,
+    collapse: abs(rects && rects.collapse),
+    close: abs(rects && rects.close),
+    occupiedWidth: occupiedWidth()
+  };
+}
+
+/** 两个按钮的**真实 DOM 事实**（给断言用）。
+ *  为什么必须查 DOM 而不是查字符串：页面是 data: URL，属性写坏一个引号就会让整个
+ *  `<button>` 被吞进属性值里 —— 页面照样有底色、照样加载成功，但**没有按钮、点了没反应**
+ *  （真机上 ✕ 就是这么坏的 ✗）。只有问 DOM 才能把这种错钉死。 */
+async function buttonProbe() {
+  const probe = async (id) => {
+    if (!state.rail || !state.rail.webContents) return null;
+    try {
+      return await state.rail.webContents.executeJavaScript(
+        `(function(){var el=document.getElementById(` + JSON.stringify(id) + `);`
+        + `return {hasEl:!!el,buttons:document.querySelectorAll("button").length,`
+        + `text:el?(el.textContent||"").trim():"",title:el?(el.getAttribute("title")||""):""};})()`);
     } catch (e) { return { hasEl: false, err: String(e && e.message) }; }
   };
-  return { collapse: await probe(state.collapseBtn, 'collapse'), close: await probe(state.closeBtn, 'close') };
+  return { collapse: await probe('collapse'), close: await probe('close') };
+}
+
+/** 点一下控制栏里的按钮（断言用：按钮"存在"≠"点了有用"，这两个 bug 都真出现过 ✗） */
+async function clickButton(id) {
+  if (!state.rail || !state.rail.webContents) return false;
+  try {
+    await state.rail.webContents.executeJavaScript(
+      `(function(){var el=document.getElementById(` + JSON.stringify(id) + `);`
+      + `if(el){el.click();return true;}return false;})()`);
+    return true;
+  } catch (e) { return false; }
 }
 
 function hide() {
@@ -826,14 +777,8 @@ function hide() {
   if (state.view && state.win.contentView) {
     try { state.win.contentView.removeChildView(state.view); } catch (e) { /* ignore */ }
   }
-  if (state.handle && state.win.contentView) {
-    try { state.win.contentView.removeChildView(state.handle); } catch (e) { /* ignore */ }
-  }
-  if (state.collapseBtn && state.win.contentView) {
-    try { state.win.contentView.removeChildView(state.collapseBtn); } catch (e) { /* ignore */ }
-  }
-  if (state.closeBtn && state.win.contentView) {
-    try { state.win.contentView.removeChildView(state.closeBtn); } catch (e) { /* ignore */ }
+  if (state.rail && state.win.contentView) {
+    try { state.win.contentView.removeChildView(state.rail); } catch (e) { /* ignore */ }
   }
   state.visible = false;
   notifyRenderer(false);
@@ -853,7 +798,9 @@ function getStatus() {
     // **实际占宽**（view 的真实 bounds）。渲染层让位必须用这个而不是 width：
     // width 是"意图/偏好"，页面按它预留而侧栏按 bounds 绘制 —— 两者不一致时页面就多留一条，
     // 用户看到的是"侧栏隔壁的灰色背景"（实测 420 vs 308 ⇒ 112px 的缝，和用户截图一致）。
-    actualWidth: b ? b.width : null,
+    actualWidth: occupiedWidth() || null,
+    // 窄宽适配的实况（模式 + 是否横向溢出）—— 改布局要用它，不要拍脑袋
+    narrow: state.narrow || null,
     servicePid: state.proc ? state.proc.pid : state.servicePid || null,
     // 本窗口是否**孵化**了这个服务（false = 接管来的驻留服务）；驻留语义下
     // 这不影响可用性，只用于排查"谁该负责收割"
@@ -873,9 +820,9 @@ function notifyRenderer(visibleFlag) {
   if (!state.win || state.win.isDestroyed()) return;
   let width = 0;
   if (visibleFlag) {
-    const b = viewBounds();
-    if (b) {
-      width = b.width;
+    const total = occupiedWidth();      // 控制栏 + 内容：只报 view 会少报一条 ✗
+    if (total > 0) {
+      width = total;
     } else {
       try {
         const [w] = state.win.getContentSize();
@@ -904,6 +851,56 @@ function notifyAfterLoad() {
  *  用户看到的就是"侧栏隔壁的灰色背景"（实测就是这么发现的）。 */
 function viewBounds() {
   try { return state.view ? state.view.getBounds() : null; } catch (e) { return null; }
+}
+
+/* ---------------- ③ 应用侧窄宽适配（不 fork DSH 本体） ----------------
+ * 为什么在应用侧做：`vendor/dsh` 是**整体替换**的（升级即换包）⇒ 任何改本体的补丁都会丢 ✗；
+ * 而 DSH Web UI 是按桌面宽度设计的，在 280–460px 的停靠宽度下会横向溢出。
+ * 做法：给页面加 .dsh-narrow / .dsh-narrow-xs 两个类 + 注入**通用且安全**的规则
+ * （允许收缩、防横向溢出），并把可视宽度写成 CSS 变量供 DSH/插件读取；
+ * 全部挂在窄宽类下 ⇒ 宽屏时零影响 ✓；注入失败只记状态、不影响主流程 ✓。
+ * 同时**量出是否真的溢出**并记在 status 里 —— 下一步改布局要靠这些数字，不能拍脑袋。 */
+const NARROW_CSS = [
+  "/* 应用侧窄宽适配（③）：允许收缩 + 防横向溢出；宽屏不生效 */",
+  "html.dsh-narrow body{overflow-x:hidden}",
+  "html.dsh-narrow *{min-width:0}",
+  "html.dsh-narrow [class*=\"sidebar\"],html.dsh-narrow [class*=\"panel\"],html.dsh-narrow [class*=\"drawer\"]{max-width:100%}",
+  "html.dsh-narrow-xs [class*=\"sidebar\"],html.dsh-narrow-xs [class*=\"drawer\"]{display:none!important}"
+].join("\n");
+
+let narrowTimer = null;
+function scheduleNarrowAdaptation() {
+  if (narrowTimer) clearTimeout(narrowTimer);
+  narrowTimer = setTimeout(() => { applyNarrowAdaptation().catch(() => {}); }, 150);
+}
+
+async function applyNarrowAdaptation() {
+  if (!state.view || !state.view.webContents || !state.url) return;
+  const wc = state.view.webContents;
+  let cur = "";
+  try { cur = wc.getURL(); } catch (e) { cur = ""; }
+  if (cur !== state.url) return;                     // 状态页/错误页不注入
+  let viewW = 0;
+  try { viewW = state.view.getBounds().width; } catch (e) { return; }
+  const mode = viewW < 340 ? "xs" : (viewW < 460 ? "narrow" : "wide");
+  try {
+    await wc.insertCSS(NARROW_CSS);
+    const info = await wc.executeJavaScript(
+      '(function(){var d=document.documentElement;'
+      + 'd.classList.toggle("dsh-narrow",' + (mode !== "wide") + ');'
+      + 'd.classList.toggle("dsh-narrow-xs",' + (mode === "xs") + ');'
+      + 'd.style.setProperty("--dsh-viewport-width","' + viewW + 'px");'
+      + 'var sw=Math.max(d.scrollWidth,document.body?document.body.scrollWidth:0);'
+      + 'return {innerWidth:window.innerWidth,scrollWidth:sw,overflow:sw>window.innerWidth+1};'
+      + '})()');
+    state.narrow = { viewWidth: viewW, mode: mode, metrics: info, at: new Date().toISOString() };
+    if (info && info.overflow) {
+      log("窄宽适配: " + mode + "（内容宽 " + viewW + "）—— DSH 页面横向溢出 "
+        + info.scrollWidth + " > " + info.innerWidth + "（已注入 min-width:0 缓解）");
+    }
+  } catch (e) {
+    state.narrow = { viewWidth: viewW, mode: mode, err: String(e && e.message) };
+  }
 }
 
 function broadcastStatus() {
@@ -1004,7 +1001,7 @@ function setDshOnly(on) {
     notifyRenderer(state.visible);
     relayout();
   }
-  refreshCollapseBtn();   // 右上角按钮换成"恢复思维导图页"
+  refreshRail();   // 控制栏里「—」的字形/语义换成"恢复思维导图页"
   log('dsh-only 模式: ' + state.dshOnly);
 }
 
@@ -1050,6 +1047,6 @@ module.exports = {
   beginWidthDrag, endWidthDrag, setWidth,
   setDshOnly, isDshOnly, hideWindowToBackground, hideToBackground, captureView, restoreWindow,
   // 只关一侧的两种能力（对外/给 AI 用；人类用界面上的两个 ✕）
-  closeSidebar, buttonBounds, buttonProbe,
+  closeSidebar, buttonBounds, buttonProbe, clickButton, occupiedWidth,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
 };

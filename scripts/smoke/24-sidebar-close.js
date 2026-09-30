@@ -30,17 +30,28 @@ const readJs = `(function () {
 
 module.exports = [
   {
-    name: '独立关侧栏：✕ 在「—」下方且不重叠、「—」已下移；关掉后主界面铺满、可再打开',
+    name: '独立关侧栏：控制栏与 DSH 页面零重叠、✕ 在「—」下面；关掉后主界面铺满、可再打开；「⤢」真能恢复',
     run: async (ctx) => {
       sidebar.init(ctx.win);
       sidebar.show();
       await sleep(500);
 
-      const bb = sidebar.buttonBounds();
+      const bb = await sidebar.buttonBounds();
       const dom = await sidebar.buttonProbe();
       const view = sidebar.viewBounds();
       const win = ctx.win.getContentBounds();
       const before = await ctx.exec(readJs);
+
+      // 「⤢ 恢复导图页」曾经是**死键**（页面发 [dsh-restore]、主进程根本没这个分支 ✗）——
+      // 现在点一下真按钮验它：进仅侧栏模式 → 点「—」（此时它是 ⤢）→ 必须回到正常模式。
+      sidebar.setDshOnly(true);
+      await sleep(400);
+      const onlyOn = sidebar.isDshOnly();
+      await sidebar.clickButton('collapse');
+      await sleep(500);
+      const onlyOff = sidebar.isDshOnly();
+      sidebar.setDshOnly(false);
+      await sleep(300);
 
       // 关侧栏（只收 view，不动服务 —— 见文件头说明）
       sidebar.closeSidebar({ keepService: true });
@@ -55,36 +66,46 @@ module.exports = [
       sidebar.hide();
       await sleep(300);
 
-      const sep = bb.collapse && bb.close
-        && bb.close.y >= bb.collapse.y + bb.collapse.height        // ✕ 在「—」下面，不重叠
-        && bb.collapse.y >= 24                                     // 已下移（原先是 4）
-        && bb.collapse.x === bb.close.x;                            // 同一列
-      const inside = bb.collapse && view
-        && bb.collapse.x + bb.collapse.width <= view.x + view.width + 2;
-      // DOM 门禁：两个按钮**真的存在**、各页只有 1 个 button、且都有可点内容。
+      // ① 的结构判据：**控制栏整体在 DSH 页面左边**（零重叠）—— 这是"以后装什么插件都不会被挡"的依据 ✓
+      const noOverlap = !!(bb.rail && view && bb.rail.x + bb.rail.width <= view.x + 1);
+      // 两个按钮都在控制栏里、✕ 在 − 下面不重叠、同一列
+      const inRail = (r) => !!(r && bb.rail
+        && r.x >= bb.rail.x - 1 && r.x + r.width <= bb.rail.x + bb.rail.width + 1
+        && r.y >= bb.rail.y - 1 && r.y + r.height <= bb.rail.y + bb.rail.height + 1);
+      const sep = !!(bb.collapse && bb.close)
+        && bb.close.y >= bb.collapse.y + bb.collapse.height
+        && bb.collapse.x === bb.close.x
+        && inRail(bb.collapse) && inRail(bb.close);
+      // 让位宽度 = 控制栏 + 内容（只报 view 会少一条 ⇒ 又出灰缝 ✗）
+      const totalOk = bb.occupiedWidth === (bb.rail ? bb.rail.width : 0) + (view ? view.width : 0);
+      // DOM 门禁：两个按钮**真的存在**、都有可点内容，且页面里恰好 2 个 button
+      //（① 之后 −/✕ 同处**一个**控制栏页面 ⇒ 计数是 2，不是 1）。
       // 这条是冲着一个真机 bug 来的：data: URL 页里属性少写一个引号 ⇒ `<button>` 被吞进属性值，
       // 页面照常加载（有底色）但**没有按钮、点了没反应** ✗ —— 只查几何永远发现不了。
       const domOk = ['collapse', 'close'].every((k) => {
         const d = dom && dom[k];
-        return d && d.hasEl === true && d.buttons === 1 && d.text && d.text.length > 0;
+        return d && d.hasEl === true && d.buttons === 2 && d.text && d.text.length > 0;
       });
 
       return {
-        ok: !!sep && !!inside && domOk
-          && closed.mainShown === true && closed.reserved === 0       // 主界面铺满（让位宽度归零）
-          && before.reserved > 0                                      // 关之前确实让过位
-          && afterClose.visible === false                             // view 已收
-          && reopened.visible === true,                               // 能再打开
-        text: '【几何】— y=' + (bb.collapse ? bb.collapse.y : 'null')
+        ok: noOverlap && sep && totalOk && domOk
+          && onlyOn === true && onlyOff === false                      // 「⤢」点了真管用
+          && closed.mainShown === true && closed.reserved === 0        // 主界面铺满（让位宽度归零）
+          && before.reserved > 0                                       // 关之前确实让过位
+          && afterClose.visible === false                              // view 已收
+          && reopened.visible === true,                                // 能再打开
+        text: '【结构】控制栏 x=' + (bb.rail ? bb.rail.x : 'null') + ' w=' + (bb.rail ? bb.rail.width : 'null')
+          + ' 与页面零重叠=' + noOverlap + ' 让位=控制栏+内容=' + totalOk + '（' + bb.occupiedWidth + '）'
+          + '｜【几何】— y=' + (bb.collapse ? bb.collapse.y : 'null')
           + ' ✕ y=' + (bb.close ? bb.close.y : 'null')
           + ' 同列=' + (bb.collapse && bb.close ? bb.collapse.x === bb.close.x : 'null')
-          + ' 在侧栏内=' + !!inside
+          + ' 都在栏内=' + (inRail(bb.collapse) && inRail(bb.close))
           + '｜【DOM】— ' + JSON.stringify(dom && dom.collapse) + ' ✕ ' + JSON.stringify(dom && dom.close)
+          + '｜【⤢】进=' + onlyOn + ' 点击后=' + onlyOff
           + '｜【关后】主内容可见=' + closed.mainShown + ' 让位宽度=' + closed.reserved
           + ' visible=' + afterClose.visible
-          + '｜【关前让位】' + before.reserved
           + '｜【重开】visible=' + reopened.visible
-          + '｜侧栏宽=' + (view ? view.width : 'null') + '（窗口 ' + win.width + '）'
+          + '｜窗口 ' + win.width
       };
     }
   }

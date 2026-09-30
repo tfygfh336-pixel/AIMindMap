@@ -47,7 +47,9 @@ async function measure(ctx, label) {
   const b = sidebar.viewBounds();
   const win = ctx.win.getContentBounds();
   const reserved = r.varPx || 0;
-  const actual = b ? b.width : null;
+  // ⚠️ "实际占宽"必须是**控制栏 + 内容**的总宽（侧栏 = 左侧原生控制栏 + DSH 页面 view）。
+  //    只量 view 会少 30px（= 控制栏宽）⇒ 这条"页面预留 == 侧栏实际"的判据会自己造假缝 ✗。
+  const actual = sidebar.occupiedWidth() || (b ? b.width : null);
   return { label, win: win.width, reserved, actual, mainRight: r.mainRight, cls: r.cls,
     fab: r.fab,
     gap: actual == null ? null : reserved - actual,
