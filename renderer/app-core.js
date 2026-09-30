@@ -151,8 +151,6 @@
     // 重建即回到"初始布局"（与 fdView 重置同一语义，避免残留偏移错位）。
     if (MM.clearTreeOffsets) MM.clearTreeOffsets();
     if (MM.clearSelection) MM.clearSelection(); // 框选同理（纯视图状态，重建即清）
-    // 新树 = 新元素，布局锚点基线必须作废（否则会拿旧树的坐标算出一次假位移）
-    if (MM.resetLayoutAnchor) MM.resetLayoutAnchor();
 
     const jm = new jsMind({
       container: 'jsmind_container',
