@@ -224,13 +224,17 @@ node cli/mm-cli.js sidebar-only on      # 只关左边导图页（#main/#toolbar
 node cli/mm-cli.js sidebar-only off     # 恢复导图页
 node cli/mm-cli.js dsh-sidebar  off     # 保留主界面，关掉侧栏 DSH（**连服务一起停**）
 node cli/mm-cli.js dsh-sidebar  on      # 重新打开侧栏（服务不在会自动重新孵化/接管）
+node cli/mm-cli.js dsh-status           # **只读**诊断：侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出）
 ```
 
-- **人类对应的按钮**：导图页右上角 ✕ = `sidebar-only on`；侧栏右上角 ✕（在「—」**下面**）= `dsh-sidebar off`。
+- **人类对应的按钮**：导图页右上角 ✕ = `sidebar-only on`；侧栏**左缘控制栏**里的 ✕（在「—」**下面**）= `dsh-sidebar off`。
 - **判据**：命令会等**回执**（`userData/mm-control-result.json`）；界面没在跑就**报错退出**，
   不会打印"已切换"就算完 —— 调用方是 AI，静默成功会被当成依据 ✗。
 - **改完记得恢复**（`off`/`on`），否则用户面对的是少一半的界面。
-- 想看清两边状态：`sidebar-only`/`dsh-sidebar` 均支持 `--json`（回显 `{ok, cmd, state, dir}`）。
+- `--json` 回显：`{ok, cmd, state, dir}`；`dsh-status --json` 回显侧栏状态对象（**不含 url/token** ✓）。
+- **窄宽适配的实况靠 `dsh-status` 读**（`narrow.mode` / `narrow.metrics.overflow`）——
+  改侧栏布局前先读它，别凭肉眼 ✗（实测这条命令一路挖出两个真 bug：页面会把 `?token=` 抹掉
+  导致 URL 比对永远失败、重试预算太小赶不上页面加载 ✓）。
 - 机制与取舍见 `src/control.js`（文件式通道：本机受限环境禁命名管道、网络要走代理）。
 
 **验证命令**（headless，按序执行，全绿才可交付）：

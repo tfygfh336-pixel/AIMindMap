@@ -103,7 +103,7 @@ walk 序列化，把 data 字段平铺到节点层级，保证工程 JSON 与界
 | `commands/edit.js` | 节点编辑：add/add-root/edit/move/remove/clone |
 | `commands/assets.js` | 图片与附件：add-image/remove-image/assets/add-file/remove-file/files |
 | `commands/links.js` | 跨项目链接：link/unlink/links/links-prune（清理悬空链接 —— 别的项目删了目标节点后本项目的自救路） |
-| `commands/ui.js` | 界面控制**两条对称命令**：`sidebar-only <on\|off>`（关掉**左边思维导图页**、只留 DSH 侧栏）与 `dsh-sidebar <on\|off>`（**保留主界面**、关/开侧栏 DSH，off 连服务一起停）。存在理由：改哪一半就只关哪一半 ⇒ **不必重启整个应用**（人类用界面上那两个 ✕，走的同一条路）。走文件式控制通道（`src/control.js`），**没有回执即报错**（界面没在运行时不许假装成功） |
+| `commands/ui.js` | 界面控制**三条命令**：`sidebar-only <on\|off>`（关掉**左边思维导图页**、只留 DSH 侧栏）、`dsh-sidebar <on\|off>`（**保留主界面**、关/开侧栏 DSH，off 连服务一起停）、`dsh-status`（**只读**诊断：可见性/总占宽/窄宽模式/是否横向溢出，白名单输出不含 url/token）。存在理由：改哪一半就只关哪一半 ⇒ **不必重启整个应用**；改侧栏布局前先 `dsh-status` 拿数字，别凭肉眼。走文件式控制通道（`src/control.js`），**没有回执即报错**（界面没在运行时不许假装成功） |
 | `commands/relations.js` | 引用关系：backlinks（单向反查）/ related（出边+入边双向合并）/ orphans（关系审计）/ mentions（未链接提及） |
 | `commands/assoc.js` | 关联笔记（N 元关联实体）：assoc-list/assoc-add/assoc-edit/assoc-remove/assoc-prune（参数处理 + 读写 + 输出；纯逻辑在 `src/assoc.js`） |
 | `commands/release.js` | 工程命令：docs-gen（从 registry 重生成 `docs/CLI.md`）/ release（发版）/ **changelog**（CHANGELOG **只读**窄查询：段/条目索引或按关键词检索正文）。`changelog` 的索引从正文**现算**、不落生成物 —— 详见 `src/changelog.js` 的 `indexChangelog` 注释（为什么不做成生成文件） |

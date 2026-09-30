@@ -633,7 +633,11 @@ function relayout() {
   const railW = Math.min(RAIL_WIDTH, vw);                      // 极窄时先保内容
   if (state.rail) state.rail.setBounds({ x: sbX, y: 0, width: railW, height: h });
   state.view.setBounds({ x: sbX + railW, y: 0, width: Math.max(0, vw - railW), height: h });
-  scheduleNarrowAdaptation();                                  // ③ 窄宽适配（去抖）
+  // ③ 窄宽适配：宽度变了重算一次（**不清状态、不打断进行中的重试** —— 原先每次 relayout
+  //    都 reset，一旦有 resize 风暴就会被无限重置，表现为"永远没注入" ✗ 实测踩过）。
+  state.narrowDiag = state.narrowDiag || { relayout: 0, scheduled: 0 };
+  state.narrowDiag.relayout++;
+  scheduleNarrowAdaptation(false);
   notifyRenderer(state.visible);
 }
 
@@ -685,6 +689,8 @@ function show() {
     state.win.contentView.addChildView(state.rail);
   }
   state.visible = true;
+  // 新一轮会话：窄宽适配重来一遍（服务可能换了端口/token ⇒ URL 变了 ⇒ 需要重新注入）
+  scheduleNarrowAdaptation(true);
   relayout();
   if (state.status === 'running' && state.url) loadCurrentUrl();
   else if (state.status === 'starting') showStatusPage(PAGE_STARTING);
@@ -801,6 +807,8 @@ function getStatus() {
     actualWidth: occupiedWidth() || null,
     // 窄宽适配的实况（模式 + 是否横向溢出）—— 改布局要用它，不要拍脑袋
     narrow: state.narrow || null,
+    // 为什么"尚未注入"——诊断要能回答它，否则只能靠猜 ✗
+    narrowSkip: state.narrowSkip || null,
     servicePid: state.proc ? state.proc.pid : state.servicePid || null,
     // 本窗口是否**孵化**了这个服务（false = 接管来的驻留服务）；驻留语义下
     // 这不影响可用性，只用于排查"谁该负责收割"
@@ -869,37 +877,74 @@ const NARROW_CSS = [
 ].join("\n");
 
 let narrowTimer = null;
-function scheduleNarrowAdaptation() {
+let narrowAttempt = 0;
+
+/** 安排一次窄宽适配。**带有限重试**：
+ *  真机实测踩到的坑 —— 一次性调用时页面往往还没到目标 URL（`getURL()` 还是空/状态页），
+ *  函数直接早退，而状态里只留个 null，诊断只能说"尚未注入"、看不出卡在哪 ✗。
+ *  现在：早退会记下**原因**（state.narrowSkip），并最多重试 12 次（每次 400ms）。 */
+function scheduleNarrowAdaptation(reset) {
+  if (reset) { narrowAttempt = 0; state.narrow = null; state.narrowSkip = null; }
+  state.narrowDiag = state.narrowDiag || { relayout: 0, scheduled: 0 };
+  state.narrowDiag.scheduled++;
   if (narrowTimer) clearTimeout(narrowTimer);
-  narrowTimer = setTimeout(() => { applyNarrowAdaptation().catch(() => {}); }, 150);
+  narrowTimer = setTimeout(async () => {
+    state.narrowDiag.ran = (state.narrowDiag.ran || 0) + 1;
+    const done = await applyNarrowAdaptation().catch(() => 'threw');
+    if (done !== true && narrowAttempt < 12) {
+      narrowAttempt++;
+      scheduleNarrowAdaptation(false);
+    }
+  }, narrowAttempt === 0 ? 150 : 400);
 }
 
+/** @returns {true} 已注入；否则返回"还要不要重试"（字符串原因写进 state.narrowSkip） */
 async function applyNarrowAdaptation() {
-  if (!state.view || !state.view.webContents || !state.url) return;
+  if (!state.view || !state.view.webContents) { state.narrowSkip = 'no-view'; return false; }
+  if (!state.url) { state.narrowSkip = 'no-url（服务还没就绪）'; return false; }
   const wc = state.view.webContents;
-  let cur = "";
-  try { cur = wc.getURL(); } catch (e) { cur = ""; }
-  if (cur !== state.url) return;                     // 状态页/错误页不注入
+  let cur = '';
+  try { cur = wc.getURL(); } catch (e) { cur = ''; }
+  // ⚠️ 只比 **origin + path**，不比 query：DSH 页面加载后会把地址栏里的 `?token=…` 抹掉
+  //    （安全惯例），原先的"全等比较"因此永远判它不是目标页 ⇒ 注入一次都没跑过 ✗
+  //    —— 真机就是靠 dsh-status 的"原因"字段一刀定位到这条的 ✓。
+  const samePage = (a, b) => {
+    if (!a || !b) return false;
+    try {
+      const ua = new URL(a); const ub = new URL(b);
+      return ua.origin === ub.origin && ua.pathname === ub.pathname;
+    } catch (e) { return a === b; }
+  };
+  if (!samePage(cur, state.url)) {
+    // 诊断要能回答"差在哪"——把两边的 origin+path 都记下来（**不含 token** ✓）
+    const brief = (u) => { try { const x = new URL(u); return x.origin + x.pathname; } catch (e) { return String(u || '空'); } };
+    state.narrowSkip = '页面还不是目标 URL（当前 ' + brief(cur) + ' ≠ 目标 ' + brief(state.url) + '）';
+    return false;
+  }
   let viewW = 0;
-  try { viewW = state.view.getBounds().width; } catch (e) { return; }
-  const mode = viewW < 340 ? "xs" : (viewW < 460 ? "narrow" : "wide");
+  try { viewW = state.view.getBounds().width; } catch (e) { state.narrowSkip = 'getBounds 失败'; return false; }
+  const mode = viewW < 340 ? 'xs' : (viewW < 460 ? 'narrow' : 'wide');
   try {
     await wc.insertCSS(NARROW_CSS);
     const info = await wc.executeJavaScript(
       '(function(){var d=document.documentElement;'
-      + 'd.classList.toggle("dsh-narrow",' + (mode !== "wide") + ');'
-      + 'd.classList.toggle("dsh-narrow-xs",' + (mode === "xs") + ');'
+      + 'd.classList.toggle("dsh-narrow",' + (mode !== 'wide') + ');'
+      + 'd.classList.toggle("dsh-narrow-xs",' + (mode === 'xs') + ');'
       + 'd.style.setProperty("--dsh-viewport-width","' + viewW + 'px");'
       + 'var sw=Math.max(d.scrollWidth,document.body?document.body.scrollWidth:0);'
       + 'return {innerWidth:window.innerWidth,scrollWidth:sw,overflow:sw>window.innerWidth+1};'
       + '})()');
     state.narrow = { viewWidth: viewW, mode: mode, metrics: info, at: new Date().toISOString() };
-    if (info && info.overflow) {
-      log("窄宽适配: " + mode + "（内容宽 " + viewW + "）—— DSH 页面横向溢出 "
-        + info.scrollWidth + " > " + info.innerWidth + "（已注入 min-width:0 缓解）");
-    }
+    state.narrowSkip = null;
+    log('窄宽适配: ' + mode + '（内容宽 ' + viewW + '）'
+      + (info ? '，页面 ' + info.innerWidth + ' / 内容 ' + info.scrollWidth
+        + (info.overflow ? ' ⇒ **横向溢出**' : ' ⇒ 不溢出') : ''));
+    return true;
   } catch (e) {
+    // 注入失败不阻断主流程，但要**留下原因**（诊断里能看见，不要静默 ✗）
     state.narrow = { viewWidth: viewW, mode: mode, err: String(e && e.message) };
+    state.narrowSkip = '注入失败: ' + String(e && e.message);
+    return true;
   }
 }
 
@@ -1048,5 +1093,6 @@ module.exports = {
   setDshOnly, isDshOnly, hideWindowToBackground, hideToBackground, captureView, restoreWindow,
   // 只关一侧的两种能力（对外/给 AI 用；人类用界面上的两个 ✕）
   closeSidebar, buttonBounds, buttonProbe, clickButton, occupiedWidth,
+  NARROW_CSS,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
 };

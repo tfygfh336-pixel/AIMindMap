@@ -93,6 +93,12 @@ function init() {
     desc: 'on = 打开侧栏 DSH；off = 关掉侧栏 DSH（连服务一起停；主界面与项目数据不受影响）。方向与 sidebar-only 相反',
     fn: loadFile('ui')['dsh-sidebar']
   });
+  register({
+    name: 'dsh-status',
+    usage: 'dsh-status [--json]',
+    desc: '**只读**诊断：侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出）。不改状态、不含 url/token',
+    fn: loadFile('ui')['dsh-status']
+  });
 
   // 跨项目链接
   register({ name: 'link', usage: 'link <项目> <id> --to 目标项目 --id 目标id [--caption 说明]', desc: '添加跨项目链接', fn: loadFile('links').link });

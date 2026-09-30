@@ -85,5 +85,30 @@ module.exports = {
       on: '已打开侧栏 DSH（服务不在会自动重新孵化/接管）',
       off: '已关掉侧栏 DSH（含服务）；主界面与项目数据不受影响，要恢复：dsh-sidebar on'
     });
+  },
+
+  /** **只读**诊断：读侧栏实况（可见性 / 总占宽 / 窄宽模式 / 是否横向溢出）。
+   *  为什么需要：窄宽适配（③）的效果以前只能靠肉眼看 ✗ —— 改布局不能拍脑袋，
+   *  要有数字。本命令不改任何状态，随便调 ✓。输出**不含 url/token** ✓。 */
+  'dsh-status'(ctx) {
+    const dir = userDataDir();
+    control.writeCommand(dir, { cmd: 'dsh-status', at: new Date().toISOString(), by: 'cli' });
+    const res = waitForResult(dir, 'dsh-status', 2500);
+    if (!res || !res.ok || !res.status) {
+      ctx.error('主界面没有响应或读不到状态（' + dir + '）：请确认 AI MindMap 正在运行');
+    }
+    const s = res.status;
+    if (ctx.args.json) { ctx.outJson(s); return; }
+    ctx.out('侧栏状态: ' + s.status + (s.visible ? '（可见）' : '（已收起）'));
+    ctx.out('宽度: 意图 ' + s.width + ' / 实际占宽 ' + s.actualWidth + '（控制栏 + 内容）');
+    if (s.narrow) {
+      ctx.out('窄宽适配: 模式 ' + s.narrow.mode + '，内容宽 ' + s.narrow.viewWidth
+        + (s.narrow.metrics
+          ? '，页面 ' + s.narrow.metrics.innerWidth + 'px / 内容 ' + s.narrow.metrics.scrollWidth
+            + 'px ⇒ ' + (s.narrow.metrics.overflow ? '**横向溢出**' : '不溢出')
+          : '（未取到页面度量：' + (s.narrow.err || '?') + '）'));
+    } else {
+      ctx.out('窄宽适配: 尚未注入（原因: ' + (s.narrowSkip || '未调度') + '）');
+    }
   }
 };

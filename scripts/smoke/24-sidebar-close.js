@@ -87,8 +87,14 @@ module.exports = [
         return d && d.hasEl === true && d.buttons === 2 && d.text && d.text.length > 0;
       });
 
+      // ③ 的注入规则**内容**本身也要钉住：空 CSS / 少了关键规则同样是"没做"，但外观上
+      // 谁也看不出来（DSH 页面照样能跑 ✗）⇒ 机械检查这几条必备规则在不在。
+      const css = sidebar.NARROW_CSS || '';
+      const cssOk = ['min-width:0', '.dsh-narrow', '.dsh-narrow-xs', 'overflow-x:hidden']
+        .every((k) => css.indexOf(k) >= 0);
+
       return {
-        ok: noOverlap && sep && totalOk && domOk
+        ok: noOverlap && sep && totalOk && domOk && cssOk
           && onlyOn === true && onlyOff === false                      // 「⤢」点了真管用
           && closed.mainShown === true && closed.reserved === 0        // 主界面铺满（让位宽度归零）
           && before.reserved > 0                                       // 关之前确实让过位
@@ -102,6 +108,7 @@ module.exports = [
           + ' 都在栏内=' + (inRail(bb.collapse) && inRail(bb.close))
           + '｜【DOM】— ' + JSON.stringify(dom && dom.collapse) + ' ✕ ' + JSON.stringify(dom && dom.close)
           + '｜【⤢】进=' + onlyOn + ' 点击后=' + onlyOff
+          + '｜【③ 注入规则】必备项齐全=' + cssOk
           + '｜【关后】主内容可见=' + closed.mainShown + ' 让位宽度=' + closed.reserved
           + ' visible=' + afterClose.visible
           + '｜【重开】visible=' + reopened.visible

@@ -52,6 +52,7 @@
 | `files` | files <项目> [--json] |
 | `sidebar-only` | sidebar-only <on|off> |
 | `dsh-sidebar` | dsh-sidebar <on|off> |
+| `dsh-status` | dsh-status [--json] |
 | `link` | link <项目> <id> --to 目标项目 --id 目标id [--caption 说明] |
 | `unlink` | unlink <项目> <id> --to 目标项目 --id 目标id |
 | `links` | links <项目> [--json] |
@@ -312,6 +313,14 @@ on = 打开侧栏 DSH；off = 关掉侧栏 DSH（连服务一起停；主界面�
 
 ```
 node cli/mm-cli.js dsh-sidebar <on|off>
+```
+
+### dsh-status
+
+**只读**诊断：侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出）。不改状态、不含 url/token
+
+```
+node cli/mm-cli.js dsh-status [--json]
 ```
 
 ### link

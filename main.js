@@ -1066,9 +1066,32 @@ function startControlChannel() {
   setInterval(() => {
     const cmd = control.readCommand(dir);
     if (!cmd) return;
-    // 两个方向各关一半（对称能力）：
+    // 三个命令（前两个是"各关一半"的对称能力，第三个是**只读**诊断）：
     //   dsh-only    —— 关左边思维导图页、只留侧栏（改主界面代码时用）
     //   dsh-sidebar —— 保留主界面、关掉侧栏 DSH（改 DSH 那一侧时用；把服务一起停）
+    //   dsh-status  —— 只读：读侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出）
+    if (cmd.cmd === 'dsh-status') {
+      let st = null;
+      let detail = '';
+      try {
+        const s = dshSidebar.getStatus();
+        // ⚠️ 白名单输出：**绝不带 url/token**（那是只在主进程内存里的东西 ✗）
+        st = {
+          status: s.status, visible: s.visible, error: s.error || null,
+          width: s.width, actualWidth: s.actualWidth, narrow: s.narrow || null,
+          narrowSkip: s.narrowSkip || null
+        };
+      } catch (err) {
+        detail = String((err && err.message) || err);
+      }
+      try {
+        control.writeResult(dir, {
+          cmd: 'dsh-status', ok: !!st, status: st, err: detail, at: new Date().toISOString()
+        });
+      } catch (err2) { /* 回执写不进去：调用方超时 ⇒ 判"没生效" */ }
+      control.clearCommand(dir);
+      return;
+    }
     if (cmd.cmd !== 'dsh-only' && cmd.cmd !== 'dsh-sidebar') return;
     let ok = false;
     let detail = '';
