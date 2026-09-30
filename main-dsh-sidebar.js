@@ -733,9 +733,14 @@ function toggle() {
 
 function isVisible() { return state.visible; }
 function getStatus() {
+  const b = viewBounds();
   return {
     status: state.status, visible: state.visible, error: state.lastError,
     width: state.width,
+    // **实际占宽**（view 的真实 bounds）。渲染层让位必须用这个而不是 width：
+    // width 是"意图/偏好"，页面按它预留而侧栏按 bounds 绘制 —— 两者不一致时页面就多留一条，
+    // 用户看到的是"侧栏隔壁的灰色背景"（实测 420 vs 308 ⇒ 112px 的缝，和用户截图一致）。
+    actualWidth: b ? b.width : null,
     servicePid: state.proc ? state.proc.pid : state.servicePid || null,
     // 本窗口是否**孵化**了这个服务（false = 接管来的驻留服务）；驻留语义下
     // 这不影响可用性，只用于排查"谁该负责收割"
@@ -744,14 +749,28 @@ function getStatus() {
   };
 }
 
-/** 渲染层只需要知道「侧栏占多宽」来让位 —— 不给 url/token */
+/** 渲染层只需要知道「侧栏占多宽」来让位 —— 不给 url/token。
+ *
+ * ⚠️ 必须发**实际占宽**，不是"意图宽度" `state.width`：
+ *   `relayout()` 里 view 的实际宽度是 `min(state.width, 窗口内容宽)`，两者可能不同；
+ *   一旦不同，页面就会多留（或少留）一条 —— 用户看到的就是"侧栏隔壁的灰色背景"。
+ *   有 view 时读 `getBounds().width`（真值）；还没有 view（服务正在启动）时按同一公式回退，
+ *   否则会发 0 ⇒ 页面完全不让位 ⇒ 工具栏被盖住（那就是上一个 bug 的症状）。 */
 function notifyRenderer(visibleFlag) {
-  if (state.win && !state.win.isDestroyed()) {
-    state.win.webContents.send('dsh-sidebar:layout', {
-      visible: !!visibleFlag,
-      width: visibleFlag ? state.width : 0
-    });
+  if (!state.win || state.win.isDestroyed()) return;
+  let width = 0;
+  if (visibleFlag) {
+    const b = viewBounds();
+    if (b) {
+      width = b.width;
+    } else {
+      try {
+        const [w] = state.win.getContentSize();
+        width = state.dshOnly ? w : Math.min(state.width, w);
+      } catch (e) { width = state.width; }
+    }
   }
+  state.win.webContents.send('dsh-sidebar:layout', { visible: !!visibleFlag, width: width });
 }
 
 /** 页面加载完成后再补发一次布局。
@@ -764,6 +783,14 @@ function notifyRenderer(visibleFlag) {
 function notifyAfterLoad() {
   if (!state.win || state.win.isDestroyed() || !state.win.webContents) return;
   state.win.webContents.on('did-finish-load', () => notifyRenderer(state.visible));
+}
+
+/** 原生侧栏 view 的**实际**几何（DIP）。诊断/断言用：
+ *  "页面预留宽度 == 实际占宽"这条判据只靠 `status().width` 不够 —— width 是**意图**，
+ *  bounds 才是真的画出来的东西；两者一旦不一致，页面就会多留（或少留）一条，
+ *  用户看到的就是"侧栏隔壁的灰色背景"（实测就是这么发现的）。 */
+function viewBounds() {
+  try { return state.view ? state.view.getBounds() : null; } catch (e) { return null; }
 }
 
 function broadcastStatus() {
@@ -880,6 +907,7 @@ function restoreWindow() {
 
 module.exports = {
   init, reattach, toggle, show, hide, isVisible, getStatus,
+  viewBounds,
   destroy, startService, stopService, restartService,
   // adoptOrStart 是对外生命周期入口（先接管后孵化）—— 导出供 headless 驻留测试
   // scripts/dsh-resident-host.js 使用：没有窗口时也要能驱动同一套服务生命周期。

@@ -805,7 +805,18 @@ function registerIpc() {
  * 不依赖键盘/鼠标，供 CI 与 AI 迭代验证使用。
  */
 async function runSmoke(win) {
-  const allAssertions = require('./scripts/smoke-assertions.js');
+  // ⚠️ 断言清单的**加载**必须响亮失败：某个 `scripts/smoke/NN-*.js` 在 require 期抛错时，
+  // 旧行为是抛成 UnhandledPromiseRejection ⇒ 整轮**静默挂住**、只能等守卫超时，
+  // 输出里连一条断言都没有（这个坑真实踩过两次：一次是探针文件，一次是 require 路径写错）。
+  let allAssertions;
+  try {
+    allAssertions = require('./scripts/smoke-assertions.js');
+  } catch (err) {
+    console.log('SMOKE LOAD ERROR — 冒烟断言清单加载失败（很可能是某个 scripts/smoke/*.js 在 require 期抛错）：');
+    console.log('  ' + ((err && err.stack) || err));
+    app.exit(1);
+    return;
+  }
   // ── 单跑（只跑选中的断言文件）──────────────────────────────────────────────
   // 用法：SMOKE_ONLY=20,21 npm run smoke   ／  electron . --smoke-only=20,21
   // 为什么：全链一轮约 100–120 s，改一条断言就得等整轮，而且每轮真启动 Electron、真占内存

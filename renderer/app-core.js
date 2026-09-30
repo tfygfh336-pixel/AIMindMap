@@ -262,6 +262,8 @@
       const visible = !!(info && info.visible);
       const width = (visible && info.width) || 0;
       const key = visible + ':' + width;
+      // 诊断留痕：最后一次**收到**的布局信息（给断言/排查用：能区分"事件没送到"与"送到的是旧值"）
+      window.__dshLayoutLast = { visible: visible, width: width, key: key, at: Date.now() };
       // ⚠️ 状态没变就**什么都不做**：下面那次 `resize` 是用来告诉渲染层"导图区宽度变了"的，
       // 若每次都派发，启动时那次"主动问"会白白扰动一次视图（浮动详情重定位、树偏移/居中重算）。
       // 实测症状：把"拖动树后 Esc 保留偏移"的断言搞红（两侧树一起被挪）。只在真的变化时通知。
@@ -278,10 +280,13 @@
     // 用户实测症状："刚打开时菜单栏被侧栏遮盖，稍微拖一下就恢复"。
     try {
       const st = window.desktop.dsh && window.desktop.dsh.status && window.desktop.dsh.status();
+      // 优先用**实际占宽**（status().actualWidth，来自原生 view 的 bounds）：
+      // `width` 只是意图/偏好，页面按它预留、侧栏按实际绘制 ⇒ 不一致就多留一条（灰缝）。
+      const fromStatus = (s) => { if (s) applyLayout({ visible: s.visible, width: s.actualWidth || s.width }); };
       if (st && typeof st.then === 'function') {
-        st.then((s) => { if (s) applyLayout({ visible: s.visible, width: s.width }); }).catch(() => {});
+        st.then(fromStatus).catch(() => {});
       } else if (st) {
-        applyLayout({ visible: st.visible, width: st.width });
+        fromStatus(st);
       }
     } catch (e) { /* 问不到就等事件 */ }
     window.desktop.on('dsh-sidebar:status', (st) => {
