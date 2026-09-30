@@ -75,6 +75,91 @@
     if (p && (p.scrollLeft || p.scrollTop)) { p.scrollLeft = 0; p.scrollTop = 0; }
   }
 
+  /* ================= 重排时钉住"你点的那个节点"（展开/收起不再跳） =================
+   * 病象（用户反馈"展开折叠导致页面跳来跳去"，已量化）：探针实测收起一个大子树时，
+   * 节点**布局坐标**位移 −564.5px、屏幕位移 −565px；真实项目里更大的子树能到 −6757px。
+   *
+   * 机制（vendor/jsmind.js 读出来的）：jsMind 的布局是"**每个父节点把自己的子节点栈居中**"
+   *   `layout_offset(){ … r.offset_y = a - s/2 … ; for (… ) o._data.layout.offset_y += l; }`
+   * 再叠加原点 `get_view_offset(){ x:(面板宽-bounds.e-bounds.w)/2, y:面板高/2 }`。
+   * ⇒ 展开/收起改变包围盒与各层子栈高度 ⇒ **每个父节点的子节点都要重新居中** ⇒ 位移是
+   *   **非等量**的（实测：主题A 位移 −565px、主题B −1406px）。所以"钉住原点"无效（试过），
+   *   "整棵树会等量平移"也是错的（我最初的判断）—— 只有**钉住具体某个节点**才对。
+   *
+   * 做法：包住 `view.relayout()`（jsMind 重排的**唯一入口**），在**调用前后**量同一个节点的
+   * 布局坐标（`style.left/top`，天然不含变换），把差值按当前缩放换算成屏幕位移补进 fdView。
+   * 为什么这次能避开上一版的坑：
+   *   · 上一版在节点层 MutationObserver 里做，**分不清**"布局变了"和"用户在平移/缩放"，
+   *     于是把用户的平移当成布局位移纠正掉（实测位移 = −平移×缩放）。
+   *   · 本版只在**重排函数被调用的那一刻**测量 ⇒ 用户平移/缩放根本不经过这里，不可能被误判。
+   * 锚点：本次操作的那个节点（`expand_node/collapse_node` 的入参，由 wrapLayoutAnchor 记录），
+   *   退化到"第一个可见顶层主题"（主题模式下容器根是隐藏的，不能用它）。 */
+  let layoutAnchorId = '';
+
+  function layoutPos(el) {
+    const lx = parseFloat(el.style && el.style.left);
+    const ly = parseFloat(el.style && el.style.top);
+    if (!isFinite(lx) || !isFinite(ly)) return null;
+    return [lx, ly];
+  }
+
+  function anchorNodeEl(jm) {
+    const panel = fdPanel();
+    if (!panel) return null;
+    const byId = (id) => (id ? panel.querySelector('jmnode[nodeid="' + id + '"]') : null);
+    const visible = (el) => !!el && getComputedStyle(el).display !== 'none';
+    const picked = byId(layoutAnchorId);
+    if (visible(picked)) return picked;
+    const tops = (jm && jm.mind && jm.mind.root && jm.mind.root.children) || [];
+    for (const t of tops) { const el = byId(t.id); if (visible(el)) return el; }
+    return null;
+  }
+
+  /** 安装"重排锚点保持"。每个 jm 实例一次；`__unwrapAnchor` 供断言做判别力证明 */
+  function wrapLayoutAnchor(jm) {
+    const view = jm && jm.view;
+    if (!view || typeof view.relayout !== 'function' || view.__anchorWrapped) return false;
+    const origRelayout = view.relayout;
+    view.relayout = function () {
+      const el = anchorNodeEl(jm);
+      const before = el ? layoutPos(el) : null;
+      const r = origRelayout.apply(this, arguments);
+      if (el && before) {
+        const after = layoutPos(el);
+        if (after) {
+          const dx = after[0] - before[0], dy = after[1] - before[1];
+          if (dx || dy) {
+            // 屏幕位移 = 布局位移 × 当前缩放（视图变换只负责平移缩放，不参与布局）
+            fdView.x -= dx * fdView.s;
+            fdView.y -= dy * fdView.s;
+            fdApplyView();
+            // 诊断留痕（供断言取证）：最近 8 次补偿 —— **只放数字**，避免 JSON 轮转炸掉
+            //（曾把 DOM/数组塞进来，冒烟直接 "Converting circular structure to JSON"）
+            window.__anchorLog = (window.__anchorLog || [])
+              .concat([[dx, dy, fdView.s, Math.round(fdView.x), Math.round(fdView.y)]])
+              .slice(-8);
+          }
+        }
+      }
+      return r;
+    };
+    view.__anchorWrapped = true;
+    view.__unwrapAnchor = function () { view.relayout = origRelayout; view.__anchorWrapped = false; };
+    // 记录"这次操作的是哪个节点"，让锚点＝用户刚点的那个（jsMind 自己的 +/- 按钮也走这里）
+    ['expand_node', 'collapse_node'].forEach((m) => {
+      const orig = jm[m];
+      if (typeof orig !== 'function') return;
+      jm[m] = function (id) {
+        if (id) layoutAnchorId = id;
+        return orig.apply(this, arguments);
+      };
+    });
+    return true;
+  }
+
+  /** 重建/切换项目时调用：新树换了元素，锚点作废 */
+  function resetLayoutAnchor() { layoutAnchorId = ''; }
+
   /** 以容器内点 (px,py) 为不动点缩放；factor 为缩放倍数 */
   function zoomViewAt(px, py, factor, min, max) {
     const s2 = Math.max(min, Math.min(max, fdView.s * factor));
@@ -1008,6 +1093,9 @@
   MM.fdScrollHost = fdScrollHost;
   MM.fdViewEls = fdViewEls;
   MM.fdApplyView = fdApplyView;
+  MM.pinViewOffset = wrapLayoutAnchor;           // 兼容旧名（实为"重排锚点保持"，见函数头注释）
+  MM.wrapLayoutAnchor = wrapLayoutAnchor;
+  MM.resetLayoutAnchor = resetLayoutAnchor;
   MM.neutralizeScroll = neutralizeScroll;
   MM.zoomViewAt = zoomViewAt;
   MM.setViewScale = setViewScale;

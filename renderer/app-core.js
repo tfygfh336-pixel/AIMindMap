@@ -151,6 +151,7 @@
     // 重建即回到"初始布局"（与 fdView 重置同一语义，避免残留偏移错位）。
     if (MM.clearTreeOffsets) MM.clearTreeOffsets();
     if (MM.clearSelection) MM.clearSelection(); // 框选同理（纯视图状态，重建即清）
+    if (MM.resetLayoutAnchor) MM.resetLayoutAnchor();   // 新树 = 新元素，重排锚点作废
 
     const jm = new jsMind({
       container: 'jsmind_container',
@@ -184,6 +185,9 @@
     // 未列出的主题保持默认右侧。方向唯一真源是 meta.layout（序列化不带 direction）。
     applyThemeLayout(data);
     jm.show(data);
+    // 重排锚点保持：包住 view.relayout()，让"刚被展开/收起的那个节点"在屏幕上原地不动
+    //（jsMind 会把每个父节点的子节点栈重新居中 ⇒ 不动手就是"页面跳来跳去"；见 app-view.js）。
+    if (MM.wrapLayoutAnchor) MM.wrapLayoutAnchor(jm);
     // 展开状态**以数据为准**（节点的 `expanded` 字段）。原先这里是无条件 `expand_to_depth(3)`：
     // 后果一是"在界面收起的节点，下次打开又被强制展开"（用户的折叠白做了），
     // 后果二是导入的大树一打开就是一片全展开、要滚很久才找到东西（用户反馈）。
