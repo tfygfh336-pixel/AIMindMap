@@ -117,6 +117,17 @@ module.exports = [
       const watcherOk = ['data-rightbar-collapsed', 'dsh-rightbar-request', 'dsh-rightbar-open',
         'dsh-rightbar-closed', 'Ctrl', 'Open sidebar'].every((k) => js.indexOf(k) >= 0)
         && sidebar.RIGHTBAR_AUTO_WIDTH > sidebar.RIGHTBAR_PAGE_MIN;
+
+      // 【真机 bug 的回归门禁】"观察器装不上"这件事，只验状态机是发现不了的 ✗：
+      // 注入时机撞上页面自身加载时 `executeJavaScript` 会**永不返回** ⇒ state.rightbarWatcher
+      // 停在 null ⇒ 观察器永远不装 ⇒「打开侧边栏」永远不触发自动加宽 ✗（用户截图那次全靠运气）。
+      // 判据：调用必须**有终态**（超时也算 ✓），且状态里能看到它 —— 不许停在 null ✓。
+      const tInstall = Date.now();
+      await sidebar.installRightbarWatcher().catch(() => {});
+      const installMs = Date.now() - tInstall;
+      const watcherState = sidebar.getStatus().rightbarWatcher;
+      const installOk = installMs < 6000
+        && typeof watcherState === 'string' && watcherState.length > 0;
       const autoOk = wide1 === true && w1 === sidebar.RIGHTBAR_AUTO_WIDTH
         && wide2 === false && w2 === w1                       // 幂等
         && released === true && w3 === 694                    // 还原到用户原宽度
@@ -125,7 +136,7 @@ module.exports = [
       await sleep(200);
 
       return {
-        ok: noOverlap && sep && totalOk && domOk && cssOk && autoOk && watcherOk
+        ok: noOverlap && sep && totalOk && domOk && cssOk && autoOk && watcherOk && installOk
           && onlyOn === true && onlyOff === false                      // 「⤢」点了真管用
           && closed.mainShown === true && closed.reserved === 0        // 主界面铺满（让位宽度归零）
           && before.reserved > 0                                       // 关之前确实让过位
@@ -143,6 +154,7 @@ module.exports = [
           + '｜【右栏自动加宽】加宽=' + wide1 + '/' + w1 + ' 幂等=' + (wide2 === false)
           + ' 还原=' + released + '/' + w3 + ' 已够宽不动=' + (alreadyWide === false)
           + ' 契约=' + watcherOk
+          + ' 安装有终态=' + installOk + '（' + installMs + 'ms，状态=' + JSON.stringify(watcherState) + '）'
           + '｜【关后】主内容可见=' + closed.mainShown + ' 让位宽度=' + closed.reserved
           + ' visible=' + afterClose.visible
           + '｜【重开】visible=' + reopened.visible

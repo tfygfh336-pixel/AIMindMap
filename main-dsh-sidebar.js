@@ -738,11 +738,23 @@ const RIGHTBAR_WATCHER_JS = `(function () {
 async function installRightbarWatcher() {
   if (!state.view || !state.view.webContents) return false;
   try {
-    const r = await state.view.webContents.executeJavaScript(RIGHTBAR_WATCHER_JS);
-    state.rightbarWatcher = r === "installed" ? "on" : "already";
+    // ⚠️ 必须带超时：真机踩到过 —— 注入时机恰好撞上页面自身的加载/导航时，
+    // `executeJavaScript` 会**一直不返回**（既不成功也不报错 ✗）⇒ state.rightbarWatcher
+    // 停在 null ⇒ 观察器永远装不上 ⇒「打开侧边栏」永远不会触发自动加宽 ✗✓。
+    // 这正是 dsh-status 的 rightbarWatcher 字段照出来的（显示"未装"而 narrow 却是 wide ✓）。
+    // 有超时后：超时只记状态，下一轮注入会再试 ✓（注入本身在 relayout / did-finish-load 上会重跑 ✓）。
+    const r = await Promise.race([
+      state.view.webContents.executeJavaScript(RIGHTBAR_WATCHER_JS),
+      new Promise((res) => setTimeout(() => res('__timeout__'), 3000))
+    ]);
+    if (r === '__timeout__') {
+      state.rightbarWatcher = 'timeout（下一轮注入重试）';
+      return false;
+    }
+    state.rightbarWatcher = r === 'installed' ? 'on' : 'already';
     return true;
   } catch (e) {
-    state.rightbarWatcher = "error: " + String(e && e.message);
+    state.rightbarWatcher = 'error: ' + String(e && e.message);
     return false;
   }
 }
@@ -1229,6 +1241,6 @@ module.exports = {
   // 只关一侧的两种能力（对外/给 AI 用；人类用界面上的两个 ✕）
   closeSidebar, buttonBounds, buttonProbe, clickButton, occupiedWidth,
   NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN,
-  ensureRightbarRoom, releaseRightbarRoom, setNoSpawn,
+  ensureRightbarRoom, releaseRightbarRoom, setNoSpawn, installRightbarWatcher,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
 };
