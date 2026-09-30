@@ -114,6 +114,7 @@ AI 助手。你本身就是运行中的 AI agent（本机场景下正是 DSH）�
 | 写笔记内容（节点怎么切、detail/caption 怎么写） | `docs/AI-GUIDE.md` **§3 笔记内容规范** |
 | **改数据格式（加字段 / 改结构）** | `docs/DATA-FORMAT.md`（契约）+ `docs/ARCHITECTURE.md` **§6**（四步：读→改→跑→更新） |
 | 改代码（加功能 / 改渲染 / 动侧栏与 DSH 运行包） | `docs/ARCHITECTURE.md` **§6 每任务四步** + `docs/EXTENSIONS.md` |
+| **动内置 DSH（换运行包 / 导插件 / 改侧栏注入）** | `docs/DSH-EMBEDDED.md`（三层划分 + 每项改动升级后会不会丢 + 重建/核对办法）；执行用 skill `embedded-dsh-maintain`（换包/维护）或 `dsh-migrate-onboard`（给别人的电脑导插件） |
 
 **⑥ 记录层 · 发生过什么、要去哪**
 

@@ -261,7 +261,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | **单一真源** | 本目录即完整工程（skill 即工程），**不分离副本**、不用软链、不做自包含打包；只维护本目录。skill 触发名统一为 **AI MindMap**（单名） | 历史上尝试过多目录/软链/自包含方案，均被用户否决 |
 | **CLI 是唯一逻辑源** | 业务逻辑只实现一次（`src/`），CLI 是唯一入口；MCP 只转发 CLI；渲染层不复制业务逻辑 | 避免两套实现分叉 |
 | **数据改动走 CLI** | 不直接手改 `projects/*.json`（迁移脚本除外）。写盘出口只有 `src/data-store.js` | CLI 提供校验闸门与原子写；直接手改会绕过两者（门禁 G2 只兜住"结果非法"，兜不住"绕过流程"） |
-| **DSH 侧边栏独立运行**（v0.16） | 应用自带完整 DSH 运行包（`vendor/dsh`，哈希清单锁定）与**独立数据目录**（`userData/dsh-home`）；侧栏只是视图容器 + 进程管理者（`main-dsh-sidebar.js`）。更新 = 新包装进 `userData/dsh-runtimes/` + `active.json` 原子切换，永不触碰 dsh-home | 用户明确要求：独立于全局安装的 DSH；两实例并行实测无冲突（端口/数据/凭据全隔离） |
+| **DSH 侧边栏独立运行**（v0.16） | 应用自带完整 DSH 运行包（`vendor/dsh`，哈希清单锁定）与**独立数据目录**（`userData/dsh-home`）；侧栏只是视图容器 + 进程管理者（`main-dsh-sidebar.js`）。更新 = 新包装进 `userData/dsh-runtimes/` + `active.json` 原子切换（**换包流程**永不触碰 dsh-home ✓；但**插件/配置导入是另一条受控通道** —— 它就是往 dsh-home 写东西 ✓，见 `docs/DSH-EMBEDDED.md`） | 用户明确要求：独立于全局安装的 DSH；两实例并行实测无冲突（端口/数据/凭据全隔离） |
 | **服务驻留与单窗口假设**（v0.16 系列） | dsh web 以 `detached` 孵化（脱离主进程 Job Object，实测主界面退出后存活）；service-info（`userData/dsh-service.json`）承载 {pid,url}，新主界面启动先 adopt（pid+HTTP 双活探测）不新孵化；健康循环 5s pid+HTTP 双探。**当前假设单主窗口**：`state.view/handle` 为单例、`destroy()` 只收割本进程孵化的服务。若未来支持多主窗口，需把 view/handle 所有权改为引用计数 | 拖宽分隔条与服务接管都绑定"一个 contentView"的模型；解耦的价值（重启主界面不掉侧栏）在单窗口下已完整兑现 |
 | **token 不进渲染层** | DSH 服务的 token URL 只存在于主进程内存与 loadURL；渲染层只收「侧栏宽度」布局事件与结构化状态（status/visible/error） | 渲染层是高危面（innerHTML 注入 detail）；token 泄进渲染层等于把 DSH 控制权交给任何能执行 JS 的路径 |
 | **运行包由哈希清单锁定** | `vendor/dsh/manifest.json`（schemaVersion 1）记录全部文件的 size+SHA256；`src/dsh-package.js` 的 `validateRuntime`/`installRuntime` 全量核验。vendor/ 因此**不进 G1 编码门禁与 G6 文档扫描**（2.6 万第三方文件的完整性由哈希清单负责，编码门禁会假红） | 门禁的职责边界：G1 防的是「我们自己写坏文件」，第三方运行时完整性是另一类问题，用另一把锁 |
@@ -300,6 +300,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | 契约 | `docs/VERIFY.md` | 验证基线（各类计数 + 验证链） | 被测功能说明 | `doc-facts --write` 生成 |
 | 设计 | `docs/AI-GUIDE.md` | AI 操作规范：怎么读写、验证链、坑 + **笔记内容写作规范（节点粒度 / detail / caption）** | 工程流程（指向 RULES/ARCHITECTURE） | 手写 |
 | 设计 | `docs/ARCHITECTURE.md` | 分层决策与理由、模块职责、架构约束、改哪里 | 具体数字（指向 VERIFY.md）、规则全表 | 手写 |
+| 设计 | `docs/DSH-EMBEDDED.md` | 记录「应用内置的独立 DSH 实例」当前被改动成什么样、每项改动属于哪一侧、升级运行包后会不会丢、以及怎么重建/怎么核对 | 不写内核私有常数本身（只写"来源文件+复核命令"，因为它们是易腐数字）；不写会话/消费等运行时状态；不复制 CHANGELOG 的变更叙事 | 每次动内置 DSH（迁移插件、改配置、加应用侧注入、换运行包）后同批更新本表；改完跑 `npm run docs:registry` |
 | 记录 | `CHANGELOG.md` | 变更轨迹（`[Unreleased]` + 最近 3 个已发版本段） | — | 每次变更必写；更老的版本段由 `release` 滚动归档 |
 | 记录 | `docs/INCIDENTS.md` | 事故与操作禁令 | 功能变更 | 仅事故后追加 |
 | 记录 | `docs/ROADMAP.md` | **功能状态视图**：在飞 / 未收口（交接面）、已发版（只回答"这能力有没有"）、已否决 | **版本流水**（那是 `CHANGELOG.md` 的事）、具体计数 | 手写（「在飞」小节发版时清空） |
