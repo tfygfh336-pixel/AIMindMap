@@ -1,5 +1,6 @@
 # CHANGELOG — AI MindMap（原 NetworkMindMap）
 
+
 <!-- registry（本块是 §5 登记表的**数据源**；改完跑 `npm run docs:registry` 重新生成表）
 层: 记录
 作用: 变更轨迹（`[Unreleased]` + 最近 3 个已发版本段）
@@ -12,6 +13,30 @@
 > README.md 版本锁同步更新（release 命令自动完成）。
 
 ## [Unreleased]
+
+### 对称能力：保留主界面、独立关掉侧栏 DSH（2026-09-30，用户要求）
+
+用户要的对称语义（此前只有"关左页留侧栏"一个方向）：
+- **侧栏右上角新增 ✕**（就在「—」**下面**）⇒ 收起侧栏**并停掉 DSH 服务**，**主界面（思维导图）继续运行**、
+  让位宽度归零 ⇒ 导图铺满；点主界面右缘的 🤖 即重新打开（`show()` 发现服务不在会自动重新孵化/接管）。
+  这样"只改 DSH 那一侧"（插件/配置/运行包）时**不必重启整个应用** ✓。
+- **「—」位置下移**（y=4 → y=44）：原先会压住 DSH 页面自己的头部 UI（用户实测反馈）。
+- 仅侧栏模式下点这个 ✕ 会**先恢复主界面**再关侧栏（否则关完窗口是空的 ✗）。
+
+**给 AI 的对称接口**（人类用按钮；两条都"有回执才算生效"）：
+```bash
+node cli/mm-cli.js sidebar-only on|off   # on=只留侧栏（关导图页）
+node cli/mm-cli.js dsh-sidebar  on|off   # off=关侧栏 DSH（连服务停；主界面不受影响）
+```
+控制通道（`src/control.js`）新增 `dsh-sidebar` 命令；`closeSidebar()` 带 `keepService` 选项仅供断言用
+（冒烟进程可能正接管着用户的真实服务，断言不能把它杀掉 ✗）。
+
+**验证**：新增冒烟断言 `scripts/smoke/24-sidebar-close.js`（实测输出）：
+`【几何】— y=44  ✕ y=74  同列=true  在侧栏内=true｜【关后】主内容可见=true 让位宽度=0 visible=false｜【重开】visible=true`
+—— 把"✕ 在下面、不重叠、已下移、关掉后主界面铺满、能再打开"四条都变成机械判据 ✓。
+
+**文档体系同步**（用户明确要求，避免"改一边"这事只有我知道）：README 的对称能力表 + `docs/AI-GUIDE.md`
+新增 §4.0「只改一侧」+ `docs/ARCHITECTURE.md` 的 `commands/ui.js` / `control.js` 两行 + `docs/CLI.md` 重生成 ✓。
 
 （新变更先记在这里，发版时移入下方版本段）
 

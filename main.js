@@ -1065,18 +1065,25 @@ function startControlChannel() {
   try { dir = app.getPath('userData'); } catch (err) { return; }
   setInterval(() => {
     const cmd = control.readCommand(dir);
-    if (!cmd || cmd.cmd !== 'dsh-only') return;
+    if (!cmd) return;
+    // 两个方向各关一半（对称能力）：
+    //   dsh-only    —— 关左边思维导图页、只留侧栏（改主界面代码时用）
+    //   dsh-sidebar —— 保留主界面、关掉侧栏 DSH（改 DSH 那一侧时用；把服务一起停）
+    if (cmd.cmd !== 'dsh-only' && cmd.cmd !== 'dsh-sidebar') return;
     let ok = false;
     let detail = '';
     try {
-      dshSidebar.setDshOnly(!!cmd.on);
+      if (cmd.cmd === 'dsh-only') dshSidebar.setDshOnly(!!cmd.on);
+      else if (cmd.on) dshSidebar.show();
+      else dshSidebar.closeSidebar();
       ok = true;
     } catch (err) {
       detail = String((err && err.message) || err);
     }
     try {
       control.writeResult(dir, {
-        cmd: 'dsh-only', ok: ok, state: ok ? dshSidebar.isDshOnly() : null,
+        cmd: cmd.cmd, ok: ok,
+        state: ok ? (cmd.cmd === 'dsh-only' ? dshSidebar.isDshOnly() : dshSidebar.isVisible()) : null,
         err: detail, at: new Date().toISOString()
       });
     } catch (err2) { /* 回执写不进去：调用方会超时 → 判"没生效"，不会静默成功 */ }

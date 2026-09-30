@@ -51,6 +51,7 @@
 | `remove-file` | remove-file <项目> <id> <相对路径 attachments/x.md> |
 | `files` | files <项目> [--json] |
 | `sidebar-only` | sidebar-only <on|off> |
+| `dsh-sidebar` | dsh-sidebar <on|off> |
 | `link` | link <项目> <id> --to 目标项目 --id 目标id [--caption 说明] |
 | `unlink` | unlink <项目> <id> --to 目标项目 --id 目标id |
 | `links` | links <项目> [--json] |
@@ -303,6 +304,14 @@ on = 只留 DSH 侧栏（关掉左边思维导图页，对话继续可用）；o
 
 ```
 node cli/mm-cli.js sidebar-only <on|off>
+```
+
+### dsh-sidebar
+
+on = 打开侧栏 DSH；off = 关掉侧栏 DSH（连服务一起停；主界面与项目数据不受影响）。方向与 sidebar-only 相反
+
+```
+node cli/mm-cli.js dsh-sidebar <on|off>
 ```
 
 ### link

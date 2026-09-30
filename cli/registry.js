@@ -79,16 +79,24 @@ function init() {
   register({ name: 'remove-file', usage: 'remove-file <项目> <id> <相对路径 attachments/x.md>', desc: '移除节点上的附件引用', fn: loadFile('assets').removeFile });
   register({ name: 'files', usage: 'files <项目> [--json]', desc: '列出项目全部附件及 caption', fn: loadFile('assets').files });
 
-  // 界面控制（给**外部 AI 与内置 DSH 侧栏**用；人类按 ✕ 即可，不需要调它）
+  // 界面控制（给**外部 AI 与内置 DSH 侧栏**用；人类用界面上的两个 ✕，不需要调它）
+  // 两个方向各关一半：sidebar-only 关左页留侧栏；dsh-sidebar 留主界面关侧栏。
   register({
     name: 'sidebar-only',
     usage: 'sidebar-only <on|off>',
     desc: 'on = 只留 DSH 侧栏（关掉左边思维导图页，对话继续可用）；off = 恢复导图页。无回执即报错（界面没在跑）',
     fn: loadFile('ui')['sidebar-only']
   });
+  register({
+    name: 'dsh-sidebar',
+    usage: 'dsh-sidebar <on|off>',
+    desc: 'on = 打开侧栏 DSH；off = 关掉侧栏 DSH（连服务一起停；主界面与项目数据不受影响）。方向与 sidebar-only 相反',
+    fn: loadFile('ui')['dsh-sidebar']
+  });
 
   // 跨项目链接
-  register({ name: 'link', usage: 'link <项目> <id> --to 目标项目 --id 目标id [--caption 说明]', desc: '添加跨项目链接', fn: loadFile('links').link });  register({ name: 'unlink', usage: 'unlink <项目> <id> --to 目标项目 --id 目标id', desc: '移除跨项目链接', fn: loadFile('links').unlink });
+  register({ name: 'link', usage: 'link <项目> <id> --to 目标项目 --id 目标id [--caption 说明]', desc: '添加跨项目链接', fn: loadFile('links').link });
+  register({ name: 'unlink', usage: 'unlink <项目> <id> --to 目标项目 --id 目标id', desc: '移除跨项目链接', fn: loadFile('links').unlink });
   register({ name: 'links', usage: 'links <项目> [--json]', desc: '列出项目全部跨项目链接', fn: loadFile('links').links });
   register({ name: 'links-prune', usage: 'links-prune <项目> [--nodes a,b] [--dry-run]', desc: '清理悬空链接（目标已不存在，修好悬挂链接导致的校验红）', fn: loadFile('links').linksPrune });
 

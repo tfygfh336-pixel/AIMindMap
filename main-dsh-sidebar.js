@@ -57,6 +57,7 @@ const state = {
   view: null,           // WebContentsView（惰性创建）
   handle: null,         // 拖宽分隔条 view
   collapseBtn: null,    // 折叠按钮 view（侧栏右上角「—」）
+  closeBtn: null,       // 独立关闭按钮 view（「—」下方那个「✕」：只关侧栏这一半）
   proc: null,           // dsh web 子进程（本窗口孵化时才有）
   procLock: null,       // 运行锁（dsh-runtime.lock）
   url: null,            // 带 token 的地址（只在主进程内存）
@@ -571,7 +572,14 @@ function relayout() {
   }
   if (state.collapseBtn) {
     state.collapseBtn.setBounds({
-      x: Math.max(0, x + vw - COLLAPSE_W - 6), y: 4,
+      x: Math.max(0, x + vw - COLLAPSE_W - 6), y: BTN_TOP,
+      width: COLLAPSE_W, height: COLLAPSE_H
+    });
+  }
+  if (state.closeBtn) {
+    // ✕ 挂在「—」**下面**（用户要求：关侧栏的按钮就在折叠按钮下方）
+    state.closeBtn.setBounds({
+      x: Math.max(0, x + vw - COLLAPSE_W - 6), y: BTN_TOP + COLLAPSE_H + BTN_GAP,
       width: COLLAPSE_W, height: COLLAPSE_H
     });
   }
@@ -623,11 +631,13 @@ function show() {
   ensureView();
   ensureHandle();
   ensureCollapseBtn();
+  ensureCloseBtn();
   if (state.win.contentView) {
-    // 顺序即 z 序：折叠按钮最后挂 → 盖在 DSH 页面上（右上角恒可点）
+    // 顺序即 z 序：两个按钮最后挂 → 盖在 DSH 页面上（右上角恒可点）
     state.win.contentView.addChildView(state.view);
     state.win.contentView.addChildView(state.handle);
     state.win.contentView.addChildView(state.collapseBtn);
+    state.win.contentView.addChildView(state.closeBtn);
   }
   state.visible = true;
   relayout();
@@ -669,6 +679,10 @@ function ensureHandle() {
  * 点击经 console 消息回传主进程 → hide()。展开走 Ctrl+B / 视图菜单。 */
 const COLLAPSE_W = 30;
 const COLLAPSE_H = 24;
+// 按钮整体**下移**：原先钉在 y=4，会压住 DSH 页面自己的头部 UI（用户实测反馈）。
+// y=44 与两按钮间距 6 是"让开头部但不脱离右上角"的折中；改这两个值不影响别处。
+const BTN_TOP = 44;
+const BTN_GAP = 6;
 
 function collapsePageHtml() {
   // 按钮含义随模式变：正常模式「—」= 折叠侧栏；仅侧栏模式「⤢」= **恢复思维导图页**
@@ -723,6 +737,62 @@ function ensureCollapseBtn() {
   return btn;
 }
 
+/* ---------------- 独立关闭按钮（「—」下方那个「✕」） ----------------
+ * 与「—」的分工（用户定的）：**「—」= 收起侧栏**（服务继续驻留，🤖 一点就回来）；
+ * **「✕」= 关掉侧栏这一半**（连 DSH 服务一起停），主界面（思维导图）照常运行。
+ * 这样"只改 DSH 那一侧"（插件/配置/运行包）时不必重启整个应用 ✓；
+ * 反过来"只改主界面"则走导图页右上角那个 ✕（只留侧栏）✓。 */
+function closeSidebarPageHtml() {
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    + 'html,body{margin:0;height:100%;background:rgba(245,246,248,.92);overflow:hidden;'
+    + 'user-select:none;-webkit-app-region:no-drag}'
+    + 'button{width:100%;height:100%;border:none;background:transparent;cursor:pointer;'
+    + 'font-size:12px;line-height:1;color:#4e5969;border-radius:0 0 0 6px}'
+    + 'button:hover{background:#fdecec;color:#d93026}'
+    + '</style></head><body>'
+    + '<button id="close" title="关闭 DSH 侧栏（连服务一起停，思维导图继续用）」>✕</button>'
+    + '<script>document.getElementById("close").addEventListener("click",function(){'
+    + 'console.log("[dsh-close-sidebar]");});</' + 'script></body></html>');
+}
+
+function ensureCloseBtn() {
+  if (state.closeBtn) return state.closeBtn;
+  const { WebContentsView } = require('electron');
+  const btn = new WebContentsView({
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+  });
+  btn.setBackgroundColor('#00000000');
+  btn.webContents.loadURL(closeSidebarPageHtml()).catch(() => { /* ignore */ });
+  btn.webContents.on('console-message', (_e, _level, message) => {
+    if (message !== '[dsh-close-sidebar]') return;
+    // 仅侧栏模式下先让主界面回来，否则关完侧栏窗口就空了 ✗
+    if (state.dshOnly) setDshOnly(false);
+    closeSidebar();
+  });
+  state.closeBtn = btn;
+  return btn;
+}
+
+/** 只关**侧栏那一半**：收起 view + 停掉 DSH 服务；主界面、应用进程、项目数据都不受影响。
+ *  停服务是刻意的（用户要的"独立关掉侧栏 DSH"）—— 这样更新 DSH 那一侧时不必重启应用；
+ *  想回来点主界面右缘的 🤖（show() 发现服务不在会自动重新孵化/接管 ✓）。
+ *  opts.keepService=true 只收 view、不动服务（**给自动化断言用**：冒烟进程可能正接管着
+ *  用户真实的服务，断言不能把它杀掉 ✗）。 */
+function closeSidebar(opts) {
+  const keepService = !!(opts && opts.keepService);
+  hide();
+  if (!keepService) stopService();
+  log('侧栏已独立关闭（' + (keepService ? '服务保留（断言模式）' : 'DSH 服务已停') + '；主界面继续运行）');
+  broadcastStatus();
+}
+
+/** 两个角标按钮的几何（给断言用：位置/是否重叠是"挡到页面 UI"这类问题的唯一机械判据）。 */
+function buttonBounds() {
+  const b = (v) => { try { return v ? v.getBounds() : null; } catch (e) { return null; } };
+  return { collapse: b(state.collapseBtn), close: b(state.closeBtn) };
+}
+
 function hide() {
   if (!state.win) return;
   if (state.view && state.win.contentView) {
@@ -733,6 +803,9 @@ function hide() {
   }
   if (state.collapseBtn && state.win.contentView) {
     try { state.win.contentView.removeChildView(state.collapseBtn); } catch (e) { /* ignore */ }
+  }
+  if (state.closeBtn && state.win.contentView) {
+    try { state.win.contentView.removeChildView(state.closeBtn); } catch (e) { /* ignore */ }
   }
   state.visible = false;
   notifyRenderer(false);
@@ -948,5 +1021,7 @@ module.exports = {
   adoptOrStart,
   beginWidthDrag, endWidthDrag, setWidth,
   setDshOnly, isDshOnly, hideWindowToBackground, hideToBackground, captureView, restoreWindow,
+  // 只关一侧的两种能力（对外/给 AI 用；人类用界面上的两个 ✕）
+  closeSidebar, buttonBounds,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
 };
