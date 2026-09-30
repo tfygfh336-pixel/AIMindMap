@@ -150,6 +150,13 @@ function buildEnv(runtimeRoot) {
 }
 
 function startService() {
+  // 冒烟模式：**唯一孵化点**要拦住 —— 只在 adoptOrStart() 里拦是不够的 ✗：
+  // show() 发现"没在跑"时也会直接调这里，于是冒烟仍然会孵出一个真服务（实测 status=running ✗），
+  // 既拖慢 G5（40–60s、随负载抖到 172.7s ✗），又可能接管用户正在用的那个服务 ✗。
+  if (state.noSpawn) {
+    state.status = 'idle';
+    return;
+  }
   if (state.status === 'starting' || state.status === 'running') return;
   let runtime;
   try {
@@ -361,8 +368,23 @@ async function adoptExistingService() {
 
 /** init 时的入口决策：先试接管，接管不了才孵化 */
 async function adoptOrStart() {
+  // 冒烟模式：**既不孵化、也不接管** ✓
+  //  为什么（实测教训）：22-*/23-*/24-* 那条几何断言会顺手孵化一个真的内置 DSH 服务，
+  //  启动耗时 40–60s 且随机器负载剧烈波动 ⇒ 同一份代码实测 94.9s 通过、172.7s 被守卫掐掉 ✗，
+  //  假红排查代价极高 ✓。而这几条断言要验的是**几何**（控制栏位置/让位宽度/按钮 DOM ✓），
+  //  不需要服务 ✓。顺带还消掉一个隐患：以前冒烟会**接管用户正在用的那个服务**，收尾时把它停掉 ✗。
+  if (state.noSpawn) {
+    log('冒烟模式：跳过服务孵化/接管（几何断言不需要服务，避免把真实服务牵连进来）');
+    state.status = 'idle';
+    return;
+  }
   if (await adoptExistingService()) return;
   startService();
+}
+
+/** 给冒烟用：true = 不孵化也不接管服务（默认 false，正常运行不受影响） */
+function setNoSpawn(flag) {
+  state.noSpawn = !!flag;
 }
 
 /** 健康循环：detached 服务没有 exit 事件可听，用轮询补齐死亡感知（pid + HTTP 双探）*/
@@ -1207,6 +1229,6 @@ module.exports = {
   // 只关一侧的两种能力（对外/给 AI 用；人类用界面上的两个 ✕）
   closeSidebar, buttonBounds, buttonProbe, clickButton, occupiedWidth,
   NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN,
-  ensureRightbarRoom, releaseRightbarRoom,
+  ensureRightbarRoom, releaseRightbarRoom, setNoSpawn,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
 };

@@ -61,10 +61,12 @@ const assertions = [
       const r = await ctx.exec(`(async () => {
         const main = document.getElementById('main');
         const tick = () => new Promise((res) => setTimeout(res, 30));
-        // ⚠️ 只验**类与 CSS 规则的契约**（on ⇒ 让位 420px；off ⇒ 收回 0px）。
-        // 旧版用"before ≠ after"当判据是**前提过期**了：渲染层现在启动时就会主动问一次真实布局
-        //（修"刚打开时工具栏被侧栏盖住"，见 scripts/smoke/21-sidebar-first-paint.js），
-        // 所以开始时 class 可能本来就是 on（侧栏显示中），before 会是 420px。
+        // ⚠️ 判据是**契约**，不是某个具体数字：
+        //   让位宽度必须等于**侧栏实际占宽**（实时读 status()），off 时归 0。
+        //   原先写死 '420px' —— 那是很久以前的默认宽度 ✗；宽度会随用户偏好/上限变化
+        //   （实测已到 720、上限提到 900 后还可能是 900），写死必然假红 ✓。
+        const st = await window.desktop.dsh.status();
+        const actual = st && typeof st.actualWidth === 'number' ? st.actualWidth : null;
         document.body.classList.add('dsh-sidebar-on');
         await tick();
         const onMargin = getComputedStyle(main).marginRight;
@@ -73,14 +75,14 @@ const assertions = [
         await tick();
         const offMargin = getComputedStyle(main).marginRight;
         const offPad = getComputedStyle(document.getElementById('toolbar')).paddingRight;
-        return { onMargin, offMargin, onPad, offPad,
-          // off 时工具栏回到它**自身**的默认内边距（实测 12px，不是 0）——
-          // 所以判据是"off 明显小于 on"，而不是写死 0px
-          ok: onMargin === '420px' && offMargin === '0px'
-            && parseInt(onPad, 10) >= 428 && parseInt(offPad, 10) < 20 };
+        const onPx = parseInt(onMargin, 10);
+        return { onMargin, offMargin, onPad, offPad, actual,
+          ok: onPx > 0 && (actual === null || Math.abs(onPx - actual) <= 2)
+            && offMargin === '0px'
+            && parseInt(onPad, 10) >= onPx + 8 && parseInt(offPad, 10) < 20 };
       })()`);
       return { ok: !!r.ok, text: 'margin on/off ' + r.onMargin + ' / ' + r.offMargin
-        + '（toolbar paddingRight on/off ' + r.onPad + ' / ' + r.offPad + '）' };
+        + '（侧栏实际占宽 ' + r.actual + '；toolbar paddingRight on/off ' + r.onPad + ' / ' + r.offPad + '）' };
     }
   },
 

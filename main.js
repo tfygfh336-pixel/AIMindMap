@@ -896,16 +896,17 @@ async function runSmoke(win) {
   // 只能由 AI/CLI 写入）。`runCli` 在冒烟模式下已把项目根指向临时副本
   // （AI_MINDMAP_PROJECTS_DIR），所以断言用它是安全的 —— 绝不碰真实数据。
   const ctx = { exec, win, runCli: (args) => runCli(args) };
-  // 兜底：整个冒烟最长 **170 秒**，防止断言挂起导致进程不退出。
-  // ⚠️ 取值要**略小于**验证体系给本步的预算（`docs/VERIFY.md` 里 G5 现在是 180s）：
+  // 兜底：整个冒烟最长 **140 秒**，防止断言挂起导致进程不退出。
+  // ⚠️ 取值要**略小于**验证体系给本步的预算（`docs/VERIFY.md` 里 G5 现在是 150s）：
   //   · 守卫 > 预算时，**挂起**会被报表成"超出预算"（看着像性能问题 ✗，实测踩过）；
   //   · 守卫远小于预算时，真实耗时逼近预算的正常运行会被守卫先掐掉 ⇒ 同一份代码有时
   //     通过、有时判红（历史上 90s 守卫就这么坑过我）。二者留 ~10s 余量最合适。
-  // 依据：侧栏那三条断言要造真 WebContentsView，实测 90–135s，属固有成本。
+  // 实测（2026-09-30）：侧栏三条断言原先会顺手孵化一个真服务（40–60s，且随负载抖到 172.7s ✗），
+  // 改成 `setNoSpawn(true)` 后它们只要 11.5s ✓ —— 冒烟耗时的大头与抖动源都消失了。
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);
-  }, 170000);
+  }, 140000);
   for (const a of assertions) {
     try {
       const r = await a.run(ctx);
@@ -1148,6 +1149,12 @@ app.whenReady().then(() => {
     if (!isSmoke && !exportImageArgs) {
       dshSidebar.init(win);
       startControlChannel();     // 外部 AI / 内置 DSH 的界面控制接口（协议见 src/control.js）
+    } else if (isSmoke) {
+      // 冒烟：侧栏 view 照建（几何断言要它），但**不碰服务** —— 既不孵化也不接管：
+      //   · 免得把用户**正在用**的那个内置服务牵连进来（以前冒烟会接管、收尾还把它停掉 ✗）
+      //   · 免得 40–60s 的服务启动把 G5 拖成假红（实测同代码 94.9s ↔ 172.7s ✗）
+      dshSidebar.setNoSpawn(true);
+      dshSidebar.init(win);
     }
     win.webContents.once('did-finish-load', () => {
       console.log('[main] did-finish-load, isSmoke=' + isSmoke);
