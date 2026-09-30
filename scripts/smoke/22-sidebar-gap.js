@@ -31,6 +31,12 @@ const rendererJs = `(function () {
     cls: b.className.indexOf('dsh-sidebar-on') >= 0 ? 'on' : 'off',
     varPx: parseFloat(varRaw) || 0,
     last: window.__dshLayoutLast || null,
+    fab: (function () {
+      var f = document.getElementById('dsh-restore-fab');
+      if (!f) return '(无 FAB)';
+      var cs = getComputedStyle(f);
+      return f.style.display + '/' + cs.display + '/' + cs.visibility;
+    })(),
     mainRight: main ? Math.round(main.getBoundingClientRect().right) : null
   };
 })()`;
@@ -43,6 +49,7 @@ async function measure(ctx, label) {
   const reserved = r.varPx || 0;
   const actual = b ? b.width : null;
   return { label, win: win.width, reserved, actual, mainRight: r.mainRight, cls: r.cls,
+    fab: r.fab,
     gap: actual == null ? null : reserved - actual,
     viewRight: b ? b.x + b.width : null, winRight: win.width };
 }
@@ -93,13 +100,15 @@ module.exports = [
         // "预留 == 实际"这条**当前不判**：冒烟里 `init` 必然晚于页面首次加载（真机是先 init 后加载），
         // 实测重载后渲染层仍未走 applyLayout（`__dshLayoutLast=undefined`）⇒ 冒烟路径不等价于真机启动顺序，
         // 拿它判红会变成假红。所以这里只**报告**实测缝隙（与用户截图一致），真机验证由人复看。
-        ok: wide.actual != null && restored.cls === 'off',
+        ok: wide.actual != null && restored.cls === 'off'
+          && narrow.reserved === narrow.actual                 // 缩放后预留仍等于实际（缝隙=0）
+          && String(restored.fab).indexOf('flex') >= 0,        // 折叠后重开圆钮必须出现（回归过）
         text: '【宽窗】窗口=' + wide.win + ' 页面预留=' + wide.reserved + ' 侧栏实际=' + wide.actual
           + ' **缝=' + wide.gap + 'px**（用户截图那条约 114px；预留来自意图/默认值，侧栏按实际 bounds 绘制）'
           + ' 最后收到=' + JSON.stringify(wide.last)
           + '｜【缩窄到最小窗】窗口=' + narrow.win + ' 预留=' + narrow.reserved + ' 实际=' + narrow.actual
           + '（窗口最小宽 960 > 侧栏最大 720 ⇒ "预留≠实际"不可能来自窗口过窄，只可能来自取值口径）'
-          + '｜【复原】实际=' + restored.actual + ' class=' + restored.cls
+          + '｜【复原】实际=' + restored.actual + ' class=' + restored.cls + ' 重开圆钮=' + restored.fab
           + '｜注：侧栏是原生 view，capturePage 截不到它 —— 这类缺陷**只能靠几何判定**，截图永远看不见'
       };
     }

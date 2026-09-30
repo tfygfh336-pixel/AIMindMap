@@ -264,13 +264,22 @@
       const key = visible + ':' + width;
       // 诊断留痕：最后一次**收到**的布局信息（给断言/排查用：能区分"事件没送到"与"送到的是旧值"）
       window.__dshLayoutLast = { visible: visible, width: width, key: key, at: Date.now() };
-      // ⚠️ 状态没变就**什么都不做**：下面那次 `resize` 是用来告诉渲染层"导图区宽度变了"的，
-      // 若每次都派发，启动时那次"主动问"会白白扰动一次视图（浮动详情重定位、树偏移/居中重算）。
-      // 实测症状：把"拖动树后 Esc 保留偏移"的断言搞红（两侧树一起被挪）。只在真的变化时通知。
+      // ── 下面三件都是**纯 DOM 同步，每次必做**（幂等、代价极低）──
+      // 教训：上一版把它们放进"状态没变就 return"的守卫里 ⇒ 一旦某条路径没触发状态变化，
+      // 就让位变量/FAB 落空，用户看到"灰色背景"和"重开圆钮不见了"。守卫只该守住**扰动视图**的那件事。
+      document.body.classList.toggle('dsh-sidebar-on', visible);
+      // `--dsh-sidebar-width` 必须显式写：不写就回落到 style.css 的兜底值 420px，
+      // 而侧栏实际可能只有 308 ⇒ 页面多留 112px ⇒ 就是用户看到的"侧栏隔壁灰色背景"。
+      document.body.style.setProperty('--dsh-sidebar-width', width + 'px');
+      window.__dshSidebarW = width;
+      // 折叠圆钮（🤖 重开入口）：侧栏可见时藏、折叠时显示
+      const fab2 = document.getElementById('dsh-restore-fab');
+      if (fab2) fab2.style.display = visible ? 'none' : 'flex';
+      // ── 只有"扰动视图"这件事需要守卫 ──
+      // resize 是告诉渲染层"导图区宽度变了"：若每次都派发，启动时那次主动询问会白白扰动一次视图
+      // （浮动详情重定位、树偏移/居中重算 —— 实测把"拖动树后 Esc 保留偏移"的断言搞红）。
       if (key === lastSidebarLayout) return;
       lastSidebarLayout = key;
-      document.body.classList.toggle('dsh-sidebar-on', visible);
-      // 导图容器宽度变了 → 触发既有 resize 链路（浮动详情重定位等）
       window.dispatchEvent(new Event('resize'));
     };
     window.desktop.on('dsh-sidebar:layout', applyLayout);
