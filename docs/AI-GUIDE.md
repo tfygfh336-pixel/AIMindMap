@@ -222,6 +222,7 @@ node scripts/cli-integration.js   # CLI 命令端到端（临时项目自动清�
 npm run smoke                     # 冒烟（Electron 无头 + 截图 smoke-shot.png）
 SMOKE_ONLY=20,21 npm run smoke     # 冒烟**单跑**：只跑选中的断言文件（+ 01 预热）；不产截图/视觉断言
 $env:SMOKE_ONLY='20,21'; npm run smoke   # ↑ 的 PowerShell 写法（Windows 上就用这个）
+node_modules\\.bin\\electron.cmd . --export-window out.png   # **整窗**截图（主页面 + 原生侧栏 view 合成，尺寸自适应）
 node cli/mm-cli.js validate-all   # 全部项目校验
 npm run check:docs                # 文档登记门禁（G8：表外文档/散落文档/悬挂登记）
 npm run check:rules               # 规则文件自洽门禁（G9：条数/表格结构/编号引用/实现列）

@@ -124,9 +124,22 @@ const exportImageArgs = (() => {
   return null;
 })();
 
+// --export-window <输出.png>：整窗截图（主页面 + **原生侧栏 view** 合成），尺寸取窗口实际大小。
+// 为什么需要：侧栏是原生 WebContentsView，主页面 capturePage() 里没有它 ✗ —— 想"看到侧栏"
+// 只能分别截图再合成（scripts/vision/window-shot.js）。本模式会**接管驻留服务**（不孵化、不收割）。
+const exportWindowArgs = (() => {
+  const i = process.argv.indexOf('--export-window');
+  if (i >= 0) return { out: process.argv[i + 1] };
+  return null;
+})();
+
 // 截图导出模式禁用 GPU 硬件加速：规避偶发 UnknownVizError（合成器崩溃导致截图失败）。
 // 注意：仅 export-image 模式禁用——冒烟等其他模式保持默认（实测禁用后冒烟进程崩溃）。
 if (exportImageArgs) app.disableHardwareAcceleration();
+
+// 真退出放行标志：✕ = 藏到后台（侧栏保活），只有「文件 → 退出 / Ctrl+Q」会置位它并真的退出。
+let quitting = false;
+app.on('before-quit', () => { quitting = true; });
 
 // 冒烟结束（含 app.exit 与异常退出）都要清掉临时项目目录，避免在系统 temp 里堆积。
 if (SMOKE_PROJECTS_DIR) {
@@ -965,6 +978,49 @@ async function runExportImage(win, { project, out }) {
   }
 }
 
+/* ---------------- 整窗截图（--export-window <输出.png>） ----------------
+ * 分别截「主页面」与「原生侧栏 view」，再按侧栏真实 bounds 贴回去 —— 尺寸取**窗口内容实际大小**
+ * （自适应，不写死分辨率）。侧栏不在主页面的 capturePage 里，这是唯一能看到它的离线方式。
+ */
+async function runExportWindow(win, { out }) {
+  const guard = setTimeout(() => { console.log('EXPORT-WINDOW GUARD TIMEOUT'); app.exit(1); }, 90000);
+  try {
+    // 侧栏可能还在启动：**重试到真正截到图**为止（只等 bounds 不够 —— view 建出来时页面还没画完，
+    // capturePage 会拿到空图/抛错，于是合出来还是没有侧栏）。拿不到就只出主页面，不算失败。
+    let b = null;
+    let sbImg = null;
+    for (let i = 0; i < 40; i++) {
+      b = dshSidebar.viewBounds();
+      sbImg = await dshSidebar.captureView();
+      if (b && b.width > 0 && sbImg && sbImg.getSize().width > 0) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    await new Promise((r) => setTimeout(r, 800));   // 让侧栏页面自己也画一帧
+    const { nativeImage } = require('electron');
+    const { composeWindowShot } = require('./scripts/vision/window-shot.js');
+    const pageImg = await win.webContents.capturePage();
+    const size = pageImg.getSize();
+    const base = { width: size.width, height: size.height, pixels: pageImg.getBitmap() };
+    let composed = base;
+    if (sbImg && b && b.width > 0) {
+      const sbSize = sbImg.getSize();
+      // 位图可能按 devicePixelRatio 放大 ⇒ 用"位图宽 ÷ 窗口内容宽"还原比例（自适应）
+      const scale = size.width / win.getContentBounds().width;
+      composed = composeWindowShot(base, { width: sbSize.width, height: sbSize.height, pixels: sbImg.getBitmap() },
+        { x: Math.round(b.x * scale), y: Math.round(b.y * scale) });
+    }
+    fs.writeFileSync(out, nativeImage.createFromBitmap(Buffer.from(composed.pixels), {
+      width: composed.width, height: composed.height
+    }).toPNG());
+    console.log('[export-window] 已写出 ' + out + '  ' + composed.width + '×' + composed.height
+      + '（侧栏 ' + (sbImg ? (b.width + '×' + b.height + ' @x=' + b.x) : '未进来') + '）');
+  } catch (err) {
+    console.log('[export-window] 失败: ' + ((err && err.stack) || err));
+  }
+  clearTimeout(guard);
+  app.exit(0);   // 用 exit 而不是 quit：**不触发收割**，驻留服务与侧栏对话保持存活
+}
+
 /* ---------------- 启动 ---------------- */
 app.whenReady().then(() => {
   try {
@@ -974,6 +1030,14 @@ app.whenReady().then(() => {
       const win = createWindow({ width: 1680, height: 1050, show: false });
       console.log('[main] export-image window created');
       win.webContents.once('did-finish-load', () => runExportImage(win, exportImageArgs));
+      return;
+    }
+    if (exportWindowArgs) {
+      // 整窗截图：窗口**离屏**但不退出侧栏 —— 要的就是把原生侧栏 view 一起拍进来
+      const win = createWindow({ width: 1680, height: 1050, show: false });
+      console.log('[main] export-window window created');
+      dshSidebar.init(win);        // ⚠️ 必须 init，否则 state.win 为 null ⇒ 侧栏 view 永远建不出来
+      win.webContents.once('did-finish-load', () => runExportWindow(win, exportWindowArgs));
       return;
     }
     const win = createWindow(isSmoke
@@ -990,12 +1054,12 @@ app.whenReady().then(() => {
       console.log('[main] did-finish-load, isSmoke=' + isSmoke);
       if (isSmoke) setTimeout(() => runSmoke(win), 500);
     });
-    // 关窗语义（v0.16.5）：仅侧边栏模式下 ✕ = 隐藏窗口到后台（DSH 驻留不动，
-    // 任务栏可复原）；正常模式下照常退出（退出时收割孵化服务）
+    // 关窗语义（2026-09-29 起）：✕ = **藏到后台**（侧栏 view 与 DSH 服务都不动 ⇒ 对话保活），
+    // 真正退出走「文件 → 退出 / Ctrl+Q」（那时 `quitting=true`，这里放行）。
+    // 用户要求："除非要更新内置 DSH 或重启它，都不要关闭侧边栏。"
     win.on('close', (e) => {
-      if (!isSmoke && !exportImageArgs && dshSidebar.hideWindowToBackground()) {
-        e.preventDefault();
-      }
+      if (isSmoke || exportImageArgs || quitting) return;
+      if (dshSidebar.hideToBackground()) e.preventDefault();
     });
     win.on('closed', () => { /* 窗口关闭；DSH 服务独立驻留（见 will-quit） */ });
     app.on('window-all-closed', () => app.quit());

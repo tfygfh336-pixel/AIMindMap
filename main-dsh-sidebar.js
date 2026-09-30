@@ -897,6 +897,21 @@ function hideWindowToBackground() {
   return true;
 }
 
+/** 关主窗口 = **藏到后台**（不动侧栏 view、不动 DSH 服务）：侧栏对话保活是产品语义。
+ *  真正的退出走「文件 → 退出 / Ctrl+Q」（main.js 用 `quitting` 标志放行 close）。 */
+function hideToBackground() {
+  if (state.win && !state.win.isDestroyed()) state.win.hide();
+  return true;
+}
+
+/** 侧栏 view **自身**的截图（整窗合成用）。
+ *  为什么需要：侧栏是原生 `WebContentsView`，主页面 `capturePage()` 里根本没有它 ✗，
+ *  想得到"能看到侧栏的图"只能单独截它、再按 `viewBounds()` 贴回主图（见 scripts/vision/window-shot.js）。 */
+async function captureView() {
+  if (!state.view || !state.view.webContents) return null;
+  try { return await state.view.webContents.capturePage(); } catch (e) { return null; }
+}
+
 /** 从后台恢复窗口（任务栏/再次启动时调）。 */
 function restoreWindow() {
   if (!state.win || state.win.isDestroyed()) return;
@@ -913,6 +928,6 @@ module.exports = {
   // scripts/dsh-resident-host.js 使用：没有窗口时也要能驱动同一套服务生命周期。
   adoptOrStart,
   beginWidthDrag, endWidthDrag, setWidth,
-  setDshOnly, isDshOnly, hideWindowToBackground, restoreWindow,
+  setDshOnly, isDshOnly, hideWindowToBackground, hideToBackground, captureView, restoreWindow,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
 };
