@@ -77,6 +77,8 @@ contextBridge.exposeInMainWorld('desktop', {
     toggle: () => ipcRenderer.send('dsh-sidebar:toggle'),
     beginDrag: () => ipcRenderer.send('dsh-sidebar:drag-start'),
     endDrag: () => ipcRenderer.send('dsh-sidebar:drag-end'),
-    isDshOnly: () => ipcRenderer.invoke('dsh-sidebar:dsh-only')
+    isDshOnly: () => ipcRenderer.invoke('dsh-sidebar:dsh-only'),
+    // 导图页右上角那个独立 ✕ 用：只关左边导图页（进"仅侧栏"模式）。人类点按钮即可，不需要敲命令。
+    sidebarOnly: (on) => ipcRenderer.invoke('dsh-sidebar:sidebar-only', !!on)
   }
 });

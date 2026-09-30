@@ -371,9 +371,7 @@ function buildMenu(win) {
       { type: 'separator' },
       { label: '导入 JSON 打包…', click: () => importJsonDialog(win) },
       { label: '导出 JSON 打包…', click: () => exportJsonDialog(win) },
-      { label: '导出当前导图为 PNG…', click: () => exportImageDialog(win) },
-      { type: 'separator' },
-      { label: '退出', accelerator: 'CmdOrCtrl+Q', click: () => app.quit() }
+      { label: '导出当前导图为 PNG…', click: () => exportImageDialog(win) }
     ]},
     { label: '编辑', submenu: [
       // 保存：此前**菜单里没有这一项**，界面也无按钮 —— 人的编辑无从落盘。
@@ -800,6 +798,11 @@ function registerIpc() {
   ipcMain.on('dsh-sidebar:toggle', () => dshSidebar.toggle());
   /* 仅侧边栏模式查询（渲染层/外部 AI 可读状态） */
   ipcMain.handle('dsh-sidebar:dsh-only', () => dshSidebar.isDshOnly());
+  /* 导图页右上角那个独立 ✕ 走这里：只关左边导图页（仅侧栏模式），人类点按钮即可 */
+  ipcMain.handle('dsh-sidebar:sidebar-only', (_e, on) => {
+    dshSidebar.setDshOnly(!!on);
+    return dshSidebar.isDshOnly();
+  });
 
   /* ---- 界面状态落盘（v0.16.6「写前协调」的可执行版本） ----
    * 渲染层在脏标记变化时推 app:ui-state → 这里写 projects/<项目>/.ui-state.json。
@@ -894,14 +897,14 @@ async function runSmoke(win) {
   // （AI_MINDMAP_PROJECTS_DIR），所以断言用它是安全的 —— 绝不碰真实数据。
   const ctx = { exec, win, runCli: (args) => runCli(args) };
   // 兜底：整个冒烟最长 **150 秒**，防止断言挂起导致进程不退出。
-  // ⚠️ 这个值必须 ≥ 验证体系给本步的预算（`docs/VERIFY.md` 里 G5 是 120s），否则会出现
+  // ⚠️ 这个值必须 ≥ 验证体系给本步的预算（`docs/VERIFY.md` 里 G5 现在是 150s），否则会出现
   // "预算内本该通过、却被内部守卫先掐掉"的假红：实测 90s 的旧值让冒烟在耗时逼近预算时
   // **随机**以 `SMOKE GUARD TIMEOUT — force exit` 收场（同一份代码有时通过、有时判红），
-  // 排查代价极高 —— 曾被我误判成"刚写的代码把渲染层拖死了"。二者留 30s 余量。
+  // 排查代价极高 —— 曾被我误判成"刚写的代码把渲染层拖死了"。二者留 50s 余量。
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);
-  }, 150000);
+  }, 200000);
   for (const a of assertions) {
     try {
       const r = await a.run(ctx);
@@ -1116,19 +1119,12 @@ app.whenReady().then(() => {
       console.log('[main] did-finish-load, isSmoke=' + isSmoke);
       if (isSmoke) setTimeout(() => runSmoke(win), 500);
     });
-    // 关窗语义：✕ = **只关左边思维导图页**（进入仅侧栏模式）—— 侧栏继续显示、对话保活；
-    // 已经在仅侧栏模式时，✕ 才把窗口藏到后台；真正退出走「文件 → 退出 / Ctrl+Q」。
-    // 用户实测反馈（改了两次才对）：先前 ✕ 把**整个窗口**藏起来 ⇒ 侧栏跟着一起消失，
-    // 用户看到的就是"aimindmap 全关了" ✗。侧栏是同一窗口里的原生 view，藏窗口必然一起没。
-    win.on('close', (e) => {
-      if (isSmoke || exportImageArgs || exportWindowArgs || quitting) return;
-      e.preventDefault();
-      if (dshSidebar.isDshOnly()) {
-        dshSidebar.hideToBackground();      // 已是"仅侧栏"：再关就藏到后台（服务照旧驻留）
-      } else {
-        dshSidebar.setDshOnly(true);        // 关左页、留侧栏
-      }
-    });
+    // 关窗语义（用户定的分工，最终版）：**窗口 ✕ = 关整个应用**（连同侧栏）。
+    // 只关左边导图页、留侧栏走**导图页右上角那个独立 ✕**（renderer/app.js 里动态插入的
+    // `#btn-close-map` ⇒ `dsh-sidebar:sidebar-only` ⇒ setDshOnly(true)）。
+    // 菜单里的「退出」已按用户要求删除 —— 退出就用窗口 ✕。
+    // DSH 服务按驻留语义处理：退出**不收割已就绪的服务** ⇒ 下次打开对话还在。
+    win.on('closed', () => { /* 窗口已关；服务驻留 */ });
     win.on('closed', () => { /* 窗口关闭；DSH 服务独立驻留（见 will-quit） */ });
     app.on('window-all-closed', () => app.quit());
     app.on('will-quit', () => dshSidebar.destroy());

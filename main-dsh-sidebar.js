@@ -671,6 +671,12 @@ const COLLAPSE_W = 30;
 const COLLAPSE_H = 24;
 
 function collapsePageHtml() {
+  // 按钮含义随模式变：正常模式「—」= 折叠侧栏；仅侧栏模式「⤢」= **恢复思维导图页**
+  //（这是"只留侧栏"状态下唯一的回去的路 —— 没有它用户就卡在这一页了 ✗）
+  const only = !!state.dshOnly;
+  const glyph = only ? '⤢' : '—';
+  const title = only ? '恢复思维导图页（关掉侧栏）' : '折叠侧边栏（Ctrl+B 可再展开）';
+  const msg = only ? '[dsh-restore]' : '[dsh-collapse]';
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(
     '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
     + 'html,body{margin:0;height:100%;background:rgba(245,246,248,.92);overflow:hidden;'
@@ -679,9 +685,15 @@ function collapsePageHtml() {
     + 'font-size:13px;line-height:1;color:#4e5969;border-radius:0 0 0 6px}'
     + 'button:hover{background:#e8eefc;color:#1664ff}'
     + '</style></head><body>'
-    + '<button id="collapse" title="折叠侧边栏（Ctrl+B 可再展开）">—</button>'
+    + '<button id="collapse" title="' + title + '">' + glyph + '</button>'
     + '<script>document.getElementById("collapse").addEventListener("click",function(){'
-    + 'console.log("[dsh-collapse]");});</' + 'script></body></html>');
+    + 'console.log("' + msg + '");});</' + 'script></body></html>');
+}
+
+/** 模式切换后刷新按钮外观（数据页重新加载，最省事也最不容易状态错位） */
+function refreshCollapseBtn() {
+  if (!state.collapseBtn || !state.collapseBtn.webContents) return;
+  try { state.collapseBtn.webContents.loadURL(collapsePageHtml()).catch(() => {}); } catch (e) { /* ignore */ }
 }
 
 function ensureCollapseBtn() {
@@ -880,11 +892,18 @@ function restartService() {
 function setDshOnly(on) {
   state.dshOnly = !!on;
   if (state.win && !state.win.isDestroyed()) {
+    // 仅侧栏模式下**连菜单栏一起隐掉**（用户要求："原本的 aimindmap 菜单栏也一并关闭"）；
+    // 恢复时再装回来 —— 否则菜单栏会一直空着一条横条。
+    try {
+      state.win.setMenuBarVisibility(!state.dshOnly);
+      state.win.setAutoHideMenuBar(state.dshOnly);
+    } catch (e) { /* ignore */ }
     state.win.webContents.send('dsh-sidebar:dsh-only', state.dshOnly);
     // 侧栏铺满：dsh-only 下让位宽度 = 全窗（渲染层 body.dsh-only 隐藏主内容）
     notifyRenderer(state.visible);
     relayout();
   }
+  refreshCollapseBtn();   // 右上角按钮换成"恢复思维导图页"
   log('dsh-only 模式: ' + state.dshOnly);
 }
 

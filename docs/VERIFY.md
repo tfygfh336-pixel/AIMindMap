@@ -40,7 +40,7 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 | 3 | G9 | `npm run check:rules` | 10s | 规则文件自洽：声明条数 == 表格行数 / 表格未被引用块或空行打断 / 编号引用闭合 / 实现列点名的脚本存在 |
 | 4 | G3 | `npm test`（附加 JSON reporter 把用例数交给 G6，省一次 vitest 重跑） | 60s | 共享核心 `src/` 各模块（含 data-store 原子写、BOM 容错与并发版本闸门） |
 | 5 | G4 | `node scripts/cli-integration.js` | 30s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |
-| 6 | G5 | `npm run smoke` | 120s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离** |
+| 6 | G5 | `npm run smoke` | 150s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离** |
 | 7 | G2 | `node cli/mm-cli.js validate-all` | 15s | 全部项目结构 + 悬挂链接 + 环 |
 | 8 | G6 | `node scripts/doc-facts.js --check` | 20s | 文档数字与真值一致、版本号四处一致 |
 | 9 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |

@@ -124,6 +124,25 @@
     // DSH 侧边栏：布局让位 + 状态栏提示（监听主进程事件；不涉及 token/url）
     if (MM.bindDshSidebar) MM.bindDshSidebar();
 
+    // 导图页右上角独立 ✕：**只关左边导图页**（进"仅侧栏"模式，连菜单栏一起隐掉），侧栏留着。
+    // 与窗口的 ✕ 分工不同：窗口 ✕ = 关整个应用；详情框里那个 ✕ = 关详情框。
+    // 动态插入而不是写进 index.html：接线集中在这一处，也避免与工具栏既有布局打架。
+    (() => {
+      const bar = document.getElementById('toolbar');
+      if (!bar || document.getElementById('btn-close-map')) return;
+      const btn = document.createElement('button');
+      btn.id = 'btn-close-map';
+      btn.title = '关闭导图页（只留 DSH 侧栏；窗口 ✕ 才是退出应用）';
+      btn.textContent = '✕';
+      btn.style.marginLeft = '4px';
+      btn.addEventListener('click', () => {
+        if (window.desktop && window.desktop.dsh && window.desktop.dsh.sidebarOnly) {
+          window.desktop.dsh.sidebarOnly(true);
+        }
+      });
+      bar.appendChild(btn);
+    })();
+
     // 图片灯箱：滚轮缩放 / 双击或点击遮罩关闭 / Esc 关闭
     const lb = $('#lightbox');
     lb.addEventListener('wheel', (e) => { e.preventDefault(); lightboxZoom(e.deltaY); }, { passive: false });

@@ -46,11 +46,13 @@ module.exports = [
       await sleep(600);
       const on = await ctx.exec(readJs);
       const boundsOn = sidebar.viewBounds();
+      const menuOn = ctx.win.isMenuBarVisible ? ctx.win.isMenuBarVisible() : null;
 
       sidebar.setDshOnly(false);
       await sleep(600);
       const off = await ctx.exec(readJs);
       const boundsOff = sidebar.viewBounds();
+      const menuOff = ctx.win.isMenuBarVisible ? ctx.win.isMenuBarVisible() : null;
 
       sidebar.hide();
       await sleep(300);
@@ -61,6 +63,7 @@ module.exports = [
           && on.dshOnly === true && on.mainShown === false && on.toolbarShown === false
           && boundsOn && Math.abs(boundsOn.width - win.width) <= 2          // 侧栏铺满整窗
           && off.dshOnly === false && off.mainShown === true
+          && menuOn === false && menuOff === true                        // 菜单栏随模式隐/现（用户要求一并关闭）
           && boundsOff && boundsOff.width > 0 && boundsOff.width < win.width  // 回到右侧固定宽度
           && boundsBefore && boundsBefore.width > 0,                        // 全程 view 都在
         text: '【进】dsh-only=' + on.dshOnly + ' 主内容可见=' + on.mainShown + ' 工具栏可见=' + on.toolbarShown
@@ -68,6 +71,7 @@ module.exports = [
           + '｜【出】dsh-only=' + off.dshOnly + ' 主内容可见=' + off.mainShown
           + ' 侧栏宽=' + (boundsOff ? boundsOff.width : 'null')
           + '｜侧栏 view 全程在=' + (!!boundsBefore && !!boundsOn && !!boundsOff)
+          + '｜菜单栏 进/出=' + menuOn + '/' + menuOff
           + '｜留下让位宽度=' + JSON.stringify(before.reserved)
       };
     }

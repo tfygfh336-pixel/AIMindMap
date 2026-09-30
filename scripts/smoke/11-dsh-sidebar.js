@@ -93,7 +93,7 @@ const assertions = [
         const keys = d ? Object.keys(d).sort() : [];
         return { keys, hasLoad: !!d.loadUrl, hasToken: !!(d.token || d.url) };
       })()`);
-      const ok = r.keys.join(',') === 'beginDrag,endDrag,isDshOnly,status,toggle'
+      const ok = r.keys.join(',') === 'beginDrag,endDrag,isDshOnly,sidebarOnly,status,toggle'
         && !r.hasLoad && !r.hasToken;
       return { ok, text: 'desktop.dsh keys=' + r.keys.join(',') };
     }

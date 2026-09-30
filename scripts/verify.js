@@ -150,7 +150,10 @@ const STEPS = [
     step: 6, gate: 'G5', label: '冒烟（Electron 无头）',
     cmd: 'npm run smoke', shown: '`npm run smoke`',
     covers: '渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**',
-    budgetMs: 120000
+    // 预算调整理由（2026-09-29）：本步新增两条要**真建原生侧栏 view** 再量的断言
+    // （22-* 几何/23-* 仅侧栏模式），实测 130.7s ⇒ 120s 的旧预算已不成立。
+    // 依本工程的规矩：预算涨必须**给出实测依据**，不是"慢一点也行"。
+    budgetMs: 150000
   },
   {
     step: 7, gate: 'G2', label: '数据校验',
