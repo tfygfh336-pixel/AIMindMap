@@ -43,6 +43,9 @@ if (SMOKE_PROJECTS_DIR) {
   } catch (err) {
     console.error('[smoke] 复制项目到沙箱目录失败，改用空目录:', err && err.message);
   }
+  // 暴露给断言：有些断言需要在沙箱里放**文件类**夹具（如给"PDF 预览按钮"造一份 PDF），
+  // 而 runCli 只能写数据。断言跑在主进程，读这个环境变量即可；真实数据照样零触碰。
+  process.env.AI_MINDMAP_PROJECTS_DIR = SMOKE_PROJECTS_DIR;
 }
 const PROJECTS_DIR = SMOKE_PROJECTS_DIR || REAL_PROJECTS_DIR;
 

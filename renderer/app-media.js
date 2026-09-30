@@ -52,12 +52,27 @@
    * 所以「换模式」与「预览框尺寸变化」两条路都必须重设 src，否则"页宽"永远按打开时的宽度算
    * （实测症状：把预览框放大后，页面仍按旧宽度排版、右边被裁）。
    * 重设 src 会回到第 1 页并丢滚动位置，故只在宽度**实质变化**（>24px）时才重设。 */
-  const pdfView = { abs: '', mode: 'page-width', lastW: 0 };
+  const pdfView = { abs: '', mode: 'page-width', lastW: 0, applied: '' };
 
   function setPdfSrc() {
     const el = $('#fp-pdf');
     if (!el) return;
-    el.src = pdfView.abs ? ('file://' + pdfView.abs + '#zoom=' + pdfView.mode) : 'about:blank';
+    if (!pdfView.abs) {
+      pdfView.applied = '';
+      el.removeAttribute('src');
+      el.src = 'about:blank';
+      return;
+    }
+    const url = 'file://' + pdfView.abs + '#zoom=' + pdfView.mode;
+    if (pdfView.applied === url) return;          // 同一 URL 不重复加载（打开同页 PDF 时不闪）
+    pdfView.applied = url;
+    // ⚠️ 只改 URL 的 hash 属"**同文档导航**"：Chromium 的 PDF 查看器不会重新读 `#zoom`，
+    // 于是三个缩放按钮点了毫无反应（用户反馈"只有打开文件夹/系统打开能用"）。
+    // 实测取证：直接把 src 换成同 URL 异 hash —— iframe **不触发 load**、视图不变。
+    // 所以要"先卸载（about:blank）再挂上"，这才是真正的重新导航。
+    el.removeAttribute('src');
+    el.src = 'about:blank';
+    setTimeout(() => { el.src = url; }, 0);
   }
 
   function syncZoomButtons() {
@@ -79,6 +94,12 @@
         syncZoomButtons();
         setPdfSrc();
       });
+    }
+    // ✕ 关闭：此前**从未接线**（机械扫描：19 个带 id 的按钮里只有它是"代码里找不到任何引用"的），
+    // 用户只能靠 Esc 关预览。现在补上，并按惯例交给唯一入口 closeFilePreview。
+    const close = $('#fp-close');
+    if (close) {
+      close.addEventListener('click', () => { if (MM.closeFilePreview) MM.closeFilePreview(); });
     }
     let timer = null;
     window.addEventListener('resize', () => {
@@ -167,6 +188,7 @@
     // 清掉 PDF 会话状态：否则关掉预览后 resize 仍会去重设一个已经关掉的 iframe
     pdfView.abs = '';
     pdfView.lastW = 0;
+    pdfView.applied = '';        // 下次打开同一份 PDF 必须重新导航（否则沿用旧 #zoom 不刷新）
     const zoom = $('#fp-zoom');
     if (zoom) zoom.style.display = 'none';
   }
