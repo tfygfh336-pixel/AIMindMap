@@ -103,6 +103,14 @@
     <div id="fp-head">
       <span id="fp-title">文件预览</span>
       <span id="fp-caption"></span>
+      <!-- PDF 缩放模式（仅 pdf 显示）：Chromium viewer 的 `#zoom=` **只在设置 src 那一刻生效**，
+           所以「换模式」与「预览框尺寸变化」都要重设 src —— 见 app-media.js 的 setPdfSrc。 -->
+      <span id="fp-zoom" style="display:none">
+        <button class="fp-zoom-btn" data-zoom="page-width" title="页面宽度适应预览框">页宽</button>
+        <button class="fp-zoom-btn" data-zoom="page-fit" title="整页可见">整页</button>
+        <button class="fp-zoom-btn" data-zoom="100" title="原始大小">100%</button>
+      </span>
+      <button id="fp-folder" style="display:none" title="用文件管理器打开该节点对应的本机文件夹">📁 文件夹</button>
       <button id="fp-open" title="用系统默认应用打开">系统打开</button>
       <button id="fp-close" title="关闭预览（Esc）">✕</button>
     </div>

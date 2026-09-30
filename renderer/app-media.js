@@ -48,6 +48,51 @@
     return base + '/' + rel.split('/').join('/');
   }
 
+  /* PDF 缩放：Chromium viewer 的 `#zoom=` **只在设置 src 那一刻生效** ——
+   * 所以「换模式」与「预览框尺寸变化」两条路都必须重设 src，否则"页宽"永远按打开时的宽度算
+   * （实测症状：把预览框放大后，页面仍按旧宽度排版、右边被裁）。
+   * 重设 src 会回到第 1 页并丢滚动位置，故只在宽度**实质变化**（>24px）时才重设。 */
+  const pdfView = { abs: '', mode: 'page-width', lastW: 0 };
+
+  function setPdfSrc() {
+    const el = $('#fp-pdf');
+    if (!el) return;
+    el.src = pdfView.abs ? ('file://' + pdfView.abs + '#zoom=' + pdfView.mode) : 'about:blank';
+  }
+
+  function syncZoomButtons() {
+    Array.prototype.forEach.call(document.querySelectorAll('#fp-zoom .fp-zoom-btn'), (b) => {
+      b.classList.toggle('on', b.dataset.zoom === pdfView.mode);
+    });
+  }
+
+  /** 接线只绑一次（工程规矩：渲染层反复重建，监听器不能在每次打开预览时累积） */
+  function bindPdfControls() {
+    if (bindPdfControls.done) return;
+    bindPdfControls.done = true;
+    const zoom = $('#fp-zoom');
+    if (zoom) {
+      zoom.addEventListener('click', (e) => {
+        const b = e.target.closest ? e.target.closest('.fp-zoom-btn') : null;
+        if (!b || !pdfView.abs) return;
+        pdfView.mode = b.dataset.zoom;
+        syncZoomButtons();
+        setPdfSrc();
+      });
+    }
+    let timer = null;
+    window.addEventListener('resize', () => {
+      if (!pdfView.abs || $('#file-preview').style.display === 'none') return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        const w = $('#file-preview').getBoundingClientRect().width;
+        if (Math.abs(w - pdfView.lastW) < 24) return;
+        pdfView.lastW = w;
+        setPdfSrc();
+      }, 260);
+    });
+  }
+
   function openFilePreview(node, rel) {
     if (!node || !rel) return;
     const f = (node.files || (node.data && node.data.files) || []).find((x) => x.file === rel);
@@ -59,9 +104,19 @@
     const abs = attachmentAbsPath(rel);
     $('#fp-open').onclick = null;
     $('#fp-open').onclick = () => { window.desktop.app.openFile(abs || rel); };
+    // 节点带本机文件夹（localPath）时给一个直达按钮 —— 把"附件预览"与"文件夹链接"两件事接起来
+    const lp = node.localPath || (node.data && node.data.localPath) || '';
+    const fbtn = $('#fp-folder');
+    if (fbtn) {
+      fbtn.style.display = lp ? 'inline-block' : 'none';
+      fbtn.onclick = lp ? () => { if (MM.openLocalPath) MM.openLocalPath(lp); } : null;
+    }
+    bindPdfControls();
     if (ext === 'md' || ext === 'markdown') {
+      $('#fp-zoom').style.display = 'none';
       $('#fp-pdf').style.display = 'none';
       $('#fp-pdf').src = 'about:blank';
+      pdfView.abs = '';
       $('#fp-md').style.display = 'block';
       $('#fp-md').innerHTML = '<span class="placeholder">正在读取…</span>';
       $('#file-preview').style.display = 'flex';
@@ -89,10 +144,15 @@
       $('#fp-md').innerHTML = '';
       $('#fp-pdf').style.display = 'block';
       $('#file-preview').style.display = 'flex';
-      // Chromium 内置 PDF viewer 直接内嵌 file:// PDF（借鉴 Electron Web Embeds）。
-      // ⚠️ 必须带 `#zoom=page-width`：不加时 viewer 按 100% 显示，在大预览框里也只是一小页，
-      // 看着"默认画面太小"（用户反馈）。page-width = 页宽自适应，配合上面 #file-preview 的 90vh 大画布。
-      $('#fp-pdf').src = abs ? ('file://' + abs + '#zoom=page-width') : '';
+      // 默认「页宽」（Chromium viewer 支持 #zoom=page-width|page-fit|<数字>）。
+      // 不加 #zoom 时 viewer 按 100% 显示，大画布上也只是一小页（用户反馈过）。
+      // `lastW` 记下当前预览框宽度，供 resize 时判断"是否真的需要重排"。
+      pdfView.abs = abs || '';
+      pdfView.mode = 'page-width';
+      pdfView.lastW = $('#file-preview').getBoundingClientRect().width;
+      $('#fp-zoom').style.display = 'inline-flex';
+      syncZoomButtons();
+      setPdfSrc();
     } else {
       // 其他类型：系统默认应用打开（XMind 附件交互模式）
       if (abs) window.desktop.app.openFile(abs);
@@ -104,6 +164,11 @@
     $('#file-preview').style.display = 'none';
     $('#fp-pdf').src = 'about:blank';
     $('#fp-md').innerHTML = '';
+    // 清掉 PDF 会话状态：否则关掉预览后 resize 仍会去重设一个已经关掉的 iframe
+    pdfView.abs = '';
+    pdfView.lastW = 0;
+    const zoom = $('#fp-zoom');
+    if (zoom) zoom.style.display = 'none';
   }
 
   /* ================= 相关知识点渲染（我引用谁 + 谁引用我；点击开新详情框） ================= */

@@ -167,7 +167,14 @@ jmnode[isroot="false"] ~ jmexpander { border-color: #1664ff; }
  * 表现为"PDF 预览只有一条窄缝、默认画面很小"（实测用户反馈）。改成大画布。 */
 #file-preview {
   display: flex; flex-direction: column; background: #fff;
-  width: 92vw; max-width: 1560px; height: 90vh; max-height: 92vh;
+  /* 宽度取"整窗 92%"与"可用区域（扣掉 DSH 侧栏）减 32px 边距"的**较小者** ——
+   * 侧栏是原生 WebContentsView，永远画在页面之上，弹窗伸过去就会被吃掉（用户实测"界面打架"）。 */
+  width: min(92vw, calc(100vw - var(--dsh-sidebar-width, 0px) - 32px));
+  /* ⚠️ 本元素**自己就是** overlay（`class="overlay"` + 固定定位），所以它没有"外层容器"帮我居中：
+   * 固定定位下同时给了 left/right 与 width 时，`right` 会被忽略、盒子贴在左边（实测 left=0、右边空 32px）。
+   * `margin: auto` 才是这种组合下的居中手段 —— 让它在 [0, 可用区域] 内左右等距。 */
+  margin: 0 auto;
+  max-width: 1560px; height: 90vh; max-height: 92vh;
   border-radius: 10px; overflow: hidden; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.28);
   /* ⚠️ 必须显式 stretch：本元素同时挂着 `.overlay` 类，而 `.overlay` 是
    * `align-items:center` —— 那是给"弹窗在遮罩里居中"用的，但它**同时**作用于本元素
@@ -186,6 +193,15 @@ jmnode[isroot="false"] ~ jmexpander { border-color: #1664ff; }
   background: #fff; cursor: pointer;
 }
 #fp-head button:hover { background: #f0f4ff; border-color: #1664ff; color: #1664ff; }
+/* PDF 缩放模式切换（页宽 / 整页 / 100%）：分段按钮，当前模式高亮 */
+#fp-zoom { display: inline-flex; gap: 0; border: 1px solid #d5d9e0; border-radius: 4px; overflow: hidden; }
+#fp-zoom .fp-zoom-btn {
+  font-size: 12.5px; padding: 3px 9px; border: none; border-right: 1px solid #e4e7ec;
+  background: #fff; cursor: pointer; color: #4e5969;
+}
+#fp-zoom .fp-zoom-btn:last-child { border-right: none; }
+#fp-zoom .fp-zoom-btn:hover { background: #f0f4ff; color: #1664ff; }
+#fp-zoom .fp-zoom-btn.on { background: #1664ff; color: #fff; }
 #fp-body { flex: 1; min-height: 0; display: flex; }
 #fp-md {
   flex: 1; overflow: auto; padding: 22px 32px;
@@ -302,13 +318,18 @@ jmnode.mm-container-root { visibility: hidden !important; }
   font-size: 12px; line-height: 1.5; white-space: nowrap; pointer-events: none;
 }
 
-/* ---------------- 图片灯箱（双击放大预览，滚轮缩放） ---------------- */
-#lightbox { position: fixed; inset: 0; background: rgba(10, 14, 20, 0.88); z-index: 300; overflow: hidden; }
+/* ---------------- 图片灯箱（双击放大预览，滚轮缩放） ----------------
+ * 同样让位：右侧扣掉 DSH 侧栏（原生 view 恒在最上层，盖不住只能躲开）。 */
+#lightbox {
+  position: fixed; top: 0; left: 0; bottom: 0; right: var(--dsh-sidebar-width, 0px);
+  background: rgba(10, 14, 20, 0.88); z-index: 300; overflow: hidden;
+}
 #lightbox-stage {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
 }
 #lightbox-img {
-  max-width: 92vw; max-height: 88vh; border-radius: 4px;
+  max-width: min(92vw, calc(100vw - var(--dsh-sidebar-width, 0px) - 32px));
+  max-height: 88vh; border-radius: 4px;
   transform-origin: center center; user-select: none;
   box-shadow: 0 12px 60px rgba(0,0,0,0.5);
 }
@@ -335,12 +356,19 @@ jmnode.mm-container-root { visibility: hidden !important; }
 .ctx-sep { height: 1px; background: #e4e7ec; margin: 5px 0; }
 
 /* ---------------- 对话框 ---------------- */
+/* ⚠️ 右侧让位给 DSH 侧边栏：侧栏是主进程的 **WebContentsView（原生控件）**，永远画在网页之上 ——
+ * 页面里 z-index 再大也盖不住它。所以"弹窗被侧栏吃掉右边一块"不是层级问题，而是**坐标系**问题：
+ * 原先 `.overlay { inset: 0 }` 让遮罩与其中的弹窗按**整窗**居中，右缘必然伸到侧栏底下。
+ * `--dsh-sidebar-width` 早已存在（JS 在 dsh-sidebar:layout 里写权威值；折叠时 CSS 兜底为 0px），
+ * 这里把它用到弹窗层 —— 于是 8 个弹窗（编辑/图片/附件/关联/审计/命令面板/灯箱/预览）一起让位。 */
 .overlay {
-  position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
+  position: fixed; top: 0; left: 0; bottom: 0; right: var(--dsh-sidebar-width, 0px);
+  background: rgba(15, 23, 42, 0.45);
   display: flex; align-items: center; justify-content: center; z-index: 100;
 }
 .dialog-box {
-  width: 480px; max-width: 90vw; max-height: 85vh; overflow-y: auto;
+  width: 480px; max-width: min(90vw, calc(100vw - var(--dsh-sidebar-width, 0px) - 32px));
+  max-height: 85vh; overflow-y: auto;
   background: #fff; border-radius: 10px; padding: 18px 20px;
   box-shadow: 0 8px 30px rgba(0,0,0,0.18);
 }
@@ -360,7 +388,8 @@ jmnode.mm-container-root { visibility: hidden !important; }
 
 /* ---------------- 关系审计面板（app-audit.js） ---------------- */
 .audit-card {
-  width: 720px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column;
+  width: 720px; max-width: min(92vw, calc(100vw - var(--dsh-sidebar-width, 0px) - 32px));
+  max-height: 84vh; display: flex; flex-direction: column;
   background: #fff; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.18); overflow: hidden;
 }
 .audit-head {
@@ -394,7 +423,8 @@ jmnode.mm-container-root { visibility: hidden !important; }
 /* ---------------- 命令面板（app-palette.js） ---------------- */
 .palette-overlay { align-items: flex-start; padding-top: 12vh; }
 .palette-card {
-  width: 560px; max-width: 92vw; background: #fff; border-radius: 10px;
+  width: 560px; max-width: min(92vw, calc(100vw - var(--dsh-sidebar-width, 0px) - 32px));
+  background: #fff; border-radius: 10px;
   box-shadow: 0 12px 40px rgba(0,0,0,0.22); overflow: hidden;
 }
 #palette-input {
