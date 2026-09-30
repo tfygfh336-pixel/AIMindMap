@@ -38,6 +38,11 @@
  *   14-headless-window.js 离屏窗口契约（隐藏 + 隐藏仍出帧，见 main.js createWindow）
  *   15-write-conflict.js  多路同时编辑（GUI 侧：**不相交自动合并** / 撞同一对象才拒绝且盘上不动）
  *   16-local-path.js      节点「本机文件夹」链接（localPath：CLI 设 → 界面可点 → 保存不丢 → 点错会报错）
+ *   17-ui-polish.js       体验四项（行内 Markdown 加粗 / 展开状态以数据为准 / 加减号尺寸 / 预览可用区）
+ *   18-overlay-sidebar.js 弹窗让位给 DSH 侧栏（原生 view 盖不住就躲开）+ PDF 缩放控制
+ *   19-view-offset-pin.js 重排锚点保持（展开/收起不再整页瞬移）
+ *   20-preview-buttons.js PDF 预览的缩放按钮与 ✕ 关闭（含"同 URL 异 hash 不重载"的机制取证）
+ *   21-sidebar-first-paint.js 刚打开时工具栏不被侧栏盖住（首帧就得让位，不必先拖一下）
  * ============================================================ */
 'use strict';
 
