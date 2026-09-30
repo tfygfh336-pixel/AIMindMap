@@ -50,6 +50,7 @@
 | `add-file` | add-file <项目> <id> --file 附件 --caption 备注 [--source 出处] |
 | `remove-file` | remove-file <项目> <id> <相对路径 attachments/x.md> |
 | `files` | files <项目> [--json] |
+| `sidebar-only` | sidebar-only <on|off> |
 | `link` | link <项目> <id> --to 目标项目 --id 目标id [--caption 说明] |
 | `unlink` | unlink <项目> <id> --to 目标项目 --id 目标id |
 | `links` | links <项目> [--json] |
@@ -294,6 +295,14 @@ node cli/mm-cli.js remove-file <项目> <id> <相对路径 attachments/x.md>
 
 ```
 node cli/mm-cli.js files <项目> [--json]
+```
+
+### sidebar-only
+
+on = 只留 DSH 侧栏（关掉左边思维导图页，对话继续可用）；off = 恢复导图页。无回执即报错（界面没在跑）
+
+```
+node cli/mm-cli.js sidebar-only <on|off>
 ```
 
 ### link

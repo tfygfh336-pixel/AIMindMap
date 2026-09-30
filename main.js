@@ -1052,6 +1052,35 @@ async function runExportWindow(win, { out }) {
   app.exit(0);   // 用 exit 而不是 quit：**不触发收割**，驻留服务与侧栏对话保持存活
 }
 
+/* ---------------- 界面控制通道（给外部 AI / 内置 DSH） ----------------
+ * 协议与取舍见 src/control.js：文件 + 轮询（本机受限环境禁命名管道、网络要走代理，
+ * 文件是唯一到处都成立的通道）。命令执行**一次**，回执留给调用方读 —— CLI 靠它判"真生效"。
+ */
+function startControlChannel() {
+  const control = require('./src/control.js');
+  let dir;
+  try { dir = app.getPath('userData'); } catch (err) { return; }
+  setInterval(() => {
+    const cmd = control.readCommand(dir);
+    if (!cmd || cmd.cmd !== 'dsh-only') return;
+    let ok = false;
+    let detail = '';
+    try {
+      dshSidebar.setDshOnly(!!cmd.on);
+      ok = true;
+    } catch (err) {
+      detail = String((err && err.message) || err);
+    }
+    try {
+      control.writeResult(dir, {
+        cmd: 'dsh-only', ok: ok, state: ok ? dshSidebar.isDshOnly() : null,
+        err: detail, at: new Date().toISOString()
+      });
+    } catch (err2) { /* 回执写不进去：调用方会超时 → 判"没生效"，不会静默成功 */ }
+    control.clearCommand(dir);
+  }, 400);
+}
+
 /* ---------------- 启动 ---------------- */
 app.whenReady().then(() => {
   try {
@@ -1081,17 +1110,24 @@ app.whenReady().then(() => {
     // DSH 侧边栏：默认打开 + 偏好恢复 + 驻留服务接管（--smoke / --export-image 不孵化）
     if (!isSmoke && !exportImageArgs) {
       dshSidebar.init(win);
+      startControlChannel();     // 外部 AI / 内置 DSH 的界面控制接口（协议见 src/control.js）
     }
     win.webContents.once('did-finish-load', () => {
       console.log('[main] did-finish-load, isSmoke=' + isSmoke);
       if (isSmoke) setTimeout(() => runSmoke(win), 500);
     });
-    // 关窗语义（2026-09-29 起）：✕ = **藏到后台**（侧栏 view 与 DSH 服务都不动 ⇒ 对话保活），
-    // 真正退出走「文件 → 退出 / Ctrl+Q」（那时 `quitting=true`，这里放行）。
-    // 用户要求："除非要更新内置 DSH 或重启它，都不要关闭侧边栏。"
+    // 关窗语义：✕ = **只关左边思维导图页**（进入仅侧栏模式）—— 侧栏继续显示、对话保活；
+    // 已经在仅侧栏模式时，✕ 才把窗口藏到后台；真正退出走「文件 → 退出 / Ctrl+Q」。
+    // 用户实测反馈（改了两次才对）：先前 ✕ 把**整个窗口**藏起来 ⇒ 侧栏跟着一起消失，
+    // 用户看到的就是"aimindmap 全关了" ✗。侧栏是同一窗口里的原生 view，藏窗口必然一起没。
     win.on('close', (e) => {
-      if (isSmoke || exportImageArgs || quitting) return;
-      if (dshSidebar.hideToBackground()) e.preventDefault();
+      if (isSmoke || exportImageArgs || exportWindowArgs || quitting) return;
+      e.preventDefault();
+      if (dshSidebar.isDshOnly()) {
+        dshSidebar.hideToBackground();      // 已是"仅侧栏"：再关就藏到后台（服务照旧驻留）
+      } else {
+        dshSidebar.setDshOnly(true);        // 关左页、留侧栏
+      }
     });
     win.on('closed', () => { /* 窗口关闭；DSH 服务独立驻留（见 will-quit） */ });
     app.on('window-all-closed', () => app.quit());

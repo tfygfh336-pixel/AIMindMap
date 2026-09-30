@@ -55,6 +55,7 @@
       'node cli/mm-cli.js edit <项目> <id> --detail-md "…" --tags a,b',
       'node cli/mm-cli.js search <项目> 关键词 --json',
       'node cli/mm-cli.js validate <项目>',
+      'node cli/mm-cli.js sidebar-only on               # 关掉左边思维导图页、只留侧栏（要恢复：off）',
       '```',
       '',
       '## 边界（务必遵守）',

@@ -103,6 +103,7 @@ walk 序列化，把 data 字段平铺到节点层级，保证工程 JSON 与界
 | `commands/edit.js` | 节点编辑：add/add-root/edit/move/remove/clone |
 | `commands/assets.js` | 图片与附件：add-image/remove-image/assets/add-file/remove-file/files |
 | `commands/links.js` | 跨项目链接：link/unlink/links/links-prune（清理悬空链接 —— 别的项目删了目标节点后本项目的自救路） |
+| `commands/ui.js` | 界面控制：`sidebar-only <on\|off>` —— 关掉**左边思维导图页**、只留 DSH 侧栏（外部 AI 与内置 DSH 用来让开界面；人类按 ✕ 走同一条路）。走文件式控制通道（`src/control.js`），**没有回执即报错**（界面没在运行时不许假装成功） |
 | `commands/relations.js` | 引用关系：backlinks（单向反查）/ related（出边+入边双向合并）/ orphans（关系审计）/ mentions（未链接提及） |
 | `commands/assoc.js` | 关联笔记（N 元关联实体）：assoc-list/assoc-add/assoc-edit/assoc-remove/assoc-prune（参数处理 + 读写 + 输出；纯逻辑在 `src/assoc.js`） |
 | `commands/release.js` | 工程命令：docs-gen（从 registry 重生成 `docs/CLI.md`）/ release（发版）/ **changelog**（CHANGELOG **只读**窄查询：段/条目索引或按关键词检索正文）。`changelog` 的索引从正文**现算**、不落生成物 —— 详见 `src/changelog.js` 的 `indexChangelog` 注释（为什么不做成生成文件） |
@@ -148,7 +149,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `dsh-capabilities.js` | DSH 能力边界（纯逻辑：解析装配清单 + 合成模型） | 支撑 `dsh-caps` 命令：回答"某能力到底挂没挂载"，防"以为不具备其实有"与反向误判 |
 | `dsh-sidebar-skill.js` | 侧栏 AI 的**指针 skill 内容生成**（纯函数） | `buildSidebarSkillContent(projectRoot)`：应用孵化内嵌实例时写入 `dsh-home/skills/ai-mind-map/SKILL.md` |
 | `ui-state.js` | 「界面有未保存编辑」的跨进程协调信号（纯逻辑 + 文件契约） | 读写 `projects/<项目>/.ui-state.json`，支撑"写前协调"（CLI 侧 `ui-state` 命令读它） |
-
+| `control.js` | **界面控制通道**（纯文件读写，不 require electron） | userData 下 `mm-control.json`（命令）/ `mm-control-result.json`（回执）；界面每 400ms 轮询执行一次。为什么不用 socket/命名管道：本机受限环境禁命名管道、网络要走代理 —— 文件是唯一到处都成立的通道。CLI 侧 `sidebar-only` 靠回执判"真生效" |
 **加载顺序**（与 index.html 中实际的 `<script src>` 顺序一致，即依赖顺序）：
 `vendor/jsmind.js` → `history` → `tree-utils` → `schema` → `convert` → `config` →
 `palette-rank` → `app-core` → `app-view` → `app-detail` → `app-detail-drag` →
