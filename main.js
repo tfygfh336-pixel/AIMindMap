@@ -141,6 +141,23 @@ if (exportImageArgs) app.disableHardwareAcceleration();
 let quitting = false;
 app.on('before-quit', () => { quitting = true; });
 
+// ── 单实例 + "把窗口调回来" ──────────────────────────────────────────────
+// 为什么必须有：✕ 改成"藏到后台"之后就**没有回去的路**了 —— 实测发现（藏起来后既没有托盘、
+// 也没有任何调用 restoreWindow 的地方，而再启动一次会开出**第二个**实例 ✗）。
+// 现在的语义：重复启动 = 把已经在跑的那个（可能藏在后台的）主界面调回前台，本次进程自己退出。
+// ⚠️ 只在**真实交互模式**里用单实例锁：冒烟/导出图是独立的一次性进程，与用户正在跑的实例共存是正常的 ——
+// 加锁会把它们挡掉。实测后果：G5 从 ~90s 掉到 **2.2s**，**冒烟根本没跑却判"通过"** ✗（假绿）。
+const headlessMode = !!(isSmoke || exportImageArgs || exportWindowArgs);
+const gotSingleLock = headlessMode ? true : app.requestSingleInstanceLock();
+if (!gotSingleLock) {
+  console.log('[main] 已有实例在运行：本次启动只负责把它调回前台，然后退出');
+  app.quit();
+}
+app.on('second-instance', () => {
+  console.log('[main] 收到第二次启动请求：把主界面调回前台');
+  dshSidebar.restoreWindow();
+});
+
 // 冒烟结束（含 app.exit 与异常退出）都要清掉临时项目目录，避免在系统 temp 里堆积。
 if (SMOKE_PROJECTS_DIR) {
   const cleanup = () => {
@@ -830,6 +847,20 @@ async function runSmoke(win) {
     app.exit(1);
     return;
   }
+  // ── 环境守卫：跑不了就必须**响亮失败** ──────────────────────────────────────
+  // 教训（本轮真的发生了）：单实例锁一度把冒烟那个实例挡在门外，冒烟**一条断言都没跑**，
+  // 而 G5 只用 2.2s 就被判"通过" ✗ —— 门禁静默空转比报错危险得多。
+  {
+    const envProblems = [];
+    if (!win || win.isDestroyed()) envProblems.push('窗口不可用（被单实例锁挡掉？）');
+    if (!allAssertions.files || !allAssertions.files.length) envProblems.push('没发现任何 scripts/smoke/NN-*.js');
+    if (envProblems.length) {
+      console.log('SMOKE ENV ERROR — 冒烟无法运行：' + envProblems.join('、'));
+      console.log('（本轮**没有**跑任何断言，绝不能算通过）');
+      app.exit(1);
+      return;
+    }
+  }
   // ── 单跑（只跑选中的断言文件）──────────────────────────────────────────────
   // 用法：SMOKE_ONLY=20,21 npm run smoke   ／  electron . --smoke-only=20,21
   // 为什么：全链一轮约 100–120 s，改一条断言就得等整轮，而且每轮真启动 Electron、真占内存
@@ -1024,6 +1055,7 @@ async function runExportWindow(win, { out }) {
 /* ---------------- 启动 ---------------- */
 app.whenReady().then(() => {
   try {
+    if (!gotSingleLock) return;   // 已有实例：本次进程只负责把它调回前台（见上面的单实例说明）
     registerIpc();
     console.log('[main] registerIpc ok');
     if (exportImageArgs) {
