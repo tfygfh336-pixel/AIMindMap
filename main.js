@@ -808,11 +808,15 @@ async function runSmoke(win) {  const assertions = require('./scripts/smoke-asse
   // 只能由 AI/CLI 写入）。`runCli` 在冒烟模式下已把项目根指向临时副本
   // （AI_MINDMAP_PROJECTS_DIR），所以断言用它是安全的 —— 绝不碰真实数据。
   const ctx = { exec, win, runCli: (args) => runCli(args) };
-  // 兜底：整个冒烟最长 90 秒，防止断言挂起导致进程不退出
+  // 兜底：整个冒烟最长 **150 秒**，防止断言挂起导致进程不退出。
+  // ⚠️ 这个值必须 ≥ 验证体系给本步的预算（`docs/VERIFY.md` 里 G5 是 120s），否则会出现
+  // "预算内本该通过、却被内部守卫先掐掉"的假红：实测 90s 的旧值让冒烟在耗时逼近预算时
+  // **随机**以 `SMOKE GUARD TIMEOUT — force exit` 收场（同一份代码有时通过、有时判红），
+  // 排查代价极高 —— 曾被我误判成"刚写的代码把渲染层拖死了"。二者留 30s 余量。
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);
-  }, 90000);
+  }, 150000);
   for (const a of assertions) {
     try {
       const r = await a.run(ctx);

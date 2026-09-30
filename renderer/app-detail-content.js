@@ -77,8 +77,11 @@
     const nodesEl = jm && jm.view && jm.view.e_panel ? jm.view.e_panel.querySelector('jmnodes') : null;
     if (!nodesEl) return;
     // 节点层任何样式变化（展开/收起/重排/树偏移）→ 20ms 后：
-    // ① 重定位浮动详情；② 重算框选虚线框（跟随节点新位置，大小自适应）
+    // ① 先钉住视图（布局重排后 jsMind 会把整棵树重新居中 ⇒ 不补偿就是"整页瞬移"，见 app-view.js）；
+    // ② 再重定位浮动详情；③ 重算框选虚线框（跟随节点新位置，大小自适应）。
+    // 顺序放在最前：先让坐标稳定，后面两步才按稳定后的坐标算。
     fdNodesObserver = new MutationObserver(() => setTimeout(() => {
+      if (MM.fdSyncLayoutAnchor) MM.fdSyncLayoutAnchor();
       positionFloatDetail();
       if (MM.refreshSelectionOutline) MM.refreshSelectionOutline();
     }, 20));

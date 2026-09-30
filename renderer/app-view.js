@@ -75,6 +75,75 @@
     if (p && (p.scrollLeft || p.scrollTop)) { p.scrollLeft = 0; p.scrollTop = 0; }
   }
 
+  /* ================= 布局重排后钉住视图（展开/收起不再"瞬移"） =================
+   * 病象（用户反馈"展开折叠导致页面跳来跳去"，已量化）：jsMind 每次重排都按包围盒把
+   * **整棵主题子树重新居中** —— 实测收起一个约 90 节点的子树时，主题根自己的屏幕 y 从
+   * 1620 跳到 −5137（Δ = −6757px，根与目标位移完全相同 ⇒ 整棵树等量平移），而 fdView 一字未变。
+   * 做法：布局重排后把这份平移**反着补进 fdView** ⇒ 锚点节点在屏幕上原地不动，其余节点照常重排。
+   *
+   * ⚠️ 踩过的两个坑（都是"看起来能跑、其实错"的）：
+   *   ① **不能用 `offsetLeft/offsetTop`**：节点层的 offsetParent 在**被变换的祖先之上**，
+   *      那份 translate 会被算进 offset ⇒ 用户平移会被误判成"布局位移"，补偿反过来把用户的平移
+   *      纠正掉（实测：平移 (+100,+50) 后展开，节点反而跳了 (−150,−75) = −平移×缩放）。
+   *      必须读 jsMind 写在 `style.left/top` 上的**纯布局值**（见 layoutPos）。
+   *   ② **见证元素必须缓存**：本函数在每次节点层变化后都会跑，一次大树重排会触发几十上百个批次；
+   *      若每次都 `querySelectorAll('jmnode')` + 逐元素 `getComputedStyle` 做全量可见性扫描，
+   *      上千次强制样式计算会把渲染层拖到冒烟守卫超时。 */
+  const LAYOUT_ANCHOR_SEL = 'jmnode';
+  let anchorBase = null;            // { id, ox, oy }：上一次稳定状态下的布局坐标
+  let anchorCache = null;           // 见证元素缓存（见坑 ②）
+
+  /** 读节点的**布局坐标**（jsMind 把绝对定位值写在 style.left/top 上）；取不到返回 null（本轮不动） */
+  function layoutPos(el) {
+    const lx = parseFloat(el.style && el.style.left);
+    const ly = parseFloat(el.style && el.style.top);
+    if (!isFinite(lx) || !isFinite(ly)) return null;
+    return [lx, ly];
+  }
+
+  /** 见证节点：第一个可见的**顶层主题** → 选中节点。主题模式下容器根是隐藏的（offset 恒 0），不能当见证 */
+  function anchorNodeEl(jm) {
+    const panel = fdPanel();
+    if (!panel) return null;
+    if (anchorCache && anchorCache.isConnected && getComputedStyle(anchorCache).display !== 'none') return anchorCache;
+    anchorCache = null;
+    const byId = (id) => (id ? panel.querySelector(LAYOUT_ANCHOR_SEL + '[nodeid="' + id + '"]') : null);
+    const ok = (el) => !!el && getComputedStyle(el).display !== 'none';
+    const tops = (jm && jm.mind && jm.mind.root && jm.mind.root.children) || [];
+    for (const t of tops) { const el = byId(t.id); if (ok(el)) { anchorCache = el; return el; } }
+    const sel = jm && jm.get_selected_node && jm.get_selected_node();
+    const elSel = byId(sel && sel.id);
+    if (ok(elSel)) { anchorCache = elSel; return elSel; }
+    return null;
+  }
+
+  /** 布局重排后调用一次：把"整棵树被重新居中"造成的平移反补进 fdView。返回 true 表示确实补偿了。
+   *  用户平移/缩放期间调用它是安全的：布局坐标没变 ⇒ 不动作（这是本方案唯一的风险点，靠坐标系分开）。 */
+  function fdSyncLayoutAnchor() {
+    const jm = state.jm;
+    if (!jm) return false;
+    const el = anchorNodeEl(jm);
+    if (!el) { anchorBase = null; return false; }
+    const pos = layoutPos(el);
+    if (!pos) { anchorBase = null; return false; }
+    const id = el.getAttribute('nodeid') || '';
+    if (!anchorBase || anchorBase.id !== id) {
+      anchorBase = { id: id, ox: pos[0], oy: pos[1] };   // 换见证（或首次）⇒ 只记基线，不补偿
+      return false;
+    }
+    const dx = pos[0] - anchorBase.ox, dy = pos[1] - anchorBase.oy;
+    anchorBase = { id: id, ox: pos[0], oy: pos[1] };
+    if (!dx && !dy) return false;
+    // 布局位移换算到屏幕：屏幕位移 = 布局位移 × 当前缩放
+    fdView.x -= dx * fdView.s;
+    fdView.y -= dy * fdView.s;
+    fdApplyView();
+    return true;
+  }
+
+  /** 重建/切换项目时调用：新树换了元素，基线必须作废（否则会拿旧树的坐标算出一次假位移） */
+  function resetLayoutAnchor() { anchorBase = null; anchorCache = null; }
+
   /** 以容器内点 (px,py) 为不动点缩放；factor 为缩放倍数 */
   function zoomViewAt(px, py, factor, min, max) {
     const s2 = Math.max(min, Math.min(max, fdView.s * factor));
@@ -1008,6 +1077,8 @@
   MM.fdScrollHost = fdScrollHost;
   MM.fdViewEls = fdViewEls;
   MM.fdApplyView = fdApplyView;
+  MM.fdSyncLayoutAnchor = fdSyncLayoutAnchor;     // 展开/收起后钉住视图（见函数头注释）
+  MM.resetLayoutAnchor = resetLayoutAnchor;
   MM.neutralizeScroll = neutralizeScroll;
   MM.zoomViewAt = zoomViewAt;
   MM.setViewScale = setViewScale;
