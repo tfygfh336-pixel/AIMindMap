@@ -481,6 +481,12 @@ function ensureView() {
 
 function loadCurrentUrl() {
   if (!state.view || !state.url) return;
+  // ⚠️ 只在"当前页不是这个 URL"时才载入。原先无条件 loadURL ⇒ 每次**重开侧栏**都整页重载：
+  // 插件重新初始化、settings/皮肤等配置被重读 —— 用户观察到的"减号像是带刷新机制"就是这个 ✗
+  //（hide() 本身不碰服务、不重载；刷新发生在 reopen 那一侧的 show()）。
+  let cur = '';
+  try { cur = state.view.webContents.getURL(); } catch (e) { cur = ''; }
+  if (cur === state.url) return;
   state.view.webContents.loadURL(state.url).catch((e) => {
     log('loadURL 失败: ' + e.message);
   });
@@ -751,7 +757,7 @@ function closeSidebarPageHtml() {
     + 'font-size:12px;line-height:1;color:#4e5969;border-radius:0 0 0 6px}'
     + 'button:hover{background:#fdecec;color:#d93026}'
     + '</style></head><body>'
-    + '<button id="close" title="关闭 DSH 侧栏（连服务一起停，思维导图继续用）」>✕</button>'
+    + '<button id="close" title="关闭 DSH 侧栏（连服务一起停，思维导图继续用）">✕</button>'
     + '<script>document.getElementById("close").addEventListener("click",function(){'
     + 'console.log("[dsh-close-sidebar]");});</' + 'script></body></html>');
 }
@@ -791,6 +797,28 @@ function closeSidebar(opts) {
 function buttonBounds() {
   const b = (v) => { try { return v ? v.getBounds() : null; } catch (e) { return null; } };
   return { collapse: b(state.collapseBtn), close: b(state.closeBtn) };
+}
+
+/** 两个角标按钮的**真实 DOM 事实**（给断言用）。
+ *  为什么必须查 DOM 而不是查字符串：这类按钮是 data: URL 页面，属性写坏一个引号就会
+ *  让整个 `<button>` 被吞进属性值里 —— 页面照样有底色、照样加载成功，但**没有按钮、
+ *  点了没反应**（真机上就是这么坏的 ✗）。只有问 DOM 才能把这种错钉死。 */
+async function buttonProbe() {
+  const probe = async (v, id) => {
+    if (!v || !v.webContents) return null;
+    try {
+      return await v.webContents.executeJavaScript(`(function () {
+        var el = document.getElementById(${JSON.stringify(id)});
+        return {
+          hasEl: !!el,
+          buttons: document.querySelectorAll('button').length,
+          text: el ? (el.textContent || '').trim() : '',
+          title: el ? (el.getAttribute('title') || '') : ''
+        };
+      })()`);
+    } catch (e) { return { hasEl: false, err: String(e && e.message) }; }
+  };
+  return { collapse: await probe(state.collapseBtn, 'collapse'), close: await probe(state.closeBtn, 'close') };
 }
 
 function hide() {
@@ -1022,6 +1050,6 @@ module.exports = {
   beginWidthDrag, endWidthDrag, setWidth,
   setDshOnly, isDshOnly, hideWindowToBackground, hideToBackground, captureView, restoreWindow,
   // 只关一侧的两种能力（对外/给 AI 用；人类用界面上的两个 ✕）
-  closeSidebar, buttonBounds,
+  closeSidebar, buttonBounds, buttonProbe,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
 };

@@ -37,6 +37,7 @@ module.exports = [
       await sleep(500);
 
       const bb = sidebar.buttonBounds();
+      const dom = await sidebar.buttonProbe();
       const view = sidebar.viewBounds();
       const win = ctx.win.getContentBounds();
       const before = await ctx.exec(readJs);
@@ -60,9 +61,16 @@ module.exports = [
         && bb.collapse.x === bb.close.x;                            // 同一列
       const inside = bb.collapse && view
         && bb.collapse.x + bb.collapse.width <= view.x + view.width + 2;
+      // DOM 门禁：两个按钮**真的存在**、各页只有 1 个 button、且都有可点内容。
+      // 这条是冲着一个真机 bug 来的：data: URL 页里属性少写一个引号 ⇒ `<button>` 被吞进属性值，
+      // 页面照常加载（有底色）但**没有按钮、点了没反应** ✗ —— 只查几何永远发现不了。
+      const domOk = ['collapse', 'close'].every((k) => {
+        const d = dom && dom[k];
+        return d && d.hasEl === true && d.buttons === 1 && d.text && d.text.length > 0;
+      });
 
       return {
-        ok: !!sep && !!inside
+        ok: !!sep && !!inside && domOk
           && closed.mainShown === true && closed.reserved === 0       // 主界面铺满（让位宽度归零）
           && before.reserved > 0                                      // 关之前确实让过位
           && afterClose.visible === false                             // view 已收
@@ -71,6 +79,7 @@ module.exports = [
           + ' ✕ y=' + (bb.close ? bb.close.y : 'null')
           + ' 同列=' + (bb.collapse && bb.close ? bb.collapse.x === bb.close.x : 'null')
           + ' 在侧栏内=' + !!inside
+          + '｜【DOM】— ' + JSON.stringify(dom && dom.collapse) + ' ✕ ' + JSON.stringify(dom && dom.close)
           + '｜【关后】主内容可见=' + closed.mainShown + ' 让位宽度=' + closed.reserved
           + ' visible=' + afterClose.visible
           + '｜【关前让位】' + before.reserved
