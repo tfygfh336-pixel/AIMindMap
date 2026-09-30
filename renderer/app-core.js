@@ -256,19 +256,34 @@
       document.body.appendChild(fab);
     }
     fab.style.display = 'none'; // 初始隐藏（layout 事件到达后按可见性同步）
-    window.desktop.on('dsh-sidebar:layout', (info) => {
-      document.body.classList.toggle('dsh-sidebar-on', !!(info && info.visible));
-      if (info && info.width) {
-        document.body.style.setProperty('--dsh-sidebar-width', info.width + 'px');
-      }
-      // 记录权威宽度供拖宽热区判定
-      window.__dshSidebarW = (info && info.visible) ? (info.width || 0) : 0;
-      // 折叠后主界面右缘显示 DSH 圆钮（点击重新展开侧栏）
-      const fab = document.getElementById('dsh-restore-fab');
-      if (fab) fab.style.display = (info && info.visible) ? 'none' : 'flex';
+    // 收到布局信息 → 应用（订阅与"主动问"共用同一段逻辑，避免两条路各写一份）
+    let lastSidebarLayout = '';
+    const applyLayout = (info) => {
+      const visible = !!(info && info.visible);
+      const width = (visible && info.width) || 0;
+      const key = visible + ':' + width;
+      // ⚠️ 状态没变就**什么都不做**：下面那次 `resize` 是用来告诉渲染层"导图区宽度变了"的，
+      // 若每次都派发，启动时那次"主动问"会白白扰动一次视图（浮动详情重定位、树偏移/居中重算）。
+      // 实测症状：把"拖动树后 Esc 保留偏移"的断言搞红（两侧树一起被挪）。只在真的变化时通知。
+      if (key === lastSidebarLayout) return;
+      lastSidebarLayout = key;
+      document.body.classList.toggle('dsh-sidebar-on', visible);
       // 导图容器宽度变了 → 触发既有 resize 链路（浮动详情重定位等）
       window.dispatchEvent(new Event('resize'));
-    });
+    };
+    window.desktop.on('dsh-sidebar:layout', applyLayout);
+    // ⚠️ 订阅完必须**主动问一次**当前布局：主进程首次发送发生在页面加载完成之前
+    //（`init(win)` 里那次），订阅还不存在 ⇒ 消息丢掉 ⇒ body 上既没有 class 也没有 CSS 变量
+    // ⇒ 工具栏右侧被原生侧栏盖住，直到用户拖一下侧栏（拖宽会再发一次）才恢复。
+    // 用户实测症状："刚打开时菜单栏被侧栏遮盖，稍微拖一下就恢复"。
+    try {
+      const st = window.desktop.dsh && window.desktop.dsh.status && window.desktop.dsh.status();
+      if (st && typeof st.then === 'function') {
+        st.then((s) => { if (s) applyLayout({ visible: s.visible, width: s.width }); }).catch(() => {});
+      } else if (st) {
+        applyLayout({ visible: st.visible, width: st.width });
+      }
+    } catch (e) { /* 问不到就等事件 */ }
     window.desktop.on('dsh-sidebar:status', (st) => {
       if (!st) return;
       if (st.status === 'starting') setStatus('DSH 启动中…（首次启动需要几十秒）');

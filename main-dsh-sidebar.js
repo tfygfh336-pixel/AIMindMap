@@ -591,6 +591,9 @@ function init(win) {
   win.on('resize', relayout);
   win.on('closed', () => { state.win = null; });
   loadPrefs();
+  // 页面**加载完成后**补发一次布局：init 期间那次发送早于渲染层订阅，消息会丢
+  //（症状：刚打开时工具栏被侧栏盖住，拖一下侧栏才恢复 —— 见 notifyAfterLoad 注释）
+  notifyAfterLoad();
   // 服务启动 + 默认打开（异步不阻塞窗口创建）
   setImmediate(async () => {
     await adoptOrStart();
@@ -749,6 +752,18 @@ function notifyRenderer(visibleFlag) {
       width: visibleFlag ? state.width : 0
     });
   }
+}
+
+/** 页面加载完成后再补发一次布局。
+ *
+ * 为什么需要：`init(win)` 里那次 `notifyRenderer()` 发生在**页面还没加载完**的时候 ——
+ * 渲染层的 `dsh-sidebar:layout` 订阅那时还不存在，消息直接丢掉。后果是渲染层不知道侧栏宽度：
+ * `body` 上既没有 `dsh-sidebar-on` 类也没有 CSS 变量 ⇒ `calc(var(--dsh-sidebar-width) + 8px)`
+ * 整条失效 ⇒ **工具栏右侧被原生侧栏盖住**，直到用户拖一下侧栏（拖宽才会再发一次事件）才恢复。
+ * 用户实测症状正是"刚打开被遮住、稍微拖一下就好"。 */
+function notifyAfterLoad() {
+  if (!state.win || state.win.isDestroyed() || !state.win.webContents) return;
+  state.win.webContents.on('did-finish-load', () => notifyRenderer(state.visible));
 }
 
 function broadcastStatus() {

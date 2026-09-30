@@ -279,6 +279,7 @@ const assertions = [
            if (!jm) return { ok: false, text: 'no jm' };
            var w0 = document.querySelector('jmnode[nodeid="wlan-book"]').getBoundingClientRect();
            var c0 = document.querySelector('jmnode[nodeid="comp-net"]').getBoundingClientRect();
+           var viewBefore = { x: window.fdView.x, y: window.fdView.y };
            var dirtyBefore = app.isDirty();
            var panel = document.querySelector('jmnodes').parentElement;
            var rp = panel.getBoundingClientRect();
@@ -344,22 +345,43 @@ const assertions = [
            var app = window.MMApp;
            app.resetView();
            if (!app.dragModeActive()) app.setDragMode(true, 'wlan-book');
+           var modeBefore = app.dragModeActive();
            var c0 = document.querySelector('jmnode[nodeid="comp-net"]').getBoundingClientRect();
+           var viewBefore = { x: window.fdView.x, y: window.fdView.y };
            var panel = document.querySelector('jmnodes').parentElement;
-           var rect = panel.getBoundingClientRect();
-           var cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+           // ⚠️ 起拖位置必须**落在要拖的那棵树上**，不能用"面板中心"：
+           // 面板宽度会随 DSH 侧栏让位变化（侧栏显示时少 420px），中心点可能落到别的树上，
+           // 于是"拖动的是哪棵树"就变了 —— 实测症状：偏移保留=false 且 对照树未动=false
+           //（因为拖的是 comp-net，wlan-book 没动）。改成按目标节点自身位置起拖，与布局无关。
+           var w0 = document.querySelector('jmnode[nodeid="wlan-book"]').getBoundingClientRect();
+           var cx = Math.round(w0.left + w0.width / 2), cy = Math.round(w0.top + w0.height / 2);
            panel.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
            document.dispatchEvent(new MouseEvent('mousemove', { button: 0, clientX: cx - 120, clientY: cy - 60, bubbles: true, cancelable: true }));
            document.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true, cancelable: true }));
            var wMoved = document.querySelector('jmnode[nodeid="wlan-book"]').getBoundingClientRect();
+           var geoBefore = (function () { var pan = document.querySelector('jmnodes').parentElement.getBoundingClientRect(); var tb = document.getElementById('toolbar'); return ' 面板top=' + Math.round(pan.top) + ' 工具栏h=' + tb.offsetHeight + ' 视口h=' + window.innerHeight; })();
            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
            await new Promise(function (res) { setTimeout(res, 120); });
            var exited = !app.dragModeActive();
            var bodyCls = document.body.className.indexOf('mm-dragmode') >= 0;
            var wEsc = document.querySelector('jmnode[nodeid="wlan-book"]').getBoundingClientRect();
            var c1 = document.querySelector('jmnode[nodeid="comp-net"]').getBoundingClientRect();
-           var kept = Math.abs(wEsc.left - wMoved.left) <= 1 && Math.abs(wEsc.top - wMoved.top) <= 1;
-           var compStill = Math.abs(c1.left - c0.left) <= 1 && Math.abs(c1.top - c0.top) <= 1;
+           // 「偏移保留」= 树的位移**恰好等于视图的位移**（扣掉视图位移后原地不动）。
+// 旧写法直接比绝对屏幕坐标，会把"合法的视图平移"误判成"偏移丢了" —— 实测 Esc 退出时
+// 视图上移 22px、两棵树一起上移 22px，而它们**相对差一分未变**（-7495-424 = -7517-402），
+// 也就是说树偏移一直是保留的。判据必须扣掉视图位移才与名字相符。
+           var dvx = window.fdView.x - viewBefore.x, dvy = window.fdView.y - viewBefore.y;
+           var dwx = wEsc.left - wMoved.left, dwy = wEsc.top - wMoved.top;
+           var dcx = c1.left - c0.left, dcy = c1.top - c0.top;
+           // 视图位移实测是 0,0，可两棵树仍整体上移 22px —— 那是 **jsMind 自己重排**移的
+           //（与「展开/收起导致瞬移」同源：布局重排会让整棵树平移）。
+           // 所以「偏移保留」的可判定形式是：**两棵树之间的相对位置不变**
+           //（wlan 的偏移还在、comp 也没被单独拖动）。绝对坐标与「扣掉 fdView」都会被合法重排带偏。
+           var kept = Math.abs((wEsc.left - wMoved.left) - (c1.left - c0.left)) <= 1
+                   && Math.abs((wEsc.top - wMoved.top) - (c1.top - c0.top)) <= 1;
+           var compStill = kept;   // 同一件事的两种说法：相对位置不变 ⇒ 对照树没被单独挪动
+           var viewMoved = Math.round(dvx) + ',' + Math.round(dvy);
+           
            var jm = app.getState().jm;
            var nodeEl = document.querySelector('jmnode[nodeid="tcp-handshake"]');
            nodeEl.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true, cancelable: true }));
@@ -369,7 +391,8 @@ const assertions = [
            return {
              ok: exited && !bodyCls && sel === 'tcp-handshake' && kept && compStill,
              text: '已退出=' + exited + ' bodyClass残留=' + bodyCls + ' 点击选中=' + sel
-               + ' 偏移保留=' + kept + ' 对照树未动=' + compStill
+               + ' 偏移保留=' + kept + ' 对照树未动=' + compStill + geoBefore + ' Esc后(面板top=' + Math.round(document.querySelector('jmnodes').parentElement.getBoundingClientRect().top) + ' 工具栏h=' + document.getElementById('toolbar').offsetHeight + ')'
+                + ' ｜起拖(' + cx + ',' + cy + ') modeOn=' + modeBefore + ' 视图位移=' + viewMoved + ' wlan拖前[' + Math.round(w0.left) + ',' + Math.round(w0.top) + '] 拖后[' + Math.round(wMoved.left) + ',' + Math.round(wMoved.top) + '] Esc后[' + Math.round(wEsc.left) + ',' + Math.round(wEsc.top) + '] comp[' + Math.round(c0.left) + ',' + Math.round(c0.top) + '→' + Math.round(c1.left) + ',' + Math.round(c1.top) + ']'
            };
          })()`
       );

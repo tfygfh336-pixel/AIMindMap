@@ -60,21 +60,27 @@ const assertions = [
       // dsh-sidebar:layout；冒烟下主进程不会发，这里经 IPC 事件回调真实触发）
       const r = await ctx.exec(`(async () => {
         const main = document.getElementById('main');
-        const before = getComputedStyle(main).marginRight;
-        // 触发让位：主进程事件通道由 preload 的 on() 订阅，冒烟里手动派发等价事件
-        // —— 通过 desktop.on 注册的回调无法从渲染层直接触发，改测 class 的 CSS 规则：
+        const tick = () => new Promise((res) => setTimeout(res, 30));
+        // ⚠️ 只验**类与 CSS 规则的契约**（on ⇒ 让位 420px；off ⇒ 收回 0px）。
+        // 旧版用"before ≠ after"当判据是**前提过期**了：渲染层现在启动时就会主动问一次真实布局
+        //（修"刚打开时工具栏被侧栏盖住"，见 scripts/smoke/21-sidebar-first-paint.js），
+        // 所以开始时 class 可能本来就是 on（侧栏显示中），before 会是 420px。
         document.body.classList.add('dsh-sidebar-on');
-        await new Promise((res) => setTimeout(res, 30));
-        const after = getComputedStyle(main).marginRight;
-        const toolbarPad = getComputedStyle(document.getElementById('toolbar')).paddingRight;
+        await tick();
+        const onMargin = getComputedStyle(main).marginRight;
+        const onPad = getComputedStyle(document.getElementById('toolbar')).paddingRight;
         document.body.classList.remove('dsh-sidebar-on');
-        await new Promise((res) => setTimeout(res, 30));
-        const restored = getComputedStyle(main).marginRight;
-        return { before, after, toolbarPad, restored,
-          ok: before !== after && after === '420px' && restored === before };
+        await tick();
+        const offMargin = getComputedStyle(main).marginRight;
+        const offPad = getComputedStyle(document.getElementById('toolbar')).paddingRight;
+        return { onMargin, offMargin, onPad, offPad,
+          // off 时工具栏回到它**自身**的默认内边距（实测 12px，不是 0）——
+          // 所以判据是"off 明显小于 on"，而不是写死 0px
+          ok: onMargin === '420px' && offMargin === '0px'
+            && parseInt(onPad, 10) >= 428 && parseInt(offPad, 10) < 20 };
       })()`);
-      return { ok: !!r.ok, text: 'margin ' + r.before + ' → ' + r.after + ' → ' + r.restored
-        + '（toolbar paddingRight=' + r.toolbarPad + '）' };
+      return { ok: !!r.ok, text: 'margin on/off ' + r.onMargin + ' / ' + r.offMargin
+        + '（toolbar paddingRight on/off ' + r.onPad + ' / ' + r.offPad + '）' };
     }
   },
 

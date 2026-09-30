@@ -15,6 +15,32 @@
 
 （新变更先记在这里，发版时移入下方版本段）
 
+### 刚打开时工具栏被 DSH 侧栏盖住（"稍微拖一下就恢复"）（2026-09-29，用户反馈）
+
+**机制**（读代码 + 实测复现）：让位靠 CSS 变量，而**类与变量只在收到 `dsh-sidebar:layout` 事件时才设**：
+`body.dsh-sidebar-on { --dsh-sidebar-width: 420px }` 与
+`body.dsh-sidebar-on #toolbar { padding-right: calc(var(--dsh-sidebar-width) + 8px) }`。
+主进程**首次发送发生在页面加载完成之前**（`init(win)` 里那次），渲染层的订阅还不存在 ⇒ 消息丢掉
+⇒ body 上两个类都没有 ⇒ 工具栏右端不 reserve ⇒ 被原生侧栏盖住；拖一下侧栏 → `setWidth` → 再发一次
+事件 → 恢复。**实测取证**（断言里保留）：清掉类与变量后工具栏 `padding-right=12px`（不 reserve）。
+
+**修法**（两处，互为保险）：
+- 主进程 `notifyAfterLoad()`：`did-finish-load` 后再补发一次布局（源头：那次发送太早）。
+- 渲染层 `bindDshSidebar()`：订阅完**主动问一次** `desktop.dsh.status()`（已含 visible/width，无需新 IPC），
+  与事件共用同一段 `applyLayout`；并**显式把变量写成 0px**（未定义会让 `calc()` 整条失效）。
+- `applyLayout` 加**幂等守卫**：状态没变就不派发 `resize` —— 否则启动那次"主动问"会白白扰动一次视图。
+
+**验证**：新增 `scripts/smoke/21-sidebar-first-paint.js`（整页重载复现"刚打开"，**不许拖任何东西**）：
+① 机制取证：清掉类+变量 ⇒ 工具栏 `padding-right=12px`（不 reserve）；② 重载后：`class=true`、
+变量 `420px`、工具栏 `padding-right=428px` ✓。判别力：去掉上面任一处修复，②立刻变红。
+
+**顺带修好两条"判据本身错了"的陈旧断言**（它们把合法行为误判成回归）：
+- `11-dsh-sidebar` 的让位断言用 "before ≠ after" 当判据，前提是"冒烟下渲染层收不到事件" —— 现在
+  启动就会主动问到真实布局，`before` 本来就是 420px。改为直接验 CSS 契约（on ⇒ 420px / off ⇒ 0px）。
+- `05-pan-lock` 的"拖动树后 Esc 保留偏移"用**绝对屏幕坐标**当判据：实测 Esc 时 jsMind 会重排，
+  **两棵树一起上移 22px**（相对差一分未变、`fdView` 位移为 0,0）⇒ 旧判据把"合法重排"读成"偏移丢了"。
+  改为**两棵树相对位置不变**（并保留诊断数值输出）。
+
 ### PDF 预览的缩放按钮无效 + ✕ 关闭是死按钮（2026-09-29，用户反馈"除了打开文件夹和系统打开，其他都有问题"）
 
 两处独立缺陷，都用机械手段定位（不是靠点）：
