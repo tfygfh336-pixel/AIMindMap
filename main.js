@@ -804,7 +804,34 @@ function registerIpc() {
  * headless：加载页面 → 逐条执行 smoke-assertions → 截图 → 汇总退出。
  * 不依赖键盘/鼠标，供 CI 与 AI 迭代验证使用。
  */
-async function runSmoke(win) {  const assertions = require('./scripts/smoke-assertions.js');
+async function runSmoke(win) {
+  const allAssertions = require('./scripts/smoke-assertions.js');
+  // ── 单跑（只跑选中的断言文件）──────────────────────────────────────────────
+  // 用法：SMOKE_ONLY=20,21 npm run smoke   ／  electron . --smoke-only=20,21
+  // 为什么：全链一轮约 100–120 s，改一条断言就得等整轮，而且每轮真启动 Electron、真占内存
+  //（实测反复跑把整机提交内存推到 80%，连带把同机其它界面拖卡/拖崩）。选择规则与"筛错名字必须响亮失败"
+  // 的细节见 scripts/smoke-select.js；过滤运行**不是全量真值**，故跳过截图/视觉断言/取景记录并显著标记。
+  const select = require('./scripts/smoke-select.js');
+  const specArg = process.argv.find((a) => a.indexOf('--smoke-only=') === 0);
+  const spec = specArg ? specArg.slice('--smoke-only='.length) : (process.env.SMOKE_ONLY || '');
+  let pickedFiles;
+  try {
+    pickedFiles = select.selectFiles(allAssertions.files || [], spec);
+  } catch (err) {
+    console.log('SMOKE SELECTION ERROR — ' + ((err && err.message) || err));
+    app.exit(1);
+    return;
+  }
+  const filtered = pickedFiles.length !== (allAssertions.files || []).length;
+  const byFile = {};
+  (allAssertions.groups || []).forEach((g) => { byFile[g.file] = g.assertions; });
+  const assertions = filtered
+    ? [].concat(...pickedFiles.map((f) => byFile[f] || []))
+    : allAssertions;
+  if (filtered) {
+    console.log('==== 过滤运行（**不是全量真值**）：仅跑 ' + pickedFiles.join(', '));
+    console.log('==== 计数只对本轮选中的 ' + assertions.length + ' 条负责；全量真值见 docs/VERIFY.md ====');
+  }
   const results = [];
   const exec = (js) => win.webContents.executeJavaScript(js);
   // 把 CLI 运行器也交给断言：某些断言需要**先造数据**（如"关联笔记"没有界面创建入口，
@@ -834,7 +861,10 @@ async function runSmoke(win) {  const assertions = require('./scripts/smoke-asse
   let visionStart = -1;   // 视觉断言在 results 里的起始下标（-1 = 没跑）
   // 截图（工程根 smoke-shot.png）+ 落一份**旁路取景记录** smoke-frame.json。
   // 顺序不可交换：先做取景准备（展开全树/禁过渡/清状态栏/等 ≥2 帧），再截图 —— 见 prepareCapture。
-  try {
+  // 过滤运行时**不做**这段：截图（prepareCapture + capturePage）、取景记录、视觉断言（L2）
+  // —— 它们只对"全量运行"有意义（真值口径见 docs/VERIFY.md），跳过还能省掉一次 GPU 合成。
+  if (filtered) console.log('==== 过滤运行：跳过截图 / 取景记录 / 视觉断言 ====');
+  if (!filtered) try {
     await prepareCapture(win);
     const img = await captureRetry(win);
     const png = img.toPNG();
@@ -887,7 +917,8 @@ async function runSmoke(win) {  const assertions = require('./scripts/smoke-asse
   const visionFrom = visionStart < 0 ? results.length : visionStart;
   console.log('\n==== SMOKE RESULTS ====');
   results.forEach((r) => console.log('[' + (r.ok ? 'PASS' : 'FAIL') + '] ' + r.name + ' :: ' + r.text));
-  console.log('==== ' + part(0, smokeCount) + ' passed ====');
+  const head = filtered ? '==== 过滤运行 ' : '==== ';
+  console.log(head + part(0, smokeCount) + ' passed ====');
   console.log('==== 视觉断言（L2 关键区域）: ' + part(visionFrom, results.length) + ' passed ====');
   if (results.length > smokeCount) {
     console.log('==== 另有 ' + (results.length - smokeCount) + ' 条非冒烟结果（取景记录 + 视觉断言），不计入冒烟断言数 ====');

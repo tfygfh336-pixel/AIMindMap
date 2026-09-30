@@ -207,6 +207,7 @@ caption **必填**且要写清"图里有什么、重点看什么"。
 | **改变「某功能如何被使用」**（数据形状/命令语义/交互模型/字段含义/默认值） | **铁律 R5「改动即连带」**：同一次改动里列出受影响的**使用者可见面**并逐个核对 —— GUI 交互（按钮/右键/菜单/快捷键/对话框/状态栏）、冒烟与集成断言、本文档与 README 的操作示例、详情框与关联笔记的渲染入口；结论（含"无影响"）写入 CHANGELOG。**判据不是"测试是否还绿"**，而是"人按原有习惯操作，得到的还是不是设计意图" —— G5 冒烟抓不住这类损害。详见 `docs/RULES.md` §3 R5 |
 | 新增 CLI 命令 | cli/registry.js 登记 → `node cli/mm-cli.js docs-gen` 重生成 docs/CLI.md → scripts/cli-integration.js 加断言 |
 | 新增渲染功能 | 在 `scripts/smoke/NN-*.js` 的**对应分域文件**追加断言（入口 `scripts/smoke-assertions.js` 只做 require + 顺序拼接，不再往入口里加）→ `npm run smoke` 验证 |
+| **只改/只查某一条冒烟断言**（或只想确认某个功能没坏） | **别跑全链**：`SMOKE_ONLY=<文件前缀> npm run smoke`（PowerShell：`$env:SMOKE_ONLY='20,21'; npm run smoke`；等价 `electron . --smoke-only=20,21`）。只跑选中文件 + `01-*` 预热，**不产截图/取景记录/视觉断言**，计数**不是全量真值**；筛错名字会**响亮失败**（`SMOKE SELECTION ERROR`）。规则见 `scripts/smoke-select.js`、`docs/VERIFY.md` §验证链 |
 | 改数据格式 | src/schema.js 版本号 + docs/DATA-FORMAT.md + 迁移逻辑 |
 | **新增 / 挪动文档** | **先在 `docs/ARCHITECTURE.md` §5 表登记**（层 / 作用 / 不该写什么 / 更新方式）—— **未登记 = 门禁 G8 红**。判断"该不该建"用 §5 的决策树：事实→已有文档或 VERIFY；计划→ROADMAP；执行记录→CHANGELOG；机制设计→登记一份设计文档。**不复制既有事实、不手写易腐数字** |
 | **要落盘任何文件**（分析稿 / 汇报稿 / 截图 / 数据 / 探针脚本） | **先读 `SKILL.md` 顶部「落盘规矩」**（4 条）：默认**不落盘** —— 分析汇报放对话里；必须落盘时**工作产物一律放 `.review/<YYYYMMDD>-<主题>/`**（唯一杂物区：可随时整目录删、不入版本库、不进 G6 数字扫描）；要长期存在才升格为 `docs/` 文档并登记 §5；一次性旧稿 → `docs/archive/`。**工程根 / 其它目录 / 工程外一律不许写** —— 工程根与顶层目录有白名单，乱放（含 png/json/脚本）由 **G8** 判红 |
@@ -219,6 +220,8 @@ npm run verify                    # 一键全链（含文档登记 G8、规则�
 npm test                          # 单测
 node scripts/cli-integration.js   # CLI 命令端到端（临时项目自动清理）
 npm run smoke                     # 冒烟（Electron 无头 + 截图 smoke-shot.png）
+SMOKE_ONLY=20,21 npm run smoke     # 冒烟**单跑**：只跑选中的断言文件（+ 01 预热）；不产截图/视觉断言
+$env:SMOKE_ONLY='20,21'; npm run smoke   # ↑ 的 PowerShell 写法（Windows 上就用这个）
 node cli/mm-cli.js validate-all   # 全部项目校验
 npm run check:docs                # 文档登记门禁（G8：表外文档/散落文档/悬挂登记）
 npm run check:rules               # 规则文件自洽门禁（G9：条数/表格结构/编号引用/实现列）

@@ -208,7 +208,8 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `rules-consistency.js` | **G9** 规则文件自洽：声明条数 == 表格行数、表格未被空行打断、编号引用闭合、实现列点名的脚本存在、其他文档的条数转述一致、**门禁声明的判定条数 == 实现脚本的判定标记数**（且标记唯一；实现脚本文案里也不得写死条数）；逐条清单见 `docs/RULES.md` §2，**本表不复述** |
 | `doc-facts.js` | **G6/G7** 文档数字与版本一致性 + 生成物是否过期；`--write` 生成 `docs/VERIFY.md` |
 | `cli-integration.js` | **G4** 全部 CLI 命令端到端断言（进程内调用，临时项目自动清理） |
-| `smoke-assertions.js` | **G5** 冒烟断言清单入口：自动发现并按文件名顺序拼接 `scripts/smoke/NN-*.js`（入口只做 require + 拼接） |
+| `smoke-assertions.js` | **G5** 冒烟断言清单入口：自动发现并按文件名顺序拼接 `scripts/smoke/NN-*.js`（入口只做 require + 拼接；另导出 `files` / `groups` 供单跑选子集，`.length` 仍是**全量**真值） |
+| `smoke-select.js` | 冒烟**单跑**选择器（纯函数，可单测）：把 `SMOKE_ONLY=20,21` / `--smoke-only=20,21` 解析成要跑的断言文件，**永远并入 `01-*` 预热**；**一项都不匹配 ⇒ 抛错**（采不到真值 = 红），避免"筛错名字却跑出 0/0 passed"的假绿 |
 | `mcp-server.js` | MCP stdio 服务器（只转发 CLI，见 §2.5） |
 | `vendor-dsh.js` | 制作独立 DSH 运行包（`vendor/dsh`，含哈希清单；一次性/更新时重跑） |
 | `dsh-maintenance.js` | 运行包维护 CLI：导入 / 切换 / 回滚 / 列表 / 校验（`npm run dsh:maint`） |

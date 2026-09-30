@@ -51,6 +51,14 @@ const files = fs.readdirSync(smokeDir)
   .filter((f) => /^\d+-.+\.js$/.test(f))
   .sort();
 
-const assertions = [].concat(...files.map((f) => require(path.join(smokeDir, f))));
+/** 每个文件各自的断言（供"单跑"选择器按文件取子集；仍是纯数据） */
+const groups = files.map((f) => ({ file: f, assertions: require(path.join(smokeDir, f)) }));
+
+const assertions = [].concat(...groups.map((g) => g.assertions));
 
 module.exports = assertions;
+// 单跑（SMOKE_ONLY / --smoke-only）用：文件清单与分组。
+// 注意 `.length` 仍然等于**全量**断言数 —— `scripts/doc-facts.js` 的冒烟真值就是它，
+// 不能因为加了单跑而改变（改的是"跑哪些"，不是"有多少条"）。
+module.exports.files = files;
+module.exports.groups = groups;

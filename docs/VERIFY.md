@@ -17,7 +17,7 @@
 |------|----|------|
 | CLI 命令数 | 47 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 35 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 645 用例 / 34 文件 | `tests/*.test.js`（vitest） |
+| 单元测试 | 649 用例 / 35 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 193 | `scripts/cli-integration.js` |
 | 冒烟断言 | 133 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
@@ -44,6 +44,13 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 | 7 | G2 | `node cli/mm-cli.js validate-all` | 15s | 全部项目结构 + 悬挂链接 + 环 |
 | 8 | G6 | `node scripts/doc-facts.js --check` | 20s | 文档数字与真值一致、版本号四处一致 |
 | 9 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |
+
+> **只改了某一条冒烟断言时不必跑全链**：`SMOKE_ONLY=<文件前缀> npm run smoke`
+> （等价写法 `electron . --smoke-only=<文件前缀>`）只跑选中的那几个断言文件，
+> **永远并入 `01-*`**（预热：它负责加载渲染层并打开 comnet，后面的断言都假设这个前提）。
+> 过滤运行**不产截图/取景记录/视觉断言**，其计数也**不代表本文件的冒烟真值** ——
+> 真值只由全量运行代表（`npm run verify` 或 `npm run smoke` 不带选择串时）。
+> 选择规则、以及"筛错名字必须响亮失败（采不到真值 = 红）"见 `scripts/smoke-select.js`。
 
 > 耗时预算是**止涨线**（取实测的 2–3 倍），不是性能目标 —— 它防的是「每次只涨一点点、没人注意到」。
 > 本链曾从 176 s 压到约 77 s（集成断言由"每条起一个进程"改为进程内调用），预算是让这个成果守得住。
