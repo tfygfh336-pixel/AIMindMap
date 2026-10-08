@@ -55,7 +55,8 @@
 | `app-media.js` | 图片灯箱、附件预览（md 内联渲染 / pdf 内嵌）、`renderRelated`（相关知识点面板） |
 | `app-audit.js` | 关系审计面板：呈现 `orphans`/`mentions` 清单，**漏链接可一键补链接**（写操作走 CLI） |
 | `app-palette.js` | 命令面板（Ctrl+P）：模糊搜索节点与命令；排序用 `src/palette-rank.js` |
-| `app-assoc.js` | **「关联笔记」二级页面**：渲染关联实体页（标题/成员列表/正文）+ 编辑对话框（标题与正文）；从节点详情的「相关知识点」区进入 |
+| `app-assoc.js` | **「关联笔记」二级页面**：渲染关联实体页（标题/成员列表/正文）+ 编辑对话框（标题与正文）；从节点详情的「相关知识点」区进入。**并在该区渲染「展示关联节点」按钮**（功能 2 的入口，恒常出现——没有关联笔记也可能有链接关系） |
+| `app-related.js` | **关联节点可视化**（功能 2）：按 `src/related-model.js` 的模型把关联节点**缩放至刚好框住**（`MM.setViewTransform` 一趟算出 s/x/y）、高亮它们并轻微虚化其余（**只写 CSS 类** —— jsMind 会重写内联样式）、在 `fdViewEls()` 里的 SVG 关系层画虚线（随导图同变换 ⇒ 平移缩放零重算），点线按**鼠标位置**开关联笔记（大锁钉住 = 不跟导图跑）。模型缺 `src/related-model.js` 时**响亮抛错**（不静默退化） | `MM.showRelated(id)` / `MM.clearRelated()` / `MM.isRelatedActive()` / `MM.scheduleRelatedRedraw()` / `MM.setViewTransform({s,x,y})`（在 app-view.js） |
 | `app-actions.js` | 保存闸门与未保存判定（`isDirty`）、**并发冲突的两条出路**（`resolveConflict`：用磁盘版本 / 保留我的）、快照撤销重做、节点增删改、搜索、项目加载/切换、MD 导入导出 |
 | `app.js` | **接线层**：`wireUI()` + `window.MMApp` 对外导出 + `DOMContentLoaded` 启动 |
 | `editor.js` | **交互层**：编辑/图片/附件对话框、快捷键、MD 导入导出文件选择；只调 MMApp API，不直接改状态 |
@@ -139,6 +140,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `export-html.js` | 静态站点导出（纯逻辑，无 IO） | `buildIndexHtml`/`buildModel`/`collectAssets`/`safeJson`；相关知识点内联为可跳转链接 |
 | `query.js` | 查询与视图构造（纯逻辑） | `buildReadView`/`buildNodeList`/`getNodeView`/`computeStats`/`searchNodes`/`treeLines` —— **决定 AI 看到什么** |
 | `bundle.js` | aimap v1 打包格式（Node 侧纯逻辑） | `buildBundle`/`parseBundle`/`collectResourceRefs`/`isSafeRelPath`（路径穿越防御） |
+| `related-model.js` | **「关联节点」可视化模型**（功能 2）：把 `assoc` 与 `relations` 的**两处既有结果合成**成一个可画的图 —— 成员并集、去重、每条边带"为什么相关"（哪篇关联笔记 / 哪条链接）。**不是** `relations.js`/`assoc.js` 的重复实现：那两个各算**一种**关系（且跑在 Node 侧），这个只负责**合并成显示用的图**并定口径（跨项目只标不画；成员 > `CLIQUE_MAX`(8) 时只画星形）。**它的输入是既有 IPC 的返回形状**，所以不新增任何后端逻辑 ✓ | `buildRelationModel({nodeId, project, assocItems, relatedItems})` → `{members, edges, crossProject, assocCount}` |
 | `version.js` | 版本号纯逻辑 | `isValid`/`parse`/`bump`（低位归零）/`compare` |
 | `changelog.js` | CHANGELOG 的发版变换（Node 侧纯逻辑） | `releaseChangelog(text, next, date)`：按**段落边界**改写 `[Unreleased]`（早期两次 `String.replace` 写法会把段首占位行带进版本段）；无变更内容时拒绝发版 |
 | `config.js` | 常量（版本/默认值） | `MMConfig`（`APP_VERSION` 是版本号单源） |

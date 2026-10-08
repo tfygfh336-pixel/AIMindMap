@@ -248,6 +248,10 @@
       kind: box ? box.kind : null,
       assocId: box && box.assoc ? box.assoc.id : null,
       kinds: fdBoxes.map((b) => b.kind),
+      // 尺寸：断言要判"框是否盖住某个点"时必须知道它有多高 —— 猜 DOM 里的框会选错
+      //（实测：用 `.fd-lock-screen.active` 选到的是**节点详情框**，量出来 136x99 ✗）
+      width: el ? Math.round(el.offsetWidth) : 0,
+      height: el ? Math.round(el.offsetHeight) : 0,
       left: parseFloat((el && el.style.left) || 0) || 0,
       top: parseFloat((el && el.style.top) || 0) || 0,
       scrollLeft: panel ? panel.scrollLeft : 0,

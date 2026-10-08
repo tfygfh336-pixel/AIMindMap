@@ -45,11 +45,13 @@
    * 从而只有一套坐标系 —— 放大后不会再因"滚动够不到"而显示不全。
    * 详情框在变换层之外，按所属节点的 getBoundingClientRect 跟随，自身再按 s 缩放。 */
 
-  /** 变换作用对象：jsMind 的连线 canvas 与节点层（两者同变换，线与节点永不错位） */
+  /** 变换作用对象：jsMind 的连线 canvas 与节点层（两者同变换，线与节点永不错位）
+   *  ＋ 关联节点可视化层（app-related.js 的 SVG，`#mm-rel-layer`，按需创建）——
+   *  挂进来它就跟着同一个 translate+scale 走 ⇒ 平移/缩放**零重算**（functional 2 的核心便利 ✓） */
   function fdViewEls() {
     const p = fdPanel();
     if (!p) return [];
-    return ['canvas.jsmind', 'jmnodes']
+    return ['canvas.jsmind', '#mm-rel-layer', 'jmnodes']
       .map((sel) => p.querySelector(sel))
       .filter(Boolean);
   }
@@ -183,6 +185,23 @@
     if (!p) return;
     const r = p.getBoundingClientRect();
     zoomViewAt(r.width / 2, r.height / 2, s / fdView.s, 0.0001, 99);
+  }
+
+  /** **精确**设置整个视图变换（缩放 + 平移），供"缩放到刚好框住这些节点"这类需求用。
+   *  为什么必须有它：既有的 `setViewScale` 只围绕面板中心按倍率缩放，`zoomViewAt` 只做锚点缩放
+   *  —— 两者都表达不了"我要 (s,x,y) 这**一个**目标值"（功能 2 的 fit 需要的正是后者）。
+   *  语义：屏幕坐标 = 逻辑坐标 × s + (x,y)，与 fdApplyView 完全一致；范围夹取 0.15–4（与滚轮缩放同区间）。 */
+  function setViewTransform(t) {
+    if (!t) return getPanState();
+    const s = Math.max(0.15, Math.min(4, Number(t.s) || fdView.s));
+    if (typeof t.x === 'number' && isFinite(t.x)) fdView.x = t.x;
+    if (typeof t.y === 'number' && isFinite(t.y)) fdView.y = t.y;
+    fdView.s = s;
+    const jm = state.jm;
+    if (jm && jm.view) jm.view.zoom_current = s; // 仅用于读数（同 setViewScale）
+    neutralizeScroll();
+    fdApplyView();
+    return getPanState();
   }
 
   /** 当前平移量（供外部/自检读取） */
@@ -557,6 +576,9 @@
           .forEach((el) => { el.style.transform = t; });
       });
     });
+    // 树被拖动/重排后**关系线的端点也变了** ⇒ 通知关联层重画（rAF 合并，拖动时每帧只画一次 ✓；
+    // 关联层没在展示时是空操作，零成本）
+    if (MM.scheduleRelatedRedraw) MM.scheduleRelatedRedraw();
   }
 
   /** 清空树偏移（切换项目/撤销重做重建由 renderMind 调；还原视图也复位）。
@@ -1149,6 +1171,7 @@
   MM.neutralizeScroll = neutralizeScroll;
   MM.zoomViewAt = zoomViewAt;
   MM.setViewScale = setViewScale;
+  MM.setViewTransform = setViewTransform;   // 精确设 (s,x,y)：fit「刚好框住这些节点」用（app-related.js）
   MM.getPanState = getPanState;
   MM.setDragMode = setDragMode;
   MM.dragModeActive = dragModeActive;

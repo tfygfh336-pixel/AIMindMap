@@ -108,20 +108,27 @@
     positionFdBox(box);
   }
 
-  /** 在「相关知识点」区渲染关联入口（这是进入二级页面的**唯一**入口） */
+  /** 在「相关知识点」区渲染关联入口（这是进入二级页面的**唯一**入口）
+   *  ＋「展示关联节点」按钮（功能 2）：**恒常渲染** —— 一个节点可能没有关联笔记但**有链接**
+   *  （那种情况一样能展示关联节点），所以按钮不能挂在"有关联笔记"这个条件里 ✗
+   *  （契约：`.assoc-entry` 的条数语义**不变**，冒烟断言数的是它 ✓ 按钮是另一个类名） */
   function renderAssocEntries(el, res, node) {
     const items = (res && res.items) || [];
-    if (!items.length) { el.innerHTML = ''; return; }
-    let html = '<div class="bl-title">关联笔记（' + items.length + '）</div>';
-    items.forEach((a, i) => {
-      const title = a.effectiveTitle || a.title || a.id;
-      html += '<div class="assoc-entry" data-i="' + i + '" title="打开这篇关联笔记（介绍这些节点之间的关系）">'
-        + '<span class="ae-icon">📝</span>'
-        + '<span class="ae-title">' + escHtml(title) + '</span>'
-        + '<span class="bl-caption">' + (a.members || []).length + ' 方'
-        + (a.hasNote ? '' : ' · 尚未写') + '</span>'
-        + '</div>';
-    });
+    let html = '<button type="button" class="rel-show-btn" data-rel-node="' + escHtml(node && node.id) + '"'
+      + ' title="在导图上高亮这个节点的关联节点、缩放至刚好框住它们，并画出关系虚线（Esc 退出）">'
+      + '🔗 展示关联节点</button>';
+    if (items.length) {
+      html += '<div class="bl-title">关联笔记（' + items.length + '）</div>';
+      items.forEach((a, i) => {
+        const title = a.effectiveTitle || a.title || a.id;
+        html += '<div class="assoc-entry" data-i="' + i + '" title="打开这篇关联笔记（介绍这些节点之间的关系）">'
+          + '<span class="ae-icon">📝</span>'
+          + '<span class="ae-title">' + escHtml(title) + '</span>'
+          + '<span class="bl-caption">' + (a.members || []).length + ' 方'
+          + (a.hasNote ? '' : ' · 尚未写') + '</span>'
+          + '</div>';
+      });
+    }
     el.innerHTML = html;
     el.querySelectorAll('.assoc-entry').forEach((row) => {
       row.addEventListener('click', (e) => {
@@ -130,6 +137,23 @@
         if (a) MM.showAssocPage(a, node);
       });
     });
+    const btn = el.querySelector('.rel-show-btn');
+    if (btn) {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id = btn.getAttribute('data-rel-node');
+        // 再点一次 = 退出（按钮就是开关；Esc 也退）。**只有同一个节点**才算"再点" ✓
+        if (MM.isRelatedActive && MM.isRelatedActive()) {
+          MM.clearRelated();
+          MM.setStatus('已退出关联节点展示');
+        } else {
+          MM.showRelated(id);
+        }
+        el.querySelectorAll('.rel-show-btn').forEach((b) => {
+          b.classList.toggle('is-on', !!(MM.isRelatedActive && MM.isRelatedActive()));
+        });
+      });
+    }
   }
 
   /* ================= 编辑笔记 =================

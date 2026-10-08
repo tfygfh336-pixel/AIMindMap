@@ -452,6 +452,37 @@ jmnode.mm-container-root { visibility: hidden !important; }
 .assoc-entry:hover { background: #e8f0ff; }
 .assoc-entry .ae-icon { flex: 0 0 auto; }
 .assoc-entry .ae-title { color: #1f2329; font-weight: 600; }
+/* 「展示关联节点」按钮（功能 2）：与入口行同区、恒常出现（没有关联笔记也可能有链接关系） */
+.rel-show-btn {
+  display: block; width: 100%; box-sizing: border-box; text-align: center;
+  padding: 5px 8px; margin: 2px 0 6px; border-radius: 5px; cursor: pointer;
+  background: #fff; border: 1px dashed #9db8ff; color: #2b5dd6; font-size: 12.5px;
+}
+.rel-show-btn:hover { background: #f0f5ff; border-style: solid; }
+.rel-show-btn.is-on { background: #2b5dd6; border-color: #2b5dd6; color: #fff; }
+
+/* ---------------- 关联节点可视化（app-related.js，功能 2） ----------------
+ * 纪律：高亮/虚化**只写类**（jsMind 的 `_reset_node_custom_style()` 会重写内联样式，
+ * 内联的 background/color 在一次 show_nodes 后就没了）；且只用 opacity / outline / z-index
+ * 这几个**jsMind 不碰**的属性，避免与它自己的配色打架（先例：mm-rubber-hit）。 */
+jmnode.mm-rel-hit {
+  outline: 2px solid #2b5dd6; outline-offset: 1px;
+  box-shadow: 0 0 0 4px rgba(43, 93, 214, 0.18);
+}
+jmnode.mm-rel-dim { opacity: 0.32; }
+/* 关系层（挂在 fdViewEls 里，随导图同变换） */
+#mm-rel-layer { pointer-events: none; }
+#mm-rel-layer .mm-rel-line {
+  fill: none; stroke: #2b5dd6; stroke-width: 1.6; stroke-dasharray: 6 4; opacity: 0.85;
+  vector-effect: non-scaling-stroke;   /* 缩放到很大/很小时线的粗细保持观感一致 */
+}
+#mm-rel-layer .mm-rel-line--link { stroke: #e08b2b; }      /* 链接关系：橙（与"关联笔记"蓝区分） */
+#mm-rel-layer .mm-rel-line--both { stroke: #7a4fd6; }
+#mm-rel-layer .mm-rel-hitpath {
+  fill: none; stroke: transparent; stroke-width: 14;      /* 热区：线太细点不中，必须有它 */
+  pointer-events: stroke; cursor: pointer;
+}
+#mm-rel-layer .mm-rel-hitpath:hover { stroke: rgba(43, 93, 214, 0.12); }
 /* 二级页面里的笔记正文 */
 .assoc-note { font-size: 13px; color: #1f2329; }
 .assoc-note p { margin: 0 0 8px; }
