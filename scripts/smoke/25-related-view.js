@@ -269,5 +269,39 @@ module.exports = [
       })()`);
       return { ok: !!res.ok, text: res.text };
     }
+  },
+  {
+    name: '⑦c 性能：连续重绘**不重复刷类**（拖动时的卡顿主因），且高亮不丢',
+    run: async (ctx) => {
+      await ctx.exec(`window.MM.showRelated(${JSON.stringify(PICK[0])}); 1`);
+      const waited = await waitFor(ctx, `(function () {
+        var svg = document.querySelector('#mm-rel-layer');
+        return JSON.stringify({ ok: !!svg && Number(svg.dataset.count) > 0, text: '线=' + (svg ? svg.dataset.count : 无) });
+      })()`);
+      const res = await execJson(ctx, `(async function () {
+        // 数"写了多少次高亮类"（DOMTokenList.toggle 是唯一的写入口 ✓）—— 与机器快慢无关的确定性判据 ✓
+        var orig = DOMTokenList.prototype.toggle, writes = 0;
+        DOMTokenList.prototype.toggle = function (t, f) {
+          if (t === 'mm-rel-hit' || t === 'mm-rel-dim') writes++;
+          return orig.apply(this, arguments);
+        };
+        function raf() { return new Promise(function (r) { requestAnimationFrame(function () { r(1); }); }); }
+        var nodes = document.querySelectorAll('jmnode[nodeid]').length;
+        MM.scheduleRelatedRedraw(); await raf();          // 第 1 帧：把账建起来（这一帧该写全量 ✓）
+        var firstFrame = writes;
+        for (var i = 0; i < 12; i++) { MM.scheduleRelatedRedraw(); await raf(); }   // 之后 12 帧
+        var total = writes;
+        DOMTokenList.prototype.toggle = orig;
+        var hit = document.querySelectorAll('jmnode.mm-rel-hit').length;
+        var dim = document.querySelectorAll('jmnode.mm-rel-dim').length;
+        return JSON.stringify({
+          firstFrame: firstFrame, total: total, nodes: nodes, hit: hit, dim: dim,
+          ok: firstFrame <= nodes * 2 && total <= nodes * 2 + 4 && hit > 0 && (hit + dim) >= nodes - 2,
+          text: '节点=' + nodes + ' 第 1 帧写=' + firstFrame + ' 共 13 帧写=' + total
+            + '（上限 ' + (nodes * 2 + 4) + '）｜ 高亮=' + hit + ' 虚化=' + dim + '（合计应≈节点数 ✓ 高亮没丢）'
+        });
+      })()`);
+      return { ok: !!res.ok, text: '线=' + JSON.parse(waited).text + ' ｜ ' + res.text };
+    }
   }
 ];

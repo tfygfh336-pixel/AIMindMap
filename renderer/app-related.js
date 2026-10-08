@@ -108,9 +108,20 @@
   }
 
   /** 高亮/虚化：**只写类**（jsMind 会重写内联样式，见文件头 ②） */
+  /* ⑦c 性能：拖动/缩放时 `scheduleRedraw` 每帧都会跑 applyHighlight —— 原实现每帧对**全部**节点
+   * （实测 556 个）做 2 次 classList.toggle ⇒ 每帧 ~1600 次 DOM 写 ⇒ 卡 ✓。
+   * 现在用 **WeakSet 记账**：同一个高亮状态里，已经标过的元素直接跳过 ⇒ 每帧只处理"新出现"的元素
+   * （jsMind 重排/展开会重建元素，新元素不在账上 ⇒ 自动补类 ✓ 不会静默丢高亮 ✓）。
+   * 状态一变（换节点 / 退出 / 成员集变化）就清账重来 ✓。 */
+  let hlSig = '';
+  let hlSeen = new WeakSet();
   function applyHighlight() {
     const hit = active ? active.members : null;
+    const sig = active ? (active.nodeId + '|' + (hit ? hit.size : 0)) : '';
+    if (sig !== hlSig) { hlSig = sig; hlSeen = new WeakSet(); }
     for (const el of allNodeEls()) {
+      if (hlSeen.has(el)) continue;
+      hlSeen.add(el);
       const id = el.getAttribute('nodeid');
       const on = !!(hit && (hit.has(id) || id === active.nodeId));
       el.classList.toggle(CLS_HIT, on);
@@ -119,6 +130,7 @@
   }
 
   function clearHighlight() {
+    hlSig = ''; hlSeen = new WeakSet();          // 清账：下次展示会重新逐元素标一遍 ✓
     for (const el of allNodeEls()) el.classList.remove(CLS_HIT, CLS_DIM);
   }
 
