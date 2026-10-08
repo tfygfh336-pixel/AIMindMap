@@ -24,12 +24,13 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 
-/** 第 4 步额外产出的用例数（供第 8 步取用，省掉它重跑一次 vitest）。
+/** 第 4 步额外产出的用例数（供第 6 步取用，省掉它重跑一次 vitest）。
  *  落在 `.review/` —— 工程既定的**工作产物区**（已 gitignore，G8 豁免）。 */
 const TEST_RESULTS = '.review/verify-tests.json';
 
@@ -62,6 +63,54 @@ function writeLastVerify(run) {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(run, null, 2) + '\n', 'utf8');
   } catch (e) { /* 写不进去不影响验证结论 */ }
+}
+
+/* ---------------- 验证历史：**追加**，不覆盖 ----------------
+ * 为什么需要：`last-verify.json` 每次运行都被**覆盖**，只剩最后一条记录。而验证链的真实故障
+ * 恰恰多是"可疑的偶发 / 变慢"：2026-09-30 一晚连跑 6 次，症状每次都不一样。跑完只剩最后一条 ⇒
+ * **事后无从查证**"是偶发还是真的变慢了"（几次记录摆在一起，规律一眼可见；只剩一条就什么都看不出）。
+ * 为什么用 JSON Lines：一行一条、追加不覆盖、坏一行不毁前面所有行，用 `Get-Content | ConvertFrom-Json`
+ * 或普通文本工具就能读，不需要任何依赖（工程零运行时依赖）。
+ * 为什么带 node / host / freeMemMB：这三点是"同一份代码、结果不同"时最先要排除的变量
+ * （node 版本差异、换机器、当时内存压力）。
+ * 为什么写失败不能影响结论：它只是**旁证**（与 `last-verify.json` 同一性质）。为了一条日志把一次
+ * 真实验证判成失败，属于"辅助设施反过来打断主流程"，得不偿失 ⇒ 只打印一行警告。
+ * 落在 `.review/`（工程既定的**唯一杂物区**：可随时整目录删除、已 gitignore、不进 G6 数字扫描）。 */
+const VERIFY_HISTORY = '.review/verify-history.jsonl';
+
+/** 一条历史记录（除 `envIn` 外都是纯计算：便于单测"字段映射"那一半） */
+function buildVerifyHistory(run, results, envIn) {
+  const env = envIn || { node: process.version, host: os.hostname(), freeMemMB: Math.round(os.freemem() / 1048576) };
+  return {
+    at: run.finishedAt,                       // ISO 时间（与 last-verify.json 同一个时刻，便于两份记录对齐）
+    ok: run.ok,
+    failedGate: run.failedGate === undefined ? null : run.failedGate,
+    totalMs: run.totalMs,
+    // 每步：门禁 / 耗时 / 退出码 / 是否超预算。另外带上 skipped（G7 与 G6 共用一次调用时 ms=0）——
+    // 免得事后看历史时把"这一步没单独跑"误读成"耗时 0 秒、很健康"。
+    steps: results.map((r) => ({
+      gate: r.gate,
+      ms: r.ms,
+      code: r.code,
+      overBudget: r.budgetMs > 0 && r.ms > r.budgetMs,
+      skipped: r.skipped === true
+    })),
+    node: env.node,
+    host: env.host,
+    freeMemMB: env.freeMemMB
+  };
+}
+
+/** 追加写一条历史（失败只警告，绝不让 verify 因此失败）。 */
+function writeVerifyHistory(run, results) {
+  try {
+    const p = path.join(ROOT, VERIFY_HISTORY);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, JSON.stringify(buildVerifyHistory(run, results)) + '\n', 'utf8');
+  } catch (e) {
+    console.warn('⚠️ 验证历史写入失败（不影响本次验证结论）：'
+      + VERIFY_HISTORY + ' —— ' + (e.message || e));
+  }
 }
 
 /* ---------------- 兜底备份的新鲜度（只提示，不判红） ----------------
@@ -106,6 +155,22 @@ function checkBackupFreshness() {
  *   cmd     实际执行（给 runner）    shown 给人看的等价命令（写进 VERIFY.md）
  *   covers  覆盖什么（写进 VERIFY.md）
  *   budgetMs 该步预算（止涨线，见文件头②）
+ *
+ * 【2026-09-30 调整：数组顺序与门禁编号**不再一致**，这是有意的】
+ * 执行顺序 = 数组顺序（runner 就是按这个数组跑的），门禁编号只是名字，不表示先后。
+ * 为什么把"生成物类"检查提到前面（G8 → G9 → G3 → G6 → G7）：
+ *   它们便宜（合计 < 3 s）、而且它们红了往往要**回头改文档 / 补元信息 / 重跑 `npm run facts:write`** ——
+ *   放在链末，就意味着改了预算而忘了 `facts:write` 时，前面的测试与冒烟（90 s+）**全部白跑一遍才报错**
+ *   （2026-09-30 真实发生：一晚上连跑 6 次，每次都要等链末那句"生成物已过期" ✗）。
+ *   一句话：**最可能红、又最便宜、且决定要不要回头重做的检查，排最前**。
+ * 为什么不能把 G6 再往前挪到 G3 之前：
+ *   G6 必须用 **G3（vitest）产出的用例数**（经 `.review/verify-tests.json` 传入），否则它会退化去
+ *   自己重跑一次 vitest（慢约 5–9 s，而且那一次在负载高时偶发取不到真值 ⇒ G6 假红）。
+ *   ⇒ 顺序约束是"**G3 之后、但仍要早于昂贵步骤**"，所以落在第 5 位。
+ * 改动本数组（顺序 / 命令 / 预算）时**必须同批**跑 `npm run facts:write`：
+ *   `docs/VERIFY.md` 的链路表与合计预算由本数组渲染（`scripts/doc-facts.js`），不同批重生成
+ *   ⇒ G6/G7 判"生成物已过期" ✗ —— 而按上面的新顺序，它会在**廉价步骤里就红**（这正是目的，
+ *   不是故障；但**别把它当成可以留到下次的债**）。
  */
 const STEPS = [
   {
@@ -129,7 +194,7 @@ const STEPS = [
   },
   {
     step: 4, gate: 'G3', label: '单元测试',
-    // 与 `npm test` 等价，**外加** JSON reporter：把用例数交给第 8 步（doc-facts），
+    // 与 `npm test` 等价，**外加** JSON reporter：把用例数交给第 6 步（doc-facts），
     // 于是整条链只需要跑**一次** vitest（以前 doc-facts 会再跑一次：慢约 5 s，
     // 而且正是那一次在负载高时偶发取不到真值、把 G6 判红）。
     // `--reporter=default` 保留人看的输出，故这一步的观感与 `npm test` 一致。
@@ -141,13 +206,34 @@ const STEPS = [
     resultsFile: TEST_RESULTS
   },
   {
-    step: 5, gate: 'G4', label: 'CLI 集成断言',
+    step: 5, gate: 'G6', label: '文档数字与版本一致',
+    cmd: 'node scripts/doc-facts.js --check', shown: '`node scripts/doc-facts.js --check`',
+    covers: '文档数字与真值一致、版本号四处一致',
+    // 20 s：正常情况（采用链上用例数）约 0.7 s；**交接失效退化为自跑 vitest 时约 9.2 s**
+    // 仍容得下，但更严重的退化会被抓住。
+    budgetMs: 20000,
+    useUnitTests: true // 由第 4 步传入用例数，省掉这里的 vitest 重跑
+  },
+  {
+    step: 6, gate: 'G7', label: '生成物未过期',
+    cmd: null, shown: '同上（重算比对）',
+    covers: '生成物是否过期（`docs/CLI.md` 与 registry 一致）',
+    budgetMs: 0 // 与 G6 同一次调用，单独不占预算
+  },
+  {
+    step: 7, gate: 'G4', label: 'CLI 集成断言',
     cmd: 'node scripts/cli-integration.js', shown: '`node scripts/cli-integration.js`',
     covers: '全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理）',
     budgetMs: 30000
   },
   {
-    step: 6, gate: 'G5', label: '冒烟（Electron 无头）',
+    step: 8, gate: 'G2', label: '数据校验',
+    cmd: 'node cli/mm-cli.js validate-all', shown: '`node cli/mm-cli.js validate-all`',
+    covers: '全部项目结构 + 悬挂链接 + 环',
+    budgetMs: 15000
+  },
+  {
+    step: 9, gate: 'G5', label: '冒烟（Electron 无头）',
     cmd: 'npm run smoke', shown: '`npm run smoke`',
     covers: '渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**',
     // 预算调整史（每次都带实测依据 ✓）：
@@ -157,27 +243,6 @@ const STEPS = [
     //     冒烟模式改 `setNoSpawn(true)`（不孵化、也不接管用户的服务 ✓）后只要 11.5s ✓
     //     ⇒ 预算收回 150s（仍是实测的 2 倍余量）。
     budgetMs: 150000
-  },
-  {
-    step: 7, gate: 'G2', label: '数据校验',
-    cmd: 'node cli/mm-cli.js validate-all', shown: '`node cli/mm-cli.js validate-all`',
-    covers: '全部项目结构 + 悬挂链接 + 环',
-    budgetMs: 15000
-  },
-  {
-    step: 8, gate: 'G6', label: '文档数字与版本一致',
-    cmd: 'node scripts/doc-facts.js --check', shown: '`node scripts/doc-facts.js --check`',
-    covers: '文档数字与真值一致、版本号四处一致',
-    // 20 s：正常情况（采用链上用例数）约 0.7 s；**交接失效退化为自跑 vitest 时约 9.2 s**
-    // 仍容得下，但更严重的退化会被抓住。
-    budgetMs: 20000,
-    useUnitTests: true // 由第 4 步传入用例数，省掉这里的 vitest 重跑
-  },
-  {
-    step: 9, gate: 'G7', label: '生成物未过期',
-    cmd: null, shown: '同上（重算比对）',
-    covers: '生成物是否过期（`docs/CLI.md` 与 registry 一致）',
-    budgetMs: 0 // 与 G6 同一次调用，单独不占预算
   }
 ];
 
@@ -207,7 +272,7 @@ function checkBudgets(results, totalBudgetMs) {
 function main() {
   const results = [];
   let failed = null;
-  let unitTestsFromChain = null; // 第 4 步产出、交给第 8 步（省一次 vitest 重跑）
+  let unitTestsFromChain = null; // 第 4 步产出、交给第 6 步（省一次 vitest 重跑）
 
   console.log('== 验证链（npm run verify）==');
   // 交接面留痕（读）：新接手的 AI 最想知道的一件事是"上一次全链到底绿没绿"
@@ -258,8 +323,8 @@ function main() {
     if (resFile) {
       unitTestsFromChain = readUnitTests(resFile);
       console.log(unitTestsFromChain === null
-        ? '   （未能读到用例数 —— 第 8 步会自己再跑一次 vitest，属可接受的降级）'
-        : '   （用例数 ' + unitTestsFromChain + '，已交给步骤 8，省去重跑一次 vitest）');
+        ? '   （未能读到用例数 —— 第 6 步会自己再跑一次 vitest，属可接受的降级）'
+        : '   （用例数 ' + unitTestsFromChain + '，已交给步骤 5（G6），省去重跑一次 vitest）');
     }
     console.log('');
     if (code !== 0) { failed = { step: s, code }; break; } // 与原 `&&` 链一致：首败即停
@@ -289,11 +354,13 @@ function main() {
 
   if (failed) {
     console.error('验证失败：步骤 ' + failed.step.step + '（' + failed.step.gate + '）退出码 ' + failed.code);
-    writeLastVerify({
+    const run = {
       finishedAt: new Date().toISOString(), ok: false, failedGate: failed.step.gate,
       totalMs: chk.totalMs, version: pkgVersion(),
       steps: results.map((r) => ({ gate: r.gate, ms: r.ms, code: r.code }))
-    });
+    };
+    writeLastVerify(run);      // 交接面：只剩一条（供下一次运行开头报"上次全链"）
+    writeVerifyHistory(run, results);   // 历史：追加一条（可疑的偶发 / 变慢，事后靠它判）
     backupHint();
     process.exitCode = 1;
     return;
@@ -321,11 +388,13 @@ function main() {
 
   console.log('验证通过（' + chk.ranCount + ' 步 / ' + fmt(chk.totalMs)
     + '，预算内）');
-  writeLastVerify({
+  const run = {
     finishedAt: new Date().toISOString(), ok: true, failedGate: null,
     totalMs: chk.totalMs, version: pkgVersion(),
     steps: results.map((r) => ({ gate: r.gate, ms: r.ms, code: r.code }))
-  });
+  };
+  writeLastVerify(run);      // 交接面：只剩一条（供下一次运行开头报"上次全链"）
+  writeVerifyHistory(run, results);   // 历史：追加一条（可疑的偶发 / 变慢，事后靠它判）
   backupHint();
 }
 
@@ -370,6 +439,8 @@ function backupHint() {
 module.exports = {
   STEPS, TOTAL_BUDGET_MS, TEST_RESULTS, checkBudgets, readUnitTests,
   LAST_VERIFY, readLastVerify, checkBackupFreshness, BACKUP_DIRS,
+  // 验证历史（追加入口 + 组记录那一半是纯函数，便于单测）
+  VERIFY_HISTORY, buildVerifyHistory, writeVerifyHistory,
   // 兜底提示的两半：取数（I/O）与组文（纯函数）分开，便于单测组文那一半
   gitCommitCount, backupHintText
 };

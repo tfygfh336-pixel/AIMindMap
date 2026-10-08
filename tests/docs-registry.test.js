@@ -335,6 +335,21 @@ describe('docs-registry-check：代码入档 / 归档横幅 / 工作目录状态
     } finally { clean(); }
   });
 
+  it('横幅检查是**递归**的：归档子目录里的旧稿同样必须带横幅（旧实现只扫一层）', () => {
+    const [root, clean] = fakeProject({ 'docs/archive/sub/OLD.md': '# 旧稿没有横幅\n\n正文\n' });
+    try {
+      const hits = checker.checkArchiveBanners(root);
+      expect(hits.some((h) => h.kind === 'banner' && h.rel === 'docs/archive/sub/OLD.md')).toBe(true);
+    } finally { clean(); }
+  });
+
+  it('归档子目录里带横幅 → 不报（递归不等于一律报红）', () => {
+    const [root, clean] = fakeProject({ 'docs/archive/sub/OLD.md': '> 历史归档（2026-09）：不是现状\n\n正文\n' });
+    try {
+      expect(checker.checkArchiveBanners(root)).toEqual([]);
+    } finally { clean(); }
+  });
+
   it('.review 的工作目录缺 README（没声明死活）必红 → workdir；散落文件豁免', () => {
     const [root, clean] = fakeProject(Object.assign({}, base, {
       '.review/20260101-有状态/README.md': '状态：在飞\n',
@@ -416,12 +431,31 @@ describe('docs-registry-check：契约覆盖 / 章节编号 / 交接提示', () 
 });
 
 describe('docs-registry-check：并发改动检测（多会话场景）', () => {
+  /** 某目录下所有文件的 mtimeMs 最大值（取"文件系统时钟"当基准用；见下面那条用例的注释） */
+  function maxMtimeMsUnder(dir) {
+    let newest = 0;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) newest = Math.max(newest, maxMtimeMsUnder(abs));
+      else if (e.isFile()) newest = Math.max(newest, fs.statSync(abs).mtimeMs);
+    }
+    return newest;
+  }
+
   it('recentlyChanged：窗口内的文件被列出，窗口外的与未来时间戳都不算', () => {
     const [root, clean] = fakeProject({
       'SKILL.md': '# s', 'README.md': '# r', 'CHANGELOG.md': '# c', 'docs/ARCHITECTURE.md': '# a'
     });
     try {
-      const now = Date.now();          // 取在建档**之后**：否则刚建的文件 mtime 会比 now 晚，被"未来时间戳"守卫排除
+      // 基准取**文件系统时钟**：所有文件建完之后，取它们 mtimeMs 的最大值再加安全余量。
+      // 为什么不能用 `Date.now()` 当基准（2026-09-30 实测的真缺陷，偶发假红）：
+      //   mtimeMs 是**亚毫秒**精度（NTFS 100 ns），`Date.now()` 只有整毫秒 ⇒ 刚写出来的文件
+      //   mtimeMs 可能略大于 now，于是被"未来时间戳不算最近改动"的守卫排除掉，
+      //   这个用例偶发红成 `expected ['SKILL.md'] to include 'docs/ARCHITECTURE.md'`。
+      //   +1000ms 是安全余量（窗口 10 分钟，加 1 秒不影响"窗口内/外"的判定）。
+      // 这是修一条真实发生过的偶发假红，不是放宽标准：
+      //   真正的时钟偏移仍由后面"未来 1 小时"那条断言守着，它必须继续被排除。
+      const now = maxMtimeMsUnder(root) + 1000;
       // 把其中一份的 mtime 设成 30 分钟前、另一份设成 1 天前
       const old = path.join(root, 'README.md');
       fs.utimesSync(old, new Date(now - 30 * 60000), new Date(now - 30 * 60000));
@@ -459,11 +493,63 @@ describe('docs-registry-check：登记表由文档头部元信息生成（T5）'
   ].join('\n');
   const MARK = (table) => '<!-- BEGIN:registry-table（勿手改）-->\n\n' + table + '\n<!-- END:registry-table -->';
 
-  it('parseDocHeader：解析四行元信息；缺 层/作用 视为无效', () => {
+  it('parseDocHeader：解析四行元信息；**四行缺一即为不合格**（旧实现只强制 层/作用）', () => {
     const ok = checker.parseDocHeader('# t\n\n' + hdr('契约', '命令参考', '架构理由', '手写'));
     expect(ok).toMatchObject({ layer: '契约', purpose: '命令参考', notWrite: '架构理由', update: '手写' });
     expect(checker.parseDocHeader('# t\n\n<!-- registry\n作用: 只有作用\n-->')).toBeNull();
     expect(checker.parseDocHeader('# t\n\n没有元信息')).toBeNull();
+    // 新增：有块但缺行 ⇒ 也不合格，且**点名缺哪几行**（报错要说准，别把"缺两行"说成"没有块"）
+    const twoKeys = '# t\n\n<!-- registry\n层: 契约\n作用: 只要两行\n-->';
+    expect(checker.parseDocHeader(twoKeys)).toBeNull();
+    expect(checker.parseHeaderBlock(twoKeys).missing).toEqual(['不该写', '更新方式']);
+    expect(checker.REQUIRED_HEADER_KEYS).toEqual(['层', '作用', '不该写', '更新方式']);
+  });
+
+  it('checkLayerValues：`层` 必须在取值表内（旧实现只把 LAYER_ORDER 用于排序 ⇒ 非法值无人管）', () => {
+    const m = (layer) => ({ rel: 'docs/A.md', meta: { layer, purpose: 'x', notWrite: 'y', update: 'z' } });
+    expect(checker.checkLayerValues([m('乱写')]).map((p) => p.kind)).toEqual(['layer']);
+    expect(checker.checkLayerValues([m('契约')])).toEqual([]);
+    expect(checker.checkLayerValues([{ rel: 'docs/B.md', meta: null, state: 'no-header' }])).toEqual([]);  // 没元信息的不重复报
+  });
+
+  it('collectDocHeaders：**递归**扫 docs/ 子目录，但跳过归档族（归档不逐份要求元信息）', () => {
+    const [root, clean] = fakeProject({
+      'SKILL.md': '# s\n\n' + hdr('入口', 'x', 'y', '手写'),
+      'README.md': '# r\n\n' + hdr('入口', 'x', 'y', '手写'),
+      'CHANGELOG.md': '# c\n\n' + hdr('记录', 'x', 'y', '手写'),
+      'docs/DEEP.md': '# d\n\n' + hdr('设计', 'x', 'y', '手写'),
+      'docs/sub/deep.md': '# 子目录里没有元信息\n',
+      'docs/archive/OLD.md': '# 归档旧稿（跳过）\n'
+    });
+    try {
+      const entries = checker.collectDocHeaders(root);
+      const rels = entries.map((e) => e.rel);
+      expect(rels).toContain('docs/sub/deep.md');                       // 旧实现完全看不到它
+      expect(entries.find((e) => e.rel === 'docs/sub/deep.md').state).toBe('no-header');
+      expect(rels).not.toContain('docs/archive/OLD.md');                // 归档族被跳过
+      expect(entries.every((e) => typeof e.state === 'string')).toBe(true);   // 每份都带判定状态
+    } finally { clean(); }
+  });
+
+  it('受管文档在磁盘上不存在 ⇒ state=missing（报错说"文件不存在"，不误报成"缺元信息块"）', () => {
+    const [root, clean] = fakeProject({ 'README.md': '# r\n\n' + hdr('入口', 'x', 'y', '手写') });
+    try {
+      const entries = checker.collectDocHeaders(root);
+      expect(entries.find((e) => e.rel === 'SKILL.md').state).toBe('missing');
+      expect(checker.headerProblemLine(entries.find((e) => e.rel === 'SKILL.md'))).toContain('不存在');
+      expect(checker.headerProblemLine({ rel: 'x', state: 'partial', gaps: ['不该写'] })).toContain('缺 不该写');
+    } finally { clean(); }
+  });
+
+  it('生成模式与检查模式一致：有不合格文档时 writeRegistryTable 必须拒绝（返回 false）', () => {
+    const [root, clean] = fakeProject({
+      'SKILL.md': '# s\n\n' + hdr('入口', 'x', 'y', '手写'),
+      'docs/ARCHITECTURE.md': '# a\n\n' + hdr('设计', 'x', 'y', '手写'),
+      'docs/BAD.md': '# 两行元信息\n\n<!-- registry\n层: 治理\n作用: 只有两行\n-->\n'
+    });
+    try {
+      expect(checker.writeRegistryTable(root)).toBe(false);             // 拒绝生成（旧实现会写默认值放过）
+    } finally { clean(); }
   });
 
   it('renderRegistryTable：按层排序，且归档族由两行前缀覆盖（不需要逐份声明）', () => {

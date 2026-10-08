@@ -228,6 +228,8 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `dsh-resident-host.js` | 上面那条用的一次性宿主进程（被 `dsh-resident.js` 拉起） |
 | `dsh-assembly-probe.js` | 回答"某插件 id 能不能被 profile patch 打到"（读运行时合成结果，不看装配文件） |
 | `dsh-token-ratio.js` | 实测 DSH token 启发式的真实偏差（诊断用，非门禁） |
+| `dsh-embedded-overrides.js` | **内置 DSH"本地覆盖值"的渲染器**（`render [--dry-run]` / `check`，`--home` 指向 dsh-home）：把 `<dsh-home>\.embedded-overrides.json` 里的**陈述式**差异**幂等**渲染进 `profiles\web\cordis.patch.yml`（白名单 4 个条目，白名单外的键**报错退出**、不猜；写盘前先复制 `.bak-<时间>`）。**为什么需要**：那份 patch 是**生成物**，手改态既不可复现、事后也无人知道曾改过 —— 实测已发生一次（台账 A3：手改写的 `workspace-write` 被后来重跑导入冲掉，文件又变回 `full-access-review`）✗；写成 overrides 才能"重放一次就回到同一状态" ✓ |
+| `dsh-embedded-check.js` | **内置 DSH 升级后自检**（只读，不起 Electron；`--home` / `--json`）：10 项三态 `PASS/FAIL/UNKNOWN`（**UNKNOWN ≠ 通过** ✗），对照真值取自迁移回执 `receipt-migrate-*.json` 与它指向的 `packageDir\manifest.json`。**为什么需要**：内置实例的现状**只存在于 `%APPDATA%` 的现网状态里**，换运行包/重跑导入后"哪些改动还在"没有别的机械判据（台账 A3 就是靠它才发现手改已丢）；它读的是机器本地状态，**故意不进 verify**（会破坏"验证链可移植"这条前提）⇒ 它是 skill `embedded-dsh-maintain` 的必跑项 ✓ |
 
 ## 3. 数据流
 

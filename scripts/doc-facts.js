@@ -695,7 +695,11 @@ if (require.main === module) main();
  */
 function parseVitestCount(text) {
   const s = String(text || '').replace(/\u001b\[[0-9;]*m/g, '');   // 去 ANSI 色码
-  const line = /Tests\s+([^\n]*)/.exec(s);
+  // ⚠️ 必须**行首锚定 + 取最后一条**：vitest 有失败用例时会先打印测试树，
+  //    测试名里也可能出现 "Tests …"（实测撞进过：解析成 null ⇒ facts:write 拒绝生成 ✗）。
+  //    摘要行永远是最后一条 ✓。返回结构与 Array.prototype.exec 兼容（[0]=整行, [1]=捕获组）。
+  const all = [...s.matchAll(/^\s*Tests\s+([^\n]*)$/gm)];
+  const line = all.length ? all[all.length - 1] : null;
   if (!line) return null;
   const total = /\((\d+)\)/.exec(line[1]);        // `… (592)` ← 总数（**要这个**）
   if (total) return Number(total[1]);

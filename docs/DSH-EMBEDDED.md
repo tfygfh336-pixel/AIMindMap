@@ -23,7 +23,7 @@
 |---|---|---|
 | **数据侧** | `%APPDATA%\AI MindMap\dsh-home\`（profiles/web、.agent-presets、skills、storages、sessions） | **保留** ✓（换包不碰 dsh-home） |
 | **应用侧** | 本仓库代码（`main-dsh-sidebar.js`、`main.js`、`src/control.js`…）与**注入到内核页面的** CSS/JS | **保留** ✓（在 git 里），但**有效性**可能静默失效 ✗（依赖内核私有 DOM/文案） |
-| **运行包侧** | `vendor\dsh\`（自带 node + DSH + pnpm，585 MB） | **全丢** ✗ —— 整体替换。**规矩：一律不 patch** ✓（哈希清单 `npm run dsh:maint -- verify` 会判红） |
+| **运行包侧** | `vendor\dsh\`（自带 node + DSH + pnpm，585 MB（快照，dsh 0.1.7-rc.2）） | **全丢** ✗ —— 整体替换。**规矩：一律不 patch** ✓（哈希清单 `npm run dsh:maint -- verify` 会判红） |
 
 > ⚠️ `docs/ARCHITECTURE.md` 里"换包流程**永不触碰** dsh-home（用户数据）"这句话
 > **只对换包流程成立** ✓。**插件/配置导入是另一条受控通道**，它就是往 dsh-home 写东西 ✓ ——
@@ -36,8 +36,8 @@
 | # | 改动 | 现状证据 | 升级运行包 | 重跑导入 | 怎么重建 / 核对 |
 |---|---|---|---|---|---|
 | A1 | 人设 `liangshen`（5 文件）写入 `.agent-presets\` | 回执 `receipt-migrate-ed160722fe48.json`（deployed 5 项 created） | 保留 ✓ | **会被源侧覆盖** ✗ | `dsh-migrate-in` 配置层重放；核对：文件数 + 哈希 |
-| A2 | 插件载荷：`profiles\web\node_modules` **7543 文件 / 199.02 MB** + `config\rules.yaml` + `cordis.patch.yml` + `package.json`（8 bundle）+ pnpm lock/workspace；合计 **7553 文件 / 199.21 MB** | 回执 `receipt-migrate-45242730bc15.json` + `packages\migrate-45242730bc15\manifest.json`（I1–I4 全 ✓） | 保留 ✓ | **会被源侧覆盖** ✗ | `dsh-migrate-in` 载荷层重放；核对：文件数/字节**容差 0** |
-| A3 | **迁移后手工改过 `cordis.patch.yml`**（16:37:48，晚于 apply 15 分钟）：`defaultPreset` `full-access-review` → **`workspace-write`** + 4 行沙箱注释 | 与迁移包 payload 逐字节不同（差 9 行）；与全局 `~/.dsh` 差 15 行 | 保留 ✓ | **会丢** ✗✗ | **唯一不可复现的数据侧改动** ⇒ 见 §3-②的治理方案（overrides 渲染） |
+| A2 | 插件载荷：`profiles\web\node_modules` **7543 文件 / 199.02 MB** + `config\rules.yaml` + `cordis.patch.yml` + `package.json`（8 bundle）+ pnpm lock/workspace；合计 **7553 文件 / 199.21 MB**（快照，dsh 0.1.7-rc.2） | 回执 `receipt-migrate-45242730bc15.json` + `packages\migrate-45242730bc15\manifest.json`（I1–I4 全 ✓） | 保留 ✓ | **会被源侧覆盖** ✗ | `dsh-migrate-in` 载荷层重放；核对：文件数/字节**容差 0** |
+| A3 | **迁移后手工改过 `cordis.patch.yml`**（16:37:48，晚于 apply 15 分钟）：`defaultPreset` `full-access-review` → **`workspace-write`** + 4 行沙箱注释 | 改完当时与迁移包 payload 逐字节不同（差 9 行）；与全局 `~/.dsh` 差 15 行。**2026-09-30 晚复核（实测）：该键已又变回 `full-access-review`** ⇒ 那次手改**已经被后来的重跑冲掉** ✓ —— 这就是"手工态必丢"的直接证据（不是推测） | 保留 ✓ | **会丢** ✗✗ | 唯一不可复现的数据侧改动 ⇒ **现在只许**把值写进 `dsh-home\.embedded-overrides.json` 再 `render`（§3-② / B9）✓；核对 = 自检第 6 项（`overrides check`） |
 | A4 | 内置实例**自建**物（非我们的改动，但要知道边界）：`profiles\web\cordis.yml`（空入口模板）、`hub.log`、根下 `storages/ sessions/ dsh-usage/ task-board/ skin-center/`、`skills\`（应用侧写入）、`node_modules\@deepseek-ai.stale-*`（升级残留） | `dsh-service.log` 有成功启动 | 保留 ✓ | 明确**不迁** ✓（含凭据 `.credentials.yaml`，有意不迁 ✓） | 无需动作；别把它们当"配置"迁移 ✗ |
 
 ### B. 应用侧（本仓库代码 / 注入）
@@ -52,6 +52,8 @@
 | B6 | **只读诊断 `dsh-status`**（可见性/总占宽/窄宽/溢出/`rightbarOpen`/`autoWide`/`rightbarWatcher`；**白名单输出，绝不含 url/token**） | `docs/CLI.md`；`AI-GUIDE.md` §4.0 | 保留 ✓ | **升级后自检的主要仪器** ✓ |
 | B7 | **指针 skill 注入**：应用孵化时写 `dsh-home\skills\ai-mind-map\SKILL.md`（幂等） | `src/dsh-sidebar-skill.js` | 保留（启动按需重写） ✓ | 文件存在 + 内容里的真源路径正确 |
 | B8 | **内核事实进文档**（本台账 + `AI-GUIDE.md` §4.0 + `ARCHITECTURE.md` 侧栏段 + CHANGELOG） | 上述文件 | 保留 ✓；**756/900 等数字易腐** ✗ | 升级后重读内核源码并更新本台账 |
+| B9 | **本地覆盖"可重放"**（治理 A3 的那条机制，已落地）：`dsh-home\.embedded-overrides.json`（陈述式差异，现在只有 `permission.defaultPreset` 一条）+ 渲染器 `scripts\dsh-embedded-overrides.js`（`render [--dry-run]` / `check`；白名单 4 个条目，白名单外**报错退出**；写盘前备份 `.bak-<时间>`；幂等） | §3-②；`tests/dsh-embedded-overrides.test.js`（锁"连跑两次 sha256 不变"与白名单边界） | 代码保留 ✓；overrides 在 dsh-home 里 ⇒ 按 A 类**保留** ✓ | **升级 / 重跑导入之后要跑它**：`node scripts/dsh-embedded-overrides.js render`（把手改态渲染回去）→ `node scripts/dsh-embedded-overrides.js check`（非 0 = 没生效）。自检第 6 项就是这次 `check` ✓ |
+| B10 | **升级后自检**（只读、不起 Electron、10 项三态）：`scripts\dsh-embedded-check.js`（`--home` / `--json`）——§4 那张表就是它的 10 项 | `tests/dsh-embedded-check.test.js`（锁真实字段名 + `UNKNOWN ≠ PASS` + `--json` 必须是合法 JSON 数组） | 代码保留 ✓；判据依赖的字段名是**迁移侧**的（回执 + 投递包 `manifest.json`）⇒ 迁移侧改结构会让它退化 ✗ | **换运行包 / 重跑导入之后必跑**：`node scripts/dsh-embedded-check.js --json`。真值来源 = 回执 `receipt-migrate-*.json` **及其指向的** `packageDir\manifest.json`（第 3 项比 bundles、第 4 项比 `files{}` 的文件数/字节）。**UNKNOWN ≠ 通过** ✗ |
 
 ### C. 运行包侧（vendor\dsh）
 
@@ -99,7 +101,7 @@
 | R1 | 目标机 DSH 版本不同 | 插件版本闭包不成立（现有 `dsh-closure` 阻断）；"只导配置层"的降级路径没人验证过 |
 | R2 | 原生依赖跨机器 | payload 含 `sharp` / `node-pty` / `koffi` / `@img/*`；内置 pnpm 不认 allowBuilds ⇒ 原生构建会被**静默跳过** ⇒ 只能物理复制本机 ABI 的二进制；ARM64 可能不可用 |
 | R3 | **插件侧没有许可证门禁** ✗ | Node 侧有"缺许可证直接失败"的硬约束 ✓，但 `@linxin666/*` 等插件能否随应用分发**未知** ⇒ 对外分发前需要一条门禁 |
-| R4 | 体积与断网 | payload 199 MB + 运行包 585 MB；断网时只能走 zip 包 |
+| R4 | 体积与断网 | payload 199 MB、运行包 585 MB（快照，dsh 0.1.7-rc.2）；断网时只能走 zip 包 |
 | R5 | 手工态（A3） | 不治理，别人的机器上会重演 |
 | R6 | 内核私有依赖 ⇒ 静默失效 | 观察器/窄宽 CSS 都依赖内核 DOM 与文案；变了**不报错** ✗ ⇒ 靠 `dsh-status` + 自检第 9 项 |
 | R7 | 配置与状态路径混放 | 迁移靠**路径白名单**而非内容分类 ⇒ 加新插件类型容易漏 |

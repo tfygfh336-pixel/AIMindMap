@@ -17,7 +17,7 @@
 |------|----|------|
 | CLI 命令数 | 50 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 35 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 657 用例 / 37 文件 | `tests/*.test.js`（vitest） |
+| 单元测试 | 686 用例 / 39 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 193 | `scripts/cli-integration.js` |
 | 冒烟断言 | 136 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
@@ -28,7 +28,7 @@
 > **执行顺序、每步命令与耗时预算的唯一定义在 `scripts/verify.js`**；本表由它渲染，勿手改。
 
 ```bash
-npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件自洽 → 单元测试 → CLI 集成断言 → 冒烟（Electron 无头） → 数据校验 → 文档数字与版本一致（合计预算 180s）
+npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件自洽 → 单元测试 → 文档数字与版本一致 → CLI 集成断言 → 数据校验 → 冒烟（Electron 无头）（合计预算 180s）
 ```
 
 每步可单独运行；下表即 `docs/RULES.md` 的**门禁 G1–G9**，顺序与 verify 链一致：
@@ -39,11 +39,11 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 | 2 | G8 | `npm run check:docs` | 10s | 文档登记与家门：表外文档 / 散落文档 / 工程根与顶层目录乱放 / 悬挂登记（登记表 = `docs/ARCHITECTURE.md` §5；工作产物区 = `.review/`） |
 | 3 | G9 | `npm run check:rules` | 10s | 规则文件自洽：声明条数 == 表格行数 / 表格未被引用块或空行打断 / 编号引用闭合 / 实现列点名的脚本存在 |
 | 4 | G3 | `npm test`（附加 JSON reporter 把用例数交给 G6，省一次 vitest 重跑） | 60s | 共享核心 `src/` 各模块（含 data-store 原子写、BOM 容错与并发版本闸门） |
-| 5 | G4 | `node scripts/cli-integration.js` | 30s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |
-| 6 | G5 | `npm run smoke` | 150s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离** |
-| 7 | G2 | `node cli/mm-cli.js validate-all` | 15s | 全部项目结构 + 悬挂链接 + 环 |
-| 8 | G6 | `node scripts/doc-facts.js --check` | 20s | 文档数字与真值一致、版本号四处一致 |
-| 9 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |
+| 5 | G6 | `node scripts/doc-facts.js --check` | 20s | 文档数字与真值一致、版本号四处一致 |
+| 6 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |
+| 7 | G4 | `node scripts/cli-integration.js` | 30s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |
+| 8 | G2 | `node cli/mm-cli.js validate-all` | 15s | 全部项目结构 + 悬挂链接 + 环 |
+| 9 | G5 | `npm run smoke` | 150s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离** |
 
 > **只改了某一条冒烟断言时不必跑全链**：`SMOKE_ONLY=<文件前缀> npm run smoke`
 > （等价写法 `electron . --smoke-only=<文件前缀>`）只跑选中的那几个断言文件，
@@ -91,8 +91,8 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 
 | 事实 | 值 | 来源 |
 |------|----|------|
-| 受管文档（登记表登记数） | 12 份 | `docs/ARCHITECTURE.md` §5 表 |
-| 登记表分层的条目分布 | 入口 2 · 治理 1 · 契约 4 · 设计 2 · 记录 3 · 归档 2 | 同上（含归档族的前缀行） |
+| 受管文档（登记表登记数） | 13 份 | `docs/ARCHITECTURE.md` §5 表 |
+| 登记表分层的条目分布 | 入口 2 · 治理 1 · 契约 4 · 设计 3 · 记录 3 · 归档 2 | 同上（含归档族的前缀行） |
 | 归档族 | `docs/archive/` 6 份 · `docs/changelog/` 14 份 | 磁盘现场统计（只增不改，不逐份登记） |
 | 工作产物区（`.review/`） | `20260925-scripts草稿清理` → 已收口 · `20260925-集成断言进程内化` → 已收口 · `20260926-文档架构图` → 已收口 · `20260926-静默闭环2-5` → 在飞 · `20260929-多路并发编辑` → 在飞 | 各目录的 `README.md` |
 | 上次全链结果 | 见 `.review/last-verify.json`（`npm run verify` 与 `npm run check:docs` 都会打印当前值） | 每次 `npm run verify` 写入 |

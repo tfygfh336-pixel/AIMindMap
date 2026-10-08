@@ -16,15 +16,25 @@
  * 文档冗余不是靠"提醒作者注意"能治的（与 G6 防的数字漂移同一种病：
  * 同一事实多副本 + 无单源），所以按本项目一贯做法**把约定变成门禁**。
  *
- * 判定：**清单以 `checkRegistry()` 里的 ①…⑬ 标记为准**，本节不再写死条数。
+ * 判定：**清单以 `checkRegistry()` 里的 ①…⑭ 标记为准**，本节不再写死条数。
  *   （写死过一次：加到第 13 条时只更新了架构文档一处，于是同一个门禁的条数在
  *    **四个地方四种说法**（规则文件 12 / 架构文档 13 / 本注释"三条" / 代码 13）——
  *    这正是本工程反复修的那类病。现有两道防线：`RULES.md` §2 的 G8 行声明的条数由 **G9**
  *    与本文件的标记数机械对齐；本注释只留"看标记"的指路。）
- * 位置：①…⑬ 十三个判定都在 `checkRegistry()` 里（工程根 / 登记 / 家门 / 悬挂 /
+ * 位置：①…⑭ 十四个判定都在 `checkRegistry()` 里（工程根 / 登记 / 家门 / 悬挂 /
  *   根与顶层白名单 / 归档重复 / 交接死指针 / 代码入档 / 归档横幅 / 工作目录状态 /
- *   导航可达 / 契约覆盖 / 章节编号 / 登记表一致性）。任一不满足即 exit 1。
+ *   导航可达 / 契约覆盖 / 章节编号 / 登记表一致性 / 层取值表）。任一不满足即 exit 1。
  *   （**标记必须唯一** —— 实测曾有两个 ①，导致"数一遍"得到错误的条数。）
+ * 2026-09-29 补三处"不严"（复核报来的三处，全部复核属实，另有两处同源）：
+ *   · **元信息块要求四行齐备** —— 原先只强制 `层`/`作用`，缺 `不该写`/`更新方式` 也能过，
+ *     且渲染登记表时用 `|| '—'` / `|| '手写'` **静默补默认值**，于是"缺两行"被表格掩盖。
+ *     现在缺行 = `partial`（与"没有块"分开报），生成模式同样拒绝。
+ *   · **层取值表真正判红（新的判定⑭）** —— 原先 `LAYER_ORDER` 只用于排序，非法层被排到末尾就没人管，
+ *     而 `REFERENCE`/`SKILL B3` 一直声称"值必须在取值表内"。
+ *   · **归档横幅与元信息收集都改成递归** —— 原先只扫一层，`docs/<子目录>/*.md` 既不会被告知要补元信息、
+ *     也没法合法进表（手工加进 §5 反而被"表过期"判红）：报错指了一条**走不通的路**。
+ *   另两条同源加固：**读失败不再静默 `return`**（采不到真值＝红）；`--list` 有不合格文档时**置失败退出码**
+ *   （否则挂进 CI 会假绿）。
  *
  * 用法：
  *   node scripts/docs-registry-check.js         # 门禁（exit 0/1）
@@ -182,11 +192,15 @@ function checkArchiveNoDuplicate(root) {
   const archDir = path.join(root, 'docs', 'changelog');
   if (!fs.existsSync(mainPath) || !fs.existsSync(archDir)) return problems;
   const main = fs.readFileSync(mainPath, 'utf8');
-  fs.readdirSync(archDir).filter((f) => /\.md$/i.test(f)).forEach((f) => {
-    const version = f.replace(/\.md$/i, '');
+  // 递归：归档族里若再分子目录，重复段同样要抓（原先只扫一层）
+  const walk = (abs, rel) => fs.readdirSync(abs, { withFileTypes: true }).flatMap((e) =>
+    (e.isDirectory() ? walk(path.join(abs, e.name), rel + '/' + e.name)
+      : /\.md$/i.test(e.name) ? [{ file: e.name, rel: rel + '/' + e.name }] : []));
+  walk(archDir, 'docs/changelog').forEach(({ file, rel }) => {
+    const version = file.replace(/\.md$/i, '');
     const re = new RegExp('^## \\[' + version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\]', 'm');
     if (re.test(main)) {
-      problems.push({ kind: 'duplicate', rel: 'docs/changelog/' + f,
+      problems.push({ kind: 'duplicate', rel,
         msg: 'CHANGELOG.md 里仍留着 ## [' + version + '] 段 —— 同一段历史两处副本；'
           + '归档后应从主文件删除（跑一次 release 的滚动，或手动删该段）' });
     }
@@ -409,18 +423,34 @@ function handoverNotice(root) {
 
 function checkArchiveBanners(root) {
   const problems = [];
-  const dir = path.join(root, 'docs', 'archive');
-  if (!fs.existsSync(dir)) return problems;
-  fs.readdirSync(dir).filter((f) => /\.(md|html?)$/i.test(f)).forEach((f) => {
-    let head = '';
-    try { head = fs.readFileSync(path.join(dir, f), 'utf8').split('\n').slice(0, 8).join(' '); }
-    catch (e) { return; }
-    if (!BANNER_RE.test(head)) {
-      problems.push({ kind: 'banner', rel: 'docs/archive/' + f,
-        msg: '归档文档开头没有「历史」横幅 —— 它会被 grep 到，接手者可能当成现状；'
-          + '请在开头加一行（HTML 用注释）：`> ⚠️ 历史归档（YYYY-MM）：不是现状、勿据此改动`' });
+  const walk = (abs, rel) => {
+    let items;
+    try { items = fs.readdirSync(abs, { withFileTypes: true }); }
+    catch (e) {
+      problems.push({ kind: 'banner', rel,
+        msg: '归档目录读不出来（' + (e.code || '?') + '）—— **采不到真值＝红**，不许静默跳过' });
+      return;
     }
-  });
+    for (const e of items) {
+      const r = rel + '/' + e.name;
+      if (e.isDirectory()) { walk(path.join(abs, e.name), r); continue; }     // 递归：子目录里的旧稿也是归档
+      if (!/\.(md|html?)$/i.test(e.name)) continue;
+      let head;
+      try { head = fs.readFileSync(path.join(abs, e.name), 'utf8').split('\n').slice(0, 8).join(' '); }
+      catch (err) {
+        problems.push({ kind: 'banner', rel: r,
+          msg: '归档文档读不出来（' + (err.code || '?') + '）—— **采不到真值＝红**，不许静默跳过' });
+        continue;
+      }
+      if (!BANNER_RE.test(head)) {
+        problems.push({ kind: 'banner', rel: r,
+          msg: '归档文档开头没有「历史」横幅 —— 它会被 grep 到，接手者可能当成现状；'
+            + '请在开头加一行（HTML 用注释）：`> ⚠️ 历史归档（YYYY-MM）：不是现状、勿据此改动`' });
+      }
+    }
+  };
+  const dir = path.join(root, 'docs', 'archive');
+  if (fs.existsSync(dir)) walk(dir, 'docs/archive');
   return problems;
 }
 
@@ -482,6 +512,15 @@ const WATCH_GLOBS = [
   'SKILL.md', 'README.md', 'CHANGELOG.md', 'docs', 'scripts', 'src', 'cli', 'renderer', 'tests'
 ];
 const RECENT_WINDOW_MIN = 10;
+/** "未来时间戳"守卫的**容差**（毫秒）。
+ *  为什么需要：文件系统的 `mtimeMs` 是**亚毫秒**精度（NTFS 100 ns），而调用方常拿 `Date.now()`
+ *  当基准（整毫秒）。刚刚写出来的文件，其 `mtimeMs` 可以**略大于** `now`（实测差 < 1 ms）——
+ *  于是它会被下面的守卫当成"未来时间戳"排除掉，报出的是**假红**：
+ *  2026-09-30 本工程 `tests/docs-registry.test.js` 偶发失败，
+ *  `expected ['SKILL.md'] to include 'docs/ARCHITECTURE.md'`，根因就是这个（657 个用例里只它红）。
+ *  这是**修一条真实发生过的偶发假红，不是放宽标准**：真实时钟偏移（分钟级以上）照样被排除，
+ *  下面那条"未来 1 小时不算最近改动"的断言仍然成立。 */
+const FUTURE_TOLERANCE_MS = 2000;
 
 function recentlyChanged(root, minutes, nowMs) {
   const win = (Number.isFinite(minutes) ? minutes : RECENT_WINDOW_MIN) * 60000;
@@ -499,7 +538,9 @@ function recentlyChanged(root, minutes, nowMs) {
     }
     if (!/\.(md|js|json|yml|html|css)$/i.test(p)) return;
     if (now - st.mtimeMs > win) return;
-    if (st.mtimeMs > now) return;          // 未来时间戳（时钟偏移）不算"最近改动"
+    // 只比 now **大一点点**（< 容差）不算"未来"：那是 mtime 亚毫秒精度 / 写入延迟造成的，
+    // 不是时钟偏移（详见 FUTURE_TOLERANCE_MS 的注释）。
+    if (st.mtimeMs - now > FUTURE_TOLERANCE_MS) return;
     if (/[\\/]\.review[\\/]/.test(p) || /[\\/]docs[\\/](archive|changelog)[\\/]/.test(p)) return;
     hits.push(path.relative(root, p).replace(/\\/g, '/'));
   };
@@ -517,10 +558,16 @@ function recentlyChanged(root, minutes, nowMs) {
 const REG_BEGIN = '<!-- BEGIN:registry-table';
 const REG_END = '<!-- END:registry-table -->';
 const HEADER_KEYS = { '层': 'layer', '作用': 'purpose', '不该写': 'notWrite', '更新方式': 'update' };
+/** 层的**取值表**（判定⑭）：新增一个层要**同批**改这里 + `SKILL.md` B3 的取值表那一行。
+ *  值不在表内 = **配置错误**，不是文档错误。 */
 const LAYER_ORDER = ['入口', '治理', '契约', '设计', '记录', '归档'];
+/** 元信息块**必须齐备**的几行：缺任何一行都不算合格（注释与报错一直声称"四行"，此前只强制了前两行） */
+const REQUIRED_HEADER_KEYS = ['层', '作用', '不该写', '更新方式'];
 
-/** 从文档正文里解析 `<!-- registry ... -->` 元信息块（前 25 行内查找） */
-function parseDocHeader(text) {
+/** 解析文档正文里的 `<!-- registry ... -->` 元信息块（前 25 行内查找）。
+ *  返回 null = **没有块**；否则 `{ meta, missing }` —— `missing` 是缺哪几行，
+ *  这样报错能说准（"缺 不该写/更新方式" ≠ "没有元信息块"）。 */
+function parseHeaderBlock(text) {
   const head = text.split(/\r?\n/).slice(0, 25).join('\n');
   const m = /<!--\s*registry([\s\S]*?)-->/.exec(head);
   if (!m) return null;
@@ -531,24 +578,66 @@ function parseDocHeader(text) {
     const key = HEADER_KEYS[mm[1].trim()];
     if (key) meta[key] = mm[2];
   });
-  return (meta.layer && meta.purpose) ? meta : null;
+  return { meta, missing: REQUIRED_HEADER_KEYS.filter((k) => !meta[HEADER_KEYS[k]]) };
 }
 
-/** 收集受管文档（docs/*.md + 根三份入口文档）的元信息 */
+/** 合格 = 有块 **且四行齐备**。不合格返回 null（缺哪几行由 `parseHeaderBlock().missing` 给出）。 */
+function parseDocHeader(text) {
+  const b = parseHeaderBlock(text);
+  return (b && b.missing.length === 0) ? b.meta : null;
+}
+
+/** 收集受管文档（**`docs/` 下递归**，但跳过归档族；+ 根三份入口文档）的元信息与判定状态。
+ *  state：`ok` | `partial`（有块但缺行） | `no-header`（没有块） | `missing`（磁盘上没有） | `unreadable`（读不出来）。
+ *  为什么递归：原先只扫 `docs/*.md` ⇒ `docs/<子目录>/x.md` **既不会被告知要补元信息、
+ *  也没法合法进表**（手工加进 §5 反而会被"表过期"判红）—— 报错指了一条**走不通的路**。
+ *  为什么必须跳过归档族：归档不逐份登记（§5 用前缀行覆盖），不跳会把归档里每份文件都判成缺元信息（假红一屏）。
+ *  为什么读失败不再静默 `return`：**采不到真值＝红**，静默跳过会被当成"通过"。
+ *  注意：`meta` 只在 `ok` 时非空 —— 渲染登记表的 `entries.filter(e => e.meta)` 依赖这一点。 */
 function collectDocHeaders(root) {
   const out = [];
   const rels = [];
+  const walk = (abs, rel) => {
+    let items;
+    try { items = fs.readdirSync(abs, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of items) {
+      const r = rel + '/' + e.name;
+      if (ARCHIVE_PREFIXES.some((p) => (r + '/').startsWith(p))) continue;   // 归档族：不逐份要求元信息
+      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(path.join(abs, e.name), r); }
+      else if (/\.md$/i.test(e.name)) rels.push(r);
+    }
+  };
   const docsDir = path.join(root, 'docs');
-  if (fs.existsSync(docsDir)) {
-    fs.readdirSync(docsDir).filter((f) => /\.md$/.test(f)).forEach((f) => rels.push('docs/' + f));
-  }
+  if (fs.existsSync(docsDir)) walk(docsDir, 'docs');
   ROOT_DOCS.forEach((f) => rels.push(f));
-  rels.sort().forEach((rel) => {
-    let text = '';
-    try { text = fs.readFileSync(path.join(root, rel), 'utf8'); } catch (e) { return; }
-    out.push({ rel, meta: parseDocHeader(text) });
+  [...new Set(rels)].sort().forEach((rel) => {
+    const abs = path.join(root, rel);
+    if (!fs.existsSync(abs)) { out.push({ rel, meta: null, state: 'missing' }); return; }
+    let text;
+    try { text = fs.readFileSync(abs, 'utf8'); }
+    catch (e) { out.push({ rel, meta: null, state: 'unreadable', code: e.code || '?' }); return; }
+    const b = parseHeaderBlock(text);
+    if (!b) out.push({ rel, meta: null, state: 'no-header' });
+    else if (b.missing.length) out.push({ rel, meta: null, state: 'partial', gaps: b.missing });
+    else out.push({ rel, meta: b.meta, state: 'ok' });
   });
   return out;
+}
+
+/** 把"某份文档头部不合格"翻成一句带指路的话（一次错误一条消息，报错即教程） */
+function headerProblemLine(e) {
+  if (e.state === 'missing') {
+    return '受管文档在磁盘上不存在 —— 要么建它，要么把它从 `ROOT_DOCS` 移除';
+  }
+  if (e.state === 'unreadable') {
+    return '受管文档读不出来（' + e.code + '）—— **采不到真值＝红**，不许静默跳过；检查权限 / 编码 / 是否被误建成目录';
+  }
+  if (e.state === 'partial') {
+    return '头部元信息块**缺 ' + e.gaps.join('、') + '** —— `REQUIRED_HEADER_KEYS` 要求四行齐备；'
+      + '补齐后跑 `npm run docs:registry`';
+  }
+  return '受管文档缺少头部元信息块 `<!-- registry 层/作用/不该写/更新方式 -->` —— '
+    + '登记表由这些声明生成，缺了它这份文档就没法进表（加完跑 `npm run docs:registry`）';
 }
 
 /** 渲染 §5 登记表（纯函数式：输入元信息 → markdown 表格） */
@@ -564,8 +653,10 @@ function renderRegistryTable(entries) {
     '|----|------|---------------------|-----------|---------|'
   ];
   rows.forEach((e) => {
+    // 四行齐备才可能进表（`parseDocHeader` 已强制）⇒ 这里**不再用 `|| '—'` / `|| '手写'` 兜底**：
+    // 静默补默认值只会让"缺两行"看起来像合规（实测被这一点掩盖过）。
     lines.push('| ' + [e.meta.layer, '`' + e.rel + '`', e.meta.purpose,
-      e.meta.notWrite || '—', e.meta.update || '手写'].join(' | ') + ' |');
+      e.meta.notWrite, e.meta.update].join(' | ') + ' |');
   });
   // 归档族：规则相同 ⇒ 由前缀行统一覆盖，不逐份声明（§5 准入第 3 条）
   lines.push('| 归档 | `docs/archive/*` | 历史快照（回溯用） | —（**勿作现状引用**） | 只增不改（必须带历史横幅） |');
@@ -578,11 +669,10 @@ function writeRegistryTable(root) {
   const archPath = path.join(root, REGISTRY_DOC);
   const md = fs.readFileSync(archPath, 'utf8');
   const entries = collectDocHeaders(root);
-  const missing = entries.filter((e) => !e.meta).map((e) => e.rel);
-  if (missing.length) {
-    console.error('✗ 这些受管文档缺少 `<!-- registry ... -->` 元信息块，无法生成登记表：');
-    missing.forEach((m) => console.error('   ' + m));
-    console.error('  → 在文件前 25 行内补：层 / 作用 / 不该写 / 更新方式（照抄 §5 表里它原来那一行）。');
+  const bad = entries.filter((e) => e.state !== 'ok');
+  if (bad.length) {
+    console.error('✗ 有 ' + bad.length + ' 份受管文档头部不合格，**拒绝生成**（生成模式与检查模式必须一致）：');
+    bad.forEach((e) => console.error('   [ ' + e.rel + ' ] ' + headerProblemLine(e)));
     return false;
   }
   const table = renderRegistryTable(entries);
@@ -600,18 +690,17 @@ function writeRegistryTable(root) {
   return true;
 }
 
-/** 检查：元信息齐全 + 登记表与元信息一致（逐字） */
-function checkRegistryTable(root, md) {
+/** 检查：元信息齐全（**四行齐备**）+ 登记表与元信息一致（逐字）。
+ *  `entriesIn` 可选：调用方已算过头部就传进来，免得同一件事解析两遍。 */
+function checkRegistryTable(root, md, entriesIn) {
   const problems = [];
-  const entries = collectDocHeaders(root);
+  const entries = entriesIn || collectDocHeaders(root);
   // 自适应门：**只有在"已经采用头部元信息"的工程里才判**（判定标志 = 至少一份文档带元信息块）。
   // 为什么需要：单测 fixture / 早期工程没有这套元信息，硬判会把它们全部变成红；
-  // 而真工程里"元信息块被删光"这种情况由下面的 no-header 逐份报出来（不会静默放过）。
+  // 而真工程里"元信息块被删光"这种情况由下面的逐份报出（不会静默放过）。
   if (!entries.some((e) => e.meta)) return problems;
-  entries.filter((e) => !e.meta).forEach((e) => {
-    problems.push({ kind: 'no-header', rel: e.rel,
-      msg: '受管文档缺少头部元信息块 `<!-- registry 层/作用/不该写/更新方式 -->` —— '
-        + '登记表由这些声明生成，缺了它这份文档就没法进表（加完跑 `npm run docs:registry`）' });
+  entries.filter((e) => e.state !== 'ok').forEach((e) => {
+    problems.push({ kind: e.state, rel: e.rel, msg: headerProblemLine(e) });
   });
   const s = md.indexOf(REG_BEGIN);
   const e = md.indexOf(REG_END);
@@ -734,9 +823,30 @@ function checkRegistry(root, registryMd) {
   checkSectionNumbering(root).forEach((p) => problems.push(p));
 
   // ⑬ 登记表必须与"各文档头部元信息"一致（表是生成的，不是手写的）
-  checkRegistryTable(root, registryMd).forEach((p) => problems.push(p));
+  const headerEntries = collectDocHeaders(root);
+  checkRegistryTable(root, registryMd, headerEntries).forEach((p) => problems.push(p));
+
+  // ⑭ 层取值表：`层` 必须在 `LAYER_ORDER` 内（原先它只用于排序 —— 非法值排在末尾就没人管，
+  // 而文档一直声称"值必须在取值表内"：声称 ≠ 实现，实测被复核抓到）
+  checkLayerValues(headerEntries).forEach((p) => problems.push(p));
 
   return { problems, reg, docs };
+}
+
+/** ⑭ 层取值表：`层` 必须在 `LAYER_ORDER` 内（权威在 `SKILL.md` B3）。
+ *  为什么需要：原先 `LAYER_ORDER` **只用于排序**（非法层落到末尾），等价于没判；
+ *  而 `REFERENCE` §3.1 ⑤ 与 `SKILL.md` B3 都声称"值必须在取值表内"。 */
+function checkLayerValues(entries) {
+  const problems = [];
+  entries.filter((e) => e.meta).forEach((e) => {
+    if (LAYER_ORDER.indexOf(e.meta.layer) < 0) {
+      problems.push({ kind: 'layer', rel: e.rel,
+        msg: '元信息的 `层` 不在取值表内：`' + e.meta.layer + '`；取值表 = ' + LAYER_ORDER.join(' / ')
+          + '。值不在表内 = **配置错误**（不是文档错误）：要么改文档的层，'
+          + '要么把新层加进 `LAYER_ORDER` —— 新增层要**同批**改 `SKILL.md` B3 的取值表那一行' });
+    }
+  });
+  return problems;
 }
 
 /* ---------------- CLI ---------------- */
@@ -775,6 +885,13 @@ function main() {
     console.log('文档清单（登记处：' + REGISTRY_DOC + ' §5）');
     console.log('─────────────────────────────────────────────');
     docs.forEach((d) => console.log('  ' + (d.verdict === 'ok' ? '✓' : '✗') + ' ' + d.rel + (d.msg ? '  ← ' + d.msg : '')));
+    // `--list` 是报告模式，但**不能假绿**：有任一问题就以非 0 退出
+    //（否则有人把它挂进 CI，看到一屏 ✓ 会以为合规 —— 实测复核报来的"挂 CI 假绿"）。
+    if (problems.length) {
+      console.log('✗ 有 ' + problems.length + ' 处问题 ⇒ 本模式**同样参与门禁**（退出码 1）；'
+        + '跑不带参数的 `docs-registry-check` 看详情与三条路');
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -797,7 +914,11 @@ function main() {
                           : p.kind === 'contract-stale' ? '检查表过期'
                             : p.kind === 'numbering' ? '章节断号'
                               : p.kind === 'no-header' ? '文档无元信息'
-                                : p.kind === 'registry-stale' ? '登记表过期' : '登记表缺失';
+                                : p.kind === 'partial' ? '元信息缺行'
+                                  : p.kind === 'missing' ? '受管文档缺失'
+                                    : p.kind === 'unreadable' ? '受管文档读不出'
+                                      : p.kind === 'layer' ? '层不在取值表'
+                                        : p.kind === 'registry-stale' ? '登记表过期' : '登记表缺失';
     console.log('   [' + tag + '] ' + (p.rel ? p.rel + ' —— ' : '') + p.msg);
   });
 
@@ -820,6 +941,7 @@ function main() {
   console.log('✓ 数据契约覆盖了 schema 校验的字段（docs/DATA-FORMAT.md）');
   console.log('✓ 受管文档的章节编号连续（无断号）');
   console.log('✓ §5 登记表与各文档头部元信息一致（表是生成的，勿手改）');
+  console.log('✓ 受管文档的 `层` 都在取值表内（' + LAYER_ORDER.join(' / ') + '）');
 
   // ---- 交接提示（不算违规，只提示） ----
   const notice = handoverNotice(ROOT);
@@ -872,9 +994,11 @@ module.exports = {
   checkArchiveNoDuplicate, checkHandoverPointers, checkModuleCoverage,
   checkArchiveBanners, checkWorkDirStatus, checkNavCoverage,
   checkContractCoverage, checkSectionNumbering, handoverNotice, recentlyChanged,
-  parseDocHeader, collectDocHeaders, renderRegistryTable, checkRegistryTable, writeRegistryTable,
+  parseHeaderBlock, parseDocHeader, collectDocHeaders, renderRegistryTable, checkRegistryTable,
+  writeRegistryTable, headerProblemLine, checkLayerValues,
   section5, ROOT_DOCS, ROOT_FILES, TOP_DIRS, WORK_DIR, BANNER_RE, SCHEMA_FIELDS, RECENT_WINDOW_MIN,
-  REG_BEGIN, REG_END
+  FUTURE_TOLERANCE_MS,
+  REQUIRED_HEADER_KEYS, LAYER_ORDER, REG_BEGIN, REG_END
 };
 
 if (require.main === module) main();
