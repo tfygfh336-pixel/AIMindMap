@@ -124,13 +124,14 @@ module.exports = [
     name: '⑥ Ctrl+点击：逐个加选（选区里有 2 个节点，虚线框出现）',
     run: async (ctx) => {
       await ctx.exec('if (window.MM.clearSelection) window.MM.clearSelection(); 1');
-      // 铺场（断言自建前置 ✓）：按域隔离后地图回到折叠状态 ⇒ 可用命中点常只剩 1 ✗ ⇒ 先展开全树
-      // 并等一次重排（域 31/32 同一招：只 expandAll 不等重排时前置必失败 ✗ 实测）。
-      // 先还原视图：pan/zoom 是界面状态 ⇒ 跨域残留（隔离只还原项目数据 ✗）⇒ 上一域可能把地图放大/拖偏 ✗
-      await ctx.exec('if (window.MM.resetView) window.MM.resetView(); 1');
-      await new Promise((r) => setTimeout(r, 200));
-      await ctx.exec('if (window.MM.expandAll) window.MM.expandAll(); 1');
-      await new Promise((r) => setTimeout(r, 350));
+      // 铺场（断言自建前置 ✓）：pan/zoom 属界面状态 ⇒ 跨域残留（按域隔离只还原**项目数据** ✗）
+      // 实测：551 个节点的坐标在 -193,-1649 这类位置 ⇒ 视口内只剩 2 个、能命中 1 个 ✗
+      // ⇒ 解药是**把视图居中到根**：`MM.centerOnRoot()`（renderMind 自己就用它 ✓ 纯视图、无副作用）。
+      // ⚠️ 更正（本轮实测 ✓）：`MM.jumpToNode` **并不移动视图** ✗ —— 它只做 展开祖先链 + 选中 + 弹详情框
+      //   （app-actions.js:80），而旧版把它包在 try/catch 里 ⇒ `jm.root` 一抛错就静默返回 0 ✗✗
+      //   （jsMind 的根是 `get_root()`，不是 `jm.root`）。现在不包 try/catch：API 变了就响亮地红 ✓。
+      // 注：resetView() 实测拉不回坐标 ✗ 已弃用；expandAll() 会把 551 个节点全铺开、邻居被推更远 ✗ 也不做。      await ctx.exec('window.MM.centerOnRoot(); 1');
+      await new Promise((r) => setTimeout(r, 400));
       await ctx.exec('new Promise(function (res) { requestAnimationFrame(function () { res(1); }); })');
       const pts = await twoNodePoints(ctx);
       if (!pts.ok) return { ok: false, text: pts.text };
@@ -275,30 +276,59 @@ module.exports = [
       const log = [];
       for (let i = 0; i < 4 && !(grew && !lost); i++) {
         attempts++;
-        const st = await execJson(ctx, `(function () {
+        const st = await execJson(ctx, `(function () { try {
           var p = window.MM.fdPanel(); var r = p.getBoundingClientRect();
           function canStart(pt) {
             var at = document.elementFromPoint(pt.x, pt.y);
             if (!at || (at.closest && at.closest('.float-detail'))) return false;
             return !!(at.closest && at.closest('jmnodes, canvas.jsmind'));
           }
-          var cands = [];
-          for (var gx = 0.05; gx <= 0.95; gx += 0.05) {
-            for (var gy = 0.15; gy <= 0.95; gy += 0.05) {
-              cands.push({ x: Math.round(r.left + r.width * gx), y: Math.round(r.top + r.height * gy) });
+          // 先挑**节点**、再反推**框**（实测：网格挑起点会挑到空白区 ⇒ 框内空无一物 ✗）
+          var cur = ${JSON.stringify(cur)};
+          var jm = window.MMApp.getState().jm;
+          var rootId = jm.get_root().id;
+          function rectOf(el) {
+            var q = el.getBoundingClientRect();
+            return { id: el.getAttribute('nodeid'), x: q.left, y: q.top, w: q.width, h: q.height };
+          }
+          var allRects = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]')).map(rectOf);
+          // 目标只取**顶层主题**（parent 就是居中根）：与当前选区同父 ⇒ trimSelection 的
+          // '同父只留最浅一组' 不会把它剔掉 ⇒ '框住了却不长大'的假红不可能出现
+          var cands = allRects.filter(function (el0) {
+            if (el0.id === rootId || cur.indexOf(el0.id) >= 0) return false;
+            if (!(el0.w > 20 && el0.h > 10)) return false;
+            var n0 = jm.get_node(el0.id);
+            if (!(n0 && n0.parent && n0.parent.isroot)) return false;
+            // 整个节点要在面板内并留出画框余量（否则夹取会把节点切出框 ⇒ 假红 ✗）
+            return el0.x > r.left + 40 && el0.y > r.top + 40
+              && el0.x + el0.w < r.right - 25 && el0.y + el0.h < r.bottom - 25;
+          });
+          var offs = [[-30, -30], [-40, -24], [-24, -40], [-48, -48]];
+          for (var k = 0; k < cands.length; k++) {
+            var tg = cands[k];
+            for (var o = 0; o < offs.length; o++) {
+              var s = { x: Math.round(tg.x + offs[o][0]), y: Math.round(tg.y + offs[o][1]) };
+              var end = { x: Math.round(tg.x + tg.w + 20), y: Math.round(tg.y + tg.h + 20) };
+              if (end.x - s.x < 40 || end.y - s.y < 40) continue;
+              if (!canStart(s)) continue;
+              // 自证（用**实现自己的**几何判定 ✓）：这一框必须命中一个未选中的顶层主题，
+              // 且不含居中根（根入框会走剔除路径 ⇒ 假红 ✗）
+              var band = { x0: Math.min(s.x, end.x), x1: Math.max(s.x, end.x),
+                y0: Math.min(s.y, end.y), y1: Math.max(s.y, end.y) };
+              var hits = allRects.filter(function (m) { return window.MM.nodeSelectedBy(m, band); });
+              if (hits.some(function (m) { return m.id === rootId; })) continue;
+              var grow = hits.filter(function (m) {
+                if (cur.indexOf(m.id) >= 0) return false;
+                var n1 = jm.get_node(m.id);
+                return !!(n1 && n1.parent && n1.parent.isroot);
+              });
+              if (!grow.length) continue;
+              return JSON.stringify({ ok: true, start: s, end: end, targetId: tg.id,
+                grow: grow.map(function (m) { return m.id; }) });
             }
           }
-          for (var k = 0; k < cands.length; k++) {
-            var c = cands[k];
-            if (!canStart(c)) continue;
-            // 拖出一个**足够大**的框（实现里 <8px 视为误触 ✗）；不必强求圈住某个特定节点 ——
-            // 契约是"只增不减"，与圈住谁无关 ✓（要求圈住反而会在某些布局下无解 ⇒ 断言卡死 ✗）
-            var end = { x: Math.min(Math.round(r.right - 4), c.x + 170), y: Math.min(Math.round(r.bottom - 4), c.y + 130) };
-            if (end.x - c.x < 40 || end.y - c.y < 40) continue;
-            return JSON.stringify({ ok: true, start: c, end: end });
-          }
-          return JSON.stringify({ ok: false, text: '找不到能起框选的空白起点' });
-        })()`);
+          return JSON.stringify({ ok: false, text: 'no-empty-start-point-with-unselected-top-topic（顶层候选=' + cands.length + '）' });
+        } catch (e) { return JSON.stringify({ ok: false, text: 'PRE-ERR: ' + ((e && e.message) || String(e)) }); } })()`);
         if (!st.ok) { log.push('第 ' + attempts + ' 次：' + st.text); break; }
         mouse(ctx, 'mouseMove', st.start, ['control']);
         mouse(ctx, 'mouseDown', st.start, ['control']);
@@ -345,7 +375,7 @@ module.exports = [
             text: 'raw=' + raw.join(',') + ' 原有 ' + prev.length + ' 个保留 ' + kept.length
               + ' 个 ｜ 本框命中=' + (raw.length > prev.length ? ('+' + (raw.length - prev.length)) : '无新增') });
         })()`);
-        log.push('第 ' + attempts + ' 次：起点=(' + st.start.x + ',' + st.start.y + ') ⇒ ' + got.text
+        log.push('第 ' + attempts + ' 次：目标=' + st.targetId + ' 预计入选=[' + (st.grow || []).join(',') + '] 起点=(' + st.start.x + ',' + st.start.y + ') ⇒ ' + got.text
           + '（' + baseN + ' → ' + got.n + '）｜ ' + expect.text);
         if (got.n > baseN) grew = true;
         if (got.kept < baseN) lost = true;      // 任何一次"丢了原有节点"都是真缺陷 ⇒ 断言必须红 ✓

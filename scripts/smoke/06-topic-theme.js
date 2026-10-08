@@ -166,10 +166,27 @@ const assertions = [
     run: async (ctx) => {
       // CLI 造数据（冒烟运行在临时副本，不碰真实项目）；再打开验证渲染链路：
       // meta.layout.left 的主题 direction=-1（左侧），未列出的默认右侧（direction=1）。
+      // 取证探针（测试侧 ✓ 不改产品代码）：记录这段窗口里每一次 renderMind 的[项目名 | meta.layout]
+      await ctx.exec(`(function () {
+        if (window.__mmRenderProbe) { window.__mmRenderProbe = []; return 1; }
+        var orig = window.MM.renderMind;
+        window.__mmRenderProbe = [];
+        window.MM.renderMind = function (data) {
+          try {
+            var st = window.MMApp.getState();
+            window.__mmRenderProbe.push(((st.project && st.project.name) || '?') + '|'
+              + JSON.stringify(((data || {}).meta || {}).layout || null));
+          } catch (e) { /* 探针自身绝不许影响被测行为 */ }
+          return orig.apply(this, arguments);
+        };
+        return 1;
+      })()`);
       const init = await ctx.runCli(['init', 'layout-probe', '--title', '布局探针']);
       if (!/已创建/.test(init)) return { ok: false, text: 'init failed: ' + init };
-      await ctx.runCli(['add-root', 'layout-probe', '--topic', '左主题', '--id', 'l1']);
-      await ctx.runCli(['add-root', 'layout-probe', '--topic', '右主题', '--id', 'r1']);
+      const a1 = await ctx.runCli(['add-root', 'layout-probe', '--topic', '左主题', '--id', 'l1']);
+      if (!/已添加顶层主题/.test(a1)) return { ok: false, text: 'add-root l1 failed: ' + a1 };
+      const a2 = await ctx.runCli(['add-root', 'layout-probe', '--topic', '右主题', '--id', 'r1']);
+      if (!/已添加顶层主题/.test(a2)) return { ok: false, text: 'add-root r1 failed: ' + a2 };
       const tl = await ctx.runCli(['theme-layout', 'layout-probe', '--left', 'l1']);
       if (!/已设置主题布局/.test(tl)) return { ok: false, text: 'theme-layout failed: ' + tl };
       await ctx.exec('window.MMApp.openProject("layout-probe")');
@@ -197,6 +214,32 @@ const assertions = [
           });
         })()`
       );
+      // 现场数据（失败信息必须自带 ✓）：应用内存实况 + 磁盘上那份 layout-probe 的实况
+      const diag = await ctx.exec(`(async function () {
+        var out = {};
+        try {
+          var st = window.MMApp.getState();
+          out.name = (st.project && st.project.name) || null;
+          out.file = (st.project && st.project.file) || null;
+          out.ml = st.metaLayout ? JSON.stringify(st.metaLayout) : null;
+          out.assoc = (st.assoc || []).length;
+          out.renderLog = window.__mmRenderProbe || null;
+          var jm = st.jm;
+          out.l1 = !!(jm && jm.get_node && jm.get_node('l1'));
+          out.r1 = !!(jm && jm.get_node && jm.get_node('r1'));
+          out.rootOk = !!(jm && jm.get_root && jm.get_root());
+          var n = 0;
+          if (jm && jm.mind && jm.mind.root) { (function w(x) { n++; (x.children || []).forEach(w); })(jm.mind.root); }
+          out.nodes = n;
+        } catch (e) { out.stateErr = String((e && e.message) || e); }
+        try {
+          var r = await window.desktop.project.read('layout-probe');
+          out.diskFile = r.file;
+          out.diskMl = JSON.stringify(((r.data || {}).meta || {}).layout || null);
+          out.diskKids = (((r.data || {}).data || {}).children || []).map(function (c) { return c.id; });
+        } catch (e2) { out.diskErr = String((e2 && e2.message) || e2); }
+        return JSON.stringify(out);
+      })()`);
       // 复原项目上下文：后续 07–10 分域全部以 comnet 为基准项目（含 tcp-handshake）。
       // 教训：本断言此前 openProject('layout-probe') 后未切回，导致 07 undo/redo /
       // attachment 与 09 保存断言在只有两个主题的 layout-probe 上运行而连锁失败。
@@ -209,7 +252,7 @@ const assertions = [
         if (back) break;
         await sleep(200);
       }
-      return { ok: /"ok":true/.test(chk) && back, text: chk };
+      return { ok: /"ok":true/.test(chk) && back, text: chk + ' ｜ 现场=' + diag };
     }
   }
 ];
