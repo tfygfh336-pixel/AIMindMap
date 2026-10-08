@@ -1064,6 +1064,35 @@ async function runSmoke(win) {
   // 为什么需要它：本机出现过**间歇**的 `THREW: Object has been destroyed` 连锁（含截图失败），
   // 但重跑不复现 ⇒ 只能靠现场留证 ✗（M 轮实测：三次跑都没复现，没有仪器就只能干等 ✓）
   const smokeState = { last: '(尚未开始)' };
+  /* 撕裂快照诊断（G5 卡死追查 ✓）：冒烟用的是真实 projects/ 的**拷贝**（见本文件顶部 SMOKE_PROJECTS_DIR），
+   * 但实测保存闸门报「悬挂关联成员」而域单独跑又是绿的 ⇒ 怀疑拷贝**发生在另一个进程正在写该文件时** ✗
+   * （拷到半截文件 ⇒ assoc 引用 data 里不存在的节点 ⇒ 任何保存都被闸门拒 ⇒ 冒烟卡死 ✗）。
+   * 这里在开跑那一刻比对两侧指纹：不一致 = 撕裂快照坐实 ✓；一致 = 运行中产生，另找 ✓。 */
+  try {
+    const crypto = require('crypto');
+    const sha = (p) => { try { return crypto.createHash('sha1').update(fs.readFileSync(p)).digest('hex').slice(0, 12); } catch (e) { return '?'; } };
+    if (SMOKE_PROJECTS_DIR && fs.existsSync(SMOKE_PROJECTS_DIR)) {
+      let same = 0, diff = 0, only = 0;
+      // 项目是**嵌套**布局（projects/<名字>/<名字>.json ✓）⇒ 递归收集（上一版平铺扫描漏光 ✗ 实测 0/0/0）
+      const collect = (dir, base) => {
+        const out = [];
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, e.name);
+          const rel = base ? base + '/' + e.name : e.name;
+          if (e.isDirectory()) out.push(...collect(p, rel));
+          else if (e.name.endsWith('.json')) out.push(rel);
+        }
+        return out;
+      };
+      for (const rel of collect(SMOKE_PROJECTS_DIR, '')) {
+        const a = sha(path.join(REAL_PROJECTS_DIR, rel));
+        const b = sha(path.join(SMOKE_PROJECTS_DIR, rel));
+        if (a === '?') { only++; continue; }
+        if (a === b) same++; else { diff++; console.log('[smoke] ⚠ 拷贝与真实文件不一致：' + rel + ' 真实=' + a + ' 副本=' + b); }
+      }
+      console.log('[smoke] 快照一致性：一致 ' + same + ' / 不一致 ' + diff + ' / 真实缺失 ' + only);
+    } else { console.log('[smoke] 没有沙箱副本目录（本次没走拷贝路径 ✓）'); }
+  } catch (e) { console.log('[smoke] 快照一致性检查失败（不阻断）：' + ((e && e.message) || e)); }
   try {
     win.webContents.on('render-process-gone', (_e, d) => {
       console.log('[smoke] ✗ 渲染进程死亡 reason=' + (d && d.reason) + ' exitCode=' + (d && d.exitCode)
