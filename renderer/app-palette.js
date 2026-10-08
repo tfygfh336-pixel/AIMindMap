@@ -20,6 +20,9 @@
   const jumpToNode = (id) => MM.jumpToNode(id);
 
   let items = [];        // 当前可选项 [{kind,id,label,hint,run}]
+  // 'cmd'（默认 ✓ 只列命令）/ 'node'（只列节点 ✓）—— 用户 A 决定：面板**只留命令**，
+  // 节点搜索**独立成一条命令**「搜索节点…」⇒ 点它切进 node 模式（输入即实时推荐 ✓）
+  let mode = 'cmd';
   let sel = 0;           // 当前高亮索引
   let nodesCache = null; // 节点清单缓存（按项目名缓存，切项目时失效）
 
@@ -44,8 +47,21 @@
     { id: 'delete-node', label: '删除当前节点', hint: '命令', run: () => MM.deleteNode() },
     { id: 'audit', label: '关系审计（孤立 / 漏链接）', hint: '命令', run: () => MM.openAudit() },
     { id: 'undo', label: '撤销', hint: '命令', run: () => MM.undo() },
-    { id: 'redo', label: '重做', hint: '命令', run: () => MM.redo() }
+    { id: 'redo', label: '重做', hint: '命令', run: () => MM.redo() },
+    // 用户 A 决定：节点搜索**独立成一条命令** ✓（点它切进节点模式；回车跳过去会**展开祖先链** ✓）
+    { id: 'search-nodes', label: '搜索节点…', hint: '命令', run: () => { MM.openPaletteNodes(); } }
   ];
+
+  /** 只读：给冒烟断言判"当前是哪个模式" ✓ */
+  MM.paletteMode = () => mode;
+
+  /** 直接进节点模式（命令 / 菜单 / 冒烟 / 其它入口共用 ✓）：清空输入、改提示、立刻刷新 ✓ */
+  MM.openPaletteNodes = () => {
+    mode = 'node';
+    const i = inputEl();
+    if (i) { i.value = ''; i.placeholder = '搜索节点…（输入即推荐，回车跳过去）'; i.focus(); }
+    return refresh();
+  };
 
   /** 极简模糊匹配与排序已下沉到 src/palette-rank.js（纯函数、有单测）。
    *  原先此处内联实现里有一个真实缺陷：用 `score >= 0` 判定"是否命中"，
@@ -90,11 +106,15 @@
 
   async function refresh() {
     const q = (inputEl() && inputEl().value) || '';
-    const nodes = await loadNodes();
     const entries = [];
-    nodes.forEach((n) => entries.push({ kind: 'node', id: n.id, label: n.topic, hint: '节点' }));
-    COMMANDS.forEach((c) => entries.push({ kind: 'cmd', label: c.label, hint: c.hint, run: c.run }));
-    // 排序/截断交给纯函数：空查询时命令在前（否则 131 个节点会把命令全挤出前 50 名）
+    if (mode === 'node') {
+      // 只列节点：输入即实时推荐 ✓；回车跳过去（jumpToNode 会**展开祖先链** ✓）
+      const nodes = await loadNodes();
+      nodes.forEach((n) => entries.push({ kind: 'node', id: n.id, label: n.topic, hint: '节点' }));
+    } else {
+      // 只列命令 ✗ —— 节点不再混进来（用户原话："为什么下面有各个节点的名字" ✓）
+      COMMANDS.forEach((c) => entries.push({ kind: 'cmd', label: c.label, hint: c.hint, run: c.run }));
+    }
     items = rankPalette(entries, q, 50);
     sel = 0;
     render();
@@ -103,6 +123,10 @@
   function closePalette() {
     const p = el();
     if (p) p.style.display = 'none';
+    // 关闭时回**命令模式**并复位提示 ✓ —— 否则下次 Ctrl+P 会以节点模式打开（会让人以为面板坏了 ✗）
+    mode = 'cmd';
+    const i2 = inputEl();
+    if (i2) { i2.value = ''; i2.placeholder = '输入命令…'; }
   }
 
   function isOpen() {

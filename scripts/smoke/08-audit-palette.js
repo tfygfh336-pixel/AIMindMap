@@ -125,7 +125,7 @@ module.exports = [
     }
   },
   {
-    name: '命令面板：Ctrl+P 快捷键可打开，且初始列出节点与命令',
+    name: '命令面板：Ctrl+P 打开 ⇒ **只列命令**（用户 A 决定：节点不再混进来 ✓）',
     run: async (ctx) => {
       const r = await ctx.exec(
         `(async function () {
@@ -144,7 +144,7 @@ module.exports = [
            var visible = p && p.style.display !== 'none';
            var hints = [].map.call(items, function (x) { return (x.querySelector('.palette-hint') || {}).textContent; });
            return {
-             ok: visible && items.length > 0 && hints.indexOf('节点') >= 0 && hints.indexOf('命令') >= 0,
+             ok: visible && items.length > 0 && hints.indexOf('节点') < 0 && hints.indexOf('命令') >= 0,
              text: 'visible=' + visible + ' 项数=' + items.length + ' 含节点=' + (hints.indexOf('节点') >= 0) + ' 含命令=' + (hints.indexOf('命令') >= 0)
            };
          })()`
@@ -155,6 +155,8 @@ module.exports = [
   {
     name: '命令面板：模糊搜索能过滤节点（输入「TCP」后结果均含该串）',
     run: async (ctx) => {
+      // P3：面板只留命令 ⇒ 搜节点必须先切到节点模式 ✓
+      await ctx.exec('window.MM.openPaletteNodes && window.MM.openPaletteNodes(); 1');
       const r = await ctx.exec(
         `(async function () {
            var inp = document.getElementById('palette-input');
@@ -173,6 +175,8 @@ module.exports = [
   {
     name: '命令面板：Enter 定位到选中节点并打开其详情，Esc 关闭',
     run: async (ctx) => {
+      // P3：面板只留命令 ⇒ 搜节点必须先切到节点模式 ✓
+      await ctx.exec('window.MM.openPaletteNodes && window.MM.openPaletteNodes(); 1');
       const r = await ctx.exec(
         `(async function () {
            var app = window.MMApp;
@@ -244,9 +248,9 @@ module.exports = [
     }
   },
   {
-    name: '命令面板：空查询时同时列出命令与节点（命令必须在截断前可见）',
+    name: '命令面板：空查询时**只列命令**（节点不混入；命令必须在截断前可见 ✓）',
     run: async (ctx) => {
-      // 这是一个**真实缺陷的回归断言**：旧实现里空查询下 131 个节点占满前 50 名，
+      // 回归断言（P3 后仍有效）：空查询下**命令必须都看得见** —— 旧实现里 131 个节点占满前 50 名，
       // 命令被 slice 全部截掉 —— 打开面板一个命令都看不到。
       const r = await ctx.exec(
         `(async function () {
@@ -263,7 +267,7 @@ module.exports = [
            var firstKind = kinds[0];
            app.closePalette();
            return {
-             ok: nMention > 0 && kinds.indexOf('命令') >= 0 && kinds.indexOf('节点') >= 0 && firstKind === '命令',
+             ok: nMention > 0 && kinds.indexOf('命令') >= 0 && kinds.indexOf('节点') < 0 && firstKind === '命令',
              text: '项数=' + nMention + ' 命令数=' + kinds.filter(function (k) { return k === '命令'; }).length
                  + ' 节点数=' + kinds.filter(function (k) { return k === '节点'; }).length + ' 首项类型=' + firstKind
            };
