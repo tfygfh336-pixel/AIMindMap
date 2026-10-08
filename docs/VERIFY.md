@@ -28,7 +28,7 @@
 > **执行顺序、每步命令与耗时预算的唯一定义在 `scripts/verify.js`**；本表由它渲染，勿手改。
 
 ```bash
-npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件自洽 → 单元测试 → 文档数字与版本一致 → CLI 集成断言 → 数据校验 → 冒烟（Electron 无头）（合计预算 180s）
+npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件自洽 → 单元测试 → 文档数字与版本一致 → CLI 集成断言 → 数据校验 → 冒烟（Electron 无头）（合计预算 400s）
 ```
 
 每步可单独运行；下表即 `docs/RULES.md` 的**门禁 G1–G9**，顺序与 verify 链一致：
@@ -43,7 +43,7 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 | 6 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |
 | 7 | G4 | `node scripts/cli-integration.js` | 30s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |
 | 8 | G2 | `node cli/mm-cli.js validate-all` | 15s | 全部项目结构 + 悬挂链接 + 环 |
-| 9 | G5 | `npm run smoke` | 150s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离** |
+| 9 | G5 | `npm run smoke` | 320s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离** |
 
 > **只改了某一条冒烟断言时不必跑全链**：`SMOKE_ONLY=<文件前缀> npm run smoke`
 > （等价写法 `electron . --smoke-only=<文件前缀>`）只跑选中的那几个断言文件，

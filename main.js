@@ -66,6 +66,14 @@ if (SMOKE_PROJECTS_DIR) {
 }
 const PROJECTS_DIR = SMOKE_PROJECTS_DIR || REAL_PROJECTS_DIR;
 
+/* 每域隔离：**默认开** ✓ —— 每个域开跑前还原沙箱副本，并让应用重载当前项目。
+ * 为什么默认开：不隔离时全跑会随机炸（实测 137/167 · destroyed 30；真因是**跨域状态污染**，
+ *   A/B 证据见 .review/20261008-DSH深度集成调研/scratch/移交-G5收口与续做.md），隔离后同一份
+ *   代码 167/167 · destroyed 0 ✓。隔离只多花「每域一次还原+重载」（实测 G5 155s）。
+ * 逃生口（**只用于 A/B 诊断/取证** ✗ 别当正常跑法）：MM_SMOKE_NO_ISOLATE=1 或 MM_SMOKE_ISOLATE=0。 */
+const smokeIsolate = !!SMOKE_PROJECTS_DIR && !process.env.MM_SMOKE_NO_ISOLATE
+  && process.env.MM_SMOKE_ISOLATE !== '0';
+
 // 存取层单源：列表与读取都走 src/data-store.js，不再各自手写 readdir + JSON.parse。
 // 历史问题：main.js 曾自建 listProjects() 并裸 JSON.parse 读文件 ——
 //   · 与 store.list() 重复实现（两处行为可能分叉）；
@@ -1064,7 +1072,7 @@ async function runSmoke(win) {
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);
-  }, process.env.MM_SMOKE_ISOLATE ? 300000 : 140000);   // 隔离会让每个域多花 ~0.5-1s（重载）⇒ 只在隔离时放宽 ✓
+  }, smokeIsolate ? 300000 : 140000);   // 隔离让每域多花 ~0.5-1s（还原+重载）⇒ 放宽到 300s ✓
   // P1 崩溃仪器：渲染进程一死就**留下遗言**（死因 + 死前正在跑哪条断言）✓
   // 为什么需要它：本机出现过**间歇**的 `THREW: Object has been destroyed` 连锁（含截图失败），
   // 但重跑不复现 ⇒ 只能靠现场留证 ✗（M 轮实测：三次跑都没复现，没有仪器就只能干等 ✓）
@@ -1117,11 +1125,13 @@ async function runSmoke(win) {
       return o && o.u ? Math.round(o.u / 1048576) : null;
     } catch (e) { return null; }
   };
-  /* 每域隔离（MM_SMOKE_ISOLATE=1 才生效 ✓）：快照**沙箱副本**；每个域开跑前恢复 + 让应用重载项目。
-   * 目的：验证 G5 的"跨域状态污染"假设（分段跑全绿、全跑才炸 ✓）。做成开关而非改默认 ✗ ——
-   * 已有断言可能**依赖**跨域状态（theme-layout 时红时绿正暗示这点 ✗），改默认可能弄红一批现在绿的断言。
-   * 用"跑前恢复"而不是"跑后恢复"：后者的插入点在 catch 之后 ✓ 锚点不稳（我曾写成把 catch 改 finally ✗ 会吞掉错误记录 ✗✗）。 */
-  const isolateOn = !!process.env.MM_SMOKE_ISOLATE && !!SMOKE_PROJECTS_DIR;
+  /* 每域隔离（**默认开** ✓，见文件头 smokeIsolate）：快照**沙箱副本**；每个域开跑前恢复 + 让应用重载项目。
+   * 实测结论（2026-10-08，全量跑）：隔离开 = 167/167 · destroyed 0 ✓；隔离关 = 137/167 · destroyed 30 ✗。
+   * 上一版把"改默认"的风险写反了：当年担心的"已有断言依赖跨域状态"是真的，但那是**断言的缺陷**——
+   * 四条这样的断言已改成"自建前置"（06/09/29/30 域 ✓）⇒ 隔离才能成为默认（正确语义）✓。
+   * 用"跑前恢复"而不是"跑后恢复"：后者的插入点在 catch 之后 ✓ 锚点不稳（曾写成把 catch 改 finally ✗ 会吞掉错误记录 ✗✗）。 */
+  const isolateOn = smokeIsolate;
+  if (!isolateOn && SMOKE_PROJECTS_DIR) console.log('[smoke] 每域隔离：关（逃生口 MM_SMOKE_NO_ISOLATE / MM_SMOKE_ISOLATE=0）—— 跨域状态会互相污染，只在诊断时用 ✗');
   const sandboxSnap = new Map();
   const walkFiles = (dir, base, out) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
