@@ -420,11 +420,33 @@
   /** 选区的**原始命中集**（未裁剪）—— 给 AI 上下文用 ✓ 与 `getSelection()`（裁剪后，给树操作用）区分开 */
   MM.getSelectionRaw = () => fdSelectionRaw.slice();
 
+  /** P5：给**真正被框选**的节点画虚线描边（用户要的"框了 a 和 b 就把 a、b 的边框变虚线"✓）。
+   *  · 数据源是 `fdSelectionRaw`（原始命中共 ✓）—— 它**不受同父/父冗余裁剪**影响 ✓
+   *    （那套裁剪是"收起/拖动"这类树操作的口径 ✓ 与"我框住了什么"是两回事 ✓ 用户明确说这两者要分开 ✓）；
+   *  · 只写 CSS 类（jsMind 会重置内联样式，类不受影响 ✓ 与本工程既有高亮同款做法 ✓）；
+   *  · 幂等：先清后加；raw 为空时把类清干净（不在 DOM 里留残影 ✓） */
+  const CLS_SEL_RAW = 'mm-sel-raw';
+  function paintRawSelection() {
+    const panelEl = fdPanel();
+    if (!panelEl) return 0;
+    const want = new Set(fdSelectionRaw);
+    let n = 0;
+    panelEl.querySelectorAll('jmnode').forEach((el) => {
+      const on = want.has(el.getAttribute('nodeid'));
+      el.classList.toggle(CLS_SEL_RAW, on);
+      if (on) n++;
+    });
+    return n;
+  }
+  MM.paintRawSelection = paintRawSelection;            // 给冒烟断言用：手动刷一次并拿条数 ✓
+  MM.rawSelectionClass = () => CLS_SEL_RAW;             // 只读：断言里别写死类名字符串 ✓
+
   /** 重算选区虚线框：跟随节点当前位置、大小自适应（不可见节点除外）。
    *  语义（v0.16.5）：框标注的范围 = **实际会被收起的范围** = 选中节点
    *  ∪ 它们**可见的子节点**（收起动作藏的正是这些子节点）。这样框选父节点
    *  时框就预告折叠范围，收起后收缩到父节点，展开再涨回（大小自适应）。 */
   function refreshSelectionOutline() {
+    paintRawSelection();   // P5：先给"真正被框选"的节点上色（不受同父裁剪限制 ✓ 数据是 fdSelectionRaw ✓）
     const el = ensureSelOutline();
     if (!fdSelection.length) { el.style.display = 'none'; return; }
     const jm = state.jm;
