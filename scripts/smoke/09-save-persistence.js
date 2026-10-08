@@ -7,6 +7,15 @@
  * （没有任何断言覆盖"人的编辑能落盘"）。
  *
  * 冒烟运行在项目副本上（见 07/08 域），所以这里真的写盘也不会碰真实数据。
+ *
+ * ⚠️ 本域有一条**已经踩过**的陷阱（2026-10-08 实测）：
+ *   `await app.save()` 在"盘上这份与载入时那份不一致"时会走**三方合并**，而合并路径会
+ *   `rebuildFromJson()` ⇒ **jsMind 实例被重建**。若在 await **之前**把 `jm` 抓在手里，
+ *   之后对它 add_node/remove_node 改的就是**已脱离的旧实例** ⇒ 应用真正的树一字未变
+ *   ⇒ `isDirty()`（快照比对）恒为 false ⇒ 断言四个值全 false，而报错信息完全看不出原因 ✗。
+ *   实测证据：`SMOKE_ONLY=09` 单跑 12/12 绿；`SMOKE_ONLY=04,09` 红（前面域留下不一致才会走合并路径）；
+ *   诊断探针打出 `saveOk=true 项目=comnet jm唯一=false`（= 捕获的 jm 已不是当前实例）。
+ *   ⇒ 规矩：**任何 await 之后要继续动树，一律用 `jmNow()` 现取**，不要复用旧引用。
  * ============================================================ */
 'use strict';
 
@@ -19,11 +28,12 @@ module.exports = [
            var app = window.MMApp;
            var st = app.getState();
            var name = st.project.name;
-           var jm = st.jm;
+           // 现取（勿缓存）：save() 可能触发 rebuildFromJson ⇒ 旧的 jm 引用会失效（见文件头）
+           var jmNow = function () { return app.getState().jm; };
            var btn = document.getElementById('btn-save');
            if (!btn) return { ok: false, text: '工具栏没有保存按钮' };
            var id = 'save-probe-1';
-           jm.add_node('root', id, '保存探针', { detail: '' });
+           jmNow().add_node('root', id, '保存探针', { detail: '' });
            var dirtyBefore = app.isDirty();
            btn.click();
            // save() 是异步落盘：大项目（comnet 187 节点）主进程校验+原子写可能远超
@@ -41,7 +51,7 @@ module.exports = [
              return null;
            }
            var onDisk = !!find(reread.data.data, id);
-           jm.remove_node(id);
+           jmNow().remove_node(id);
            app.save();                       // 复原副本（把探针从磁盘删掉）
            return {
              ok: dirtyBefore === true && onDisk === true && dirtyAfter === false,
@@ -58,16 +68,16 @@ module.exports = [
       const r = await ctx.exec(
         `(async function () {
            var app = window.MMApp;
-           var jm = app.getState().jm;
+           var jmNow = function () { return app.getState().jm; };   // 现取：save() 可能重建实例
            var id = 'save-probe-2';
-           jm.add_node('root', id, '快捷键探针', { detail: '' });
+           jmNow().add_node('root', id, '快捷键探针', { detail: '' });
            var dirtyBefore = app.isDirty();
            document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
            // 同断言 1：轮询等异步落盘完成（大项目固定 600ms 不够，实测 flaky FAIL）
            var deadline = Date.now() + 8000;
            while (app.isDirty() && Date.now() < deadline) { await new Promise(function (res) { setTimeout(res, 200); }); }
            var dirtyAfter = app.isDirty();
-           jm.remove_node(id);
+           jmNow().remove_node(id);
            app.save();
            return { ok: dirtyBefore === true && dirtyAfter === false,
                     text: 'Ctrl+S 前有未保存=' + dirtyBefore + ' 之后=' + dirtyAfter };
@@ -82,19 +92,21 @@ module.exports = [
       const r = await ctx.exec(
         `(async function () {
            var app = window.MMApp;
-           var jm = app.getState().jm;
+           // 现取（勿缓存）：下面的 await app.save() 可能走合并路径 ⇒ rebuildFromJson ⇒ 旧引用失效。
+           // 实测（2026-10-08）：缓存旧引用时四个值全 false，诊断得 saveOk=true jm唯一=false。
+           var jmNow = function () { return app.getState().jm; };
            // 显式复位：原来假设"刚载入应为干净" ✗ —— 但前一条断言可能留下未保存编辑，
         // 整段按序跑时 base 会是 true ⇒ 偶发假红（本机实测同一份代码 2 红 3 绿 ✓）。
         // 用本文件已有的 API 把状态压回干净 ⇒ 这条断言与"前一个文件干了什么"解耦 ✓。
         await app.save();
         var base = app.isDirty();                       // 复位后必为干净
            var id = 'save-probe-3';
-           jm.add_node('root', id, '脏标记探针', { detail: '' });
+           jmNow().add_node('root', id, '脏标记探针', { detail: '' });
            var afterAdd = app.isDirty();
-           var n = jm.get_node(id);
+           var n = jmNow().get_node(id);
            n.data = n.data || {}; n.data.detail = '<p>改了详情</p>';   // 模拟编辑对话框改详情
            var afterEdit = app.isDirty();
-           jm.remove_node(id);
+           jmNow().remove_node(id);
            await app.save();
            var afterSave = app.isDirty();
            return {

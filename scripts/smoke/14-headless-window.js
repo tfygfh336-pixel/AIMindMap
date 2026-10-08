@@ -60,6 +60,33 @@ const assertions = [
           + (v.ok ? '' : '（疑似黑屏/白屏/空白帧）')
       };
     }
+  },
+  {
+    name: '离屏窗口：保帧开关真的加上了（三个 disable-* + CDPScreenshotNewSurface）',
+    run: async () => {
+      // ⚠️ 本文件会被**纯 node** 进程 require（scripts/doc-facts.js 靠 require 计数断言条数），
+      //    所以 electron 只能在这里**惰性取**：顶层 require 会在非 Electron 进程里拿到 undefined。
+      let app = null;
+      try { app = require('electron').app; } catch (e) { app = null; }
+      if (!app || !app.commandLine) return { ok: false, text: '拿不到 app.commandLine（不在主进程？）' };
+      const flags = require('../smoke-flags.js').keepAliveSwitches(true);
+      const missing = [];
+      for (const [name, value] of flags) {
+        if (value) {
+          // 用"包含"而不是"相等"：--enable-features 可能被多处追加，Chromium 会合并。
+          if (String(app.commandLine.getSwitchValue(name)).indexOf(value) < 0) missing.push(name + '=' + value);
+        } else if (!app.commandLine.hasSwitch(name)) {
+          // 无值开关必须用 hasSwitch：getSwitchValue 对"无值"与"没有"都返回空串，区分不了。
+          missing.push(name);
+        }
+      }
+      return {
+        ok: missing.length === 0,
+        text: missing.length
+          ? '缺 ' + missing.join('、') + '（隐藏窗口可能不出帧 ⇒ 假红；清单见 scripts/smoke-flags.js）'
+          : '四个保帧开关都在（' + flags.map((p) => p[0]).join('、') + '）'
+      };
+    }
   }
 ];
 

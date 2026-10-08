@@ -23,6 +23,23 @@ const CLI = path.join(ROOT, 'cli', 'mm-cli.js');
 
 const isSmoke = process.argv.includes('--smoke');
 
+/* ---------------- 冒烟保帧开关（**只在冒烟/离屏路径**） ----------------
+ * 问题：Chromium 会后台化"不可见 / 被遮挡"的窗口并节流定时器 ⇒ 隐藏窗口可能不出帧、
+ *   断言里的 setTimeout 可能被降频 ⇒ L1 帧断言与超时判定**偶发假红**，而假红的终点
+ *   是有人把断言关掉（本工程已发生过门禁退化与数字漂移）。
+ * 对策：照搬 Playwright 给 Chromium 的四个默认开关（清单与来源见 scripts/smoke-flags.js，
+ *   **只照搬开关名，不引依赖**）。开关必须在**窗口创建之前**追加，Chromium 只认启动前的参数。
+ * 边界：清单是纯函数、单测锁内容；"真的加上了"由 scripts/smoke/14-headless-window.js 断言；
+ *   "正常启动不许带"由 tests/smoke-flags.test.js 的接线检查守。三者缺一都会变成"声称加了"。
+ */
+if (isSmoke) {
+  const smokeFlags = require('./scripts/smoke-flags.js');
+  for (const pair of smokeFlags.keepAliveSwitches(true)) {
+    if (pair[1]) app.commandLine.appendSwitch(pair[0], pair[1]);
+    else app.commandLine.appendSwitch(pair[0]);
+  }
+}
+
 /* ---------------- 冒烟模式的「沙箱项目目录」 ----------------
  * 问题：冒烟断言里有会真正写盘的操作（如 undo/redo 回合断言调用 app.save() 两次）。
  * 它们在**真实项目**上执行 —— 内容虽然最终被复原，但每次 verify 都会重写用户数据，

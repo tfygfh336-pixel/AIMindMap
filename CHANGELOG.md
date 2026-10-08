@@ -14,6 +14,53 @@
 
 ## [Unreleased]
 
+### 修一条顺序依赖的冒烟假红：save() 会重建 jsMind 实例，旧引用必须弃用（2026-10-08）
+
+**症状**：全量冒烟里 `09-*` 的「未保存改动判定」四个值全是 `false`（`复位后=false 新增后=false 改详情后=false 保存后=false`），
+但**单跑该域 12/12 全绿** —— 典型的顺序依赖假红。前一会话修过它的另一半（"刚载入应为干净"的假设），这次是另一半。
+
+**定位（实测，不靠猜）**：
+- 二分 `SMOKE_ONLY`：`02,03,04,09` 红 → `05,06,07,08,09` 绿 → 逐个试 ⇒ **元凶是 `04-*`**（`04,09` 红、`09` 单跑绿）；
+- 诊断探针打出 `saveOk=true 项目=comnet **jm唯一=false**` ⇒ 复位那次 `save()` **成功了**，
+  但**当前 jsMind 实例已经不是断言开头抓到的那个**。
+
+**根因**：`await app.save()` 在"盘上这份与载入时那份不一致"时走**三方合并**，而合并路径会 `rebuildFromJson()` ⇒
+**jsMind 实例被重建**。断言在 await **之前**缓存了 `var jm = app.getState().jm`，
+之后 `jm.add_node(...)` 改的是**已脱离的旧实例** ⇒ 应用真正的树一字未变 ⇒ `isDirty()`（**快照比对**实现）恒 false。
+`04-*` 只是"留下不一致"的那个前提，不是错误本身 —— 所以它单独跑也看不出问题。
+
+**修法（结构化，不是补丁）**：`scripts/smoke/09-save-persistence.js` 三条断言统一改为
+**`jmNow()` 现取**（`app.getState().jm` 在使用点取），并在文件头写明这条陷阱与实测证据。
+⇒ 以后**任何 await 之后要动树，都不许复用旧引用**。
+
+**验证**：`SMOKE_ONLY=04,09` 23/23 通过（原 22/23）；全量冒烟 **137/137** + 视觉 2/2。
+
+### 冒烟保帧开关：治"隐藏窗口不出帧"引发的假红（2026-10-08）
+
+**症状**：G5 冒烟段偶发假红 —— 隐藏窗口捕到的帧可能偏黑/偏旧，断言里的 `setTimeout` 也可能被降频。
+假红的真正代价不是那一次红，而是**有人把断言关掉**（本工程已发生过门禁退化与数字漂移）。
+
+**来源（不是现想的）**：Playwright 给 Chromium 的默认启动参数（官方源码
+`packages/playwright-core/src/server/chromium/chromiumSwitches.ts`，Apache-2.0）。
+**只照搬开关名，不引任何依赖**：三个 `disable-*`（遮挡不后台化 / 渲染进程不降级 / 后台定时器不降频）
++ `enable-features=CDPScreenshotNewSurface`（抓帧走新 surface）。
+
+**实现**：
+- 清单是**纯函数** `scripts/smoke-flags.js`：`keepAliveSwitches(isSmoke)`，**正常启动返回空数组**；
+- `main.js` 在**窗口创建之前**、**只在 `--smoke` 分支**追加（Chromium 只认启动前参数）；
+- **三道锁**（缺一就会退化成"注释里声称加了"）：
+  · `tests/smoke-flags.test.js`（7 条）锁清单内容 + **接线**：调用点必须在 `isSmoke` 守卫内、且在 `new BrowserWindow` 之前（源码级检查，同 `tests/verify-budget.test.js` 守 RULES→verify 接线的做法）；
+  · `scripts/smoke/14-headless-window.js` 新增一条断言，机械核对四个开关**真的加上了**（无值开关必须走 `hasSwitch` —— `getSwitchValue` 对"无值"与"没有"都返回空串，区分不了）；
+  · 冒烟断言文件**不得在顶层 require electron**（`scripts/doc-facts.js` 会在纯 node 里 require 它来计数）⇒ 一律惰性取。
+
+**判别力证明（实跑，非口头）**：把 `main.js` 里那个守卫临时改成 `if (false)` ⇒ 新断言**报红**并逐项列出缺哪些开关；
+**同一次运行里"隐藏窗口能出帧"那条仍然 PASS** —— 这恰好说明新断言的价值：帧断言是**偶发**的，新断言是**确定**的。
+撤销注入后同一域 11/11 通过。
+
+**能力边界（诚实标注）**：这四个开关在 **Electron 44** 上的**实际效力尚未验证**（来源是 Chromium/Playwright 的用法，
+不是 Electron 文档）。判据是**长期指标**：`verify-history.jsonl` 里 G5 的假红率与耗时趋势（真涨了 >10% 就该撤）。
+正常启动不带这些开关 —— 否则会改变真实用户进程的功耗与后台行为。
+
 ### 内核「打开侧边栏」右栏：自动加宽侧栏、关掉还原（2026-09-30，用户提议）
 
 **症状**：内置 DSH 右上角「打开侧边栏」（Ctrl+Shift+B）点一下就消失 ✗ —— 面板里是
