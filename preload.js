@@ -56,6 +56,14 @@ contextBridge.exposeInMainWorld('desktop', {
       ipcRenderer.invoke('app:link-nodes', projectName, fromId, toProject, toId, caption),
     nodes: (projectName) => ipcRenderer.invoke('app:nodes', projectName),
     ask: (projectName, nodeId, opts) => ipcRenderer.invoke('app:ask', projectName, nodeId, opts),
+    // 功能 5a：把一个大文件导入成**新项目**（拖拽入口；菜单入口在主进程里直接调同一个实现）
+    importDoc: (filePath) => ipcRenderer.invoke('app:import-doc', filePath),
+    // Electron ≥32 起 `File.path` 已被移除 ⇒ 取拖拽文件的真实路径**只有** webUtils 这一条路
+    //（这也是"必须从 preload 暴露"的原因：渲染层拿不到 webUtils ✓）
+    pathForFile: (file) => {
+      try { return require('electron').webUtils.getPathForFile(file); }
+      catch (e) { return ''; }
+    },
     assoc: (projectName, nodeId) => ipcRenderer.invoke('app:assoc', projectName, nodeId),
     assocEdit: (projectName, assocId, title, noteMd) =>
       ipcRenderer.invoke('app:assoc-edit', projectName, assocId, title, noteMd),

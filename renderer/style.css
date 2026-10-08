@@ -518,6 +518,15 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   font-size: 12.5px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
 }
 .ask-inputrow .ask-send:hover { background: #1f4bb8; }
+/* ---------------- 拖拽导入提示（app-import.js，功能 5a） ---------------- */
+.mm-drop-hint {
+  display: none; position: fixed; inset: 0; z-index: 80;
+  align-items: center; justify-content: center; pointer-events: none;
+  background: rgba(43, 93, 214, 0.08);
+  border: 3px dashed #2b5dd6; box-sizing: border-box;
+  color: #2b5dd6; font-size: 16px; font-weight: 600;
+  text-shadow: 0 1px 0 #fff;
+}
 /* 二级页面里的笔记正文 */
 .assoc-note { font-size: 13px; color: #1f2329; }
 .assoc-note p { margin: 0 0 8px; }

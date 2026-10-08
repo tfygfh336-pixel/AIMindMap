@@ -401,8 +401,15 @@
         sel.appendChild(opt);
       });
       if (projects.length) {
-        sel.value = projects[0].name;
-        await openProject(projects[0].name);
+        // ⚠️ 这里**不能**无条件跳到第一个项目：本函数同时服务于"启动时装载"和
+        // "外部改动后刷新列表"（`menu:project-changed`）。原来的 `sel.value = projects[0]; openProject(...)`
+        // 会在**任何一次列表刷新**时把界面拽回第一个项目 ✗ —— 实测：导入新项目后刚切过去，
+        // 1.5 秒内又被拽回旧项目（时间线：`openProject 返回 true cur=两本书` → `1.5s 后 cur=comnet`）。
+        // ⇒ 保留当前选中的项目；**只有当前没有项目**时才自动打开第一个 ✓
+        const keep = state.project && projects.some((p) => p.name === state.project.name)
+          ? state.project.name : null;
+        sel.value = keep || projects[0].name;
+        if (!keep) await openProject(projects[0].name);
       } else {
         $('#empty-hint').style.display = 'flex';
       }

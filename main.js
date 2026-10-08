@@ -224,7 +224,86 @@ function listProjects() {
   return store.list();
 }
 
-/* ---------------- 窗口 ---------------- */
+/* ---------------- 功能 5a：大文件 → 新项目（菜单与拖拽**共用这一段**） ----------------
+ * 为什么共用：两条入口若是各写一份，行为迟早分叉（一个会去重项目名、另一个不会 ✗）。
+ * 为什么**异步**跑 CLI：大文件（几十 MB 的 txt/md）解析要几秒，spawnSync 会把界面卡住 ✗。 */
+async function runCliAsync(args) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(process.execPath, [CLI].concat(args), {
+        cwd: ROOT,
+        env: Object.assign({}, process.env, {
+          ELECTRON_RUN_AS_NODE: '1',
+          AI_MINDMAP_PROJECTS_DIR: PROJECTS_DIR,
+          MM_WRITER: 'gui-cli'
+        })
+      });
+    } catch (err) { resolve({ code: -1, out: '', err: String((err && err.message) || err) }); return; }
+    let out = '', err = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', (e) => resolve({ code: -1, out: out, err: err + String((e && e.message) || e) }));
+    child.on('close', (code) => resolve({ code: code, out: out, err: err }));
+  });
+}
+
+/** 项目名清洗：只留字母/数字/汉字/下划线/连字符（其余换 `-`），并压掉连续连字符 */
+function sanitizeProjectName(s) {
+  let t = String(s || '').normalize('NFC').replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/-{2,}/g, '-');
+  t = t.replace(/^[-_]+|[-_]+$/g, '').slice(0, 40);
+  return t || 'imported';
+}
+
+/** 从文件导入成新项目：名字取文件名（重名自动加 -2/-3）；返回 {ok, name, out, error} */
+async function importDocToNewProject(filePath) {
+  const ext = path.extname(filePath || '');
+  const base = sanitizeProjectName(path.basename(filePath || '').replace(/\.[^.]+$/, ''));
+  let name = base, n = 1;
+  while (fs.existsSync(path.join(PROJECTS_DIR, name))) { n += 1; name = base + '-' + n; if (n > 99) break; }
+  const r = await runCliAsync(['import-project', name, filePath]);
+  if (r.code !== 0) {
+    const msg = (r.err || r.out || '').trim().split('\n').filter(Boolean).pop() || ('CLI 退出码 ' + r.code);
+    return { ok: false, name: name, error: msg.replace(/^error:\s*/, '') };
+  }
+  return { ok: true, name: name, ext: ext, out: (r.out || '').trim() };
+}
+
+/** 导入成功后统一收尾：刷新项目列表 + 打开新项目 + 提示（两条入口共用，行为一致 ✓）
+ *  ⚠️ 收尾要发给**发起那一侧的 webContents**，不能用模块级的 `win` ——
+ *  `win` 在 main.js 里只是各处的参数/局部变量，IPC handler 里根本没有它
+ *  （实测：写成 `win.webContents.send` ⇒ `ReferenceError: win is not defined` 整条导入链失败 ✗）。 */
+function afterDocImported(res, targetWebContents) {
+  const wc = targetWebContents;
+  if (!wc) return;
+  wc.send('menu:project-changed');
+  wc.send('menu:open-project', res.name);
+  wc.send('app:toast', '已从文件创建项目「' + res.name + '」并打开'
+    + ((res.out && res.out.split('\n')[0]) ? '——' + res.out.split('\n')[0] : ''));
+}
+
+/** 菜单入口：选文件 → 导入（拖拽那条走 IPC，见下面的 app:import-doc） */
+async function importDocDialog(w) {
+  const res0 = await dialog.showOpenDialog(w, {
+    title: '选一个大文件（.md / .txt / .docx）生成新项目',
+    properties: ['openFile'],
+    filters: [
+      { name: '可导入的文档', extensions: ['md', 'markdown', 'txt', 'text', 'docx'] },
+      { name: '全部文件', extensions: ['*'] }
+    ]
+  });
+  if (res0.canceled || !res0.filePaths || !res0.filePaths.length) return;
+  const res = await importDocToNewProject(res0.filePaths[0]);
+  if (!res.ok) {
+    win.webContents.send('app:toast', '导入失败：' + res.error);
+    dialog.showMessageBox(win, { type: 'error', title: '导入失败', message: '没能从文件生成项目',
+      detail: res.error + '\n\n支持 .md / .txt / .docx；PDF 与"一个文件里多本书"是 5b 的范围。' });
+    return;
+  }
+  afterDocImported(res, win.webContents);
+}
+
+/** 窗口 ---------------- */
 function createWindow(opts) {
   // headless（--smoke / --export-image）：窗口离屏，不显示、不进任务栏、不抢焦点。
   const headless = !!(opts && opts.show === false);
@@ -383,6 +462,10 @@ function buildMenu(win) {
     { label: '文件', submenu: [
       { label: '导入 Markdown…', accelerator: 'CmdOrCtrl+I',
         click: () => send('menu:import-md') },
+      // 功能 5a：大文件（md/txt/docx）⇒ **新项目 + 新树**。与上面那条的区别：这个是"建新项目"，
+      // 上面那条是"往当前项目里追加"。也可以直接把文件**拖进窗口**（两条入口同一个实现 ✓）。
+      { label: '导入大文件生成新项目…', accelerator: 'CmdOrCtrl+Shift+I',
+        click: () => importDocDialog(win) },
       { label: '导出 Markdown…', accelerator: 'CmdOrCtrl+E',
         click: () => send('menu:export-md') },
       { type: 'separator' },
@@ -718,34 +801,24 @@ function registerIpc() {
     const args = ['ask', projectName, nodeId, '--json', '--kind', kind];
     if (o.question) args.push('--question', String(o.question));
     if (o.timeoutSec) args.push('--timeout', String(o.timeoutSec));
-    return new Promise((resolve) => {
-      let child;
-      try {
-        child = spawn(process.execPath, [CLI].concat(args), {
-          cwd: ROOT,
-          env: Object.assign({}, process.env, {
-            ELECTRON_RUN_AS_NODE: '1',
-            AI_MINDMAP_PROJECTS_DIR: PROJECTS_DIR,   // 数据隔离：子进程也必须指向同一个副本 ✓
-            MM_WRITER: 'gui-cli'
-          })
-        });
-      } catch (err) {
-        resolve({ ok: false, kind, error: '拉起 CLI 失败：' + ((err && err.message) || err) });
-        return;
+    // 复用 runCliAsync（唯一的异步 CLI 出口）：一次解释 20+ 秒，spawnSync 会把界面卡住 ✗
+    return runCliAsync(args).then((r) => {
+      try { return JSON.parse(r.out); }
+      catch (parseErr) {
+        // 解析不了就把**原文**带回去（红色要能自己解释自己 ✓，不要只丢一个 "failed"）
+        return { ok: false, kind, code: r.code,
+          error: ((r.err || r.out || '').trim() || ('CLI 退出码 ' + r.code)).slice(0, 400) };
       }
-      let out = '', err = '';
-      child.stdout.on('data', (d) => { out += d; });
-      child.stderr.on('data', (d) => { err += d; });
-      child.on('error', (er) => resolve({ ok: false, kind, error: '子进程错误：' + ((er && er.message) || er) }));
-      child.on('close', (code) => {
-        try { resolve(JSON.parse(out)); }
-        catch (parseErr) {
-          // 解析不了就把**原文**带回去（红色要能自己解释自己 ✓，不要只丢一个 "failed"）
-          resolve({ ok: false, kind, code: code,
-            error: (err.trim() || out.trim() || ('CLI 退出码 ' + code)).slice(0, 400) });
-        }
-      });
     });
+  });
+
+  /* 功能 5a：拖拽进来的文件（渲染层拿到路径后走这里）—— 与菜单**同一个实现** ✓ */
+  ipcMain.handle('app:import-doc', async (e, filePath) => {
+    if (!filePath || typeof filePath !== 'string') return { ok: false, error: '没有拿到文件路径' };
+    if (!fs.existsSync(filePath)) return { ok: false, error: '文件不存在: ' + filePath };
+    const res = await importDocToNewProject(filePath);
+    if (res.ok) afterDocImported(res, e.sender);
+    return res;
   });
 
   /* 关系审计面板：orphans（无引用但有内容）+ mentions（正文提到却没建链接）。
