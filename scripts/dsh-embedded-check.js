@@ -161,12 +161,37 @@ if (fs.existsSync(nm)) {
   add(7, '独立性（无 reparse 点）', s.reparse === 0 ? 'PASS' : 'FAIL', 'payload 内 reparse 点 = ' + s.reparse);
 } else { add(4, '载荷完整', 'FAIL', '没有 node_modules：' + nm); add(7, '独立性', 'UNKNOWN', '跳过'); }
 
-/* 5 人设在位 */
+/* 5 模式声明（agent preset）—— 判据是「**被声明**」，不是「目录里有没有文件」（2026-10-08 更正）
+ * 旧版核对 `.agent-presets/` 的文件数 ⇒ **校的是错的东西** ✗：内核已不再读那个目录
+ *   （内核自带 skill `dsh-agent-preset/skills/editing-cordis-compositions/SKILL.md` 原文：
+ *    "Nothing reads that directory any more"），模式真正生效靠**声明** —— 本工程的 aimindmap
+ *   走 `$presets` 生成块；第三方的梁神走它自己插件的声明（`declare = enabled`）。
+ * 这里只做**机械可判**的那一半：overrides 里每个 `$presets` 都要在 patch 里找到对应的
+ * `- id: preset-<id>` 行。**内容级**核对（生成块逐行比对）在第 6 项 —— 不在这里重复表达。
+ * 遗留目录只作为**信息**附带报告：它不影响生效，别再把它当"模式可用"的证据 ✓ */
 try {
-  const dir = path.join(HOME, '.agent-presets');
-  const names = fs.readdirSync(dir);
-  add(5, '人设在位', names.length ? 'PASS' : 'FAIL', names.join(', ') || '（空）');
-} catch (e) { add(5, '人设在位', 'FAIL', '读不到 .agent-presets：' + e.message); }
+  const ovsPath = path.join(HOME, '.embedded-overrides.json');
+  const ovs = fs.existsSync(ovsPath) ? JSON.parse(fs.readFileSync(ovsPath, 'utf8')) : {};
+  const want = Object.keys(ovs.$presets || {});
+  let legacy = '';
+  try {
+    const names = fs.readdirSync(path.join(HOME, '.agent-presets'));
+    legacy = '；遗留 .agent-presets: ' + (names.join(', ') || '（空）') + '（内核已不读，仅留档）';
+  } catch (e) { legacy = '；无遗留 .agent-presets 目录'; }
+  if (!want.length) {
+    add(5, '模式声明', 'UNKNOWN', 'overrides 里没有 $presets（本工程没有声明任何模式）' + legacy);
+  } else {
+    const patchPath = path.join(HOME, 'profiles', 'web', 'cordis.patch.yml');
+    if (!fs.existsSync(patchPath)) {
+      add(5, '模式声明', 'FAIL', '声明了 ' + want.join(', ') + ' 但找不到 patch 文件：' + patchPath + legacy);
+    } else {
+      const patchText = fs.readFileSync(patchPath, 'utf8');
+      const missing = want.filter((id) => !new RegExp('^\\s*-\\s+id:\\s+preset-' + id + '\\s*$', 'm').test(patchText));
+      add(5, '模式声明', missing.length ? 'FAIL' : 'PASS',
+        (missing.length ? '声明了但 patch 里没有对应行: ' + missing.join(', ') : '已声明且在 patch 里: ' + want.join(', ')) + legacy);
+    }
+  }
+} catch (e) { add(5, '模式声明', 'FAIL', '核对失败：' + e.message); }
 
 /* 6 本地覆盖生效（调用渲染器的 check；stdio: inherit 避开管道 ✓）
  * ⚠️ `--json` 模式下**不能** inherit：check 的"✗ 期望/实际"会直接打在 stdout 上、

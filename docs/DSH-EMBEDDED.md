@@ -88,7 +88,7 @@
 | 2 | 运行包**零补丁** | `npm run dsh:maint -- verify` 通过 |
 | 3 | profile 清单 | `package.json` 的 `dsh.profile.bundles` **逐字** == 期望 8 项 |
 | 4 | 载荷完整 | `node_modules` 文件数/字节 == 回执值（**7543 / 199.02 MB**，容差 0） |
-| 5 | 人设在位 | `.agent-presets\<name>` 文件数与哈希 == 台账值 |
+| 5 | **模式被声明**（2026-10-08 更正判据） | `overrides.$presets` 里每个模式都在 `cordis.patch.yml` 里有对应的 `- id: preset-<id>` 行。**旧判据**（`.agent-presets\<name>` 的文件数与哈希）**已废** —— 内核不再读那个目录（见 A1 更正），它核对的是**不影响生效的副本** ✗；遗留目录现在只作为**信息**附带报告。内容级核对（生成块逐行比对）在第 6 项，不在这里重复 |
 | 6 | 本地覆盖生效 | `cordis.patch.yml` 的 `defaultPreset/model/rulesFile` == overrides 渲染结果；**且 `$presets` 的生成块与"现在重新生成的结果"逐行一致**（手改/半截都算没生效） |
 | 7 | **独立性** | payload 内零 reparse 点；无"源机器绝对路径"引用（复用迁移的 I1/I2 判据） |
 | 8 | 注入链完好 | `node cli/mm-cli.js dsh-status --json`：`narrow.mode` 与 `rightbarWatcher` **都非 null** |

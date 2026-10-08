@@ -158,10 +158,16 @@ describe('真实字段名：第 3/4/5/10 项按回执 + 投递包清单判定', 
     expect(r.by.get(4).detail).toContain('2 文件');
   });
 
-  it('第 5 项读的是 --home 给的那份（真相：test-preset，而不是真机的 liangshen）', () => {
-    expect(r.by.get(5).state).toBe('PASS');
+  it('第 5 项按「被声明」判：只有遗留目录、没有 $presets ⇒ UNKNOWN（**不再**把"文件在位"当模式可用）', () => {
+    // 判据更正（2026-10-08）：内核已不再读 `.agent-presets/`（"Nothing reads that directory
+    // any more"）⇒ 旧判据核对的是一份不影响生效的副本。这里锁三件：
+    //   ① 没有声明 ⇒ UNKNOWN（判不了就说判不了，不是 PASS ✗）；
+    //   ② 遗留目录仍被**如实报告**（信息，不是判分依据）；
+    //   ③ 报告里说清它不影响生效 —— 免得下一个人又把"文件在"当"模式可用"。
+    expect(r.by.get(5).state).toBe('UNKNOWN');
+    expect(r.by.get(5).detail).toContain('没有 $presets');
     expect(r.by.get(5).detail).toContain('test-preset');
-    expect(r.by.get(5).detail).not.toContain('liangshen');
+    expect(r.by.get(5).detail).toContain('内核已不读');
   });
 
   it('第 10 项 PASS：deployed[] 按 `path` + **首段**判 —— 名字里带 task-board/sessions 的插件文件不算污染', () => {
@@ -233,5 +239,43 @@ describe('判别力：坏掉之后必须变红（三个故障同装一个实例�
 
   it('任一 FAIL ⇒ 退出码非 0', () => {
     expect(r.status).not.toBe(0);
+  });
+});
+
+describe('第 5 项「模式声明」的判别力（2026-10-08 新判据）', () => {
+  /** 给夹具补上 overrides 与 patch：第 5 项判的就是"声明 ↔ patch 行"这一对 */
+  const withDecl = (tmp, presets, patchLines) => {
+    fs.writeFileSync(path.join(tmp.home, '.embedded-overrides.json'),
+      JSON.stringify({ $presets: presets }), 'utf8');
+    if (patchLines) {
+      fs.writeFileSync(path.join(tmp.home, 'profiles', 'web', 'cordis.patch.yml'), patchLines.join('\n'), 'utf8');
+    }
+  };
+
+  it('声明了、patch 里也有对应的 preset 行 ⇒ PASS', () => {
+    const tmp = buildInstance();
+    withDecl(tmp, { mymode: { cloneFrom: 'standard' } }, ['- id: permission', '  config:', '    defaultPreset: x', '', '  - id: preset-mymode', '    name: "@deepseek-ai/dsh-agent-preset"']);
+    const r = runCheck(tmp.home);
+    expect(r.by.get(5).state).toBe('PASS');
+    expect(r.by.get(5).detail).toContain('mymode');
+    rm(tmp.root);
+  });
+
+  it('声明了、但 patch 里**没有**那一行 ⇒ FAIL（这才是要抓的失败形态：以为加了、其实没生效）', () => {
+    const tmp = buildInstance();
+    withDecl(tmp, { mymode: { cloneFrom: 'standard' } }, ['- id: permission', '  config:', '    defaultPreset: x']);
+    const r = runCheck(tmp.home);
+    expect(r.by.get(5).state).toBe('FAIL');
+    expect(r.by.get(5).detail).toContain('patch 里没有对应行');
+    rm(tmp.root);
+  });
+
+  it('声明了、但 patch 文件根本不存在 ⇒ FAIL（不是崩、也不是 UNKNOWN 糊过去）', () => {
+    const tmp = buildInstance();
+    withDecl(tmp, { mymode: { cloneFrom: 'standard' } }, null);
+    const r = runCheck(tmp.home);
+    expect(r.by.get(5).state).toBe('FAIL');
+    expect(r.by.get(5).detail).toContain('找不到 patch 文件');
+    rm(tmp.root);
   });
 });

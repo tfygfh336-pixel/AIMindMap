@@ -14,6 +14,24 @@
 
 ## [Unreleased]
 
+### 自检第 5 项改对了判据：从"目录里有文件"改成"模式**被声明**"（2026-10-08）
+
+**问题**：自检第 5 项（`scripts/dsh-embedded-check.js`）核对 `.agent-presets\` 的**文件数与哈希**，
+但内核**已不再读那个目录**（`Nothing reads that directory any more` ⇒ 见 `docs/DSH-EMBEDDED.md` A1 更正）
+⇒ 它核对的是一份**不影响生效的副本** ✗：文件在、判 PASS，而模式可能根本不存在。
+（同一天还发现过它的反面：第 8 项在 patch 热重载的瞬间读到 `null` 报了 FAIL，其实注入链是好的。）
+
+**改法**：第 5 项改为 **「模式被声明」** —— `overrides.$presets` 里每个模式都必须在
+`cordis.patch.yml` 里有对应的 `- id: preset-<id>` 行（机械可判）；**遗留目录降级为信息**附带报告
+（"内核已不读，仅留档"）；内容级核对（生成块逐行比对）留在第 6 项，**不在两处表达同一事实**。
+台账 §4 的自检表同步更新。
+
+**实测**：第 5 项 ⇒ `PASS 已声明且在 patch 里: aimindmap；遗留 .agent-presets: liangshen（内核已不读，仅留档）`；
+`--json` 输出仍是**纯 JSON**（10 项，已单独验证 —— 该项的 stdout 纯度是既有契约）。
+另两项 UNKNOWN 保持原样（第 2 项需跑重命令、第 9 项需人工点一次右栏）；第 6 项仍 FAIL，
+原因是**既有的** `permission.defaultPreset` 漂移（`workspace-write` vs 现网 `full-access-review`），
+与本次改动无关 —— 改不改那个档位由使用者定（改它 = 改内置 AI 的沙箱档位）。
+
 ### 框选拖动可以保存了：顶层主题偏移进 `meta.themeOffsets`（2026-10-08）
 
 **症状（用户报的）**：「框选之后的移动功能应该可以通过保存永久化，而不是无法保存」。
