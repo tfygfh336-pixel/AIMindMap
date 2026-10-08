@@ -18,9 +18,9 @@
 
 **背景**（功能 6，调研见 `.review/20261008-DSH深度集成调研/07-功能6-DSH模式与人设.md`）：
 内置 DSH 的「模式」= `@deepseek-ai/dsh-agent-preset` 的一条**声明**，而它的 `plugins` 是**该模式 agent 的全部能力**
-（人设 / 工具 / 技能 / plan-mode / 压缩 / 委派 —— 实测「标准模式」那份有 23 行）。
+（人设 / 工具 / 技能 / plan-mode / 压缩 / 委派 —— 实测「标准模式」那份 **19 个顶层条目**，其中 3 个是分组、组内还有子行）。
 内核自带的声明在 `dsh-web-app/presets/{standard,ptc,minimal,cordis}.patch.yml`，**是运行包的事实、随升级会变** ✗。
-⇒ 手抄一份清单进本仓库 = 又一份会漂移的副本（台账 R8 那类）。
+⇒ 手抄一份清单进本仓库 = 又一份会漂移的副本（同 `docs/DSH-EMBEDDED.md` §5「快照漂移」那一类）。
 
 **实现**（扩 `scripts/dsh-embedded-overrides.js`，它是那份 patch 的**唯一写者**，不另开脚本）：
 - 新的陈述式键 `"$presets": { "aimindmap": { "cloneFrom": "standard", "order": 0 } }`；
@@ -34,7 +34,15 @@
 
 **测试**：`tests/dsh-embedded-overrides.test.js` 13 → **22 条**（新增：结构与"逐行 id 与运行包一致"、
 人设落位与占位符保留、幂等、手改被抓、运行包路径错、白名单拒绝、require 守卫）。全部在**临时 home** 上跑，
-不碰真实实例 ✓。用户可见的"模式出现在列表里"由下一批（apply 到现网 + 台账/自检）验证。**
+不碰真实实例 ✓。
+
+**现网已 apply（2026-10-08 11:27）**：`render` 把生成块写进 `profiles\web\cordis.patch.yml`（先备份 `.bak-<时间>`）；
+`check` ⇒ `✓ $presets.aimindmap`。⚠️ **apply 时故意不动权限键**：overrides 里原有的
+`permission.defaultPreset: workspace-write` 与现网（`full-access-review`）不一致是**既有漂移**（台账 A3 那次手改被冲掉的后果），
+改它等于改内置 AI 的沙箱档位 —— 与"加模式"无关，故**保留原样**、`check` 仍如实报那一条 ✗（与 apply 前一致）。
+**生效判据**（人工 5 秒）：内置侧栏 → 新建任务 → 模式选择器里应有「aimindmap 模式」。
+台账 `docs/DSH-EMBEDDED.md` 同批更新（新增 A5 行；并**更正 A1**：遗留 `.agent-presets\liangshen` 是内核已不再读取的形态，
+"文件数+哈希"核对的是**不影响生效的副本** ✗ —— 真正生效靠插件声明）。
 
 ### 修一条顺序依赖的冒烟假红：save() 会重建 jsMind 实例，旧引用必须弃用（2026-10-08）
 

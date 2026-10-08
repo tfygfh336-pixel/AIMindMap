@@ -35,10 +35,11 @@
 
 | # | 改动 | 现状证据 | 升级运行包 | 重跑导入 | 怎么重建 / 核对 |
 |---|---|---|---|---|---|
-| A1 | 人设 `liangshen`（5 文件）写入 `.agent-presets\` | 回执 `receipt-migrate-ed160722fe48.json`（deployed 5 项 created） | 保留 ✓ | **会被源侧覆盖** ✗ | `dsh-migrate-in` 配置层重放；核对：文件数 + 哈希 |
+| A1 | 人设 `liangshen`（5 文件）写入 `.agent-presets\` | 回执 `receipt-migrate-ed160722fe48.json`（deployed 5 项 created） | 保留 ✓ | **会被源侧覆盖** ✗ | `dsh-migrate-in` 配置层重放；核对：文件数 + 哈希。⚠️ **2026-10-08 更正（重要）**：这份目录是**遗留形态、内核已不再读它** —— 内核自带 skill `dsh-agent-preset/skills/editing-cordis-compositions/SKILL.md` 原文写着"**Nothing reads that directory any more**"；「梁神模式」真正生效靠的是**已安装的插件 `@linxin666/dsh-liangshen`**（它激活时把自带的 preset **声明**给 registry，"declare = enabled"，不往 dsh-home 写东西）。⇒ **"文件数 + 哈希"核对的是那份不影响生效的副本** ✗；要核"模式真的可用"请按 A5 的判据（列表里能选） |
 | A2 | 插件载荷：`profiles\web\node_modules` **7543 文件 / 199.02 MB** + `config\rules.yaml` + `cordis.patch.yml` + `package.json`（8 bundle）+ pnpm lock/workspace；合计 **7553 文件 / 199.21 MB**（快照，dsh 0.1.7-rc.2） | 回执 `receipt-migrate-45242730bc15.json` + `packages\migrate-45242730bc15\manifest.json`（I1–I4 全 ✓） | 保留 ✓ | **会被源侧覆盖** ✗ | `dsh-migrate-in` 载荷层重放；核对：文件数/字节**容差 0** |
 | A3 | **迁移后手工改过 `cordis.patch.yml`**（16:37:48，晚于 apply 15 分钟）：`defaultPreset` `full-access-review` → **`workspace-write`** + 4 行沙箱注释 | 改完当时与迁移包 payload 逐字节不同（差 9 行）；与全局 `~/.dsh` 差 15 行。**2026-09-30 晚复核（实测）：该键已又变回 `full-access-review`** ⇒ 那次手改**已经被后来的重跑冲掉** ✓ —— 这就是"手工态必丢"的直接证据（不是推测） | 保留 ✓ | **会丢** ✗✗ | 唯一不可复现的数据侧改动 ⇒ **现在只许**把值写进 `dsh-home\.embedded-overrides.json` 再 `render`（§3-② / B9）✓；核对 = 自检第 6 项（`overrides check`） |
 | A4 | 内置实例**自建**物（非我们的改动，但要知道边界）：`profiles\web\cordis.yml`（空入口模板）、`hub.log`、根下 `storages/ sessions/ dsh-usage/ task-board/ skin-center/`、`skills\`（应用侧写入）、`node_modules\@deepseek-ai.stale-*`（升级残留） | `dsh-service.log` 有成功启动 | 保留 ✓ | 明确**不迁** ✓（含凭据 `.credentials.yaml`，有意不迁 ✓） | 无需动作；别把它们当"配置"迁移 ✗ |
+| A5 | **「aimindmap 模式」的 agent preset 声明**（2026-10-08 新增）：`cordis.patch.yml` 末尾的**生成块** `- insert: - id: preset-aimindmap / name: @deepseek-ai/dsh-agent-preset`，其 `plugins` 清单（19 个顶层条目）**从运行包自带的 `presets/standard.patch.yml` 生成**、只替换 `persona.prefix` 为本工程的人设文本 | `render` 回执 + `overrides check` 的 `✓ $presets.aimindmap`（**逐行比对**生成块与"现在重新生成的结果"）；声明在 `dsh-home\.embedded-overrides.json` 的 `"$presets"` | 保留 ✓（overrides 在 dsh-home；生成块在 patch 里） | **会丢** ✗（重跑导入按 A3 同路径覆盖） | **重建**：`node scripts/dsh-embedded-overrides.js render` → `check`（非 0 = 没生效）。**核对生效**（人工，5 秒）：内置侧栏 → 新建任务 → 模式选择器里应有「aimindmap 模式」（与标准/PTC/梁神并列）。⚠️ 生效判据**不是**"文件里有那几行" —— 那是 A1 栽过的坑 |
 
 ### B. 应用侧（本仓库代码 / 注入）
 
@@ -52,7 +53,7 @@
 | B6 | **只读诊断 `dsh-status`**（可见性/总占宽/窄宽/溢出/`rightbarOpen`/`autoWide`/`rightbarWatcher`；**白名单输出，绝不含 url/token**） | `docs/CLI.md`；`AI-GUIDE.md` §4.0 | 保留 ✓ | **升级后自检的主要仪器** ✓ |
 | B7 | **指针 skill 注入**：应用孵化时写 `dsh-home\skills\ai-mind-map\SKILL.md`（幂等） | `src/dsh-sidebar-skill.js` | 保留（启动按需重写） ✓ | 文件存在 + 内容里的真源路径正确 |
 | B8 | **内核事实进文档**（本台账 + `AI-GUIDE.md` §4.0 + `ARCHITECTURE.md` 侧栏段 + CHANGELOG） | 上述文件 | 保留 ✓；**756/900 等数字易腐** ✗ | 升级后重读内核源码并更新本台账 |
-| B9 | **本地覆盖"可重放"**（治理 A3 的那条机制，已落地）：`dsh-home\.embedded-overrides.json`（陈述式差异，现在只有 `permission.defaultPreset` 一条）+ 渲染器 `scripts\dsh-embedded-overrides.js`（`render [--dry-run]` / `check`；白名单 4 个条目，白名单外**报错退出**；写盘前备份 `.bak-<时间>`；幂等） | §3-②；`tests/dsh-embedded-overrides.test.js`（锁"连跑两次 sha256 不变"与白名单边界） | 代码保留 ✓；overrides 在 dsh-home 里 ⇒ 按 A 类**保留** ✓ | **升级 / 重跑导入之后要跑它**：`node scripts/dsh-embedded-overrides.js render`（把手改态渲染回去）→ `node scripts/dsh-embedded-overrides.js check`（非 0 = 没生效）。自检第 6 项就是这次 `check` ✓ |
+| B9 | **本地覆盖"可重放"**（治理 A3 的那条机制，已落地）：`dsh-home\.embedded-overrides.json`（陈述式差异：现在有 `permission.defaultPreset` 与 `$presets.aimindmap`）+ 渲染器 `scripts\dsh-embedded-overrides.js`（`render [--dry-run]` / `check`；白名单 4 个条目，白名单外**报错退出**；写盘前备份 `.bak-<时间>`；幂等）。**2026-10-08 扩展**：新增 `$presets` —— 渲染器会**插入**一条 `@deepseek-ai/dsh-agent-preset` 声明，清单**从运行包自带的 `presets/<cloneFrom>.patch.yml` 生成**（不手抄进仓库，避免随升级漂移）、只替换 persona 文本；`check` 会把生成块与"现在重新生成的结果"**逐行比对**（手改/半截都判红）。**它同时是那份 patch 文件的唯一写者**（新增"要渲染进 patch 的东西"请扩它，别再开第二个写者 ✗） | §3-②；`tests/dsh-embedded-overrides.test.js`（22 条：锁"连跑两次 sha256 不变"、白名单边界、生成块与运行包逐行 id 对齐、check 抓手改、require 守卫） | 代码保留 ✓；overrides 在 dsh-home 里 ⇒ 按 A 类**保留** ✓ | **升级 / 重跑导入之后要跑它**：`node scripts/dsh-embedded-overrides.js render`（把手改态渲染回去）→ `node scripts/dsh-embedded-overrides.js check`（非 0 = 没生效）。自检第 6 项就是这次 `check` ✓ |
 | B10 | **升级后自检**（只读、不起 Electron、10 项三态）：`scripts\dsh-embedded-check.js`（`--home` / `--json`）——§4 那张表就是它的 10 项 | `tests/dsh-embedded-check.test.js`（锁真实字段名 + `UNKNOWN ≠ PASS` + `--json` 必须是合法 JSON 数组） | 代码保留 ✓；判据依赖的字段名是**迁移侧**的（回执 + 投递包 `manifest.json`）⇒ 迁移侧改结构会让它退化 ✗ | **换运行包 / 重跑导入之后必跑**：`node scripts/dsh-embedded-check.js --json`。真值来源 = 回执 `receipt-migrate-*.json` **及其指向的** `packageDir\manifest.json`（第 3 项比 bundles、第 4 项比 `files{}` 的文件数/字节）。**UNKNOWN ≠ 通过** ✗ |
 
 ### C. 运行包侧（vendor\dsh）
@@ -88,7 +89,7 @@
 | 3 | profile 清单 | `package.json` 的 `dsh.profile.bundles` **逐字** == 期望 8 项 |
 | 4 | 载荷完整 | `node_modules` 文件数/字节 == 回执值（**7543 / 199.02 MB**，容差 0） |
 | 5 | 人设在位 | `.agent-presets\<name>` 文件数与哈希 == 台账值 |
-| 6 | 本地覆盖生效 | `cordis.patch.yml` 的 `defaultPreset/model/rulesFile` == overrides 渲染结果 |
+| 6 | 本地覆盖生效 | `cordis.patch.yml` 的 `defaultPreset/model/rulesFile` == overrides 渲染结果；**且 `$presets` 的生成块与"现在重新生成的结果"逐行一致**（手改/半截都算没生效） |
 | 7 | **独立性** | payload 内零 reparse 点；无"源机器绝对路径"引用（复用迁移的 I1/I2 判据） |
 | 8 | 注入链完好 | `node cli/mm-cli.js dsh-status --json`：`narrow.mode` 与 `rightbarWatcher` **都非 null** |
 | 9 | 内核事实仍成立 | 把侧栏拖到 900 ⇒ 点「打开侧边栏」⇒ 右栏真的出现（`rightbarOpen=true`、`autoWide` 有还原值）—— **人工确认**（判据不可机械判定，故不做硬门禁 ✗） |
