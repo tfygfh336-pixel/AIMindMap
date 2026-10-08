@@ -243,12 +243,14 @@ module.exports = [
         });
         return 1;
       })()`);
+      // 探针（临时，随本轮调试一起撤）：记录每次框选收尾的真实输入
+      await ctx.exec('window.__selSpy = []; 1');
       // 真鼠标拖拽 + Ctrl。**带重试**：起点是否"起得来框"取决于此刻的布局（前面的断言可能留下工具条/
       // 详情框/视图位移 ⇒ 实测点会落到节点上 ✗），所以一次不行就重挑起点再试 —— 与真人"点空了再点"一致 ✓。
       // 判定"这次真的起了框"：橡皮筋元素在 mouseDown 之后可见 ✓（这是实现的直接产物，不猜 ✗）
-      let attempts = 0, ok = false, last = '';
+      let attempts = 0, grew = false, lost = false, last = '';
       const log = [];
-      for (let i = 0; i < 4 && !ok; i++) {
+      for (let i = 0; i < 4 && !(grew && !lost); i++) {
         attempts++;
         const st = await execJson(ctx, `(function () {
           var p = window.MM.fdPanel(); var r = p.getBoundingClientRect();
@@ -275,10 +277,6 @@ module.exports = [
           return JSON.stringify({ ok: false, text: '找不到能起框选的空白起点' });
         })()`);
         if (!st.ok) { log.push('第 ' + attempts + ' 次：' + st.text); break; }
-        // 基准必须**每次尝试前**重读：点空的那几次会走 Ctrl+点击的加减选分支 ⇒ 选区已经变了 ✗
-        //（实测踩到：拿最初的选区去比"保留了几个"，结果冤枉了并集 ✓）
-        const curNow = JSON.parse(await ctx.exec('JSON.stringify(window.MM.getSelectionRaw())'));
-        const baseN = curNow.length;
         mouse(ctx, 'mouseMove', st.start, ['control']);
         mouse(ctx, 'mouseDown', st.start, ['control']);
         await new Promise((r) => setTimeout(r, 90));
@@ -287,6 +285,11 @@ module.exports = [
           return JSON.stringify({ ok: !!el && el.style.display !== 'none' });
         })()`));
         if (!started.ok) { mouse(ctx, 'mouseUp', st.start, ['control']); log.push('第 ' + attempts + ' 次起点没起框'); continue; }
+        // ⚠️ 基准必须**在按下之后**读：这次按下若落到节点上，会走 Ctrl+点击的加减选分支 ⇒ 按下**之前**
+        //    读的值已经过期 ✗（实测：拿它去比"保留了几个"，冤枉了并集，还误报成"加选丢节点" ✓）。
+        //    现在框已经起来了（started ✓），这之后再没有加减选 ⇒ 这个基准是准的 ✓
+        const curNow = JSON.parse(await ctx.exec('JSON.stringify(window.MM.getSelectionRaw())'));
+        const baseN = curNow.length;
         mouse(ctx, 'mouseMove', { x: Math.round((st.start.x + st.end.x) / 2), y: Math.round((st.start.y + st.end.y) / 2) }, ['control']);
         mouse(ctx, 'mouseMove', st.end, ['control']);
         mouse(ctx, 'mouseUp', st.end, ['control']);
@@ -319,14 +322,16 @@ module.exports = [
             text: 'raw=' + raw.join(',') + ' 原有 ' + prev.length + ' 个保留 ' + kept.length
               + ' 个 ｜ 本框命中=' + (raw.length > prev.length ? ('+' + (raw.length - prev.length)) : '无新增') });
         })()`);
-        log.push('第 ' + attempts + ' 次：起点=(' + st.start.x + ',' + st.start.y + ') 目标=' + st.targetId
-          + ' ⇒ ' + got.text + '（' + baseN + ' → ' + got.n + '）｜ ' + expect.text);
-        ok = !!got.ok;
+        log.push('第 ' + attempts + ' 次：起点=(' + st.start.x + ',' + st.start.y + ') ⇒ ' + got.text
+          + '（' + baseN + ' → ' + got.n + '）｜ ' + expect.text);
+        if (got.n > baseN) grew = true;
+        if (got.kept < baseN) lost = true;      // 任何一次"丢了原有节点"都是真缺陷 ⇒ 断言必须红 ✓
       }
       const res = await execJson(ctx, `(function () {
         var raw = window.MM.getSelectionRaw ? window.MM.getSelectionRaw() : [];
-        return JSON.stringify({ ok: ${ok},
-          text: '加选前 ' + ${before} + ' 个 ⇒ 加选后 ' + raw.length + ' 个（应更多 ✓）｜ 尝试 ${attempts} 次 ｜ '
+        return JSON.stringify({ ok: ${grew} && !${lost},
+          text: '加选前 ' + ${before} + ' 个 ⇒ 加选后 ' + raw.length + ' 个 ｜ 至少一次真的长大=${grew} 任何一次丢过节点=${lost}'
+            + ' ｜ 尝试 ${attempts} 次 ｜ '
             + ${JSON.stringify(log.join(' ／ '))}
             + ' ｜ 渲染层事件=' + JSON.stringify((window.__dbg || []).slice(0, 4))
         });
