@@ -177,10 +177,19 @@
     });
     html += '<div class="ask-inputrow">'
       + '<input class="ask-input" type="text" placeholder="问一句…（Enter 发送）" />'
+      // 思考强度（用户反馈③："对话栏里要可以手动设置"）：解释默认low、问答默认medium；改了就影响**下一次**提问 ✓
+      + '<select class="ask-effort" title="思考强度：越高越慢但更细致；改完对下一次提问生效">'
+      + '<option value="low">思考：低（快）</option><option value="medium">思考：中</option>'
+      + '<option value="high">思考：高</option><option value="xhigh">思考：很高</option></select>'
       + '<button type="button" class="ask-send">发送</button></div>';
     dc.innerHTML = html;
     const input = dc.querySelector('.ask-input');
     const sendBtn = dc.querySelector('.ask-send');
+    const effortSel = dc.querySelector('.ask-effort');
+    if (effortSel) {
+      effortSel.value = st.effort || MM.DEFAULT_ASK_EFFORT || 'low';
+      effortSel.addEventListener('change', () => { st.effort = effortSel.value; });
+    }
     const fire = () => { const q = input.value.trim(); if (!q) return; input.value = ''; send(box, q, 'ask'); };
     sendBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); fire(); });
     input.addEventListener('keydown', (e) => {
@@ -199,12 +208,14 @@
     if (!project) return Promise.resolve(null);
     const st = box.ask || (box.ask = { kind: kind, log: [] });
     st.kind = kind === 'explain' ? 'explain' : st.kind;
+    // 思考强度默认：解释 low（"解释的时候自动降低思考强度增加速度"✓）、问答 medium；界面可改 ✓
+    if (!st.effort) st.effort = (kind === 'explain' || st.kind === 'explain') ? 'low' : 'medium';
     const entry = { q: question || '', pending: true };
     st.log.push(entry);
     renderAskPage(box);
     const api = window.desktop && window.desktop.app && window.desktop.app.ask;
     if (!api) { entry.pending = false; entry.err = '没有 desktop.app.ask（preload 没接上）'; renderAskPage(box); return Promise.resolve(null); }
-    return Promise.resolve(api(project, nodeId, { kind: kind, question: question || undefined }))
+    return Promise.resolve(api(project, nodeId, { kind: kind, question: question || undefined, effort: st.effort }))
       .then((r) => {
         entry.pending = false;
         if (r && r.ok) { entry.a = r.text; entry.stub = !!r.stub; entry.ms = r.ms; }

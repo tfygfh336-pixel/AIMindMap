@@ -240,5 +240,48 @@ module.exports = [
         text: opened.text + ' ｜ ' + stayed.text + ' ｜ ' + gone.text
       };
     }
+  },
+  {
+    name: 'AI 问答：思考强度下拉（③）—— 在浮窗里能改，且真的送出去了',
+    run: async (ctx) => {
+      const pick = await pickVisibleNode(ctx);
+      if (!pick.ok) return { ok: false, text: pick.text };
+      // 自己开一个（**不依赖上一条留下的状态**：上一条断言最后会点空白关掉所有框 —— 我又踩了一次顺序依赖 ✗）
+      await ctx.exec(`window.MM.showAskBox(${JSON.stringify(pick.node.id)}, { kind: 'ask' }); 1`);
+      await waitFor(ctx, `(function () {
+        return JSON.stringify({ ok: !!document.querySelector('.fd-ask-box .ask-effort'), text: '等下拉出现' });
+      })()`);
+      const res = await execJson(ctx, `(function () {
+        var boxes = Array.prototype.slice.call(document.querySelectorAll('.fd-ask-box'));
+        if (!boxes.length) return JSON.stringify({ ok: false, text: '没有已打开的问答框' });
+        var sel = boxes[boxes.length - 1].querySelector('.ask-effort');
+        if (!sel) return JSON.stringify({ ok: false, text: '输入行里没有 .ask-effort 下拉' });
+        var opts = Array.prototype.slice.call(sel.options).map(function (o) { return o.value; });
+        var before = sel.value;
+        sel.value = 'high';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return JSON.stringify({ ok: opts.join(',') === 'low,medium,high,xhigh', text: '选项=' + opts.join(',')
+          + ' 默认=' + before + ' ⇒ 改成 high', opts: opts });
+      })()`);
+      if (!res.ok) return { ok: false, text: res.text };
+      // 真发一句：桩会把收到的强度回显（证明 下拉 → 主进程 这一跳通了 ✓；主进程→CLI 那跳由集成断言覆盖）
+      await ctx.exec(`(function () {
+        var boxes = Array.prototype.slice.call(document.querySelectorAll('.fd-ask-box'));
+        var box = boxes[boxes.length - 1];
+        var input = box.querySelector('.ask-input');
+        input.value = '强度测试问题';
+        box.querySelector('.ask-send').click();
+        return 1;
+      })()`);
+      const chk = await waitFor(ctx, `(function () {
+        var boxes = Array.prototype.slice.call(document.querySelectorAll('.fd-ask-box'));
+        var box = boxes[boxes.length - 1];
+        var text = box ? box.textContent : '';
+        return JSON.stringify({ ok: text.indexOf('思考强度：high') >= 0,
+          text: '桩回显含"思考强度：high"=' + (text.indexOf('思考强度：high') >= 0) });
+      })()`);
+      const o = JSON.parse(chk);
+      return { ok: !!o.ok, text: res.text + ' ｜ ' + o.text };
+    }
   }
 ];

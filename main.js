@@ -794,15 +794,16 @@ function registerIpc() {
     if (isSmoke || process.env.MM_ASK_STUB === '1') {
       const echo = o.question ? ('｜你问：' + String(o.question).slice(0, 80)) : '';
       return Promise.resolve({
-        ok: true, stub: true, kind, ms: 0,
+        ok: true, stub: true, kind, ms: 0, effort: o.effort || null,
         // 桩答案**故意带 Markdown**（加粗/列表）：这样冒烟能顺带验"答案里的粗体真的渲染出来了" ✓
         text: '（冒烟桩：未调用模型）**' + (kind === 'explain' ? '这是对该节点的解释占位' : '这是回答占位') + '。**'
-          + '\n\n- 第一点\n- 第二点' + echo
+          + '\n\n- 第一点\n- 第二点' + echo + (o.effort ? ('｜思考强度：' + o.effort) : '')
       });
     }
     const args = ['ask', projectName];
     if (nodeId) args.push(String(nodeId));      // 节点可选：消息栏那条入口是**项目级**提问 ✓
     args.push('--json', '--kind', kind);
+    if (o.effort) args.push('--effort', String(o.effort));   // 界面上的"思考强度"下拉 ✓（用户反馈③）
     if (o.question) args.push('--question', String(o.question));
     if (o.timeoutSec) args.push('--timeout', String(o.timeoutSec));
     // 复用 runCliAsync（唯一的异步 CLI 出口）：一次解释 20+ 秒，spawnSync 会把界面卡住 ✗

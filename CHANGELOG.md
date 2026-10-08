@@ -14,6 +14,32 @@
 
 ## [Unreleased]
 
+### 反馈③：解释/问AI 提速 —— 思考强度可调（默认解释 low、问答 medium）（2026-10-08）
+
+**取证结论**（都是实测，不是推断）：
+- `dsh headless` **没有**思考强度参数（只有 `--json` / `--session-id`）✗ ⇒ 唯一的旋钮是 profile 里的
+  `agent-default-model.reasoningEffort`，而现网 web profile 是 **`high`** —— 这就是"慢"的直接原因 ✓；
+- 允许取值**按模型声明**：本机在用的 `deepseek-flash` 声明 `low/medium/high/xhigh`
+  （另一个模型是 `high/max`）⇒ 代码只做粗校验，未知值**一律拒绝**并列出可用值（不猜 ✗）；
+- ⚠️ **patch 是整行替换**：实测只写 `reasoningEffort` 会把同行的 `provider`/`model` 一起抹掉 ✗✗
+  ⇒ 生成的 patch 必须**三项写全**（provider/model 从 `--dump-config` 的现实值里扫出来）。
+
+**实现**：`src/dsh-ask.js` 新增 `EFFORTS`（含取值来源注释）/`DEFAULT_EFFORT`（解释 low、问答 medium）/
+`parseAgentModel`（**不引 YAML 解析器** —— 本工程零运行时依赖，只做一次极窄文本扫描；扫不到就返回 null，
+调用方**放弃覆盖并如实说明**，不猜 ✗）/`buildEffortPatch`（三项写全 + 未知值抛错）；
+`askOnce` 在需要时落一个**临时 patch 文件**（用完即删 ✓）。CLI：`ask --effort low|medium|high|xhigh`
+（`--dry-run` 会把 patch 也打出来 ⇒ **离线可验** ✓）。界面：对话栏加了「思考：低/中/高/很高」下拉
+（用户原话"对话栏里要可以手动设置"✓），改完对**下一次**提问生效 ✓。
+
+**提速实测**：同一条解释（`comnet/tcp-handshake --kind explain`）——
+`high` **23.8 s** → `low` **15.8 s**（端到端 16.4 s，答案仍 1534 字，不是变短敷衍 ✓）。**单次样本，不是严谨基准** ✓。
+
+**测试**：单测 18 → **24**（dump 文本扫描不串行/扫不到返回 null/三项写全/未知值抛错/默认值/带 patch 的参数形状）；
+集成断言 **+3**（210，全离线）：解释默认 low 且 patch 三项齐全、显式 `--effort xhigh` 生效、
+未知值非 0 且列出可用值；冒烟 **+1**（154）：下拉四个选项齐、默认 low、改成 high 后**桩回显 `思考强度：high`**
+（证明 渲染层→主进程 这一跳真的把强度送出去了 ✓，主进程→CLI 那跳由集成断言覆盖 ✓）。
+**判别力证明（实跑）**：让 CLI 忽略 `--effort` ⇒ **4 条断言同时报红**（含两条新的强度断言）⇒ 撤销后 210/210 ✓。
+
 ### 按用户反馈修 5 项：Markdown 渲染 / 空对话框 / 点线打不开 / 悬浮窗行为 / 抓到一个真根因（2026-10-08）
 
 **① 全局 `**粗体**` 不渲染** —— 根因有两处，都在我这边：

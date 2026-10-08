@@ -395,8 +395,11 @@ const askDry = run(['ask', PROJ, 'a', '--kind', 'explain', '--dry-run', '--json'
 const askDryJ = (() => { try { return JSON.parse(askDry.out); } catch (e) { return null; } })();
 check('ask --dry-run：不调用模型（无 key 也能跑），并给出完整提示词与命令行',
   !!(askDryJ && askDryJ.ok && askDryJ.dryRun && askDryJ.prompt && askDryJ.command
-    && askDryJ.command.args.length === 3                                   // [dsh 入口, headless, 提示词]
-    && askDryJ.command.args[1] === 'headless'),
+    // 判**形状**不判个数（思考强度 patch 会让参数变多 ✓）：最后一个参数必须是提示词原文，
+    // 且必须出现 `headless` 子命令（有 patch 时还要有 --patch）
+    && askDryJ.command.args[askDryJ.command.args.length - 1] === askDryJ.prompt
+    && askDryJ.command.args.indexOf('headless') > 0
+    && (askDryJ.command.args.indexOf('--patch') < 0 || askDryJ.command.args.indexOf('--patch') < askDryJ.command.args.length - 1)),
   askDryJ ? ('提示词 ' + askDryJ.prompt.length + ' 字，命令行参数 ' + askDryJ.command.args.length + ' 个') : askDry.out.trim().slice(0, 160));
 check('ask 的提示词**自动补齐了情境**：项目 / 树中路径 / 正文三者都不能空',
   !!(askDryJ && /· 项目：\S/.test(askDryJ.prompt) && /· 在树中的路径：\S/.test(askDryJ.prompt)
@@ -416,6 +419,21 @@ check('ask **项目级**（不给节点）：可用，且情境里说清"项目�
   askProjJ ? ('提示词 ' + askProjJ.prompt.length + ' 字') : askProj.out.trim().slice(0, 140));
 check('ask 项目级但**不给问题** ⇒ 非 0 且说明原因（不许发一个空问题出去）',
   (() => { const r = run(['ask', PROJ, '--dry-run']); return r.status !== 0 && /项目级提问要带/.test(r.err + r.out); })());
+
+/* 9.1.2 思考强度（用户反馈③"太慢"）：解释默认 low；显式 --effort 生效；patch 必须**三项写全**
+ *（实测教训：patch 是整行替换，只写 reasoningEffort 会把 provider/model 抹掉 ✗）。
+ * 这一段**全离线**（--dry-run + dump-config），不烧额度 ✓ */
+const effLo = (() => { try { return JSON.parse(run(['ask', PROJ, 'a', '--kind', 'explain', '--dry-run', '--json']).out); } catch (e) { return null; } })();
+check('ask 思考强度：解释**默认 low**（自动提速 ✓），且 patch 里 provider/model/reasoningEffort 三项齐全',
+  !!(effLo && effLo.effort === 'low' && /provider:\s*\S/.test(effLo.effortPatch || '')
+    && /model:\s*\S/.test(effLo.effortPatch || '') && /reasoningEffort:\s*low/.test(effLo.effortPatch || '')),
+  effLo ? ('effort=' + effLo.effort + ' patch=' + String(effLo.effortPatch).split('\n').filter((l) => /provider:|model:|reasoningEffort:/.test(l)).join(' / ')) : '—');
+const effHi = (() => { try { return JSON.parse(run(['ask', PROJ, 'a', '--kind', 'ask', '--question', 'x', '--effort', 'xhigh', '--dry-run', '--json']).out); } catch (e) { return null; } })();
+check('ask 思考强度：显式 --effort xhigh 生效（对话栏那个下拉发的就是这个 ✓）',
+  !!(effHi && effHi.effort === 'xhigh' && /reasoningEffort:\s*xhigh/.test(effHi.effortPatch || '')),
+  effHi ? ('effort=' + effHi.effort) : '—');
+check('ask 思考强度：未知取值 ⇒ 非 0 且列出可用值（不猜、不静默退回默认 ✗）',
+  (() => { const r = run(['ask', PROJ, 'a', '--kind', 'explain', '--effort', 'turbo', '--dry-run']); return r.status !== 0 && /未知的思考强度/.test(r.err + r.out) && /low \/ medium/.test(r.err + r.out); })());
 
 // 8.7 mentions --cross：跨项目「未链接提及」两个方向。
 // 用一个**临时第二项目**做对端，绝不触碰 comnet（真实数据）。

@@ -104,37 +104,57 @@ module.exports = {
     const prompt = dshAsk.buildAskPrompt(Object.assign({}, info, { kind, question }));
     const runtime = dshAsk.resolveAskRuntime({ repoRoot: path.resolve(__dirname, '..', '..') });
     const timeoutSec = Number(ctx.args.timeout) > 0 ? Number(ctx.args.timeout) : undefined;
+    // 思考强度（用户反馈③"太慢"）：解释默认 low（原话："解释的时候自动降低思考强度增加速度"✓），
+    // 问答默认 medium；两者都能用 --effort 覆盖（界面上的下拉框发的就是这个 ✓）。
+    // ⚠️ 取值由**模型自己声明**（deepseek-flash: low/medium/high/xhigh）⇒ 未知值一律拒绝，不猜 ✗
+    const effort = ctx.args.effort || dshAsk.DEFAULT_EFFORT[kind];
+    if (dshAsk.EFFORTS.indexOf(effort) < 0) {
+      ctx.error('未知的思考强度: ' + effort + '（可用：' + dshAsk.EFFORTS.join(' / ') + '）');
+      return;
+    }
 
     // ⚠️ 参数名是**驼峰**（cli/core.js 把 `--dry-run` 解析成 `args.dryRun`）。
     //    第一版写成 `ctx.args['dry-run']` ⇒ 标志被**静默忽略**、白白烧了一次真模型调用 ✗
     //    （实测：本该 0.4s 的 dry-run 跑了 23.3s 才现形）。tests/dsh-ask.test.js 锁死这条契约。
     if (ctx.args.dryRun) {
+      // 顺便把"将要打的思考强度 patch 长什么样"也打出来（离线可验 ✓ 不用真跑模型）
+      let patchText = null;
+      try {
+        const dump = require('child_process').spawnSync(runtime.node, [runtime.dsh, '--profile', 'headless', '--dump-config'],
+          { encoding: 'utf8', windowsHide: true, timeout: 20000, env: Object.assign({}, process.env, { DSH_HOME: runtime.home }) });
+        patchText = dshAsk.buildEffortPatch(effort, dshAsk.parseAgentModel(String((dump && dump.stdout) || '')));
+      } catch (e) { patchText = '（生成失败：' + ((e && e.message) || e) + '）'; }
       const out = {
         ok: true, dryRun: true, project: info.project, target: { id: info.nodeId, topic: info.topic },
-        kind, prompt, timeoutMs: (timeoutSec ? timeoutSec * 1000 : dshAsk.DEFAULT_TIMEOUT_MS),
-        command: { node: runtime.node, args: [runtime.dsh].concat(dshAsk.buildAskArgs(prompt)), cwd: process.cwd(), dshHome: runtime.home }
+        kind, effort, prompt, timeoutMs: (timeoutSec ? timeoutSec * 1000 : dshAsk.DEFAULT_TIMEOUT_MS),
+        effortPatch: patchText,
+        command: { node: runtime.node, args: [runtime.dsh].concat(dshAsk.buildAskArgs(prompt, { patchFile: '<临时 patch>' })), cwd: process.cwd(), dshHome: runtime.home }
       };
       if (ctx.args.json) { ctx.outJson(out); return; }
       ctx.out('（--dry-run：只打印将要发给 AI 的内容，**没有调用模型** ✓）');
-      ctx.out('命令行：' + runtime.node + ' ' + runtime.dsh + ' headless "<下面这段>"');
+      ctx.out('命令行：' + runtime.node + ' ' + runtime.dsh + ' --profile headless --patch <临时patch> "<下面这段>"');
       ctx.out('DSH_HOME：' + runtime.home);
+      ctx.out('思考强度：' + effort + '（' + (ctx.args.effort ? '显式指定' : '按用途默认') + '）');
       ctx.out('超时：' + Math.round(out.timeoutMs / 1000) + 's');
+      ctx.out('---- 思考强度 patch ----');
+      String(patchText).split('\n').forEach((l) => ctx.out(l));
       ctx.out('---- 提示词 ----');
       prompt.split('\n').forEach((l) => ctx.out(l));
       return;
     }
 
     const r = dshAsk.askOnce({
-      runtime, prompt, timeoutMs: timeoutSec ? timeoutSec * 1000 : undefined
+      runtime, prompt, effort, timeoutMs: timeoutSec ? timeoutSec * 1000 : undefined
     });
     if (ctx.args.json) {
       ctx.outJson({ ok: r.ok, project: info.project, target: { id: info.nodeId, topic: info.topic },
-        kind, ms: r.ms, code: r.code, text: r.text, error: r.error || null });
+        kind, effort, ms: r.ms, code: r.code, text: r.text, error: r.error || null });
       if (!r.ok) process.exitCode = 1;
       return;
     }
     if (!r.ok) ctx.error('向内嵌 DSH 提问失败（' + r.ms + 'ms）：' + r.error);
-    ctx.out('「' + info.topic + '」' + (kind === 'explain' ? '的解释' : '') + '（' + (r.ms / 1000).toFixed(1) + 's）：');
+    ctx.out('「' + info.topic + '」' + (kind === 'explain' ? '的解释' : '') + '（' + (r.ms / 1000).toFixed(1) + 's，思考强度 '
+      + (r.effort || effort) + '）：');
     ctx.out(r.text);
   }
 };

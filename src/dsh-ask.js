@@ -18,11 +18,60 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const { spawnSync } = require('child_process');
 const dshPackage = require('./dsh-package.js');
 
 /** 一次性问答的超时上限（默认）。实测极小提示词 4.4 s；留足模型思考与吐字的时间 */
 const DEFAULT_TIMEOUT_MS = 120000;
+
+/* ---------------- 思考强度（用户反馈③：解释/问AI 太慢） ----------------
+ * 证据（2026-10-08 实地取证）：
+ *   · `dsh headless` **没有**任何思考强度参数（只有 --json / --session-id）✗ ⇒ 只能用 `--patch` 覆盖
+ *     `agent-default-model` 这一行；
+ *   · 现值来自 profile：实测 web profile 是 `reasoningEffort: high` —— 这就是"慢"的直接原因 ✓；
+ *   · 允许取值**按模型声明**：`deepseek-flash` 声明的是 low/medium/high/xhigh（另一个模型是 high/max）
+ *     ⇒ 本文件只做**取值的粗校验**，未知值一律拒绝（不猜 ✗）；
+ *   · **patch 是整行替换**：实测只写 `reasoningEffort` 会把 `provider`/`model` 一起抹掉 ✗✗
+ *     ⇒ 生成的 patch 必须把三项写全（provider/model 从 `--dump-config` 的现实值里取）。
+ * 默认：解释用 low（用户原话"解释的时候自动降低思考强度增加速度"✓），问答用 medium（可手动改 ✓）。 */
+const EFFORTS = ['low', 'medium', 'high', 'xhigh'];
+const DEFAULT_EFFORT = { explain: 'low', ask: 'medium' };
+
+/** 从 `--dump-config` 的文本里取 `agent-default-model` 的 provider/model（**不引 YAML 解析器**：
+ *  本工程零运行时依赖；只做一次极窄扫描 ✓，扫不到返回 null ⇒ 调用方**放弃 effort 覆盖**并如实说明 ✓） */
+function parseAgentModel(dumpText) {
+  const lines = String(dumpText || '').split(/\r?\n/);
+  let i = lines.findIndex((l) => /^\s*-\s+id:\s*agent-default-model\s*$/.test(l));
+  if (i < 0) return null;
+  const out = {};
+  for (let k = i + 1; k < lines.length && k < i + 12; k++) {
+    if (/^\s*-\s+id:/.test(lines[k])) break;                 // 进入下一行了
+    const m = lines[k].match(/^\s*(provider|model):\s*(\S+)\s*$/);
+    if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, '');
+  }
+  return (out.provider && out.model) ? out : null;
+}
+
+/** 生成"只改思考强度"的 patch 文本（**三项写全** —— 见上面的实测说明 ✓） */
+function buildEffortPatch(effort, agentModel) {
+  if (EFFORTS.indexOf(effort) < 0) throw new Error('未知的思考强度: ' + effort + '（可用：' + EFFORTS.join('/') + '）');
+  if (!agentModel || !agentModel.provider || !agentModel.model) {
+    throw new Error('拿不到 agent-default-model 的 provider/model（--dump-config 扫描失败）⇒ 不敢打 patch：'
+      + 'patch 是整行替换，写不全会把模型配置抹掉');
+  }
+  return [
+    '# 由 src/dsh-ask.js 生成（一次性）：只为了改思考强度。',
+    '# ⚠️ 必须把 provider/model 一起写全：patch 是**整行替换**，只写 effort 会把它们抹掉（实测）✗',
+    '- id: agent-default-model',
+    '  config:',
+    '    provider: ' + agentModel.provider,
+    '    model: ' + agentModel.model,
+    '    reasoningEffort: ' + effort,
+    ''
+  ].join('\n');
+}
 
 /** 问的"种类"：决定了开头那句指令怎么写（UI 上的两个按钮就映射到这里） */
 const KINDS = {
@@ -85,9 +134,12 @@ function buildAskPrompt(input) {
   return parts.join('\n');
 }
 
-/** 运行包子命令参数：`dsh headless "<prompt>"`（多行提示词原样作为**一个** argv 传递 ✓ 不经 shell） */
-function buildAskArgs(prompt) {
-  return ['headless', String(prompt)];
+/** 运行包子命令参数：`dsh headless "<prompt>"`（多行提示词原样作为**一个** argv 传递 ✓ 不经 shell）
+ *  给了 patchFile ⇒ 前面加 `--patch <文件>`（启动器的全局参数，在子命令之前 ✓） */
+function buildAskArgs(prompt, opts) {
+  const o = opts || {};
+  const p = ['headless', String(prompt)];
+  return o.patchFile ? ['--profile', 'headless', '--patch', String(o.patchFile)].concat(p) : p;
 }
 
 /** 子进程环境：DSH_HOME 指向应用自己的数据目录（**不覆盖**其它变量，只增） */
@@ -125,14 +177,34 @@ function askOnce(opts) {
   const spawn = o.spawn || spawnSync;
   const timeoutMs = Number(o.timeoutMs) > 0 ? Number(o.timeoutMs) : DEFAULT_TIMEOUT_MS;
   const t0 = Date.now();
-  const r = spawn(rt.node, [rt.dsh].concat(buildAskArgs(prompt)), {
-    cwd: o.cwd || process.cwd(),
-    env: buildAskEnv(o.env, rt.home),
-    timeout: timeoutMs,
-    encoding: 'utf8',
-    windowsHide: true,
-    maxBuffer: 8 * 1024 * 1024
-  });
+  // 思考强度：给了就落一个临时 patch 文件（用完删 ✓）。拿不到模型配置 ⇒ **放弃覆盖并如实报**（不猜 ✗）
+  let patchFile = null, effortNote = '';
+  if (o.effort) {
+    try {
+      const dump = spawn(rt.node, [rt.dsh, '--profile', 'headless', '--dump-config'],
+        { encoding: 'utf8', windowsHide: true, timeout: 20000, env: buildAskEnv(o.env, rt.home) });
+      const agentModel = parseAgentModel(String((dump && dump.stdout) || ''));
+      const text = buildEffortPatch(o.effort, agentModel);
+      patchFile = path.join(os.tmpdir(), 'mm-ask-effort-' + process.pid + '-' + Date.now() + '.yml');
+      fs.writeFileSync(patchFile, text, 'utf8');
+      effortNote = o.effort;
+    } catch (e) {
+      effortNote = '（思考强度未生效：' + ((e && e.message) || e) + '）';
+    }
+  }
+  let r;
+  try {
+    r = spawn(rt.node, [rt.dsh].concat(buildAskArgs(prompt, { patchFile: patchFile })), {
+      cwd: o.cwd || process.cwd(),
+      env: buildAskEnv(o.env, rt.home),
+      timeout: timeoutMs,
+      encoding: 'utf8',
+      windowsHide: true,
+      maxBuffer: 8 * 1024 * 1024
+    });
+  } finally {
+    if (patchFile) { try { fs.unlinkSync(patchFile); } catch (e) { /* 用完就删，失败不影响结果 */ } }
+  }
   const ms = Date.now() - t0;
   const stdout = String((r && r.stdout) || '');
   const stderr = String((r && r.stderr) || '');
@@ -150,7 +222,7 @@ function askOnce(opts) {
   }
   const text = stdout.trim();
   if (!text) return { ok: false, text: '', ms, code, error: '退出码 0 但**没有任何输出**（不许当成空答案 ✓）', stdout };
-  return { ok: true, text, ms, code, stdout };
+  return { ok: true, text, ms, code, effort: effortNote, stdout };
 }
 
 /* ⚠️ **本文件不许出现异步 API**（Promise / async / 回调式 spawn）：
@@ -162,5 +234,6 @@ function askOnce(opts) {
 
 module.exports = {
   DEFAULT_TIMEOUT_MS, KINDS,
+  EFFORTS, DEFAULT_EFFORT, parseAgentModel, buildEffortPatch,
   buildContextBlock, buildAskPrompt, buildAskArgs, buildAskEnv, resolveAskRuntime, askOnce
 };

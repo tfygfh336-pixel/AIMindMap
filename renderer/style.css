@@ -518,6 +518,11 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   font-size: 12.5px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
 }
 .ask-inputrow .ask-send:hover { background: #1f4bb8; }
+/* 思考强度下拉（用户反馈③）：窄一点，别抢输入框的地方 ✓ */
+.ask-inputrow .ask-effort {
+  flex: 0 0 auto; font-size: 12px; padding: 4px 2px; border-radius: 6px;
+  border: 1px solid #dfe3ea; background: #fff; color: #4e5969; cursor: pointer;
+}
 /* ---------------- 拖拽导入提示（app-import.js，功能 5a） ---------------- */
 .mm-drop-hint {
   display: none; position: fixed; inset: 0; z-index: 80;

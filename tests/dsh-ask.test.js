@@ -71,6 +71,60 @@ describe('提示词：AI 收到什么（情境自动补齐）', () => {
   });
 });
 
+describe('思考强度（用户反馈③：解释/问AI 太慢）', () => {
+  const DUMP = [
+    '# composed profile',
+    '- id: other-row',
+    '  config:',
+    '    x: 1',
+    '- id: agent-default-model',
+    "  name: '@deepseek-ai/dsh-agent-default-model'",
+    '  config:',
+    '    provider: deepseek-official',
+    '    model: deepseek-flash',
+    '    reasoningEffort: high',
+    '- id: next-row',
+    '  config:',
+    '    provider: 不该被扫到'
+  ].join('\n');
+
+  it('parseAgentModel：只认 agent-default-model 那一段里的 provider/model（不会串到下一行去）', () => {
+    const m = dshAsk.parseAgentModel(DUMP);
+    expect(m).toEqual({ provider: 'deepseek-official', model: 'deepseek-flash' });
+  });
+
+  it('parseAgentModel：扫不到就返回 null（**不猜** —— 调用方据此放弃覆盖并如实说明 ✓）', () => {
+    expect(dshAsk.parseAgentModel('没有那一行')).toBe(null);
+    expect(dshAsk.parseAgentModel('- id: agent-default-model\n  config:\n    model: x')).toBe(null);  // 缺 provider
+    expect(dshAsk.parseAgentModel('')).toBe(null);
+  });
+
+  it('buildEffortPatch：**三项写全**（校验实测教训：patch 是整行替换，少写会把模型配置抹掉 ✗）', () => {
+    const t = dshAsk.buildEffortPatch('low', { provider: 'p', model: 'm' });
+    expect(t).toMatch(/- id: agent-default-model/);
+    expect(t).toMatch(/provider: p/);
+    expect(t).toMatch(/model: m/);
+    expect(t).toMatch(/reasoningEffort: low/);
+  });
+
+  it('buildEffortPatch：拿不到模型配置 / 未知取值 ⇒ **抛错**（不静默打一个半截 patch ✗）', () => {
+    expect(() => dshAsk.buildEffortPatch('low', null)).toThrow(/provider\/model/);
+    expect(() => dshAsk.buildEffortPatch('turbo', { provider: 'p', model: 'm' })).toThrow(/未知的思考强度/);
+    for (const e of dshAsk.EFFORTS) expect(() => dshAsk.buildEffortPatch(e, { provider: 'p', model: 'm' })).not.toThrow();
+  });
+
+  it('默认强度：解释 low（提速 ✓）、问答 medium（可手动改 ✓）', () => {
+    expect(dshAsk.DEFAULT_EFFORT.explain).toBe('low');
+    expect(dshAsk.DEFAULT_EFFORT.ask).toBe('medium');
+  });
+
+  it('buildAskArgs：给了 patch 就带 `--profile headless --patch <文件>`（启动器全局参数在子命令之前 ✓）', () => {
+    expect(dshAsk.buildAskArgs('问', {})).toEqual(['headless', '问']);
+    const withPatch = dshAsk.buildAskArgs('问', { patchFile: 'C:\\t\\p.yml' });
+    expect(withPatch).toEqual(['--profile', 'headless', '--patch', 'C:\\t\\p.yml', 'headless', '问']);
+  });
+});
+
 describe('子进程参数与环境', () => {
   it('参数 = [headless, 整段提示词]：多行提示词必须是**一个** argv（不能拆成多个 ✗）', () => {
     const p = 'a\nb\nc';
