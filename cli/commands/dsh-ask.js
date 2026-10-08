@@ -46,10 +46,19 @@ function relatedToText(relations, projectName, node, all, tree) {
   } catch (e) { return ''; }
 }
 
-/** 收集情境（**一处定义**：界面与 CLI 都走这里，免得"AI 收到什么"有两份说法） */
+/** 收集情境（**一处定义**：界面与 CLI 都走这里，免得"AI 收到什么"有两份说法）。
+ *  节点是**可选**的：消息栏那条入口常在没有选中节点时使用（项目级提问 ✓）。 */
 function collectContext(ctx) {
   const id = ctx.args._[1];
-  if (!id) ctx.error('用法: ask <项目> <id> [--question "..."] [--kind explain|ask] [--json] [--timeout 秒] [--dry-run]');
+  if (!id) {
+    // 项目级：只给项目与"你能动手做什么"（见 src/dsh-ask.js 的 buildContextBlock）
+    return {
+      project: ctx.projectName,
+      projectRoot: path.resolve(__dirname, '..', '..'),
+      projectLevel: true,
+      nodeId: null, topic: null, pathText: '', tags: [], detailText: '', relatedText: ''
+    };
+  }
   const { data, file } = ctx.read();
   const node = ctx.tree.find(data.data, id);
   if (!node) ctx.error('节点不存在: ' + id);
@@ -89,6 +98,8 @@ module.exports = {
     const info = collectContext(ctx);
     const kind = ctx.args.kind === 'explain' ? 'explain' : 'ask';
     const question = ctx.args.question || '';
+    // 项目级提问必须有内容 —— 「解释这个节点」在项目级没有意义（没有节点可解释 ✗）
+    if (!info.nodeId && !question) ctx.error('项目级提问要带 --question "…"（或改用 ask <项目> <节点id> --kind explain）');
     if (kind === 'ask' && !question) ctx.error('--kind ask 需要 --question "…"（或直接用 --kind explain）');
     const prompt = dshAsk.buildAskPrompt(Object.assign({}, info, { kind, question }));
     const runtime = dshAsk.resolveAskRuntime({ repoRoot: path.resolve(__dirname, '..', '..') });

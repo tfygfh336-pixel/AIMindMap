@@ -42,15 +42,25 @@ function buildContextBlock(info) {
   lines.push('【情境】（由 AI MindMap 自动补充，不要复述，直接用）');
   lines.push('· 项目：' + (i.project || '(未知)'));
   if (i.projectRoot) lines.push('· 工程根：' + i.projectRoot);
-  lines.push('· 节点：' + (i.topic || '(无标题)') + '（id=' + (i.nodeId || '?') + '）');
-  if (i.pathText) lines.push('· 在树中的路径：' + i.pathText);
-  if (i.tags && i.tags.length) lines.push('· 标签：' + i.tags.join('、'));
-  if (i.relatedText) lines.push('· 相关节点：' + i.relatedText);
-  if (i.detailText) {
-    lines.push('· 节点正文（HTML 已转纯文本，过长会被截断）：');
-    lines.push(String(i.detailText));
-  } else {
-    lines.push('· 节点正文：（这个节点还没有正文）');
+  if (i.nodeId) {
+    lines.push('· 节点：' + (i.topic || '(无标题)') + '（id=' + i.nodeId + '）');
+    if (i.pathText) lines.push('· 在树中的路径：' + i.pathText);
+    if (i.tags && i.tags.length) lines.push('· 标签：' + i.tags.join('、'));
+    if (i.relatedText) lines.push('· 相关节点：' + i.relatedText);
+    if (i.detailText) {
+      lines.push('· 节点正文（HTML 已转纯文本，过长会被截断）：');
+      lines.push(String(i.detailText));
+    } else {
+      lines.push('· 节点正文：（这个节点还没有正文）');
+    }
+  } else if (i.projectLevel) {
+    // 项目级提问（消息栏那条入口）：没有当前节点，但要告诉 AI **它在什么环境里、手上有哪些手段** ——
+    // 否则它只会干聊，不会真去动数据（用户的原话是"描述要导入什么"，那需要它知道 import-project ✓）
+    lines.push('· 这是**项目级**提问（用户没有选中具体节点）。');
+    lines.push('· 你可以**动手**：本工程有 CLI（在工程根跑 `node cli/mm-cli.js --help` 看全部命令），'
+      + '例如从一个大文件建新项目 `import-project <新项目名> <文件.md|.txt|.docx>`、'
+      + '查询 `read/search/related/backlinks`、编辑 `add/edit/move/remove`。'
+      + '用户让你"导入/整理某个文件"时，先看清文件存不存在、再动手，并把结果如实回报。');
   }
   return lines.join('\n');
 }
@@ -60,8 +70,10 @@ function buildAskPrompt(input) {
   const i = input || {};
   const kind = KINDS[i.kind] ? i.kind : 'ask';
   const parts = [];
-  parts.push('你是「AI MindMap」里内置的助手，正在帮使用者理解他自己思维导图里的一个节点。');
-  parts.push('回答要贴住这个节点的语境，直接给内容，不要寒暄、不要复述情境。');
+  parts.push(i.projectLevel
+    ? '你是「AI MindMap」里内置的助手，正在帮使用者处理他的思维导图应用（可以动手，不只是聊天）。'
+    : '你是「AI MindMap」里内置的助手，正在帮使用者理解他自己思维导图里的一个节点。');
+  parts.push('回答要贴住情境，直接给内容，不要寒暄、不要复述情境。');
   parts.push('');
   parts.push(buildContextBlock(i));
   parts.push('');

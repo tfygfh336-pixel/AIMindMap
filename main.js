@@ -798,7 +798,9 @@ function registerIpc() {
         text: '（冒烟桩：未调用模型）' + (kind === 'explain' ? '这是对该节点的解释占位。' : '这是回答占位。') + echo
       });
     }
-    const args = ['ask', projectName, nodeId, '--json', '--kind', kind];
+    const args = ['ask', projectName];
+    if (nodeId) args.push(String(nodeId));      // 节点可选：消息栏那条入口是**项目级**提问 ✓
+    args.push('--json', '--kind', kind);
     if (o.question) args.push('--question', String(o.question));
     if (o.timeoutSec) args.push('--timeout', String(o.timeoutSec));
     // 复用 runCliAsync（唯一的异步 CLI 出口）：一次解释 20+ 秒，spawnSync 会把界面卡住 ✗

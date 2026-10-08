@@ -84,6 +84,16 @@
       </template>
       <!-- 搜索结果面板（全文搜索） -->
       <div id="search-results" style="display:none"></div>
+      <!-- 下方消息栏（功能 5a 入口③）：上面的虚体字是给使用者的**提示**，输入即视为向内嵌 AI 发提示词，
+           情境（当前项目、可用 CLI、没选中节点这件事）由 CLI 侧自动补齐（见 src/dsh-ask.js）✓ -->
+      <div id="msg-bar">
+        <div id="msg-hint">或者你可以直接向我描述要导入什么</div>
+        <div id="msg-row">
+          <input id="msg-input" type="text" autocomplete="off"
+                 placeholder="描述要导入什么，或问内置 AI 一句…（Enter 发送）">
+          <button id="msg-send" type="button" title="发送给内置 AI">发送</button>
+        </div>
+      </div>
     </div>
   </div>
 

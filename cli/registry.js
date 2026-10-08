@@ -54,7 +54,7 @@ function init() {
   register({ name: 'related', usage: 'related <项目> <id> [--json] [--depth 2]', desc: '查看节点相关知识点（我引用谁 + 谁引用我，双向合并去重；--depth 2 扩到两跳邻域）', fn: loadFile('relations').related });
 
   // 内置 AI（功能 1 的后端通道：一次性问答；--dry-run 只打印提示词、不调模型）
-  register({ name: 'ask', usage: 'ask <项目> <id> [--question "..."] [--kind explain|ask] [--json] [--timeout 秒] [--dry-run]', desc: '向内嵌 DSH 提一个问题（走 `dsh headless` 一次性通道，stdout 即为答案）；自动补齐节点情境（项目/路径/正文/相关节点）；--dry-run 只打印将要发送的提示词与命令行、**不调用模型**', fn: loadFile('dsh-ask').ask });
+  register({ name: 'ask', usage: 'ask <项目> [<节点id>] [--question "..."] [--kind explain|ask] [--json] [--timeout 秒] [--dry-run]', desc: '向内嵌 DSH 提一个问题（走 `dsh headless` 一次性通道，stdout 即为答案）；**节点可选** —— 不给节点就是项目级提问（消息栏那条入口用的就是它，情境里会告诉 AI 本工程有 CLI 可用）；自动补齐情境（项目/路径/正文/相关节点）；--dry-run 只打印将要发送的提示词与命令行、**不调用模型**', fn: loadFile('dsh-ask').ask });
 
   register({ name: 'theme-layout', usage: 'theme-layout <项目> [--left a,b] [--right c,d] [--clear]', desc: '设置顶层主题左右分侧（meta.layout；未列出的主题默认在右侧）', fn: loadFile('project').themeLayout });
 

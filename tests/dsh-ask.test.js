@@ -52,6 +52,23 @@ describe('提示词：AI 收到什么（情境自动补齐）', () => {
     const u = dshAsk.buildAskPrompt(Object.assign({ kind: 'nonsense' }, CTX_INFO));
     expect(u).toContain('请回答用户的问题');
   });
+  it('**项目级**（消息栏那条入口）：不说"理解一个节点"，而要说清"你能动手 + 有哪些命令"', () => {
+    const p = dshAsk.buildAskPrompt({ kind: 'ask', projectLevel: true, project: 'comnet',
+      projectRoot: 'D:\\proj', question: '把 E:\\书\\计算机网络.md 导入成新项目' });
+    expect(p).toContain('项目级');
+    expect(p).toContain('可以动手');
+    expect(p).toContain('import-project');          // 关键：告诉它怎么真的导入 ✓
+    expect(p).toContain('把 E:\\书\\计算机网络.md 导入成新项目');
+    expect(p).not.toContain('理解他自己思维导图里的一个节点');   // 开场白也要换 ✓
+    expect(p).not.toContain('还没有正文');           // 项目级不谈节点正文 ✓
+  });
+
+  it('节点级不受影响（项目级的改动没有把原来的情境挤掉）', () => {
+    const p = dshAsk.buildAskPrompt(Object.assign({ kind: 'explain' }, CTX_INFO));
+    expect(p).toContain('理解他自己思维导图里的一个节点');
+    expect(p).toContain('网络 / TCP / TCP 连接管理');
+    expect(p).not.toContain('可以动手');            // 节点级不塞"你能动手"那段（免得解释跑偏）
+  });
 });
 
 describe('子进程参数与环境', () => {

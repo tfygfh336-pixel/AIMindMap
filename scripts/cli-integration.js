@@ -407,6 +407,16 @@ check('ask --kind ask 不给 --question ⇒ 非 0 且报错（不许发一个没
 check('ask 节点不存在 ⇒ 非 0 且点名原因',
   (() => { const r = run(['ask', PROJ, 'no-such-node', '--dry-run']); return r.status !== 0 && /节点不存在/.test(r.err + r.out); })());
 
+// 9.1.1 功能 5a 入口③：**项目级**提问（消息栏那条）—— 节点可选，情境里要告诉 AI"你能动手"
+const askProj = run(['ask', PROJ, '--question', '把 D:\\某处\\一本书.md 导入成新项目', '--dry-run', '--json']);
+const askProjJ = (() => { try { return JSON.parse(askProj.out); } catch (e) { return null; } })();
+check('ask **项目级**（不给节点）：可用，且情境里说清"项目级 + 你能动手 + 具体命令"',
+  !!(askProjJ && askProjJ.ok && /项目级/.test(askProjJ.prompt) && /可以动手/.test(askProjJ.prompt)
+    && /import-project/.test(askProjJ.prompt) && /把 D:\\某处\\一本书\.md 导入成新项目/.test(askProjJ.prompt)),
+  askProjJ ? ('提示词 ' + askProjJ.prompt.length + ' 字') : askProj.out.trim().slice(0, 140));
+check('ask 项目级但**不给问题** ⇒ 非 0 且说明原因（不许发一个空问题出去）',
+  (() => { const r = run(['ask', PROJ, '--dry-run']); return r.status !== 0 && /项目级提问要带/.test(r.err + r.out); })());
+
 // 8.7 mentions --cross：跨项目「未链接提及」两个方向。
 // 用一个**临时第二项目**做对端，绝不触碰 comnet（真实数据）。
 const XPROJ = PROJ + '-x';

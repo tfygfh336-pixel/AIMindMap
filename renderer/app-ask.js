@@ -106,17 +106,18 @@
   function showAskBox(nodeId, opts) {
     const o = opts || {};
     const project = state().project && state().project.name;
-    if (!project || !nodeId) return null;
+    if (!project) return null;   // 项目级提问也需要有个项目（情境里有它 ✓）
     const kind = o.kind === 'explain' ? 'explain' : 'ask';
-    // 同一个节点复用同一个框（再点「解释」不会堆出一摞框 ✓），不同节点各一个
-    let box = askBoxes.find((b) => b.node && b.node.id === nodeId && b.el && b.el.parentElement);
+    // 同一个节点（或同一个"项目级"）复用同一个框：再点「解释」不会堆出一摞框 ✓
+    const key = nodeId || '__project__';
+    let box = askBoxes.find((b) => (b.node ? b.node.id : '__project__') === key && b.el && b.el.parentElement);
     if (!box) {
       box = MM.createFdBox();
       box.kind = 'ask';
       box.el.setAttribute('data-kind', 'ask');
       askBoxes.push(box);
     }
-    box.node = state().jm.get_node(nodeId);
+    box.node = nodeId && state().jm ? state().jm.get_node(nodeId) : null;   // 项目级：无节点 ✓
     box.ask = { kind: kind, log: (box.ask && box.ask.log) || [] };
     box.el.style.display = 'flex';
     MM.bringFdBoxToFront(box);
@@ -131,10 +132,12 @@
   /** 渲染整个问答框（标题 + 问答流水 + 输入行）。**同一次问答的流水只在这里长出来** ✓ */
   function renderAskPage(box) {
     if (!box || !box.el) return null;
-    const node = box.node || { id: '?', topic: '（未知节点）' };
+    const project = (state().project && state().project.name) || '?';
+    const node = box.node || { id: null, topic: '「' + project + '」' };
     const st = box.ask || (box.ask = { kind: 'ask', log: [] });
-    MM.fdQ(box, '.fd-title').textContent =
-      (st.kind === 'explain' ? 'AI 解释：' : 'AI 问答：') + node.topic;
+    MM.fdQ(box, '.fd-title').textContent = box.node
+      ? ((st.kind === 'explain' ? 'AI 解释：' : 'AI 问答：') + node.topic)
+      : ('AI 助手 · ' + project);
     // 只留正文容器（详情框模板里的其它容器对本框无意义 ⇒ 清空，免得出现"图片（0）"这类空壳）
     ['fd-tags', 'fd-localpath', 'fd-images-content', 'fd-files-content'].forEach((c) => {
       const el = MM.fdQ(box, '.' + c); if (el) el.innerHTML = '';
@@ -170,8 +173,8 @@
   /** 发一次提问：先落 Q（pending），成功后补 A；失败**如实显示**错误 ✓ */
   function send(box, question, kind) {
     const project = state().project && state().project.name;
-    const nodeId = box && box.node ? box.node.id : null;
-    if (!project || !nodeId) return Promise.resolve(null);
+    const nodeId = box && box.node ? box.node.id : null;   // null = 项目级提问（消息栏那条 ✓）
+    if (!project) return Promise.resolve(null);
     const st = box.ask || (box.ask = { kind: kind, log: [] });
     st.kind = kind === 'explain' ? 'explain' : st.kind;
     const entry = { q: question || '', pending: true };
@@ -194,6 +197,32 @@
         return null;
       });
   }
+
+  /* ================= 下方消息栏（功能 5a 入口③） =================
+   * 用户原话：「在下方消息栏上方有一些虚体字，写『或者你可以直接向我描述要导入什么』，
+   * 如果用户向里输入，就认为用户在向内嵌 DSH 发送提示词，自动补充情境信息」✓
+   * ⇒ 这里只做"把文字送出去 + 把答案放回浮窗"；**情境由 CLI 侧补齐**（当前项目、可用 CLI、
+   *    没有选中节点这件事 —— 见 src/dsh-ask.js 的 buildContextBlock）✓ 单一真源。 */
+  function bindMsgBar() {
+    const input = document.getElementById('msg-input');
+    const btn = document.getElementById('msg-send');
+    if (!input || !btn) return false;
+    const fire = () => {
+      const q = input.value.trim();
+      if (!q) return;
+      input.value = '';
+      const box = showAskBox(null, { kind: 'ask' });   // 项目级（无节点）浮窗 ✓
+      if (box) send(box, q, 'ask');
+      else if (MM.setStatus) MM.setStatus('没有打开的项目，发不出去', true);
+    };
+    btn.addEventListener('click', (e) => { e.preventDefault(); fire(); });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); fire(); }
+      else e.stopPropagation();   // 别让导图快捷键吃掉输入
+    });
+    return true;
+  }
+  bindMsgBar();
 
   MM.showNodeToolbar = showBarFor;
   MM.hideNodeToolbar = hideBar;
