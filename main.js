@@ -1112,8 +1112,54 @@ async function runSmoke(win) {
       return o && o.u ? Math.round(o.u / 1048576) : null;
     } catch (e) { return null; }
   };
+  /* 每域隔离（MM_SMOKE_ISOLATE=1 才生效 ✓）：快照**沙箱副本**；每个域开跑前恢复 + 让应用重载项目。
+   * 目的：验证 G5 的"跨域状态污染"假设（分段跑全绿、全跑才炸 ✓）。做成开关而非改默认 ✗ ——
+   * 已有断言可能**依赖**跨域状态（theme-layout 时红时绿正暗示这点 ✗），改默认可能弄红一批现在绿的断言。
+   * 用"跑前恢复"而不是"跑后恢复"：后者的插入点在 catch 之后 ✓ 锚点不稳（我曾写成把 catch 改 finally ✗ 会吞掉错误记录 ✗✗）。 */
+  const isolateOn = !!process.env.MM_SMOKE_ISOLATE && !!SMOKE_PROJECTS_DIR;
+  const sandboxSnap = new Map();
+  const walkFiles = (dir, base, out) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name); const rel = base ? base + "/" + e.name : e.name;
+      if (e.isDirectory()) walkFiles(p, rel, out); else out.push(rel);
+    }
+    return out;
+  };
+  if (isolateOn) {
+    try {
+      for (const rel of walkFiles(SMOKE_PROJECTS_DIR, "", [])) {
+        if (rel.endsWith(".ui-state.json")) continue;   // 界面状态旁挂 ⇒ 每域都变 ⇒ 纳入就必然拖慢（实测 36 次还原 ✗）
+        sandboxSnap.set(rel, fs.readFileSync(path.join(SMOKE_PROJECTS_DIR, rel)));
+      }
+      console.log("[smoke] 每域隔离已开启：快照沙箱文件 " + sandboxSnap.size + " 个");
+    } catch (e) { console.log("[smoke] 隔离快照失败：" + ((e && e.message) || e)); }
+  }
+  const isolateDomain = async () => {
+    if (!isolateOn || !sandboxSnap.size) return;
+    let n = 0;
+    for (const [rel, buf] of sandboxSnap) {
+      try {
+        const p = path.join(SMOKE_PROJECTS_DIR, rel);
+        let cur = null; try { cur = fs.readFileSync(p); } catch (e2) { cur = null; }
+        if (!cur || !cur.equals(buf)) { fs.writeFileSync(p, buf); n++; }
+      } catch (e2) { /* 单个文件失败不阻断 ✓ */ }
+    }
+    // 光恢复磁盘不够 ✗：应用内存里那份还是旧的 ⇒ 让它自己重新加载当前项目 ✓
+    try {
+      if (!n) return;   // 项目数据没动过 ⇒ 不用重载 ✓
+      const reloadP = win.webContents.executeJavaScript('(async function () { try { var st = window.MMApp && window.MMApp.getState && window.MMApp.getState(); var name = st && st.project && st.project.name; if (!name) return "noproj"; if (window.MMApp.switchProject) { await window.MMApp.switchProject(name); return "ok"; } if (window.MMApp.openProject) { await window.MMApp.openProject(name); return "ok2"; } return "noapi"; } catch (e) { return "err:" + ((e && e.message) || e); } })()');
+      // 超时兜底：上一版直接 await 这个 Promise ⇒ 整条链卡在某个域 ✗（守卫 140s 强杀 ✓）
+      const raced = await Promise.race([
+        reloadP.then(() => 'done').catch(() => 'err'),
+        new Promise((res) => setTimeout(() => res('timeout'), 1500))
+      ]);
+      if (raced === 'timeout') console.log('[smoke] 隔离：重载超时（照常继续，不阻塞链 ✓）');
+    } catch (e) { /* 窗口没了就跳过 ✓ 别让隔离本身变成新的失败源 ✗ */ }
+    if (n) console.log("[smoke] 隔离：已还原 " + n + " 个沙箱文件");
+  };
   for (const a of assertions) {
     smokeState.last = a.name;
+    await isolateDomain();   // 每个域开跑前恢复初始状态（含让应用重载项目 ✓）
     const memBefore = await readMem();
     // 仪器自检开关（只为证明"仪器确实能留下遗言" ✓ 不影响正常跑）：
     //   MM_SMOKE_CRASH=<第几条> ⇒ 跑到那一条之前**人为把渲染进程打掉** ⇒ 日志必须出现
