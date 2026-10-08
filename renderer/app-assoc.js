@@ -114,9 +114,28 @@
    *  （契约：`.assoc-entry` 的条数语义**不变**，冒烟断言数的是它 ✓ 按钮是另一个类名） */
   function renderAssocEntries(el, res, node) {
     const items = (res && res.items) || [];
-    let html = '<button type="button" class="rel-show-btn" data-rel-node="' + escHtml(node && node.id) + '"'
-      + ' title="在导图上高亮这个节点的关联节点、缩放至刚好框住它们，并画出关系虚线（Esc 退出）">'
-      + '🔗 展示关联节点</button>';
+    // ⑦「展示关联节点」按钮：用户反馈"应该再明显再大一点，让它**独立出现在节点详情框的左侧**"✓
+    // ⇒ 不再塞在关联区里，而是挂到**框元素**上、贴在框左缘竖排显示 ✓（类名沿用 .rel-show-btn ⇒
+    //   点击/开关态的逻辑不用改 ✓；只是多了个定位修饰类 ✓）
+    // ⚠️ 面板 `#mindmap-container` 是 overflow:hidden ⇒ 框贴着面板左缘时伸不出去 ✗ ⇒ 那种情况
+    //    退回"框内左缘"（is-inside ✓），宁可贴里也不能被裁掉 ✓
+    const boxEl = el.closest ? el.closest('.float-detail') : null;
+    let sideBtn = null;
+    if (boxEl) {
+      sideBtn = boxEl.querySelector('.rel-show-btn');
+      if (!sideBtn) {
+        sideBtn = document.createElement('button');
+        sideBtn.type = 'button';
+        sideBtn.className = 'rel-show-btn rel-show-btn-side';
+        boxEl.appendChild(sideBtn);
+      }
+      sideBtn.setAttribute('data-rel-node', node && node.id ? node.id : '');
+      sideBtn.innerHTML = '<span class="rsb-icon">🔗</span><span class="rsb-text">关联节点</span>';
+      sideBtn.title = '在导图上高亮这个节点的关联节点、缩放至刚好框住它们，并画出关系虚线（Esc 退出）';
+      const room = boxEl.offsetLeft;
+      sideBtn.classList.toggle('is-inside', room < 52);
+    }
+    let html = '';
     if (items.length) {
       html += '<div class="bl-title">关联笔记（' + items.length + '）</div>';
       items.forEach((a, i) => {
@@ -137,7 +156,7 @@
         if (a) MM.showAssocPage(a, node);
       });
     });
-    const btn = el.querySelector('.rel-show-btn');
+    const btn = (sideBtn || el.querySelector('.rel-show-btn'));
     if (btn) {
       btn.addEventListener('click', (e) => {
         e.preventDefault();

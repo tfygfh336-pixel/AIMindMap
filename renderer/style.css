@@ -557,6 +557,21 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   fill: none; stroke: transparent; stroke-width: 14;
   pointer-events: stroke; cursor: pointer;
 }
+/* ⑦ 侧边大按钮（用户反馈：更明显更大 + 独立出现在详情框左侧）——挂在框元素上，竖排贴左缘 ✓ */
+.rel-show-btn-side {
+  position: absolute; left: -46px; top: 16px; width: 42px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 4px; margin: 0; border-radius: 10px; text-align: center;
+  font-size: 13.5px; font-weight: 600; line-height: 1.2;
+  box-shadow: 0 2px 10px rgba(20, 40, 90, .16); background: #fff;
+}
+.rel-show-btn-side .rsb-text { writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 1px; }
+.rel-show-btn-side .rsb-icon { font-size: 16px; }
+.rel-show-btn-side:hover { background: #f0f5ff; }
+/* 框贴面板左缘时伸不出去（容器 overflow:hidden）⇒ 退回**框内**左缘，宁可贴里也不能被裁掉 ✓ */
+.rel-show-btn-side.is-inside { left: 6px; width: auto; flex-direction: row; padding: 7px 10px; }
+.rel-show-btn-side.is-inside .rsb-text { writing-mode: horizontal-tb; letter-spacing: 0; }
+
 /* AI 问答浮窗：**不显示**大小锁（行为上是大锁 = 钉在首次显示的位置，但不需要那两个按钮 ✓ 用户反馈⑧） */
 .fd-ask-box .fd-lock-map, .fd-ask-box .fd-lock-screen { display: none !important; }
 /* 空对话框的提示（不能写"正在生成…"，那看着像 AI 先开口了 ✗ 用户反馈⑤） */
