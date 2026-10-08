@@ -359,5 +359,28 @@ module.exports = [
       })()`);
       return { ok: !!res.ok, text: res.text };
     }
+  },
+  {
+    name: '⑨ 拖拽入口：MM.sendNodesToSidebar 已导出（app-view 的树拖动松手处要调它），失败时如实报错',
+    run: async (ctx) => {
+      const pick = await pickVisibleNode(ctx);
+      if (!pick.ok) return { ok: false, text: pick.text };
+      const res = await execJson(ctx, `(async function () {
+        if (typeof window.MM.sendNodesToSidebar !== 'function') {
+          return JSON.stringify({ ok: false, text: '没有导出 MM.sendNodesToSidebar（拖拽收尾会静默失败 ✗）' });
+        }
+        await window.MM.sendNodesToSidebar([${JSON.stringify(pick.node.id)}]);
+        await new Promise(function (r) { setTimeout(r, 500); });
+        var status = (document.querySelector('#status-text') || {}).textContent || '';
+        return JSON.stringify({
+          ok: /没送进侧边栏：|已把 \d+ 个节点送进侧栏输入框/.test(status),
+          text: '导出=有 ｜ 状态栏=' + JSON.stringify(status.slice(0, 60))
+        });
+      })()`);
+      // ⚠️ 诚实标注：这一条验的是"拖拽要调的那个入口"存在且会如实报结果 ✓；
+      //    **手势接线本身**（拖动模式 + 在最右侧松手）目前**还没有断言覆盖** ✗ —— 需要知道怎么进拖动模式，
+      //    留到下一轮补（不假装它已经被覆盖 ✓）
+      return { ok: !!res.ok, text: res.text + '（手势接线本身待补断言 ✗）' };
+    }
   }
 ];

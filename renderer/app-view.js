@@ -905,7 +905,7 @@
       syncFdBoxes();
     });
 
-    document.addEventListener('mouseup', () => {
+    document.addEventListener('mouseup', (e) => {
       // 框选收尾：中心点/过半面积命中的可见节点入选（与预览同口径）
       if (fdRubber) {
         const band = rubberBand();
@@ -934,6 +934,18 @@
       }
       if (fdTreeDragStart) {
         fdTreeDragStart = null;
+        // ⑨「拖进侧栏」：**在面板最右侧松手** = 把这棵树交给右侧 DSH 侧栏 ✓。
+        // 为什么是"最右侧"而不是"真落在侧栏上"：侧栏是主进程的**原生 WebContentsView**，
+        // 指针一进去渲染层就收不到事件（连 mouseup 都收不到 ⇒ 拖动会卡住 ✗）⇒ 跨视图协调得由主进程做
+        // （下一步再做）。取"距面板右缘 ≤ 24px 松手"是**渲染层自己就能判定**的边界手势 ✓
+        const pnl9 = fdPanel();
+        const pr9 = pnl9 ? pnl9.getBoundingClientRect() : null;
+        if (pr9 && e && e.clientX >= pr9.right - 24 && fdDragTreeRoot && MM.sendNodesToSidebar) {
+          MM.sendNodesToSidebar([fdDragTreeRoot]);
+          if (pnl9 && fdDragMode) pnl9.style.cursor = 'grab';
+          document.body.classList.remove('mm-dragging');
+          return;
+        }
         const panel = fdPanel();
         if (panel && fdDragMode) panel.style.cursor = 'grab'; // 拖完回到可拖动光标
         document.body.classList.remove('mm-dragging');

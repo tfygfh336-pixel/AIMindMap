@@ -373,6 +373,7 @@
   }
 
   MM.showNodeToolbar = showBarFor;
+  MM.sendNodesToSidebar = sendNodesToSidebar;   // ⑨ 供拖拽收尾复用（app-view 的树拖动松手处 ✓）
   MM.hideNodeToolbar = hideBar;
   MM.isNodeToolbarVisible = isBarVisible;
   MM.computeBarPos = computeBarPos;          // 纯几何（单测）
