@@ -997,6 +997,11 @@ async function runSmoke(win) {
   let allAssertions;
   try {
     allAssertions = require('./scripts/smoke-assertions.js');
+  // 给每条断言打上**所属域**（冒烟文件 ✓）：隔离要按域做，不能按断言 ✗
+  //  —— 有些域是"先写盘、再由后续断言检查刚才写的东西"（如"外部新写的笔记不被保存抹掉"），
+  //     按断言隔离会把被测行为本身擦掉 ⇒ 上轮我实测到 5 条 assoc 假红 ✗。
+  try { for (const grp of (allAssertions.groups || [])) for (const a of grp.assertions) a.__domain = grp.file; }
+  catch (e) { console.log('[smoke] 域标记失败（隔离将退化为按断言）：' + ((e && e.message) || e)); }
   } catch (err) {
     console.log('SMOKE LOAD ERROR — 冒烟断言清单加载失败（很可能是某个 scripts/smoke/*.js 在 require 期抛错）：');
     console.log('  ' + ((err && err.stack) || err));
@@ -1134,6 +1139,7 @@ async function runSmoke(win) {
       console.log("[smoke] 每域隔离已开启：快照沙箱文件 " + sandboxSnap.size + " 个");
     } catch (e) { console.log("[smoke] 隔离快照失败：" + ((e && e.message) || e)); }
   }
+  const smokeIsolateState = { lastDomain: null };
   const isolateDomain = async () => {
     if (!isolateOn || !sandboxSnap.size) return;
     let n = 0;
@@ -1159,7 +1165,10 @@ async function runSmoke(win) {
   };
   for (const a of assertions) {
     smokeState.last = a.name;
-    await isolateDomain();   // 每个域开跑前恢复初始状态（含让应用重载项目 ✓）
+    if (a.__domain !== smokeIsolateState.lastDomain) {
+      smokeIsolateState.lastDomain = a.__domain;
+      await isolateDomain();   // **域变了才隔离**（域内顺序不受影响 ✓）
+    }
     const memBefore = await readMem();
     // 仪器自检开关（只为证明"仪器确实能留下遗言" ✓ 不影响正常跑）：
     //   MM_SMOKE_CRASH=<第几条> ⇒ 跑到那一条之前**人为把渲染进程打掉** ⇒ 日志必须出现
