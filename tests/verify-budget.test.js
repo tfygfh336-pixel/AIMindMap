@@ -198,3 +198,67 @@ describe('兜底备份提示：本地 Git 与工程外备份各自独立', () =>
     expect(n === null || (typeof n === 'number' && n >= 0)).toBe(true);
   });
 });
+
+/* ============================================================================
+ * 度量列（2026-10-08 加）："这次比上次快/慢了多少"要能显示出来，
+ * 否则"这轮省下的时间"没人知道、也就没人守（本链真的从 77 s 涨回过 176 s ✗）。
+ * 测的是**纯函数那一半** —— 打印格式与"缺数据时显示什么"都是会骗人的地方 ✓
+ * ========================================================================= */
+describe('度量列：与上一条历史比较（纯函数）', () => {
+  const run = (gate, ms, skipped) => ({ gate, ms, skipped: !!skipped });
+
+  it('逐门禁算差：正=变慢、负=变快', () => {
+    const prev = { totalMs: 100000, steps: [{ gate: 'G5', ms: 90000 }, { gate: 'G3', ms: 10000 }] };
+    const d = verify.historyDelta(prev, [run('G5', 95000), run('G3', 8000)], 103000);
+    expect(d.byGate.G5).toEqual({ ms: 90000, deltaMs: 5000 });
+    expect(d.byGate.G3).toEqual({ ms: 10000, deltaMs: -2000 });
+    expect(d.total).toEqual({ ms: 100000, deltaMs: 3000 });
+  });
+
+  it('skipped 的步骤（与上一步共用一次调用，ms=0）**不参与比较** —— 比出来是假信号', () => {
+    const prev = { totalMs: 100000, steps: [{ gate: 'G6', ms: 600 }, { gate: 'G7', skipped: true, ms: 0 }] };
+    const d = verify.historyDelta(prev, [run('G6', 600), run('G7', 0, true)], 100000);
+    expect(d.byGate.G6).toBeTruthy();
+    expect(d.byGate.G7).toBeUndefined();
+  });
+
+  it('没有可比历史 ⇒ null（调用方据此打印"这是历史里的第一条"，**不是**显示 0）', () => {
+    expect(verify.historyDelta(null, [run('G5', 1)], 1)).toBe(null);
+    expect(verify.historyDelta({ steps: [] }, [run('G5', 1)], 1).byGate).toEqual({});
+    // 上一条记录里没有这个门禁（新增了门禁）⇒ 该步不算差，但整表仍有输出
+    const d = verify.historyDelta({ totalMs: 10, steps: [{ gate: 'G1', ms: 5 }] }, [run('G1', 6), run('G9', 7)], 20);
+    expect(d.byGate.G1.deltaMs).toBe(1);
+    expect(d.byGate.G9).toBeUndefined();
+  });
+
+  it('fmtDelta：总是带符号（正负一眼可辨），空值显示 —（不是 0.0s）', () => {
+    expect(verify.fmtDelta(7600)).toBe('+7.6s');
+    expect(verify.fmtDelta(-12300)).toBe('-12.3s');
+    expect(verify.fmtDelta(0)).toBe('±0.0s');
+    expect(verify.fmtDelta(null)).toBe('—');
+    expect(verify.fmtDelta(undefined)).toBe('—');
+    expect(verify.fmtDelta(NaN)).toBe('—');
+  });
+
+  it('readHistoryBaseline / pickHistoryBaseline：基线只认**最后一次成功**的验证', () => {
+    // 失败/中断的那次步骤没跑完（合计 23.7s）⇒ 拿它比会得出"慢了 +101.7s"的假信号（实测踩到 ✗）
+    const lines = [
+      JSON.stringify({ ok: true, totalMs: 100000, steps: [{ gate: 'G5', ms: 90000 }] }),
+      '{"半截坏行"',
+      JSON.stringify({ ok: false, failedGate: 'G4', totalMs: 23700, steps: [{ gate: 'G3', ms: 18100 }] }),
+      ''
+    ];
+    const b = verify.pickHistoryBaseline(lines);
+    expect(b.totalMs).toBe(100000);
+    expect(b.steps[0].gate).toBe('G5');
+    // 全是失败/坏行 ⇒ null（调用方据此说"还没有一次成功的验证"，不编一个基线出来）
+    expect(verify.pickHistoryBaseline([JSON.stringify({ ok: false, steps: [] })])).toBe(null);
+    expect(verify.pickHistoryBaseline([])).toBe(null);
+    expect(verify.pickHistoryBaseline(['', '   '])).toBe(null);
+  });
+
+  it('readHistoryBaseline：读不到历史文件时不抛（首次运行就是这么开始的）', () => {
+    const t = verify.readHistoryBaseline();
+    expect(t === null || typeof t === 'object').toBe(true);
+  });
+});

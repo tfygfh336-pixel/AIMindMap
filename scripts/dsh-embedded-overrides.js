@@ -19,7 +19,10 @@
  *    key = "<patch 条目的 id>.<config 里的键路径>"，value = 标量（字符串/数字/布尔）。
  *
  * ② agent preset 声明（**插入**一条新条目，2026-10-08 新增）：
- *      { "$presets": { "aimindmap": { "cloneFrom": "standard", "order": 0 } } }
+ *      { "$presets": { "aimindmap": { "cloneFrom": "standard", "makeDefault": true } } }
+ *    `cloneFrom` = 从运行包里哪个内置 preset 复制清单（`standard` / `ptc` / `minimal` / `cordis`）；
+ *    `makeDefault: true` 额外覆盖注册表那一行（`agent-preset-registry: {default: <id>}`）——
+ *    注意**用户选择优先**：使用者在界面里选过模式（volatile 的 `selectedDefault`）时部署默认不生效。
  *    **为什么是"生成"而不是把清单抄进本仓库**：一条 preset 的 `plugins` 是"这个模式的
  *    agent 能用的全部东西"（人设 / 工具 / 技能 / plan-mode / 压缩 / 委派），它是**运行包的
  *    事实**，随内置 DSH 升级会变。手抄一份 = 又一份会漂移的副本（台账 R8 那类）。所以本
@@ -134,6 +137,7 @@ function validate(ov) {
     if (!spec.cloneFrom) die('$presets.' + id + ' 缺 cloneFrom（要从哪个内置 preset 复制清单，如 standard）');
     if (!/^[a-z0-9][a-z0-9-]*$/.test(spec.cloneFrom)) die('$presets.' + id + '.cloneFrom 不是合法 preset 名：' + spec.cloneFrom);
     if (spec.order !== undefined && typeof spec.order !== 'number') die('$presets.' + id + '.order 必须是数字');
+    if (spec.makeDefault !== undefined && typeof spec.makeDefault !== 'boolean') die('$presets.' + id + '.makeDefault 必须是布尔');
   }
 }
 
@@ -247,6 +251,17 @@ function buildPresetBlock(id, spec) {
     '        order: ' + order
   ];
   for (const l of swapped.lines) out.push(l || '');
+  if (spec.makeDefault) {
+    // 设成默认模式：注册表那一行**不在** profile patch 里（它由 `dsh-web-app` bundle 定义）
+    // ⇒ 用"**按 id 覆盖**"这种 patch 条目（与 patch 里 permission / approval 那几行同一形态 ✓）。
+    // ⚠️ 按 id 覆盖会**整份替换该行的 config** —— 该行的 config 只有 `default` 一个键
+    //   （见 `dsh-agent-preset-registry` README 的字段表），所以这里是完整的 ✓。
+    // 注意用户选择优先：若使用者在界面里选过模式（`selectedDefault`），部署默认不生效。
+    out.push('# 默认模式：覆盖注册表那一行（按 id 覆盖 = 整份 config 替换；该行只有 default 一个键）',
+      '- id: agent-preset-registry',
+      '  config:',
+      '    default: ' + id);
+  }
   out.push(BANNER_END);
   return out;
 }

@@ -248,6 +248,26 @@ describe('preset 生成：清单必须与运行包自带的逐行对齐（不手
     const base = fixtureLines();
     expect(ov.applyPresetBlocks(base.slice(), {}).lines.join('\n')).toBe(base.join('\n'));
   });
+
+  it('makeDefault: true ⇒ 额外覆盖注册表那一行（按 id 覆盖，config 只有 default 一个键）', () => {
+    const block = ov.buildPresetBlock('aimindmap', { cloneFrom: 'standard', makeDefault: true });
+    const doc = yaml.load(neutralizeJsTag(block.join('\n')));
+    const registry = doc.find((d) => d && d.id === 'agent-preset-registry');
+    expect(registry).toBeTruthy();
+    expect(registry.config).toEqual({ default: 'aimindmap' });   // 整份 config（该行只有这一个键）
+    // 声明本体也在同一个块里 ⇒ 一次 render 原子地"加模式 + 设默认" ✓
+    expect(doc.some((d) => d && d.insert && d.insert[0].id === 'preset-aimindmap')).toBe(true);
+  });
+
+  it('不给 makeDefault ⇒ **不碰**注册表（别顺手改别人的默认模式）', () => {
+    const doc = yaml.load(neutralizeJsTag(ov.buildPresetBlock('aimindmap', { cloneFrom: 'standard' }).join('\n')));
+    expect(doc.some((d) => d && d.id === 'agent-preset-registry')).toBe(false);
+  });
+
+  it('makeDefault 必须是布尔（白名单纪律：不许猜、不许"真值字符串")', () => {
+    expect(() => ov.validate({ $presets: { aimindmap: { cloneFrom: 'standard', makeDefault: 'true' } } })).toThrow();
+    expect(() => ov.validate({ $presets: { aimindmap: { cloneFrom: 'standard', makeDefault: true } } })).not.toThrow();
+  });
 });
 
 describe('preset 生成：CLI 端到端（临时 home）', () => {

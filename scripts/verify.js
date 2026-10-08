@@ -113,6 +113,63 @@ function writeVerifyHistory(run, results) {
   }
 }
 
+/* ---------------- 度量列：这次比上次快了多少（2026-10-08 加） ----------------
+ * 为什么加：本链有过一次真实的教训 —— 从 176 s 压到 77 s 之后**又慢慢涨回去**
+ *（`01` 里记的 70 s 与后来的 118 s 就是同一件事的两个时点）。只打印"本次耗时"看不出趋势，
+ * 于是"这轮省下的"没人知道、也就没人守 ⇒ 每次运行时直接把**与上一条历史的差**打出来 ✓。
+ * 读历史必须在**追加本次记录之前**（就在打印耗时表那一刻）✓ 否则比的是自己。
+ * 阈值只提示不判红：耗时受负载影响（本机实测同一份代码能差 20%+），判红交给预算 ✓。 */
+
+/** 从历史行里挑**对比基线**：最后一次 `ok:true` 的那条（纯函数，便于单测）。
+ *  ⚠️ 为什么不能拿"最后一条"：**失败/中断的那次步骤压根没跑完** ⇒ 逐门禁比出来是假信号。
+ *  实测踩到：一次在 G4 中断的运行（合计 23.7s）让下一次全链显示"比上次慢了 +101.7s" ✗。 */
+function pickHistoryBaseline(lines) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!String(lines[i]).trim()) continue;
+    try {
+      const r = JSON.parse(lines[i]);
+      if (r && r.ok === true && Array.isArray(r.steps)) return r;
+    } catch (e) { /* 坏行跳过：历史上可能有半截行 */ }
+  }
+  return null;
+}
+
+/** 读历史文件的对比基线（读不到/没有成功的记录 ⇒ null，绝不因此让 verify 失败） */
+function readHistoryBaseline() {
+  try {
+    const text = fs.readFileSync(path.join(ROOT, VERIFY_HISTORY), 'utf8');
+    return pickHistoryBaseline(text.split(/\r?\n/));
+  } catch (e) {
+    return null;
+  }
+}
+
+/** 与上一条历史逐门禁比较（纯函数，便于单测）。
+ *  `skipped` 的步骤（与上一步共用一次调用）不参与比较 —— 它的 ms 是 0，比出来是假信号 ✗ */
+function historyDelta(prev, results, currentTotalMs) {
+  if (!prev || !Array.isArray(prev.steps)) return null;
+  const byGate = {};
+  for (const s of prev.steps) if (s && s.gate) byGate[s.gate] = s;
+  const out = { byGate: {}, total: null };
+  for (const r of results) {
+    if (r.skipped) continue;
+    const p = byGate[r.gate];
+    if (!p || p.skipped || typeof p.ms !== 'number') continue;
+    out.byGate[r.gate] = { ms: p.ms, deltaMs: r.ms - p.ms };
+  }
+  if (typeof prev.totalMs === 'number' && typeof currentTotalMs === 'number') {
+    out.total = { ms: prev.totalMs, deltaMs: currentTotalMs - prev.totalMs };
+  }
+  return out;
+}
+
+/** 差的显示形式：**总是带符号**（"+7.6s" / "-12.3s"），负=变快 ✓ */
+function fmtDelta(ms) {
+  if (typeof ms !== 'number' || !isFinite(ms)) return '—';
+  const s = ms / 1000;
+  return (s > 0 ? '+' : s < 0 ? '-' : '±') + Math.abs(s).toFixed(1) + 's';
+}
+
 /* ---------------- 兜底备份的新鲜度（只提示，不判红） ----------------
  * 为什么需要：**两件互相替代不了的事**必须都看着 ——
  *   ① **本地回滚**（本地 Git 有没有提交）：改了能回去；
@@ -332,24 +389,41 @@ function main() {
 
   const chk = checkBudgets(results, TOTAL_BUDGET_MS);
 
-  // ---- 耗时表（每次都打印：时间花在哪，一眼可见）----
-  console.log('== 耗时 ==');
-  console.log('  步  门禁   耗时      预算      余量      步骤');
+  // ---- 耗时表（每次都打印：时间花在哪 + 比上次差多少，一眼可见）----
+  // 基线要在**写本次记录之前**读（下面 writeVerifyHistory 才追加）✓
+  // 且只认"最后一次**成功**的验证"：失败/中断的那次步骤没跑完，拿来比是假信号 ✗（实测踩过）
+  const prevRun = readHistoryBaseline();
+  const delta = historyDelta(prevRun, results, chk.totalMs);
+  console.log('== 耗时 ==' + (delta
+    ? '（对比对象：' + (prevRun.at ? String(prevRun.at).replace('T', ' ').slice(0, 19) : '上一次成功验证')
+      + '；若它不是紧邻的那次，说明中间有失败/中断的验证 ✓）'
+    : '（无可比历史：历史里还没有一次成功的验证 ✓）'));
+  console.log('  步  门禁   耗时      预算      余量      上次      差        步骤');
   for (const r of results) {
+    const pad = (v, n) => String(v).padEnd(n);
     if (r.skipped) {
-      console.log('  ' + String(r.step).padEnd(3) + r.gate.padEnd(6)
-        + '（与上一步同一次调用）'.padEnd(10) + ' '.repeat(8) + ' '.repeat(10) + r.label);
+      console.log('  ' + pad(r.step, 3) + pad(r.gate, 6)
+        + pad('（与上一步同一次调用）', 10) + ' '.repeat(8) + ' '.repeat(10) + pad('—', 10) + pad('—', 10) + r.label);
       continue;
     }
     const over = r.budgetMs > 0 && r.ms > r.budgetMs;
-    const pad = (v, n) => String(v).padEnd(n);
+    const d = delta && delta.byGate[r.gate];
     console.log('  ' + pad(r.step, 3) + pad(r.gate, 6)
       + pad(fmt(r.ms), 9) + pad(fmt(r.budgetMs), 9)
       + pad(over ? '⚠ 超出' : fmt(r.budgetMs - r.ms), 9)
+      + pad(d ? fmt(d.ms) : '—', 10) + pad(d ? fmtDelta(d.deltaMs) : '—', 10)
       + r.label + (r.code === 0 ? '' : '  ← exit ' + r.code));
   }
   console.log('  ' + '合计'.padEnd(9) + fmt(chk.totalMs).padEnd(9) + fmt(chk.totalBudgetMs).padEnd(9)
-    + (chk.overTotal ? '⚠ 超出' : fmt(chk.totalBudgetMs - chk.totalMs)));
+    + (chk.overTotal ? '⚠ 超出' : fmt(chk.totalBudgetMs - chk.totalMs)).padEnd(10)
+    + (delta && delta.total ? fmt(delta.total.ms) : '—').padEnd(10)
+    + (delta && delta.total ? fmtDelta(delta.total.deltaMs) : '—'));
+  // 只提示不判红：耗时受负载影响（同一份代码实测能差 20%+），判红交给预算 ✓
+  if (delta && delta.total && delta.total.deltaMs > 0 && delta.total.ms > 0
+    && delta.total.deltaMs / delta.total.ms > 0.15) {
+    console.log('  ⚠ 比上次慢了 ' + fmtDelta(delta.total.deltaMs) + '（超过上次的 15%）—— 看上面是哪一步涨的；'
+      + '急涨先怀疑负载，稳涨要查根因 ✗');
+  }
   console.log('');
 
   if (failed) {
@@ -441,6 +515,8 @@ module.exports = {
   LAST_VERIFY, readLastVerify, checkBackupFreshness, BACKUP_DIRS,
   // 验证历史（追加入口 + 组记录那一半是纯函数，便于单测）
   VERIFY_HISTORY, buildVerifyHistory, writeVerifyHistory,
+  // 度量列：与上一次**成功**的验证比较（纯函数 + 一个读取口，便于单测）
+  pickHistoryBaseline, readHistoryBaseline, historyDelta, fmtDelta,
   // 兜底提示的两半：取数（I/O）与组文（纯函数）分开，便于单测组文那一半
   gitCommitCount, backupHintText
 };
