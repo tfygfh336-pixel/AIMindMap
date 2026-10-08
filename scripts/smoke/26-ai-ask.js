@@ -56,11 +56,15 @@ async function pickVisibleNode(ctx) {
  *  于是 `bar.dataset.node` 指向**恢复出来的节点**，与断言挑中的节点对不上 ✓。
  *  加上这条前置，断言就与实际数据形状无关了 ✓ */
 async function closeAllBoxes(ctx) {
+  // ⚠️ 先**等启动安定**：应用开机时会**异步恢复**上次打开的详情框 ✓，域 26 跑在刚启动时 ⇒
+  //    那个框会在我 showDetail 之后才出现、把工具条抢走 ✗（实测 data-node 指向恢复出来的节点 ✓）。
+  //    早先我只关一次框 ⇒ 关的是"还没恢复出来的那个" ✗ ⇒ 白关 ✓。
+  await new Promise((r) => setTimeout(r, 1200));
   await ctx.exec(`(function () {
     Array.prototype.slice.call(document.querySelectorAll('.float-detail .fd-close')).forEach(function (b) { b.click(); });
     return 1;
   })()`);
-  await new Promise((r) => setTimeout(r, 200));
+  await new Promise((r) => setTimeout(r, 250));
 }
 
 module.exports = [
@@ -71,10 +75,15 @@ module.exports = [
       if (!pick.ok) return { ok: false, text: pick.text };
       const id = pick.node.id;
       await closeAllBoxes(ctx);          // ① 关掉"恢复出来的框"，否则工具条归它 ✗
-      // ② （下一轮要做）确保该节点**真的有几何**：观察到工具条落到 (8,8) 且 data-node 指向另一个
-      //    节点 ⇒ 说明被选中的节点当时几何为 0（祖先折叠 / 恢复出来的框抢走工具条）。
-      //    我本轮试过在页面里 expand+layout，**注入抛错**（jm 的 API 形态与假设不符）⇒ 先撤回，
-      //    留给下一轮用正确 API 做，别在这里留一个会抛错的注入 ✗
+      // ② 确保该节点**真的有几何**（祖先折叠 ⇒ 几何 0 ⇒ 工具条落到 (8,8) ✗）。
+      //    ⚠️ `MM.expandAncestors(jm, id)` 是**两个**参数（单源 app-actions.js:71 ✓）——
+      //    上一轮我只传一个 ⇒ jm 为 undefined ⇒ 注入抛错 ✗（"Script failed to execute" 的真因）
+      await ctx.exec(`(function () {
+        var app = window.MMApp, jm = app.getState().jm;
+        if (jm && window.MM.expandAncestors) window.MM.expandAncestors(jm, ${JSON.stringify(id)});
+        return 1;
+      })()`);
+      await new Promise((r) => setTimeout(r, 150));
       await ctx.exec(`(function () {
         var app = window.MMApp, jm = app.getState().jm;
         app.showDetail(jm.get_node(${JSON.stringify(id)}));
