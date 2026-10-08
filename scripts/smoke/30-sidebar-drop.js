@@ -142,4 +142,132 @@ module.exports = [
       return { ok: !!res.ok, text: res.text };
     }
   }
+  ,
+  {
+    name: 'P7 跨视图拖放：preload 暴露 selDragStart/selDragEnd，且与「拖宽」那套分开 ✓',
+    run: async (ctx) => {
+      const r = await ctx.exec(`(function () {
+        var d = window.desktop && window.desktop.dsh;
+        if (!d) return JSON.stringify({ ok: false, text: '没有 desktop.dsh' });
+        return JSON.stringify({ ok: typeof d.selDragStart === 'function' && typeof d.selDragEnd === 'function'
+          && typeof d.beginDrag === 'function' && typeof d.endDrag === 'function',
+          text: 'selDragStart=' + typeof d.selDragStart + ' selDragEnd=' + typeof d.selDragEnd
+            + ' ｜ 拖宽那套 beginDrag=' + typeof d.beginDrag + ' endDrag=' + typeof d.endDrag + '（两套都在 ✓ 不混用 ✗）' });
+      })()`);
+      const o = JSON.parse(r);
+      return { ok: !!o.ok, text: o.text };
+    }
+  },
+  {
+    name: 'P7 跨视图拖放：起点/终点上报有结构化回执，且「命中才投喂」这条不变量成立 ✓',
+    run: async (ctx) => {
+      // ① 没有活动拖拽 ⇒ 必须**明说** no-active-drag（不静默 ✗）
+      // ⚠️ executeJavaScript 是**脚本**不是模块 ⇒ 里面不许有 top-level await ✗（踩过：Script failed to execute）
+      const idle = JSON.parse(await ctx.exec('(async function () { return JSON.stringify(await window.desktop.dsh.selDragEnd()); })()'));
+      // ② 一次完整循环：start(ids) → end() ⇒ 回执必须带 hit(bool) + pt + ids，未命中时带 reason
+      const cycle = JSON.parse(await ctx.exec(`(async function () {
+        window.desktop.dsh.selDragStart(['smoke-p7-a', 'smoke-p7-b']);
+        await new Promise(function (r) { setTimeout(r, 150); });
+        return JSON.stringify(await window.desktop.dsh.selDragEnd());
+      })()`));
+      // ③ 不变量（成对 ✓）：把状态栏擦干净后再来一轮，然后判「回执说没命中 ⇒ 状态栏不许出现送栏结论」
+      await ctx.exec("window.MM.setStatus('（P7 对照组起点）'); 1");
+      const again = JSON.parse(await ctx.exec(`(async function () {
+        window.desktop.dsh.selDragStart(['smoke-p7-a']);
+        await new Promise(function (r) { setTimeout(r, 150); });
+        return JSON.stringify(await window.desktop.dsh.selDragEnd());
+      })()`));
+      const status = await ctx.exec("(document.querySelector('#status-text') || {}).textContent || ''");
+      const delivered = /没送进侧边栏：|已把 \d+ 个节点送进侧栏输入框/.test(String(status));
+      const structureOk = idle.ok === false && idle.reason === 'no-active-drag'
+        && cycle.ok === true && typeof cycle.hit === 'boolean' && !!cycle.pt && Array.isArray(cycle.ids)
+        && (cycle.hit === true || (typeof cycle.reason === 'string' && cycle.reason.length > 0))
+        && again.ok === true;
+      // ④ 几何独立复算（这条才是判别力的所在 ✓）：回执里的 hit 必须等于"ptWin 是否落在 viewRect 内"。
+      //    把 src/drop-target.js 注入成恒真 ⇒ hit=true 而这里是 false ⇒ **必红** ✓（B4 判别力证明）
+      const vr = again.viewRect, pw = again.ptWin;
+      const expectHit = !!(vr && pw && pw.x >= vr.x && pw.x < vr.x + vr.width
+        && pw.y >= vr.y && pw.y < vr.y + vr.height);
+      const geometryOk = (expectHit === again.hit);
+      // 命中却投喂失败是允许的（冒烟里侧栏服务没在跑 ✓）；没命中却投喂过 = 真缺陷 ⇒ 必红 ✓
+      const invariantOk = (again.hit === true) ? true : (delivered === false);
+      return { ok: structureOk && invariantOk && geometryOk,
+        text: '空闲回执=' + JSON.stringify(idle) + ' ｜ 循环回执=' + JSON.stringify(cycle)
+          + ' ｜ 第二次 hit=' + again.hit + ' 状态栏=' + JSON.stringify(String(status).slice(0, 60))
+          + ' ｜ 不变量（hit=false ⇒ 不投喂）=' + invariantOk
+          + ' ｜ 几何复算 hit应=' + expectHit + ' 实=' + again.hit + ' ⇒ ' + geometryOk
+          + ' ｜ viewRect=' + JSON.stringify(vr) + ' ptWin=' + JSON.stringify(pw) };
+    }
+  }
+  ,
+  {
+    name: 'P7 渲染层接线：回执说命中 ⇒ 真的投喂；回执说没命中 ⇒ 不许投喂（成对 ✓ 用桩判接线，不依赖真实光标 ✗）',
+    run: async (ctx) => {
+      // 前置：选一个可见、该点**真能点中**的非根节点（与其它断言同一套判据 ✓）
+      const prep = await execJson(ctx, `(function () {
+        var all = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]'));
+        for (var i = 0; i < all.length; i++) {
+          var el = all[i], id = el.getAttribute('nodeid');
+          if (id === 'root') continue;
+          var r = el.getBoundingClientRect();
+          if (!(r.width > 20 && r.height > 10)) continue;
+          if (!(r.left > 4 && r.top > 40 && r.right < window.innerWidth - 200 && r.bottom < window.innerHeight - 60)) continue;
+          var p = { x: Math.round(r.left + Math.round(r.width / 2)), y: Math.round(r.top + Math.round(r.height / 2)) };
+          var at = document.elementFromPoint(p.x, p.y);
+          if (!(at && at.closest && at.closest('jmnode[nodeid]') === el)) continue;
+          return JSON.stringify({ ok: true, id: id, x: p.x, y: p.y });
+        }
+        return JSON.stringify({ ok: false, text: '找不到可点的可见非根节点' });
+      })()`);
+      if (!prep.ok) return { ok: false, text: prep.text };
+      const drop = await execJson(ctx, `(function () {
+        var p = window.MM.fdPanel(); var r = p.getBoundingClientRect();
+        return JSON.stringify({ x: Math.round(r.right - 100), y: ${prep.y} });   // 离右缘 100px ⇒ 不触发 24px 兜底 ✓
+      })()`);
+      const deliverRe = "没送进侧边栏：|已把 \\d+ 个节点送进侧栏输入框|正在送进侧栏";
+      // —— 第一回合：桩回执 hit=true ⇒ 必须投喂
+      await ctx.exec(`(function () {
+        if (window.MMApp.closeAllFloatDetail) window.MMApp.closeAllFloatDetail();
+        if (window.MM.clearSelection) window.MM.clearSelection();
+        window.MM.toggleNodeSelection(${JSON.stringify(prep.id)});
+        window.__mmOrigVerdict = window.MM.requestSelDropVerdict;
+        window.__mmVerdict = { ok: true, hit: true };
+        window.MM.requestSelDropVerdict = function () { return window.__mmVerdict; };
+        window.MM.setStatus('（P7 渲染层起点）');
+        return 1;
+      })()`);
+      mouse(ctx, 'mouseMove', { x: prep.x, y: prep.y });
+      mouse(ctx, 'mouseDown', { x: prep.x, y: prep.y });
+      mouse(ctx, 'mouseMove', { x: drop.x, y: drop.y });
+      mouse(ctx, 'mouseUp', { x: drop.x, y: drop.y });
+      await new Promise((r) => setTimeout(r, 500));
+      const hitRes = await execJson(ctx, `(function () {
+        var s = (document.querySelector('#status-text') || {}).textContent || '';
+        return JSON.stringify({ ok: new RegExp(${JSON.stringify(deliverRe)}).test(s),
+          text: '桩 hit=true ⇒ 状态栏=' + JSON.stringify(s.slice(0, 70)) });
+      })()`);
+      // —— 第二回合（对照组）：桩回执 hit=false ⇒ 同一个手势**不许**投喂
+      await ctx.exec(`(function () {
+        if (window.MMApp.closeAllFloatDetail) window.MMApp.closeAllFloatDetail();
+        if (window.MM.clearSelection) window.MM.clearSelection();
+        window.MM.toggleNodeSelection(${JSON.stringify(prep.id)});
+        window.__mmVerdict = { ok: true, hit: false };
+        window.MM.setStatus('（P7 渲染层对照组起点）');
+        return 1;
+      })()`);
+      mouse(ctx, 'mouseMove', { x: prep.x, y: prep.y });
+      mouse(ctx, 'mouseDown', { x: prep.x, y: prep.y });
+      mouse(ctx, 'mouseMove', { x: drop.x, y: drop.y });
+      mouse(ctx, 'mouseUp', { x: drop.x, y: drop.y });
+      await new Promise((r) => setTimeout(r, 500));
+      const missRes = await execJson(ctx, `(function () {
+        var s = (document.querySelector('#status-text') || {}).textContent || '';
+        return JSON.stringify({ ok: !new RegExp(${JSON.stringify(deliverRe)}).test(s),
+          text: '桩 hit=false ⇒ 状态栏=' + JSON.stringify(s.slice(0, 70)) });
+      })()`);
+      // 收尾：把桩撤掉（不给后续断言留假回执 ✗）
+      await ctx.exec('(function () { if (window.__mmOrigVerdict) window.MM.requestSelDropVerdict = window.__mmOrigVerdict; if (window.MM.clearSelection) window.MM.clearSelection(); return 1; })()');
+      return { ok: !!hitRes.ok && !!missRes.ok, text: hitRes.text + " ｜ " + missRes.text };
+    }
+  }
 ];

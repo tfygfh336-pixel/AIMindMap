@@ -89,7 +89,12 @@ contextBridge.exposeInMainWorld('desktop', {
     status: () => ipcRenderer.invoke('dsh-sidebar:status'),
     // ⑩ 把一段对话预填进侧栏输入框（返回 {ok, reason} ✓ 失败不静默 ✗）
     prefill: (text) => ipcRenderer.invoke('dsh-sidebar:prefill', text),
-    toggle: () => ipcRenderer.send('dsh-sidebar:toggle'),
+    toggle: () => ipcRenderer.send('dsh-sidebar:toggle'),
+    /* P7 真·跨视图拖放：选区拖拽的**起点/终点**上报 ✓（坐标跟踪与落点判定在主进程 ——
+     * 侧栏是原生 WebContentsView，指针进它的矩形后渲染层收不到 mouseup ✗）。
+     * ⚠️ 与上面的 beginDrag/endDrag **不是一套**：那两个是"拖宽侧栏"用的 ✓ 别混用 ✗。 */
+    selDragStart: (ids) => ipcRenderer.send('dsh-sidebar:sel-drag-start', ids),
+    selDragEnd: () => ipcRenderer.invoke('dsh-sidebar:sel-drag-end'),
     beginDrag: () => ipcRenderer.send('dsh-sidebar:drag-start'),
     endDrag: () => ipcRenderer.send('dsh-sidebar:drag-end'),
     isDshOnly: () => ipcRenderer.invoke('dsh-sidebar:dsh-only'),

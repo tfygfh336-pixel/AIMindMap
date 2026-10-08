@@ -10,12 +10,13 @@
  * ============================================================ */
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync, spawn } = require('child_process');
-const dshSidebar = require('./main-dsh-sidebar.js');
+const dshSidebar = require('./main-dsh-sidebar.js');
+const dropTarget = require('./src/drop-target.js');   // P7 落点判定（纯函数 ✓ 有单测 ✓ 屏幕坐标）
 
 const ROOT = __dirname;
 const REAL_PROJECTS_DIR = path.join(ROOT, 'projects');
@@ -954,7 +955,51 @@ function registerIpc() {
   /* 拖宽分隔条：渲染层在交界处 mousedown 时触发（坐标 hit-test 在渲染层做，
    * 主进程用 screen.getCursorScreenPoint 轮询接管拖拽 —— Electron 惯例） */
   ipcMain.on('dsh-sidebar:drag-start', () => dshSidebar.beginWidthDrag());
-  ipcMain.on('dsh-sidebar:drag-end', () => dshSidebar.endWidthDrag());
+  ipcMain.on('dsh-sidebar:drag-end', () => dshSidebar.endWidthDrag());
+
+  /* ---- P7 真·跨视图拖放：选区拖到**原生侧栏视图**上松手也要生效 ✓ ----
+   * 起点/终点各一次（渲染层上报 ✓），中间由主进程 40ms 轮询光标屏幕坐标（无需权限 ✓）。
+   * 投喂仍走渲染层的 MM.sendNodesToSidebar（文本只有那一处实现 ✓）；这里只回判定回执 ✓。
+   * 兜底：结束信号**永远不来**时（指针停在原生视图上 ✗）30s 自动清理并留日志 —— 不静默泄漏 ✗。 */
+  let selDrag = null;
+  const SEL_DRAG_MAX_MS = 30000;
+  ipcMain.on('dsh-sidebar:sel-drag-start', (e, ids) => {
+    if (selDrag && selDrag.timer) clearInterval(selDrag.timer);
+    const list = Array.isArray(ids) ? ids.filter((x) => typeof x === "string").slice(0, 50) : [];
+    selDrag = null;
+    if (!list.length) { console.log("[dsh-sidebar] 选区拖拽：没有选区 ⇒ 不跟踪"); return; }
+    let win = null;
+    try { win = BrowserWindow.fromWebContents(e.sender); } catch (err) { win = null; }
+    const st = { ids: list, pt: null, timer: null, t0: Date.now(), win: win };
+    st.timer = setInterval(() => {
+      try { const p = screen.getCursorScreenPoint(); st.pt = { x: p.x, y: p.y }; } catch (err) { /* 取不到就保留上一次 ✓ */ }
+      if (Date.now() - st.t0 > SEL_DRAG_MAX_MS) {
+        clearInterval(st.timer); if (selDrag === st) selDrag = null;
+        console.log("[dsh-sidebar] 选区拖拽：30s 没收到结束信号 ⇒ 已清理（指针可能停在原生侧栏视图上 ✗）");
+      }
+    }, 40);
+    if (st.timer.unref) st.timer.unref();
+    selDrag = st;
+  });
+  ipcMain.handle('dsh-sidebar:sel-drag-end', () => {
+    const st = selDrag; selDrag = null;
+    if (st && st.timer) clearInterval(st.timer);
+    if (!st) return { ok: false, reason: "no-active-drag", hit: false };
+    let pt = st.pt, hit = false, reason = "", ptWin = null, viewRect = null;
+    try {
+      if (!pt) { const p = screen.getCursorScreenPoint(); pt = { x: p.x, y: p.y }; }
+      const wb = (st.win && !st.win.isDestroyed()) ? st.win.getBounds() : null;
+      const vb = dshSidebar.viewBounds();
+      viewRect = vb ? { x: vb.x, y: vb.y, width: vb.width, height: vb.height } : null;
+      if (wb) ptWin = { x: pt.x - wb.x, y: pt.y - wb.y };   // 与 viewRect 同框 ⇒ 断言可独立复算 ✓
+      hit = !!(wb && dropTarget.isPointInSidebar(pt, wb, vb));
+      if (!vb) reason = "sidebar-closed";
+      else if (!wb) reason = "no-window";
+      else if (!hit) reason = "point-not-over-sidebar";
+    } catch (err) { reason = "judge-error:" + ((err && err.message) || err); }
+    console.log("[dsh-sidebar] 选区拖拽结束：point=" + JSON.stringify(pt) + " hit=" + hit + (reason ? (" reason=" + reason) : ""));
+    return { ok: true, hit: hit, ids: st.ids, reason: reason, pt: pt, ptWin: ptWin, viewRect: viewRect };
+  });
   /* 折叠后的重展开圆钮（渲染层 fab）→ toggle（与菜单 Ctrl+B 同一入口） */
   ipcMain.on('dsh-sidebar:toggle', () => dshSidebar.toggle());
   /* 仅侧边栏模式查询（渲染层/外部 AI 可读状态） */

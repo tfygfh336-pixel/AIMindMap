@@ -816,6 +816,13 @@
       if (!nodeEl) return;
       const id = nodeEl.getAttribute('nodeid');
       if (!fdSelectionRaw.length || fdSelectionRaw.indexOf(id) < 0) return;   // 只认"选中批"里的节点 ✓
+      // P7：把"起点"报给主进程（拖拽期间它用 40ms 轮询光标屏幕坐标 ✓ ——
+      // 指针飘到原生侧栏视图上时渲染层收不到 mouseup ✗ ⇒ 那条路由主进程判定，见 main.js）
+      try {
+        if (window.desktop && desktop.dsh && desktop.dsh.selDragStart) desktop.dsh.selDragStart(fdSelectionRaw.slice());
+      } catch (err) {
+        if (MM.setStatus) MM.setStatus('侧栏拖放：起点上报失败（' + ((err && err.message) || err) + '）', true);
+      }
       fdSelDrag = { x: e.clientX, y: e.clientY };
     }, true);
     document.addEventListener('mousemove', (e) => {
@@ -827,12 +834,26 @@
       fdSelDrag = null;
       const pnel = fdPanel();
       const pr = pnel ? pnel.getBoundingClientRect() : null;
-      if (!pr || e.clientX < pr.right - 24) return;          // 不在右缘 ⇒ 什么都不做（点击照常 ✓）
       const ids = MM.getSelectionRaw ? MM.getSelectionRaw() : [];
-      if (!ids.length) return;
-      e.preventDefault();
-      e.stopPropagation();                                   // 吞掉这次点击 ⇒ 不再额外弹详情 ✓
-      if (MM.sendNodesToSidebar) MM.sendNodesToSidebar(ids);
+      // P7：把"终点"报给主进程 —— 它拿的是**屏幕坐标 + 原生侧栏真实几何**，比渲染层这份可信 ✓
+      //（命中 ⇒ 投喂；投喂仍走同一条 sendNodesToSidebar ⇒ 文本只有一处实现 ✓）
+      let verdictP = null;
+      try {
+        if (MM.requestSelDropVerdict) verdictP = MM.requestSelDropVerdict();
+      } catch (err) {
+        if (MM.setStatus) MM.setStatus('侧栏拖放：终点判定失败（' + ((err && err.message) || err) + '）', true);
+      }
+      if (pr && ids.length && e.clientX >= pr.right - 24) {   // 面板右缘 24px 兜底（已验过 ✓ 保留）
+        e.preventDefault();
+        e.stopPropagation();                                   // 吞掉这次点击 ⇒ 不再额外弹详情 ✓
+        if (MM.sendNodesToSidebar) MM.sendNodesToSidebar(ids);
+        return;
+      }
+      if (verdictP && ids.length) {
+        Promise.resolve(verdictP).then((v) => {
+          if (v && v.ok && v.hit && MM.sendNodesToSidebar) MM.sendNodesToSidebar(ids);
+        }).catch(() => { /* 失败已在上面的状态栏里说过 ✗ */ });
+      }
     }, true);
 
     /* ⑥ Ctrl/Cmd+点击节点 = 加选/减选。**必须在捕获阶段**：
@@ -1305,6 +1326,13 @@
     return Object.assign({ added: !has }, res);
   }
 
+  /** P7：向主进程要"落点回执"（抽成 MM 上的小函数 ⇒ 冒烟可替换它来判"回执驱动投喂"这条接线 ✓）。
+   *  没有桌面 API（纯浏览器里跑）⇒ 返回 null（= 没有回执 ⇒ 不投喂 ✓ 不静默假成功 ✗）。 */
+  function requestSelDropVerdict() {
+    if (window.desktop && window.desktop.dsh && window.desktop.dsh.selDragEnd) return window.desktop.dsh.selDragEnd();
+    return null;
+  }
+  MM.requestSelDropVerdict = requestSelDropVerdict;
   MM.toggleNodeSelection = toggleNodeSelection;
   MM.clearSelection = clearSelection;
   MM.applySelection = applySelection;
