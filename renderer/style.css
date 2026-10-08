@@ -518,6 +518,13 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   font-size: 12.5px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
 }
 .ask-inputrow .ask-send:hover { background: #1f4bb8; }
+/* ⑩「侧边栏」按钮：窄一点，别抢输入框的地方 ✓ */
+.ask-inputrow .ask-to-sidebar {
+  flex: 0 0 auto; font-size: 12px; padding: 5px 9px; border-radius: 6px;
+  border: 1px solid #dfe3ea; background: #fff; color: #2b5dd6; cursor: pointer; white-space: nowrap;
+}
+.ask-inputrow .ask-to-sidebar:hover { background: #f0f5ff; border-color: #2b5dd6; }
+.ask-inputrow .ask-to-sidebar:disabled { opacity: .55; cursor: default; }
 /* 思考强度下拉（用户反馈③）：窄一点，别抢输入框的地方 ✓ */
 .ask-inputrow .ask-effort {
   flex: 0 0 auto; font-size: 12px; padding: 4px 2px; border-radius: 6px;

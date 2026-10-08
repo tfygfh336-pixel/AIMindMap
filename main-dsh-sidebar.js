@@ -953,6 +953,8 @@ function getStatus() {
     rightbarOpen: !!state.rightbarOpen,
     autoWide: state.autoWide || null,
     rightbarWatcher: state.rightbarWatcher || null,
+    // ⑩ 最近一次"把对话预填进侧栏"的结果（4b：失败也要看得见原因 ✓ 不阻断 ✗）
+    lastPrefill: state.lastPrefill || null,
     servicePid: state.proc ? state.proc.pid : state.servicePid || null,
     // 本窗口是否**孵化**了这个服务（false = 接管来的驻留服务）；驻留语义下
     // 这不影响可用性，只用于排查"谁该负责收割"
@@ -1229,6 +1231,48 @@ function restoreWindow() {
   state.win.focus();
 }
 
+/** ⑩「在侧边栏打开」：把一段文本**预填**进侧栏的输入框（不代替用户发送 ✗ —— 谁按发送谁负责 ✓）。
+ *  内核事实（易腐，复核命令见 docs/DSH-EMBEDDED.md 的注入一节）：DSH 页面的输入框是
+ *  `textarea` 或 `[contenteditable]`，用**内容特征 + 弱选择器**定位（4a ✓），不绑会被改名的类名 ✓。
+ *  ⚠️ 与 installRightbarWatcher 同一个坑：`executeJavaScript` 可能**永不返回** ⇒ 必须超时 + 如实报错 ✓ */
+const COMPOSER_PREFILL_JS = `(function (text) {
+  var cands = Array.prototype.slice.call(document.querySelectorAll('textarea, [contenteditable="true"]'))
+    .filter(function (el) { return el.offsetParent !== null && el.offsetWidth > 120 && el.offsetHeight > 16; });
+  if (!cands.length) return JSON.stringify({ ok: false, reason: '页面上找不到可见的输入框（textarea / contenteditable）' });
+  // 取面积最大的那个（主输入框最大 ✓ 弱选择器 ✓）
+  cands.sort(function (a, b) { return b.offsetWidth * b.offsetHeight - a.offsetWidth * a.offsetHeight; });
+  var el = cands[0];
+  el.focus();
+  if (el.tagName === 'TEXTAREA') el.value = text;
+  else el.textContent = text;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return JSON.stringify({ ok: true, tag: el.tagName, w: el.offsetWidth, h: el.offsetHeight,
+    textLen: String(text || '').length });
+})`;
+
+function prefillComposer(text) {
+  const body = String(text == null ? '' : text);
+  if (!body.trim()) return Promise.resolve({ ok: false, reason: '没有要送过去的内容' });
+  if (!state.view) return Promise.resolve({ ok: false, reason: '侧栏还没创建（先打开侧边栏）' });
+  if (state.status !== 'running') {
+    return Promise.resolve({ ok: false, reason: '侧栏服务没在运行（状态 ' + state.status + '）' });
+  }
+  // 超时保护：内核页面加载中时 executeJavaScript 可能永不返回 ✗（本模块踩过同一个坑 ✓）
+  let done = false;
+  const timeout = new Promise((r) => setTimeout(() => { if (!done) r({ ok: false, reason: '执行超时（6s）—— 页面可能没加载完' }); }, 6000));
+  const run = state.view.webContents.executeJavaScript('(' + COMPOSER_PREFILL_JS + ')('
+    + JSON.stringify(body) + ')', true).then((raw) => {
+    done = true;
+    try { return JSON.parse(raw); } catch (e) { return { ok: false, reason: '返回无法解析：' + String(raw).slice(0, 80) }; }
+  }).catch((e) => { done = true; return { ok: false, reason: (e && e.message) || String(e) }; });
+  return Promise.race([run, timeout]).then((r) => {
+    // 4b：失败只记状态、不阻断，但**必须留原因** ✓（自检/状态里看得见 ✓）
+    state.lastPrefill = { ok: !!r.ok, reason: r.reason || null, at: Date.now(), len: body.length };
+    return r;
+  });
+}
+
 module.exports = {
   init, reattach, toggle, show, hide, isVisible, getStatus,
   viewBounds,
@@ -1242,5 +1286,7 @@ module.exports = {
   closeSidebar, buttonBounds, buttonProbe, clickButton, occupiedWidth,
   NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN,
   ensureRightbarRoom, releaseRightbarRoom, setNoSpawn, installRightbarWatcher,
+  // ⑩ 把对话预填进侧栏输入框（不代替用户发送）
+  prefillComposer, COMPOSER_PREFILL_JS,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
 };

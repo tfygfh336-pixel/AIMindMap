@@ -940,6 +940,9 @@ function registerIpc() {
 
   /* DSH 侧边栏状态（渲染层只拿状态与几何，绝不拿 token/url） */
   ipcMain.handle('dsh-sidebar:status', () => dshSidebar.getStatus());
+  // ⑩「在侧边栏打开」：把对话预填进侧栏输入框（**不代替用户发送** ✗ —— 谁按发送谁负责 ✓；
+  //   发出去之后那段对话自然就成了侧栏那个会话的工作区历史 ✓）。失败也返回结构化的原因 ✓ 不静默 ✗
+  ipcMain.handle('dsh-sidebar:prefill', (_e, text) => dshSidebar.prefillComposer(text));
   /* 拖宽分隔条：渲染层在交界处 mousedown 时触发（坐标 hit-test 在渲染层做，
    * 主进程用 screen.getCursorScreenPoint 轮询接管拖拽 —— Electron 惯例） */
   ipcMain.on('dsh-sidebar:drag-start', () => dshSidebar.beginWidthDrag());

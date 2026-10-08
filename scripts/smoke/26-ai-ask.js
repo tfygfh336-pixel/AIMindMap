@@ -283,5 +283,36 @@ module.exports = [
       const o = JSON.parse(chk);
       return { ok: !!o.ok, text: res.text + ' ｜ ' + o.text };
     }
+  },
+  {
+    name: '⑩「侧边栏」按钮：在浮窗里，且送不出去时**如实说出原因**（不静默失败 ✗）',
+    run: async (ctx) => {
+      const pick = await pickVisibleNode(ctx);
+      if (!pick.ok) return { ok: false, text: pick.text };
+      await ctx.exec(`window.MM.showAskBox(${JSON.stringify(pick.node.id)}, { kind: 'ask' }); 1`);
+      const waited = await waitFor(ctx, `(function () {
+        return JSON.stringify({ ok: !!document.querySelector('.fd-ask-box .ask-to-sidebar'), text: '等按钮出现' });
+      })()`);
+      const res = await execJson(ctx, `(async function () {
+        var box = document.querySelector('.fd-ask-box');
+        var btn = box.querySelector('.ask-to-sidebar');
+        if (!btn) return JSON.stringify({ ok: false, text: '按钮不存在' });
+        var input = box.querySelector('.ask-input');
+        input.value = '侧栏投喂测试问题';
+        box.querySelector('.ask-send').click();                       // 先造一条对话（Q/A 都在）
+        await new Promise(function (r) { setTimeout(r, 400); });
+        btn.click();                                                  // 再点「侧边栏」
+        await new Promise(function (r) { setTimeout(r, 600); });
+        var status = (document.querySelector('#status-text') || {}).textContent || '';
+        // 冒烟里没有真侧栏 ⇒ 预期是**如实报错**（不管是"没在运行"还是"找不到输入框"）✓
+        // 硬判据：状态栏必须出现"没送进侧边栏：<原因>"，而不是什么都没说 ✗
+        return JSON.stringify({
+          ok: status.indexOf('没送进侧边栏：') >= 0 || status.indexOf('已送进侧栏输入框') >= 0,
+          text: '状态栏=' + JSON.stringify(status.slice(0, 80))
+            + ' ｜ 按钮存在=' + !!btn + ' ｜ 回复区=' + ((box.textContent || '').indexOf('侧栏投喂测试问题') >= 0)
+        });
+      })()`);
+      return { ok: !!res.ok, text: JSON.parse(waited).text + ' ｜ ' + res.text };
+    }
   }
 ];

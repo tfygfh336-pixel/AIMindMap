@@ -95,7 +95,10 @@ const assertions = [
         const keys = d ? Object.keys(d).sort() : [];
         return { keys, hasLoad: !!d.loadUrl, hasToken: !!(d.token || d.url) };
       })()`);
-      const ok = r.keys.join(',') === 'beginDrag,endDrag,isDshOnly,sidebarOnly,status,toggle'
+      // ⚠️ 这是**刻意**的白名单：`desktop.dsh` 的 API 面一变就得在这里显式加一笔 ✓
+      //    （防止有人顺手把 loadUrl / token / url 暴露给渲染层 ✗）。本次新增 `prefill`（⑩）：
+      //    它只**送文本进去**、回一个 {ok, reason} 的结果 —— 不返回 url/token ✓ 故放行。
+      const ok = r.keys.join(',') === 'beginDrag,endDrag,isDshOnly,prefill,sidebarOnly,status,toggle'
         && !r.hasLoad && !r.hasToken;
       return { ok, text: 'desktop.dsh keys=' + r.keys.join(',') };
     }

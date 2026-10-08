@@ -87,6 +87,8 @@ contextBridge.exposeInMainWorld('desktop', {
   /* DSH 侧边栏：状态查询、布局事件、toggle 与拖宽（token/URL 永不进渲染层） */
   dsh: {
     status: () => ipcRenderer.invoke('dsh-sidebar:status'),
+    // ⑩ 把一段对话预填进侧栏输入框（返回 {ok, reason} ✓ 失败不静默 ✗）
+    prefill: (text) => ipcRenderer.invoke('dsh-sidebar:prefill', text),
     toggle: () => ipcRenderer.send('dsh-sidebar:toggle'),
     beginDrag: () => ipcRenderer.send('dsh-sidebar:drag-start'),
     endDrag: () => ipcRenderer.send('dsh-sidebar:drag-end'),

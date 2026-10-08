@@ -188,11 +188,13 @@
     const node = box.node || { id: null, topic: '「' + project + '」' };
     const nCount = (box.nodes || []).length;
     const st = box.ask || (box.ask = { kind: 'ask', log: [] });
-    MM.fdQ(box, '.fd-title').textContent = nCount > 1
+    const titleText = nCount > 1
       ? ((st.kind === 'explain' ? 'AI 解释：' : 'AI 问答：') + nCount + ' 个节点')
       : (box.node
         ? ((st.kind === 'explain' ? 'AI 解释：' : 'AI 问答：') + node.topic)
         : ('AI 助手 · ' + project));
+    box.title = titleText;                     // ⑩ 送去侧栏时要带上"这是在谈哪个节点" ✓
+    MM.fdQ(box, '.fd-title').textContent = titleText;
     // 只留正文容器（详情框模板里的其它容器对本框无意义 ⇒ 清空，免得出现"图片（0）"这类空壳）
     ['fd-tags', 'fd-localpath', 'fd-images-content', 'fd-files-content'].forEach((c) => {
       const el = MM.fdQ(box, '.' + c); if (el) el.innerHTML = '';
@@ -223,10 +225,40 @@
       + '<select class="ask-effort" title="思考强度：越高越慢但更细致；改完对下一次提问生效">'
       + '<option value="low">思考：低（快）</option><option value="medium">思考：中</option>'
       + '<option value="high">思考：高</option><option value="xhigh">思考：很高</option></select>'
-      + '<button type="button" class="ask-send">发送</button></div>';
+      + '<button type="button" class="ask-send">发送</button>'
+      // ⑩「在侧边栏打开」：把这段对话（含 AI 的回答）预填进侧栏输入框，之后由你在侧栏按发送 ✓
+      //    ⇒ 那段对话就落进侧栏那个会话的工作区历史里 ✓（这里**不代替你发送** ✗）
+      + '<button type="button" class="ask-to-sidebar" title="把这段对话送进右边的 DSH 侧栏输入框（由你在那边按发送；发了就进它的会话历史）">⇥ 侧边栏</button>'
+      + '</div>';
     dc.innerHTML = html;
     const input = dc.querySelector('.ask-input');
     const sendBtn = dc.querySelector('.ask-send');
+    const sideBtn = dc.querySelector('.ask-to-sidebar');
+    if (sideBtn) {
+      sideBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const st1 = box.ask || {};
+        const lines = ['【来自 AI MindMap 的对话】'];
+        if (box.title) lines.push('节点：' + box.title);
+        (st1.log || []).forEach((it) => {
+          if (it.q) lines.push('我：' + it.q);
+          if (it.a) lines.push('AI：' + it.a);
+        });
+        lines.push('（接着上面这段继续 —— 这是从 AI MindMap 的对话窗口送过来的上下文。）');
+        const api = (window.desktop && window.desktop.dsh && window.desktop.dsh.prefill);
+        if (!api) { MM.setStatus('这个版本没有侧栏通道', true); return; }
+        sideBtn.disabled = true;
+        Promise.resolve(api(lines.join('\n'))).then((r) => {
+          sideBtn.disabled = false;
+          if (r && r.ok) MM.setStatus('已送进侧栏输入框（' + (r.textLen || 0) + ' 字）—— 到右边按发送即可 ✓');
+          else MM.setStatus('没送进侧边栏：' + ((r && r.reason) || '未知原因'), true);
+        }).catch((err) => {
+          sideBtn.disabled = false;
+          MM.setStatus('没送进侧边栏：' + ((err && err.message) || err), true);
+        });
+      });
+    }
     const effortSel = dc.querySelector('.ask-effort');
     if (effortSel) {
       effortSel.value = st.effort || MM.DEFAULT_ASK_EFFORT || 'low';
