@@ -272,6 +272,10 @@ module.exports = [
       // 真鼠标拖拽 + Ctrl。**带重试**：起点是否"起得来框"取决于此刻的布局（前面的断言可能留下工具条/
       // 详情框/视图位移 ⇒ 实测点会落到节点上 ✗），所以一次不行就重挑起点再试 —— 与真人"点空了再点"一致 ✓。
       // 判定"这次真的起了框"：橡皮筋元素在 mouseDown 之后可见 ✓（这是实现的直接产物，不猜 ✗）
+      // 前置加固（断言自建前置 ✓）：全量跑实测这条曾出现「顶层候选=1、起框点全被拒」✗ ⇒
+      // 先关掉所有浮窗详情框、把根重新居中（可见的顶层主题才是候选 ✓），再挑点。
+      await ctx.exec('(function () { if (window.MMApp.closeAllFloatDetail) window.MMApp.closeAllFloatDetail(); if (window.MM.centerOnRoot) window.MM.centerOnRoot(); return 1; })()');
+      await new Promise((r) => setTimeout(r, 250));
       let attempts = 0, grew = false, lost = false, last = '';
       const log = [];
       for (let i = 0; i < 4 && !(grew && !lost); i++) {
@@ -303,31 +307,32 @@ module.exports = [
             return el0.x > r.left + 40 && el0.y > r.top + 40
               && el0.x + el0.w < r.right - 25 && el0.y + el0.h < r.bottom - 25;
           });
-          var offs = [[-30, -30], [-40, -24], [-24, -40], [-48, -48]];
+          var offs = [[-30, -30], [-40, -24], [-24, -40], [-48, -48], [-60, -20], [-20, -60], [-70, -70], [-90, -40], [-40, -90]];
+          var rejStart = 0, rejRoot = 0, rejHit = 0;
           for (var k = 0; k < cands.length; k++) {
             var tg = cands[k];
             for (var o = 0; o < offs.length; o++) {
               var s = { x: Math.round(tg.x + offs[o][0]), y: Math.round(tg.y + offs[o][1]) };
               var end = { x: Math.round(tg.x + tg.w + 20), y: Math.round(tg.y + tg.h + 20) };
               if (end.x - s.x < 40 || end.y - s.y < 40) continue;
-              if (!canStart(s)) continue;
+              if (!canStart(s)) { rejStart++; continue; }
               // 自证（用**实现自己的**几何判定 ✓）：这一框必须命中一个未选中的顶层主题，
               // 且不含居中根（根入框会走剔除路径 ⇒ 假红 ✗）
               var band = { x0: Math.min(s.x, end.x), x1: Math.max(s.x, end.x),
                 y0: Math.min(s.y, end.y), y1: Math.max(s.y, end.y) };
               var hits = allRects.filter(function (m) { return window.MM.nodeSelectedBy(m, band); });
-              if (hits.some(function (m) { return m.id === rootId; })) continue;
+              if (hits.some(function (m) { return m.id === rootId; })) { rejRoot++; continue; }
               var grow = hits.filter(function (m) {
                 if (cur.indexOf(m.id) >= 0) return false;
                 var n1 = jm.get_node(m.id);
                 return !!(n1 && n1.parent && n1.parent.isroot);
               });
-              if (!grow.length) continue;
+              if (!grow.length) { rejHit++; continue; }
               return JSON.stringify({ ok: true, start: s, end: end, targetId: tg.id,
                 grow: grow.map(function (m) { return m.id; }) });
             }
           }
-          return JSON.stringify({ ok: false, text: 'no-empty-start-point-with-unselected-top-topic（顶层候选=' + cands.length + '）' });
+          return JSON.stringify({ ok: false, text: 'no-empty-start-point-with-unselected-top-topic（顶层候选=' + cands.length + ' 起点被拒=' + rejStart + ' 框住根被拒=' + rejRoot + ' 没圈住目标被拒=' + rejHit + ' 视线内节点=' + allRects.length + '）' });
         } catch (e) { return JSON.stringify({ ok: false, text: 'PRE-ERR: ' + ((e && e.message) || String(e)) }); } })()`);
         if (!st.ok) { log.push('第 ' + attempts + ' 次：' + st.text); break; }
         mouse(ctx, 'mouseMove', st.start, ['control']);

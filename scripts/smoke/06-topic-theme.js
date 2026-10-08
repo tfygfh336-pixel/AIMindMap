@@ -189,16 +189,26 @@ const assertions = [
       if (!/已添加顶层主题/.test(a2)) return { ok: false, text: 'add-root r1 failed: ' + a2 };
       const tl = await ctx.runCli(['theme-layout', 'layout-probe', '--left', 'l1']);
       if (!/已设置主题布局/.test(tl)) return { ok: false, text: 'theme-layout failed: ' + tl };
-      await ctx.exec('window.MMApp.openProject("layout-probe")');
+      // 前置加固（断言自建前置 ✓）：ready 只证明「项目名对了」，**不证明树真的换了** ——
+      // 全量跑实测出现过 project.name=layout-probe 而内存树/metaLayout 仍是 comnet 的 ✗
+      //（真因是产品侧「迟到的异步读盘重建」，已在 app-actions.js 加世代核对修掉；这里再加一道
+      // 自证：最多 3 次「打开 → 等到真能取到 l1/r1」，仍不行才判红并带现场 ✓）
       let ready = false;
-      for (let i = 0; i < 40; i++) {
-        ready = await ctx.exec(
-          'window.__mindReady === true && window.MMApp.getState().project && window.MMApp.getState().project.name === "layout-probe"'
-        );
-        if (ready) break;
-        await sleep(200);
+      for (let attempt = 0; attempt < 3 && !ready; attempt++) {
+        await ctx.exec('window.MMApp.openProject("layout-probe")');
+        for (let i = 0; i < 12; i++) {   // 每次最多等 ~2.4s
+          ready = await ctx.exec(
+            '(function () { var st = window.MMApp.getState(); return !!(st.project && st.project.name === "layout-probe"'
+            + ' && st.jm && st.jm.get_node && st.jm.get_node("l1") && st.jm.get_node("r1")); })()'
+          );
+          if (ready) break;
+          await sleep(200);
+        }
       }
-      if (!ready) return { ok: false, text: 'project not ready' };
+      if (!ready) {
+        const d0 = await ctx.exec('JSON.stringify({ name: (window.MMApp.getState().project || {}).name, meta: window.MMApp.getState().metaLayout || null })');
+        return { ok: false, text: 'project/tree not ready（3 次重开都没取到 l1/r1）｜' + d0 };
+      }
       const chk = await ctx.exec(
         `(function () {
           var app = window.MMApp;
@@ -252,7 +262,7 @@ const assertions = [
         if (back) break;
         await sleep(200);
       }
-      return { ok: /"ok":true/.test(chk) && back, text: chk + ' ｜ 现场=' + diag };
+      return { ok: /"ok":true/.test(chk) && back, text: chk + ' ｜ 现场=' + diag + ' ｜ 切回comnet=' + back };
     }
   }
 ];

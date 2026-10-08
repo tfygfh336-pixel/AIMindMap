@@ -28,6 +28,11 @@ module.exports = [
            var app = window.MMApp;
            var st = app.getState();
            var name = st.project.name;
+           // 前置（断言自建前置 ✓）：先把内存重置成「刚打开磁盘上那份」—— 别的域可能留下脏改动 /
+           // 混合状态（全量跑实测：保存被写前闸门拒 ⇒ 保存后仍脏 ⇒ 假红 ✗）。真实用户场景本来就是
+           // 「打开项目（干净）⇒ 改 ⇒ 存」✓；同名打开不会弹「丢弃改动」确认 ✓。
+           await window.MMApp.openProject(name);
+           if (app.isDirty()) return { ok: false, text: '前置失败：重开后仍是脏的（内存与磁盘不一致）' };
            // 现取（勿缓存）：save() 可能触发 rebuildFromJson ⇒ 旧的 jm 引用会失效（见文件头）
            var jmNow = function () { return app.getState().jm; };
            var btn = document.getElementById('btn-save');

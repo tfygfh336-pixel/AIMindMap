@@ -128,6 +128,7 @@
    * （实测踩过：`SMOKE GUARD TIMEOUT — force exit`）。所以主进程会回一个 `headless` 标志。
    */
   async function save(opts) {
+    const epoch0 = projectEpoch;   // 保存期间项目被切走 ⇒ 合并回来的那份数据不再用于重建内存
     const data = serializeTree();
     if (!data) return false;
     try {
@@ -154,7 +155,7 @@
       pendingConflict = null;
       if (res && res.merged) {
         // 内存必须跟上**实际落盘的那份**（合并后，冲突对象上取的是盘上版本）
-        if (res.data) rebuildFromJson(res.data);
+        if (res.data && epoch0 === projectEpoch) rebuildFromJson(res.data);
         lastSavedSnapshot = snapshot();
         setStatus('已保存 ' + new Date().toLocaleTimeString() + '（已与外部改动自动合并）');
       } else {
@@ -418,6 +419,14 @@
     }
   }
 
+  /** 载入世代：**切换项目开始时** +1。
+   *  为什么需要：两处异步路径（外部改盘自动重读、保存后被自动合并的重建）都是
+   *  "先 await 读盘、再 renderMind"，中间那个窗口里项目可能已经切走 ⇒ 迟到的 renderMind
+   *  会把**旧项目的树**盖到新项目上（全量冒烟实测：project.name 已是 layout-probe，
+   *  内存树/metaLayout 却还是 comnet 的 ✗ ⇒ 再保存就会把错树写进新项目 ⇒ 数据安全）。
+   *  判据：await 之前记下世代，回来时不一致 ⇒ 丢弃这份过期数据（等价于"这次自动重读没发生"）。*/
+  let projectEpoch = 0;
+
   async function openProject(name) {
     // 打开**另一个**项目会从磁盘重建内存树 + 重置撤销栈 → 未保存的改动会丢。
     // 守卫放在这里而不是 switchProject：工具栏下拉框是直接调 openProject 的，
@@ -430,6 +439,7 @@
       }
     }
     try {
+      projectEpoch++;   // 切换开始 ⇒ 在途的旧读盘结果一律作废（见 projectEpoch 说明）
       const r = await window.desktop.project.read(name);
       state.project = { name, file: r.file };
       state.history = new UndoStack(50);
@@ -469,9 +479,13 @@
       return;
     }
     if (reloadingFromDisk) return;
+    const epoch0 = projectEpoch;
+    const name0 = state.project.name;
     reloadingFromDisk = true;
     try {
-      const r = await window.desktop.project.read(state.project.name);
+      const r = await window.desktop.project.read(name0);
+      // 读盘期间项目被切走 ⇒ 这份数据已过期，丢弃（否则会把旧项目的树盖到新项目上 ✗）
+      if (epoch0 !== projectEpoch) { setStatus('已忽略一次过期的自动重读（期间已切换项目）'); return; }
       renderMind(r.data);
       state.history = new UndoStack(50);
       state.history.push(snapshot());

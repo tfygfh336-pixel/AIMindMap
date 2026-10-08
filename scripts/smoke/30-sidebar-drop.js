@@ -36,23 +36,29 @@ module.exports = [
     name: '⑨ 拖动模式 + 在最右侧松手 ⇒ 把该节点交给侧栏（送不出去要如实说原因）',
     run: async (ctx) => {
       // 找一棵可拖的树：取一个可见节点所属的顶层主题（拖动单位是树 ✓）
+      // 前置加固（断言自建前置 ✓）：全量跑实测这条曾挑到 **主题模式下隐藏的容器根**（点不中 ⇒
+      // 拖动根本没起来 ⇒ 假红 ✗）⇒ 现在要求 (a) 不是容器根、(b) 该点**真的命中这个节点**
+      //（elementFromPoint 复核 ✓）、(c) 拖动单位是它所属的**顶层主题树**（向上走到 root 的孩子 ✓）
       const prep = await execJson(ctx, `(function () {
-        var vis = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]')).filter(function (el) {
+        var all = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]'));
+        var rej = [];
+        for (var i = 0; i < all.length; i++) {
+          var el = all[i], id = el.getAttribute('nodeid');
+          if (id === 'root') continue;                     // 容器根在主题模式下是隐藏的
           var r = el.getBoundingClientRect();
-          return r.width > 20 && r.height > 10 && r.left > 4 && r.top > 40
-            && r.right < window.innerWidth - 30 && r.bottom < window.innerHeight - 60;
-        });
-        if (!vis.length) return JSON.stringify({ ok: false, text: '没有可见节点' });
-        // 选一个**不是根**、且能算出所属树的节点
-        for (var i = 0; i < vis.length; i++) {
-          var id = vis[i].getAttribute('nodeid');
-          var root = id;   // 拖动目标由 setDragMode(true, <id>) 显式给定 ⇒ 不依赖 treeRootOf 是否导出 ✓
-          if (!root) continue;
-          var r = vis[i].getBoundingClientRect();
-          return JSON.stringify({ ok: true, nodeId: id, rootId: root,
-            x: Math.round(r.left + Math.round(r.width / 2)), y: Math.round(r.top + Math.round(r.height / 2)) });
+          if (!(r.width > 20 && r.height > 10)) continue;
+          if (!(r.left > 4 && r.top > 40 && r.right < window.innerWidth - 30 && r.bottom < window.innerHeight - 60)) continue;
+          var p = { x: Math.round(r.left + Math.round(r.width / 2)), y: Math.round(r.top + Math.round(r.height / 2)) };
+          var at = document.elementFromPoint(p.x, p.y);
+          var hit = at && at.closest && at.closest('jmnode[nodeid]');
+          if (hit !== el) { if (rej.length < 3) rej.push(id + ':点不到'); continue; }
+          var jm = window.MMApp.getState().jm;
+          var top = (jm && jm.get_node) ? jm.get_node(id) : null;
+          while (top && top.parent && !top.parent.isroot) top = top.parent;
+          var rootId = (top && top.parent && top.parent.isroot && !top.isroot) ? top.id : id;
+          return JSON.stringify({ ok: true, nodeId: id, rootId: rootId, x: p.x, y: p.y });
         }
-        return JSON.stringify({ ok: false, text: '找不到可拖的（非根）可见节点' });
+        return JSON.stringify({ ok: false, text: '找不到「真能点中」的可拖节点 ｜ 被拒=' + (rej.join(' ') || '无') });
       })()`);
       if (!prep.ok) return { ok: false, text: prep.text };
 
@@ -70,6 +76,9 @@ module.exports = [
         var p = window.MM.fdPanel(); var r = p.getBoundingClientRect();
         return JSON.stringify({ ok: true, x: Math.round(r.right - 10), y: ${prep.y} });
       })()`);
+      // 现场数据（失败信息必须自带 ✓）：拖动前后的节点屏幕矩形 ⇒「这一拖到底动没动」一眼可判
+      const rectOf = async () => JSON.parse(await ctx.exec('(function () { var el = document.querySelector(' + JSON.stringify('jmnode[nodeid="' + prep.nodeId + '"]') + '); if (!el) return "null"; var r = el.getBoundingClientRect(); return JSON.stringify([Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]); })()'));
+      const rectBefore = await rectOf();
       mouse(ctx, 'mouseMove', { x: prep.x, y: prep.y });
       mouse(ctx, 'mouseDown', { x: prep.x, y: prep.y });
       mouse(ctx, 'mouseMove', { x: Math.round((prep.x + edge.x) / 2), y: prep.y });
@@ -86,7 +95,10 @@ module.exports = [
       })()`);
       // 收尾：退出拖动模式，不给后续断言留状态 ✓
       await ctx.exec('if (window.MM.setDragMode) window.MM.setDragMode(false); 1');
-      return { ok: !!res.ok, text: '树=' + prep.rootId + ' 拖到 x=' + edge.x + ' 松手 ｜ ' + res.text };
+      const rectAfter = await rectOf();
+      const moved = JSON.stringify(rectBefore) !== JSON.stringify(rectAfter);
+      return { ok: !!res.ok, text: '树=' + prep.rootId + ' 节点=' + prep.nodeId + ' 拖到 x=' + edge.x + ' 松手 ｜ ' + res.text
+        + ' ｜ 拖动真的动过=' + moved + '（前=' + JSON.stringify(rectBefore) + ' 后=' + JSON.stringify(rectAfter) + '）' };
     }
   },
 
