@@ -90,6 +90,38 @@ describe('schema.validateProject', () => {
     expect(bad3.errors.join(';')).toMatch(/meta\.layout\.right 含非法 id/);
   });
 
+  it('meta.themeOffsets 树偏移校验：合法通过，非法/越界拒绝', () => {
+    // 合法：顶层主题 a 偏移 (120,-40)；零偏移项与不存在的 id 由**视图层**负责不写回，
+    // schema 只判形状（这里 id 是合法的就通过）
+    const ok = validateProject({ meta: { name: 'x', themeOffsets: { a: { x: 120, y: -40 } } }, format: 'node_tree',
+      data: { id: 'root', topic: 'R', children: [{ id: 'a', topic: 'A' }] } }, null);
+    expect(ok.ok).toBe(true);
+    // 缺省（老文件）必须照样通过 —— 它是可选字段，且 formatVersion 不升
+    const none = validateProject({ meta: { name: 'x' }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(none.ok).toBe(true);
+
+    const bad1 = validateProject({ meta: { name: 'x', themeOffsets: [1] }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(bad1.ok).toBe(false);
+    expect(bad1.errors.join(';')).toMatch(/meta\.themeOffsets 必须是对象/);
+
+    const bad2 = validateProject({ meta: { name: 'x', themeOffsets: { 'Bad ID': { x: 1, y: 1 } } }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(bad2.ok).toBe(false);
+    expect(bad2.errors.join(';')).toMatch(/meta\.themeOffsets 含非法 id/);
+
+    const bad3 = validateProject({ meta: { name: 'x', themeOffsets: { a: 5 } }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(bad3.ok).toBe(false);
+    expect(bad3.errors.join(';')).toMatch(/meta\.themeOffsets\.a 必须是 \{x,y\} 对象/);
+
+    const bad4 = validateProject({ meta: { name: 'x', themeOffsets: { a: { x: '1', y: 0 } } }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(bad4.ok).toBe(false);
+    expect(bad4.errors.join(';')).toMatch(/meta\.themeOffsets\.a\.x 必须是有限数字/);
+
+    // 越界护栏：坏数据不能把内容推到视口外再也找不回来
+    const bad5 = validateProject({ meta: { name: 'x', themeOffsets: { a: { x: 20001, y: 0 } } }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(bad5.ok).toBe(false);
+    expect(bad5.errors.join(';')).toMatch(/超出允许范围/);
+  });
+
   it('回归：返回的 errors 不再被后续调用改写（曾共用模块级数组）', () => {
     // 缺陷：errors 是模块级共享数组，调用时清空复用 →
     // 先前返回的结果对象被后续调用污染，出现 ok:true 却带错误的矛盾状态。

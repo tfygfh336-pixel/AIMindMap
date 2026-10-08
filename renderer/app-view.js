@@ -141,6 +141,10 @@
           }
         }
       }
+      // ⚠️ 重排会**重建节点元素**（折叠/展开时 jsMind 为新可见节点建 DOM）⇒ 元素上的
+      // 「树偏移」transform 随旧元素一起丢 ⇒ 那棵树看着散架。relayout 是 jsMind 重排的
+      // **唯一入口**，在这里补一次重施即可（无偏移时是空跑，零成本 ✓）。
+      applyTreeOffsets();
       return r;
     };
     view.__anchorWrapped = true;
@@ -555,10 +559,56 @@
     });
   }
 
-  /** 清空全部树偏移（切换项目/撤销重做重建由 renderMind 调；还原视图也复位） */
-  function clearTreeOffsets() {
-    for (const k in treeOffsets) delete treeOffsets[k];
+  /** 清空树偏移（切换项目/撤销重做重建由 renderMind 调；还原视图也复位）。
+   *  传 treeId ⇒ 只清那一棵（右键菜单"回到自动布局"用）；不传 ⇒ 全清。 */
+  function clearTreeOffsets(treeId) {
+    if (treeId && treeOffsets[treeId]) delete treeOffsets[treeId];
+    else if (!treeId) for (const k in treeOffsets) delete treeOffsets[k];
     applyTreeOffsets();
+  }
+
+  /* —— 树偏移的对外读写口（功能：框选后拖动可**保存永久化**，2026-10-08）——
+   * 单一真源：偏移只活在**这一层**（treeOffsets），序列化时向这里取（`MM.getTreeOffsets`），
+   * 绝不在数据层再存一份 —— 两份就会漂移（本工程修过多次同类问题）。
+   * 数据形状：`meta.themeOffsets = { "<顶层主题id>": { x, y } }`（逻辑画布坐标，相对该主题的
+   * 自动布局位置；缺省 = 自动布局）。契约见 docs/DATA-FORMAT.md，校验见 src/schema.js。 */
+
+  /** 读出全部非零偏移（只回**当前树里真实存在的顶层主题**，避免脏 id 被写回数据） */
+  function getTreeOffsets() {
+    const jm = state.jm;
+    const out = {};
+    if (!jm) return out;
+    const rootNode = jm.get_node('root');
+    const topics = (rootNode && rootNode.children) || [];
+    topics.forEach((tp) => {
+      const o = treeOffsets[tp.id];
+      if (o && (o.x !== 0 || o.y !== 0)) out[tp.id] = { x: Math.round(o.x), y: Math.round(o.y) };
+    });
+    return out;
+  }
+
+  /** 从数据恢复偏移（打开项目 / undo 之后调用 —— **节点 DOM 必须已建好**）。
+   *  返回真正落下的条数，供断言与诊断用（0 = 没有偏移或全被丢弃）。 */
+  function setTreeOffsets(map) {
+    clearTreeOffsets();
+    const jm = state.jm;
+    if (!jm || !map || typeof map !== 'object') return 0;
+    const rootNode = jm.get_node('root');
+    const topics = (rootNode && rootNode.children) || [];
+    const valid = new Set(topics.map((tp) => tp.id));
+    let n = 0;
+    Object.keys(map).forEach((id) => {
+      const o = map[id];
+      if (!valid.has(id)) return;                       // 数据里有、当前树里没有的主题：丢弃（不写回）
+      if (!o || typeof o !== 'object') return;
+      const x = Number(o.x), y = Number(o.y);
+      if (!isFinite(x) || !isFinite(y)) return;          // 坏数据一律忽略（schema 已拦，这里兜底）
+      if (x === 0 && y === 0) return;                   // 零偏移 = 无偏移，不落
+      treeOffsets[id] = { x: x, y: y };
+      n++;
+    });
+    applyTreeOffsets();
+    return n;
   }
 
   /* —— 拖动模式虚线框：用虚线框框住被选中的整棵树（用户反馈②）——
@@ -1106,6 +1156,8 @@
   MM.treeRootOf = treeRootOf;
   MM.applyTreeOffsets = applyTreeOffsets;
   MM.clearTreeOffsets = clearTreeOffsets;
+  MM.getTreeOffsets = getTreeOffsets;   // 序列化取偏移的唯一入口（app-core.js 的 serializeTree）
+  MM.setTreeOffsets = setTreeOffsets;   // 打开项目/undo 后从 meta.themeOffsets 恢复
   MM.computeTreeBounds = computeTreeBounds;
   MM.showTreeOutline = showTreeOutline;
   MM.syncTreeOutline = syncTreeOutline;

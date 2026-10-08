@@ -62,6 +62,26 @@
           }
         });
       }
+      // 树偏移（可选，2026-10-08 新增）：meta.themeOffsets = { "<顶层主题id>": { x, y } }
+      // 语义：界面把顶层主题拖到别处后的**相对偏移**（逻辑画布像素，相对该主题的自动布局位置）；
+      // 缺省 = 全部按自动布局。只影响呈现，不改变树结构 —— 所以它是可选字段、formatVersion 不升。
+      // 上下界（±20000）不是随手写的：它是"明显异常数据"的护栏（自动布局量级是千像素级），
+      // 防止坏数据把内容推到视口之外、用户再也找不回来。
+      if (data.meta.themeOffsets !== undefined) {
+        const TO = data.meta.themeOffsets;
+        const LIMIT = 20000;
+        if (typeof TO !== 'object' || TO === null || Array.isArray(TO)) err('meta.themeOffsets 必须是对象');
+        else Object.keys(TO).forEach((tid) => {
+          if (!ID_RE.test(tid)) err('meta.themeOffsets 含非法 id（小写字母/数字/连字符）: ' + tid);
+          const p = TO[tid];
+          if (typeof p !== 'object' || p === null || Array.isArray(p)) { err('meta.themeOffsets.' + tid + ' 必须是 {x,y} 对象'); return; }
+          ['x', 'y'].forEach((k) => {
+            const v = p[k];
+            if (typeof v !== 'number' || !Number.isFinite(v)) err('meta.themeOffsets.' + tid + '.' + k + ' 必须是有限数字');
+            else if (Math.abs(v) > LIMIT) err('meta.themeOffsets.' + tid + '.' + k + ' 超出允许范围（±' + LIMIT + '）: ' + v);
+          });
+        });
+      }
     }
     if (data.format !== 'node_tree') err('format 必须为 "node_tree"');
     if (!data.data) err('缺少 data（根节点）');

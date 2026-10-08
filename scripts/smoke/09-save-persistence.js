@@ -119,6 +119,55 @@ module.exports = [
     }
   },
   {
+    name: '框选拖动持久化：真手势拖整棵树 ⇒ 保存 ⇒ 重开项目后偏移还在（用户报的"移动无法保存"）',
+    run: async (ctx) => {
+      const r = await ctx.exec(
+        `(async function () {
+           var app = window.MMApp;
+           var jmNow = function () { return app.getState().jm; };   // await 之后必须现取（见文件头）
+           var name = app.getState().project.name;
+           var root = jmNow().get_node('root');
+           var top = (root.children || [])[0];
+           if (!top) return { ok: false, text: '该项目没有顶层主题，测不了拖动持久化' };
+           app.clearTreeOffsets();                       // 起点干净（前一条断言可能留过偏移）
+           // ① 用**真手势**产生偏移：选中顶层主题 → 进入拖动模式 → mousedown / mousemove / mouseup
+           app.applySelection([top.id]);
+           app.dragSelection();
+           var el = document.querySelector('jmnode[nodeid="' + top.id + '"]');
+           if (!el) return { ok: false, text: '找不到顶层主题的 jmnode 元素' };
+           var fire = function (type, x, y) {
+             el.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true }));
+           };
+           fire('mousedown', 400, 300);
+           fire('mousemove', 520, 240);                  // 拖 (+120, -60)：缩放 1 ⇒ 偏移应约等于这个位移
+           fire('mouseup', 520, 240);
+           app.setDragMode(false);                       // 退出拖动模式，别影响后续断言
+           app.clearSelection();
+           var moved = app.getTreeOffsets()[top.id];
+           // ② 保存 → **从磁盘重开项目** → 偏移必须原样回来
+           await app.save();
+           await app.openProject(name);
+           var back = app.getTreeOffsets()[top.id];
+           var dirty = app.isDirty();
+           var nodeEl = document.querySelector('jmnode[nodeid="' + top.id + '"]');
+           var tf = nodeEl ? String(nodeEl.style.transform || '') : '';
+           // ③ 收尾：清掉偏移并保存 ⇒ 磁盘回到"无偏移"，后续断言不受影响
+           app.clearTreeOffsets();
+           await app.save();
+           var leftAfterCleanup = Object.keys(app.getTreeOffsets()).length;
+           return {
+             ok: !!moved && Math.abs(moved.x - 120) <= 2 && Math.abs(moved.y + 60) <= 2
+                 && !!back && Math.abs(back.x - moved.x) <= 1 && Math.abs(back.y - moved.y) <= 1
+                 && dirty === false && tf.indexOf('translate') === 0 && leftAfterCleanup === 0,
+             text: '拖动后=' + JSON.stringify(moved) + ' 重开后=' + JSON.stringify(back)
+               + ' 脏=' + dirty + ' DOM=' + (tf || '(无)') + ' 清理后剩余=' + leftAfterCleanup
+           };
+         })()`
+      );
+      return r;
+    }
+  },
+  {
     name: '未保存改动的保护：切到别的项目会先弹确认（有脏改动时才拦）',
     run: async (ctx) => {
       const r = await ctx.exec(

@@ -203,6 +203,24 @@
     const items = [];
     if (sel.ids && sel.ids.length) {
       items.push({ label: '拖动所选（整棵所属树）', action: () => app().dragSelection() });
+      // 「回到自动布局」：拖动结果现在会**保存**（meta.themeOffsets），所以必须给一条
+      // 清回去的路 —— 否则用户拖远了只能靠撤销或重开项目（2026-10-08 加）。
+      items.push({
+        label: '把这棵树移回自动布局',
+        action: () => {
+          const ids = sel.ids || [];
+          const jm = app().getState && app().getState().jm;
+          let top = null;
+          if (jm) {
+            // 选区已保证同父同树 ⇒ 往上找到顶层主题即可
+            let n = jm.get_node(ids[0]);
+            while (n && n.parent && !n.parent.isroot) n = n.parent;
+            if (n && n.parent && n.parent.isroot && !n.isroot) top = n.id;
+          }
+          if (top && app().clearTreeOffsets) app().clearTreeOffsets(top);
+          else if (app().clearTreeOffsets) app().clearTreeOffsets();
+        }
+      });
       items.push('---');
     }
     items.push({ label: '收起所选', action: () => app().collapseSelection() });

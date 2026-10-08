@@ -75,6 +75,9 @@
       return out;
     };
     const root = jm.get_node('root') || jm.mind.root;
+    // 树偏移（框选后拖动的结果）：**向视图层要**（唯一真源在 app-view.js 的 treeOffsets），
+    // 只写非零项 ⇒ 没拖过的项目与旧文件零差异（与 rootMode / layout 同一套"条件写回"手法）。
+    const themeOffsets = (MM.getTreeOffsets && MM.getTreeOffsets()) || {};
     const out = {
       meta: {
         name: state.project ? state.project.name : '未命名项目',
@@ -86,7 +89,9 @@
         // 主题模式（顶层主题互相独立）需持久化，否则重新打开会退回单中心
         ...(state.rootMode === 'themes' ? { rootMode: 'themes' } : {}),
         // 主题布局（左右分侧）需持久化，否则重新打开会退回全右侧堆叠
-        ...(state.metaLayout ? { layout: state.metaLayout } : {})
+        ...(state.metaLayout ? { layout: state.metaLayout } : {}),
+        // 树偏移同理：不写回就等于"拖了白拖"（用户报的正是"框选后的移动无法保存"）
+        ...(Object.keys(themeOffsets).length ? { themeOffsets } : {})
       },
       format: 'node_tree',
       data: walk(root)
@@ -195,6 +200,10 @@
     applyTopicMarkup(jm);
     state.jm = jm;
     applyRootMode(jm, data);
+    // 树偏移：**数据 → 视图**。顺序有讲究：必须在 `state.jm` 就位、节点 DOM 建好之后
+    // （setTreeOffsets 要按当前树筛掉不存在的主题），且在 centerOnRoot 之前 ——
+    // 偏移只动顶层主题、不动根节点，先落偏移再定视口少闪一下 ✓。
+    if (MM.setTreeOffsets) MM.setTreeOffsets((data.meta && data.meta.themeOffsets) || null);
     bindViewportControls(); // 视口滚轮缩放 / 中键平移 / 滚动吸收（全局只绑一次）
     // 打开即把根节点摆到视口正中；再延迟一次以覆盖 jsMind 的异步布局
     centerOnRoot();
