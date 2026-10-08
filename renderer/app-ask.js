@@ -62,7 +62,10 @@
     barEl.innerHTML = '<button type="button" class="mm-tb-btn mm-tb-explain" data-act="explain"'
       + ' title="让内置 AI 解释这个节点（在浮窗里给出答案）">💡 解释</button>'
       + '<button type="button" class="mm-tb-btn mm-tb-ask" data-act="ask"'
-      + ' title="向内置 AI 提问（浮窗里输入问题）">💬 问问AI</button>';
+      + ' title="向内置 AI 提问（浮窗里输入问题）">💬 问问AI</button>'
+      // ⑨ 把所选节点的上下文**直接送进右侧 DSH 侧栏输入框**（不代替你发送 ✗ —— 那边按了发送才进它的会话历史 ✓）
+      + '<button type="button" class="mm-tb-btn mm-tb-side" data-act="side"'
+      + ' title="把所选节点的上下文送进右侧 DSH 侧栏输入框（到那边按发送；发了就进它的会话历史）">⇥ 侧栏</button>';
     document.body.appendChild(barEl);
     barEl.addEventListener('click', (e) => {
       const btn = e.target.closest ? e.target.closest('.mm-tb-btn') : null;
@@ -70,6 +73,7 @@
       e.preventDefault();
       e.stopPropagation();
       const act = btn.getAttribute('data-act');
+      if (act === 'side') { sendNodesToSidebar(curNodes.slice()); return; }   // ⑨
       // 单节点 ⇒ 走原来的单节点问答；多节点（框选/Ctrl+多选）⇒ 把**整批**交给 AI ✓（反馈④）
       showAskBox(curNodes.length === 1 ? curNodes[0] : null, {
         kind: act === 'explain' ? 'explain' : 'ask',
@@ -334,6 +338,41 @@
     return true;
   }
   bindMsgBar();
+
+  /** ⑨ 把所选节点（单节点也可）的上下文送进侧栏输入框。
+   *  ⚠️ **不代替你发送** ✗：谁按发送谁负责 —— 那边按下去，这段才真正进入该会话的工作区历史 ✓。
+   *  失败一律**说出来**（侧栏没开 / 服务没跑 / 找不到输入框 ✓ 由主进程给原因）✓ */
+  function sendNodesToSidebar(ids) {
+    const jm = state().jm;
+    const st = (MMApp && MMApp.getState) ? MMApp.getState() : null;
+    const project = (st && st.project && st.project.name) || '?';
+    if (!jm || !ids || !ids.length) return Promise.resolve(null);
+    const conv = window.MMConvert || {};
+    const lines = ['【来自 AI MindMap·' + project + '】' + (ids.length > 1 ? ('以下 ' + ids.length + ' 个节点') : '以下节点') + '：'];
+    ids.forEach((id, k) => {
+      const n = jm.get_node(id);
+      if (!n) return;
+      lines.push('');
+      lines.push((ids.length > 1 ? ((k + 1) + '. ') : '') + (n.topic || '(无标题)'));
+      const tags = Array.isArray(n.tags) ? n.tags : [];
+      if (tags.length) lines.push('   标签：' + tags.join('、'));
+      const plain = conv.stripHtml ? String(conv.stripHtml(n.detail || '')).replace(/\s+/g, ' ').trim() : '';
+      if (plain) lines.push('   正文：' + plain.slice(0, 600));
+    });
+    lines.push('');
+    lines.push('（这些是我这边的上下文；接着我想问 —— 你按需回答即可。）');
+    const api = (window.desktop && window.desktop.dsh && window.desktop.dsh.prefill);
+    if (!api) { MM.setStatus('这个版本没有侧栏通道', true); return Promise.resolve(null); }
+    MM.setStatus('正在送进侧栏…');
+    return Promise.resolve(api(lines.join('\n'))).then((r) => {
+      if (r && r.ok) MM.setStatus('已把 ' + ids.length + ' 个节点送进侧栏输入框（' + (r.textLen || 0) + ' 字）—— 到右边按发送 ✓');
+      else MM.setStatus('没送进侧边栏：' + ((r && r.reason) || '未知原因'), true);
+      return r;
+    }).catch((err) => {
+      MM.setStatus('没送进侧边栏：' + ((err && err.message) || err), true);
+      return null;
+    });
+  }
 
   MM.showNodeToolbar = showBarFor;
   MM.hideNodeToolbar = hideBar;
