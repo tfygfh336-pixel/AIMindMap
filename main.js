@@ -795,7 +795,9 @@ function registerIpc() {
       const echo = o.question ? ('｜你问：' + String(o.question).slice(0, 80)) : '';
       return Promise.resolve({
         ok: true, stub: true, kind, ms: 0,
-        text: '（冒烟桩：未调用模型）' + (kind === 'explain' ? '这是对该节点的解释占位。' : '这是回答占位。') + echo
+        // 桩答案**故意带 Markdown**（加粗/列表）：这样冒烟能顺带验"答案里的粗体真的渲染出来了" ✓
+        text: '（冒烟桩：未调用模型）**' + (kind === 'explain' ? '这是对该节点的解释占位' : '这是回答占位') + '。**'
+          + '\n\n- 第一点\n- 第二点' + echo
       });
     }
     const args = ['ask', projectName];

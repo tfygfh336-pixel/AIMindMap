@@ -115,6 +115,7 @@
       box = MM.createFdBox();
       box.kind = 'ask';
       box.el.setAttribute('data-kind', 'ask');
+      box.el.classList.add('fd-ask-box');   // CSS 里据此**隐藏大小锁**（悬浮窗不需要锁 ✓ 用户反馈⑧）
       askBoxes.push(box);
     }
     box.node = nodeId && state().jm ? state().jm.get_node(nodeId) : null;   // 项目级：无节点 ✓
@@ -123,6 +124,18 @@
     MM.bringFdBoxToFront(box);
     renderAskPage(box);
     MM.positionFdBox(box);
+    // ⑧「绑定在第一次显示的位置」：首次显示时定好位置，然后上**大锁**（相对屏幕锁死 ⇒ 之后不跟导图跑 ✓）。
+    // 界面上**不显示**锁按钮（用户明确说不需要）—— 行为有、按钮无 ✓
+    const newlyShown = !box.__placed;
+    if (newlyShown) {
+      box.__placed = true;
+      // 摆在一个"舒服"的默认位置（右侧偏上，避开工具条与详情框）
+      const pw = window.innerWidth, ph = window.innerHeight;
+      const bw = box.el.offsetWidth || 380, bh = box.el.offsetHeight || 320;
+      box.el.style.left = Math.max(12, Math.round(pw * 0.52) - Math.round(bw / 2)) + 'px';
+      box.el.style.top = Math.max(12, Math.round(ph * 0.18)) + 'px';
+      if (box.lock !== MM.FD_LOCK.SCREEN) MM.setFdBoxLock(box, MM.FD_LOCK.SCREEN);
+    }
     setTimeout(() => { if (box.el.parentElement) MM.positionFdBox(box); }, 40);
     if (kind === 'explain') send(box, '', 'explain');
     else if (o.focus) setTimeout(() => { const i = box.el.querySelector('.ask-input'); if (i) i.focus(); }, 60);
@@ -143,13 +156,22 @@
       const el = MM.fdQ(box, '.' + c); if (el) el.innerHTML = '';
     });
     const dc = MM.fdQ(box, '.fd-detail-content');
-    let html = '<div class="ask-hint">每问一次都是一次**独立**会话（答完即止，不延续上下文）。'
+    const md = MM.mdBlock || ((t) => (MM.escHtml(t) || ''));
+    let html = '<div class="ask-hint">每问一次都是一次独立会话（答完即止，不延续上下文）。'
       + '想接着聊，就在下面再问一句。</div>';
-    if (!st.log.length) html += '<div class="ask-item ask-q"><span class="ask-who">·</span>正在生成…</div>';
+    // ⚠️ 空框**不能**显示"正在生成…"：那看着像"AI 已经先开口了"（用户实测反馈 ✗）。
+    //    只有真的发出去了（有 pending 条目）才显示；空框给一句"请你先问" ✓
+    if (!st.log.length) {
+      html += st.kind === 'explain'
+        ? '<div class="ask-item ask-pending"><span class="ask-who">AI</span>正在生成…</div>'
+        : '<div class="ask-item ask-empty">在下面输入你的问题，按 Enter 发送（我只会回答你问的 ✓）。</div>';
+    }
+    const raw = null;   // （占位已弃用，见下）
     st.log.forEach((e) => {
-      if (e.q) html += '<div class="ask-item ask-q"><span class="ask-who">你</span>' + esc(e.q) + '</div>';
+      if (e.q) html += '<div class="ask-item ask-q"><span class="ask-who">你</span>' + md(e.q) + '</div>';
       if (e.pending) html += '<div class="ask-item ask-a ask-pending"><span class="ask-who">AI</span>正在生成…</div>';
-      else if (e.a) html += '<div class="ask-item ask-a"><span class="ask-who">AI</span>' + esc(e.a).replace(/\n/g, '<br>') + '</div>';
+      // AI 的回答按 **Markdown 整段**渲染（加粗/列表/代码都出来）—— 用户反馈"全局 ** 不渲染"的根因就在这 ✓
+      else if (e.a) html += '<div class="ask-item ask-a"><span class="ask-who">AI</span>' + md(e.a) + '</div>';
       if (e.err) html += '<div class="ask-item ask-err"><span class="ask-who">!</span>' + esc(e.err) + '</div>';
       if (e.stub) html += '<div class="ask-stub">（冒烟桩：未调用模型，仅验证链路）</div>';
     });
@@ -251,12 +273,35 @@
     MM.closeFdBox = function (box) {
       const r = origCloseFdBox.apply(this, arguments);
       try {
-        // 关掉的是**当前工具条对应**的节点、或所有详情框都关了 ⇒ 收起工具条
+        // 关掉的是**当前工具条对应**的节点、或所有详情框都关了 ⇒ 收起工具条。
+        // ⚠️ AI 问答框（kind==='ask'）**不算**：它关掉不该连带收起工具条（用户还要继续点「解释」✓）
         const stillOpen = (MM.getFloatDetailState ? MM.getFloatDetailState().boxes : 0) > 0;
         if (!stillOpen) hideBar();
-        else if (box && box.node && curNodeId && box.node.id === curNodeId) hideBar();
+        else if (box && box.kind !== 'ask' && box.node && curNodeId && box.node.id === curNodeId) hideBar();
       } catch (e) { /* 同上 */ }
       return r;
     };
   }
+
+  /* ⑧ 点击**其它地方** ⇒ 关掉 AI 浮窗（并收起工具条）。用户原话：
+   *    "应该是点击其他地方之后那个悬浮窗就消失了而不是像现在这样一直显示" ✓
+   * 两个必须排除的区域：工具条自己（否则点「问问AI」会先把框关掉 ✗）与浮窗内部 ✓ */
+  function closeAskBoxes() {
+    let n = 0;
+    askBoxes.slice().forEach((b) => {
+      if (b.el && b.el.parentElement) { MM.closeFdBox(b); n++; }
+    });
+    return n;
+  }
+  document.addEventListener('mousedown', (e) => {
+    const t = e.target;
+    if (!t) return;
+    if (t.closest && (t.closest('#mm-node-toolbar') || t.closest('.fd-ask-box'))) return;
+    if (!askBoxes.some((b) => b.el && b.el.parentElement)) {
+      if (isBarVisible()) hideBar();     // 只开着的工具条：点别处也收起 ✓
+      return;
+    }
+    closeAskBoxes();
+    hideBar();
+  }, true);
 })();

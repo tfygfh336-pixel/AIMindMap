@@ -26,6 +26,7 @@
   const MM = window.MM || (window.MM = {});
 
   const LAYER_ID = 'mm-rel-layer';
+  const HIT_LAYER_ID = 'mm-rel-hit-layer';
   const CLS_HIT = 'mm-rel-hit';     // 关联节点（高亮）
   const CLS_DIM = 'mm-rel-dim';     // 其余节点（轻微虚化）
   const ROLE = 'relation';          // 线图层路径的角色标记（断言据此认出来）
@@ -62,6 +63,25 @@
     // 放在 canvas 之后：DOM 顺序让它在树边之上；节点层 z-index 更高 ⇒ 节点仍压在最上面 ✓
     if (canvas && canvas.nextSibling) p.insertBefore(svg, canvas.nextSibling);
     else p.appendChild(svg);
+    return svg;
+  }
+
+  /** 命中层：**必须单独一层且盖在节点之上** ✗✗ —— 这是"点线打不开笔记"的真根因：
+   *  视觉线在节点层**下面**（不然会压在节点上），而节点层是整块 DOM ⇒ 真鼠标事件永远落在节点层上，
+   *  到不了线 ✗。（我最初的断言用 `dispatchEvent` 直接派到 path 上 ⇒ **绕过了命中测试** ⇒ 断言绿、
+   *  功能坏 ✓✓ 教训记这里：验点击必须发**真鼠标事件**（`sendInputEvent`），不能用 DOM 派发。）
+   *  所以：视觉层在下（pointer-events:none ✓），命中层在上（透明、只有 stroke 可点 ✓）。 */
+  function ensureHitLayer() {
+    const p = panel();
+    if (!p) return null;
+    let svg = p.querySelector('#' + HIT_LAYER_ID);
+    if (svg) return svg;
+    svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('id', HIT_LAYER_ID);
+    svg.setAttribute('data-role', ROLE + '-hit-layer');
+    // z-index 3 > 节点层（jsMind 给 jmnodes 的 2）⇒ 真点击先落到这里；根元素本身不吃事件 ✓
+    svg.style.cssText = 'position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:3';
+    p.appendChild(svg);
     return svg;
   }
 
@@ -104,12 +124,15 @@
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
-  /** 重画所有线（端点现取 ⇒ 树被拖动/重排后依然贴合） */
+  /** 重画所有线（端点现取 ⇒ 树被拖动/重排后依然贴合）。
+   *  同时维护**两层**：视觉层（节点下面）+ 命中层（节点上面，见 ensureHitLayer 的说明）✓ */
   function redrawLines() {
     const svg = ensureLayer();
+    const hitSvg = ensureHitLayer();
     if (!svg) return 0;
     while (svg.firstChild) svg.removeChild(svg.firstChild);
-    if (!active) { svg.dataset.count = '0'; return 0; }
+    if (hitSvg) while (hitSvg.firstChild) hitSvg.removeChild(hitSvg.firstChild);
+    if (!active) { svg.dataset.count = '0'; if (hitSvg) hitSvg.dataset.count = '0'; return 0; }
     let n = 0;
     for (const e of active.edges) {
       const ra = rectOf(e.a), rb = rectOf(e.b);
@@ -122,19 +145,22 @@
       line.setAttribute('data-rel-b', e.b);
       line.setAttribute('data-role', ROLE + '-line');
       svg.appendChild(line);
-      // 命中热区：透明加粗 + pointer-events:stroke（线太细点不中 ⇒ 必须有它）
-      const hit = document.createElementNS(SVG_NS, 'path');
-      hit.setAttribute('d', d);
-      hit.setAttribute('class', 'mm-rel-hitpath');
-      hit.setAttribute('data-role', ROLE + '-hit');
-      hit.setAttribute('data-rel-a', e.a);
-      hit.setAttribute('data-rel-b', e.b);
-      hit.setAttribute('data-assoc', (e.assocIds || []).join(','));
-      hit.addEventListener('click', (ev) => { ev.stopPropagation(); onLineClick(e, ev); });
-      svg.appendChild(hit);
+      // 命中热区：透明加粗 + pointer-events:stroke，放在**上层**才真的点得到 ✓
+      if (hitSvg) {
+        const hit = document.createElementNS(SVG_NS, 'path');
+        hit.setAttribute('d', d);
+        hit.setAttribute('class', 'mm-rel-hitpath');
+        hit.setAttribute('data-role', ROLE + '-hit');
+        hit.setAttribute('data-rel-a', e.a);
+        hit.setAttribute('data-rel-b', e.b);
+        hit.setAttribute('data-assoc', (e.assocIds || []).join(','));
+        hit.addEventListener('click', (ev) => { ev.stopPropagation(); onLineClick(e, ev); });
+        hitSvg.appendChild(hit);
+      }
       n++;
     }
     svg.dataset.count = String(n);
+    if (hitSvg) hitSvg.dataset.count = String(n);
     return n;
   }
 
@@ -257,12 +283,13 @@
     active = null;
     window.__mmAssocItems = null;
     clearHighlight();
-    const p = panel();
-    const svg = p ? p.querySelector('#' + LAYER_ID) : null;
-    if (svg) {
+    [LAYER_ID, HIT_LAYER_ID].forEach((id) => {
+      const p = panel();
+      const svg = p ? p.querySelector('#' + id) : null;
+      if (!svg) return;
       while (svg.firstChild) svg.removeChild(svg.firstChild);
       svg.dataset.count = '0';
-    }
+    });
     return true;
   }
 

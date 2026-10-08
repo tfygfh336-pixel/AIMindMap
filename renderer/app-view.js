@@ -51,7 +51,7 @@
   function fdViewEls() {
     const p = fdPanel();
     if (!p) return [];
-    return ['canvas.jsmind', '#mm-rel-layer', 'jmnodes']
+    return ['canvas.jsmind', '#mm-rel-layer', 'jmnodes', '#mm-rel-hit-layer']
       .map((sel) => p.querySelector(sel))
       .filter(Boolean);
   }

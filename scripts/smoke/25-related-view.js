@@ -182,16 +182,14 @@ module.exports = [
         return JSON.stringify({ ok: !!svg && Number(svg.dataset.count) > 0,
           text: '线=' + (svg ? svg.dataset.count : '无') });
       })()`);
-      // 在一条**带关联笔记**的线（data-assoc 非空）上派发 click。
+      // 找一条**带关联笔记**的线（data-assoc 非空）在视口内的一个点。
       // · 为什么挑"带 assoc"：链接关系的线本身没有关联笔记（点它只应给说明，不该硬开一篇）；
-      // · 为什么挑"中点落在视口内"的：线可能整条在面板外（缩放后常见），点视口外的坐标不像真人操作。
-      const res = await execJson(ctx, `(function () {
-        var svg = document.querySelector('#mm-rel-layer');
-        if (!svg) return JSON.stringify({ ok: false, text: '没有关系层' });
+      // · 为什么沿整条线采样：线常常很长、中点跑到视口外，而真人只会点看得见的那一段 ✓
+      const hitPt = await execJson(ctx, `(function () {
+        var svg = document.querySelector('#mm-rel-hit-layer');
+        if (!svg) return JSON.stringify({ ok: false, text: '没有命中层 #mm-rel-hit-layer' });
         var hits = Array.prototype.slice.call(svg.querySelectorAll('path.mm-rel-hitpath'));
         var withAssoc = hits.filter(function (h) { return (h.getAttribute('data-assoc') || '').length > 0; });
-        if (!withAssoc.length) return JSON.stringify({ ok: false,
-          text: '没有任何带关联笔记的线（共 ' + hits.length + ' 条热区）⇒ 断言无处可点' });
         function ptAt(h, t) {
           var d = h.getAttribute('d').match(/^M([-\\d.]+),([-\\d.]+) L([-\\d.]+),([-\\d.]+)$/);
           if (!d) return null;
@@ -201,25 +199,26 @@ module.exports = [
           q.y = Number(d[2]) + (Number(d[4]) - Number(d[2])) * t;
           return q.matrixTransform(ctm);
         }
-        // 沿整条线采样（不只中点）：线常常很长、中点跑到视口外，而真人只会点看得见的那一段 ✓
-        var HIT_T = [0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9];
-        var hit = null, sp = null;
-        for (var i = 0; i < withAssoc.length && !hit; i++) {
-          for (var k = 0; k < HIT_T.length; k++) {
-            var m = ptAt(withAssoc[i], HIT_T[k]);
-            if (m && m.x > 10 && m.y > 10 && m.x < window.innerWidth - 10 && m.y < window.innerHeight - 10) {
-              hit = withAssoc[i]; sp = m; break;
+        var T = [0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9];
+        for (var i = 0; i < withAssoc.length; i++) {
+          for (var k = 0; k < T.length; k++) {
+            var m = ptAt(withAssoc[i], T[k]);
+            if (m && m.x > 12 && m.y > 12 && m.x < window.innerWidth - 12 && m.y < window.innerHeight - 12) {
+              window.__relClick = { x: m.x, y: m.y, assoc: withAssoc[i].getAttribute('data-assoc'), inViewport: true };
+              return JSON.stringify({ ok: true, x: Math.round(m.x), y: Math.round(m.y), assoc: withAssoc[i].getAttribute('data-assoc') });
             }
           }
         }
-        var inViewport = !!hit;
-        if (!hit) { hit = withAssoc[0]; sp = ptAt(hit, 0.5); }   // 都在视口外：只好点中点（断言会识别这种情形）
-        hit.dispatchEvent(new MouseEvent('click', { clientX: sp.x, clientY: sp.y, bubbles: true }));
-        window.__relClick = { x: sp.x, y: sp.y, assoc: hit.getAttribute('data-assoc'), inViewport: inViewport };
-        return JSON.stringify({ ok: true, text: '点在带 assoc=' + hit.getAttribute('data-assoc') + ' 的线上 ('
-          + Math.round(sp.x) + ',' + Math.round(sp.y) + ')' + (inViewport ? '［视口内］' : '［整条线都在视口外，按夹回视口判］') });
+        return JSON.stringify({ ok: false, text: '命中层里没有视口内的可点线（热区 ' + hits.length + ' 条）' });
       })()`);
-      if (!res.ok) return { ok: false, text: res.text };
+      if (!hitPt.ok) return { ok: false, text: '找不到可点位置：' + (hitPt.text || JSON.stringify(hitPt)) };
+      // ★ 用**真鼠标事件**点它（不是 DOM 派发！）—— 这是本功能最早的假绿根因：
+      //   视觉线在节点层**下面**，真事件永远落在节点层上；而 `dispatchEvent` 直接派到 path 上会
+      //   **绕过命中测试** ⇒ 断言绿、功能坏 ✗。sendInputEvent 走 Chromium 的真实命中测试 ✓
+      ctx.win.webContents.sendInputEvent({ type: 'mouseMove', x: hitPt.x, y: hitPt.y });
+      ctx.win.webContents.sendInputEvent({ type: 'mouseDown', x: hitPt.x, y: hitPt.y, button: 'left', clickCount: 1 });
+      ctx.win.webContents.sendInputEvent({ type: 'mouseUp', x: hitPt.x, y: hitPt.y, button: 'left', clickCount: 1 });
+      await new Promise((r) => setTimeout(r, 300));
       const chk = await waitFor(ctx, `(function () {
         var c = window.__relClick;
         var st = window.MM.getFloatDetailState ? window.MM.getFloatDetailState() : null;
@@ -246,7 +245,7 @@ module.exports = [
         });
       })()`);
       const o = JSON.parse(chk);
-      return { ok: !!o.ok, text: res.text + ' ｜ ' + o.text };
+      return { ok: !!o.ok, text: '真鼠标点击 (' + hitPt.x + ',' + hitPt.y + ') 落在带 assoc=' + hitPt.assoc + ' 的线上 ｜ ' + o.text };
     }
   },
   {

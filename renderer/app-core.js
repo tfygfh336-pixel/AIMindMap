@@ -120,8 +120,25 @@
       .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
       .replace(/`([^`\n]+)`/g, '<code>$1</code>');
   }
-  function applyTopicMarkup(jm) {
-    const host = (jm && jm.view && jm.view.e_panel) || document.getElementById('jsmind_container');
+
+  /* 全工程**唯一**的两处 Markdown 渲染口（用户反馈「很多地方**字面量**没渲染成粗体」）——
+   *   · `mdInline`：**一行**里的加粗/行内代码（标题、列表项、标签）⇒ 只做行内替换，先整体转义 ✓；
+   *   · `mdBlock`：**整段** Markdown（AI 的回答、笔记正文）⇒ 走 `src/convert.js` 的 markdownToHtml ✓
+   *     （与 `--note-md` 导入走的是同一个转换器 ⇒ 一份实现、两种来源表现一致 ✓）。
+   * ⚠️ 两者都**只作用于 DOM**，绝不写回数据（`serializeTree` 读的是原文 ✓，见上面 topic 的说明）。 */
+  function mdInline(text) { return topicMarkup(text); }
+  function mdBlock(text) {
+    const s = String(text == null ? '' : text);
+    if (window.MMConvert && window.MMConvert.markdownToHtml) {
+      try {
+        const html = window.MMConvert.markdownToHtml(s);
+        if (html) return html;
+      } catch (e) { /* 转换失败退回行内渲染 —— 宁可少渲染，不可整段丢失 ✗ */ }
+    }
+    return topicMarkup(s).replace(/\n/g, '<br>');
+  }
+
+  function applyTopicMarkup(jm) {    const host = (jm && jm.view && jm.view.e_panel) || document.getElementById('jsmind_container');
     if (!host) return 0;
     let n = 0;
     host.querySelectorAll('jmnode').forEach((el) => {
@@ -375,6 +392,9 @@
   MM.renderMind = renderMind;
   MM.rebuildFromJson = rebuildFromJson;
   MM.escHtml = escHtml;
+  // Markdown 渲染的**唯一两个口**（行内 / 整段）—— 见文件里 mdInline/mdBlock 的说明 ✓
+  MM.mdInline = mdInline;
+  MM.mdBlock = mdBlock;
   MM.topicMarkup = topicMarkup;          // 单源：行内 Markdown → HTML（供详情框标题等复用）
   MM.applyTopicMarkup = applyTopicMarkup;
   MM.nodeImages = nodeImages;

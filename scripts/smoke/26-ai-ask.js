@@ -107,9 +107,17 @@ module.exports = [
           && box.querySelector('.fd-close') && box.querySelector('.fd-rs-e'));
         var hasStub = !!box.querySelector('.ask-stub') && text.indexOf('未调用模型') >= 0;
         var hasAnswer = text.indexOf('解释占位') >= 0;
+        // ① 答案里的 **粗体** 必须渲染成 <strong>（用户反馈"全局 ** 不渲染"的机械判据 ✓）
+        var hasBold = !!box.querySelector('.ask-a strong');
+        var hasList = !!box.querySelector('.ask-a li');
+        var noVisLocks = (function () {
+          var m = box.querySelector('.fd-lock-map'), s = box.querySelector('.fd-lock-screen');
+          return (!m || getComputedStyle(m).display === 'none') && (!s || getComputedStyle(s).display === 'none');
+        })();
         return JSON.stringify({
-          ok: title.indexOf(${JSON.stringify(topic)}) >= 0 && hasChrome && hasStub && hasAnswer,
+          ok: title.indexOf(${JSON.stringify(topic)}) >= 0 && hasChrome && hasStub && hasAnswer && hasBold && hasList && noVisLocks,
           text: '标题=「' + title + '」 复用详情框外壳=' + hasChrome + ' 有桩标记=' + hasStub + ' 有答案=' + hasAnswer
+            + ' 粗体已渲染=' + hasBold + ' 列表已渲染=' + hasList + ' 大小锁已隐藏=' + noVisLocks
         });
       })()`);
       const o = JSON.parse(res);
@@ -174,6 +182,63 @@ module.exports = [
           text: '正常=' + JSON.stringify(a) + ' 上边翻转=' + JSON.stringify(b) + ' 右边夹取=' + JSON.stringify(c) });
       })()`);
       return { ok: !!res.ok, text: res.text };
+    }
+  },
+  {
+    name: 'AI 问答（用户反馈⑤⑧）：空框**不写"正在生成…"**、点别处即消失、位置钉在首次显示处',
+    run: async (ctx) => {
+      const pick = await pickVisibleNode(ctx);
+      if (!pick.ok) return { ok: false, text: pick.text };
+      // ① 开一个**全新的**空框：先关掉前面断言留下的框（否则会**复用**那个已有流水的框，
+      //    而"空框提示"只对真的空框成立 —— 我第一版就踩了这个前置条件 ✗）
+      await ctx.exec(`(function () {
+        Array.prototype.slice.call(document.querySelectorAll('.fd-ask-box .fd-close'))
+          .forEach(function (b) { b.click(); });
+        return 1;
+      })()`);
+      await new Promise((r) => setTimeout(r, 150));
+      const opened = await execJson(ctx, `(function () {
+        var box = window.MM.showAskBox(${JSON.stringify(pick.node.id)}, { kind: 'ask' });
+        if (!box) return JSON.stringify({ ok: false, text: '没打开框' });
+        var text = box.el.textContent || '';
+        var empty = !!box.el.querySelector('.ask-empty');
+        var pending = text.indexOf('正在生成') >= 0;
+        return JSON.stringify({
+          ok: empty && !pending,
+          text: '有"请你先问"提示=' + empty + ' 出现"正在生成…"=' + pending
+            + ' 位置=(' + Math.round(parseFloat(box.el.style.left) || 0) + ',' + Math.round(parseFloat(box.el.style.top) || 0) + ')',
+          left: Math.round(parseFloat(box.el.style.left) || 0), top: Math.round(parseFloat(box.el.style.top) || 0)
+        });
+      })()`);
+      if (!opened.ok) return { ok: false, text: opened.text };
+      // ② 位置钉住：改视图变换（平移+缩放）后，框的位置**不该变**（= 大锁 = 绑定在首次显示处 ✓）
+      const stayed = await execJson(ctx, `(function () {
+        var el = document.querySelector('.fd-ask-box');
+        if (!el) return JSON.stringify({ ok: false, text: '框不见了' });
+        window.MM.setViewTransform({ s: 0.7, x: 120, y: 60 });
+        var l = Math.round(parseFloat(el.style.left) || 0), t = Math.round(parseFloat(el.style.top) || 0);
+        window.MM.setViewTransform({ s: 1, x: 0, y: 0 });
+        return JSON.stringify({ ok: Math.abs(l - ${opened.left}) < 2 && Math.abs(t - ${opened.top}) < 2,
+          text: '变换后位置=(' + l + ',' + t + ')，首显位置=(${opened.left},${opened.top})' });
+      })()`);
+      // ③ 点**别处**（导图空白处，真鼠标事件）⇒ 框消失（用户反馈⑧）
+      const panel = await execJson(ctx, `(function () {
+        var p = window.MM.fdPanel(); var r = p.getBoundingClientRect();
+        return JSON.stringify({ ok: true, x: Math.round(r.left + 24), y: Math.round(r.bottom - 24) });
+      })()`);
+      ctx.win.webContents.sendInputEvent({ type: 'mouseMove', x: panel.x, y: panel.y });
+      ctx.win.webContents.sendInputEvent({ type: 'mouseDown', x: panel.x, y: panel.y, button: 'left', clickCount: 1 });
+      ctx.win.webContents.sendInputEvent({ type: 'mouseUp', x: panel.x, y: panel.y, button: 'left', clickCount: 1 });
+      await new Promise((r) => setTimeout(r, 250));
+      const gone = await execJson(ctx, `(function () {
+        var n = document.querySelectorAll('.fd-ask-box').length;
+        var bar = window.MM.isNodeToolbarVisible ? window.MM.isNodeToolbarVisible() : null;
+        return JSON.stringify({ ok: n === 0, text: '剩下打开的 AI 框=' + n + ' 工具条可见=' + bar });
+      })()`);
+      return {
+        ok: !!opened.ok && !!stayed.ok && !!gone.ok,
+        text: opened.text + ' ｜ ' + stayed.text + ' ｜ ' + gone.text
+      };
     }
   }
 ];

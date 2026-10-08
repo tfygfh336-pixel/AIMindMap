@@ -546,6 +546,16 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   border: 1px solid #2b5dd6; background: #2b5dd6; color: #fff; cursor: pointer;
 }
 #msg-send:hover { background: #1f4bb8; }
+/* 命中层（**在节点之上**）—— 见 app-related.js 里 ensureHitLayer 的说明：
+ * 视觉线在节点下面是为了不被节点压住，但那样真鼠标事件永远落不到线上 ⇒ 命中单独一层 ✓ */
+#mm-rel-hit-layer .mm-rel-hitpath {
+  fill: none; stroke: transparent; stroke-width: 14;
+  pointer-events: stroke; cursor: pointer;
+}
+/* AI 问答浮窗：**不显示**大小锁（行为上是大锁 = 钉在首次显示的位置，但不需要那两个按钮 ✓ 用户反馈⑧） */
+.fd-ask-box .fd-lock-map, .fd-ask-box .fd-lock-screen { display: none !important; }
+/* 空对话框的提示（不能写"正在生成…"，那看着像 AI 先开口了 ✗ 用户反馈⑤） */
+.ask-empty { color: #86909c; font-size: 12.5px; }
 /* 二级页面里的笔记正文 */
 .assoc-note { font-size: 13px; color: #1f2329; }
 .assoc-note p { margin: 0 0 8px; }
