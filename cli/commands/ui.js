@@ -38,7 +38,12 @@ function waitForResult(baseDir, wantCmd, timeoutMs) {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     const r = control.readResult(baseDir);
-    if (r && r.cmd === wantCmd) return r;
+    // ⚠️ 回执必须**新鲜** ✗ —— 本机真实事故：应用**没在运行**时，目录里留着的 4.5 小时前的旧回执
+    //    被当成实时结果 ⇒ `dsh-status` 报 "running"、界面其实早关了 ✗✓（工程最忌的"假绿"）。
+    //    判据：回执自带的 `at` 必须落在**本次等待窗口**内 ✓（该字段本来就有 ⇒ 不改函数签名 ✓）
+    const at = r && r.at ? Date.parse(r.at) : NaN;
+    const fresh = Number.isFinite(at) && at >= Date.now() - timeoutMs - 3000;
+    if (r && r.cmd === wantCmd && fresh) return r;
     // 忙等一小会儿：本命令是人工/AI 一次性调用，不值得为它引入异步框架
     const t0 = Date.now();
     while (Date.now() - t0 < 100) { /* spin */ }
@@ -91,7 +96,8 @@ module.exports = {
    *  用法：`dsh-prefill "要送过去的文本"`；也支持 `--file <路径>` 从文件读（长对话用）。
    *  等**回执**才报成功 ✓（没有回执 = 没生效 ✗）。 */
   'dsh-prefill'(ctx) {
-    let text = String((ctx.args._ && ctx.args._[1]) || '');
+    // ⚠️ 位置参数从 `_[0]` 起（命令名不在里面 ✓ —— 隔壁 dsh-sidebar 用的就是 _[0] ✓）
+    let text = String((ctx.args._ && ctx.args._[0]) || '');
     if (ctx.args.file) {
       try { text = require('fs').readFileSync(String(ctx.args.file), 'utf8'); } catch (e) { ctx.error('读不到文件：' + String(ctx.args.file) + '（' + ((e && e.message) || e) + '）'); }
     }
