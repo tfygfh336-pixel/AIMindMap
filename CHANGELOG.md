@@ -14,6 +14,28 @@
 
 ## [Unreleased]
 
+### 覆盖渲染器支持 agent preset 声明：为「aimindmap 模式」备好可重放的载体（2026-10-08）
+
+**背景**（功能 6，调研见 `.review/20261008-DSH深度集成调研/07-功能6-DSH模式与人设.md`）：
+内置 DSH 的「模式」= `@deepseek-ai/dsh-agent-preset` 的一条**声明**，而它的 `plugins` 是**该模式 agent 的全部能力**
+（人设 / 工具 / 技能 / plan-mode / 压缩 / 委派 —— 实测「标准模式」那份有 23 行）。
+内核自带的声明在 `dsh-web-app/presets/{standard,ptc,minimal,cordis}.patch.yml`，**是运行包的事实、随升级会变** ✗。
+⇒ 手抄一份清单进本仓库 = 又一份会漂移的副本（台账 R8 那类）。
+
+**实现**（扩 `scripts/dsh-embedded-overrides.js`，它是那份 patch 的**唯一写者**，不另开脚本）：
+- 新的陈述式键 `"$presets": { "aimindmap": { "cloneFrom": "standard", "order": 0 } }`；
+- 渲染时**从运行包自带的 `presets/<cloneFrom>.patch.yml` 读出 plugins 段原文**，
+  只把 `persona` 行的 `prefix` 换成脚本内的人设文本（块标量 `|-`，往返逐字相等）⇒ 单一真源 ✓；
+- 生成块带 BEGIN/END 横幅、**幂等**（重复渲染整块覆盖，第二次"无需改动"）、写盘前备份；
+- `check` 除了比标量，还把生成块与"现在重新生成的结果"**逐行比对** ⇒ 手改或半截块都会红 ✓；
+- 白名单纪律不变：`$presets` 的 id 必须在脚本的 `PRESETS` 里、`cloneFrom` 必须是运行包里真实存在的 preset，
+  否则**报错退出**（不许猜 ✗）；运行包路径给错也响亮失败（不静默生成空清单模式）。
+- 顺手修：脚本此前**没有 `require.main` 守卫**（`require()` 它会当场执行 CLI 并 exit ⇒ 不可单测）。
+
+**测试**：`tests/dsh-embedded-overrides.test.js` 13 → **22 条**（新增：结构与"逐行 id 与运行包一致"、
+人设落位与占位符保留、幂等、手改被抓、运行包路径错、白名单拒绝、require 守卫）。全部在**临时 home** 上跑，
+不碰真实实例 ✓。用户可见的"模式出现在列表里"由下一批（apply 到现网 + 台账/自检）验证。**
+
 ### 修一条顺序依赖的冒烟假红：save() 会重建 jsMind 实例，旧引用必须弃用（2026-10-08）
 
 **症状**：全量冒烟里 `09-*` 的「未保存改动判定」四个值全是 `false`（`复位后=false 新增后=false 改详情后=false 保存后=false`），

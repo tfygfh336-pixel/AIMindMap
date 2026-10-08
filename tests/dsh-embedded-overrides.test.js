@@ -20,9 +20,25 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import yaml from 'js-yaml';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'dsh-embedded-overrides.js');
+/** 内置 DSH 运行包（动 preset 声明时要读它自带的 presets/*.patch.yml 当参照物） */
+const RUNTIME = path.join(ROOT, 'vendor', 'dsh');
+const require_ = (await import('node:module')).createRequire(import.meta.url);
+const ov = require_(SCRIPT);
+
+/** DSH 的 `!!js` 是自定义标签：中性化成普通标量后 js-yaml 才能验证"结构是否合法" ✓ */
+const neutralizeJsTag = (text) => text.replace(/!!js /g, '');
+
+/** 运行包自带的某个内置 preset 的 plugins 行 id 序列（当"不许手抄漂移"的参照物） */
+function builtinPluginIds(cloneFrom) {
+  const f = path.join(RUNTIME, 'app', 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', cloneFrom + '.patch.yml');
+  const doc = yaml.load(neutralizeJsTag(fs.readFileSync(f, 'utf8')));
+  const row = doc.flatMap((d) => (d && d.insert) || []).find((r) => r && String(r.id || '').startsWith('preset-'));
+  return row.config.plugins.map((p) => p.id);
+}
 
 let home = null;
 let patch = null;
@@ -186,5 +202,104 @@ describe('check：不一致必须非 0（它是自检第 6 项的真值来源）
     writeOverrides({ 'permission.defaultPreset': 'workspace-write' });
     fs.rmSync(patch);
     expect(run('check').status).not.toBe(0);
+  });
+});
+
+/* ============================================================================
+ * ② agent preset 声明（2026-10-08 新增：aimindmap 模式）
+ * 需求背景见 .review/20261008-DSH深度集成调研/07-功能6-DSH模式与人设.md：
+ * 「模式」= `@deepseek-ai/dsh-agent-preset` 的一条**声明**，plugins 是该模式 agent 的
+ * 全部能力（人设/工具/技能/plan-mode/压缩/委派）。**清单从运行包自带的 preset 生成，
+ * 不手抄进本仓库** —— 手抄一份就是又一份会随内置 DSH 升级漂移的副本（台账 R8 那类）。
+ * ========================================================================= */
+describe('preset 生成：清单必须与运行包自带的逐行对齐（不手抄 ⇒ 不漂移）', () => {
+  it('结构：insert 一条 preset 行，id/name/config 齐备，plugins 与 standard 同序同 id', () => {
+    const block = ov.buildPresetBlock('aimindmap', { cloneFrom: 'standard' });
+    const doc = yaml.load(neutralizeJsTag(block.join('\n')));
+    const row = doc[0].insert[0];
+    expect(row.id).toBe('preset-aimindmap');
+    expect(row.name).toBe('@deepseek-ai/dsh-agent-preset');
+    expect(row.config.id).toBe('aimindmap');
+    expect(typeof row.config.order).toBe('number');
+    expect(row.config.plugins.map((p) => p.id)).toEqual(builtinPluginIds('standard'));
+    expect(row.config.plugins.length).toBeGreaterThan(15);   // "能干活"的 agent 不会只有几条
+  });
+
+  it('人设进了 persona.prefix（不是空壳），且保留宿主的 {{cwd}} 占位符', () => {
+    const doc = yaml.load(neutralizeJsTag(ov.buildPresetBlock('aimindmap', { cloneFrom: 'standard' }).join('\n')));
+    const persona = doc[0].insert[0].config.plugins.find((p) => p.id === 'persona');
+    expect(persona.name).toBe('@deepseek-ai/dsh-persona');
+    expect(persona.config.prefix).toBe(ov.PRESETS.aimindmap.persona);
+    expect(persona.config.prefix.length).toBeGreaterThan(80);
+    expect(persona.config.suffix).toContain('{{cwd}}');
+  });
+
+  it('幂等：applyPresetBlocks 连应用两次只留一个块，且在文件末尾', () => {
+    const base = fixtureLines();
+    const ovd = { $presets: { aimindmap: { cloneFrom: 'standard' } } };
+    const once = ov.applyPresetBlocks(base.slice(), ovd).lines;
+    const twice = ov.applyPresetBlocks(once.slice(), ovd).lines;
+    expect(twice.filter((l) => l.trim() === ov.BANNER_BEGIN).length).toBe(1);
+    expect(twice.join('\n')).toBe(once.join('\n'));
+    expect(twice[twice.length - 2].trim()).toBe(ov.BANNER_END);
+  });
+
+  it('没声明 $presets ⇒ 不留痕（不生成空块）', () => {
+    const base = fixtureLines();
+    expect(ov.applyPresetBlocks(base.slice(), {}).lines.join('\n')).toBe(base.join('\n'));
+  });
+});
+
+describe('preset 生成：CLI 端到端（临时 home）', () => {
+  it('render → 幂等 → check 全绿；生成物是合法 YAML、且备份已产生', () => {
+    writeOverrides({ $presets: { aimindmap: { cloneFrom: 'standard' } } });
+    const r1 = run('render', '--runtime', RUNTIME);
+    expect(r1.status).toBe(0);
+    expect(r1.out).toContain('$presets: aimindmap');
+    const text = readPatch();
+    expect(() => yaml.load(neutralizeJsTag(text))).not.toThrow();
+    expect(fs.readdirSync(path.dirname(patch)).some((f) => f.includes('.bak-'))).toBe(true);
+
+    const r2 = run('render', '--runtime', RUNTIME);
+    expect(r2.status).toBe(0);
+    expect(r2.out).toContain('无需改动');
+    expect(sha(patch)).toBe(crypto.createHash('sha256').update(fs.readFileSync(patch)).digest('hex'));
+    expect(readPatch()).toBe(text);
+
+    const c = run('check', '--runtime', RUNTIME);
+    expect(c.status).toBe(0);
+    expect(c.out).toContain('✓ $presets.aimindmap');
+  });
+
+  it('check 抓得到"生成块被手改"（不是只看文件在不在）', () => {
+    writeOverrides({ $presets: { aimindmap: { cloneFrom: 'standard' } } });
+    expect(run('render', '--runtime', RUNTIME).status).toBe(0);
+    fs.writeFileSync(patch, readPatch().replace('aimindmap 模式', '被手改了'), 'utf8');
+    const c = run('check', '--runtime', RUNTIME);
+    expect(c.status).not.toBe(0);
+    expect(c.out).toContain('✗ $presets.aimindmap');
+  });
+
+  it('运行包路径给错 ⇒ 响亮失败（不静默生成一个空清单的模式）', () => {
+    writeOverrides({ $presets: { aimindmap: { cloneFrom: 'standard' } } });
+    const r = run('render', '--runtime', path.join(os.tmpdir(), 'no-such-runtime'));
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain('运行包里没有内置 preset');
+  });
+
+  it('$presets 里不认识的 id / 缺 cloneFrom ⇒ 非 0（白名单之外不许猜）', () => {
+    writeOverrides({ $presets: { whatever: { cloneFrom: 'standard' } } });
+    expect(run('render', '--runtime', RUNTIME).status).not.toBe(0);
+    writeOverrides({ $presets: { aimindmap: {} } });
+    expect(run('render', '--runtime', RUNTIME).status).not.toBe(0);
+  });
+});
+
+describe('require 守卫：脚本可被单测加载而不执行 CLI', () => {
+  it('require() 只导出函数，不打印用法、不退出', () => {
+    expect(typeof ov.buildPresetBlock).toBe('function');
+    expect(typeof ov.applyPresetBlocks).toBe('function');
+    expect(Object.keys(ov.PRESETS)).toContain('aimindmap');
+    expect(ov.BANNER_BEGIN).toContain('生成物');
   });
 });
