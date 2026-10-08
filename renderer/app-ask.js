@@ -348,23 +348,21 @@
     const project = (st && st.project && st.project.name) || '?';
     if (!jm || !ids || !ids.length) return Promise.resolve(null);
     const conv = window.MMConvert || {};
-    const lines = ['【来自 AI MindMap·' + project + '】' + (ids.length > 1 ? ('以下 ' + ids.length + ' 个节点') : '以下节点') + '：'];
-    ids.forEach((id, k) => {
+    const nodes = ids.map((id) => {
       const n = jm.get_node(id);
-      if (!n) return;
-      lines.push('');
-      lines.push((ids.length > 1 ? ((k + 1) + '. ') : '') + (n.topic || '(无标题)'));
-      const tags = Array.isArray(n.tags) ? n.tags : [];
-      if (tags.length) lines.push('   标签：' + tags.join('、'));
-      const plain = conv.stripHtml ? String(conv.stripHtml(n.detail || '')).replace(/\s+/g, ' ').trim() : '';
-      if (plain) lines.push('   正文：' + plain.slice(0, 600));
-    });
-    lines.push('');
-    lines.push('（这些是我这边的上下文；接着我想问 —— 你按需回答即可。）');
+      if (!n) return null;
+      const plain = conv.stripHtml ? String(conv.stripHtml(n.detail || '')).trim() : String(n.detail || '');
+      return { topic: n.topic, tags: Array.isArray(n.tags) ? n.tags : [], detailText: plain };
+    }).filter(Boolean);
+    // 文本拼装在 **src/sidebar-context.js**（纯函数 ⇒ node 里能单测 ✓）—— 见那里的说明 ✓
+    const body = (window.MMSidebarContext && window.MMSidebarContext.buildSidebarText)
+      ? window.MMSidebarContext.buildSidebarText(project, nodes)
+      : ('【来自 AI MindMap·' + project + '】' + nodes.map((n) => '\n' + n.topic).join('')
+        + '\n\n（这些是我这边的上下文；接着我想问 —— 你按需回答即可。）');
     const api = (window.desktop && window.desktop.dsh && window.desktop.dsh.prefill);
     if (!api) { MM.setStatus('这个版本没有侧栏通道', true); return Promise.resolve(null); }
     MM.setStatus('正在送进侧栏…');
-    return Promise.resolve(api(lines.join('\n'))).then((r) => {
+    return Promise.resolve(api(body)).then((r) => {
       if (r && r.ok) MM.setStatus('已把 ' + ids.length + ' 个节点送进侧栏输入框（' + (r.textLen || 0) + ' 字）—— 到右边按发送 ✓');
       else MM.setStatus('没送进侧边栏：' + ((r && r.reason) || '未知原因'), true);
       return r;

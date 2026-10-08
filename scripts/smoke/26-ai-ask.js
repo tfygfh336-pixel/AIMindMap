@@ -332,5 +332,32 @@ module.exports = [
       })()`);
       return { ok: !!res.ok, text: JSON.parse(waited).text + ' ｜ ' + res.text };
     }
+  },
+  {
+    name: '⑨ 工具条「⇥ 侧栏」：按钮在，且送不出去时**如实说原因**（不静默 ✗）',
+    run: async (ctx) => {
+      const pick = await pickVisibleNode(ctx);
+      if (!pick.ok) return { ok: false, text: pick.text };
+      await closeAllBoxes(ctx);
+      await ctx.exec(`(function () {
+        var app = window.MMApp, jm = app.getState().jm, n = jm.get_node(${JSON.stringify(pick.node.id)});
+        if (window.MM.showNodeToolbar) window.MM.showNodeToolbar(${JSON.stringify(pick.node.id)});
+        return 1;
+      })()`);
+      const res = await execJson(ctx, `(async function () {
+        var bar = document.getElementById('mm-node-toolbar');
+        var btn = bar ? bar.querySelector('.mm-tb-side') : null;
+        if (!btn) return JSON.stringify({ ok: false, text: '工具条上没有 .mm-tb-side 按钮' });
+        btn.click();
+        await new Promise(function (r) { setTimeout(r, 700); });
+        var status = (document.querySelector('#status-text') || {}).textContent || '';
+        // 冒烟里没有真侧栏 ⇒ 预期是**如实报错**；硬判据 = 状态栏必须给出结论（成功或原因）✓ 不能沉默 ✗
+        return JSON.stringify({
+          ok: /没送进侧边栏：|已把 \d+ 个节点送进侧栏输入框|正在送进侧栏/.test(status),
+          text: '按钮文案="' + btn.textContent.trim() + '" ｜ 状态栏=' + JSON.stringify(status.slice(0, 70))
+        });
+      })()`);
+      return { ok: !!res.ok, text: res.text };
+    }
   }
 ];
