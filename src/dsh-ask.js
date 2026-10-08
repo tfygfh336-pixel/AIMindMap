@@ -141,6 +141,13 @@ function askOnce(opts) {
   return { ok: true, text, ms, code, stdout };
 }
 
+/* ⚠️ **本文件不许出现异步 API**（Promise / async / 回调式 spawn）：
+ * `tests/cli-sync-invariant.test.js` 会检查 CLI 每个命令的**依赖闭包**里没有异步 API
+ * （`cli/main.js` 的 `invokeSync` 依赖命令同步完成）。界面那条路**不在这里** ——
+ * 它由主进程**异步 spawn `cli ask`**（见 `main.js` 的 `app:ask` 与它上面的注释）：
+ * 一次解释要 20+ 秒，主进程不能用 spawnSync 把界面卡住，但 CLI 侧保持同步 ✓。
+ * 实测教训：第一版把 `askOnceAsync` 写进了本文件 ⇒ 直接被这条不变量判红 ✗（现在它不存在）。 */
+
 module.exports = {
   DEFAULT_TIMEOUT_MS, KINDS,
   buildContextBlock, buildAskPrompt, buildAskArgs, buildAskEnv, resolveAskRuntime, askOnce

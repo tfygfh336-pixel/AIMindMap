@@ -56,6 +56,7 @@
 | `app-audit.js` | 关系审计面板：呈现 `orphans`/`mentions` 清单，**漏链接可一键补链接**（写操作走 CLI） |
 | `app-palette.js` | 命令面板（Ctrl+P）：模糊搜索节点与命令；排序用 `src/palette-rank.js` |
 | `app-assoc.js` | **「关联笔记」二级页面**：渲染关联实体页（标题/成员列表/正文）+ 编辑对话框（标题与正文）；从节点详情的「相关知识点」区进入。**并在该区渲染「展示关联节点」按钮**（功能 2 的入口，恒常出现——没有关联笔记也可能有链接关系） |
+| `app-ask.js` | **节点悬浮工具条 + AI 问答浮窗**（功能 1 界面层）：选中节点（= 出现详情框，**唯一钩子点**）后在节点上方弹出「💡 解释 / 💬 问问AI」；浮窗**复用详情框组件**（`createFdBox`）从而自带拖动/改大小/📌🖥 锁/让位 —— 这正是"视觉与节点详情一致"最省力的达成方式 ✓。后端走 `app:ask`（main.js）→ `cli ask` → `dsh headless`，**每问一次是一次独立会话**（界面上明说，不假装连续对话）；冒烟里后端返回 `stub:true` 的桩，界面**必须**把它标出来（`.ask-stub`，有断言守）| `MM.showNodeToolbar(id)` / `MM.hideNodeToolbar()` / `MM.showAskBox(id, {kind, focus})` / `MM.renderAskPage(box)` / `MM.computeBarPos(rect,w,h,view)`（纯几何，可判） |
 | `app-related.js` | **关联节点可视化**（功能 2）：按 `src/related-model.js` 的模型把关联节点**缩放至刚好框住**（`MM.setViewTransform` 一趟算出 s/x/y）、高亮它们并轻微虚化其余（**只写 CSS 类** —— jsMind 会重写内联样式）、在 `fdViewEls()` 里的 SVG 关系层画虚线（随导图同变换 ⇒ 平移缩放零重算），点线按**鼠标位置**开关联笔记（大锁钉住 = 不跟导图跑）。模型缺 `src/related-model.js` 时**响亮抛错**（不静默退化） | `MM.showRelated(id)` / `MM.clearRelated()` / `MM.isRelatedActive()` / `MM.scheduleRelatedRedraw()` / `MM.setViewTransform({s,x,y})`（在 app-view.js） |
 | `app-actions.js` | 保存闸门与未保存判定（`isDirty`）、**并发冲突的两条出路**（`resolveConflict`：用磁盘版本 / 保留我的）、快照撤销重做、节点增删改、搜索、项目加载/切换、MD 导入导出 |
 | `app.js` | **接线层**：`wireUI()` + `window.MMApp` 对外导出 + `DOMContentLoaded` 启动 |

@@ -19,6 +19,10 @@
  *   desktop.app.assocPrune(name, ids)  → 删节点前在**磁盘上**剪掉这些节点在关联/链接里的引用
  *                                        （写操作只经 CLI —— 见 main.js 里的说明）
  *   desktop.app.version()              → 版本号
+ *   desktop.app.ask(name, nodeId, opts) → 向内嵌 AI 问一个节点（功能 1 后端；opts={kind:'explain'|'ask',
+ *                                        question}）。**异步**、实测 20+ 秒；冒烟/`MM_ASK_STUB=1` 时返回
+ *                                        `stub:true` 的桩（绝不冒充真答案）。走 `cli ask` ⇒
+ *                                        "AI 收到什么"只有一处定义
  *   desktop.on(channel, cb)            → 订阅菜单事件
  * ============================================================ */
 'use strict';
@@ -51,6 +55,7 @@ contextBridge.exposeInMainWorld('desktop', {
     linkNodes: (projectName, fromId, toProject, toId, caption) =>
       ipcRenderer.invoke('app:link-nodes', projectName, fromId, toProject, toId, caption),
     nodes: (projectName) => ipcRenderer.invoke('app:nodes', projectName),
+    ask: (projectName, nodeId, opts) => ipcRenderer.invoke('app:ask', projectName, nodeId, opts),
     assoc: (projectName, nodeId) => ipcRenderer.invoke('app:assoc', projectName, nodeId),
     assocEdit: (projectName, assocId, title, noteMd) =>
       ipcRenderer.invoke('app:assoc-edit', projectName, assocId, title, noteMd),

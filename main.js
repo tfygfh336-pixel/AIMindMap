@@ -14,7 +14,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron')
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawnSync, spawn } = require('child_process');
 const dshSidebar = require('./main-dsh-sidebar.js');
 
 const ROOT = __dirname;
@@ -695,6 +695,57 @@ function registerIpc() {
     const text = runCli(['related', projectName, nodeId, '--json']);
     try { return JSON.parse(text); }
     catch (err) { return { error: text }; }
+  });
+
+  /* 功能 1：向内嵌 AI 问一个**节点**（界面「解释」/「问问AI」两个按钮的后端）。
+   * · 为什么**异步**：一次解释实测 ~24s（`src/dsh-ask.js` 文件头有实测数据），而 runCli 是 spawnSync
+   *   ⇒ 会把主进程整段卡住（界面假死 + 别的 IPC 排队）✗。这里自己 spawn 并把结果包成 Promise。
+   * · 为什么复用 `cli ask`（而不是在主进程里再拼一次提示词）：**"AI 收到什么"只能有一处定义** ✓
+   *   （提示词/情境补齐/失败口径都在 CLI 与 src/dsh-ask.js，且已有单测与集成断言）。
+   * · 冒烟/离线（`--smoke` 或 `MM_ASK_STUB=1`）返回**桩**：真调用要烧额度 + 依赖网络 + 24s
+   *   —— 门禁里不做重活（分层纪律）。要验的是"点按钮 ⇒ 出框 ⇒ 显示答案 ⇒ 能发问题"这条链路。
+   *   桩**必须**带 `stub:true`，断言与人都能一眼分辨"这不是真答案" ✗ 不许冒充。 */
+  ipcMain.handle('app:ask', (e, projectName, nodeId, opts) => {
+    const o = opts || {};
+    const kind = o.kind === 'explain' ? 'explain' : 'ask';
+    if (isSmoke || process.env.MM_ASK_STUB === '1') {
+      const echo = o.question ? ('｜你问：' + String(o.question).slice(0, 80)) : '';
+      return Promise.resolve({
+        ok: true, stub: true, kind, ms: 0,
+        text: '（冒烟桩：未调用模型）' + (kind === 'explain' ? '这是对该节点的解释占位。' : '这是回答占位。') + echo
+      });
+    }
+    const args = ['ask', projectName, nodeId, '--json', '--kind', kind];
+    if (o.question) args.push('--question', String(o.question));
+    if (o.timeoutSec) args.push('--timeout', String(o.timeoutSec));
+    return new Promise((resolve) => {
+      let child;
+      try {
+        child = spawn(process.execPath, [CLI].concat(args), {
+          cwd: ROOT,
+          env: Object.assign({}, process.env, {
+            ELECTRON_RUN_AS_NODE: '1',
+            AI_MINDMAP_PROJECTS_DIR: PROJECTS_DIR,   // 数据隔离：子进程也必须指向同一个副本 ✓
+            MM_WRITER: 'gui-cli'
+          })
+        });
+      } catch (err) {
+        resolve({ ok: false, kind, error: '拉起 CLI 失败：' + ((err && err.message) || err) });
+        return;
+      }
+      let out = '', err = '';
+      child.stdout.on('data', (d) => { out += d; });
+      child.stderr.on('data', (d) => { err += d; });
+      child.on('error', (er) => resolve({ ok: false, kind, error: '子进程错误：' + ((er && er.message) || er) }));
+      child.on('close', (code) => {
+        try { resolve(JSON.parse(out)); }
+        catch (parseErr) {
+          // 解析不了就把**原文**带回去（红色要能自己解释自己 ✓，不要只丢一个 "failed"）
+          resolve({ ok: false, kind, code: code,
+            error: (err.trim() || out.trim() || ('CLI 退出码 ' + code)).slice(0, 400) });
+        }
+      });
+    });
   });
 
   /* 关系审计面板：orphans（无引用但有内容）+ mentions（正文提到却没建链接）。

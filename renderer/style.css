@@ -483,6 +483,41 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   pointer-events: stroke; cursor: pointer;
 }
 #mm-rel-layer .mm-rel-hitpath:hover { stroke: rgba(43, 93, 214, 0.12); }
+/* ---------------- 节点悬浮工具条 + AI 问答浮窗（app-ask.js，功能 1） ----------------
+ * 工具条是 **position:fixed 的顶层覆盖物**：不放进画布变换层，免得被缩放/裁剪 ✗ */
+.mm-tb {
+  display: none; position: fixed; z-index: 60; gap: 4px; padding: 3px;
+  background: #fff; border: 1px solid #d6e4ff; border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(31, 35, 41, 0.14);
+}
+.mm-tb-btn {
+  border: none; background: transparent; cursor: pointer; font-size: 12.5px;
+  padding: 4px 9px; border-radius: 6px; color: #1f2329; white-space: nowrap;
+}
+.mm-tb-btn:hover { background: #eef4ff; color: #2b5dd6; }
+/* 问答浮窗里的问答流水 */
+.ask-hint { font-size: 12px; color: #86909c; margin-bottom: 8px; }
+.ask-item { font-size: 13px; line-height: 1.65; margin: 6px 0; }
+.ask-item .ask-who {
+  display: inline-block; min-width: 22px; margin-right: 6px; font-weight: 600; color: #2b5dd6;
+}
+.ask-q { color: #1f2329; }
+.ask-a { color: #1f2329; }
+.ask-pending { color: #86909c; }
+.ask-err { color: #d4380d; }
+.ask-stub { font-size: 11.5px; color: #b26a00; margin: -2px 0 6px 28px; }
+/* 输入行：贴在正文底部（`.fd-scroll` 会滚动 ⇒ sticky 让输入框始终可达 ✓） */
+.ask-inputrow { display: flex; gap: 6px; position: sticky; bottom: 0; padding: 6px 0 2px; background: #fff; }
+.ask-input {
+  flex: 1 1 auto; min-width: 0; font-size: 13px; padding: 5px 8px;
+  border: 1px solid #d6e4ff; border-radius: 6px; outline: none;
+}
+.ask-input:focus { border-color: #2b5dd6; }
+.ask-inputrow .ask-send {
+  flex: 0 0 auto; border: 1px solid #2b5dd6; background: #2b5dd6; color: #fff;
+  font-size: 12.5px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
+}
+.ask-inputrow .ask-send:hover { background: #1f4bb8; }
 /* 二级页面里的笔记正文 */
 .assoc-note { font-size: 13px; color: #1f2329; }
 .assoc-note p { margin: 0 0 8px; }
