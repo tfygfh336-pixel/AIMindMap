@@ -17,6 +17,7 @@ const query = require('../../src/query.js');       // 视图/搜索/统计纯逻
 const bundle = require('../../src/bundle.js');     // aimap 打包格式纯逻辑
 const exportHtml = require('../../src/export-html.js');   // 静态站点 HTML 生成纯逻辑
 const MMConfig = require('../../src/config.js');   // 版本号单源（APP_VERSION）
+const docImport = require('../../src/doc-import.js');  // 功能 5a：md/txt/docx → 提纲（三种前端、一个建树入口）
 
 /** 树形打印（缩进由 src/query.js 的 treeLines 生成） */
 function printTree(ctx, root) {
@@ -128,6 +129,59 @@ module.exports = {
     };
     ctx.write(data);
     ctx.out('已创建项目: ' + name);
+  },
+
+  /** 功能 5a：**大文档 → 新项目 + 新树**（md/txt/docx）。
+   *  与 `import-md` 的区别：那个把节点**追加到已有项目**的某个父节点下；这个**从零建项目**。
+   *  · 转换只做一次并捕获进闭包（同 import-md 的理由：fn 里禁止 I/O、并发重放不该重生成 id）；
+   *  · **一次 ctx.write** 落盘 ⇒ 中途失败不会留下半个项目 ✓；
+   *  · 文档的 1 级标题变成**顶层主题**（"一个文件里几本书 ⇒ 几棵树"在 5a 这一级就成立 ✓）；
+   *  · `--dry-run` 只报格式/规模/前几个标题，**不写盘**（可机械验证，也是使用者预览的第一入口 ✓）。 */
+  importProject(ctx) {
+    const name = ctx.projectName;
+    if (!name) ctx.error('缺少项目名');
+    const file = ctx.args._[1];
+    if (!file) ctx.error('用法: import-project <新项目名> <文件.md|.txt|.docx> [--title 标题] [--dry-run]');
+    if (!fs.existsSync(file)) ctx.error('文件不存在: ' + file);
+    if (fs.existsSync(path.join(ctx.PROJECTS_DIR, name, name + '.json'))) ctx.error('项目已存在: ' + name + '（换个名字，或先删掉它）');
+
+    let conv;
+    try { conv = docImport.docToOutline(file); }
+    catch (e) { ctx.error(e.message); return; }
+
+    const built = markdown.markdownToTree(conv.md, 'root');
+    const themes = ((built.data && built.data.children) || []);
+    const title = ctx.args.title
+      || (themes[0] && themes[0].topic)
+      || path.basename(file).replace(/\.[^.]+$/, '');
+
+    if (ctx.args.dryRun) {
+      const heads = conv.md.split('\n').filter((l) => /^#{1,6}\s+\S/.test(l)).slice(0, 8);
+      const out = {
+        ok: true, dryRun: true, project: name, file: file, format: conv.format,
+        title: title, stats: conv.stats, themes: themes.length, nodes: built.addedCount || 0,
+        topHeadings: heads.map((l) => l.replace(/^(#+)\s+/, (m, g) => '#'.repeat(g.length) + ' '))
+      };
+      if (ctx.args.json) { ctx.outJson(out); return; }
+      ctx.out('（--dry-run：只预览，**没有写盘** ✓）');
+      ctx.out('格式: ' + conv.format + ' ｜ 提纲 ' + conv.stats.lines + ' 行 / ' + conv.stats.headings + ' 个标题'
+        + ' ｜ 层级分布 ' + JSON.stringify(conv.stats.levelCounts));
+      ctx.out('将创建项目「' + name + '」（标题：' + title + '）：' + themes.length + ' 个顶层主题 / '
+        + (built.addedCount || 0) + ' 个节点');
+      ctx.out('前几个顶层主题：');
+      themes.slice(0, 10).forEach((t) => ctx.out('  · ' + t.topic));
+      return;
+    }
+
+    const data = {
+      meta: { name: title, author: '', version: MMConfig.APP_VERSION, formatVersion: 2 },
+      format: 'node_tree',
+      data: { id: 'root', topic: title, expanded: true, children: themes }
+    };
+    ctx.write(data);   // 一次写入（原子）⇒ 不会留下半个项目 ✓
+    ctx.out('已从 ' + path.basename(file) + '（' + conv.format + '）创建项目「' + name + '」：'
+      + themes.length + ' 个顶层主题 / ' + (built.addedCount || 0) + ' 个节点');
+    ctx.out('打开：node cli/mm-cli.js read ' + name + ' --brief');
   },
 
   importMd(ctx) {

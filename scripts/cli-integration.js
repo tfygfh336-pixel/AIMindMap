@@ -473,6 +473,57 @@ fs.writeFileSync(MD, '# 主题\n## 子题\n正文并入详情\n', 'utf8');
 r = run(['import-md', PROJ, MD]);
 check('import-md', ok(r.out) && /导入完成/.test(r.out), r.out.trim());
 
+/* 9.1 功能 5a：大文档 → **新项目 + 新树**（md / txt / docx 三种前端走同一个建树入口）
+ * ⚠️ 数据落在哪：本夹具**故意在真实 `projects/` 下**造探针项目（见文件头 42 行的说明：
+ *   store 与 CLI 同源，不另设根）——**不是**沙箱副本 ✗。所以清理必须用 `ROOT/projects/<名字>`，
+ *   写成临时目录就会留下垃圾（我第一版就这么错的：下次运行变成"项目已存在"的假红 ✗）。
+ * 重点核对三件：① 一个文件里的多个 1 级标题 ⇒ **多个顶层主题**（"几本书 ⇒ 几棵树"）；
+ *              ② 真的能读回来且过校验（不是只写了个文件）；③ 认不出的格式要**响亮拒绝**。 */
+const IMP_A = path.join(ROOT, 'projects', 'imp-probe-a');
+// 先清后建（幂等）：跑红/中断/注入实验**都会**留下探针，清了才不会变成下一次的假红 ✓。
+// 按**前缀**清（不只清 a）：判别力证明那次注入让 dry-run 真写盘 ⇒ 多留了一个 imp-probe-b，
+// 于是下一轮这里变成"项目已存在"的假红 ✗（自己踩的，记在注释里免得再犯）。
+try {
+  for (const e of fs.readdirSync(path.join(ROOT, 'projects'), { withFileTypes: true })) {
+    if (e.isDirectory() && e.name.indexOf('imp-probe-') === 0) {
+      fs.rmSync(path.join(ROOT, 'projects', e.name), { recursive: true, force: true });
+    }
+  }
+} catch (err) { /* projects/ 不存在：后面会自己建 */ }
+const BIGMD = path.join(TMP, 'big.md');
+fs.writeFileSync(BIGMD, '# 计算机网络（自顶向下方法）\n\n## 第 1 章 概述\n内容\n\n# 数据结构与算法\n\n## 第 1 章 绪论\n内容\n', 'utf8');
+const d1 = run(['import-project', 'imp-probe-a', BIGMD, '--dry-run', '--json']);
+const d1j = (() => { try { return JSON.parse(d1.out); } catch (e) { return null; } })();
+check('import-project --dry-run（md）：不写盘，且报告"2 个顶层主题"（一个文件里两本书 ⇒ 两棵树）',
+  !!(d1j && d1j.ok && d1j.dryRun && d1j.themes === 2 && d1j.format === 'md'
+    && !fs.existsSync(path.join(TMP, 'imp-probe-a', 'imp-probe-a.json'))),
+  d1j ? ('格式=' + d1j.format + ' 顶层主题=' + d1j.themes + ' 节点=' + d1j.nodes + ' 写盘=' + fs.existsSync(path.join(TMP, 'imp-probe-a'))) : d1.out.trim().slice(0, 140));
+
+r = run(['import-project', 'imp-probe-a', BIGMD]);
+check('import-project 真写：项目落地 + 标题取第一个顶层主题', ok(r.out) && /已从 big\.md/.test(r.out) && /2 个顶层主题/.test(r.out), r.out.trim());
+const rd = run(['read', 'imp-probe-a', '--brief']);
+check('import-project 写出来的项目**能读回来**且顶层主题两棵',
+  ok(rd.out) && /计算机网络（自顶向下方法）/.test(rd.out) && /数据结构与算法/.test(rd.out),
+  rd.out.split('\n').slice(0, 3).join(' | ').slice(0, 120));
+check('import-project 写出来的项目**过校验**（不是只写了个文件）',
+  ok(run(['validate', 'imp-probe-a']).out) || ok(run(['validate-all']).out), '');
+fs.rmSync(IMP_A, { recursive: true, force: true });
+check('import-project 收尾：探针项目已清掉（不给下一次运行留"项目已存在"的假红）', !fs.existsSync(IMP_A), '');
+
+const BIGTXT = path.join(TMP, 'big.txt');
+fs.writeFileSync(BIGTXT, '第一章 绪论\n\n这一章介绍结构，句子较长。\n\n1.1 研究背景\n\n背景说明，带逗号与句号。\n\n第二章 方法\n\n正文。\n', 'utf8');
+const d2 = (() => { try { return JSON.parse(run(['import-project', 'imp-probe-b', BIGTXT, '--dry-run', '--json']).out); } catch (e) { return null; } })();
+check('import-project（txt）：启发式把"第X章"识别为 1 级 ⇒ 两个顶层主题，正文行原样保留',
+  !!(d2 && d2.themes === 2 && d2.stats.levelCounts['1'] === 2 && d2.stats.levelCounts['2'] === 1),
+  d2 ? ('顶层主题=' + d2.themes + ' 层级=' + JSON.stringify(d2.stats.levelCounts)) : '—');
+
+const BIGBAD = path.join(TMP, 'big.pdf');
+fs.writeFileSync(BIGBAD, '%PDF-1.4\n', 'utf8');
+check('import-project 遇到 .pdf ⇒ **响亮拒绝**并指向 5b（不许当文本读进去 ✗）',
+  (() => { const r3 = run(['import-project', 'imp-probe-c', BIGBAD]); return r3.status !== 0 && /暂不支持 \.pdf/.test(r3.err + r3.out) && /5b/.test(r3.err + r3.out); })());
+check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已有项目）',
+  (() => { const r4 = run(['import-project', PROJ, BIGMD]); return r4.status !== 0 && /项目已存在/.test(r4.err + r4.out); })());
+
 // 10. add-file 附件 → export-md 文件夹导出（md + 附件复制 + 相对链接）
 const ATT = path.join(TMP, 'note.md');
 fs.writeFileSync(ATT, '# 附件笔记\n', 'utf8');
