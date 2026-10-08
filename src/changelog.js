@@ -44,8 +44,12 @@ function releaseChangelog(text, nextVersion, dateStr) {
   const bodyEnd = nextRel < 0 ? src.length : headEnd + nextRel;
 
   let body = src.slice(headEnd, bodyEnd);
-  // 剥掉段首的占位行 —— 这正是原先被带进版本段的那句
-  body = body.replace(new RegExp('^\\s*' + PLACEHOLDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[^\\n]*\\n'), '');
+  // 剥掉占位行 —— 它在段里**任何位置**都要剥掉，不只是段首 ✗。
+  // 为什么改这一处（实机缺陷，v0.16.1 发版被门禁拦下）：历轮把新条目插在 `## [Unreleased]` 之后 ⇒
+  // 占位行被**挤到段中段**（实测第 647 行）⇒ 只剥段首的写法会把它**连同正文搬进新版本段** ✗ ⇒
+  // 加上新 Unreleased 自带的 1 条 ⇒ 占位行共 2 条 ⇒ 后置不变量（恰好 1 条）判红、发版中止 ✓
+  const esc = PLACEHOLDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  body = body.replace(new RegExp('^[ \\t]*' + esc + '[^\\n]*\\n?', 'gm'), '');   // 任意位置的整行占位 ✓
   body = body.replace(/^\s+/, '').replace(/\s+$/, '');
 
   // 没有实际内容就拒绝发版：空版本段是几乎必然的失误（宁可不做，也不留下空记录）
