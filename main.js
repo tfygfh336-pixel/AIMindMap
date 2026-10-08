@@ -1073,8 +1073,19 @@ async function runSmoke(win) {
       console.log('[smoke] ⚠ 渲染进程无响应 ｜ 当前断言=' + smokeState.last);
     });
   } catch (e) { console.log('[smoke] 崩溃仪器挂不上：' + ((e && e.message) || e)); }
+  // P1 内存探针（默认关闭 ✓）：MM_SMOKE_MEM=1 ⇒ 每个域打印渲染内存增量，用于看漏没漏 ✓
+  const memOn = !!process.env.MM_SMOKE_MEM;
+  const readMem = async () => {
+    if (!memOn) return null;
+    try {
+      const s = await win.webContents.executeJavaScript('JSON.stringify((performance.memory && {u: performance.memory.usedJSHeapSize, t: performance.memory.totalJSHeapSize}) || {})');
+      const o = JSON.parse(s);
+      return o && o.u ? Math.round(o.u / 1048576) : null;
+    } catch (e) { return null; }
+  };
   for (const a of assertions) {
     smokeState.last = a.name;
+    const memBefore = await readMem();
     // 仪器自检开关（只为证明"仪器确实能留下遗言" ✓ 不影响正常跑）：
     //   MM_SMOKE_CRASH=<第几条> ⇒ 跑到那一条之前**人为把渲染进程打掉** ⇒ 日志必须出现
     //   `[smoke] ✗ 渲染进程死亡 reason=… ｜ 死前断言=<名字>` ✓（判别力证明：这条仪器不是摆设 ✓）
@@ -1086,6 +1097,12 @@ async function runSmoke(win) {
     try {
       const r = await a.run(ctx);
       results.push({ name: a.name, ok: !!r.ok, text: String(r.text || '') });
+      if (memOn) {
+        const memAfter = await readMem();
+        if (memBefore !== null || memAfter !== null) {
+          console.log('[mem] ' + a.name.slice(0, 34) + ' ｜ 域前=' + memBefore + 'MB 域后=' + memAfter + 'MB ｜ 增量=' + ((memAfter !== null && memBefore !== null) ? (memAfter - memBefore) : '?') + 'MB');
+        }
+      }
     } catch (err) {
       const msg = String((err && err.message) || err);
       // 这条**必须**带上"是哪条断言"：窗口一死，后面的断言会连锁报 destroyed，
