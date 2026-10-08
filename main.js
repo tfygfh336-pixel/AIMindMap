@@ -1060,12 +1060,38 @@ async function runSmoke(win) {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);
   }, 140000);
+  // P1 崩溃仪器：渲染进程一死就**留下遗言**（死因 + 死前正在跑哪条断言）✓
+  // 为什么需要它：本机出现过**间歇**的 `THREW: Object has been destroyed` 连锁（含截图失败），
+  // 但重跑不复现 ⇒ 只能靠现场留证 ✗（M 轮实测：三次跑都没复现，没有仪器就只能干等 ✓）
+  const smokeState = { last: '(尚未开始)' };
+  try {
+    win.webContents.on('render-process-gone', (_e, d) => {
+      console.log('[smoke] ✗ 渲染进程死亡 reason=' + (d && d.reason) + ' exitCode=' + (d && d.exitCode)
+        + ' ｜ 死前断言=' + smokeState.last);
+    });
+    win.webContents.on('unresponsive', () => {
+      console.log('[smoke] ⚠ 渲染进程无响应 ｜ 当前断言=' + smokeState.last);
+    });
+  } catch (e) { console.log('[smoke] 崩溃仪器挂不上：' + ((e && e.message) || e)); }
   for (const a of assertions) {
+    smokeState.last = a.name;
+    // 仪器自检开关（只为证明"仪器确实能留下遗言" ✓ 不影响正常跑）：
+    //   MM_SMOKE_CRASH=<第几条> ⇒ 跑到那一条之前**人为把渲染进程打掉** ⇒ 日志必须出现
+    //   `[smoke] ✗ 渲染进程死亡 reason=… ｜ 死前断言=<名字>` ✓（判别力证明：这条仪器不是摆设 ✓）
+    if (process.env.MM_SMOKE_CRASH && results.length === Number(process.env.MM_SMOKE_CRASH)) {
+      console.log('[smoke] （自检）人为杀掉渲染进程，用于验证崩溃仪器');
+      try { win.webContents.forcefullyCrashRenderer(); } catch (e) { /* 忽略 */ }
+      await new Promise((r) => setTimeout(r, 400));
+    }
     try {
       const r = await a.run(ctx);
       results.push({ name: a.name, ok: !!r.ok, text: String(r.text || '') });
     } catch (err) {
-      results.push({ name: a.name, ok: false, text: 'THREW: ' + (err && err.message) });
+      const msg = String((err && err.message) || err);
+      // 这条**必须**带上"是哪条断言"：窗口一死，后面的断言会连锁报 destroyed，
+      // 只看消息分不清"谁先死"✗（实测就是靠这一点才定位到域 29 ✓）
+      results.push({ name: a.name, ok: false,
+        text: 'THREW: ' + msg + (/destroyed/.test(msg) ? '（渲染进程/窗口已销毁 ⇒ 见 [smoke] 死亡行）' : '') });
     }
   }
   // 冒烟断言的条数**到此为止** —— 后面追加的"取景记录/视觉断言"不是冒烟断言，
