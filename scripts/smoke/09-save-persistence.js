@@ -83,7 +83,11 @@ module.exports = [
         `(async function () {
            var app = window.MMApp;
            var jm = app.getState().jm;
-           var base = app.isDirty();                       // 刚载入应为干净
+           // 显式复位：原来假设"刚载入应为干净" ✗ —— 但前一条断言可能留下未保存编辑，
+        // 整段按序跑时 base 会是 true ⇒ 偶发假红（本机实测同一份代码 2 红 3 绿 ✓）。
+        // 用本文件已有的 API 把状态压回干净 ⇒ 这条断言与"前一个文件干了什么"解耦 ✓。
+        await app.save();
+        var base = app.isDirty();                       // 复位后必为干净
            var id = 'save-probe-3';
            jm.add_node('root', id, '脏标记探针', { detail: '' });
            var afterAdd = app.isDirty();
@@ -95,7 +99,7 @@ module.exports = [
            var afterSave = app.isDirty();
            return {
              ok: base === false && afterAdd === true && afterEdit === true && afterSave === false,
-             text: '载入=' + base + ' 新增后=' + afterAdd + ' 改详情后=' + afterEdit + ' 保存后=' + afterSave
+             text: '复位后=' + base + ' 新增后=' + afterAdd + ' 改详情后=' + afterEdit + ' 保存后=' + afterSave
            };
          })()`
       );
