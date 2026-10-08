@@ -237,8 +237,11 @@
    *     其所属顶层树（拖动单位是树，与既有拖动树一致）。
    * 纯视图操作：不产生脏数据、不落盘；renderMind 重建时清除。 */
   let fdRubber = null;           // 框选中：{x0,y0,x1,y1}（面板内坐标）
+  let fdRubberAdditive = false;  // 本次框选是不是"加选"（Ctrl/Cmd 按住 → 与已有选区并集 ✓）
+  let fdRubberBase = null;       // 加选时要保留的原选区 id 列表
   let fdRubberEl = null;         // 橡皮筋 DOM
   let fdSelection = [];          // 选中的节点 id（持久到点击框外）
+  let fdSelectionRaw = [];       // 原始命中共（未做"同父裁剪"）—— 见 applySelection 的说明 ✓
   const RUBBER_ID = 'dsh-rubber-band';
   const SEL_OUTLINE_ID = 'dsh-selection-outline';
 
@@ -402,12 +405,20 @@
   }
 
   /** 应用框选结果：先筛选，再由虚线框包裹（含可见子树 = 折叠范围预告）。 */
-  function applySelection(ids) {
+  function applySelection(ids, rawIds) {
     const res = trimSelection(ids || []);
     fdSelection = res.kept;
+    // ④ 原始的命中共（未裁剪）单独留一份：**问 AI 要看到全部被框选的节点**
+    //（`trimSelection` 的同父/父冗余裁剪是给"收起/拖动"这类树操作定义的，用它来筛 AI 的上下文
+    //  会把用户明明框住的节点悄悄丢掉 ✗）。
+    fdSelectionRaw = (rawIds || ids || []).filter(Boolean);
     refreshSelectionOutline();
-    return { kept: res.kept.length, dropped: res.dropped };
+    if (MM.showNodeToolbar) MM.showNodeToolbar(null);   // 选区一变 ⇒ 工具条按**整批**刷新/出现 ✓
+    return { kept: res.kept, dropped: res.dropped };
   }
+
+  /** 选区的**原始命中集**（未裁剪）—— 给 AI 上下文用 ✓ 与 `getSelection()`（裁剪后，给树操作用）区分开 */
+  MM.getSelectionRaw = () => fdSelectionRaw.slice();
 
   /** 重算选区虚线框：跟随节点当前位置、大小自适应（不可见节点除外）。
    *  语义（v0.16.5）：框标注的范围 = **实际会被收起的范围** = 选中节点
@@ -768,23 +779,48 @@
       positionFloatDetail();
     }, { capture: true, passive: false });
 
+    /* ⑥ Ctrl/Cmd+点击节点 = 加选/减选。**必须在捕获阶段**：
+     * jsMind 对节点（尤其**根节点**）的 mousedown 会 stopPropagation ✗ ⇒ 冒泡阶段收不到，
+     * 表现为"Ctrl 点根节点没反应"（实测踩到 ✓）。捕获阶段先于 jsMind ✓ */
+    document.addEventListener('mousedown', (e) => {
+      const additive = !!(e.ctrlKey || e.metaKey);
+      if (!additive || e.button !== 0 || fdDragMode) return;
+      const cont = document.getElementById('mindmap-container');
+      if (!cont || !cont.contains(e.target)) return;
+      if (e.target.closest && (e.target.closest('.float-detail') || e.target.closest('#mm-node-toolbar'))) return;
+      const nodeEl = e.target.closest && e.target.closest('jmnode[nodeid]');
+      if (!nodeEl) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (MM.toggleNodeSelection) MM.toggleNodeSelection(nodeEl.getAttribute('nodeid'));
+    }, true);
+
     document.addEventListener('mousedown', (e) => {
       const cont = document.getElementById('mindmap-container');
       if (!cont || !cont.contains(e.target)) return;
       if (e.target.closest && e.target.closest('.float-detail')) return;
+      // ⑥ 多选：Ctrl（或 Mac 的 Cmd）按住时——**加选**语义（用户反馈⑥）：
+      //   · Ctrl+点击节点 ⇒ 捕获阶段已处理（见上）✓；
+      //   · Ctrl+框选 ⇒ 在**已有选区**上继续加（普通框选是"重新选"）。
+      const additive = !!(e.ctrlKey || e.metaKey);
       // 框选：主界面空白处左键按下 = 开始框选（节点上按下不算——那是选中/详情）。
-      // 已有选区时点击**框外**（空白或节点）→ 先清除选区再按普通逻辑走。
-      if (e.button === 0 && !fdDragMode && !fdSelection.length
+      // 已有选区时点击**框外**（空白或节点）→ 先清除选区再按普通逻辑走（加选时**不清** ✓）。
+      if (e.button === 0 && !fdDragMode && (!fdSelection.length || additive)
         && (e.target.tagName === 'JMNODES' || e.target.tagName === 'CANVAS'
           || (e.target.closest && e.target.closest('jmnodes, canvas.jsmind')))) {
         const pt = panelPoint(e.clientX, e.clientY);
         fdRubber = { x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y };
+        fdRubberAdditive = additive;
+        // ⚠️ 并集的**基**必须是"原始命中共"（fdSelectionRaw），不是裁剪后的 fdSelection：
+        //    裁剪（同父/父冗余）是给树操作定义的口径 ⇒ 用它当基会把用户明明框住的节点**悄悄丢掉** ✗
+        //    （实测：加选一次，选区从 2 个变 1 个 ✓ 这条是断言抓出来的真缺陷）
+        fdRubberBase = additive ? fdSelectionRaw.slice() : [];
         const el = ensureRubberEl();
         el.style.display = 'block';
         e.preventDefault();
         return;
       }
-      if (e.button === 0 && fdSelection.length && !fdDragMode) {
+      if (e.button === 0 && fdSelection.length && !fdDragMode && !additive) {
         // 点击框外（空白/其他节点）→ 清除选区（点击框内节点不清，供右键菜单用）
         const inside = fdSelection.some((id) => {
           const n = document.querySelector('jmnode[nodeid="' + id + '"]');
@@ -873,22 +909,26 @@
       // 框选收尾：中心点/过半面积命中的可见节点入选（与预览同口径）
       if (fdRubber) {
         const band = rubberBand();
-        fdRubber = null;
+        const additive = fdRubberAdditive;
+        const base = fdRubberBase || [];
+        fdRubber = null; fdRubberAdditive = false; fdRubberBase = null;
         const el = ensureRubberEl();
         if (el) el.style.display = 'none';
         clearRubberPreview();
-        // 太小的拖拽（<8px）视为误触/点击 → 清选区不框
-        if (!band || band.x1 - band.x0 < 8 || band.y1 - band.y0 < 8) { clearSelection(); return; }
+        // 太小的拖拽（<8px）视为误触/点击 → 清选区不框（加选时不清：那会把人已有的选区弄没 ✗）
+        if (!band || band.x1 - band.x0 < 8 || band.y1 - band.y0 < 8) { if (!additive) clearSelection(); return; }
         const hit = visibleNodeRects()
           .filter((r) => nodeSelectedBy(r, band))
           .map((r) => r.id);
-        const res = applySelection(hit);
-        if (!hit.length) setStatus('框选为空');
+        // Ctrl+框选 = **加选**（用户反馈⑥）：在原选区基础上并集，而不是替换 ✓
+        const merged = additive ? Array.from(new Set(base.concat(hit))) : hit;
+        const res = applySelection(merged, merged);
+        if (!merged.length) setStatus('框选为空');
         else if (res.dropped > 0) {
-          setStatus('已框选 ' + res.kept + ' 个节点（另有 ' + res.dropped
-            + ' 个跨父/已被包含的节点被过滤；右键框内可拖动/收起/展开）');
+          setStatus('已框选 ' + res.kept + ' 个节点' + (additive ? '（加选，共 ' + res.kept + '）' : '')
+            + '（另有 ' + res.dropped + ' 个跨父/已被包含的节点被过滤；右键框内可拖动/收起/展开）');
         } else {
-          setStatus('已框选 ' + res.kept + ' 个节点（右键框内可拖动/收起/展开）');
+          setStatus('已框选 ' + res.kept + ' 个节点' + (additive ? '（加选）' : '') + '（右键框内可拖动/收起/展开）');
         }
         return;
       }
@@ -1185,6 +1225,19 @@
   MM.showTreeOutline = showTreeOutline;
   MM.syncTreeOutline = syncTreeOutline;
   MM.hideTreeOutline = hideTreeOutline;
+  /** ⑥ Ctrl+点击：把一个节点**加入/移出**选区（不打开详情框 ✓ 用户反馈⑥的多选入口之一）。
+   *  与框选共用同一个选区模型（`applySelection`）⇒ 虚线框、右键菜单、AI 提问看到的都是同一份 ✓ */
+  function toggleNodeSelection(id) {
+    if (!id) return { kept: 0, added: false };
+    const has = fdSelection.indexOf(id) >= 0;
+    const next = has ? fdSelection.filter((x) => x !== id) : fdSelection.concat([id]);
+    const res = applySelection(next);
+    setStatus(has ? ('已从选区移除（剩 ' + res.kept + ' 个）')
+      : ('已加入选区（共 ' + res.kept + ' 个；Ctrl+点击可加/减，右键可批量操作）'));
+    return Object.assign({ added: !has }, res);
+  }
+
+  MM.toggleNodeSelection = toggleNodeSelection;
   MM.clearSelection = clearSelection;
   MM.applySelection = applySelection;
   MM.refreshSelectionOutline = refreshSelectionOutline;

@@ -47,9 +47,36 @@ function relatedToText(relations, projectName, node, all, tree) {
 }
 
 /** 收集情境（**一处定义**：界面与 CLI 都走这里，免得"AI 收到什么"有两份说法）。
- *  节点是**可选**的：消息栏那条入口常在没有选中节点时使用（项目级提问 ✓）。 */
+ *  节点是**可选**的：消息栏那条入口常在没有选中节点时使用（项目级提问 ✓）；
+ *  `--nodes a,b,c` 是**多节点**（用户反馈④：框选后把所有所选都给 AI 看 ✓）。 */
 function collectContext(ctx) {
   const id = ctx.args._[1];
+  const many = String(ctx.args.nodes || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (many.length) {
+    const { data } = ctx.read();
+    const nodes = [];
+    const missing = [];
+    many.forEach((nid) => {
+      const n = ctx.tree.find(data.data, nid);
+      if (!n) { missing.push(nid); return; }               // 不静默丢：下面如实报出来 ✓
+      const chain = (ctx.tree.pathTo ? ctx.tree.pathTo(data.data, nid) : null) || [n];
+      nodes.push({
+        id: nid, topic: n.topic,
+        pathText: chain.map((x) => (x && typeof x === 'object' ? x.topic : (ctx.tree.find(data.data, x) || {}).topic))
+          .filter(Boolean).join(' / '),
+        tags: Array.isArray(n.tags) ? n.tags : [],
+        detailText: detailToText(n.detail)
+      });
+    });
+    if (missing.length) ctx.error('这些节点不存在：' + missing.join('、'));
+    return {
+      project: ctx.projectName,
+      projectRoot: path.resolve(__dirname, '..', '..'),
+      nodes: nodes, multi: true,
+      nodeId: nodes.length === 1 ? nodes[0].id : null,     // 只有一个就按单节点渲染（措辞更贴 ✓）
+      topic: nodes.length === 1 ? nodes[0].topic : null
+    };
+  }
   if (!id) {
     // 项目级：只给项目与"你能动手做什么"（见 src/dsh-ask.js 的 buildContextBlock）
     return {
@@ -98,8 +125,10 @@ module.exports = {
     const info = collectContext(ctx);
     const kind = ctx.args.kind === 'explain' ? 'explain' : 'ask';
     const question = ctx.args.question || '';
-    // 项目级提问必须有内容 —— 「解释这个节点」在项目级没有意义（没有节点可解释 ✗）
-    if (!info.nodeId && !question) ctx.error('项目级提问要带 --question "…"（或改用 ask <项目> <节点id> --kind explain）');
+    // 项目级提问必须有内容 —— 「解释这个节点」在项目级没有意义（没有节点可解释 ✗）。
+    // 多节点（--nodes）算"有节点" ⇒ 不给问题也能解释（解释它们**合在一起**是什么 ✓）
+    const hasNodes = !!(info.nodeId || (info.nodes && info.nodes.length));
+    if (!hasNodes && !question) ctx.error('项目级提问要带 --question "…"（或改用 ask <项目> <节点id> --kind explain）');
     if (kind === 'ask' && !question) ctx.error('--kind ask 需要 --question "…"（或直接用 --kind explain）');
     const prompt = dshAsk.buildAskPrompt(Object.assign({}, info, { kind, question }));
     const runtime = dshAsk.resolveAskRuntime({ repoRoot: path.resolve(__dirname, '..', '..') });
@@ -152,8 +181,12 @@ module.exports = {
       if (!r.ok) process.exitCode = 1;
       return;
     }
+    const label = (info.nodes && info.nodes.length > 1)
+      ? (info.nodes.length + ' 个节点（' + info.nodes.slice(0, 3).map((n) => n.topic).join('、')
+        + (info.nodes.length > 3 ? ' 等' : '') + '）')
+      : (info.topic || '(项目级)');
     if (!r.ok) ctx.error('向内嵌 DSH 提问失败（' + r.ms + 'ms）：' + r.error);
-    ctx.out('「' + info.topic + '」' + (kind === 'explain' ? '的解释' : '') + '（' + (r.ms / 1000).toFixed(1) + 's，思考强度 '
+    ctx.out('「' + label + '」' + (kind === 'explain' ? '的解释' : '') + '（' + (r.ms / 1000).toFixed(1) + 's，思考强度 '
       + (r.effort || effort) + '）：');
     ctx.out(r.text);
   }

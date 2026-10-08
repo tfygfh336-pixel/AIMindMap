@@ -26,6 +26,7 @@
   const BAR_ID = 'mm-node-toolbar';
   let barEl = null;
   let curNodeId = null;
+  let curNodes = [];      // 工具条当前作用的节点集合（单节点 ⇒ 1 个；有选区 ⇒ 整批 ✓）
 
   function topicOf(id) {
     const jm = state().jm;
@@ -65,36 +66,71 @@
     document.body.appendChild(barEl);
     barEl.addEventListener('click', (e) => {
       const btn = e.target.closest ? e.target.closest('.mm-tb-btn') : null;
-      if (!btn || !curNodeId) return;
+      if (!btn || !curNodes.length) return;
       e.preventDefault();
       e.stopPropagation();
       const act = btn.getAttribute('data-act');
-      showAskBox(curNodeId, { kind: act === 'explain' ? 'explain' : 'ask', focus: act !== 'explain' });
+      // 单节点 ⇒ 走原来的单节点问答；多节点（框选/Ctrl+多选）⇒ 把**整批**交给 AI ✓（反馈④）
+      showAskBox(curNodes.length === 1 ? curNodes[0] : null, {
+        kind: act === 'explain' ? 'explain' : 'ask',
+        nodes: curNodes.slice(),
+        focus: act !== 'explain'
+      });
     });
     return barEl;
   }
 
-  /** 显示工具条（多选框选时不显示 —— 见文件头取舍③的边界说明） */
+  /** 工具条当前作用的**节点集合**：单节点详情 ⇒ [该节点]；有选区 ⇒ 整个选区（④"把所有被框选的都给 AI"✓） */
+  function barTargets() {
+    if (MM.hasSelection && MM.hasSelection()) {
+      // ④ 用**原始命中集**（未裁剪）：用户框住几个，AI 就看几个 ✓
+      const raw = MM.getSelectionRaw ? MM.getSelectionRaw() : (MM.getSelection ? MM.getSelection() : []);
+      return raw.filter(Boolean);
+    }
+    return curNodeId ? [curNodeId] : [];
+  }
+
+  /** 显示工具条。
+   *  · 单节点：贴在该节点上方 ✓
+   *  · **有选区（框选/Ctrl+多选）**：贴在选区**外接矩形**上方，按钮上显示节点数 ✓
+   *    （用户反馈④：框选之后就想要"把这些都给 AI 看"，所以这里**不再**回避选区 ✗→✓） */
   function showBarFor(nodeId) {
-    if (!nodeId) { hideBar(); return null; }
-    if (MM.hasSelection && MM.hasSelection()) { hideBar(); return null; }   // 框选中：先不打扰
-    const el = nodeEl(nodeId);
-    if (!el) { hideBar(); return null; }
-    curNodeId = nodeId;
+    const sel = barTargets();
+    const ids = sel.length ? sel.filter(Boolean) : (nodeId ? [nodeId] : []);
+    if (!ids.length) { hideBar(); return null; }
+    curNodeId = ids.length === 1 ? ids[0] : null;
+    curNodes = ids.slice();
     const bar = ensureBar();
+    const rects = ids.map((id) => {
+      const el = nodeEl(id);
+      return el ? el.getBoundingClientRect() : null;
+    }).filter(Boolean);
+    if (!rects.length) { hideBar(); return null; }
+    const box = rects.reduce((a, r) => ({
+      left: Math.min(a.left, r.left), top: Math.min(a.top, r.top),
+      right: Math.max(a.right, r.right), bottom: Math.max(a.bottom, r.bottom),
+      width: 0, height: 0
+    }), { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
     bar.style.display = 'flex';
-    const r = el.getBoundingClientRect();
+    const explain = bar.querySelector('.mm-tb-explain'), ask = bar.querySelector('.mm-tb-ask');
+    const n = ids.length;
+    if (explain) explain.textContent = n > 1 ? ('💡 解释 ' + n + ' 个') : '💡 解释';
+    if (ask) ask.textContent = n > 1 ? ('💬 问这 ' + n + ' 个') : '💬 问问AI';
     const bw = bar.offsetWidth || 150, bh = bar.offsetHeight || 30;
-    const pos = computeBarPos(r, bw, bh, { w: window.innerWidth, h: window.innerHeight });
+    const pos = computeBarPos({ left: box.left, top: box.top, right: box.right, bottom: box.bottom,
+      width: box.right - box.left, height: box.bottom - box.top },
+      bw, bh, { w: window.innerWidth, h: window.innerHeight });
     bar.style.left = pos.left + 'px';
     bar.style.top = pos.top + 'px';
-    bar.setAttribute('data-node', nodeId);
+    bar.setAttribute('data-node', ids.join(','));
+    bar.setAttribute('data-count', String(n));
     return pos;
   }
 
   function hideBar() {
     if (barEl) barEl.style.display = 'none';
     curNodeId = null;
+    curNodes = [];
     return true;
   }
 
@@ -108,17 +144,20 @@
     const project = state().project && state().project.name;
     if (!project) return null;   // 项目级提问也需要有个项目（情境里有它 ✓）
     const kind = o.kind === 'explain' ? 'explain' : 'ask';
-    // 同一个节点（或同一个"项目级"）复用同一个框：再点「解释」不会堆出一摞框 ✓
-    const key = nodeId || '__project__';
-    let box = askBoxes.find((b) => (b.node ? b.node.id : '__project__') === key && b.el && b.el.parentElement);
+    // ④ 多节点：一次可以对**整批选中**提问（`opts.nodes` = id 数组 ✓）
+    const nodes = Array.isArray(o.nodes) ? o.nodes.filter(Boolean) : (nodeId ? [nodeId] : []);
+    const key = nodes.length > 1 ? ('__multi__' + nodes.slice().sort().join(',')) : (nodes[0] || '__project__');
+    let box = askBoxes.find((b) => b.__key === key && b.el && b.el.parentElement);
     if (!box) {
       box = MM.createFdBox();
       box.kind = 'ask';
+      box.__key = key;
       box.el.setAttribute('data-kind', 'ask');
       box.el.classList.add('fd-ask-box');   // CSS 里据此**隐藏大小锁**（悬浮窗不需要锁 ✓ 用户反馈⑧）
       askBoxes.push(box);
     }
-    box.node = nodeId && state().jm ? state().jm.get_node(nodeId) : null;   // 项目级：无节点 ✓
+    box.nodes = nodes.slice();
+    box.node = (nodes.length === 1 && state().jm) ? state().jm.get_node(nodes[0]) : null;
     box.ask = { kind: kind, log: (box.ask && box.ask.log) || [] };
     box.el.style.display = 'flex';
     MM.bringFdBoxToFront(box);
@@ -147,10 +186,13 @@
     if (!box || !box.el) return null;
     const project = (state().project && state().project.name) || '?';
     const node = box.node || { id: null, topic: '「' + project + '」' };
+    const nCount = (box.nodes || []).length;
     const st = box.ask || (box.ask = { kind: 'ask', log: [] });
-    MM.fdQ(box, '.fd-title').textContent = box.node
-      ? ((st.kind === 'explain' ? 'AI 解释：' : 'AI 问答：') + node.topic)
-      : ('AI 助手 · ' + project);
+    MM.fdQ(box, '.fd-title').textContent = nCount > 1
+      ? ((st.kind === 'explain' ? 'AI 解释：' : 'AI 问答：') + nCount + ' 个节点')
+      : (box.node
+        ? ((st.kind === 'explain' ? 'AI 解释：' : 'AI 问答：') + node.topic)
+        : ('AI 助手 · ' + project));
     // 只留正文容器（详情框模板里的其它容器对本框无意义 ⇒ 清空，免得出现"图片（0）"这类空壳）
     ['fd-tags', 'fd-localpath', 'fd-images-content', 'fd-files-content'].forEach((c) => {
       const el = MM.fdQ(box, '.' + c); if (el) el.innerHTML = '';
@@ -204,7 +246,8 @@
   /** 发一次提问：先落 Q（pending），成功后补 A；失败**如实显示**错误 ✓ */
   function send(box, question, kind) {
     const project = state().project && state().project.name;
-    const nodeId = box && box.node ? box.node.id : null;   // null = 项目级提问（消息栏那条 ✓）
+    const ids = (box && box.nodes) || [];
+    const nodeId = (box && box.node) ? box.node.id : (ids.length === 1 ? ids[0] : null);   // null = 项目级提问
     if (!project) return Promise.resolve(null);
     const st = box.ask || (box.ask = { kind: kind, log: [] });
     st.kind = kind === 'explain' ? 'explain' : st.kind;
@@ -215,7 +258,10 @@
     renderAskPage(box);
     const api = window.desktop && window.desktop.app && window.desktop.app.ask;
     if (!api) { entry.pending = false; entry.err = '没有 desktop.app.ask（preload 没接上）'; renderAskPage(box); return Promise.resolve(null); }
-    return Promise.resolve(api(project, nodeId, { kind: kind, question: question || undefined, effort: st.effort }))
+    return Promise.resolve(api(project, nodeId, {
+      kind: kind, question: question || undefined, effort: st.effort,
+      nodes: ids.length > 1 ? ids : undefined          // ④ 多节点：整批交给 AI ✓
+    }))
       .then((r) => {
         entry.pending = false;
         if (r && r.ok) { entry.a = r.text; entry.stub = !!r.stub; entry.ms = r.ms; }

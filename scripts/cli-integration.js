@@ -420,6 +420,29 @@ check('ask **项目级**（不给节点）：可用，且情境里说清"项目�
 check('ask 项目级但**不给问题** ⇒ 非 0 且说明原因（不许发一个空问题出去）',
   (() => { const r = run(['ask', PROJ, '--dry-run']); return r.status !== 0 && /项目级提问要带/.test(r.err + r.out); })());
 
+/* 9.1.3 多节点上下文（用户反馈④"把所有被框选的都给 AI 看"）：`--nodes a,b,c` ⇒ 情境逐个列出 ✓
+ * 全离线（--dry-run）✓；节点不存在必须**响亮报错**（不许悄悄少给一个 ✗） */
+const multiIds = (() => {
+  const r = run(['list', PROJ, '--json']);
+  try {
+    const arr = JSON.parse(r.out);
+    const flat = [];
+    (function walk(ns) { (ns || []).forEach((n) => { flat.push(n.id); walk(n.children); }); })(Array.isArray(arr) ? arr : arr.nodes);
+    return flat.slice(0, 3);
+  } catch (e) { return []; }
+})();
+const askMulti = (() => {
+  try { return JSON.parse(run(['ask', PROJ, '--nodes', multiIds.join(','), '--kind', 'explain', '--dry-run', '--json']).out); } catch (e) { return null; }
+})();
+check('ask 多节点（--nodes a,b,c）：情境里**逐个列出**并说明"放在一起看"（不是只答第一个 ✓）',
+  !!(askMulti && askMulti.ok && multiIds.length >= 2
+    && /多节点/.test(askMulti.prompt) && /选了 \*\*\d+ 个节点\*\*/.test(askMulti.prompt)
+    && multiIds.every((id) => askMulti.prompt.indexOf(id) >= 0)
+    && /【节点 1】/.test(askMulti.prompt) && /【节点 2】/.test(askMulti.prompt)),
+  askMulti ? ('节点 ' + multiIds.join(',') + ' ⇒ 提示词 ' + askMulti.prompt.length + ' 字') : '—');
+check('ask 多节点：其中有不存在的节点 ⇒ 非 0 且点名（不静默少给一个 ✗）',
+  (() => { const r = run(['ask', PROJ, '--nodes', (multiIds[0] || 'x') + ',no-such-node', '--kind', 'explain', '--dry-run']); return r.status !== 0 && /节点不存在/.test(r.err + r.out); })());
+
 /* 9.1.2 思考强度（用户反馈③"太慢"）：解释默认 low；显式 --effort 生效；patch 必须**三项写全**
  *（实测教训：patch 是整行替换，只写 reasoningEffort 会把 provider/model 抹掉 ✗）。
  * 这一段**全离线**（--dry-run + dump-config），不烧额度 ✓ */

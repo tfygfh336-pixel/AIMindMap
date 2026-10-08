@@ -91,6 +91,26 @@ function buildContextBlock(info) {
   lines.push('【情境】（由 AI MindMap 自动补充，不要复述，直接用）');
   lines.push('· 项目：' + (i.project || '(未知)'));
   if (i.projectRoot) lines.push('· 工程根：' + i.projectRoot);
+  // **多节点**（用户反馈④：框选/多选后"把所有被框选的都给 AI 看"）——
+  // 逐个列出，每个都带路径与正文（正文按**总量**截断，避免 N 个节点把提示词撑爆 ✗）
+  if (i.nodes && i.nodes.length) {
+    lines.push('· 这是**多节点**提问：使用者在导图上选了 **' + i.nodes.length + ' 个节点**，'
+      + '请把它们**放在一起**看（共同点 / 差异 / 彼此关系），不要只答第一个。');
+    let budget = i.multiDetailBudget || 1200;   // 所有节点正文共享的预算（字符）
+    i.nodes.forEach((n, k) => {
+      lines.push('');
+      lines.push('【节点 ' + (k + 1) + '】' + (n.topic || '(无标题)') + '（id=' + (n.id || '?') + '）');
+      if (n.pathText) lines.push('  · 路径：' + n.pathText);
+      if (n.tags && n.tags.length) lines.push('  · 标签：' + n.tags.join('、'));
+      const d = String(n.detailText || '');
+      if (!d) { lines.push('  · 正文：（这个节点还没有正文）'); return; }
+      const take = Math.max(0, Math.min(budget, d.length));
+      lines.push('  · 正文' + (take < d.length ? '（截断）' : '') + '：' + d.slice(0, take));
+      budget -= take;
+      if (budget <= 0 && k < i.nodes.length - 1) lines.push('  （其余节点正文因长度预算略去）');
+    });
+    return lines.join('\n');
+  }
   if (i.nodeId) {
     lines.push('· 节点：' + (i.topic || '(无标题)') + '（id=' + i.nodeId + '）');
     if (i.pathText) lines.push('· 在树中的路径：' + i.pathText);
@@ -121,7 +141,9 @@ function buildAskPrompt(input) {
   const parts = [];
   parts.push(i.projectLevel
     ? '你是「AI MindMap」里内置的助手，正在帮使用者处理他的思维导图应用（可以动手，不只是聊天）。'
-    : '你是「AI MindMap」里内置的助手，正在帮使用者理解他自己思维导图里的一个节点。');
+    : (i.nodes && i.nodes.length > 1
+      ? '你是「AI MindMap」里内置的助手，正在帮使用者理解他在导图上**一起选中的几个节点**。'
+      : '你是「AI MindMap」里内置的助手，正在帮使用者理解他自己思维导图里的一个节点。'));
   parts.push('回答要贴住情境，直接给内容，不要寒暄、不要复述情境。');
   parts.push('');
   parts.push(buildContextBlock(i));
