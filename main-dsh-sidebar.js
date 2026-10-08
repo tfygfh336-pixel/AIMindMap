@@ -1255,6 +1255,17 @@ function prefillComposer(text) {
   const body = String(text == null ? '' : text);
   if (!body.trim()) return Promise.resolve({ ok: false, reason: '没有要送过去的内容' });
   if (!state.view) return Promise.resolve({ ok: false, reason: '侧栏还没创建（先打开侧边栏）' });
+  // ⚠️ 已销毁的 view **必须在这里挡住** ✗ —— 本机事故：冒烟链内 G5 三次红、9 条断言同时
+  //    `THREW: Object has been destroyed`、视觉断言 0/0（窗口中途死掉）。机制：对已销毁的
+  //    webContents 调 executeJavaScript 会**同步抛**，而 `.then/.catch` 接不到同步异常 ⇒
+  //    异常冒到主进程调用点（控制通道那句 `prefillComposer(...).then(…)`）⇒ 未捕获异常 ✓。
+  //    这里先判销毁并返回**结构化失败** ⇒ 无论它是不是那次的真凶，函数边界都不再放异常出去 ✓
+  if ((state.view.isDestroyed && state.view.isDestroyed()) || !state.view.webContents
+      || (state.view.webContents.isDestroyed && state.view.webContents.isDestroyed())) {
+    const why = '侧栏视图已销毁或不可用（重开侧栏再试）';
+    state.lastPrefill = { ok: false, reason: why, at: Date.now(), len: body.length };
+    return Promise.resolve({ ok: false, reason: why });
+  }
   if (state.status !== 'running') {
     return Promise.resolve({ ok: false, reason: '侧栏服务没在运行（状态 ' + state.status + '）' });
   }
