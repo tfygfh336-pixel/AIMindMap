@@ -69,20 +69,26 @@ async function twoNodePoints(ctx) {
         && r.right < window.innerWidth - 4 && r.bottom < window.innerHeight - 4;
     });
     if (vis.length < 2) return JSON.stringify({ ok: false, text: '可见节点不足 2 个（' + vis.length + '）' });
-    function pt(el) {
+    // 每个节点试**多个候选点**（照抄本文件 pickPoint 的做法 ✓ —— 它一直是对的）：
+    // 原先只试"左中"一个点 ⇒ 被工具条/详情框盖住就整条跳过 ✗ ⇒ 干净地图上只剩 1 个可用点 ✗
+    function candsOf(el) {
       var r = el.getBoundingClientRect();
-      return { x: Math.round(r.left + 6), y: Math.round(r.top + Math.round(r.height / 2)) };
+      return [
+        { x: Math.round(r.left + 6), y: Math.round(r.top + Math.round(r.height / 2)) },
+        { x: Math.round(r.right - 6), y: Math.round(r.top + Math.round(r.height / 2)) },
+        { x: Math.round(r.left + Math.round(r.width / 2)), y: Math.round(r.top + 3) }
+      ];
     }
-    // 先自检：这个点**真的**落在目标节点上吗（elementFromPoint 走的是同一套命中测试 ✓）
-    // —— 顺带排掉"点被别的层盖住"这种可能 ✗
     function hits(el, p) {
       var at = document.elementFromPoint(p.x, p.y);
       return !!(at && at.closest && at.closest('jmnode[nodeid]') === el);
     }
     var cands = [];
     for (var k = 0; k < vis.length && cands.length < 2; k++) {
-      var p = pt(vis[k]);
-      if (hits(vis[k], p)) cands.push({ el: vis[k], p: p });
+      var ps = candsOf(vis[k]);
+      for (var q = 0; q < ps.length; q++) {
+        if (hits(vis[k], ps[q])) { cands.push({ el: vis[k], p: ps[q] }); break; }
+      }
     }
     if (cands.length < 2) return JSON.stringify({ ok: false, text: '可用命中点不足 2 个（' + cands.length + '）' });
     var vis2 = cands[0].el, visB = cands[1].el;
@@ -109,6 +115,14 @@ module.exports = [
     name: '⑥ Ctrl+点击：逐个加选（选区里有 2 个节点，虚线框出现）',
     run: async (ctx) => {
       await ctx.exec('if (window.MM.clearSelection) window.MM.clearSelection(); 1');
+      // 铺场（断言自建前置 ✓）：按域隔离后地图回到折叠状态 ⇒ 可用命中点常只剩 1 ✗ ⇒ 先展开全树
+      // 并等一次重排（域 31/32 同一招：只 expandAll 不等重排时前置必失败 ✗ 实测）。
+      // 先还原视图：pan/zoom 是界面状态 ⇒ 跨域残留（隔离只还原项目数据 ✗）⇒ 上一域可能把地图放大/拖偏 ✗
+      await ctx.exec('if (window.MM.resetView) window.MM.resetView(); 1');
+      await new Promise((r) => setTimeout(r, 200));
+      await ctx.exec('if (window.MM.expandAll) window.MM.expandAll(); 1');
+      await new Promise((r) => setTimeout(r, 350));
+      await ctx.exec('new Promise(function (res) { requestAnimationFrame(function () { res(1); }); })');
       const pts = await twoNodePoints(ctx);
       if (!pts.ok) return { ok: false, text: pts.text };
       // 热身：窗口的**第一次**鼠标交互常被当成"点一下获得焦点"而吞掉 ✗（实测第一次 Ctrl+点击
