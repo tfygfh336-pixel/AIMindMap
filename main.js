@@ -1059,7 +1059,7 @@ async function runSmoke(win) {
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);
-  }, 140000);
+  }, process.env.MM_SMOKE_ISOLATE ? 300000 : 140000);   // 隔离会让每个域多花 ~0.5-1s（重载）⇒ 只在隔离时放宽 ✓
   // P1 崩溃仪器：渲染进程一死就**留下遗言**（死因 + 死前正在跑哪条断言）✓
   // 为什么需要它：本机出现过**间歇**的 `THREW: Object has been destroyed` 连锁（含截图失败），
   // 但重跑不复现 ⇒ 只能靠现场留证 ✗（M 轮实测：三次跑都没复现，没有仪器就只能干等 ✓）
