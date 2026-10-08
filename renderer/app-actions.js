@@ -486,6 +486,9 @@
       const r = await window.desktop.project.read(name0);
       // 读盘期间项目被切走 ⇒ 这份数据已过期，丢弃（否则会把旧项目的树盖到新项目上 ✗）
       if (epoch0 !== projectEpoch) { setStatus('已忽略一次过期的自动重读（期间已切换项目）'); return; }
+      // 读盘期间用户又有了未保存改动 ⇒ **同样不许覆盖** ✓（读盘前判一次、回来再判一次：
+      // 只判前面那一次会漏掉这个窗口，实测会把盘上那份的旧树偏移带回内存 ✗）。
+      if (isDirty()) { setStatus('⚠ 同步外部修改期间你又有了未保存改动 —— 本次不覆盖（保存/重开项目后再同步）', true); return; }
       renderMind(r.data);
       state.history = new UndoStack(50);
       state.history.push(snapshot());

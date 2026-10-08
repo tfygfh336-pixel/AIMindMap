@@ -15,7 +15,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync, spawn } = require('child_process');
-const dshSidebar = require('./main-dsh-sidebar.js');
+const dshSidebar = require('./main-dsh-sidebar.js');
 const dropTarget = require('./src/drop-target.js');   // P7 落点判定（纯函数 ✓ 有单测 ✓ 屏幕坐标）
 
 const ROOT = __dirname;
@@ -955,7 +955,7 @@ function registerIpc() {
   /* 拖宽分隔条：渲染层在交界处 mousedown 时触发（坐标 hit-test 在渲染层做，
    * 主进程用 screen.getCursorScreenPoint 轮询接管拖拽 —— Electron 惯例） */
   ipcMain.on('dsh-sidebar:drag-start', () => dshSidebar.beginWidthDrag());
-  ipcMain.on('dsh-sidebar:drag-end', () => dshSidebar.endWidthDrag());
+  ipcMain.on('dsh-sidebar:drag-end', () => dshSidebar.endWidthDrag());
 
   /* ---- P7 真·跨视图拖放：选区拖到**原生侧栏视图**上松手也要生效 ✓ ----
    * 起点/终点各一次（渲染层上报 ✓），中间由主进程 40ms 轮询光标屏幕坐标（无需权限 ✓）。
@@ -1101,6 +1101,34 @@ async function runSmoke(win) {
     console.log('==== 过滤运行（**不是全量真值**）：仅跑 ' + pickedFiles.join(', '));
     console.log('==== 计数只对本轮选中的 ' + assertions.length + ' 条负责；全量真值见 docs/VERIFY.md ====');
   }
+  /* 真实数据**零写入**（E1/E2）：冒烟跑在沙箱副本上 ⇒ 真实 projects/ 必须逐字节不变。
+   * 为什么需要它：本项目真出过一次"经 CLI 的写操作落到真实目录"（见 runCli 的注释 ✗）。
+   * ⚠️ 上一版把"副本与真实不一致"直接当泄漏 ✗ —— 那多半是**应用在跑动中更新了自己那份副本**
+   *（`comnet/.ui-state.json` 每次交互都会变 ✓）：实测三次跑，**真实侧** hash 完全相同、副本侧每次都不同
+   * ⇒ 变的只是副本 ✓。现在改成"开跑记真实侧指纹 → 跑完复核"，只有**真实侧**变了才算 ✗。
+   * 前提：跑重门禁时同机不该有人正在用这个应用 ✗（否则是假红，属运行纪律 ✓）。 */
+  const REAL_SNAP = new Map();
+  let realWriteLeak = null;
+  const sha12 = (p) => { try { return require('crypto').createHash('sha1').update(fs.readFileSync(p)).digest('hex').slice(0, 12); } catch (e) { return '?'; } };
+  const listRealFiles = (dir, base, out) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name); const rel = base ? base + "/" + e.name : e.name;
+      if (e.isDirectory()) listRealFiles(p, rel, out); else out.push(rel);
+    }
+    return out;
+  };
+  try {
+    if (fs.existsSync(REAL_PROJECTS_DIR)) {
+      for (const rel of listRealFiles(REAL_PROJECTS_DIR, '', [])) REAL_SNAP.set(rel, sha12(path.join(REAL_PROJECTS_DIR, rel)));
+      console.log('[smoke] 真实数据基线：' + REAL_SNAP.size + ' 个文件已记指纹（跑完复核；变了就是泄漏 ✗）');
+      if (process.env.MM_SMOKE_LEAK_INJECT === '1') {
+        // 判别力证明用（只在显式开关下生效 ✓）：故意往**真实**目录写一个文件 ⇒
+        // 跑完复核必须打印 ✗ 并让退出码非 0 ✓。
+        fs.writeFileSync(path.join(REAL_PROJECTS_DIR, '_leak-inject-probe.json'), 'inject');
+        console.log('[smoke] （注入）已往真实目录写 _leak-inject-probe.json，用于验证复核确实能红 ✓');
+      }
+    }
+  } catch (e) { console.log('[smoke] 真实数据基线记账失败（不阻断）：' + ((e && e.message) || e)); }
   const results = [];
   const exec = (js) => win.webContents.executeJavaScript(js);
   // 把 CLI 运行器也交给断言：某些断言需要**先造数据**（如"关联笔记"没有界面创建入口，
@@ -1208,7 +1236,7 @@ async function runSmoke(win) {
     // 光恢复磁盘不够 ✗：应用内存里那份还是旧的 ⇒ 让它自己重新加载当前项目 ✓
     try {
       if (!n) return;   // 项目数据没动过 ⇒ 不用重载 ✓
-      const reloadP = win.webContents.executeJavaScript('(async function () { try { var st = window.MMApp && window.MMApp.getState && window.MMApp.getState(); var name = st && st.project && st.project.name; if (!name) return "noproj"; if (window.MMApp.switchProject) { await window.MMApp.switchProject(name); return "ok"; } if (window.MMApp.openProject) { await window.MMApp.openProject(name); return "ok2"; } return "noapi"; } catch (e) { return "err:" + ((e && e.message) || e); } })()');
+      const reloadP = win.webContents.executeJavaScript('(async function () { try { var st = window.MMApp && window.MMApp.getState && window.MMApp.getState(); var name = st && st.project && st.project.name; if (!name) return "noproj"; if (window.MMApp.openProject) { await window.MMApp.openProject(name); return "ok"; } if (window.MMApp.switchProject) { await window.MMApp.switchProject(name); return "ok2"; } return "noapi"; } catch (e) { return "err:" + ((e && e.message) || e); } })()');
       // 超时兜底：上一版直接 await 这个 Promise ⇒ 整条链卡在某个域 ✗（守卫 140s 强杀 ✓）
       const raced = await Promise.race([
         reloadP.then(() => 'done').catch(() => 'err'),
@@ -1301,6 +1329,30 @@ async function runSmoke(win) {
     results.push({ name: 'screenshot', ok: false, text: 'capture failed: ' + err.message });
   }
   clearTimeout(guard);
+  /* 真实数据零写入：跑完复核真实侧（内容变了 / 新增 / 删除 任一 ⇒ 判红 ✓；采不到也判红 ✗） */
+  try {
+    if (fs.existsSync(REAL_PROJECTS_DIR)) {
+      const now = listRealFiles(REAL_PROJECTS_DIR, '', []);
+      const changed = [], added = [], removed = [];
+      for (const rel of now) {
+        const h = sha12(path.join(REAL_PROJECTS_DIR, rel));
+        if (!REAL_SNAP.has(rel)) added.push(rel);
+        else if (REAL_SNAP.get(rel) !== h) changed.push(rel);
+      }
+      for (const rel of REAL_SNAP.keys()) if (now.indexOf(rel) < 0) removed.push(rel);
+      if (changed.length || added.length || removed.length) {
+        realWriteLeak = { changed: changed, added: added, removed: removed };
+        console.log('[smoke] ✗ 真实数据被动过（冒烟必须零写入！）：改=' + (changed.join(',') || '无')
+          + ' 新增=' + (added.join(',') || '无') + ' 删除=' + (removed.join(',') || '无')
+          + ' ｜ 若同机有人正在用这个应用，那属**假红**（先关掉再跑 ✓）');
+      } else {
+        console.log('[smoke] ✓ 真实数据零写入：' + REAL_SNAP.size + ' 个文件跑完逐字节一致');
+      }
+    }
+  } catch (e) {
+    realWriteLeak = { error: String((e && e.message) || e) };
+    console.log('[smoke] ✗ 真实数据复核失败（采不到真值 ⇒ 不能自称已校验 ✗）：' + realWriteLeak.error);
+  }
   const failed = results.filter((r) => !r.ok);
   // 输出**显式给出构成**：冒烟断言 / 视觉断言 / 取景记录 分开报。
   // 为什么必须分开：`docs/VERIFY.md` 的"冒烟断言"真值就是 `scripts/smoke-assertions.js` 的条数，
@@ -1318,7 +1370,7 @@ async function runSmoke(win) {
   if (results.length > smokeCount) {
     console.log('==== 另有 ' + (results.length - smokeCount) + ' 条非冒烟结果（取景记录 + 视觉断言），不计入冒烟断言数 ====');
   }
-  app.exit(failed.length ? 1 : 0);
+  app.exit((failed.length || realWriteLeak) ? 1 : 0);   // 真实数据被动过 ⇒ 即便断言全绿也判红 ✓
 }
 
 /* ---------------- 离屏导出 PNG（--export-image <项目> <输出.png>） ----------------
