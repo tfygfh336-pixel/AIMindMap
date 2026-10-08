@@ -223,7 +223,8 @@
   const treeOffsets = {};        // { [顶层主题id]: {x, y} }
   let fdDragMode = false;
   let fdDragTreeRoot = null;     // 拖动模式锁定的目标树根（root 直接子节点 id）
-  let fdTreeDragStart = null;    // {x, y, ox, oy} 拖动起点（屏幕）与起始偏移（逻辑）
+  let fdTreeDragStart = null;
+  let fdSelDrag = null;          // P4：从"已选中的节点"上按下开始的拖拽（起点坐标 ✓）    // {x, y, ox, oy} 拖动起点（屏幕）与起始偏移（逻辑）
   let fdDragModePan = null;      // 兜底：无目标树时的画布平移（中键同款）
 
   /* —— 框选节点（v0.16.3）——
@@ -800,6 +801,39 @@
       zoomViewAt(px, py, target / fdView.s, 0.15, 4);
       positionFloatDetail();
     }, { capture: true, passive: false });
+
+    /* P4：框选后**直接**拖给侧栏（不进拖动模式 ✓）。三个捕获监听，**不阻断**其它行为 ✓：
+     *  · 只有"按在**当前选中的节点**上"才算这次拖拽的起点 ✓（按在别处/空白 ⇒ 与原来一模一样 ✓）
+     *  · 松手点必须落在**面板右缘 24px 内**才发送 ✓（否则什么都不做 ⇒ 普通点击照常弹详情 ✓）
+     *  · 发送的是**整批 raw 选区**（getSelectionRaw ✓ 未裁剪 ✓ —— 与 P5 的描边同源 ✓）
+     *  · 不搞拖动模式：那条路径是"移动树的位置"（fdDragMode）✓ 两者互不干扰 ✓ 用户明确要求分开 ✓ */
+    document.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || fdDragMode) return;
+      const cont = document.getElementById('mindmap-container');
+      if (!cont || !cont.contains(e.target)) return;
+      if (e.target.closest && (e.target.closest('.float-detail') || e.target.closest('#mm-node-toolbar'))) return;
+      const nodeEl = e.target.closest && e.target.closest('jmnode[nodeid]');
+      if (!nodeEl) return;
+      const id = nodeEl.getAttribute('nodeid');
+      if (!fdSelectionRaw.length || fdSelectionRaw.indexOf(id) < 0) return;   // 只认"选中批"里的节点 ✓
+      fdSelDrag = { x: e.clientX, y: e.clientY };
+    }, true);
+    document.addEventListener('mousemove', (e) => {
+      if (!fdSelDrag) return;
+      fdSelDrag.x = e.clientX; fdSelDrag.y = e.clientY;
+    }, true);
+    document.addEventListener('mouseup', (e) => {
+      if (!fdSelDrag) return;
+      fdSelDrag = null;
+      const pnel = fdPanel();
+      const pr = pnel ? pnel.getBoundingClientRect() : null;
+      if (!pr || e.clientX < pr.right - 24) return;          // 不在右缘 ⇒ 什么都不做（点击照常 ✓）
+      const ids = MM.getSelectionRaw ? MM.getSelectionRaw() : [];
+      if (!ids.length) return;
+      e.preventDefault();
+      e.stopPropagation();                                   // 吞掉这次点击 ⇒ 不再额外弹详情 ✓
+      if (MM.sendNodesToSidebar) MM.sendNodesToSidebar(ids);
+    }, true);
 
     /* ⑥ Ctrl/Cmd+点击节点 = 加选/减选。**必须在捕获阶段**：
      * jsMind 对节点（尤其**根节点**）的 mousedown 会 stopPropagation ✗ ⇒ 冒泡阶段收不到，
