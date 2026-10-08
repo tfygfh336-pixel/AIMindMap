@@ -9,7 +9,7 @@
 
   return {
     APP_NAME: 'AI MindMap',
-    APP_VERSION: '0.17.0',
+    APP_VERSION: '0.18.0',
     DATA_FORMAT_VERSION: 2,          // projects/<name>/<name>.json 的 schema 版本
     DEFAULT_UNDO_LIMIT: 50,
     DEFAULT_EXPAND_DEPTH: 3          // 打开项目时默认展开深度

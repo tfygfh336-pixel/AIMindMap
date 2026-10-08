@@ -21,7 +21,7 @@
 | CLI 集成断言 | 212 | `scripts/cli-integration.js` |
 | 冒烟断言 | 170 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
-| 版本号 | 0.17.0 | `package.json` / `src/config.js` / `package-lock.json`（须一致） |
+| 版本号 | 0.18.0 | `package.json` / `src/config.js` / `package-lock.json`（须一致） |
 
 ## 验证链
 
@@ -93,7 +93,7 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 |------|----|------|
 | 受管文档（登记表登记数） | 13 份 | `docs/ARCHITECTURE.md` §5 表 |
 | 登记表分层的条目分布 | 入口 2 · 治理 1 · 契约 4 · 设计 3 · 记录 3 · 归档 2 | 同上（含归档族的前缀行） |
-| 归档族 | `docs/archive/` 6 份 · `docs/changelog/` 15 份 | 磁盘现场统计（只增不改，不逐份登记） |
+| 归档族 | `docs/archive/` 6 份 · `docs/changelog/` 16 份 | 磁盘现场统计（只增不改，不逐份登记） |
 | 工作产物区（`.review/`） | `20260925-scripts草稿清理` → 已收口 · `20260925-集成断言进程内化` → 已收口 · `20260926-文档架构图` → 已收口 · `20260926-静默闭环2-5` → 在飞 · `20260929-多路并发编辑` → 在飞 · `20261008-DSH深度集成调研` → 在飞 | 各目录的 `README.md` |
 | 上次全链结果 | 见 `.review/last-verify.json`（`npm run verify` 与 `npm run check:docs` 都会打印当前值） | 每次 `npm run verify` 写入 |
 
@@ -102,4 +102,4 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 
 ---
 
-*本文件由 `scripts/doc-facts.js` 生成（勿手改）；对应版本 v0.17.0。*
+*本文件由 `scripts/doc-facts.js` 生成（勿手改）；对应版本 v0.18.0。*
