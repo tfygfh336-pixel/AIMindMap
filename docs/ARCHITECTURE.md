@@ -220,6 +220,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `cli-integration.js` | **G4** 全部 CLI 命令端到端断言（进程内调用，临时项目自动清理） |
 | `smoke-assertions.js` | **G5** 冒烟断言清单入口：自动发现并按文件名顺序拼接 `scripts/smoke/NN-*.js`（入口只做 require + 拼接；另导出 `files` / `groups` 供单跑选子集，`.length` 仍是**全量**真值） |
 | `smoke-select.js` | 冒烟**单跑**选择器（纯函数，可单测）：把 `SMOKE_ONLY=20,21` / `--smoke-only=20,21` 解析成要跑的断言文件，**永远并入 `01-*` 预热**；**一项都不匹配 ⇒ 抛错**（采不到真值 = 红），避免"筛错名字却跑出 0/0 passed"的假绿 |
+| `changed-plan.js` | **「改动面 → 必跑集」的映射**（纯函数，可单测）：把 `git diff` 出的文件清单映射成该跑哪几步（+ 冒烟该收窄到哪些域）。**保守优先**：认不出的路径一律**全量**（这是它唯一允许"多跑"的方向 ✓）；`G1/G8/G9` 恒定跑（G8 还管"新代码文件必须入档"）；干净工作树 ⇒ **一步都不跑**（不许跑两件卫生门禁假装验证过）。`verify.js --changed` 是唯一调用方 —— 它会打出"**这不是全量真值**"横幅、把记录写进 `.review/last-verify-changed.json`（**不覆盖** `last-verify.json` 那句"上次全链"）、历史标 `partial: true`（耗时基线也不认它 ✓） |
 | `smoke-flags.js` | 冒烟/离屏路径额外的 **Chromium 保帧开关**（纯函数，可单测）：照搬 Playwright 给 Chromium 的四个默认开关（三个 `disable-*` + `enable-features=CDPScreenshotNewSurface`），治"隐藏窗口不出帧 / 定时器被降频"引发的**假红**。**只在 `--smoke` 路径生效**（正常启动必须为空 —— `tests/smoke-flags.test.js` 有接线检查），"真的加上了"由 `scripts/smoke/14-headless-window.js` 断言。**效力在 Electron 上的验证未完成**，判据是 `verify-history.jsonl` 里 G5 的假红率与耗时趋势 |
 | `mcp-server.js` | MCP stdio 服务器（只转发 CLI，见 §2.5） |
 | `vendor-dsh.js` | 制作独立 DSH 运行包（`vendor/dsh`，含哈希清单；一次性/更新时重跑） |

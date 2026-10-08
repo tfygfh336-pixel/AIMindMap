@@ -27,6 +27,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+// 改动面 → 必跑集的映射（纯函数 + 单测；本文件只负责取清单、跳过与留痕）
+const changedPlan = require('./changed-plan.js');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -86,6 +88,8 @@ function buildVerifyHistory(run, results, envIn) {
     ok: run.ok,
     failedGate: run.failedGate === undefined ? null : run.failedGate,
     totalMs: run.totalMs,
+    // `--changed` 的部分验证要标出来：它**不能**当耗时基线（只跑了几步，比出来是假信号 ✗）
+    partial: run.partial === true,
     // 每步：门禁 / 耗时 / 退出码 / 是否超预算。另外带上 skipped（G7 与 G6 共用一次调用时 ms=0）——
     // 免得事后看历史时把"这一步没单独跑"误读成"耗时 0 秒、很健康"。
     steps: results.map((r) => ({
@@ -128,7 +132,8 @@ function pickHistoryBaseline(lines) {
     if (!String(lines[i]).trim()) continue;
     try {
       const r = JSON.parse(lines[i]);
-      if (r && r.ok === true && Array.isArray(r.steps)) return r;
+      // `partial`（--changed 的部分验证）同样不能当基线 —— 它只跑了几步，比出来是假信号 ✗
+      if (r && r.ok === true && r.partial !== true && Array.isArray(r.steps)) return r;
     } catch (e) { /* 坏行跳过：历史上可能有半截行 */ }
   }
   return null;
@@ -142,6 +147,41 @@ function readHistoryBaseline() {
   } catch (e) {
     return null;
   }
+}
+
+/* ---------------- `--changed`（改动面 → 必跑集，2026-10-08 加） ----------------
+ * 映射规则在 `scripts/changed-plan.js`（纯函数、有单测）；这里只做三件事：
+ *   ① 取改动清单（git 的 I/O）；② 按计划**跳过**不在计划里的步骤；
+ *   ③ 把"这是**部分**验证"写进**另一个**记录位 —— **绝不覆盖** `last-verify.json`
+ *      （那句话回答的是"上一次**全链**绿没绿"，被一条只跑了 4 步的记录覆盖就变成假事实 ✗）。 */
+const LAST_VERIFY_CHANGED = '.review/last-verify-changed.json';
+
+/** 工作区改动（含未跟踪文件）；取不到 git ⇒ null（调用方退回全量） */
+function changedFiles() {
+  const run = (args) => spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
+  try {
+    const diff = run(['diff', '--name-only', 'HEAD']);
+    if (diff.status !== 0) return null;
+    const untracked = run(['ls-files', '--others', '--exclude-standard']);
+    const files = String(diff.stdout || '').split(/\r?\n/)
+      .concat(String(untracked.stdout || '').split(/\r?\n/));
+    return files.map((f) => f.trim()).filter(Boolean);
+  } catch (e) { return null; }
+}
+
+/** 部分验证的记录（单独一格：不覆盖"上次全链"） */
+function writeLastVerifyChanged(run) {
+  try {
+    const p = path.join(ROOT, LAST_VERIFY_CHANGED);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(run, null, 2) + '\n', 'utf8');
+  } catch (e) { /* 记录写失败不影响结论 */ }
+}
+
+/** 读部分验证那格（供开头一句"另有上次部分验证"） */
+function readLastVerifyChanged() {
+  try { return JSON.parse(fs.readFileSync(path.join(ROOT, LAST_VERIFY_CHANGED), 'utf8')); }
+  catch (e) { return null; }
 }
 
 /** 与上一条历史逐门禁比较（纯函数，便于单测）。
@@ -339,6 +379,13 @@ function main() {
     ? '上次全链：' + prev.finishedAt.replace('T', ' ').slice(0, 16) + '  '
       + (prev.ok ? '✅ 通过' : '❌ 失败于 ' + (prev.failedGate || '?')) + '（' + fmt(prev.totalMs) + '）'
     : '上次全链：（无记录 —— 这是本机第一次跑，或 `.review/` 被清理过）');
+  // 部分验证（--changed）单独一格：**不能**拿它当"上次全链"，但也不能完全不提（免得以为没跑过）
+  const prevPartial = readLastVerifyChanged();
+  if (prevPartial) {
+    console.log('另有上次**部分**验证：' + String(prevPartial.finishedAt).replace('T', ' ').slice(0, 16) + '  '
+      + (prevPartial.ok ? '✅ 通过' : '❌ 失败于 ' + (prevPartial.failedGate || '?'))
+      + '（' + fmt(prevPartial.totalMs) + '，只跑计划内的步骤 —— **不是全链结论**）');
+  }
   // 并发改动检测（只告知，不判红）：本工程**同时会有多个 AI 会话在改**（实测被回退过两次）。
   // 数据层有版本闸门（ADR），文档层没有 —— 这里至少把"最近有谁在动"摆到台面上。
   try {
@@ -350,8 +397,45 @@ function main() {
         + '）—— 若有另一个会话在写，跑完请复核自己的改动还在不在。');
     }
   } catch (e) { /* 检测失败不影响验证 */ }
+
+  // ── `--changed`：按改动面裁掉用不着的步骤（映射规则见 scripts/changed-plan.js）──────
+  // 设计要点：**它是提速工具，不是验收工具** —— 所有输出都带"部分验证"横幅，
+  // 记录写进另一个格子（不覆盖 last-verify.json），历史标 partial（基线也不认它）。
+  const changedMode = process.argv.includes('--changed');
+  let plan = null;
+  if (changedMode) {
+    const files = changedFiles();
+    if (files === null) {
+      console.log('⚠️ --changed：取不到 git 改动清单（没有 git / 不在仓库里？）⇒ **退回全量**');
+      console.log('');
+    } else {
+      plan = changedPlan.planForFiles(files);
+      console.log('⚠️ == 部分验证（--changed）== **这不是全量真值**，发版/交付前请跑 `npm run verify`');
+      console.log('   ' + plan.reason);
+      for (const l of changedPlan.describePlan(plan)) console.log('   ' + l);
+      console.log('   改动文件 ' + files.length + ' 个：'
+        + (files.length > 8 ? files.slice(0, 8).join('、') + ' 等' : files.join('、')));
+      if (process.argv.includes('--plan-only')) {
+        console.log('   （--plan-only：只报计划，本次一步都没跑 ✓）');
+        return;
+      }
+      if (!plan.steps.length) {
+        console.log('   ⇒ 计划里没有步骤：**本次没有验证任何东西** ✓（要全量请不传 --changed）');
+        return;
+      }
+      console.log('');
+    }
+  }
   console.log('');
   for (const s of STEPS) {
+    // `--changed` 计划外 ⇒ 跳过（G7 是"与 G6 共用一次调用"，G6 在计划里它就跟着跑 ✓）
+    const inPlan = !plan || plan.full || plan.steps.indexOf(s.gate) >= 0
+      || (s.gate === 'G7' && plan.steps.indexOf('G6') >= 0);
+    if (!inPlan) {
+      results.push({ step: s.step, gate: s.gate, label: s.label, ms: 0, code: null,
+        budgetMs: 0, skipped: true, skippedBy: 'changed' });
+      continue;
+    }
     if (!s.cmd) { // G7 与 G6 共用一次调用
       results.push({ step: s.step, gate: s.gate, label: s.label, ms: 0, code: null,
         budgetMs: 0, skipped: true });
@@ -371,6 +455,10 @@ function main() {
     if (s.useUnitTests && unitTestsFromChain !== null) {
       opts.env = Object.assign({}, process.env,
         { AI_MINDMAP_UNIT_TESTS: String(unitTestsFromChain) });
+    }
+    // 冒烟收窄：走既有的 SMOKE_ONLY（选择器会"筛错名字响亮失败"，并自标"过滤运行不是全量真值" ✓）
+    if (plan && plan.smokeOnly && s.gate === 'G5') {
+      opts.env = Object.assign({}, opts.env || process.env, { SMOKE_ONLY: plan.smokeOnly.join(',') });
     }
     const r = spawnSync(s.cmd, opts);
     const ms = Date.now() - t0;
@@ -402,8 +490,9 @@ function main() {
   for (const r of results) {
     const pad = (v, n) => String(v).padEnd(n);
     if (r.skipped) {
+      const why = r.skippedBy === 'changed' ? '（--changed 计划外：跳过）' : '（与上一步同一次调用）';
       console.log('  ' + pad(r.step, 3) + pad(r.gate, 6)
-        + pad('（与上一步同一次调用）', 10) + ' '.repeat(8) + ' '.repeat(10) + pad('—', 10) + pad('—', 10) + r.label);
+        + pad(why, 10) + ' '.repeat(8) + ' '.repeat(10) + pad('—', 10) + pad('—', 10) + r.label);
       continue;
     }
     const over = r.budgetMs > 0 && r.ms > r.budgetMs;
@@ -426,14 +515,18 @@ function main() {
   }
   console.log('');
 
+  const partial = !!(plan && !plan.full);
   if (failed) {
-    console.error('验证失败：步骤 ' + failed.step.step + '（' + failed.step.gate + '）退出码 ' + failed.code);
+    console.error((partial ? '部分验证失败（--changed）' : '验证失败')
+      + '：步骤 ' + failed.step.step + '（' + failed.step.gate + '）退出码 ' + failed.code);
     const run = {
       finishedAt: new Date().toISOString(), ok: false, failedGate: failed.step.gate,
-      totalMs: chk.totalMs, version: pkgVersion(),
+      totalMs: chk.totalMs, version: pkgVersion(), partial,
       steps: results.map((r) => ({ gate: r.gate, ms: r.ms, code: r.code }))
     };
-    writeLastVerify(run);      // 交接面：只剩一条（供下一次运行开头报"上次全链"）
+    // 部分验证写**另一个**格子：`last-verify.json` 回答的是"上次**全链**绿没绿"，
+    // 被一条只跑了几步的记录覆盖就变成假事实 ✗（这是本工程最重的损害类别：静默）
+    if (partial) writeLastVerifyChanged(run); else writeLastVerify(run);
     writeVerifyHistory(run, results);   // 历史：追加一条（可疑的偶发 / 变慢，事后靠它判）
     backupHint();
     process.exitCode = 1;
@@ -460,14 +553,14 @@ function main() {
     return;
   }
 
-  console.log('验证通过（' + chk.ranCount + ' 步 / ' + fmt(chk.totalMs)
-    + '，预算内）');
+  console.log((partial ? '部分验证通过' : '验证通过') + '（' + (partial ? '计划内 ' : '') + chk.ranCount + ' 步 / ' + fmt(chk.totalMs)
+    + '，预算内）' + (partial ? ' —— **不是全量真值**；发版/交付前请跑 `npm run verify`' : ''));
   const run = {
     finishedAt: new Date().toISOString(), ok: true, failedGate: null,
-    totalMs: chk.totalMs, version: pkgVersion(),
+    totalMs: chk.totalMs, version: pkgVersion(), partial,
     steps: results.map((r) => ({ gate: r.gate, ms: r.ms, code: r.code }))
   };
-  writeLastVerify(run);      // 交接面：只剩一条（供下一次运行开头报"上次全链"）
+  if (partial) writeLastVerifyChanged(run); else writeLastVerify(run);
   writeVerifyHistory(run, results);   // 历史：追加一条（可疑的偶发 / 变慢，事后靠它判）
   backupHint();
 }
@@ -517,6 +610,8 @@ module.exports = {
   VERIFY_HISTORY, buildVerifyHistory, writeVerifyHistory,
   // 度量列：与上一次**成功**的验证比较（纯函数 + 一个读取口，便于单测）
   pickHistoryBaseline, readHistoryBaseline, historyDelta, fmtDelta,
+  // `--changed`：取改动清单、部分验证的独立记录位
+  changedFiles, writeLastVerifyChanged, readLastVerifyChanged, LAST_VERIFY_CHANGED,
   // 兜底提示的两半：取数（I/O）与组文（纯函数）分开，便于单测组文那一半
   gitCommitCount, backupHintText
 };
