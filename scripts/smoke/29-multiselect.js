@@ -63,12 +63,21 @@ async function pickPoint(ctx, excludeIds) {
 /** 取两个可见节点的**屏幕坐标**（各自中心点），供真鼠标事件使用 */
 async function twoNodePoints(ctx) {
   return execJson(ctx, `(function () {
-    var vis = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]')).filter(function (el) {
+    var all = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]'));
+    var rej = [];
+    var vis = all.filter(function (el) {
       var r = el.getBoundingClientRect();
-      return r.width > 20 && r.height > 10 && r.left > 4 && r.top > 4
-        && r.right < window.innerWidth - 4 && r.bottom < window.innerHeight - 4;
+      var why = null;
+      if (!(r.width > 20)) why = 'w=' + Math.round(r.width);
+      else if (!(r.height > 10)) why = 'h=' + Math.round(r.height);
+      else if (!(r.left > 4 && r.top > 4)) why = 'left/top=' + Math.round(r.left) + ',' + Math.round(r.top);
+      else if (!(r.right < window.innerWidth - 4 && r.bottom < window.innerHeight - 4)) why = 'right/bottom=' + Math.round(r.right) + ',' + Math.round(r.bottom) + '(vp=' + window.innerWidth + 'x' + window.innerHeight + ')';
+      if (why) { if (rej.length < 4) rej.push(el.getAttribute('nodeid') + ':' + why); return false; }
+      return true;
     });
-    if (vis.length < 2) return JSON.stringify({ ok: false, text: '可见节点不足 2 个（' + vis.length + '）' });
+    // 诊断前缀（失败信息必须自带数据 ✓ 别让人再猜 ✗）
+    var DIAG = 'jmnode总=' + all.length + ' 可见=' + vis.length + ' 被拒=' + (rej.join(' ') || '无');
+    if (vis.length < 2) return JSON.stringify({ ok: false, text: '可见节点不足 2 个 ⇒ ' + DIAG });
     // 每个节点试**多个候选点**（照抄本文件 pickPoint 的做法 ✓ —— 它一直是对的）：
     // 原先只试"左中"一个点 ⇒ 被工具条/详情框盖住就整条跳过 ✗ ⇒ 干净地图上只剩 1 个可用点 ✗
     function candsOf(el) {
@@ -90,7 +99,7 @@ async function twoNodePoints(ctx) {
         if (hits(vis[k], ps[q])) { cands.push({ el: vis[k], p: ps[q] }); break; }
       }
     }
-    if (cands.length < 2) return JSON.stringify({ ok: false, text: '可用命中点不足 2 个（' + cands.length + '）' });
+    if (cands.length < 2) return JSON.stringify({ ok: false, text: '可用命中点不足 2 个（' + cands.length + '）⇒ ' + DIAG });
     var vis2 = cands[0].el, visB = cands[1].el;
     return JSON.stringify({ ok: true, a: cands[0].p, b: cands[1].p,
       ida: vis2.getAttribute('nodeid'), idb: visB.getAttribute('nodeid') });
