@@ -87,6 +87,25 @@ module.exports = {
     });
   },
 
+  /** ⑩ 把一段文本送进侧栏的输入框（**不代替你发送** ✗ —— 那边按了发送才进它的会话历史 ✓）。
+   *  用法：`dsh-prefill "要送过去的文本"`；也支持 `--file <路径>` 从文件读（长对话用）。
+   *  等**回执**才报成功 ✓（没有回执 = 没生效 ✗）。 */
+  'dsh-prefill'(ctx) {
+    let text = String((ctx.args._ && ctx.args._[1]) || '');
+    if (ctx.args.file) {
+      try { text = require('fs').readFileSync(String(ctx.args.file), 'utf8'); } catch (e) { ctx.error('读不到文件：' + String(ctx.args.file) + '（' + ((e && e.message) || e) + '）'); }
+    }
+    if (!text.trim()) ctx.error('用法：dsh-prefill "<文本>" 或 dsh-prefill --file <路径>（以 - 开头时用 --file）');
+    const dir = userDataDir();
+    control.writeCommand(dir, { cmd: 'dsh-prefill', text: text, at: new Date().toISOString(), by: 'cli' });
+    const res = waitForResult(dir, 'dsh-prefill', 12000);   // 页面可能没加载完 ⇒ 给足超时 ✓
+    if (!res) ctx.error('主界面没有回执（' + dir + '）：确认 AI MindMap 正在运行、且侧栏已打开');
+    if (!res.ok) ctx.error('没有送进侧栏：' + (res.err || '未知原因'));
+    if (ctx.args.json) { ctx.outJson({ ok: true, result: res.result || null }); return; }
+    ctx.out('已送进侧栏输入框：' + ((res.result && res.result.textLen) || text.length) + ' 字（'
+      + ((res.result && res.result.tag) || '?') + '）—— 到侧栏按发送即可 ✓');
+  },
+
   /** **只读**诊断：读侧栏实况（可见性 / 总占宽 / 窄宽模式 / 是否横向溢出）。
    *  为什么需要：窄宽适配（③）的效果以前只能靠肉眼看 ✗ —— 改布局不能拍脑袋，
    *  要有数字。本命令不改任何状态，随便调 ✓。输出**不含 url/token** ✓。 */

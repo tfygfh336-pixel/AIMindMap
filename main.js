@@ -1225,6 +1225,17 @@ function startControlChannel() {
     //   dsh-only    —— 关左边思维导图页、只留侧栏（改主界面代码时用）
     //   dsh-sidebar —— 保留主界面、关掉侧栏 DSH（改 DSH 那一侧时用；把服务一起停）
     //   dsh-status  —— 只读：读侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出）
+    //   dsh-prefill —— 把文本送进侧栏输入框（⑩；**不代替用户发送** ✗）
+    if (cmd.cmd === 'dsh-prefill') {
+      dshSidebar.prefillComposer(cmd.text || '').then((r) => {
+        try {
+          control.writeResult(dir, { cmd: 'dsh-prefill', ok: !!r.ok, result: r, err: r.reason || null,
+            at: new Date().toISOString() });
+        } catch (err2) { /* 回执写不进去：调用方会超时 ⇒ 当没生效 ✓ */ }
+        control.clearCommand(dir);
+      });
+      return;
+    }
     if (cmd.cmd === 'dsh-status') {
       let st = null;
       let detail = '';

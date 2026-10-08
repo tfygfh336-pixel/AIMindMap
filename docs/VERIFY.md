@@ -15,7 +15,7 @@
 
 | 事实 | 值 | 来源 |
 |------|----|------|
-| CLI 命令数 | 52 | `cli/registry.js`（`registry.list().length`） |
+| CLI 命令数 | 53 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 35 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
 | 单元测试 | 797 用例 / 45 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 212 | `scripts/cli-integration.js` |

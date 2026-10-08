@@ -103,6 +103,12 @@ function init() {
     desc: '**只读**诊断：侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出/内核右栏与自动加宽状态）。不改状态、不含 url/token',
     fn: loadFile('ui')['dsh-status']
   });
+  register({
+    name: 'dsh-prefill',
+    usage: 'dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json]',
+    desc: '把一段文本送进 DSH 侧栏的输入框（**不代替你发送** ✗ —— 侧栏按了发送才进它的会话历史）；等主进程**回执**才报成功 ✓；失败会给出原因（侧栏没开/服务没跑/找不到输入框）',
+    fn: loadFile('ui')['dsh-prefill']
+  });
 
   // 跨项目链接
   register({ name: 'link', usage: 'link <项目> <id> --to 目标项目 --id 目标id [--caption 说明]', desc: '添加跨项目链接', fn: loadFile('links').link });

@@ -55,6 +55,7 @@
 | `sidebar-only` | sidebar-only <on|off> |
 | `dsh-sidebar` | dsh-sidebar <on|off> |
 | `dsh-status` | dsh-status [--json] |
+| `dsh-prefill` | dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json] |
 | `link` | link <项目> <id> --to 目标项目 --id 目标id [--caption 说明] |
 | `unlink` | unlink <项目> <id> --to 目标项目 --id 目标id |
 | `links` | links <项目> [--json] |
@@ -339,6 +340,14 @@ node cli/mm-cli.js dsh-sidebar <on|off>
 
 ```
 node cli/mm-cli.js dsh-status [--json]
+```
+
+### dsh-prefill
+
+把一段文本送进 DSH 侧栏的输入框（**不代替你发送** ✗ —— 侧栏按了发送才进它的会话历史）；等主进程**回执**才报成功 ✓；失败会给出原因（侧栏没开/服务没跑/找不到输入框）
+
+```
+node cli/mm-cli.js dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json]
 ```
 
 ### link
