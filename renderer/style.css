@@ -606,3 +606,13 @@ jmnode.mm-rel-dim { opacity: 0.32; }
 /* P5：真正被框选的节点用**虚线描边**（用户原话："框选了 a 和 b，就把 a 和 b 节点的边框变成虚线"✓）
    用 outline（不改盒子尺寸 ⇒ 不会让 jsMind 的连线错位 ✗）；这一层**不受同父裁剪限制** ✓ */
 .jmnodes jmnode.mm-sel-raw { outline: 2px dashed #1664ff; outline-offset: 2px; }
+
+/* ⑩ 工具栏「⇥ 侧栏」按钮（用户要"再明显一点" ✓ 与普通工具按钮区分开 ✓）：
+   用主题强调色 + 悬停加深；不用 border（避免改盒子尺寸 ⇒ 工具条换行错位 ✗） */
+.mm-tb-side {
+  background: #1664ff;
+  color: #fff !important;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(22, 100, 255, .35);
+}
+.mm-tb-side:hover { background: #0d4fd8; }
