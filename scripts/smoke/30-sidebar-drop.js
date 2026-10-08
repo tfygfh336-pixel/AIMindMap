@@ -88,5 +88,46 @@ module.exports = [
       await ctx.exec('if (window.MM.setDragMode) window.MM.setDragMode(false); 1');
       return { ok: !!res.ok, text: '树=' + prep.rootId + ' 拖到 x=' + edge.x + ' 松手 ｜ ' + res.text };
     }
+  },
+
+  {
+    /* 判别力证明（**常驻对照组**，比一次性注入更有价值 ✓）：
+     * 同样的手势，但**在离右缘 80px 处松手** ⇒ 那 24px 的边界判定不该被触发 ⇒
+     * 状态栏里**不允许**出现任何"送进侧栏"的结论 ✓。
+     * 这一条与上一条成对 ⇒ 上一条一旦变成"永远绿"（例如判定写成恒真），本组立刻红 ✓ */
+    name: '⑨ 对照组：在离右缘 80px 处松手 ⇒ 什么都不该被送出去（边界判定必须真的在生效）',
+    run: async (ctx) => {
+      const prep = await execJson(ctx, `(function () {
+        var vis = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]')).filter(function (el) {
+          var r = el.getBoundingClientRect();
+          return r.width > 20 && r.height > 10 && r.left > 4 && r.top > 40
+            && r.right < window.innerWidth - 120 && r.bottom < window.innerHeight - 60;
+        });
+        if (!vis.length) return JSON.stringify({ ok: false, text: '没有可见节点' });
+        var el = vis[0], id = el.getAttribute('nodeid'), r = el.getBoundingClientRect();
+        return JSON.stringify({ ok: true, nodeId: id, rootId: id,
+          x: Math.round(r.left + Math.round(r.width / 2)), y: Math.round(r.top + Math.round(r.height / 2)) });
+      })()`);
+      if (!prep.ok) return { ok: false, text: prep.text };
+      // 先把状态栏擦干净（否则会读到上一条留下的结论 ✗）
+      await ctx.exec(`(function () { window.MM.setStatus('（对照组：起点干净）'); window.MM.setDragMode(true, ${JSON.stringify(prep.rootId)}); return 1; })()`);
+      const edge = await execJson(ctx, `(function () {
+        var p = window.MM.fdPanel(); var r = p.getBoundingClientRect();
+        return JSON.stringify({ ok: true, x: Math.round(r.right - 80), y: ${prep.y} });
+      })()`);
+      mouse(ctx, 'mouseMove', { x: prep.x, y: prep.y });
+      mouse(ctx, 'mouseDown', { x: prep.x, y: prep.y });
+      mouse(ctx, 'mouseMove', { x: edge.x, y: edge.y });
+      mouse(ctx, 'mouseUp', { x: edge.x, y: edge.y });
+      await new Promise((r) => setTimeout(r, 600));
+      const res = await execJson(ctx, `(function () {
+        var status = (document.querySelector('#status-text') || {}).textContent || '';
+        var bad = /没送进侧边栏：|已把 \\d+ 个节点送进侧栏输入框|正在送进侧栏/.test(status);
+        return JSON.stringify({ ok: !bad,
+          text: '离右缘 80px 松手 ⇒ 状态栏=' + JSON.stringify(status.slice(0, 60)) + '（不该出现送栏结论 ✓）' });
+      })()`);
+      await ctx.exec('if (window.MM.setDragMode) window.MM.setDragMode(false); 1');
+      return { ok: !!res.ok, text: res.text };
+    }
   }
 ];
