@@ -385,6 +385,28 @@ run(['unlink', PROJ, 'a', '--to', PROJ, '--id', 'c']);
 run(['unlink', PROJ, 'c', '--to', PROJ, '--id', 'rel-tail']);
 run(['remove', PROJ, 'rel-tail']);   // 用后即删，不给后续断言留状态
 
+/* ---------------- 8.8 内置 AI 通道（功能 1 后端）：ask（**只测 dry-run**） ----------------
+ * 为什么只测 dry-run：真跑一次要**烧真实额度 + 依赖网络**（实测一次解释 ~24s）——
+ * 那类验证属于"人工/可选"的层级（本工程的分层纪律：门禁里不做重活 ✗），
+ * 而 dry-run 恰好把最该机械核对的东西留下来了：**将发给 AI 的提示词**。
+ * 其中"情境被补齐"必须真判：路径为空这种缺陷（第一版 `pathTo` 返回 id 数组被当对象用过 ✗）
+ * 在真跑时**看不出来**（模型照样能答），只有断言提示词里"路径不是空的"才抓得住 ✓ */
+const askDry = run(['ask', PROJ, 'a', '--kind', 'explain', '--dry-run', '--json']);
+const askDryJ = (() => { try { return JSON.parse(askDry.out); } catch (e) { return null; } })();
+check('ask --dry-run：不调用模型（无 key 也能跑），并给出完整提示词与命令行',
+  !!(askDryJ && askDryJ.ok && askDryJ.dryRun && askDryJ.prompt && askDryJ.command
+    && askDryJ.command.args.length === 3                                   // [dsh 入口, headless, 提示词]
+    && askDryJ.command.args[1] === 'headless'),
+  askDryJ ? ('提示词 ' + askDryJ.prompt.length + ' 字，命令行参数 ' + askDryJ.command.args.length + ' 个') : askDry.out.trim().slice(0, 160));
+check('ask 的提示词**自动补齐了情境**：项目 / 树中路径 / 正文三者都不能空',
+  !!(askDryJ && /· 项目：\S/.test(askDryJ.prompt) && /· 在树中的路径：\S/.test(askDryJ.prompt)
+    && /· 节点正文/.test(askDryJ.prompt)),
+  askDryJ ? (askDryJ.prompt.match(/· 在树中的路径：[^\n]*/) || ['(没有路径行)'])[0].slice(0, 80) : '—');
+check('ask --kind ask 不给 --question ⇒ 非 0 且报错（不许发一个没有问题的"问题"）',
+  (() => { const r = run(['ask', PROJ, 'a', '--kind', 'ask', '--dry-run']); return r.status !== 0 && /需要 --question/.test(r.err + r.out); })());
+check('ask 节点不存在 ⇒ 非 0 且点名原因',
+  (() => { const r = run(['ask', PROJ, 'no-such-node', '--dry-run']); return r.status !== 0 && /节点不存在/.test(r.err + r.out); })());
+
 // 8.7 mentions --cross：跨项目「未链接提及」两个方向。
 // 用一个**临时第二项目**做对端，绝不触碰 comnet（真实数据）。
 const XPROJ = PROJ + '-x';

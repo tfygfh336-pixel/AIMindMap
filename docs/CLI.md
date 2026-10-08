@@ -31,6 +31,7 @@
 | `init` | init <项目> [--title 标题] |
 | `backlinks` | backlinks <项目> <id> [--json] |
 | `related` | related <项目> <id> [--json] [--depth 2] |
+| `ask` | ask <项目> <id> [--question "..."] [--kind explain|ask] [--json] [--timeout 秒] [--dry-run] |
 | `theme-layout` | theme-layout <项目> [--left a,b] [--right c,d] [--clear] |
 | `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] |
 | `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] |
@@ -145,6 +146,14 @@ node cli/mm-cli.js backlinks <项目> <id> [--json]
 
 ```
 node cli/mm-cli.js related <项目> <id> [--json] [--depth 2]
+```
+
+### ask
+
+向内嵌 DSH 提一个问题（走 `dsh headless` 一次性通道，stdout 即为答案）；自动补齐节点情境（项目/路径/正文/相关节点）；--dry-run 只打印将要发送的提示词与命令行、**不调用模型**
+
+```
+node cli/mm-cli.js ask <项目> <id> [--question "..."] [--kind explain|ask] [--json] [--timeout 秒] [--dry-run]
 ```
 
 ### theme-layout

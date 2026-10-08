@@ -14,6 +14,50 @@
 
 ## [Unreleased]
 
+### 功能 1（后端通道）：`ask` —— 向内嵌 DSH 提一个一次性问题（2026-10-08）
+
+**这是「解释 / 问问AI」两个按钮的后端**。界面还没做（下一步），但通道与提示词这一层先落地并已机械验证 ✓。
+
+**通道（运行包自带 help 的原文 + 实测）**：
+```
+dsh headless "run the tests"   → answer one task, print the result, and exit
+```
+- `headless` 是**内置 profile**（不落在 `$DSH_HOME/profiles` 里，所以不必也不能用 `--from-default-profile` 建它
+  —— 实测报错原文：`profile "headless" is shipped and cannot be a custom profile target`）；
+- 实测：`dsh headless "用不超过 10 个字回答：1+1 等于几？"` ⇒ 退出码 0、**4.4 s**、stdout **只有答案一行**
+  （无 banner / 无 token / 无噪音）✓；
+- 实测（真情境）：`node cli/mm-cli.js ask comnet tcp-handshake --kind explain` ⇒ **23.8 s** 得到一段
+  贴住该节点语境的解释（引用它的正文、上下游节点、三次握手/四次挥手/TIME_WAIT 的因果）✓；
+- ⇒ **一次性子进程**足够撑起第一版对话：不需要 web 服务、不需要 ACP/SSE，**不碰用户侧栏的会话写锁**（那套冲突全绕开）。
+  代价是每次一问一个新会话；多轮要 `--resume <session>`，属后续步。
+
+**新增**：
+- `src/dsh-ask.js`：纯函数（`buildAskPrompt` / `buildContextBlock` / `buildAskArgs` / `buildAskEnv`）
+  + 运行器（`spawn` 可注入 ⇒ 单测验参数与环境而不真起进程）。
+  **"AI 收到什么"只有这一处定义**：自动补齐 项目 / 工程根 / 节点 id / 树中路径 / 标签 / 正文（截断 1500 字）/
+  相关节点，并明说"不要寒暄、不要复述情境"；
+- `cli/commands/dsh-ask.js` + registry：`ask <项目> <id> [--question "…"] [--kind explain|ask] [--json] [--timeout 秒] [--dry-run]`。
+  **`--dry-run` 只打印将要发送的提示词与命令行、不调用模型** —— 让门禁能在**不烧额度、不联网**的前提下核对提示词，
+  也是使用者自查"为什么它答偏了"的第一入口；
+- **失败绝不当成功**：非 0 退出 / **退出码 0 但没有输出** / 超时 ⇒ 一律 `ok:false` 并带原因（"采不到真值 = 红"）。
+
+**过程里抓到的三个真缺陷**（都由"测量"而非"阅读"现形）：
+1. **`--dry-run` 静默失效**：CLI 把 `--dry-run` 解析成 `args.dryRun`（驼峰），我写成 `args['dry-run']`
+   ⇒ 标志被忽略、**真烧了一次模型调用**（本该 0.4 s 却跑了 23.3 s）✓ 已修 + 单测锁死
+   （桩掉 `askOnce` 断言 dry-run 下**一次都不调用**，并配一条"不带 dry-run 确实会调用"的对照）；
+2. **树中路径全空**：`ctx.tree.pathTo()` 返回的是 **id 数组**（不是节点对象），我按节点取 `.topic` ⇒ 提示词里
+   是「 /  /  / 」✗。（`--dry-run` 一眼看出；真跑时模型照样能答 ⇒ **只有断言提示词才抓得住** ✓）
+3. **工程根算错**：`dirname` 了两次得到 `…\projects` ✗ ⇒ 改为仓库根（单一真源）。
+
+**测试**：`tests/dsh-ask.test.js` **16 条**（提示词补齐/两种 kind 措辞/参数是一个 argv/环境只增不覆盖/
+非 0·空输出·超时·运行包缺失都不当成功/dry-run 契约）；
+`scripts/cli-integration.js` **+4 条**（197）：dry-run 不调模型且命令行形状正确、
+**情境三项都不能空**（就是能抓住缺陷 2 的那条）、kind=ask 缺问题 ⇒ 非 0、节点不存在 ⇒ 非 0 且点名原因。
+**判别力证明（实跑）**：把 `pathText` 清空 ⇒ 该断言报红 `(没有路径行)` ⇒ 撤销后 197/197 ✓。
+
+**顺带**：`docs/CLI.md` 重生成（50 → **51** 条命令）；**不加 MCP 工具** —— MCP 是给**外部** AI 用的，
+把"再问一个内嵌 DSH"暴露出去等于递归入口，没用还危险 ✗。
+
 ### 功能 2：关联节点可视化（"展示关联节点"按钮 + 缩放框住 + 高亮虚化 + 关系虚线 + 点线按鼠标位置开笔记）（2026-10-08）
 
 **入口**：节点详情的「关联笔记」区新增按钮 **🔗 展示关联节点**（**恒常出现** —— 一个节点可能没有关联笔记但**有链接**，那种情况一样能展示）。再点一次或按 **Esc** 退出。
