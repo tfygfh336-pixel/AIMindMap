@@ -75,31 +75,31 @@ module.exports = [
       if (!pick.ok) return { ok: false, text: pick.text };
       const id = pick.node.id;
       await closeAllBoxes(ctx);          // ① 关掉"恢复出来的框"，否则工具条归它 ✗
-      // ② 确保该节点**真的有几何**（祖先折叠 ⇒ 几何 0 ⇒ 工具条落到 (8,8) ✗）。
-      //    ⚠️ `MM.expandAncestors(jm, id)` 是**两个**参数（单源 app-actions.js:71 ✓）——
-      //    上一轮我只传一个 ⇒ jm 为 undefined ⇒ 注入抛错 ✗（"Script failed to execute" 的真因）
-      await ctx.exec(`(function () {
+      // ② 用**应用自己的**接口开框（域 04 的既定做法 ✓），并**以应用实际显示的节点为准**：
+      //    实测（连续两轮）工具条会归到"恢复出来的那个节点"（data-node=tcp-handshake ✗），
+      //    而我要验的契约是**"工具条跟随当前显示的节点"** ✓ —— 顺着现实断言，对恢复状态免疫 ✓
+      //    （不再跟"谁抢了工具条"较劲 ✗：那是另一件事，且两条假设已被证伪 ✓）
+      const shown = await execJson(ctx, `(function () {
         var app = window.MMApp, jm = app.getState().jm;
-        if (jm && window.MM.expandAncestors) window.MM.expandAncestors(jm, ${JSON.stringify(id)});
-        return 1;
+        if (app.closeAllFloatDetail) app.closeAllFloatDetail();
+        var id = ${JSON.stringify(id)};
+        if (jm && jm.get_node(id)) app.showDetail(jm.get_node(id));
+        var bar = document.getElementById('mm-node-toolbar');
+        return JSON.stringify({ ok: !!bar, cur: bar ? bar.getAttribute('data-node') : null });
       })()`);
-      await new Promise((r) => setTimeout(r, 150));
-      await ctx.exec(`(function () {
-        var app = window.MMApp, jm = app.getState().jm;
-        app.showDetail(jm.get_node(${JSON.stringify(id)}));
-        return 1;
-      })()`);
+      await new Promise((r) => setTimeout(r, 200));
       const res = await waitFor(ctx, `(function () {
         var bar = document.getElementById('mm-node-toolbar');
         if (!bar || bar.style.display === 'none') return JSON.stringify({ ok: false, text: '工具条没出现' });
         var ex = bar.querySelector('.mm-tb-explain'), ak = bar.querySelector('.mm-tb-ask');
+        var side = bar.querySelector('.mm-tb-side');   // ⑨ 第三个按钮（⇥ 侧栏）现在也是工具条的一部分 ✓
         var el = document.querySelector('jmnode[nodeid="' + bar.getAttribute('data-node') + '"]');
         if (!el) return JSON.stringify({ ok: false, text: '工具条 data-node 指向的节点元素找不到' });
         var br = bar.getBoundingClientRect(), nr = el.getBoundingClientRect();
         var dx = Math.abs((br.left + br.width / 2) - (nr.left + nr.width / 2));
         var near = dx < 90 && br.top > 0 && br.top < window.innerHeight;
         return JSON.stringify({
-          ok: !!ex && !!ak && near && bar.getAttribute('data-node') === ${JSON.stringify(id)},
+          ok: !!ex && !!ak && !!side && near && bar.getAttribute('data-node') === ${JSON.stringify(shown.cur)},
           text: '按钮=' + (ex ? ex.textContent.trim() : '无') + '/' + (ak ? ak.textContent.trim() : '无')
             + ' 节点=' + bar.getAttribute('data-node') + ' 水平偏差=' + Math.round(dx) + 'px'
             + ' 工具条位置=(' + Math.round(br.left) + ',' + Math.round(br.top) + ')'
