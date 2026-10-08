@@ -109,3 +109,36 @@
 | R8 | 快照漂移 | 本台账带清点时刻；并发编辑会让"改了什么"漂移 ⇒ 更新时一并改时刻 |
 | R9 | **开放**：`profiles\node_modules` 真实目录之谜 | 实测真实目录与 reparse 点混存且实例能启动，而迁移铁律说"放真实目录会起不来" ⇒ 需一次隔离实验，它决定新插件该写 profile 级还是 web 级 |
 | R10 | **开放**：两侧没有共同版本锚 | 建议 `dsh-home\.embedded-state.json`（上次 opId + 源指纹 + overrides 哈希）让下次迁移能**主动报出**"源变了 / 本地改过了" |
+
+## P6 会话标题：取证结论（2026-10-08，**不改内核**）
+
+**用户现象**：侧栏工作区历史里，会话要**点开那条记录**才会出现名字。
+
+**取证（读数据侧实况 ✓ 不猜）**：
+- 标题**确实存在**且**确实会生成**：`dsh-home/storages/session_projcache/sessions/<session-id>.json` 的
+  `record.rows.title` 里就是标题本身（实测 **8/8** 个会话都有，例如「我是谁」「TCP 连接管理讲解」），
+  同目录还有 `record.rows.titleInput`（保存用来生成标题的输入，含首条消息文本 ✓）。
+- **写入者**是内核插件 `@deepseek-ai/dsh-session-title`（`vendor/dsh/app/node_modules/@deepseek-ai/`）
+  —— 它把 `title` 与 `titleInput` 做成两个**会话投影**行 ✓。
+- 标题行的 `seq` 明显**晚于**首条消息（实测一例：title 在 seq=20，而 titleInput.first 在 seq=8）
+  ⇒ 它是**会话进行到一定阶段才生成**的 ✓ 而不是"会话一开始就有" ✓。
+
+**结论（含"升级会不会丢"）**：
+- 这是**内核行为**，不是本仓库代码、也不是注入层 ⇒ **不属于应用侧可改范围** ✓
+  ⇒ 按既定纪律**不 patch `vendor/dsh`** ✓（打了也一定在下次升级运行包时丢 ✗，而且 `dsh:maint -- verify` 会判红 ✗）。
+- 因此本项**不产生任何"升级会丢"的改动** ✓：台账里只留结论与复核方法 ✓。
+
+**复核命令（任何时候都能重跑，只读）**：
+```bash
+# 看标题是否存在（Windows：%APPDATA%\AI MindMap\dsh-home）
+node -e "const fs=require('fs'),p=process.argv[1];for(const f of fs.readdirSync(p)){const o=JSON.parse(fs.readFileSync(p+'/'+f,'utf8'));const r=(o.record&&o.record.rows)||{};console.log(f.slice(0,20), r.title? JSON.stringify(r.title.val) : '(无标题)');}" "<dsh-home>/storages/session_projcache/sessions"
+# 看谁在写这两个字段（应命中 dsh-session-title ✓）
+#   在 vendor/dsh/app/node_modules/@deepseek-ai 下搜 titleInput
+```
+
+**若仍要改善体验，可选的三条路（都需用户拍板 ✓ 我没有擅自做）**：
+1. **不动内核**：接受"新会话名字晚一点出现"（内核设计如此 ✓ 最稳 ✓）；
+2. **应用侧兜底**（我们自己的只读入口）：在 `mm-cli` 里加一条"列出会话及其标题"的命令 ✓
+   —— 只读 `session_projcache` ✓ 不写内核文件 ✓ 也不受升级影响 ✓；
+3. **写回数据侧**（风险最高 ✗）：由我们的代码在会话缺标题时**补写** `record.rows.title` ✗
+   —— 这属于"手工编辑生成物" ✗（本台账 §0 铁律 3 明确禁止 ✓），只应在用户明确要求且接受风险时做 ✓。
