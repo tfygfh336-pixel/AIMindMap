@@ -93,15 +93,36 @@ module.exports = [
         if (!bar || bar.style.display === 'none') return JSON.stringify({ ok: false, text: '工具条没出现' });
         var ex = bar.querySelector('.mm-tb-explain'), ak = bar.querySelector('.mm-tb-ask');
         var side = bar.querySelector('.mm-tb-side');   // ⑨ 第三个按钮（⇥ 侧栏）现在也是工具条的一部分 ✓
-        var el = document.querySelector('jmnode[nodeid="' + bar.getAttribute('data-node') + '"]');
-        if (!el) return JSON.stringify({ ok: false, text: '工具条 data-node 指向的节点元素找不到' });
-        var br = bar.getBoundingClientRect(), nr = el.getBoundingClientRect();
-        var dx = Math.abs((br.left + br.width / 2) - (nr.left + nr.width / 2));
-        var near = dx < 90 && br.top > 0 && br.top < window.innerHeight;
+        // ★ 契约变更（2026-10-09）：工具条**锚在详情框上**（不再是"贴节点"）⇒ 判据改成
+        //   "相对框的位置对得上 + 它真的点得到"。旧的 dx<90 且 br.top 在视口内 判的是"贴节点"，
+        //   换锚后必然要改；**按新契约改，不是放宽**（工具条在框下缘外侧，框很高时旧判据会假红 ✗）。
+        var boxes = Array.prototype.slice.call(document.querySelectorAll('.float-detail'));
+        var box = null;
+        for (var bi = 0; bi < boxes.length; bi++) {
+          var bq0 = boxes[bi].getBoundingClientRect();
+          if (boxes[bi].style.display !== 'none' && bq0.width > 40 && bq0.height > 40) { box = boxes[bi]; break; }
+        }
+        if (!box) return JSON.stringify({ ok: false, text: '没有可见的详情框（工具条应锚在它上面）' });
+        var br = bar.getBoundingClientRect(), bq = box.getBoundingClientRect();
+        var dx = Math.abs((br.left + br.width / 2) - (bq.left + bq.width / 2));
+        var dy = Math.round(br.top - bq.bottom);              // 正值 = 在框下方
+        var upGap = Math.round(bq.top - br.bottom);            // 正值 = 在框上方
+        var anchor = bar.getAttribute('data-anchor');
+        var place = bar.getAttribute('data-place');
+        // 三档都要**判得出来**：默认贴框下缘外侧（+6）；放不下就翻到上缘外侧（−6）；再放不下才夹进面板。
+        // 兜底不是放宽：兜底档要求它**真的落在面板内且点得到**（"看不见 = 没有" ✓）
+        var placedOk = (place === 'below' && dy === 6)
+          || (place === 'above' && upGap === 6)
+          || (place === 'clamp' && br.top >= 2 && br.bottom <= window.innerHeight - 2);
+        // 可见性**必须**用命中测试（rect 对 overflow 裁切是盲的 —— 见 37-域文件头与 ARCHITECTURE §4b）
+        var at = document.elementFromPoint(Math.round(br.left + br.width / 2), Math.round(br.top + br.height / 2));
+        var hitSelf = !!(at && bar.contains(at));
+        var near = anchor === 'box' && dx <= 3 && placedOk && hitSelf;
         return JSON.stringify({
           ok: !!ex && !!ak && !!side && near && bar.getAttribute('data-node') === ${JSON.stringify(shown.cur)},
           text: '按钮=' + (ex ? ex.textContent.trim() : '无') + '/' + (ak ? ak.textContent.trim() : '无')
-            + ' 节点=' + bar.getAttribute('data-node') + ' 水平偏差=' + Math.round(dx) + 'px'
+            + ' 节点=' + bar.getAttribute('data-node') + ' 锚=' + anchor + ' 档=' + place
+            + ' 条中心−框中心=' + Math.round(dx) + 'px 条顶−框底=' + dy + 'px 条底−框顶=' + upGap + 'px 命中=' + hitSelf
             + ' 工具条位置=(' + Math.round(br.left) + ',' + Math.round(br.top) + ')'
         });
       })()`);

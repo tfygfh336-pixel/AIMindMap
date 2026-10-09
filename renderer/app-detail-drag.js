@@ -98,7 +98,16 @@
     if (fdGlobalDragBound) return;   // 幂等：与 bindContainerControls 同规矩（防重复调用叠加监听）
     fdGlobalDragBound = true;
     document.addEventListener('mousemove', (e) => {
-      if (fdResize) { e.preventDefault(); applyFdResize(e); return; }
+      // ⚠️ 拖动/改大小**不经过 positionFdBox**（下面直接写 style.left/top），而逐帧看护在拖动期间
+      //    主动让位（fdStartWatch: `if (fdDrag || fdResize) return`）⇒ 卫星必须在这里同步一次，
+      //    否则它们停在原地不动 = 用户报过的"圆钮会浮动 / 工具条滞后" ✗。
+      //    同一批事件里更新 = 同一帧合成 ⇒ 相对坐标恒定 ✓（这是"框几何刚变过"的第三个触发时机）
+      if (fdResize) {
+        e.preventDefault();
+        applyFdResize(e);
+        if (MM.syncFdSatellites) MM.syncFdSatellites();
+        return;
+      }
       if (!fdDrag) return;
       if (e.clientX < 0 || e.clientY < 0
         || e.clientX > window.innerWidth || e.clientY > window.innerHeight) {
@@ -108,6 +117,7 @@
       e.preventDefault();
       fdDrag.box.el.style.left = Math.round(fdDrag.l + (e.clientX - fdDrag.x)) + 'px';
       fdDrag.box.el.style.top = Math.round(fdDrag.t + (e.clientY - fdDrag.y)) + 'px';
+      if (MM.syncFdSatellites) MM.syncFdSatellites();
     });
     document.addEventListener('mouseup', () => { fdEndResize(); fdEndDrag(); });
     // 真拖拽时指针移出窗口后浏览器可能不再派发 mousemove → 用 mouseout 兜底

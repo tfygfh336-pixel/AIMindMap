@@ -85,10 +85,15 @@
   }
 
   function closeFdBox(box) {
+    // 卫星（圆钮/工具条）与框是**同一生命周期**：框一消失，属于它的圆钮立刻收干净（不留残影 ——
+    // 用户验收口径"关框 ⇒ 两者都消失"）。判据仍是 fdSatellitePlan（不在这里另判一次 ✗）。
+    const boxId = box.el && box.el.dataset ? box.el.dataset.boxId : '';
+    if (boxId && MM.dropFdSatellites) MM.dropFdSatellites(boxId);
     if (box.el.parentElement) box.el.parentElement.removeChild(box.el);
     fdBoxes = fdBoxes.filter((b) => b !== box);
     hideFdImgTip();
     if (!fdBoxes.length) state.selectedNode = null;
+    syncFdSatellites();   // 框池变了 ⇒ 卫星同一批更新（工具条该收就收 ✓）
   }
 
   /** 关闭所有「未锁定」的框；已上小锁/屏幕锁的框保留（点空白、Esc 都不误关） */
@@ -170,8 +175,121 @@
         : '详情框：已解除锁定（回到跟随节点，会被下一个节点复用）');
   }
 
+  /* ================= 详情框的「卫星」：圆钮 + 悬浮工具条 =================
+   * 为什么它们**不放在框里**：圆钮必须落在框**外面**（用户 2026-10-08 第二批："不要在框内，
+   * 就放在边上，变成一个圆形按钮浮在节点详情左边"），而框是 `overflow:hidden`（style.css:261）
+   * ⇒ 放框里会被裁掉。实测（`.review/20261009-圆钮工具栏绑定/probe-clip.js`，同一读数跑两种 CSS）：
+   *   · `getBoundingClientRect()` 说"在框外、在面板内"（现有断言全绿 ✗）；
+   *   · 可 `elementFromPoint(圆心)` 命中普通 DIV（**不是按钮**）、真帧里圆钮矩形内只有 81 个非白像素
+   *     （放到框外可见时是 768）⇒ **看不见也点不到**。
+   * 所以：两者都放**与框同级**的浮层 `#fd-satellite-layer`（本文件创建），
+   * 位置**只从框的 `getBoundingClientRect()` 推导**，刷新时机与框**同一批事件**。
+   *
+   * 纪律（本工程硬规矩：一份事实一处实现）：
+   *   · 显隐判据**只有** fdSatellitePlan() 一处；
+   *   · 位置计算**只有** syncFdSatellites() 一处（它再分派给各自的 owner：圆钮 → app-assoc.js、
+   *     工具条 → app-ask.js）；触发时机**只有**三处，且都是"框几何刚变过"的同一批事件：
+   *     positionFdBox / syncFdBoxes / 拖动·改大小 mousemove（窗口 resize 汇入 syncFdBoxes）。
+   *   别在别处再判一次"该不该显示" ✗（改前这套判据散在 5 处，正是漂移的来源）。
+   */
+  const SAT_LAYER_ID = 'fd-satellite-layer';
+
+  /** 卫星浮层：与详情框同级（`#mindmap-container` 的子元素）⇒ **不受框的 overflow 影响**。
+   *  ⚠️ 它自己必须 `pointer-events:none`（样式在 style.css），否则整块画布点不动 ✗ */
+  function fdSatLayer() {
+    const container = document.getElementById('mindmap-container');
+    if (!container) return null;
+    let el = document.getElementById(SAT_LAYER_ID);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = SAT_LAYER_ID;
+      // 放最后 ⇒ 与框同层但排在框之后（再加 CSS 的 z-index ⇒ 稳定压在框上）
+      container.appendChild(el);
+    }
+    return el;
+  }
+
+  /** **唯一判据**：这个框的卫星该不该出现。
+   *  · 框不可见 ⇒ 两个都不出现；
+   *  · 圆钮：节点详情框恒有（与"有没有关联数据"无关 —— 2026-10-08 的既定契约 ✓）；
+   *  · 悬浮工具条：**大小锁（FD_LOCK.SCREEN）时关闭** ← 用户原话「大小锁的时候要关闭悬浮工具栏，
+   *    但是保留视图按钮」（圆钮照样保留，位置/尺寸/可点性逐字不变 ✓）。
+   *  返回 reason 供断言与排查（**不静默**：判据的结果要能读出来）。 */
+  function fdSatellitePlan(box) {
+    const el = box && box.el;
+    const visible = !!(el && el.parentElement && el.style.display !== 'none');
+    if (!visible) return { visible: false, round: false, toolbar: false, locked: false, reason: 'box-hidden' };
+    const locked = box.lock === FD_LOCK.SCREEN;
+    return {
+      visible: true,
+      round: box.kind === 'node',
+      toolbar: box.kind === 'node' && !locked,
+      locked: locked,
+      reason: locked ? 'size-lock' : 'ok'
+    };
+  }
+
+  /** 框在**卫星浮层坐标系**里的几何帧 —— 卫星位置的唯一来源。
+   *  为什么不用 `offsetLeft/offsetTop`：框带 `transform: scale(S)`，布局值不含缩放；
+   *  `getBoundingClientRect()` 是**显示**矩形（含缩放）⇒ 与"看起来在哪"一致 ✓ */
+  function fdBoxFrame(box) {
+    const layer = fdSatLayer();
+    const el = box && box.el;
+    if (!layer || !el || !el.parentElement) return null;
+    const lr = layer.getBoundingClientRect();
+    const br = el.getBoundingClientRect();
+    return { x: br.left - lr.left, y: br.top - lr.top, w: br.width, h: br.height, s: fdZoom() || 1 };
+  }
+
+  /** 当前"活着"的节点详情框（最上面的那个）—— 工具条据此认锚（**框池是唯一真源**）。
+   *  取 z-index 最大者；并列时取后加入的（bringFdBoxToFront 会给活动框 51）✓ */
+  function fdPrimaryNodeBox() {
+    let best = null, bestZ = -1;
+    fdBoxes.forEach((box) => {
+      if (box.kind !== 'node' || !box.node) return;
+      if (!fdSatellitePlan(box).visible) return;
+      const z = parseInt((box.el.style.zIndex || '0'), 10) || 0;
+      if (z >= bestZ) { bestZ = z; best = box; }
+    });
+    return best;
+  }
+
+  /** **唯一刷新口**：算一遍所有框的 `{plan, frame}`，再交给各卫星的 owner 落位。
+   *  返回读数（冒烟断言可直接读它，不必猜 DOM）。
+   *  ⚠️ 判据走 `MM.fdSatellitePlan`（不是直接引用本文件的局部名）——**这是刻意的接缝**：
+   *  否则"判据只有一处"只在源码里成立，**外部无法替换它做判别力注入**（实测踩过：按局部名调用时，
+   *  注入 `MM.fdSatellitePlan` 完全无效 ⇒ 三条注入"绿着通过"= 门禁在空转 ✗ 见 37-域文件头）。 */
+  function syncFdSatellites() {
+    const layer = fdSatLayer();
+    if (!layer) return null;
+    const frames = fdBoxes.slice().map((box) => {
+      const plan = MM.fdSatellitePlan(box);
+      return { box: box, plan: plan, frame: plan.round ? fdBoxFrame(box) : null };
+    });
+    const lr = layer.getBoundingClientRect();
+    const view = { w: lr.width, h: lr.height };
+    if (MM.layoutRelShowBtn) MM.layoutRelShowBtn(layer, frames, view);       // 圆钮（app-assoc.js 拥有）
+    if (MM.layoutNodeToolbar) MM.layoutNodeToolbar(layer, frames, view);     // 工具条（app-ask.js 拥有）
+    return { frames: frames, view: view, count: frames.length };
+  }
+
+  MM.fdSatLayer = fdSatLayer;
+  MM.fdSatellitePlan = fdSatellitePlan;
+  MM.fdBoxFrame = fdBoxFrame;
+  MM.fdPrimaryNodeBox = fdPrimaryNodeBox;
+  MM.syncFdSatellites = syncFdSatellites;
+
+  /** 事件是不是落在**卫星浮层**上（圆钮/悬浮工具条）。
+   *  为什么要它：圆钮原先在 `.float-detail` 里 ⇒ 各处"点别处"的守卫只写 `.float-detail` 就够了；
+   *  搬进浮层后那些守卫会**集体失效** —— 实测后果：点一下圆钮会顺手把未锁定的详情框关掉 ✗。
+   *  **一份事实一处实现**：调用点各自写 `closest('#fd-satellite-layer')` 就是第二份表达，别那么干 ✗ */
+  function fdIsSatelliteTarget(target) {
+    return !!(target && target.closest && target.closest('#' + SAT_LAYER_ID));
+  }
+  MM.fdIsSatelliteTarget = fdIsSatelliteTarget;
+
   /** 定位单个框：screen=纹丝不动（大小也冻结）；map=锚点−滚动；follow=挂在节点框下面 */
-  function positionFdBox(box) {
+  function positionFdBoxInner(box) {
     const el = box.el;
     if (!el || el.style.display === 'none') return;
     // 大锁：位置完全不动（大小由 syncFdBoxes 一并冻结）
@@ -203,6 +321,13 @@
     el.style.top = Math.round(top) + 'px';
   }
 
+  /** 对外的 positionFdBox：**几何一变就同步卫星**（触发时机之一，见文件头）。
+   *  内部原函数改名 positionFdBoxInner；既有调用点全部仍走这个壳 ⇒ 一处不漏 ✓ */
+  function positionFdBox(box) {
+    positionFdBoxInner(box);
+    syncFdSatellites();
+  }
+
   /** 同步所有框的缩放比例与位置（导图缩放/平移/节点移动/窗口缩放后调用）。
    *  大锁（screen）的框**位置与大小都冻结**，完全不动。 */
   function syncFdBoxes() {
@@ -212,8 +337,9 @@
       if (!el || el.style.display === 'none') return;
       if (box.lock === FD_LOCK.SCREEN) return; // 大锁：大小 + 位置都不再变化
       el.style.transform = S === 1 ? '' : 'scale(' + S + ')';
-      positionFdBox(box);
+      positionFdBoxInner(box);
     });
+    syncFdSatellites();   // 触发时机之二：视图变换（缩放/平移/窗口 resize）后与框同一批更新 ✓
   }
 
   function positionFloatDetail() { syncFdBoxes(); }

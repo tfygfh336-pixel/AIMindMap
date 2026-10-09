@@ -566,10 +566,21 @@ jmnode.mm-rel-dim { opacity: 0.32; }
 .rele-status { padding: 0 8px 4px; color: #4e5969; font-size: 11.5px; }
 .rele-status:empty { display: none; }
 
-/* ---------------- 节点悬浮工具条 + AI 问答浮窗（app-ask.js，功能 1） ----------------
- * 工具条是 **position:fixed 的顶层覆盖物**：不放进画布变换层，免得被缩放/裁剪 ✗ */
+/* ---------------- 卫星浮层 + 节点悬浮工具条 + AI 问答浮窗（app-ask.js，功能 1） ----------------
+ * 详情框的两颗"卫星"（圆钮 + 悬浮工具条）都住在**与框同级**的浮层里：
+ *   · 为什么不放框里：圆钮必须落在框外左侧，而框是 overflow:hidden ⇒ 放框里会被**裁掉**
+ *     （实测：getBoundingClientRect 报"在框外可见"，可 elementFromPoint 点不到、真帧 0 像素 ✗）；
+ *   · 为什么不放 body 的 fixed 顶层：那样位置只能靠 JS 追、且容易只追一次（用户报过"浮动/滞后"）；
+ *     放在与框同级的浮层里、由框的 frame 直接算出 left/top ⇒ 与框同一坐标系、同一批刷新 ✓。
+ * 不进 fdViewEls()：它是"详情框的卫星"，不是图的一部分，**不该跟着 translate+scale 走** ✓
+ * ⚠️ 浮层自己必须 pointer-events:none（否则整块画布点不动 ✗），由子元素各自打开 ✓ */
+#fd-satellite-layer {
+  position: absolute; left: 0; top: 0; right: 0; bottom: 0;
+  z-index: 60; pointer-events: none;
+}
+#fd-satellite-layer > * { pointer-events: auto; }
 .mm-tb {
-  display: none; position: fixed; z-index: 60; gap: 4px; padding: 3px;
+  display: none; position: absolute; z-index: 60; gap: 4px; padding: 3px;
   background: #fff; border: 1px solid #d6e4ff; border-radius: 8px;
   box-shadow: 0 4px 14px rgba(31, 35, 41, 0.14);
 }
@@ -647,17 +658,22 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   fill: none; stroke: transparent; stroke-width: 14;
   pointer-events: stroke; cursor: pointer;
 }
-/* ⑨ 圆形「关联节点」按钮：浮在**详情框左缘外侧** ✓（用户 2026-10-08 第二批："不要在框内，就放在边上，变成一个圆形按钮浮在节点详情左边"）。左边空间不够（面板 overflow:hidden 会裁掉）时加 .is-inside 退回框内左缘 ✓ —— 判定用实测矩形（MM.placeRelShowBtn ✓），框一动就重判 ✓。 */
+/* ⑨ 圆形「关联节点」按钮：**详情框的卫星**（挂 #fd-satellite-layer，与框同级）——
+ * 用户 2026-10-08 第二批："不要在框内，就放在边上，变成一个圆形按钮浮在节点详情左边"。
+ * ⚠️ 位置（left/top/width/height/transform）**一律由 JS 从框的几何算出**（MM.layoutRelShowBtn，
+ * 由 MM.syncFdSatellites 一处调用）—— **这里不再写 left/top**：先前写在框里用 left:-54px，
+ * 会被框自己的 overflow:hidden 裁掉，而 getBoundingClientRect() 看不出来（真帧 0 像素、点不到 ✗）。
+ * 尺寸随框同比例缩放（transform: scale(s)，与 .float-detail 同一机制）。 */
 .rel-show-btn.rel-show-btn-round {
-  position: absolute; left: -54px; top: 14px; width: 44px; height: 44px; margin: 0; padding: 0;
+  position: absolute; width: 44px; height: 44px; margin: 0; padding: 0;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%; border: 1px dashed #9db8ff; background: #fff; color: #2b5dd6;
   font-size: 20px; line-height: 1; box-shadow: 0 2px 10px rgba(20, 40, 90, .18);
+  transform-origin: 0 0;
 }
 .rel-show-btn.rel-show-btn-round:hover { background: #f0f5ff; border-style: solid; }
 .rel-show-btn.rel-show-btn-round.is-on { background: #2b5dd6; border-color: #2b5dd6; color: #fff; }
-.rel-show-btn.rel-show-btn-round.is-right { left: auto; right: -54px; }   /* 左边没空间时镜像到右缘外侧 ✓ 永不进框内 ✓ */
-/* 贴面板左缘时伸不出去（容器 overflow:hidden）⇒ **镜像到右缘外侧** ✓（绝不进框内 ✗ 会遮住内容）*/
+/* .is-right 现在只是**语义标记**（"已镜像到右缘外侧"，断言/排查读它）；横向位置一律由 JS 写 left ✓ */
 
 
 

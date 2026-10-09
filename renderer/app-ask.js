@@ -66,7 +66,11 @@
       // ⑨ 把所选节点的上下文**直接送进右侧 DSH 侧栏输入框**（不代替你发送 ✗ —— 那边按了发送才进它的会话历史 ✓）
       + '<button type="button" class="mm-tb-btn mm-tb-side" data-act="side"'
       + ' title="把所选节点的上下文送进右侧 DSH 侧栏输入框（到那边按发送；发了就进它的会话历史）">⇥ 侧栏</button>';
-    document.body.appendChild(barEl);
+    // ⚠️ 挂在**与详情框同级**的卫星浮层里（不是 document.body 的 fixed 顶层）：位置才能由框的几何
+    //    推导，且拖动框时与框同一次合成 ⇒ 零滞后（"用户报过浮动"那条教训的解法 ✓）。
+    //    拿不到浮层（没有打开的项目/没有面板）才退回 body —— **不静默**：data-anchor 会写出来 ✓
+    const satLayer = MM.fdSatLayer ? MM.fdSatLayer() : null;
+    (satLayer || document.body).appendChild(barEl);
     barEl.addEventListener('click', (e) => {
       const btn = e.target.closest ? e.target.closest('.mm-tb-btn') : null;
       if (!btn || !curNodes.length) return;
@@ -84,57 +88,143 @@
     return barEl;
   }
 
-  /** 工具条当前作用的**节点集合**：单节点详情 ⇒ [该节点]；有选区 ⇒ 整个选区（④"把所有被框选的都给 AI"✓） */
+  /** 工具条当前作用的**节点集合**（**唯一判据**；改前它的显隐散在 5 处 ✗）：
+   *   ① 有选区 ⇒ 整个选区（④"把所有被框选的都给 AI" ✓，用**原始命中集**未裁剪 ✓）；
+   *   ② 否则**以框池为准**：当前最上面的节点详情框挂的是谁就是谁 —— 这正是"和节点详情严格绑定"：
+   *      框一出现它就有目标、框一关目标就空（自动收起 ✓），于是不再需要包 MM.showDetail /
+   *      MM.closeFdBox 那两条猴子补丁 ✗；
+   *   ③ 再没有 ⇒ 用显式指定的目标（MM.showNodeToolbar(id) 这条既有 API；它只在**没有可见节点
+   *      详情框**时生效 ⇒ 不会出现"过期的显式目标压过真实框"这种漂移 ✓）。 */
   function barTargets() {
     if (MM.hasSelection && MM.hasSelection()) {
-      // ④ 用**原始命中集**（未裁剪）：用户框住几个，AI 就看几个 ✓
       const raw = MM.getSelectionRaw ? MM.getSelectionRaw() : (MM.getSelection ? MM.getSelection() : []);
       return raw.filter(Boolean);
     }
-    return curNodeId ? [curNodeId] : [];
+    const box = MM.fdPrimaryNodeBox ? MM.fdPrimaryNodeBox() : null;
+    if (box && box.node) return [box.node.id];
+    return forcedTargets ? forcedTargets.slice() : [];
   }
+
+  /** 显式目标（`MM.showNodeToolbar(id)` 设置）。为什么需要：既有 API 与冒烟会在**没有详情框**时
+   *  直接点它（scripts/smoke/26-ai-ask.js 的「⇥ 侧栏」那条）。hideBar() 会清掉它 ✓ */
+  let forcedTargets = null;
 
   /** 显示工具条。
    *  · 单节点：贴在该节点上方 ✓
    *  · **有选区（框选/Ctrl+多选）**：贴在选区**外接矩形**上方，按钮上显示节点数 ✓
    *    （用户反馈④：框选之后就想要"把这些都给 AI 看"，所以这里**不再**回避选区 ✗→✓） */
+  /** 显式指定工具条的目标（既有 API）。**只记目标**，显隐与位置一律由唯一的 layoutNodeToolbar 算 ✓ */
   function showBarFor(nodeId) {
-    const sel = barTargets();
-    const ids = sel.length ? sel.filter(Boolean) : (nodeId ? [nodeId] : []);
+    forcedTargets = nodeId ? [nodeId] : null;
+    return syncNodeToolbarNow();
+  }
+
+  /** 立即按唯一判据重算一次（薄壳：真正的实现在 layoutNodeToolbar，由 MM.syncFdSatellites 调用） */
+  function syncNodeToolbarNow() {
+    if (MM.syncFdSatellites) MM.syncFdSatellites();
+    return lastBarPos;
+  }
+
+  /** **工具条落位的唯一实现**（由 MM.syncFdSatellites 调用；别在别处再算一遍 ✗）。
+   *  两种锚，规则不同，但都从**同一批几何**推导：
+   *   ① **框锚**（有节点详情框、且未上大小锁）：贴框**下缘外侧**、水平居中于框 ——
+   *      位置是框 frame 的纯函数 ⇒ 拖动框时相对坐标恒定（"不许浮动或滞后"✓）。
+   *      为什么放下方而不是上方：框出现在"节点下方 +8px"处，放上方会**整个盖住节点** ✗
+   *      （节点底边 = 框顶边 − 8，而工具条约 30px 高 ⇒ 会压住节点 22px）；下方是空画布 ✓。
+   *      **不做上下翻转 / 不夹取** —— 本工程已有实测教训"翻转 ⇒ 上下区间跳"（见 app-detail.js
+   *      positionFdBox 的注释）；框移出视野时由面板 overflow:hidden 与框**同语义**地一起裁掉 ✓。
+   *   ② **节点锚**（只有选区、没有详情框）：沿用原规则（贴选区外接矩形上方 + 夹进视口），
+   *      仍走既有的纯函数 computeBarPos（单测覆盖不变 ✓）—— 这是它的"各自规则"，
+   *      scripts/smoke/29-multiselect.js ④ 明确要求"有选区时工具条必须出现并写明整批"✓。
+   *  大小锁 ⇒ 目标框的 plan.toolbar=false ⇒ **收起工具条**（圆钮不受影响，由 layoutRelShowBtn 管 ✓）。 */
+  function layoutNodeToolbar(layer, frames, view) {
+    const list = frames || [];
+    const bar = ensureBar();
+    const ids = barTargets();
     if (!ids.length) { hideBar(); return null; }
     curNodeId = ids.length === 1 ? ids[0] : null;
     curNodes = ids.slice();
-    const bar = ensureBar();
-    const rects = ids.map((id) => {
-      const el = nodeEl(id);
-      return el ? el.getBoundingClientRect() : null;
-    }).filter(Boolean);
-    if (!rects.length) { hideBar(); return null; }
-    const box = rects.reduce((a, r) => ({
-      left: Math.min(a.left, r.left), top: Math.min(a.top, r.top),
-      right: Math.max(a.right, r.right), bottom: Math.max(a.bottom, r.bottom),
-      width: 0, height: 0
-    }), { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
-    bar.style.display = 'flex';
-    const explain = bar.querySelector('.mm-tb-explain'), ask = bar.querySelector('.mm-tb-ask');
     const n = ids.length;
+    let host = null;
+    if (curNodeId) {
+      for (let i = 0; i < list.length; i++) {
+        const f = list[i];
+        if (f.box && f.box.kind === 'node' && f.box.node && f.box.node.id === curNodeId) { host = f; break; }
+      }
+      if (host && !host.plan.toolbar) { hideBar(); return null; }   // ★ 大小锁：关工具栏（保留圆钮）
+    }
+    const explain = bar.querySelector('.mm-tb-explain'), ask = bar.querySelector('.mm-tb-ask');
     if (explain) explain.textContent = n > 1 ? ('💡 解释 ' + n + ' 个') : '💡 解释';
     if (ask) ask.textContent = n > 1 ? ('💬 问这 ' + n + ' 个') : '💬 问问AI';
+    bar.style.display = 'flex';
+    // ⚠️ 必须先显示再量 offsetWidth（display:none 时量到 0，兜底值会让位置偏 ✗）
     const bw = bar.offsetWidth || 150, bh = bar.offsetHeight || 30;
-    const pos = computeBarPos({ left: box.left, top: box.top, right: box.right, bottom: box.bottom,
-      width: box.right - box.left, height: box.bottom - box.top },
-      bw, bh, { w: window.innerWidth, h: window.innerHeight });
+    let pos;
+    if (host && host.frame) {
+      const fr = host.frame;
+      // ★ 贴框**下缘外侧**、水平居中于框；**放不下就翻到框上缘外侧**，再放不下才夹进面板。
+      //   为什么必须有兜底：框可以很高（实测内容多的节点框底到 1025px，而面板只有 795px）⇒
+      //   "只放下方"会把工具条推到面板外被裁掉 = **看不见**（与圆钮那个真 bug 同一类损害 ✗）。
+      //   为什么默认放下方：框出现在"节点下方 +8px"处，放上方会**整个盖住节点** ✗
+      //   （节点底边 = 框顶边 − 8，而工具条约 30px 高 ⇒ 会压住节点）。
+      //   为什么默认档不夹取：本工程已有实测教训"翻转 ⇒ 上下区间跳"（见 app-detail.js 的 positionFdBox），
+      //   故**只有真的放不下时才翻**，并把档位写进 data-place（断言读它 ⇒ 不静默 ✗）。
+      const wantLeft = Math.round(fr.x + fr.w / 2 - bw / 2);
+      const below = Math.round(fr.y + fr.h + 6);
+      const above = Math.round(fr.y - bh - 6);
+      const viewH = (view && view.h) || window.innerHeight;
+      const viewW = (view && view.w) || window.innerWidth;
+      let place;
+      if (below + bh <= viewH - 4) { pos = { left: wantLeft, top: below }; place = 'below'; }
+      else if (above >= 4) { pos = { left: wantLeft, top: above }; place = 'above'; }
+      else {
+        // 上下都放不下（框比面板还高）⇒ 夹进面板（宁可压住框边，也不能看不见 ✓）
+        pos = { left: wantLeft, top: Math.max(4, Math.min(below, viewH - bh - 4)) };
+        place = 'clamp';
+      }
+      // 水平方向同样不许跑出面板（夹取只在这最后一档做，免得破坏"相对坐标恒定"）
+      if (pos.left < 4) pos.left = 4;
+      if (pos.left + bw > viewW - 4) pos.left = Math.max(4, viewW - bw - 4);
+      bar.setAttribute('data-place', place);
+      bar.setAttribute('data-anchor', 'box');
+      bar.setAttribute('data-anchor-box', (host.box.el && host.box.el.dataset.boxId) || '');
+    } else {
+      const lr = layer.getBoundingClientRect();
+      const rects = ids.map((id) => {
+        const el = nodeEl(id);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { left: r.left - lr.left, top: r.top - lr.top, right: r.right - lr.left, bottom: r.bottom - lr.top };
+      }).filter(Boolean);
+      if (!rects.length) { hideBar(); return null; }
+      const u = rects.reduce((a, r) => ({
+        left: Math.min(a.left, r.left), top: Math.min(a.top, r.top),
+        right: Math.max(a.right, r.right), bottom: Math.max(a.bottom, r.bottom)
+      }), { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
+      pos = computeBarPos({ left: u.left, top: u.top, right: u.right, bottom: u.bottom,
+        width: u.right - u.left, height: u.bottom - u.top },
+        bw, bh, { w: view ? view.w : window.innerWidth, h: view ? view.h : window.innerHeight });
+      bar.setAttribute('data-anchor', 'nodes');
+      bar.removeAttribute('data-anchor-box');
+    }
     bar.style.left = pos.left + 'px';
     bar.style.top = pos.top + 'px';
     bar.setAttribute('data-node', ids.join(','));
     bar.setAttribute('data-count', String(n));
+    lastBarPos = pos;
     return pos;
   }
+  let lastBarPos = null;
 
+  /** 唯一的"收起"原语。**同时清掉显式目标**（否则收起之后下一次同步又把它拉回来 ✗）。 */
   function hideBar() {
-    if (barEl) barEl.style.display = 'none';
+    if (barEl) {
+      barEl.style.display = 'none';
+      barEl.setAttribute('data-anchor', 'off');
+    }
     curNodeId = null;
     curNodes = [];
+    forcedTargets = null;
     return true;
   }
 
@@ -376,6 +466,8 @@
   MM.sendNodesToSidebar = sendNodesToSidebar;   // ⑨ 供拖拽收尾复用（app-view 的树拖动松手处 ✓）
   MM.hideNodeToolbar = hideBar;
   MM.isNodeToolbarVisible = isBarVisible;
+  MM.layoutNodeToolbar = layoutNodeToolbar;     // 工具条落位的**唯一实现**（MM.syncFdSatellites 调它）
+  MM.syncNodeToolbarNow = syncNodeToolbarNow;   // 薄壳：立即按唯一判据重算一次
   MM.computeBarPos = computeBarPos;          // 纯几何（单测）
   MM.showAskBox = showAskBox;
   MM.renderAskPage = renderAskPage;
@@ -387,28 +479,13 @@
    * ⇒ 包住这一个入口就覆盖了所有"选中"路径（不必去每个调用点加代码，那种做法必漏 ✗）。
    * 关框同理包 `MM.closeFdBox`（工具条不该在节点已取消选中后还杵着）。
    * ⚠️ 包之前先存原函数，包之后**必须**把返回值原样透传（有调用方依赖它的返回值）。 */
-  const origShowDetail = MM.showDetail;
-  if (origShowDetail) {
-    MM.showDetail = function (node) {
-      const r = origShowDetail.apply(this, arguments);
-      try { if (node && node.id) showBarFor(node.id); } catch (e) { /* 工具条失败不该影响详情框 */ }
-      return r;
-    };
-  }
-  const origCloseFdBox = MM.closeFdBox;
-  if (origCloseFdBox) {
-    MM.closeFdBox = function (box) {
-      const r = origCloseFdBox.apply(this, arguments);
-      try {
-        // 关掉的是**当前工具条对应**的节点、或所有详情框都关了 ⇒ 收起工具条。
-        // ⚠️ AI 问答框（kind==='ask'）**不算**：它关掉不该连带收起工具条（用户还要继续点「解释」✓）
-        const stillOpen = (MM.getFloatDetailState ? MM.getFloatDetailState().boxes : 0) > 0;
-        if (!stillOpen) hideBar();
-        else if (box && box.kind !== 'ask' && box.node && curNodeId && box.node.id === curNodeId) hideBar();
-      } catch (e) { /* 同上 */ }
-      return r;
-    };
-  }
+  /* 改前这里是**两条猴子补丁**（包 MM.showDetail 显示、包 MM.closeFdBox 隐藏）—— 那正是
+   * "同一判据两处表达"：只包住"开框那一刻"，于是拖动框、改大小、切节点、关框之后它都停在原地
+   * （用户报的"浮动/滞后"）。现在**不再包任何东西**：
+   *   · 目标由框池推导（见 barTargets ②）；显隐与位置由唯一的 layoutNodeToolbar 算；
+   *   · 触发时机与框同一批事件：app-detail.js 的 MM.syncFdSatellites 会在 positionFdBox /
+   *     syncFdBoxes / 拖动·改大小 mousemove 三处调用（窗口 resize 汇入 syncFdBoxes）✓。
+   * ⇒ 开框、切节点、拖动、缩放、关框**全部自动跟上**，没有需要记得去打的补丁 ✓ */
 
   /* ⑧ 点击**其它地方** ⇒ 关掉 AI 浮窗（并收起工具条）。用户原话：
    *    "应该是点击其他地方之后那个悬浮窗就消失了而不是像现在这样一直显示" ✓
@@ -423,7 +500,11 @@
   document.addEventListener('mousedown', (e) => {
     const t = e.target;
     if (!t) return;
-    if (t.closest && (t.closest('#mm-node-toolbar') || t.closest('.fd-ask-box'))) return;
+    // 工具条自己 / AI 浮窗内部 / **卫星浮层里的圆钮** ⇒ 都不算"点别处"
+    //（点圆钮不能先把工具条收掉；浮层是 pointer-events:none，命中的只会是它里面的元素 ✓）
+    // ⚠️ 这里**故意不含** `.float-detail`：点"节点详情框"本来就该关掉 AI 浮窗（既有语义 ✓）
+    if (t.closest && (t.closest('#mm-node-toolbar') || t.closest('.fd-ask-box')
+      || (MM.fdIsSatelliteTarget && MM.fdIsSatelliteTarget(t)))) return;
     if (!askBoxes.some((b) => b.el && b.el.parentElement)) {
       if (isBarVisible()) hideBar();     // 只开着的工具条：点别处也收起 ✓
       return;

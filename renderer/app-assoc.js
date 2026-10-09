@@ -167,14 +167,21 @@
    *  与关联数据**无关** ⇒ 不放在 assoc 查询回调里（那正是「消失」与「无关联就没有」的真因 ✗）。 */
   function refreshRelShowBtn(boxEl, node) {
     if (!boxEl) return null;
-    let btn = boxEl.querySelector('.rel-show-btn');
-    let created = false;
+    // ⚠️ 圆钮**不是**框的子元素：框是 overflow:hidden，而圆钮必须落在框外左侧 ⇒ 放框里会被**裁掉**
+    //    （实测：getBoundingClientRect 报"在框外可见"、断言全绿，可 elementFromPoint 点不到、
+    //     真帧里 0 像素。见 .review/20261009-圆钮工具栏绑定/probe-clip.js 与 shots/）。
+    //    它挂在**与框同级**的卫星浮层里，用 data-fd-box 与框一一对应 ⇒ 框一消失就由
+    //    MM.dropFdSatellites 收掉（同生命周期 ✓），位置由 MM.layoutRelShowBtn 从框的 frame 算出 ✓。
+    const layer = MM.fdSatLayer ? MM.fdSatLayer() : null;
+    if (!layer) return null;
+    const boxId = (boxEl.dataset && boxEl.dataset.boxId) || '';
+    let btn = boxId ? layer.querySelector('.rel-show-btn[data-fd-box="' + boxId + '"]') : null;
     if (!btn) {
       btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'rel-show-btn rel-show-btn-round';
-      created = true;
-      boxEl.appendChild(btn);
+      if (boxId) btn.setAttribute('data-fd-box', boxId);
+      layer.appendChild(btn);
     }
     btn.setAttribute('data-rel-node', node && node.id ? node.id : '');
     btn.innerHTML = '<span class="rsb-icon">🔗</span>';
@@ -196,34 +203,105 @@
           MM.showRelated(id2);
         }
         const on = !!(MM.isRelatedActive && MM.isRelatedActive());
-        (MM.fdPanel ? MM.fdPanel() : document).querySelectorAll('.rel-show-btn').forEach((b) => b.classList.toggle('is-on', on));
+        // ⚠️ 圆钮现在住在**卫星浮层**里（与 MM.fdPanel() 返回的 e_panel **同级**，不是它的后代 ✗）
+        //    ⇒ 必须按浮层找；继续用 fdPanel() 会一个都找不到（所有圆钮的 is-on 都刷不到 ✗）
+        (MM.fdSatLayer ? MM.fdSatLayer() : document).querySelectorAll('.rel-show-btn')
+          .forEach((b) => b.classList.toggle('is-on', on));
       });
     }
-    // 位置**只在新建时定一次** ✓（用户 2026-10-09："应该和节点详情一起渲染、不要浮动"）
-    // 之后它就是框的子元素，跟着框走 ✓；拖动中不再重判（旧版每次 style 变化都重判 ⇒ 贴边就来回跳 ✗）
-    if (created && MM.placeRelShowBtn) {
-      MM.placeRelShowBtn(btn, boxEl);
-      if (!window.__relBtnResizeBound) {
-        window.__relBtnResizeBound = true;
-        window.addEventListener('resize', function () {
-          var b3 = document.querySelector('.float-detail .rel-show-btn');
-          var owner = b3 && b3.closest ? b3.closest('.float-detail') : null;
-          if (b3 && owner && MM.placeRelShowBtn) MM.placeRelShowBtn(b3, owner);
-        });
-      }
-    }
-    // 框一动（拖动/缩放改 style）就重判贴哪边 —— 否则贴到面板边上会被 overflow:hidden 裁掉 ✗
-    if (!boxEl.__relBtnObserved && window.MutationObserver) {
-      boxEl.__relBtnObserved = true;
-      try {
-        new MutationObserver(function () {
-          var b2 = boxEl.querySelector('.rel-show-btn');
-          if (b2 && MM.placeRelShowBtn) MM.placeRelShowBtn(b2, boxEl);
-        }).observe(boxEl, { attributes: true, attributeFilter: ['style'] });
-      } catch (e0) { /* 观察器建不起来不影响主流程 ✓ */ }
-    }
+    // 位置**不再"新建时定一次"**（那正是"浮动/滞后"的来源 ✗）：每次 MM.syncFdSatellites 都按框的
+    // 当前几何重算一次，与框同一批事件 ⇒ 开框、切节点、拖动、缩放、上锁全都跟上 ✓
+    if (MM.syncFdSatellites) MM.syncFdSatellites();
     return btn;
   }
+
+  /** 取某个框的那颗圆钮（圆钮在卫星浮层里，不在框里 ⇒ 选择器必须经它；冒烟与内部都走这里） */
+  function fdRelShowBtnOf(boxEl) {
+    const layer = MM.fdSatLayer ? MM.fdSatLayer() : null;
+    const boxId = boxEl && boxEl.dataset ? boxEl.dataset.boxId : '';
+    if (!layer || !boxId) return null;
+    return layer.querySelector('.rel-show-btn[data-fd-box="' + boxId + '"]');
+  }
+  MM.fdRelShowBtnOf = fdRelShowBtnOf;
+
+  /** **反向**查：这颗圆钮属于哪个框。
+   *  为什么必须有它：圆钮搬出框之后 `btn.closest('.float-detail')` **永远是 null** ⇒
+   *  "圆钮在框外、不遮框"这类断言会**静默判错**（实测：25-域的 ① 因此假红）。
+   *  它与 fdRelShowBtnOf 是一对（同一份「框 ↔ 圆钮」映射，只是方向相反）✓ */
+  function fdBoxOfSatellite(btn) {
+    const boxId = btn && btn.dataset ? btn.dataset.fdBox : '';
+    if (!boxId) return null;
+    const boxes = document.querySelectorAll('.float-detail');
+    for (let i = 0; i < boxes.length; i++) {
+      if (boxes[i].dataset && boxes[i].dataset.boxId === boxId) return boxes[i];
+    }
+    return null;
+  }
+  MM.fdBoxOfSatellite = fdBoxOfSatellite;
+
+  /** **圆钮落位的唯一实现**（只由 MM.syncFdSatellites 调用；别在别处再算一遍 ✗）。
+   *  全部由**框的几何**推导（frame 见 app-detail.js 的 fdBoxFrame，坐标系 = 卫星浮层 = 面板）：
+   *    · 默认贴框**左缘外侧**（用户："浮在节点详情左边"✓）—— x − 54·s；
+   *    · 面板左缘空间不够 ⇒ **镜像到右缘外侧** x + w + 54·s；
+   *    · 两侧都挤（框本身贴着面板边）⇒ 夹到框内左缘 x + 4·s —— 宁可轻微压住框边，
+   *      也不能跑出可视区被面板裁掉（"看不见 = 没有" ✓）；
+   *    · 尺寸随框同比例缩放（transform: scale(s)，与 .float-detail 同一机制）；
+   *    · plan.round === false ⇒ 收起，不留残影 ✓。
+   *  返回档位 'left'|'right'|'clamp'|'off'，同时写进 data-place（断言与排查都读它 ✓ 不静默）。 */
+  function layoutRelShowBtn(layer, frames, view) {
+    const out = [];
+    (frames || []).forEach((f) => {
+      const boxId = f.box && f.box.el && f.box.el.dataset ? f.box.el.dataset.boxId : '';
+      const btn = boxId ? layer.querySelector('.rel-show-btn[data-fd-box="' + boxId + '"]') : null;
+      if (!btn) return;
+      if (!f.plan.round || !f.frame) {
+        btn.style.display = 'none';
+        btn.setAttribute('data-place', 'off');
+        out.push('off');
+        return;
+      }
+      const fr = f.frame;
+      const s = fr.s || 1;
+      const viewW = (view ? view.w : 0) || 0;
+      const bw = 44 * s;                     // 圆钮的显示宽度（CSS 44px + transform: scale(s)）
+      const roomLeft = fr.x;
+      const roomRight = viewW - (fr.x + fr.w);
+      const need = 60 * s;                   // 44·s 的钮 + 余量（旧版是固定 60；随框缩放后按比例取更合理 ✓）
+      let mode = 'left';
+      let left = fr.x - 54 * s;
+      if (roomLeft < need) { mode = 'right'; left = fr.x + fr.w + 54 * s; }
+      if (roomLeft < need && roomRight < need) {
+        // 两侧都挤（框本身贴着面板边，甚至**比面板还宽**）⇒ 贴框内左缘，但**必须夹进面板**：
+        // 框自己可以在视野外（follow 语义允许），圆钮不行 —— 跑出面板就被 overflow 裁掉 = 看不见 ✗
+        mode = 'clamp';
+        left = Math.max(4, Math.min(fr.x + 4 * s, viewW - bw - 4));
+      }
+      btn.style.display = 'flex';
+      // ⚠️ 尺寸**只缩一次**：CSS 里是 44×44，这里用 transform: scale(s) 放大到 44·s
+      //    （与 .float-detail 同一机制）。**绝不能同时**把 width 写成 44*s —— 那会变成 s² 倍的尺寸 ✗
+      btn.style.transform = s === 1 ? '' : 'scale(' + s + ')';
+      btn.style.left = Math.round(left) + 'px';
+      btn.style.top = Math.round(Math.max(4, Math.min(fr.y + 14 * s, (view ? view.h : 0) - bw - 4))) + 'px';
+      btn.style.width = '44px';
+      btn.style.height = '44px';
+      btn.classList.toggle('is-right', mode === 'right');
+      btn.setAttribute('data-place', mode);
+      out.push(mode);
+    });
+    return out;
+  }
+  MM.layoutRelShowBtn = layoutRelShowBtn;
+
+  /** 框没了 ⇒ 属于它的圆钮立刻收干净（由 app-detail.js 的 closeFdBox 调；同生命周期 ✓） */
+  function dropFdSatellites(boxId) {
+    const layer = MM.fdSatLayer ? MM.fdSatLayer() : null;
+    if (!layer || !boxId) return 0;
+    let n = 0;
+    Array.prototype.slice.call(layer.querySelectorAll('[data-fd-box="' + boxId + '"]'))
+      .forEach((el) => { el.remove(); n++; });
+    return n;
+  }
+  MM.dropFdSatellites = dropFdSatellites;
   MM.refreshRelShowBtn = refreshRelShowBtn;
 
   function renderAssocEntries(el, res, node) {
@@ -253,9 +331,7 @@
         if (a) MM.showAssocPage(a, node);
       });
     });
-    const boxOwner = el.closest ? el.closest('.float-detail') : null;   // 可能为空（el 已脱离文档 ✗）
-    const btn = boxOwner ? boxOwner.querySelector('.rel-show-btn') : null;
-    // （点击处理已搬到 refreshRelShowBtn：跟着圆钮建 ⇒ 不必等 assoc 数据 ✓ 也避免绑两次 ✗）
+    // （点击处理与位置都在 refreshRelShowBtn / layoutRelShowBtn 里：跟着圆钮走 ⇒ 不必等 assoc 数据 ✓）
   }
 
   /* ================= 编辑笔记 =================

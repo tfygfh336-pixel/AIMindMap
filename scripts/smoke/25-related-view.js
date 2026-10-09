@@ -81,7 +81,14 @@ module.exports = [
       })()`);
       // 等按钮出现（详情内容是异步拉的）
       const btn = await waitFor(ctx, `(function () {
-        var b = document.querySelector('.float-detail .rel-show-btn');
+        // 只认**可见那个**框（域与域之间会留下隐藏的旧框 —— 34-域记过同款坑 ✓）
+        var boxes = Array.prototype.slice.call(document.querySelectorAll('.float-detail'));
+        var boxEl0 = null;
+        for (var bi = 0; bi < boxes.length; bi++) {
+          var q0 = boxes[bi].getBoundingClientRect();
+          if (boxes[bi].style.display !== 'none' && q0.width > 40 && q0.height > 40) { boxEl0 = boxes[bi]; break; }
+        }
+        var b = (boxEl0 && MM.fdRelShowBtnOf) ? MM.fdRelShowBtnOf(boxEl0) : document.querySelector('.rel-show-btn');
         if (!b) return JSON.stringify({ ok: false, text: '还没有 .rel-show-btn' });
         // ★ 用户 2026-10-08「关联视图去哪里了？」⇒ 只验存在不够 ✗：必须真的**看得见** ✓
         //   （有面积 + 落在面板内 —— 同型的坑刚在 ① 上踩过：类名在、样式不生效 ✓）
@@ -90,23 +97,30 @@ module.exports = [
         var pr = p ? p.getBoundingClientRect() : null;
         var area = r.width > 8 && r.height > 8;
         var inside = !!pr && r.left >= pr.left - 2 && r.right <= pr.right + 2 && r.top >= pr.top - 2 && r.bottom <= pr.bottom + 2;
-        var vis = !!b.offsetParent || (r.width > 0 && r.height > 0);
+        // ★ 命中测试：rect 对 overflow 裁切是**盲的**（本工程实测：被裁掉的圆钮 rect 看着"在框外、在面板内"，
+        //   而 elementFromPoint 点不到、真帧 0 像素）⇒ 可见性必须叠加这一条 ✓
+        var cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+        var at = document.elementFromPoint(cx, cy);
+        var hitSelf = !!(at && at.closest && at.closest('.rel-show-btn') === b);
         // ★ 圆形判定（用户 2026-10-08 第二批："变成一个圆形按钮浮在节点详情左边" ✓）
         var cs = window.getComputedStyle(b);
         // ★ 不遮挡节点详情框（用户 2026-10-08 第二批 ✗）：圆钮必须在框的**横向之外** ✓
-        var bx = b.closest ? b.closest('.float-detail') : null;
+        //   ⚠️ 圆钮已搬进**卫星浮层**（与框同级）⇒ \`b.closest('.float-detail')\` 永远为 null ✗，
+        //   必须用「框 ↔ 圆钮」的映射反查它**自己**那个框（MM.fdBoxOfSatellite ✓）
+        var bx = MM.fdBoxOfSatellite ? MM.fdBoxOfSatellite(b) : null;
         var bq = bx ? bx.getBoundingClientRect() : null;
         var outsideBox = !!bq && (r.right <= bq.left + 1 || r.left >= bq.right - 1);
         var radius = cs.borderTopLeftRadius || '';
         var round = (radius === '50%' || parseFloat(radius) >= Math.min(r.width, r.height) / 2 - 1);
-        return JSON.stringify({ ok: !!area && !!inside && !!vis && round && outsideBox,
+        return JSON.stringify({ ok: !!area && !!inside && hitSelf && round && outsideBox,
           text: '按钮=' + (b.textContent || '').trim() + ' 面积=' + Math.round(r.width) + 'x' + Math.round(r.height)
-            + ' 在面板内=' + inside + ' 可见=' + vis + ' 圆形=' + round + ' 圆角=' + radius + ' 在框外(不遮挡)=' + outsideBox });
+            + ' 在面板内=' + inside + ' 命中圆钮=' + hitSelf + ' 圆形=' + round + ' 圆角=' + radius
+            + ' 在框外(不遮挡)=' + outsideBox + ' 档=' + (b.getAttribute('data-place') || '') });
       })()`);
       let o = JSON.parse(btn);
       if (!o.ok) return { ok: false, text: o.text };
       // 点它
-      await ctx.exec(`document.querySelector('.float-detail .rel-show-btn').click(); 1`);
+      await ctx.exec(`(function () { var b = document.querySelector('.rel-show-btn'); if (b) b.click(); return 1; })()`);
       const res = await waitFor(ctx, `(function () {
         var MM = window.MM;
         var panel = MM.fdPanel ? MM.fdPanel() : null;   // 权威口径：视图层自己的面板（不猜选择器）

@@ -26,7 +26,7 @@ const BTN_JS = `(function () {
     var bq0 = allBoxes[bi].getBoundingClientRect();
     if (allBoxes[bi].style.display !== 'none' && bq0.width > 40 && bq0.height > 40) { box = allBoxes[bi]; break; }
   }
-  var b = box ? box.querySelector('.rel-show-btn') : null;
+  var b = (box && window.MM.fdRelShowBtnOf) ? window.MM.fdRelShowBtnOf(box) : null;
   if (!b) return JSON.stringify({ ok: false, text: '没有圆钮（.rel-show-btn）' });
   var r = b.getBoundingClientRect();
   var bq = box.getBoundingClientRect();
@@ -100,7 +100,8 @@ module.exports = [
         window.MM.clearSelection && window.MM.clearSelection();
         var n = jm.get_node(id);
         window.MMApp.showDetail(n);            // 同步：renderFdBox → renderDetail 同一 tick
-        var b = document.querySelector('.float-detail .rel-show-btn');
+        var boxEl0 = document.querySelector('.float-detail');
+        var b = (boxEl0 && window.MM.fdRelShowBtnOf) ? window.MM.fdRelShowBtnOf(boxEl0) : null;
         return JSON.stringify({ ok: !!b, id: id, text: '同 tick 有圆钮=' + !!b + '（节点 ' + id + '）' });
       })()`);
       if (!now.ok) return { ok: false, text: '同 tick 检查失败：' + now.text };
@@ -124,7 +125,8 @@ module.exports = [
         var jm = window.MMApp.getState().jm, n = jm.get_node(${JSON.stringify(empty.id)});
         if (!n) return JSON.stringify({ ok: false, text: '节点没了' });
         window.MMApp.showDetail(n);
-        var b = document.querySelector('.float-detail .rel-show-btn');
+        var boxEl1 = document.querySelector('.float-detail');
+        var b = (boxEl1 && window.MM.fdRelShowBtnOf) ? window.MM.fdRelShowBtnOf(boxEl1) : null;
         return JSON.stringify({ ok: !!b, text: '零关联节点 ' + ${JSON.stringify(empty.id)} + ' 有圆钮=' + !!b });
       })()`);
       return { ok: !!st.ok, text: now.text + ' ｜ ' + st.text };
@@ -203,7 +205,7 @@ module.exports = [
           var bq = boxes[bi].getBoundingClientRect();
           if (boxes[bi].style.display !== 'none' && bq.width > 40 && bq.height > 40) { vbox = boxes[bi]; break; }
         }
-        var btn = vbox ? vbox.querySelector('.rel-show-btn') : null;
+        var btn = (vbox && window.MM.fdRelShowBtnOf) ? window.MM.fdRelShowBtnOf(vbox) : null;
         if (!btn) return JSON.stringify({ ok: false, text: '可见框里没有圆钮（可见框数=' + (vbox ? 1 : 0) + '）' });
         var before = { active: !!(window.MM.isRelatedActive && window.MM.isRelatedActive()) };
         var err = null;
@@ -249,13 +251,13 @@ module.exports = [
           var q = boxes[i].getBoundingClientRect();
           if (boxes[i].style.display !== 'none' && q.width > 40 && q.height > 40) { box = boxes[i]; break; }
         }
-        var b = box ? box.querySelector('.rel-show-btn') : null;
+        var b = (box && window.MM.fdRelShowBtnOf) ? window.MM.fdRelShowBtnOf(box) : null;
         if (!b) return JSON.stringify({ ok: false, text: '没有圆钮' });
         var p = window.MM.fdPanel ? window.MM.fdPanel() : null;
         var pr = p ? p.getBoundingClientRect() : null;
         var r = b.getBoundingClientRect();
         var insidePanel = !!pr && r.left >= pr.left - 1 && r.right <= pr.right + 1;
-        return JSON.stringify({ ok: insidePanel, text: '圆钮=[' + Math.round(r.left) + ',' + Math.round(r.right) + '] 面板=[' + Math.round(pr.left) + ',' + Math.round(pr.right) + '] 完整在内=' + insidePanel + ' 档=' + (b.classList.contains('is-right') ? 'right' : (b.style.left ? 'clamp' : 'left')) });
+        return JSON.stringify({ ok: insidePanel, text: '圆钮=[' + Math.round(r.left) + ',' + Math.round(r.right) + '] 面板=[' + Math.round(pr.left) + ',' + Math.round(pr.right) + '] 完整在内=' + insidePanel + ' 档=' + (b.getAttribute('data-place') || (b.classList.contains('is-right') ? 'right' : 'left')) });
       })()`);
       // ② 右键菜单里有入口（真派发一次 contextmenu 事件，读菜单文本 ✓）
       const menu = await execJson(ctx, `(function () {

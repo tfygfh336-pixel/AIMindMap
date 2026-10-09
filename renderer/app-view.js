@@ -823,7 +823,8 @@
       if (e.button !== 0 || fdDragMode) return;
       const cont = document.getElementById('mindmap-container');
       if (!cont || !cont.contains(e.target)) return;
-      if (e.target.closest && (e.target.closest('.float-detail') || e.target.closest('#mm-node-toolbar'))) return;
+      if ((e.target.closest && (e.target.closest('.float-detail') || e.target.closest('#mm-node-toolbar')))
+        || (MM.fdIsSatelliteTarget && MM.fdIsSatelliteTarget(e.target))) return;
       const nodeEl = e.target.closest && e.target.closest('jmnode[nodeid]');
       if (!nodeEl) return;
       const id = nodeEl.getAttribute('nodeid');
@@ -881,7 +882,8 @@
       if (!additive || e.button !== 0 || fdDragMode) return;
       const cont = document.getElementById('mindmap-container');
       if (!cont || !cont.contains(e.target)) return;
-      if (e.target.closest && (e.target.closest('.float-detail') || e.target.closest('#mm-node-toolbar'))) return;
+      if ((e.target.closest && (e.target.closest('.float-detail') || e.target.closest('#mm-node-toolbar')))
+        || (MM.fdIsSatelliteTarget && MM.fdIsSatelliteTarget(e.target))) return;
       const nodeEl = e.target.closest && e.target.closest('jmnode[nodeid]');
       if (!nodeEl) return;
       e.preventDefault();
@@ -893,6 +895,8 @@
       const cont = document.getElementById('mindmap-container');
       if (!cont || !cont.contains(e.target)) return;
       if (e.target.closest && e.target.closest('.float-detail')) return;
+      // 卫星浮层同样不算"点框外" —— 否则点一下圆钮会顺手把选区清掉 ✗（圆钮原先在框里，靠上面那条挡住）
+      if (MM.fdIsSatelliteTarget && MM.fdIsSatelliteTarget(e.target)) return;
       // ⑥ 多选：Ctrl（或 Mac 的 Cmd）按住时——**加选**语义（用户反馈⑥）：
       //   · Ctrl+点击节点 ⇒ 捕获阶段已处理（见上）✓；
       //   · Ctrl+框选 ⇒ 在**已有选区**上继续加（普通框选是"重新选"）。
@@ -1376,36 +1380,11 @@
       });
     } catch (e) { console.log("P7 跨视图兜底接线失败：" + ((e && e.message) || e)); }
   }
-  /** 圆形「关联节点」按钮贴哪边（用户 2026-10-08 第二批：圆形、浮在详情框左边 ✓）：
-   *  · 默认贴框左缘**外侧**（看着就是浮在框左边的一颗圆钮 ✓）；
-   *  · 面板是 overflow:hidden ⇒ 左边空间不够会被裁掉（上一版正是这样"消失"的 ✗）
-   *    ⇒ 用**实测矩形**（框左缘 − 面板左缘）判：不够就退回框内左缘 ✓；
-   *  · 阈值按圆钮直径 44 + 余量取 60（旧版用 offsetLeft 阈值 ⇒ 不可靠 ✗）。
-   *  返回 'side' / 'inside' / 'error'，便于冒烟与排查（不静默 ✗）。 */
-  MM.placeRelShowBtn = (btn, boxEl) => {
-    try {
-      if (!btn || !boxEl) return 'error';
-      const panel = fdPanel();
-      const pr = panel ? panel.getBoundingClientRect() : null;
-      const br = boxEl.getBoundingClientRect();
-      const roomLeft = pr ? (br.left - pr.left) : 999;
-      const roomRight = pr ? (pr.right - br.right) : 999;
-      // 默认浮在**左缘外侧**（用户：「绑定在节点详情框左边」✓）；左边没空间就镜像到右缘外侧 ✓
-      // ⚠️ **绝不放到框内** —— 放框内会遮住详情内容（用户 2026-10-08 第二批明确 ✗）
-      // 两侧都挤（例如框本身贴着窗口边）⇒ 夹取到面板内 ✓
-      // 宁可轻微压住框边，也不能跑出可视区被裁掉 ✗ —— 看不见等于没有 ✓
-      const place = (roomLeft >= 60) ? 'left' : ((roomRight >= 60) ? 'right' : 'clamp');
-      btn.classList.toggle('is-right', place === 'right');
-      if (place === 'clamp' && pr) {
-        const want = Math.max(4, Math.round(pr.left - br.left + 4));   // 相对框左缘的偏移（正数 = 压住框边 ✓）
-        btn.style.left = want + 'px';
-        btn.style.right = 'auto';
-      } else {
-        btn.style.left = ''; btn.style.right = '';   // 交回 CSS ✓
-      }
-      return place;
-    } catch (e) { return 'error'; }
-  };
+  /* 「圆钮贴哪边」的判定**已搬走**：它属于圆钮自己 —— 见 app-assoc.js 的 MM.layoutRelShowBtn，
+   * 由 MM.syncFdSatellites 一处调用（一份事实一处实现 ✓）。
+   * 搬走的理由（实测）：圆钮原先写在详情框里、位置"交回 CSS"（left:-54px），于是被**框自己的**
+   * overflow:hidden 裁掉 —— 而 getBoundingClientRect() 看不出被裁，断言一直绿。
+   * 现在它挂在卫星浮层里、位置**显式**由框的 frame 算出（.review/20261009-圆钮工具栏绑定/probe-clip.js）。 */
   MM.toggleNodeSelection = toggleNodeSelection;
   MM.clearSelection = clearSelection;
   MM.applySelection = applySelection;

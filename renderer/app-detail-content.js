@@ -75,7 +75,14 @@
       for (let i = 0; i < path.length; i++) {
         const el = path[i];
         if (el && el.classList && el.classList.contains('float-detail')) return;
+        // 卫星浮层（圆钮 / 悬浮工具条）也是**详情框的 UI** ⇒ 点它不算"点空白"。
+        // ⚠️ 圆钮原先就在 `.float-detail` 里，上面那条顺手挡住了；搬进浮层后不补这一条，
+        //    点一下圆钮就会把未锁定的详情框关掉 ✗（scripts/smoke/37 的断言⑦守着）
+        // ⚠️ 判定**只经 MM.fdIsSatelliteTarget**（不在调用点另写一遍 id/closest 比较）：
+        //    两处表达会两处漂移，而且"注入一处就该失效"的判别力也拿不到（B4 的注入要真的能红 ✓）
+        if (MM.fdIsSatelliteTarget && MM.fdIsSatelliteTarget(el)) return;
       }
+      if (MM.fdIsSatelliteTarget && MM.fdIsSatelliteTarget(e.target)) return;
       if (e.target.closest && e.target.closest('.float-detail')) return; // 兜底（老环境无 composedPath）
       let el = e.target;
       while (el && el !== container) {
