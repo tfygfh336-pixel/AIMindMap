@@ -23,7 +23,33 @@
   let fdNodesObserver = null;
 
   /** 导图容器点击：选中节点→刷新详情；点空白→隐藏浮动详情。
-   *  jsMind 0.9 不派发 select 事件（mousedown 只改选中样式），必须在 DOM 层补一次。
+   *
+   *  **为什么在 DOM 层接管，而不是听 jsMind 的 select 事件** —— 2026-10-09 实测
+   *  （探针与原始报文：`.review/20261009-jsMind事件派发探针/`；
+   *   内部符号清单：`renderer/vendor/JSMIND-INTERNALS.md`）：
+   *
+   *  ① 先钉死一个容易读错的事实：jsMind 0.9.1 **是派发的**。vendor bundle 里共 **12 个**
+   *     `invoke_event_handle` 派发点，`select` 那个是第 **[11]** 个，而它就写在**公开方法
+   *     `jm.select_node(…)` 的函数体里**。实测：**编程调用一次**（`jm.select_node(…)`）
+   *     派发 **1** 次；**真点一下 `<jmnode>`** 也派发 **1** 次，`code/evt` 完全相同
+   *     ⇒ **两条路径命中的是同一个派发点**，点击最终也是调这个方法。
+   *     所以"编程调用不派发、只有用户点击才派发"**不成立** ✗。
+   *     会看混的是**同名**的 `view.select_node(…)` —— 只有那一层是"只改 selected 样式、不派发"。
+   *
+   *     （本文里的 API 名一律写成 `f(…)` 带省略号：**不是**可执行形状，
+   *      免得以"数 renderer 里还剩几处库调用"为口径的脚本/复核把注释算成耦合点。）
+   *
+   *  ② 但这条事件**仍然不够用**，四条实测：· **点空白根本不派发** —— 空白走 `select_clear()`，
+   *     全链 0 派发，而本函数必须先知道"点了空白"才能隐藏详情框；· 派发是**异步**的
+   *     （内部 `setTimeout(...,0)`，收到时已是下一拍）；· 节点**不可见就不派发**
+   *     （`layout.is_visible` 守卫，收起分支里的节点拿不到）；· 载荷只有 `{evt,data,node}`，
+   *     **没有 Ctrl/Cmd**，而 Ctrl+点击在本工程是"加选"语义（见下方守卫）。
+   *
+   *  ③ 真正的理由：本工程要的是 jsMind **库里没有的模型** —— 多选 / 框选 / 非选中节点虚化 /
+   *     关联高亮（jsMind 只有**单个** `mind.selected`，库层面表达不了"一组选中节点"）。
+   *     选中的**事实**因此由 DOM 层自己判定（本函数 + `app-view.js` 的选区模型）；
+   *     这里的 `jm.select_node(…)` 只负责把 jsMind 自己的**单选游标**同步过去。
+   *
    *  **全局只绑一次**；每次操作都用 state.jm 取当前实例，避免重复建图时重复注册。 */
   function bindContainerControls() {
     if (fdContainerBound) return;
@@ -57,8 +83,8 @@
         if (tag === 'jmnode') {
           const id = el.getAttribute('nodeid');
           if (id) {
-            jm.select_node(id);
-            const n = jm.get_node(id);
+            MM.adapter.selectNode(jm, id);
+            const n = MM.adapter.getNode(jm, id);
             if (n) showDetail(n);
           }
           return;

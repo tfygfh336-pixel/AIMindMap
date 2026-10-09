@@ -148,8 +148,8 @@
       setStatus('已补链接：' + fromId + ' → ' + toId + '（已写入磁盘；如需撤销请用 CLI unlink）');
       // 刷新详情框里的「相关知识点」，让新链接立即可见
       const jm = st.jm;
-      const node = jm && jm.get_node ? jm.get_node(fromId) : null;
-      if (node && MM.showDetail && jm.get_selected_node && jm.get_selected_node() === node) showDetail(node);
+      const node = MM.adapter.available(jm) ? MM.adapter.getNode(jm, fromId) : null;
+      if (node && MM.showDetail && MM.adapter.available(jm) && MM.adapter.getSelected(jm) === node) showDetail(node);
       await openAudit();
     } catch (err) {
       setStatus('补链接失败：' + ((err && err.message) || err), true);
@@ -178,8 +178,8 @@
         const st = getState();
         const jm = st && st.jm;
         if (jm) {
-          const node = jm.get_node(li.getAttribute('data-node'));
-          if (node) { jm.select_node(node); showDetail(node); }
+          const node = MM.adapter.getNode(jm, li.getAttribute('data-node'));
+          if (node) { MM.adapter.selectNode(jm, node); showDetail(node); }
         }
       }
     });

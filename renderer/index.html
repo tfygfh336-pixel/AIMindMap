@@ -212,6 +212,8 @@
   <script src="../src/related-model.js"></script>
   <script src="../src/sidebar-context.js"></script>
   <!-- 应用模块（拆分自原 app.js，共享 window.MM；app-core.js 必须最先、app.js 必须最后） -->
+  <!-- 适配层：对渲染库（jsMind）**公共 API** 的调用全走这里 —— 换库只改这一个文件 -->
+  <script src="mindmap-adapter.js"></script>
   <script src="app-core.js"></script>
   <script src="app-view.js"></script>
   <script src="app-detail.js"></script>

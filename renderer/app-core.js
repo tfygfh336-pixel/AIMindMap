@@ -74,7 +74,7 @@
       if (n.children && n.children.length) out.children = n.children.map(walk);
       return out;
     };
-    const root = jm.get_node('root') || jm.mind.root;
+    const root = MM.adapter.getRoot(jm);
     // 树偏移（框选后拖动的结果）：**向视图层要**（唯一真源在 app-view.js 的 treeOffsets），
     // 只写非零项 ⇒ 没拖过的项目与旧文件零差异（与 rootMode / layout 同一套"条件写回"手法）。
     const themeOffsets = (MM.getTreeOffsets && MM.getTreeOffsets()) || {};
@@ -206,7 +206,7 @@
     // 主题布局：依 meta.layout 在 show 前给顶层主题标 direction（jsMind 左右分侧），
     // 未列出的主题保持默认右侧。方向唯一真源是 meta.layout（序列化不带 direction）。
     applyThemeLayout(data);
-    jm.show(data);
+    MM.adapter.loadTree(jm, data);
     // 重排锚点保持：包住 view.relayout()，让"刚被展开/收起的那个节点"在屏幕上原地不动
     //（jsMind 会把每个父节点的子节点栈重新居中 ⇒ 不动手就是"页面跳来跳去"；见 app-view.js）。
     if (MM.wrapLayoutAnchor) MM.wrapLayoutAnchor(jm);

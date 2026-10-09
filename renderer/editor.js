@@ -12,11 +12,16 @@
 (function () {
   'use strict';
 
+  // 适配层命名空间（与其余 renderer 模块同一写法）：
+  // 本文件此前只用 window.MMApp，没有 MM 绑定 —— 走 MM.adapter 就必须显式持有它，
+  // 不能依赖"window.MM 恰好能当裸标识符解析"这种隐式全局（换个加载方式就崩 ✗）。
+  const MM = window.MM || (window.MM = {});
+
   const $ = (sel) => document.querySelector(sel);
   const app = () => window.MMApp;
   const getNode = (id) => {
     const jm = app().getState().jm;
-    return jm ? jm.get_node(id) : null;
+    return jm ? MM.adapter.getNode(jm, id) : null;
   };
 
   /* ================= 节点编辑对话框 ================= */
@@ -52,7 +57,7 @@
 
     // 记录快照后修改
     const jm = app().getState().jm;
-    if (node.topic !== topic) jm.update_node(node.id, topic);
+    if (node.topic !== topic) MM.adapter.updateNode(jm, node.id, topic);
     // 标题里若含行内 Markdown（`**加粗**` / 反引号代码），在这里补一次渲染期转换 ——
     // jsMind 刚把原文写进节点元素，是唯一需要重转的时机（详见 app-core.js 的 applyTopicMarkup）。
     if (window.MM && window.MM.applyTopicMarkup) window.MM.applyTopicMarkup(jm);
@@ -60,7 +65,7 @@
     node.data.detail = detail;
     if (tags.length) node.data.tags = tags; else delete node.data.tags;
     if (node.expanded !== expanded) {
-      if (expanded) jm.expand_node(node.id); else jm.collapse_node(node.id);
+      if (expanded) MM.adapter.expandNode(jm, node.id); else MM.adapter.collapseNode(jm, node.id);
     }
     app().setStatus('节点已更新，点击保存生效');
     closeEditDialog();
@@ -164,7 +169,7 @@
 
   /* ================= Markdown 导入/导出（经隐藏 file input + 主进程） ================= */
   function pickAndImportMd() {
-    const node = app().getState().jm && app().getState().jm.get_selected_node();
+    const node = app().getState().jm && MM.adapter.getSelected(app().getState().jm);
     const parent = node ? node.id : 'root';
     const input = document.createElement('input');
     input.type = 'file';
@@ -255,7 +260,7 @@
     else if (e.key === 'F2') { e.preventDefault(); app().editNode(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') {
       const jm = app().getState().jm;
-      const sel = jm && jm.get_selected_node();
+      const sel = jm && MM.adapter.getSelected(jm);
       if (sel && sel.id !== 'root') { e.preventDefault(); app().deleteNode(sel.id); }
     }
   }

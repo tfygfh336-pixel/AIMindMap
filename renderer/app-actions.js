@@ -69,11 +69,11 @@
    *  注：展开祖先链本身会把这条链的 expanded 置为 true（jsMind 的语义）——这是必要的，
    *  否则目标节点在视图里看不见；但它只影响这条链，不再是"全树"。 */
   function expandAncestors(jm, id) {
-    const n = jm && jm.get_node(id);
+    const n = jm && MM.adapter.getNode(jm, id);
     if (!n) return false;
     const chain = [];
     for (let p = n.parent; p; p = p.parent) chain.push(p);
-    chain.reverse().forEach((a) => { try { jm.expand_node(a.id); } catch (e) { /* 容器根不支持展开 */ } });
+    chain.reverse().forEach((a) => { try { MM.adapter.expandNode(jm, a.id); } catch (e) { /* 容器根不支持展开 */ } });
     return true;
   }
 
@@ -81,8 +81,8 @@
     const jm = state.jm;
     if (!jm || !id) return;
     expandAncestors(jm, id);
-    const n = jm.get_node(id);
-    if (n) { jm.select_node(id); showDetail(n); }
+    const n = MM.adapter.getNode(jm, id);
+    if (n) { MM.adapter.selectNode(jm, id); showDetail(n); }
     else setStatus('节点不在当前视图：' + id);
   }
 
@@ -92,8 +92,8 @@
     if (selectId) {
       const jm = state.jm;
       expandAncestors(jm, selectId);
-      const n = jm.get_node(selectId);
-      if (n) { jm.select_node(selectId); showDetail(jm.get_selected_node()); }
+      const n = MM.adapter.getNode(jm, selectId);
+      if (n) { MM.adapter.selectNode(jm, selectId); showDetail(MM.adapter.getSelected(jm)); }
     }
   }
 
@@ -270,24 +270,31 @@
   /* ================= 编辑操作（供 editor.js / 菜单调用） ================= */
   function addNode(parentId) {
     const jm = state.jm;
-    const parent = parentId ? jm.get_node(parentId) : jm.get_selected_node();
+    const parent = parentId ? MM.adapter.getNode(jm, parentId) : MM.adapter.getSelected(jm);
     if (!parent) { setStatus('请先选中一个节点作为父节点'); return; }
     const id = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    jm.add_node(parent.id, id, '新节点', { detail: '' });
+    MM.adapter.addNode(jm, parent.id, id, '新节点', { detail: '' });
     recordHistory(); // 修改后压入快照（撤销时恢复修改前状态）
-    jm.select_node(id);
+    MM.adapter.selectNode(jm, id);
     window.MMEditor && window.MMEditor.editNode(id);
   }
 
   function addSiblingNode(id) {
     const jm = state.jm;
-    const sel = id ? jm.get_node(id) : jm.get_selected_node();
+    const sel = id ? MM.adapter.getNode(jm, id) : MM.adapter.getSelected(jm);
     if (!sel) { setStatus('请先选中要插入的节点'); return; }
     if (sel.id === 'root') { setStatus('根节点无法新增同级'); return; }
     const newId = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    jm.add_node(sel.parent.id, newId, '新节点', { detail: '' }, undefined, sel.index + 1);
+    // ⚠️ 已知缺陷（**本次纯重构按原样保留**，没有顺手"修"）：jsMind 0.9.1 的公开
+    // `add_node(parent, id, topic, data, direction)` **只有 5 个形参、没有 index** ——
+    // 这里多传的 `sel.index + 1`（本意"插到所选节点之后"）**一直被静默丢弃**，新节点
+    // 实际追加在**父节点末尾**。取证：`.review/20261009-jsMind事件派发探针/` 与
+    // `renderer/mindmap-adapter.js` 头部。适配层的 addNode 形参也只到 direction 为止 ⇒
+    // 那个第 7 个实参同样不会被用到，留着只为让"这里曾想插到所选节点之后"在代码里看得见。
+    // 要改它是**行为变更**（换了新节点落点），应另开一次改动并补一条"落点"断言。
+    MM.adapter.addNode(jm, sel.parent.id, newId, '新节点', { detail: '' }, undefined, sel.index + 1);
     recordHistory();
-    jm.select_node(newId);
+    MM.adapter.selectNode(jm, newId);
     window.MMEditor && window.MMEditor.editNode(newId);
   }
 
@@ -295,22 +302,22 @@
    *  同时开启主题模式 —— 于是它与其它顶层主题互相独立（容器根隐藏、连线跳过）。 */
   function addTopic() {
     const jm = state.jm;
-    const root = jm && jm.get_node('root');
+    const root = jm && MM.adapter.getNode(jm, 'root');
     if (!root) { setStatus('导图尚未就绪'); return; }
     if (state.rootMode !== 'themes') {
       state.rootMode = 'themes'; // 顶层主题 = 独立主题
       applyRootModeVisual(jm, true);
     }
     const id = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    jm.add_node('root', id, '新主题', { detail: '' });
+    MM.adapter.addNode(jm, 'root', id, '新主题', { detail: '' });
     recordHistory();
-    jm.select_node(id);
+    MM.adapter.selectNode(jm, id);
     window.MMEditor && window.MMEditor.editNode(id);
   }
 
   function editNode(id) {
     const jm = state.jm;
-    const node = id ? jm.get_node(id) : jm.get_selected_node();
+    const node = id ? MM.adapter.getNode(jm, id) : MM.adapter.getSelected(jm);
     if (!node) { setStatus('请先选中要编辑的节点'); return; }
     window.MMEditor && window.MMEditor.editNode(node.id);
   }
@@ -333,18 +340,18 @@
       });
       (n.children || []).forEach(walk);
     };
-    walk(state.jm.get_root());
+    walk(MM.adapter.getRoot(state.jm));
     return out;
   }
 
   function deleteNode(id) {
     const jm = state.jm;
-    const node = id ? jm.get_node(id) : jm.get_selected_node();
+    const node = id ? MM.adapter.getNode(jm, id) : MM.adapter.getSelected(jm);
     if (!node) { setStatus('请先选中要删除的节点'); return; }
     if (node.id === 'root') { setStatus('根节点不可删除'); return; }
 
     const finish = () => {
-      jm.remove_node(node.id);
+      MM.adapter.removeNode(jm, node.id);
       recordHistory(); // 修改后压入快照
       setStatus('已删除：' + node.topic);
     };
@@ -406,7 +413,7 @@
           }
           (n.children || []).forEach(stripInbound);
         };
-        stripInbound(state.jm.get_root());
+        stripInbound(MM.adapter.getRoot(state.jm));
         finish();
         setStatus('已删除：' + node.topic + '（并清理 ' + affected.length + ' 篇关联 / '
           + inLinks.length + ' 条链接的引用）');
@@ -572,12 +579,12 @@
    *  边界如实说：根节点没有可展开子层、叶子节点没有子节点 ⇒ 给一句状态说明（不静默 ✗）。 */
   function toggleNodeExpanded(id) {
     const jm = state.jm;
-    const n = (jm && jm.get_node) ? jm.get_node(id) : null;
+    const n = MM.adapter.available(jm) ? MM.adapter.getNode(jm, id) : null;
     if (!n) { setStatus('节点不存在：' + id, true); return false; }
     if (n.isroot) { setStatus('根节点没有可展开的子层'); return false; }
     if (!(n.children && n.children.length)) { setStatus('「' + n.topic + '」没有子节点'); return false; }
-    if (n.expanded) { jm.collapse_node(id); setStatus('已收起：' + n.topic); }
-    else { jm.expand_node(id); setStatus('已展开：' + n.topic); }
+    if (n.expanded) { MM.adapter.collapseNode(jm, id); setStatus('已收起：' + n.topic); }
+    else { MM.adapter.expandNode(jm, id); setStatus('已展开：' + n.topic); }
     return true;
   }
   MM.toggleNodeExpanded = toggleNodeExpanded;

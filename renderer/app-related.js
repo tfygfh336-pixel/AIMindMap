@@ -193,7 +193,7 @@
     let assoc = assocId ? items.find((a) => a.id === assocId) : null;
     if (!assoc && items.length === 1) assoc = items[0];      // 只有一篇（星形线常见）就直接开它
     const jm = MM.getState && MM.getState().jm;
-    const node = jm && active ? jm.get_node(active.nodeId) : null;
+    const node = jm && active ? MM.adapter.getNode(jm, active.nodeId) : null;
     if (!assoc) { MM.setStatus('这条线没有对应的关联笔记（它是链接关系）', true); return; }
     const box = MM.showAssocPage(assoc, node);
     if (!box) return;
@@ -263,7 +263,7 @@
     // ★ 先把祖先展开：关联节点**常常在被收起的子树里**，而收起的节点没有几何
     // （实测：冒烟里 5 个目标节点全是 0×0 矩形 ⇒ 缩放算成"退化框"、线端点全错 ✗）。
     // "缩放至刚好展示所有关联节点"的前提就是它们**可见** ⇒ 展开是这一步的一部分 ✓
-    const inTreeAll = rel.members.filter((m) => !!jm.get_node(m.id));
+    const inTreeAll = rel.members.filter((m) => !!MM.adapter.getNode(jm, m.id));
     const expandable = [nodeId].concat(inTreeAll.map((m) => m.id));
     if (MM.expandAncestors) {
       for (const id of expandable) {
@@ -346,7 +346,7 @@
     const jm = st && st.jm;
     const cur = (st && st.project && st.project.name) || '';
     if (!opts || opts.project !== cur) return 'other-project';
-    const node = jm && jm.get_node ? jm.get_node(opts.fromId) : null;
+    const node = MM.adapter.available(jm) ? MM.adapter.getNode(jm, opts.fromId) : null;
     if (!node) return 'no-node';
     node.data = node.data || {};
     let list;
@@ -420,7 +420,7 @@
   /** 中心节点：**从内存树现取**（节点被删/换项目 ⇒ 树里找不到就该退出，不留一个指向空气的编辑条） */
   function barNode() {
     const jm = jmOf();
-    return (jm && bar.nodeId && jm.get_node) ? jm.get_node(bar.nodeId) : null;
+    return (MM.adapter.available(jm) && bar.nodeId) ? MM.adapter.getNode(jm, bar.nodeId) : null;
   }
 
   /** 候选排序：唯一真源是 src/palette-rank.js（与命令面板同一份，别在这儿再写一套 ✗） */
@@ -482,7 +482,7 @@
     const host = document.getElementById('mindmap-container');
     if (!host || !nodeId) return null;
     const jm = jmOf();
-    const node = jm && jm.get_node ? jm.get_node(nodeId) : null;
+    const node = MM.adapter.available(jm) ? MM.adapter.getNode(jm, nodeId) : null;
     if (!node) return null;
     let el = barEl();
     if (!el) {
@@ -707,7 +707,7 @@
       window.__mmAssocItems = (res[0] && res[0].items) || [];
       const rel = model()({ nodeId: nodeId, project: p, assocItems: window.__mmAssocItems, relatedItems: (res[1] && res[1].items) || [] });
       const jm = jmOf();
-      const inTree = rel.members.filter((m) => !!jm.get_node(m.id) && !!rectOf(m.id));
+      const inTree = rel.members.filter((m) => !!MM.adapter.getNode(jm, m.id) && !!rectOf(m.id));
       active.members = new Set(inTree.map((m) => m.id));
       active.edges = rel.edges;
       applyHighlight();

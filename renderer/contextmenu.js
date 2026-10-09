@@ -14,6 +14,11 @@
 (function () {
   'use strict';
 
+  // 适配层命名空间（与其余 renderer 模块同一写法）：
+  // 本文件此前只用 window.MMApp / window.MMEditor，没有 MM 绑定 —— 走 MM.adapter 就必须
+  // 显式持有它，不能依赖"window.MM 恰好能当裸标识符解析"这种隐式全局（换个加载方式就崩 ✗）。
+  const MM = window.MM || (window.MM = {});
+
   const MENU_ID = 'ctx-menu';
 
   function ensureMenu() {
@@ -95,7 +100,7 @@
     const treeRoot = app().treeRootOf ? app().treeRootOf(nodeId) : null;
     if (!treeRoot) return null;
     const jm = app().getState().jm;
-    const topic = jm && jm.get_node(treeRoot) ? jm.get_node(treeRoot).topic : treeRoot;
+    const topic = jm && MM.adapter.getNode(jm, treeRoot) ? MM.adapter.getNode(jm, treeRoot).topic : treeRoot;
     return {
       label: '拖动树：移动「' + topic + '」',
       action: () => app().setDragMode(true, treeRoot)
@@ -105,7 +110,7 @@
   function nodeMenu(nodeId) {
     const app = () => window.MMApp;
     const jm = app().getState().jm;
-    const node = jm ? jm.get_node(nodeId) : null;
+    const node = jm ? MM.adapter.getNode(jm, nodeId) : null;
     if (!node) return;
     const isRoot = node.id === 'root';
     const items = [
@@ -116,8 +121,8 @@
       { label: '新增子节点', action: () => app().addNode(nodeId) },
       { label: '新增同级节点', action: () => app().addSiblingNode(nodeId) },
       '---',
-      { label: '展开', action: () => { jm.expand_node(nodeId); app().setStatus('已展开：' + node.topic); } },
-      { label: '收起', action: () => { jm.collapse_node(nodeId); app().setStatus('已收起：' + node.topic); } },
+      { label: '展开', action: () => { MM.adapter.expandNode(jm, nodeId); app().setStatus('已展开：' + node.topic); } },
+      { label: '收起', action: () => { MM.adapter.collapseNode(jm, nodeId); app().setStatus('已收起：' + node.topic); } },
       '---',
       { label: '添加图片…', action: () => window.MMEditor && window.MMEditor.openImageDialog(nodeId) },
       { label: '添加附件文件…', action: () => window.MMEditor && window.MMEditor.openFileDialog(nodeId) }
@@ -192,7 +197,7 @@
     if (isNodeEl(target)) {
       const id = getBindedNodeId(target);
       const jm = window.MMApp && window.MMApp.getState().jm;
-      if (jm && id) jm.select_node(id); // 先选中，保证菜单操作作用于该节点
+      if (jm && id) MM.adapter.selectNode(jm, id); // 先选中，保证菜单操作作用于该节点
       nodeMenu(id);
     } else {
       backgroundMenu();
@@ -216,7 +221,7 @@
           let top = null;
           if (jm) {
             // 选区已保证同父同树 ⇒ 往上找到顶层主题即可
-            let n = jm.get_node(ids[0]);
+            let n = MM.adapter.getNode(jm, ids[0]);
             while (n && n.parent && !n.parent.isroot) n = n.parent;
             if (n && n.parent && n.parent.isroot && !n.isroot) top = n.id;
           }

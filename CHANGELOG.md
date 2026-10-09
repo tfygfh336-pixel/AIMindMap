@@ -14,6 +14,94 @@
 
 ## [Unreleased]
 
+### 渲染库（jsMind）适配层落地：把"换库"变成只改一个文件 + 内部耦合成表（**纯重构，行为不变**）
+
+**起因与结论（可引用）**：起因是"渲染库要不要换个更好的、要不要重构"这次评估。
+结论 = **有条件地不换**（置信度 0.8）。依据是把集成面分成两半看：
+
+- 约 **1/3 是可移植的公共 API**（迁移前 83 处调用点）—— 换库时这半边"白送"；
+- 约 **2/3 是我们主动接管渲染层内部**（14 类符号 / 75 个代码行：`view.relayout`、`show_lines`、
+  `e_panel`、`<jmnode>`/`<jmnodes>`、`jmexpander`、`zoom_current`、`layout.is_visible` …）。
+
+换库会**淘汰便宜的 1/3、重建最贵的 2/3**，还要重付一份"渲染几何类冒烟断言"的回归成本 ✗。
+所以不换，但把便宜那一半收进适配层 —— 将来真要换，改动面落在**一个文件**上。
+
+**做了三件事**
+
+1. **`renderer/mindmap-adapter.js`（新）** —— 12 个语义函数覆盖全部公共 API 调用点，全工程唯一的
+   调用形状是 `MM.adapter.X(jm, …)`：`getNode` / `getRoot` / `getSelected` / `available` /
+   `selectNode` / `addNode` / `updateNode` / `removeNode` / `expandNode` / `collapseNode` /
+   `expandAll` / `loadTree`。
+   - **纯转发**：不判空、不兜底、不吞异常、不 try/catch ⇒ 与直接调库**逐字同义**。
+   - **`jm` 显式传参**，不从 `state.jm` 内部取：`renderMind()` 里 `new jsMind(…)` 与 `jm.show(data)`
+     发生在 `state.jm = jm` **之前**，内部读全局态会在那个窗口里取到上一次的实例（静默错误）。
+   - `renderer/*.js`（不含适配层）里的公共 API 调用点：**83 → 0**。
+   - 另补：`editor.js` / `contextmenu.js` 原先**没有 `MM` 绑定**（只用 `window.MMApp`），
+     走 `MM.adapter` 就必须显式持有它 —— 同批补上，不依赖"`window.MM` 恰好能当裸标识符解析"。
+
+2. **`renderer/vendor/JSMIND-INTERNALS.md`（新）** —— 我们**主动接管的内部**逐条给 `file:line`：
+   14 类符号 / 75 个代码行的位置 + 三个"整体替换"的库方法（`view.set_zoom` / `zoom_in` / `zoom_out` /
+   `view.show_lines`）+ **刻意不用**的三个（`view.reset`、`get_node_point_in/out`，附历史事故）。
+   **升级 jsMind 时人工回归的就是这张表**；行号会漂移，文件里给了重算命令。
+
+3. **登记**：`docs/ARCHITECTURE.md` §2.1 的 `vendor/jsmind.js` 行写明 **版本 0.9.1** 与
+   "升级前必须先读 `JSMIND-INTERNALS.md`"；新增 `mindmap-adapter.js` 行；
+   **顺带更正**加载顺序清单漏列的 5 个模块（`related-model` / `sidebar-context` / `app-related` /
+   `app-ask` / `app-import`）。
+
+**行为不变量（判据，不是"测试还绿"）**
+
+| 判据 | 迁移前 | 迁移后 |
+|------|--------|--------|
+| 冒烟断言（真值 = `docs/VERIFY.md`） | 185/185 通过 | **185/185 通过**（条数未变） |
+| 视觉断言（L2 ROI） | 2/2 | **2/2** |
+| 单元测试 | 853/853 · 48 文件 | **853/853 · 48 文件** |
+| CLI 集成断言 | 216 | 216（迁移未触碰 CLI） |
+| 真实数据写入 | 零 | **零**（跑完 21 个文件逐字节一致） |
+| `renderer/*.js` 语法 | — | 全部 `node --check` 通过 |
+
+**判别力证明（注入违规必须红；没红过的不算门禁）**
+
+冒烟套件是这次改动唯一能守住行为的安全网（渲染层没有单测）。它真的在看适配层吗？实测：
+
+1. 注入：把 `getNode` 改成 `return undefined`（`SHA256 9FCC…9E40 → A24C…5EDDA`）；
+2. **变红**：`SMOKE_ONLY=01 npm run smoke` ⇒ `过滤运行 6/8 passed`、退出码 **1**，
+   报出 `[FAIL] click node → float detail shows`、`[FAIL] float detail sits below its node box`；
+3. 撤销：从备份逐字节还原（`SHA256` 回到 `9FCC…9E40`，注入标记已不存在）；
+4. **复绿**：同一条命令 ⇒ `过滤运行 8/8 passed`、退出码 **0**。
+
+⇒ 适配层在**真实执行路径**上（不是没人走的摆设），且冒烟对它**有判别力**。
+（完整报文：`.review/20261009-渲染库适配层/` —— 工作产物区，可随时删除。）
+
+**顺带的一次取证更正（"结论对、根因错"）**：`app-detail-content.js` 顶部原注释写
+"jsMind 0.9 不派发 select 事件"。实测**这句话是错的**：
+
+- vendor bundle 里 `invoke_event_handle` 共 **12 个派发点**（`show`×3 / `resize`×1 / `edit`×7 /
+  `select`×1），`select` 那个就写在**公开方法 `jm.select_node()` 的函数体里**；
+- 编程调 `jm.select_node('a')` 派发 **1** 次，真点一下 `<jmnode>` 也派发 **1** 次，
+  `code/evt` **完全相同** ⇒ **两条路径命中同一个派发点**，"编程不派发、只有点击派发"不成立；
+- 会看混的是**同名**的 `view.select_node()` —— 只有那一层是"只改 selected 样式、不派发"。
+
+**但"必须在 DOM 层接管"这个结论仍然对**，理由换成四条实测：点空白**根本不派发**（走
+`select_clear()`，全链 0 派发，而我们要靠"点了空白"关详情框）· 派发是**异步**的
+（`setTimeout(…,0)`）· 节点**不可见就不派发**（`layout.is_visible` 守卫）· 载荷里**没有 Ctrl/Cmd**，
+而 Ctrl+点击在本工程是"加选"。真正的理由仍是"要的是**库里没有的模型**"：
+多选 / 框选 / 非选中节点虚化 / 关联高亮（jsMind 只有**单个** `mind.selected`）。
+
+**已知缺陷（如实记录，本次纯重构按原样保留，没有顺手"修"）**：`app-actions.js` 的
+`addSiblingNode` 想"把新节点插到所选节点之后"，于是给 `add_node` 传了第 6 个实参
+`sel.index + 1` —— 但 jsMind 0.9.1 的公开 `add_node(parent, id, topic, data, direction)`
+**只有 5 个形参、没有 index**，那个实参**一直被静默丢弃**，新节点实际追加在**父节点末尾**。
+修它属于**行为变更**（换了落点），应另开一次改动并补一条"落点"断言；本条目只在调用点留了醒目注释。
+
+**三个重新评估的硬触发（满足任一就该重开这次决策）**
+
+1. **jsMind 连续 > 18 个月无发布**（"库很老"才真正成立；当前反例：0.8.6 → 0.9.1 一路在发，
+   vendor 里就是 npm 最新版 0.9.1）；
+2. **需要虚拟化 / 万级节点而现库做不到**（那是库层面的能力缺口，适配层解决不了）；
+3. **适配层落地后，数据显示那 7 项深度改造（渲染几何/连线重写/统一 transform/主题分侧/框选与
+   关联高亮的渲染）成了 bug 的主要来源** —— 即"贵的那 2/3"开始自己制造缺陷，而不是在提供价值。
+
 ### 两个 ✕ 改成**真关**：导图页从内存里卸载、侧栏视图真正销毁（用户明确选了"内存里真的不留页面"）
 
 **根因（两处"关"其实都不是关）**：

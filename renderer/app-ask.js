@@ -30,7 +30,7 @@
 
   function topicOf(id) {
     const jm = state().jm;
-    const n = jm && jm.get_node ? jm.get_node(id) : null;
+    const n = MM.adapter.available(jm) ? MM.adapter.getNode(jm, id) : null;
     return n && n.topic ? n.topic : id;
   }
 
@@ -161,7 +161,7 @@
       askBoxes.push(box);
     }
     box.nodes = nodes.slice();
-    box.node = (nodes.length === 1 && state().jm) ? state().jm.get_node(nodes[0]) : null;
+    box.node = (nodes.length === 1 && state().jm) ? MM.adapter.getNode(state().jm, nodes[0]) : null;
     box.ask = { kind: kind, log: (box.ask && box.ask.log) || [] };
     box.el.style.display = 'flex';
     MM.bringFdBoxToFront(box);
@@ -349,7 +349,7 @@
     if (!jm || !ids || !ids.length) return Promise.resolve(null);
     const conv = window.MMConvert || {};
     const nodes = ids.map((id) => {
-      const n = jm.get_node(id);
+      const n = MM.adapter.getNode(jm, id);
       if (!n) return null;
       const plain = conv.stripHtml ? String(conv.stripHtml(n.detail || '')).trim() : String(n.detail || '');
       return { topic: n.topic, tags: Array.isArray(n.tags) ? n.tags : [], detailText: plain };

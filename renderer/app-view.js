@@ -381,7 +381,7 @@
     const set = new Set(ids);
     // ① 剔父冗余
     const eff = ids.filter((id) => {
-      const n = jm.get_node(id);
+      const n = MM.adapter.getNode(jm, id);
       return n && n.parent && !set.has(n.parent.id);
     });
     // ② 按**直接父节点**分组（不是按树根！用户实测 bug 根因：wlan-01 与
@@ -391,7 +391,7 @@
     //    → 两组不同父 → 取 wlan-01 组（更浅）→ STA 被过滤。
     const groups = {};
     eff.forEach((id) => {
-      const n = jm.get_node(id);
+      const n = MM.adapter.getNode(jm, id);
       const pid = n.parent.id;
       let depth = 0;
       let w = n;
@@ -458,7 +458,7 @@
     const scope = new Set(fdSelection);
     // 把选中节点的**可见子节点**并入范围（折叠动作影响的就是它们）
     const addVisibleChildren = (id) => {
-      const n = jm ? jm.get_node(id) : null;
+      const n = jm ? MM.adapter.getNode(jm, id) : null;
       (n && n.children ? n.children : []).forEach((c) => {
         const cel = document.querySelector('jmnode[nodeid="' + c.id + '"]');
         if (cel && cel.offsetWidth > 0) {
@@ -503,7 +503,7 @@
     const list = ids || fdSelection;
     const groups = {};
     list.forEach((id) => {
-      const n = jm.get_node(id);
+      const n = MM.adapter.getNode(jm, id);
       if (!n || !n.parent) return;
       const pid = n.parent.id;
       (groups[pid] = groups[pid] || []).push(id);
@@ -551,8 +551,8 @@
     const g = groups[0];
     let n = 0;
     g.ids.forEach((id) => {
-      const node = jm.get_node(id);
-      if (node && node.children && node.children.length) { jm.collapse_node(id); n++; }
+      const node = MM.adapter.getNode(jm, id);
+      if (node && node.children && node.children.length) { MM.adapter.collapseNode(jm, id); n++; }
     });
     refreshSelectionOutline();
     setStatus(n ? '已收起所选 ' + n + ' 个节点' : '所选节点没有可收起的子节点');
@@ -567,8 +567,8 @@
     const g = groups[0];
     let n = 0;
     g.ids.forEach((id) => {
-      const node = jm.get_node(id);
-      if (node && node.children && node.children.length) { jm.expand_node(id); n++; }
+      const node = MM.adapter.getNode(jm, id);
+      if (node && node.children && node.children.length) { MM.adapter.expandNode(jm, id); n++; }
     });
     refreshSelectionOutline();
     setStatus(n ? '已展开所选 ' + n + ' 个节点' : '所选节点没有可展开的子节点');
@@ -578,7 +578,7 @@
   function treeRootOf(nodeId) {
     const jm = state.jm;
     if (!jm) return null;
-    let n = jm.get_node(nodeId);
+    let n = MM.adapter.getNode(jm, nodeId);
     while (n && n.parent && !n.parent.isroot) n = n.parent;
     return (n && n.parent && n.parent.isroot && !n.isroot) ? n.id : null;
   }
@@ -587,7 +587,7 @@
   function treeOffsetFor(id) {
     const jm = state.jm;
     if (!jm) return null;
-    let n = jm.get_node(id);
+    let n = MM.adapter.getNode(jm, id);
     if (!n) return null;
     while (n && n.parent && !n.parent.isroot) n = n.parent;
     if (!n || n.isroot || !n.parent || !n.parent.isroot) return null;
@@ -599,7 +599,7 @@
   function applyTreeOffsets() {
     const jm = state.jm;
     if (!jm) return;
-    const rootNode = jm.get_node('root');
+    const rootNode = MM.adapter.getNode(jm, 'root');
     const topics = (rootNode && rootNode.children) || [];
     topics.forEach((tp) => {
       const o = treeOffsets[tp.id];
@@ -639,7 +639,7 @@
     const jm = state.jm;
     const out = {};
     if (!jm) return out;
-    const rootNode = jm.get_node('root');
+    const rootNode = MM.adapter.getNode(jm, 'root');
     const topics = (rootNode && rootNode.children) || [];
     topics.forEach((tp) => {
       const o = treeOffsets[tp.id];
@@ -654,7 +654,7 @@
     clearTreeOffsets();
     const jm = state.jm;
     if (!jm || !map || typeof map !== 'object') return 0;
-    const rootNode = jm.get_node('root');
+    const rootNode = MM.adapter.getNode(jm, 'root');
     const topics = (rootNode && rootNode.children) || [];
     const valid = new Set(topics.map((tp) => tp.id));
     let n = 0;
@@ -693,7 +693,7 @@
   function computeTreeBounds(treeRootId) {
     const jm = state.jm;
     if (!jm) return null;
-    const tp = jm.get_node(treeRootId);
+    const tp = MM.adapter.getNode(jm, treeRootId);
     if (!tp) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     let found = false;
@@ -766,7 +766,7 @@
     let topic = '';
     if (fdDragTreeRoot) {
       const jm = state.jm;
-      const n = jm && jm.get_node(fdDragTreeRoot);
+      const n = jm && MM.adapter.getNode(jm, fdDragTreeRoot);
       topic = n ? n.topic : '';
     }
     setStatus(fdDragMode
@@ -1214,7 +1214,7 @@
         label.id = 'mm-root-label';
         cont.appendChild(label);
       }
-      label.textContent = (jm.get_node('root') || {}).topic || '';
+      label.textContent = (MM.adapter.getNode(jm, 'root') || {}).topic || '';
       label.style.display = '';
     } else if (label) {
       label.style.display = 'none';
@@ -1274,18 +1274,18 @@
     setStatus('已还原视图：100% 缩放，根节点居中');
   }
 
-  function expandAll() { const jm = state.jm; if (jm) { jm.expand_all(); setStatus('已全部展开'); } }
+  function expandAll() { const jm = state.jm; if (jm) { MM.adapter.expandAll(jm); setStatus('已全部展开'); } }
   /** 收起（v0.16.2 修复）：jm.collapse_all() 会把 root 也折叠 → 容器根隐藏后
    *  什么都看不到（用户实测）。改为只收起**顶层主题**（root 保持展开），
    *  即"收起到树根"：主题的孙辈及以下全部收进主题节点。 */
   function collapseAll() {
     const jm = state.jm;
     if (!jm) return;
-    const root = jm.get_node('root');
+    const root = MM.adapter.getNode(jm, 'root');
     let n = 0;
     (root.children || []).forEach((tp) => {
-      if (jm.get_node(tp.id).children && jm.get_node(tp.id).children.length) {
-        jm.collapse_node(tp.id);
+      if (MM.adapter.getNode(jm, tp.id).children && MM.adapter.getNode(jm, tp.id).children.length) {
+        MM.adapter.collapseNode(jm, tp.id);
         n++;
       }
     });

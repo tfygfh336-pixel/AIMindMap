@@ -34,6 +34,17 @@ backups/
 # DSH 独立运行包（scripts/vendor-dsh.js 制作，含哈希清单；323MB/2.6万文件不入库）
 vendor/
 
+# ⚠️ 上面那条是**裸模式**：任何层级叫 `vendor` 的目录都命中，**包括 `renderer/vendor/`** ——
+# 实测（2026-10-09）`renderer/vendor/` 因此**从未入过库**：`jsmind.js` / `jsmind.css` 不是跟踪文件，
+# 也没有任何脚本会重建它们（`git log -- renderer/vendor` 为空）⇒ 新克隆的工程没有导图引擎。
+# 本次只做**最小**处理：放行我们自己写的 `JSMIND-INTERNALS.md`（升级 jsMind 时人工回归的内部符号表，
+# 必须入库，否则 CHANGELOG 与 docs/ARCHITECTURE.md 里对它的引用是死指针 ✗）；
+# 两个第三方 bundle **维持"不入库"的现状**，不在这次顺手改（那是另一个决定）。
+# gitignore 的规则顺序：**父目录被排除时无法单独放行里面的文件** ⇒ 必须先放行目录，再把包本身忽略回去。
+!renderer/vendor/
+renderer/vendor/jsmind.js
+renderer/vendor/jsmind.css
+
 # 原子写残留（正常不会存在，异常退出时可能留下）
 projects/**/*.tmp
 

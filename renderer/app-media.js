@@ -224,8 +224,8 @@
           // 只展开该节点的祖先链：原先 expand_to_depth(20) 会把整棵树摊开，用户的折叠状态就此丢失
           //（单源见 app-actions.js 的 expandAncestors）。
           if (MM.expandAncestors) MM.expandAncestors(jm, nid);
-          const nn = jm.get_node(nid);
-          if (nn) { jm.select_node(nid); showDetail(nn); }
+          const nn = MM.adapter.getNode(jm, nid);
+          if (nn) { MM.adapter.selectNode(jm, nid); showDetail(nn); }
           else setStatus('节点不在当前视图：' + nid);
         } else {
           switchProject(p, nid);

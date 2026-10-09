@@ -47,6 +47,7 @@
 | 文件 | 职责 |
 |------|------|
 | `index.html` | 唯一页面：工具栏、导图容器、浮动详情框模板、编辑/图片/附件对话框、审计与命令面板；**CSP 限制脚本来源** |
+| `mindmap-adapter.js` | **渲染库适配层**（v0.18 起）：把对 jsMind **公共 API** 的调用收敛成 12 个语义函数（`getNode` / `getRoot` / `getSelected` / `available` / `selectNode` / `addNode` / `updateNode` / `removeNode` / `expandNode` / `collapseNode` / `expandAll` / `loadTree`），全工程唯一的调用形状是 `MM.adapter.X(jm, …)`。**纯转发**：不判空、不兜底、不吞异常、不 try/catch。目的 = 换库只改这一个文件（迁移前 83 处调用点，迁移后 `renderer/*.js` 里公共 API 调用点为 0）。⚠️ 它**只**覆盖可移植的那一半；我们主动接管的内部（`view.relayout` / `show_lines` / `e_panel` / `<jmnode>` / `jmexpander` …）**故意不进来**，清单见 `renderer/vendor/JSMIND-INTERNALS.md` |
 | `app-core.js` | **必须最先加载**：初始化 `window.MM`、共享状态、`serializeTree`、`renderMind`、纯函数助手、`setStatus` |
 | `app-view.js` | 画布视图：统一 transform 平移缩放、视口接线、居中/还原、主题模式、展开收起 |
 | `app-detail.js` | 浮动详情框池：创建/复用/关闭、跟随锚点、小锁/大锁、逐帧看护、`showDetail` |
@@ -63,7 +64,7 @@
 | `app.js` | **接线层**：`wireUI()` + `window.MMApp` 对外导出 + `DOMContentLoaded` 启动 |
 | `editor.js` | **交互层**：编辑/图片/附件对话框、快捷键、MD 导入导出文件选择；只调 MMApp API，不直接改状态 |
 | `contextmenu.js` | **交互层**：节点/背景右键菜单 + 双击节点打开编辑对话框 |
-| `vendor/jsmind.js` | 第三方导图引擎（npm jsmind@0.9.1 es6 版，本地化避免 CDN） |
+| `vendor/jsmind.js` | 第三方导图引擎（npm **jsmind@0.9.1** es6 版，本地化避免 CDN）。**升级前必须先读 `renderer/vendor/JSMIND-INTERNALS.md`** —— 那张表列着我们**主动接管**的内部符号（14 类 / 75 个代码行）与三条实测事实，是升级时**要人工回归的清单**（本节只说明"它是谁"，不复述那张表） |
 | `style.css` | 界面样式（含审计面板与命令面板） |
 
 **为什么 app.js 与 editor.js 分离**：冒烟断言直接调用 `MMApp` 的 API（如
@@ -166,11 +167,16 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `dsh-sidebar-skill.js` | 侧栏 AI 的**指针 skill 内容生成**（纯函数） | `buildSidebarSkillContent(projectRoot)`：应用孵化内嵌实例时写入 `dsh-home/skills/ai-mind-map/SKILL.md` |
 | `ui-state.js` | 「界面有未保存编辑」的跨进程协调信号（纯逻辑 + 文件契约） | 读写 `projects/<项目>/.ui-state.json`，支撑"写前协调"（CLI 侧 `ui-state` 命令读它） |
 | `control.js` | **界面控制通道**（纯文件读写，不 require electron） | userData 下 `mm-control.json`（命令）/ `mm-control-result.json`（回执）；界面每 400ms 轮询执行一次。为什么不用 socket/命名管道：本机受限环境禁命名管道、网络要走代理 —— 文件是唯一到处都成立的通道。CLI 侧 `sidebar-only` / `dsh-sidebar` 都靠回执判"真生效"；**两个方向各关一半**（关左页留侧栏 / 留主界面关侧栏）⇒ 改一侧不必重启整个应用 |
-**加载顺序**（与 index.html 中实际的 `<script src>` 顺序一致，即依赖顺序）：
+**加载顺序**（与 `renderer/index.html` 里实际的 `<script src>` 顺序一致 = 依赖顺序）：
 `vendor/jsmind.js` → `history` → `tree-utils` → `schema` → `convert` → `config` →
-`palette-rank` → `app-core` → `app-view` → `app-detail` → `app-detail-drag` →
-`app-detail-content` → `app-media` → `app-actions` → `app-audit` → `app-palette` →
-`app-assoc` → `app.js` → `editor.js` → `contextmenu.js`。
+`palette-rank` → `related-model` → `sidebar-context` → `mindmap-adapter` → `app-core` →
+`app-view` → `app-detail` → `app-detail-drag` → `app-detail-content` → `app-media` →
+`app-actions` → `app-audit` → `app-palette` → `app-assoc` → `app-related` → `app-ask` →
+`app-import` → `app.js` → `editor.js` → `contextmenu.js`。
+
+> ⚠️ 上面这一行是**快照**：唯一的定义在 `renderer/index.html` 的 `<script src>` 顺序里，
+> **改加载顺序只改那里**；发现两边不一致时以 `index.html` 为准（2026-10-09 更正：
+> 本节此前漏列 `related-model` / `sidebar-context` / `app-related` / `app-ask` / `app-import` 五个模块）。
 
 > 注意：渲染层**不加载** `src/assoc.js`／`src/links.js`。`assoc` 的增删改只经 CLI（渲染层只展示与编辑
 > 标题正文，删节点时的清理走 IPC → CLI），链接剪枝同理 —— 所以渲染层不需要这两个模块的纯逻辑，
