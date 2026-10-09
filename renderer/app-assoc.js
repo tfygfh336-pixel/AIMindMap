@@ -118,10 +118,12 @@
   function refreshRelShowBtn(boxEl, node) {
     if (!boxEl) return null;
     let btn = boxEl.querySelector('.rel-show-btn');
+    let created = false;
     if (!btn) {
       btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'rel-show-btn rel-show-btn-round';
+      created = true;
       boxEl.appendChild(btn);
     }
     btn.setAttribute('data-rel-node', node && node.id ? node.id : '');
@@ -147,7 +149,19 @@
         (MM.fdPanel ? MM.fdPanel() : document).querySelectorAll('.rel-show-btn').forEach((b) => b.classList.toggle('is-on', on));
       });
     }
-    if (MM.placeRelShowBtn) MM.placeRelShowBtn(btn, boxEl);
+    // 位置**只在新建时定一次** ✓（用户 2026-10-09："应该和节点详情一起渲染、不要浮动"）
+    // 之后它就是框的子元素，跟着框走 ✓；拖动中不再重判（旧版每次 style 变化都重判 ⇒ 贴边就来回跳 ✗）
+    if (created && MM.placeRelShowBtn) {
+      MM.placeRelShowBtn(btn, boxEl);
+      if (!window.__relBtnResizeBound) {
+        window.__relBtnResizeBound = true;
+        window.addEventListener('resize', function () {
+          var b3 = document.querySelector('.float-detail .rel-show-btn');
+          var owner = b3 && b3.closest ? b3.closest('.float-detail') : null;
+          if (b3 && owner && MM.placeRelShowBtn) MM.placeRelShowBtn(b3, owner);
+        });
+      }
+    }
     // 框一动（拖动/缩放改 style）就重判贴哪边 —— 否则贴到面板边上会被 overflow:hidden 裁掉 ✗
     if (!boxEl.__relBtnObserved && window.MutationObserver) {
       boxEl.__relBtnObserved = true;
