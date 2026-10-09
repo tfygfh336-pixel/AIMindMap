@@ -1370,10 +1370,13 @@
       const panel = fdPanel();
       const pr = panel ? panel.getBoundingClientRect() : null;
       const br = boxEl.getBoundingClientRect();
-      const room = pr ? (br.left - pr.left) : 999;
-      const inside = room < 60;
-      btn.classList.toggle('is-inside', inside);
-      return inside ? 'inside' : 'side';
+      const roomLeft = pr ? (br.left - pr.left) : 999;
+      const roomRight = pr ? (pr.right - br.right) : 999;
+      // 默认浮在**左缘外侧**（用户：「绑定在节点详情框左边」✓）；左边没空间就镜像到右缘外侧 ✓
+      // ⚠️ **绝不放到框内** —— 放框内会遮住详情内容（用户 2026-10-08 第二批明确 ✗）
+      const place = (roomLeft >= 60) ? 'left' : ((roomRight >= 60) ? 'right' : 'left');
+      btn.classList.toggle('is-right', place === 'right');
+      return place;
     } catch (e) { return 'error'; }
   };
   MM.toggleNodeSelection = toggleNodeSelection;

@@ -998,7 +998,9 @@ function registerIpc() {
     st.timer = setInterval(() => {
       try { const p = screen.getCursorScreenPoint(); st.pt = { x: p.x, y: p.y }; } catch (err) { /* 取不到就保留上一次 ✓ */ }
       // ③ 跨视图兜底：渲染层收不到 mouseup ⇒ 终点永远不会上报 ✗ ⇒ 这里按"悬停时长"判 ✓
-      if (!st.fired && st.pt) {
+      // ⚠️ **只在真实使用里生效**：冒烟没有真光标概念 ⇒ 兜底是否触发会取决于测试者鼠标当时停在哪
+      //    （实测：它让 P7 对照组随机变红 ✗）⇒ 冒烟里关掉 ✓（判定逻辑本身由 drop-target 的单测钉住 ✓）
+      if (!isSmoke && !st.fired && st.pt) {
         try {
           const cb0 = (st.win && !st.win.isDestroyed() && st.win.getContentBounds) ? st.win.getContentBounds() : null;
           const vb0 = dshSidebar.viewBounds();

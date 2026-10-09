@@ -573,8 +573,8 @@ jmnode.mm-rel-dim { opacity: 0.32; }
 }
 .rel-show-btn.rel-show-btn-round:hover { background: #f0f5ff; border-style: solid; }
 .rel-show-btn.rel-show-btn-round.is-on { background: #2b5dd6; border-color: #2b5dd6; color: #fff; }
-.rel-show-btn.rel-show-btn-round.is-inside { left: 8px; }
-/* 贴面板左缘时伸不出去（容器 overflow:hidden）⇒ 退回**框内**左缘 ✓ 宁可贴里也不能被裁掉 ✓ */
+.rel-show-btn.rel-show-btn-round.is-right { left: auto; right: -54px; }   /* 左边没空间时镜像到右缘外侧 ✓ 永不进框内 ✓ */
+/* 贴面板左缘时伸不出去（容器 overflow:hidden）⇒ **镜像到右缘外侧** ✓（绝不进框内 ✗ 会遮住内容）*/
 
 
 

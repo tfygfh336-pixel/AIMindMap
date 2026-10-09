@@ -169,6 +169,9 @@
       img.addEventListener('mouseleave', hideFdImgTip);
     });
     // 相关知识点（我引用谁 + 谁引用我）——异步经主进程 CLI（跨项目反查后双向合并）
+    // 圆钮：**每次详情渲染都刷新** ✓（用户要求「固定每次和节点详情一起刷新」）
+    // 与关联数据无关 ⇒ 没有关联笔记 / 没有链接的节点也一定有一颗 ✓
+    if (MM.refreshRelShowBtn) MM.refreshRelShowBtn(box.el, node);
     const rl = fdQ(box, '.fd-related');
     rl.innerHTML = '<div class="bl-title">相关知识点（加载中…）</div>';
     const projectName = state.project && state.project.name;

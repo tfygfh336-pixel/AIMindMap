@@ -93,11 +93,15 @@ module.exports = [
         var vis = !!b.offsetParent || (r.width > 0 && r.height > 0);
         // ★ 圆形判定（用户 2026-10-08 第二批："变成一个圆形按钮浮在节点详情左边" ✓）
         var cs = window.getComputedStyle(b);
+        // ★ 不遮挡节点详情框（用户 2026-10-08 第二批 ✗）：圆钮必须在框的**横向之外** ✓
+        var bx = b.closest ? b.closest('.float-detail') : null;
+        var bq = bx ? bx.getBoundingClientRect() : null;
+        var outsideBox = !!bq && (r.right <= bq.left + 1 || r.left >= bq.right - 1);
         var radius = cs.borderTopLeftRadius || '';
         var round = (radius === '50%' || parseFloat(radius) >= Math.min(r.width, r.height) / 2 - 1);
-        return JSON.stringify({ ok: !!area && !!inside && !!vis && round,
+        return JSON.stringify({ ok: !!area && !!inside && !!vis && round && outsideBox,
           text: '按钮=' + (b.textContent || '').trim() + ' 面积=' + Math.round(r.width) + 'x' + Math.round(r.height)
-            + ' 在面板内=' + inside + ' 可见=' + vis + ' 圆形=' + round + ' 圆角=' + radius });
+            + ' 在面板内=' + inside + ' 可见=' + vis + ' 圆形=' + round + ' 圆角=' + radius + ' 在框外(不遮挡)=' + outsideBox });
       })()`);
       let o = JSON.parse(btn);
       if (!o.ok) return { ok: false, text: o.text };

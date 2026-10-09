@@ -112,40 +112,44 @@
    *  ＋「展示关联节点」按钮（功能 2）：**恒常渲染** —— 一个节点可能没有关联笔记但**有链接**
    *  （那种情况一样能展示关联节点），所以按钮不能挂在"有关联笔记"这个条件里 ✗
    *  （契约：`.assoc-entry` 的条数语义**不变**，冒烟断言数的是它 ✓ 按钮是另一个类名） */
+  /** 圆形「关联节点」按钮：**每次详情渲染都刷新一遍** ✓（用户 2026-10-08 第二批：
+   *  「出现一次就消失了」「应该固定每次和节点详情一起刷新并绑定在节点详情框左边」「没有关联节点的也要有」）。
+   *  与关联数据**无关** ⇒ 不放在 assoc 查询回调里（那正是「消失」与「无关联就没有」的真因 ✗）。 */
+  function refreshRelShowBtn(boxEl, node) {
+    if (!boxEl) return null;
+    let btn = boxEl.querySelector('.rel-show-btn');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'rel-show-btn rel-show-btn-round';
+      boxEl.appendChild(btn);
+    }
+    btn.setAttribute('data-rel-node', node && node.id ? node.id : '');
+    btn.innerHTML = '<span class="rsb-icon">🔗</span>';
+    btn.title = '关联节点：在导图上高亮它的关联节点、缩放至刚好框住并画出关系虚线；再点一次或 Esc 退出';
+    btn.setAttribute('aria-label', '关联节点（高亮展示）');
+    btn.classList.toggle('is-on', !!(MM.isRelatedActive && MM.isRelatedActive()));
+    if (MM.placeRelShowBtn) MM.placeRelShowBtn(btn, boxEl);
+    // 框一动（拖动/缩放改 style）就重判贴哪边 —— 否则贴到面板边上会被 overflow:hidden 裁掉 ✗
+    if (!boxEl.__relBtnObserved && window.MutationObserver) {
+      boxEl.__relBtnObserved = true;
+      try {
+        new MutationObserver(function () {
+          var b2 = boxEl.querySelector('.rel-show-btn');
+          if (b2 && MM.placeRelShowBtn) MM.placeRelShowBtn(b2, boxEl);
+        }).observe(boxEl, { attributes: true, attributeFilter: ['style'] });
+      } catch (e0) { /* 观察器建不起来不影响主流程 ✓ */ }
+    }
+    return btn;
+  }
+  MM.refreshRelShowBtn = refreshRelShowBtn;
+
   function renderAssocEntries(el, res, node) {
     const items = (res && res.items) || [];
     // ⑦「展示关联节点」按钮：用户反馈"应该再明显再大一点，让它**独立出现在节点详情框的左侧**"✓
-    // ⇒ 不再塞在关联区里，而是挂到**框元素**上、贴在框左缘竖排显示 ✓（类名沿用 .rel-show-btn ⇒
-    //   点击/开关态的逻辑不用改 ✓；只是多了个定位修饰类 ✓）
-    // ⚠️ 面板 `#mindmap-container` 是 overflow:hidden ⇒ 框贴着面板左缘时伸不出去 ✗ ⇒ 那种情况
-    //    退回"框内左缘"（is-inside ✓），宁可贴里也不能被裁掉 ✓
-    const boxEl = el.closest ? el.closest('.float-detail') : null;
-    let sideBtn = null;
-    if (boxEl) {
-      sideBtn = boxEl.querySelector('.rel-show-btn');
-      if (!sideBtn) {
-        sideBtn = document.createElement('button');
-        sideBtn.type = 'button';
-        sideBtn.className = 'rel-show-btn rel-show-btn-round';   // 圆形（用户 2026-10-08 第二批 ✓）
-        boxEl.appendChild(sideBtn);
-      }
-      sideBtn.setAttribute('data-rel-node', node && node.id ? node.id : '');
-      sideBtn.innerHTML = '<span class="rsb-icon">🔗</span>';   // 圆钮只有一个图标（文字走 tooltip / aria-label ✓）
-      sideBtn.title = '关联节点：在导图上高亮它的关联节点、缩放至刚好框住并画出关系虚线（Esc 退出）';
-      sideBtn.setAttribute('aria-label', '关联节点（高亮展示）');
-      if (MM.isRelatedActive && MM.isRelatedActive()) sideBtn.classList.add('is-on');
-      // 贴哪边由**实测矩形**决定（旧版这个 offsetLeft 阈值不可靠 ⇒ 会被裁掉、看起来"消失" ✗）
-      if (MM.placeRelShowBtn) MM.placeRelShowBtn(sideBtn, boxEl);
-      // 框被拖动/缩放（style 变化）时重判 —— 否则拖到面板左缘后就被 overflow:hidden 裁掉 ✗
-      if (!boxEl.__relBtnObserved && window.MutationObserver) {
-        boxEl.__relBtnObserved = true;
-        try {
-          new MutationObserver(function () { var b2 = boxEl.querySelector('.rel-show-btn'); if (b2 && MM.placeRelShowBtn) MM.placeRelShowBtn(b2, boxEl); })
-            .observe(boxEl, { attributes: true, attributeFilter: ['style'] });
-        } catch (e0) { /* 观察器建不起来不影响主流程 ✓ */ }
-      }
-      // （is-inside 由 MM.placeRelShowBtn 设置 ✓ 见上面）
-    }
+    // 位置（贴左缘外侧 / 左边没空间时镜像到右缘外侧）由 MM.placeRelShowBtn 用**实测矩形**决定 ✓：
+    // 绝不放进框内（会遮住详情内容 ✗ 用户 2026-10-08 第二批明确）。
+    // 圆钮由 refreshRelShowBtn() 负责（每次详情渲染都调 ✓，且与关联数据无关 ✓）；这里只管关联笔记列表 ✓
     let html = '';
     if (items.length) {
       html += '<div class="bl-title">关联笔记（' + items.length + '）</div>';
@@ -167,7 +171,8 @@
         if (a) MM.showAssocPage(a, node);
       });
     });
-    const btn = (sideBtn || el.querySelector('.rel-show-btn'));
+    const boxOwner = el.closest ? el.closest('.float-detail') : null;   // 可能为空（el 已脱离文档 ✗）
+    const btn = boxOwner ? boxOwner.querySelector('.rel-show-btn') : null;
     if (btn) {
       btn.addEventListener('click', (e) => {
         e.preventDefault();
