@@ -13,6 +13,20 @@
  * ============================================================ */
 'use strict';
 
+// 真帧像素判据（"仍可见"那半）：像素统计的唯一实现 + 阈值单源
+const frameStats = require('../vision/frame-stats.js');
+const VTH = frameStats.THRESHOLDS;
+
+/** 渲染层返回 JSON 的取回口（迁移后的断言多处复用 ✓） */
+async function execJson(ctx, js) {
+  const raw = await ctx.exec(js);
+  try { return JSON.parse(raw); } catch (e) { return { ok: false, text: String(raw).slice(0, 300) }; }
+}
+
+/** 判别力证明开关（默认空 ⇒ 正常跑完全不生效 ✓）；逗号分隔多键 ⇒ 一趟跑完多条注入 ✓ */
+const INJECT = process.env.MM_SMOKE_INJECT || '';
+const MY_KEY = (k) => INJECT.split(',').indexOf('12-' + k) >= 0;
+
 const assertions = [
   {
     name: '拖宽分隔条：IPC 序列 beginDrag→endDrag 在未 init（冒烟）下安全无副作用',
@@ -59,29 +73,107 @@ const assertions = [
   },
 
   {
-    name: '拖宽不遮挡工具栏：窄主区下 toolbar 自动换行（flex-wrap），保存按钮仍可见可点',
+    /* 【可见性判据迁移（2026-10-09）】原判据 = 保存按钮 rect 在 toolbar rect 内 + `flexWrap` 计算样式
+     *  （V1 门禁在册欠账之一）。rect 对**裁切与遮挡是盲的**：按钮被挤到视口外/被盖住时读数一模一样 ✗。
+     *  迁到真判据：① 命中测试 `elementFromPoint(按钮中心)` 必须命中按钮自身（抓遮挡与出视口）；
+     *  ② 真帧像素数按钮矩形里的非背景像素（抓"没画出来"）；
+     *  ③ "可点"用**真输入** `ctx.input.click`（走 Chromium 命中测试），并在 capture 阶段拦下 click
+     *  只记"这一点上是谁"—— 不真触发 save()（本断言判"点得到"，落盘正确性归 09 域 ✓）。
+     *  ⚠️ 能力边界（如实标注）：DSH 侧栏是主进程的 WebContentsView，**不参与 DOM 命中测试** ——
+     *  "按钮是否落在给侧栏让出的那一条带里"只能由几何判（`save.right ≤ toolbar 内容框右缘`），
+     *  其余（DOM 遮挡 / 裁切 / 出视口）由真判据覆盖；侧栏 native view 那一层需真机复核 ✓。 */
+    name: '拖宽不遮挡工具栏：窄主区下 toolbar 自动换行（flex-wrap），保存按钮仍可见可点'
+      + '（elementFromPoint 命中自身 + 真帧像素 + 真输入点击）',
     run: async (ctx) => {
-      const r = await ctx.exec(`(async () => {
-        // 模拟侧栏拖到最宽（主界面被压到最窄）：让位 CSS 全量生效
+      if (!ctx.input) return { ok: false, text: '没有真输入底座（ctx.input 缺失）⇒ 取不到真帧/真输入 = 红' };
+      // ① 铺场：模拟侧栏拖到最宽（主界面被压到最窄）：让位 CSS 全量生效
+      const geo = await execJson(ctx, `(function () {
+        // 前置（**断言自建前置** ✓，与域 09/37 同一做法）：别的域可能留下没关掉的模态 ——
+        // 全量运行实测：跑到本域时 \`#edit-dialog\`（编辑节点弹窗）还开着，把工具栏盖住了。
+        // **模态开着时点不到保存是正常的**，不是本条要抓的损害（本条判的是"拖宽会不会把按钮
+        // 挤出可视区 / 被侧栏盖住"）⇒ 先把残留模态收干净，并把"收了谁"写进报文 ——
+        // 免得看起来像是把判据放宽了 ✗（\`display:none\` 正是产品自己 \`closeEditDialog\` 的做法 ✓）。
+        var strays = [];
+        Array.prototype.slice.call(document.querySelectorAll('.overlay')).forEach(function (ov) {
+          if (ov.style.display && ov.style.display !== 'none') {
+            strays.push(ov.id || (String(ov.className).split(' ')[0] || ov.tagName));
+            ov.style.display = 'none';
+          }
+        });
         document.body.classList.add('dsh-sidebar-on');
         document.body.style.setProperty('--dsh-sidebar-width', '720px');
         window.dispatchEvent(new Event('resize'));
-        await new Promise(function (res) { setTimeout(res, 60); });
-        const tb = document.getElementById('toolbar');
-        const wrap = getComputedStyle(tb).flexWrap;
-        const save = document.getElementById('btn-save');
-        const sr = save.getBoundingClientRect();
-        const tbRect = tb.getBoundingClientRect();
-        // 可见 = 在 toolbar 矩形内且高度正常（换行后仍在文档流内，未被裁掉）
-        const visible = sr.height > 0 && sr.top >= tbRect.top - 1
-          && sr.bottom <= tbRect.bottom + 1 && sr.left >= tbRect.left - 1;
-        // 还原
+        var tb = document.getElementById('toolbar');
+        var save = document.getElementById('btn-save');
+        if (!tb || !save) return JSON.stringify({ ok: false, text: '没有 toolbar 或 btn-save' });
+        var cs = window.getComputedStyle(tb);
+        var sr = save.getBoundingClientRect(), tr = tb.getBoundingClientRect();
+        var cx = Math.round(sr.left + sr.width / 2), cy = Math.round(sr.top + sr.height / 2);
+        // —— 判别力证明（\`MM_SMOKE_INJECT=12-cover-save\`）：复刻"按钮被盖住"（native 侧栏占道
+        //   在 DOM 里的等价物）—— rect 读数**一个数都不变**，只有命中测试/真输入能判出来 ✓
+        if (${JSON.stringify(MY_KEY('cover-save'))}) {
+          var cov = document.createElement('div');
+          cov.id = 'mm-save-cover-probe';
+          cov.style.cssText = 'position:fixed;left:' + sr.left + 'px;top:' + sr.top + 'px;width:' + sr.width
+            + 'px;height:' + sr.height + 'px;background:#ffffff;z-index:99999;';
+          document.body.appendChild(cov);
+        }
+        var at = document.elementFromPoint(cx, cy);
+        var isSave = function (e) { return !!(e && (e.id === 'btn-save' || (e.closest && e.closest('#btn-save')))); };
+        // 真输入点击的**拦截器**：capture 阶段先拿到事件（document 是路径最外层）⇒ 记下"命中是谁"
+        // 后立刻 stopPropagation，事件到不了 #btn-save 自己的 click 监听器 ⇒ 不落盘、无副作用 ✓
+        window.__mmSaveProbe = null; window.__mmSaveProbeArmed = true;
+        document.addEventListener('click', function (ev) {
+          if (!window.__mmSaveProbeArmed) return;
+          window.__mmSaveProbeArmed = false;
+          window.__mmSaveProbe = { target: ev.target ? (ev.target.id ? ('#' + ev.target.id) : (ev.target.tagName || '?')) : null,
+            isSave: isSave(ev.target), x: ev.clientX, y: ev.clientY };
+          ev.stopPropagation(); ev.preventDefault();
+        }, true);
+        return JSON.stringify({ ok: true, wrap: cs.flexWrap, padRight: parseFloat(cs.paddingRight) || 0,
+          dpr: window.devicePixelRatio || 1, innerW: window.innerWidth, strays: strays,
+          tb: { left: tr.left, top: tr.top, right: tr.right, bottom: tr.bottom, width: tr.width, height: tr.height },
+          save: { left: sr.left, top: sr.top, width: sr.width, height: sr.height, right: sr.right, bottom: sr.bottom,
+            center: { x: cx, y: cy } },
+          hitIsSave: isSave(at),
+          hitWhat: at ? (at.id ? ('#' + at.id) : (String(at.className || at.tagName).slice(0, 30))) : null });
+      })()`);
+      if (!geo.ok) return { ok: false, text: geo.text || '铺场失败' };
+      await ctx.input.settle({ delayMs: 150 });
+      // ② 真帧像素：按钮矩形里数非背景像素（"这块到底画出来没有"）
+      const img = await ctx.input.capture();
+      const dpr = geo.dpr || 1;
+      const scan = frameStats.scanRegion(img, { x: geo.save.left * dpr, y: geo.save.top * dpr,
+        width: geo.save.width * dpr, height: geo.save.height * dpr },
+      { predicate: frameStats.nonBackgroundPredicate() });
+      // ③ 真输入点击（真命中测试）+ ④ 还原铺场（本域后面的断言不该看到"侧栏被拖宽"）
+      await ctx.input.click(geo.save.center);
+      await ctx.input.settle({ delayMs: 150 });
+      const probe = await execJson(ctx, `(function () {
+        var p = window.__mmSaveProbe;
+        var cov = document.getElementById('mm-save-cover-probe');
+        if (cov) cov.parentNode.removeChild(cov);      // 注入收尾一律复位 ✓
         document.body.classList.remove('dsh-sidebar-on');
         document.body.style.setProperty('--dsh-sidebar-width', '');
         window.dispatchEvent(new Event('resize'));
-        return { wrap, visible, ok: wrap === 'wrap' && visible };
+        return JSON.stringify({ ok: true, probe: p });
       })()`);
-      return { ok: !!r.ok, text: 'flexWrap=' + r.wrap + ' 保存按钮在最窄主区下可见=' + r.visible };
+      await ctx.input.settle({ delayMs: 60 });
+      const pr = probe.probe;
+      // 几何那半：按钮不得伸进"给侧栏让出的那一条带"（内容框右缘 = toolbar 右缘 − padding-right）
+      const contentRight = geo.tb.right - geo.padRight;
+      const inBand = geo.save.right <= contentRight + 1 && geo.save.bottom <= geo.tb.bottom + 1
+        && geo.save.top >= geo.tb.top - 1;
+      const ok = geo.wrap === 'wrap' && geo.hitIsSave === true && scan.ok === true
+        && scan.hits >= VTH.paint.minHitsSaveBtn && !!pr && pr.isSave === true && inBand;
+      return { ok: ok, text: 'flexWrap=' + geo.wrap
+        + ' ｜ 命中测试命中保存按钮=' + geo.hitIsSave + '（命中=' + geo.hitWhat + '）'
+        + ' ｜ 真帧非背景像素=' + (scan.ok ? scan.hits : ('扫描失败:' + scan.reason))
+        + '（阈值 ≥' + VTH.paint.minHitsSaveBtn + '）'
+        + ' ｜ 真输入点击送达=' + (pr ? (pr.isSave + '（事件目标=' + pr.target + ' @' + pr.x + ',' + pr.y + '）') : '没收到 click')
+        + ' ｜ 按钮rect右缘=' + Math.round(geo.save.right) + ' ≤ 内容框右缘=' + Math.round(contentRight) + '=' + inBand
+        + ' ｜ 窗口宽=' + geo.innerW + ' 让出带宽=' + geo.padRight
+        + ' ｜ 前置收掉的残留模态=' + (geo.strays && geo.strays.length ? geo.strays.join(',') : '（无）') };
     }
   },
 
@@ -267,14 +359,17 @@ const assertions = [
   },
 
   {
-    name: '虚线框范围 = 实际会被折叠的范围（选中节点 ∪ 其可见子节点）',
+    // ⚠️ 名字里的"可见"曾经写成"可见子节点"⇒ 被 V1 门禁当成了**界面可见性**断言，而体内量的是 rect ✗。
+    //    这里的语义其实是**数据层**的「展开集合」（`node.expanded` / `jm.layout.is_visible`），
+    //    与"用户看不看得见"无关 ⇒ 正解是**改名消歧**（把话说到不会歧义），而不是硬套像素判据 ✓。
+    name: '虚线框范围 = 实际会被折叠的范围（选中节点 ∪ 其展开中的子节点）',
     run: async (ctx) => {
       const r = await ctx.exec(`(async () => {
         var app = window.MMApp;
         var jm = app.getState().jm;
         jm.expand_all();
         await new Promise(function (res) { setTimeout(res, 60); });
-        // 只选父节点（不选子）：框应自动把其可见子树也包进来（预告折叠范围）
+        // 只选父节点（不选子）：框应自动把其**展开集合**里的子树也包进来（预告折叠范围）
         var topic = jm.get_node('wlan-01');
         if (!topic || !topic.children || !topic.children.length) {
           return { ok: false, text: 'wlan-01 无子节点（前置不成立）' };

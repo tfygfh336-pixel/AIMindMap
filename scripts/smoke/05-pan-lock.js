@@ -9,6 +9,15 @@
  * ============================================================ */
 'use strict';
 
+const frameStats = require('../vision/frame-stats.js');
+const VTH = frameStats.THRESHOLDS;
+
+/** 判别力证明开关（默认空 ⇒ 正常跑完全不生效 ✓）。
+ *  支持逗号分隔多键：本工程有 6 条迁移后的断言要各自证明"会红"，一趟冒烟跑完比跑 6 趟省 10 分钟 ✓
+ *  （域 37 用的是精确匹配，遇到列表值天然忽略、不受影响 ✓） */
+const INJECT = process.env.MM_SMOKE_INJECT || '';
+const MY_KEY = (k) => INJECT.split(',').indexOf('05-' + k) >= 0;
+
 const assertions = [
   {
     name: 'drag is unclamped (box may be dragged outside the container)',
@@ -562,12 +571,20 @@ const assertions = [
     }
   },
   {
-    name: '拖动树模式：任意方向拖动后每条可见连线两端都落在连线层矩形内（无裁切丢失）',
+    /* 【可见性判据迁移（2026-10-09）】原判据 = 父子两级 rect 比大小，**对裁切是盲的**：
+     *  连线被连线层位图裁掉时，两个 rect 一个数都不变 ⇒ 断言恒绿（V1 门禁在册欠账之一）。
+     *  迁到真判据：**每条连线两端各取一个取样点，在真帧里数"线像素"**（`scanRegionMany` +
+     *  `thresholds.paint.minHitsLineEnd`）—— 线被裁 ⇒ 那个窗口里 0 个非背景像素 ⇒ 必红 ✓。
+     *  取样点用连线方向内缩（不贴在节点边上，避开节点自己的边框像素）；
+     *  只对**落在可见面板内**的取样点判（拖到视野外的线是"看不见"，不是"线丢了" ✗ 那不是本条的损害）。 */
+    name: '拖动树模式：任意方向拖动后每条可见连线两端都落在连线层矩形内（无裁切丢失）+ 两端真帧里都数得到线像素',
     run: async (ctx) => {
       // 用户反馈：拖动后子节点连线丢失。根因：连线层位图固定、余量仅 hmargin/
       // vmargin，向任意方向拖动超过该距离，线端点被位图边界裁切，节点 DOM 溢出
       // 仍可见。修复让连线层位置/尺寸随偏移扩展。这里多方向（含向右/下超出余量
-      // 的大距离）黑盒核对：每条线两端（父子节点相邻缘）必须在连线层屏幕矩形内。
+      // 的大距离）黑盒核对：每条线两端（父子节点相邻缘）必须在连线层屏幕矩形内，
+      // **并且真的画出来了**（真帧像素，见上面那段迁移说明）。
+      if (!ctx.input) return { ok: false, text: '没有真输入底座（ctx.input 缺失）⇒ 取不到真帧 = 红' };
       const r = await ctx.exec(
         `(async function () {
            var app = window.MMApp;
@@ -577,8 +594,20 @@ const assertions = [
            var panel = document.querySelector('jmnodes').parentElement;
            var canvas = panel.querySelector('canvas.jsmind');
            var vectors = [[-130, -90], [260, 150], [-400, 220], [150, -260]];
-           var summary = [];
-           var allOk = true;
+           var dpr = window.devicePixelRatio || 1;
+           // 主题模式下 root → 顶层主题的线是**设计性不画**的（见 installRootLineOverride）⇒
+           // 像素判据必须跳过它们，否则「没画」会被误判成「线被裁掉」✗（实测踩到：comp-net 0/0 像素）
+           var hideRoot = app.isThemeMode ? app.isThemeMode() : false;
+           // —— 判别力证明（\`MM_SMOKE_INJECT=05-fixed-bitmap\`）：复刻**旧缺陷** ——
+           //   连线层位图固定不随包围盒扩 ⇒ 线端点被位图边界裁掉 ⇒ 必须判红 ✓
+           var INJ = ${JSON.stringify(MY_KEY('fixed-bitmap'))};
+           var origSetSize = null;
+           if (INJ && jm.view && jm.view.graph && jm.view.graph.set_size) {
+             var g = jm.view.graph;
+             origSetSize = g.set_size;
+             g.set_size = function () { return origSetSize.call(g, 200, 150); };
+           }
+           var OUT = [];
            for (var vi = 0; vi < vectors.length; vi++) {
              window.MM.clearTreeOffsets();
              app.resetView();
@@ -590,13 +619,24 @@ const assertions = [
              document.dispatchEvent(new MouseEvent('mousemove', { button: 0, clientX: cx + VX, clientY: cy + VY, bubbles: true, cancelable: true }));
              document.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true, cancelable: true }));
              var cr = canvas.getBoundingClientRect();
+             var pr2 = panel.getBoundingClientRect();
+             // 可见区 = 连线层矩形 ∩ 面板矩形（面板 overflow:hidden ⇒ 交集之外的东西用户本来就看不到）
+             var vis = { left: Math.max(cr.left, pr2.left), top: Math.max(cr.top, pr2.top),
+               right: Math.min(cr.right, pr2.right), bottom: Math.min(cr.bottom, pr2.bottom) };
+             var INSET = 3;
+             function inVis(p) {
+               return p.x >= vis.left + INSET && p.x <= vis.right - INSET
+                 && p.y >= vis.top + INSET && p.y <= vis.bottom - INSET;
+             }
              var bad = 0, checked = 0; var ex = [];
+             var samples = [], short = 0, offscreen = 0, rootSkipped = 0, oneEndIn = 0;
              function inRect(px, py) {
                return px >= cr.left - 1 && px <= cr.right + 1 && py >= cr.top - 1 && py <= cr.bottom + 1;
              }
              for (var id in jm.mind.nodes) {
                var t = jm.mind.nodes[id];
                if (t.isroot || !jm.layout.is_visible(t) || !t.parent) continue;
+               if (hideRoot && t.parent.isroot) { rootSkipped++; continue; }
                var pe = document.querySelector('jmnode[nodeid="' + t.parent.id + '"]');
                var ce = document.querySelector('jmnode[nodeid="' + t.id + '"]');
                if (!pe || !ce) continue;
@@ -613,17 +653,100 @@ const assertions = [
                if (!inRect(p1.x, p1.y) || !inRect(p2.x, p2.y)) {
                  bad++; if (ex.length < 4) ex.push(t.id);
                }
+               // ── 取样点：沿连线方向从两端各内缩 D（避开节点自己的边框像素）──
+               //  ⚠️ 只判**在屏上**的那一端：本工程的地图（comnet 548 节点）远大于面板
+               //  （实测面板 729×754）⇒ 绝大多数线的两端都在视口外。**两端都出屏的跳过**，
+               // 只剩一端在屏的**仍然要判**（"这一端真的画出来了吗"是同一件事 ✓）。
+               var dx = p2.x - p1.x, dy = p2.y - p1.y;
+               var len = Math.sqrt(dx * dx + dy * dy);
+               if (!(len >= 8)) { short++; continue; }       // 太短的连线没有"两端内缩"空间
+               var ux = dx / len, uy = dy / len;
+               var D = Math.min(6, len / 4);
+               var q1 = { x: p1.x + ux * D, y: p1.y + uy * D };
+               var q2 = { x: p2.x - ux * D, y: p2.y - uy * D };
+               var v1 = inVis(q1), v2 = inVis(q2);
+               if (!v1 && !v2) { offscreen++; continue; }
+               if (!v1 || !v2) oneEndIn++;
+               samples.push({ id: t.id, q1: v1 ? q1 : null, q2: v2 ? q2 : null });
              }
-             if (bad) allOk = false;
-             summary.push('[' + VX + ',' + VY + ']bad=' + bad + '/' + checked + (ex.length ? '(' + ex.join(',') + ')' : ''));
+             OUT.push({ v: [VX, VY], bad: bad, checked: checked, ex: ex,
+               short: short, offscreen: offscreen, rootSkipped: rootSkipped, oneEndIn: oneEndIn,
+               vis: { left: Math.round(vis.left), top: Math.round(vis.top), right: Math.round(vis.right), bottom: Math.round(vis.bottom) },
+               canvas: { left: Math.round(cr.left), top: Math.round(cr.top), right: Math.round(cr.right), bottom: Math.round(cr.bottom) },
+               samples: samples });
            }
            app.setDragMode(false);
            window.MM.clearTreeOffsets();
            app.resetView();
-           return { ok: allOk, text: summary.join(' ') };
+           if (origSetSize) jm.view.graph.set_size = origSetSize;   // 注入收尾一律复位 ✓
+           return JSON.stringify({ ok: true, dpr: dpr, s: (window.MM.getPanState ? window.MM.getPanState().s : null),
+             panel: { left: Math.round(panel.getBoundingClientRect().left), top: Math.round(panel.getBoundingClientRect().top),
+               width: Math.round(panel.getBoundingClientRect().width), height: Math.round(panel.getBoundingClientRect().height) },
+             frames: OUT });
          })()`
       );
-      return r;
+      let data;
+      try { data = JSON.parse(r); } catch (e) { return { ok: false, text: '几何取样返回的不是 JSON：' + String(r).slice(0, 200) }; }
+      if (!data.ok) return { ok: false, text: '几何取样失败' + JSON.stringify(data).slice(0, 200) };
+      // ── 逐帧：真帧里数每个取样点窗口的非背景像素（一帧只取一次位图，见 scanRegionMany 的注释）──
+      const dpr = data.dpr || 1;
+      const ROI = 9;                                     // 取样窗口边长（CSS px）
+      const pred = frameStats.nonBackgroundPredicate();
+      const parts = [];
+      let clipped = 0, probed = 0, checkedAll = 0, shortAll = 0, offAll = 0, badAll = 0, rootAll = 0, oneAll = 0;
+      let layerMin = Infinity;
+      for (const f of data.frames) {
+        checkedAll += f.checked; shortAll += f.short; offAll += f.offscreen; badAll += f.bad;
+        rootAll += f.rootSkipped; oneAll += f.oneEndIn;
+        const rects = [];
+        for (const s of f.samples) {
+          if (s.q1) rects.push({ x: (s.q1.x - ROI / 2) * dpr, y: (s.q1.y - ROI / 2) * dpr, width: ROI * dpr, height: ROI * dpr });
+          if (s.q2) rects.push({ x: (s.q2.x - ROI / 2) * dpr, y: (s.q2.y - ROI / 2) * dpr, width: ROI * dpr, height: ROI * dpr });
+        }
+        // 连线层"可见区整块"的像素计数（另一条**更宽**的真判据：层真的画了东西）
+        const layerRoi = { x: f.vis.left * dpr, y: f.vis.top * dpr,
+          width: (f.vis.right - f.vis.left) * dpr, height: (f.vis.bottom - f.vis.top) * dpr };
+        if (!rects.length) {
+          // 这一帧一个在屏端点都没有 ⇒ 判不了像素；**但几何那一半照样要报**（端点全落在连线层矩形外
+          // 正是"位图没扩"的旧缺陷形态 ⇒ 报文必须点名它，不然看不出是谁红的 ✗）
+          parts.push('[' + f.v + ']几何bad=' + f.bad + '/' + f.checked
+            + (f.bad ? '（端点落在连线层矩形外 ⇒ 该帧红了）' : '') + ' 无可见端点可判');
+          continue;
+        }
+        const img = await ctx.input.capture();
+        const layer = frameStats.scanRegion(img, layerRoi, { predicate: pred });
+        if (layer.ok) layerMin = Math.min(layerMin, layer.hits);
+        const res = frameStats.scanRegionMany(img, rects, { predicate: pred });
+        let lost = 0; const lostEx = []; let k = 0;
+        for (const s of f.samples) {
+          const ends = [];
+          if (s.q1) ends.push(res[k++]);
+          if (s.q2) ends.push(res[k++]);
+          probed += ends.length;
+          const okPix = ends.every((h) => h.ok && h.hits >= VTH.paint.minHitsLineEnd);
+          if (!okPix) {
+            clipped++;
+            lost++;
+            if (lostEx.length < 3) lostEx.push(s.id + '(' + ends.map((h) => h.hits).join('/') + ')');
+          }
+        }
+        parts.push('[' + f.v + ']几何bad=' + f.bad + '/' + f.checked + ' 线像素丢失=' + lost
+          + '/' + f.samples.length + (lostEx.length ? '(' + lostEx.join(',') + ')' : '')
+          + ' 太短跳过=' + f.short + ' 只有一端在屏=' + f.oneEndIn + ' 两端都出屏=' + f.offscreen
+          + ' root线跳过=' + f.rootSkipped + ' 可见区像素（节点+连线合计）=' + (layer.ok ? layer.hits : '扫描失败'));
+      }
+      if (!probed || !isFinite(layerMin)) {
+        return { ok: false, text: '取不到"线画出来没有"的真值（没有落在可见区内的取样点 / 连线层扫不了）⇒ 红 ｜ 几何='
+          + badAll + '/' + checkedAll + ' 视口=' + JSON.stringify(data.frames[0].vis) + ' 面板=' + JSON.stringify(data.panel) + ' s=' + data.s };
+      }
+      const layerOk = layerMin >= VTH.paint.minHitsMapVisible;
+      const ok = badAll === 0 && clipped === 0 && layerOk;
+      return { ok: ok, text: parts.join(' ｜ ')
+        + ' ｜ 判据：连线层矩形（几何）+ **每个在屏端点** 9x9px 窗口真帧非背景像素 ≥' + VTH.paint.minHitsLineEnd
+        + ' + 可见区整块非背景像素 ≥' + VTH.paint.minHitsMapVisible + '（本次最少 ' + layerMin + '，只挡整块白屏）'
+        + '（已判 ' + probed + ' 个在屏端点，太短跳过 ' + shortAll + '、两端都出屏跳过 ' + offAll
+        + '、root线（设计性不画）跳过 ' + rootAll + '、只有一端在屏 ' + oneAll + '）'
+        + ' ｜ s=' + data.s + ' 面板=' + JSON.stringify(data.panel) + ' 视口=' + JSON.stringify(data.frames[0].vis) };
     }
   },
   {

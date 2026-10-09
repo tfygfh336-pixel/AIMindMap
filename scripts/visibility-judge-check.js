@@ -98,48 +98,29 @@ const RUN_AHEAD_RE = /^[\s\S]{0,400}?\brun\s*:/;
  *    ⚠️ 清单只能靠"修好 + 删条目"缩小；**加条目**必须同时给出为什么它只能这么判（否则就是放宽判定 ✗）。
  * --------------------------------------------------------------- */
 const DEBT = [
-  {
-    rel: 'scripts/smoke/05-pan-lock.js',
-    name: '拖动树模式：任意方向拖动后每条可见连线两端都落在连线层矩形内（无裁切丢失）',
-    why: '名字说的是"可见连线不被裁"，判据却是 line/层两级 rect 比大小 —— 连线被父层裁掉时 rect 一个数都不变 ✗',
-    fix: '对连线层做 `scanRegion`（数线色像素，ROI=连线层矩形）并给阈值；或对每条连线中点做 elementFromPoint 命中连线层'
-  },
-  {
-    rel: 'scripts/smoke/08-audit-palette.js',
-    name: '关系审计面板：可关闭（关闭后不再遮挡界面）',
-    why: '"遮挡"是**层叠关系**，而现在看的是审计面板自己的 `style.display` —— 面板没关干净却也不在顶上时照样绿 ✗',
-    fix: '对原被遮挡位置做 elementFromPoint，断言命中的不是审计面板（这才是"不再遮挡"的判据）'
-  },
-  {
-    rel: 'scripts/smoke/12-dsh-drag.js',
-    name: '拖宽不遮挡工具栏：窄主区下 toolbar 自动换行（flex-wrap），保存按钮仍可见可点',
-    why: '保存按钮被侧栏盖住时，rect 读数与"没被盖住"完全相同 ✗',
-    fix: '对保存按钮中心做 elementFromPoint 命中自身（可见+可点那半），必要时再加 ctx.input 真点击'
-  },
-  {
-    rel: 'scripts/smoke/12-dsh-drag.js',
-    name: '虚线框范围 = 实际会被折叠的范围（选中节点 ∪ 其可见子节点）',
-    why: '"可见子节点"指的是**展开集合**（数据语义），但体内用 rect 量虚线框 ⇒ 触发本门禁；rect 在这里不是判"用户看得见"',
-    fix: '把名字里的"可见子节点"改成"展开中的子节点"（消歧），或对虚线框改用像素判据并把它移出触发词范围'
-  },
-  {
-    rel: 'scripts/smoke/34-user-paths.js',
-    name: '用户路径①：详情框**反复开关/切节点**，圆钮每次都在、都在框外、都是圆形（治"出现一次就消失"）',
-    why: '★**事故现场**：判据是 `34-user-paths.js` 顶部的 `BTN_JS` —— `visible: (r.width > 8 && r.height > 8) && (!!b.offsetParent || …)`，纯几何 ⇒ 圆钮被详情框 `overflow:hidden` 裁掉时四个 round 全绿 ✗',
-    fix: '在 `BTN_JS` 里加 elementFromPoint 命中圆钮中心（真遮挡判据），并对圆钮 rect 做 scanRegion 像素阈值（数出 accent 色像素 ≥ 阈值）'
-  },
-  {
-    rel: 'scripts/smoke/34-user-paths.js',
-    name: '关联视图：三个入口都在（圆钮 ✓ 右键菜单 ✓ 命令面板 ✓），且圆钮**完整落在面板内**（看不见=没有 ✗）',
-    why: '★**事故现场**：`完整落在面板内` 是一句纯 rect 包含判断 —— 面板自己 overflow:hidden 把圆钮裁掉时，rect 依然"落在框内" ✗',
-    fix: '对圆钮可见区域做 elementFromPoint（命中自身）并数真帧像素；"落在面板内"那半交给像素判据（被裁则像素骤降）'
-  },
-  {
-    rel: 'scripts/smoke/35-rel-edit.js',
-    name: '关联信息编辑条：进关联视图即出现（可见 · 在面板内 · 有出边/入边两组 · 不遮住被框住的节点）',
-    why: '★**事故现场**：`可见 / 在面板内 / 不遮住…` 三句全是 rect 比较；编辑条被面板裁掉或被节点盖住时读数不变 ✗',
-    fix: '编辑条中心与四个角各做 elementFromPoint 命中自身（抓遮挡与裁切），"不遮住节点"用命中测试断言命中的不是编辑条'
-  }
+  /* ⚠️ **空** —— 2026-10-09 七条在册欠账**已逐条迁完**（第一步门禁落地 → 第二步逐条迁移收口）。
+   *  为什么保留这个空数组而不删掉机制：清单是**封闭**的 —— "在册算欠账、不在册一律判红、
+   *  修好忘销账也判红"这套判定（`analyze()` 的 ④）靠的就是它与 `staleDebt` 的对照。
+   *  删掉数组 = 把"新代码不许再写盲判据"这条判定一起删掉 ✗。
+   *
+   *  迁移记录（每一步的"原判据 → 新判据"，权威副本在 git 历史与 `docs/CHANGELOG.md`）：
+   *   · `05-pan-lock.js` 拖动树连线 —— 两级 rect → 每条线两端 9×9px 窗口数真帧线像素；
+   *   · `08-audit-palette.js` 审计面板"关闭后不再遮挡" —— `style.display` → `elementFromPoint`
+   *     不再命中面板层 + 同一小块真帧 mean 变亮；
+   *   · `12-dsh-drag.js` 保存按钮"可见可点" —— rect + `flexWrap` → `elementFromPoint` 命中自身
+   *     + 真帧非背景像素 + **真输入** `ctx.input.click`（capture 阶段拦下 click 只记目标，不真触发 save）；
+   *   · `12-dsh-drag.js` "可见子节点" —— **改名消歧**（数据语义的"展开集合"，不是界面可见）：名字改成
+   *     "其展开中的子节点" ⇒ 不再是本门禁的触发项（硬套像素反而是错的判据）；
+   *   · `34-user-paths.js` 用户路径① 圆钮 —— `BTN_JS` 纯几何 → 加 `elementFromPoint` 命中圆心
+   *     + 真帧非背景像素 ≥ `thresholds.paint.minHitsRoundBtn`；
+   *   · `34-user-paths.js` "圆钮完整落在面板内" —— 纯 rect 包含 → `elementFromPoint` 命中自身
+   *     + 真帧像素（被面板裁掉则像素骤降）；
+   *   · `35-rel-edit.js` 关联信息编辑条 —— 三句 rect 比较 → 中心 + 四角 `elementFromPoint` 命中条自身
+   *     + 每个被框节点顶缘中点的命中不得落进条 + 真帧像素。
+   *  每条迁移都做过**判别力证明**（注入违规 ⇒ 必红 ⇒ 撤销 ⇒ 逐字节还原），报文见 CHANGELOG。
+   *
+   *  ⚠️ 新增条目**仍是禁区**：清单只能靠"修好 + 删条目"缩小；加条目必须同时给出
+   *  "为什么它只能这么判"（否则就是放宽判定 ✗，见下面 ④ 的设计说明）。 */
 ];
 
 /* ---------------------------------------------------------------
@@ -248,6 +229,24 @@ function expandSnippets(region, src) {
 /** 名字是否在声称可见性 */
 function visibilityWordsIn(name) {
   return VIS_WORDS.filter((w) => name.indexOf(w) >= 0);
+}
+
+/**
+ * 把一段源码里**所有真判据的字面量**抹掉（⇒ 那条断言只剩盲判据）。
+ *
+ * 为什么是"全部"而不是"抹掉 `document.elementFromPoint`"（**实测踩到，2026-10-09**）：
+ *   门禁上线时仓库里**只有一条**合规断言（域 37），抹掉它唯一的判据就是一次有效注入 ✓。
+ *   逐条迁移完成后有 **7 条**合规断言，且其中 6 条**同时**用了命中测试与真帧像素
+ *   （两类判据缺一不可，见 H2 的教训）⇒ 只抹 `elementFromPoint` 时，它仍靠 `scanRegion`
+ *   合规、门禁**照样绿** —— 那不是门禁在空转，而是**注入选错了对象** ✗
+ *   （教训：判别力证明失败时先问"我注入的到底是不是那条判据"，别急着改判定）。
+ *   判据清单**不另写一份**：直接由上面那个 `REAL_JUDGES` 数组生成 ⇒ 门禁加一类真判据时，
+ *   这条注入自动跟着覆盖，不会再出现"注入漏了新判据"这种空转 ✓。
+ */
+function zeroRealJudges(src) {
+  let out = src;
+  for (const j of REAL_JUDGES) out = out.split(j.token).join('判据已抹掉');
+  return out;
 }
 
 /** 找出文件里的断言（`name: '…'` 且后面紧跟 `run:`），返回 {name, line, regionStart, start} */
@@ -374,17 +373,18 @@ function loadSmokeFiles(dir) {
  * 因为它要求的字面量在中文自然写法里压根匹配不上（"2 条视觉断言"，类别词夹在数字与"断言"之间）。
  * 一个没红过的门禁等于不存在 ✗。这条自检把"它会红"变成**每次都能重放**的事实 ✓。
  * 做法（与 `scripts/vision/frame-stats.js --selftest` 同一路子）：
- *   ① 拿**仓库里真实的**断言字节，把样板断言的现场判据（`document.elementFromPoint`）抹掉 ⇒ 必须红；
+ *   ① 拿**仓库里真实的**断言字节，把样板断言用到的真判据字面量**全部**抹掉（判据来源由
+ *      `REAL_JUDGES` 生成，见 `zeroRealJudges` 的说明）⇒ 必须红；
  *   ② 让一条真实断言只留 rect（把它的名字也算进去，检验"名字里提到判据不算判据"）⇒ 必须红；
  *   ③ 用原始字节重算 ⇒ 必须复绿（证明①②只是内存里的注入，没有污染真输入 ✗）。
  */
 function selftest() {
   const real = loadSmokeFiles();
   const base = analyze(real);
-  const sample = base.judged.find((x) => x.verdict === 'ok');
+  const sample = base.judged.find((x) => x.verdict === 'ok' && x.via.length);
   const out = { ok: true, steps: [] };
   const step = (name, ok, detail) => {
-    out.steps.push({ name, ok, detail });
+    out.steps.push({ name: name, ok: ok, detail: detail });
     if (!ok) out.ok = false;
   };
 
@@ -398,14 +398,12 @@ function selftest() {
 
   if (sample) {
     const idx = real.findIndex((f) => f.rel === sample.rel);
-    const stripped = real.map((f, i) => (i === idx
-      ? { rel: f.rel, src: f.src.split('document.elementFromPoint').join('document.querySelector') }
-      : f));
+    const stripped = real.map((f, i) => (i === idx ? { rel: f.rel, src: zeroRealJudges(f.src) } : f));
     const r1 = analyze(stripped);
-    step('注入 1：抹掉样板断言的 elementFromPoint（只用 rect）⇒ 必须判红',
+    step('注入 1：抹掉样板断言用到的**全部**真判据（' + sample.via.join('、') + '）⇒ 必须判红',
       r1.problems.some((p) => p.name === sample.name),
       r1.problems.length ? '报红 ' + r1.problems.length + ' 条：' + r1.problems[0].rel + ':' + r1.problems[0].line
-        + '　' + r1.problems[0].name.slice(0, 40) + '…' : '没红 ✗（门禁在空转）');
+        + '　' + r1.problems[0].name.slice(0, 40) + '…' : '没红 ✗（门禁在空转，或注入选错了对象）');
   }
 
   step('注入 2：一条"名字里写着 elementFromPoint、代码里只有 rect"的断言 ⇒ 必须判红', (function () {
@@ -539,7 +537,8 @@ module.exports = {
   SMOKE_REL, SMOKE_ABS,
   sliceStatement, constSource, expandSnippets, visibilityWordsIn,
   stripComments, judgeView,
-  findAssertions, backwardRegionStart, judgeAssertion, analyze, loadSmokeFiles, selftest
+  findAssertions, backwardRegionStart, judgeAssertion, analyze, loadSmokeFiles, selftest,
+  zeroRealJudges
 };
 
 if (require.main === module) main();

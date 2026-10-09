@@ -13,6 +13,20 @@
  * ============================================================ */
 'use strict';
 
+// 真帧像素判据（"不再遮挡"那半）：像素统计的唯一实现 + 阈值单源
+const frameStats = require('../vision/frame-stats.js');
+const VTH = frameStats.THRESHOLDS;
+
+/** 渲染层返回 JSON 的取回口（本域原为内联 `ctx.exec` + 手动 JSON.parse；迁移后多处复用 ✓） */
+async function execJson(ctx, js) {
+  const raw = await ctx.exec(js);
+  try { return JSON.parse(raw); } catch (e) { return { ok: false, text: String(raw).slice(0, 300) }; }
+}
+
+/** 判别力证明开关（默认空 ⇒ 正常跑完全不生效 ✓）；逗号分隔多键 ⇒ 一趟跑完多条注入 ✓ */
+const INJECT = process.env.MM_SMOKE_INJECT || '';
+const MY_KEY = (k) => INJECT.split(',').indexOf('08-' + k) >= 0;
+
 module.exports = [
   {
     name: '关系审计面板：打开后渲染出 orphans 与 mentions 两份清单',
@@ -109,19 +123,65 @@ module.exports = [
     }
   },
   {
-    name: '关系审计面板：可关闭（关闭后不再遮挡界面）',
+    /* 【可见性判据迁移（2026-10-09）】原判据 = 审计面板自己的 `style.display === 'none'`
+     *  （V1 门禁在册欠账之一）。问题：**"遮挡"是层叠关系，不是某个元素自己的行内样式** ——
+     *  面板没关干净却也不在顶上时，`display` 照样是 'none' ⇒ 断言恒绿 ✗。
+     *  迁到真判据：① 命中测试（`elementFromPoint`）—— 关前必须在面板层上、关后**必须不在**；
+     *  ② 真帧像素 —— 面板的 `.overlay` 是 45% 暗遮罩，关掉后同一小块区域必须**变亮**
+     *  （`analyzeRegion().mean` 的差值，阈值单源在 `thresholds.paint.minOverlayBrighten`）。 */
+    name: '关系审计面板：可关闭（关闭后不再遮挡界面 · elementFromPoint 不再命中面板 + 真帧变亮）',
     run: async (ctx) => {
-      const r = await ctx.exec(
-        `(function () {
-           var app = window.MMApp;
-           app.openAudit();
-           var before = document.getElementById('audit-panel').style.display;
-           document.getElementById('audit-close').click();
-           var after = document.getElementById('audit-panel').style.display;
-           return { ok: after === 'none', text: 'before=' + before + ' after=' + after };
-         })()`
-      );
-      return r;
+      if (!ctx.input) return { ok: false, text: '没有真输入底座（ctx.input 缺失）⇒ 取不到真帧 = 红' };
+      // 取样点：① 面板中心（关前应命中卡片） ② 遮罩左上角内 20px 处（关前应命中遮罩本身）
+      const open = await execJson(ctx, `(function () {
+        var app = window.MMApp;
+        app.openAudit();
+        var panel = document.getElementById('audit-panel');
+        var pr = panel.getBoundingClientRect();
+        var p1 = { x: Math.round(pr.left + pr.width / 2), y: Math.round(pr.top + pr.height / 2) };
+        var p2 = { x: Math.round(pr.left + 20), y: Math.round(pr.top + 20) };
+        function at(p) { var e = document.elementFromPoint(p.x, p.y); return e ? (e.id ? ('#' + e.id) : e.className || e.tagName) : null; }
+        var inPanel = function (p) { var e = document.elementFromPoint(p.x, p.y); return !!(e && panel.contains(e)); };
+        return JSON.stringify({ ok: true, display: panel.style.display, p1: p1, p2: p2, dpr: window.devicePixelRatio || 1,
+          overlay: { left: Math.round(pr.left), top: Math.round(pr.top), width: Math.round(pr.width), height: Math.round(pr.height) },
+          before1: at(p1), before2: at(p2), beforeIn1: inPanel(p1), beforeIn2: inPanel(p2) });
+      })()`);
+      await ctx.input.settle({ delayMs: 220 });
+      const imgBefore = await ctx.input.capture();
+      const after = await execJson(ctx, `(function () {
+        var app = window.MMApp;
+        // —— 判别力证明（\`MM_SMOKE_INJECT=08-keep-open\`）：复刻**旧判据骗得过**的那种违规 ——
+        //   面板"关不干净"（这里直接不关）⇒ 命中测试与真帧变亮**都必须判红** ✓
+        var doClose = ${JSON.stringify(!MY_KEY('keep-open'))};
+        if (doClose) document.getElementById('audit-close').click();
+        var panel = document.getElementById('audit-panel');
+        var p1 = ${JSON.stringify(open.p1)}, p2 = ${JSON.stringify(open.p2)};
+        function at(p) { var e = document.elementFromPoint(p.x, p.y); return e ? (e.id ? ('#' + e.id) : e.className || e.tagName) : null; }
+        var inPanel = function (p) { var e = document.elementFromPoint(p.x, p.y); return !!(e && panel.contains(e)); };
+        return JSON.stringify({ ok: true, display: panel.style.display, after1: at(p1), after2: at(p2),
+          afterIn1: inPanel(p1), afterIn2: inPanel(p2) });
+      })()`);
+      await ctx.input.settle({ delayMs: 220 });
+      const imgAfter = await ctx.input.capture();
+      const dpr = open.dpr || 1;
+      const roi = { x: (open.p2.x - 4) * dpr, y: (open.p2.y - 4) * dpr, width: 9 * dpr, height: 9 * dpr };
+      const stBefore = frameStats.analyzeRegion(imgBefore, roi);
+      const stAfter = frameStats.analyzeRegion(imgAfter, roi);
+      const brighten = stAfter.mean - stBefore.mean;
+      const minBrighten = VTH.paint.minOverlayBrighten;
+      const hitOk = open.beforeIn1 === true && open.beforeIn2 === true
+        && after.afterIn1 === false && after.afterIn2 === false;
+      const pixOk = brighten >= minBrighten;
+      return {
+        ok: hitOk && pixOk,
+        text: 'display: ' + open.display + ' → ' + after.display
+          + ' ｜ 命中测试：关前[中心=' + open.before1 + ' 遮罩=' + open.before2 + ' 都在面板层上='
+          + (open.beforeIn1 && open.beforeIn2) + '] 关后[中心=' + after.after1 + ' 遮罩=' + after.after2
+          + ' 都不在面板层上=' + (!after.afterIn1 && !after.afterIn2) + ']'
+          + ' ｜ 真帧取样点(' + open.p2.x + ',' + open.p2.y + ') 关前 mean=' + stBefore.mean.toFixed(1)
+          + ' 关后 mean=' + stAfter.mean.toFixed(1) + ' 变亮=' + brighten.toFixed(1)
+          + '（阈值 ≥' + minBrighten + '）'
+      };
     }
   },
   {

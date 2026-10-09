@@ -218,16 +218,15 @@ describe('判别力证明（可重复版）：合规断言被改回"只用 rect"
 
   it('把样板断言的现场判据抹掉（只在内存里抹 ✗）⇒ 门禁必须报红', () => {
     const r0 = gate.analyze(real);
-    const sample = r0.judged.find((x) => x.verdict === 'ok');
-    expect(sample, '需要一个合规样板（域 37 的圆钮断言）').toBeTruthy();
+    const sample = r0.judged.find((x) => x.verdict === 'ok' && x.via.length);
+    expect(sample, '需要一个合规样板（有真判据的断言）').toBeTruthy();
     const idx = real.findIndex((f) => f.rel === sample.rel);
     expect(idx).toBeGreaterThanOrEqual(0);
-    // 只抹**代码里**的判据（`document.elementFromPoint`）。
-    // ⚠️ 断言名里也写着 "elementFromPoint"（"名字要说清凭什么判"正是配套纪律 ✓）—— 那不是判据，
-    //    不能一起抹：第一版注入把名字也改了，于是"报出来的断言名"与样板名对不上，看起来像门禁没抓到 ✗。
-    const injected = real.map((f, i) => (i === idx
-      ? { rel: f.rel, src: f.src.split('document.elementFromPoint').join('document.querySelector') }
-      : f));
+    // 抹的是这条断言**用到的全部真判据**（由门禁自己的 REAL_JUDGES 生成，不在这里另写一份清单）。
+    // ⚠️ 曾经只抹 `document.elementFromPoint`：那在"仓库里只有域 37 一条合规断言"时是有效注入，
+    //    但逐条迁移后有 7 条合规断言、其中 6 条**同时**靠命中测试 + 真帧像素 ⇒ 只抹一类时
+    //    它仍合规、门禁照样绿 —— 那是**注入选错了对象**，不是门禁空转 ✗（教训如实留在注释里）。
+    const injected = real.map((f, i) => (i === idx ? { rel: f.rel, src: gate.zeroRealJudges(f.src) } : f));
     expect(injected[idx].src).not.toBe(real[idx].src);
     const r = gate.analyze(injected);
     expect(r.problems.map((p) => p.name)).toContain(sample.name);   // 名字逐字不变 ✓

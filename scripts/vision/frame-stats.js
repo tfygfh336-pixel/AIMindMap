@@ -192,8 +192,28 @@ function isAccentBlue(c0, c1, c2, th) {
  *   `longestRun` = 单行里连续命中像素的最大长度（"虚线"是短段、"实心大边框/整条色带"是长段 —— 用它分辨）
  */
 function scanRegion(img, rect, opts) {
-  const o = opts || {};
+  return scanRect(bitmapInfo(img), rect, opts);
+}
+
+/**
+ * 一次取位图、多矩形扫描（`scanRegion` 的批处理形态）—— 语义与 `scanRegion` **逐字一致**，
+ * 只是**共用同一份位图**。
+ *
+ * 为什么需要：`scanRegion` 每次都 `bitmapInfo()`，而它内含一次 `toBitmap()` —— 那是整帧复制
+ * （1440×900×4 ≈ 5 MB）。可见性判据迁移里要**逐条连线各扫两端**（近 400 次/帧）⇒ 单调用形态
+ * 会复制近 2 GB，慢到没法进冒烟 ✗。批处理把这份复制降到**一帧一次** ✓。
+ * @param {object} img NativeImage
+ * @param {Array<object>} rects 每个矩形的设备像素坐标
+ * @returns {Array<object>} 与 `rects` **等长同序**的结果数组（单项形状同 `scanRegion`）
+ */
+function scanRegionMany(img, rects, opts) {
   const info = bitmapInfo(img);
+  return rects.map((r) => scanRect(info, r, opts));
+}
+
+/** 真正的扫描实现（`scanRegion` / `scanRegionMany` 共用；**唯一实现**） */
+function scanRect(info, rect, opts) {
+  const o = opts || {};
   if (!info.ok) {
     return {
       ok: false, hits: 0, longestRun: 0, rowsWithHits: 0, px: 0,
@@ -232,7 +252,24 @@ function scanRegion(img, rect, opts) {
     rect: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } };
 }
 
+/** 通道序无关的「**非背景**」判据（可见性判据迁移专用的通用 predicate，阈值在 `thresholds.paint`）。
+ *
+ *  口径：三通道**都**亮到 `bgAtLeast` 才算背景（本工程被扫的底都是白/近白：导图面板 `#fff`、
+ *  圆钮白底、编辑条 `#fbfcfe`）⇒ 任何通道排列都命中同一个判据 ✓。
+ *  它回答的是"这块矩形里**真的有东西画出来**"—— 与 `dashStroke`（专门认强调蓝）分工不同：
+ *  这里不管画的是什么，只问"画了没有" ✓。 */
+function nonBackground(a, b, c, th) {
+  const t = th || THRESHOLDS.paint;
+  return a < t.bgAtLeast || b < t.bgAtLeast || c < t.bgAtLeast;
+}
+
+/** 由 `nonBackground` 构造 predicate（免得每个调用点各写一遍闭包与默认值） */
+function nonBackgroundPredicate(th) {
+  return (a, b, c) => nonBackground(a, b, c, th);
+}
+
 module.exports = {
   THRESHOLDS, bitmapOf, analyzeFrame, passValidFrame, analyzeRegion, passRegion,
-  bitmapInfo, isAccentBlue, scanRegion
+  bitmapInfo, isAccentBlue, scanRegion, scanRegionMany,
+  nonBackground, nonBackgroundPredicate
 };

@@ -24,14 +24,32 @@
  * ============================================================ */
 'use strict';
 
+// 真帧像素判据（编辑条"真的画出来"那半）：像素统计的唯一实现 + 阈值单源
+const frameStats = require('../vision/frame-stats.js');
+const VTH = frameStats.THRESHOLDS;
+
 const PROJ = 'comnet';
 const TITLE = '冒烟探针·关联视图内新建的关联笔记';
 const NOTE = '- 由「关联信息」编辑条新建\n- **正文按 Markdown 写**，命令内转 HTML 后存盘';
+
+/** 判别力证明开关（默认空 ⇒ 正常跑完全不生效 ✓）；逗号分隔多键 ⇒ 一趟跑完多条注入 ✓ */
+const INJECT = process.env.MM_SMOKE_INJECT || '';
+const MY_KEY = (k) => INJECT.split(',').indexOf('35-' + k) >= 0;
 
 let PICK = [];   // [中心节点, 链接目标兼成员, 参与子序列查询的备用节点]
 
 /** 嵌进渲染层的字面量一律走它（避免手拼引号） */
 const j = (v) => JSON.stringify(v);
+
+/** 编辑条矩形里的**非背景像素**（"条真的画出来了"那半：DOM 在、画面上没有时必红 ✓）。
+ *  阈值单源在 `thresholds.paint.minHitsRelBar` ✓ */
+async function relBarPixels(ctx, o) {
+  if (!ctx.input || !o || !(o.width > 0)) return { ok: false, hits: 0, reason: '没有编辑条或没有真输入底座（取不到真帧 = 红）' };
+  const img = await ctx.input.capture();
+  const dpr = o.dpr || 1;
+  return frameStats.scanRegion(img, { x: o.left * dpr, y: o.top * dpr, width: o.width * dpr, height: o.height * dpr },
+    { predicate: frameStats.nonBackgroundPredicate() });
+}
 
 async function waitFor(ctx, js, tries) {
   let last = '';
@@ -76,8 +94,19 @@ async function pickNodes(ctx) {
 
 module.exports = [
   {
-    name: '关联信息编辑条：进关联视图即出现（可见 · 在面板内 · 有出边/入边两组 · 不遮住被框住的节点）',
+    /* 【可见性判据迁移（2026-10-09）】原判据 = 编辑条 rect 与面板 rect 比大小（V1 门禁在册欠账之一）。
+     *  `可见 / 在面板内 / 不遮住节点` 三句全是 rect 比较 —— 编辑条被面板 `overflow:hidden` 裁掉、
+     *  或被节点/别的浮层盖住时，** rect 读数一个数都不变** ✗（裁掉与正常显示在同一条断言里无从区分）。
+     *  迁到真判据（**全部用命中测试**，`elementFromPoint` 抓遮挡与裁切）：
+     *    ① 编辑条中心 + 四角（内缩 1px）各点必须命中编辑条自身或其子孙；
+     *    ② "不遮住被框住的节点"：每个被框节点**顶缘中点**上的命中**不得落进编辑条**
+     *       （fit 让出高度这件事的判据从"最低节点 top ≥ 条底"变成"节点顶上那一点不是条"）；
+     *    ③ 真帧里数编辑条矩形内的非背景像素（抓"条在 DOM 里、画面上却没有"）。
+     *  `inPanel` 那句 rect 保留原样，只作为几何旁证（不再是"看得见"的依据）✓ */
+    name: '关联信息编辑条：进关联视图即出现（可见 · 在面板内 · 有出边/入边两组 · 不遮住被框住的节点）'
+      + '【判据=elementFromPoint 命中条自身与四角 + 节点顶上命中不落进条 + 真帧像素】',
     run: async (ctx) => {
+      if (!ctx.input) return { ok: false, text: '没有真输入底座（ctx.input 缺失）⇒ 取不到真帧 = 红' };
       const p = await pickNodes(ctx);
       if (!p.ok) return { ok: false, text: p.text };
       PICK = p.list;
@@ -93,27 +122,72 @@ module.exports = [
         var bar = document.getElementById('mm-rel-edit');
         var p = window.MM.fdPanel();
         if (!bar || !p) return JSON.stringify({ ok: false, text: '还没有 #mm-rel-edit' });
+        // —— 判别力证明（\`MM_SMOKE_INJECT=35-bar-over-nodes\`）：把编辑条**挪下去盖住节点** ——
+        //    \`inPanel\` 与四角命中**全都还是 true**（旧那三句 rect 比较完全看不见这件事），
+        //    只有"节点顶缘那一点上的命中不得落进条"这条判据判得出来 ✓
+        if (${JSON.stringify(MY_KEY('bar-over-nodes'))}) {
+          // 挪到**正好压住最高的那个被框节点**（位置按现场算，不写死像素 —— 窗口/面板尺寸一变就不会失效 ✗）
+          var hh = Array.prototype.slice.call(document.querySelectorAll('jmnode.mm-rel-hit'));
+          var minTopAbs = Infinity;
+          hh.forEach(function (el) { var q0 = el.getBoundingClientRect(); if (q0.top < minTopAbs) minTopAbs = q0.top; });
+          var cont0 = document.getElementById('mindmap-container');
+          if (isFinite(minTopAbs) && cont0) {
+            var c0 = cont0.getBoundingClientRect();
+            bar.style.top = Math.max(0, Math.round(minTopAbs - c0.top - 4)) + 'px';
+          }
+        }
         var br = bar.getBoundingClientRect(), pr = p.getBoundingClientRect();
         if (br.width < 2 || br.height < 2) return JSON.stringify({ ok: false, text: '编辑条没有面积' });
         var inPanel = br.left >= pr.left - 2 && br.right <= pr.right + 2 && br.top >= pr.top - 2 && br.bottom <= pr.bottom + 2;
+        // ★ 真判据①：中心 + 四角（各内缩 1px，避开"角落那个像素属于谁"的边界）都命中条自身/子孙
+        var probes = [
+          { tag: '中心', x: br.left + br.width / 2, y: br.top + br.height / 2 },
+          { tag: '左上', x: br.left + 1, y: br.top + 1 },
+          { tag: '右上', x: br.right - 1, y: br.top + 1 },
+          { tag: '左下', x: br.left + 1, y: br.bottom - 1 },
+          { tag: '右下', x: br.right - 1, y: br.bottom - 1 }
+        ];
+        var hitOk = true, hitWhat = [];
+        probes.forEach(function (q) {
+          var e = document.elementFromPoint(Math.round(q.x), Math.round(q.y));
+          var isBar = !!(e && (e === bar || bar.contains(e)));
+          if (!isBar) hitOk = false;
+          hitWhat.push(q.tag + '=' + (e ? (e.id ? ('#' + e.id) : (e.className && String(e.className).slice(0, 30)) || e.tagName) : 'null'));
+        });
         var groups = Array.prototype.slice.call(bar.querySelectorAll('.rele-group-title')).map(function (e) { return e.textContent; }).join('｜');
         var title = (bar.querySelector('.rele-title') || {}).textContent || '';
-        // **不遮住被框住的节点**：关联视图把节点缩放到"刚好框住"，编辑条占了顶部一条，
-        // fit 必须让出它的高度（fitToNodes 的 insetTop）—— 判据是几何，不是"看着没问题"。
+        // ★ 真判据②：**不遮住被框住的节点** —— 每个被框节点顶缘中点上的命中**不得落进编辑条**
+        //   （关联视图把节点缩放到"刚好框住"，编辑条占顶部一条 ⇒ fit 必须让出它的高度）
         var hits = Array.prototype.slice.call(document.querySelectorAll('jmnode.mm-rel-hit'));
-        var minTop = Infinity;
-        hits.forEach(function (el) { var q = el.getBoundingClientRect(); minTop = Math.min(minTop, q.top); });
-        var clear = !hits.length || !isFinite(minTop) || minTop >= br.bottom - 2;
+        var covered = 0, coverEx = [], nodeHits = 0, minTop = Infinity;
+        hits.forEach(function (el) {
+          var q = el.getBoundingClientRect();
+          minTop = Math.min(minTop, q.top);
+          var ex = Math.round(q.left + q.width / 2), ey = Math.round(q.top + 2);
+          var e = document.elementFromPoint(ex, ey);
+          if (!e) return;
+          nodeHits++;
+          if (bar.contains(e)) { covered++; if (coverEx.length < 3) coverEx.push(el.getAttribute('nodeid')); }
+        });
+        var clear = covered === 0;
         return JSON.stringify({
           ok: inPanel && !!bar.querySelector('.rele-add') && !!bar.querySelector('.rele-new')
             && groups.indexOf('出边') >= 0 && groups.indexOf('入边') >= 0 && title.indexOf('关联信息') >= 0 && clear,
+          inPanel: inPanel, hitOk: hitOk, hitWhat: hitWhat, clear: clear, covered: covered, coverEx: coverEx,
+          nodeHits: nodeHits, left: br.left, top: br.top, width: br.width, height: br.height,
+          dpr: window.devicePixelRatio || 1,
           text: '尺寸=' + Math.round(br.width) + 'x' + Math.round(br.height) + ' 在面板内=' + inPanel
             + ' 组=' + groups + ' 标题=' + title + ' 节点数=' + hits.length
-            + ' 最高节点=' + (isFinite(minTop) ? Math.round(minTop) : '—') + ' 条底=' + Math.round(br.bottom) + ' 不遮挡=' + clear
+            + ' 最高节点=' + (isFinite(minTop) ? Math.round(minTop) : '—') + ' 条底=' + Math.round(br.bottom)
+            + ' 命中条自身(中心+四角)=' + hitOk + ' 被条盖住的节点=' + covered + (coverEx.length ? '(' + coverEx.join(',') + ')' : '')
+            + ' 节点顶缘取样=' + nodeHits + ' 命中明细=' + hitWhat.join(' ')
         });
       })()`);
       const o = JSON.parse(r);
-      return { ok: !!o.ok, text: r };
+      const pix = await relBarPixels(ctx, o);
+      const ok = !!(o.ok && o.hitOk === true && o.clear === true && pix.ok === true && pix.hits >= VTH.paint.minHitsRelBar);
+      return { ok: ok, text: o.text + ' ｜ 真帧非背景像素=' + (pix.ok ? pix.hits : ('扫描失败:' + pix.reason))
+        + '（阈值 ≥' + VTH.paint.minHitsRelBar + '）' };
     }
   },
   {

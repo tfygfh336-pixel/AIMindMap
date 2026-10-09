@@ -12,12 +12,67 @@
  */
 'use strict';
 
+// 真帧像素判据（"看得见"那半）：像素统计的唯一实现 + 阈值单源
+const frameStats = require('../vision/frame-stats.js');
+const VTH = frameStats.THRESHOLDS;
+
 async function execJson(ctx, js) {
   const raw = await ctx.exec(js);
   try { return JSON.parse(raw); } catch (e) { return { ok: false, text: String(raw).slice(0, 300) }; }
 }
 
-/** 圆钮的现场读数（存在 / 可见 / 在框外 / 贴哪边）——多处复用 ✓ */
+/** 判别力证明开关（默认空 ⇒ 正常跑完全不生效 ✓）；逗号分隔多键 ⇒ 一趟跑完多条注入 ✓ */
+const INJECT = process.env.MM_SMOKE_INJECT || '';
+const MY_KEY = (k) => INJECT.split(',').indexOf('34-' + k) >= 0;
+
+/** 注入①：复刻**事故现场的可见性后果** —— 圆钮"在 DOM 里、rect 一切正常，却根本看不到"。
+ *  用 `clip-path` 在被测元素自己身上复现（它**同时裁绘制与命中测试** ✓，而 `getBoundingClientRect`
+ *  一个数都不变 ⇒ 正好证明"旧那套几何判据对裁切是盲的"）。
+ *  为什么不用"把它塞回框里再 overflow:hidden"：圆钮搬进框后 `MM.fdRelShowBtnOf`（按
+ *  `data-fd-box` 在**卫星浮层**里查）就**找不到它**了 ⇒ 注入会退化成"元素没了"，那不是本条的损害形态 ✗ */
+const CLIP_BTN_JS = `(function () {
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('.float-detail'));
+  var box = null;
+  for (var i = 0; i < boxes.length; i++) {
+    var q = boxes[i].getBoundingClientRect();
+    if (boxes[i].style.display !== 'none' && q.width > 40 && q.height > 40) { box = boxes[i]; break; }
+  }
+  var b = (box && window.MM.fdRelShowBtnOf) ? window.MM.fdRelShowBtnOf(box) : null;
+  if (!b) return JSON.stringify({ ok: false, text: '注入失败：没有圆钮' });
+  b.style.clipPath = 'inset(0 100% 0 0)';
+  return JSON.stringify({ ok: true, text: '已把圆钮裁光（rect / 位置 / 形状一个数都不变）' });
+})()`;
+
+/** 注入复位（只在注入开启时用；正常跑完全不调用 ✓） */
+const UNDO_INJECT_JS = `(function () {
+  var c = document.getElementById('mm-btn-cover-probe');
+  if (c) c.parentNode.removeChild(c);
+  Array.prototype.slice.call(document.querySelectorAll('.rel-show-btn')).forEach(function (x) { x.style.clipPath = ''; });
+  Array.prototype.slice.call(document.querySelectorAll('.float-detail')).forEach(function (x) { x.style.overflow = ''; });
+  if (window.MM.syncFdSatellites) { try { window.MM.syncFdSatellites(); } catch (e) { /* 复位尽力而为 */ } }
+  return JSON.stringify({ ok: true });
+})()`;
+
+/** 圆钮矩形里的**非背景像素**（与"落盘的那张帧"同源 ⇒ 数字与图片可一起复核 ✓）
+ *  这是"看得见"的另一半真判据：命中测试抓遮挡，像素抓**裁切**（被父框 overflow 裁掉时命中测试
+ *  也可能落到框上、而像素一定骤降 ✓）。阈值单源在 `thresholds.paint.minHitsRoundBtn` ✓ */
+async function btnPixels(ctx, sat) {
+  if (!ctx.input || !sat || !sat.ok) return { ok: false, hits: 0, reason: '没有圆钮或没有真输入底座（取不到真帧 = 红）' };
+  const img = await ctx.input.capture();
+  const dpr = sat.dpr || 1;
+  return frameStats.scanRegion(img, { x: sat.left * dpr, y: sat.top * dpr, width: sat.width * dpr, height: sat.height * dpr },
+    { predicate: frameStats.nonBackgroundPredicate() });
+}
+
+/** 圆钮的现场读数（存在 / 尺寸 / **真可见** / 在框外 / 贴哪边）——多处复用 ✓
+ *
+ *  ⚠️【可见性判据迁移（2026-10-09）】这里曾是**事故现场**：`visible` 只看
+ *  `r.width > 8 && r.height > 8 && !!b.offsetParent` —— 纯几何，圆钮被详情框 `overflow:hidden`
+ *  裁掉时四个 round 全绿 ✗（用户两轮报"看不见"，而断言一直绿）。
+ *  现在 `visible` 仍是几何那一半（保留原语义），但**断言必须同时**要求：
+ *    ① `hitIsBtn` —— `document.elementFromPoint(圆心)` 命中圆钮自身（抓遮挡，浏览器自己回答）；
+ *    ② `btnPixels()` 的非背景像素 ≥ 阈值（抓裁切/没画出来）。
+ *  两样缺一不可：命中测试答不了"画面上没有"，像素答不了"被盖在顶上" ✓ */
 const BTN_JS = `(function () {
   // 只认**可见的那个**详情框（域与域之间会留下隐藏的旧框 ✗ 实测量到过 121x121、负坐标的僵尸框 ✓）
   var allBoxes = Array.prototype.slice.call(document.querySelectorAll('.float-detail'));
@@ -31,9 +86,16 @@ const BTN_JS = `(function () {
   var r = b.getBoundingClientRect();
   var bq = box.getBoundingClientRect();
   var cs = window.getComputedStyle(b);
+  var cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+  var at = document.elementFromPoint(cx, cy);
   return JSON.stringify({
     ok: true,
     w: Math.round(r.width), h: Math.round(r.height),
+    left: r.left, top: r.top, width: r.width, height: r.height,
+    center: { x: cx, y: cy }, dpr: window.devicePixelRatio || 1,
+    // ★ 真判据①：命中测试（rect 对裁切与遮挡是盲的）
+    hitIsBtn: !!(at && at.closest && at.closest('.rel-show-btn') === b),
+    hitWhat: at ? ((at.className && String(at.className).slice(0, 40)) || at.tagName) : null,
     visible: (r.width > 8 && r.height > 8) && (!!b.offsetParent || r.width > 0),
     outsideBox: (r.right <= bq.left + 1 || r.left >= bq.right - 1),
     right: b.classList.contains('is-right'), on: b.classList.contains('is-on'),
@@ -69,8 +131,10 @@ const PICK_PC_JS = `(function () {
 //   三层守着；要补自动覆盖，应用**真鼠标拖动**来写（参考域 05 的拖法 ✓）。
 module.exports = [
   {
-    name: '用户路径①：详情框**反复开关/切节点**，圆钮每次都在、都在框外、都是圆形（治"出现一次就消失"）',
+    name: '用户路径①：详情框**反复开关/切节点**，圆钮每次都在、都在框外、都是圆形（治"出现一次就消失"）'
+      + '【可见那半=elementFromPoint 命中圆心 + 真帧像素】',
     run: async (ctx) => {
+      if (!ctx.input) return { ok: false, text: '没有真输入底座（ctx.input 缺失）⇒ 取不到真帧 = 红' };
       const pick = await execJson(ctx, `(function () {
         var jm = window.MMApp.getState().jm, out = [];
         (function walk(n) { if (!n) return; if (n.id && n.id !== 'root' && out.length < 2) out.push(n.id); (n.children || []).forEach(walk); })(jm.get_node('root'));
@@ -78,13 +142,26 @@ module.exports = [
       })()`);
       if (!pick.ok) return { ok: false, text: '挑不到两个节点' };
       const seq = [pick.a, pick.b, pick.a, pick.b];   // 切四次 ⇒ 覆盖"每次渲染都要有" ✓
+      const injectClip = MY_KEY('clip-btn');
       const rounds = [];
       for (let i = 0; i < seq.length; i++) {
         await ctx.exec(`(function () { var n = window.MMApp.getState().jm.get_node(${JSON.stringify(seq[i])}); if (n) window.MMApp.showDetail(n); return 1; })()`);
-        await new Promise((r) => setTimeout(r, 120));
+        await ctx.input.settle({ delayMs: 140 });     // ≥2 帧 + 覆盖过渡 ⇒ 抓到的帧才是"现在的画面" ✓
+        // —— 判别力证明（`MM_SMOKE_INJECT=34-clip-btn`）：注入①（复刻事故现场，见 CLIP_BTN_JS）——
+        //    注入后 `visible`/`outsideBox`/`radius` 三个几何读数**全都还是好的**，只有
+        //    命中测试与真帧像素判得出来 ⇒ 这正是本次迁移要保住的那条纪律 ✓
+        if (injectClip) await execJson(ctx, CLIP_BTN_JS);
         const s = await execJson(ctx, BTN_JS);
-        rounds.push({ node: seq[i], ok: !!(s.ok && s.visible && s.outsideBox && s.radius === '50%'), text: s.text || ('w=' + s.w + ' 在框外=' + s.outsideBox + ' 圆角=' + s.radius + ' 可见=' + s.visible) });
+        const pix = await btnPixels(ctx, s);
+        const geometryOk = !!(s.ok && s.visible && s.outsideBox && s.radius === '50%');
+        const ok = geometryOk && s.hitIsBtn === true && pix.ok === true && pix.hits >= VTH.paint.minHitsRoundBtn;
+        rounds.push({ node: seq[i], ok: ok,
+          text: s.text || ('w=' + s.w + ' 在框外=' + s.outsideBox + ' 圆角=' + s.radius + ' 几何可见=' + s.visible
+            + ' 命中测试命中圆钮=' + s.hitIsBtn + '（命中=' + s.hitWhat + '）'
+            + ' 真帧非背景像素=' + (pix.ok ? pix.hits : ('扫描失败:' + pix.reason))
+            + '（阈值 ≥' + VTH.paint.minHitsRoundBtn + '）') });
       }
+      if (injectClip) await execJson(ctx, UNDO_INJECT_JS);   // 注入收尾一律复位 ✓
       const bad = rounds.filter((r) => !r.ok);
       return { ok: bad.length === 0, text: '四轮=' + JSON.stringify(rounds) };
     }
@@ -232,8 +309,15 @@ module.exports = [
     }
    },
   {
-    name: '关联视图：三个入口都在（圆钮 ✓ 右键菜单 ✓ 命令面板 ✓），且圆钮**完整落在面板内**（看不见=没有 ✗）',
+    /* 【可见性判据迁移（2026-10-09）】原判据 = 一句纯 rect 包含判断（`r.left >= pr.left && r.right <= pr.right`）
+     *  —— **事故现场**：面板自己 `overflow:hidden` 把圆钮裁掉时，rect 依然"落在框内" ⇒ 断言恒绿 ✗。
+     *  迁到真判据：① `elementFromPoint(圆心)` 命中圆钮自身（抓遮挡）；
+     *  ② 真帧里数圆钮矩形内的非背景像素（**被裁则像素骤降** —— 这才是"完整"的判据）；
+     *  `insidePanel` 那句 rect 保留原样，只作为几何旁证（不再是"看得见"的依据）✓ */
+    name: '关联视图：三个入口都在（圆钮 ✓ 右键菜单 ✓ 命令面板 ✓），且圆钮**完整落在面板内**（看不见=没有 ✗）'
+      + '【判据=elementFromPoint 命中 + 真帧像素】',
     run: async (ctx) => {
+      if (!ctx.input) return { ok: false, text: '没有真输入底座（ctx.input 缺失）⇒ 取不到真帧 = 红' };
       const pick = await execJson(ctx, `(function () {
         var jm = window.MMApp.getState().jm, id = null;
         (function walk(n) { if (id || !n) return; if (n.id && n.id !== 'root') { id = n.id; return; } (n.children || []).forEach(walk); })(jm.get_node('root'));
@@ -242,8 +326,31 @@ module.exports = [
         return JSON.stringify({ ok: true, id: id });
       })()`);
       if (!pick.ok) return { ok: false, text: pick.text };
-      await new Promise((r) => setTimeout(r, 200));
-      // ① 圆钮完整落在面板内（被 overflow:hidden 裁掉 ⇒ 用户就是"看不到" ✓）
+      await ctx.input.settle({ delayMs: 200 });
+      // —— 判别力证明（`MM_SMOKE_INJECT=34-btn-covered`）：把浮层盖在圆钮上 ——
+      //    `insidePanel` / rect **全都还是 true**（旧判据完全看不见这件事），只有命中测试判得出来 ✓
+      const injectCover = MY_KEY('btn-covered');
+      if (injectCover) {
+        const inj = await execJson(ctx, `(function () {
+          var boxes = Array.prototype.slice.call(document.querySelectorAll('.float-detail'));
+          var box = null;
+          for (var i = 0; i < boxes.length; i++) {
+            var q = boxes[i].getBoundingClientRect();
+            if (boxes[i].style.display !== 'none' && q.width > 40 && q.height > 40) { box = boxes[i]; break; }
+          }
+          var b = (box && window.MM.fdRelShowBtnOf) ? window.MM.fdRelShowBtnOf(box) : null;
+          if (!b) return JSON.stringify({ ok: false, text: '注入失败：没有圆钮' });
+          var r = b.getBoundingClientRect();
+          var cov = document.createElement('div');
+          cov.id = 'mm-btn-cover-probe';
+          cov.style.cssText = 'position:fixed;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width
+            + 'px;height:' + r.height + 'px;background:#ffe58f;z-index:99999;';
+          document.body.appendChild(cov);
+          return JSON.stringify({ ok: true, text: '已盖上浮层（rect 不变）' });
+        })()`);
+        if (!inj.ok) return { ok: false, text: inj.text };
+      }
+      // ① 圆钮真的看得见（被 overflow:hidden 裁掉 ⇒ 用户就是"看不到" ✓）
       const circle = await execJson(ctx, `(function () {
         var boxes = Array.prototype.slice.call(document.querySelectorAll('.float-detail'));
         var box = null;
@@ -257,8 +364,17 @@ module.exports = [
         var pr = p ? p.getBoundingClientRect() : null;
         var r = b.getBoundingClientRect();
         var insidePanel = !!pr && r.left >= pr.left - 1 && r.right <= pr.right + 1;
-        return JSON.stringify({ ok: insidePanel, text: '圆钮=[' + Math.round(r.left) + ',' + Math.round(r.right) + '] 面板=[' + Math.round(pr.left) + ',' + Math.round(pr.right) + '] 完整在内=' + insidePanel + ' 档=' + (b.getAttribute('data-place') || (b.classList.contains('is-right') ? 'right' : 'left')) });
+        var cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+        var at = document.elementFromPoint(cx, cy);
+        return JSON.stringify({ ok: insidePanel, insidePanel: insidePanel,
+          hitIsBtn: !!(at && at.closest && at.closest('.rel-show-btn') === b),
+          hitWhat: at ? ((at.className && String(at.className).slice(0, 40)) || at.tagName) : null,
+          left: r.left, top: r.top, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1,
+          text: '圆钮=[' + Math.round(r.left) + ',' + Math.round(r.right) + '] 面板=[' + Math.round(pr.left) + ',' + Math.round(pr.right) + '] 完整在内=' + insidePanel + ' 档=' + (b.getAttribute('data-place') || (b.classList.contains('is-right') ? 'right' : 'left')) });
       })()`);
+      const cpix = await btnPixels(ctx, circle);
+      const circleOk = !!(circle.ok && circle.insidePanel && circle.hitIsBtn === true
+        && cpix.ok === true && cpix.hits >= VTH.paint.minHitsRoundBtn);
       // ② 右键菜单里有入口（真派发一次 contextmenu 事件，读菜单文本 ✓）
       const menu = await execJson(ctx, `(function () {
         var el = document.querySelector('jmnode[nodeid="' + ${JSON.stringify(pick.id)} + '"]');
@@ -291,9 +407,14 @@ module.exports = [
         await new Promise((r) => setTimeout(r, 150));
       }
       await ctx.exec('(function () { document.dispatchEvent(new KeyboardEvent(\'keydown\', { key: \'Escape\', bubbles: true })); return 1; })()');
+      if (injectCover) await execJson(ctx, UNDO_INJECT_JS);   // 注入收尾一律复位 ✓
       return {
-        ok: !!(circle.ok && menu.ok && pal && pal.ok),
-        text: circle.text + ' ｜ ' + menu.text + ' ｜ 命令面板命中=' + (pal ? pal.ok : false) + ' 项=' + (pal ? pal.n : '-')
+        ok: !!(circleOk && menu.ok && pal && pal.ok),
+        text: circle.text
+          + ' 命中测试命中圆钮=' + circle.hitIsBtn + '（命中=' + circle.hitWhat + '）'
+          + ' 真帧非背景像素=' + (cpix.ok ? cpix.hits : ('扫描失败:' + cpix.reason))
+          + '（阈值 ≥' + VTH.paint.minHitsRoundBtn + '）'
+          + ' ｜ ' + menu.text + ' ｜ 命令面板命中=' + (pal ? pal.ok : false) + ' 项=' + (pal ? pal.n : '-')
       };
     }
   }
