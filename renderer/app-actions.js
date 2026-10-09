@@ -524,6 +524,20 @@
   /* —— 本文件定义的东西挂到共享命名空间 —— */
   MM.runSearch = runSearch;
   MM.renderSearchResults = renderSearchResults;
+  /** 双击节点的语义（用户 2026-10-08 定）：**展开 / 收起**子层 ✓（不再弹编辑框 ✗）。
+   *  编辑走右键菜单「编辑（F2）」✓ —— 能力没丢，只是入口换了 ✓。
+   *  边界如实说：根节点没有可展开子层、叶子节点没有子节点 ⇒ 给一句状态说明（不静默 ✗）。 */
+  function toggleNodeExpanded(id) {
+    const jm = state.jm;
+    const n = (jm && jm.get_node) ? jm.get_node(id) : null;
+    if (!n) { setStatus('节点不存在：' + id, true); return false; }
+    if (n.isroot) { setStatus('根节点没有可展开的子层'); return false; }
+    if (!(n.children && n.children.length)) { setStatus('「' + n.topic + '」没有子节点'); return false; }
+    if (n.expanded) { jm.collapse_node(id); setStatus('已收起：' + n.topic); }
+    else { jm.expand_node(id); setStatus('已展开：' + n.topic); }
+    return true;
+  }
+  MM.toggleNodeExpanded = toggleNodeExpanded;
   MM.jumpToNode = jumpToNode;
   MM.switchProject = switchProject;
   MM.expandAncestors = expandAncestors;   // 单源：跳转到某节点的三个入口（搜索/关联/媒体）共用

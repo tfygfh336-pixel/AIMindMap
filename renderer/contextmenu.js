@@ -235,9 +235,15 @@
     const target = e.target;
     if (isNodeEl(target)) {
       const id = getBindedNodeId(target);
-      if (id && window.MMApp) {
-        window.MMApp.editNode(id);
+      // 双击 = **展开 / 收起**（用户 2026-10-08 定 ✓）。编辑改从右键菜单「编辑（F2）」进 ✓
+      //（那条本来就在，见本文件顶部的 nodeItems）——所以这里不再弹编辑框 ✗。
+      const fn = (window.MM && window.MM.toggleNodeExpanded)
+        || (window.MMApp && window.MMApp.toggleNodeExpanded);
+      if (id && fn) {
         e.preventDefault();
+        fn(id);
+      } else if (id && window.MM && window.MM.setStatus) {
+        window.MM.setStatus('双击展开/收起还没接线（缺 toggleNodeExpanded）', true);   // 不静默 ✗
       }
     }
   }

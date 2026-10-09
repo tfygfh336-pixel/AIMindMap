@@ -605,7 +605,10 @@ jmnode.mm-rel-dim { opacity: 0.32; }
 
 /* P5：真正被框选的节点用**虚线描边**（用户原话："框选了 a 和 b，就把 a 和 b 节点的边框变成虚线"✓）
    用 outline（不改盒子尺寸 ⇒ 不会让 jsMind 的连线错位 ✗）；这一层**不受同父裁剪限制** ✓ */
-.jmnodes jmnode.mm-sel-raw { outline: 2px dashed #1664ff; outline-offset: 2px; }
+/* ⚠️ 选择器只能用 **tag** `jmnode`：jsMind 的节点层是 `<jmnodes>`（**没有** `.jmnodes` 这个 class ✗）。
+ * 曾经写成 `.jmnodes jmnode.mm-sel-raw` ⇒ 规则永不命中：类名加上了、**虚线却看不见** ✗（真机反馈①）。
+ * 冒烟现在会读 `getComputedStyle` 的 outline-style/width 来判"真的画出来了" ✓（只验类名会假绿 ✗）。 */
+jmnode.mm-sel-raw { outline: 2px dashed #1664ff; outline-offset: 2px; }
 
 /* ⑩ 工具栏「⇥ 侧栏」按钮（用户要"再明显一点" ✓ 与普通工具按钮区分开 ✓）：
    用主题强调色 + 悬停加深；不用 border（避免改盒子尺寸 ⇒ 工具条换行错位 ✗） */

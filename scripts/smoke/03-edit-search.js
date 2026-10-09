@@ -48,20 +48,35 @@ const assertions = [
     }
   },
   {
-    name: 'dblclick node → edit dialog',
+    name: '双击节点 = **展开 / 收起**（用户定 ✓ 不再弹编辑框 ✗）；编辑在右键菜单里',
     run: async (ctx) => {
-      // 双击节点应打开编辑对话框（jsMind 内置双击已禁用，由本工程接管）
       const chk = await ctx.exec(
         `(function () {
           try {
-            var nodeEl = document.querySelector('jmnode[nodeid="tcp-handshake"]');
+            var app = window.MMApp;
+            var jm = app.getState().jm;
+            // 自建前置（✓ 不写死 id）：挑一个**真的有子节点**的节点 —— 实测 tcp-handshake 是叶子 ✗
+            var id = null;
+            var all = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]'));
+            for (var i = 0; i < all.length; i++) {
+              var cand = all[i].getAttribute('nodeid');
+              var nn = jm.get_node(cand);
+              if (nn && !nn.isroot && nn.children && nn.children.length) { id = cand; break; }
+            }
+            if (!id) return { ok: false, text: '找不到有子节点的可见节点' };
+            var n = jm.get_node(id);
+            var before = !!n.expanded;
+            var nodeEl = document.querySelector('jmnode[nodeid="' + id + '"]');
             if (!nodeEl) return { ok: false, text: 'no jmnode el' };
-            var ev = new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 320, clientY: 260 });
-            nodeEl.dispatchEvent(ev);
-            var dlgOpen = document.getElementById('edit-dialog').style.display === 'flex';
-            var topicVal = document.getElementById('edit-topic').value;
-            if (dlgOpen) document.getElementById('edit-cancel').click();
-            return { ok: dlgOpen && topicVal === 'TCP 连接管理', text: 'dlg=' + dlgOpen + ' topic=' + topicVal };
+            nodeEl.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 320, clientY: 260 }));
+            var after = !!jm.get_node(id).expanded;
+            var dlg = document.getElementById('edit-dialog').style.display === 'flex';
+            if (dlg) document.getElementById('edit-cancel').click();
+            // 还原：不给后续断言留一个被改动过的展开态 ✓
+            if (after !== before) { if (before) jm.expand_node(id); else jm.collapse_node(id); }
+            var editApi = typeof app.editNode === 'function';
+            return { ok: (after !== before) && !dlg && editApi,
+              text: '展开态 ' + before + ' → ' + after + ' ｜ 弹出编辑框=' + dlg + '（必须 false ✓）｜ 编辑入口仍在=' + editApi };
           } catch (e) { return { ok: false, text: 'err:' + e.message }; }
         })()`
       );

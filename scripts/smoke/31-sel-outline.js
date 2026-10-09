@@ -54,12 +54,20 @@ module.exports = [
         });
         var raw = window.MM.getSelectionRaw ? window.MM.getSelectionRaw() : [];
         var box = document.getElementById('dsh-selection-outline');
+        // ★ 真判据：**算出来的样式**必须真的是虚线描边 —— 光有类名会假绿 ✗
+        //   （实测踩到：「.jmnodes jmnode.mm-sel-raw」用的是 class 选择器，而那个容器只有 tag ⇒ 规则永不命中）
+        var styleOk = painted.every(function (x) {
+          var el = document.querySelector('jmnode[nodeid="' + x.id + '"]');
+          if (!el || !window.getComputedStyle) return false;
+          var cs = window.getComputedStyle(el);
+          return cs.outlineStyle === 'dashed' && parseFloat(cs.outlineWidth) >= 1.5;
+        });
         return JSON.stringify({
-          ok: painted.every(function (x) { return x.cls; }) && raw.length >= 2
+          ok: painted.every(function (x) { return x.cls; }) && styleOk && raw.length >= 2
             && !!box && box.style.display !== 'none',
           text: '两个不同父节点=' + JSON.stringify(painted) + ' ｜ raw=' + raw.join(',')
             + ' ｜ 父级虚线框可见=' + (!!box && box.style.display !== 'none')
-            + ' ｜ 描边类=' + cls
+            + ' ｜ 描边类=' + cls + ' ｜ 真的画成虚线=' + styleOk
         });
       })()`);
       // 收尾：清掉选区与描边，不给后续断言留脏状态 ✓
