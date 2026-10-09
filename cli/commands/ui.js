@@ -1,14 +1,16 @@
 /* ============================================================
  * cli/commands/ui.js —— 界面控制（给外部 AI / 内置 DSH 用）
  * ------------------------------------------------------------
- * `sidebar-only on`  = 关掉**左边思维导图页**，只留 DSH 侧栏（侧栏铺满窗口、对话继续可用）
- * `sidebar-only off` = 恢复导图页
+ * `sidebar-only on`  = 关掉**左边思维导图页**（**真卸载这一页**：主窗口只剩占位页）、只留 DSH 侧栏
+ * `sidebar-only off` = 重新加载导图页（回到上次的项目与侧栏停靠宽度）
  *
  * 为什么要有它：这个能力本来只在**应用菜单**里（人点），于是"外部 AI 迭代主界面代码"时，
  * 内置 DSH 明明想帮忙却没法自己把导图页让开。通道细节见 `src/control.js`。
  *
  * 硬口径：**没有回执 = 没生效**。主界面没在运行时，本命令**报错退出**（退出码非 0），
  * 绝不打印"已切换"就算完 —— 调用方是 AI，它会把静默成功当依据。
+ * ⚠️ 导图页有**未保存编辑**时，`on` 会被界面**拒绝**（报错里带原因）：那条路不弹模态框
+ * （没人保证有人在看，弹窗会把调用方挂死 ✗）⇒ 先请人保存，或让人点界面上的 ✕。
  * ============================================================ */
 'use strict';
 
@@ -57,6 +59,10 @@ function driveUI(ctx, cmd, wantOn, msgs) {
   control.writeCommand(dir, { cmd: cmd, on: wantOn, at: new Date().toISOString(), by: 'cli' });
   const res = waitForResult(dir, cmd, 2500);
   if (!res || !res.ok) {
+    // 两种失败必须分清（否则用户拿到的建议是错的 ✗）：
+    //   · **界面拒绝了**（有回执、带原因，如"有未保存编辑"）⇒ 照实转述那个原因；
+    //   · **界面没响应**（压根没回执）⇒ 才说"请确认 AI MindMap 正在运行"。
+    if (res && res.err) ctx.error('界面拒绝了这条命令：' + res.err);
     ctx.error('主界面没有响应（' + dir + '）：请确认 AI MindMap 正在运行；'
       + '本命令只驱动**正在运行的**界面，不会自己去启动它');
   }
@@ -71,24 +77,26 @@ module.exports = {
   'sidebar-only'(ctx) {
     const mode = String((ctx.args._ && ctx.args._[0]) || '').toLowerCase();
     if (mode !== 'on' && mode !== 'off') {
-      ctx.error('用法：sidebar-only <on|off>   on = 只留 DSH 侧栏（关掉左边思维导图页）；off = 恢复导图页');
+      ctx.error('用法：sidebar-only <on|off>   on = 关掉左边思维导图页（**真卸载这一页**，只留 DSH 侧栏）；'
+        + 'off = 重新加载导图页（回到上次的项目）');
     }
     driveUI(ctx, 'dsh-only', mode === 'on', {
-      on: '已切到「只留侧栏」：左边思维导图页已关闭，DSH 侧栏继续可用（要恢复：sidebar-only off）',
-      off: '已恢复思维导图页'
+      on: '已关掉导图页（**真卸载这一页**：它的内存已释放，主窗口只剩占位页）；'
+        + 'DSH 侧栏继续可用（要恢复：sidebar-only off —— 会重新加载导图页）',
+      off: '已重新加载导图页（回到上次的项目与侧栏停靠宽度）'
     });
   },
 
   /** 反方向：保留主界面（思维导图），独立关/开侧栏 DSH。
-   *  off 会把 DSH 服务一起停掉 —— 所以"只改 DSH 那一侧"时不用重启整个应用 ✓。 */
+   *  off 会把 DSH 服务一起停掉、并**销毁**侧栏那个视图 ⇒ 所以"只改 DSH 那一侧"时不用重启整个应用 ✓ */
   'dsh-sidebar'(ctx) {
     const mode = String((ctx.args._ && ctx.args._[0]) || '').toLowerCase();
     if (mode !== 'on' && mode !== 'off') {
       ctx.error('用法：dsh-sidebar <on|off>   on = 打开侧栏 DSH；off = 关掉侧栏 DSH（主界面继续用）');
     }
     driveUI(ctx, 'dsh-sidebar', mode === 'on', {
-      on: '已打开侧栏 DSH（服务不在会自动重新孵化/接管）',
-      off: '已关掉侧栏 DSH（含服务）；主界面与项目数据不受影响，要恢复：dsh-sidebar on'
+      on: '已打开侧栏 DSH（服务不在会自动重新孵化/接管；视图会重新加载）',
+      off: '已关掉侧栏 DSH（含服务，视图已销毁）；主界面与项目数据不受影响，要恢复：dsh-sidebar on'
     });
   },
 
@@ -125,6 +133,11 @@ module.exports = {
     const s = res.status;
     if (ctx.args.json) { ctx.outJson(s); return; }
     ctx.out('侧栏状态: ' + s.status + (s.visible ? '（可见）' : '（已收起）'));
+    // 「真关」的两个判据（v0.19）：侧栏视图在不在、导图页是不是已经被卸载
+    ctx.out('侧栏视图: ' + (s.hasView ? ('在（第 ' + s.viewEpoch + ' 次创建，webContents ' + s.viewId + '）')
+      : '**已销毁**（关侧栏会销毁它；重开会重建并重新加载页面）'));
+    ctx.out('导图页: ' + (s.mapPageClosed ? '**已关闭/已卸载**（真关，重开：sidebar-only off）' : '打开着')
+      + '｜上次项目 ' + (s.lastProject || '（未记）'));
     ctx.out('宽度: 意图 ' + s.width + ' / 实际占宽 ' + s.actualWidth + '（控制栏 + 内容）');
     if (s.narrow) {
       ctx.out('窄宽适配: 模式 ' + s.narrow.mode + '，内容宽 ' + s.narrow.viewWidth

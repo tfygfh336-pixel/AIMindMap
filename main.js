@@ -464,42 +464,78 @@ async function exportImageDialog(win) {
   } catch (e) { toast(win, '导出失败: ' + e.message, true); }
 }
 
-/* ---------------- 菜单 ---------------- */
+/* ---------------- 菜单 ----------------
+ * ⚠️ 导图页可以被**真关**（卸载这一页，见 main-dsh-sidebar.js 的 closeMapPage）。卸载期间，
+ * 下面这些菜单项点下去只会"发进一个空页" ⇒ 用户看到的是**毫无反应** ✗ —— 那正是本轮要
+ * 消灭的那类缺陷。所以：所有"要么发给导图页渲染层、要么必须靠导图页才能成立"的项都打上 id，
+ * 关闭时统一**置灰**、重开时恢复 ✓（`setMapPageMenuEnabled`）。
+ * 判据由冒烟钉住：关闭期间菜单里禁用的项数 ≥ 本清单长度，重开后回到 0（见 smoke/23-*）。 */
+const MAP_PAGE_MENU_IDS = [
+  // 文件：全部要靠导图页（导出要用它的树；导入的结果也要它来显示，否则 toast 也发进空页 ✗）
+  'map-menu-import-md', 'map-menu-import-doc', 'map-menu-export-md',
+  'map-menu-import-json', 'map-menu-export-json', 'map-menu-export-png',
+  // 编辑：整族都是 menu:* ⇒ 发给导图页渲染层
+  'map-menu-save', 'map-menu-undo', 'map-menu-redo',
+  'map-menu-add-node', 'map-menu-edit-node', 'map-menu-delete-node',
+  'map-menu-expand-all', 'map-menu-collapse-all',
+  // 工具（在导图页里开面板）
+  'map-menu-palette', 'map-menu-audit'
+];
+const MAP_PAGE_ITEM_IDS = { close: 'map-menu-close-page', open: 'map-menu-open-page' };
+
+/** 导图页在/不在 ⇒ 菜单项启用/置灰（幂等；返回改动了几项，便于日志与断言） */
+function setMapPageMenuEnabled(enabled) {
+  const menu = Menu.getApplicationMenu();
+  if (!menu) return 0;
+  let n = 0;
+  for (const id of MAP_PAGE_MENU_IDS) {
+    const it = menu.getMenuItemById(id);
+    if (it && it.enabled !== enabled) { it.enabled = enabled; n++; }
+  }
+  const closeIt = menu.getMenuItemById(MAP_PAGE_ITEM_IDS.close);
+  const openIt = menu.getMenuItemById(MAP_PAGE_ITEM_IDS.open);
+  if (closeIt && closeIt.enabled !== enabled) { closeIt.enabled = enabled; n++; }
+  if (openIt && openIt.enabled !== !enabled) { openIt.enabled = !enabled; n++; }
+  if (n) console.log('[menu] 导图页菜单项已' + (enabled ? '恢复' : '置灰') + ' ' + n + ' 项'
+    + (enabled ? '' : '（导图页已卸载：这些项发往的是渲染层，点下去不会有任何反应 ✗）'));
+  return n;
+}
+
 function buildMenu(win) {
   const send = (channel, ...args) => { if (!win.isDestroyed()) win.webContents.send(channel, ...args); };
   const template = [
     { label: '文件', submenu: [
-      { label: '导入 Markdown…', accelerator: 'CmdOrCtrl+I',
+      { id: 'map-menu-import-md', label: '导入 Markdown…', accelerator: 'CmdOrCtrl+I',
         click: () => send('menu:import-md') },
       // 功能 5a：大文件（md/txt/docx）⇒ **新项目 + 新树**。与上面那条的区别：这个是"建新项目"，
       // 上面那条是"往当前项目里追加"。也可以直接把文件**拖进窗口**（两条入口同一个实现 ✓）。
-      { label: '导入大文件生成新项目…', accelerator: 'CmdOrCtrl+Shift+I',
+      { id: 'map-menu-import-doc', label: '导入大文件生成新项目…', accelerator: 'CmdOrCtrl+Shift+I',
         click: () => importDocDialog(win) },
-      { label: '导出 Markdown…', accelerator: 'CmdOrCtrl+E',
+      { id: 'map-menu-export-md', label: '导出 Markdown…', accelerator: 'CmdOrCtrl+E',
         click: () => send('menu:export-md') },
       { type: 'separator' },
-      { label: '导入 JSON 打包…', click: () => importJsonDialog(win) },
-      { label: '导出 JSON 打包…', click: () => exportJsonDialog(win) },
-      { label: '导出当前导图为 PNG…', click: () => exportImageDialog(win) }
+      { id: 'map-menu-import-json', label: '导入 JSON 打包…', click: () => importJsonDialog(win) },
+      { id: 'map-menu-export-json', label: '导出 JSON 打包…', click: () => exportJsonDialog(win) },
+      { id: 'map-menu-export-png', label: '导出当前导图为 PNG…', click: () => exportImageDialog(win) }
     ]},
     { label: '编辑', submenu: [
       // 保存：此前**菜单里没有这一项**，界面也无按钮 —— 人的编辑无从落盘。
-      { label: '保存', accelerator: 'CmdOrCtrl+S', click: () => send('menu:save') },
+      { id: 'map-menu-save', label: '保存', accelerator: 'CmdOrCtrl+S', click: () => send('menu:save') },
       { type: 'separator' },
-      { label: '撤销', accelerator: 'CmdOrCtrl+Z', click: () => send('menu:undo') },
-      { label: '重做', accelerator: 'CmdOrCtrl+Y', click: () => send('menu:redo') },
+      { id: 'map-menu-undo', label: '撤销', accelerator: 'CmdOrCtrl+Z', click: () => send('menu:undo') },
+      { id: 'map-menu-redo', label: '重做', accelerator: 'CmdOrCtrl+Y', click: () => send('menu:redo') },
       { type: 'separator' },
-      { label: '新建节点', accelerator: 'CmdOrCtrl+N', click: () => send('menu:add-node') },
-      { label: '编辑节点', accelerator: 'F2', click: () => send('menu:edit-node') },
-      { label: '删除节点', accelerator: 'Delete', click: () => send('menu:delete-node') },
+      { id: 'map-menu-add-node', label: '新建节点', accelerator: 'CmdOrCtrl+N', click: () => send('menu:add-node') },
+      { id: 'map-menu-edit-node', label: '编辑节点', accelerator: 'F2', click: () => send('menu:edit-node') },
+      { id: 'map-menu-delete-node', label: '删除节点', accelerator: 'Delete', click: () => send('menu:delete-node') },
       { type: 'separator' },
-      { label: '展开全部', accelerator: 'CmdOrCtrl+Shift+E', click: () => send('menu:expand-all') },
-      { label: '收起全部', accelerator: 'CmdOrCtrl+Shift+C', click: () => send('menu:collapse-all') },
+      { id: 'map-menu-expand-all', label: '展开全部', accelerator: 'CmdOrCtrl+Shift+E', click: () => send('menu:expand-all') },
+      { id: 'map-menu-collapse-all', label: '收起全部', accelerator: 'CmdOrCtrl+Shift+C', click: () => send('menu:collapse-all') },
       { type: 'separator' },
       // 命令面板与关系审计放在菜单里：菜单快捷键比渲染层 keydown 更可靠
       // （不受输入框焦点影响），渲染层仍保留 keydown 兜底。
-      { label: '命令面板…', accelerator: 'CmdOrCtrl+P', click: () => send('menu:palette') },
-      { label: '关系审计…', accelerator: 'CmdOrCtrl+Shift+A', click: () => send('menu:audit') }
+      { id: 'map-menu-palette', label: '命令面板…', accelerator: 'CmdOrCtrl+P', click: () => send('menu:palette') },
+      { id: 'map-menu-audit', label: '关系审计…', accelerator: 'CmdOrCtrl+Shift+A', click: () => send('menu:audit') }
     ]},
     { label: '视图', submenu: [
       { role: 'reload' },
@@ -521,14 +557,17 @@ function buildMenu(win) {
           shell.openPath(require('path').join(app.getPath('userData'), 'dsh-home'));
       } },
       { type: 'separator' },
-      // 仅侧边栏模式：外部 AI 迭代主界面时用（✕ 隐藏窗口、「—」最小化，DSH 驻留不动）
-      { label: '仅 DSH 侧边栏（主界面迭代中用）', type: 'checkbox', checked: false,
-        click: (mi) => {
-          dshSidebar.setDshOnly(mi.checked);
-          win.webContents.send('app:toast',
-            mi.checked ? '已进入仅侧边栏模式：✕ 隐藏窗口、「—」最小化到任务栏，DSH 服务驻留不受影响'
-              : '已恢复主界面');
-        } }
+      // 导图页的**真关**（本版语义：把这一页从内存里卸掉，不是隐藏 —— 藏起来内存还在 ✗）。
+      // 两个入口按状态互斥启用：关掉了就只剩「重新加载思维导图页」（回去的唯一正门之一，
+      // 另外两个是占位页上的按钮与侧栏控制栏里的「⤢」）。
+      // ⚠️ 关闭**必须**走渲染层：未保存编辑只在那儿知道（它会先弹「保存后关闭 / 取消」，
+      //    复用既有保存路径与冲突保护）⇒ 这里只发一条事件，不自己动手卸载。
+      { id: MAP_PAGE_ITEM_IDS.close, label: '关闭思维导图页（只留 DSH 侧栏）',
+        click: () => send('menu:close-map-page') },
+      { id: MAP_PAGE_ITEM_IDS.open, label: '重新加载思维导图页', enabled: false,
+        click: () => dshSidebar.openMapPage().catch((e) => {
+          console.log('[dsh-sidebar] openMapPage 失败: ' + ((e && e.message) || e));
+        }) }
     ]},
     { label: '帮助', submenu: [
       { label: '关于 AI MindMap', click: () => {
@@ -542,6 +581,10 @@ function buildMenu(win) {
     ]}
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  // 导图页"真关"状态的**唯一订阅者**：卸载/重开时统一改菜单项（见 setMapPageMenuEnabled）。
+  // 放在这里而不是各个入口：关闭入口有四个（工具栏 ✕ / 菜单 / 侧栏「⤢」/ CLI），分散去调必然漏一处。
+  dshSidebar.setMapPageListener((closed) => setMapPageMenuEnabled(!closed));
+  setMapPageMenuEnabled(!dshSidebar.getStatus().mapPageClosed);
 }
 
 /* ---------------- IPC ---------------- */
@@ -629,6 +672,9 @@ function registerIpc() {
     versionAtRead.set(name, r.version);
     // 同时记下**内容基线**：并发时要做三方合并（阶段 2），只有指纹是不够的
     baseAtRead.set(name, r.data);
+    // 导图页的"上次项目"由**主进程**存住：导图页被卸载后重开时，页面自己不知道原来开的是哪个
+    // （页面 boot 时只会默认开 projects[0] ⇒ 重开后项目会跑掉）⇒ 在这里记，重开时还回去 ✓
+    try { dshSidebar.setCurrentProject(name); } catch (err) { /* 记不住不阻断读项目 */ }
     return r;
   });
 
@@ -1132,11 +1178,15 @@ function registerIpc() {
   ipcMain.on('dsh-sidebar:toggle', () => dshSidebar.toggle());
   /* 仅侧边栏模式查询（渲染层/外部 AI 可读状态） */
   ipcMain.handle('dsh-sidebar:dsh-only', () => dshSidebar.isDshOnly());
-  /* 导图页右上角那个独立 ✕ 走这里：只关左边导图页（仅侧栏模式），人类点按钮即可 */
-  ipcMain.handle('dsh-sidebar:sidebar-only', (_e, on) => {
-    dshSidebar.setDshOnly(!!on);
-    return dshSidebar.isDshOnly();
-  });
+  /* 导图页右上角那个独立 ✕ 走这里：**真关 = 把这一页从内存里卸掉**（v0.19 语义）。
+   * ⚠️ `confirmed:true` 是渲染层的承诺：它已经拦过未保存编辑（「保存后关闭 / 取消」），
+   *    必要时保存成功后才发这条 —— 主进程不重复问（问也问不出人话，它只看得见脏标记）。
+   * 返回结构化结果（ok/reason），**失败不静默** ✗ */
+  ipcMain.handle('dsh-sidebar:close-map-page', () => dshSidebar.closeMapPage({ confirmed: true }));
+  /* 重开（占位页上的按钮 / 菜单 / 侧栏「⤢」都走它）：重新加载这一页 + 还原停靠宽度 + 回上次项目 */
+  ipcMain.handle('dsh-sidebar:open-map-page', () => dshSidebar.openMapPage());
+  /* 页面 boot 时问一次"我该打开哪个项目"：只有"重开"会武装它 ⇒ 正常启动仍按原样开 projects[0] ✓ */
+  ipcMain.handle('dsh-sidebar:boot-project', () => ({ project: dshSidebar.bootProject() }));
 
   /* ---- 界面状态落盘（v0.16.6「写前协调」的可执行版本） ----
    * 渲染层在脏标记变化时推 app:ui-state → 这里写 projects/<项目>/.ui-state.json。
@@ -1575,6 +1625,13 @@ async function runExportWindow(win, { out }) {
 /* ---------------- 界面控制通道（给外部 AI / 内置 DSH） ----------------
  * 协议与取舍见 src/control.js：文件 + 轮询（本机受限环境禁命名管道、网络要走代理，
  * 文件是唯一到处都成立的通道）。命令执行**一次**，回执留给调用方读 —— CLI 靠它判"真生效"。
+ *
+ * ⚠️ 事实核对（写进这里的理由：导图页**能被卸载**之后，"轮询在谁身上"变成了关键问题）：
+ *   这个 400ms 的轮询跑在**主进程**（本函数在 app.whenReady 里被调用），**不在渲染层** ⇒
+ *   导图页被卸载（主窗口只剩占位页）期间，通道**照常工作**：`dsh-status`（只读诊断）、
+ *   `sidebar-only on/off`、`dsh-sidebar on/off` 都不受影响 ✓。受影响的是"发给导图页渲染层"
+ *   的东西（菜单 `menu:*` 那一批）⇒ 那个由菜单项的启用状态挡住（见 setMapPageMenuEnabled）。
+ *   （README 那句"界面每 400ms 轮询一次"说的就是本函数 —— "界面"= 应用主进程，不是渲染层 ✓）
  */
 function startControlChannel() {
   const control = require('./src/control.js');
@@ -1584,9 +1641,10 @@ function startControlChannel() {
     const cmd = control.readCommand(dir);
     if (!cmd) return;
     // 三个命令（前两个是"各关一半"的对称能力，第三个是**只读**诊断）：
-    //   dsh-only    —— 关左边思维导图页、只留侧栏（改主界面代码时用）
-    //   dsh-sidebar —— 保留主界面、关掉侧栏 DSH（改 DSH 那一侧时用；把服务一起停）
-    //   dsh-status  —— 只读：读侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出）
+    //   dsh-only    —— 关左边思维导图页（**真卸载这一页**：主窗口改为占位页）、只留侧栏
+    //                  （改主界面代码时用；重开 = 重新加载 ⇒ sidebar-only on/off 成对）
+    //   dsh-sidebar —— 保留主界面、关掉侧栏 DSH（改 DSH 那一侧时用；把服务一起停 + 销毁侧栏视图）
+    //   dsh-status  —— 只读：读侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出/视图在不在）
     //   dsh-prefill —— 把文本送进侧栏输入框（⑩；**不代替用户发送** ✗）
     if (cmd.cmd === 'dsh-prefill') {
       prefillAfterEnsureOpen(cmd.text || '').then((r) => {
@@ -1610,7 +1668,11 @@ function startControlChannel() {
           narrowSkip: s.narrowSkip || null,
           // 内核右栏 ⇄ 侧栏自动加宽（用户要求）的实况
           rightbarOpen: !!s.rightbarOpen, autoWide: s.autoWide || null,
-          rightbarWatcher: s.rightbarWatcher || null
+          rightbarWatcher: s.rightbarWatcher || null,
+          // 「真关」的判据（v0.19）：**视图在不在**、导图页是不是已被卸载 —— 断言/诊断别靠猜 ✓
+          hasView: !!s.hasView, viewId: (typeof s.viewId === 'number' ? s.viewId : null),
+          viewEpoch: s.viewEpoch || 0,
+          mapPageClosed: !!s.mapPageClosed, lastProject: s.lastProject || null
         };
       } catch (err) {
         detail = String((err && err.message) || err);
@@ -1623,12 +1685,32 @@ function startControlChannel() {
       control.clearCommand(dir);
       return;
     }
-    if (cmd.cmd !== 'dsh-only' && cmd.cmd !== 'dsh-sidebar') return;
+    // dsh-only：**关导图页 = 真卸载这一页**（v0.19；旧语义只是给它加个类名、页面还在内存里 ✗）
+    //   `confirmed:false` ⇒ 主进程自己查一次渲染层的脏标记：脏就**如实拒绝**（AI 这条路上
+    //   不弹模态框 —— 没人保证有人在看，弹窗会把 CLI 挂死 ✗）。
+    // dsh-sidebar：保留主界面、关掉侧栏 DSH（语义不变）。
+    if (cmd.cmd === 'dsh-only') {
+      const done = cmd.on
+        ? dshSidebar.closeMapPage({ confirmed: false, by: 'cli' })
+        : dshSidebar.openMapPage();
+      const reply = (r) => {
+        try {
+          control.writeResult(dir, {
+            cmd: 'dsh-only', ok: !!(r && r.ok),
+            state: (r && r.ok) ? dshSidebar.isDshOnly() : null,
+            err: (r && r.reason) || null, at: new Date().toISOString()
+          });
+        } catch (err2) { /* 回执写不进去：调用方超时 ⇒ 判"没生效" ✓ */ }
+        control.clearCommand(dir);
+      };
+      Promise.resolve(done).then(reply).catch((err) => reply({ ok: false, reason: String((err && err.message) || err) }));
+      return;
+    }
+    if (cmd.cmd !== 'dsh-sidebar') return;
     let ok = false;
     let detail = '';
     try {
-      if (cmd.cmd === 'dsh-only') dshSidebar.setDshOnly(!!cmd.on);
-      else if (cmd.on) dshSidebar.show();
+      if (cmd.on) dshSidebar.show();
       else dshSidebar.closeSidebar();
       ok = true;
     } catch (err) {
@@ -1637,7 +1719,7 @@ function startControlChannel() {
     try {
       control.writeResult(dir, {
         cmd: cmd.cmd, ok: ok,
-        state: ok ? (cmd.cmd === 'dsh-only' ? dshSidebar.isDshOnly() : dshSidebar.isVisible()) : null,
+        state: ok ? dshSidebar.isVisible() : null,
         err: detail, at: new Date().toISOString()
       });
     } catch (err2) { /* 回执写不进去：调用方会超时 → 判"没生效"，不会静默成功 */ }
@@ -1687,8 +1769,9 @@ app.whenReady().then(() => {
       if (isSmoke) setTimeout(() => runSmoke(win), 500);
     });
     // 关窗语义（用户定的分工，最终版）：**窗口 ✕ = 关整个应用**（连同侧栏）。
-    // 只关左边导图页、留侧栏走**导图页右上角那个独立 ✕**（renderer/app.js 里动态插入的
-    // `#btn-close-map` ⇒ `dsh-sidebar:sidebar-only` ⇒ setDshOnly(true)）。
+    // 关掉左边导图页走**导图页右上角那个独立 ✕**（renderer/app.js 里动态插入的
+    // `#btn-close-map` ⇒ `MM.closeMapPage()`：先拦未保存编辑 ⇒ 保存成功才
+    // ⇒ `dsh-sidebar:close-map-page` ⇒ **卸载这一页**，主窗口改为占位页）。
     // 菜单里的「退出」已按用户要求删除 —— 退出就用窗口 ✕。
     // DSH 服务按驻留语义处理：退出**不收割已就绪的服务** ⇒ 下次打开对话还在。
     win.on('closed', () => { /* 窗口已关；服务驻留 */ });

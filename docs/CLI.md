@@ -320,7 +320,7 @@ node cli/mm-cli.js files <项目> [--json]
 
 ### sidebar-only
 
-on = 只留 DSH 侧栏（关掉左边思维导图页，对话继续可用）；off = 恢复导图页。无回执即报错（界面没在跑）
+on = 关掉左边思维导图页（**真卸载这一页**：内存释放、主窗口只剩占位页），DSH 侧栏继续可用；off = 重新加载导图页（回到上次的项目与侧栏停靠宽度）。⚠️ 有未保存编辑时 on 会被**拒绝**（报错带原因、不弹模态框）—— 先让人保存，或让人点界面上的 ✕（那条路会先问「保存后关闭」）。无回执即报错（界面没在跑）
 
 ```
 node cli/mm-cli.js sidebar-only <on|off>
@@ -328,7 +328,7 @@ node cli/mm-cli.js sidebar-only <on|off>
 
 ### dsh-sidebar
 
-on = 打开侧栏 DSH；off = 关掉侧栏 DSH（连服务一起停；主界面与项目数据不受影响）。方向与 sidebar-only 相反
+on = 打开侧栏 DSH；off = 关掉侧栏 DSH（连服务一起停、侧栏视图**销毁**；主界面与项目数据不受影响）。方向与 sidebar-only 相反
 
 ```
 node cli/mm-cli.js dsh-sidebar <on|off>

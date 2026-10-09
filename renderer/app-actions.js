@@ -186,6 +186,37 @@
   }
   function hasPendingConflict() { return !!pendingConflict; }
 
+  /* ================= 关导图页（**真关**：交给主进程把这一页从内存里卸掉） =================
+   * 核心纪律：**先拦未保存编辑**（不许省 —— 丢改动是本工程最重的损害类别）。
+   * 顺序（每一步都有理由）：
+   *   ① 有脏改动 ⇒ 弹「保存后关闭 / 取消」；
+   *   ② 选「保存后关闭」⇒ 走**既有** `save()`（含并发冲突保护：撞同一对象时它自己会再问一次，
+   *      或回报 RACE_RETRY）⇒ **只有真保存成功**才继续；否则留在导图页（宁可不关，也不丢 ✗）；
+   *   ③ 然后才让主进程卸载这一页（`desktop.dsh.closeMapPage()` ⇒ 主窗口导航到占位页）。
+   * 主进程做不了这个判断：脏标记只活在渲染层内存里（页面一卸载连它一起没了）⇒ 必须在这之前问。
+   * ⚠️ headless（冒烟/自动化）下**不能真弹 `window.confirm`**：没人回答会把整轮卡死（实测踩过）
+   *    ⇒ `setConfirmStub()` 给自动化换掉确认框（默认就是 window.confirm ✓）。 */
+  let confirmFn = (msg) => window.confirm(msg);
+  function setConfirmStub(fn) { confirmFn = (typeof fn === 'function') ? fn : ((msg) => window.confirm(msg)); }
+
+  async function closeMapPage() {
+    if (isDirty()) {
+      const saveFirst = confirmFn(
+        '有未保存的编辑：关闭导图页会把这一页从内存里卸掉。\n\n'
+        + '点「确定」= 先保存，然后关闭（保存被拦下就不关）\n'
+        + '点「取消」= 取消关闭，导图页留着');
+      if (!saveFirst) { setStatus('已取消关闭导图页（改动还在）'); return false; }
+      const saved = await save();
+      if (!saved) { setStatus('保存未完成 ⇒ 导图页没有关闭（避免丢改动）', true); return false; }
+    }
+    const r = await window.desktop.dsh.closeMapPage();
+    if (!r || !r.ok) {
+      setStatus('关闭导图页失败：' + ((r && r.reason) || '未知原因'), true);
+      return false;
+    }
+    return true;
+  }
+
   /** 有未保存改动时询问用户；返回 false 表示用户选择取消 */
   function confirmDiscardIfDirty(actionLabel) {
     if (!isDirty()) return true;
@@ -409,8 +440,20 @@
         // ⇒ 保留当前选中的项目；**只有当前没有项目**时才自动打开第一个 ✓
         const keep = state.project && projects.some((p) => p.name === state.project.name)
           ? state.project.name : null;
-        sel.value = keep || projects[0].name;
-        if (!keep) await openProject(projects[0].name);
+        // 「导图页被卸载后重开」这条路上，主进程会武装一个 **boot 项目**（上次那个）——
+        // 页面自己不知道原来是哪个项目（内存随页面一起没了 ⇒ 只能问主进程 ✓）。
+        // 正常启动时它是 null ⇒ 仍然开 projects[0]（**启动行为不变** ✓）；
+        // 记着的项目已经不存在时同样退回 projects[0]（不报错、不假装成功 ✓）。
+        let bootName = null;
+        try {
+          const b = (window.desktop.dsh && window.desktop.dsh.bootProject)
+            ? await window.desktop.dsh.bootProject() : null;
+          bootName = (b && b.project) ? b.project : null;
+        } catch (e) { bootName = null; }
+        const fallback = (bootName && projects.some((p) => p.name === bootName))
+          ? bootName : projects[0].name;
+        sel.value = keep || fallback;
+        if (!keep) await openProject(fallback);
       } else {
         $('#empty-hint').style.display = 'flex';
       }
@@ -558,6 +601,8 @@
   MM.openProject = openProject;
   MM.isDirty = isDirty;
   MM.confirmDiscardIfDirty = confirmDiscardIfDirty;
+  MM.closeMapPage = closeMapPage;      // **真关**导图页：先拦未保存编辑（保存成功才卸页）
+  MM.setConfirmStub = setConfirmStub;  // 自动化用：换掉确认框（默认 window.confirm）
   MM.onProjectDiskChange = onProjectDiskChange;
   MM.importMarkdown = importMarkdown;
   MM.exportMarkdown = exportMarkdown;

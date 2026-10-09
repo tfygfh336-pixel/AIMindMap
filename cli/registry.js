@@ -84,17 +84,19 @@ function init() {
   register({ name: 'files', usage: 'files <项目> [--json]', desc: '列出项目全部附件及 caption', fn: loadFile('assets').files });
 
   // 界面控制（给**外部 AI 与内置 DSH 侧栏**用；人类用界面上的两个 ✕，不需要调它）
-  // 两个方向各关一半：sidebar-only 关左页留侧栏；dsh-sidebar 留主界面关侧栏。
+  // 两个方向各关一半：sidebar-only 关掉导图页（**真卸载这一页**）留侧栏；dsh-sidebar 留主界面关侧栏。
   register({
     name: 'sidebar-only',
     usage: 'sidebar-only <on|off>',
-    desc: 'on = 只留 DSH 侧栏（关掉左边思维导图页，对话继续可用）；off = 恢复导图页。无回执即报错（界面没在跑）',
+    desc: 'on = 关掉左边思维导图页（**真卸载这一页**：内存释放、主窗口只剩占位页），DSH 侧栏继续可用；'
+      + 'off = 重新加载导图页（回到上次的项目与侧栏停靠宽度）。⚠️ 有未保存编辑时 on 会被**拒绝**'
+      + '（报错带原因、不弹模态框）—— 先让人保存，或让人点界面上的 ✕（那条路会先问「保存后关闭」）。无回执即报错（界面没在跑）',
     fn: loadFile('ui')['sidebar-only']
   });
   register({
     name: 'dsh-sidebar',
     usage: 'dsh-sidebar <on|off>',
-    desc: 'on = 打开侧栏 DSH；off = 关掉侧栏 DSH（连服务一起停；主界面与项目数据不受影响）。方向与 sidebar-only 相反',
+    desc: 'on = 打开侧栏 DSH；off = 关掉侧栏 DSH（连服务一起停、侧栏视图**销毁**；主界面与项目数据不受影响）。方向与 sidebar-only 相反',
     fn: loadFile('ui')['dsh-sidebar']
   });
   register({

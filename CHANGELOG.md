@@ -14,6 +14,87 @@
 
 ## [Unreleased]
 
+### 两个 ✕ 改成**真关**：导图页从内存里卸载、侧栏视图真正销毁（用户明确选了"内存里真的不留页面"）
+
+**根因（两处"关"其实都不是关）**：
+- **导图页 ✕** 原来只给 `body` 加一个 `dsh-only` 类（CSS 把 `#main`/`#toolbar` 设成 `display:none`）
+  ⇒ 导图页的 DOM、jsMind 实例、全部视图模块**都还活在内存里**；
+- **侧栏 ✕**（`closeSidebar()`）只 `removeChildView`，把那个 `WebContentsView` **从窗口上摘下来挂着**
+  ⇒ DSH 页面与它的 JS 堆照旧活着。
+用户明确选定语义：**"关"就是内存里真的不留这一侧的页面**（并接受"重开要重新加载 ⇒ 比原来慢"这个代价）。
+
+**导图页那一半（关键认知：它不是独立窗口，它就是主窗口的渲染层）**
+- "真关"只有一条路 —— 让主窗口**导航到占位页**：新增 `renderer/map-closed.html`
+  （写清"已关闭 + 三个回去的入口"，不留一片白 ✗）。
+  **实测报文**：`index.html → map-closed.html`；页内 `#main=false`、`MMApp=false`（两者都不存在了，
+  而旧"隐藏"实现下两者都在）；`getOSProcessId()` 前后相同 ⇒ **渲染进程被复用，被卸载的是旧文档
+  （DOM + JS 堆）** —— 文档只按这个实测口径写，不写成"渲染进程被替换"。
+- **关之前先拦未保存编辑**（不许省）：有脏改动 ⇒ 弹「保存后关闭 / 取消」，**复用既有** `save()`
+  （含并发冲突保护：`MERGE_CONFLICT` / `RACE_RETRY` 都还在那条路上）；**保存没成功就不关**。
+  脏标记只活在渲染层内存里（页面一卸载它也没了）⇒ 这件事**只能**在卸载之前做。
+- **重开**（占位页按钮 / 菜单「视图 → 重新加载思维导图页」/ 侧栏控制栏「⤢」/ CLI `sidebar-only off`）
+  = **重新加载** `renderer/index.html` + **还原停靠宽度** + **回到上次的项目**。后两项由**主进程**记
+  （`project:read` 时 `setCurrentProject()`，落 `userData/dsh-sidebar-prefs.json`；页面 boot 时问一次
+  `dsh-sidebar:boot-project`）—— 页面自己记不住，它已经被卸载了。**正常启动不武装这个提示** ⇒ 启动行为不变 ✓。
+
+**侧栏那一半**：新增 `destroyView()` —— 摘下来 + `webContents.close()`（**真的销毁**）+ `state.view` 置空；
+重开走既有 `ensureView()` 重建（**新** webContents ⇒ 页面重新加载）。
+判据字段进 `getStatus()`：`hasView / viewId / viewEpoch / lastDestroyedViewId`（`dsh-status` 白名单里也放这几个，
+不含 url/token ✓）。**实测**：关后 `hasView=false viewId=null lastDestroyedViewId=2`、`webContents.fromId(2)`
+已取不到；重开 `viewId=4`、`viewEpoch 1→2` ⇒ 确实是**新视图**，不是把旧的又挂回来。
+
+**副作用：都同批处理了，不留给人踩**
+- **关闭期间把发往导图页的菜单项置灰**（16 条：保存/撤销/重做/新建·编辑·删除节点/展开收起/命令面板/
+  关系审计 + 文件菜单 6 条导入导出）：否则点下去只是"发进一个空页" —— 又一种"没反应" ✗。
+  重开后恢复；「重新加载思维导图页」在**关着时**才可点（两个入口按状态互斥）；菜单入口也从
+  「视图 → 仅 DSH 侧边栏」（勾选项，语义是"隐藏"）换成「关闭思维导图页（只留 DSH 侧栏）」。
+- **关闭期间控制栏拖宽不响应**：那时侧栏铺满整窗，拖宽既看不出效果、又会把"重开时要还原的停靠宽度"
+  改坏 ✗（这是"重开还原宽度"能成立的**前提**，所以宁可明确不响应并记日志，也不静默改坏）。
+- **控制通道不受影响（核对后的事实，写进注释）**：那个 400ms 轮询在**主进程**
+  （`main.js` 的 `startControlChannel`），不在渲染层 ⇒ 卸载期间 `dsh-status` / `sidebar-only` /
+  `dsh-prefill` 照常工作 ✓。受影响的只有"发给导图页渲染层"的菜单项（就是上面那条）。
+- **CLI 与界面在脏改动上的分工**：`sidebar-only on` 遇到未保存编辑**直接拒绝**（回执里带原因，
+  **不弹模态框** —— AI 调用时没人保证有人在看，弹窗会把调用方挂死 ✗）；界面上的 ✕ 弹确认框（人在）。
+  `cli/commands/ui.js` 同时把"界面**拒绝了**"与"界面**没响应**"分开报（原先一律说"主界面没有响应"，
+  会把人引到错误的排查方向）。
+- **连带发现（如实记录，本次不顺手改）**：`main-dsh-sidebar.js` 的 `hideWindowToBackground()` /
+  `hideToBackground()` **没有任何调用方** ⇒ 旧 README 那句"仅侧栏模式下 ✕ = 隐藏到后台"与实现不符
+  （实际是"窗口 ✕ = 退出应用"）。本次按**实际行为**改写文档，**没有**去实现那个后台隐藏
+  （那是另一个决定，不在本卡范围）。
+
+**判别力证明（每处注入一次违规，确认变红，再撤销；撤销后逐字节还原，比 sha1）**
+- 注入 A「导图页只隐藏、不导航」（把 `loadFile(mapClosedPage())` 换成空操作）+ 注入 B「菜单不置灰」
+  ⇒ 冒烟 23：② 红（报文：`【页】index.html → index.html｜#main=true MMApp=true｜【菜单】禁用 1/30 项`）、
+  ③ 红（`关着时禁用 1 → 重开后 1`）；**① 仍绿** ⇒ 注入是"定点"的，且这一轮不是整体坏掉。
+- 注入 C「`closeSidebar` 只摘视图、不销毁」+ 注入 D「渲染层省掉'先拦未保存编辑'」
+  ⇒ 冒烟 24 红（`旧 view id=2 ⇒ hasView=true viewId=2 lastDestroyedViewId=null 旧 id 已取不到=false`、
+  `新 id=2 epoch 1→1`）、冒烟 23① 红（`确认框被问=-1 次`、`这一页还在：MMApp=false`、`mapPageClosed=true`）、
+  23② 红（`【盘】探针在盘上=false` —— **省掉保存直接卸页 = 丢改动**，正是最重的损害类别）。
+- 撤销后哈希逐字节还原：`main-dsh-sidebar.js ee2794cdb13f`、`main.js fd4a033ea445`、
+  `renderer/app-actions.js 17c06e920692`；复跑 12/12 绿（exit 0）。
+- 顺带修了断言本身的脆弱点：注入 D 第一次跑时整轮冒烟**挂到守卫超时**（页面被卸载 ⇒ 页内 Promise 永不 settle
+  ⇒ `executeJavaScript` 永不返回）⇒ 冒烟 23 的页内调用一律加超时、超时当**结构化失败**回报（"红得有话说"）。
+
+**连带面（R5：改变"某功能如何被使用"时逐个核对使用者可见面）**
+- 渲染层：`renderer/app.js`（✕ 与菜单事件）、`renderer/app-actions.js`（`closeMapPage` + boot 项目）、
+  新增 `renderer/map-closed.html`；`preload.js` 的 `desktop.dsh` 去掉 `sidebarOnly`、加
+  `closeMapPage/openMapPage/bootProject` ⇒ 冒烟 11 的**刻意手写白名单**同批更新 ✓。
+- 断言：`scripts/smoke/23-dsh-only.js` 重写（拦脏 / 真卸载+菜单置灰 / 重开还原三段，每段自建前置）、
+  `scripts/smoke/24-sidebar-close.js` 增销毁取证；`scripts/smoke/11-dsh-sidebar.js` 白名单。
+- CLI：`cli/registry.js` + `cli/commands/ui.js`（文案与失败口径）⇒ `docs/CLI.md` 同批重生成 ✓；
+  `src/dsh-sidebar-skill.js`（侧栏 AI 的操作说明 + 一条边界：这条命令会真卸载、脏改动会被拒）。
+- 文档：README「两条对称能力」与「三条操作语义」两张**语义表**、`docs/ARCHITECTURE.md`
+  （§2.2 / §2.4 / §4b ADR「两个 ✕ 都是真关」）、本文件。
+- 数据格式 / CLI 命令数 / MCP 工具数：**无影响**。
+- 顺手修：README 那行手写的侧栏宽度范围 `280–720px` 早已过期（上限早在"内核右栏自动加宽"那轮提到
+  900）⇒ 改成 280–900。
+
+**⚠️ 只能真机验（headless 覆盖不到 —— 已在冒烟里覆盖"机制"，但下面三件需要你在真机上复核）**
+1. 重开后是否**真的**回到你原来的项目与侧栏停靠宽度（冒烟用 comnet + 512px 验的是机制）；
+2. 占位页按钮 / 菜单回开的**观感**（本来就会比"隐藏恢复"慢，因为要重新加载整页）；
+3. 关闭导图页期间侧栏对话**完全不受影响**（本卡只断言"侧栏视图还在、服务没被动"，
+   没有真的起服务跑一轮对话）。
+
 ### 关联视图里能**人工编辑关联信息**了（用户需求：加/删链接 + 新建关联笔记）
 
 **根因（"看得见、改不动"）**：关联视图（功能 2）把关联节点高亮并画出关系线，但那条信息在界面上**只能看**：

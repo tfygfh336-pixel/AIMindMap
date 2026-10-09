@@ -100,8 +100,12 @@ const assertions = [
       //    它只**送文本进去**、回一个 {ok, reason} 的结果 —— 不返回 url/token ✓ 故放行。
       //    P7 又新增 `selDragStart/selDragEnd`（选区拖到原生侧栏视图上）：同样只发 ids/只拿判定
       //    回执 {ok,hit,ids,reason,pt} ✓ 不含 url/token ✓ —— 与"拖宽"那套 beginDrag/endDrag 分开 ✓。
-      // P7 跨视图兜底又加一笔 `onSelDrop`（主进程判出悬停松手后把 ids 发回来 ⇒ 渲染层投喂 ✓）
-      const ok = r.keys.join(',') === 'beginDrag,endDrag,isDshOnly,onSelDrop,prefill,selDragEnd,selDragStart,sidebarOnly,status,toggle'
+      // P7 跨视图兜底又加一笔 `onSelDrop`（主进程判出悬停松手后把 ids 发回来 ⇒ 渲染层投喂 ✓）。
+      // 「真关」语义（v0.19）：`sidebarOnly` 那条（只隐藏页面的旧语义）**已删除**，换成
+      //    `closeMapPage`（卸载导图页）/ `openMapPage`（重新加载）/ `bootProject`（重开后该开哪个
+      //    项目，只回项目名 ⇒ 不是 url/token ✓）—— 三个都只回结构化结果，理由同上 ✓
+      const ok = r.keys.join(',') === 'beginDrag,bootProject,closeMapPage,endDrag,isDshOnly,onSelDrop,'
+        + 'openMapPage,prefill,selDragEnd,selDragStart,status,toggle'
         && !r.hasLoad && !r.hasToken;
       return { ok, text: 'desktop.dsh keys=' + r.keys.join(',') };
     }

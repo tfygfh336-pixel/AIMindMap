@@ -124,22 +124,20 @@
     // DSH 侧边栏：布局让位 + 状态栏提示（监听主进程事件；不涉及 token/url）
     if (MM.bindDshSidebar) MM.bindDshSidebar();
 
-    // 导图页右上角独立 ✕：**只关左边导图页**（进"仅侧栏"模式，连菜单栏一起隐掉），侧栏留着。
+    // 导图页右上角独立 ✕：**真的把这一页关掉**（卸载渲染层 ⇒ 它的内存真正释放；v0.19 语义）。
     // 与窗口的 ✕ 分工不同：窗口 ✕ = 关整个应用；详情框里那个 ✕ = 关详情框。
+    // 顺序（不许颠倒）：先拦未保存编辑（有脏就弹「保存后关闭 / 取消」并走既有保存路径）
+    //   ⇒ 保存成功才让主进程卸载这一页。主进程做不了这个判断：脏标记只活在渲染层内存里。
     // 动态插入而不是写进 index.html：接线集中在这一处，也避免与工具栏既有布局打架。
     (() => {
       const bar = document.getElementById('toolbar');
       if (!bar || document.getElementById('btn-close-map')) return;
       const btn = document.createElement('button');
       btn.id = 'btn-close-map';
-      btn.title = '关闭导图页（只留 DSH 侧栏；窗口 ✕ 才是退出应用）';
+      btn.title = '关闭导图页（真卸载这一页：有未保存编辑会先问你；窗口 ✕ 才是退出应用）';
       btn.textContent = '✕';
       btn.style.marginLeft = '4px';
-      btn.addEventListener('click', () => {
-        if (window.desktop && window.desktop.dsh && window.desktop.dsh.sidebarOnly) {
-          window.desktop.dsh.sidebarOnly(true);
-        }
-      });
+      btn.addEventListener('click', () => { MM.closeMapPage(); });
       bar.appendChild(btn);
     })();
 
@@ -162,6 +160,8 @@
     window.desktop.on('menu:export-md', exportMarkdown);
     window.desktop.on('menu:palette', () => openPalette());
     window.desktop.on('menu:audit', () => openAudit());
+    // 菜单「视图 → 关闭思维导图页」：与工具栏那个 ✕ **同一条路**（先拦未保存编辑 ⇒ 保存成功才卸页）
+    window.desktop.on('menu:close-map-page', () => { MM.closeMapPage(); });
     // 主进程 toast（导入导出结果提示）与项目列表刷新（导入 JSON 后）
     window.desktop.on('app:toast', (text, isErr) => setStatus(text, !!isErr));
     window.desktop.on('menu:project-changed', () => loadProjects());
@@ -229,6 +229,9 @@
     // 未保存改动（供工具栏、菜单与冒烟断言使用）
     isDirty,
     confirmDiscardIfDirty: (label) => MM.confirmDiscardIfDirty(label),
+    // **真关**导图页（v0.19：卸载这一页，不是隐藏）+ 自动化用的确认框桩
+    closeMapPage: () => MM.closeMapPage(),
+    setConfirmStub: (fn) => MM.setConfirmStub(fn),
     // 关系审计与命令面板（供工具栏、菜单、冒烟断言与 AI 注入使用）
     openAudit,
     closeAudit,

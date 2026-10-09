@@ -113,7 +113,7 @@ CLI `assoc-add`；二级页面本身仍只能从节点详情的「相关知识�
 | `commands/edit.js` | 节点编辑：add/add-root/edit/move/remove/clone |
 | `commands/assets.js` | 图片与附件：add-image/remove-image/assets/add-file/remove-file/files |
 | `commands/links.js` | 跨项目链接：link/unlink/links/links-prune（清理悬空链接 —— 别的项目删了目标节点后本项目的自救路） |
-| `commands/ui.js` | 界面控制**三条命令**：`sidebar-only <on\|off>`（关掉**左边思维导图页**、只留 DSH 侧栏）、`dsh-sidebar <on\|off>`（**保留主界面**、关/开侧栏 DSH，off 连服务一起停）、`dsh-status`（**只读**诊断：可见性/总占宽/窄宽模式/是否横向溢出，白名单输出不含 url/token）。存在理由：改哪一半就只关哪一半 ⇒ **不必重启整个应用**；改侧栏布局前先 `dsh-status` 拿数字，别凭肉眼。走文件式控制通道（`src/control.js`），**没有回执即报错**（界面没在运行时不许假装成功） |
+| `commands/ui.js` | 界面控制**三条命令**：`sidebar-only <on\|off>`（on = **真卸载导图页**（这一页的内存被释放，主窗口只剩占位页）、只留 DSH 侧栏；off = 重新加载导图页）、`dsh-sidebar <on\|off>`（**保留主界面**、关/开侧栏 DSH，off 连服务一起停并销毁侧栏视图）、`dsh-status`（**只读**诊断：视图在不在/导图页关没关/可见性/总占宽/窄宽模式/是否横向溢出，白名单输出不含 url/token）。存在理由：改哪一半就只关哪一半 ⇒ **不必重启整个应用**；改侧栏布局前先 `dsh-status` 拿数字，别凭肉眼。走文件式控制通道（`src/control.js`），**没有回执即报错**（界面没在运行时不许假装成功）；**被界面拒绝**（如导图页有未保存编辑）时转述原因，与"没响应"分开报 |
 | `commands/relations.js` | 引用关系：backlinks（单向反查）/ related（出边+入边双向合并）/ orphans（关系审计）/ mentions（未链接提及） |
 | `commands/assoc.js` | 关联笔记（N 元关联实体）：assoc-list/assoc-add/assoc-edit/assoc-remove/assoc-prune（参数处理 + 读写 + 输出；纯逻辑在 `src/assoc.js`） |
 | `commands/release.js` | 工程命令：docs-gen（从 registry 重生成 `docs/CLI.md`）/ release（发版）/ **changelog**（CHANGELOG **只读**窄查询：段/条目索引或按关键词检索正文）。`changelog` 的索引从正文**现算**、不落生成物 —— 详见 `src/changelog.js` 的 `indexChangelog` 注释（为什么不做成生成文件） |
@@ -193,6 +193,23 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
     （`available = view − 56 − 400 ≥ 300`，不足即把右栏宽算成 0 ✗）；检测到意图
     （点按钮 / Ctrl+Shift+B ✓ —— **宽度不够时官方属性不变，只靠属性检测不到 ✗**）就把侧栏
     加宽到 900 ✓，右栏关掉还原 ✓（只在我们仍处于自动宽度时还原 ✓）。
+  - **两个 ✕ = 真关（"卸载"，不是"隐藏"）**——本工程的一条事实：**渲染层是可被卸载/重载的**。
+    · **导图页 ✕** / 菜单「关闭思维导图页」/ CLI `sidebar-only on` ⇒ `closeMapPage()`：
+      导图页**不是独立窗口，它就是主窗口的渲染层** ⇒ 想让它"真的不在内存里"只有一条路 ——
+      让主窗口**导航到占位页**（`renderer/map-closed.html`），旧文档连同 DOM/JS 堆一起被卸载 ✓。
+      **实测**：关完之后页面里 `#main` 与 `MMApp` 都不存在；渲染进程会被复用（`getOSProcessId()`
+      前后相同）⇒ **别写成"渲染进程被替换"**。关之前先拦未保存编辑（界面弹「保存后关闭 / 取消」并
+      走既有保存+冲突保护；CLI 那条路**直接拒绝**并在回执里带原因）——脏标记只活在渲染层内存里，
+      页面一卸载它也没了，所以这件事**只能**在关之前做。关着时：发往导图页的菜单项置灰、
+      控制栏拖宽禁用（那时侧栏铺满整窗，拖宽只会改坏"重开要还原的停靠宽度"）。
+      重开 `openMapPage()` = **重新加载** + 还原停靠宽度 + 回到上次的项目
+      （项目名由**主进程**记：`project:read` 时 `setCurrentProject()`，落 `userData/dsh-sidebar-prefs.json`；
+      页面 boot 时问一次 `dsh-sidebar:boot-project`。正常启动不武装它 ⇒ 启动行为不变 ✓）。
+    · **侧栏 ✕** ⇒ `closeSidebar()`：收起 + **销毁** `WebContentsView`（`destroyView()`：先摘下来
+      再 `webContents.close()` —— 旧实现只摘不销毁，页面还挂在内存里 ✗）+ 停 DSH 服务；
+      重开走 `show()`（`ensureView()` 重建 ⇒ **新** webContents，页面重新加载）。
+      判据字段（断言/诊断不靠猜）：`getStatus()` 的 `hasView / viewId / viewEpoch / lastDestroyedViewId /
+      mapPageClosed / lastProject / bootProject`，`dsh-status` 白名单里也放这些（不含 url/token ✓）。
 - `preload.js`：contextBridge 暴露 `window.desktop`（projects/project.save/asset.import/
   app.exportMd/app.importMd/app.version/on/dsh.status/onProjectDiskChange）。渲染层**无 Node 权限**，只能走 IPC。
 - **保存闸门**：`project:save` 先把数据写临时文件 → 跑 `mm-cli validate` →
@@ -284,6 +301,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | **DSH 侧边栏独立运行**（v0.16） | 应用自带完整 DSH 运行包（`vendor/dsh`，哈希清单锁定）与**独立数据目录**（`userData/dsh-home`）；侧栏只是视图容器 + 进程管理者（`main-dsh-sidebar.js`）。更新 = 新包装进 `userData/dsh-runtimes/` + `active.json` 原子切换（**换包流程**永不触碰 dsh-home ✓；但**插件/配置导入是另一条受控通道** —— 它就是往 dsh-home 写东西 ✓，见 `docs/DSH-EMBEDDED.md`） | 用户明确要求：独立于全局安装的 DSH；两实例并行实测无冲突（端口/数据/凭据全隔离） |
 | **服务驻留与单窗口假设**（v0.16 系列） | dsh web 以 `detached` 孵化（脱离主进程 Job Object，实测主界面退出后存活）；service-info（`userData/dsh-service.json`）承载 {pid,url}，新主界面启动先 adopt（pid+HTTP 双活探测）不新孵化；健康循环 5s pid+HTTP 双探。**当前假设单主窗口**：`state.view/handle` 为单例、`destroy()` 只收割本进程孵化的服务。若未来支持多主窗口，需把 view/handle 所有权改为引用计数 | 拖宽分隔条与服务接管都绑定"一个 contentView"的模型；解耦的价值（重启主界面不掉侧栏）在单窗口下已完整兑现 |
 | **token 不进渲染层** | DSH 服务的 token URL 只存在于主进程内存与 loadURL；渲染层只收「侧栏宽度」布局事件与结构化状态（status/visible/error） | 渲染层是高危面（innerHTML 注入 detail）；token 泄进渲染层等于把 DSH 控制权交给任何能执行 JS 的路径 |
+| **两个 ✕ 都是"真关"（卸载，而不是隐藏）** | **导图页 ✕** ⇒ 主窗口导航到占位页 `renderer/map-closed.html`（旧文档连同 DOM/JS 堆被卸载）；**侧栏 ✕** ⇒ 收起 + **销毁** `WebContentsView` + 停 DSH 服务。两者重开都是**重新加载**，并还原停靠宽度与"上次的项目"。关之前一律**先拦未保存编辑**（界面弹「保存后关闭 / 取消」；CLI 那条路直接拒绝并带原因）。判据字段进 `getStatus()`：`hasView/viewId/viewEpoch/lastDestroyedViewId/mapPageClosed` | 用户明确选定："**内存里真的不留页面**"（明确否掉了"只隐藏"）。旧做法是两处都不卸载：导图页加 `body.dsh-only`（`#main` 仍 `display:none` 地活着）、侧栏只把 view 从窗口摘下来挂着 —— 渲染层都还在内存里，与"关掉"不是一件事。代价（重开要重新加载，比"隐藏了再显示"慢）**如实写进 README 与占位页** ✓。边界两条：① 渲染**进程**会被 Chromium 复用（实测 `getOSProcessId()` 前后相同）⇒ 文档只说"旧文档被卸载"，不说"进程被替换"；② 控制通道轮询在**主进程**，所以导图页卸载期间通道照常（受影响的只有"发给导图页渲染层"的菜单项，故把它们置灰） |
 | **运行包由哈希清单锁定** | `vendor/dsh/manifest.json`（schemaVersion 1）记录全部文件的 size+SHA256；`src/dsh-package.js` 的 `validateRuntime`/`installRuntime` 全量核验。vendor/ 因此**不进 G1 编码门禁与 G6 文档扫描**（2.6 万第三方文件的完整性由哈希清单负责，编码门禁会假红） | 门禁的职责边界：G1 防的是「我们自己写坏文件」，第三方运行时完整性是另一类问题，用另一把锁 |
 | **测试不碰真实数据** | 冒烟在 `os.tmpdir()` 的项目副本上运行；`verify` 全链不得修改 `projects/` | 历史上冒烟断言会在真实项目上 `app.save()`，中途崩溃会在真实笔记里残留测试节点 |
 | **易腐事实不手写** | 命令数/工具数/用例数/断言数只写在 `docs/VERIFY.md`（生成物）；生成物（`docs/CLI.md`）由门禁校验是否过期 | 同一事实多副本必然漂移（已发生过多次） |

@@ -206,7 +206,7 @@ caption **必填**且要写清"图里有什么、重点看什么"。
 | 任何代码/功能/数据格式变更 | CHANGELOG.md [Unreleased] 段 + README.md（模块表/功能表/版本） |
 | **改变「某功能如何被使用」**（数据形状/命令语义/交互模型/字段含义/默认值） | **铁律 R5「改动即连带」**：同一次改动里列出受影响的**使用者可见面**并逐个核对 —— GUI 交互（按钮/右键/菜单/快捷键/对话框/状态栏）、冒烟与集成断言、本文档与 README 的操作示例、详情框与关联笔记的渲染入口；结论（含"无影响"）写入 CHANGELOG。**判据不是"测试是否还绿"**，而是"人按原有习惯操作，得到的还是不是设计意图" —— G5 冒烟抓不住这类损害。详见 `docs/RULES.md` §3 R5 |
 | 新增 CLI 命令 | cli/registry.js 登记 → `node cli/mm-cli.js docs-gen` 重生成 docs/CLI.md → scripts/cli-integration.js 加断言 |
-| **只想改一侧、不想整体重启应用** | 用**两条对称命令**（下节 §4.0 详述）：改主界面用 `sidebar-only on`（关左页留侧栏）；改内置 DSH 用 `dsh-sidebar off`（留主界面关侧栏，连服务一起停）。**跑完用 `… on`/`off` 恢复**；两条都靠"有回执才算生效" |
+| **只想改一侧、不想整体重启应用** | 用**两条对称命令**（下节 §4.0 详述）：改主界面用 `sidebar-only on`（**真卸载导图页**、留侧栏；有未保存编辑会被拒）；改内置 DSH 用 `dsh-sidebar off`（留主界面关侧栏，连服务一起停 + 销毁侧栏视图）。**跑完用 `… on`/`off` 恢复**；两条都靠"有回执才算生效" |
 | 新增渲染功能 | 在 `scripts/smoke/NN-*.js` 的**对应分域文件**追加断言（入口 `scripts/smoke-assertions.js` 只做 require + 顺序拼接，不再往入口里加）→ `npm run smoke` 验证 |
 | **只改/只查某一条冒烟断言**（或只想确认某个功能没坏） | **别跑全链**：`SMOKE_ONLY=<文件前缀> npm run smoke`（PowerShell：`$env:SMOKE_ONLY='20,21'; npm run smoke`；等价 `electron . --smoke-only=20,21`）。只跑选中文件 + `01-*` 预热，**不产截图/取景记录/视觉断言**，计数**不是全量真值**；筛错名字会**响亮失败**（`SMOKE SELECTION ERROR`）。规则见 `scripts/smoke-select.js`、`docs/VERIFY.md` §验证链 |
 | 改数据格式 | src/schema.js 版本号 + docs/DATA-FORMAT.md + 迁移逻辑 |
@@ -220,16 +220,19 @@ caption **必填**且要写清"图里有什么、重点看什么"。
 "改哪一半就只关哪一半"是**产品语义**，不是调试技巧 —— 因为关掉一侧不必重启整个应用：
 
 ```bash
-node cli/mm-cli.js sidebar-only on      # 只关左边导图页（#main/#toolbar + 菜单栏隐掉），侧栏继续对话
-node cli/mm-cli.js sidebar-only off     # 恢复导图页
-node cli/mm-cli.js dsh-sidebar  off     # 保留主界面，关掉侧栏 DSH（**连服务一起停**）
-node cli/mm-cli.js dsh-sidebar  on      # 重新打开侧栏（服务不在会自动重新孵化/接管）
-node cli/mm-cli.js dsh-status           # **只读**诊断：侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出）
+node cli/mm-cli.js sidebar-only on      # **真卸载导图页**（这一页从内存里卸掉、主窗口只剩占位页），侧栏继续对话
+node cli/mm-cli.js sidebar-only off     # 重新加载导图页（回到上次的项目与侧栏停靠宽度；比"挂回来"慢 ✓）
+node cli/mm-cli.js dsh-sidebar  off     # 保留主界面，关掉侧栏 DSH（**连服务一起停 + 销毁侧栏视图**）
+node cli/mm-cli.js dsh-sidebar  on      # 重新打开侧栏（视图重建、页面重新加载；服务不在会自动重新孵化/接管）
+node cli/mm-cli.js dsh-status           # **只读**诊断：视图在不在 / 导图页关没关 / 可见性 / 总占宽 / 窄宽模式
 ```
 
 - **人类对应的按钮**：导图页右上角 ✕ = `sidebar-only on`；侧栏**左缘控制栏**里的 ✕（在「—」**下面**）= `dsh-sidebar off`。
 - **判据**：命令会等**回执**（`userData/mm-control-result.json`）；界面没在跑就**报错退出**，
   不会打印"已切换"就算完 —— 调用方是 AI，静默成功会被当成依据 ✗。
+- ⚠️ **`sidebar-only on` 会被拒绝**：导图页有未保存编辑时界面直接拒绝（回执里带原因，**不弹模态框**
+  —— 弹窗会把没人在看时的调用方挂死）⇒ 先请人保存，或让人点界面上的 ✕（那条路会弹「保存后关闭 / 取消」）。
+- **关闭期间**：发往导图页的菜单项会置灰；控制通道（本文件这套命令）**照常可用** —— 它的轮询在**主进程**。
 - **改完记得恢复**（`off`/`on`），否则用户面对的是少一半的界面。
 - `--json` 回显：`{ok, cmd, state, dir}`；`dsh-status --json` 回显侧栏状态对象（**不含 url/token** ✓）。
 - **窄宽适配的实况靠 `dsh-status` 读**（`narrow.mode` / `narrow.metrics.overflow`）——

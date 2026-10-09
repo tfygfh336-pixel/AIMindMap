@@ -20,6 +20,14 @@
  *   · 显式停止：菜单「视图 → 停止 DSH 服务」（任务管理器之外的唯一正门）。
  *   · 运行锁 dsh-runtime.lock 的 pid 指向**服务进程**，维护互斥随服务生死。
  *
+ * 两个 ✕ 的语义（本版起，README 有对外承诺）：
+ *   · **导图页 ✕**（工具栏）/ 菜单「关闭思维导图页」/ CLI `sidebar-only on`
+ *     ⇒ `closeMapPage()`：把导图页**从内存里卸掉**（主窗口导航到 renderer/map-closed.html
+ *     占位页）；重开走 `openMapPage()`（**重新加载** + 还原停靠宽度 + 回到上次的项目）。
+ *   · **侧栏 ✕** ⇒ `closeSidebar()`：收起侧栏 + **销毁**它的 WebContentsView + 停 DSH 服务；
+ *     重开走 `show()`（`ensureView()` 重建视图 ⇒ 页面重新加载）。
+ *   两者都是"真关"，代价都是"重开要重新加载，比挂回去慢" —— 这是用户明确选的语义 ✓。
+ *
  * 安全边界：
  *   · view 的 webPreferences：contextIsolation / sandbox 开，nodeIntegration 关，
  *     无宿主 preload，独立 session partition —— 与 jsMind 渲染层零耦合。
@@ -76,7 +84,15 @@ const state = {
   startTimer: null,
   healthTimer: null,
   servicePid: null,     // 驻留服务的 pid（adopt 场景：proc 为 null 但服务活着）
-  dshOnly: false,       // 仅侧边栏模式（外部 AI 迭代主界面时开启；主 renderer 隐藏）
+  dshOnly: false,       // 仅侧边栏模式（外部 AI 迭代主界面时开启；导图页被**卸载**）
+  // ── 导图页「真关」的状态（关 = 把这一页从内存里卸掉，不是把它藏起来）──────────────
+  //   语义改动见 README「DSH 侧边栏的三条操作语义」；判据字段一起进 getStatus()（断言不靠猜 ✓）
+  mapPageClosed: false, // 导图页是否处于"已卸载"（此时主窗口跑的是 renderer/map-closed.html 占位页）
+  lastProject: null,    // 导图页最后打开的项目名（主进程存住 ⇒ 重开时能回到同一个项目）
+  bootProject: null,    // 只由 openMapPage() 武装：本次页面加载该去开哪个项目（页面 boot 时问一次）
+  dockWidth: null,      // 关闭前的**停靠宽度**（重开还原它；关闭期间拖宽被禁用 ⇒ 不会被改坏）
+  viewEpoch: 0,         // view 被创建过几次（**判别力**：重开必须是新视图，不是把旧的又挂回来）
+  lastDestroyedViewId: null, // 最近一次被销毁的 view 的 webContents id（断言"真的销毁了"用）
   shuttingDown: false
 };
 
@@ -517,7 +533,44 @@ function ensureView() {
     if (state.visible) scheduleNarrowAdaptation();
   });
   state.view = view;
+  state.viewEpoch++;   // 每次**新建**都计数：重开侧栏后 `viewEpoch` 必须增 1（断言"是新视图"而不是"旧的又挂回来"）
+  state.lastDestroyedViewId = null;
+  log('DSH 页面视图已创建（第 ' + state.viewEpoch + ' 次，webContents id=' + viewIdOf(view) + '）');
   return view;
+}
+
+/** view 的 webContents id（取不到就 null）—— 诊断与断言都用它认对象 */
+function viewIdOf(v) {
+  try { return v && v.webContents ? v.webContents.id : null; } catch (e) { return null; }
+}
+
+/** **真正销毁**侧栏那个 WebContentsView（用户语义："关了就真的不在了，别只是摘下来"）。
+ *
+ *  旧实现（v0.16 系列）只 `removeChildView` —— 视图被摘下来挂在内存里，DSH 页面的渲染层进程
+ *  连同整个 JS 堆都还活着（用户要的是"内存里真的不留页面"✗）。现在：摘下来 + 销毁 webContents
+ *  ⇒ 页面、它的 DOM/JS 堆一起消失（实测 exit：`webContents.fromId(旧 id)` 变成 undefined ✓）。
+ *  代价（**如实说明**）：重开要重新加载整页 —— 比"把旧的挂回去"慢，这是"真关"的应有之义。
+ *  判据字段：`getStatus().hasView === false` / `viewId === null` / `lastDestroyedViewId === 旧 id` ✓ */
+function destroyView(reason) {
+  const v = state.view;
+  if (!v) return false;
+  if (state.win && !state.win.isDestroyed() && state.win.contentView) {
+    try { state.win.contentView.removeChildView(v); } catch (e) { /* 本来就不在树上 */ }
+  }
+  const id = viewIdOf(v);
+  try {
+    if (v.webContents && !v.webContents.isDestroyed()) v.webContents.close();
+  } catch (e) {
+    log('销毁 view 失败（不静默吞掉原因）: ' + ((e && e.message) || e));
+  }
+  state.view = null;
+  state.lastDestroyedViewId = id;
+  state.narrow = null;
+  state.narrowSkip = '视图已销毁（重开侧栏会重建并重新加载页面）';
+  if (state.rightbarWatcher) state.rightbarWatcher = null;
+  log('DSH 页面视图已销毁（' + reason + '，webContents id=' + id
+    + '）—— 内存里不再留这个页面；重开=重新加载（比"挂回来"慢 ✓）');
+  return true;
 }
 
 function loadCurrentUrl() {
@@ -622,9 +675,11 @@ function ensureRail() {
       hide();
     } else if (message === '[dsh-restore]') {
       // ⚠️ 原先这个分支**不存在** ⇒ 仅侧栏模式下的「⤢ 恢复导图页」是和 ✕ 一样的死键 ✗
-      setDshOnly(false);
+      // 现在语义变了：导图页是被**卸载**的（不是藏起来）⇒「⤢」= 重新加载这一页 ✓
+      openMapPage().catch((e) => log('恢复导图页失败: ' + ((e && e.message) || e)));
     } else if (message === '[dsh-close-sidebar]') {
-      if (state.dshOnly) setDshOnly(false);   // 先让主界面回来，否则关完窗口是空的 ✗
+      // 先让导图页回来，否则关完窗口是空的 ✗
+      if (state.dshOnly) openMapPage().catch((e) => log('恢复导图页失败: ' + ((e && e.message) || e)));
       closeSidebar();
     }
   });
@@ -632,9 +687,16 @@ function ensureRail() {
   return rail;
 }
 
-/** 开始拖宽：新宽度用光标屏幕坐标对窗口右缘的**绝对距离**计算 */
+/** 开始拖宽：新宽度用光标屏幕坐标对窗口右缘的**绝对距离**计算。
+ *  ⚠️ 仅侧栏模式（导图页已卸载）下**禁用**：那时侧栏铺满整窗，拖出来的"宽度"既看不出效果、
+ *  又会把 `state.width`（= 重开时要还原的**停靠宽度**）改坏 ⇒ 重开后宽度回不到原样 ✗。
+ *  这是"重开还原停靠宽度"这条承诺能成立的前提，所以宁可在这里明确不响应（并记日志 ✓ 不静默）。 */
 function beginWidthDrag() {
   if (dragTimer || !state.win) return;
+  if (state.dshOnly) {
+    log('仅侧栏模式（导图页已卸载）：忽略拖宽（拖宽只调"停靠宽度"，会破坏重开时的还原值）');
+    return;
+  }
   const { screen } = require('electron');
   log('开始拖宽（起始 ' + state.width + 'px）');
   dragTimer = setInterval(() => {
@@ -843,16 +905,19 @@ function show() {
 }
 
 
-/** 只关**侧栏那一半**：收起 view + 停掉 DSH 服务；主界面、应用进程、项目数据都不受影响。
+/** 只关**侧栏那一半**：收起 view（并**真正销毁**它 —— 内存里不留这个页面）+ 停掉 DSH 服务；
+ *  主界面、应用进程、项目数据都不受影响。
  *  停服务是刻意的（用户要的"独立关掉侧栏 DSH"）—— 这样更新 DSH 那一侧时不必重启应用；
- *  想回来点主界面右缘的 🤖（show() 发现服务不在会自动重新孵化/接管 ✓）。
+ *  想回来点主界面右缘的 🤖（show() 发现服务不在会自动重新孵化/接管 ✓，view 也会重建 ✓）。
  *  opts.keepService=true 只收 view、不动服务（**给自动化断言用**：冒烟进程可能正接管着
  *  用户真实的服务，断言不能把它杀掉 ✗）。 */
 function closeSidebar(opts) {
   const keepService = !!(opts && opts.keepService);
   hide();
+  destroyView('侧栏独立关闭（✕）');
   if (!keepService) stopService();
-  log('侧栏已独立关闭（' + (keepService ? '服务保留（断言模式）' : 'DSH 服务已停') + '；主界面继续运行）');
+  log('侧栏已独立关闭（' + (keepService ? '服务保留（断言模式）' : 'DSH 服务已停')
+    + '；主界面继续运行；视图已销毁，重开会重新加载页面）');
   broadcastStatus();
 }
 
@@ -955,6 +1020,15 @@ function getStatus() {
     rightbarWatcher: state.rightbarWatcher || null,
     // ⑩ 最近一次"把对话预填进侧栏"的结果（4b：失败也要看得见原因 ✓ 不阻断 ✗）
     lastPrefill: state.lastPrefill || null,
+    // **视图在不在**（判据字段：侧栏 ✕ 是"真关"⇒ 这里必须变成 false，断言不必去猜 ✓）
+    hasView: !!state.view,
+    viewId: viewIdOf(state.view),                 // 当前 view 的 webContents id（没有 = null）
+    viewEpoch: state.viewEpoch,                   // 建过几次（重开必须 +1 ⇒ 是新视图，不是旧的挂回来）
+    lastDestroyedViewId: state.lastDestroyedViewId, // 最近销毁的 view id（"真的销毁了"的取证点）
+    // 导图页的"真关"状态（关 = 页面被卸载；重开 = 重新加载 + 还原宽度/项目）
+    mapPageClosed: state.mapPageClosed,
+    lastProject: state.lastProject,
+    bootProject: state.bootProject,
     servicePid: state.proc ? state.proc.pid : state.servicePid || null,
     // 本窗口是否**孵化**了这个服务（false = 接管来的驻留服务）；驻留语义下
     // 这不影响可用性，只用于排查"谁该负责收割"
@@ -1111,6 +1185,8 @@ function loadPrefs() {
   try {
     const p = JSON.parse(fs.readFileSync(prefsFile(), 'utf8'));
     if (typeof p.width === 'number') state.width = clampWidth(p.width);
+    // 导图页最后打开的项目（关页时记下、重开时回到同一个；没记过就是 null ⇒ 按默认第一个 ✓）
+    if (typeof p.lastProject === 'string' && p.lastProject) state.lastProject = p.lastProject;
     // 可见性**不跨启动记忆**（用户语义：每次启动默认打开；折叠只是当次会话状态）
     state.visible = true;
   } catch (e) {
@@ -1120,10 +1196,13 @@ function loadPrefs() {
 
 function savePrefs() {
   try {
-    // 只存宽度；visible 是会话状态，不持久化（启动永远默认打开）
+    // 只存宽度与"导图页上次的项目"；visible 是会话状态，不持久化（启动永远默认打开）。
+    // ⚠️ 导图页**关闭**这个状态也**不**持久化：重启应用后导图页照常在（与从前一致 ✓，
+    //    用户要的是"关掉之后内存里不留"，不是"关掉之后永远不要"）。
     fs.writeFileSync(prefsFile(), JSON.stringify({
-      width: state.width
-    }), 'utf8');
+      width: state.width,
+      lastProject: state.lastProject || null
+    }, null, 2) + '\n', 'utf8');
   } catch (e) { /* 非致命 */ }
 }
 
@@ -1172,13 +1251,14 @@ function restartService() {
   if (state.visible && state.view) showStatusPage(PAGE_STARTING);
 }
 
-/* ---------------- 仅侧边栏模式（v0.16.5） ----------------
+/* ---------------- 仅侧边栏模式（v0.16.5；本版语义升级为**真卸载**） ----------------
  * 用途：外部 AI 迭代主界面代码时，导图页面先下线、DSH 侧边栏继续可用。
- *  · 进入：主 renderer 隐藏（body.dsh-only），侧栏占满全窗；
+ *  · 进入（`closeMapPage()`）：导图页**被卸载**（主窗口导航到占位页）+ 侧栏占满全窗；
+ *    弃用的旧语义是"给 body 加 dsh-only ⇒ `#main` 仍 display:none 地活着" ✗（内存没释放）；
  *    此时侧栏「—」= 窗口最小化到任务栏（任务栏图标可复原）；
  *  · 关窗语义：dsh-only 下点 ✕ 不退出应用 —— 隐藏到托盘式后台
  *    （窗口保留、服务驻留），任务栏图标可复原；再次进入 dsh-only 关窗同前；
- *  · 退出：恢复主 renderer 显示（正常窗口）。
+ *  · 退出（`openMapPage()`）：**重新加载**导图页 + 还原停靠宽度 + 回到上次的项目。
  * 服务生命周期在本模式下完全不变（驻留语义照旧）。 */
 
 function setDshOnly(on) {
@@ -1191,15 +1271,134 @@ function setDshOnly(on) {
       state.win.setAutoHideMenuBar(state.dshOnly);
     } catch (e) { /* ignore */ }
     state.win.webContents.send('dsh-sidebar:dsh-only', state.dshOnly);
-    // 侧栏铺满：dsh-only 下让位宽度 = 全窗（渲染层 body.dsh-only 隐藏主内容）
+    // 侧栏铺满：dsh-only 下让位宽度 = 全窗
     notifyRenderer(state.visible);
     relayout();
   }
   refreshRail();   // 控制栏里「—」的字形/语义换成"恢复思维导图页"
   log('dsh-only 模式: ' + state.dshOnly);
+  broadcastStatus();
 }
 
 function isDshOnly() { return state.dshOnly; }
+
+/* ---------------- 导图页「真关」（关 = 从内存里卸掉，不是藏起来） ----------------
+ * 用户语义（README「只改一边，不用全部重启」）：导图页右上角那个 ✕ 要**真的把这一页关掉**。
+ * 关键认知：导图页**不是独立窗口**，它就是主窗口的渲染层 ⇒「真关」只有一条路：
+ *   把这一页从内存里卸掉（主窗口导航到占位页 renderer/map-closed.html）
+ *   —— 旧实现只给它加 `body.dsh-only`（`#main` 仍 `display:none` 地活着）✗，DOM/JS 堆全在。
+ *
+ * 两条入口，**语义必须一致**（都是"卸载导图页"）：
+ *   · 人类：工具栏 ✕ / 菜单「关闭思维导图页」⇒ 渲染层先拦未保存编辑（弹「保存后关闭 / 取消」，
+ *     复用既有脏标记与保存路径与冲突保护 ✓）⇒ 保存成功才调 `closeMapPage({confirmed:true})`；
+ *   · AI：`node cli/mm-cli.js sidebar-only on` ⇒ 走控制通道直接到这里 ⇒ 这里自己查一次脏
+ *     （**不弹模态框**：AI 调用时没人保证有人在看，弹窗会把 CLI 挂死 ✗），脏就**如实拒绝** ✓。
+ *   ⚠️ 控制通道的轮询在**主进程**（main.js 的 startControlChannel）⇒ 导图页卸载期间它照样在跑 ✓
+ *      （`dsh-status` / `dsh-prefill` / `dsh-sidebar` 都不受影响 —— 它们要的是侧栏，不是导图页）。
+ *      唯一受影响的是"发往导图页渲染层"的东西：菜单里那批 `menu:*` 项会**置灰**（main.js 负责）✓
+ *      —— 否则点下去就是发进空页、毫无反应 ✗（正是这一轮要消灭的那类"没反应"）。 */
+
+/** 导图页被卸载期间，主窗口显示的那一页（占位页；写清"已关闭 + 怎么回来"，别留一片白 ✗） */
+function mapClosedPage() { return path.join(__dirname, 'renderer', 'map-closed.html'); }
+
+/** 问渲染层"有没有未保存编辑"。三态：true / false / null（**取不到**）。
+ *  取不到一律当"不知道" ⇒ 调用方必须拒绝卸载：**采不到真值 ≠ 通过**（本工程最忌静默）。 */
+async function rendererDirty() {
+  if (!state.win || state.win.isDestroyed() || !state.win.webContents) return null;
+  try {
+    const r = await Promise.race([
+      state.win.webContents.executeJavaScript(
+        '(function(){try{return (window.MMApp&&window.MMApp.isDirty)?!!window.MMApp.isDirty():null;}catch(e){return null;}})()'),
+      new Promise((res) => setTimeout(() => res('__timeout__'), 3000))
+    ]);
+    if (r === true || r === false) return r;
+    return null;   // 超时 / 没有 MMApp（占位页、页面没加载完）⇒ 如实报"不知道"
+  } catch (e) { return null; }
+}
+
+/** 关导图页（**真卸载**）。opts.confirmed=true 表示渲染层已经问过用户、（必要时）保存完了。
+ *  @returns {{ok:boolean, closed?:boolean, already?:boolean, reason?:string, project?:string|null, dockWidth?:number}} */
+async function closeMapPage(opts) {
+  const o = opts || {};
+  if (state.mapPageClosed) return { ok: true, already: true, project: state.lastProject };
+  if (!state.win || state.win.isDestroyed()) return { ok: false, reason: '主窗口不可用，无法卸载导图页' };
+  if (!o.confirmed) {
+    const dirty = await rendererDirty();
+    if (dirty === true) {
+      return { ok: false,
+        reason: '导图页有未保存的编辑 ⇒ 拒绝卸载（AI 这条路不弹模态框，避免把调用方挂死）。'
+          + '请先保存，或让用户点导图页右上角的 ✕ —— 那条路会先弹「保存后关闭 / 取消」' };
+    }
+    if (dirty === null) {
+      return { ok: false,
+        reason: '取不到导图页的未保存状态（页面没加载完 / 没有 MMApp）⇒ 拒绝卸载'
+          + '（不能在"不知情"的情况下把可能带脏改动的一页卸掉）' };
+    }
+  }
+  state.dockWidth = state.width;         // 重开要还原的停靠宽度
+  state.mapPageClosed = true;
+  savePrefs();                           // 落盘：停靠宽度 + 上次项目（崩溃后也查得到）
+  setDshOnly(true);
+  try {
+    await state.win.loadFile(mapClosedPage());
+  } catch (e) {
+    // 连占位页都加载不出来 ⇒ **回滚**成"导图页还在"，绝不把窗口留在空白页上 ✗
+    state.mapPageClosed = false;
+    setDshOnly(false);
+    try { await state.win.loadFile(path.join(__dirname, 'renderer', 'index.html')); } catch (e2) { /* 已尽力 */ }
+    return { ok: false, reason: '占位页加载失败（已回滚成导图页）：' + ((e && e.message) || e) };
+  }
+  log('导图页已**卸载**（真关）：主窗口现在是占位页；停靠宽度记下 ' + state.dockWidth + 'px、项目记下 '
+    + (state.lastProject || '（未知）') + ' —— 重开时按这两项还原 ✓');
+  notifyMapPageChanged();
+  broadcastStatus();
+  return { ok: true, closed: true, project: state.lastProject, dockWidth: state.dockWidth };
+}
+
+/** 重开导图页（**重新加载**这一页，不是把隐藏的恢复显示）。
+ *  三件事一起做：还原停靠宽度（`dockWidth`）· 回到上次的项目（`bootProject` ⇒ 页面 boot 时问一次）
+ *  · 退出仅侧栏模式（菜单栏装回来）。@returns {{ok:boolean, reopened?:boolean, reason?:string}} */
+async function openMapPage() {
+  if (!state.mapPageClosed) return { ok: true, already: true };
+  if (!state.win || state.win.isDestroyed()) return { ok: false, reason: '主窗口不可用，无法重新加载导图页' };
+  state.mapPageClosed = false;
+  state.bootProject = state.lastProject || null;   // 一次性：本次页面加载该开哪个项目
+  setDshOnly(false);
+  if (typeof state.dockWidth === 'number') setWidth(state.dockWidth);   // 还原停靠宽度
+  try {
+    await state.win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  } catch (e) {
+    return { ok: false, reason: '导图页加载失败：' + ((e && e.message) || e) };
+  }
+  log('导图页已重新加载（项目 ' + (state.bootProject || '（未记 ⇒ 按默认第一个）')
+    + '，停靠宽度 ' + state.width + 'px）');
+  notifyMapPageChanged();
+  broadcastStatus();
+  return { ok: true, reopened: true, project: state.bootProject, dockWidth: state.width };
+}
+
+/** 导图页当前打开的项目名（main.js 的 project:read 里调 ⇒ 关页/重开都靠它回到同一个项目）。
+ *  `null` 也是合法值（还没打开任何项目）—— 不静默编一个默认值 ✗ */
+function setCurrentProject(name) {
+  const n = (typeof name === 'string' && name) ? name : null;
+  if (n === state.lastProject) return;
+  state.lastProject = n;
+  savePrefs();
+}
+
+/** 页面 boot 时问一次"我该打开哪个项目"（只有 openMapPage() 会武装它 ⇒ 正常启动返回 null，
+ *  启动行为与从前一致：仍然开 projects[0] ✓） */
+function bootProject() { return state.bootProject; }
+
+/* 「导图页在/不在」的变更通知（唯一订阅者：main.js 用它把发往渲染层的菜单项置灰/恢复）。
+ * 为什么用回调而不是让 main.js 自己到处调：关闭入口有三个（工具栏 ✕ / 菜单 / 侧栏控制栏「⤢」）
+ * 加一条 CLI —— 分散去调必然漏一处，而漏一处的症状正是"点了没反应" ✗（本模块自己发通知最稳）。*/
+let mapPageListener = null;
+function setMapPageListener(fn) { mapPageListener = (typeof fn === 'function') ? fn : null; }
+function notifyMapPageChanged() {
+  try { if (mapPageListener) mapPageListener(!!state.mapPageClosed); }
+  catch (e) { log('导图页状态通知失败: ' + ((e && e.message) || e)); }
+}
 
 /** dsh-only 下主窗口被要求关闭 → 隐藏到后台（不退出应用、服务不动）。 */
 function hideWindowToBackground() {
@@ -1295,6 +1494,11 @@ module.exports = {
   setDshOnly, isDshOnly, hideWindowToBackground, hideToBackground, captureView, restoreWindow,
   // 只关一侧的两种能力（对外/给 AI 用；人类用界面上的两个 ✕）
   closeSidebar, buttonBounds, buttonProbe, clickButton, occupiedWidth,
+  // 「真关」两个入口 + 判据（closeMapPage/openMapPage 也供 main.js 的菜单、控制通道与冒烟断言调用）
+  //   · closeMapPage({confirmed}) —— 卸载导图页（confirmed=false 时自己查脏，脏就拒绝 ✓）
+  //   · openMapPage()            —— 重新加载导图页 + 还原停靠宽度 + 回到上次的项目
+  closeMapPage, openMapPage, destroyView, mapClosedPage, rendererDirty,
+  setCurrentProject, bootProject, setMapPageListener,
   NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN,
   ensureRightbarRoom, releaseRightbarRoom, setNoSpawn, installRightbarWatcher,
   // ⑩ 把对话预填进侧栏输入框（不代替用户发送）

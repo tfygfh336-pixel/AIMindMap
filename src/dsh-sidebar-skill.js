@@ -55,7 +55,7 @@
       'node cli/mm-cli.js edit <项目> <id> --detail-md "…" --tags a,b',
       'node cli/mm-cli.js search <项目> 关键词 --json',
       'node cli/mm-cli.js validate <项目>',
-      'node cli/mm-cli.js sidebar-only on               # 关掉左边思维导图页、只留侧栏（要恢复：off）',
+      'node cli/mm-cli.js sidebar-only on               # 关掉左边思维导图页（**真卸载这一页**，要恢复：off）',
       '```',
       '',
       '## 边界（务必遵守）',
@@ -70,6 +70,9 @@
       '  （信号来自 `projects/<项目>/.ui-state.json`，由主进程在脏标记变化时写入。）',
       '- **不要改应用代码**（renderer/ main*.js src/ vendor/…）：那属于功能迭代，',
       '  是用户在开发会话里做的事，不是侧栏对话的事。',
+      '- **`sidebar-only on` 会真的把导图页从内存里卸掉**（不是隐藏）：界面有未保存编辑时',
+      '  主进程会**拒绝**这条命令（报错里带原因）—— 那是在保人的改动，不是命令坏了。',
+      '  重开用 `sidebar-only off`（会重新加载导图页，比原来慢一点）。',
       '- 编辑落盘后，界面会自动感知磁盘变化并刷新导图（文件监听已内置），无需额外操作。',
       ''
     ].join('\n');

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<!-- ============================================================
+     导图页「已关闭」占位页（v0.19）
+     ------------------------------------------------------------
+     为什么是**另一个页面**而不是给 body 加个类名：
+       导图页右上角那个 ✕ 的语义是"**真的把这一页关掉**"（用户明确选的）—— 不是隐藏。
+       而导图页不是独立窗口，它就是主窗口的渲染层 ⇒ 唯一真正的"关"就是**让主窗口导航到别处**：
+       旧文档（#main / jsMind / 全部视图模块）连同它的 JS 堆一起被卸载，内存真正释放 ✓。
+       代价（如实写在页面上）：重开要**重新加载**这一页，比原来慢一点。
+     怎么回来（三个入口，都调用同一个主进程入口 dsh.openMapPage）：
+       ① 本页按钮；② 菜单「视图 → 重新加载思维导图页」（菜单栏在关闭期间自动隐藏，按 Alt 显示）；
+       ③ DSH 侧栏左缘控制栏里的「⤢」。
+     ============================================================ -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>导图页已关闭 · AI MindMap</title>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; align-items: center; justify-content: center;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    background: #f5f6f8; color: #4e5969;
+  }
+  #box { text-align: center; max-width: 520px; padding: 24px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 8px; color: #1d2129; }
+  p  { font-size: 13px; line-height: 1.9; margin: 6px 0; }
+  kbd { font-family: Consolas, monospace; background: #eef0f3; border: 1px solid #d5d9e0;
+        border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  button { margin-top: 14px; padding: 8px 22px; font-size: 13px; cursor: pointer;
+           border: 1px solid #d5d9e0; border-radius: 6px; background: #fff; color: #1664ff; }
+  button:hover:not(:disabled) { border-color: #1664ff; background: #f2f7ff; }
+  button:disabled { color: #86909c; cursor: default; }
+  #err { display: none; margin-top: 12px; color: #d93026; font-size: 12px; }
+  #note { margin-top: 18px; font-size: 12px; color: #86909c; }
+</style>
+</head>
+<body>
+  <div id="box">
+    <h1>导图页已关闭</h1>
+    <p>这一页已经从内存里卸载了（不是隐藏 —— 为了让它的内存真正释放）。</p>
+    <p>DSH 侧栏与它的对话<strong>不受影响</strong>，继续可用。</p>
+    <button id="reopen">点这里重新加载导图页</button>
+    <p id="err"></p>
+    <p id="note">
+      其他入口：菜单「视图 → 重新加载思维导图页」（菜单栏已隐藏，按 <kbd>Alt</kbd> 显示）·
+      DSH 侧栏左缘控制栏的「⤢」<br>
+      重新加载 = 重新读一遍界面代码并回到上次的项目与侧栏宽度，比原来慢一点。
+    </p>
+  </div>
+  <script>
+    (function () {
+      var btn = document.getElementById('reopen');
+      var err = document.getElementById('err');
+      function fail(msg) {
+        err.textContent = msg;
+        err.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = '点这里重新加载导图页';
+      }
+      btn.addEventListener('click', function () {
+        // 桥没接上就**如实报错**，不假装"点了在转圈"（本工程最重的损害类别是静默 ✗）
+        if (!window.desktop || !window.desktop.dsh || !window.desktop.dsh.openMapPage) {
+          fail('没有拿到桌面接口（window.desktop.dsh.openMapPage）—— 请用菜单「视图 → 重新加载思维导图页」或重启应用');
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = '正在重新加载…';
+        Promise.resolve(window.desktop.dsh.openMapPage()).then(function (r) {
+          if (r && r.ok) return;   // 成功后主窗口会导航到导图页 ⇒ 本页随即被替换，不必再做什么
+          fail('重新加载失败：' + ((r && r.reason) || '未知原因'));
+        }).catch(function (e) {
+          fail('重新加载失败：' + ((e && e.message) || e));
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

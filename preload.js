@@ -111,7 +111,16 @@ contextBridge.exposeInMainWorld('desktop', {
     beginDrag: () => ipcRenderer.send('dsh-sidebar:drag-start'),
     endDrag: () => ipcRenderer.send('dsh-sidebar:drag-end'),
     isDshOnly: () => ipcRenderer.invoke('dsh-sidebar:dsh-only'),
-    // 导图页右上角那个独立 ✕ 用：只关左边导图页（进"仅侧栏"模式）。人类点按钮即可，不需要敲命令。
-    sidebarOnly: (on) => ipcRenderer.invoke('dsh-sidebar:sidebar-only', !!on)
+    /* 导图页**真关**（v0.19 语义）：把这一页从内存里卸掉（主窗口导航到 renderer/map-closed.html）。
+     * ⚠️ 这条 IPC 的契约是"**已经问过用户、并且保存完了**"：调用方（渲染层）必须先拦未保存编辑
+     * （「保存后关闭 / 取消」，复用既有脏标记 + 保存路径 + 冲突保护），保存成功才调它。
+     * 返回结构化结果 { ok, reason } —— 失败不静默 ✗（P19 起：不再有"只隐藏"的那条路） */
+    closeMapPage: () => ipcRenderer.invoke('dsh-sidebar:close-map-page'),
+    /* 重开：**重新加载**导图页 + 还原停靠宽度 + 回到上次的项目。
+     * 三个入口共用它：占位页上的按钮 / 菜单「重新加载思维导图页」/ 侧栏控制栏的「⤢」 */
+    openMapPage: () => ipcRenderer.invoke('dsh-sidebar:open-map-page'),
+    /* 页面 boot 时问一次"我该打开哪个项目"：只有"重开"会武装它 ⇒
+     * 正常启动返回 null（仍按原样打开 projects[0]，启动行为不变 ✓） */
+    bootProject: () => ipcRenderer.invoke('dsh-sidebar:boot-project')
   }
 });
