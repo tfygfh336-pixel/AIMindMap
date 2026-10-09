@@ -7,7 +7,7 @@
  * 所以这里锁的不是"能省多少"，而是**保守性**：
  *   ① 认不出的路径一律全量；
  *   ② 只有"G5 的唯一来源是已知冒烟域"时才收窄冒烟；
- *   ③ 干净工作树一步都不跑（不许跑两件卫生门禁假装验证过）；
+ *   ③ 干净工作树一步都不跑（不许跑几件卫生门禁假装验证过）；
  *   ④ 测试/冒烟域改动必须带上 G6（用例数/断言数会变，忘了 facts:write 要红）。
  * ============================================================ */
 import { describe, it, expect } from 'vitest';
@@ -26,22 +26,22 @@ const verifySrc = fs.readFileSync(path.join(ROOT, 'scripts', 'verify.js'), 'utf8
 const plan = (...files) => planForFiles(files);
 
 describe('映射：已知范围内的改动只跑相关步骤', () => {
-  it('只改文档 ⇒ 卫生三件 + G3 + G6（**G3 必须带上**：不带时 G6 会自跑 vitest，耗时一样但单测没跑）', () => {
+  it('只改文档 ⇒ 卫生四件 + G3 + G6（**G3 必须带上**：不带时 G6 会自跑 vitest，耗时一样但单测没跑）', () => {
     const p = plan('docs/ARCHITECTURE.md', 'CHANGELOG.md', 'README.md');
     expect(p.full).toBe(false);
-    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'G3', 'G6']);
+    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'G3', 'G6']);
     expect(p.steps).not.toContain('G5');
     expect(p.smokeOnly).toBe(null);
   });
 
-  it('只改单测 ⇒ 卫生三件 + G3 + G6（用例数变 ⇒ G6 必须看）', () => {
+  it('只改单测 ⇒ 卫生四件 + G3 + G6（用例数变 ⇒ G6 必须看）', () => {
     const p = plan('tests/schema.test.js');
-    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'G3', 'G6']);
+    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'G3', 'G6']);
   });
 
-  it('只改一个冒烟域 ⇒ 卫生三件 + G5（**收窄到该域**）+ G6', () => {
+  it('只改一个冒烟域 ⇒ 卫生四件 + G5（**收窄到该域**）+ G6', () => {
     const p = plan('scripts/smoke/22-sidebar-gap.js');
-    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'G6', 'G5']);
+    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'G6', 'G5']);
     expect(p.smokeOnly).toEqual(['22']);
   });
 
@@ -52,7 +52,7 @@ describe('映射：已知范围内的改动只跑相关步骤', () => {
 
   it('文档 + 单测混着改 ⇒ 取并集（保守：宁多跑）', () => {
     const p = plan('docs/RULES.md', 'tests/truth-floor.test.js');
-    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'G3', 'G6']);
+    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'G3', 'G6']);
   });
 
   it('backslash 路径与前后空格照样识别（git 在 Windows 上给的是 /，但别赌）', () => {

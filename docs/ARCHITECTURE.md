@@ -255,6 +255,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `encoding-check.js` | **G1** 文件编码完整性（UTF-8 BOM / U+FFFD / 经典乱码特征） |
 | `docs-registry-check.js` | **G8** 文档体系完整性（**判定清单现场取**：`npm run check:docs -- --judgments` 会从实现的**全部**判定标记打印全套；条数由 `docs/RULES.md` §2 声明并与标记机械对齐 —— **本表不复述**，复述一次就是第二份会漂移的副本）；`--write` 从各文档头部元信息**生成** §5 登记表（`npm run docs:registry`，`npm run check:docs` 为校验模式） |
 | `rules-consistency.js` | **G9** 规则文件自洽：声明条数 == 表格行数、表格未被空行打断、编号引用闭合、实现列点名的脚本存在、其他文档的条数转述一致、**门禁声明的判定条数 == 实现脚本的判定标记数**（且标记唯一；实现脚本文案里也不得写死条数）；逐条清单见 `docs/RULES.md` §2，**本表不复述** |
+| `visibility-judge-check.js` | **V1** 可见性判据门禁：扫描 `scripts/smoke/*.js`，凡**名字**里声称可见性（可见/不可见/遮挡/面板内/框外/看得见/看不见）的断言，判据必须是**真判据**（`document.elementFromPoint` 命中测试 ⇒ 抓遮挡；`scanRegion` / `isAccentBlue` / `bitmapInfo` 等真帧像素 ⇒ 抓裁切）或一行显式豁免 `判据-豁免: <原因>` —— 只用 rect / 类名 / `style.display` 判"可见"的断言**对裁切与遮挡是盲的**（实测：同一元素被父元素 `overflow:hidden` 裁掉时 rect 读数与正常显示**完全相同**，而真帧像素 81 px vs 768 px）⇒ 它在"用户根本看不到"时照样绿 ✗。判定清单现场取：`--list`（逐条分类）· `--debt`（既有欠账，**只减不增**，含"为什么是欠账 + 怎么迁"）· `--selftest`（**判别力自检**：内存注入 ⇒ 必红 ⇒ 撤销 ⇒ 必绿，不碰任何文件）；`npm run check:visibility` 单跑。**能力边界**：它查判据的**来源**，查不了判据用得对不对（`elementFromPoint` 也能传错坐标）；名字里不写可见性词的断言它抓不到 ⇒"**名字要说清凭什么判**"是配套纪律（名字是这门禁的输入 ✗）。⚠️ **编号是 V1 而不是 G 号**：门禁编号的唯一权威是 `docs/RULES.md` §2，而本门禁上线时该文件正被另一个会话占用（脏文件、禁止提交）⇒ 待它交回后并入 §2（界时只改 `scripts/verify.js` 的 gate 串、本行与两处 `tests/` 期望；**不是**再挂一个门禁） |
 | `doc-facts.js` | **G6/G7** 文档数字与版本一致性 + 生成物是否过期；`--write` 生成 `docs/VERIFY.md` |
 | `cli-integration.js` | **G4** 全部 CLI 命令端到端断言（进程内调用，临时项目自动清理） |
 | `smoke-assertions.js` | **G5** 冒烟断言清单入口：自动发现并按文件名顺序拼接 `scripts/smoke/NN-*.js`（入口只做 require + 拼接；另导出 `files` / `groups` 供单跑选子集，`.length` 仍是**全量**真值） |
@@ -470,8 +471,8 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | **从导出恢复**（零 Git 下唯一手段） | `docs/INCIDENTS.md`（两次全损与派生禁令）+ `docs/AI-GUIDE.md` §4.1 + `export-json` / `import-json` 用法 | **不要直接覆盖在用项目**：先 `import-json <备份.aimap.json> --name 恢复验证` 导成**临时项目** | `node cli/mm-cli.js validate 恢复验证` → 用 `read`/`export-md` 抽查内容是否完整 | 确认无误后决定"替换在用项目"还是"合并"；**CHANGELOG 必须记：何时、从哪份备份、恢复成什么** |
 | 打包 | `electron-builder.yml` | —— | `npm run dist` | 打包后**冒烟一次** + `CHANGELOG.md` |
 
-> **③"跑"的口径（唯一，消歧）**：**验收 = `npm run verify` 全链全绿**（9 条步骤；G7 与 G6 共用一次运行 ⇒ 末尾打印"实跑 8 步"；**总预算 400s**，单项预算见 `scripts/verify.js` 的 `STEPS`）。
-> 单个门禁脚本（`npm run check:docs` / `check:rules` / `facts` / `check:encoding`）只是**自检**，
+> **③"跑"的口径（唯一，消歧）**：**验收 = `npm run verify` 全链全绿**（步骤数 / 每步命令 / 预算的**唯一定义**在 `scripts/verify.js` 的 `STEPS`，`docs/VERIFY.md` 的链表由它渲染 —— **此处不复述条数**；G7 与 G6 共用一次运行 ⇒ 末尾打印的"实跑 N 步"比步骤数少 1；**总预算 400s**）。
+> 单个门禁脚本（`npm run check:docs` / `check:rules` / `check:visibility` / `facts` / `check:encoding`）只是**自检**，
 > 用来快速迭代（实测文档类四步合计十几秒），**任何一条都不能当作"做完了"** ——
 > 它们只是全链的子集，全链还含单测 / 集成 / 冒烟 / 数据校验。
 > （此前本表的"③跑"列写的是子集命令，而 `RULES.md` R3 / README / AI-GUIDE 写的是全链，

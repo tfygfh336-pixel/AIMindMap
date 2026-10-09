@@ -18,6 +18,7 @@
     "check:encoding": "node scripts/encoding-check.js",
     "check:docs": "node scripts/docs-registry-check.js",
     "check:rules": "node scripts/rules-consistency.js",
+    "check:visibility": "node scripts/visibility-judge-check.js",
     "docs:registry": "node scripts/docs-registry-check.js --write",
     "dsh:e2e": "node scripts/dsh-e2e.js",
     "dsh:resident": "node scripts/dsh-resident.js",
