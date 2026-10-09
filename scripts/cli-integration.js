@@ -570,8 +570,31 @@ check('import-project（txt）：启发式把"第X章"识别为 1 级 ⇒ 两个
 
 const BIGBAD = path.join(TMP, 'big.pdf');
 fs.writeFileSync(BIGBAD, '%PDF-1.4\n', 'utf8');
-check('import-project 遇到 .pdf ⇒ **响亮拒绝**并指向 5b（不许当文本读进去 ✗）',
-  (() => { const r3 = run(['import-project', 'imp-probe-c', BIGBAD]); return r3.status !== 0 && /暂不支持 \.pdf/.test(r3.err + r3.out) && /5b/.test(r3.err + r3.out); })());
+check('import-project 遇到坏 PDF ⇒ **响亮报错**并说清原因（不许当文本读进去 ✗）',
+  (() => { const r3 = run(['import-project', 'imp-probe-c', BIGBAD]); return r3.code !== 0 && /PDF/.test(r3.out); })());
+// P8 最小切片（用户批准 ✓）：**有书签**的 PDF ⇒ 真的建成项目；顶层书签多于一个 = 多棵树 ✓
+// 夹具**自己生成**（tests/pdf-fixture.js ✓ 不引二进制样本）
+let pdfImportDetail = '';
+check('import-project 带书签的 PDF ⇒ 建成项目，且顶层主题数 = 顶层书签数（一个文件多本书 ✓）',
+  (() => {
+    const { buildPdf } = require('../tests/pdf-fixture.js');
+    const p = path.join(TMP, 'two-books.pdf');
+    fs.writeFileSync(p, buildPdf({ outline: [{ title: 'Book One', page: 1 }, { title: 'Book Two', page: 2 }] }));
+    const name = 'imp-pdf-' + Date.now().toString(36);
+    const r = run(['import-project', name, p]);
+    pdfImportDetail = 'code=' + r.code + ' out=' + String(r.out || '').slice(0, 70);
+    // 判据（对着"骨架真的变成顶层主题"这件事）：导入成功 + 报告 2 个顶层主题
+    //（= 两个顶层书签 ⇒ 两棵树 ✓ 一个文件多本书）。读回/校验那条链由 md 用例与 validate 覆盖 ✓。
+    return r.code === 0 && /2 个顶层主题/.test(r.out);
+  })(), pdfImportDetail);
+check('import-project 无书签的 PDF ⇒ 响亮拒绝并点名「没有书签」（5b 其余部分未批准 ⇒ 不猜 ✗）',
+  (() => {
+    const { buildPdf } = require('../tests/pdf-fixture.js');
+    const p = path.join(TMP, 'no-bookmark.pdf');
+    fs.writeFileSync(p, buildPdf({ outline: [] }));
+    const r = run(['import-project', 'imp-pdf-nb-' + Date.now().toString(36), p]);
+    return r.code !== 0 && /没有书签/.test(r.out);
+  })());
 check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已有项目）',
   (() => { const r4 = run(['import-project', PROJ, BIGMD]); return r4.status !== 0 && /项目已存在/.test(r4.err + r4.out); })());
 

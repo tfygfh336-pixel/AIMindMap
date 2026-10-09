@@ -11,7 +11,7 @@
 (function () {
   'use strict';
   const MM = window.MM || (window.MM = {});
-  const OK_EXT = ['.md', '.markdown', '.txt', '.text', '.docx'];
+  const OK_EXT = ['.md', '.markdown', '.txt', '.text', '.docx', '.pdf'];
   const OVERLAY_ID = 'mm-drop-hint';
   let overlay = null;
   let busy = false;
@@ -50,8 +50,8 @@
     const name = f.name || '';
     const ext = extOf(name);
     if (OK_EXT.indexOf(ext) < 0) {
-      hint('暂不支持 ' + (ext || '这种') + ' 格式：目前只能导入 .md / .txt / .docx'
-        + '（PDF 与"一个文件里多本书"是 5b 的范围）', 'err');
+      hint('暂不支持 ' + (ext || '这种') + ' 格式：目前能导入 .md / .txt / .docx / 带书签的 .pdf'
+        + '（无书签的 PDF 与"一个文件多本书"的自动判定是 5b 尚未批准的部分）', 'err');
       return;
     }
     const api = window.desktop && window.desktop.app;

@@ -22,17 +22,19 @@ const zlib = require('zlib');
 /** **认识但不支持**的格式：必须响亮拒绝，绝不落到"当 txt 读"的兜底里 ✗
  *（否则 PDF 的二进制原文会被当正文导进树 —— 看着"导入成功"、内容全是乱码，
  *  正是本工程最忌讳的"静默给出错误结果"。PDF 与多书拆分是 5b 的范围 ✓） */
-const UNSUPPORTED = ['.pdf', '.doc', '.epub', '.rtf', '.odt', '.xlsx', '.xls', '.pptx', '.ppt', '.html', '.htm'];
+const UNSUPPORTED = ['.doc', '.epub', '.rtf', '.odt', '.xlsx', '.xls', '.pptx', '.ppt', '.html', '.htm'];
 
 /** 按扩展名 + 内容眉眼识别（返回 'md' | 'txt' | 'docx' | null；**不认识就 null**，由调用方响亮报错 ✓） */
 function detectFormat(filePath, buf) {
   const ext = String(path.extname(filePath || '')).toLowerCase();
   if (ext === '.docx') return 'docx';
+  if (ext === '.pdf') return 'pdf';   // P8 最小切片：PDF 走**书签**路径 ✓
   if (ext === '.md' || ext === '.markdown') return 'md';
   if (ext === '.txt' || ext === '.text') return 'txt';
   if (UNSUPPORTED.indexOf(ext) >= 0) return null;      // 认识但不管 ⇒ null（调用方按扩展名给出更准的提示）
   // 没有/不认识扩展名：看内容（zip 魔数 PK\x03\x04 ⇒ docx；`#` 开头 ⇒ md；其余当 txt）
   const b = buf || Buffer.alloc(0);
+  if (b.length > 4 && b.slice(0, 5).toString('latin1') === '%PDF-') return 'pdf';   // 没扩展名也认得出来 ✓
   if (b.length > 4 && b[0] === 0x50 && b[1] === 0x4b && (b[2] === 0x03 || b[2] === 0x05 || b[2] === 0x07)) return 'docx';
   if (/^\s*#{1,6}\s+\S/m.test(b.toString('utf8', 0, Math.min(b.length, 4096)))) return 'md';
   if (b.length) return 'txt';
@@ -185,15 +187,16 @@ function docToOutline(filePath, opts) {
   if (!format) {
     const ext = String(path.extname(filePath || '')).toLowerCase();
     if (UNSUPPORTED.indexOf(ext) >= 0) {
-      throw new Error('暂不支持 ' + ext + '：功能 5a 只做 .md / .txt / .docx'
-        + '（PDF 与"一个文件里多本书"要另走 5b，见 .review/20261008-DSH深度集成调研/06-功能5-大文档导入生成树.md）'
-        + '；也可以先把文件转成 .md/.txt/.docx 再导入，或把内容贴给内置 AI 让它整理后导入');
+      throw new Error('暂不支持 ' + ext + '：现在支持 .md / .txt / .docx / 带书签的 .pdf'
+        + '（无书签的 PDF 与多书判定属 5b 里**尚未批准**的部分，见 .review/20261008-DSH深度集成调研/06-功能5-大文档导入生成树.md）'
+        + '；也可以先把文件转成 .md/.txt 再导入，或把内容贴给内置 AI 让它整理后导入');
     }
-    throw new Error('认不出这个文件的格式（支持 .md / .txt / .docx）：' + filePath
-      + '；PDF 与"一个文件里多本书"要另走 5b（见 .review/20261008-DSH深度集成调研/06-功能5-大文档导入生成树.md）');
+    throw new Error('认不出这个文件的格式（支持 .md / .txt / .docx / 带书签的 .pdf）：' + filePath
+      + '；无书签的 PDF 与多书判定属 5b 里**尚未批准**的部分（见 .review/20261008-DSH深度集成调研/06-功能5-大文档导入生成树.md）');
   }
   let md;
   if (format === 'md') md = buf.toString('utf8');
+  else if (format === 'pdf') { const r = pdfOutlineViaHelper(filePath); md = r.md; }
   else if (format === 'txt') md = textToOutline(buf.toString('utf8'));
   else {
     const xml = zipFindEntry(buf, 'word/document.xml');
@@ -206,6 +209,11 @@ function docToOutline(filePath, opts) {
   //    顶层主题变成合成的「（层级2）」✗）。用户导入的文件不在我们的编码门禁范围内，
   //    所以这里必须自己容错 ✓
   if (md.charCodeAt(0) === 0xfeff) md = md.slice(1);
+  return finishOutline(format, md);
+}
+
+/** 提纲收口（md → {format, md, stats}）：两条入口（同步 / 异步）共用同一套统计口径 ✓ */
+function finishOutline(format, md, pages) {
   const lines = md.split('\n');
   const levelCounts = {};
   let headings = 0;
@@ -213,10 +221,32 @@ function docToOutline(filePath, opts) {
     const m = l.match(/^(#{1,6})\s+\S/);
     if (m) { headings++; levelCounts[m[1].length] = (levelCounts[m[1].length] || 0) + 1; }
   }
-  return { format: format, md: md, stats: { chars: md.length, lines: lines.length, headings: headings, levelCounts: levelCounts } };
+  const out = { format: format, md: md, stats: { chars: md.length, lines: lines.length, headings: headings, levelCounts: levelCounts } };
+  if (Array.isArray(pages)) out.pages = pages;
+  return out;
 }
 
+/* ================= ④ PDF → 提纲（P8 最小切片：**只走书签** ✓） =================
+ * 范围（用户批准的最小切片 ✓）：PDF **有书签** ⇒ 书签树 → Markdown 提纲 → 走同一条建树路。
+ *   顶层书签多于一个 = 一个文件多棵树 ⇒ 用户要的"一个 PDF 里两本书自动成两棵"自然成立 ✓。
+ * 明确不做（5b 其余部分仍未批准 ✗）：无书签字号启发式 / 目录页正则 / 页偏移 / 多书自动判定 / OCR 后端
+ *   ⇒ **没有书签的 PDF 必须响亮拒绝**（不静默失败、不拿正文瞎猜一棵树 ✗）。
+
+/** 同步读 PDF 书签：**起一个小进程**（scripts/pdf-outline-helper.mjs）去 await ✓ ——
+ *  为什么不在本进程里 await：`cli/commands/*` 有硬不变量"命令体必须同步完成"（见 cli/main.js 的守卫与
+ *  tests/cli-sync-invariant.test.js），而 pdf.js 的 API 是异步的 ✗。小进程把异步收在它自己那边 ✓。
+ *  失败一律**响亮**（把子进程给出的原因原样抛出 ✓ 不静默、不返回半棵树 ✗）。 */
+function pdfOutlineViaHelper(filePath) {
+  const helper = path.join(__dirname, '..', 'scripts', 'pdf-outline-helper.mjs');
+  const r = require('child_process').spawnSync(process.execPath, [helper, filePath], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  const out = String(r.stdout || '').trim();
+  let parsed = null;
+  try { parsed = JSON.parse(out.split('\n').pop()); } catch (e) { parsed = null; }
+  if (!parsed) throw new Error('读 PDF 书签的子进程没有给出结果（exit=' + r.status + '）：' + (out || String(r.stderr || '').trim()).slice(0, 200));
+  if (!parsed.ok) throw new Error(parsed.error || '读 PDF 书签失败（未说明原因）');
+  return { md: parsed.md, pages: parsed.pages };
+}
 module.exports = {
   detectFormat, textToOutline, looksLikeHeading, headingLevelOf,
-  zipFindEntry, docxParagraphs, docxToOutline, docToOutline
+  zipFindEntry, docxParagraphs, docxToOutline, docToOutline, finishOutline
 };

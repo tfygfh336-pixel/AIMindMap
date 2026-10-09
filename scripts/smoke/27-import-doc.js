@@ -41,19 +41,18 @@ function writeProbe(name, text) {
 
 module.exports = [
   {
-    name: '导入：扩展名判据 —— .pdf 等不支持的格式**响亮说明**，且不尝试导入',
+    name: '导入：扩展名判据 —— .pdf 已**受支持**（P8 切片：限有书签 ✓），.doc/.epub/.png 仍**响亮说明**',
     run: async (ctx) => {
       const res = await execJson(ctx, `(function () {
         var MM = window.MM;
-        var okList = ['.md', '.markdown', '.txt', '.text', '.docx'].map(function (e) { return MM.importExtOk('书' + e); });
-        var badList = ['.pdf', '.doc', '.epub', '.png'].map(function (e) { return MM.importExtOk('书' + e); });
-        // 喂一个 .pdf 的 File 形状对象：应当只提示、不发起导入
-        var before = document.querySelectorAll('*').length;   // 占位：仅确保没抛
-        MM.importHandleFiles([{ name: '某本书.pdf' }]);
+        var okList = ['.md', '.markdown', '.txt', '.text', '.docx', '.pdf'].map(function (e) { return MM.importExtOk('书' + e); });
+        var badList = ['.doc', '.epub', '.png'].map(function (e) { return MM.importExtOk('书' + e); });
+        // 喂一个**仍不支持**的 File 形状对象：应当只提示、不发起导入
+        MM.importHandleFiles([{ name: '某本书.epub' }]);
         var status = (document.querySelector('#status-text') || {}).textContent || '';
         return JSON.stringify({
           ok: okList.every(Boolean) && badList.every(function (b) { return !b; }) && status.indexOf('暂不支持') >= 0,
-          text: '支持的都认=' + okList.every(Boolean) + ' 不支持的都拒=' + badList.every(function (b) { return !b; })
+          text: '支持的都认=' + okList.every(Boolean) + '（含 .pdf ✓）不支持的都拒=' + badList.every(function (b) { return !b; })
             + ' 状态栏=' + JSON.stringify(status.slice(0, 60))
         });
       })()`);

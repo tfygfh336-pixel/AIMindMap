@@ -141,7 +141,7 @@ module.exports = {
     const name = ctx.projectName;
     if (!name) ctx.error('缺少项目名');
     const file = ctx.args._[1];
-    if (!file) ctx.error('用法: import-project <新项目名> <文件.md|.txt|.docx> [--title 标题] [--dry-run]');
+    if (!file) ctx.error('用法: import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run]');
     if (!fs.existsSync(file)) ctx.error('文件不存在: ' + file);
     if (fs.existsSync(path.join(ctx.PROJECTS_DIR, name, name + '.json'))) ctx.error('项目已存在: ' + name + '（换个名字，或先删掉它）');
 

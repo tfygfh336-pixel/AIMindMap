@@ -179,13 +179,40 @@ describe('读不了就说读不了（绝不给一个空树冒充成功）', () =
     expect(di.zipFindEntry(Buffer.from('这不是一个 zip 文件'), 'word/document.xml')).toBe(null);
   });
 
-  it('格式认不出 ⇒ 错误信息里点名支持哪些、并指向 5b（PDF 的边界）', () => {
-    expect(() => di.docToOutline('x.pdf', { buf: Buffer.from('%PDF-1.4') })).toThrow(/\.md \/ \.txt \/ \.docx/);
-    expect(() => di.docToOutline('x.pdf', { buf: Buffer.from('%PDF-1.4') })).toThrow(/5b/);
-    // 认识的但不支持 ⇒ 说清"暂不支持 .pdf"，而不是"认不出"（两种错因要给不同的出路 ✓）
-    expect(() => di.docToOutline('x.pdf', { buf: Buffer.from('%PDF-1.4') })).toThrow(/暂不支持 \.pdf/);
+  it('格式认不出 ⇒ 错误信息里点名支持哪些、并说清 5b 的边界（不许含糊）', () => {
+    expect(() => di.docToOutline('x.epub', { buf: Buffer.from('x') })).toThrow(/\.md \/ \.txt \/ \.docx/);
+    expect(() => di.docToOutline('x.epub', { buf: Buffer.from('x') })).toThrow(/5b/);
+    expect(() => di.docToOutline('x.epub', { buf: Buffer.from('x') })).toThrow(/暂不支持 \.epub/);
   });
 
+  it('P8 最小切片：PDF 有书签 ⇒ 书签变成 `#` 标题（顶层多于一个 = 一个文件多棵树 ✓）', () => {
+    const { buildPdf } = require('./pdf-fixture.js');
+    const os = require('os'), path = require('path'), fsx = require('fs');
+    const p = path.join(os.tmpdir(), 'mm-di-two-books-' + Date.now() + '.pdf');
+    fsx.writeFileSync(p, buildPdf({ outline: [{ title: 'Book One', page: 1, children: [{ title: 'Chapter 1', page: 2 }] }, { title: 'Book Two', page: 2 }] }));
+    try {
+      const r = di.docToOutline(p);            // **同步入口**（命令体不变量要求 ✓）：内部起小进程读书签
+      expect(r.format).toBe('pdf');
+      expect(r.md).toBe('# Book One\n## Chapter 1\n# Book Two');
+      expect(r.stats.levelCounts['1']).toBe(2);     // 两个顶层 = 两棵树 ✓
+    } finally { try { fsx.unlinkSync(p); } catch (e) { /* 清理失败不影响判定 */ } }
+  });
+
+  it('P8 最小切片：无书签 / 坏 PDF 都**响亮拒绝**（5b 其余部分未批准 ⇒ 不猜、不静默降级 ✗）', () => {
+    const { buildPdf } = require('./pdf-fixture.js');
+    const os = require('os'), path = require('path'), fsx = require('fs');
+    const no = path.join(os.tmpdir(), 'mm-di-nobook-' + Date.now() + '.pdf');
+    const badp = path.join(os.tmpdir(), 'mm-di-bad-' + Date.now() + '.pdf');
+    fsx.writeFileSync(no, buildPdf({ outline: [] }));
+    fsx.writeFileSync(badp, Buffer.from('not a pdf'));
+    try {
+      expect(() => di.docToOutline(no)).toThrow(/没有书签/);
+      expect(() => di.docToOutline(badp)).toThrow(/打不开/);
+    } finally {
+      try { fsx.unlinkSync(no); } catch (e) { /* ignore */ }
+      try { fsx.unlinkSync(badp); } catch (e) { /* ignore */ }
+    }
+  });
   it('★ 带 BOM 的 md/txt 必须容忍：BOM 会让首行 `#` 匹配不上，把第一个标题吃成正文（实测踩到）', () => {
     const withBom = '\uFEFF# 第一本书\n\n## 第 1 章\n正文\n\n# 第二本书\n';
     const r = di.docToOutline('bom.md', { buf: Buffer.from(withBom, 'utf8') });

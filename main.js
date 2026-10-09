@@ -306,7 +306,7 @@ async function importDocDialog(w) {
   if (!res.ok) {
     win.webContents.send('app:toast', '导入失败：' + res.error);
     dialog.showMessageBox(win, { type: 'error', title: '导入失败', message: '没能从文件生成项目',
-      detail: res.error + '\n\n支持 .md / .txt / .docx；PDF 与"一个文件里多本书"是 5b 的范围。' });
+      detail: res.error + '\n\n支持 .md / .txt / .docx / 带书签的 .pdf；无书签的 PDF 与多书自动判定尚未批准（5b 的其余部分）。' });
     return;
   }
   afterDocImported(res, win.webContents);
