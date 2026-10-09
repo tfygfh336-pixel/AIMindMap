@@ -487,12 +487,19 @@
     el.style.display = 'block';
   }
 
+  /** 清空选区（点空白处、切项目重建、右键「清除框选」都走它）。
+   *  ⚠️ **原始命中集与描边类必须一起清**（本轮真机缺陷的第二个根因）：原先只清裁剪集 + 把大框藏起来，
+   *  而描边画的是 `fdSelectionRaw` ⇒ **节点上的虚线描边留在画面上**（点空白也擦不掉，直到重排/重开）✗；
+   *  顺带还会让"工具条 N / 问 AI 的集合"与画面上的描边对不上（一个说 0，一个还画着 3 个 ✗）。
+   *  真机复现见 `scripts/smoke/36-real-input.js` ⑤（真鼠标点空白 ⇒ raw 与像素判据都仍在 ✗）。 */
   function clearSelection() {
     fdSelectionBoxVisible = true;   // 复位 ✓（下一次框选照常画框 ✓）
     fdSelection = [];
+    fdSelectionRaw = [];            // ★ 原始命中集也清（"我点过谁"这件事必须真的归零 ✓）
     const el = document.getElementById(SEL_OUTLINE_ID);
     if (el) el.style.display = 'none';
     clearRubberPreview(); // 预览残留一并清
+    paintRawSelection();  // ★ 把 mm-sel-raw 类从节点上摘掉（不是只把大框藏起来 ✓）
   }
 
   /** 选中集按父分组；取最大组（框选设计：一次操作只针对同一父节点的节点）。
@@ -1325,11 +1332,22 @@
   MM.syncTreeOutline = syncTreeOutline;
   MM.hideTreeOutline = hideTreeOutline;
   /** ⑥ Ctrl+点击：把一个节点**加入/移出**选区（不打开详情框 ✓ 用户反馈⑥的多选入口之一）。
-   *  与框选共用同一个选区模型（`applySelection`）⇒ 虚线框、右键菜单、AI 提问看到的都是同一份 ✓ */
+   *  与框选共用同一个选区模型（`applySelection`）⇒ 虚线框、右键菜单、AI 提问看到的都是同一份 ✓
+   *
+   *  ⚠️ **判据与并集的基都必须是「原始命中集」`fdSelectionRaw`（本轮真机缺陷的根因）**：
+   *  原先用裁剪集 `fdSelection` 判"这个节点在不在选区里"，而裁剪集是**给树操作定义的口径**
+   *  （剔父冗余 + 同父只留一组）—— 父节点也在选区时，它的**子节点会被整个剔出去**
+   *  ⇒ 于是：① 再 Ctrl 点一次那个子节点**取消不掉**（判"不在选区"⇒ 又加一遍）；
+   *          ② 下一次点别的节点时，`fdSelection.concat([id])` 会把它**冲掉**（描边凭空消失）✗。
+   *  真机复现（`scripts/smoke/36-real-input.js` ②③，真鼠标事件 + 像素判据）：
+   *    Ctrl 点 wlan-book → wlan-01（它的子）→ comp-net ⇒ raw 变成 [wlan-book,comp-net]，
+   *    **wlan-01 的虚线描边消失**、工具条 N=2（用户点了 3 个）；
+   *    再 Ctrl 点 wlan-01 ⇒ raw 仍是 [wlan-book,wlan-01]（取消不掉）。
+   *  ⇒ 用户要的是"我点过谁，谁就带描边"（"全部都包住"）⇒ **唯一真源只能是 raw** ✓ */
   function toggleNodeSelection(id) {
     if (!id) return { kept: 0, added: false };
-    const has = fdSelection.indexOf(id) >= 0;
-    const next = has ? fdSelection.filter((x) => x !== id) : fdSelection.concat([id]);
+    const has = fdSelectionRaw.indexOf(id) >= 0;
+    const next = has ? fdSelectionRaw.filter((x) => x !== id) : fdSelectionRaw.concat([id]);
     // raw = next（未裁剪 ✓）⇒ paintRawSelection 会给**每一个**被选中节点描边（"全部都包住" ✓）；
     // hideBox：Ctrl 加选不画大虚线框 ✓（大框是框选的概念 ✓）
     const res = applySelection(next, next, { hideBox: true });
@@ -1398,7 +1416,11 @@
     ids: fdSelection.slice(),
     groups: selectionByParent()
   });
-  MM.hasSelection = () => fdSelection.length > 0;
+  /** 「现在有没有选区」= **有没有节点被描边** ⇒ 真源是原始命中集（`fdSelectionRaw`）。
+   *  原先读裁剪集：父与子一起选中时子会被剔掉 ⇒ 某些组合下"画面明明有描边、这里说没有"
+   *  ⇒ 工具条 `barTargets()` 会退回单节点分支（N 与实际参与提问的集合对不上 ✗）。
+   *  （`fdSelection` 仍是**树操作**的口径 —— 收起/拖动/右键批量都按它 ✓ 两者分工不同，别合并 ✗） */
+  MM.hasSelection = () => fdSelectionRaw.length > 0;
   MM.selectionHitTest = selectionHitTest;
   MM.dragSelection = dragSelection;
   MM.collapseSelection = collapseSelection;

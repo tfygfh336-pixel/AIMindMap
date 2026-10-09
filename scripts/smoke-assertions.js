@@ -46,6 +46,12 @@
  *   20-preview-buttons.js PDF 预览的缩放按钮与 ✕ 关闭（含"同 URL 异 hash 不重载"的机制取证）
  *   21-sidebar-first-paint.js 刚打开时工具栏不被侧栏盖住（首帧就得让位，不必先拖一下）
  *   35-rel-edit.js        关联视图的「关联信息」编辑条（加/删链接 + 新建关联笔记；写操作经 CLI 且写完回读同步内存）
+ *   36-real-input.js      **真输入域**：用 `webContents.sendInputEvent` 发真实鼠标/键盘（走 Chromium 命中测试 ✓，
+ *                         不是 `dispatchEvent` 合成事件）+ `capturePage` 截图证据（落 `.review/…/shots/`，可判读、
+ *                         前后差分、与读数同源）。底座与用法见 `scripts/smoke-input.js` 文件头；
+ *                         本域锁 5 条真机契约：①真点中 <jmnode> ②Ctrl 加选 3 个都真的带虚线描边且无大框
+ *                         ③再点一次真能取消加选（N 回落）④「💬 问这 N 个」的 N = 真送出去的集合
+ *                         ⑤点空白清选区不留残影。判别力证明：`MM_SMOKE_INJECT=<key>`（见该文件头）
  * ============================================================ */
 'use strict';
 

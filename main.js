@@ -1313,6 +1313,21 @@ async function runSmoke(win) {
   // 只能由 AI/CLI 写入）。`runCli` 在冒烟模式下已把项目根指向临时副本
   // （AI_MINDMAP_PROJECTS_DIR），所以断言用它是安全的 —— 绝不碰真实数据。
   const ctx = { exec, win, runCli: (args) => runCli(args) };
+  /* 真输入 + 截图证据（`scripts/smoke-input.js` 是唯一实现）：
+   * `sendInputEvent` / `capturePage` 都是**主进程** API，而冒烟断言就跑在主进程里
+   * （`ctx.exec` 只是主→渲染的桥）⇒ 直接挂在 ctx 上即可，**不需要 IPC 通道**
+   * （理由与"非冒烟模式三重不可用"的保证写在该模块文件头 ✓）。
+   * 构造失败**不能静默**：真输入域的断言会因缺底座判红（"没跑却看着像通过"是本工程最重的损害类别 ✗）。 */
+  try {
+    ctx.input = require('./scripts/smoke-input.js').createDriver({
+      win: win, exec: exec, isSmoke: isSmoke, root: ROOT, capture: () => captureRetry(win)
+    });
+    console.log('[smoke] 真输入底座就绪（isSmoke=' + isSmoke + '）：截图落 ' + ctx.input.shotDir);
+  } catch (err) {
+    ctx.input = null;
+    console.log('SMOKE INPUT ERROR — 真输入底座构造失败（真输入域的断言会全红，不许当通过 ✗）：'
+      + ((err && err.message) || err));
+  }
   // 兜底：整个冒烟最长 **140 秒**，防止断言挂起导致进程不退出。
   // ⚠️ 取值要**略小于**验证体系给本步的预算（`docs/VERIFY.md` 里 G5 现在是 150s）：
   //   · 守卫 > 预算时，**挂起**会被报表成"超出预算"（看着像性能问题 ✗，实测踩过）；
