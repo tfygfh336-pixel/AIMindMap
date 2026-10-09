@@ -57,6 +57,8 @@
 
   /** 直接进节点模式（命令 / 菜单 / 冒烟 / 其它入口共用 ✓）：清空输入、改提示、立刻刷新 ✓ */
   MM.openPaletteNodes = () => {
+    // 面板关着时（菜单里的「搜索节点」入口）必须先打开 —— 否则只改了模式、界面毫无反应 ✗
+    if (!isOpen()) return openPalette().then(() => MM.openPaletteNodes());
     mode = 'node';
     const i = inputEl();
     if (i) { i.value = ''; i.placeholder = '搜索节点…（输入即推荐，回车跳过去）'; i.focus(); }
@@ -144,7 +146,11 @@
     // spawn 一次 CLI），但**跨打开复用会过期** —— 新增/删除节点后立刻按 Ctrl+P
     // 就会搜不到新节点（或搜到已删除的）。打开那一刻刷新是正确性与开销的平衡点。
     nodesCache = null;
+    // 每次打开都必须从命令模式开始 ✗：以前只有 closePalette() 重置 mode ⇒ 用过一次
+    // 「搜索节点…」之后再按 Ctrl+P 会以**节点模式**打开（真机反馈④ 已复现：重开后 mode=node ✗）
+    mode = 'cmd';
     p.style.display = 'flex';
+    i.placeholder = '输入命令…';   // 与命令模式配套（否则提示还写着「搜索节点…」✗）
     i.value = '';
     await refresh();
     i.focus();

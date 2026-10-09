@@ -357,4 +357,31 @@ module.exports = [
       return r;
     }
   }
+  ,
+  {
+    name: '命令面板：上次停在**节点模式**，再打开也必须回到**命令模式**（真机反馈④：否则像坏了一样 ✗）',
+    run: async (ctx) => {
+      // ① 先切进节点模式（面板内的「搜索节点…」命令走的就是这条）
+      await ctx.exec('(async function () { window.MM.openPaletteNodes(); await new Promise(function (r) { setTimeout(r, 600); }); return 1; })()');
+      const inNode = await ctx.exec('(function () { var items = document.querySelectorAll("#palette .palette-item"); var hints = [].map.call(items, function (x) { return (x.querySelector(".palette-hint") || {}).textContent; }); return JSON.stringify({ mode: window.MM.paletteMode(), hasNode: hints.indexOf("节点") >= 0, n: items.length }); })()');
+      const nodeState = JSON.parse(inNode);
+      // ② 关掉（Esc），再按 Ctrl+P 打开 —— 必须回命令模式 ✓
+      await ctx.exec('(function () { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return 1; })()');
+      await new Promise((r) => setTimeout(r, 250));
+      await ctx.exec('(function () { document.dispatchEvent(new KeyboardEvent("keydown", { key: "p", ctrlKey: true, bubbles: true })); return 1; })()');
+      let back = null;
+      for (let i = 0; i < 30; i++) {
+        const r2 = await ctx.exec('(function () { var items = document.querySelectorAll("#palette .palette-item"); var hints = [].map.call(items, function (x) { return (x.querySelector(".palette-hint") || {}).textContent; }); return JSON.stringify({ mode: window.MM.paletteMode(), hasNode: hints.indexOf("节点") >= 0, hasCmd: hints.indexOf("命令") >= 0, n: items.length }); })()');
+        back = JSON.parse(r2);
+        if (back.n > 0 && back.mode === "cmd") break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      // ③ 收尾：关掉面板，不给后续断言留一个开着的面板 ✓
+      await ctx.exec('(function () { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return 1; })()');
+      const okAll = nodeState.mode === "node" && nodeState.hasNode === true
+        && !!back && back.mode === "cmd" && back.hasNode === false && back.hasCmd === true;
+      return { ok: okAll,
+        text: '节点模式时=' + JSON.stringify(nodeState) + ' ｜ 重开后=' + JSON.stringify(back) };
+    }
+  }
 ];
