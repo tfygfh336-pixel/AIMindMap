@@ -126,14 +126,25 @@
       if (!sideBtn) {
         sideBtn = document.createElement('button');
         sideBtn.type = 'button';
-        sideBtn.className = 'rel-show-btn rel-show-btn-side';
+        sideBtn.className = 'rel-show-btn rel-show-btn-round';   // 圆形（用户 2026-10-08 第二批 ✓）
         boxEl.appendChild(sideBtn);
       }
       sideBtn.setAttribute('data-rel-node', node && node.id ? node.id : '');
-      sideBtn.innerHTML = '<span class="rsb-icon">🔗</span><span class="rsb-text">关联节点</span>';
-      sideBtn.title = '在导图上高亮这个节点的关联节点、缩放至刚好框住它们，并画出关系虚线（Esc 退出）';
-      const room = boxEl.offsetLeft;
-      sideBtn.classList.toggle('is-inside', room < 52);
+      sideBtn.innerHTML = '<span class="rsb-icon">🔗</span>';   // 圆钮只有一个图标（文字走 tooltip / aria-label ✓）
+      sideBtn.title = '关联节点：在导图上高亮它的关联节点、缩放至刚好框住并画出关系虚线（Esc 退出）';
+      sideBtn.setAttribute('aria-label', '关联节点（高亮展示）');
+      if (MM.isRelatedActive && MM.isRelatedActive()) sideBtn.classList.add('is-on');
+      // 贴哪边由**实测矩形**决定（旧版这个 offsetLeft 阈值不可靠 ⇒ 会被裁掉、看起来"消失" ✗）
+      if (MM.placeRelShowBtn) MM.placeRelShowBtn(sideBtn, boxEl);
+      // 框被拖动/缩放（style 变化）时重判 —— 否则拖到面板左缘后就被 overflow:hidden 裁掉 ✗
+      if (!boxEl.__relBtnObserved && window.MutationObserver) {
+        boxEl.__relBtnObserved = true;
+        try {
+          new MutationObserver(function () { var b2 = boxEl.querySelector('.rel-show-btn'); if (b2 && MM.placeRelShowBtn) MM.placeRelShowBtn(b2, boxEl); })
+            .observe(boxEl, { attributes: true, attributeFilter: ['style'] });
+        } catch (e0) { /* 观察器建不起来不影响主流程 ✓ */ }
+      }
+      // （is-inside 由 MM.placeRelShowBtn 设置 ✓ 见上面）
     }
     let html = '';
     if (items.length) {

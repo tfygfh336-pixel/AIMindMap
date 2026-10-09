@@ -1358,6 +1358,24 @@
       });
     } catch (e) { console.log("P7 跨视图兜底接线失败：" + ((e && e.message) || e)); }
   }
+  /** 圆形「关联节点」按钮贴哪边（用户 2026-10-08 第二批：圆形、浮在详情框左边 ✓）：
+   *  · 默认贴框左缘**外侧**（看着就是浮在框左边的一颗圆钮 ✓）；
+   *  · 面板是 overflow:hidden ⇒ 左边空间不够会被裁掉（上一版正是这样"消失"的 ✗）
+   *    ⇒ 用**实测矩形**（框左缘 − 面板左缘）判：不够就退回框内左缘 ✓；
+   *  · 阈值按圆钮直径 44 + 余量取 60（旧版用 offsetLeft 阈值 ⇒ 不可靠 ✗）。
+   *  返回 'side' / 'inside' / 'error'，便于冒烟与排查（不静默 ✗）。 */
+  MM.placeRelShowBtn = (btn, boxEl) => {
+    try {
+      if (!btn || !boxEl) return 'error';
+      const panel = fdPanel();
+      const pr = panel ? panel.getBoundingClientRect() : null;
+      const br = boxEl.getBoundingClientRect();
+      const room = pr ? (br.left - pr.left) : 999;
+      const inside = room < 60;
+      btn.classList.toggle('is-inside', inside);
+      return inside ? 'inside' : 'side';
+    } catch (e) { return 'error'; }
+  };
   MM.toggleNodeSelection = toggleNodeSelection;
   MM.clearSelection = clearSelection;
   MM.applySelection = applySelection;

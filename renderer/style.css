@@ -564,20 +564,19 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   fill: none; stroke: transparent; stroke-width: 14;
   pointer-events: stroke; cursor: pointer;
 }
-/* ⑦ 侧边大按钮（用户反馈：更明显更大 + 独立出现在详情框左侧）——挂在框元素上，竖排贴左缘 ✓ */
-.rel-show-btn-side {
-  position: absolute; left: -46px; top: 16px; width: 42px;
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  padding: 10px 4px; margin: 0; border-radius: 10px; text-align: center;
-  font-size: 13.5px; font-weight: 600; line-height: 1.2;
-  box-shadow: 0 2px 10px rgba(20, 40, 90, .16); background: #fff;
+/* ⑨ 圆形「关联节点」按钮：浮在**详情框左缘外侧** ✓（用户 2026-10-08 第二批："不要在框内，就放在边上，变成一个圆形按钮浮在节点详情左边"）。左边空间不够（面板 overflow:hidden 会裁掉）时加 .is-inside 退回框内左缘 ✓ —— 判定用实测矩形（MM.placeRelShowBtn ✓），框一动就重判 ✓。 */
+.rel-show-btn.rel-show-btn-round {
+  position: absolute; left: -54px; top: 14px; width: 44px; height: 44px; margin: 0; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px dashed #9db8ff; background: #fff; color: #2b5dd6;
+  font-size: 20px; line-height: 1; box-shadow: 0 2px 10px rgba(20, 40, 90, .18);
 }
-.rel-show-btn-side .rsb-text { writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 1px; }
-.rel-show-btn-side .rsb-icon { font-size: 16px; }
-.rel-show-btn-side:hover { background: #f0f5ff; }
-/* 框贴面板左缘时伸不出去（容器 overflow:hidden）⇒ 退回**框内**左缘，宁可贴里也不能被裁掉 ✓ */
-.rel-show-btn-side.is-inside { left: 6px; width: auto; flex-direction: row; padding: 7px 10px; }
-.rel-show-btn-side.is-inside .rsb-text { writing-mode: horizontal-tb; letter-spacing: 0; }
+.rel-show-btn.rel-show-btn-round:hover { background: #f0f5ff; border-style: solid; }
+.rel-show-btn.rel-show-btn-round.is-on { background: #2b5dd6; border-color: #2b5dd6; color: #fff; }
+.rel-show-btn.rel-show-btn-round.is-inside { left: 8px; }
+/* 贴面板左缘时伸不出去（容器 overflow:hidden）⇒ 退回**框内**左缘 ✓ 宁可贴里也不能被裁掉 ✓ */
+
+
 
 /* AI 问答浮窗：**不显示**大小锁（行为上是大锁 = 钉在首次显示的位置，但不需要那两个按钮 ✓ 用户反馈⑧） */
 .fd-ask-box .fd-lock-map, .fd-ask-box .fd-lock-screen { display: none !important; }

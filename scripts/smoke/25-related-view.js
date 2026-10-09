@@ -91,9 +91,13 @@ module.exports = [
         var area = r.width > 8 && r.height > 8;
         var inside = !!pr && r.left >= pr.left - 2 && r.right <= pr.right + 2 && r.top >= pr.top - 2 && r.bottom <= pr.bottom + 2;
         var vis = !!b.offsetParent || (r.width > 0 && r.height > 0);
-        return JSON.stringify({ ok: !!area && !!inside && !!vis,
+        // ★ 圆形判定（用户 2026-10-08 第二批："变成一个圆形按钮浮在节点详情左边" ✓）
+        var cs = window.getComputedStyle(b);
+        var radius = cs.borderTopLeftRadius || '';
+        var round = (radius === '50%' || parseFloat(radius) >= Math.min(r.width, r.height) / 2 - 1);
+        return JSON.stringify({ ok: !!area && !!inside && !!vis && round,
           text: '按钮=' + (b.textContent || '').trim() + ' 面积=' + Math.round(r.width) + 'x' + Math.round(r.height)
-            + ' 在面板内=' + inside + ' 可见=' + vis });
+            + ' 在面板内=' + inside + ' 可见=' + vis + ' 圆形=' + round + ' 圆角=' + radius });
       })()`);
       let o = JSON.parse(btn);
       if (!o.ok) return { ok: false, text: o.text };
