@@ -131,11 +131,12 @@ module.exports = {
     ctx.out('已创建项目: ' + name);
   },
 
-  /** 功能 5a：**大文档 → 新项目 + 新树**（md/txt/docx）。
+  /** 功能 5a：**大文档 → 新项目 + 新树**（md/txt/docx/pdf）。
    *  与 `import-md` 的区别：那个把节点**追加到已有项目**的某个父节点下；这个**从零建项目**。
    *  · 转换只做一次并捕获进闭包（同 import-md 的理由：fn 里禁止 I/O、并发重放不该重生成 id）；
    *  · **一次 ctx.write** 落盘 ⇒ 中途失败不会留下半个项目 ✓；
    *  · 文档的 1 级标题变成**顶层主题**（"一个文件里几本书 ⇒ 几棵树"在 5a 这一级就成立 ✓）；
+   *  · PDF：有书签走书签、**无书签走文字层**（P0 ✓）；两样都没有 ⇒ 转换阶段就**响亮拒绝** ✓；
    *  · `--dry-run` 只报格式/规模/前几个标题，**不写盘**（可机械验证，也是使用者预览的第一入口 ✓）。 */
   importProject(ctx) {
     const name = ctx.projectName;
@@ -154,20 +155,28 @@ module.exports = {
     const title = ctx.args.title
       || (themes[0] && themes[0].topic)
       || path.basename(file).replace(/\.[^.]+$/, '');
+    // PDF 的来源标注（书签 / 文字层）与如实报告 —— 使用者必须看得见这棵树是怎么来的 ✓ 不静默 ✗
+    const srcLabel = conv.source === 'text' ? 'pdf·文字层' : conv.source === 'outline' ? 'pdf·书签' : conv.format;
+    const notes = Array.isArray(conv.notes) ? conv.notes : [];
+    const printNotes = (out) => notes.forEach((n) => out('  · ' + n));
 
     if (ctx.args.dryRun) {
       const heads = conv.md.split('\n').filter((l) => /^#{1,6}\s+\S/.test(l)).slice(0, 8);
       const out = {
         ok: true, dryRun: true, project: name, file: file, format: conv.format,
+        pdfSource: conv.source || null,
         title: title, stats: conv.stats, themes: themes.length, nodes: built.addedCount || 0,
+        notes: notes,
         topHeadings: heads.map((l) => l.replace(/^(#+)\s+/, (m, g) => '#'.repeat(g.length) + ' '))
       };
       if (ctx.args.json) { ctx.outJson(out); return; }
       ctx.out('（--dry-run：只预览，**没有写盘** ✓）');
-      ctx.out('格式: ' + conv.format + ' ｜ 提纲 ' + conv.stats.lines + ' 行 / ' + conv.stats.headings + ' 个标题'
+      ctx.out('格式: ' + srcLabel + ' ｜ 提纲 ' + conv.stats.lines + ' 行 / ' + conv.stats.headings + ' 个标题'
         + ' ｜ 层级分布 ' + JSON.stringify(conv.stats.levelCounts));
       ctx.out('将创建项目「' + name + '」（标题：' + title + '）：' + themes.length + ' 个顶层主题 / '
         + (built.addedCount || 0) + ' 个节点');
+      if (conv.source) ctx.out('来源: ' + (conv.source === 'text' ? '文字层（这份 PDF 没有书签 ✓ 已自动回退）' : 'PDF 书签'));
+      printNotes(ctx.out);
       ctx.out('前几个顶层主题：');
       themes.slice(0, 10).forEach((t) => ctx.out('  · ' + t.topic));
       return;
@@ -179,8 +188,9 @@ module.exports = {
       data: { id: 'root', topic: title, expanded: true, children: themes }
     };
     ctx.write(data);   // 一次写入（原子）⇒ 不会留下半个项目 ✓
-    ctx.out('已从 ' + path.basename(file) + '（' + conv.format + '）创建项目「' + name + '」：'
+    ctx.out('已从 ' + path.basename(file) + '（' + srcLabel + '）创建项目「' + name + '」：'
       + themes.length + ' 个顶层主题 / ' + (built.addedCount || 0) + ' 个节点');
+    printNotes(ctx.out);
     ctx.out('打开：node cli/mm-cli.js read ' + name + ' --brief');
   },
 

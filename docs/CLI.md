@@ -232,7 +232,7 @@ node cli/mm-cli.js import-md <项目> <md文件> [--parent id]
 
 ### import-project
 
-功能 5a：**从大文档建一个新项目 + 一棵新树**（md/txt/docx；1 级标题成为顶层主题）；一次原子写入，失败不留半个项目；--dry-run 只预览格式/规模/前几个标题、不写盘
+功能 5a：**从大文档建一个新项目 + 一棵新树**（md/txt/docx；PDF **有书签走书签、无书签自动回退文字层**，两样都没有才响亮拒绝）；1 级标题成为顶层主题；一次原子写入，失败不留半个项目；--dry-run 只预览格式/规模/前几个标题与来源、不写盘
 
 ```
 node cli/mm-cli.js import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json]

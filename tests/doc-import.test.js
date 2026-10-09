@@ -179,9 +179,9 @@ describe('读不了就说读不了（绝不给一个空树冒充成功）', () =
     expect(di.zipFindEntry(Buffer.from('这不是一个 zip 文件'), 'word/document.xml')).toBe(null);
   });
 
-  it('格式认不出 ⇒ 错误信息里点名支持哪些、并说清 5b 的边界（不许含糊）', () => {
+  it('格式认不出 ⇒ 错误信息里点名支持哪些、并说清 PDF 的两条路（不许含糊）', () => {
     expect(() => di.docToOutline('x.epub', { buf: Buffer.from('x') })).toThrow(/\.md \/ \.txt \/ \.docx/);
-    expect(() => di.docToOutline('x.epub', { buf: Buffer.from('x') })).toThrow(/5b/);
+    expect(() => di.docToOutline('x.epub', { buf: Buffer.from('x') })).toThrow(/无书签走文字层/);
     expect(() => di.docToOutline('x.epub', { buf: Buffer.from('x') })).toThrow(/暂不支持 \.epub/);
   });
 
@@ -193,26 +193,55 @@ describe('读不了就说读不了（绝不给一个空树冒充成功）', () =
     try {
       const r = di.docToOutline(p);            // **同步入口**（命令体不变量要求 ✓）：内部起小进程读书签
       expect(r.format).toBe('pdf');
+      expect(r.source).toBe('outline');        // 如实标注来源（书签）✓
       expect(r.md).toBe('# Book One\n## Chapter 1\n# Book Two');
       expect(r.stats.levelCounts['1']).toBe(2);     // 两个顶层 = 两棵树 ✓
     } finally { try { fsx.unlinkSync(p); } catch (e) { /* 清理失败不影响判定 */ } }
   });
 
-  it('P8 最小切片：无书签 / 坏 PDF 都**响亮拒绝**（5b 其余部分未批准 ⇒ 不猜、不静默降级 ✗）', () => {
+  it('★ P0：PDF **无书签但有文字层** ⇒ 自动回退文字层并建成骨架（用户的真实样本就是这种）', () => {
+    const { buildUnlabeledChinesePdf } = require('./pdf-fixture.js');
+    const os = require('os'), path = require('path'), fsx = require('fs');
+    const p = path.join(os.tmpdir(), 'mm-di-textlayer-' + Date.now() + '.pdf');
+    fsx.writeFileSync(p, buildUnlabeledChinesePdf());
+    try {
+      const r = di.docToOutline(p);            // 同步入口（命令体不变量 ✓）：异步全在小进程里
+      expect(r.format).toBe('pdf');
+      expect(r.source).toBe('text');           // 来源 = 文字层（使用者看得见 ✓）
+      expect(r.stats.levelCounts).toEqual({ 1: 1, 2: 2, 3: 2 });
+      expect(r.md.split('\n').filter((l) => /^#/.test(l))).toEqual([
+        '# 深入理解计算机系统 学习笔记',
+        '## 第一章 概述', '### 1.1 研究背景',
+        '## 第二章 方法', '### 2.1 顺序存储'
+      ]);
+      expect(r.md).toContain('这是一段中文正文');        // 正文没丢 ✓
+      expect(r.md).not.toContain('AI MindMap 文字层夹具');  // 页眉没混进来 ✓
+      expect(Array.isArray(r.notes) && r.notes.join(' ')).toContain('剔除');   // 如实报告了剔除的页眉页脚 ✓
+    } finally { try { fsx.unlinkSync(p); } catch (e) { /* ignore */ } }
+  }, 30000);
+
+  it('PDF：无书签且文字层也用不上（每页才 13 个字符）⇒ **响亮拒绝**，理由里带数字与出路', () => {
     const { buildPdf } = require('./pdf-fixture.js');
     const os = require('os'), path = require('path'), fsx = require('fs');
     const no = path.join(os.tmpdir(), 'mm-di-nobook-' + Date.now() + '.pdf');
     const badp = path.join(os.tmpdir(), 'mm-di-bad-' + Date.now() + '.pdf');
     fsx.writeFileSync(no, buildPdf({ outline: [] }));
     fsx.writeFileSync(badp, Buffer.from('not a pdf'));
+    // ⚠️ 每次都起一个小进程（spawnSync）⇒ **只调用一次**、把消息抓下来再断言，
+    // 别为每条断言各起一次（全量跑时进程调度会让 4 次调用超过 vitest 的默认 5s 超时 ✗，实测踩到）
+    const msgOf = (f) => { try { di.docToOutline(f); return ''; } catch (e) { return e.message; } };
     try {
-      expect(() => di.docToOutline(no)).toThrow(/没有书签/);
-      expect(() => di.docToOutline(badp)).toThrow(/打不开/);
+      const noMsg = msgOf(no);
+      expect(noMsg).toMatch(/没有书签/);
+      expect(noMsg).toMatch(/文字层/);
+      expect(noMsg).toMatch(/出路/);
+      expect(noMsg).toMatch(/20 个字符/);            // 理由必须**带数字** ✓
+      expect(msgOf(badp)).toMatch(/打不开/);
     } finally {
       try { fsx.unlinkSync(no); } catch (e) { /* ignore */ }
       try { fsx.unlinkSync(badp); } catch (e) { /* ignore */ }
     }
-  });
+  }, 30000);
   it('★ 带 BOM 的 md/txt 必须容忍：BOM 会让首行 `#` 匹配不上，把第一个标题吃成正文（实测踩到）', () => {
     const withBom = '\uFEFF# 第一本书\n\n## 第 1 章\n正文\n\n# 第二本书\n';
     const r = di.docToOutline('bom.md', { buf: Buffer.from(withBom, 'utf8') });

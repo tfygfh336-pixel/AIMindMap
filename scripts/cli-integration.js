@@ -575,6 +575,7 @@ check('import-project 遇到坏 PDF ⇒ **响亮报错**并说清原因（不许
 // P8 最小切片（用户批准 ✓）：**有书签**的 PDF ⇒ 真的建成项目；顶层书签多于一个 = 多棵树 ✓
 // 夹具**自己生成**（tests/pdf-fixture.js ✓ 不引二进制样本）
 let pdfImportDetail = '';
+let pdfTextDetail = '';        // P0：无书签 ⇒ 文字层回退那一条的现场报文
 const IMP_PDF = 'imp-probe-pdf';        // 固定名 ⇒ 能被收尾清掉 ✓（动态名会逃过清理、污染真实 projects/ ✗）
 const IMP_PDF_NB = 'imp-probe-pdf-nb';
 check('import-project 带书签的 PDF ⇒ 建成项目，且顶层主题数 = 顶层书签数（一个文件多本书 ✓）',
@@ -592,15 +593,45 @@ check('import-project 带书签的 PDF ⇒ 建成项目，且顶层主题数 = �
     //（= 两个顶层书签 ⇒ 两棵树 ✓ 一个文件多本书）。读回/校验那条链由 md 用例与 validate 覆盖 ✓。
     return r.code === 0 && /2 个顶层主题/.test(r.out) && cleaned;
   })(), pdfImportDetail);
-check('import-project 无书签的 PDF ⇒ 响亮拒绝并点名「没有书签」（5b 其余部分未批准 ⇒ 不猜 ✗）',
+check('import-project 无书签的 PDF ⇒ 响亮拒绝并点名「没有书签」+ 说清文字层也不够用（带数字）',
   (() => {
     const { buildPdf } = require('../tests/pdf-fixture.js');
     const p = path.join(TMP, 'no-bookmark.pdf');
     fs.writeFileSync(p, buildPdf({ outline: [] }));
     const r = run(['import-project', IMP_PDF_NB, p]);
     try { fs.rmSync(path.join(ROOT, 'projects', IMP_PDF_NB), { recursive: true, force: true }); } catch (e) { /* 清不掉不掩盖主判据，但下面会看到残留 ✗ */ }
-    return r.code !== 0 && /没有书签/.test(r.out);
+    // 判据三样都要：非 0 ／ 点名没有书签 ／ **带数字**说清文字层为什么也用不上 + 给出路
+    // （⚠️ 这里刻意不写 ①…⑳ 那套圈号：本文件的圈号是**判定标记**，写一个就会被 G9 判重复 ✗，见文件头）
+    return r.code !== 0 && /没有书签/.test(r.out) && /20 个字符/.test(r.out) && /出路/.test(r.out);
   })());
+
+// P0（用户批准 ✓）：**无书签但有文字层** ⇒ 自动回退文字层建树。用户自己的真实样本就是这种
+//（30 页 Chromium 技术文档、getOutline() === null）⇒ 这条是"最急的那个 bug"的回归网 ✓
+const IMP_PDF_TEXT = 'imp-probe-pdf-text';    // 固定名 ⇒ 能被收尾清掉 ✓（动态名会逃过清理、污染真实 projects/ ✗）
+check('import-project 无书签但有文字层的 PDF ⇒ 回退文字层建成项目（顶层主题/节点数/层级对着夹具核对）',
+  (() => {
+    const { buildUnlabeledChinesePdf } = require('../tests/pdf-fixture.js');
+    const p = path.join(TMP, 'text-layer.pdf');
+    fs.writeFileSync(p, buildUnlabeledChinesePdf());
+    // 先 dry-run：不写盘，且如实报"来源=文字层"与夹具的真实规模
+    const d = run(['import-project', IMP_PDF_TEXT, p, '--dry-run', '--json']);
+    let j = null; try { j = JSON.parse(d.out); } catch (e) { j = null; }
+    const dryOk = !!(j && j.ok && j.dryRun && j.pdfSource === 'text'
+      && j.themes === 1 && j.nodes === 5
+      && JSON.stringify(j.stats.levelCounts) === JSON.stringify({ 1: 1, 2: 2, 3: 2 })
+      && !fs.existsSync(path.join(ROOT, 'projects', IMP_PDF_TEXT)));
+    // 再真写盘：项目落地、能读回骨架、过校验，然后立刻清掉（不给下次留"项目已存在"的假红 ✗）
+    const r = run(['import-project', IMP_PDF_TEXT, p]);
+    const rd = run(['read', IMP_PDF_TEXT, '--brief']);
+    const vd = run(['validate', IMP_PDF_TEXT]);
+    let cleaned = false;
+    try { fs.rmSync(path.join(ROOT, 'projects', IMP_PDF_TEXT), { recursive: true, force: true }); cleaned = !fs.existsSync(path.join(ROOT, 'projects', IMP_PDF_TEXT)); } catch (e) { cleaned = false; }
+    pdfTextDetail = 'dry=' + (j ? ('来源=' + j.pdfSource + ' 主题=' + j.themes + ' 节点=' + j.nodes + ' 层级=' + JSON.stringify(j.stats.levelCounts)) : ('非 JSON: ' + String(d.out).slice(0, 60)))
+      + ' ｜ 真写: code=' + r.code + ' out=' + String(r.out || '').slice(0, 90).replace(/\n/g, ' ')
+      + ' ｜ 读回=' + (/第一章 概述/.test(rd.out) ? '含章标题' : '缺章标题') + ' ｜ 校验=' + (ok(vd.out) ? 'PASS' : 'FAIL') + ' ｜ 已清=' + cleaned;
+    return dryOk && r.code === 0 && /文字层/.test(r.out) && /1 个顶层主题/.test(r.out) && /5 个节点/.test(r.out)
+      && /第一章 概述/.test(rd.out) && ok(vd.out) && cleaned;
+  })(), pdfTextDetail);
 check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已有项目）',
   (() => { const r4 = run(['import-project', PROJ, BIGMD]); return r4.status !== 0 && /项目已存在/.test(r4.err + r4.out); })());
 

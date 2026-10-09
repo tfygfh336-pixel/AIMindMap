@@ -69,7 +69,7 @@ function init() {
 
   // 导入导出
   register({ name: 'import-md', usage: 'import-md <项目> <md文件> [--parent id]', desc: '从 Markdown 导入节点（追加到 parent）', fn: loadFile('project').importMd });
-  register({ name: 'import-project', usage: 'import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json]', desc: '功能 5a：**从大文档建一个新项目 + 一棵新树**（md/txt/docx；1 级标题成为顶层主题）；一次原子写入，失败不留半个项目；--dry-run 只预览格式/规模/前几个标题、不写盘', fn: loadFile('project').importProject });
+  register({ name: 'import-project', usage: 'import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json]', desc: '功能 5a：**从大文档建一个新项目 + 一棵新树**（md/txt/docx；PDF **有书签走书签、无书签自动回退文字层**，两样都没有才响亮拒绝）；1 级标题成为顶层主题；一次原子写入，失败不留半个项目；--dry-run 只预览格式/规模/前几个标题与来源、不写盘', fn: loadFile('project').importProject });
   register({ name: 'export-md', usage: 'export-md <项目> <输出目录> [--format heading|list] [--with-detail]', desc: '导出为文件夹：<项目>.md + assets/ + attachments/（v0.16 起）', fn: loadFile('project').exportMd });
   register({ name: 'export-json', usage: 'export-json <项目> <输出.json>', desc: '导出为 aimap 单文件（图片 base64 内嵌，可移植）', fn: loadFile('project').exportJson });
   register({ name: 'export-html', usage: 'export-html <项目> <输出目录>', desc: '导出为静态站点（index.html + assets/，可分享部署；相关知识点已内联为可跳转链接）', fn: loadFile('project').exportHtml });
