@@ -19,7 +19,7 @@
 | MCP 工具数 | 35 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
 | 单元测试 | 820 用例 / 47 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 214 | `scripts/cli-integration.js` |
-| 冒烟断言 | 171 | `scripts/smoke-assertions.js` |
+| 冒烟断言 | 176 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
 | 版本号 | 0.18.0 | `package.json` / `src/config.js` / `package-lock.json`（须一致） |
 

@@ -129,6 +129,24 @@
     btn.title = '关联节点：在导图上高亮它的关联节点、缩放至刚好框住并画出关系虚线；再点一次或 Esc 退出';
     btn.setAttribute('aria-label', '关联节点（高亮展示）');
     btn.classList.toggle('is-on', !!(MM.isRelatedActive && MM.isRelatedActive()));
+    // ⚠️ 点击处理**必须在这里绑**（跟着圆钮一起 ✓）：旧版绑在 renderAssocEntries 里，
+    //    那要等 assoc IPC 回来（几百 ms ✗）⇒ 打开节点后立刻点圆钮 = 什么都没发生 ✓（探针实测 ✗）
+    if (!btn.__relBound) {
+      btn.__relBound = true;
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id2 = btn.getAttribute('data-rel-node');
+        // 再点一次 = 退出（按钮就是开关；Esc 也退 ✓）
+        if (MM.isRelatedActive && MM.isRelatedActive()) {
+          MM.clearRelated();
+          MM.setStatus('已退出关联节点展示');
+        } else if (id2) {
+          MM.showRelated(id2);
+        }
+        const on = !!(MM.isRelatedActive && MM.isRelatedActive());
+        (MM.fdPanel ? MM.fdPanel() : document).querySelectorAll('.rel-show-btn').forEach((b) => b.classList.toggle('is-on', on));
+      });
+    }
     if (MM.placeRelShowBtn) MM.placeRelShowBtn(btn, boxEl);
     // 框一动（拖动/缩放改 style）就重判贴哪边 —— 否则贴到面板边上会被 overflow:hidden 裁掉 ✗
     if (!boxEl.__relBtnObserved && window.MutationObserver) {
@@ -173,22 +191,7 @@
     });
     const boxOwner = el.closest ? el.closest('.float-detail') : null;   // 可能为空（el 已脱离文档 ✗）
     const btn = boxOwner ? boxOwner.querySelector('.rel-show-btn') : null;
-    if (btn) {
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        const id = btn.getAttribute('data-rel-node');
-        // 再点一次 = 退出（按钮就是开关；Esc 也退）。**只有同一个节点**才算"再点" ✓
-        if (MM.isRelatedActive && MM.isRelatedActive()) {
-          MM.clearRelated();
-          MM.setStatus('已退出关联节点展示');
-        } else {
-          MM.showRelated(id);
-        }
-        el.querySelectorAll('.rel-show-btn').forEach((b) => {
-          b.classList.toggle('is-on', !!(MM.isRelatedActive && MM.isRelatedActive()));
-        });
-      });
-    }
+    // （点击处理已搬到 refreshRelShowBtn：跟着圆钮建 ⇒ 不必等 assoc 数据 ✓ 也避免绑两次 ✗）
   }
 
   /* ================= 编辑笔记 =================

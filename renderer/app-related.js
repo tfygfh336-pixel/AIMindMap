@@ -263,11 +263,18 @@
     const inTree = inTreeAll.filter((m) => !!rectOf(m.id));
     const unrendered = inTreeAll.length - inTree.length;
     if (!inTree.length) {
+      // 用户 2026-10-08：**没有关联节点的也要能进这个视图** ✓（它是人工编辑关联信息的入口 ✓）
+      // ⇒ 不再"早退什么都不做"：只高亮中心节点自身、给一句明确状态（不静默 ✗）
       MM.setStatus(rel.crossProject
-        ? '这个节点只有跨项目的关联（' + rel.crossProject + ' 个不在当前图上，画不出线）'
-        : '这个节点没有可展示的关联节点（关联笔记：' + rel.assocCount + ' 篇）', true);
-      clearRelated();
-      return null;
+        ? '这个节点只有跨项目的关联（' + rel.crossProject + ' 个不在当前图上）：已进入关联视图，可在下面添加本图内的关联'
+        : '这个节点还没有关联节点（关联笔记：' + rel.assocCount + ' 篇）：已进入关联视图，可在下面添加关联', true);
+      active = { nodeId, members: new Set([nodeId]), edges: [], model: rel };
+      ensureLayer();
+      bindEsc();
+      applyHighlight();
+      fitToNodes([nodeId]);
+      redrawLines();
+      return { members: [], drawn: 0, fit: null, crossProject: rel.crossProject, unrendered: 0, assocCount: rel.assocCount, empty: true };
     }
     active = { nodeId, members: new Set(inTree.map((m) => m.id)), edges: rel.edges, model: rel };
     ensureLayer();
