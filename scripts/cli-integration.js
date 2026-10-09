@@ -575,24 +575,30 @@ check('import-project 遇到坏 PDF ⇒ **响亮报错**并说清原因（不许
 // P8 最小切片（用户批准 ✓）：**有书签**的 PDF ⇒ 真的建成项目；顶层书签多于一个 = 多棵树 ✓
 // 夹具**自己生成**（tests/pdf-fixture.js ✓ 不引二进制样本）
 let pdfImportDetail = '';
+const IMP_PDF = 'imp-probe-pdf';        // 固定名 ⇒ 能被收尾清掉 ✓（动态名会逃过清理、污染真实 projects/ ✗）
+const IMP_PDF_NB = 'imp-probe-pdf-nb';
 check('import-project 带书签的 PDF ⇒ 建成项目，且顶层主题数 = 顶层书签数（一个文件多本书 ✓）',
   (() => {
     const { buildPdf } = require('../tests/pdf-fixture.js');
     const p = path.join(TMP, 'two-books.pdf');
     fs.writeFileSync(p, buildPdf({ outline: [{ title: 'Book One', page: 1 }, { title: 'Book Two', page: 2 }] }));
-    const name = 'imp-pdf-' + Date.now().toString(36);
-    const r = run(['import-project', name, p]);
+    const r = run(['import-project', IMP_PDF, p]);
     pdfImportDetail = 'code=' + r.code + ' out=' + String(r.out || '').slice(0, 70);
+    // 收尾：探针项目**立刻清掉**（不给下一次运行留"项目已存在"的假红，也不污染真实 projects/ ✗）
+    let cleaned = false;
+    try { fs.rmSync(path.join(ROOT, 'projects', IMP_PDF), { recursive: true, force: true }); cleaned = !fs.existsSync(path.join(ROOT, 'projects', IMP_PDF)); } catch (e) { cleaned = false; }
+    pdfImportDetail += ' 已清掉=' + cleaned;
     // 判据（对着"骨架真的变成顶层主题"这件事）：导入成功 + 报告 2 个顶层主题
     //（= 两个顶层书签 ⇒ 两棵树 ✓ 一个文件多本书）。读回/校验那条链由 md 用例与 validate 覆盖 ✓。
-    return r.code === 0 && /2 个顶层主题/.test(r.out);
+    return r.code === 0 && /2 个顶层主题/.test(r.out) && cleaned;
   })(), pdfImportDetail);
 check('import-project 无书签的 PDF ⇒ 响亮拒绝并点名「没有书签」（5b 其余部分未批准 ⇒ 不猜 ✗）',
   (() => {
     const { buildPdf } = require('../tests/pdf-fixture.js');
     const p = path.join(TMP, 'no-bookmark.pdf');
     fs.writeFileSync(p, buildPdf({ outline: [] }));
-    const r = run(['import-project', 'imp-pdf-nb-' + Date.now().toString(36), p]);
+    const r = run(['import-project', IMP_PDF_NB, p]);
+    try { fs.rmSync(path.join(ROOT, 'projects', IMP_PDF_NB), { recursive: true, force: true }); } catch (e) { /* 清不掉不掩盖主判据，但下面会看到残留 ✗ */ }
     return r.code !== 0 && /没有书签/.test(r.out);
   })());
 check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已有项目）',
