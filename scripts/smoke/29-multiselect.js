@@ -166,10 +166,11 @@ module.exports = [
         });
         return JSON.stringify({
           ok: raw.length === 2 && raw.indexOf(${JSON.stringify(second.id)}) >= 0 && !anyFdVisible
-            && !!out && out.style.display !== 'none',
+            && !!out && out.style.display === 'none',
           text: '第 1 次点后=' + ${JSON.stringify(after1)} + ' ｜ 第 2 次点（${second.id}）后=[' + raw.join(',')
             + ']（应含 ${second.id}）虚线框可见=' + (!!out && out.style.display !== 'none')
             + ' ｜ 详情框可见=' + anyFdVisible + '（必须 false ✓）'
+            + ' ｜ 大虚线框可见=' + (!!out && out.style.display !== 'none') + '（Ctrl 加选必须 false ✓）'
             + ' ｜ 点击点 A=(' + ${pts.a.x} + ',' + ${pts.a.y} + ') B=(' + ${second.x} + ',' + ${second.y} + ')'
         });
       })()`);

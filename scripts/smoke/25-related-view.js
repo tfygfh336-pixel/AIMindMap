@@ -82,7 +82,18 @@ module.exports = [
       // 等按钮出现（详情内容是异步拉的）
       const btn = await waitFor(ctx, `(function () {
         var b = document.querySelector('.float-detail .rel-show-btn');
-        return JSON.stringify({ ok: !!b, text: b ? ('按钮=' + b.textContent.trim()) : '还没有 .rel-show-btn' });
+        if (!b) return JSON.stringify({ ok: false, text: '还没有 .rel-show-btn' });
+        // ★ 用户 2026-10-08「关联视图去哪里了？」⇒ 只验存在不够 ✗：必须真的**看得见** ✓
+        //   （有面积 + 落在面板内 —— 同型的坑刚在 ① 上踩过：类名在、样式不生效 ✓）
+        var r = b.getBoundingClientRect();
+        var p = (window.MM.fdPanel ? window.MM.fdPanel() : null);
+        var pr = p ? p.getBoundingClientRect() : null;
+        var area = r.width > 8 && r.height > 8;
+        var inside = !!pr && r.left >= pr.left - 2 && r.right <= pr.right + 2 && r.top >= pr.top - 2 && r.bottom <= pr.bottom + 2;
+        var vis = !!b.offsetParent || (r.width > 0 && r.height > 0);
+        return JSON.stringify({ ok: !!area && !!inside && !!vis,
+          text: '按钮=' + (b.textContent || '').trim() + ' 面积=' + Math.round(r.width) + 'x' + Math.round(r.height)
+            + ' 在面板内=' + inside + ' 可见=' + vis });
       })()`);
       let o = JSON.parse(btn);
       if (!o.ok) return { ok: false, text: o.text };

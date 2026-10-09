@@ -64,9 +64,10 @@ module.exports = [
         });
         return JSON.stringify({
           ok: painted.every(function (x) { return x.cls; }) && styleOk && raw.length >= 2
-            && !!box && box.style.display !== 'none',
+            // ★ 契约更正（用户 2026-10-08）：Ctrl 加选**不该**出现大虚线框 ✓ 大框只属于"框选"；改之前这条断言把错的行为钉成了契约 ✗
+            && !!box && box.style.display === 'none',
           text: '两个不同父节点=' + JSON.stringify(painted) + ' ｜ raw=' + raw.join(',')
-            + ' ｜ 父级虚线框可见=' + (!!box && box.style.display !== 'none')
+            + ' ｜ 大虚线框可见=' + (!!box && box.style.display !== 'none') + '（Ctrl 加选必须 false ✓）'
             + ' ｜ 描边类=' + cls + ' ｜ 真的画成虚线=' + styleOk
         });
       })()`);

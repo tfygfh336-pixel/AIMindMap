@@ -243,6 +243,8 @@
   let fdRubberEl = null;         // 橡皮筋 DOM
   let fdSelection = [];          // 选中的节点 id（持久到点击框外）
   let fdSelectionRaw = [];       // 原始命中共（未做"同父裁剪"）—— 见 applySelection 的说明 ✓
+  /** 大虚线框是否可见：**只有框选才画它** ✓（Ctrl+点击加选不画 —— 用户 2026-10-08："按住 Ctrl 选的时候不要出现那个大的虚线框，它的逻辑和框选不一样" ✓） */
+  let fdSelectionBoxVisible = true;
   const RUBBER_ID = 'dsh-rubber-band';
   const SEL_OUTLINE_ID = 'dsh-selection-outline';
 
@@ -406,13 +408,15 @@
   }
 
   /** 应用框选结果：先筛选，再由虚线框包裹（含可见子树 = 折叠范围预告）。 */
-  function applySelection(ids, rawIds) {
+  function applySelection(ids, rawIds, opts) {   // opts.hideBox：Ctrl+加选不画大框 ✓
     const res = trimSelection(ids || []);
     fdSelection = res.kept;
     // ④ 原始的命中共（未裁剪）单独留一份：**问 AI 要看到全部被框选的节点**
     //（`trimSelection` 的同父/父冗余裁剪是给"收起/拖动"这类树操作定义的，用它来筛 AI 的上下文
     //  会把用户明明框住的节点悄悄丢掉 ✗）。
     fdSelectionRaw = (rawIds || ids || []).filter(Boolean);
+    // 大框只在**框选**时出现 ✓：opts.hideBox（Ctrl+点击加选 ✓）传 true 就把它藏起来 ✓
+    fdSelectionBoxVisible = !(opts && opts.hideBox);
     refreshSelectionOutline();
     if (MM.showNodeToolbar) MM.showNodeToolbar(null);   // 选区一变 ⇒ 工具条按**整批**刷新/出现 ✓
     return { kept: res.kept, dropped: res.dropped };
@@ -449,7 +453,7 @@
   function refreshSelectionOutline() {
     paintRawSelection();   // P5：先给"真正被框选"的节点上色（不受同父裁剪限制 ✓ 数据是 fdSelectionRaw ✓）
     const el = ensureSelOutline();
-    if (!fdSelection.length) { el.style.display = 'none'; return; }
+    if (!fdSelectionBoxVisible || !fdSelection.length) { el.style.display = 'none'; return; }   // Ctrl+加选 ⇒ 不画大框 ✓
     const jm = state.jm;
     const scope = new Set(fdSelection);
     // 把选中节点的**可见子节点**并入范围（折叠动作影响的就是它们）
@@ -484,6 +488,7 @@
   }
 
   function clearSelection() {
+    fdSelectionBoxVisible = true;   // 复位 ✓（下一次框选照常画框 ✓）
     fdSelection = [];
     const el = document.getElementById(SEL_OUTLINE_ID);
     if (el) el.style.display = 'none';
@@ -1325,9 +1330,12 @@
     if (!id) return { kept: 0, added: false };
     const has = fdSelection.indexOf(id) >= 0;
     const next = has ? fdSelection.filter((x) => x !== id) : fdSelection.concat([id]);
-    const res = applySelection(next);
-    setStatus(has ? ('已从选区移除（剩 ' + res.kept + ' 个）')
-      : ('已加入选区（共 ' + res.kept + ' 个；Ctrl+点击可加/减，右键可批量操作）'));
+    // raw = next（未裁剪 ✓）⇒ paintRawSelection 会给**每一个**被选中节点描边（"全部都包住" ✓）；
+    // hideBox：Ctrl 加选不画大虚线框 ✓（大框是框选的概念 ✓）
+    const res = applySelection(next, next, { hideBox: true });
+    // 状态里报**原始命中数**（= 用户看到的描边数 ✓）；批量操作作用几个也如实说 ✓
+    setStatus(has ? ('已从选区移除（剩 ' + fdSelectionRaw.length + ' 个）')
+      : ('已加入选区（共 ' + fdSelectionRaw.length + ' 个已描边' + (res.kept !== fdSelectionRaw.length ? '；批量操作按其所属树取 ' + res.kept + ' 个' : '') + '；Ctrl+点击可加/减、右键可批量操作）'));
     return Object.assign({ added: !has }, res);
   }
 
