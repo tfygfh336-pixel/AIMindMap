@@ -55,10 +55,10 @@
 | `app-media.js` | 图片灯箱、附件预览（md 内联渲染 / pdf 内嵌）、`renderRelated`（相关知识点面板） |
 | `app-audit.js` | 关系审计面板：呈现 `orphans`/`mentions` 清单，**漏链接可一键补链接**（写操作走 CLI） |
 | `app-palette.js` | 命令面板（Ctrl+P）：模糊搜索节点与命令；排序用 `src/palette-rank.js` |
-| `app-assoc.js` | **「关联笔记」二级页面**：渲染关联实体页（标题/成员列表/正文）+ 编辑对话框（标题与正文）；从节点详情的「相关知识点」区进入。**并在该区渲染「展示关联节点」按钮**（功能 2 的入口，恒常出现——没有关联笔记也可能有链接关系） |
+| `app-assoc.js` | **「关联笔记」二级页面**：渲染关联实体页（标题/成员列表/正文）+ 编辑对话框（标题与正文）；从节点详情的「相关知识点」区进入。**并在该区渲染「展示关联节点」按钮**（功能 2 的入口，恒常出现——没有关联笔记也可能有链接关系）。**assoc 的内存同步只有一处实现**：`MM.syncAssocRaw`（按 id 合并、**不能整体替换**——整份替换成子集曾导致保存时删掉别的笔记）；`MM.assocAddFromView` 是"关联视图里新建一篇"的唯一落点（IPC → CLI `assoc-add` → 回读同步 → 取回视图） | `MM.syncAssocRaw(list)` / `MM.assocAddFromView(project, centerId, members, title, noteMd)` |
 | `app-import.js` | **拖拽文件 ⇒ 导入成新项目**（功能 5a 的拖拽入口）：投放提示覆盖层、取路径、如实报结果。**两条入口一个实现**：菜单走主进程的 `importDocDialog`，拖拽走这里，最后都调 `importDocToNewProject`。**取路径必须走 `desktop.app.pathForFile()`** —— Electron ≥32 起 `File.path` 已被移除，`webUtils` 只有 preload 拿得到（这是渲染层唯一的取路径方式 ✓）。不支持的扩展名**说清楚**（不静默失败）| `MM.importDocFile(path)` / `MM.importHandleFiles(FileList)` / `MM.showDropHint()` / `MM.hideDropHint()` |
 | `app-ask.js` | **节点悬浮工具条 + AI 问答浮窗**（功能 1 界面层）：选中节点（= 出现详情框，**唯一钩子点**）后在节点上方弹出「💡 解释 / 💬 问问AI」；浮窗**复用详情框组件**（`createFdBox`）从而自带拖动/改大小/📌🖥 锁/让位 —— 这正是"视觉与节点详情一致"最省力的达成方式 ✓。后端走 `app:ask`（main.js）→ `cli ask` → `dsh headless`，**每问一次是一次独立会话**（界面上明说，不假装连续对话）；冒烟里后端返回 `stub:true` 的桩，界面**必须**把它标出来（`.ask-stub`，有断言守）| `MM.showNodeToolbar(id)` / `MM.hideNodeToolbar()` / `MM.showAskBox(id, {kind, focus})` / `MM.renderAskPage(box)` / `MM.computeBarPos(rect,w,h,view)`（纯几何，可判） |
-| `app-related.js` | **关联节点可视化**（功能 2）：按 `src/related-model.js` 的模型把关联节点**缩放至刚好框住**（`MM.setViewTransform` 一趟算出 s/x/y）、高亮它们并轻微虚化其余（**只写 CSS 类** —— jsMind 会重写内联样式）、在 `fdViewEls()` 里的 SVG 关系层画虚线（随导图同变换 ⇒ 平移缩放零重算），点线按**鼠标位置**开关联笔记（大锁钉住 = 不跟导图跑）。模型缺 `src/related-model.js` 时**响亮抛错**（不静默退化） | `MM.showRelated(id)` / `MM.clearRelated()` / `MM.isRelatedActive()` / `MM.scheduleRelatedRedraw()` / `MM.setViewTransform({s,x,y})`（在 app-view.js） |
+| `app-related.js` | **关联节点可视化**（功能 2）：按 `src/related-model.js` 的模型把关联节点**缩放至刚好框住**（`MM.setViewTransform` 一趟算出 s/x/y）、高亮它们并轻微虚化其余（**只写 CSS 类** —— jsMind 会重写内联样式）、在 `fdViewEls()` 里的 SVG 关系层画虚线（随导图同变换 ⇒ 平移缩放零重算），点线按**鼠标位置**开关联笔记（大锁钉住 = 不跟导图跑）。模型缺 `src/related-model.js` 时**响亮抛错**（不静默退化）。**并承载「关联信息」编辑条**（`#mm-rel-edit`，进视图即出现、与视图同生命周期）：链接清单（出边/入边逐条 ✕ 删）· 添加链接（输入即搜 = `app.nodes` + `src/palette-rank.js`）· 新建关联笔记（成员小标签，走 `MM.assocAddFromView`）；`fitToNodes(ids, insetTop)` 会**让出编辑条占掉的顶部高度**，否则"刚好框住"会把最上面那排节点藏在条底下。**链接改动写内存只有一处实现**：`MM.applyLinkToMemory`（补链接与删链接共用，`app-audit.js` 的补链接也走它） | `MM.showRelated(id)` / `MM.clearRelated()` / `MM.isRelatedActive()` / `MM.scheduleRelatedRedraw()` / `MM.applyLinkToMemory(opts)` / `MM.isRelatedEditBarOpen()` / `MM.relatedEditBarEdges()` / `MM.setViewTransform({s,x,y})`（在 app-view.js） |
 | `app-actions.js` | 保存闸门与未保存判定（`isDirty`）、**并发冲突的两条出路**（`resolveConflict`：用磁盘版本 / 保留我的）、快照撤销重做、节点增删改、搜索、项目加载/切换、MD 导入导出 |
 | `app.js` | **接线层**：`wireUI()` + `window.MMApp` 对外导出 + `DOMContentLoaded` 启动 |
 | `editor.js` | **交互层**：编辑/图片/附件对话框、快捷键、MD 导入导出文件选择；只调 MMApp API，不直接改状态 |
@@ -80,8 +80,9 @@
 walk 序列化，把 data 字段平铺到节点层级，保证工程 JSON 与界面一致。
 
 **归属划分：「节点树归渲染层，`assoc`（关联笔记）归 CLI」**。`assoc` 是项目级集合、
-不在节点树里，**主要作者是 AI/CLI**（界面没有创建入口，只能从节点详情的「相关知识点」区
-进入二级页面读它、并编辑标题与正文——写操作仍走 CLI）。因此两侧各让一步：
+不在节点树里，**成批作者是 AI/CLI**（界面里"新建一篇"走关联视图的「关联信息」编辑条 →
+CLI `assoc-add`；二级页面本身仍只能从节点详情的「相关知识点」区进入，用它读它、并编辑标题与正文
+——写操作仍走 CLI）。因此两侧各让一步：
 渲染层用 `state.assoc` 持有它并由 `serializeTree` 原样写回（否则界面保存即抹掉），
 主进程 `project:save` 在渲染层未带 `assoc` 时**从磁盘取回**、不用空值覆盖
 （否则 AI 刚写的笔记会被一次界面保存清掉）。**删节点是两侧唯一的交叉点**：删掉被关联引用的节点
@@ -93,6 +94,12 @@ walk 序列化，把 data 字段平铺到节点层级，保证工程 JSON 与界
 于是"我把 assoc 清空了"与"我没见过 assoc"在载荷上无法区分 → 内存里剪掉的成员会**原地复活**（实测）。
 清理完渲染层还要把**内存树**里指向被删节点的链接一并摘掉（与 `app-audit.js` 补链后的就地同步同一道理、方向相反），
 否则下一次 `save()` 会把悬挂链接原样写回磁盘。数据契约见 `docs/DATA-FORMAT.md` §2.6。
+
+**链接改动写内存的唯一实现是 `MM.applyLinkToMemory`**（app-related.js）：补链接（`app-audit.js`
+的审计面板、关联视图编辑条的「➕ 添加链接」）与摘链接（编辑条的每行 ✕）都走它，别在调用点各写一遍。
+两条相关 IPC 都是**写完回读**：`app:unlink-nodes` 回读该节点剩下的出边并**裁成契约形状**
+（只留 project/id/caption —— 派生字段写回内存会污染契约），`app:assoc-add` 回读**原始实体**
+（`assoc-list --raw`）并认出新增那篇的 id；`assoc-add` 的**写前**回读失败即判失败（拿不到真值不猜）。
 
 ### 2.2 CLI 层（cli/）
 

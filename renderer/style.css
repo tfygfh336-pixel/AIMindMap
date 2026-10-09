@@ -483,6 +483,89 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   pointer-events: stroke; cursor: pointer;
 }
 #mm-rel-layer .mm-rel-hitpath:hover { stroke: rgba(43, 93, 214, 0.12); }
+
+/* ---------------- 「关联信息」编辑条（app-related.js：进入关联视图后的人工编辑入口） ----------------
+ * 形态：面板**顶部一条固定条**（`#mindmap-container` 的绝对定位子元素）——
+ *   ① 不进 `fdViewEls()`：它不是图的一部分，不该跟着 translate+scale 走（否则缩放时会飘）；
+ *   ② 打开期间容器角标 `#mm-root-label` **让位**：两者占同一位置，与其让谁莫名被盖住，不如显式让位；
+ *   ③ z-index 与 `#msg-bar` 同级（都是"面板上的常驻条"），位置一顶一底，互不干扰；
+ *   ④ `max-height: 72%` + 内部滚动：展开"添加链接/新建关联笔记"时也不会把导图挤没。 */
+#mm-rel-edit {
+  position: absolute; left: 0; right: 0; top: 0; z-index: 31;
+  display: flex; flex-direction: column; max-height: 72%;
+  background: #fbfcfe; border-bottom: 1px solid #e5e8ef;
+  box-shadow: 0 2px 8px rgba(20, 40, 90, .06);
+  font-size: 12.5px; color: #1f2329;
+}
+#mindmap-container.mm-rele-open #mm-root-label { display: none; }
+
+.rele-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 4px 8px; }
+.rele-head .rele-title { font-weight: 600; }
+.rele-head .rele-title b { color: #2b5dd6; }
+.rele-head .rele-hint { color: #86909c; font-size: 11.5px; margin-left: auto; }
+.rele-head button {
+  font-size: 12px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
+  border: 1px solid #d6e4ff; background: #fff; color: #2b5dd6;
+}
+.rele-head button:hover { background: #f0f5ff; }
+.rele-head button.on { background: #2b5dd6; border-color: #2b5dd6; color: #fff; }
+.rele-head .rele-close { border-color: #e4e7ec; color: #86909c; }
+.rele-head .rele-close:hover { background: #f5f6f8; color: #1f2329; }
+
+.rele-links { padding: 0 8px 4px; overflow: auto; max-height: 96px; }
+.rele-group { margin: 2px 0; }
+.rele-group-title { color: #86909c; font-size: 11.5px; margin-right: 6px; }
+.rele-empty { color: #b0b6c0; }
+.rele-err { color: #d93026; }
+.rele-link {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  margin: 2px 6px 2px 0; padding: 1px 4px 1px 6px;
+  background: #fff; border: 1px solid #e4e7ec; border-radius: 6px;
+}
+.rele-link .rele-arrow { font-weight: 700; }
+.rele-link .rele-arrow--out { color: #e08b2b; }   /* 与关系线同一套配色：出边橙、入边蓝 */
+.rele-link .rele-arrow--in { color: #2b5dd6; }
+.rele-link .rele-dir { color: #86909c; font-size: 11px; }
+.rele-link .rele-link-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rele-link .rele-caption, .rele-link .rele-where { color: #86909c; font-size: 11px; }
+.rele-link .rele-del {
+  border: none; background: none; cursor: pointer; color: #b0b6c0;
+  font-size: 12px; padding: 0 3px; border-radius: 4px;
+}
+.rele-link .rele-del:hover { background: #fdeceb; color: #d93026; }
+
+.rele-pane { padding: 4px 8px 8px; border-top: 1px dashed #e4e7ec; display: flex; flex-direction: column; gap: 4px; }
+.rele-pane input, .rele-pane textarea {
+  font-size: 12.5px; padding: 4px 8px; border: 1px solid #dfe3ea; border-radius: 6px;
+  outline: none; background: #fff; font-family: inherit;
+}
+.rele-pane input:focus, .rele-pane textarea:focus { border-color: #2b5dd6; }
+.rele-cands { max-height: 132px; overflow: auto; }
+.rele-cand { display: flex; align-items: baseline; gap: 6px; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
+.rele-cand:hover, .rele-cand.on { background: #eef4ff; }
+.rele-cand .rele-cand-topic { font-weight: 600; }
+.rele-cand .rele-cand-id { color: #86909c; font-size: 11px; }
+.rele-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.rele-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 6px; border-radius: 10px; background: #eef3ff;
+  border: 1px solid #d6e4ff; color: #1664ff; font-size: 12px;
+}
+.rele-chip--center { background: #f0f5ff; border-style: dashed; }
+.rele-chip .rele-chip-note { color: #86909c; font-size: 11px; }
+.rele-chip .rele-mdel { border: none; background: none; cursor: pointer; color: #86909c; font-size: 11px; padding: 0 2px; }
+.rele-chip .rele-mdel:hover { color: #d93026; }
+.rele-actions { display: flex; align-items: center; gap: 8px; }
+.rele-actions .rele-count { color: #86909c; font-size: 11.5px; margin-right: auto; }
+.rele-actions button {
+  font-size: 12px; padding: 3px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid #e4e7ec; background: #fff; color: #1f2329;
+}
+.rele-actions button.primary, .rele-actions .rele-submit { border-color: #2b5dd6; background: #2b5dd6; color: #fff; }
+.rele-actions .rele-submit:disabled { background: #f2f3f5; border-color: #e4e7ec; color: #b0b6c0; cursor: not-allowed; }
+.rele-status { padding: 0 8px 4px; color: #4e5969; font-size: 11.5px; }
+.rele-status:empty { display: none; }
+
 /* ---------------- 节点悬浮工具条 + AI 问答浮窗（app-ask.js，功能 1） ----------------
  * 工具条是 **position:fixed 的顶层覆盖物**：不放进画布变换层，免得被缩放/裁剪 ✗ */
 .mm-tb {

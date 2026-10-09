@@ -905,6 +905,69 @@ function registerIpc() {
     return { ok, text: String(text).trim() };
   });
 
+  /* 关联视图里**摘掉一条链接**（用户需求「进入关联视图后能人工编辑关联信息」里"删链接"那一半）：
+   * 与 `app:link-nodes` 成对 —— 那条加边、这条摘边，两条都**只经 CLI**（校验闸门 + 原子写 + 并发重放）。
+   *
+   * 参数就是 CLI 的签名本身（`unlink <项目> <id> --to <项目> --id <id>`），**不做任何翻译**：
+   *   出边（我引用谁）   ⇒ projectName = 当前项目，   fromId = 中心节点，toProject/toId = 目标
+   *   入边（谁引用了我） ⇒ projectName = **来源节点所在的项目**（那条边写在它的文件里），
+   *                       fromId = 来源节点，toProject/toId = 当前项目/中心节点
+   * 入边之所以要支持跨项目：反查天然会跨（`backlinks` 的 cross），而"看到一条边却删不掉"正是本次要修的缺口。
+   *
+   * **写完回读**：把该节点在**它自己项目里**剩下的出边取回来，裁成**契约形状**（只留 project/id/caption）。
+   * 为什么要裁：渲染层会拿这份回读去**同步内存树**，而内存树在下一次保存时会整树写回磁盘 ——
+   * 若把 CLI 视图里的派生字段（node/topic）一起存回去，契约就被污染（`app:assoc-edit` 用 `--raw` 是同一回事）。
+   * 回读失败 ⇒ links 为 null，调用方**不许假装同步成功**（"采不到真值"与"采到了"必须可区分）。 */
+  ipcMain.handle('app:unlink-nodes', (e, projectName, fromId, toProject, toId) => {
+    const args = ['unlink', projectName, fromId, '--to', toProject, '--id', toId];
+    let text;
+    try { text = runCli(args); }
+    catch (err) { return { ok: false, text: (err && err.message) || String(err) }; }
+    let links = null;
+    try {
+      const back = JSON.parse(runCli(['links', projectName, '--json']));
+      links = (back.links || [])
+        .filter((l) => l && l.node === fromId)
+        .map((l) => (l.caption ? { project: l.project, id: l.id, caption: l.caption } : { project: l.project, id: l.id }));
+    } catch (err) { /* 回读失败不影响"已移除"这个事实；links=null 会让渲染层如实报告 */ }
+    return { ok: true, text: String(text).trim(), project: projectName, node: fromId, links: links };
+  });
+
+  /* 关联视图里**新建**一篇关联笔记（此前界面**没有创建入口**，只能改 AI 已写好的那篇）。
+   * 写操作只经 CLI `assoc-add`：成员数（≥2）、成员存在性、id 规范全在 CLI 侧判定 —— 渲染层不复制规则。
+   *
+   * 写完回读两件事：① 该项目全部关联的**原始实体**（`--raw`）⇒ 渲染层据此把 `state.assoc`
+   * 整份对齐磁盘（少了这一步，下一次界面保存会拿旧内存把刚写的笔记抹掉 —— 与 assoc-edit 同一条纪律）；
+   * ② **认出新增的那一篇**：写前先回读一次 id 集合，写后取差集。
+   * 为什么不解析 stdout：`assoc-add` 的输出是给人读的中文句子，改一个字就坏 —— 本工程不用"猜输出"当契约。
+   * 写前回读失败 ⇒ **直接判失败**（拿不到真值就不猜、不写），与本工程"采不到真值就等于红"同规约。 */
+  ipcMain.handle('app:assoc-add', (e, projectName, members, title, noteMd) => {
+    const list = (Array.isArray(members) ? members : []).map((s) => String(s === undefined || s === null ? '' : s).trim()).filter(Boolean);
+    const readRaw = () => {
+      const back = JSON.parse(runCli(['assoc-list', projectName, '--json', '--raw']));
+      return Array.isArray(back.raw) ? back.raw : [];
+    };
+    let before;
+    try { before = readRaw(); }
+    catch (err) {
+      return { ok: false, text: '写前回读关联清单失败，未写入（拿不到真值就不猜）：' + ((err && err.message) || String(err)) };
+    }
+    const args = ['assoc-add', projectName, '--members', list.join(',')];
+    if (title !== undefined && title !== null && String(title).trim() !== '') args.push('--title', String(title));
+    if (noteMd !== undefined && noteMd !== null && String(noteMd).trim() !== '') args.push('--note-md', String(noteMd));
+    let text;
+    try { text = runCli(args); }
+    catch (err) { return { ok: false, text: (err && err.message) || String(err) }; }
+    const known = new Set(before.map((a) => a && a.id));
+    let raw = null;
+    let created = null;
+    try {
+      raw = readRaw();
+      created = raw.find((a) => a && !known.has(a.id)) || null;
+    } catch (err) { /* 回读失败：raw=null ⇒ 渲染层只报"已写入"，不假装界面已同步 */ }
+    return { ok: true, text: String(text).trim(), raw: raw, created: created };
+  });
+
   /* 命令面板用的节点清单（扁平淡信息，供模糊搜索）。走 CLI list --json。 */
   ipcMain.handle('app:nodes', (e, projectName) => {
     const text = runCli(['list', projectName, '--json']);

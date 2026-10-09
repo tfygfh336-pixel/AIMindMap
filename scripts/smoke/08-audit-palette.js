@@ -376,8 +376,13 @@ module.exports = [
         if (back.n > 0 && back.mode === "cmd") break;
         await new Promise((r) => setTimeout(r, 100));
       }
-      // ③ 收尾：关掉面板，不给后续断言留一个开着的面板 ✓
-      await ctx.exec('(function () { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return 1; })()');
+      // ③ 收尾：**把开着的面板都关掉**，不给后续断言留一个全屏模态 ✓
+      // ⚠️ 这里原先只关了命令面板 —— 而本域**上游的两条断言**（补链接 / 沙箱写入）都会经
+      //    `addLinkFromAudit` → `openAudit()` 把**审计面板**重新打开，它就一直开到了下一个域。
+      //    实测代价：审计卡 720x668 盖住屏幕中部，域 25「点线开笔记」的采样点正好落在卡上，
+      //    真鼠标点击打到审计列表 ⇒ 打开的不是那篇笔记（断言红，且看不出跟本域有关 ✗）。
+      //    跨域状态泄漏只能在**制造它的地方**收口（域 25 不该替别人擦桌子）。
+      await ctx.exec('(function () { if (window.MMApp && window.MMApp.closeAudit) window.MMApp.closeAudit(); if (window.MMApp && window.MMApp.closePalette) window.MMApp.closePalette(); return 1; })()');
       const okAll = nodeState.mode === "node" && nodeState.hasNode === true
         && !!back && back.mode === "cmd" && back.hasNode === false && back.hasCmd === true;
       return { ok: okAll,

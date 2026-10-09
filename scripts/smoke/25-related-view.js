@@ -192,7 +192,15 @@ module.exports = [
   {
     name: '关联节点：点线 ⇒ 按**鼠标点击位置**打开那篇关联笔记（大锁钉住，不跟导图跑）',
     run: async (ctx) => {
-      // 前置：**重新进入展示态**。上一条断言为了验"线跟变换"把视图改成了 s=0.8/平移，
+      // 前置①：**把上一条断言留下的详情框收掉**。详情框浮在关系线之上，会挡掉真鼠标事件
+      //   （真人同样点不穿它）—— 本断言判的是"点线 ⇒ 按点击位置开笔记"，
+      //   不该被一个与线无关的框搅进来（实测：编辑条让视口上移后，采到的点正好压在框上，
+      //   点击打到框里的关联条目 ⇒ 打开的是**另一篇**且没有大锁，看着像功能坏了）。
+      await ctx.exec(`(function () {
+        if (window.MMApp && window.MMApp.closeAllFloatDetail) window.MMApp.closeAllFloatDetail();
+        return 1;
+      })()`);
+      // 前置②：**重新进入展示态**。上一条断言为了验"线跟变换"把视图改成了 s=0.8/平移，
       // 关联节点可能因此散到视口外（实测就这样：整条线的采样点全在视口外 ✗）——
       // 本断言自己建前置条件，不依赖上一条留下的视图（真人点线时也正看着那次 fit ✓）
       await ctx.exec(`window.MM.showRelated(${JSON.stringify(PICK[0])}); 1`);
@@ -218,17 +226,34 @@ module.exports = [
           q.y = Number(d[2]) + (Number(d[4]) - Number(d[2])) * t;
           return q.matrixTransform(ctm);
         }
-        var T = [0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9];
+        var T = [0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9, 0.05, 0.15, 0.25, 0.45, 0.55, 0.75, 0.95];
+        var diag = [];
+        var desc = function (el) {
+          if (!el) return 'null';
+          var chain = [], cur = el, n = 0;
+          while (cur && n < 4 && cur.tagName !== 'BODY') {
+            chain.push((cur.tagName || '?') + (cur.id ? '#' + cur.id : '') + (cur.getAttribute && cur.getAttribute('class') ? '.' + String(cur.getAttribute('class')).split(' ').slice(0, 2).join('.') : ''));
+            cur = cur.parentElement; n++;
+          }
+          return chain.join(' < ');
+        };
         for (var i = 0; i < withAssoc.length; i++) {
           for (var k = 0; k < T.length; k++) {
             var m = ptAt(withAssoc[i], T[k]);
-            if (m && m.x > 12 && m.y > 12 && m.x < window.innerWidth - 12 && m.y < window.innerHeight - 12) {
-              window.__relClick = { x: m.x, y: m.y, assoc: withAssoc[i].getAttribute('data-assoc'), inViewport: true };
-              return JSON.stringify({ ok: true, x: Math.round(m.x), y: Math.round(m.y), assoc: withAssoc[i].getAttribute('data-assoc') });
-            }
+            if (!m) continue;
+            var inVp = m.x > 12 && m.y > 12 && m.x < window.innerWidth - 12 && m.y < window.innerHeight - 12;
+            // ★ 只挑**真的在最上面**的点：视口内还不够 —— 详情框/编辑条压在线上时，
+            //   真鼠标事件落到的是那个框（真人同样点不穿它）⇒ 必须用 elementFromPoint 判一次。
+            var top = document.elementFromPoint(m.x, m.y);
+            var onTop = top === withAssoc[i];
+            if (diag.length < 3) diag.push('t=' + T[k] + ' (' + Math.round(m.x) + ',' + Math.round(m.y) + ') 视口内=' + inVp + ' 最上层=' + desc(top));
+            if (!inVp || !onTop) continue;
+            window.__relClick = { x: m.x, y: m.y, assoc: withAssoc[i].getAttribute('data-assoc'), inViewport: true };
+            return JSON.stringify({ ok: true, x: Math.round(m.x), y: Math.round(m.y), assoc: withAssoc[i].getAttribute('data-assoc'), onTop: true });
           }
         }
-        return JSON.stringify({ ok: false, text: '命中层里没有视口内的可点线（热区 ' + hits.length + ' 条）' });
+        return JSON.stringify({ ok: false, text: '命中层里没有可点的线（热区 ' + hits.length + ' 条 / 带 assoc ' + withAssoc.length + ' 条）'
+          + '；首几个采样点：' + diag.join(' ｜ ') });
       })()`);
       if (!hitPt.ok) return { ok: false, text: '找不到可点位置：' + (hitPt.text || JSON.stringify(hitPt)) };
       // ★ 用**真鼠标事件**点它（不是 DOM 派发！）—— 这是本功能最早的假绿根因：
@@ -319,6 +344,15 @@ module.exports = [
           text: '节点=' + nodes + ' 第 1 帧写=' + firstFrame + ' 共 13 帧写=' + total
             + '（上限 ' + (nodes * 2 + 4) + '）｜ 高亮=' + hit + ' 虚化=' + dim + '（合计应≈节点数 ✓ 高亮没丢）'
         });
+      })()`);
+      // 收尾：**退出关联视图**。本域最后一条又调了一次 showRelated（它自己要前置），不退的话
+      // 高亮/虚化/**关联信息编辑条**会一直挂到后面的域去 —— 实测代价：编辑条占着面板顶部，
+      // 域 33「从已选中节点拖到右缘」挑中的节点中心正好落在条上 ⇒ 真鼠标按下打到条上、拖拽根本没启动，
+      // 状态栏停在选区提示上（红得莫名其妙 ✗，与 08 域那次是同一类"跨域状态泄漏"）。
+      await ctx.exec(`(function () {
+        if (window.MM && window.MM.clearRelated) window.MM.clearRelated();
+        if (window.MMApp && window.MMApp.closeAllFloatDetail) window.MMApp.closeAllFloatDetail();
+        return 1;
       })()`);
       return { ok: !!res.ok, text: '线=' + JSON.parse(waited).text + ' ｜ ' + res.text };
     }

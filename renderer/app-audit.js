@@ -130,24 +130,26 @@
       const r = await window.desktop.app.linkNodes(name, fromId, name, toId, caption);
       if (!r || !r.ok) { setStatus('补链接失败：' + ((r && r.text) || '未知错误'), true); return; }
 
-      // 同步到内存树（磁盘已由 CLI 写好）
-      const jm = st.jm;
-      const node = jm && jm.get_node ? jm.get_node(fromId) : null;
-      if (!node) {
+      // 同步到内存树（磁盘已由 CLI 写好）。
+      // ⚠️ 实现只有一份：`MM.applyLinkToMemory`（定义在 app-related.js）—— 关联视图里的
+      // 「添加链接 / 删链接」也要做同一件事，两处各写一遍必然分叉（那正是本工程禁止的"同一逻辑两处表达"）。
+      // 它返回状态串而不是布尔：'other-project' / 'no-node' 与 'ok' 必须可区分（不静默）。
+      const mem = MM.applyLinkToMemory
+        ? MM.applyLinkToMemory({ project: name, fromId: fromId, toProject: name, toId: toId, caption: caption })
+        : 'no-impl';
+      if (mem !== 'ok') {
         // 面板里的清单可能已过期（例如节点被删/改名）。磁盘已写入，但界面无法反映，
         // 需如实告知并刷新清单，而不是假装成功。
-        setStatus('链接已写入磁盘，但当前视图找不到节点 ' + fromId + '（清单可能已过期，已刷新）', true);
+        setStatus('链接已写入磁盘，但**内存未同步**（' + mem + '：' + fromId + '）—— 清单可能已过期，已刷新', true);
         await openAudit();
         return;
       }
-      node.data = node.data || {};
-      const links = Array.isArray(node.data.links) ? node.data.links : (node.data.links = []);
-      const dup = links.some((l) => l && l.project === name && l.id === toId);
-      if (!dup) links.push({ project: name, id: toId, caption: caption });
 
       setStatus('已补链接：' + fromId + ' → ' + toId + '（已写入磁盘；如需撤销请用 CLI unlink）');
       // 刷新详情框里的「相关知识点」，让新链接立即可见
-      if (MM.showDetail && jm.get_selected_node && jm.get_selected_node() === node) showDetail(node);
+      const jm = st.jm;
+      const node = jm && jm.get_node ? jm.get_node(fromId) : null;
+      if (node && MM.showDetail && jm.get_selected_node && jm.get_selected_node() === node) showDetail(node);
       await openAudit();
     } catch (err) {
       setStatus('补链接失败：' + ((err && err.message) || err), true);

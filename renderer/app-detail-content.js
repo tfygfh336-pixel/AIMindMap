@@ -268,27 +268,18 @@
   const renderRelated = (el, r) => MM.renderRelated(el, r);
   const renderAssocEntries = (el, r, node) => MM.renderAssocEntries(el, r, node);
   /** 把 CLI 返回的**原始实体**同步进内存。
-   *  必要性：界面保存写回的是内存里的 assoc；而 assoc 的主要作者是 AI/CLI，
+   *  必要性：界面保存写回的是内存里的 assoc；而 assoc 的作者是 AI/CLI，
    *  磁盘可能已有界面没见过的新笔记 —— 不同步就会用旧内存把新笔记覆盖掉。
    *
-   *  **必须按 id 合并，不能整体替换**（实测的数据丢失缺陷）：
-   *  详情框调的是 `assoc-list --node <当前节点>`，返回的 `raw` 只是**该节点所属的子集**。
-   *  早先这里写的是 `st.assoc = r.raw` —— 于是**每次打开任一节点详情**，内存里的 assoc
-   *  就被换成这个子集；用户随后一点保存（`serializeTree` 写的是内存那份），
-   *  **其他所有关联笔记都会从磁盘上被静默删掉**。
-   *  实测：沙箱里 6 篇 → 打开一次节点详情后只剩 2 篇（该节点的子集）。
-   *  为什么早期冒烟没抓到：当时真实项目还没有任何关联笔记，子集恒等于全量。
+   *  ⚠️ **实现只有一份**：`MM.syncAssocRaw`（app-assoc.js，那里写了"必须按 id 合并、
+   *  不能整体替换"的实测根因 —— 整份替换过一个子集，用户一点保存就删掉了其他笔记）。
+   *  这里只做"该节点有没有笔记"的前置判断，不再自己抄一遍合并逻辑。
    */
   const syncAssocToState = (r) => {
-    if (!r || !Array.isArray(r.raw) || !r.raw.length) return;   // 该节点没有笔记 → 不动内存
-    const st = MM.getState();
-    if (!st) return;
-    if (!Array.isArray(st.assoc)) st.assoc = [];
-    r.raw.forEach((fresh) => {
-      if (!fresh || !fresh.id) return;
-      const i = st.assoc.findIndex((a) => a && a.id === fresh.id);
-      if (i >= 0) st.assoc[i] = fresh; else st.assoc.push(fresh);
-    });
+    if (!MM.syncAssocRaw) return 0;
+    // 该节点没有笔记 ⇒ 不动内存（"读到了空的"与"读不到"必须可区分，别把内存清空 ✗）
+    if (!r || !Array.isArray(r.raw) || !r.raw.length) return 0;
+    return MM.syncAssocRaw(r.raw);
   };
 
   /**

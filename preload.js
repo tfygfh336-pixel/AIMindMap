@@ -13,8 +13,10 @@
  *   desktop.app.related(...)           → 某节点的相关知识点（出边+入边）
  *   desktop.app.audit(name)            → 关系审计（orphans + mentions 两清单）
  *   desktop.app.linkNodes(...)         → 补一条链接（写操作，走 CLI 闸门）
- *   desktop.app.nodes(name)            → 扁平节点清单（命令面板模糊搜索用）
+ *   desktop.app.unlinkNodes(...)       → 摘掉一条链接（写操作，走 CLI 闸门；入边可指定**来源所在项目**）
+ *   desktop.app.nodes(name)            → 扁平节点清单（命令面板与关联视图的"输入即搜"共用）
  *   desktop.app.assoc(name, nodeId?)   → 关联笔记（N 元关联实体）；给 nodeId 则只列该节点所属的
+ *   desktop.app.assocAdd(...)          → 新建一篇关联笔记（写操作，走 CLI 闸门；回读原始实体 + 新条目）
  *   desktop.app.assocEdit(...)         → 保存关联笔记（写操作，走 CLI 闸门；回读最新形态）
  *   desktop.app.assocPrune(name, ids)  → 删节点前在**磁盘上**剪掉这些节点在关联/链接里的引用
  *                                        （写操作只经 CLI —— 见 main.js 里的说明）
@@ -54,6 +56,8 @@ contextBridge.exposeInMainWorld('desktop', {
     audit: (projectName) => ipcRenderer.invoke('app:audit', projectName),
     linkNodes: (projectName, fromId, toProject, toId, caption) =>
       ipcRenderer.invoke('app:link-nodes', projectName, fromId, toProject, toId, caption),
+    unlinkNodes: (projectName, fromId, toProject, toId) =>
+      ipcRenderer.invoke('app:unlink-nodes', projectName, fromId, toProject, toId),
     nodes: (projectName) => ipcRenderer.invoke('app:nodes', projectName),
     ask: (projectName, nodeId, opts) => ipcRenderer.invoke('app:ask', projectName, nodeId, opts),
     // 功能 5a：把一个大文件导入成**新项目**（拖拽入口；菜单入口在主进程里直接调同一个实现）
@@ -65,6 +69,9 @@ contextBridge.exposeInMainWorld('desktop', {
       catch (e) { return ''; }
     },
     assoc: (projectName, nodeId) => ipcRenderer.invoke('app:assoc', projectName, nodeId),
+    // members: 本项目节点 id 数组（≥2 由 CLI 判定）；title / noteMd 可为空串（表示不写）
+    assocAdd: (projectName, members, title, noteMd) =>
+      ipcRenderer.invoke('app:assoc-add', projectName, members, title, noteMd),
     assocEdit: (projectName, assocId, title, noteMd) =>
       ipcRenderer.invoke('app:assoc-edit', projectName, assocId, title, noteMd),
     assocPrune: (projectName, ids) => ipcRenderer.invoke('app:pre-delete-cleanup', projectName, ids),
@@ -89,7 +96,7 @@ contextBridge.exposeInMainWorld('desktop', {
     status: () => ipcRenderer.invoke('dsh-sidebar:status'),
     // ⑩ 把一段对话预填进侧栏输入框（返回 {ok, reason} ✓ 失败不静默 ✗）
     prefill: (text) => ipcRenderer.invoke('dsh-sidebar:prefill', text),
-    toggle: () => ipcRenderer.send('dsh-sidebar:toggle'),
+    toggle: () => ipcRenderer.send('dsh-sidebar:toggle'),
     /* P7 真·跨视图拖放：选区拖拽的**起点/终点**上报 ✓（坐标跟踪与落点判定在主进程 ——
      * 侧栏是原生 WebContentsView，指针进它的矩形后渲染层收不到 mouseup ✗）。
      * ⚠️ 与上面的 beginDrag/endDrag **不是一套**：那两个是"拖宽侧栏"用的 ✓ 别混用 ✗。 */

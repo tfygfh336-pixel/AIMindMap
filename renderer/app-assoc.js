@@ -34,6 +34,56 @@
     return m.topic || (m.project + '/' + m.id);
   }
 
+  /* ================= assoc 的内存同步：**唯一一份实现** =================
+   * 界面保存写回的是**内存里**的那份 assoc（`serializeTree` 的 `out.assoc`），而 assoc 的作者
+   * 一直是 AI/CLI ⇒ 磁盘上随时可能有界面没见过的笔记。所以规则是：
+   *   ① **必须按 id 合并**，**不能整体替换** —— 详情框调的是 `assoc-list --node <当前节点>`，
+   *      返回的 raw 只是**该节点所属的子集**；早先整份替换过一次子集 ⇒ 用户随后一点保存
+   *      就把其他所有关联笔记从磁盘上删掉了（实测：6 篇 → 打开一次详情后剩 2 篇）；
+   *   ② 空清单**不动内存**（"读不到"与"读到了空的"不能混为一谈）。
+   * 这条纪律的落点只有本函数：详情框、编辑保存、新建三处都走它。
+   * @returns 合并进去的条数（0 = 没动内存）
+   */
+  function syncAssocRaw(list) {
+    const st = getState();
+    if (!st || !Array.isArray(list) || !list.length) return 0;
+    if (!Array.isArray(st.assoc)) st.assoc = [];
+    let n = 0;
+    list.forEach((fresh) => {
+      if (!fresh || !fresh.id) return;
+      const i = st.assoc.findIndex((a) => a && a.id === fresh.id);
+      if (i >= 0) st.assoc[i] = fresh; else st.assoc.push(fresh);
+      n++;
+    });
+    return n;
+  }
+  MM.syncAssocRaw = syncAssocRaw;
+
+  /** 在关联视图的编辑条里**新建**一篇关联笔记（成员由那个表单给，中心节点已预置）。
+   *  写操作经 IPC → CLI `assoc-add`（成员数 ≥2、成员存在性、id 规范全在 CLI 侧判定）；
+   *  写完**回读**并同步内存（见 syncAssocRaw），再把**视图**那一份（含成员标题与
+   *  `effectiveTitle`）取回来 —— 调用方可以直接拿它开二级页面。 */
+  async function assocAddFromView(project, centerId, members, title, noteMd) {
+    if (!project || !window.desktop || !window.desktop.app || !window.desktop.app.assocAdd) {
+      return { ok: false, text: '拿不到 assocAdd 通道（preload 没暴露？）' };
+    }
+    let r;
+    try { r = await window.desktop.app.assocAdd(project, members, title, noteMd); }
+    catch (err) { return { ok: false, text: (err && err.message) || String(err) }; }
+    if (!r || !r.ok) return { ok: false, text: (r && r.text) || '未知错误' };
+    const merged = syncAssocRaw(r.raw);          // 磁盘已由 CLI 写好 ⇒ 内存必须跟上
+    const id = (r.created && r.created.id) || null;
+    let item = null;
+    if (id) {
+      try {
+        const res = await window.desktop.app.assoc(project, centerId);
+        item = ((res && res.items) || []).find((a) => a && a.id === id) || null;
+      } catch (err) { /* 取视图失败不影响"已写入磁盘"这个事实（调用方会如实报告） */ }
+    }
+    return { ok: true, text: String(r.text || ''), id: id, item: item, merged: merged, readBack: !!r.raw };
+  }
+  MM.assocAddFromView = assocAddFromView;
+
   /** 渲染关联页面（box.kind === 'assoc'） */
   function renderAssocPage(box, assoc, anchorNode) {
     const st = getState();
@@ -260,11 +310,7 @@
       // 否则之后任何一次界面保存都会把刚写的笔记覆盖掉。
       // 用 CLI 回读的那份为准（它带 HTML 形式与解析后的成员标题），避免自己拼。
       const fresh = r.assoc;
-      if (fresh) {
-        if (!Array.isArray(st.assoc)) st.assoc = [];
-        const i = st.assoc.findIndex((a) => a && a.id === id);
-        if (i >= 0) st.assoc[i] = fresh; else st.assoc.push(fresh);
-      }
+      if (fresh) syncAssocRaw([fresh]);
       closeAssocEditor();
       setStatus('关联笔记已保存');
       // 重绘本页（用回读到的数据）
