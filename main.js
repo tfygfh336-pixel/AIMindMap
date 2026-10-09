@@ -545,6 +545,48 @@ function buildMenu(win) {
 }
 
 /* ---------------- IPC ---------------- */
+// ⑩「在侧边栏打开」：把对话预填进侧栏输入框（**不代替用户发送** ✗ —— 谁按发送谁负责 ✓；
+//   发出去之后那段对话自然就成了侧栏那个会话的工作区历史 ✓）。失败也返回结构化的原因 ✓ 不静默 ✗
+/* 真机反馈③：投喂前先把侧栏开起来 ✓ —— 以前这里直接转发给 prefillComposer，而它要求
+ * 「视图已建 + 服务 running」，自己不会开侧栏 ✗；而侧栏 ✕ 关闭会 hide()+stopService() ⇒ status=idle
+ * ⇒ 之后所有「送进侧栏」都被拒（用户看到顶部一句提示、输入框永远空 ✓）。show() 自己会 ensureView +
+ * 接管/启动服务 ✓，所以「先 show、等到 running、再投喂」就够了。
+ * ⚠️ 冒烟（isSmoke）不这么做：冒烟跑在 setNoSpawn 下，起真服务会把 G5 从 11s 拖回 170s ✗。
+ * 也不静默：show 失败/超时都照样去 prefill，让 prefillComposer 给出它自己的原因 ✓。 */
+async function prefillAfterEnsureOpen(text) {
+  if (!isSmoke) {
+    try {
+      const st0 = dshSidebar.getStatus() || {};
+      if (st0.status !== 'running') {
+        console.log('[dsh-sidebar] 投喂前先把侧栏开起来（当前状态 ' + st0.status + '）…');
+        try { dshSidebar.show(); } catch (e1) { console.log('[dsh-sidebar] show() 失败：' + ((e1 && e1.message) || e1)); }
+        for (let i = 0; i < 60; i++) {          // ≤6s：服务冷启动实测几秒 ✓
+          const st = dshSidebar.getStatus() || {};
+          if (st.status === 'running') break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+    } catch (e2) { /* 起不来也照样试一次 ✓ 让 prefillComposer 报它自己的原因 */ }
+  }
+  // 2026-10-09 真机反馈：侧栏处于**窄模式（xs）**时页面里没有可见输入框 ⇒ 投喂必然失败 ✗
+  //   实测：dsh-status 报 narrow.mode='xs' / viewWidth=0，而服务是 running ✓
+  //   ⇒ 投递前先确认够宽：不够就加宽（用现成的 setWidth ✓ 与"内核右栏要空间"同一条路 ✓）
+  if (!isSmoke) {
+    try {
+      const st1 = dshSidebar.getStatus() || {};
+      const vw = (st1.narrow && typeof st1.narrow.viewWidth === 'number') ? st1.narrow.viewWidth : null;
+      const w0 = typeof st1.width === 'number' ? st1.width : 0;
+      if ((vw !== null && vw < 640) || (vw === null && w0 < 720)) {
+        console.log('[dsh-sidebar] 侧栏太窄（view=' + vw + ' width=' + w0 + '）⇒ 加宽到 900 再投喂 ✓');
+        dshSidebar.setWidth(900);
+        await new Promise((r) => setTimeout(r, 400));   // 等布局重排（窄→宽实测要一点时间 ✓）
+      }
+    } catch (e3) { /* 加宽失败也照样试投喂 ✓ 让它给出自己的原因 ✗ */ }
+  }
+
+  return dshSidebar.prefillComposer(text);
+}
+
 function registerIpc() {
   ipcMain.handle('project:list', () => listProjects());
 
@@ -949,47 +991,6 @@ function registerIpc() {
 
   /* DSH 侧边栏状态（渲染层只拿状态与几何，绝不拿 token/url） */
   ipcMain.handle('dsh-sidebar:status', () => dshSidebar.getStatus());
-  // ⑩「在侧边栏打开」：把对话预填进侧栏输入框（**不代替用户发送** ✗ —— 谁按发送谁负责 ✓；
-  //   发出去之后那段对话自然就成了侧栏那个会话的工作区历史 ✓）。失败也返回结构化的原因 ✓ 不静默 ✗
-  /* 真机反馈③：投喂前先把侧栏开起来 ✓ —— 以前这里直接转发给 prefillComposer，而它要求
-   * 「视图已建 + 服务 running」，自己不会开侧栏 ✗；而侧栏 ✕ 关闭会 hide()+stopService() ⇒ status=idle
-   * ⇒ 之后所有「送进侧栏」都被拒（用户看到顶部一句提示、输入框永远空 ✓）。show() 自己会 ensureView +
-   * 接管/启动服务 ✓，所以「先 show、等到 running、再投喂」就够了。
-   * ⚠️ 冒烟（isSmoke）不这么做：冒烟跑在 setNoSpawn 下，起真服务会把 G5 从 11s 拖回 170s ✗。
-   * 也不静默：show 失败/超时都照样去 prefill，让 prefillComposer 给出它自己的原因 ✓。 */
-  async function prefillAfterEnsureOpen(text) {
-    if (!isSmoke) {
-      try {
-        const st0 = dshSidebar.getStatus() || {};
-        if (st0.status !== 'running') {
-          console.log('[dsh-sidebar] 投喂前先把侧栏开起来（当前状态 ' + st0.status + '）…');
-          try { dshSidebar.show(); } catch (e1) { console.log('[dsh-sidebar] show() 失败：' + ((e1 && e1.message) || e1)); }
-          for (let i = 0; i < 60; i++) {          // ≤6s：服务冷启动实测几秒 ✓
-            const st = dshSidebar.getStatus() || {};
-            if (st.status === 'running') break;
-            await new Promise((r) => setTimeout(r, 100));
-          }
-        }
-      } catch (e2) { /* 起不来也照样试一次 ✓ 让 prefillComposer 报它自己的原因 */ }
-    }
-    // 2026-10-09 真机反馈：侧栏处于**窄模式（xs）**时页面里没有可见输入框 ⇒ 投喂必然失败 ✗
-    //   实测：dsh-status 报 narrow.mode='xs' / viewWidth=0，而服务是 running ✓
-    //   ⇒ 投递前先确认够宽：不够就加宽（用现成的 setWidth ✓ 与"内核右栏要空间"同一条路 ✓）
-    if (!isSmoke) {
-      try {
-        const st1 = dshSidebar.getStatus() || {};
-        const vw = (st1.narrow && typeof st1.narrow.viewWidth === 'number') ? st1.narrow.viewWidth : null;
-        const w0 = typeof st1.width === 'number' ? st1.width : 0;
-        if ((vw !== null && vw < 640) || (vw === null && w0 < 720)) {
-          console.log('[dsh-sidebar] 侧栏太窄（view=' + vw + ' width=' + w0 + '）⇒ 加宽到 900 再投喂 ✓');
-          dshSidebar.setWidth(900);
-          await new Promise((r) => setTimeout(r, 400));   // 等布局重排（窄→宽实测要一点时间 ✓）
-        }
-      } catch (e3) { /* 加宽失败也照样试投喂 ✓ 让它给出自己的原因 ✗ */ }
-    }
-
-    return dshSidebar.prefillComposer(text);
-  }
   ipcMain.handle('dsh-sidebar:prefill', (_e, text) => prefillAfterEnsureOpen(text));
   /* 拖宽分隔条：渲染层在交界处 mousedown 时触发（坐标 hit-test 在渲染层做，
    * 主进程用 screen.getCursorScreenPoint 轮询接管拖拽 —— Electron 惯例） */
