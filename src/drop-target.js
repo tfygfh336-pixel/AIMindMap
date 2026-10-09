@@ -53,4 +53,23 @@ function isPointInSidebar(pt, winBounds, viewBounds) {
   return isPointInRect(pt, r);
 }
 
-module.exports = { isPointInSidebar, isPointInRect, toScreenRect };
+/**
+ * 跨视图拖放的**兜底判据**：光标落在侧栏视图内、并持续 ≥ thresholdMs ⇒ 判为"就是在这儿松的手"。
+ * 为什么需要它：指针进了原生 WebContentsView 之后，渲染层收不到 mouseup ✗ ⇒ 没人上报终点；
+ *   而主进程在 Windows 下**拿不到全局鼠标按键状态** ✗ ⇒ 只能按"悬停时长"近似（400ms、离开即复位 ✓）。
+ * 纯函数（时间由调用方传入）⇒ 边界可单测 ✓；侧栏没开 / 时间戳缺失 ⇒ false ✓。
+ * @param {{x:number,y:number}} pt 屏幕坐标（最近一次采样的光标位置）
+ * @param {{x:number,y:number}} winBounds 窗口屏幕原点
+ * @param {object|null} viewBounds 侧栏视图（窗口内坐标）
+ * @param {number|null} overSinceMs 光标**开始**停留在侧栏内的时刻（毫秒；离开侧栏时调用方需复位为 null）
+ * @param {number} nowMs 当前时刻（毫秒）
+ * @param {number} thresholdMs 判定阈值（毫秒）
+ * @returns {boolean}
+ */
+function shouldDropByDwell(pt, winBounds, viewBounds, overSinceMs, nowMs, thresholdMs) {
+  if (!isPointInSidebar(pt, winBounds, viewBounds)) return false;
+  if (!overSinceMs || !nowMs) return false;
+  return (nowMs - overSinceMs) >= Number(thresholdMs || 0);
+}
+
+module.exports = { isPointInSidebar, isPointInRect, toScreenRect, shouldDropByDwell };

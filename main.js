@@ -951,7 +951,30 @@ function registerIpc() {
   ipcMain.handle('dsh-sidebar:status', () => dshSidebar.getStatus());
   // ⑩「在侧边栏打开」：把对话预填进侧栏输入框（**不代替用户发送** ✗ —— 谁按发送谁负责 ✓；
   //   发出去之后那段对话自然就成了侧栏那个会话的工作区历史 ✓）。失败也返回结构化的原因 ✓ 不静默 ✗
-  ipcMain.handle('dsh-sidebar:prefill', (_e, text) => dshSidebar.prefillComposer(text));
+  /* 真机反馈③：投喂前先把侧栏开起来 ✓ —— 以前这里直接转发给 prefillComposer，而它要求
+   * 「视图已建 + 服务 running」，自己不会开侧栏 ✗；而侧栏 ✕ 关闭会 hide()+stopService() ⇒ status=idle
+   * ⇒ 之后所有「送进侧栏」都被拒（用户看到顶部一句提示、输入框永远空 ✓）。show() 自己会 ensureView +
+   * 接管/启动服务 ✓，所以「先 show、等到 running、再投喂」就够了。
+   * ⚠️ 冒烟（isSmoke）不这么做：冒烟跑在 setNoSpawn 下，起真服务会把 G5 从 11s 拖回 170s ✗。
+   * 也不静默：show 失败/超时都照样去 prefill，让 prefillComposer 给出它自己的原因 ✓。 */
+  async function prefillAfterEnsureOpen(text) {
+    if (!isSmoke) {
+      try {
+        const st0 = dshSidebar.getStatus() || {};
+        if (st0.status !== 'running') {
+          console.log('[dsh-sidebar] 投喂前先把侧栏开起来（当前状态 ' + st0.status + '）…');
+          try { dshSidebar.show(); } catch (e1) { console.log('[dsh-sidebar] show() 失败：' + ((e1 && e1.message) || e1)); }
+          for (let i = 0; i < 60; i++) {          // ≤6s：服务冷启动实测几秒 ✓
+            const st = dshSidebar.getStatus() || {};
+            if (st.status === 'running') break;
+            await new Promise((r) => setTimeout(r, 100));
+          }
+        }
+      } catch (e2) { /* 起不来也照样试一次 ✓ 让 prefillComposer 报它自己的原因 */ }
+    }
+    return dshSidebar.prefillComposer(text);
+  }
+  ipcMain.handle('dsh-sidebar:prefill', (_e, text) => prefillAfterEnsureOpen(text));
   /* 拖宽分隔条：渲染层在交界处 mousedown 时触发（坐标 hit-test 在渲染层做，
    * 主进程用 screen.getCursorScreenPoint 轮询接管拖拽 —— Electron 惯例） */
   ipcMain.on('dsh-sidebar:drag-start', () => dshSidebar.beginWidthDrag());
@@ -963,6 +986,7 @@ function registerIpc() {
    * 兜底：结束信号**永远不来**时（指针停在原生视图上 ✗）30s 自动清理并留日志 —— 不静默泄漏 ✗。 */
   let selDrag = null;
   const SEL_DRAG_MAX_MS = 30000;
+  const SEL_DWELL_MS = 400;   // 光标在侧栏视图上停这么久 ⇒ 判为"在这儿松的手"（跨视图那条路的唯一近似 ✓）
   ipcMain.on('dsh-sidebar:sel-drag-start', (e, ids) => {
     if (selDrag && selDrag.timer) clearInterval(selDrag.timer);
     const list = Array.isArray(ids) ? ids.filter((x) => typeof x === "string").slice(0, 50) : [];
@@ -970,9 +994,26 @@ function registerIpc() {
     if (!list.length) { console.log("[dsh-sidebar] 选区拖拽：没有选区 ⇒ 不跟踪"); return; }
     let win = null;
     try { win = BrowserWindow.fromWebContents(e.sender); } catch (err) { win = null; }
-    const st = { ids: list, pt: null, timer: null, t0: Date.now(), win: win };
+    const st = { ids: list, pt: null, timer: null, t0: Date.now(), win: win, overSince: null, fired: false };
     st.timer = setInterval(() => {
       try { const p = screen.getCursorScreenPoint(); st.pt = { x: p.x, y: p.y }; } catch (err) { /* 取不到就保留上一次 ✓ */ }
+      // ③ 跨视图兜底：渲染层收不到 mouseup ⇒ 终点永远不会上报 ✗ ⇒ 这里按"悬停时长"判 ✓
+      if (!st.fired && st.pt) {
+        try {
+          const cb0 = (st.win && !st.win.isDestroyed() && st.win.getContentBounds) ? st.win.getContentBounds() : null;
+          const vb0 = dshSidebar.viewBounds();
+          const over = !!(cb0 && dropTarget.isPointInSidebar(st.pt, cb0, vb0));
+          if (!over) st.overSince = null;
+          else if (!st.overSince) st.overSince = Date.now();
+          if (over && dropTarget.shouldDropByDwell(st.pt, cb0, vb0, st.overSince, Date.now(), SEL_DWELL_MS)) {
+            st.fired = true;
+            clearInterval(st.timer);
+            if (selDrag === st) selDrag = null;
+            console.log("[dsh-sidebar] 选区拖拽：光标在侧栏上停留 ≥" + SEL_DWELL_MS + "ms ⇒ 判为在此松手，交给渲染层投喂 ✓");
+            try { st.win.webContents.send("dsh-sidebar:sel-drop", st.ids); } catch (err2) { console.log("[dsh-sidebar] 投喂通知失败：" + ((err2 && err2.message) || err2)); }
+          }
+        } catch (err3) { /* 判定失败不影响 30s 兜底清理 ✓ */ }
+      }
       if (Date.now() - st.t0 > SEL_DRAG_MAX_MS) {
         clearInterval(st.timer); if (selDrag === st) selDrag = null;
         console.log("[dsh-sidebar] 选区拖拽：30s 没收到结束信号 ⇒ 已清理（指针可能停在原生侧栏视图上 ✗）");
@@ -1466,7 +1507,7 @@ function startControlChannel() {
     //   dsh-status  —— 只读：读侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出）
     //   dsh-prefill —— 把文本送进侧栏输入框（⑩；**不代替用户发送** ✗）
     if (cmd.cmd === 'dsh-prefill') {
-      dshSidebar.prefillComposer(cmd.text || '').then((r) => {
+      prefillAfterEnsureOpen(cmd.text || '').then((r) => {
         try {
           control.writeResult(dir, { cmd: 'dsh-prefill', ok: !!r.ok, result: r, err: r.reason || null,
             at: new Date().toISOString() });

@@ -130,7 +130,10 @@ module.exports = [
       // ⚠️ 更正（本轮实测 ✓）：`MM.jumpToNode` **并不移动视图** ✗ —— 它只做 展开祖先链 + 选中 + 弹详情框
       //   （app-actions.js:80），而旧版把它包在 try/catch 里 ⇒ `jm.root` 一抛错就静默返回 0 ✗✗
       //   （jsMind 的根是 `get_root()`，不是 `jm.root`）。现在不包 try/catch：API 变了就响亮地红 ✓。
-      // 注：resetView() 实测拉不回坐标 ✗ 已弃用；expandAll() 会把 551 个节点全铺开、邻居被推更远 ✗ 也不做。      await ctx.exec('window.MM.centerOnRoot(); 1');
+      // 注：resetView() 实测拉不回坐标 ✗ 已弃用；expandAll() 会把 551 个节点全铺开、邻居被推更远 ✗ 也不做。
+      // ⚠️ 下一行**故意**保持被上面的注释吃掉的状态（历史遗留）：放开它会改变视图，实测让后面那条
+      //    「Ctrl+框选 = 加选」断言挑不到空起点而红 ✗ —— 要放开必须连那条断言一起改，别顺手打开。
+      // await ctx.exec('window.MM.centerOnRoot(); 1');
       await new Promise((r) => setTimeout(r, 400));
       await ctx.exec('new Promise(function (res) { requestAnimationFrame(function () { res(1); }); })');
       const pts = await twoNodePoints(ctx);
@@ -155,11 +158,18 @@ module.exports = [
       const res = await execJson(ctx, `(function () {
         var raw = window.MM.getSelectionRaw ? window.MM.getSelectionRaw() : [];
         var out = document.getElementById('dsh-selection-outline');
+        // ★ ② 的新判据（真机反馈）：Ctrl 加选**不许弹详情框** ✓
+        //   原来只验了选区与虚线框 ⇒「会弹框」这个缺陷一路绿到底 ✗
+        var fdBoxes = document.querySelectorAll('.float-detail');
+        var anyFdVisible = Array.prototype.some.call(fdBoxes, function (b) {
+          var r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0;
+        });
         return JSON.stringify({
-          ok: raw.length === 2 && raw.indexOf(${JSON.stringify(second.id)}) >= 0
+          ok: raw.length === 2 && raw.indexOf(${JSON.stringify(second.id)}) >= 0 && !anyFdVisible
             && !!out && out.style.display !== 'none',
           text: '第 1 次点后=' + ${JSON.stringify(after1)} + ' ｜ 第 2 次点（${second.id}）后=[' + raw.join(',')
             + ']（应含 ${second.id}）虚线框可见=' + (!!out && out.style.display !== 'none')
+            + ' ｜ 详情框可见=' + anyFdVisible + '（必须 false ✓）'
             + ' ｜ 点击点 A=(' + ${pts.a.x} + ',' + ${pts.a.y} + ') B=(' + ${second.x} + ',' + ${second.y} + ')'
         });
       })()`);

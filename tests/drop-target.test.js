@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { isPointInSidebar, isPointInRect, toScreenRect } = require('../src/drop-target.js');
+const { isPointInSidebar, isPointInRect, toScreenRect, shouldDropByDwell } = require('../src/drop-target.js');
 
 // 典型几何：窗口在屏幕 (100, 50)，宽 1400；侧栏视图在窗口内的 x=980、宽 420、高 800
 const WIN = { x: 100, y: 50 };
@@ -64,5 +64,22 @@ describe('P7 落点判定：基础矩形工具', () => {
   it('isPointInRect 对 null 入参返回 false（不抛）✓', () => {
     expect(isPointInRect(null, null)).toBe(false);
     expect(isPointInRect({ x: 1, y: 1 }, null)).toBe(false);
+  });
+});
+
+describe('P7 跨视图兜底：悬停判定 shouldDropByDwell（真机反馈③）', () => {
+  it('光标不在侧栏内 ⇒ 永远 false ✓（哪怕停很久）', () => {
+    expect(shouldDropByDwell({ x: 200, y: 400 }, WIN, VIEW, 1000, 99999, 400)).toBe(false);
+  });
+  it('在侧栏内但没到阈值 ⇒ false ✓（还没到「就是在这儿松手」的程度）', () => {
+    expect(shouldDropByDwell({ x: 1200, y: 400 }, WIN, VIEW, 1000, 1399, 400)).toBe(false);
+  });
+  it('在侧栏内且停够阈值 ⇒ true ✓（这条就是跨视图那条路的判定）', () => {
+    expect(shouldDropByDwell({ x: 1200, y: 400 }, WIN, VIEW, 1000, 1400, 400)).toBe(true);
+    expect(shouldDropByDwell({ x: 1200, y: 400 }, WIN, VIEW, 1000, 5000, 400)).toBe(true);
+  });
+  it('时间戳缺失 / 侧栏没开 ⇒ false ✓（不误判、不抛）', () => {
+    expect(shouldDropByDwell({ x: 1200, y: 400 }, WIN, VIEW, null, 5000, 400)).toBe(false);
+    expect(shouldDropByDwell({ x: 1200, y: 400 }, WIN, null, 1000, 5000, 400)).toBe(false);
   });
 });

@@ -95,6 +95,12 @@ contextBridge.exposeInMainWorld('desktop', {
      * ⚠️ 与上面的 beginDrag/endDrag **不是一套**：那两个是"拖宽侧栏"用的 ✓ 别混用 ✗。 */
     selDragStart: (ids) => ipcRenderer.send('dsh-sidebar:sel-drag-start', ids),
     selDragEnd: (pt) => ipcRenderer.invoke('dsh-sidebar:sel-drag-end', pt),
+    /* 跨视图兜底：主进程判出"光标停在侧栏上很久 ⇒ 就是在这儿松手"，把 ids 发回来 ⇒ 渲染层负责投喂 ✓ */
+    onSelDrop: (cb) => {
+      const wrap = (_e, ids) => cb(ids);
+      ipcRenderer.on('dsh-sidebar:sel-drop', wrap);
+      return () => ipcRenderer.removeListener('dsh-sidebar:sel-drop', wrap);
+    },
     beginDrag: () => ipcRenderer.send('dsh-sidebar:drag-start'),
     endDrag: () => ipcRenderer.send('dsh-sidebar:drag-end'),
     isDshOnly: () => ipcRenderer.invoke('dsh-sidebar:dsh-only'),

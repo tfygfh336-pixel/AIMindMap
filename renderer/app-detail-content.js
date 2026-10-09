@@ -32,6 +32,9 @@
     fdContainerBound = true;
 
     container.addEventListener('click', (e) => {
+      // ② 真机反馈：Ctrl/Cmd + 点击 = 加选，不该弹详情框 ✓（加选语义由 app-view.js 的捕获阶段
+      //   mousedown 处理 ✓ 这里只负责「单击节点 → 开详情」）。用户实机确认：不拦就会弹 ✓。
+      if (e.ctrlKey || e.metaKey) return;
       const jm = state.jm;
       if (!jm) return;
       // **判定「点击是否来自详情框内部」必须用 composedPath()**，不能只看 e.target.closest()。

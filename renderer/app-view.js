@@ -852,6 +852,11 @@
       if (verdictP && ids.length) {
         Promise.resolve(verdictP).then((v) => {
           if (v && v.ok && v.hit && MM.sendNodesToSidebar) MM.sendNodesToSidebar(ids);
+          // 只说**需要用户知道**的原因 ✓：point-not-over-sidebar = 在别处松手 ⇒ 正常操作，不该弹失败文案 ✗
+          // （实测：这条正是被 P4 ② 对照组抓出来才收窄的 ✓ —— 对照组存在的意义 ✓）
+          else if (v && v.reason && v.reason !== 'point-not-over-sidebar') {
+            MM.setStatus('没送进侧栏：' + v.reason + (v.reason === 'sidebar-closed' ? ' —— 先打开侧栏再拖 ✓' : ''), true);
+          }
         }).catch(() => { /* 失败已在上面的状态栏里说过 ✗ */ });
       }
     }, true);
@@ -1333,6 +1338,18 @@
     return null;
   }
   MM.requestSelDropVerdict = requestSelDropVerdict;
+  /* P7 跨视图兜底：主进程判出「光标停在原生侧栏视图上 ≥400ms ⇒ 就是在这儿松手」之后，
+   * 把 ids 发回来 ⇒ 这里投喂（走同一条 sendNodesToSidebar ✓）并清掉那份可能一直挂着的拖拽状态 ✓。
+   * 注册在 IIFE 顶层：只绑一次 ✓ 且与 fdSelDrag 同作用域 ✓。preload 老版本没这个 key 时退化为
+   * 「只有页面内松手才送」✓，并留一句日志（不静默 ✗）。 */
+  if (window.desktop && window.desktop.dsh && window.desktop.dsh.onSelDrop) {
+    try {
+      window.desktop.dsh.onSelDrop((ids) => {
+        fdSelDrag = null;
+        if (ids && ids.length && MM.sendNodesToSidebar) MM.sendNodesToSidebar(ids);
+      });
+    } catch (e) { console.log("P7 跨视图兜底接线失败：" + ((e && e.message) || e)); }
+  }
   MM.toggleNodeSelection = toggleNodeSelection;
   MM.clearSelection = clearSelection;
   MM.applySelection = applySelection;
