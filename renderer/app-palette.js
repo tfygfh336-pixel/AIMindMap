@@ -49,7 +49,14 @@
     { id: 'undo', label: '撤销', hint: '命令', run: () => MM.undo() },
     { id: 'redo', label: '重做', hint: '命令', run: () => MM.redo() },
     // 用户 A 决定：节点搜索**独立成一条命令** ✓（点它切进节点模式；回车跳过去会**展开祖先链** ✓）
-    { id: 'search-nodes', label: '搜索节点…', hint: '命令', run: () => { MM.openPaletteNodes(); } }
+    { id: 'search-nodes', label: '搜索节点…', hint: '命令', run: () => { MM.openPaletteNodes(); } },
+    // 2026-10-09：关联视图的第三个入口（前两个：详情框左缘圆钮 ✓ 右键菜单 ✓）
+    { id: 'related-view', label: '关联节点视图（高亮关联）', hint: '命令', run: () => {
+      const st = MM.getState ? MM.getState() : null;
+      const sel = (MM.getSelection && MM.getSelection()[0]) || (st && st.selectedNode && st.selectedNode.id);
+      if (!sel) { if (MM.setStatus) MM.setStatus('请先选中一个节点，再执行「关联节点视图」', true); return; }
+      if (MM.showRelated) MM.showRelated(sel);
+    } },
   ];
 
   /** 只读：给冒烟断言判"当前是哪个模式" ✓ */

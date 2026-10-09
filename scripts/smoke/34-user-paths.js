@@ -228,5 +228,71 @@ module.exports = [
       })()`);
       return { ok: !!r.ok, text: r.text };
     }
+   },
+  {
+    name: '关联视图：三个入口都在（圆钮 ✓ 右键菜单 ✓ 命令面板 ✓），且圆钮**完整落在面板内**（看不见=没有 ✗）',
+    run: async (ctx) => {
+      const pick = await execJson(ctx, `(function () {
+        var jm = window.MMApp.getState().jm, id = null;
+        (function walk(n) { if (id || !n) return; if (n.id && n.id !== 'root') { id = n.id; return; } (n.children || []).forEach(walk); })(jm.get_node('root'));
+        if (!id) return JSON.stringify({ ok: false, text: '挑不到节点' });
+        window.MMApp.showDetail(jm.get_node(id));
+        return JSON.stringify({ ok: true, id: id });
+      })()`);
+      if (!pick.ok) return { ok: false, text: pick.text };
+      await new Promise((r) => setTimeout(r, 200));
+      // ① 圆钮完整落在面板内（被 overflow:hidden 裁掉 ⇒ 用户就是"看不到" ✓）
+      const circle = await execJson(ctx, `(function () {
+        var boxes = Array.prototype.slice.call(document.querySelectorAll('.float-detail'));
+        var box = null;
+        for (var i = 0; i < boxes.length; i++) {
+          var q = boxes[i].getBoundingClientRect();
+          if (boxes[i].style.display !== 'none' && q.width > 40 && q.height > 40) { box = boxes[i]; break; }
+        }
+        var b = box ? box.querySelector('.rel-show-btn') : null;
+        if (!b) return JSON.stringify({ ok: false, text: '没有圆钮' });
+        var p = window.MM.fdPanel ? window.MM.fdPanel() : null;
+        var pr = p ? p.getBoundingClientRect() : null;
+        var r = b.getBoundingClientRect();
+        var insidePanel = !!pr && r.left >= pr.left - 1 && r.right <= pr.right + 1;
+        return JSON.stringify({ ok: insidePanel, text: '圆钮=[' + Math.round(r.left) + ',' + Math.round(r.right) + '] 面板=[' + Math.round(pr.left) + ',' + Math.round(pr.right) + '] 完整在内=' + insidePanel + ' 档=' + (b.classList.contains('is-right') ? 'right' : (b.style.left ? 'clamp' : 'left')) });
+      })()`);
+      // ② 右键菜单里有入口（真派发一次 contextmenu 事件，读菜单文本 ✓）
+      const menu = await execJson(ctx, `(function () {
+        var el = document.querySelector('jmnode[nodeid="' + ${JSON.stringify(pick.id)} + '"]');
+        if (!el) return JSON.stringify({ ok: false, text: '节点不可见' });
+        var r = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
+        var m = document.getElementById('ctx-menu');
+        var txt = m ? (m.textContent || '') : '';
+        var has = txt.indexOf('关联节点') >= 0;
+        if (window.MMContextMenu && window.MMContextMenu.closeMenu) window.MMContextMenu.closeMenu();
+        return JSON.stringify({ ok: has, text: '菜单含「关联节点」=' + has + ' 菜单长度=' + txt.replace(/\\s+/g, ' ').trim().length });
+      })()`);
+      // ③ 命令面板里有入口（打开面板 → 搜「关联节点视图」→ 命中 ✓）
+      await ctx.exec('(function () { document.dispatchEvent(new KeyboardEvent(\'keydown\', { key: \'p\', ctrlKey: true, bubbles: true })); return 1; })()');
+      await new Promise((r) => setTimeout(r, 300));
+      let pal = null;
+      for (let i = 0; i < 20; i++) {
+        const r2 = await execJson(ctx, `(function () {
+          var i2 = document.getElementById('palette-input');
+          if (!i2) return JSON.stringify({ ok: false, text: '没打开面板' });
+          i2.value = '关联节点视图';
+          i2.dispatchEvent(new Event('input', { bubbles: true }));
+          var items = document.querySelectorAll('#palette .palette-item');
+          var labels = [].map.call(items, function (x) { return (x.querySelector('.palette-label') || {}).textContent || ''; });
+          var hit = labels.some(function (L) { return L.indexOf('关联节点视图') >= 0; });
+          return JSON.stringify({ ok: hit, n: items.length, labels: labels.slice(0, 3) });
+        })()`);
+        pal = r2;
+        if (pal.ok) break;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      await ctx.exec('(function () { document.dispatchEvent(new KeyboardEvent(\'keydown\', { key: \'Escape\', bubbles: true })); return 1; })()');
+      return {
+        ok: !!(circle.ok && menu.ok && pal && pal.ok),
+        text: circle.text + ' ｜ ' + menu.text + ' ｜ 命令面板命中=' + (pal ? pal.ok : false) + ' 项=' + (pal ? pal.n : '-')
+      };
+    }
   }
 ];

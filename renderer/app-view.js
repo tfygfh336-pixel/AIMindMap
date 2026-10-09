@@ -1374,8 +1374,17 @@
       const roomRight = pr ? (pr.right - br.right) : 999;
       // 默认浮在**左缘外侧**（用户：「绑定在节点详情框左边」✓）；左边没空间就镜像到右缘外侧 ✓
       // ⚠️ **绝不放到框内** —— 放框内会遮住详情内容（用户 2026-10-08 第二批明确 ✗）
-      const place = (roomLeft >= 60) ? 'left' : ((roomRight >= 60) ? 'right' : 'left');
+      // 两侧都挤（例如框本身贴着窗口边）⇒ 夹取到面板内 ✓
+      // 宁可轻微压住框边，也不能跑出可视区被裁掉 ✗ —— 看不见等于没有 ✓
+      const place = (roomLeft >= 60) ? 'left' : ((roomRight >= 60) ? 'right' : 'clamp');
       btn.classList.toggle('is-right', place === 'right');
+      if (place === 'clamp' && pr) {
+        const want = Math.max(4, Math.round(pr.left - br.left + 4));   // 相对框左缘的偏移（正数 = 压住框边 ✓）
+        btn.style.left = want + 'px';
+        btn.style.right = 'auto';
+      } else {
+        btn.style.left = ''; btn.style.right = '';   // 交回 CSS ✓
+      }
       return place;
     } catch (e) { return 'error'; }
   };

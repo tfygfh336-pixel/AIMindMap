@@ -110,6 +110,9 @@
     const isRoot = node.id === 'root';
     const items = [
       { label: '编辑（F2）', action: () => app().editNode(nodeId) },
+      // 2026-10-09：用户「找不到关联视图」⇒ 右键菜单是找节点操作的第一落点 ✓
+      // （与详情框左缘那颗圆形 🔗 按钮等价 ✓，多一个入口只为好找 ✓）
+      { label: '🔗 关联节点（高亮展示）', action: () => { if (window.MM && window.MM.showRelated) window.MM.showRelated(nodeId); } },
       { label: '新增子节点', action: () => app().addNode(nodeId) },
       { label: '新增同级节点', action: () => app().addSiblingNode(nodeId) },
       '---',
