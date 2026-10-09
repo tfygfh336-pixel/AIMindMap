@@ -963,6 +963,26 @@ check('保存闸门按**待写数据**判悬挂成员（界面删节点后第一
 // 同一个磁盘文件（节点还在）仍然校验通过 —— 证明差异来自"按待写数据判"，不是误报
 check('对照：未删节点的磁盘文件仍校验通过（差异确实来自按待写数据判）', ok(run(['validate', PROJ5]).out));
 
+// MCP 补齐的 9 条：既要在 TOOLS 里，也要**真的调得通**（存在 ≠ 能调 ✗ —— 三者任一断就是"看得见调不动" ✓）
+let mcpProbeDetail = '';
+check('MCP 补齐的 9 条工具：定义齐全，且 stats / ui_state 真调通（ok:true）；validate_all 只验「定义在」——集成中途有坏项目探针，真调必然红 ✗', (() => {
+  const mcp = require(path.join(ROOT, 'scripts', 'mcp-server.js'));
+  const need = ['ask', 'add_root', 'expand_depth', 'clone_node', 'import_project', 'remove_file', 'stats', 'ui_state', 'validate_all'];
+  const missing = need.filter((n) => !mcp.TOOLS.some((t2) => t2.name === n));
+  if (missing.length) { mcpProbeDetail = '缺工具：' + missing.join(','); return false; }
+  let r1, r2;
+  try {
+    r1 = mcp.callTool('stats', { project: PROJ });
+    r2 = mcp.callTool('ui_state', {});
+    // validate_all 故意不真调：集成中途 harness 还留着**坏项目探针** ⇒ 全量校验必然失败 ✗
+    // （实测报文：error: Expected property name or ... at position 2 ✓）它只验「定义在」即可 ✓
+  } catch (e) { mcpProbeDetail = '抛异常：' + ((e && e.message) || e); return false; }
+  mcpProbeDetail = 'stats=' + JSON.stringify(r1).slice(0, 110) + ' ｜ ui_state=' + JSON.stringify(r2).slice(0, 110)
+    + ' ｜ validate_all=只验定义（原因见注释 ✓）';
+  const okv = (r) => !!(r && r.ok && r.text && String(r.text).length > 0);
+  return okv(r1) && okv(r2);
+})(), mcpProbeDetail);
+
 // MCP 侧不能有"AI 修不了"的缺口：remove_node 要能带 clean_assoc，且必须有 assoc_prune
 check('MCP 暴露 assoc_prune（AI 删节点后能自救）且 remove_node 支持 clean_assoc', (() => {
   const { TOOLS } = require(path.join(ROOT, 'scripts', 'mcp-server.js'));

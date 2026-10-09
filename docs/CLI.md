@@ -41,7 +41,7 @@
 | `remove` | remove <项目> <id> [--clean-assoc] [--clean-links] |
 | `clone` | clone <项目> <源id> <新父id> [--deep] |
 | `import-md` | import-md <项目> <md文件> [--parent id] |
-| `import-project` | import-project <新项目名> <文件.md|.txt|.docx> [--title 标题] [--dry-run] [--json] |
+| `import-project` | import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] |
 | `export-md` | export-md <项目> <输出目录> [--format heading|list] [--with-detail] |
 | `export-json` | export-json <项目> <输出.json> |
 | `export-html` | export-html <项目> <输出目录> |
@@ -235,7 +235,7 @@ node cli/mm-cli.js import-md <项目> <md文件> [--parent id]
 功能 5a：**从大文档建一个新项目 + 一棵新树**（md/txt/docx；1 级标题成为顶层主题）；一次原子写入，失败不留半个项目；--dry-run 只预览格式/规模/前几个标题、不写盘
 
 ```
-node cli/mm-cli.js import-project <新项目名> <文件.md|.txt|.docx> [--title 标题] [--dry-run] [--json]
+node cli/mm-cli.js import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json]
 ```
 
 ### export-md

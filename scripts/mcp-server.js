@@ -155,6 +155,43 @@ const TOOLS = [
     right: s('放右侧的主题 id（逗号分隔）'), clear: b('清除布局配置')
   }, ['project']),
   T('validate', '校验项目数据格式', { project: s('项目名或 JSON 文件路径') }, ['project']),
+  // ---- 2026-10-09 补齐缺口（用户点名 9 条；只透传同名 CLI ✓）----
+  T('stats', '项目统计：节点数 / 最大深度 / 图片数 / 链接数', {
+    project: s('项目名或 JSON 文件路径')
+  }, ['project']),
+  T('validate_all', '校验 projects/ 下**全部**项目（结构 + 悬挂链接 + 悬挂关联成员 + 环）—— 写盘闸门挡住时先跑它定位', {}),
+  T('ui_state', '界面是否有**未保存编辑**（写前协调用）：dirty 时先请用户保存，再让 AI 动笔 ✓', {
+    project: s('可选，只看某个项目')
+  }),
+  T('add_root', '新增**顶层主题**（不选父节点，直接挂在根下）—— 一个项目里放多个不同方面的笔记', {
+    project: s('项目名或 JSON 文件路径'), topic: s('顶层主题标题'), id: s('可选，见名知义的 id'),
+    detail: s('可选，详情 HTML'), detail_md: s('可选，详情 Markdown（推荐；与 detail 互斥）'),
+    local_path: s('可选，本机文件夹绝对路径（界面里可点开）')
+  }, ['project', 'topic']),
+  T('expand_depth', '按深度**规范化展开状态**（默认前 2 层展开；depth=0 = 全收起），一次原子写', {
+    project: s('项目名或 JSON 文件路径'), depth: s('保留展开的层数，默认 2；0 = 全收起'),
+    id: s('可选，只规范化这棵子树')
+  }, ['project']),
+  T('clone_node', '复制节点到新父节点（deep=true 连子树一起）—— 注意与 move_node 的区别：clone 是**新增副本**', {
+    project: s('项目名或 JSON 文件路径'), id: s('源节点 id'), parent: s('新父节点 id'),
+    deep: b('是否连子树一起复制')
+  }, ['project', 'id', 'parent']),
+  T('remove_file', '移除节点上的**附件引用**（文件本身留不留由调用方决定；与 remove_image 对称）', {
+    project: s('项目名或 JSON 文件路径'), id: s('节点 id'), file: s('相对路径，如 attachments/x.md')
+  }, ['project', 'id', 'file']),
+  T('import_project', '**从大文档建一个新项目 + 一棵新树**（md / txt / docx / **带书签的 pdf**）：1 级标题成为顶层主题；一次原子写，失败不留半个项目', {
+    name: s('新项目名'), file: s('源文件路径（.md / .txt / .docx / 带书签的 .pdf）'),
+    title: s('可选，项目标题'), dry_run: b('只预览格式/规模/前几个标题，不写盘（建议先跑一次）')
+  }, ['name', 'file']),
+  T('ask', '向内嵌 DSH 提**一次性问题**（stdout 即答案）：不给 id 就是项目级提问；kind=explain|ask；effort 调思考强度；dry_run=true 只打印提示词与命令行、**不调模型**（不烧额度）', {
+    project: s('项目名或 JSON 文件路径'), id: s('可选，节点 id（给了就是针对该节点提问）'),
+    question: s('问题原文'), kind: s('explain（解释该节点）或 ask（自由问答），默认 explain'),
+    effort: s('思考强度 low|medium|high|xhigh'), timeout: s('超时秒数'),
+    dry_run: b('只打印提示词/思考强度/命令行，不调模型')
+  }, ['project']),
+  // ---- 缺口补齐结束 ----
+
+
   T('changes', '变更可见性（多路同时编辑的**事前避让**）：最近是谁、什么时候、改了哪些对象。'
     + '不带 since 时返回当前 rev/version（当作下次的锚点）；带上 since（上一次的 rev 或 version）'
     + '即回答"自那以来改了什么"。⚠ 报错表示**答不了**（锚点滑出窗口/本机无日志），'
@@ -335,6 +372,56 @@ function callTool(name, args) {
       if (a.clear) c.push('--clear');
       return runCli(c);
     }
+    /* ---- 2026-10-09 补齐的 9 条（只透传同名 CLI ✓）---- */
+    case 'stats': return runCli(['stats', argOf('project'), '--json']);
+    case 'validate_all': return runCli(['validate-all']);
+    case 'ui_state': {
+      const c = ['ui-state'];
+      if (a.project) c.push(argOf('project'));
+      c.push('--json');
+      return runCli(c);
+    }
+    case 'add_root': {
+      const c = ['add-root', argOf('project'), '--topic', argOf('topic')];
+      if (a.id) c.push('--id', argOf('id'));
+      if (a.detail) c.push('--detail', argOf('detail'));
+      if (a.detail_md) c.push('--detail-md', argOf('detail_md'));
+      if (a.local_path) c.push('--local-path', argOf('local_path'));
+      return runCli(c);
+    }
+    case 'expand_depth': {
+      const c = ['expand-depth', argOf('project')];
+      if (a.depth !== undefined) c.push('--depth', argOf('depth'));
+      if (a.id) c.push('--id', argOf('id'));
+      return runCli(c);
+    }
+    case 'clone_node': {
+      const c = ['clone', argOf('project'), argOf('id'), argOf('parent')];
+      if (a.deep) c.push('--deep');
+      return runCli(c);
+    }
+    case 'remove_file': return runCli(['remove-file', argOf('project'), argOf('id'), argOf('file')]);
+    case 'import_project': {
+      const c = ['import-project', argOf('name'), argOf('file')];
+      if (a.title) c.push('--title', argOf('title'));
+      if (a.dry_run) c.push('--dry-run');
+      c.push('--json');
+      return runCli(c);
+    }
+    case 'ask': {
+      const c = ['ask', argOf('project')];
+      if (a.id) c.push(argOf('id'));
+      if (a.question) c.push('--question', argOf('question'));
+      if (a.kind) c.push('--kind', argOf('kind'));
+      if (a.effort) c.push('--effort', argOf('effort'));
+      if (a.timeout !== undefined) c.push('--timeout', argOf('timeout'));
+      if (a.dry_run) c.push('--dry-run');
+      c.push('--json');
+      return runCli(c);
+    }
+    /* ---- 补齐结束 ---- */
+
+
     case 'validate': return runCli(['validate', argOf('project')]);
     case 'changes': {
       // 变更可见性（多路同时编辑的**事前避让**）：写之前先问"我要动的对象最近被谁碰过"。
