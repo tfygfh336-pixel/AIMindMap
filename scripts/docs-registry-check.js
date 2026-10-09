@@ -150,7 +150,7 @@ function collectDocs(dir, out, base) {
   return out.sort();
 }
 
-/* ---------------- 判定：登记与家门（清单与条数以 checkRegistry 的 ①…⑬ 标记为准） ---------------- */
+/* ---------------- 判定：登记与家门（清单与条数以 checkRegistry 的 ①…⑭ 标记为准） ---------------- */
 
 /* ---------------- 判定：根/顶层目录白名单（"其他文件乱放"也抓） ---------------- */
 
@@ -865,7 +865,7 @@ function main() {
   const registryMd = fs.readFileSync(regPath, 'utf8');
   const { problems, reg, docs } = checkRegistry(ROOT, registryMd);
 
-  // `--judgments`：把本门禁的判定清单**现场列出来**（从 `checkRegistry()` 的 ①…⑬ 标记与标题提取）。
+  // `--judgments`：把本门禁的判定清单**现场列出来**（从 `checkRegistry()` 的 ①…⑭ 标记与标题提取）。
   // 为什么需要：`docs/RULES.md` §2 不再逐条复制这份清单（复制过，结果"声明 13 条、只列 12 项"）——
   // 改为指路到这条命令，清单永远与实现同步。
   if (process.argv.includes('--judgments')) {

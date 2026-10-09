@@ -43,7 +43,7 @@ function init() {
   if (COMMANDS.length) return;
 
   // 项目与数据
-  register({ name: 'projects', usage: '列出全部笔记项目', desc: '列出 projects/ 下全部项目（含 meta）', fn: loadFile('project').projects });
+  register({ name: 'projects', usage: 'projects', desc: '列出 projects/ 下全部项目（含 meta）', fn: loadFile('project').projects });
   register({ name: 'read', usage: 'read <项目> [--json] [--brief] [--skeleton] [--compact] [--subtree id] [--images]', desc: '读取项目可读视图（树 + 详情 + 图片清单）。四个变窄开关可叠加：--brief 去长文本 / --skeleton 再去 tags+links（只要结构）/ --subtree <id> 只要某棵子树 / --compact 单行 JSON；实测全叠加比全量省约 86%（`--detail` 已从此处移除：--json 默认就含详情，它在 read 上是空操作）', fn: loadFile('project').read });
   register({ name: 'list', aliases: ['tree'], usage: 'list <项目> [--json]', desc: '树形列出项目全部节点', fn: loadFile('project').list });
   register({ name: 'get', usage: 'get <项目> <id> [--json] [--detail] [--images]', desc: '查看节点（路径/详情/图片）', fn: loadFile('project').get });

@@ -22,7 +22,7 @@
 
 | 命令 | 说明 |
 |------|------|
-| `projects` | 列出全部笔记项目 |
+| `projects` | projects |
 | `read` | read <项目> [--json] [--brief] [--skeleton] [--compact] [--subtree id] [--images] |
 | `list` | list <项目> [--json] |
 | `get` | get <项目> <id> [--json] [--detail] [--images] |
@@ -83,7 +83,7 @@
 列出 projects/ 下全部项目（含 meta）
 
 ```
-node cli/mm-cli.js 列出全部笔记项目
+node cli/mm-cli.js projects
 ```
 
 ### read

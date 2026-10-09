@@ -222,7 +222,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 |------|------|
 | `verify.js` | **验证链的运行器**：`STEPS` 是"执行顺序 / 每步命令 / 耗时预算"的**唯一定义**，`docs/VERIFY.md` 的链表由它渲染；首败即停 |
 | `encoding-check.js` | **G1** 文件编码完整性（UTF-8 BOM / U+FFFD / 经典乱码特征） |
-| `docs-registry-check.js` | **G8** 文档体系完整性（**判定清单现场取**：`npm run check:docs -- --judgments` 会从实现的 ①…⑬ 标记打印全套；条数由 `docs/RULES.md` §2 声明并与标记机械对齐 —— **本表不复述**，复述一次就是第二份会漂移的副本）；`--write` 从各文档头部元信息**生成** §5 登记表（`npm run docs:registry`，`npm run check:docs` 为校验模式） |
+| `docs-registry-check.js` | **G8** 文档体系完整性（**判定清单现场取**：`npm run check:docs -- --judgments` 会从实现的**全部**判定标记打印全套；条数由 `docs/RULES.md` §2 声明并与标记机械对齐 —— **本表不复述**，复述一次就是第二份会漂移的副本）；`--write` 从各文档头部元信息**生成** §5 登记表（`npm run docs:registry`，`npm run check:docs` 为校验模式） |
 | `rules-consistency.js` | **G9** 规则文件自洽：声明条数 == 表格行数、表格未被空行打断、编号引用闭合、实现列点名的脚本存在、其他文档的条数转述一致、**门禁声明的判定条数 == 实现脚本的判定标记数**（且标记唯一；实现脚本文案里也不得写死条数）；逐条清单见 `docs/RULES.md` §2，**本表不复述** |
 | `doc-facts.js` | **G6/G7** 文档数字与版本一致性 + 生成物是否过期；`--write` 生成 `docs/VERIFY.md` |
 | `cli-integration.js` | **G4** 全部 CLI 命令端到端断言（进程内调用，临时项目自动清理） |
@@ -438,7 +438,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | **从导出恢复**（零 Git 下唯一手段） | `docs/INCIDENTS.md`（两次全损与派生禁令）+ `docs/AI-GUIDE.md` §4.1 + `export-json` / `import-json` 用法 | **不要直接覆盖在用项目**：先 `import-json <备份.aimap.json> --name 恢复验证` 导成**临时项目** | `node cli/mm-cli.js validate 恢复验证` → 用 `read`/`export-md` 抽查内容是否完整 | 确认无误后决定"替换在用项目"还是"合并"；**CHANGELOG 必须记：何时、从哪份备份、恢复成什么** |
 | 打包 | `electron-builder.yml` | —— | `npm run dist` | 打包后**冒烟一次** + `CHANGELOG.md` |
 
-> **③"跑"的口径（唯一，消歧）**：**验收 = `npm run verify` 全链全绿**（9 步 / 预算 150s）。
+> **③"跑"的口径（唯一，消歧）**：**验收 = `npm run verify` 全链全绿**（9 条步骤；G7 与 G6 共用一次运行 ⇒ 末尾打印"实跑 8 步"；**总预算 400s**，单项预算见 `scripts/verify.js` 的 `STEPS`）。
 > 单个门禁脚本（`npm run check:docs` / `check:rules` / `facts` / `check:encoding`）只是**自检**，
 > 用来快速迭代（实测文档类四步合计十几秒），**任何一条都不能当作"做完了"** ——
 > 它们只是全链的子集，全链还含单测 / 集成 / 冒烟 / 数据校验。

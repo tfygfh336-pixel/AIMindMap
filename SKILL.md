@@ -42,7 +42,8 @@ description: "维护 AI MindMap 智能笔记工程（面向 AI 与人协作的�
 2. **看最近改了什么** → `CHANGELOG.md` 的 `[Unreleased]`（已完成、等发版的变更）。
    > 两者分工不同，**缺一边就会误判现状**：`[Unreleased]` = 做完但没发版；「在飞」= 还没做完。
 3. **找你这类的做法** → `docs/ARCHITECTURE.md` **§6 每任务四步**（读哪份 → 改哪里 → 跑什么 → 更新什么）。
-4. **改完怎么算完** → `npm run verify` **全链全绿**才算验收（9 步 / 预算 150s）。
+4. **改完怎么算完** → `npm run verify` **全链全绿**才算验收（9 条步骤；其中 G7 与 G6 共用一次运行
+   ⇒ 末尾打印的是"实跑 8 步"。**总预算 400s**，单项预算见 `scripts/verify.js` 的 `STEPS`，改动要带实测理由）。
    只改文档时可先跑子集自检（`check:docs` + `check:rules` + `facts` + `check:encoding`，十几秒），**但它不是验收**。
    > 顺手看 verify 开头那行「**上次全链**」—— 它告诉你动手前的基线绿不绿（记录在 `.review/last-verify.json`）。
 5. **收尾** → 在 `CHANGELOG.md` 的 `[Unreleased]` 记一笔（新增文档还要先在 `docs/ARCHITECTURE.md` §5 登记）；
@@ -140,7 +141,7 @@ AI 助手。你本身就是运行中的 AI agent（本机场景下正是 DSH）�
 node cli/mm-cli.js projects                       # 列出项目
 node cli/mm-cli.js read <项目> --json              # 读全项目（树+详情+图片+附件）
 node cli/mm-cli.js read <项目> --json --brief      # 只要结构（省 token；**省多少取决于详情占比，故不写百分比**）
-node cli/mm-cli.js read <项目> --json --brief --compact  # 再加单行 JSON —— 三开关可叠加，实测合计省约 3/4
+node cli/mm-cli.js read <项目> --json --brief --compact  # 再加单行 JSON —— 三开关可叠加，省得多（**具体倍数见 `cli/registry.js` 的 `read` 条**：那里写着实测口径 ✓ 本文不写易腐数字）
 node cli/mm-cli.js read <项目> --json --subtree <id>     # 只要某棵子树（定位到分支后的定点作业，再省一大截）
 node cli/mm-cli.js list <项目> --json              # 只要 id+标题+层级（最省的「这里都有什么」）
 node cli/mm-cli.js get <项目> <id> --json          # 读单个节点（含 path 层级路径）
