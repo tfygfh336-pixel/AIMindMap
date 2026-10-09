@@ -839,7 +839,7 @@
       //（命中 ⇒ 投喂；投喂仍走同一条 sendNodesToSidebar ⇒ 文本只有一处实现 ✓）
       let verdictP = null;
       try {
-        if (MM.requestSelDropVerdict) verdictP = MM.requestSelDropVerdict();
+        if (MM.requestSelDropVerdict) verdictP = MM.requestSelDropVerdict({ x: e.clientX, y: e.clientY });
       } catch (err) {
         if (MM.setStatus) MM.setStatus('侧栏拖放：终点判定失败（' + ((err && err.message) || err) + '）', true);
       }
@@ -1328,8 +1328,8 @@
 
   /** P7：向主进程要"落点回执"（抽成 MM 上的小函数 ⇒ 冒烟可替换它来判"回执驱动投喂"这条接线 ✓）。
    *  没有桌面 API（纯浏览器里跑）⇒ 返回 null（= 没有回执 ⇒ 不投喂 ✓ 不静默假成功 ✗）。 */
-  function requestSelDropVerdict() {
-    if (window.desktop && window.desktop.dsh && window.desktop.dsh.selDragEnd) return window.desktop.dsh.selDragEnd();
+  function requestSelDropVerdict(pt) {
+    if (window.desktop && window.desktop.dsh && window.desktop.dsh.selDragEnd) return window.desktop.dsh.selDragEnd(pt);
     return null;
   }
   MM.requestSelDropVerdict = requestSelDropVerdict;

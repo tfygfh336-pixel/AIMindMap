@@ -94,7 +94,7 @@ contextBridge.exposeInMainWorld('desktop', {
      * 侧栏是原生 WebContentsView，指针进它的矩形后渲染层收不到 mouseup ✗）。
      * ⚠️ 与上面的 beginDrag/endDrag **不是一套**：那两个是"拖宽侧栏"用的 ✓ 别混用 ✗。 */
     selDragStart: (ids) => ipcRenderer.send('dsh-sidebar:sel-drag-start', ids),
-    selDragEnd: () => ipcRenderer.invoke('dsh-sidebar:sel-drag-end'),
+    selDragEnd: (pt) => ipcRenderer.invoke('dsh-sidebar:sel-drag-end', pt),
     beginDrag: () => ipcRenderer.send('dsh-sidebar:drag-start'),
     endDrag: () => ipcRenderer.send('dsh-sidebar:drag-end'),
     isDshOnly: () => ipcRenderer.invoke('dsh-sidebar:dsh-only'),

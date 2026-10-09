@@ -81,14 +81,18 @@ module.exports = [
     }
   },
   {
-    name: 'P4 ② 对照组：同样从已选中节点拖，但离右缘 80px 松手 ⇒ 什么都不该被送出去',
+    name: 'P4 ② 对照组：同样从已选中节点拖，但**在面板左侧**松手（离侧栏很远）⇒ 什么都不该被送出去',
     run: async (ctx) => {
       const st = await setupOne(ctx);
       if (!st.ok) return { ok: false, text: st.text };
       await ctx.exec('window.MM.setStatus("（对照组：起点干净）"); 1');
+      // ⚠️ 松手点必须**离原生侧栏足够远**：窄窗时侧栏能占到窗口右侧 690px，面板本身只剩 ~250px 宽，
+      //    "离右缘 80px"就会**真的落在侧栏上** ⇒ P7 的落点判定判 hit ✓ ⇒ 投喂 ✓ —— 那不是缺陷，
+      //    是本对照组的前提错了 ✗（实测：全链跑窗口更窄时这条假红 ✓）。改成"面板左缘 +80px"：
+      //    无论窗口多窄都远离侧栏 ✓，而"不在右缘 24px 内 ⇒ 不投喂"这条契约照旧被验 ✓。
       const edge = await execJson(ctx, `(function () {
         var p = window.MM.fdPanel(); var r = p.getBoundingClientRect();
-        return JSON.stringify({ ok: true, x: Math.round(r.right - 80) });
+        return JSON.stringify({ ok: true, x: Math.round(r.left + 80) });
       })()`);
       mouse(ctx, 'mouseMove', { x: st.x, y: st.y });
       mouse(ctx, 'mouseDown', { x: st.x, y: st.y });
@@ -99,7 +103,7 @@ module.exports = [
         var status = (document.querySelector('#status-text') || {}).textContent || '';
         var bad = /没送进侧边栏：|已把 \\d+ 个节点送进侧栏输入框|正在送进侧栏/.test(status);
         return JSON.stringify({ ok: !bad,
-          text: '离右缘 80px 松手 ⇒ 状态栏=' + JSON.stringify(status.slice(0, 60)) + '（不该有送栏结论 ✓）' });
+          text: '在面板左侧（x=' + ${edge.x} + '）松手 ⇒ 状态栏=' + JSON.stringify(status.slice(0, 60)) + '（不该有送栏结论 ✓）' });
       })()`);
       await ctx.exec('if (window.MM.clearSelection) window.MM.clearSelection(); 1');
       return { ok: !!res.ok, text: res.text };

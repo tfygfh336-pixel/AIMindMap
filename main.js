@@ -981,14 +981,19 @@ function registerIpc() {
     if (st.timer.unref) st.timer.unref();
     selDrag = st;
   });
-  ipcMain.handle('dsh-sidebar:sel-drag-end', () => {
+  ipcMain.handle('dsh-sidebar:sel-drag-end', (_e, atPoint) => {
     const st = selDrag; selDrag = null;
     if (st && st.timer) clearInterval(st.timer);
     if (!st) return { ok: false, reason: "no-active-drag", hit: false };
     let pt = st.pt, hit = false, reason = "", ptWin = null, viewRect = null;
     try {
-      if (!pt) { const p = screen.getCursorScreenPoint(); pt = { x: p.x, y: p.y }; }
       const wb = (st.win && !st.win.isDestroyed()) ? st.win.getBounds() : null;
+      // 渲染层真收到 mouseup ⇒ 它的 clientX/Y 才是**这次松手**的位置 ✓（换算到屏幕坐标）；
+      // 只有它没报（跨视图：指针停在原生侧栏视图上，渲染层收不到事件 ✗）才回退到轮询到的光标点 ✓。
+      const cb = (st.win && !st.win.isDestroyed() && st.win.getContentBounds) ? st.win.getContentBounds() : null;
+      if (atPoint && cb && typeof atPoint.x === 'number' && typeof atPoint.y === 'number') {
+        pt = { x: cb.x + atPoint.x, y: cb.y + atPoint.y };
+      } else if (!pt) { const p = screen.getCursorScreenPoint(); pt = { x: p.x, y: p.y }; }
       const vb = dshSidebar.viewBounds();
       viewRect = vb ? { x: vb.x, y: vb.y, width: vb.width, height: vb.height } : null;
       if (wb) ptWin = { x: pt.x - wb.x, y: pt.y - wb.y };   // 与 viewRect 同框 ⇒ 断言可独立复算 ✓
