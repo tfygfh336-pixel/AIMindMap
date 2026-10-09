@@ -972,6 +972,22 @@ function registerIpc() {
         }
       } catch (e2) { /* 起不来也照样试一次 ✓ 让 prefillComposer 报它自己的原因 */ }
     }
+    // 2026-10-09 真机反馈：侧栏处于**窄模式（xs）**时页面里没有可见输入框 ⇒ 投喂必然失败 ✗
+    //   实测：dsh-status 报 narrow.mode='xs' / viewWidth=0，而服务是 running ✓
+    //   ⇒ 投递前先确认够宽：不够就加宽（用现成的 setWidth ✓ 与"内核右栏要空间"同一条路 ✓）
+    if (!isSmoke) {
+      try {
+        const st1 = dshSidebar.getStatus() || {};
+        const vw = (st1.narrow && typeof st1.narrow.viewWidth === 'number') ? st1.narrow.viewWidth : null;
+        const w0 = typeof st1.width === 'number' ? st1.width : 0;
+        if ((vw !== null && vw < 640) || (vw === null && w0 < 720)) {
+          console.log('[dsh-sidebar] 侧栏太窄（view=' + vw + ' width=' + w0 + '）⇒ 加宽到 900 再投喂 ✓');
+          dshSidebar.setWidth(900);
+          await new Promise((r) => setTimeout(r, 400));   // 等布局重排（窄→宽实测要一点时间 ✓）
+        }
+      } catch (e3) { /* 加宽失败也照样试投喂 ✓ 让它给出自己的原因 ✗ */ }
+    }
+
     return dshSidebar.prefillComposer(text);
   }
   ipcMain.handle('dsh-sidebar:prefill', (_e, text) => prefillAfterEnsureOpen(text));
