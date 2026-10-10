@@ -42,8 +42,10 @@ description: "维护 AI MindMap 智能笔记工程（面向 AI 与人协作的�
 2. **看最近改了什么** → `CHANGELOG.md` 的 `[Unreleased]`（已完成、等发版的变更）。
    > 两者分工不同，**缺一边就会误判现状**：`[Unreleased]` = 做完但没发版；「在飞」= 还没做完。
 3. **找你这类的做法** → `docs/ARCHITECTURE.md` **§6 每任务四步**（读哪份 → 改哪里 → 跑什么 → 更新什么）。
-4. **改完怎么算完** → `npm run verify` **全链全绿**才算验收（9 条步骤；其中 G7 与 G6 共用一次运行
-   ⇒ 末尾打印的是"实跑 8 步"。**总预算 400s**，单项预算见 `scripts/verify.js` 的 `STEPS`，改动要带实测理由）。
+4. **改完怎么算完** → `npm run verify` **全链全绿**才算验收（**步骤数 11 步** —— 由 `scripts/verify.js` 的
+   `STEPS` 现场决定、**G6 校核这一句**（`docs/VERIFY.md` 是生成物，跟着 `STEPS` 走；本页是手写的，
+   曾经漂了两轮没人察 ✗）；其中 G7 与 G6 共用一次调用、没有自己的命令）。
+   **总预算 400s**，单项预算见 `scripts/verify.js` 的 `STEPS`，改动要带实测理由。
    只改文档时可先跑子集自检（`check:docs` + `check:rules` + `facts` + `check:encoding`，十几秒），**但它不是验收**。
    > 顺手看 verify 开头那行「**上次全链**」—— 它告诉你动手前的基线绿不绿（记录在 `.review/last-verify.json`）。
 5. **收尾** → 在 `CHANGELOG.md` 的 `[Unreleased]` 记一笔（新增文档还要先在 `docs/ARCHITECTURE.md` §5 登记）；

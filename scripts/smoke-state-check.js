@@ -89,7 +89,8 @@ const EXEMPT = /收尾-豁免:\s*\S/;
 
 /** 从源码里切出"段"：每个 `{ name: …, run: … }` 的断言入口。
  *  纯文本切分（不做语法分析）：从 `name:` 行开始，到下一个同层 `name:` 或文件末为止。
- *  为什么不用 AST：本工程零依赖，而这里要的只是"这一段里有没有那个词" ✓ */
+ *  为什么不用 AST：本工程**零必需运行时依赖**（唯一的例外是 PDF 解析用的 `pdfjs-dist`，与此处无关），
+ *  而这里要的只是"这一段里有没有那个词" ✓ */
 function segmentAssertions(src) {
   const lines = String(src).split(/\r?\n/);
   const starts = [];

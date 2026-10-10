@@ -8,7 +8,8 @@
  * ⚠️ **本文件不许出现异步 API**：它挂在 CLI 命令的依赖闭包里，而
  * `tests/cli-sync-invariant.test.js` 要求 CLI 命令同步完成（`cli/main.js` 的 invokeSync 依赖它）。
  *
- * docx 为什么自己解（不引依赖）：本工程**零运行时依赖**是硬约束（见 RULES / 08 的 D1）。
+ * docx 为什么自己解（不引依赖）：本工程**零必需运行时依赖**（唯一例外：PDF 解析用的 `pdfjs-dist`）
+ * 是硬约束（见 RULES / 08 的 D1）。
  * docx 就是一个 zip + 一份 `word/document.xml`：zip 的 deflate 用 node 自带的 zlib 就能解 ✓
  * ⇒ 大约 100 行换掉一个依赖，划算；且**边界要写明**（见 §docx 注释）。
  * ============================================================ */

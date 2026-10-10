@@ -307,8 +307,10 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 1. **逻辑单源**：转换/校验/序列化只实现一次；渲染层与 CLI 共用 src/。
 2. **分层单向**：renderer → main(IPC) → CLI → src → data；不反向依赖。
 3. **可测性优先**：核心逻辑全部可 headless 验证（npm test / npm run smoke）。
-4. **零运行时依赖**：生产代码只用 Node 内置 + 本地 vendor；npm 依赖仅限
-   electron / jsmind / vitest(dev) / electron-builder(dev)。
+4. **零必需运行时依赖**：生产代码只用 Node 内置 + 本地 vendor；npm 依赖仅限
+   electron / jsmind / vitest(dev) / electron-builder(dev)，**唯一例外是 PDF 解析用的 `pdfjs-dist`**
+   （只有 `scripts/pdf-outline-helper.mjs` 这个子进程 require 它 ⇒ 不用 PDF 导入就完全不载入；
+   原先这里写的是"零运行时依赖"，与 `package.json` 的 `dependencies` 不一致 —— 实测漂了一版 ✗）。
 5. **数据安全**：写盘必经校验，且**一律走 `writeFileAtomic`**（临时文件 + fsync + rename）；
    assets/attachments 引用相对路径；id 稳定规范。
 

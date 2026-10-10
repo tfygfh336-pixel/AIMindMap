@@ -72,7 +72,8 @@ function writeLastVerify(run) {
  * 恰恰多是"可疑的偶发 / 变慢"：2026-09-30 一晚连跑 6 次，症状每次都不一样。跑完只剩最后一条 ⇒
  * **事后无从查证**"是偶发还是真的变慢了"（几次记录摆在一起，规律一眼可见；只剩一条就什么都看不出）。
  * 为什么用 JSON Lines：一行一条、追加不覆盖、坏一行不毁前面所有行，用 `Get-Content | ConvertFrom-Json`
- * 或普通文本工具就能读，不需要任何依赖（工程零运行时依赖）。
+ * 或普通文本工具就能读，不需要任何依赖（工程**零必需运行时依赖**，唯一例外是 PDF 解析用的
+ * `pdfjs-dist` —— 它只在 `scripts/pdf-outline-helper.mjs` 那个子进程里载入）。
  * 为什么带 node / host / freeMemMB：这三点是"同一份代码、结果不同"时最先要排除的变量
  * （node 版本差异、换机器、当时内存压力）。
  * 为什么写失败不能影响结论：它只是**旁证**（与 `last-verify.json` 同一性质）。为了一条日志把一次
@@ -327,7 +328,7 @@ const STEPS = [
   {
     step: 7, gate: 'G6', label: '文档数字与版本一致',
     cmd: 'node scripts/doc-facts.js --check', shown: '`node scripts/doc-facts.js --check`',
-    covers: '文档数字与真值一致、版本号四处一致',
+    covers: '文档数字与真值一致（含**第一屏 `SKILL.md` 自报的验证链步骤数** == `STEPS.length`）、版本号四处一致',
     // 20 s：正常情况（采用链上用例数）约 0.7 s；**交接失效退化为自跑 vitest 时约 9.2 s**
     // 仍容得下，但更严重的退化会被抓住。
     budgetMs: 20000,

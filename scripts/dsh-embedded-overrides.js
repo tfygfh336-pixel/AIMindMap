@@ -29,7 +29,8 @@
  *    脚本在渲染时**从运行包自带的 `<runtime>/app/node_modules/@deepseek-ai/dsh-web-app/presets/
  *    <cloneFrom>.patch.yml` 读出清单原文**，只替换其中的 persona 文本 ⇒ 单一真源 ✓。
  *
- * 支持范围（白名单 —— 不做通用 YAML 序列化，工程零依赖 ✓）：
+ * 支持范围（白名单 —— 不做通用 YAML 序列化，工程**零必需运行时依赖** ✓；
+ * 唯一例外是 PDF 解析用的 `pdfjs-dist`）：
  *   permission.defaultPreset / agent-default-model.{provider,model,reasoningEffort}
  *   / permission-rules.rulesFile / auto-review.{maxReviewsPerTurn,fallbackPolicy}
  *   / $presets.<id>.{cloneFrom,order}（`cloneFrom` 必须是运行包里真实存在的 preset 名）

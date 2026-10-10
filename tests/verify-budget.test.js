@@ -101,11 +101,28 @@ describe('验证链定义自洽（scripts/verify.js 是唯一定义）', () => {
 
   it('**`docs/RULES.md` 声明的每个门禁都真的挂在链上**（防"加了门禁忘了挂"）', () => {
     const rules = fs.readFileSync(path.join(ROOT, 'docs', 'RULES.md'), 'utf8');
-    const declared = [...rules.matchAll(/^\|\s*\*\*(G\d+)\*\*/gm)].map((m) => m[1]);
+    const declared = [...rules.matchAll(/^\|\s*\*\*([GV]\d+)\*\*/gm)].map((m) => m[1]);
     const mounted = verify.STEPS.map((s) => s.gate);
     expect(declared.length, 'RULES.md 里应声明多个门禁').toBeGreaterThan(5);
     const missing = declared.filter((g) => !mounted.includes(g));
     expect(missing, '这些门禁在 RULES.md 里声明了，却没挂进 scripts/verify.js 的 STEPS').toEqual([]);
+  });
+
+  /* ------------------------------------------------------------
+   * **反方向**：挂了门禁但没人声明 —— 与上一条同一个"谁守门禁"元问题的另一半。
+   *
+   * 为什么需要（实测缺陷，2026-10-10）：V1/V2 挂进 `STEPS` 已多日，而 `docs/RULES.md` §2 表里
+   * **至今没有它们** ⇒ 接手者查规则表**根本不知道这两条门禁存在**。
+   * 上一条只守"声明 ⊆ 实现"（防加了门禁忘了挂），**不守"实现 ⊆ 声明"** —— 这是它的对偶缺口。
+   * 两向都判红才是闭包，且两边差集都要**点名**（`docs-for-ai` G6 的"声明 ↔ 实现双向"）。
+   * ------------------------------------------------------------ */
+  it('**反向：链上实现的每个门禁都必须在 `docs/RULES.md` §2 有声明**（防"挂了门禁没人声明"）', () => {
+    const rules = fs.readFileSync(path.join(ROOT, 'docs', 'RULES.md'), 'utf8');
+    const declared = [...rules.matchAll(/^\|\s*\*\*([GV]\d+)\*\*/gm)].map((m) => m[1]);
+    const mounted = verify.STEPS.map((s) => s.gate);
+    const undeclared = mounted.filter((g) => !declared.includes(g));
+    expect(undeclared, '这些门禁挂在 scripts/verify.js 的 STEPS 上，却没在 docs/RULES.md §2 声明'
+      + '（接手者查规则表查不到它们存在 ⇒ 把声明补进 §2 的门禁表）').toEqual([]);
   });
 
   it('package.json 的 verify 指向本 runner（不是又一份手抄的 && 链）', () => {

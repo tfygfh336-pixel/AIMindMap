@@ -40,7 +40,8 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 const DEFAULT_EFFORT = { explain: 'low', ask: 'medium' };
 
 /** 从 `--dump-config` 的文本里取 `agent-default-model` 的 provider/model（**不引 YAML 解析器**：
- *  本工程零运行时依赖；只做一次极窄扫描 ✓，扫不到返回 null ⇒ 调用方**放弃 effort 覆盖**并如实说明 ✓） */
+ *  本工程**零必需运行时依赖**（唯一例外：PDF 解析用的 `pdfjs-dist`）；只做一次极窄扫描 ✓，
+ *  扫不到返回 null ⇒ 调用方**放弃 effort 覆盖**并如实说明 ✓） */
 function parseAgentModel(dumpText) {
   const lines = String(dumpText || '').split(/\r?\n/);
   let i = lines.findIndex((l) => /^\s*-\s+id:\s*agent-default-model\s*$/.test(l));

@@ -17,7 +17,7 @@
 |------|----|------|
 | CLI 命令数 | 55 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 45 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 1026 用例 / 55 文件 | `tests/*.test.js`（vitest） |
+| 单元测试 | 1034 用例 / 55 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 310 | `scripts/cli-integration.js` |
 | 冒烟断言 | 204 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
@@ -31,7 +31,7 @@
 npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件自洽 → 可见性判据 → 冒烟域内自收尾 → 单元测试 → 文档数字与版本一致 → CLI 集成断言 → 数据校验 → 冒烟（Electron 无头）（合计预算 400s）
 ```
 
-每步可单独运行；下表即 `docs/RULES.md` 的**门禁 G1–G9**，顺序与 verify 链一致：
+每步可单独运行；下表即 `docs/RULES.md` §2 的**门禁表**（`G1–G9` 与 `V1`/`V2`），顺序与 verify 链一致：
 
 | 步 | 门禁 | 命令 | 耗时预算 | 覆盖 |
 |----|------|------|---------|------|
@@ -41,7 +41,7 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 | 4 | V1 | `node scripts/visibility-judge-check.js` | 10s | 冒烟断言**判据的来源**：名字里声称"可见/看不见/遮挡/在框外/在面板内"的断言，必须有真判据（`elementFromPoint` 命中测试 / `scanRegion` 等真帧像素）或一行显式豁免（`判据-豁免: <原因>`）—— 只用 rect / 类名 / `style.display` 判"可见"的断言对**裁切与遮挡是盲的**（实测：同一元素被 `overflow:hidden` 裁掉时 rect 读数与正常显示完全相同，而真帧像素 81 vs 768） |
 | 5 | V2 | `node scripts/smoke-state-check.js` | 10s | 冒烟**域内自收尾**（跨域状态污染）：凡是会**留下浮层/模态**的动作（`addNode`/`addTopic` 会顺手打开「编辑节点」框；`openFilePreview`/`openAudit`/`openPalette`/… 各自留下浮层），域末必须给出收尾（共用入口 `closeDialogs(ctx)`，或产品自己的关闭口）或写一行豁免 —— 而"每域隔离"收不掉 DOM 模态（它只还原项目数据 + 重开项目）⇒ 模态会跨域存活、盖住后面域的画布（实测：域 16 一处漏关 ⇒ 域 36/37 连锁红 11 条，而那两个文件一行都没改过 ✗）。运行时兜底是 main.js 的"域开始的干净前置"（有残留 ⇒ 该域判红并**点名是哪个域留下的**） |
 | 6 | G3 | `npm test`（附加 JSON reporter 把用例数交给 G6，省一次 vitest 重跑） | 60s | 共享核心 `src/` 各模块（含 data-store 原子写、BOM 容错与并发版本闸门） |
-| 7 | G6 | `node scripts/doc-facts.js --check` | 20s | 文档数字与真值一致、版本号四处一致 |
+| 7 | G6 | `node scripts/doc-facts.js --check` | 20s | 文档数字与真值一致（含**第一屏 `SKILL.md` 自报的验证链步骤数** == `STEPS.length`）、版本号四处一致 |
 | 8 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |
 | 9 | G4 | `node scripts/cli-integration.js` | 30s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |
 | 10 | G2 | `node cli/mm-cli.js validate-all` | 15s | 全部项目结构 + 悬挂链接 + 环 |

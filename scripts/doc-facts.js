@@ -322,6 +322,68 @@ function scanFutureVersions(currentVersion) {
   return hits;
 }
 
+/* ---------------- 第五类扫描：第一屏自报的验证链「步骤数」 ----------------
+ * 为什么需要（实测缺陷，2026-10-10）：`SKILL.md` 是 `docs-for-ai` 钦定的「**第一屏**」
+ * （新会话最先读的那一页），而它上面那句"9 条步骤"是**手写**的 —— 于是同一件事在两个地方
+ * 有两种命运：`docs/VERIFY.md` 是**生成物**（跟着 `scripts/verify.js` 的 `STEPS` 自动走 ✓），
+ * 第一屏那处**漂了两轮没人察** ✗（10-08 是 9 步、10-09 加 V1 变 10 步、10-10 加 V2 变 11 步）。
+ * 它附带的那句"实跑 8 步"更彻底：全仓 grep 不到任何实现 ⇒ 旧措辞连对应代码都没有了。
+ * ⇒ **最需要准确的同一页，恰好是唯一没有守卫的一页。** 这里给它一条机械判定：
+ *   第一屏里的步骤数声明（形如「步骤数 N 步」）必须等于 `verifyChain.STEPS.length`。
+ *
+ * 两个设计取舍（都是"防静默失效"，不是风格问题）：
+ *   ① 用**固定字样**「步骤数」锚定，而不是无差别扫所有「N 步」—— 第一屏还有「接手 5 步」，
+ *      那是"读几份文档"的步数，与验证链步数不是一回事，混扫会造**假红**（而假红的结局是被无视）。
+ *   ② **字样缺失也判红**（不是"没写就不检查"）—— 否则把这句话删掉/改写一下就**静默关掉了守卫**
+ *      （`testing-for-ai` B8：与声明无关的检查必须无条件跑，守卫自己要落在受检范围内）。
+ */
+const RE_STEP_CLAIM = /步骤数[^\d\n]{0,8}?(\d+)\s*步/g;
+
+/** 从一段文本里解析「步骤数 N 步」（纯函数，无 IO —— 便于单测）。标题行跳过，与 parseClaims 同口径。 */
+function parseStepCountClaims(text) {
+  const out = [];
+  String(text === undefined || text === null ? '' : text).split(/\r?\n/).forEach((line, i) => {
+    if (/^\s*#{1,6}\s/.test(line)) return;
+    RE_STEP_CLAIM.lastIndex = 0;
+    let m;
+    while ((m = RE_STEP_CLAIM.exec(line))) out.push({ line: i + 1, value: Number(m[1]) });
+  });
+  return out;
+}
+
+/** 读第一屏（`SKILL.md`）并解析步骤数声明。
+ *  传了 textIn 就用它（便于单测注入）；读不到文件时 `claims: null` = **采不到真值**，
+ *  下游必须判红 —— 不能把"没读到"当成"没声明"再放行。 */
+function scanStepCount(textIn) {
+  const rel = 'SKILL.md';
+  const want = verifyChain.STEPS.length;
+  if (textIn !== undefined && textIn !== null) return { rel, claims: parseStepCountClaims(textIn), want };
+  try {
+    return { rel, claims: parseStepCountClaims(fs.readFileSync(path.join(ROOT, rel), 'utf8')), want };
+  } catch (e) {
+    return { rel, claims: null, want, error: (e && e.message) || String(e) };
+  }
+}
+
+/** 纯判定：通过 ⇒ null，否则返回**指路**的报文（F4 报错即教程）。
+ *  @param {{line:number,value:number}[]|null} claims
+ *  @param {number} want 真值 = `scripts/verify.js` 的 `STEPS.length`
+ */
+function stepCountProblem(claims, want) {
+  if (claims === null) {
+    return '无法读取第一屏 `SKILL.md`（采不到真值 ⇒ 门禁不能自称已校验）—— 确认文件存在且编码正常';
+  }
+  if (!claims.length) {
+    return '`SKILL.md` 里找不到步骤数声明（形如「步骤数 N 步」）—— 删掉/改写这句话就等于**静默关掉**'
+      + '这条判定，故判红。请在「接手 5 步」第 4 步写回：**步骤数 ' + want + ' 步**';
+  }
+  const bad = claims.filter((c) => c.value !== want);
+  if (!bad.length) return null;
+  return bad.map((c) => '`SKILL.md` 第 ' + c.line + ' 行写的是「步骤数 ' + c.value + ' 步」，应为 **' + want
+    + ' 步**（= `scripts/verify.js` 的 `STEPS.length`）').join('；')
+    + ' —— 第一屏是手写的、没有生成器守着它，改 `STEPS` 必须同批改这一句 ✗';
+}
+
 /* ---------------- 输出 ---------------- */
 function printFacts(v) {
   console.log('AI MindMap 文档事实基线（权威值，直接来自代码/测试）');
@@ -471,6 +533,18 @@ function main() {
     console.log('✓ 文档里的版本号都不高于当前发布版本（或已标明是计划/迭代）');
   }
 
+  // 第一屏（`SKILL.md`）自报的验证链步骤数 —— **手写第一屏是唯一没有生成器守着的关键页**
+  // （实测：它漂了两轮没人察，而 docs/VERIFY.md 那处是生成物、自动跟着 STEPS 走）
+  const stepScan = scanStepCount();
+  const stepMsg = stepCountProblem(stepScan.claims, stepScan.want);
+  if (stepMsg) {
+    console.log('✗ 第一屏的验证链步骤数与 `scripts/verify.js` 不一致：');
+    console.log('   ' + stepMsg);
+    bad = true;
+  } else {
+    console.log('✓ 第一屏 `SKILL.md` 自报的步骤数与 `STEPS` 一致（' + stepScan.want + ' 步）');
+  }
+
   // 交接面提示（**只提示不判红**）：[Unreleased] 太长说明该发版了 —— 它不受滚动窗口约束
   try {
     const cl = path.join(ROOT, 'CHANGELOG.md');
@@ -542,7 +616,7 @@ function renderVerifyDoc(v) {
       + '（合计预算 ' + (verifyChain.TOTAL_BUDGET_MS / 1000) + 's）',
     '```',
     '',
-    '每步可单独运行；下表即 `docs/RULES.md` 的**门禁 G1–G9**，顺序与 verify 链一致：',
+    '每步可单独运行；下表即 `docs/RULES.md` §2 的**门禁表**（`G1–G9` 与 `V1`/`V2`），顺序与 verify 链一致：',
     '',
     '| 步 | 门禁 | 命令 | 耗时预算 | 覆盖 |',
     '|----|------|------|---------|------|',
@@ -704,5 +778,7 @@ module.exports = {
   parseClaims, scan, trackedFiles, markdownFiles,
   findSizeClaim, scanSizeClaims, SIZE_ANCHOR,
   findFutureVersion, scanFutureVersions, docSystemSnapshot, renderVerifyDoc,
-  parseVitestCount
+  parseVitestCount,
+  // 第一屏（`SKILL.md`）步骤数 ↔ `STEPS.length`（纯函数那一半单独导出，便于单测）
+  parseStepCountClaims, scanStepCount, stepCountProblem
 };

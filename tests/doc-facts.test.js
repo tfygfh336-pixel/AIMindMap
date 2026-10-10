@@ -15,9 +15,14 @@
  * ============================================================ */
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const df = require('../scripts/doc-facts.js');
+const verify = require('../scripts/verify.js');
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /** 取某一类声明（便于断言） */
 const claimsOf = (line, kind) => df.parseClaims(line).filter((c) => c.kind === kind);
@@ -211,5 +216,53 @@ describe('parseVitestCount：取总数，不取 passed', () => {
 
   it('没有括号的退化形态 ⇒ 退回 passed（不静默给 0）', () => {
     expect(df.parseVitestCount('Tests  7 passed')).toBe(7);
+  });
+});
+
+/* ------------------------------------------------------------
+ * 第一屏（`SKILL.md`）的验证链步骤数 ↔ `scripts/verify.js` 的 `STEPS.length`
+ *
+ * 真实缺陷（2026-10-10 实测）：第一屏手写"9 条步骤"，而 `STEPS` 现场已经 **11 步**
+ * （10-08 九步 → 10-09 加 V1 十步 → 10-10 加 V2 十一步），**漂了两轮没人察**；
+ * 它附带的"实跑 8 步"在全仓 grep 不到任何实现。`docs/VERIFY.md` 那处是生成物所以自动准 ——
+ * 于是**最需要准确的同一页，恰好是唯一没有守卫的一页**。这组断言就是那条守卫的判别力证明：
+ * 只注入"改成别的数字"→ 必红；**把这句话删掉也要红**（否则守卫能被受检方自己关掉 ✗）。
+ * ------------------------------------------------------------ */
+describe('第一屏步骤数：与 `STEPS.length` 绑死（手写页的机械守卫）', () => {
+  it('认出中文自然写法「**步骤数 11 步**」', () => {
+    expect(df.parseStepCountClaims('（**步骤数 11 步** —— 由 `STEPS` 现场决定）'))
+      .toEqual([{ line: 1, value: 11 }]);
+  });
+
+  it('「接手 5 步」**不算**步骤数声明（那是"读几份文档"，混扫会造假红）', () => {
+    expect(df.parseStepCountClaims('## 接手 5 步（**第一次进入本工程就按这个顺序走**）')).toEqual([]);
+    expect(df.parseStepCountClaims('按这五步走，够你正确使用它')).toEqual([]);
+  });
+
+  it('标题行整行跳过（与 parseClaims 同口径）', () => {
+    expect(df.parseStepCountClaims('#### 步骤数 9 步')).toEqual([]);
+  });
+
+  it('判定：数字不符 ⇒ 报出**行号 + 现值 + 应为**（报错即教程）', () => {
+    const msg = df.stepCountProblem([{ line: 45, value: 9 }], 11);
+    expect(msg).toContain('第 45 行');
+    expect(msg).toContain('9');
+    expect(msg).toContain('11');
+    expect(df.stepCountProblem([{ line: 45, value: 11 }], 11)).toBe(null);
+  });
+
+  it('**声明缺失也判红**（不是"没写就不检查"——否则删掉那句话就把守卫关掉了）', () => {
+    expect(df.stepCountProblem([], 11)).toContain('找不到步骤数声明');
+  });
+
+  it('**采不到真值（读不到文件）也判红**，不许静默放行', () => {
+    expect(df.stepCountProblem(null, 11)).toContain('采不到真值');
+  });
+
+  it('真实工程：`SKILL.md` 里的步骤数 == `STEPS.length`（这就是那条判定的现场形态）', () => {
+    const scan = df.scanStepCount(require('node:fs').readFileSync(path.join(ROOT, 'SKILL.md'), 'utf8'));
+    expect(scan.claims.length, 'SKILL.md 里必须有一处步骤数声明').toBeGreaterThan(0);
+    expect(df.stepCountProblem(scan.claims, scan.want)).toBe(null);
+    expect(scan.want).toBe(verify.STEPS.length);
   });
 });
