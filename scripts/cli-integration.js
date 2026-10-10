@@ -38,6 +38,16 @@ const PROJ = 'it-probe-' + Date.now().toString(36);
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-it-'));
 const OUT_JSON = path.join(TMP, 'out.aimap.json');
 
+/* ---------------- 沙箱 worker 模式（由下面 §9.2 的 runSandboxWorker 子进程调起） ----------------
+ * 为什么需要单独一个进程：§9.2 的**导入类**探针会真的新建项目，而本轮新增的幂等闸门要
+ * **扫全部项目**比对来源指纹 —— 探针若落在真实 `projects/` 里，使用者导入同一个文件时会被
+ * 自己留下的残留**无端拒绝**（跨运行的污染，比"留个空目录"更毒 ✗）。
+ * 重定向项目根只有一条路：`cli/core.js` 在**模块加载时**读 `AI_MINDMAP_PROJECTS_DIR`，
+ * 父进程在本进程里来不及改 ⇒ 由父进程把 env 传进来、另起一个进程跑。
+ * ⚠️ 本分支必须在**任何会写盘 / 造探针的代码之前**就 return 掉
+ *   （顶层 `return` 在 CJS 里合法；`runSandboxWorker` 是函数声明，提升可用）。 */
+if (process.argv[2] === '--sandbox-worker') { runSandboxWorker(); return; }
+
 /* ---------------- 开工前清扫历史残留 ----------------
  * 本脚本在**真实** projects/ 下造探针项目（store 与 CLI 同源，不另设根），
  * 结尾统一 rm。但脚本被中断（Ctrl+C / 超时被杀 / 崩溃）时收尾不执行 ——
@@ -89,6 +99,88 @@ let passed = 0, failed = 0;
 function check(name, cond, detail) {
   if (cond) { passed++; console.log('[PASS] ' + name + (detail ? ' :: ' + detail : '')); }
   else { failed++; console.log('[FAIL] ' + name + (detail ? ' :: ' + detail : '')); }
+}
+
+/* ---------------- §9.2 的沙箱 worker ----------------
+ * 在**项目根 = %TEMP% 沙箱**的进程里跑全部导入类探针，只吐一个 JSON 交给父进程判定
+ *（判定留在父进程 ⇒ PASS/FAIL 计数、`check(` 计数、报错文案都在一处，不分裂成两套）。
+ * 覆盖：来源指纹 origin（幂等闸门 / --force / 指纹随内容变 / get 读得到 / stats 报得出）
+ *      + 目录入参（响亮拒绝 + 给出路）+ 旧数据（无 origin）不受影响。 */
+function runSandboxWorker() {
+  const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-imp-'));
+  const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-impdir-'));
+  const wf = (rel, text) => { const p = path.join(WORK, rel); fs.writeFileSync(p, text, 'utf8'); return p; };
+  const go = (args) => {
+    const r = invokeSync(args);
+    return { code: r.code, out: (r.stdout + r.stderr).trim() };
+  };
+  const J = (r) => { try { return JSON.parse(r.out); } catch (e) { return null; } };
+  const statsOf = (name) => J(go(['stats', name, '--json']));
+  const projectNames = () => {
+    const j = J(go(['projects', '--json']));
+    return Array.isArray(j) ? j.map((p) => p.name).sort() : [];
+  };
+
+  const out = { work: WORK, dir: DIR };
+  try {
+    // 三份**不同内容**的来源文件（注意 fA2 只比 fA 多一个字符 —— 指纹必须变）
+    const fA = wf('docA.md', '# 主题甲\n## 子一\n正文\n\n# 主题乙\n## 子二\n');
+    const fA2 = wf('docA-one-byte.md', '# 主题甲\n## 子一\n正文!\n\n# 主题乙\n## 子二\n');
+    const fB = wf('docB.md', '# 另一份文档\n正文 B\n');
+
+    // ── A. import-project：同一份文档导两次**不许**产生第二棵树 ──
+    out.impProjFirst = go(['import-project', 'imp-a', fA]);
+    out.projectsAfterFirst = projectNames();
+    out.impProjSecondOtherName = go(['import-project', 'imp-b', fA]);   // ← 换个项目名再导同一份
+    out.projectsAfterSecond = projectNames();
+    out.impProjNoForce = go(['import-project', 'imp-b', fA]);           // 同名 ⇒ 也会被"项目已存在"拦
+    out.impProjForced = go(['import-project', 'imp-b', fA, '--force']); // 显式 --force ⇒ 放行
+    out.projectsAfterForce = projectNames();
+    out.rootA = J(go(['get', 'imp-a', 'root', '--json']));
+    out.statsA = statsOf('imp-a');
+    out.readBriefA = (() => {
+      const j = J(go(['read', 'imp-a', '--json', '--brief']));
+      const n = ((j && j.nodes) || []).filter((x) => x.origin)[0];
+      return n ? { id: n.id, src: n.origin.src, sha256: n.origin.sha256 } : null;
+    })();
+    out.dryRunDup = J(go(['import-project', 'imp-c', fA, '--dry-run', '--json']));
+    out.impProjChanged = go(['import-project', 'imp-d', fA2]);          // 改一个字节 ⇒ 指纹变 ⇒ 放行
+    out.projectsAfterChanged = projectNames();
+
+    // ── B. 旧数据（一个 origin 都没有）读 / 写 / 校验一切照旧 ──
+    out.legacyInit = go(['init', 'legacy']);
+    out.legacyAdd = go(['add', 'legacy', 'root', '--topic', '手写的', '--id', 'n1']);
+    out.legacyValidate = go(['validate', 'legacy']);
+    out.legacyEdit = go(['edit', 'legacy', 'n1', '--topic', '手写的（改过）']);
+    out.legacyValidateAgain = go(['validate', 'legacy']);
+    out.legacyGet = J(go(['get', 'legacy', 'n1', '--json']));
+    out.legacyStats = statsOf('legacy');
+
+    // ── C. import-md：同一份 md 追加两次**不许**生成第二棵子树 ──
+    out.mdFirst = go(['import-md', 'legacy', fB]);
+    out.mdStatsAfterFirst = statsOf('legacy');
+    out.mdSecond = go(['import-md', 'legacy', fB]);
+    out.mdStatsAfterRefuse = statsOf('legacy');
+    out.mdForced = go(['import-md', 'legacy', fB, '--force']);
+    out.mdStatsAfterForce = statsOf('legacy');
+
+    // ── D. 目录入参：两条命令都要响亮拒绝 + 给出路，且**一点都不许写** ──
+    const projBeforeDir = projectNames();
+    out.dirImportProject = go(['import-project', 'imp-dir', DIR]);
+    out.dirImportMd = go(['import-md', 'legacy', DIR]);
+    out.projectsAfterDir = projectNames();
+    out.projectsBeforeDir = projBeforeDir;
+    out.missingImportProject = go(['import-project', 'imp-gone', path.join(WORK, 'nope.md')]);
+    out.missingImportMd = go(['import-md', 'legacy', path.join(WORK, 'nope.md')]);
+    out.projectsAfterMissing = projectNames();
+    out.ok = true;
+  } catch (e) {
+    out.ok = false;
+    out.error = String((e && e.stack) || e);
+  }
+  // ⚠️ 只在这里吐一次 JSON：上面的 `invokeSync` 自己会捕获 stdout ⇒ 不会污染这一行。
+  //    父进程按"最后一行 JSON"解析，坏掉就让断言**红**（绝不静默空转 ✗）。
+  process.stdout.write('\n' + JSON.stringify(out) + '\n');
 }
 
 /* ---------------- 用例序列 ---------------- */
@@ -723,6 +815,136 @@ check('import-project 无书签但有文字层的 PDF ⇒ 回退文字层建成�
   })(), pdfTextDetail);
 check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已有项目）',
   (() => { const r4 = run(['import-project', PROJ, BIGMD]); return r4.status !== 0 && /项目已存在/.test(r4.err + r4.out); })());
+
+/* ---------------- 9.2 导入的**来源指纹**（origin）与目录入参：幂等 + 响亮拒绝 ----------------
+ * ⚠️ **全部走 %TEMP% 沙箱的子进程**（见文件头的 `--sandbox-worker` 说明）：
+ *   本段会真的新建项目，而幂等闸门要**扫全部项目**比对来源指纹 —— 探针落在真实 `projects/`
+ *   里会让使用者导入同一个文件时被残留**无端拒绝**（跨运行的污染 ✗）。真实 `projects/` 零接触 ✓。
+ *
+ * 两件事一起验（它们同属"批量/整库导入"这条路）：
+ *   ① 节点 id 由 `Date.now()+随机` 生成 ⇒ 同一份文档导两次会得到**两棵不相交的树**；
+ *      `origin.src + origin.sha256` 是唯一能认出"这份导过了"的判据 ⇒ 二次导入默认**拒绝并指名**，
+ *      `--force` 是显式出口（取舍：默认拒绝，因为重复导入是不可察觉的污染；--force 是有意的重复）。
+ *   ② `<目录>` 入参原先露 `EISDIR: illegal operation on a directory, read`（原因不准、没有出路）——
+ *      而"想导整库"的人第一步就会撞到它 ⇒ 必须响亮拒绝 + 说清 `import-dir` 未实现 + 给出逐文件流程。 */
+{
+  const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-sb-'));
+  const sp = spawnSync(process.execPath, [__filename, '--sandbox-worker'], {
+    cwd: ROOT, encoding: 'utf8',
+    env: Object.assign({}, process.env, { AI_MINDMAP_PROJECTS_DIR: SANDBOX })
+  });
+  const raw = String(sp.stdout || '');
+  const SBJ = (() => { try { return JSON.parse(raw.trim().split('\n').pop()); } catch (e) { return null; } })();
+  const sbFailDetail = 'exit=' + sp.status + ' worker=' + (SBJ ? JSON.stringify(SBJ.error || null) : '没有 JSON 输出')
+    + ' stderr=' + String(sp.stderr || '').trim().slice(0, 180);
+  // 前置：worker 挂了后面每条都必须**红**（`!!(SBJ && ...)` 保证不空转）—— 空转的断言比没有断言更坏 ✗
+  check('沙箱 worker 正常产出（项目根已重定向到 %TEMP%；它一崩，下面每条都得红而不是空转）',
+    !!(SBJ && SBJ.ok === true && SBJ.impProjFirst), sbFailDetail);
+  const has = (p) => !!(SBJ && SBJ.ok === true && p);
+
+  // ── ① 同一份文档导两次**不会生成第二棵树**（本条的验收核心）──
+  check('★ import-project 第一次导入 ⇒ 成功且报告来源指纹（origin 记在树根上）',
+    has(SBJ.impProjFirst && SBJ.impProjFirst.code === 0 && /来源指纹/.test(SBJ.impProjFirst.out)),
+    has(SBJ.impProjFirst) ? SBJ.impProjFirst.out.slice(0, 150) : sbFailDetail);
+  check('★ 同一份文档换个项目名再导一次 ⇒ **被拒**（非 0 + 指名上次导到哪个项目/节点 + 给出 --force 出路）',
+    has(SBJ.impProjSecondOtherName && SBJ.impProjSecondOtherName.code !== 0
+      && /这份文档已经导入过/.test(SBJ.impProjSecondOtherName.out)
+      && /项目 imp-a 的节点 root/.test(SBJ.impProjSecondOtherName.out)
+      && /--force/.test(SBJ.impProjSecondOtherName.out)),
+    has(SBJ.impProjSecondOtherName) ? SBJ.impProjSecondOtherName.out.slice(0, 200) : sbFailDetail);
+  check('★★ 被拒之后**盘上没有第二个项目**（"拒绝"是真的没写，不是"报错了但还是建了"）',
+    has(Array.isArray(SBJ.projectsAfterSecond) && SBJ.projectsAfterSecond.join(',') === 'imp-a'),
+    has(SBJ.projectsAfterSecond) ? '项目列表=[' + SBJ.projectsAfterSecond.join(' ') + ']' : sbFailDetail);
+  check('--force 是显式出口：给了它才允许第二棵树（取舍写在 registry 的 desc 里）',
+    has(SBJ.impProjForced && SBJ.impProjForced.code === 0 && /第 2 份/.test(SBJ.impProjForced.out)
+      && SBJ.projectsAfterForce.join(',') === 'imp-a,imp-b'),
+    has(SBJ.projectsAfterForce) ? '项目列表=[' + SBJ.projectsAfterForce.join(' ') + ']' : sbFailDetail);
+  check('指纹对**内容**敏感：同一份文档改一个字节再导 ⇒ 指纹变了 ⇒ 正常放行（不误杀真新内容）',
+    has(SBJ.impProjChanged && SBJ.impProjChanged.code === 0
+      && SBJ.projectsAfterChanged.indexOf('imp-d') >= 0),
+    has(SBJ.impProjChanged) ? 'code=' + SBJ.impProjChanged.code + ' 项目=[' + SBJ.projectsAfterChanged.join(' ') + ']' : sbFailDetail);
+
+  // ── ② 来源指纹读得到 / 统计得出来 ──
+  check('get --json 读得到 origin（kind/src/sha256/at/tool 五项齐全，sha256 是 64 位十六进制）',
+    has(SBJ.rootA && SBJ.rootA.origin && SBJ.rootA.origin.kind === 'import'
+      && /docA\.md$/.test(SBJ.rootA.origin.src) && /^[0-9a-f]{64}$/.test(SBJ.rootA.origin.sha256)
+      && typeof SBJ.rootA.origin.at === 'string' && SBJ.rootA.origin.tool === 'import-project'),
+    has(SBJ.rootA && SBJ.rootA.origin) ? JSON.stringify(SBJ.rootA.origin).slice(0, 170) : sbFailDetail);
+  check('read --json --brief 也带 origin（批量导入时"这个文件导过没有"要能一眼扫出来）',
+    has(SBJ.readBriefA && /docA\.md$/.test(SBJ.readBriefA.src)),
+    has(SBJ.readBriefA) ? JSON.stringify(SBJ.readBriefA).slice(0, 150) : sbFailDetail);
+  check('stats 报"有多少节点带来源"+"涉及几份不同来源"（排查用；本段是 2 次 --force 导入 ⇒ 来源数仍是 1）',
+    has(SBJ.statsA && SBJ.statsA.originNodes === 1 && SBJ.statsA.originSources === 1),
+    has(SBJ.statsA) ? 'originNodes=' + SBJ.statsA.originNodes + ' originSources=' + SBJ.statsA.originSources : sbFailDetail);
+  check('--dry-run 预览也如实报"这份导过了"（预览说能导、真导被拒，是最烦人的落差 ✗）',
+    has(SBJ.dryRunDup && SBJ.dryRunDup.dryRun === true && SBJ.dryRunDup.wouldRefuse === true
+      && SBJ.dryRunDup.duplicate && SBJ.dryRunDup.duplicate.project === 'imp-a'
+      && !!SBJ.dryRunDup.origin && /^[0-9a-f]{64}$/.test(SBJ.dryRunDup.origin.sha256)),
+    has(SBJ.dryRunDup) ? ('wouldRefuse=' + SBJ.dryRunDup.wouldRefuse + ' duplicate='
+      + JSON.stringify(SBJ.dryRunDup.duplicate)) : sbFailDetail);
+
+  // ── ③ 旧数据（无 origin）不受影响：读 / 写 / 校验全照旧 ──
+  check('旧数据（一个 origin 都没有）validate 通过、edit 能改、get 能读 —— 新字段没给它添半点要求',
+    has(SBJ.legacyValidate && SBJ.legacyValidate.code === 0
+      && SBJ.legacyEdit && SBJ.legacyEdit.code === 0
+      && SBJ.legacyValidateAgain && SBJ.legacyValidateAgain.code === 0
+      && SBJ.legacyGet && SBJ.legacyGet.topic === '手写的（改过）'
+      && !('origin' in (SBJ.legacyGet || {}))),
+    has(SBJ.legacyGet) ? ('validate=' + SBJ.legacyValidate.code + '/' + SBJ.legacyValidateAgain.code
+      + ' edit=' + SBJ.legacyEdit.code + ' topic=' + SBJ.legacyGet.topic
+      + ' 有 origin 键=' + ('origin' in SBJ.legacyGet)) : sbFailDetail);
+  check('旧数据 stats 的 origin 计数是 0（不是 undefined/NaN —— 那会让"没来源"与"算不出来"分不清）',
+    has(SBJ.legacyStats && SBJ.legacyStats.originNodes === 0 && SBJ.legacyStats.originSources === 0),
+    has(SBJ.legacyStats) ? ('originNodes=' + SBJ.legacyStats.originNodes + ' originSources=' + SBJ.legacyStats.originSources) : sbFailDetail);
+
+  // ── ④ import-md：同一份 md 追加两次**不许**生成第二棵子树 ──
+  check('★ import-md 第一次导入 ⇒ 成功；第二次同一份 ⇒ **被拒**且盘上节点数不变',
+    has(SBJ.mdFirst && SBJ.mdFirst.code === 0 && SBJ.mdSecond && SBJ.mdSecond.code !== 0
+      && /这份文档已经导入过/.test(SBJ.mdSecond.out)
+      && SBJ.mdStatsAfterRefuse && SBJ.mdStatsAfterFirst
+      && SBJ.mdStatsAfterRefuse.nodes === SBJ.mdStatsAfterFirst.nodes),
+    has(SBJ.mdStatsAfterRefuse) ? ('第二次 code=' + (SBJ.mdSecond || {}).code
+      + ' 节点数 ' + SBJ.mdStatsAfterFirst.nodes + ' → ' + SBJ.mdStatsAfterRefuse.nodes) : sbFailDetail);
+  check('import-md --force ⇒ 放行，且 stats 一眼看得出那是"同一份来源的第 2 份"（节点数涨、来源数不涨）',
+    has(SBJ.mdForced && SBJ.mdForced.code === 0 && SBJ.mdStatsAfterForce
+      && SBJ.mdStatsAfterForce.nodes > SBJ.mdStatsAfterRefuse.nodes
+      && SBJ.mdStatsAfterForce.originSources === SBJ.mdStatsAfterRefuse.originSources),
+    has(SBJ.mdStatsAfterForce) ? ('节点 ' + SBJ.mdStatsAfterRefuse.nodes + '→' + SBJ.mdStatsAfterForce.nodes
+      + ' 来源数 ' + SBJ.mdStatsAfterRefuse.originSources + '→' + SBJ.mdStatsAfterForce.originSources) : sbFailDetail);
+
+  // ── ⑤ 目录入参：响亮拒绝 + 给出路 + **一点都不许写** ──
+  const dirOk = (r, cmd) => !!(r && r.code !== 0 && r.out.indexOf('目录') >= 0
+    && r.out.indexOf('不是文件') >= 0 && r.out.indexOf('import-dir') >= 0
+    && r.out.indexOf('尚未实现') >= 0 && r.out.indexOf('import-md') >= 0
+    && r.out.indexOf('EISDIR') < 0);
+  check('★ import-project 拿到**目录** ⇒ 退出 1 + 说清"这是目录不是文件" + 如实说 import-dir 未实现 + 给出逐文件流程（旧行为：露 EISDIR）',
+    has(dirOk(SBJ.dirImportProject, 'import-project')),
+    has(SBJ.dirImportProject) ? SBJ.dirImportProject.out.slice(0, 200) : sbFailDetail);
+  check('★ import-md 拿到**目录** ⇒ 同一份报文（同一处实现，两条命令不各写一套）',
+    has(dirOk(SBJ.dirImportMd, 'import-md')),
+    has(SBJ.dirImportMd) ? SBJ.dirImportMd.out.slice(0, 200) : sbFailDetail);
+  check('目录被拒之后**没有留下任何项目**（拒绝是真的没写）',
+    has(SBJ.projectsAfterDir && SBJ.projectsBeforeDir
+      && SBJ.projectsAfterDir.join(',') === SBJ.projectsBeforeDir.join(',')),
+    has(SBJ.projectsAfterDir) ? '项目列表未变=[' + SBJ.projectsAfterDir.join(' ') + ']' : sbFailDetail);
+  check('路径不存在 ⇒ 原因准确（"文件不存在" + 说清相对路径按哪个目录解析），不是权限/格式别的原因',
+    has(SBJ.missingImportProject && SBJ.missingImportProject.code !== 0
+      && /文件不存在/.test(SBJ.missingImportProject.out)
+      && !/权限/.test(SBJ.missingImportProject.out)
+      && SBJ.missingImportMd && SBJ.missingImportMd.code !== 0
+      && /文件不存在/.test(SBJ.missingImportMd.out)),
+    has(SBJ.missingImportProject) ? SBJ.missingImportProject.out.slice(0, 150) : sbFailDetail);
+  check('不存在路径也没有留下项目（两条命令的入参闸门都在**写盘之前**）',
+    has(SBJ.projectsAfterMissing && SBJ.projectsAfterMissing.join(',') === 'imp-a,imp-b,imp-d,legacy'),
+    sbFailDetail + ' 项目=[' + ((SBJ && SBJ.projectsAfterMissing) || []).join(' ') + ']');
+
+  // 收尾：沙箱子进程、它造的工作目录、以及**项目根沙箱**一起清掉（真实 projects/ 全程零接触）
+  try { fs.rmSync(SBJ && SBJ.work ? SBJ.work : SANDBOX, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+  try { fs.rmSync(SBJ && SBJ.dir ? SBJ.dir : SANDBOX, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+  check('沙箱收尾：%TEMP% 里的沙箱项目根已删除（不给下次运行留"这份导过了"的假红）',
+    !fs.existsSync(SANDBOX), SANDBOX);
+}
 
 // 10. add-file 附件 → export-md 文件夹导出（md + 附件复制 + 相对链接）
 const ATT = path.join(TMP, 'note.md');
@@ -1492,6 +1714,46 @@ check('changes --limit 非法 ⇒ 非 0（旧行为：NaN > 0 为假 ⇒ 悄悄�
 r = run(['ask', PROJ, 'a', '--kind', 'explain', '--timeout', 'abc', '--dry-run']);
 check('ask --timeout 非法 ⇒ 非 0（旧行为：静默退回默认超时 —— 而这条命令烧真实额度）',
   !ok(r.out) && r.code !== 0 && /--timeout 必须是/.test(r.out), r.out.trim().slice(0, 120));
+
+/* 21c. **单短横线**选项：失败原因必须准（同 21b 的"不静默"，但病根不同）
+ * 缺陷取证（本轮实测）：`node cli/mm-cli.js read -x` ⇒ `error: 项目不存在: -x`。
+ *   退出码非 0 是**响亮**的，但**原因错**：它把 `-x` 当成了项目名 ⇒ 人和 AI 都会去查
+ *   "项目 -x 为什么不存在"，而真因是"这个选项写错了"（本工程约定长选项 `--xxx`）。
+ *   根因：21b 那个守门点只认 `--xxx`（`a.slice(0,2) !== '--'` 直接跳过单横线），
+ *   于是单横线一路落到位置参数。
+ * 边界（不许把正常用法判死 ✗）：
+ *   · `-h` 是工程**既有**短选项（`<命令> -h` 打印该命令用法、exit 0）⇒ 原样保留 ✓；
+ *   · 被当作**选项值**的 `-x`（`--topic -x`）是正常用法 ⇒ 不许误杀 ✓（只看位置参数）。
+ * 判据用**文案里的关键短语 + 退出码**，并显式核对"不再出现旧的那句误导文案"。 */
+r = run(['read', '-x']);
+check('单短横线未知选项（-x）⇒ 非 0 且**原因准确**：不认识的选项 + 长选项约定（旧行为：项目不存在: -x）',
+  !ok(r.out) && r.code !== 0 && /不认识的选项 -x/.test(r.out) && /长选项/.test(r.out)
+    && !/项目不存在/.test(r.out) && /read 支持的选项/.test(r.out),
+  r.out.trim().slice(0, 190));
+r = run(['stats', '-v']);
+check('单短横线未知选项（-v，工程无此语义）⇒ 同样报"不认识"，不冒充别的错因',
+  !ok(r.out) && r.code !== 0 && /不认识的选项 -v/.test(r.out) && !/项目不存在/.test(r.out),
+  r.out.trim().slice(0, 150));
+r = run(['read', '-h']);
+check('正向对照：`-h` 的既有语义保留（`<命令> -h` 打该命令用法、exit 0）—— 不许判死正常用法',
+  r.code === 0 && /支持的选项:/.test(r.out) && /AI MindMap CLI — read/.test(r.out),
+  r.out.trim().split('\n').slice(0, 2).join(' ｜ '));
+// 用节点 a 的 topic 当"以 - 开头的值"的载体。⚠️ 用完**逐字还原**：后面的段落还要用这个项目，
+// 留一个改过的 topic 会给别人埋一个难查的假红（本文件前面已吃过同类亏）。
+const topicABefore = (() => {
+  try { return JSON.parse(run(['get', PROJ, 'a', '--json']).out).topic; } catch (e) { return null; }
+})();
+r = run(['edit', PROJ, 'a', '--topic', '-x']);
+check('正向对照：以 "-" 开头的**值**照旧可用（`--topic -x`：扫描只看位置参数，不误杀）',
+  ok(r.out) && /已更新/.test(r.out), r.out.trim().slice(0, 120));
+check('正向对照：那个值真的落盘了（不是"报成功但其实没写"）', (() => {
+  try { return JSON.parse(run(['get', PROJ, 'a', '--json']).out).topic === '-x'; } catch (e) { return false; }
+})());
+r = run(['edit', PROJ, 'a', '--topic=' + String(topicABefore)]);
+check('正向对照：--key=值 形态照旧可用（也是"以 - 开头的值"的官方写法）+ topic 已逐字还原',
+  ok(r.out) && (() => {
+    try { return JSON.parse(run(['get', PROJ, 'a', '--json']).out).topic === topicABefore; } catch (e) { return false; }
+  })(), '还原为 ' + JSON.stringify(topicABefore));
 
 /* ---------------- 22. 多路同时编辑（并发：不相交自动合并 / 相交指名拒绝） ----------------
  * 上面所有断言都是"单路"。本段专门跑**两路同时编辑**，而且走**真实的** ctx + 命令函数 + store：

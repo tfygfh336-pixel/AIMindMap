@@ -12,6 +12,13 @@
  * ============================================================ */
 'use strict';
 
+const path = require('path');
+// 侧栏模块本身（主进程侧）：本域的"状态广播"断言要**直接驱动真实产品路径**，
+// 而不是只读渲染层的 status()（那只能证明"查询通"，证明不了"广播通"）
+const sidebar = require(path.join(__dirname, '..', '..', 'main-dsh-sidebar.js'));
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const assertions = [
 
   {
@@ -83,6 +90,64 @@ const assertions = [
       })()`);
       return { ok: !!r.ok, text: 'margin on/off ' + r.onMargin + ' / ' + r.offMargin
         + '（侧栏实际占宽 ' + r.actual + '；toolbar paddingRight on/off ' + r.onPad + ' / ' + r.offPad + '）' };
+    }
+  },
+
+  {
+    // ⚠️ 名字里**不要**出现「可见/看不见/遮挡…」那几个词（V1 门禁会要求给出真判据，
+    //    见 scripts/visibility-judge-check.js）—— 本条判的是**事件送达**，不是像素。
+    name: 'DSH 侧栏：状态广播真的送达（broadcastStatus 在调用路径上已就位，不是"没抛就算过"）',
+    run: async (ctx) => {
+      // 本轮核实项的运行时取证：`main-dsh-sidebar.js` 里 `broadcastStatus()` 有 14 处调用，
+      // 而**定义在 1200 行开外** —— 靠**函数声明提升**才成立（既不是外部注入，也没有缺失）。
+      // 静态读源码"看得见定义"不等于运行时就到得了：这里把"可达"钉成**可观测副作用**
+      //（渲染层真收到事件），而不是"函数没抛异常就算过" —— 后者对本工程毫无价值 ✗。
+      //
+      // 四条判据，缺一不成立：
+      //   ① 渲染层先经**真 IPC** 订阅 `dsh-sidebar:status`（不是合成事件）；
+      //   ② 主进程触发一条**真实产品路径**：`ensureRightbarRoom()` → `broadcastStatus()`
+      //     （用户点内核官方「打开侧边栏」时走的就是它，见 main-dsh-sidebar.js 的右栏自动加宽）；
+      //   ③ 渲染层**真的收到**，且载荷是 `getStatus()` 的结构化对象（status/visible/width 三字段）；
+      //   ④ 整个过程**不抛异常** —— 抛了这条直接红，那正是"定义缺失"会有的症状。
+      await ctx.exec(`(function () {
+        window.__dshStatusProbe = [];
+        window.desktop.on('dsh-sidebar:status', function (st) { window.__dshStatusProbe.push(st); });
+        return true;
+      })()`);
+      // ② 落到"侧栏不够宽"这个**确定**前提上：宽 690 ⇒ view 660 < RIGHTBAR_PAGE_MIN(756)
+      //    ⇒ `ensureRightbarRoom()` 必然加宽并广播。前提若不成立（widened=false），
+      //    这条断言**直接红**而不是静默空转 —— 空转的断言比没有断言更坏 ✗（本工程的既有纪律）。
+      const widthBefore = sidebar.getStatus().width;
+      let threw = null, widened = null;
+      try {
+        sidebar.setWidth(690);
+        widened = sidebar.ensureRightbarRoom();
+      } catch (e) { threw = e; }
+      // ③ 等事件送达（真 IPC 是异步的）
+      let raw = null;
+      for (let i = 0; i < 12 && raw === null; i++) {
+        await sleep(120);
+        const n = await ctx.exec('((window.__dshStatusProbe || []).length)');
+        if (n > 0) raw = await ctx.exec('JSON.stringify(window.__dshStatusProbe[0])');
+      }
+      // 还原几何：净零改动（后面的域按原来的宽度跑 —— 这里只测通道，不改用户偏好）
+      let restored = false;
+      try {
+        sidebar.releaseRightbarRoom();
+        sidebar.setWidth(widthBefore);
+        restored = sidebar.getStatus().width === widthBefore;
+      } catch (e) { restored = false; }
+      let payload = null;
+      try { payload = JSON.parse(raw); } catch (e) { payload = null; }
+      const shapeOk = !!payload && typeof payload.status === 'string'
+        && typeof payload.visible === 'boolean' && typeof payload.width === 'number';
+      return {
+        ok: threw === null && widened === true && !!raw && shapeOk && restored,
+        text: '异常=' + (threw ? String(threw.message) : '无')
+          + ' ｜ 真实路径加宽并广播=' + widened
+          + ' ｜ 渲染层收到=' + (payload ? (payload.status + ' / visible=' + payload.visible + ' / width=' + payload.width) : '没有')
+          + ' ｜ 载荷结构=' + shapeOk + ' ｜ 宽度还原=' + restored + '（' + widthBefore + '）'
+      };
     }
   },
 

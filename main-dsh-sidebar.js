@@ -185,6 +185,9 @@ function startService() {
     state.status = 'error';
     state.lastError = '运行包不可用: ' + e.message;
     log(state.lastError);
+    // 注意：`broadcastStatus` **不是外部注入的**，就是本文件里的函数声明（定义在本文件
+    // **下方**、调用点在它上面，靠**函数声明提升**成立 —— 见它的定义处那条注释）。
+    // 别因为"上面看不到定义"就以为这里会 ReferenceError ✗。
     broadcastStatus();
     return;
   }
@@ -1205,6 +1208,19 @@ state.narrow = { viewWidth: viewW, mode: mode, metrics: info, at: new Date().toI
   }
 }
 
+/* 把「侧栏状态」推给渲染层（`renderer/app-core.js` 的 `dsh-sidebar:status` 订阅）。
+ *
+ * ⚠️ **它是本文件内的函数声明，不是外部注入的**（本轮核实项，结论：**不是 bug**）——
+ *   定义就在下面（`main-dsh-sidebar.js:1220` 一带），而调用点**在它上面**（从 188 起共 14 处）。
+ *   这靠的是**函数声明提升**（function declaration hoisting）：同一模块作用域内的
+ *   `function foo(){}` 在进入模块时就已绑定，故上面的调用点照样能调到 ✓。
+ *   之所以值得写这一行：`grep -n 'function broadcastStatus'` 的输出一旦被截断
+ *   （前十几行全是调用点，定义在 1200 行开外），非常容易得出"它没有定义"的错误结论，
+ *   然后去查一个**不存在**的 `ReferenceError`。调用链上的运行时证据见
+ *   `scripts/smoke/11-dsh-sidebar.js` 的「状态广播真能送达渲染层」一条。
+ *
+ * 副作用恒定（不抛异常）也是刻意的：`state.win` 还没接上（init 之前）时是**空操作**，
+ * 不是错误 —— 启动早期有多条路径会走到这里，为此报错会把启动打断 ✗ */
 function broadcastStatus() {
   if (state.win && !state.win.isDestroyed()) {
     state.win.webContents.send('dsh-sidebar:status', getStatus());

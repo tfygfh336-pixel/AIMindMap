@@ -17,6 +17,143 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const crypto = require('crypto');
+
+/** 工程根（`src/` 的上一层）。origin.src 记的是**相对它**的路径 ⇒ 与 cwd 无关、可复现 ✓ */
+const REPO_ROOT = path.resolve(__dirname, '..');
+
+/* ================= ⓪ 导入源闸门：把"为什么读不了"说准，并**每条都给出去路** =================
+ * 缺陷取证（实测 2026-10-10）：`import-project <项目> <目录>` 与 `import-md <项目> <目录>` 都露出
+ *   `error: EISDIR: illegal operation on a directory, read`
+ * —— 那是 Node 的原始 errno 文本：既没点明"这是**目录**，不是文件"，也没给任何出路。
+ * 而"把一个文件夹喂进来"恰恰是**最自然**的误用：想导一整个库的人，第一反应就是给目录。
+ *
+ * 所以这里统一成"原因准确 + 带出路"的报文，两条命令共用同一份实现
+ * （各写一套必然漂移 —— 本工程反复治的就是"同一件事两处表达"）。
+ * ⚠️ 本文件**不实现** `import-dir`（整库导入是另一件事，尚未批准 ✗）：只如实说"尚未实现" + 给出
+ *    现在就能走的逐文件流程。把"没做"说成"做了"比不做更坏。
+ *
+ * 返回 `null` = 这个源可以用；否则返回 `{ code, message }`（message 已含出路，调用方直接 ctx.error） */
+function describeImportSourceProblem(filePath) {
+  const p = String(filePath);
+  let st = null;
+  try {
+    st = fs.statSync(p);
+  } catch (e) {
+    const c = e && e.code;
+    // 每条都**分开说清**：`ENOENT` 是"没这个路径"，别让它和"没权限"共用一个含糊的文案
+    if (c === 'ENOENT') {
+      return { code: 'missing', message: '文件不存在: ' + p
+        + '（相对路径按**当前工作目录**解析，不是按工程根；也可以用绝对路径）' };
+    }
+    if (c === 'EACCES' || c === 'EPERM') {
+      return { code: 'denied', message: '没有权限读取这个路径: ' + p
+        + '（路径本身存在，是访问被拒 —— 检查文件权限，或换一个可读的位置再试）' };
+    }
+    if (c === 'ENOTDIR') {
+      return { code: 'notdir', message: '路径中间有一段不是目录: ' + p
+        + '（路经里某个"目录"其实是个文件 —— 逐段核对）' };
+    }
+    if (c === 'ELOOP') {
+      return { code: 'loop', message: '路径里的符号链接成环，读不了: ' + p
+        + '（换一个没有自引用链接的路径）' };
+    }
+    return { code: 'stat-failed', message: '读不了这个路径（' + (c || (e && e.message) || '未说明原因') + '）: ' + p };
+  }
+
+  if (st.isDirectory()) return { code: 'is-dir', message: directoryMessage(p) };
+  if (!st.isFile()) {
+    return { code: 'not-regular-file', message: '这不是一个普通文件（可能是设备/命名管道/特殊节点）: ' + p
+      + '；导入只接受普通文件（.md / .txt / .docx / .pdf）' };
+  }
+  // stat 成功 ≠ 能打开：Windows 的 ACL 拒绝要到 open 那一刻才报，故这里真探一次可读性
+  try {
+    fs.accessSync(p, fs.constants.R_OK);
+  } catch (e) {
+    return { code: 'denied', message: '文件存在，但没有读权限: ' + p
+      + '（用 icacls / 文件属性检查权限，或复制到可读位置再导入）' };
+  }
+  // 空文件不是"读不了"，是"导出来会是空树"—— 交给格式识别给出更准的话（不在这里判死 ✗）
+  return null;
+}
+
+/** 目录入参的报文：点明"这是目录不是文件" + 如实说 `import-dir` 未实现 + 给出**现在就能走**的逐文件流程 */
+function directoryMessage(p) {
+  return '这是一个**目录**，不是文件: ' + p
+    + '。当前只支持**单文件**导入（.md / .txt / .docx / .pdf）；整库导入（`import-dir`）**尚未实现** ✗。'
+    + '出路（现在就能做，逐文件导入）：'
+    + '① 合成一个项目：node cli/mm-cli.js import-md <项目> "<目录>\\某文件.md" --parent <父节点id>；'
+    + '② 一个文件一个项目：node cli/mm-cli.js import-project <新项目名> "<目录>\\某文件.md"；'
+    + '③ PowerShell 批量（先列一遍再逐个导）：Get-ChildItem "<目录>" -Filter *.md | ForEach-Object '
+    + '{ node cli/mm-cli.js import-md <项目> $_.FullName --parent root }'
+    + '（重复导入会被来源指纹挡住 ⇒ 逐文件跑可以随时中断、再跑不会导重 ✓）';
+}
+
+/* ================= ⓪′ 来源指纹 origin：批量导入**幂等**的前提 =================
+ * 为什么必须有它（本工程实测的缺陷）：节点 id 由 `Date.now()` + 随机数生成
+ * （见 `src/markdown.js` 的 idGen）⇒ **同一份文档导入两次会得到两棵不相交的树**：
+ * 内容一样，id 与每个节点的实例都不一样 ⇒ 事后无法回答"这份文件我导过没有"。
+ * 于是任何批量/整库导入都做不到幂等：再跑一遍只会又长一棵树 ✗。
+ *
+ * 记法：`origin: { kind, src, sha256, at, tool }` —— **可选字段，不升 formatVersion**
+ *（无则兼容：旧数据没有它照样读、照样写、照样过校验），详见 `docs/DATA-FORMAT.md` §2.8。
+ * 指纹算的是**规范化后的提纲文本**（不是原始文件字节）：这样同一份内容存成 CRLF/BOM 不同
+ * 也不会被当成两份来源 ✓，而**改一个字节就变** ✓。
+ *
+ * ⚠️ 规范化与指纹**只有这一处实现**：写入方（cli/commands/project.js）不许自己拼 origin。 */
+
+/** 规范化：CRLF/CR → LF，剥 BOM。**导入正文与指纹共用同一份规范化**（否则指纹与正文会各按一套算） */
+function normalizeOutline(text) {
+  let s = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+  if (s.charCodeAt(0) === 0xfeff) s = s.slice(1);   // Windows 上编出来的 md/txt 极常带 BOM（详见 docToOutline）
+  return s;
+}
+
+/** 内容指纹：规范化提纲的 sha256（64 位小写十六进制）。对**内容**敏感、对换行/BOM 不敏感 ✓ */
+function outlineSha256(text) {
+  return crypto.createHash('sha256').update(normalizeOutline(text), 'utf8').digest('hex');
+}
+
+/** 来源引用：相对**工程根**的 POSIX 路径（与 cwd 无关 ⇒ 同一份文档在哪儿导入都是同一个 src ✓）。
+ *  跨盘（Windows 的 `D:` ↔ `C:`）时 `path.relative` 只会给回绝对路径 —— 那种情况如实写绝对路径：
+ *  它是**追溯字段**（"这份树是从哪个文件来的"），不参与任何路径安全判定（见 docs/DATA-FORMAT.md §2.8）。 */
+function sourceRef(file) {
+  const abs = path.resolve(String(file));
+  const rel = path.relative(REPO_ROOT, abs);
+  const s = (rel && !path.isAbsolute(rel)) ? rel : abs;
+  return s.split(path.sep).join('/');
+}
+
+/**
+ * 造一个 origin（唯一实现，写入方只许调它）。
+ * @param {{file:string, md:string, tool:string, at?:string}} o `md` 是**导入用的那份提纲文本**
+ * @returns {{kind:string, src:string, sha256:string, at:string, tool:string}}
+ */
+function makeOrigin(o) {
+  const src = (o && o.file) ? sourceRef(o.file) : '';
+  return {
+    kind: 'import',
+    src: src,
+    sha256: outlineSha256(o && o.md),
+    at: (o && o.at) || new Date().toISOString(),
+    tool: (o && o.tool) || 'import'
+  };
+}
+
+/** 两个 origin 是否**指向同一份来源**：`src` 与 `sha256` **都要**相同。
+ *  只比 sha256：两份内容相同但确实不同的文件会被误判成"导过了"（那是另一份来源 ✗）；
+ *  只比 src：文件被改过就判不出来（正是最该拦住的那种重复 ✗）。故两个一起比。 */
+function originMatches(a, b) {
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (typeof a.sha256 !== 'string' || !a.sha256) return false;
+  return a.sha256 === b.sha256 && typeof a.src === 'string' && a.src === b.src;
+}
+
+/** 一句人话（报错与 --dry-run 都用它，不各写一套） */
+function describeOrigin(o) {
+  if (!o || typeof o !== 'object') return '（无来源记录）';
+  return '来源 ' + o.src + ' ｜ 指纹 ' + String(o.sha256 || '').slice(0, 12) + '… ｜ ' + o.at + ' ｜ ' + o.tool;
+}
 
 /* ================= ① 格式识别 ================= */
 /** **认识但不支持**的格式：必须响亮拒绝，绝不落到"当 txt 读"的兜底里 ✗
@@ -211,12 +348,12 @@ function docToOutline(filePath, opts) {
     if (!xml) throw new Error('这个 docx 里没有 word/document.xml（不是 Word 文档？）');
     md = docxToOutline(docxParagraphs(xml.toString('utf8')));
   }
-  md = md.replace(/\r\n?/g, '\n');
-  // ⚠️ **剥掉 BOM**：Windows 上编出来的 md/txt 极常带 BOM，而它会让**首行的 `#` 匹配不上**
-  // ⇒ 第一个标题被当成正文吞掉、整棵树少一层（实测踩到：一个带 BOM 的 md 导入后
-  //    顶层主题变成合成的「（层级2）」✗）。用户导入的文件不在我们的编码门禁范围内，
-  //    所以这里必须自己容错 ✓
-  if (md.charCodeAt(0) === 0xfeff) md = md.slice(1);
+  // ⚠️ **规范化（CRLF → LF + 剥 BOM）**：Windows 上编出来的 md/txt 极常带 BOM，而它会让
+  //    **首行的 `#` 匹配不上** ⇒ 第一个标题被当成正文吞掉、整棵树少一层（实测踩到：一个带 BOM
+  //    的 md 导入后顶层主题变成合成的「（层级2）」✗）。用户导入的文件不在我们的编码门禁范围内，
+  //    所以这里必须自己容错 ✓。
+  //    同时它也是 `outlineSha256` 的规范化 —— **同一处实现**，否则指纹与正文会各按一套算。
+  md = normalizeOutline(md);
   return finishOutline(format, md, pdfPages, pdfInfo);
 }
 
@@ -260,5 +397,8 @@ function pdfOutlineViaHelper(filePath) {
 }
 module.exports = {
   detectFormat, textToOutline, looksLikeHeading, headingLevelOf,
-  zipFindEntry, docxParagraphs, docxToOutline, docToOutline, finishOutline
+  zipFindEntry, docxParagraphs, docxToOutline, docToOutline, finishOutline,
+  // 导入源闸门（把"为什么读不了"说准 + 给出路）与来源指纹 origin（幂等的前提，唯一实现）
+  describeImportSourceProblem, directoryMessage,
+  normalizeOutline, outlineSha256, sourceRef, makeOrigin, originMatches, describeOrigin
 };

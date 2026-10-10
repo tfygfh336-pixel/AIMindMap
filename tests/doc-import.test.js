@@ -254,3 +254,100 @@ describe('读不了就说读不了（绝不给一个空树冒充成功）', () =
     expect(t.stats.levelCounts).toEqual({ 1: 2 });
   });
 });
+
+/* ============================================================
+ * 来源指纹 origin（§2.8）与导入源闸门 —— 批量导入**幂等**的前提
+ * ------------------------------------------------------------
+ * 为什么这些必须是单测而不是只靠集成：判据本身是**纯函数**（指纹/规范化/匹配），
+ * 集成里一旦红了，分不清是"指纹算错"还是"命令装错了"。
+ * ============================================================ */
+describe('doc-import：来源指纹 origin', () => {
+  it('指纹对**内容**敏感：改一个字节就变（否则"改过没有"永远判不出来）', () => {
+    const a = di.outlineSha256('# 标题\n正文\n');
+    const b = di.outlineSha256('# 标题\n正文!\n');       // 只多一个字符
+    const c = di.outlineSha256('# 标题\n正文 \n');       // 只多一个空格
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(b).not.toBe(a);
+    expect(c).not.toBe(a);
+  });
+
+  it('指纹对**换行风格/BOM**不敏感：同一份内容存成 CRLF / 带 BOM 仍是同一个指纹', () => {
+    const lf = di.outlineSha256('# 标题\n正文\n');
+    expect(di.outlineSha256('# 标题\r\n正文\r\n')).toBe(lf);
+    expect(di.outlineSha256('\uFEFF# 标题\n正文\n')).toBe(lf);
+  });
+
+  it('originMatches：src 与 sha256 **都要**相同才算同一份来源', () => {
+    const a = { kind: 'import', src: 'docs/a.md', sha256: 'x'.repeat(64), at: 'T', tool: 't' };
+    expect(di.originMatches(a, { src: 'docs/a.md', sha256: 'x'.repeat(64) })).toBe(true);
+    // 内容同、来源不同 ⇒ **不是**同一份（那是另一份文件，导它不该被拒）
+    expect(di.originMatches(a, { src: 'docs/b.md', sha256: 'x'.repeat(64) })).toBe(false);
+    // 来源同、内容改过 ⇒ 也不是（这正是最该拦住"我以为导过了"的那种）
+    expect(di.originMatches(a, { src: 'docs/a.md', sha256: 'y'.repeat(64) })).toBe(false);
+    expect(di.originMatches(null, a)).toBe(false);
+    expect(di.originMatches(a, undefined)).toBe(false);
+    expect(di.originMatches({ src: 'docs/a.md' }, a)).toBe(false);   // 缺 sha256（截断的旧记录）不匹配
+  });
+
+  it('makeOrigin：形状固定（kind/src/sha256/at/tool），且 src 与内容指纹都由它一处算', () => {
+    const o = di.makeOrigin({ file: 'a/b.md', md: '# T\n', tool: 'import-md', at: '2026-10-10T00:00:00.000Z' });
+    expect(o).toEqual({
+      kind: 'import',
+      src: di.sourceRef('a/b.md'),
+      sha256: di.outlineSha256('# T\n'),
+      at: '2026-10-10T00:00:00.000Z',
+      tool: 'import-md'
+    });
+    expect(o.sha256).toMatch(/^[0-9a-f]{64}$/);
+    // at 默认取当前时间（调用方不给时也不能是空串 —— schema 会判红）
+    expect(typeof di.makeOrigin({ file: 'a.md', md: 'x' }).at).toBe('string');
+  });
+
+  it('describeOrigin：给人看的一句里必须含来源与指纹片段（报错文案与 --dry-run 共用它）', () => {
+    const s = di.describeOrigin({ src: 'docs/a.md', sha256: 'abcdef'.repeat(11) + 'ab', at: 'T', tool: 'import-md' });
+    expect(s).toContain('docs/a.md');
+    expect(s).toContain('abcdef');
+    expect(di.describeOrigin(null)).toContain('无来源');
+  });
+});
+
+describe('doc-import：导入源闸门（原因准确 + 给出路）', () => {
+  const fsx = require('node:fs');
+  const pathx = require('node:path');
+  const osx = require('node:os');
+
+  it('★ 目录入参：说清"这是目录不是文件" + 如实说 import-dir 未实现 + 给出**可执行**的出路', () => {
+    const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'mm-dirgate-'));
+    try {
+      const p = di.describeImportSourceProblem(dir);
+      expect(p).not.toBe(null);
+      expect(p.code).toBe('is-dir');
+      expect(p.message).toContain('目录');
+      expect(p.message).toContain('不是文件');
+      expect(p.message).toContain('import-dir');
+      expect(p.message).toContain('尚未实现');
+      // 出路必须是**现在就能跑**的真实命令（不是"敬请期待"）
+      expect(p.message).toContain('import-md');
+      expect(p.message).toContain('import-project');
+      // 不许露出 Node 的原始 errno 文本（那正是本条的病根）
+      expect(p.message).not.toContain('EISDIR');
+      expect(di.directoryMessage(dir)).toBe(p.message);
+    } finally { fsx.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('不存在的路径：报文写"文件不存在"并说清相对路径按哪个目录解析（不冒充权限问题）', () => {
+    const ghost = pathx.join(osx.tmpdir(), 'mm-nope-' + Date.now() + '.md');
+    const p = di.describeImportSourceProblem(ghost);
+    expect(p.code).toBe('missing');
+    expect(p.message).toContain('文件不存在');
+    expect(p.message).not.toMatch(/权限/);
+  });
+
+  it('正常文件返回 null（探针**不许**误杀可读文件 —— 否则导入全线变红）', () => {
+    const f = pathx.join(osx.tmpdir(), 'mm-ok-' + Date.now() + '.md');
+    fsx.writeFileSync(f, '# ok\n', 'utf8');
+    try {
+      expect(di.describeImportSourceProblem(f)).toBe(null);
+    } finally { fsx.unlinkSync(f); }
+  });
+});

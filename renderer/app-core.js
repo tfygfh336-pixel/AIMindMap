@@ -75,6 +75,13 @@
         // 走的是 CLI（外部写盘）—— 只要用户随后在界面上按一次保存（整树写回），刚落盘的问答记录
         // 就会被**静默抹掉**，而界面上一切正常（`scripts/smoke/38-ai-落盘.js` 断言⑤专治这一条）。
         if (Array.isArray(n.data.qa) && n.data.qa.length) out.qa = n.data.qa;
+        // 来源指纹（可选字段，见 docs/DATA-FORMAT.md §2.8）：**同理必须平铺**。
+        // 它是"这份文档导过没有"的唯一判据（导入幂等闸门靠它），而导入走的是 CLI（外部写盘）——
+        // 只要用户随后在界面上按一次保存（整树写回），import-project/import-md 留下的 origin
+        // 就会被**静默抹掉** ⇒ 同一份文档又能被导入第二遍（正是本批要治的那个缺陷）。
+        // 与 qa / localPath 同一类，判据在 `scripts/smoke/27-import-doc.js`。
+        // 只在有值时写（保持旧形状：没导入过的节点与老文件零差异）。
+        if (n.data.origin && typeof n.data.origin === 'object') out.origin = n.data.origin;
       }
       if (n.children && n.children.length) out.children = n.children.map(walk);
       return out;

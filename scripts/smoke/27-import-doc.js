@@ -149,5 +149,90 @@ module.exports = [
       const hasErr = /不存在/.test(res.text);
       return { ok: !!res.ok && hasErr, text: res.text };
     }
+  },
+
+  {
+    // ⚠️ 名字里**不要**出现「可见/看不见/遮挡…」那几个词（V1 门禁会要求真判据）
+    name: '导入：来源指纹 origin 记下来了，且**界面保存不会抹掉它**（整树写回是手挑字段，漏一个就静默丢）',
+    run: async (ctx) => {
+      // 这条冲着一个**真失效模式**来的：`origin` 是"这份文档导过没有"的唯一判据（导入幂等闸门靠它），
+      // 而导入走 CLI（外部写盘）、界面保存走 `serializeTree()` 的**手挑字段**整树写回 ——
+      // 漏了它就会被静默抹掉 ⇒ 同一份文档又能被导入第二遍，而界面上一切正常 ✗。
+      // 与 `qa` / `localPath` 完全同型（那两条各有一个冒烟断言守着，本条是第三个）。
+      const file = writeProbe('origin-keep-probe.md', ['# 只此一章', '', '正文。', ''].join('\n'));
+      const res = await execJson(ctx, `window.MM.importDocFile(${JSON.stringify(file)}).then(function (r) {
+        return JSON.stringify({ ok: !!r && r.ok === true, name: r && r.name,
+          text: (r && r.ok) ? ('项目=' + r.name) : ('失败=' + ((r && r.error) || '?')) });
+      })`);
+      if (!res.ok) return { ok: false, text: '导入失败：' + res.text };
+      // ① 导入就该留下指纹（走 CLI 读盘：与界面写的是同一个文件）
+      const rootJson = () => {
+        try { return JSON.parse(ctx.runCli(['get', res.name, 'root', '--json'])); } catch (e) { return null; }
+      };
+      const o1 = (rootJson() || {}).origin || null;
+      const shapeOk = !!(o1 && o1.kind === 'import' && /^[0-9a-f]{64}$/.test(o1.sha256)
+        && /origin-keep-probe\.md$/.test(o1.src) && o1.tool === 'import-project');
+      // ② 等界面切到新项目（主进程发 menu:open-project 是异步的），再造改动 + 保存（整树写回）
+      let cur = '';
+      for (let i = 0; i < 20; i++) {
+        cur = await ctx.exec('(window.MMApp.getState().project || {}).name || ""');
+        if (cur === res.name) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      const saved = await execJson(ctx, `(async function () {
+        var app = window.MMApp;
+        app.addNode('root');               // 真实改动：否则可能走不到写盘
+        // ⚠️ addNode 会**顺手打开**「编辑节点」对话框（app-actions.js:279 的 MMEditor.editNode）——
+        //    必须**当场关掉**：本域离开时留一个模态，后面的域（34/36/37 全是真鼠标输入 + elementFromPoint
+        //    命中测试）会整片变红。实测：不关它 ⇒ 34/36/37 共 9 条断言变红，报文是
+        //    "命中测试命中圆钮=false（命中=overlay）" 与 "编辑框=true"（而这个文件本身**没被改过**）。
+        //    这里走**用户关框的那条路**（点「取消」⇒ editor.js 的 closeEditDialog）。冒烟"每域不留脏状态"
+        //    的既有要求：离开本域时界面必须回到进入时的样子。
+        var dlg = document.getElementById('edit-dialog');
+        var cancel = document.getElementById('edit-cancel');
+        if (cancel) cancel.click();
+        var closedAfterAdd = !dlg || dlg.style.display === 'none';
+        var s1 = await app.save();
+        app.undo();                        // 撤掉探针改动
+        // 再存一次：把"撤掉"也落盘 ⇒ 内存与盘一致、不脏 —— 否则下面切不回原项目。
+        //（openProject 对脏状态走的是"问人确认"，冒烟里没人点确定 ⇒ 合法地不切换，
+        //  于是**后面的每一个域**都在这个探针项目上跑。实测踩到：22 条断言一起变红 ✗）
+        var s2 = await app.save();
+        var dlg2 = document.getElementById('edit-dialog');
+        return JSON.stringify({ ok: s1 === true && s2 === true && closedAfterAdd,
+          text: 'save()=' + s1 + '/' + s2 + ' · 编辑框已关=' + closedAfterAdd
+            + '（收尾时仍未关=' + (!dlg2 || dlg2.style.display === 'none' ? false : true) + '）' });
+      })()`);
+      // ③ 保存之后指纹必须**逐字还在**（这是本条的验收核心）
+      const o2 = (rootJson() || {}).origin || null;
+      const kept = !!(o1 && o2 && o2.sha256 === o1.sha256 && o2.src === o1.src && o2.at === o1.at);
+      // ④ 收尾（**无论成败都要走到**）：切回原项目 + 删掉探针项目。
+      //    本工程对每个冒烟域的要求是"不留脏状态"—— 留了就会连环红（见上面那条实测）。
+      const back = await execJson(ctx, `(function () {
+        var home = ${JSON.stringify('comnet')};
+        var st = window.MMApp.getState();
+        if (!st.project || st.project.name === home) return JSON.stringify({ ok: true, text: '无需切回' });
+        return Promise.resolve(window.MM.openProject(home)).then(function (r) {
+          var now = (window.MMApp.getState().project || {}).name;
+          return JSON.stringify({ ok: r !== false && now === home, text: '已切回 ' + now + '（openProject=' + r + '）' });
+        }).catch(function (e) {
+          return JSON.stringify({ ok: false, text: '切回失败：' + ((e && e.message) || e) });
+        });
+      })()`);
+      let cleaned = false;
+      try {
+        const dir = path.join(process.env.AI_MINDMAP_PROJECTS_DIR || '', res.name);
+        fs.rmSync(dir, { recursive: true, force: true });
+        cleaned = !fs.existsSync(dir);
+      } catch (e) { cleaned = false; }
+      return {
+        ok: shapeOk && !!saved.ok && kept && !!back.ok && cleaned,
+        text: res.text + ' ｜ 导入时记下指纹=' + shapeOk
+          + (o1 ? ('（' + o1.tool + ' / ' + String(o1.sha256).slice(0, 10) + '…）') : '（没有 origin）')
+          + ' ｜ 界面当前项目=' + cur + ' ｜ ' + saved.text
+          + ' ｜ 保存后指纹仍在=' + kept + (kept ? '' : '｜⚠️ 被整树写回丢掉了')
+          + ' ｜ 收尾=' + back.text + ' ｜ 探针项目已删=' + cleaned
+      };
+    }
   }
 ];

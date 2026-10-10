@@ -231,6 +231,27 @@
         if (e.model !== undefined && typeof e.model !== 'string') err('qa[' + i + '].model 必须是字符串', node.id);
       });
     }
+    // 来源指纹（**可选字段**，不升 formatVersion；无则兼容 —— 见 docs/DATA-FORMAT.md §2.8）。
+    // 它回答"这棵树/这棵子树是从哪一份文档、哪一次导入来的"，是**批量导入幂等**的前提：
+    // 节点 id 由 `Date.now()+随机` 生成 ⇒ 同一份文档导入两次会得到两棵不相交的树，
+    // 光看内容判不出"这份已经导过了"；`origin.src + origin.sha256` 才是那个判据。
+    // ⚠️ 只校验**形状**，不重算哈希：重算要把整份源文档读回来，而它可能早已不在本机/已被改过
+    //    —— 那样"校验"就变成了环境检查（同 localPath 不校验存在性的理由）。
+    if (node.origin !== undefined) {
+      const o = node.origin;
+      if (!o || typeof o !== 'object' || Array.isArray(o)) err('origin 必须是对象', node.id);
+      else {
+        if (o.kind !== 'import') err('origin.kind 必须是 "import"（当前只有这一种来源）', node.id);
+        if (typeof o.src !== 'string' || !o.src.trim()) err('origin.src 必须是非空字符串（来源文件/URL）', node.id);
+        // 64 位小写十六进制 = `crypto.createHash('sha256').digest('hex')` 的形状。
+        // 写死长度是**故意的**：截断的/别家算法的指纹都能通过"非空字符串"，却会让幂等判定永远不命中。
+        if (typeof o.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(o.sha256)) {
+          err('origin.sha256 必须是 64 位小写十六进制（内容指纹）', node.id);
+        }
+        if (typeof o.at !== 'string' || !o.at.trim()) err('origin.at 必须是非空字符串（ISO 时间）', node.id);
+        if (o.tool !== undefined && typeof o.tool !== 'string') err('origin.tool 必须是字符串', node.id);
+      }
+    }
   }
 
   /** 重复 id 与环检测：对整棵树做**一次**迭代遍历（不递归，避免环导致栈溢出） */

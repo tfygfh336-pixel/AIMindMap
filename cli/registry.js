@@ -105,6 +105,30 @@ function unknownOptionError(name, unknown) {
   return msg;
 }
 
+/**
+ * 未知**短选项**（单短横线）→ 一句能照着改的 error 文本（纯函数 ⇒ 可单测）。
+ *
+ * 必须说清三件事（缺陷取证：`read -x` 原先报的是"项目不存在: -x" —— 原因错，会把人领到
+ * 完全无关的方向上）：
+ *   ① 这是**选项**写错了，不是项目名/文件名错；
+ *   ② 本工程的约定是**长选项** `--xxx`（短选项只有 `-h`）；
+ *   ③ 想把它当成一个"以 `-` 开头的值"传，怎么写（`--key=值`）。
+ * 再附上该命令的**支持集**与用法 —— 与 `unknownOptionError` 同一口径（不知道能写什么时
+ * 有正规入口：`<命令> --help`）。
+ */
+function unknownShortOptionError(name, tokens) {
+  const cmd = BY_NAME.get(name);
+  const list0 = allowedOptions(name);
+  let msg = '不认识的选项 ' + tokens.join(' ') + '：本工程约定使用**长选项**（--xxx），'
+    + '短选项只有 -h（= --help）';
+  msg += '。要传一个以 "-" 开头的**值**，写成 `--<选项>=<值>`（如 `--topic=-x`）';
+  msg += '；要把一个以 "-" 开头的文件当成位置参数，写成 `./-x.md`';
+  msg += '。' + name + ' 支持的选项：'
+    + (list0.length ? list0.map((k) => '--' + kebab(k)).join(' ') : '（无）');
+  if (cmd && cmd.usage) msg += '。用法：node cli/mm-cli.js ' + cmd.usage;
+  return msg;
+}
+
 /* ---------------- 登记全部命令 ---------------- */
 function init() {
   if (COMMANDS.length) return;
@@ -148,8 +172,8 @@ function init() {
   });
 
   // 导入导出
-  register({ name: 'import-md', usage: 'import-md <项目> <md文件> [--parent id]', options: ['parent'], desc: '从 Markdown 导入节点（追加到 parent）', fn: loadFile('project').importMd });
-  register({ name: 'import-project', usage: 'import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json]', options: ['title', 'dryRun', 'json'], desc: '功能 5a：**从大文档建一个新项目 + 一棵新树**（md/txt/docx；PDF **有书签走书签、无书签自动回退文字层**，两样都没有才响亮拒绝）；1 级标题成为顶层主题；一次原子写入，失败不留半个项目；--dry-run 只预览格式/规模/前几个标题与来源、不写盘', fn: loadFile('project').importProject });
+  register({ name: 'import-md', usage: 'import-md <项目> <md文件> [--parent id] [--force]', options: ['parent', 'force'], desc: '从 Markdown 导入节点（追加到 parent）。**同一份来源默认只导一次**：本命令会给导入的子树的根写上 `origin`（来源路径 + 内容指纹，见 docs/DATA-FORMAT.md §2.8），再次导入同一 `src`+`sha256` 会**被拒并指名**上一次导到哪去了 —— 真的想要第二份就加 `--force`（那是有意的重复，不是手滑）', fn: loadFile('project').importMd });
+  register({ name: 'import-project', usage: 'import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] [--force]', options: ['title', 'dryRun', 'json', 'force'], desc: '功能 5a：**从大文档建一个新项目 + 一棵新树**（md/txt/docx；PDF **有书签走书签、无书签自动回退文字层**，两样都没有才响亮拒绝）；1 级标题成为顶层主题；一次原子写入，失败不留半个项目；--dry-run 只预览格式/规模/前几个标题与来源、不写盘（并如实报"这份文档已经导过了"）；入参是**目录**或路径读不了时**响亮拒绝并给出路**；**同一份来源默认只导一次**（`origin.src`+`origin.sha256` 全库比对，重复会拒绝并指名是哪个项目导的）—— 真的想再建一棵就加 `--force`', fn: loadFile('project').importProject });
   register({ name: 'export-md', usage: 'export-md <项目> <输出目录> [--format heading|list] [--with-detail]', options: ['format', 'withDetail'], desc: '导出为文件夹：<项目>.md + assets/ + attachments/（v0.16 起）', fn: loadFile('project').exportMd });
   register({ name: 'export-json', usage: 'export-json <项目> <输出.json>', options: [], desc: '导出为 aimap 单文件（图片 base64 内嵌，可移植）', fn: loadFile('project').exportJson });
   register({ name: 'export-html', usage: 'export-html <项目> <输出目录>', options: [], desc: '导出为静态站点（index.html + assets/，可分享部署；相关知识点已内联为可跳转链接）', fn: loadFile('project').exportHtml });
@@ -244,4 +268,7 @@ function init() {
 
 init();
 
-module.exports = { register, get, list, allowedOptions, documentedOptions, unknownOptionError, optionKnowers, kebab };
+module.exports = {
+  register, get, list, allowedOptions, documentedOptions,
+  unknownOptionError, unknownShortOptionError, optionKnowers, kebab
+};

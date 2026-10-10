@@ -123,3 +123,53 @@ describe('cli/main.js invokeSync()（同步入口，供直线式断言序列）'
     expect(again.stdout).toBe(first.stdout);
   });
 });
+
+/* ------------------------------------------------------------
+ * 单短横线选项：**失败原因必须准**
+ *
+ * 缺陷取证（实测）：`node cli/mm-cli.js read -x` ⇒ `error: 项目不存在: -x`。
+ * 退出码非 0 是响亮的，但**原因错** —— 它把 `-x` 当成了项目名，于是人和 AI 都会去查
+ * "项目 -x 为什么不存在"，而真因是"这个选项写错了"。诊断方向一错，弯路就长了。
+ * 这一组同时钉住**边界**（不许把正常用法判死）：
+ *   · `-h` 是工程既有的短选项（`<命令> -h` 打印该命令用法，exit 0）⇒ 必须保留 ✓
+ *   · 被当作**选项值**的 `-x`（`--topic -x`）是正常用法 ⇒ 不许误杀 ✓
+ * ------------------------------------------------------------ */
+describe('cli/main.js 单短横线选项（失败原因准确性）', () => {
+  it('★ `-x` 报"不认识的选项 -x"，并给出长选项约定 —— **不再是"项目不存在: -x"**', () => {
+    const r = invokeSync(['read', '-x']);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toContain('不认识的选项 -x');
+    expect(r.stdout).toContain('长选项');
+    // 真因必须**盖过**那个误导性的旧文案
+    expect(r.stdout).not.toContain('项目不存在');
+    // 出路要有：支持集与用法都得打出来（不知道能写什么时有正规入口）
+    expect(r.stdout).toContain('--json');
+    expect(r.stdout).toContain('node cli/mm-cli.js read');
+  });
+
+  it('`-v` 同样（工程里**没有** `-v` 语义 ⇒ 报不认识，而不是"版本号"或"项目不存在"）', () => {
+    const r = invokeSync(['stats', '-v']);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toContain('不认识的选项 -v');
+  });
+
+  it('`-h` 的既有语义**必须保留**：`<命令> -h` 还是打该命令用法且 exit 0', () => {
+    const r = invokeSync(['read', '-h']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('支持的选项');
+    expect(r.stdout.startsWith('AI MindMap CLI — read')).toBe(true);
+  });
+
+  it('不误杀"以 - 开头的**值**"：`--topic -x` 是正常用法（只看位置参数，不看原始 argv）', () => {
+    // 这条**不碰盘**：它在解析阶段就被拦下（缺项目名）之前先要确认没被误判成未知选项。
+    // 用一个必然因别的原因失败、但绝对不会报"不认识的选项"的命令来钉住这一点。
+    const r = invokeSync(['search', 'no-such-proj-xyz', '--tag', '-x']);
+    expect(r.stdout).not.toContain('不认识的选项');
+  });
+
+  it('`--key=值` 是官方给出的逃生口：以 - 开头的值这样写不会被当成选项', () => {
+    const { parseArgs } = require('../cli/core.js');
+    expect(parseArgs(['--topic=-x']).topic).toBe('-x');
+    expect(parseArgs(['--topic', '-x']).topic).toBe('-x');   // 空格形式同样吃成值
+  });
+});

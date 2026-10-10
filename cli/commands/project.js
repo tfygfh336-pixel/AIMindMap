@@ -29,6 +29,42 @@ function buildReadView(data, opts) {
   return query.buildReadView(data, opts);
 }
 
+/* ---------------- 导入的**来源指纹**闸门（origin；见 src/doc-import.js 与 docs/DATA-FORMAT.md §2.8） ----------------
+ * 为什么这一层在命令里而不是 `src/`：`import-project` 要判"这份文档是不是已经导过了"，
+ * 就必须读**别的项目**（它自己那个项目还不存在），读盘是命令层的事，`src/` 保持纯逻辑 ✓。
+ * 两个方向各一个入口：
+ *   · originHitIn(root, want)          —— **本项目内**已有的同来源节点（import-md 用）
+ *   · originHitAcrossStore(ctx, want)  —— **全部项目**里已有的同来源节点（import-project 用）
+ * 判据本身只有一处（docImport.originMatches：src 与 sha256 **都要**相同）。 */
+function originHitIn(root, want) {
+  let hit = null;
+  tree.walk(root, (n) => { if (!hit && docImport.originMatches(n.origin, want)) hit = n; });
+  return hit;
+}
+
+function originHitAcrossStore(ctx, want) {
+  let hit = null;
+  ctx.store.list().forEach((p) => {
+    if (hit) return;
+    let d = null;
+    // 读不动的单个项目**不阻断**导入（那是别人的坏数据，不是我的问题）；也不出声 ——
+    // 它只会让闸门"少查一处"，而导入本身仍然安全（大不了多一棵树，且有 origin 记着）
+    try { d = ctx.store.read(p.name).data; } catch (e) { return; }
+    const got = originHitIn(d && d.data, want);
+    if (got) hit = { project: p.name, node: got };
+  });
+  return hit;
+}
+
+/** 重复导入的拒绝报文：**上一次导到哪** + **怎么继续**（与既有"项目已存在: X（换个名字，或先删掉它）"
+ *  "节点不存在: X" 同一形状 ✓）。为什么默认拒绝而不是默认放行：见 registry 里 import-md 的说明 ——
+ *  节点 id 由时间+随机生成，同一份文档导两次会得到**两棵不相交的树**，事后无法分辨哪棵是哪棵。 */
+function duplicateOriginError(where, origin) {
+  return '这份文档已经导入过: ' + where + '（' + docImport.describeOrigin(origin) + '）'
+    + '—— 同一份来源再导一次会得到**第二棵树**（节点 id 由"时间+随机"生成，内容相同的两棵也不会重合）'
+    + '；确实要再来一份：加 --force（若想改的是已有的那一份，请直接 edit 那个节点）';
+}
+
 module.exports = {
   projects(ctx) {
     const list = ctx.store.list();
@@ -142,8 +178,12 @@ module.exports = {
     const name = ctx.projectName;
     if (!name) ctx.error('缺少项目名');
     const file = ctx.args._[1];
-    if (!file) ctx.error('用法: import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run]');
-    if (!fs.existsSync(file)) ctx.error('文件不存在: ' + file);
+    if (!file) ctx.error('用法: import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--force]');
+    // 入参闸门（见 src/doc-import.js 的 ⓪）：目录 / 路径不存在 / 没权限 / 不是普通文件，
+    // 各自**原因准确 + 带出路**。原先目录会露出 Node 原始的 `EISDIR: illegal operation on a
+    // directory, read` —— 既没说"这是目录不是文件"，也没给出路，而"想导整库"的人最容易撞到它 ✗
+    const bad = docImport.describeImportSourceProblem(file);
+    if (bad) ctx.error(bad.message);
     if (fs.existsSync(path.join(ctx.PROJECTS_DIR, name, name + '.json'))) ctx.error('项目已存在: ' + name + '（换个名字，或先删掉它）');
 
     let conv;
@@ -160,6 +200,13 @@ module.exports = {
     const notes = Array.isArray(conv.notes) ? conv.notes : [];
     const printNotes = (out) => notes.forEach((n) => out('  · ' + n));
 
+    // 来源指纹：**在预览之前**就算好 —— dry-run 与真导用同一个判据，不各算一套 ✓
+    const origin = docImport.makeOrigin({ file: file, md: conv.md, tool: 'import-project' });
+    const dup = originHitAcrossStore(ctx, origin);
+    // `--force` 的分工（取舍写明）：默认**拒绝**重复，因为"同一份文档悄悄导两次"是不可察觉的污染
+    //（第二棵树长得和第一棵不一样，事后无法分辨）；`--force` 是给"我真的要第二份"的显式出口。
+    const refused = !!dup && !ctx.args.force;
+
     if (ctx.args.dryRun) {
       const heads = conv.md.split('\n').filter((l) => /^#{1,6}\s+\S/.test(l)).slice(0, 8);
       const out = {
@@ -167,6 +214,11 @@ module.exports = {
         pdfSource: conv.source || null,
         title: title, stats: conv.stats, themes: themes.length, nodes: built.addedCount || 0,
         notes: notes,
+        // 来源指纹与"会不会被拒"也一并预览 —— 否则预览说"能导"、真导被拒，是最烦人的那种落差 ✗
+        origin: origin,
+        duplicate: dup ? { project: dup.project, id: dup.node.id, topic: dup.node.topic } : null,
+        wouldRefuse: refused,
+        forced: !!ctx.args.force,
         topHeadings: heads.map((l) => l.replace(/^(#+)\s+/, (m, g) => '#'.repeat(g.length) + ' '))
       };
       if (ctx.args.json) { ctx.outJson(out); return; }
@@ -176,20 +228,32 @@ module.exports = {
       ctx.out('将创建项目「' + name + '」（标题：' + title + '）：' + themes.length + ' 个顶层主题 / '
         + (built.addedCount || 0) + ' 个节点');
       if (conv.source) ctx.out('来源: ' + (conv.source === 'text' ? '文字层（这份 PDF 没有书签 ✓ 已自动回退）' : 'PDF 书签'));
+      ctx.out('来源指纹: ' + docImport.describeOrigin(origin));
+      if (dup) {
+        ctx.out('⚠ 这份文档已经导入过：项目 ' + dup.project + ' 的节点 ' + dup.node.id
+          + (ctx.args.force ? '（已给 --force ⇒ 仍会再建一棵）' : '（真导会被拒；真要再建一棵加 --force）'));
+      }
       printNotes(ctx.out);
       ctx.out('前几个顶层主题：');
       themes.slice(0, 10).forEach((t) => ctx.out('  · ' + t.topic));
       return;
     }
 
+    // ---- 幂等闸门（本批核心）：同一 src + 同一 sha256 二次导入 ⇒ 拒绝并**指名**上次导到哪 ----
+    if (refused) ctx.error(duplicateOriginError('项目 ' + dup.project + ' 的节点 ' + dup.node.id, dup.node.origin));
+
     const data = {
       meta: { name: title, author: '', version: MMConfig.APP_VERSION, formatVersion: 2 },
       format: 'node_tree',
-      data: { id: 'root', topic: title, expanded: true, children: themes }
+      // origin 挂在**这棵树的根**上：一次导入只留一个来源痕（不是每个节点都抄一遍 ⇒ 文件不膨胀）。
+      // 它记的是"这棵树从哪一份文档、哪一次导入来"，是"这份文件导过没有"的唯一判据 ✓
+      data: { id: 'root', topic: title, expanded: true, origin: origin, children: themes }
     };
     ctx.write(data);   // 一次写入（原子）⇒ 不会留下半个项目 ✓
     ctx.out('已从 ' + path.basename(file) + '（' + srcLabel + '）创建项目「' + name + '」：'
-      + themes.length + ' 个顶层主题 / ' + (built.addedCount || 0) + ' 个节点');
+      + themes.length + ' 个顶层主题 / ' + (built.addedCount || 0) + ' 个节点'
+      + (ctx.args.force && dup ? '（--force：这是同一个来源的第 2 份）' : ''));
+    ctx.out('来源指纹: ' + docImport.describeOrigin(origin));
     printNotes(ctx.out);
     ctx.out('打开：node cli/mm-cli.js read ' + name + ' --brief');
   },
@@ -197,17 +261,27 @@ module.exports = {
   importMd(ctx) {
     const file = ctx.args._[1];
     if (!file) ctx.error('缺少 Markdown 文件路径');
-    if (!fs.existsSync(file)) ctx.error('文件不存在: ' + file);
+    // 入参闸门（同 import-project，同一份实现）：目录 ⇒ 明确说"这是目录不是文件" + 给出路 ✓
+    const bad = docImport.describeImportSourceProblem(file);
+    if (bad) ctx.error(bad.message);
     const md = fs.readFileSync(file, 'utf8');
     const parent = ctx.args.parent || 'root';
     // 预读一次：让"父节点不存在"这条错误**先于**转换与写入报出来（保持原有报错顺序）
     const pre = ctx.read();
     if (!ctx.tree.find(pre.data.data, parent)) ctx.error('父节点不存在: ' + parent);
+    // 来源指纹 + 幂等闸门：只看**本项目**（这条命令是追加到已有项目，看不到别处；要看全库用
+    // import-project —— 它按同一判据扫全部项目）。判据只在 docImport.originMatches 一处 ✓
+    const origin = docImport.makeOrigin({ file: file, md: md, tool: 'import-md' });
+    const dup = originHitIn(pre.data.data, origin);
+    if (dup && !ctx.args.force) ctx.error(duplicateOriginError('本项目 ' + ctx.projectName + ' 的节点 ' + dup.id, dup.origin));
     // **转换只做一次**并捕获进闭包：fn 里禁止 I/O，且并发重放不该重新生成一遍节点 id。
     // 这使本命令的并发语义与 `add`（同一种"往某父节点下加内容"）完全一致：
     // 别人改的是**别的对象**时自动叠到最新版，撞同一个父节点时才拒绝。
     const r = markdown.markdownToTree(md, parent);
     const added = r.data.children || [];
+    // 来源痕挂在**这次导入产生的每棵子树的根**上（= `added` 的每一项）：
+    // 条数 = 一次导入里的顶层主题数，而不是节点数 ⇒ 代价极低，但"这份文件导过没有"一眼可查 ✓
+    added.forEach((n) => { if (n && typeof n === 'object') n.origin = origin; });
     ctx.mutate((cur) => {
       const parentNode = ctx.tree.find(cur.data, parent);
       // 读之后父节点被别人删了（罕见）⇒ 报错而不是凭空造一个父节点出来
@@ -215,7 +289,9 @@ module.exports = {
       parentNode.children = (parentNode.children || []).concat(added);
       return cur;
     });
-    ctx.out('导入完成，新增 ' + r.addedCount + ' 个节点（父节点 ' + parent + '）');
+    ctx.out('导入完成，新增 ' + r.addedCount + ' 个节点（父节点 ' + parent + '）'
+      + (ctx.args.force && dup ? '（--force：这是同一个来源的第 2 份）' : ''));
+    ctx.out('来源指纹: ' + docImport.describeOrigin(origin));
   },
 
   exportMd(ctx) {

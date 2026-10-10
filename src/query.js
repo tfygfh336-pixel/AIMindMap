@@ -70,6 +70,10 @@
         // 它是"这段结论是哪次 AI 交流得来的"，属于导航信息而不是长文本（answer 可能长，
         // 所以真嫌大就上 skeleton，别用 brief 半省）。
         qa: withLinks && Array.isArray(n.qa) && n.qa.length ? n.qa : undefined,
+        // 来源指纹（可选，§2.8）：与 qa 同一档（skeleton 才省掉，brief 不省）。
+        // 它只挂在**一次导入产生的那几棵子树的根**上，条数 ≈ 导入次数（不是节点数）⇒ 代价极低，
+        // 而"这个文件导过没有"正是批量导入必须先看得见的东西 ✓
+        origin: withLinks && n.origin && typeof n.origin === 'object' ? n.origin : undefined,
         children: (n.children || []).map((c) => ({
           id: c.id, topic: c.topic, children: (c.children || []).length
         }))
@@ -118,6 +122,10 @@
     // 挂到 detail 下会让 `get --json`（不带 --detail）看不出它，而 MCP 的 get_node 正带 --detail，
     // 两条路读到的字段集就会分叉（本工程反复治的"同一件事两处表达"）。
     if (Array.isArray(node.qa) && node.qa.length) out.qa = node.qa;
+    // 来源指纹（可选，§2.8）：与 qa 同一条策略 —— **总是带出**。理由也一样：它是"这个节点
+    // 的实况"（这份内容是从哪个文件导进来的）的一部分，挂到 `opts.detail` 下会让
+    // `get --json`（不带 --detail）看不见它，而幂等判定正需要它 ✓
+    if (node.origin && typeof node.origin === 'object') out.origin = node.origin;
     out.path = tree.pathTo(root, id) || [id];
     return out;
   }
@@ -125,7 +133,9 @@
   /** 项目统计。project 字段由调用方附加（本函数不认识"项目名"）。 */
   function computeStats(root) {
     let nodes = 0, images = 0, files = 0, links = 0, detailedNodes = 0, taggedNodes = 0, maxDepth = 0;
+    let originNodes = 0;                      // 带来源指纹的**节点**数（= 有几次导入留了痕）
     const tagSet = new Set();
+    const originSet = new Set();              // 不同的**(来源, 指纹)**组合数（同一次导入只算一个）
     tree.walk(root, (n, d) => {
       nodes++;
       images += (n.images || []).length;
@@ -133,9 +143,17 @@
       links += (n.links || []).length;
       if ((n.tags || []).length) { taggedNodes++; n.tags.forEach((t) => tagSet.add(t)); }
       if (typeof n.detail === 'string' && n.detail.trim()) detailedNodes++;
+      // 来源指纹（§2.8）：排查"这个项目里哪些内容是从文件导进来的、导过几份"用。
+      // 两个数都报：`originNodes` 答"有多少节点带来源"，`originSources` 答"涉及几份不同来源"
+      //（同一个文件被 --force 导两次 ⇒ 节点数涨、来源数不涨 —— 一眼能看出那是重复导的）。
+      if (n.origin && typeof n.origin === 'object') {
+        originNodes++;
+        if (n.origin.src) originSet.add(n.origin.src + '#' + n.origin.sha256);
+      }
       if (d > maxDepth) maxDepth = d;
     });
-    return { nodes, maxDepth, images, files, links, detailedNodes, taggedNodes, tags: tagSet.size };
+    return { nodes, maxDepth, images, files, links, detailedNodes, taggedNodes, tags: tagSet.size,
+      originNodes: originNodes, originSources: originSet.size };
   }
 
   /**

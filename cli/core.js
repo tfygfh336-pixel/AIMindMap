@@ -71,6 +71,9 @@ function parseArgs(argv) {
     // 其余纯布尔开关显式登记（否则会被通用分支按"--key value"吞掉下一个位置参数）
     if (a === '--clear') { out.clear = true; continue; }
     if (a === '--raw') { out.raw = true; continue; }
+    // 覆盖式导入的显式开关（import-project / import-md）：纯布尔 ⇒ 必须在这里登记，
+    // 否则会被通用分支按"--key value"处理、把后面的位置参数吞成它的值（见上面那条注释）
+    if (a === '--force') { out.force = true; continue; }
     if (a === '--unmounted') { out.unmounted = true; continue; }
     if (a === '--major') { out.major = true; continue; }
     if (a === '--minor') { out.minor = true; continue; }
@@ -163,6 +166,41 @@ function parseIntOption(raw, opts) {
     return { ok: false, reason: '必须是' + range + '（收到 ' + JSON.stringify(raw) + '）' };
   }
   return { ok: true, value: n };
+}
+
+/**
+ * 本工程**真的认**的短选项。当前只有 `-h`（= `--help`：全局与 `<命令> -h` 两种用法，
+ * 见 `cli/main.js` 的 dispatch —— 它在进到下面那个扫描之前就已经被处理掉了）。
+ * 定义在这里是**为了有唯一一份**：扫描器与报错文案必须共用它，否则"报不认识的选项"
+ * 会把工程自己的正常用法判死 ✗。
+ */
+const SHORT_OPTIONS = ['-h'];
+
+/**
+ * 扫出 argv 里**单短横线开头、又不是已知短选项**的位置参数（纯函数、无 IO ⇒ 可单测）。
+ *
+ * 为什么需要它（缺陷取证，实测）：`node cli/mm-cli.js read -x` ⇒ `error: 项目不存在: -x`。
+ * 退 1 是响亮的，但**原因错**：它把 `-x` 当成项目名了 ⇒ 调用方（人和 AI 都会）
+ * 去查"项目 -x 为什么不存在"，而真实原因是"这个选项写错了"。诊断方向一错，弯路就长了。
+ *
+ * ⚠️ 只扫**位置参数**（`parseArgs(...)._`），不扫原始 argv —— 被当作**选项值**的 `-x` 是正常用法：
+ *   `edit <项目> <id> --topic -x` 里的 `-x` 会被通用分支吃成 topic 的值，
+ *   拿原始 argv 去扫会把它误报成未知选项 ✗（"别把正常用法判死"）。
+ * @param {string[]} positionals `parseArgs(argv)._`
+ * @param {string[]} [knownShort] 真的认的短选项（默认 SHORT_OPTIONS）
+ * @returns {string[]} 去重后的未知短选项（按出现顺序）
+ */
+function unknownShortOptions(positionals, knownShort) {
+  const known = new Set(knownShort || SHORT_OPTIONS);
+  const out = [];
+  const seen = new Set();
+  (positionals || []).forEach((a) => {
+    if (typeof a !== 'string' || a.length < 2 || a[0] !== '-' || a.slice(0, 2) === '--') return;
+    if (known.has(a) || seen.has(a)) return;    // 同一个未知选项重复出现只报一次
+    seen.add(a);
+    out.push(a);
+  });
+  return out;
 }
 
 /** 选项键 → 命令行写法（报错里要写用户敲的那个 `--foo-bar`） */
@@ -280,4 +318,7 @@ function createContext(argv, meta) {
   return ctx;
 }
 
-module.exports = { createContext, parseArgs, optionKey, unknownOptions, parseIntOption, optionFlag, PROJECTS_DIR };
+module.exports = {
+  createContext, parseArgs, optionKey, unknownOptions, parseIntOption, optionFlag, PROJECTS_DIR,
+  unknownShortOptions, SHORT_OPTIONS
+};

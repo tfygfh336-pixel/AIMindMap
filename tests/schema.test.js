@@ -274,3 +274,59 @@ describe('schema · localPath（本机文件夹路径）', () => {
     expect(v.ok).toBe(true);
   });
 });
+
+/* ------------------------------------------------------------
+ * origin（来源指纹，见 docs/DATA-FORMAT.md §2.8）
+ *
+ * 它是**批量导入幂等**的前提（节点 id 由时间+随机生成 ⇒ 同一份文档导两次会是两棵不相交的树，
+ * 只能靠 src+sha256 认出来）。校验口径与 localPath 同理：**只校验形状，不重算哈希** ——
+ * 重算要把源文档读回来，而它可能早已不在本机/已被改过，那会把"数据问题"变成"环境问题"。
+ * 这组断言同时钉住**向后兼容**：没有 origin 的旧数据读、写、校验一切照旧。
+ * ------------------------------------------------------------ */
+describe('schema · origin（来源指纹）', () => {
+  const SHA = 'a'.repeat(64);
+  const withOrigin = (o) => wrap({ id: 'root', topic: 'R', children: [
+    { id: 'a', topic: 'A', origin: o }
+  ] });
+  const good = { kind: 'import', src: 'docs/a.md', sha256: SHA, at: '2026-10-10T00:00:00.000Z', tool: 'import-md' };
+
+  it('合法 origin 通过（tool 可缺省）', () => {
+    expect(validateProject(withOrigin(good), null).ok).toBe(true);
+    const noTool = { kind: 'import', src: 'docs/a.md', sha256: SHA, at: 'T' };
+    expect(validateProject(withOrigin(noTool), null).ok).toBe(true);
+    // src 可以是 URL（将来从网页导入也用同一个字段）
+    expect(validateProject(withOrigin(Object.assign({}, good, { src: 'https://x/y.md' })), null).ok).toBe(true);
+  });
+
+  it('它是**可选**字段：旧数据（无 origin）照旧通过 —— 不升 formatVersion、不需要迁移', () => {
+    const v = validateProject(wrap({ id: 'root', topic: 'R', children: [{ id: 'a', topic: 'A' }] }), null);
+    expect(v.ok).toBe(true);
+    const pack = withOrigin(undefined);
+    expect(validateProject(pack, null).ok).toBe(true);
+    expect(pack.meta.formatVersion === undefined || pack.meta.formatVersion === 2).toBe(true);
+  });
+
+  it('形状错的 origin 一律判红（而且理由**指名**是 origin 的哪一项）', () => {
+    const cases = [
+      [null, /origin 必须是对象/],
+      [[], /origin 必须是对象/],
+      ['x', /origin 必须是对象/],
+      [Object.assign({}, good, { kind: 'copy' }), /origin\.kind/],
+      [Object.assign({}, good, { src: '' }), /origin\.src/],
+      [Object.assign({}, good, { src: 123 }), /origin\.src/],
+      [Object.assign({}, good, { sha256: 'short' }), /origin\.sha256/],           // 截断的指纹
+      [Object.assign({}, good, { sha256: SHA.toUpperCase() }), /origin\.sha256/], // 大写：形状不对
+      [Object.assign({}, good, { at: '' }), /origin\.at/],
+      [Object.assign({}, good, { tool: 7 }), /origin\.tool/]
+    ];
+    cases.forEach(([o, re]) => {
+      const v = validateProject(withOrigin(o), null);
+      expect(v.ok, JSON.stringify(o)).toBe(false);
+      expect(v.errors.join(';')).toMatch(re);
+    });
+  });
+
+  it('只校验形状：src 指向的文件**不存在**也合法（同 localPath 的理由，别把它变成环境检查）', () => {
+    expect(validateProject(withOrigin(Object.assign({}, good, { src: 'Z:/绝不存在.md' })), null).ok).toBe(true);
+  });
+});

@@ -124,6 +124,19 @@ function dispatch(argv) {
     process.exitCode = 1;
     return undefined;
   }
+  // ---- 单短横线选项的守门点（缺陷取证：`read -x` 原先报"项目不存在: -x"）----
+  // 上面的 unknownOptions 只认 `--xxx`（它按 `a.slice(0, 2) !== '--'` 直接跳过单横线），
+  // 于是 `-x` 一路落到位置参数 ⇒ 被当成项目名 ⇒ **响亮，但原因错**：调用方会去查
+  // "项目 -x 为什么不存在"，而真因是"这个选项写错了"。诊断方向一错，弯路就长了。
+  // ⚠️ 顺序：必须在上面 `-h` 短路**之后** —— `-h` 是工程既有语义（`<命令> -h` 打印该命令用法），
+  //    有语义的短选项一律保留 ✓，别把正常用法判死 ✗。
+  // ⚠️ 只看**位置参数**：被当作选项值的 `-x`（如 `--topic -x`）是正常用法，拿原始 argv 扫会误杀 ✗。
+  const shortBad = core.unknownShortOptions(core.parseArgs(rest)._, core.SHORT_OPTIONS);
+  if (shortBad.length) {
+    process.stdout.write('error: ' + registry.unknownShortOptionError(name, shortBad) + '\n');
+    process.exitCode = 1;
+    return undefined;
+  }
   const ctx = core.createContext(rest, { command: name });
   return cmd.fn(ctx, rest);
 }

@@ -85,8 +85,9 @@ const TOOLS = [
     clean_assoc: b('同时清理引用了该节点的关联成员'),
     clean_links: b('同时清理指向该节点的链接')
   }, ['project', 'id']),
-  T('import_markdown', '从 Markdown 文件导入节点（追加到 parent）', {
-    project: s('项目名或 JSON 文件路径'), file: s('Markdown 文件路径'), parent: s('可选，目标父节点 id，默认 root')
+  T('import_markdown', '从 Markdown 文件导入节点（追加到 parent）。**同一份来源默认只导一次**：命令会记下来源路径 + 内容指纹，重复导入会被拒并指名上次导到哪去了；确实要第二份就 force=true', {
+    project: s('项目名或 JSON 文件路径'), file: s('Markdown 文件路径'), parent: s('可选，目标父节点 id，默认 root'),
+    force: b('同一个来源**故意**再导一次（默认拒绝重复导入）')
   }, ['project', 'file']),
   T('export_markdown', '导出项目为 Markdown 大纲', {
     project: s('项目名或 JSON 文件路径'), out: s('输出 .md 文件路径'),
@@ -180,9 +181,10 @@ const TOOLS = [
   T('remove_file', '移除节点上的**附件引用**（文件本身留不留由调用方决定；与 remove_image 对称）', {
     project: s('项目名或 JSON 文件路径'), id: s('节点 id'), file: s('相对路径，如 attachments/x.md')
   }, ['project', 'id', 'file']),
-  T('import_project', '**从大文档建一个新项目 + 一棵新树**（md / txt / docx / **带书签的 pdf**）：1 级标题成为顶层主题；一次原子写，失败不留半个项目', {
+  T('import_project', '**从大文档建一个新项目 + 一棵新树**（md / txt / docx / **带书签的 pdf**）：1 级标题成为顶层主题；一次原子写，失败不留半个项目。**同一份来源默认只导一次**（全库比来源指纹，重复会拒绝并指名是哪个项目导的）；入参是目录或读不了 ⇒ 响亮拒绝并给出路', {
     name: s('新项目名'), file: s('源文件路径（.md / .txt / .docx / 带书签的 .pdf）'),
-    title: s('可选，项目标题'), dry_run: b('只预览格式/规模/前几个标题，不写盘（建议先跑一次）')
+    title: s('可选，项目标题'), dry_run: b('只预览格式/规模/前几个标题与来源指纹，不写盘（建议先跑一次）'),
+    force: b('同一个来源**故意**再建一棵（默认拒绝重复导入）')
   }, ['name', 'file']),
   T('ask', '向内嵌 DSH 提**一次性问题**（stdout 即答案）：不给 id 就是项目级提问；kind=explain|ask；effort 调思考强度；dry_run=true 只打印提示词与命令行、**不调模型**（不烧额度）', {
     project: s('项目名或 JSON 文件路径'), id: s('可选，节点 id（给了就是针对该节点提问）'),
@@ -332,6 +334,8 @@ function callTool(name, args) {
     case 'import_markdown': {
       const c = ['import-md', argOf('project'), argOf('file')];
       if (a.parent) c.push('--parent', argOf('parent'));
+      // 重复导入的唯一出口（默认拒绝）：与 CLI 的 --force 同一个开关，别让 MCP 侧没有出路 ✗
+      if (a.force === true) c.push('--force');
       return runCli(c);
     }
     case 'export_markdown': {
@@ -446,6 +450,8 @@ function callTool(name, args) {
       const c = ['import-project', argOf('name'), argOf('file')];
       if (a.title) c.push('--title', argOf('title'));
       if (a.dry_run) c.push('--dry-run');
+      // 与 CLI 的 --force 同一个开关（默认拒绝重复导入 ⇒ MCP 侧也必须有这条出路 ✓）
+      if (a.force === true) c.push('--force');
       c.push('--json');
       return runCli(c);
     }

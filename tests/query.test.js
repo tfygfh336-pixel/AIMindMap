@@ -311,3 +311,65 @@ describe('query · localPath 的读视图暴露', () => {
     expect('localPath' in v).toBe(false);
   });
 });
+
+/* ------------------------------------------------------------
+ * origin（来源指纹，见 docs/DATA-FORMAT.md §2.8）的读视图暴露
+ *
+ * 它要能回答两件事，缺一件这条字段就白加了：
+ *   ① "这个节点是从哪份文档导进来的" —— `get --json` 必须**总是**带（幂等判定的输入）；
+ *   ② "这个项目里有多少内容是从文件导进来的" —— `stats` 要报得出数（排查用）。
+ * 三档口径与 qa 一致：完整 / brief 带，skeleton（最窄那档）省。
+ * ------------------------------------------------------------ */
+describe('query · origin 的读视图暴露与统计', () => {
+  const ORG = { kind: 'import', src: 'docs/a.md', sha256: 'a'.repeat(64), at: 'T', tool: 'import-md' };
+  const ORG2 = { kind: 'import', src: 'docs/b.md', sha256: 'b'.repeat(64), at: 'T', tool: 'import-project' };
+  const withOrigin = () => ({
+    meta: { name: 'x' },
+    data: {
+      id: 'root', topic: '根', origin: ORG,
+      children: [
+        { id: 'a', topic: 'A', origin: ORG2, children: [] },
+        { id: 'b', topic: 'B', children: [] }          // 无 origin：手写的节点
+      ]
+    }
+  });
+
+  it('get 的节点视图带 origin（**不带 --detail 也带** —— 幂等判定就靠它）', () => {
+    const v = query.getNodeView(withOrigin().data, 'a', {});
+    expect(v.origin).toEqual(ORG2);
+  });
+
+  it('read 的完整视图与 brief 都带；skeleton（最窄档）省掉', () => {
+    const full = query.buildReadView(withOrigin(), {});
+    const brief = query.buildReadView(withOrigin(), { brief: true });
+    expect(full.nodes.find((n) => n.id === 'a').origin).toEqual(ORG2);
+    expect(brief.nodes.find((n) => n.id === 'a').origin).toEqual(ORG2);
+    const sk = query.buildReadView(withOrigin(), { skeleton: true });
+    expect(sk.nodes.find((n) => n.id === 'a').origin).toBeUndefined();
+  });
+
+  it('没有这个字段时不产生噪音键（旧数据零变化）', () => {
+    const v = query.getNodeView(withOrigin().data, 'b', {});
+    expect('origin' in v).toBe(false);
+  });
+
+  it('stats 报"有多少节点带来源"与"涉及几份不同来源"（同一次导入只算一个来源）', () => {
+    const s = query.computeStats(withOrigin().data);
+    expect(s.originNodes).toBe(2);      // root + a
+    expect(s.originSources).toBe(2);    // docs/a.md 与 docs/b.md 各一份
+    // 同一份来源被 --force 导两次 ⇒ 节点数涨、来源数不涨（一眼能看出那是重复导的）
+    const twice = {
+      meta: { name: 'x' },
+      data: { id: 'root', topic: '根', origin: ORG, children: [{ id: 'a', topic: 'A', origin: ORG, children: [] }] }
+    };
+    const s2 = query.computeStats(twice.data);
+    expect(s2.originNodes).toBe(2);
+    expect(s2.originSources).toBe(1);
+  });
+
+  it('旧数据（一个 origin 都没有）统计仍是 0，不是 undefined（否则门禁里会变成 NaN 比较）', () => {
+    const s = query.computeStats({ id: 'root', topic: 'R', children: [] });
+    expect(s.originNodes).toBe(0);
+    expect(s.originSources).toBe(0);
+  });
+});
