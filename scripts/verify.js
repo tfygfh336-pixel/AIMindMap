@@ -32,6 +32,17 @@ const changedPlan = require('./changed-plan.js');
 
 const ROOT = path.resolve(__dirname, '..');
 
+/* ================================================================
+ * ⚠️ **非确定性产物**（生成器就是本文件）—— 下面这几个**不得当真值**读：
+ *   · `.review/verify-tests.json`     vitest 报告（含每个文件的耗时），只是"用例数"的交接文件
+ *   · `.review/last-verify.json`      每次运行都不同（finishedAt / totalMs / freeMemMB / version）
+ *   · `.review/verify-history.jsonl`  **追加式**历史（同上 + node / host / freeMemMB）
+ *   它们是**留痕**，回答的是"上次绿没绿、比上次慢了没有"；要**当前真值**就现场取：
+ *   `node scripts/doc-facts.js`（命令数 / 工具数 / 用例数 / 断言数）。
+ *   差异来源属于「时间戳 / 耗时 / 路径」三类 —— 逐类的"为什么可以不确定"见门禁 **S3**
+ *   （`node scripts/determinism-check.js --list`）。**判定**：标注缺了、或标注没点名产物，都会判红。
+ * ================================================================ */
+
 /** 第 4 步额外产出的用例数（供第 6 步取用，省掉它重跑一次 vitest）。
  *  落在 `.review/` —— 工程既定的**工作产物区**（已 gitignore，G8 豁免）。 */
 const TEST_RESULTS = '.review/verify-tests.json';
@@ -313,8 +324,38 @@ const STEPS = [
     budgetMs: 10000
   },
   {
-    step: 6, gate: 'G3', label: '单元测试',
-    // 与 `npm test` 等价，**外加** JSON reporter：把用例数交给第 6 步（doc-facts），
+    step: 6, gate: 'S1', label: '单向依赖',
+    cmd: 'node scripts/dep-direction-check.js', shown: '`node scripts/dep-direction-check.js`',
+    covers: '**单向依赖**（声明在 `docs/ARCHITECTURE.md` §4 原则 2：renderer → main/scripts → cli → src，'
+      + '不反向依赖）：扫第一方源码的 `require`/`import` 边，按**单源分层图**（本门禁的 `LAYERS`，只写一处）'
+      + '判方向 —— **反向边即红并指名 `A → B`**，同层成环与"指向分层图之外"也判红（在册豁免除外）。'
+      + '它守的正是 skill 点名的"性质成立、检查没建"那一类：这条约束一直成立（实测零回边），'
+      + '但**一次顺手 `require` 就能破而全链不红** ✗',
+    // 纯文本扫描 + 一行 require 解析（实测 ≈0.1 s）⇒ 取十几倍仍是 10 s 档（廉价门禁）
+    budgetMs: 10000
+  },
+  {
+    step: 7, gate: 'S2', label: '连带清单',
+    cmd: 'node scripts/collateral-check.js', shown: '`node scripts/collateral-check.js`',
+    covers: '**改动即连带清单**：把"改动类型 → 连带处"做成**单源表**（本脚本的 `COLLATERAL`），'
+      + '并对其中**尚未机制化**的那几处直接断言（① MCP 派发到的每条 CLI 命令都必须存在；'
+      + '② 每个冒烟域都必须在断言注册面的索引里）；已机制化的那几处（G8 / G7 / G6 / V2 / V1 / G8 第 ⑮ 条…）'
+      + '**指过去复用**，只校验那个门禁真的挂在链上 ✗ 不重做。`--list` 现场打印全表（报错即指路）',
+    budgetMs: 10000
+  },
+  {
+    step: 8, gate: 'S3', label: '确定性产物',
+    cmd: 'node scripts/determinism-check.js', shown: '`node scripts/determinism-check.js`',
+    covers: '**确定性产物**（判据 `A-08`）：产物登记表（声明面 = `docs/ARCHITECTURE.md` §5.2，双向闭包）里'
+      + '**真值比**的产物必须"同一状态**连续两次**重算逐字节相同"（含时钟 / 随机 / 顺序 / 工作区四类扰动，'
+      + '差异来源可分类）；**允许不确定**的产物必须在生成器里**点名标注**"非确定性、不得当真值"；'
+      + '自述是生成物却没进表的一律判红。**乙档上线**：被当证据真值用、但判定尚不存在的那些住在'
+      + '**门禁侧的封闭欠账册**里（`--debt` 现场取，只减不增，修好忘销账或册上对象不存在都判红）',
+    budgetMs: 10000
+  },
+  {
+    step: 9, gate: 'G3', label: '单元测试',
+    // 与 `npm test` 等价，**外加** JSON reporter：把用例数交给第 10 步（doc-facts），
     // 于是整条链只需要跑**一次** vitest（以前 doc-facts 会再跑一次：慢约 5 s，
     // 而且正是那一次在负载高时偶发取不到真值、把 G6 判红）。
     // `--reporter=default` 保留人看的输出，故这一步的观感与 `npm test` 一致。
@@ -326,34 +367,34 @@ const STEPS = [
     resultsFile: TEST_RESULTS
   },
   {
-    step: 7, gate: 'G6', label: '文档数字与版本一致',
+    step: 10, gate: 'G6', label: '文档数字与版本一致',
     cmd: 'node scripts/doc-facts.js --check', shown: '`node scripts/doc-facts.js --check`',
     covers: '文档数字与真值一致（含**第一屏 `SKILL.md` 自报的验证链步骤数** == `STEPS.length`）、版本号四处一致',
     // 20 s：正常情况（采用链上用例数）约 0.7 s；**交接失效退化为自跑 vitest 时约 9.2 s**
     // 仍容得下，但更严重的退化会被抓住。
     budgetMs: 20000,
-    useUnitTests: true // 由第 4 步传入用例数，省掉这里的 vitest 重跑
+    useUnitTests: true // 由第 9 步（G3）传入用例数，省掉这里的 vitest 重跑
   },
   {
-    step: 8, gate: 'G7', label: '生成物未过期',
+    step: 11, gate: 'G7', label: '生成物未过期',
     cmd: null, shown: '同上（重算比对）',
     covers: '生成物是否过期（`docs/CLI.md` 与 registry 一致）',
     budgetMs: 0 // 与 G6 同一次调用，单独不占预算
   },
   {
-    step: 9, gate: 'G4', label: 'CLI 集成断言',
+    step: 12, gate: 'G4', label: 'CLI 集成断言',
     cmd: 'node scripts/cli-integration.js', shown: '`node scripts/cli-integration.js`',
     covers: '全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理）',
     budgetMs: 30000
   },
   {
-    step: 10, gate: 'G2', label: '数据校验',
+    step: 13, gate: 'G2', label: '数据校验',
     cmd: 'node cli/mm-cli.js validate-all', shown: '`node cli/mm-cli.js validate-all`',
     covers: '全部项目结构 + 悬挂链接 + 环',
     budgetMs: 15000
   },
   {
-    step: 11, gate: 'G5', label: '冒烟（Electron 无头）',
+    step: 14, gate: 'G5', label: '冒烟（Electron 无头）',
     cmd: 'npm run smoke', shown: '`npm run smoke`',
     covers: '渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**',
     // 预算调整史（每次都带实测依据 ✓）：

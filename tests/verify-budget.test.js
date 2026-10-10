@@ -86,7 +86,8 @@ describe('验证链定义自洽（scripts/verify.js 是唯一定义）', () => {
     const gates = verify.STEPS.map((s) => s.gate);
     expect(new Set(gates).size).toBe(gates.length);
     // V2（冒烟域内自收尾）与 V1 同档：都是"扫冒烟源码文本"的廉价卫生门禁，排在昂贵步骤之前 ✓
-    expect(gates).toEqual(['G1', 'G8', 'G9', 'V1', 'V2', 'G3', 'G6', 'G7', 'G4', 'G2', 'G5']);
+    // S1/S2/S3（结构声明的三条卫生门禁）同档：依赖方向 / 连带清单 / 产物确定性，同样是纯文本扫描 ✓
+    expect(gates).toEqual(['G1', 'G8', 'G9', 'V1', 'V2', 'S1', 'S2', 'S3', 'G3', 'G6', 'G7', 'G4', 'G2', 'G5']);
   });
 
   it('除 G7（与 G6 同一次调用）外，每步都有可执行命令与预算', () => {
@@ -101,7 +102,8 @@ describe('验证链定义自洽（scripts/verify.js 是唯一定义）', () => {
 
   it('**`docs/RULES.md` 声明的每个门禁都真的挂在链上**（防"加了门禁忘了挂"）', () => {
     const rules = fs.readFileSync(path.join(ROOT, 'docs', 'RULES.md'), 'utf8');
-    const declared = [...rules.matchAll(/^\|\s*\*\*([GV]\d+)\*\*/gm)].map((m) => m[1]);
+    // 前缀 `G`（功能与契约）/ `V`（验证物自身的卫生）/ `S`（结构声明的卫生）三种都认
+    const declared = [...rules.matchAll(/^\|\s*\*\*([GVS]\d+)\*\*/gm)].map((m) => m[1]);
     const mounted = verify.STEPS.map((s) => s.gate);
     expect(declared.length, 'RULES.md 里应声明多个门禁').toBeGreaterThan(5);
     const missing = declared.filter((g) => !mounted.includes(g));
@@ -118,7 +120,7 @@ describe('验证链定义自洽（scripts/verify.js 是唯一定义）', () => {
    * ------------------------------------------------------------ */
   it('**反向：链上实现的每个门禁都必须在 `docs/RULES.md` §2 有声明**（防"挂了门禁没人声明"）', () => {
     const rules = fs.readFileSync(path.join(ROOT, 'docs', 'RULES.md'), 'utf8');
-    const declared = [...rules.matchAll(/^\|\s*\*\*([GV]\d+)\*\*/gm)].map((m) => m[1]);
+    const declared = [...rules.matchAll(/^\|\s*\*\*([GVS]\d+)\*\*/gm)].map((m) => m[1]);
     const mounted = verify.STEPS.map((s) => s.gate);
     const undeclared = mounted.filter((g) => !declared.includes(g));
     expect(undeclared, '这些门禁挂在 scripts/verify.js 的 STEPS 上，却没在 docs/RULES.md §2 声明'

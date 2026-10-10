@@ -1589,6 +1589,13 @@ async function runSmoke(win) {
   let visionStart = -1;   // 视觉断言在 results 里的起始下标（-1 = 没跑）
   // 截图（工程根 smoke-shot.png）+ 落一份**旁路取景记录** smoke-frame.json。
   // 顺序不可交换：先做取景准备（展开全树/禁过渡/清状态栏/等 ≥2 帧），再截图 —— 见 prepareCapture。
+  //
+  // ⚠️ **非确定性产物**（生成器就是这一段）：`smoke-shot.png` 与 `smoke-frame.json` 是**本次运行的
+  //    取景证据**（分辨率 / 字节 / sha256 / 像素统计）—— **不得当真值**读：换一次运行像素统计就变，
+  //    差异来源属于「渲染取景」那一类（逐类的"为什么可以不确定"见 `scripts/determinism-check.js --list`）。
+  //    它**能**当真值用的那一半是"这份读图结论绑的是哪一张帧"（`scripts/vision/record.js` 用 sha256 绑，
+  //    不一致就拒绝写）—— 而"同一状态连续两帧逐字节相同"这条判定**目前不存在**，在门禁 **S3** 的
+  //    欠账册里：`node scripts/determinism-check.js --debt`。
   // 过滤运行时**不做**这段：截图（prepareCapture + capturePage）、取景记录、视觉断言（L2）
   // —— 它们只对"全量运行"有意义（真值口径见 docs/VERIFY.md），跳过还能省掉一次 GPU 合成。
   if (filtered) console.log('==== 过滤运行：跳过截图 / 取景记录 / 视觉断言 ====');
