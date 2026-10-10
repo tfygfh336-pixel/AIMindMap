@@ -61,7 +61,8 @@ module.exports = {
    * 不带项目名 → 汇总**所有**项目最近一次写入（"现在谁在动哪个项目"）。
    */
   changes(ctx) {
-    const limit = ctx.args.limit === undefined ? 20 : Number(ctx.args.limit);
+    // --limit：非法值当场报错（`--limit abc` 以前会静默变成 NaN，而 NaN > 0 为假 ⇒ 悄悄退回"全量"）
+    const limit = ctx.intOption('limit', { min: 0, def: 20 });
     const show = (list) => (limit > 0 ? list.slice(Math.max(0, list.length - limit)) : list);
 
     /* ---------- 不带项目名：汇总 ---------- */

@@ -181,7 +181,8 @@ module.exports = {
       else structural.push(rec);
     });
 
-    const limit = ctx.args.limit !== undefined ? Math.max(0, Number(ctx.args.limit)) : 40;
+    // --limit：非法值当场报错（`--limit abc` 以前会静默变成 NaN ⇒ `slice(0,NaN)` = 空清单 ✗）
+    const limit = ctx.intOption('limit', { min: 0, def: 40 });
     const shown = (ctx.args.contentOnly ? contentOrphans : contentOrphans.concat(structural)).slice(0, limit);
 
     const summary = {
@@ -232,9 +233,10 @@ module.exports = {
    */
   mentions(ctx) {
     const { data } = ctx.read();
+    // --min-length / --limit 的非法值当场报错（0 = 不限条数，与既有语义一致）
     const common = {
-      minTopicLength: ctx.args.minLength !== undefined ? Number(ctx.args.minLength) : undefined,
-      limit: ctx.args.limit !== undefined ? Math.max(0, Number(ctx.args.limit)) : 0
+      minTopicLength: ctx.intOption('minLength', { min: 1, def: undefined }),
+      limit: ctx.intOption('limit', { min: 0, def: 0 })
     };
     const r = mentions.findMentions(data.data, Object.assign({
       selfProject: ctx.projectName,

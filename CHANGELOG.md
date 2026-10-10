@@ -23,7 +23,7 @@
 
 | # | 现象（修前实测） | 根因（file:line） | 修法 |
 |---|------------------|-------------------|------|
-| D1 | `add <项目> root --topic X --tags aaa,bbb` ⇒ **exit 0 +「已添加」**，而 `get` 里没有 tags、`stats.taggedNodes` 是 0；`--bogus xyz`、`--expanded=nonsense`（盘上落成默认 `true`）同样静默 | `cli/core.js` 的通用参数分支**没有白名单**（`git log -S` 只命中首次提交 `5888f90` ⇒ 旧遗留）；`--tags` 在 `edit`/`add-image` 上**是合法选项** ⇒ 跨命令误用极自然 | 每条命令在 `cli/registry.js` 声明 `options`；`cli/main.js` 的 dispatch **唯一一处**判未知选项 ⇒ exit 1 + 点名 + **打印支持集**（是别的命令的选项就点名那条命令）。`core.parseArgs` 支持 `--key=value`；`--expanded` 取值只认 true/false；`--index` 只认非负整数。新增 `tests/cli-options.test.js`（17 条：声明自洽 + 判定纯函数 + 报错文本 + 进程内行为） |
+| D1 | `add <项目> root --topic X --tags aaa,bbb` ⇒ **exit 0 +「已添加」**，而 `get` 里没有 tags、`stats.taggedNodes` 是 0；`--bogus xyz`、`--expanded=nonsense`（盘上落成默认 `true`）同样静默 | `cli/core.js` 的通用参数分支**没有白名单**（`git log -S` 只命中首次提交 `5888f90` ⇒ 旧遗留）；`--tags` 在 `edit`/`add-image` 上**是合法选项** ⇒ 跨命令误用极自然 | 每条命令在 `cli/registry.js` 声明 `options`；`cli/main.js` 的 dispatch **唯一一处**判未知选项 ⇒ exit 1 + 点名 + **打印支持集**（是别的命令的选项就点名那条命令）。`core.parseArgs` 支持 `--key=value`；`--expanded` 取值只认 true/false；`--index` 只认非负整数。**同类的"值非法"一并收口**：`--limit` / `--min-length` / `--timeout` 走 `ctx.intOption`（修前 `--limit abc` 会静默变 NaN ⇒ `slice(0,NaN)` = 空清单、`--timeout abc` 会静默退回默认超时）。新增 `tests/cli-options.test.js`（20 条：声明自洽 + 判定纯函数 + 报错文本 + 进程内行为） |
 | D2 | 原始报文 `{"jsonrpc":"2.0","id":4,"result":"method not found: no-such-method"}` —— 未知方法回 `result` 字符串，无 `error` 无 `code` ⇒ 标准客户端按成功处理 | `scripts/mcp-server.js` 默认分支漏传 `isError`（对照 `tools/call` 那条传了） | 抽出 `handleMessage`（唯一分流点）：未知方法/未知工具 ⇒ `error -32601`；缺必填参数/没给工具名 ⇒ `error -32602`；服务器异常 ⇒ `-32603`；**工具内部失败仍走 `result + isError:true`**（MCP 约定：失败原因要让模型看得见）。必填项取自 `inputSchema.required`（与工具定义同源）。两面都钉：`tests/mcp-protocol.test.js`（12 条）+ 真 stdio 一拍（集成 6 条） |
 | D3 | 新建一个 `.review/<目录>/`（哪怕只写它的 README）⇒ 全链 G6 判红：`✗ 生成物已过期：docs/VERIFY.md（第 98 行起不一致）` ⇒ 任何"只读仓库 + 只写 `.review/`"的核查任务**不可能让全链变绿** | `scripts/doc-facts.js` 把 `.review/` 的**目录清单 + 各自状态**渲染进受管文档 `docs/VERIFY.md` | 该行改为**不含清单**的语义指针（"见 `.review/*/README.md`"）。判据：**易变、可随时整目录删的工作区不得成为受管真值的一部分**。G8 对 `.review/<目录>/README.md` 的**死活声明**照旧保留（它管可删性，不管清单） |
 | D4 | `renderer/app-ask.js` 的函数 docblock 写"**不做上下翻转 / 不夹取**…由 overflow 裁掉"，而函数体正是 below → above → clamp + 水平夹取（行为是对的，注释是反的） | 该 docblock 是上一次改动前留下的（实现的兜底档位后加） | docblock 改成与实现一致的**真实档位语义**，并写清"为什么要兜底"（框可以比面板高 ⇒ 只放下方 = **看不见**，与圆钮那个真 bug 同类）。顺带发现同函数内**第二处**反转：`// 夹取只在这最后一档做` 与"水平夹取每一档都做"矛盾 ⇒ 一并改正 |
@@ -50,9 +50,9 @@
 
 #### 四、验证
 
-* 单测 **946 用例 / 52 文件**（新增 `tests/cli-options.test.js`、`tests/mcp-protocol.test.js`、
-  `tests/dsh-prefill-wait.test.js`）；集成 **243 条**（新增 D1 负向/正向 10 条、F1 多跳 8 条、MCP 真 stdio 6 条）；
-  全链 `npm run verify` 见本轮提交信息里的原文数字。
+* 单测 **949 用例 / 52 文件**（新增 `tests/cli-options.test.js`、`tests/mcp-protocol.test.js`、
+  `tests/dsh-prefill-wait.test.js`）；集成 **249 条**（新增 D1 未知选项 10 条 + 值非法 6 条、
+  F1 多跳 8 条、MCP 真 stdio 6 条）；全链 `npm run verify` 见本轮提交信息里的原文数字。
 * ⚠️ 只能真机复核的项（本会话无法重启用户正在用的应用实例）：`dsh-prefill` 的 14s 窗口只在
   "探活成功但界面迟迟不回"时才会走满 —— 探活成功路径已在本机真实实例上验证（1.58–1.77s 成功）。
 

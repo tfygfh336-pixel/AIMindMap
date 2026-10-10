@@ -17,6 +17,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const dshAsk = require('../src/dsh-ask.js');
 const askCmd = require('../cli/commands/dsh-ask.js');
+const core = require('../cli/core.js');
 
 const CTX_INFO = {
   project: 'comnet', projectRoot: 'D:\\proj', nodeId: 'tcp-handshake', topic: 'TCP 连接管理',
@@ -206,7 +207,14 @@ describe('CLI 命令：--dry-run 必须真的不调模型（实测教训）', ()
     },
     out(s) { this.outs.push(String(s)); },
     outJson(o) { this.outs.push(JSON.stringify(o)); },
-    error(m) { throw new Error('ctx.error: ' + m); }
+    error(m) { throw new Error('ctx.error: ' + m); },
+    // 与真实 ctx 同一套语义（**委托给真实现**，别在桩里另写一份判定逻辑）：
+    // 整数选项非法 ⇒ 报错；没给 ⇒ 默认值。`ask --timeout` 现在走它。
+    intOption(key, opts) {
+      const p = core.parseIntOption(this.args[key], opts);
+      if (!p.ok) this.error('--' + key + ' ' + p.reason);
+      return p.value;
+    }
   });
 
   it('--dry-run（驼峰 dryRun）⇒ 打印提示词，且**一次都不调用** askOnce', () => {

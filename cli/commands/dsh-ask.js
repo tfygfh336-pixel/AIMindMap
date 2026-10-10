@@ -132,7 +132,9 @@ module.exports = {
     if (kind === 'ask' && !question) ctx.error('--kind ask 需要 --question "…"（或直接用 --kind explain）');
     const prompt = dshAsk.buildAskPrompt(Object.assign({}, info, { kind, question }));
     const runtime = dshAsk.resolveAskRuntime({ repoRoot: path.resolve(__dirname, '..', '..') });
-    const timeoutSec = Number(ctx.args.timeout) > 0 ? Number(ctx.args.timeout) : undefined;
+    // --timeout：非法值当场报错（`--timeout abc` 以前会让 `Number(...) > 0` 为假 ⇒ 悄悄用默认超时，
+    // 调用方以为自己设的时限生效了 —— 而这条命令烧真实额度，静默改参数尤其不能容忍）
+    const timeoutSec = ctx.intOption('timeout', { min: 1, def: undefined });
     // 思考强度（用户反馈③"太慢"）：解释默认 low（原话："解释的时候自动降低思考强度增加速度"✓），
     // 问答默认 medium；两者都能用 --effort 覆盖（界面上的下拉框发的就是这个 ✓）。
     // ⚠️ 取值由**模型自己声明**（deepseek-flash: low/medium/high/xhigh）⇒ 未知值一律拒绝，不猜 ✗

@@ -1471,6 +1471,28 @@ check('`<命令> --help` 打印该命令的支持集且不执行命令（退出�
 r = run(['edit', PROJ, 'a', '--expanded', 'false']);
 check('正向对照：--expanded false（空格形态）照旧可用', ok(r.out) && /已更新/.test(r.out));
 
+// 整数选项的"值非法"：同一类缺陷的另外几个入口（读参数非法以前被静默吞掉）
+// 修前实测：`orphans --limit abc` ⇒ `Math.max(0, Number('abc'))` = NaN ⇒ `slice(0, NaN)` = []（**静默空清单**）；
+//           `changelog --limit abc` ⇒ `parseInt(...) || 0` ⇒ 限 0 条（静默空索引）；
+//           `mentions --min-length abc` ⇒ NaN 传下去 ⇒ 过滤形同没设。
+r = run(['orphans', PROJ, '--limit', 'abc']);
+check('orphans --limit 非法 ⇒ 非 0 + 说清允许范围（旧行为：静默给出空清单）',
+  !ok(r.out) && r.code !== 0 && /--limit 必须是非负整数/.test(r.out), r.out.trim().slice(0, 120));
+r = run(['orphans', PROJ, '--limit', '5']);
+check('正向对照：orphans --limit 5 照旧可用', ok(r.out) && /无引用关系/.test(r.out));
+r = run(['changelog', '--limit', 'abc']);
+check('changelog --limit 非法 ⇒ 非 0（旧行为：静默限 0 条）',
+  !ok(r.out) && r.code !== 0 && /--limit 必须是非负整数/.test(r.out), r.out.trim().slice(0, 120));
+r = run(['mentions', PROJ, '--min-length', 'abc']);
+check('mentions --min-length 非法 ⇒ 非 0（旧行为：NaN 传下去，过滤形同没设）',
+  !ok(r.out) && r.code !== 0 && /--min-length 必须是/.test(r.out), r.out.trim().slice(0, 120));
+r = run(['changes', '--limit', 'abc']);
+check('changes --limit 非法 ⇒ 非 0（旧行为：NaN > 0 为假 ⇒ 悄悄退回全量）',
+  !ok(r.out) && r.code !== 0 && /--limit 必须是非负整数/.test(r.out), r.out.trim().slice(0, 120));
+r = run(['ask', PROJ, 'a', '--kind', 'explain', '--timeout', 'abc', '--dry-run']);
+check('ask --timeout 非法 ⇒ 非 0（旧行为：静默退回默认超时 —— 而这条命令烧真实额度）',
+  !ok(r.out) && r.code !== 0 && /--timeout 必须是/.test(r.out), r.out.trim().slice(0, 120));
+
 /* ---------------- 22. 多路同时编辑（并发：不相交自动合并 / 相交指名拒绝） ----------------
  * 上面所有断言都是"单路"。本段专门跑**两路同时编辑**，而且走**真实的** ctx + 命令函数 + store：
  * 用 `createContext` 造 ctx（命令名不进 ctx —— 见 `cli/main.js` 的 `createContext(rest)`），

@@ -124,6 +124,36 @@ describe('cli/core.js 选项归一与未知选项扫描（纯函数）', () => {
   });
 });
 
+describe('cli/core.js 整数选项（值非法不再静默退化）', () => {
+  it('没给 ⇒ 返回默认值（含 undefined / null 两种既定默认语义）', () => {
+    expect(core.parseIntOption(undefined, { def: 40 })).toEqual({ ok: true, value: 40 });
+    expect(core.parseIntOption(undefined, { def: undefined })).toEqual({ ok: true, value: undefined });
+    expect(core.parseIntOption(undefined, { def: null })).toEqual({ ok: true, value: null });
+  });
+
+  it('整数照收；越界/非整数/空值一律判非法（并说清允许范围）', () => {
+    expect(core.parseIntOption('5', {})).toEqual({ ok: true, value: 5 });
+    expect(core.parseIntOption('0', { min: 0 })).toEqual({ ok: true, value: 0 });
+    expect(core.parseIntOption('-1', {})).toMatchObject({ ok: false });
+    expect(core.parseIntOption('1.5', {})).toMatchObject({ ok: false });
+    expect(core.parseIntOption('abc', {})).toMatchObject({ ok: false });
+    expect(core.parseIntOption(true, {})).toMatchObject({ ok: false });     // 裸写 `--limit`
+    expect(core.parseIntOption('', {})).toMatchObject({ ok: false });
+    expect(core.parseIntOption('abc', {}).reason).toContain('非负整数');
+    expect(core.parseIntOption('999', { max: 100 }).reason).toContain('100');
+  });
+
+  it('ctx.intOption：非法值经 ctx.error 抛错，且报错里写的是用户敲的那个 kebab 选项名', () => {
+    const ctx = core.createContext(['x'], { command: 'orphans' });
+    expect(ctx.intOption('limit', { def: 40 })).toBe(40);
+    expect(ctx.intOption('limit2', {})).toBeUndefined();     // 没给 ⇒ undefined
+    expect(() => core.createContext(['x', '--limit', 'abc'], { command: 'orphans' }).intOption('limit', { def: 40 }))
+      .toThrow(/--limit 必须是非负整数/);
+    expect(() => core.createContext(['x', '--min-length', 'x'], { command: 'mentions' }).intOption('minLength', { min: 1 }))
+      .toThrow(/--min-length/);
+  });
+});
+
 describe('CLI 未知选项的行为（进程内，命令体不得被调用）', () => {
   it('未知长选项 ⇒ exit 1 + error: 开头 + 支持集；且**命令体没跑**（报错不是"项目不存在"）', () => {
     const r = invokeSync(['add', 'no-such-project-xyz', 'root', '--topic', 'X', '--tags', 'a,b']);

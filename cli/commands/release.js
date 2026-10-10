@@ -103,7 +103,8 @@ module.exports = {
     const srcLines = text.split('\n');
     const kw = (ctx.args.grep === undefined || ctx.args.grep === true) ? null : String(ctx.args.grep);
     const full = !!ctx.args.full;
-    const limit = ctx.args.limit === undefined ? null : Math.max(0, parseInt(ctx.args.limit, 10) || 0);
+    // --limit：非法值当场报错（`--limit abc` 以前会被 `parseInt(...) || 0` 静默变成"限 0 条" = 空索引）
+    const limit = ctx.intOption('limit', { min: 0, def: null });
     const kwLc = kw === null ? null : kw.toLowerCase();
     const totalEntries = idx.sections.reduce((n, s) => n + s.entries.length, 0);
 

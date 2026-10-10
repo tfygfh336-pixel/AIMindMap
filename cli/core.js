@@ -135,6 +135,42 @@ function unknownOptions(argv, allowed) {
 }
 
 /**
+ * 解析一个"必须是整数"的选项值（纯函数、无 IO ⇒ 可单测）。
+ *
+ * 为什么需要它（与"未知选项"同一类缺陷，2026-10-10 实测）：
+ * `--limit abc` / `--min-length abc` / `--timeout abc` 以前被**静默吞掉** ——
+ *   · `Math.max(0, Number('abc'))` = NaN ⇒ `slice(0, NaN)` = `[]` ⇒ **静默给出一份空清单**
+ *     （读者会当"真的没有"）；
+ *   · `Number('abc') > 0` 为假 ⇒ 悄悄退回默认值 ⇒ 调用方以为自己设的超时生效了。
+ * 这两条都属于"看起来成功、其实按别的参数跑了"。统一在这里判：非法值**当场报错并说清允许范围**。
+ *
+ * @param {*} raw 原始值（`undefined` = 没给这个选项）
+ * @param {{min?:number, max?:number, def?:number, label?:string}} [opts]
+ * @returns {{ok:true, value:(number|undefined)}|{ok:false, reason:string}}
+ */
+function parseIntOption(raw, opts) {
+  const o = opts || {};
+  if (raw === undefined) return { ok: true, value: o.def };
+  if (raw === true || raw === '' || raw === null) {
+    return { ok: false, reason: '需要一个整数（没给值）' };
+  }
+  const n = Number(raw);
+  const min = o.min === undefined ? 0 : o.min;
+  const max = o.max === undefined ? Number.MAX_SAFE_INTEGER : o.max;
+  const range = (min === 0 && max === Number.MAX_SAFE_INTEGER) ? '非负整数'
+    : (max === Number.MAX_SAFE_INTEGER ? '≥ ' + min + ' 的整数' : min + '–' + max + ' 的整数');
+  if (!Number.isInteger(n) || n < min || n > max) {
+    return { ok: false, reason: '必须是' + range + '（收到 ' + JSON.stringify(raw) + '）' };
+  }
+  return { ok: true, value: n };
+}
+
+/** 选项键 → 命令行写法（报错里要写用户敲的那个 `--foo-bar`） */
+function optionFlag(key) {
+  return '--' + String(key).replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+}
+
+/**
  * @param {string[]} argv 去掉命令名之后的参数（`cli/main.js` 已切掉）
  * @param {{command?:string}} [meta] 命令名 —— 只用于**变更日志的"谁在写"**（见 writer）
  */
@@ -176,6 +212,19 @@ function createContext(argv, meta) {
     // `--compact` 时输出单行 JSON：**机器消费者零损失**，省掉的纯是缩进与换行。
     outJson(obj) { process.stdout.write(JSON.stringify(obj, null, args.compact ? 0 : 2) + '\n'); },
     error(msg) { throw new Error(msg); },
+
+    /**
+     * 读一个"必须是整数"的选项（`--limit` / `--min-length` / `--timeout` …）。
+     * 非法值**当场报错**（带上允许范围），不静默退化成 NaN / 默认值 —— 理由见 `parseIntOption`。
+     * @param {string} key camelCase 键名（如 `limit` / `minLength`）
+     * @param {{min?:number, max?:number, def?:number}} [opts]
+     * @returns {number|undefined} 没给该选项时返回 `def`（默认 `undefined`）
+     */
+    intOption(key, opts) {
+      const p = parseIntOption(this.args[key], opts);
+      if (!p.ok) this.error(optionFlag(key) + ' ' + p.reason);
+      return p.value;
+    },
 
     read() {
       if (!projectName) throw new Error('缺少项目名');
@@ -231,4 +280,4 @@ function createContext(argv, meta) {
   return ctx;
 }
 
-module.exports = { createContext, parseArgs, optionKey, unknownOptions, PROJECTS_DIR };
+module.exports = { createContext, parseArgs, optionKey, unknownOptions, parseIntOption, optionFlag, PROJECTS_DIR };

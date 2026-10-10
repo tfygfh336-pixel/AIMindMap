@@ -17,8 +17,8 @@
 |------|----|------|
 | CLI 命令数 | 53 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 44 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 946 用例 / 53 文件 | `tests/*.test.js`（vitest） |
-| CLI 集成断言 | 243 | `scripts/cli-integration.js` |
+| 单元测试 | 949 用例 / 53 文件 | `tests/*.test.js`（vitest） |
+| CLI 集成断言 | 249 | `scripts/cli-integration.js` |
 | 冒烟断言 | 197 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
 | 版本号 | 0.18.0 | `package.json` / `src/config.js` / `package-lock.json`（须一致） |
