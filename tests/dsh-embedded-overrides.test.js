@@ -295,7 +295,38 @@ describe('preset 生成：CLI 端到端（临时 home）', () => {
 
     const c = run('check', '--runtime', RUNTIME);
     expect(c.status).toBe(0);
-    expect(c.out).toContain('✓ $presets.aimindmap');
+    expect(c.out).toContain('生成块与当前内置 preset 逐行一致');
+    expect(c.out).toContain('aimindmap ← standard');
+  });
+
+  it('**多模式**：所有 preset 共用一个生成区，check 仍然全绿（回归：旧形态"每 preset 各一个横幅"会让第二个模式必红 ✗）', () => {
+    writeOverrides({ $presets: {
+      aimindmap: { cloneFrom: 'standard', makeDefault: true },
+      iterate: { cloneFrom: 'standard', order: 10 },
+    } });
+    const r = run('render', '--runtime', RUNTIME);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('$presets: aimindmap, iterate');
+
+    const text = readPatch();
+    // 判据①：**恰好一个**生成区（BEGIN/END 各一次）——旧形态这里是 2
+    expect(text.split(ov.BANNER_BEGIN).length - 1).toBe(1);
+    expect(text.split(ov.BANNER_END).length - 1).toBe(1);
+    // 判据②：两个模式的声明都在，且注册表默认仍只指 aimindmap（iterate 没写 makeDefault）
+    expect(text).toContain('- id: preset-aimindmap');
+    expect(text).toContain('- id: preset-iterate');
+    expect(text).toContain('default: aimindmap');
+    // 判据③：YAML 仍然合法
+    expect(() => yaml.load(neutralizeJsTag(text))).not.toThrow();
+    // 判据④：check 全绿（含 iterate —— 这一条就是当年会红的那个）
+    const c = run('check', '--runtime', RUNTIME);
+    expect(c.status).toBe(0);
+    expect(c.out).toContain('aimindmap ← standard, iterate ← standard');
+    // 判据⑤：幂等（连跑两次字节相同）
+    const again = run('render', '--runtime', RUNTIME);
+    expect(again.status).toBe(0);
+    expect(again.out).toContain('无需改动');
+    expect(readPatch()).toBe(text);
   });
 
   it('check 抓得到"生成块被手改"（不是只看文件在不在）', () => {
@@ -304,7 +335,7 @@ describe('preset 生成：CLI 端到端（临时 home）', () => {
     fs.writeFileSync(patch, readPatch().replace('aimindmap 模式', '被手改了'), 'utf8');
     const c = run('check', '--runtime', RUNTIME);
     expect(c.status).not.toBe(0);
-    expect(c.out).toContain('✗ $presets.aimindmap');
+    expect(c.out).toContain('✗ $presets');
   });
 
   it('运行包路径给错 ⇒ 响亮失败（不静默生成一个空清单的模式）', () => {

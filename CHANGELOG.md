@@ -14,6 +14,24 @@
 
 ## [Unreleased]
 
+### 内置 DSH 新增第二种作业模式「迭代模式」+ 修掉一处会让多模式误报的门禁（2026-10-10）
+
+- **新增**：`$presets.iterate`（标签「迭代模式」）—— 与既有的「aimindmap 模式」（**改笔记**）分工，它的人设是
+  **改本工程本体**（代码/文档/数据/工具链）：单一真源先行（`SKILL.md` + `docs/AI-GUIDE.md`）、落盘规矩（**别用 PowerShell 写中文**）、
+  数据面只走 CLI、**改完跑完整验证链才算完**、改文档要登记、远端被拦 ⇒ **只做本地提交**。
+  **人设文本的唯一真源**依旧只有一处：`scripts/dsh-embedded-overrides.js` 的 `PRESETS`（渲染时写进生成块）；
+  数据侧只写**差异**（`dsh-home\.embedded-overrides.json`）✓。**不设 `makeDefault`** ⇒ 默认模式仍是 aimindmap，
+  免得把"改笔记"的日常会话默认变成"改代码"。
+- **修**：**多模式会让 `overrides check` 必红**（误报）—— 旧形态是"**每个 preset 各一对横幅**"（渲染时首尾相接），
+  而 `check` 天生只认**第一个**生成块 ⇒ 声明第二个模式时它报"iterate 不一致"，**即使文件完全正确** ✗。
+  现在：**一个横幅对包住全部 preset 的声明**（"文件里有几个生成块"**恒等于 1**），`check` 判据 = 整个生成区与"现在重新生成"逐行一致。
+  另加 **`--tag <patch 文件>`**（把任意候选 patch 按正式判据核一遍，便于排查"到底哪里不一致"）。
+- **判据（现场读数）**：`overrides render` ✓ 写盘（自动备份）→ `overrides check` **exit 0**
+  （`✓ permission.defaultPreset` + `✓ $presets（aimindmap ← standard, iterate ← standard）`）；
+  patch 里 `BEGIN/END` **各 1 个**，两种模式的声明都在，`agent-preset-registry.default` 仍为 **aimindmap** ✓；
+  单测 `tests/dsh-embedded-overrides.test.js` **26 条全过**（新增回归：多模式单块 + 幂等 + 手改可抓）。
+  **生效核对**（人工，5 秒）：内置侧栏 → 新建任务 → 模式选择器里应看到「**迭代模式**」；
+  ⚠️ **用户选择优先** —— 若你曾在界面里选过模式，部署默认对已选值不生效。
 ### 待做清单搬回工作产物区（2026-10-10 用户裁定）
 
 - **决定**：`docs/BACKLOG.md`（2026-10-10 当天刚升格进来的待做台账）**撤回** —— 内容整体搬回

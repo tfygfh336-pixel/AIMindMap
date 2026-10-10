@@ -1,0 +1,668 @@
+{
+  "meta": {
+    "name": "AI MindMap · 核心卖点（干净版 · 给人和 AI 读）",
+    "author": "",
+    "version": "0.18.0",
+    "formatVersion": 2
+  },
+  "format": "node_tree",
+  "data": {
+    "id": "root",
+    "topic": "AI MindMap · 核心卖点（干净版 · 给人和 AI 读）",
+    "expanded": true,
+    "origin": {
+      "kind": "import",
+      "src": ".review/20261010-卖点与功能-常驻讨论/卖点-干净版.md",
+      "sha256": "24a681d0e04880d29b7705d767693c4b17f82f2d326b12691e985be55aee12c9",
+      "at": "2026-10-10T14:23:59.758Z",
+      "tool": "import-project"
+    },
+    "children": [
+      {
+        "id": "ai-mindmap-ai-mv2hj3t24fnf",
+        "topic": "AI MindMap · 核心卖点（干净版 · 给人和 AI 读）",
+        "expanded": true,
+        "children": [
+          {
+            "id": "n-mv2hj3t34jn4",
+            "topic": "一句话定位",
+            "expanded": true,
+            "children": [],
+            "detail": "<p><strong>AI MindMap 不是&quot;又一个脑图 / 笔记软件&quot;，而是一份&quot;人和 AI 共用、AI 能直接读写、并且能被 AI 自己迭代&quot;的长期记忆库与经验库。</strong></p>\n<p>人看到的是可读的树与关联；AI 看到的是有结构、有校验、有写入闸门的结构化知识；<strong>两边操作同一份数据</strong>。</p>\n<p>---</p>"
+          },
+          {
+            "id": "ai-ai-mv2hj3t3zi78",
+            "topic": "① 给 AI 的\"可写可校\"知识库 —— AI 不必每次去网上重新检索",
+            "expanded": true,
+            "children": [
+              {
+                "id": "4-mv2hj3t31zz7",
+                "topic": "（层级4）",
+                "expanded": true,
+                "children": [
+                  {
+                    "id": "n-mv2hj3t3fwyj",
+                    "topic": "判据",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>AI 通过 <strong>CLI（55 命令）· MCP（45 工具）</strong> 直接读写：检索（全文/标签/关联/反链/被提及/孤儿）与写入（增删改移/链接/关联笔记/导入）<strong>都是工具</strong>，不是&quot;让 AI 自由发挥写文件&quot;；</li><li>写入走<strong>同一条闸门</strong>（校验 → 原子写 → 写后回读）+ <strong>并发保护</strong>（内容指纹版本闸门 · 变更日志 · 界面脏标记）⇒ 写完立刻知道结果、人也知道库没被写坏；</li><li>⭐ <strong>同一份库 · 三个入口</strong>（内置 DSH / 外置 AI（MCP·CLI）/ 技能形态），三者<strong>共用同一套 CLI 实现</strong>；</li><li>⭐ 总纲 <strong>&quot;AI 就是扩展机制&quot;</strong>：不设插件市场、不设用户脚本钩子（与&quot;数据一律走 CLI 校验闸门&quot;冲突）；要加功能先问&quot;现有原子命令能否组合&quot;，反复需要就固化成<strong>一条新 CLI 命令</strong>。</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "a-mv2hj3t37fse",
+                "topic": "①a 检索面（怎么把库读出来）",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "26-mv2hj3t3lidk",
+                    "topic": "已有功能与设计（26 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>只读查询命令不做生成索引文件（那会给最频繁的动作新增一道强制重生成步骤）</li><li><code>changelog</code> 索引里不写日期：实测 90 个条目标题里 22 个日期格式各异，拿它当索引键必然漏；日期只从段标题取</li><li>展开状态以数据为准（渲染层不再兜底 <code>expand_to_depth(3)</code>）；导入器默认只让前两层展开；跳转类动作（搜索/关联/媒体）只展开目标节点的祖先链</li><li>标签 chips 点击即按标签搜索（标签是交互入口不只是展示）</li><li>搜索结果面板点击跳转</li><li>关联笔记是二级页面：不是节点、不在树里、命令面板也搜不到</li><li>关联视图三个入口：详情框左缘圆钮 🔗 / 右键菜单「🔗 关联节点（高亮展示）」/ 命令面板「关联节点视图（高亮关联）」</li><li>命令面板：<code>Ctrl+P</code>，一个框里模糊搜索节点与命令；<code>↑↓</code> 选择、<code>Enter</code> 执行、<code>Esc</code> 关闭</li><li>命令面板的模糊排序非连续子序列也能命中（不是子串匹配；等价子串匹配会落空）</li><li>空查询时命令在前（还没打字时人最可能想执行动作）—— 修前 131 个节点排满前 50 名、命令被 <code>slice</code> 全截掉</li><li>输入态守卫 <code>inTextInput()</code>（含 <code>#palette-input</code>、<code>#search-box</code>、contentEditable）：输入框内只保留撤销/重做/保存（否则 Backspace 会删整棵子树）</li><li>命令面板快捷键改 <code>stopPropagation</code>，避免一次 Esc 连带关掉审计面板/浮动详情</li><li>工具栏瘦身是只删按钮不删功能：节点操作走右键菜单/快捷键/命令面板；关系审计走菜单 Ctrl+Shift+A；「撤销/重做」只留图标、功能说明在 tooltip</li><li>工具条钩子只包一个入口：本工程&quot;选中节点&quot;的唯一标志是它有了详情框（<code>MM.showDetail</code>）—— 单击、命令面板跳转、关联页点成员最后都走它</li><li>接手 5 步：① 看没做完（ROADMAP 在飞/未收口）→ ② 看最近改了什么（<code>[Unreleased]</code>）→ ③ 找你这类的做法（§6 四步）→ ④ 改完算完（verify 全链全绿）→ ⑤ 收尾（记 CHANGELOG）</li><li><code>changelog --grep</code> 的索引会指路归档目录（&quot;主文件里查不到&quot;不等于&quot;没发生过&quot;）</li><li>演练每条卡点必须转化（变成新条目/新判定，或显式写下&quot;决定不做&quot;及理由），否则演练等于没做；转化清单写进当次 CHANGELOG</li><li>冒烟新增断言要放进对应分域文件（入口只做 require + 顺序拼接，不再往入口里加）；实际已改成自动发现 + 文件名排序</li><li>换包固定流程顺序即防线：停服务 → 备份配置层到 <code>dsh-home</code> 之外（记前后 sha256）→ 制新包到新目录 → 旧包改名 <code>*-backup</code> → 新包改名 → <code>dsh:maint -- verify</code> → 重启 → 自检 → 更</li><li>链接与搜索友好：topic 用规范术语（标准名称、完整表述），不要口语/缩写歧义；同义术语可在 detail 首行给出「中文名（English Name）」</li><li>故意不做 <code>mentions</code> 默认限流：实测默认与 <code>--limit 40</code> 输出完全相同（只有 17 条）⇒ 改默认零可观测差异；机制已就绪，真出&quot;无界输出&quot;事故改一行即可</li><li>同一形状又发生一次（v0.16.0 期）：做 G8 判别力注入时用 <code>Get-Content</code>/<code>Set-Content</code> 读写 <code>CHANGELOG.md</code> ⇒ 双重编码损坏（411 KB、全文乱码、被加上 BOM），已从备份字节级恢复*</li><li>G9 的能力边界：只查自洽（前后是否一致），查不了内容对不对；也不查 <code>CHANGELOG.md</code>（历史记录里出现已退役的编号是正常的）；且它规定一个二级章节里只允许一张 ID 表</li><li>一条探针测错对象的教训（已判为通过其实没发现）：<code>export-html</code> 站点搜索把深层命中全藏掉 —— 探针只数了&quot;未加 hidden 的条目数&quot;，而没验证祖先链是否可见</li><li>&quot;干净前置&quot;的责任边界：它收的是模态/浮层（<code>.overlay</code> 一族 + 命令面板 + 审计面板）；浮动详情框、选区块、大小锁属另一类状态，不在它的责任内（各有各的域在收拾）</li><li>性能欠账（已修，留作判据）：<code>export-html</code> 的 <code>buildModel</code> 是 O(N²)（每个节点调一次 <code>relatedAll</code>，而后者每次重建索引）⇒ <code>relations.buildIndexes()</code> + `opts.indexes</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "c-mv2hj3t3h3jr",
+                "topic": "①c 写盘闸门与并发保护（怎么保证不被写坏）",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "153-mv2hj3t3kn09",
+                    "topic": "已有功能与设计（153 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>关之前先拦未保存编辑：复用既有脏标记/保存路径/并发冲突保护；保存没成功就不关</li><li>导图页卸载期间控制通道照常（400ms 轮询跑在主进程，不在渲染层）</li><li>CLI 与界面在脏改动上的分工：CLI 直接拒绝不弹模态框（弹窗会把没人应答的调用方挂死），界面弹确认框</li><li>导图页关闭期间控制栏拖宽不响应（会改坏&quot;重开要还原的停靠宽度&quot;）—— 宁可明确不响应并记日志，也不静默改坏</li><li>&quot;拒绝&quot;与&quot;没响应&quot;是两种失败，分开报；界面没在运行时报错退出、不会静默假装成功</li><li>没有回执 = 没生效：文件式控制通道（命令 + 回执），命令会报错而不是假装成功</li><li>多路同时编辑：改不同对象自动合并（两边都保留）；只有改同一对象才拦，并报出是哪个对象</li><li>冲突两条出路：「用磁盘上的版本（只丢这些对象上的改动）」/「保留我的、本次不保存」</li><li>写入者身份可分辨：<code>cli:</code> / <code>mcp:</code> / <code>gui</code> / <code>gui-cli:</code> —— 且只进日志、不参与任何判定</li><li><code>changes --since</code> 报错＝答不了，不等于&quot;没有变更&quot;（调用方是 AI，会把静默空结果当成&quot;放心写&quot;）</li><li>写盘前经 CLI validate 闸门，坏数据拒收</li><li>偏移的规格边界（写清免得被当 bug）：相对偏移不是绝对坐标；<code>meta</code> 在冲突指纹里是整体一个键⇒&quot;你拖主题 A、我拖主题 B&quot;算同一对象冲突；CLI 只读透传</li><li>越界/失效的机器本地快捷方式明确报错，不静默没反应（<code>localPath</code>）</li><li><code>localPath</code> 的取值纪律：放行绝对路径并要求它（相对路径会随工作目录漂移，而点击打开的是操作系统）；路径不存在时警告但照记（盘没挂是正常情况）</li><li><code>localPath</code> 的 headless 守卫：<code>--smoke</code> 下不真的打开，只做可访问性校验并回报 <code>headless:true</code> —— 不是静默降级</li><li>默认拒绝重复导入而不是默认放行（取舍）：重复导入是不可察觉的污染（第二棵树与第一棵不重合，事后无法分辨谁是谁）</li><li>整库导入跳过判据一律跳过并逐类计数 + 逐条点名</li><li>整库导入上限在写盘之前拒绝并给出路；合计体积与单文件共用同一份常量</li><li>大文档导入的如实打印：疑似扫描页、剔掉的页眉页脚、目录条目、没进树的字符都打印</li><li>PDF 无书签自动回退文字层；<code>--dry-run</code> 只预览不写盘</li><li>来源指纹的取舍论证：两个键都要相同才算同一份（只比 sha256 会误判&quot;两份内容恰好相同的不同文件&quot;；只比 <code>src</code> 则文件被改过判不出来）</li><li>关联信息编辑条的写操作一律经 CLI（校验闸门 + 原子写 + 并发重放），写完回读并同步内存，否则下次界面保存会覆盖</li><li>关联笔记可能被&quot;打开任一节点详情&quot;用子集整体替换掉 ⇒ 内存同步必须按 id 合并</li><li><code>remove</code> 发现被关联/链接引用时拒绝执行（不是警告后照删），并给两条路</li><li>悬挂关联成员检测的判定真值分两种：本项目成员以&quot;即将落盘的那份 data&quot;为准；跨项目只能读盘</li><li><code>ask-apply</code> 一次原子写完成三件事；空回答响亮拒绝（&quot;落一条空记录比报错危险得多&quot;）</li><li><code>ask</code> 失败绝不当成功：非 0 退出 / 退出码 0 但没有输出 / 超时 ⇒ 一律 <code>ok:false</code> 并带原因</li><li><code>dsh-prefill</code> 不代替用户发送（按了发送才进会话历史）；等主进程回执才报成功</li><li>侧栏 AI 的指针 skill 写死边界：只做笔记内容编辑、写完 validate 一次、绝不跑 verify、不改应用代码</li><li>「编辑笔记 ≠ 功能迭代」：内容操作只跑 <code>validate</code>，禁止跑 <code>npm run verify</code>（全链只属改代码）</li><li>只关一侧两条命令的 <code>--json</code> 回显形状：<code>{ok, cmd, state, dir}</code>；<code>dsh-status --json</code> 不含 url/token</li><li>界面保存的冲突处理是三方合并（baseAtRead / 内存 / 盘上）；合并结果在 validate 期间又被插队 ⇒ 仍不盲写，回报 <code>RACE_RETRY</code> 让用户再点一次</li><li>外部编辑冲突规则：无脏改动 → 静默重读（AI 编辑实时上屏）；有脏改动 → 绝不覆盖人的编辑</li><li>版本闸门用内容指纹而不是 mtime/size（mtime 粒度粗到同秒分不开；size 遇原地改字段不变）</li><li>版本闸门只拦&quot;同一次保存覆盖别处已落盘的改动&quot;；不拦&quot;两人同时在内存里编辑、先后保存&quot;</li><li>重放时若已被别人清掉，命令如实报告&quot;已被其他写入者清掉、本次无需改动&quot;，而不是报一个版本冲突让调用方以为失败</li><li>并发安全的安全论证：只写被证明过的那一份数据；判据用重放后实测的差集，不用重放前的预测</li><li>写命令的新纪律：改动函数 <code>fn</code> 里不得做 I/O / 打印 / 物理写盘（并发重放会再调用它一次；实测教训是附件复制必须留在 <code>fn</code> 之外）</li><li>变更日志的两条硬口径：①&quot;答不了&quot;绝不等于&quot;没有变更&quot;；②记账失败不能让数据写入失败（记账抛错只打 stderr，响亮但不致命），日志被删后 <code>changes</code> 明说&quot;本机没有日志&quot;</li><li>变更日志的成本已量过：每次写入多读一次旧文件 + 算一次逐对象指纹 —— 实测 ≈7 ms，占端到端 685–1056 ms 的 ≈1%</li><li>原子写盘的 <code>rename</code> 加有界重试：只对瞬时占用类错误（EPERM/EBUSY/EACCES）重试（6 次、约 100ms 上限），其它错误立刻抛；用尽抛原错误并附「已重试 N 次」</li><li>只读诊断 <code>dsh-status</code> 是白名单输出，绝不含 url/token</li><li>采不到真值 = 红；&quot;跳过&quot;必须显式可见，不能伪装成&quot;一致&quot;（G6 曾犯过：真值 null ⇒ 跳过 ⇒ 仍打印&quot;一致&quot;并 exit 0）</li><li>为什么不做锁（并发写入）：AI 场景下锁会死锁/误杀（会话异常退出后无人释放），而损害是&quot;可发现、可重做&quot;</li><li>多会话并发写入的约定：改动前先重读文件（过期快照的编辑会被工具拒绝 —— 那是保护，不是故障）；被覆盖时不要反复重写；跑完 verify 复核自己的改动还在不在</li><li>状态类措辞必须带锚（<code>开发中/待办/临时</code> 要么带版本日期，要么不写）</li><li><code>dsh-caps</code> 是现算而非生成物：真值来源 <code>vendor/dsh</code> 被 git 忽略 ⇒ 生成物会让门禁假红或静默跳过</li><li>失败不许伪装成成功：CLI 未知选项 exit 1 + 点名 + 打印支持集（修前静默忽略）</li><li>MCP 协议错不许回 <code>result</code> 字符串（原报文让标准客户端按成功处理）</li><li>控制通道协议 v2：每条命令带自己的 token，回执按 token 认（按命令名认会互相吃回执）</li><li>控制通道用路径表达三态（pending→consuming→done）而不是&quot;已消费&quot;标记文件（标记要&quot;读标记 + 写标记&quot;，本身又是一次竞态）</li><li>轮询消费器契约：<code>handle</code> 可返回 Promise（慢命令），必须调 <code>reply</code>，否则是欠调用方的回执 ⇒ 调用方超时判失败（可见的失败，不是静默通过）</li><li><code>sweep</code> 清孤儿认领位/超量 pending/过期回执，如实告警不静默丢</li><li>防挖空：以已提交的 <code>git show HEAD:docs/VERIFY.md</code> 为地板，任何一项低于地板即红；地板不能取当前生成物（删掉断言后重跑 <code>facts:write</code> 它自己就变小了）；也不写在测试文件里当常量；没 git 历</li><li><code>release</code> 拒绝版本倒退（守卫：&quot;新版本号必须大于当前版本&quot;）；<code>--minor</code> 必须把 patch 归零</li><li>overrides 白名单纪律：<code>$presets</code> 的 id 必须在脚本的 <code>PRESETS</code> 里、<code>cloneFrom</code> 必须是运行包里真实存在的 preset，否则报错退出（不许猜）；运行包路径给错也响亮失败（不静默生成空清单模式）</li><li>节点标题的行内 Markdown 在渲染期转换（<code>applyTopicMarkup</code>），绝不写回数据（&quot;若把 HTML 塞进 jsMind 数据，界面一保存就会把 <code>&lt;strong&gt;</code> 写进 topic（静默污染）&quot;）；代码块里的 `必</li><li>项目级但没给问题 ⇒ 响亮报错（不许发一个空问题出去）；节点级的开场白与情境保持不变</li><li>性能优化的记账用 WeakSet（<code>.rel-hit</code>/<code>.rel-dim</code> 只写类，因为 jsMind <code>_reset_node_custom_style()</code> 会重写内联样式）；关键是它不会静默失效：重排/展开重建元素 ⇒ 新元素不在账上</li><li>跨项目成员只标不画（不在当前图上 → 画不出线，只计数并如实告知，不许静默丢掉）；成员 &gt; <code>CLIQUE_MAX</code>(8) 时只画星形</li><li>Ctrl 加选取并集时，并集的基必须用 <code>fdSelectionRaw</code>（用裁剪后的基会让被裁剪掉的节点在&quot;再加框&quot;时静默消失，实测 2 → 1）</li><li>多节点提问的提示词口径：逐个列出（标题/路径/标签/正文）+ 明确要求&quot;把它们放在一起看（共同点/差异/彼此关系），不要只答第一个&quot;；有不存在的节点 ⇒ 响亮报错并点名（不许悄悄少给一个）；开场白按&quot;多节点/单节点/项目级&quot;分别措辞</li><li>强度取值按模型声明：代码只做粗校验，未知值一律拒绝并列出可用值（不猜）；默认解释 low、问答 medium；界面下拉「思考：低/中/高/很高」，改完对下一次提问生效</li><li>「有出口的拒绝」这一条产品纪律：凡是拒绝（导入重复、超限、目录入参、坏文档）都要给出路（三条出路/<code>--force</code>/点名替代命令）</li><li>折叠圆钮失效的真因：圆钮调 <code>desktop.dsh.toggle()</code> 但 preload 从未暴露 toggle ⇒ 渲染层调了个不存在的方法、静默失败</li><li>右键菜单禁用 jsMind 内置双击编辑与快捷键，避免与工程双击/键盘（F2/Delete/Ctrl+Z）冲突</li><li>冒烟断言自带步迹、并以数值判据替代截图（&quot;截图在本工程里对'树形变化'不可靠&quot;；<code>invalidate()</code> 强制重绘会把 GPU 上下文搞崩）</li><li>「防挖空」失败时的处置风格：没有 git 历史 ⇒ 响亮跳过并打印&quot;未在守护&quot;，不当假红（&quot;它是安全网不是门禁&quot;）</li><li>界面把&quot;外部 AI 正在改盘&quot;做成实时上屏（<code>project:watch</code>），而无脏改动时才静默重读</li><li><code>themeOffsets</code> 的校验边界：键必须是合法顶层主题 id，值是 <code>{x,y}</code> 有限数字且绝对值 ≤ 20000</li><li><code>localPath</code> 只校验形状（非空/无换行/≤500），不校验存在性</li><li>指纹口径：规范化后的提纲文本（CRLF/CR → LF、剥 BOM）的 sha256，不是原始文件字节 ⇒ CRLF/BOM 不影响、改一字节就变</li><li>正文与指纹共用同一份规范化（<code>import-md</code> 先 <code>normalizeOutline</code> 再建树与算指纹）——否则同一份 BOM 内容经两条导入路得到两棵不同的树</li><li>整库导入两档各留一条痕：项目根写目录清单指纹（按相对路径排序的&quot;相对路径 sha256&quot;每行一条再取哈希），每个文件节点写自己的指纹</li><li><code>origin</code> 的校验只校验形状、不重算哈希（重算要把源文档读回来，那是把环境问题伪装成数据问题）</li><li>体量闸门是与导入格式无关的入参约束：超 <code>MAX_SOURCE_MB</code> 时不读进内存（整份读进来会把进程拖垮 = 那正是&quot;命令莫名退出、什么都没打印&quot;的成因）</li><li>路径穿越不在 <code>file</code> 字段的校验范围内：<code>validate</code> 只要求非空字符串，<code>../</code> 能通过；真正的拦截点在 <code>import-json</code> 的 <code>isSafeRelPath</code>（要求解析后仍在目标项目目录内部）</li><li>原型污染防御：节点 id/topic 恰为 <code>__proto__</code>/<code>constructor</code> 时赋值会被静默忽略 ⇒ 索引与计数字典改 <code>Object.create(null)</code></li><li>整数选项走 <code>ctx.intOption(key,{min,max,def})</code>：非法值当场报错并说清允许范围，不静默退化成 NaN/默认值</li><li><code>invokeSync</code> 的不变量：命令体不得出现 <code>await</code>/<code>.then()</code>/<code>fs.promises</code>/<code>setTimeout</code>/<code>process.nextTick</code>；违反时立刻抛错（不静默降级），由 `tests/cli-sync</li><li><code>invoke</code> / <code>invokeSync</code> 两条硬约束：不调用 <code>process.exit</code>（会连带杀死宿主 MCP / Electron / 测试进程）；进出隔离 <code>process.exitCode</code>（validate 会自行置非 0，故</li><li>版本冲突用错误码单源（<code>concurrency.js</code> 的 <code>VERSION_CONFLICT</code> / <code>MERGE_CONFLICT</code> / <code>RACE_RETRY</code>），调用方只认码不认文案（&quot;文案会漂，靠正则匹配报错文本会静默失效&quot;）</li><li><code>write</code> 成功时回传 <code>{file, version}</code>（供同一命令里连续写不误报冲突）；每次写入顺带记一条变更日志（<code>recordChange</code> 实现只有一份，GUI 保存那条路径也调它）</li><li>冲突判定的指纹粒度是对象级：<code>node:&lt;id&gt;</code> / <code>children:&lt;父id&gt;</code> / <code>assoc:&lt;id&gt;</code> / <code>meta</code></li><li>并发重放的安全论证：判据必须用重放后实测的差集（不用重放前的预测），且只写被证明过的那一份数据（<code>withReplay</code>）</li><li><code>concurrency.fingerprint()</code> 与 <code>changedKeys()</code> 同一套 ⇒&quot;哪里算冲突&quot;与&quot;哪里报变更&quot;永远同一份定义</li><li>导入/导出格式版本：<code>export-json</code>/<code>import-json</code> 是 aimap v1 单文件（图片 base64 内嵌）；<code>assoc</code> 仅非空时写入（旧包形状不变）</li><li><code>meta.version</code>（应用版本）不是格式版本，解析方不应据此判断格式</li><li>契约字段覆盖由门禁守：<code>docs/DATA-FORMAT.md</code> 必须覆盖 <code>src/schema.js</code> 校验的字段（清单 <code>SCHEMA_FIELDS</code>，且清单自身要与 schema 对得上）—— <code>meta.layout</code> 实测漏过一次；</li><li>G8 第 11 条判定把两类字段分开判：校验型必须出现在 <code>src/schema.js</code>（否则&quot;检查表过期&quot;）、仅契约型不应出现（分类漂移也要报）、两类都必须在契约里出现</li><li><code>docs/VERIFY.md</code> 被纳入 G7 的逐字校验范围（此前手改快照无人抓）—— 为此把它改成确定性生成物（生成日期 → 版本号、&quot;上次全链结果&quot;只留指针）</li><li>版本闸门四处版本号必须一致（package.json / <code>src/config.js</code> / package-lock.json / README 版本锁），由 <code>doc-facts --check</code> 校验</li><li><code>verify</code> 与 <code>check:docs</code> 每次打印「最近 10 分钟内被改动的受管文件」（本工程同时会有多个 AI 会话在改）——实现为纯函数 <code>recentlyChanged(root,minutes,nowMs)</code>，含未来时间戳守卫</li><li><code>--list</code> 不再假绿：有任一问题时置失败退出码（否则有人把它挂进 CI，看一屏 ✓ 就以为合规）</li><li>每任务四步表：①读 → ②改 → ③跑 → ④更新，覆盖 13 类任务（加命令/加渲染功能/改数据格式/改写盘路径/加 IPC/加 MCP 工具/加门禁/改文档体系/发版/动 DSH 侧栏/加断言/从导出恢复/打包）</li><li>发版流程：<code>release [版本号]</code>（自动 CHANGELOG 段落 + package.json + <code>src/config.js</code> + <code>package-lock.json</code>（顶层与 <code>packages[&quot;&quot;]</code> 两处）+ README</li><li><code>CHANGELOG</code> 滚动归档：只滚已发版本段（<code>[Unreleased]</code> 永不归档，带后置不变量&quot;主文件必须仍含且仅含一个 <code>[Unreleased]</code>&quot;）；保留窗口 = 最近 3 个已发版本段</li><li>归档去重判定：<code>CHANGELOG.md</code> 与 <code>docs/changelog/</code> 不得重复版本段（<code>checkArchiveNoDuplicate</code>，G8 第 5 条判定，已注入验证）</li><li>零 Git 下的恢复 runbook四步（顺序不能换）：① 找工程外导出 → ② 验（<code>import-json &lt;备份&gt; --name 恢复验证</code> 导成临时项目，绝不直接覆盖在用项目）→ ③ 查（<code>validate</code> + `re</li><li>「没有工程外导出 = 没有兜底」（<code>backups/</code> 在工程内、与工程同盘，磁盘级事故会一起丢）；<code>verify</code> 结束打印兜底备份新鲜度（只提示，不影响退出码）</li><li>三条横切规矩（任何改动都可能踩到）：加写盘路径 → <code>writeFileAtomic</code>；加版本号引用 → 读 <code>APP_CONFIG</code>/<code>APP_VERSION</code>；加全局监听 → 放进带幂等守卫的 <code>bind*</code></li><li>集成断言要测真实副作用（例：<code>export-html</code> 的断言校验&quot;模型引用的每个图片/附件路径都在输出目录存在&quot;，否则分享出去的站点会图挂）；造夹具时注意&quot;目标节点必须真的存在且真的建成链接&quot;，必要时先加前置条件断言</li><li>改数据格式的连带：<code>src/schema.js</code> 版本号 + <code>docs/DATA-FORMAT.md</code>（同批，否则 G8「契约缺字段」判红）+ CHANGELOG + README</li><li>新字段若不在节点树里（如 <code>assoc</code> 这类项目级集合）：不会被 <code>serializeTree</code>/<code>export-md</code> 自动带上，必须逐条确认出口（渲染层序列化、<code>export-json</code>/<code>import-json</code>、主进程 `projec</li><li>新增命令的六步与红线（不要在命令里手写 <code>fs.writeFileSync</code>，一律用 <code>ctx.store.write()</code> / <code>writeFileAtomic()</code>）</li><li>CLI 稳定性分三级（稳定=非大版本不变 / 演进中=字段可能增补 / 内部=不保证兼容），且每条命令恰好落一级（G8 第 ⑮ 条机械核对）</li><li>加/改写盘路径的规矩：<code>fn</code> 里不做 I/O / 打印 / 物理写盘（并发重放会再调用它一次），结果用闭包变量带出；GUI 侧走 <code>mergeTrees</code>，别退回&quot;一律拒绝&quot;</li><li>冒烟跨域验收的运行时兜底：每个域开始时调 <code>MMApp.closeAllDialogs()</code> 并返回列表（不静默关掉）；有残留就判红并点名是哪个域留下的（过滤运行也生效）</li><li>验证期间不要在工程内并发写文件（有并发写入的 3 次全链里 2 次失败：一次 G2 报红、一次 G3 以 <code>0xC0000005</code> 原生崩溃）；处置 = 让它单独重跑一次，不要直接当成&quot;我改坏了&quot;</li><li>台账的三层结构与&quot;升级会不会丢&quot;：数据侧保留 ✓ / 应用侧保留但有效性可能静默失效 ✗ / 运行包侧全丢 ✗（规矩：一律不 patch，哈希清单会判红）</li><li>升级后自检 10 项：一条命令（<code>dsh-embedded-check.js --json</code>）+ 人工两项；UNKNOWN ≠ 通过；判据依赖的字段名是迁移侧的（回执 + <code>manifest.json</code>）⇒ 迁移侧改结构会让它退</li><li>生成块带 BEGIN/END 横幅、幂等（重复渲染整块覆盖，第二次&quot;无需改动&quot;）、写盘前备份 <code>.bak-&lt;时间&gt;</code>；<code>check</code> 把生成块与&quot;现在重新生成的结果&quot;逐行比对</li><li>数据格式的&quot;验收只看数据闸门&quot;：纯笔记内容新增/修改只需 <code>node cli/mm-cli.js validate &lt;项目&gt;</code>；跑全量链是多余的</li><li>AI 操作的常见坑清单（原文 §6）：不要用界面手动测试；不要直接改 JSON 绕过校验；不要重复实现转换/校验；图片引用用相对路径不要绝对路径；删除节点是级联的（子树全删），删除前确认；根节点 id 固定 <code>root</code>，不可删除/移动</li><li>防丢失的人用动作：每次大改后 <code>export-json</code> 一份到工程外目录（如 <code>D:/backup/ai-mind-map/</code>）；不要用 <code>robocopy /MOVE</code> 移动 <code>.user_skills</code> 内目录；不要写批量</li><li>「用 CLI 操作数据（唯一的写入方式）」：不要直接改 JSON —— 校验闸门在 CLI 里，绕过它会写出非法数据</li><li>目标项目数据的写入者白名单只在唯一写盘出口实现（<code>writeFileAtomic</code>），CLI 全部写命令一次性受益</li><li>修顺序依赖假红的结构化做法：断言里任何 <code>await</code> 之后要动树，都不许复用旧引用（<code>save()</code> 的三方合并会 <code>rebuildFromJson()</code> ⇒ jsMind 实例被重建）⇒ 统一改为 <code>jmNow()</code> 现取</li><li>❌ 社区插件市场 / 主题商店（已否决）：需要沙箱、签名、审核、兼容矩阵，与&quot;单机、AI 驱动迭代&quot;定位冲突</li><li>&quot;常规做法 vs 本工程选择&quot;四条对照表：插件市场+热加载 ❌ / 主题样式包 ❌ / 用户脚本钩子 ❌（与&quot;数据改动一律走 CLI 校验闸门&quot;冲突）/ 外部 API 集成 ✅ 用 MCP</li><li>这条设计的实际含义：想加功能时不要设计&quot;扩展点&quot;，先问&quot;现有原子命令能否组合出来&quot;（例：批量打标签 = <code>list --json</code> 筛 id 再循环 <code>edit --tags</code>）；反复需要就固化成一条新 CLI 命令而不是插件 API</li><li><code>dsh-caps</code> 的已知边界：依赖 <code>vendor/dsh</code>，缺它时响亮报错（而不是给一份空报告，&quot;这一条本身就是集成断言覆盖的契约&quot;）；且它读的是&quot;挂了什么&quot;，读不出&quot;挂上之后行为如何&quot;</li><li>外部阻塞（只有用户能做）：① 两个 ✕「真关」的真机复核（headless 只能验机制，验不到你真实的项目与宽度偏好，也验不了观感）② 真机手感复核 ③ 技能目录 C→D 切换（已销账）④ 推送到 GitHub（网络策略代理拒绝到</li><li>未收口：P0 之后 P1（页眉页脚三计数、目录页 → 页码树、跨页段合并）与 P2（页码 ↔ 物理页）均需用户再次批准；<code>ROADMAP.md:43</code> 记录的 P0 实测规模（30 页无书签 ⇒ 1 顶层主题 / 76 标题 / 层级</li><li>导入的已知边界：txt 的标题识别是尽力而为（认不出就是正文，绝不丢内容）；docx 不支持 ZIP64 / 加密（响亮抛错）；<code>.doc/.epub</code> 等认识但不支持的格式直接拒绝</li><li>PDF 其余部分一律未做：没有书签的 PDF 响亮拒绝并给三条出路（换带书签的 PDF / 先转 md / 把目录贴给 AI 整理）——「不猜、不静默降级」</li><li>明确标记为开放问题：两侧没有共同版本锚 ⇒ 建议 <code>dsh-home\\.embedded-state.json</code>（上次 opId + 源指纹 + overrides 哈希）让下次迁移能主动报出&quot;源变了 / 本地改过了&quot;</li><li><code>dsh-token-ratio</code> 三条刻意不做的事：不给&quot;万能倍数&quot;（比值跨度 0.995–4.197）；不说&quot;启发式总是低估&quot;（实测有 10/231 比值 &lt; 1 ⇒ 该表述本身是错的）；不把样本当目标实例的实测（内嵌实例零会话 ⇒ 零</li><li><code>dsh-token-ratio</code> 的退出码契约（两条路径必须分开）：<code>home 不存在</code> = 1（路径给错，是错误）；<code>home 存在但没有投影/没有样本</code> = 0（那是有效结论）</li><li><code>dsh-token-ratio</code> 未做：没有把折算比换算进&quot;该把 <code>thresholdRatio</code> 设成多少&quot;（属下一步 P3-2，且需先确定目标实例走 <code>baseline.kind: 'usage'</code> 还是 <code>'estimated'</code>，proj</li><li>归档稿里仍成立的人用接口约定（早期实施契约）：WebContentsView 单独 session partition、无宿主 preload、<code>nodeIntegration false</code>、`contextIsolation true</li><li>归档稿里的进程与路径契约（现仍适用）：子进程用捆绑 Node 执行 <code>DSH web --host 127.0.0.1 --port 0 --no-open</code>；清理继承的 DSH 会话环境并指定独立 HOME；只接收自身子进程 stdo</li><li>DSH 风险 R1 目标机 DSH 版本不同：插件版本闭包不成立（现有 <code>dsh-closure</code> 阻断）；&quot;只导配置层&quot;的降级路径没人验证过</li><li>DSH 风险 R2 原生依赖跨机器：payload 含 <code>sharp</code>/<code>node-pty</code>/<code>koffi</code>/<code>@img/*</code>；内置 pnpm 不认 allowBuilds ⇒ 原生构建会被静默跳过 ⇒ 只能物理复制本机 ABI 的二进制；</li><li>DSH 风险 R6 内核私有依赖 ⇒ 静默失效（观察器/窄宽 CSS 都依赖内核 DOM 与文案；变了不报错 ✗）⇒ 靠 <code>dsh-status</code> + 自检第 9 项</li><li>DSH 风险 R8 快照漂移：本台账带清点时刻；并发编辑会让&quot;改了什么&quot;漂移 ⇒ 更新时一并改时刻</li><li>DSH 风险 R10（开放）：两侧没有共同版本锚</li><li>内核私有常数是易腐数字：900 / 756 内核改预算即失效（台账只写&quot;来源文件 + 复核命令&quot;）；<code>B2</code> 的注入有效性可能静默失效（内核改文案/DOM ⇒ 装上了但永不触发，不报错 ✗）</li><li>事故二（2026-09-15）：用 PowerShell 读写 UTF-8 文档导致文件损坏（PS 5.1 默认按 GBK 解码再以 UTF-8 写回）</li><li>派生禁令 3 不做批量写盘（企业安全软件会把这类行为判定为可疑操作并清理目录）——这条正是本项目&quot;避免脚本大批量修改文件&quot;的由来</li><li>派生禁令 5 写盘必须原子（<code>writeFileAtomic</code> = 临时文件 + fsync + rename，是唯一写盘出口）</li><li>G1 的另一条边界：它抓的是损坏的结果，不是违规的动作（只读地用 <code>Get-Content</code> 不写盘、不留痕，G1 无法发现）</li><li>S1 的实测缺口：27 处动态 <code>require</code> 判不了方向 ⇒ 如实计数并打印（不静默跳过）</li><li>已知缺陷按原样保留（纯重构没有顺手&quot;修&quot;）：<code>addSiblingNode</code> 给 <code>add_node</code> 传第 6 个实参 <code>sel.index+1</code>，而 jsMind 0.9.1 的公开 <code>add_node</code> 只有 5 个形参、没有 index</li><li>一轮&quot;抓不到名字的偶发&quot;：G3 出现过两次异常（一次退出码 <code>2147483651</code> = 崩溃、一次 1 条失败），后续三次全绿 ⇒ 没在第一次就捕获失败用例名是我的失误（下次先加 <code>--reporter</code> 落盘）</li><li>已知静默失效模式 A：<code>smoke-assertions.js</code> 原先是硬编码 require 列表 ⇒ 新增分域文件却忘登记时该文件断言一条都不跑，计数也一起少掉，从输出上看不出任何异常</li><li>已知静默失效模式 B：<code>.review/</code> 会被 vitest 的默认 include 收集（放一个 <code>*.test.js</code> 就让 <code>npm test</code> 直接红）⇒ 后果不是&quot;坏了&quot;，而是让人得出错误结论</li><li>已知数据丢失模式：<code>syncAssocToState</code> 曾用 <code>st.assoc = r.raw</code> 整体替换 ⇒ 每次打开任一节点详情就把内存关联换成子集，用户一保存其他所有笔记被静默删掉（沙箱实测 7 篇 → 5 篇）；早期没抓到是因</li><li>已知数据丢失模式：<code>project:save</code> 注释记着两条实测路径（内存里是子集时整树写回会删掉其他笔记，曾 7 篇 → 5 篇；AI/CLI 在界面打开期间写的笔记被渲染层整树覆盖）—— 原先只对 <code>assoc</code> 打了补丁，节点树没有*</li><li>已知数据丢失模式：<code>serializeTree()</code> 是手挑字段的 ⇒ 漏一个字段就会被整树写回静默丢掉（与 <code>qa</code>/<code>origin</code> 两次修复同型）</li><li>一次并发写入的真实代价（<code>docs</code> 层）：两个写入者没有互斥，后写者按旧快照回退前者（上一轮已按层分组的导航表被整文件回退，同批丢失的还有它的 CHANGELOG 记录）</li><li>本工程地图规模（L2/像素判据的背景）：comnet 548 节点，面板实测 729×754 ⇒ 547 条线里只有个位数在屏上 ⇒ 判据改成&quot;只判在屏的那一端&quot;，并在报文里报出&quot;只有一端在屏 / 两端都出屏&quot;的条数（*</li><li>清点佐证（数据完整性）：<code>docs/VERIFY.md</code> 与 <code>CHANGELOG.md</code> 曾刻意不校验（前者一度不在 G7 逐字校验范围内、后者记历史值）⇒ 这类漂移&quot;门禁抓不到，只能靠人工核对&quot;</li></ul>"
+                  },
+                  {
+                    "id": "1-mv2hj3t5tiem",
+                    "topic": "我觉得该做的（1 条 · 待你点头）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>background</code> 是透传字段：schema 不校验、界面与 CLI 均无设置入口，仅在序列化时原样保留</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "d-ai-mv2hj3t5i672",
+                "topic": "①d 三入口与接入面（AI 从哪儿进来）",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "58-mv2hj3t5ze9a",
+                    "topic": "已有功能与设计（58 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>删节点是两侧唯一交叉点：界面先列影响面 → 经 IPC 让 CLI 在磁盘上先剪干净 → 成功才删</li><li><code>ask</code> 不加 MCP 工具的理由：MCP 是给外部 AI 用的，把&quot;再问一个内嵌 DSH&quot;暴露出去等于递归入口</li><li>修复类命令接 <code>mutate</code> 时的纪律：判据 <code>should</code> 在 <code>fn</code> 外固定（它依赖别的项目读盘，而 <code>fn</code> 里禁止 I/O）；重放只按&quot;我核实过的那份名单&quot;剪，不猜新的</li><li><code>.review/</code> 根下只允许两种东西：① 各任务的工作目录（须带 README）② 机器产物（目前只有两个，命令自动写、可随时删、不要手工编辑）</li><li>报错即教程：门禁判红必须告诉人怎么改（改哪个文件、跑哪个命令、三条路是哪三条）</li><li>慢命令走先探活、再下命令两步（否则&quot;界面没在跑&quot;与&quot;界面在跑但慢&quot;分不开 ⇒ 报假原因）</li><li>认领靠 <code>rename</code>（只有一个赢家）⇒ 同一条命令至多被派发一次</li><li><code>--export-window</code> 整窗截图的已知边界：离屏实例里侧栏 view 的页面可能一直没渲染 ⇒ 工具会明确打印&quot;侧栏 未进来&quot;而不是假装拍到了</li><li>AI 问答浮窗行为三条：首次显示时定好位置并上大锁（&quot;绑定在第一次显示的位置&quot;）；界面上不显示大小锁（用户说不需要，行为保留）；点击别处即消失（连同工具条一起收起）</li><li>「描述一句话 ⇒ AI 真去建项目」这条路通的前提是情境块里写明它能动手、以及用哪条命令</li><li>关系虚线按&quot;为什么相关&quot;区别配色（关联=蓝 / 链接=橙 / 两者都有=紫）；&quot;点线开笔记&quot;与&quot;从入口原位打开&quot;是两种位置来源</li><li>展示关联节点前先展开祖先（jsMind 里被收起的元素还在但 <code>getBoundingClientRect()</code> 是 0×0 ⇒ 缩放算出退化框、线端点全错），并把退化矩形当&quot;没渲染&quot;</li><li>「合成事件永远点得到，而真人永远点不到」：冒烟底座的价值定位</li><li>占位页（导图页真关后）写清&quot;已关闭 + 三个回去的入口&quot;，不留一片白</li><li>编辑对话框文案与&quot;保存入口存在&quot;必须一致（历史缺陷：文案写&quot;点击保存生效&quot;而当时全 renderer 只有一处调用 <code>save()</code>、工具栏无按钮、无 Ctrl+S）</li><li>工具栏自动换行（<code>flex-wrap</code> + row-gap 6px）：侧栏拖宽挤压主界面时按键落到下一行不被盖住</li><li>工具条默认档不翻转也不夹取（相对坐标才恒定，&quot;同步跟随&quot;才可判），只有真的放不下才翻</li><li>节点悬浮工具条锚在详情框上：默认贴框下缘外侧 +6，放不下翻到上缘外侧 −6，再放不下才夹进面板；档位写 <code>data-place</code></li><li>大小锁（<code>FD_LOCK.SCREEN</code>）特例：关工具条、留圆钮，且圆钮的位置/尺寸/可点性逐字不变</li><li>圆钮与工具条住在与框同级的卫星浮层（框是 <code>overflow:hidden</code>，放框里会被框自己裁掉：看不见也点不到）</li><li>启动时工具栏被侧栏盖住&quot;稍微拖一下就恢复&quot;的真因：让位靠 CSS 变量，而类与变量只在收到 <code>dsh-sidebar:layout</code> 事件时才设，主进程首次发送早于页面加载完成</li><li>「文件预览 + 文件夹」入口合流：预览头「📁 文件夹」按钮把&quot;附件预览&quot;与&quot;文件夹链接&quot;接起来</li><li><code>assoc.note</code> 与节点 <code>detail</code> 同约定（HTML 存储），Markdown 只出现在命令行边界（<code>--note-md</code>）</li><li>MCP 错误分流（协议级 vs 业务级，边界只判一次）：未知方法/工具 → <code>-32601</code>；缺必填参数/没给工具名 → <code>-32602</code>；服务器自身异常 → <code>-32603</code>；工具内部失败仍走 <code>result + isError:true</code>（</li><li>MCP 必填项取自 <code>inputSchema.required</code>（与工具定义同源，不另写一份清单）</li><li>CLI 选项同时支持 <code>--key value</code> 与 <code>--key=value</code>；归一规则（<code>optionKey</code>）与未知选项扫描（<code>unknownOptions</code>）是无 IO 纯函数且必须共用同一套归一</li><li>未知选项的处置：exit 1 + 点名 + 打印支持集（若它是别的命令的选项则直接点名那条命令）</li><li><code>registry.js</code> 的 <code>options</code> 是&quot;这条命令认识哪些选项&quot;的唯一声明处；<code>compatOptions</code> = 接受但故意不写进 usage 的旧写法（如 <code>read --detail</code>）</li><li>生成物也不例外：<code>CLI.md</code> / <code>VERIFY.md</code> 的元信息块由它们的生成器产出 —— 否则每次重生成都会抹掉它、G8 立刻报「文档无元信息」（这一点落地时当场就踩到了）</li><li>归档触发点只有一处（<code>release</code> 命令内部，发版顺手滚），不新增任何需要人记住的步骤</li><li>演练提示词必须包含五条（① 明确&quot;你是第一次接手、没有先前上下文&quot; ② 只读或只改副本、不许动原工程 ③ 禁重命令 ④ 回答四问：状态与在飞工作 / 某类任务的步骤 / 写文件的禁令 / 验收标准 ⑤ 如实报告卡点，并声明&quot;报告的价值在于暴露缺口，不在</li><li>验证链执行顺序 / 每步命令 / 耗时预算的唯一定义在 <code>scripts/verify.js</code> 的 <code>STEPS</code>；<code>docs/VERIFY.md</code> 的链表由它渲染</li><li>分层测试只约束&quot;改代码&quot;：改 <code>src/</code> 加单测、加/改命令加集成断言、加/改渲染加冒烟断言；断言要测可观测副作用，不要测&quot;命令没报错&quot;</li><li>可依赖的稳定接口只有三类（数据格式 &gt; CLI &gt; MCP）；其余（内部函数、文件布局、DOM 结构）随时可能变</li><li>外部工具应直接读 JSON 文件，而不是调 CLI 来读</li><li>每条改动都要能回答三件事：属于哪一侧 / 运行包升级后会不会丢 / 怎么重建、怎么核对（给命令，不给形容词）</li><li>会话标题是内核行为（<code>@deepseek-ai/dsh-session-title</code>），不属于应用侧可改范围 ⇒ 按纪律不 patch；给了三条可选路（不动内核 / 应用侧只读入口 / 写回数据侧=最高风险，属&quot;手工编辑生成物&quot;被明确禁止）</li><li>与其它 AI 工具协作的接入前建议先读：<code>SKILL.md</code> → <code>docs/RULES.md</code> → <code>docs/AI-GUIDE.md</code> → <code>docs/DATA-FORMAT.md</code></li><li>MCP 客户端配置形态（<code>command: node</code> + <code>args: [&quot;&lt;工程绝对路径&gt;/scripts/mcp-server.js&quot;]</code>）；标准 MCP 2024-11-05 stdio</li><li>加/改 MCP 工具的纪律：只允许拼参数转发 CLI，不得复制业务逻辑；端到端验证 = 写文件再读回 + <code>npm run verify</code></li><li><code>cli/core.js</code> 的项目根可重定向（<code>AI_MINDMAP_PROJECTS_DIR</code>），这是&quot;冒烟隔离落到 CLI 侧&quot;的关键一环（CLI 是另一个进程，否则自己算出真实 <code>projects/</code>）</li><li>冒烟模式下把沙箱项目根暴露为 <code>AI_MINDMAP_PROJECTS_DIR</code>，好让断言放文件类夹具（如造一份 PDF）—— <code>runCli</code> 只能写数据；真实数据依旧零触碰</li><li>读写文本文件的工具约定：读用 <code>read</code> 工具、写用 <code>write</code>/<code>edit</code> 工具；不要用 shell 命令读写文本（&quot;写入造成的损坏已由门禁 G1 兜住，但 PowerShell 5.1 的 GBK 默认解码曾把整个工程写坏过&quot;）</li><li>对外部 skill 消费者的边界（本文件顶部反复强调）：操作笔记不要碰 <code>vendor/dsh</code>、内嵌实例的端口、<code>dsh:vendor</code> / <code>dsh:maint</code>；<code>npm start</code> 是人类动作（headless 下没有界面可看</li><li>双重身份与角色边界：本工程有两个使用面（笔记数据操作 = skill 的全部意义；桌面应用功能 = 人类经 <code>npm start</code>）；内嵌 DSH 侧边栏属第二个使用面</li><li>导航按层分组（第 0 屏 → 入口 → 治理 → 契约 → 设计 → 记录 → 归档），每层给&quot;这份文档为什么存在、能不能改&quot; + 挑中一行即可，不必读完</li><li><code>read</code> 的三个变窄开关可叠加，具体省多少写在各命令自己的 registry 条目里（&quot;本文不写易腐数字&quot;）</li><li>测量口径的教训：PowerShell <code>.Length</code> 量的是行数/字符数不是字节数（&quot;中文一字占 3 字节&quot;⇒ 百分比随之偏小），测量工具本身可能量错了对象</li><li><code>dsh-assembly-probe.js</code> 的已知边界：<code>--dump-config</code> 会无条件重写 <code>profiles/&lt;name&gt;/cordis.yml</code>，实测直接对真实 home 跑会 EPERM（同一路径同一时刻 PowerShel</li><li>归档稿明确&quot;不建议做&quot;（避免过度设计）：不引入数据层 ORM/数据库（JSON 文件即数据库、单项目 &lt;1MB）；不做实时协作；不把 UI 框架换成 React/Vue；另 SKILL 瘦身属&quot;收益中等，非紧急&quot;</li><li>归档文件的引用纪律：<code>docs/archive/</code> 只增不改、必须带历史横幅、勿作现状引用；原因是&quot;grep 到旧稿会当成现状&quot;；归档的 <code>DEEP-REVIEW</code> 自述其数字（命令 26 / 工具 20 / 单测 30 / CLI 断言 29</li><li>事故一（2026-09-15）：目录级重命名导致工程整体丢失（robocopy 移动后 <code>.user_skills</code> 整体被清空，疑似文件系统层/企业安全软件层问题）</li><li>G8 的能力边界：只查&quot;文件有没有家、在不在登记表/白名单里&quot;，查不了&quot;该不该存在/内容是否重复&quot;；它也管不到工程外（如 <code>.user_skills/</code> 根目录的散落文件 —— 那一层只有 <code>SKILL.md</code> 的「落盘规矩」这条约定，没有</li><li>一条取证更正（&quot;结论对、根因错&quot;）：原注释写&quot;jsMind 0.9 不派发 select 事件&quot;—— 实测这句话是错的（<code>invoke_event_handle</code> 共 12 个派发点，<code>select</code> 那个就写在公开方法 `jm.selec</li><li>同一形态的另一次（已定位）：<code>tests/dsh-embedded-overrides.test.js</code> 的用例会 spawn 一个 node 子进程（1.9–5.1 s），而 vitest 默认单测超时是 5000 ms ⇒ 机器一有负载就偶发超</li><li>已知数据安全模式：冒烟/verify 会写用户真实项目数据（成因：CLI 是另一个进程、自己算出真实 <code>projects/</code>）⇒ 靠 <code>AI_MINDMAP_PROJECTS_DIR</code> 把沙箱传给子进程；验证 = 连跑冒烟后 `comnet.j</li><li>一条循环 require 的坑：新加的共用工具挂在 <code>require</code> 各分域之后 ⇒ 分域拿到 <code>undefined</code> ⇒ 5 个域一起报 <code>mm.closeDialogs is not a function</code>（已把挂载点提到 `requir</li><li>一条口径修正（&quot;预期 N 步&quot;）：SKILL 第一屏原写&quot;9 条步骤 / 实跑 8 步&quot;（漂了两轮 ✗）⇒ 现改由 <code>doc-facts.js</code> 的 <code>scanStepCount</code> 校核（数字不符 / 字样缺失 / 采不到真值三种情况都判红</li></ul>"
+                  },
+                  {
+                    "id": "1-mv2hj3t5sa6p",
+                    "topic": "我觉得该做的（1 条 · 待你点头）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>新增 <code>--skeleton</code> 档是纯 opt-in、不改任何默认（<code>--brief</code> 与 <code>list</code> 之间原本缺一档：&quot;有嵌套但只有结构&quot;没有入口）</li></ul>"
+                  },
+                  {
+                    "id": "n-mv2hj3t5zedl",
+                    "topic": "本条的实物（命令 / 界面 / 字段 / 门禁）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>projects</code></li><li><code>read</code></li><li><code>list (tree)</code></li><li><code>get</code></li><li><code>search</code></li><li><code>stats</code></li><li><code>init</code></li><li><code>add</code></li><li><code>add-root</code></li><li><code>edit</code></li><li><code>move</code></li><li><code>expand-depth</code></li><li><code>remove (rm)</code></li><li><code>clone</code></li><li><code>validate</code></li><li><code>validate-all</code></li><li><code>ui-state</code></li><li><code>changes</code></li><li><code>ask</code></li><li><code>ask-apply</code></li><li><code>sidebar-only</code></li><li><code>dsh-sidebar</code></li><li><code>dsh-status</code></li><li><code>dsh-prefill</code></li><li><code>dsh-caps</code></li></ul>\n<ul><li><code>projects</code></li><li><code>read_project</code></li><li><code>list_nodes</code></li><li><code>get_node</code></li><li><code>search_nodes</code></li><li><code>stats</code></li><li><code>init</code></li><li><code>add_node</code></li><li><code>add_root</code></li><li><code>edit_node</code></li><li><code>move_node</code></li><li><code>expand_depth</code></li><li><code>remove_node</code></li><li><code>clone_node</code></li><li><code>validate</code></li><li><code>validate_all</code></li><li><code>ui_state</code></li><li><code>changes</code></li><li><code>ask</code></li></ul>\n<ul><li><code>工具栏（11）</code></li><li><code>命令面板（12）</code></li></ul>\n<ul><li><code>meta.formatVersion</code></li><li><code>format</code></li><li><code>data</code></li><li><code>id</code></li><li><code>topic</code></li><li><code>expanded</code></li><li><code>children</code></li><li><code>原子写+BOM</code></li><li><code>.ui-state.json</code></li><li><code>.changes.jsonl</code></li></ul>\n<ul><li><code>src/dsh-sidebar-skill.js（向内置实例注入指针型 skill）</code></li><li><code>cli/mm-cli.js（薄壳入口）</code></li><li><code>scripts/mcp-server.js（任意 MCP 客户端可达 45 能力）</code></li><li><code>src/dsh-capabilities.js（CLI dsh-caps 后端）</code></li></ul>\n<ul><li><code>preload.js 暴露给界面的 desktop.*（projects/project/asset/app/on/dsh）</code></li></ul>"
+                  },
+                  {
+                    "id": "n-mv2hj3t56hel",
+                    "topic": "行为与不变量",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>并发合并的真粒度：指纹 = <code>node:&lt;id&gt;</code> / <code>children:&lt;父id&gt;</code> / <code>assoc:&lt;id&gt;</code> / <code>meta</code>；不相交 ⇒ 自动合并，相交 ⇒ 指名拒绝</strong>：①c</li><li><strong>界面保存的三方合并：&quot;界面载荷不含 <code>assoc</code> ⇒ 视为界面没意见&quot;（防一次界面保存抹掉全部关联笔记）</strong>：①c + ②b</li><li><strong>保存路径三道守护：版本记录 + 只在&quot;写入前盘上版本 == 渲染层手里那版&quot;才推进 + 校验探针临时文件</strong>：①c</li><li><strong>冲突的结构化返回：<code>MERGE_CONFLICT</code> / <code>RACE_RETRY</code>，头部带 <code>headless</code> 标记（无头下不弹模态）</strong>：①c + ④e</li><li><strong>两个&quot;答不了&quot;的口径：<code>changes --since</code> 答不出来一律非 0 退出（&quot;答不了&quot;≠&quot;没变更&quot;）；<code>links-prune</code>/<code>assoc-prune</code> 的&quot;项目读不出来&quot;不算不存在</strong>：①c</li><li><strong>CLI 契约：<code>invoke(argv) -&gt; {code, stdout, stderr}</code> 进程内可调；失败一律非 0 + <code>error:</code> 前缀</strong>：①d + ⑥a</li><li><strong>用户脚本钩子：与&quot;数据改动一律走 CLI 校验闸门&quot;直接冲突</strong>：①c</li><li><strong>外部 API 集成 → 用 MCP：原文：&quot;AI 就是扩展机制&quot; —— 想加功能不要设计&quot;扩展点&quot;，先问&quot;现有原子命令能否组合出来&quot;</strong>：★ 这是①与⑥之间的总纲</li></ul>"
+                  },
+                  {
+                    "id": "9-mv2hj3t5iqil",
+                    "topic": "待做（9 条 · 已入待做清单）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>W1</strong> search-all 跨项目检索</li><li><strong>W2</strong> 时间线检索 recency</li><li><strong>W3</strong> 向量/语义近似检索</li><li><strong>W4</strong> 混合检索与权重（RRF + 黄金查询集）</li><li><strong>W6</strong> 把命令面板的模糊排序给 AI 侧</li><li><strong>W7</strong> 检索延迟基准</li><li><strong>W8</strong> 写入类命令统一 --dry-run</li><li><strong>W26</strong> 使用者版 skill：让新会话能加载</li><li><strong>K8</strong> 重复 link 不带 --caption 静默清掉说明</li></ul>\n<p>---</p>"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "n-mv2hj3t5f5pe",
+            "topic": "② 关联性与\"关联笔记\" —— 像人脑一样连着记",
+            "expanded": true,
+            "children": [
+              {
+                "id": "4-mv2hj3t5i9u1",
+                "topic": "（层级4）",
+                "expanded": true,
+                "children": [
+                  {
+                    "id": "n-mv2hj3t5p46b",
+                    "topic": "判据",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>带说明的链接</strong>（可跨项目）· <strong>关联笔记</strong>（N 元共写一篇，改链接不会抹掉它）· <strong>关联视图</strong>（高亮/虚化/关系线 + 人工编辑条）· <strong>多跳可查</strong>；</li><li><strong>标签是同一件事的另一面</strong>：点标签即搜 → 跨项目聚合 → 标签关联视图 + 标签笔记 → AI 推荐/统一/重分类；</li><li>⭐ 要解决的是&quot;<strong>类人脑的联想记忆</strong>&quot;：知识不是塞进文件夹，而是靠<strong>关系</strong>被记住、被找回；</li><li>⭐ 与之配套的取舍：<strong>局部图要做、全量图不做</strong>（全量出图孤点占 2/3、信噪比过低，已否决 ✗）。</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "a-mv2hj3t6mlgp",
+                "topic": "②a 带说明的链接",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "0-mv2hj3t6lqru",
+                    "topic": "已有功能与设计（0 条）",
+                    "expanded": false,
+                    "children": []
+                  }
+                ]
+              },
+              {
+                "id": "b-n-mv2hj3t6mru6",
+                "topic": "②b 关联笔记（N 元）",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "12-mv2hj3t6hnuc",
+                    "topic": "已有功能与设计（12 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>assoc-add</code> 的写前回读失败即判失败（拿不到真值不猜、不写）；回读的 id 集合取差集认新增，不解析给人看的 stdout（&quot;那是中文句子，改一个字就坏&quot;）</li><li><code>links-prune</code> / <code>assoc-prune</code> 默认只剪确认不存在的目标；读不出来时只警告、不猜</li><li><code>assoc-remove</code> 删空时把 <code>assoc</code> 键整个去掉（不留空数组噪音）</li><li>载荷缺 <code>assoc</code> 键必须当作&quot;界面没有意见&quot;（从 base 继承），而不是&quot;界面把 assoc 删光了&quot;</li><li>关系虚线是点线，按鼠标位置开关对应的那篇关联笔记</li><li>关联信息编辑条三件套：链接清单（出/入边逐条 ✕ 删，互指的 A↔B 显示两行）· ➕ 添加链接 · 📝 新建关联笔记（≥2 成员才能提交）</li><li>关联笔记页的有效标题是视图派生值（缺省时用成员主题拼成「A ↔ B」，不落盘）</li><li>关联笔记页的表格样式与详情框各自匹配各自容器（<code>.assoc-note table</code> 有样式，用裸 <code>&lt;table&gt;</code>）</li><li><code>assoc.id</code> 用 <code>a-</code> 前缀区分节点 id（<code>a-</code> + 时间戳 base36 + 随机后缀）</li><li><code>assoc.members</code> 至少 2 个且不可重复（同一 <code>project</code>+<code>id</code> 出现两次即报错）</li><li>保存链路两道保护：渲染层 <code>serializeTree</code> 原样带出 <code>state.assoc</code>；主进程 <code>project:save</code> 发现没带就从磁盘取回、不用空值覆盖</li><li><code>export-md</code> 输出 Markdown（heading 或 list 两种格式）；<code>--with-detail</code> 把 detail 转成 <code>&gt; 引用块</code> 跟在标题行后；不含 <code>assoc</code></li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "c-mv2hj3t6gk88",
+                "topic": "②c 关联视图与编辑条",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "10-mv2hj3t6wp5f",
+                    "topic": "已有功能与设计（10 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>高频反馈的性能判据：与机器快慢无关的确定性判据（第 1 帧 ≤ 2×节点数、连刷 13 帧 ≤ 同量级），并同时断言&quot;高亮没丢&quot;</li><li>关联视图的顺序依赖教训：本域最初借真实节点 ⇒ 单跑绿、全量红（前面域会删节点）；改成自造节点又进不了界面内存 ⇒ 最终运行时从界面自己的树里挑两个真实存在的节点</li><li>进关联视图即：关联节点缩放到刚好框住（让出编辑条高度，不遮节点）、高亮它们 + 轻微虚化其余、画关系虚线</li><li>侧栏折叠后主界面右缘显示 🤖 圆钮，点击或 Ctrl+B 重新展开（layout 事件驱动显隐）</li><li>搬进同级浮层带来的真回归：点一下圆钮会把未锁定的详情框关掉 ⇒ 新增唯一判据 <code>MM.fdIsSatelliteTarget</code>，4 处守卫共用</li><li>拖宽分隔条手感：hover 高亮 <code>col-resize</code>；宽度权威值在主进程，渲染层只上报热区事件</li><li>展开/收起按钮加大：jsMind 默认 <code>11×11px</code>/字号 10px ⇒ 现为 19×19px 圆钮（白底蓝边、hover 反色放大、<code>+</code>/<code>−</code> 字号 14px）；位置仍由 jsMind 内联 <code>left/top</code> 决定，配 `margin:</li><li>侧栏隔壁的灰缝真因（112px）：漏写两行 DOM 同步 ⇒ <code>--dsh-sidebar-width</code> 回落到 style.css 兜底值 420px；且折叠圆钮的显隐也被裹进守卫里</li><li>关联视图的已知观察（未修，非本功能引入）：关联页框在窗口 795 高时会到 926 高 ⇒ 位置会被夹回视口（行为正确，已按&quot;覆盖住点击点&quot;判定）</li><li>性能欠账（已修）：关联高亮 <code>scheduleRedraw</code> 在拖动/缩放时每帧对全部节点（本机 551 个）各做 2 次 <code>classList.toggle</code> ⇒ 每帧 ~1102 次 DOM 写；判别力证明里关掉优化 13 帧写</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "d-mv2hj3t6fmtd",
+                "topic": "②d 多跳与反向查询",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "8-mv2hj3t6log9",
+                    "topic": "已有功能与设计（8 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>unlink</code> 后回读剩余出边并裁成契约形状（只留 project/id/caption）——派生字段写回内存会污染契约</li><li>预览头「📁 文件夹」按钮：节点带 <code>localPath</code> 时出现，点击复用 <code>openLocalPath</code> —— 把&quot;附件预览&quot;与&quot;文件夹链接&quot;两件事接起来</li><li>详情框的图片区只放图片，不再单列链接行（旧「🔗 跳转到」行已删；它对本项目内链接完全失效 ⇒ 47 个死链接）</li><li><code>backlinksAll</code> 与 <code>relatedAll</code> 的去重口径有意不同（前者按 项目\\</li><li>多项目组织规范：一个项目 = 一个主题域；跨主题引用用 links，不复制内容；项目内保持单一知识主线，避免重复节点</li><li>❌ 全量图谱视图（已否决）：全量节点出图在 130+ 节点、大量纯结构节点无链接时孤点占比达 2/3 ⇒ 局部图要做，全量图不做</li><li>❌ Canvas 自由画布（已否决）：自由排布与现有数据模型（树 + links）不匹配</li><li>Git 背景：<code>git init</code> 成功但写 <code>.git/objects</code> 被 EDR 拦截（<code>.git</code> 目录内出现探针符号链接 <code>tyawWZT → {testing}</code>；系统安全软件为亚信安全防毒墙 + Windows Defender）；2</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "e-mv2hj3t6ieka",
+                "topic": "②e 标签体系",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "2-mv2hj3t6adw2",
+                    "topic": "已有功能与设计（2 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>走 Markdown 路径时不要把裸 HTML 混进 Markdown（<code>markdownToHtml</code> 会把裸标签转义）；<code>--detail</code> 与 <code>--detail-md</code> 互斥</li><li><code>export-md</code> 的格式约定缺失（不是缺陷）：Markdown 导出不携带 <code>links</code> 与 <code>tags</code>；需无损迁移请用 <code>export-json</code>/<code>import-json</code></li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "f-mv2hj3t6fakc",
+                "topic": "②f 关系审计",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "0-mv2hj3t6ffl6",
+                    "topic": "已有功能与设计（0 条）",
+                    "expanded": false,
+                    "children": []
+                  },
+                  {
+                    "id": "n-mv2hj3t6qixx",
+                    "topic": "本条的实物（命令 / 界面 / 字段 / 门禁）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>backlinks</code></li><li><code>related</code></li><li><code>orphans</code></li><li><code>mentions</code></li><li><code>link</code></li><li><code>unlink</code></li><li><code>links</code></li><li><code>links-prune</code></li><li><code>assoc-list</code></li><li><code>assoc-add</code></li><li><code>assoc-edit</code></li><li><code>assoc-remove</code></li><li><code>assoc-prune</code></li></ul>\n<ul><li><code>backlinks</code></li><li><code>related</code></li><li><code>orphans</code></li><li><code>mentions</code></li><li><code>link_nodes</code></li><li><code>unlink_nodes</code></li><li><code>list_links</code></li><li><code>links_prune</code></li><li><code>assoc_list</code></li><li><code>assoc_add</code></li><li><code>assoc_edit</code></li><li><code>assoc_remove</code></li><li><code>assoc_prune</code></li></ul>\n<ul><li><code>关联视图 / 关联笔记（13）</code></li><li><code>审计面板（4）</code></li></ul>\n<ul><li><code>assoc</code></li><li><code>tags</code></li><li><code>links</code></li><li><code>links[].project+id</code></li><li><code>links[].caption</code></li><li><code>assoc[].id/title</code></li><li><code>assoc[].members</code></li><li><code>assoc[].note</code></li><li><code>悬挂链接检测</code></li><li><code>悬挂关联成员检测</code></li></ul>\n<ul><li><code>OBSIDIAN-FUSION-2026-09-15</code></li></ul>"
+                  },
+                  {
+                    "id": "n-mv2hj3t6g8cu",
+                    "topic": "行为与不变量",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>界面保存的三方合并：&quot;界面载荷不含 <code>assoc</code> ⇒ 视为界面没意见&quot;（防一次界面保存抹掉全部关联笔记）</strong>：①c + ②b</li><li><strong>全量图谱视图：&quot;问题不在&quot;图&quot;，而在&quot;全量出图&quot;—— 局部图要做，全量图不做&quot;</strong>：②（讲清&quot;我们做局部联想，不做全景图&quot;）</li><li><strong>Canvas 自由画布：与&quot;类人脑联想&quot;无关；画布不是记忆结构</strong>：②</li></ul>"
+                  },
+                  {
+                    "id": "4-mv2hj3t6w7zb",
+                    "topic": "待做（4 条 · 已入待做清单）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>W5a</strong> 跨项目标签聚合</li><li><strong>W5b</strong> 正文 #标签 抽取成字段</li><li><strong>W9</strong> 标签关联视图 + 标签笔记</li><li><strong>W10</strong> AI 推荐标签 + 统一 + 重分类</li></ul>\n<p>---</p>"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "n-mv2hj3t6goob",
+            "topic": "③ 经验沉淀 —— 从\"记下来\"到\"可复用的判断\"（沉淀 · 找到 · 应用）",
+            "expanded": true,
+            "children": [
+              {
+                "id": "4-mv2hj3t6fm1m",
+                "topic": "（层级4）",
+                "expanded": true,
+                "children": [
+                  {
+                    "id": "n-mv2hj3t6nkdi",
+                    "topic": "判据",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>一个项目可放<strong>多个顶层主题</strong>当容器；载体齐全：详情/图片/附件（md·pdf 内联预览）/本机文件夹路径/问答记录；</li><li>工具能<strong>主动找出还没成篇的经验</strong>：<code>mentions</code>（反复被提及却没自己页面）、<code>orphans</code>（孤岛）、<strong>概念目录</strong>（聚成清单、一键补成节点）；</li><li>⭐ <strong>一边学一边记</strong>：与 AI 交流 → 一键<strong>写入详情</strong>或<strong>建成子节点</strong> → 留 <code>qa</code> 记录 ⇒ 结论当场变成自己的经验；</li><li>⭐ 比 Obsidian 更智能的地方：<strong>它不只是让你写，它还会告诉你&quot;你还没写哪块&quot;</strong>。</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "a-mv2hj3t6gm6u",
+                "topic": "③a 多顶层主题当容器",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "30-mv2hj3t6p77g",
+                    "topic": "已有功能与设计（30 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>拖动树模式退出语义：树偏移保留、不弹回；「还原视图」/切项目/撤销重做才复位</li><li>顶层主题偏移可以保存了（进 <code>meta.themeOffsets</code>）；并补齐&quot;把这棵树移回自动布局&quot;</li><li>窄宽适配的实况靠 <code>dsh-status</code> 读（<code>narrow.mode</code> / <code>narrow.metrics.overflow</code>），改布局前先读它别凭肉眼</li><li>载入世代：<code>openProject</code> 开始时 +1，两处异步消费者回来核对不符即丢弃（防迟到重建把旧项目的树盖到新项目上）</li><li>首次布局事件会丢（主进程首次发送发生在页面加载完成之前）⇒ 两处互为保险：主进程 <code>did-finish-load</code> 后补发；渲染层订阅完主动问一次 <code>desktop.dsh.status()</code></li><li>锚点保持只在重排函数被调用那一刻测量（前两版在 MutationObserver 里事后对冲 ⇒ 分不清&quot;布局重排&quot;与&quot;用户在平移/缩放&quot;，把用户的平移纠正掉）；测量必须用 <code>style.left/top</code>（<code>offsetLeft/offsetTop</code></li><li>数据与状态路径的点文件惯例：<code>.ui-state.json</code> / <code>.changes.jsonl</code> 都是点文件 sidecar —— 项目列举只认 <code>&lt;项目&gt;/&lt;项目&gt;.json</code>，文件监听也显式跳过点文件</li><li>跨项目条目带 <code>[项目]</code> 标记，点击即切项目并选中目标</li><li>主题模式：根节点被当作容器（隐藏其方框与连线），各顶层子节点互相独立</li><li>界面有状态栏，并承担计数提示（「已收起到树根（N 个主题）」「另有 N 个跨父节点被过滤」）</li><li>框选预览样式不碰背景与文字色（历史缺陷：<code>!important</code> 覆写背景 ⇒ 主题节点蓝底白字，白字落浅蓝底上不可见）</li><li>收起到树根 = 只收起顶层主题（root 保持展开）—— 原调 <code>collapse_all()</code> 会连 root 折叠，主题模式下&quot;什么都看不到&quot;</li><li>冒烟探针树的设计理由：真实项目 6757px 的位移会让 headless 光栅层直接 <code>VirtualAlloc failed</code> ⇒ 用&quot;主题模式 + 链三层 + 30 叶子&quot;的探针树（−565px 够判又安全）</li><li><code>meta.rootMode=&quot;themes&quot;</code> = 主题模式（根作容器，隐藏方框与连线）；缺省 = 单中心模式</li><li><code>meta.layout</code> 是方向唯一真源（<code>{left:[], right:[]}</code>），界面保存不丢；id 必须是顶层主题的 id</li><li><code>meta.themeOffsets</code> 存顶层主题的拖拽偏移（逻辑画布像素、相对该主题的自动布局位置）；只写非零项；只影响呈现、不改父子关系、不改分侧</li><li>id 生成器在整库导入下要 <code>uniqueIdGen()</code> 再摇一次（中文主题被 <code>[^a-z0-9]+</code> 整段抹掉 ⇒ 同毫秒撞 id ⇒ 全库导入以&quot;id 重复&quot;整体失败）</li><li>单短横线选项单独守门：只看位置参数（<code>-x</code> 不再被当成项目名），<code>-h</code> 语义保留且不许误杀选项值（<code>--topic -x</code> 是正常用法）</li><li><code>rev</code> 从日志自身推导（不依赖项目文件里的任何字段）⇒ 可见性功能不改数据格式</li><li>三条落盘路：工作产物 → <code>.review/&lt;YYYYMMDD&gt;-&lt;主题&gt;/</code>（唯一杂物区）；长期文档 → <code>docs/</code> + 头部元信息块 + 跑 <code>docs:registry</code>；一次性旧稿 → <code>docs/archive/</code>（只增不改）</li><li>加全局监听/观察者必须放进带幂等守卫的 <code>bind*</code> 函数，禁止内联进 <code>renderMind()</code>（该方法每次 undo/redo、切项目都会执行 ⇒ 监听器无限累积）</li><li>受限环境的假失败清单与判据：<code>npm test</code> 固定 <code>--pool=threads</code>；跑集成断言时别用会&quot;提前关闭管道&quot;的方式取输出（会留下探针项目 ⇒ 下一步 G2 报假红）；G5 要求 Electron 能真正启动（判据：先单独跑 `elect</li><li>层级约束：不超过 5-6 层（根 → 主题 → 子主题 → 条目 → 细节）；同层节点并列，不要出现&quot;兄弟之间父子关系&quot;的歧义</li><li><code>import-json</code> 的提交点顺序：资源先解包、项目 JSON 最后写（保证&quot;看到一个项目名 ⇒ 它的资源已就位&quot;）</li><li>❌ 在静态导出里做 HTML 消毒（已否决）：不完整的消毒器比&quot;诚实标注边界&quot;更危险 ⇒ 改为导出加 CSP 阻断远程加载/回传 + 文档写明&quot;只导出你自己的项目&quot;</li><li>❌ 每日笔记 / 模板系统（已否决）：服务日记型 PKM，与本工程&quot;主题结构型笔记&quot;定位不符</li><li>E2–E6 的归档前身（更完整的否决理由）：插件市场/主题商店、每日笔记/模板、Canvas 白板、付费同步/多设备实时协同（出自决策参考稿）</li><li>L3（基线差率）是&quot;延后 + 触发条件&quot;，不是欠账：触发条件 = 出现一次「布局回归在全绿下溜过」的真实事故；按 M1 无据不做（需人确认基线 + 新增 <code>.raw</code> 产物形态）</li><li>冒烟的&quot;每域隔离&quot;收不掉 DOM 模态（它只还原项目数据 + 重开项目）⇒ 模态跨域存活、盖住后面域的画布：实测域 16 一处漏关 ⇒ 域 36/37 连锁红 11 条（而那两个文件一行都没改过 ✗）</li><li>一次偶发假红的真因已证明：跨域状态污染（不是渲染进程崩溃、不是内存、不是项目文件坏、不是撕裂快照 —— 这些假设都已实测否证，别再重查 ✗）；按域隔离后同一份代码 167/167 · destroyed 0</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "b-mv2hj3t6lv6e",
+                "topic": "③b 载体（详情/图片/附件/本机路径/问答）",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "24-mv2hj3t6vm5l",
+                    "topic": "已有功能与设计（24 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>拖动树模式内：左键单击不选节点、不弹详情</li><li>浮动详情在节点上方（放不下自动转到下方）；点击空白处隐藏</li><li>图片预览是灯箱：双击放大、灯箱内滚轮缩放、Esc/双击关闭</li><li>附件预览按类型分流：md 内联渲染 / pdf 内嵌（Chromium PDF viewer）/ 其他系统打开</li><li>「相关知识点」方向标注 → / ← / ↔；点击即在详情框中打开该节点</li><li>图片/附件每一项 caption 必填（AI 凭 caption 决定引用哪张图，没有 caption 的附件等于不可发现）</li><li>详情框图文表格样式约定：<code>.fd-detail-content</code> 只样式化 code/ul/ol/h3/h4/p/img，没有 table ⇒ 既有节点用内联属性补边框</li><li>详情框拖动不夹取（允许拖出容器，由 <code>overflow:hidden</code> 自然裁切）；指针脱离软件窗口即钉住并自动上小锁</li><li>详情框改大小夹取放宽到&quot;限制在软件窗口内&quot;（既可超出容器，又不会被拖出窗口）</li><li>详情框最小尺寸 200×120，首次改大小解除初始尺寸上限</li><li>拖动详情框即自动上小锁（相对所属节点框锚定并记内容坐标锚点）；原本是大锁的保持大锁</li><li>顺序契约：框内区块次序 = 图片 → 相关知识点 → 附件</li><li>详情框内图片悬停提示 <code>#fd-img-tip</code>（跟随指针 +14/+16）；并移除原生 <code>title</code> 避免两个气泡同时弹出</li><li><code>localPath</code> 是格式里唯一的绝对路径（与&quot;禁止绝对路径&quot;不矛盾：那条管资源引用，它天生机器本地、无移植含义）</li><li><code>qa.a</code> 必须非空（否则会让&quot;AI 产出是不是落进去了&quot;永远为真 —— 本工程最忌的假绿）</li><li><code>qa.q</code> 允许空串（&quot;解释这个节点&quot;本来就没有提问文本）</li><li><code>qa</code> 的文本形状（detail 里那段 HTML、子节点标题怎么派生）只有一处实现：<code>src/qa.js</code></li><li>资源引用禁止绝对路径；图片只存 <code>assets/</code>、附件只存 <code>attachments/</code>；目录按需创建（空目录不入库）</li><li><code>import-md</code> 的图片/附件引用不会自动搬进 <code>assets/</code>/<code>attachments/</code> ⇒ 得到指向不存在文件的坏引用（已知坑 + 正确流程写在契约里）</li><li>图片规范：需要 AI 二次理解的内容（时序图、架构图、对比表截图）尤其要详细；纯装饰图（图标）不必挂载；<code>source</code> 记录出处便于追溯</li><li>引用图片的AI 侧口径：给出相对工程根的路径并复述 caption；不要猜测图片内容 —— caption 不足时先 Read 图片文件再引用</li><li>历史事故的遗留缺口（永久）：原 <code>network.json</code> 44 节点中部分节点的详情文字与图片无法恢复（重建版 36 节点，保真度有限）；该 <code>network</code> 项目现已不在 <code>projects/</code> 中，仅存于 <code>backups/</code></li><li>派生禁令 4 大改前先导出备份到工程外目录（单文件含全部图片，可整体回滚）</li><li>本轮没动的东西（诚实边界）：<code>import-dir</code> 仍未实现（上一批结论）；体量上限是人为约定；PDF <code>maxBuffer</code> 只改报文；冒烟&quot;干净前置&quot;不管浮动详情框/选区块</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "c-mv2hj3t6i5ru",
+                "topic": "③c 主动发现还没成篇的经验",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "17-mv2hj3t6ynhk",
+                    "topic": "已有功能与设计（17 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>导入幂等：同一份来源默认只导一次，被拒并指名上次导到哪，<code>--force</code> 才放行</li><li>S3 差异来源分类里 &quot;顺序&quot; = 不允许（不是不确定，是缺陷）</li><li>一次导入只留一个痕：origin 挂在一次导入产生的子树的根上，条数 ≈ 导入次数（不是节点数）</li><li>侧栏让位的幂等守卫语义（一次真回归的教训）：<code>classList</code> / CSS 变量 / FAB 显隐都是纯 DOM 同步、每次必做；守卫只守住扰动视图的那一件事（<code>resize</code> 派发）</li><li>弹窗让位给侧栏的根因不是层级顺序而是坐标系：侧栏是原生 <code>WebContentsView</code>，永远画在网页之上（页面里 <code>z-index</code> 再大也盖不住）⇒ 8 个弹窗全按整窗算尺寸；做法是纯 CSS（`right: var(--dsh-side</li><li>详情框尺寸相对节点框按 <code>transform: scale(zoom)</code> 等比（<code>transform-origin: 0 0</code>）；视口单位换成固定 px（560px），不再随屏幕变化</li><li>AI 问答浮窗复用详情框组件（<code>MM.createFdBox()</code>）——&quot;照抄组件就是最省力的达成方式&quot;，自动获得拖动/改大小/📌🖥 锁/与侧栏让位</li><li>这类缺陷截图永远看不见（侧栏是原生 <code>WebContentsView</code>，<code>capturePage()</code> 只截页面）⇒ 判据只能是几何（页面预留宽度 == 侧栏 <code>getBounds().width</code>）</li><li><code>qa</code> / <code>origin</code> 都不升 <code>formatVersion</code>（可选字段，缺失即&quot;从没被问过/不是导进来的&quot;，旧文件不需迁移）</li><li><code>origin.kind</code> 当前只有 <code>&quot;import&quot;</code>（写死具体值而不是&quot;任意字符串&quot;，为了让消费者能穷举）</li><li><code>origin.src</code> 是相对工程根的 POSIX 路径（跨盘退回绝对路径），仅供追溯、不参与任何路径安全判定</li><li><code>origin.tool</code> 取不到就不写（&quot;编一个比没有更坏&quot;）</li><li><code>stats</code> 报 <code>originNodes</code> 与 <code>originSources</code>（几份不同来源）⇒ 同一来源 <code>--force</code> 导两次时&quot;节点数涨、来源数不涨&quot;，一眼看出是重复导的</li><li>改规则的流程：按 M1 判定层级 → 在本文件登记（含&quot;来源&quot;一栏，空着不许进）→ 门禁则实现脚本 + 证明判别力 + 挂进 verify → 按 M3 在动作现场留条目与指针</li><li>冒烟保帧开关的能力边界（诚实标注）：4 个开关在 Electron 44 上的实际效力尚未验证（来源是 Chromium/Playwright 的用法，不是 Electron 文档）；判据是长期指标（`verify-hi</li><li>S1/S2/S3 的能力边界都在各自脚本的文件头：S1 判不了动态 <code>require</code> 与运行时的反向调用；S2 不看易变的工作区状态；S3 的扰动只覆盖时钟/随机/顺序/工作区四类来源</li><li>约束的两难记录：S3 是乙档上线（带封闭欠账册），理由是&quot;一次性全红或硬凑全绿的清单，下场都是被关掉&quot;；差异来源里&quot;顺序&quot;那一类不允许（不是不确定，是缺陷）</li></ul>"
+                  },
+                  {
+                    "id": "n-mv2hj3t6b9a4",
+                    "topic": "本条的实物（命令 / 界面 / 字段 / 门禁）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>theme-layout</code></li><li><code>add-image</code></li><li><code>remove-image</code></li><li><code>assets</code></li><li><code>add-file</code></li><li><code>remove-file</code></li><li><code>files</code></li></ul>\n<ul><li><code>theme_layout</code></li><li><code>assets</code></li><li><code>add_image</code></li><li><code>remove_image</code></li><li><code>add_file</code></li><li><code>remove_file</code></li><li><code>files</code></li></ul>\n<ul><li><code>详情框（15）</code></li><li><code>悬浮工具条与 AI 问答（10）</code></li></ul>\n<ul><li><code>meta.name</code></li><li><code>meta.author</code></li><li><code>meta.version</code></li><li><code>meta.rootMode</code></li><li><code>meta.layout</code></li><li><code>meta.themeOffsets</code></li><li><code>detail</code></li><li><code>background</code></li><li><code>images</code></li><li><code>files</code></li><li><code>localPath</code></li><li><code>qa</code></li><li><code>images[].file/caption/source/tags</code></li><li><code>files[].file/caption/source</code></li><li><code>qa[].q/a/at/model</code></li></ul>\n<ul><li><code>src/dsh-ask.js（CLI ask 后端）</code></li></ul>\n<ul><li><code>AI 工具集成分析 <strong>v1→v2→v3</strong></code></li></ul>"
+                  },
+                  {
+                    "id": "n-mv2hj3t7y2fv",
+                    "topic": "行为与不变量",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>每日笔记 / 模板系统：与&quot;沉淀经验&quot;的目标不匹配（那是日志，不是经验）</strong>：③</li></ul>"
+                  },
+                  {
+                    "id": "2-mv2hj3t7ik3b",
+                    "topic": "待做（2 条 · 已入待做清单）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>W16</strong> contents 概念目录</li><li><strong>W17</strong> 经验来源链</li></ul>\n<p>---</p>"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "ai-mv2hj3t79xpr",
+            "topic": "④ 人机同屏 —— AI 的产出直接落在图和笔记上",
+            "expanded": true,
+            "children": [
+              {
+                "id": "4-mv2hj3t7pzr2",
+                "topic": "（层级4）",
+                "expanded": true,
+                "children": [
+                  {
+                    "id": "n-mv2hj3t74a7c",
+                    "topic": "判据",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>内置 <strong>DSH 侧栏</strong>与导图<strong>同屏常驻</strong>：投喂选中节点 → AI 回答<strong>一键写回</strong>（详情/子节点）+ 留<strong>问答记录</strong>；</li><li>侧栏语义是<strong>真关 + 驻留</strong>：关导图页＝真卸载；关侧栏＝销毁视图 + 停服务；服务驻留（关主界面不停服务）；让位布局真值 = <code>rail(30) + view</code>；</li><li>⭐ <strong>导图本身就是 AI 的输出面</strong> —— 不是&quot;AI 吐 Markdown、我再粘进去&quot;；</li><li>⭐ <strong>人这一侧不缺手</strong>：工具栏 11 · 右键 22 · 快捷键与手势 31 · 命令面板 12 · 详情框 15（多框并存/📌🖥 双锁/拖动改大小/随缩放同步）。</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "a-mv2hj3t7tqe3",
+                "topic": "④a 侧栏同屏（真关/驻留/让位）",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "33-mv2hj3t7n25f",
+                    "topic": "已有功能与设计（33 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>关左页留侧栏 / 留主界面关侧栏 —— 两条对称能力，只改一侧不必重启整个应用</li><li>&quot;关&quot;= 真关（真卸载）：内存里不再留那一侧的页面，代价是重开要重新加载 —— 明确选定的语义</li><li>侧栏「—」= 只收起（服务继续驻留）；与「✕」（收视图 + 停服务）分工不同</li><li>内核「打开侧边栏」有硬宽度门槛；检测到意图就自动加宽到 900、关掉还原原宽度</li><li>侧栏窗口 ✕ = 关整个应用；菜单里的「退出」已按用户要求删除</li><li>服务驻留：关主界面不会停 DSH 服务（detached + 日志落盘 + 凭据留盘，下次直接接管，不是冷启动）</li><li>维护互斥锁 <code>dsh-runtime.lock</code> 的 pid 指向服务进程（不是孵化它的主界面）⇒ 主界面退出后维护照样被拒</li><li>内核右栏：宽度不够时官方属性根本不会变⇒ 只靠属性检测不到用户点击，必须同时挂&quot;意图&quot;信号</li><li><code>dsh-embedded-overrides.js</code> 是那份 patch 的唯一写者（新增&quot;要渲染进 patch 的东西&quot;请扩它，别开第二个写者）</li><li>验证工作流写进文档（避免再犯）：只改 <code>renderer/*</code> ⇒ 按 Ctrl+R 重载即可；改主进程 ⇒ 走「文件 → 退出」再启动（驻留服务与对话存活）；不再 <code>Stop-Process -Force</code> 杀 electron</li><li>思考强度：<code>dsh headless</code> 没有强度参数 ⇒ 唯一旋钮是 profile 里的 <code>agent-default-model.reasoningEffort</code>；patch 是整行替换（只写 <code>reasoningEffort</code> 会把同行的</li><li>PDF 预览修法（真因）：<code>iframe.src</code> 改成&quot;同 URL 异 hash&quot;是同文档导航 —— Chromium 的 PDF 查看器不会重新读 <code>#zoom</code>；实测直接改 hash 不触发 iframe 的 <code>load</code>（次数 0）⇒</li><li>仅侧栏模式下侧栏右上角那个原生按钮从「—」变成「⤢ 恢复思维导图页」</li><li>侧栏启动中显示动画占位页，失败显示错误页 + 可点重试</li><li>侧栏可见性是会话状态不持久化（偏好只存宽度），每次启动一律默认打开</li><li>「仅侧边栏模式」菜单项下移一位 + 分隔线隔开，与常规视图项在视觉上分层，避免误勾</li><li>仅侧边栏模式下侧栏「—」= 窗口最小化到任务栏（服务驻留不动，任务栏图标复原）</li><li>拖宽手感重做：宽度绝对定位（窗口右缘−光标），松手判定移进分隔条页面自身（<code>mouseup</code> / <code>mousemove 时 buttons===0</code> / Escape / contextmenu）；移除 globalShortcut Esc</li><li>左侧原生控制栏 30px（拖宽热区 +「—」+「✕」合一）；「—」下移（y=4 → y=44，原先会压住 DSH 页面自己的头部 UI）；✕ 在「—」下面</li><li>两个角标按钮钉在左侧原生控制栏里（不是浮在页面上）⇒ DSH 页面从它右边开始排，与页面零重叠 ⇒ 以后装什么 UI 插件都不会被按钮挡住</li><li>发版前清单（v0.16 起）：verify 全绿 → 动了侧栏/服务生命周期时追加 <code>dsh:e2e</code> 与 <code>dsh:resident</code> → <code>dsh:maint -- verify</code> → dist → 打包后冒烟一次</li><li>DSH 侧栏的产品语义：服务驻留 + 单窗口假设（<code>state.view/handle</code> 单例、<code>destroy()</code> 只收割本进程孵化的服务；多窗口需引用计数）</li><li><code>dsh-caps</code> 的四条&quot;最易误判的规则&quot;：① host 平面 <code>disabled:true</code> ≠ 不可用（agent preset 会把同一 id 重挂）② 装配文件里没有 ≠ 不具备（包可能就在磁盘上）③ 磁盘上有 ≠ 当前可用</li><li>真机复核清单里明确&quot;未验证&quot;的一项：把选中节点拖到原生侧栏视图上松手时，渲染层到底收不收得到 <code>mouseup</code> —— headless 无法复现跨视图路由（<code>sendInputEvent</code> 直达渲染层 ✗）；若收不到：主进程 30s</li><li>DSH 插件侧没有许可证门禁 ✗：Node 侧有&quot;缺许可证直接失败&quot;的硬约束 ✓，但 <code>@linxin666/*</code> 等插件能否随应用分发未知 ⇒ 对外分发前需要一条门禁</li><li>DSH 风险 R3 插件侧没有许可证门禁 ✗</li><li>DSH 风险 R4 体积与断网：payload 199 MB、运行包 585 MB（快照）；断网时只能走 zip 包</li><li>DSH 风险 R5 手工态（A3 那次手改已实测被重跑冲掉）：不治理，别人的机器上会重演</li><li>DSH 风险 R7 配置与状态路径混放：迁移靠路径白名单而非内容分类 ⇒ 加新插件类型容易漏</li><li>DSH 风险 R9（开放）：<code>profiles\\node_modules</code> 真实目录之谜</li><li>DSH 应用侧注入的弱依赖：窄宽适配弱依赖内核类名 ✗不命中也不报错；观察器超时兜底（3s）因真机 bug（注入撞页面加载时 <code>executeJavaScript</code> 永不返回 ⇒ 状态停在 null ⇒ 永久失效）才加上</li><li>一次性能自伤（人因，非产品）：反复跑全链把整机提交内存推到 80%（38.4/48.1 GB），连带把同机 Edge 拖卡、把 DSH 界面拖崩；日志侧证据 `GPU process exited unexpectedly: exit_code</li><li>两条&quot;判据本身错了&quot;的陈旧断言（把合法行为误判成回归）：① <code>11-dsh-sidebar</code> 用 &quot;before ≠ after&quot; 当判据 ② <code>05-pan-lock</code> 用绝对屏幕坐标当判据（实测 Esc 时 jsMind 会重排，两棵树</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "c-mv2hj3t7csh9",
+                "topic": "④c 投喂与一键写回",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "9-mv2hj3t781bz",
+                    "topic": "已有功能与设计（9 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>headless 下不弹模态框（第一版用 <code>window.confirm</code> ⇒ 冒烟里没人回答 ⇒ <code>SMOKE GUARD TIMEOUT</code>）</li><li>Markdown 渲染只有两个口：<code>MM.mdInline</code>（行内）与 <code>MM.mdBlock</code>（整段走 <code>src/convert.js</code>，与 <code>--note-md</code> 同一个转换器）；两者都只作用于 DOM</li><li>「问问AI」没有自动发第一句（只有「解释」会自动发）；&quot;正在生成…&quot;只在真的发出去之后出现，空框显示「在下面输入你的问题，按 Enter 发送（我只会回答你问的 ✓）」</li><li>问答浮窗后端返回 <code>stub:true</code> 的桩时，界面必须把它标出来（<code>.ask-stub</code>，有断言守）——「不许把桩冒充成真答案」</li><li>问答浮窗每问一次是一次独立会话（没有上下文延续），界面上明说这一点（<code>.ask-hint</code>），不假装是连续对话</li><li>菜单结构现状只有 文件 / 编辑 / 视图 / 帮助 四个（用户提&quot;窗口选项&quot;时的如实回答：没有「窗口」，导入这类动作的天然归宿是「文件」）</li><li><code>topic</code> 可含行内 Markdown（加粗/代码），界面渲染成 <code>&lt;strong&gt;</code>/<code>&lt;code&gt;</code>，但数据里仍是原文（不写回 HTML）</li><li><code>meta.author</code> 当前恒为空串（历史缺陷：曾被硬编码空串写回）</li><li><code>dsh:e2e</code> / <code>dsh:resident</code> / <code>dsh:prefill-stub</code> 故意不在 verify 里（各要真实冷启动一次，慢；且 <code>dsh-embedded-check</code> 读机器本地状态、会破坏&quot;验证链可移植&quot;这条前提）</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "e-mv2hj3t7t1j7",
+                "topic": "④e 界面这一侧的完整可操作性",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "15-mv2hj3t75c60",
+                    "topic": "已有功能与设计（15 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>导图页关着时，发往导图页的菜单项必须置灰（否则点下去只是&quot;发进一个空页&quot;）</li><li>拖动树模式：树偏移视图机制，与中键同一套 transform 坐标系；连线端直接取节点实际左右边框中点</li><li>选区双口径的分工：<code>getSelection()</code>（裁剪后，管收起/拖动这类树操作）与 <code>getSelectionRaw()</code>（原始命中集）；问 AI 用后者（用裁剪后的会把你明明框住的节点悄悄丢掉）</li><li>关窗语义的两次翻转（用户指定的最终版）：窗口 ✕ = 关整个应用（不再是&quot;藏到后台&quot;）；导图页右上角独立 ✕ = 只关左边导图页并连应用菜单栏一起隐掉（<code>setMenuBarVisibility(false)</code>）；菜单里的「退出」删</li><li>滚轮缩放 = 以指针位置为中心，范围 0.15×–4×；Ctrl+滚轮同样生效；滚动条保留</li><li>中键平移 = 自由平移画布（替代上下滚动），与缩放/选择互不干扰</li><li>拖动树模式手势全貌：虚线框框住整棵目标树（含折叠 +/− 号）、光标恒为 grab（按住 grabbing）、+/− 号随树移动</li><li>位图随树偏移动态扩展不裁切；逻辑原点经 transform 承载、缩放不错位</li><li>状态栏文案用相对时间（<code>已保存 + toLocaleTimeString()</code>）曾导致取景不确定 ⇒ 取景前清空 <code>#status-text</code></li><li>框选命中口径（查证 React Flow / ng-diagram / draw.io / GoJS 后取折中）：中心点在框内 或 被覆盖面积 ≥50%；蹭边不选</li><li>框选实时预览：拖动过程中命中的节点即时加蓝色虚线包裹（<code>mm-rubber-hit</code>），松手才真正落选</li><li>跨父框选的收起/展开只作用于最大同父组，其余被过滤并在状态栏说明数量</li><li>退出拖动模式有两个手势：任意位置右键（不弹菜单） 与 Esc</li><li>面板/画布上无滚动条，全靠缩放与中键平移操作</li><li>缩放中键平移范围无界、四向对称；「还原视图」= s 回 1 + 根节点重新居中</li></ul>"
+                  },
+                  {
+                    "id": "n-mv2hj3t7yixa",
+                    "topic": "本条的实物（命令 / 界面 / 字段 / 门禁）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>工具栏（11）</code></li><li><code>右键菜单（22）</code></li><li><code>快捷键与鼠标（31）</code></li><li><code>命令面板（12）</code></li><li><code>详情框（15）</code></li><li><code>侧栏 DSH（12）</code></li><li><code>悬浮工具条与 AI 问答（10）</code></li></ul>\n<ul><li><code>main-dsh-sidebar.js（侧栏宿主：原生 view + 控制栏 + 真卸载/重载）</code></li></ul>\n<ul><li><code>preload.js 暴露给界面的 desktop.*（projects/project/asset/app/on/dsh）</code></li><li><code>ipcMain.handle/on 频道（全在 main.js，30 handle + 8 on）</code></li><li><code>主进程 → 渲染层推送（menu:* 13 + toast/project-changed/disk-changed/project-reread/sel-drop）</code></li></ul>\n<ul><li><code>OBSIDIAN-FUSION-2026-09-15</code></li><li><code>DSH-IMPL-CONTRACT-2026-09</code></li></ul>"
+                  },
+                  {
+                    "id": "n-mv2hj3t78s2d",
+                    "topic": "行为与不变量",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>冲突的结构化返回：<code>MERGE_CONFLICT</code> / <code>RACE_RETRY</code>，头部带 <code>headless</code> 标记（无头下不弹模态）</strong>：①c + ④e</li><li><strong>让位布局的真值口径：真值 = <code>rail(30) + view</code>（不是 <code>state.width</code>）；只报 view 会少报一条 ⇒ 用户看到&quot;侧栏隔壁的灰背景&quot;</strong>：④a</li><li><strong>内核右栏的宽度门槛：右栏要 <code>view ≥ 756px</code> 才渲染 ⇒ 侧栏上限 720→900 + &quot;点开右栏自动加宽 / 关掉还原&quot;</strong>：④a</li><li><strong>两个&quot;真关&quot;的判据字段：<code>hasView/viewId/viewEpoch/lastDestroyedViewId/mapPageClosed</code> 全进 <code>getStatus()</code>（断言与诊断不用猜）</strong>：④a</li><li><strong>撤销上限：快照式 UndoStack，上限 50（<code>src/history.js</code>）</strong>：④e</li></ul>"
+                  },
+                  {
+                    "id": "2-mv2hj3t7i2nt",
+                    "topic": "待做（2 条 · 已入待做清单）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>W11</strong> 临时导图窗口（AI 输出暂存区）</li><li><strong>W21</strong> MCP 版 ask-apply + AI 驱动界面通道</li></ul>\n<p>---</p>"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "n-mv2hj3t7ivnk",
+            "topic": "⑤ 多源多格式 —— 进得来 · 看得见改得动 · 拿得走",
+            "expanded": true,
+            "children": [
+              {
+                "id": "4-mv2hj3t7j2km",
+                "topic": "（层级4）",
+                "expanded": true,
+                "children": [
+                  {
+                    "id": "n-mv2hj3t79iea",
+                    "topic": "判据",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>进</strong>：md / txt / docx / PDF（<strong>不要求书签</strong>，回退文字层）/ 整个文件夹镜像成树 / <strong>Obsidian 库</strong>（待做）；导入<strong>幂等</strong>（来源路径 + 内容指纹双键）；</li><li><strong>看得见、改得动</strong>：图片灯箱 · md 内联 · PDF 内嵌 + 三档缩放 · 编辑对话框（节点/图片/附件/关联笔记）—— <strong>&quot;编辑任意格式文件&quot;尚不存在</strong> ⇒ <strong>W27</strong>；</li><li><strong>拿得走</strong>：md 文件夹 / <strong>aimap 单文件</strong> / <strong>静态站点（可分享可部署）</strong> / PNG / NSIS·portable 打包 / <strong>异地备份</strong>（待做）；</li><li>⭐ <strong>你的资产能进来，也能原样带走</strong> —— 这是&quot;融合 Obsidian 等长处&quot;的兑现方式，也是<strong>不锁死</strong>的承诺。</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "a-mv2hj3t7v1g5",
+                "topic": "⑤a 导入与幂等",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "13-mv2hj3t7dc1u",
+                    "topic": "已有功能与设计（13 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>ctx.mutate</code> 的接线范围写死：<code>init</code> 与 <code>import-json</code> 故意不接（理由各不相同，别顺手改）</li><li>单实例锁只在真实交互模式申请（<code>isSmoke</code> / <code>--export-image</code> / <code>--export-window</code> 一律不加锁），否则会把冒烟实例挡在门外 ⇒ 一条断言都没跑却判&quot;通过&quot;</li><li>整库导入另加文件数上限 <code>MAX_IMPORT_FILES_DEFAULT</code>（<code>--max-files</code> 覆盖）；两条都在读文件之前判、都给可执行出路</li><li>解析时剥离 UTF-8 BOM（<code>store.read()</code> / <code>store.list()</code> / <code>import-json</code> 一致）</li><li><code>.changes.jsonl</code> 是有界窗口（最近 <code>MAX_ENTRIES</code> 条）、不进 <code>export-json</code>、可随时删</li><li><code>import-md</code> 两条硬规则：围栏代码块是数据不是结构（之间的内容整段原样进 detail）；标题层级要连续（跳跃由 <code>（层级N）</code> 占位节点兜底）</li><li>导入的唯一文本归一化：每行行尾空白被去掉 ⇒ 代码块里&quot;只由空格组成的行&quot;变空行（渲染等价，但逐字节 diff 时要知道）</li><li>已知数据噪音：从博客/编辑器导出的 Markdown 常夹带 1×1 透明 GIF 占位图，实测量级可到一篇笔记 128 处</li><li>契约只增不改：新增可选字段不递增 <code>formatVersion</code>；破坏性变更（改语义/删字段/改必填性）必须递增并加迁移分支；字段顺序无意义、解析方不得依赖 JSON 键序</li><li>迁移的固定顺序：<code>migrate-in apply</code> → <code>overrides render</code> → 重启服务；禁止迁移后手工编辑 patch 文件</li><li>❌ 实时多人协作 / 付费云同步（已否决）：场景是单机笔记 + AI 协作，<code>export-json</code> + Git 已覆盖</li><li>明确标记为开放问题：<code>profiles\\node_modules</code> 真实目录之谜（实测真实目录与 reparse 点混存且实例能启动，而迁移铁律说&quot;放真实目录会起不来&quot;）⇒ 需一次隔离实验，它决定新插件该写 profile 级还是 we</li><li>V1 门禁自身的空转修正：<code>--selftest</code> 注入① 只抹一类真判据时，迁移后的 7 条合规断言里 6 条同时用两类判据 ⇒ 只抹一类它仍合规、门禁照样绿 ⇒ 新增 <code>zeroRealJudges</code>，清单由门禁自己的 `REA</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "b-mv2hj3t7k3p5",
+                "topic": "⑤b 应用内预览 / 编辑",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "9-mv2hj3t7yqsz",
+                    "topic": "已有功能与设计（9 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>--dry-run</code> 也报&quot;这份导过了&quot;（<code>wouldRefuse</code>）：「预览说'能导'、真导被拒是最烦人的那种落差 ✗」</li><li><code>.review/</code> 的内容不得渲染进受管文档（易变工作区不得成为真值的一部分，否则&quot;用它&quot;就等于&quot;改真值&quot;）</li><li>PDF <code>#zoom=</code> 只在设置 <code>src</code> 那一刻生效 ⇒ 切换「页宽/整页/100%」必须重设 src；并监听 resize（260ms 去抖、宽度变化 &gt;24px 才重设，避免抖动与丢滚动位置）</li><li>「每个带 id 的按钮都必须在渲染层被引用」被做成单测（带判别力注入 + &quot;按钮数不许悄悄归零&quot;防门禁空转）——它当场抓回了 <code>fp-close</code>（✕ 关闭从未接线）</li><li>文件预览铺满：预览弹窗没有自己的尺寸会落回 <code>.dialog-box</code> 的 480px ⇒ 现 <code>92vw × 90vh</code>（上限 1560px）；<code>.overlay { align-items:center }</code> 会把 <code>#fp-body</code> 收缩成内容</li><li>只跑某一条冒烟断言：<code>SMOKE_ONLY=&lt;前缀&gt;</code>；永远并入 <code>01-*</code> 预热（它负责加载渲染层并打开 comnet）</li><li>渲染层扩展约定：跨模块调用一律走 <code>window.MM</code> 的包装函数（不要用解构赋值 —— 其他模块后加载，解构会在加载时捕获 <code>undefined</code>）</li><li>体量上限是人为约定的 64 MB（不是性能测量结论）；PDF 的 <code>maxBuffer</code> 上限（32 MB 提纲文本）只改了报文、没有改成流式/分块读</li><li>一条自相矛盾的守卫（已修）：冒烟内部兜底 90s、而验证体系给 G5 的预算 120s ⇒ &quot;预算内本该通过&quot;的运行会被内部守卫先掐掉，表现为同一份代码有时绿有时红；它把排查引向过错误方向（一度判定&quot;新写的代码把渲染层拖死了&quot;）</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "c-mv2hj3t7qwe2",
+                "topic": "⑤c 导出与打包",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "0-mv2hj3t76ftc",
+                    "topic": "已有功能与设计（0 条）",
+                    "expanded": false,
+                    "children": []
+                  }
+                ]
+              },
+              {
+                "id": "d-mv2hj3t7m4ke",
+                "topic": "⑤d 分享与分发",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "0-mv2hj3t760bm",
+                    "topic": "已有功能与设计（0 条）",
+                    "expanded": false,
+                    "children": []
+                  }
+                ]
+              },
+              {
+                "id": "e-mv2hj3t7bo1h",
+                "topic": "⑤e 备份与不锁死",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "0-mv2hj3t7c04y",
+                    "topic": "已有功能与设计（0 条）",
+                    "expanded": false,
+                    "children": []
+                  },
+                  {
+                    "id": "n-mv2hj3t7nyko",
+                    "topic": "本条的实物（命令 / 界面 / 字段 / 门禁）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>import-md</code></li><li><code>import-project</code></li><li><code>import-dir</code></li><li><code>import-json</code></li><li><code>export-md</code></li><li><code>export-json</code></li><li><code>export-html</code></li></ul>\n<ul><li><code>import_markdown</code></li><li><code>import_project</code></li><li><code>import_dir</code></li><li><code>import_json</code></li><li><code>export_markdown</code></li><li><code>export_json</code></li><li><code>export_html</code></li></ul>\n<ul><li><code>文件预览 / 媒体（8）</code></li><li><code>导入导出入口（13）</code></li></ul>\n<ul><li><code>origin</code></li><li><code>origin.*（5 项）</code></li><li><code>导入幂等闸门</code></li><li><code>体量闸门</code></li><li><code>路径穿越</code></li><li><code>export-md 语义</code></li></ul>\n<ul><li><code>import-md</code></li><li><code>import-project</code></li><li><code>import-dir</code></li><li><code>import-json</code></li><li><code>export-md</code></li><li><code>export-json</code></li><li><code>export-html</code></li><li><code>src/bundle.js（aimap v1 打包格式）</code></li><li><code>导出 PNG（仅界面）</code></li><li><code>DEEP-REVIEW-2026-09-15</code></li><li><code>INCIDENTS.md</code></li></ul>"
+                  },
+                  {
+                    "id": "n-mv2hj3t8g010",
+                    "topic": "行为与不变量",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>两个&quot;静默损坏&quot;的实证：<code>import-md</code> 不剥 BOM 会静默吃掉第一个标题（同一份文件两条导入路径得到两棵不同的树）；无标题提纲的兜底</strong>：⑤a</li><li><strong>实时协作 / 付费云同步：单机本地优先</strong>：⑤e</li></ul>"
+                  },
+                  {
+                    "id": "7-mv2hj3t88aed",
+                    "topic": "待做（7 条 · 已入待做清单）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>W12</strong> Obsidian 库直进（P0）</li><li><strong>W13</strong> 界面侧导入入口补齐</li><li><strong>W14</strong> 修&quot;第一个标题之前的正文会丢&quot;</li><li><strong>W15</strong> 导入的程序化/AI 分档 + 效果评估</li><li><strong>W19</strong> 修 import-md 图片/附件坏引用</li><li><strong>W20</strong> 修中文 id 撞号</li><li><strong>W22</strong> 推送到 GitHub（异地备份）</li></ul>\n<p>---</p>"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "ai-mv2hj3t8dylb",
+            "topic": "⑥ 这个软件本身\"易于被 AI 迭代\"",
+            "expanded": true,
+            "children": [
+              {
+                "id": "4-mv2hj3t8ouha",
+                "topic": "（层级4）",
+                "expanded": true,
+                "children": [
+                  {
+                    "id": "n-mv2hj3t8sn46",
+                    "topic": "判据",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>五件事</strong>：①结构让 AI 改得动 ②文档让新会话接得上 ③验证让 AI 改完能自证 ④验证链本身也被维护 ⑤⭐冲突有出口；</li><li><strong>一条命令跑完 14 步验证链</strong>（G1/G8/G9/V1/V2/S1/S2/S3/G3/G6/G7/G4/G2/G5）+ <strong>26 项链外工具</strong>；</li><li>纯 Node · 无构建 · <strong>零必需运行时依赖</strong>（唯一例外 <code>pdfjs-dist 6.4.299</code>）；内置 DSH 运行包 vendored、升级可回滚、本地覆盖可重放；</li><li><strong>诚实边界</strong>：迭代便宜 ≠ 不返工 · 门禁守着你 ≠ 任何 AI 都能安全改 · 结构能吸收新功能 ≠ 零成本。</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "a-mv2hj3t8a17j",
+                "topic": "⑥a 结构与写盘纪律",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "0-mv2hj3t8d0du",
+                    "topic": "已有功能与设计（0 条）",
+                    "expanded": false,
+                    "children": []
+                  }
+                ]
+              },
+              {
+                "id": "b-mv2hj3t8cv4l",
+                "topic": "⑥b 容器化接入面",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "2-mv2hj3t8jjdr",
+                    "topic": "已有功能与设计（2 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>parseAgentModel</code> 不引 YAML 解析器（本工程零运行时依赖，只做一次极窄文本扫描）；扫不到就返回 null，调用方放弃覆盖并如实说明（不猜）</li><li><code>$presets</code> 的清单从运行包自带的 <code>presets/&lt;cloneFrom&gt;.patch.yml</code> 生成、不手抄进仓库（抄一份就是又一份会随升级漂移的副本）；只替换 <code>persona.prefix</code> 并经块标量 `</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "c-mv2hj3t80gey",
+                "topic": "⑥c 验证链",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "54-mv2hj3t886pp",
+                    "topic": "已有功能与设计（54 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>产物确定性：真值比产物须&quot;同一状态连续两次重算逐字节相同&quot;；允许不确定的必须在生成器里点名标注</li><li>门禁判别力必须被证明过：新加门禁要故意注入一次违规、确认变红、再撤销</li><li>门禁的能力边界必须写在门禁旁边（G1 抓的是损坏的结果，不是违规的动作）</li><li>新增规则要同时满足四条（有事故为据 / 不可机械化 / 损害高不可逆 / 能写成具体动作），否则降级</li><li>M4 退役：规则一旦被机械化就从铁律降级为门禁并标注「已由 Gx 覆盖」</li><li>冒烟&quot;域内自收尾&quot;口径：域内接力可以，域末必须干净（逐段要求&quot;自己开自己关&quot;只会制造假红）</li><li>跨域状态只能由制造它的域收口，下游断言不该替别人擦桌子，也不该依赖&quot;屏幕上没别的东西&quot;这种隐式前提</li><li>可见性断言的判据纪律：不得只用 <code>rect</code>/类名/计算样式（对裁切与遮挡是盲的）；<code>rect</code> 只用来判几何</li><li>&quot;名字要说清凭什么判&quot;是 V1 门禁的输入纪律（名字是这门禁的输入 ✗）</li><li>测试失败先怀疑测试本身；断言要盯住真正的性质而不是&quot;看起来相关的替代指标&quot;</li><li>注入必须打在真接缝上（打在局部函数名上会&quot;绿着通过&quot;= 空转门禁）</li><li>冒烟断言改为对异步副作用轮询而不是固定睡眠（数据规模增长会暴露断言对&quot;小数据量&quot;的隐性依赖）</li><li>冒烟断言不许在顶层 require electron（<code>doc-facts.js</code> 会在纯 node 里 require 它来计数）⇒ 一律惰性取</li><li>冒烟&quot;单跑&quot;的三条硬口径：采不到真值 = 红（筛错名字 ⇒ <code>SMOKE SELECTION ERROR</code> + exit 1，绝不返回空集）；过滤运行 ≠ 全量真值（显著打印标记）；跳过截图/取景记录/视觉断言</li><li><code>verify --changed</code> 的三条保守设计：认不出的路径一律全量；<code>G1/G8/G9</code> 恒定跑；干净工作树 ⇒ 一步都不跑（不许跑两件卫生门禁假装&quot;验证过了&quot;）</li><li>&quot;部分验证&quot;绝不当验收：顶部显式横幅&quot;这不是全量真值&quot;；记录写进另一个格子（<code>last-verify-changed.json</code>，不覆盖 <code>last-verify.json</code>）；历史标 <code>partial: true</code>、耗时基线不认它</li><li>耗时表打&quot;比上次快/慢多少&quot;（差的格式总是带符号）；比上次慢 &gt;15% 只提示不判红（同一份代码实测能差 20%+，判红交给预算）；基线只认&quot;最后一次成功的验证&quot;（失败/中断的那次拿来比是假信号）</li><li><code>runSmoke</code> 增加环境守卫：窗口不可用或找不到断言文件 ⇒ <code>SMOKE ENV ERROR</code> + exit 1</li><li>「验点击必须发真鼠标事件」——<code>dispatchEvent</code> 直接派到 path 上会绕过命中测试 ⇒ 断言绿、功能坏</li><li>冒烟断言自带&quot;步迹&quot;（哪一步抛错），因为冒烟的 THREW 只给一句笼统错误</li><li>质量/正确性的判别力证明要&quot;先注入一次违规、确认变红、再撤销&quot;，撤销后逐字节还原（比 sha256 / sha1）</li><li>「断言自建前置」纪律（域 09/17/37 同一做法）：断言自己把前置做足，不看运气；收掉的东西写进断言报文（免得看起来像把判据放宽了）</li><li>前端防篡改：<code>MM_SMOKE_INJECT</code> 支持逗号分隔多键（6 条注入一趟冒烟跑完）</li><li>过滤运行（单跑）的耗时数量级：<code>SMOKE_ONLY=21</code> ⇒ 约 4s（全量约 90–110s）</li><li>允许不确定的产物点名列出：<code>.review/verify-tests.json</code> · <code>.review/last-verify.json</code> · <code>.review/verify-history.jsonl</code> · <code>smoke-frame.json</code></li><li>门禁编号分三组前缀：G=功能与契约；V=验证物自身的卫生（扫源码文本）；S=结构声明的卫生（先有声明、后有判定）</li><li>门禁编号的唯一权威是 <code>docs/RULES.md</code> §2；有反向断言&quot;链上实现的每个门禁都必须在 §2 有声明&quot;（实测缺口：V1/V2 挂进 <code>STEPS</code> 多日而表里没有）</li><li>门禁的封闭欠账册：在册算欠账、只减不增、修好忘销账判红、册上对象不存在判红；口径是乙档（上线时就带在册欠账）——&quot;不许一次修干净 ✗（那会让门禁长期全红而被关掉）&quot;</li><li>门禁的&quot;判定列举&quot;约定：宁可少列，不要列错；做不到一一对应就改用&quot;分类 + 现场取清单&quot;（<code>--judgments</code> / <code>--list</code> / <code>--debt</code>）</li><li>门禁的判别力可重复重放：<code>--selftest</code> 只在内存里注入、不碰任何文件；另有 <code>tests/*.test.js</code> 的同款注入</li><li>③&quot;跑&quot;的口径唯一消歧：验收 = <code>npm run verify</code> 全链全绿；单个门禁脚本只是自检（实测文档类四步合计十几秒），任何一条都不能当&quot;做完了&quot;</li><li>接手演练是&quot;唯一能检验初衷是否达成&quot;的动作：每个发版周期至少一次；两种变体（只读理解 / 执行变体 = 在临时副本上真改一处并跑门禁）</li><li>耗时预算是止涨线（取实测的 2–3 倍），不是性能目标 —— 防的是&quot;每次只涨一点点、没人注意到&quot;；超预算会红并提示&quot;若增长合理就改预算并说明理由&quot;</li><li>每次运行都打印耗时表是主要产物（&quot;以后不必再问 verify 为什么慢&quot;）；预算调整史与依据都写在 <code>scripts/verify.js</code> 注释里</li><li><code>verify</code> 开头打印「上次全链」（基线绿不绿，记录在 <code>.review/last-verify.json</code>；丢了就显示&quot;无记录&quot;，不判红）</li><li>加/改断言的连带项：<code>npm run facts:write</code>（断言数是 G6 真值，不同步就判红）</li><li>判&quot;放哪一级&quot;是人的判断（门禁只判&quot;有没有落在某一级&quot;）：会被外部依赖的放演进中，工程自用的放内部</li><li>加门禁的流程：先注入一次违规证明它会红，再撤销 → 挂进 <code>STEPS</code>（含 <code>budgetMs</code>）→ §2 登记（含能力边界）+ <code>tests/*</code> 锁判别力</li><li>overrides 的验证三条（报错必须含&quot;对象 + 期望 + 实际&quot;）：连跑两次 sha256 不变（幂等）✓ · 临时副本重放后与现网逐字节一致（重放证明）✓ · 解析 YAML 断言字段相等 ✓</li><li>改了 <code>registry.js</code> 就跑 <code>docs-gen</code>：忘跑会被门禁 G7 直接抓到并报出差异行</li><li>冒烟断言数是&quot;覆盖规模&quot;的唯一机械真值 ⇒ 因此必须有防挖空地板（见 A117）</li><li>「先证明前提，再断言结论」：夹具/测试图要自建自证（&quot;以 a 为心的星形图 ⇒ 二跳恒为 0&quot;这类实现对、测试图错已发生）</li><li>单测与门禁的分工口径：性能该由链上的预算管，单测只管&quot;对不对&quot;（所以把 vitest 单测超时从默认 5s 抬到 30s）</li><li>待批准项（均未批准，台账第 6 波「⏸ 单独批准」）：目录页解析 / 页偏移（P2）、多书自动判定（P3）、外部 OCR 后端（P4）、功能 4 批 3（变异测试）；多书判定只能到&quot;高召回 + 人工确认&quot;（上游也无公开准确率背书 ✗）</li><li>G5 的能力边界：只验行为级可用性（按钮还在、事件还通、结果正确），验证不了「设计意图是否仍与实现一致」</li><li>V1/V2 的判别力证明与豁免口径尚未补齐（在待做清单的 <code>G-19</code> / <code>G-20</code>）⇒ 在此之前不要把它们当作&quot;已证明会红的门禁&quot;</li><li>S3 的在册欠账 1 条：冒烟截图&quot;连续两帧逐字节相同&quot;尚无判定 —— 哈希被记录被绑定，却从没被用来证明一致性；上界 1、复审时机 = 每次动冒烟取景链路</li><li>V1 上线时的封闭欠账：仓库里已有 7 处&quot;只看 rect/类名/style.display&quot;的旧断言先记进 <code>DEBT</code>（其中 3 处正是事故现场：域 34 两条 + 域 35 一条；另有域 05/08/12）；在册的算欠账、不在册的一律</li><li>门禁空转的两种历史形态（同一句教训）：① V1 第一版被判据名字里的字符串抹掉（名字里写着&quot;elementFromPoint 命中&quot;）② G6 的断言正则要求数字紧邻「断言」，而中文自然写法是「2 条视觉断言」⇒ 匹配不到，写进任何 m</li><li>门禁空转的第三种形态：判定六给自己留了后门（<code>G9</code> 那行写作「N 条判定」没有数字 ⇒ 正则不匹配 ⇒ 整段跳过 rules-consistency.js，于是它的实现文件里同时存在&quot;标记重复&quot;与&quot;注释写死条数&quot;）；修法 =</li><li>一次假绿的真事故：单实例锁一度把冒烟实例也挡在门外 ⇒ 冒烟一条断言都没跑，G5 只用 2.2s 就被判&quot;通过&quot;（全链 12.6s vs 正常 ~103s）</li><li>一条断言自身造出来的假警报（已撤回）：按下鼠标之前读选区当基准 ⇒ 基准已经过期；留作教训「基准要在&quot;被测动作已经发生&quot;之后再读」</li><li>一条注入过程本身踩到的坑（两次）：把反引号写进 JS 模板串里的注释 ⇒ 提前终止字符串、<code>require</code> 期直接 SyntaxError，整轮冒烟变成 <code>SMOKE LOAD ERROR</code>（一条断言都不跑）</li><li>一条断言为真值但产品为假的教训：<code>invisible-outline</code> 注入下 DOM 类名 ✓、计算样式 <code>dashed 2px</code> ✓、像素 16→16 ⇒ 只有像素判据抓得住&quot;画面上其实没画出来&quot;</li></ul>"
+                  }
+                ]
+              },
+              {
+                "id": "d-mv2hj3t8skbv",
+                "topic": "⑥d 交付与运维",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "0-mv2hj3t8j0nz",
+                    "topic": "已有功能与设计（0 条）",
+                    "expanded": false,
+                    "children": []
+                  }
+                ]
+              },
+              {
+                "id": "e-mv2hj3t8tjai",
+                "topic": "⑥e 文档与冲突出口",
+                "expanded": false,
+                "children": [
+                  {
+                    "id": "14-mv2hj3t8ixe4",
+                    "topic": "已有功能与设计（14 条）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li>归档族只增不改、不进 G6 扫描、由 §5 前缀行统一覆盖、必须带历史横幅；归档不是藏起来，它仍会被 grep 到</li><li>M3 动作现场：与动作绑定的规则必须出现在执行该动作时会看到的文档里</li><li>副本上限硬约定：一条规则/清单/数字最多 1 处权威 + 1 处动作现场，第 3 处必须写成指针；判断方法 = grep 活跃文档 &gt;2 处命中就该改指针</li><li>S2 的双向闭包 + 不看 <code>git status</code>（易变工作区状态当判据 ⇒ 新建/删除一个工作目录就能让链变色）；&quot;该不该加这条登记&quot;是人的判断 ⇒ 一律标 <code>role: 'residual'</code> 显式写下来</li><li>G6 的第四类扫描：受管文档里出现高于 <code>package.json</code> 的 <code>vX.Y.Z</code> 即红；同行带「计划/拟/目标/预计/未来」等字样则放行（那是在描述规划）</li><li>G9 的判定六：声明的条数必须等于实现脚本里现场数出的标记数（去重）；标记必须唯一（曾有两个 <code>①</code>）；实现脚本的注释里不得写死条数；其他文档里不得复述这个条数（应改为指针）</li><li>G8 的自适应门：只有当工程里至少一份文档带元信息时才判元信息块（旧工程 / 单测 fixture 不会被误伤）</li><li>落盘规矩 4 条：默认不落盘（判据 = &quot;3 个月后还会有人读它吗？&quot;）→ 必须落盘只有三条路 → 禁止工程根/其它目录/工程外 → 违反被 G8 判红</li><li>§5 登记表的正确姿势：在文档头部写 <code>&lt;!-- registry 层/作用/不该写/更新方式 --&gt;</code>（须在文件前 25 行内）+ <code>npm run docs:registry</code>；手改表格会被 G8 第 13 条判红并给出差异行</li><li>只改文档时可先跑子集自检（check:docs + check:rules + facts + check:encoding，十几秒），但它不是验收</li><li>内容规范唯一权威处在 <code>docs/AI-GUIDE.md</code> §3（原 <code>docs/CONTENT-STYLE.md</code> 已并入 ——&quot;两份文档讲同一件事必然各自漂移&quot;）</li><li>派生禁令 2 不用 PowerShell 读写 UTF-8 文档；文档必须 UTF-8 无 BOM</li><li>一条跨副本同步事故（D 盘验证红的根因）：工程曾存在两份副本且已双向发散；一次单向 <code>robocopy 工作区 → D</code>（不加 <code>/PURGE</code>）把 D 上较新的文件换成了旧版，而归档产物因 robocopy 不清理目标而幸存 ⇒</li><li>一条撤回的规格矛盾：某方法论文档原要求「<code>.review/vision/</code> 需先在 §5 登记」，而架构文档明确&quot;工作产物不进 §5 口径&quot; ⇒ 同一件事在两份文档里要求相反；裁决：以工作产物定义为准</li></ul>"
+                  },
+                  {
+                    "id": "n-mv2hj3t84ncm",
+                    "topic": "本条的实物（命令 / 界面 / 字段 / 门禁）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><code>docs-gen</code></li><li><code>release</code></li><li><code>changelog</code></li></ul>\n<ul><li><code>G1 编码完整性</code></li><li><code>G8 文档登记与家门</code></li><li><code>G9 规则文件自洽</code></li><li><code>V1 可见性判据来源</code></li><li><code>V2 冒烟域内自收尾</code></li><li><code>S1 单向依赖</code></li><li><code>S2 连带清单</code></li><li><code>S3 确定性产物</code></li><li><code>G3 共享核心单测</code></li><li><code>G6 文档数字与真值</code></li><li><code>G7 生成物过期</code></li><li><code>G4 全部 CLI 端到端</code></li><li><code>G2 全部项目结构校验</code></li><li><code>G5 渲染层无头冒烟</code></li><li><code>DSH 工具 10（vendor-dsh / dsh-maintenance / dsh-e2e / dsh-resident / dsh-resident-host / dsh-assembly-probe / dsh-token-ratio / dsh-embedded-overrides / dsh-embedded-check / dsh-prefill-stub）</code></li><li><code>冒烟机制子件 4（smoke-assertions / smoke-select / smoke-flags / smoke-input）</code></li><li><code>视觉子件 5（frame-stats / thresholds / roi-assertions / record / window-shot）</code></li><li><code>辅助 3（changed-plan / mcp-server / pdf-outline-helper）</code></li><li><code>CLI 侧工程命令 4（docs-gen / release / changelog / dsh-caps）</code></li></ul>\n<ul><li><code>scripts/vendor-dsh.js（打独立运行包）</code></li><li><code>dsh-maintenance.js + src/dsh-package.js（导入/切换/回滚/校验）</code></li><li><code>dsh-e2e / dsh-resident / dsh-resident-host</code></li><li><code>dsh-embedded-check.js（10 项三态自检）</code></li><li><code>dsh-embedded-overrides.js（本地覆盖可重放）</code></li><li><code>dsh-assembly-probe.js</code></li><li><code>dsh-token-ratio.js</code></li><li><code>dsh-prefill-stub.js</code></li></ul>\n<ul><li><code>DEEP-REVIEW-2026-09-15</code></li><li><code>DSH-IMPL-CONTRACT-2026-09</code></li><li><code>INCIDENTS.md</code></li></ul>"
+                  },
+                  {
+                    "id": "n-mv2hj3t9foby",
+                    "topic": "行为与不变量",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>冒烟框架自身的守卫：真实数据零写入复核；域开始&quot;干净前置&quot;（残留模态 ⇒ 本域红并点名上位域）；守卫超时略小于验证链预算</strong>：⑥c</li><li><strong>CLI 契约：<code>invoke(argv) -&gt; {code, stdout, stderr}</code> 进程内可调；失败一律非 0 + <code>error:</code> 前缀</strong>：①d + ⑥a</li><li><strong>社区插件市场 / 主题商店：单机个人工具，沙箱/签名/审核/版本矩阵的维护成本远大于收益</strong>：⑥e</li><li><strong>外部 API 集成 → 用 MCP：原文：&quot;AI 就是扩展机制&quot; —— 想加功能不要设计&quot;扩展点&quot;，先问&quot;现有原子命令能否组合出来&quot;</strong>：★ 这是①与⑥之间的总纲</li></ul>"
+                  },
+                  {
+                    "id": "4-mv2hj3t9rlf2",
+                    "topic": "待做（4 条 · 已入待做清单）",
+                    "expanded": false,
+                    "children": [],
+                    "detail": "<ul><li><strong>W18</strong> 文档体系是否满足&quot;AI 高效使用&quot;</li><li><strong>W23</strong> 落盘规矩补&quot;用 node 别用 PowerShell&quot;</li><li><strong>W24</strong> dsh-migrate-in / onboard 合并（提案）</li><li><strong>W25</strong> 性能优化（无虚拟化，556 节点实测已卡）</li></ul>\n<p>---</p>"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "46-mv2hj3t9yf15",
+            "topic": "⑦ 未分（没能归纳进六条 · 46 条）",
+            "expanded": true,
+            "children": [],
+            "detail": "<p>---</p>"
+          },
+          {
+            "id": "n-mv2hj3t920m3",
+            "topic": "明确不做（讲\"为什么不做什么\"）",
+            "expanded": true,
+            "children": [],
+            "detail": "<p>---</p>"
+          },
+          {
+            "id": "n-mv2hj3t9p8qq",
+            "topic": "诚实边界（不写成卖点，但要一起看）",
+            "expanded": true,
+            "children": [],
+            "detail": "<ul><li><strong>网络受限</strong>：推送远程被策略拦（<code>github.com:443 CONNECT 403</code>）⇒ 异地备份当前做不到；</li><li><strong>性能上限</strong>：约 556 节点实测已卡（无虚拟化）⇒ <strong>W25</strong>，不写成边界 ✗；</li><li><strong>语义检索</strong>：W3 = &quot;待验证 + 有条件 P3&quot;，有&quot;先验证后建设&quot;门槛（≥3 个不可替代场景；阈值为经验值）；</li><li><strong>没有自定义图标</strong>：<code>electron-builder.yml</code> 无 <code>icon</code> ⇒ 打包用默认图标；</li><li><strong>硬覆盖缺口</strong>：<code>v0.17.0</code> 变更在本仓库无档可查；</li><li><strong>清点本身</strong>：静态读码，未跑验证 ✗。</li></ul>"
+          }
+        ],
+        "detail": "<p>---</p>"
+      }
+    ]
+  }
+}

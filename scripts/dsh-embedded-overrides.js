@@ -94,6 +94,24 @@ const PRESETS = {
       '4. 结论必须有据：能跑的命令就跑；不能跑就明说「未验证」，不要把推断写成事实。',
       '5. 汇报用中文：先给结论与证据，再给细节；改动小步、可回退，并写清「改了什么 / 怎么验的 / 还缺什么」。'
     ].join('\n')
+  },
+  iterate: {
+    label: "迭代模式",
+    description: "长期迭代 AI MindMap 本体的作业模式：改代码/文档/数据都按工程自己的规矩与验证链来——与「aimindmap 模式」（改笔记）分开。",
+    order: 10,
+    persona: [
+      "你是「AI MindMap」（一个由人机协作长期迭代的开源笔记工程）本仓库的**迭代者**，当前工作在迭代模式下 —— 你的任务是**改这个工程本身**（代码/文档/数据/工具链），不是改笔记内容。",
+      "",
+      "工作准则（按优先级从高到低）：",
+      "1. 单一真源先行：先读工程根的 `SKILL.md`（导航）与 `docs/AI-GUIDE.md`（干活指南）——命令、规矩、门禁、门类边界都写在里面，**别凭记忆猜命令名或参数**。",
+      "2. 落盘规矩（写任何文件之前先看那几条）：编码用工程约定（UTF-8 无 BOM）；**改文件用编辑工具、写文本用 node**；**不要**用 PowerShell 读写中文文本（本机踩过两次全损）；**不要**批量写盘；写盘必须原子。",
+      "3. 数据面：`projects/` 下的 JSON 不手改，一律走工程 CLI/MCP（有版本闸门与校验）；**不许** `git add -A`、不许 commit 那个既有脏文件。",
+      "4. 改完必须自证：跑工程的完整验证链，**全绿才算完**；没跑的或跑不动的要**如实说**（哪些没验、为什么）。部分验证只记一格，不当全链结论。",
+      "5. 改文档体系要登记：新增/移动文档后按工程规则重生成登记表并写 `CHANGELOG.md`；**同一句话只准有一处权威**（另一处只给指针）。",
+      "6. 网络：本机推送远端被策略拦 ⇒ **只做本地提交**；要推的话明说做不到。",
+      "7. 汇报用中文：先给结论与证据（命令输出 / `file:line`），再给细节；改动小步、可回退；写清「改了什么 / 怎么验的 / 还缺什么」。",
+      "8. 拿不准就明说「未核实」——**不要把推断写成实测** ✗。",
+    ].join('\n')
   }
 };
 
@@ -231,7 +249,14 @@ function replacePersonaPrefix(block, persona) {
 }
 
 /** 生成"一条 preset 声明"的完整块（含横幅）；返回 string[] */
-function buildPresetBlock(id, spec) {
+/**
+ * 生成**一个** preset 的声明体（不含横幅）——
+ * 为什么不带横幅：**多个 preset 必须共用一个横幅对**。
+ * 旧形态是"每个 preset 各带一对横幅、渲染时首尾相接"，于是出现"文件里有 N 个生成块"；
+ * 而 `check()` 天生只认**第一个**块 ⇒ 声明到第二个模式时它必红（误报，2026-10-10 实测踩到）。
+ * 现在：`applyPresetBlocks` 把**一个**横幅对包住所有 preset 的声明体 ✓（`check()` 也按同一个期望比对）。
+ */
+function buildPresetBlockBody(id, spec) {
   const meta = PRESETS[id];
   const order = spec.order === undefined ? meta.order : spec.order;
   const src = readBuiltinPresetLines(spec.cloneFrom);
@@ -239,9 +264,7 @@ function buildPresetBlock(id, spec) {
   const block = src.slice(span.start, span.end);
   const swapped = replacePersonaPrefix(block, meta.persona);
   if (!swapped.ok) die('无法把人设写进 preset「' + id + '」：' + swapped.why + '；换 cloneFrom 或改脚本的人设注入点');
-  const out = [BANNER_BEGIN,
-    '# 来源：' + path.join('presets', spec.cloneFrom + '.patch.yml').replace(/\\/g, '/') + '（运行包自带）＋ 脚本内人设文本',
-    '# 手改无效：下一次 render 会整块覆盖。要改就先改 .embedded-overrides.json 或脚本，再 render。',
+  const out = [
     '- insert:',
     '    - id: preset-' + id,
     "      name: '@deepseek-ai/dsh-agent-preset'",
@@ -263,8 +286,35 @@ function buildPresetBlock(id, spec) {
       '  config:',
       '    default: ' + id);
   }
-  out.push(BANNER_END);
   return out;
+}
+
+/** 单个 preset 的"完整块"（含横幅）——既有单测按这个形态断言，保留 ✓ */
+function buildPresetBlock(id, spec) {
+  return [BANNER_BEGIN,
+    '# 来源：' + path.join('presets', (spec && spec.cloneFrom || 'standard') + '.patch.yml').replace(/\\/g, '/') + '（运行包自带）＋ 脚本内人设文本',
+    '# 手改无效：下一次 render 会整块覆盖。要改就先改 .embedded-overrides.json 或脚本，再 render。',
+  ].concat(buildPresetBlockBody(id, spec), [BANNER_END]);
+}
+
+/** 把一个写好的 patch 文件（或候选内容）里的**唯一**生成块取出来；没有则返回 null */
+function findBannerBlock(lines) {
+  const at = lines.findIndex((l) => String(l).trim() === BANNER_BEGIN);
+  if (at < 0) return null;
+  let end = at;
+  while (end < lines.length && String(lines[end]).trim() !== BANNER_END) end++;
+  if (end >= lines.length) return null;   // 半截（只有 BEGIN 没 END）⇒ 当"取不到"，由调用方响亮处理
+  return { start: at, end, lines: lines.slice(at, end + 1) };
+}
+
+/** 渲染器**现在**会写出的那个唯一生成块（含横幅）——`check` 用它与现网逐行比对 ✓ */
+function expectedOverridesBlock(ov) {
+  const presets = (ov && ov.$presets) || {};
+  const ids = Object.keys(presets);
+  if (!ids.length) return [];
+  const body = [];
+  for (const id of ids) { if (body.length) body.push(''); body.push(...buildPresetBlockBody(id, presets[id])); }
+  return [BANNER_BEGIN, ...body, BANNER_END];
 }
 
 /** 把生成块替换进 patch 行数组（幂等：先删旧的同类块，再按 id 顺序追加到末尾） */
@@ -283,11 +333,16 @@ function applyPresetBlocks(lines, ov) {
     removed++;
   }
   if (!ids.length) return { lines: kept, changed: removed > 0, removed };
-  // 统一放在末尾：一个区域、一眼能看全 ✓
+  // 统一放在末尾：**一个**横幅对包住所有 preset 的声明体（一个区域、一眼能看全 ✓；
+  // 且"文件里有几个生成块"恒等于 1 ⇒ `check()` 的"只认第一个块"不再会误报 ✓）
   while (kept.length && /^\s*$/.test(kept[kept.length - 1])) kept.pop();
   const block = [];
-  for (const id of ids) { if (block.length) block.push(''); block.push(...buildPresetBlock(id, presets[id])); }
-  return { lines: kept.concat('', ...block, ''), changed: true, removed };
+  for (const id of ids) { if (block.length) block.push(''); block.push(...buildPresetBlockBody(id, presets[id])); }
+  const wrapped = [BANNER_BEGIN,
+    '# 来源：' + ids.map((i) => path.join('presets', presets[i].cloneFrom + '.patch.yml')).join(' + ').replace(/\\/g, '/') + '（运行包自带）＋ 脚本内人设文本',
+    '# 手改无效：下一次 render 会整块覆盖。要改就先改 .embedded-overrides.json 或脚本，再 render。',
+    ...block, BANNER_END];
+  return { lines: kept.concat('', ...wrapped, ''), changed: true, removed };
 }
 
 function render(dryRun) {
@@ -350,25 +405,59 @@ function check() {
     else { console.log('✗ ' + k + '：期望 ' + want + '，实际 ' + got); bad++; }
   }
   // 生成块：与"现在重新生成"逐行比对（逐字相等才算 ✓ —— 半截/被手改都会被抓到）
+  // ⚠️ 判据是**整个生成区**（一个横幅对里有全部 preset 的声明）—— 按"每个 preset 各取一个块"比对
+  //    会在第二个模式出现时误报（2026-10-10 实测踩到的那条）。
   const presets = ov.$presets || {};
-  for (const id of Object.keys(presets)) {
-    const want = buildPresetBlock(id, presets[id]);
-    const wantBlock = [BANNER_BEGIN].concat(want.slice(1, -1), [BANNER_END]);
-    const at = lines.findIndex((l) => l.trim() === BANNER_BEGIN);
-    if (at < 0) { console.log('✗ $presets.' + id + '：patch 里没有生成块（没 render 过？）'); bad++; continue; }
-    let end = at;
-    while (end < lines.length && lines[end].trim() !== BANNER_END) end++;
-    const gotBlock = lines.slice(at, end + 1);
-    const expecting = wantBlock.filter((l) => !/^#\s*来源/.test(l) && !/^#\s*手改无效/.test(l));
-    const gotFiltered = gotBlock.filter((l) => !/^#\s*来源/.test(l) && !/^#\s*手改无效/.test(l));
-    if (gotFiltered.join('\n') === expecting.join('\n')) {
-      console.log('✓ $presets.' + id + '：生成块与当前内置 preset 一致（' + presets[id].cloneFrom + ' 的清单 + 本脚本人设）');
-    } else {
-      console.log('✗ $presets.' + id + '：生成块与"现在重新生成"的结果不一致（内置 preset 升级了？或块被改过 ⇒ 重跑 render）');
-      bad++;
+  const ids = Object.keys(presets);
+  if (ids.length) {
+    const want = expectedOverridesBlock(ov);
+    const expecting = want.filter((l) => !/^#\s*来源/.test(l) && !/^#\s*手改无效/.test(l));
+    const found = findBannerBlock(lines);
+    if (!found) { console.log('✗ $presets（' + ids.join(', ') + '）：patch 里没有完整生成块（没 render 过？或只剩半截）'); bad++; }
+    else {
+      const gotFiltered = found.lines.filter((l) => !/^#\s*来源/.test(l) && !/^#\s*手改无效/.test(l));
+      if (found.lines.length && gotFiltered.join('\n') === expecting.join('\n')) {
+        console.log('✓ $presets（' + ids.map((i) => i + ' ← ' + presets[i].cloneFrom).join(', ') + '）：生成块与当前内置 preset 逐行一致 ✓');
+      } else {
+        console.log('✗ $presets（' + ids.join(', ') + '）：生成块与"现在重新生成"的结果不一致（内置 preset 升级了？或块被改过 ⇒ 重跑 render）');
+        bad++;
+      }
     }
   }
   if (!Object.keys(ov).length) console.log('（overrides 为空 —— 没有本地覆盖要核对 ✓）');
+  process.exit(bad ? 1 : 0);
+}
+
+/**
+ * `--tag <文件>`：把**任意**候选 patch 文件（临时 home 的副本也支持）按正式判据核一遍：
+ *   ① 生成区必须**完整**（BEGIN…END 都在，半截 ⇒ 红）
+ *   ② 且**恰好一个**生成区（多个 ⇒ 红：那是"每 preset 一个块"的旧形态，`check` 天生只认第一个）
+ *   ③ 内容与渲染器**现在**会写出的逐行一致（忽略两行易变注释：来源 / 手改无效）
+ * 给单测用（多模式那条的核心判据就靠它）✓，也是人工排查"到底哪里不一致"的入口。
+ */
+function checkTag(file) {
+  if (!file) die('--tag 需要一个文件路径：--tag <patch 文件>');
+  if (!fs.existsSync(file)) die('--tag 找不到文件：' + file);
+  const ov = readOverrides();
+  validate(ov);
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+  let bad = 0;
+  const begins = lines.filter((l) => l.trim() === BANNER_BEGIN).length;
+  const ends = lines.filter((l) => l.trim() === BANNER_END).length;
+  if (begins !== 1 || ends !== 1) { console.log('✗ 生成区数量异常：BEGIN=' + begins + ' / END=' + ends + '（期望各 1）'); bad++; }
+  const found = findBannerBlock(lines);
+  if (!found) { console.log('✗ 取不到完整的生成区（缺 BEGIN/END）'); bad++; }
+  else {
+    const want = expectedOverridesBlock(ov).filter((l) => !/^#\s*来源/.test(l) && !/^#\s*手改无效/.test(l));
+    const got = found.lines.filter((l) => !/^#\s*来源/.test(l) && !/^#\s*手改无效/.test(l));
+    if (got.join('\n') === want.join('\n')) console.log('✓ 生成区与渲染器现在的输出逐行一致（' + Object.keys(ov.$presets || {}).join(', ') + '）');
+    else {
+      console.log('✗ 生成区与渲染器现在的输出不一致');
+      const a = got, b = want;
+      for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) { console.log('  第一处差异 @ 行 ' + (i + 1) + '\n    实际: ' + String(a[i]).slice(0, 120) + '\n    期望: ' + String(b[i]).slice(0, 120)); break; }
+      bad++;
+    }
+  }
   process.exit(bad ? 1 : 0);
 }
 
@@ -376,12 +465,14 @@ function check() {
  *（本工程既有规矩：门禁要把纯函数暴露出来做单测。实测踩过：没守卫时 require 打印用法并退出。） */
 if (require.main === module) {
   const cmd = process.argv[2];
+  const tagFile = argOf('tag');
   if (cmd === 'render') render(process.argv.includes('--dry-run'));
   else if (cmd === 'check') check();
+  else if (tagFile) checkTag(tagFile);
   else {
-    console.log('用法：node scripts/dsh-embedded-overrides.js <render [--dry-run]|check> [--home <dsh-home>] [--runtime <运行包>]');
+    console.log('用法：node scripts/dsh-embedded-overrides.js <render [--dry-run]|check> [--tag <patch 文件>] [--home <dsh-home>] [--runtime <运行包>]');
     process.exit(1);
   }
 }
 
-module.exports = { yamlScalar, validate, findEntry, replaceKey, extractPluginsBlock, replacePersonaPrefix, buildPresetBlock, applyPresetBlocks, PRESETS, BANNER_BEGIN, BANNER_END, PRESETS_DIR, HOME, PATCH };
+module.exports = { yamlScalar, validate, findEntry, replaceKey, extractPluginsBlock, replacePersonaPrefix, buildPresetBlock, buildPresetBlockBody, expectedOverridesBlock, findBannerBlock, checkTag, applyPresetBlocks, PRESETS, BANNER_BEGIN, BANNER_END, PRESETS_DIR, HOME, PATCH };
