@@ -390,6 +390,13 @@ async function adoptOrStart() {
   //  假红排查代价极高 ✓。而这几条断言要验的是**几何**（控制栏位置/让位宽度/按钮 DOM ✓），
   //  不需要服务 ✓。顺带还消掉一个隐患：以前冒烟会**接管用户正在用的那个服务**，收尾时把它停掉 ✗。
   if (state.noSpawn) {
+    // ⚠️ 桩服务场景：`injectStubServiceForTest()` 已经装上了 `{status:'running', url}`，
+    //    这里**不能**把它清成 idle —— 否则桩脚本刚接上就被本函数（`init` 里 setImmediate 调它）
+    //    打回 idle ⇒ `prefillComposer` 永远停在"服务没在运行"，成功分支还是走不到 ✗
+    if (state.url) {
+      log('桩服务已接入：跳过服务孵化/接管（url=' + state.url + '）');
+      return;
+    }
     log('冒烟模式：跳过服务孵化/接管（几何断言不需要服务，避免把真实服务牵连进来）');
     state.status = 'idle';
     return;
@@ -402,6 +409,33 @@ async function adoptOrStart() {
 function setNoSpawn(flag) {
   state.noSpawn = !!flag;
 }
+
+/* ---------------- 测试专用：把"已就绪的服务"直接接上（**给桩用，不是产品路径**） ----------------
+ * 为什么需要它：`dsh-prefill` 的**成功分支**（真的把文本塞进页面输入框）在门禁里永远走不到 ——
+ * 冒烟跑在 `setNoSpawn(true)` 下，`prefillComposer` 永远停在 `state.status !== 'running'` 那一句。
+ * 于是"投喂成功"这半边没有任何门禁覆盖，坏了也只有真机才发现（这正是 D7 要治的）。
+ *
+ * 它做的只有一件事：把 `{status:'running', url:给定地址}` 装上，并让视图去加载那个地址 ——
+ * **不孵化进程、不认领任何真实服务、不碰 service-info 文件**。
+ * 调用方：`scripts/dsh-prefill-stub.js`（它自己起一个只回静态 HTML 的本地桩服务）。
+ * ⚠️ 只应在**测试**里调用；产品路径要"接管"请走 `adoptExistingService()`（它会做 pid + HTTP 双探活）。
+ * @param {string} url 桩服务地址（http://127.0.0.1:<port>/） */
+function injectStubServiceForTest(url) {
+  if (!url || !/^https?:\/\//.test(String(url))) return false;
+  state.url = String(url);
+  state.proc = null;
+  state.procLock = null;
+  state.servicePid = null;      // 没有 pid（桩不是本模块孵化的）⇒ 不做 pid 健康检查
+  state.status = 'running';
+  state.lastError = null;
+  ensureView();
+  loadCurrentUrl();
+  broadcastStatus();
+  return true;
+}
+
+/** 测试专用：把侧栏视图交出来（桩脚本要读它页面里的 DOM 真值）。没有视图返回 null。 */
+function viewForTest() { return state.view || null; }
 
 /** 健康循环：detached 服务没有 exit 事件可听，用轮询补齐死亡感知（pid + HTTP 双探）*/
 function startHealthLoop() {
@@ -1503,5 +1537,7 @@ module.exports = {
   ensureRightbarRoom, releaseRightbarRoom, setNoSpawn, installRightbarWatcher,
   // ⑩ 把对话预填进侧栏输入框（不代替用户发送）
   prefillComposer, COMPOSER_PREFILL_JS,
+  // 测试专用（见函数注释）：桩服务接上 / 交出视图。产品路径不要用这两个。
+  __injectStubServiceForTest: injectStubServiceForTest, __viewForTest: viewForTest,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
 };

@@ -918,6 +918,71 @@ function registerIpc() {
     });
   });
 
+  /* 功能 1 的**下半截**（A）：把一次 AI 问答**落到节点上** —— 界面「写入本节点详情 / 新建子节点」
+   * 两个按钮的唯一出口。写操作只经 CLI（`ask-apply`）：闸门校验 + 原子写 + 并发版本闸门都在那里，
+   * 渲染层不直接改盘（本工程硬约束）✓。
+   *
+   * 为什么这一条**同步**（runCli 而非 runCliAsync）：它不调模型（模型那一步已经在上面的 app:ask 里
+   * 完成了，这里只是把结果落盘），实测毫秒级 ⇒ 用异步反而让"写完了没有"变难判定。
+   * 与 ask 的 20+ 秒完全不是一类活。
+   *
+   * **写后回读**（本工程规约：采不到真值就不许声称成功）：回读该节点的 qa 与 detail 长度，
+   * 交给渲染层同步内存 —— 少了这一步，下一次界面保存会拿旧内存把刚写的问答抹掉
+   * （与 app:assoc-edit / app:unlink-nodes 同一条纪律：**不是**可选装饰）。
+   * 回读失败 ⇒ `qa:null` + `ok:false`：调用方不许假装同步成功（"采不到真值"与"采到了"必须可区分）。
+   *
+   * `--at` 由**渲染层**给：界面上显示的那个时间就是落盘时间（同一件事一个时间 ✗ 不要两个）。 */
+  ipcMain.handle('app:ask-apply', (e, projectName, nodeId, payload) => {
+    const p = payload || {};
+    const project = String(projectName || '');
+    const node = String(nodeId || '');
+    if (!project || !node) return { ok: false, error: '缺少项目名或节点 id' };
+    const answer = String(p.answer == null ? '' : p.answer);
+    if (!answer.trim()) {
+      // 与本命令的 CLI 口径一致：空回答响亮拒绝（界面侧先拦一道，省一次子进程；判定仍以 CLI 为准）
+      return { ok: false, error: '回答为空，没有可落盘的内容' };
+    }
+    // 子节点 id 由**主进程**生成（与 `add`/`clone` 同一套 idGen ⇒ 同一 id 规范、同一防撞号逻辑）。
+    // 渲染层不许自己造 id：那是"两处实现"的开端。
+    let childId = null;
+    if (p.asChild) {
+      try { childId = require('./src/markdown.js').idGen(String(p.topicSeed || answer.slice(0, 40))); }
+      catch (err) { childId = null; }   // 生成不了就交给 CLI 自己生成（不静默改语义 ✓）
+    }
+    const args = ['ask-apply', project, node, '--answer', answer, '--at', String(p.at || new Date().toISOString())];
+    if (p.question) args.push('--question', String(p.question));
+    if (p.model) args.push('--model', String(p.model));
+    if (p.asChild) {
+      args.push('--as-child');
+      if (childId) args.push('--child-id', childId);
+    }
+    let text;
+    try { text = runCli(args); }
+    catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
+    // 写后回读：节点实况（qa + detail）交给渲染层同步内存
+    let back = null;
+    try { back = JSON.parse(runCli(['get', project, node, '--json', '--detail'])); }
+    catch (err) { /* 回读失败：back=null ⇒ 渲染层如实报告"已写入，但没能同步内存" */ }
+    if (!back) {
+      return { ok: false, error: '已写入，但写后回读失败（拿不到真值就不许声称已同步）',
+        text: String(text).trim(), qa: null, detail: null, child: null };
+    }
+    // 通知渲染层**立刻**按磁盘重读一次（复用既有的 onProjectDiskChange：脏则拒绝覆盖、世代校验都在那儿）。
+    // 为什么不由 fs.watch 兜底就够：那条路有 300ms 防抖，界面上要"晚一拍"才看见新子节点 ——
+    // 而这一步的验收判据恰恰是"界面侧也变了"。
+    try {
+      const w = BrowserWindow.fromWebContents(e.sender);
+      if (w && !w.isDestroyed()) w.webContents.send('app:project-reread');
+    } catch (err) { /* 通知失败只影响"立刻"，不影响"已落盘"这个事实（fs.watch 还会兜一次） */ }
+    return {
+      ok: true, text: String(text).trim(),
+      child: childId ? { id: childId } : null,
+      qa: Array.isArray(back.qa) ? back.qa : [],
+      detail: typeof back.detail === 'string' ? back.detail : '',
+      node: node, project: project
+    };
+  });
+
   /* 功能 5a：拖拽进来的文件（渲染层拿到路径后走这里）—— 与菜单**同一个实现** ✓ */
   ipcMain.handle('app:import-doc', async (e, filePath) => {
     if (!filePath || typeof filePath !== 'string') return { ok: false, error: '没有拿到文件路径' };
@@ -1638,8 +1703,10 @@ async function runExportWindow(win, { out }) {
 }
 
 /* ---------------- 界面控制通道（给外部 AI / 内置 DSH） ----------------
- * 协议与取舍见 src/control.js：文件 + 轮询（本机受限环境禁命名管道、网络要走代理，
- * 文件是唯一到处都成立的通道）。命令执行**一次**，回执留给调用方读 —— CLI 靠它判"真生效"。
+ * 协议与取舍见 `src/control.js`（文件 + 轮询：本机受限环境禁命名管道、网络要走代理，
+ * 文件是唯一到处都成立的通道；**多槽 + 序号** = 并发的两条命令各有各的回执）。
+ * 执行**一次**：`pollOnce` 先 `claim()`（rename 只有一个赢家）再执行 ⇒ 同一条命令不会因为
+ * "异步还没干完"被 400ms 轮询**重复派发**（批 1 报告 ⑦-2 的另一半）。
  *
  * ⚠️ 事实核对（写进这里的理由：导图页**能被卸载**之后，"轮询在谁身上"变成了关键问题）：
  *   这个 400ms 的轮询跑在**主进程**（本函数在 app.whenReady 里被调用），**不在渲染层** ⇒
@@ -1650,26 +1717,24 @@ async function runExportWindow(win, { out }) {
  */
 function startControlChannel() {
   const control = require('./src/control.js');
+  const { createControlPoller } = require('./src/control-poll.js');
   let dir;
   try { dir = app.getPath('userData'); } catch (err) { return; }
-  setInterval(() => {
-    const cmd = control.readCommand(dir);
-    if (!cmd) return;
-    // 三个命令（前两个是"各关一半"的对称能力，第三个是**只读**诊断）：
+
+  /** 一条命令的处理（**不许在这里 throw 出去**：poller 会把同步异常翻成失败回执，
+   *  但那样调用方拿到的是"命令执行异常"而不是这条命令**自己**的原因） */
+  const handle = (claim, reply) => {
+    const cmd = claim;
+    // 五个命令（前两个是"各关一半"的对称能力，第三个是**只读**诊断）：
     //   dsh-only    —— 关左边思维导图页（**真卸载这一页**：主窗口改为占位页）、只留侧栏
     //                  （改主界面代码时用；重开 = 重新加载 ⇒ sidebar-only on/off 成对）
     //   dsh-sidebar —— 保留主界面、关掉侧栏 DSH（改 DSH 那一侧时用；把服务一起停 + 销毁侧栏视图）
     //   dsh-status  —— 只读：读侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出/视图在不在）
     //   dsh-prefill —— 把文本送进侧栏输入框（⑩；**不代替用户发送** ✗）
     if (cmd.cmd === 'dsh-prefill') {
-      prefillAfterEnsureOpen(cmd.text || '').then((r) => {
-        try {
-          control.writeResult(dir, { cmd: 'dsh-prefill', ok: !!r.ok, result: r, err: r.reason || null,
-            at: new Date().toISOString() });
-        } catch (err2) { /* 回执写不进去：调用方会超时 ⇒ 当没生效 ✓ */ }
-        control.clearCommand(dir);
+      return prefillAfterEnsureOpen(cmd.text || '').then((r) => {
+        reply({ cmd: 'dsh-prefill', ok: !!r.ok, result: r, err: r.reason || null });
       });
-      return;
     }
     if (cmd.cmd === 'dsh-status') {
       let st = null;
@@ -1692,36 +1757,33 @@ function startControlChannel() {
       } catch (err) {
         detail = String((err && err.message) || err);
       }
-      try {
-        control.writeResult(dir, {
-          cmd: 'dsh-status', ok: !!st, status: st, err: detail, at: new Date().toISOString()
-        });
-      } catch (err2) { /* 回执写不进去：调用方超时 ⇒ 判"没生效" */ }
-      control.clearCommand(dir);
+      reply({ cmd: 'dsh-status', ok: !!st, status: st, err: detail });
       return;
     }
     // dsh-only：**关导图页 = 真卸载这一页**（v0.19；旧语义只是给它加个类名、页面还在内存里 ✗）
     //   `confirmed:false` ⇒ 主进程自己查一次渲染层的脏标记：脏就**如实拒绝**（AI 这条路上
-    //   不弹模态框 —— 没人保证有人在看，弹窗会把 CLI 挂死 ✗）。
+    //   不弹模态框 —— 没人保证有人在看，弹窗会把调用方挂死 ✗）。
     // dsh-sidebar：保留主界面、关掉侧栏 DSH（语义不变）。
     if (cmd.cmd === 'dsh-only') {
       const done = cmd.on
         ? dshSidebar.closeMapPage({ confirmed: false, by: 'cli' })
         : dshSidebar.openMapPage();
-      const reply = (r) => {
-        try {
-          control.writeResult(dir, {
-            cmd: 'dsh-only', ok: !!(r && r.ok),
-            state: (r && r.ok) ? dshSidebar.isDshOnly() : null,
-            err: (r && r.reason) || null, at: new Date().toISOString()
-          });
-        } catch (err2) { /* 回执写不进去：调用方超时 ⇒ 判"没生效" ✓ */ }
-        control.clearCommand(dir);
-      };
-      Promise.resolve(done).then(reply).catch((err) => reply({ ok: false, reason: String((err && err.message) || err) }));
+      Promise.resolve(done).then((r) => {
+        reply({
+          cmd: 'dsh-only', ok: !!(r && r.ok),
+          state: (r && r.ok) ? dshSidebar.isDshOnly() : null,
+          err: (r && r.reason) || null
+        });
+      }).catch((err) => {
+        reply({ cmd: 'dsh-only', ok: false, state: null, err: String((err && err.message) || err) });
+      });
       return;
     }
-    if (cmd.cmd !== 'dsh-sidebar') return;
+    if (cmd.cmd !== 'dsh-sidebar') {
+      // 未知命令：当场给回执（否则调用方会白等满窗口，拿到的是"界面没响应"这种**假原因**）
+      reply({ cmd: cmd.cmd, ok: false, err: '界面不认识这条命令: ' + String(cmd.cmd) });
+      return;
+    }
     let ok = false;
     let detail = '';
     try {
@@ -1731,16 +1793,18 @@ function startControlChannel() {
     } catch (err) {
       detail = String((err && err.message) || err);
     }
-    try {
-      control.writeResult(dir, {
-        cmd: cmd.cmd, ok: ok,
-        state: ok ? dshSidebar.isVisible() : null,
-        err: detail, at: new Date().toISOString()
-      });
-    } catch (err2) { /* 回执写不进去：调用方会超时 → 判"没生效"，不会静默成功 */ }
-    control.clearCommand(dir);
-  }, 400);
+    reply({ cmd: cmd.cmd, ok: ok, state: ok ? dshSidebar.isVisible() : null, err: detail });
+  };
+
+  controlPoller = createControlPoller({
+    dir: dir,
+    handle: handle,
+    log: (m) => console.log('[control] ' + m)
+  });
+  controlPoller.start(400);
 }
+/** 控制通道的轮询器（唯一实例；菜单/诊断要读它的派发历史时用得上） */
+let controlPoller = null;
 
 /* ---------------- 启动 ---------------- */
 app.whenReady().then(() => {

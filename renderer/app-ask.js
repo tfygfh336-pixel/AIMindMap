@@ -302,8 +302,15 @@
     });
     const dc = MM.fdQ(box, '.fd-detail-content');
     const md = MM.mdBlock || ((t) => (MM.escHtml(t) || ''));
+    // 落盘结果（A）：**必须留在框里**，因为状态栏那句会被下一条动作覆盖 ——
+    // 用户与断言都要能回答"这条回答到底有没有写进去"（只在 setStatus 里说 = 说过就没了 ✗）。
+    const writeNote = st.lastWrite || null;
     let html = '<div class="ask-hint">每问一次都是一次独立会话（答完即止，不延续上下文）。'
-      + '想接着聊，就在下面再问一句。</div>';
+      + '想接着聊，就在下面再问一句。</div>'
+      + (writeNote
+        ? '<div class="ask-write-note' + (writeNote.ok ? '' : ' ask-write-err') + '">'
+          + esc(writeNote.text) + '</div>'
+        : '');
     // ⚠️ 空框**不能**显示"正在生成…"：那看着像"AI 已经先开口了"（用户实测反馈 ✗）。
     //    只有真的发出去了（有 pending 条目）才显示；空框给一句"请你先问" ✓
     if (!st.log.length) {
@@ -312,13 +319,26 @@
         : '<div class="ask-item ask-empty">在下面输入你的问题，按 Enter 发送（我只会回答你问的 ✓）。</div>';
     }
     const raw = null;   // （占位已弃用，见下）
-    st.log.forEach((e) => {
+    st.log.forEach((e, i) => {
       if (e.q) html += '<div class="ask-item ask-q"><span class="ask-who">你</span>' + md(e.q) + '</div>';
       if (e.pending) html += '<div class="ask-item ask-a ask-pending"><span class="ask-who">AI</span>正在生成…</div>';
       // AI 的回答按 **Markdown 整段**渲染（加粗/列表/代码都出来）—— 用户反馈"全局 ** 不渲染"的根因就在这 ✓
       else if (e.a) html += '<div class="ask-item ask-a"><span class="ask-who">AI</span>' + md(e.a) + '</div>';
       if (e.err) html += '<div class="ask-item ask-err"><span class="ask-who">!</span>' + esc(e.err) + '</div>';
       if (e.stub) html += '<div class="ask-stub">（冒烟桩：未调用模型，仅验证链路）</div>';
+      // ★ A（用户要求）：**AI 产出直接落到节点与详情** —— 每条回答下面两个动作。
+      //   只对有回答、没出错的条目出现（"正在生成"时不该给按钮 = 不许把没生成完的东西写进数据 ✗）。
+      //   两个动作都**只发意图**，真正的写盘在 `app:ask-apply` ⇒ CLI `ask-apply`（渲染层不直接改盘 ✓）。
+      if (e.a && !e.pending && !e.err) {
+        html += '<div class="ask-acts" data-act-index="' + i + '">'
+          + '<button type="button" class="ask-act ask-act-detail" data-act="detail"'
+          + ' title="把这条回答追加到本节点详情末尾（带来源标记与时间；写盘走 CLI，写后回读）">'
+          + '📥 写入本节点详情</button>'
+          + '<button type="button" class="ask-act ask-act-child" data-act="child"'
+          + ' title="用这条回答在本节点下新建一个子节点（标题取首行，详情放全文）">'
+          + '🌱 新建子节点</button>'
+          + '</div>';
+      }
     });
     html += '<div class="ask-inputrow">'
       + '<input class="ask-input" type="text" placeholder="问一句…（Enter 发送）" />'
@@ -335,6 +355,17 @@
     const input = dc.querySelector('.ask-input');
     const sendBtn = dc.querySelector('.ask-send');
     const sideBtn = dc.querySelector('.ask-to-sidebar');
+    // ★ A：两个落盘动作的事件接线（**委托**到容器：renderAskPage 每次重渲染都会重建按钮，
+    //   逐个绑监听会漏掉重建后的那些 ⇒ 只有委托是稳的 ✓）
+    dc.querySelectorAll('.ask-acts').forEach((row) => {
+      row.addEventListener('click', (e) => {
+        const btn = e.target && e.target.closest ? e.target.closest('.ask-act') : null;
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        writeBack(box, Number(row.getAttribute('data-act-index')), btn.getAttribute('data-act'));
+      });
+    });
     if (sideBtn) {
       sideBtn.addEventListener('click', (e) => {
         e.preventDefault();
@@ -410,6 +441,100 @@
       });
   }
 
+  /* ================= A：把 AI 回答落到节点上（详情 / 子节点） =================
+   * 用户的立场（原话）：**AI 产出直接落到节点与详情** ⇒ 这里做的正是那半截。
+   *
+   * 三条纪律（每条都有理由，别省）：
+   *   ① **写操作只经 CLI**：渲染层只发意图（`app:ask-apply` → `cli ask-apply`），
+   *      闸门校验 / 原子写 / 并发版本闸门 / 写后回读全在那一边 —— 渲染层不碰盘 ✗；
+   *   ② **一次动作一次原子写**：qa 记录与 detail 追加、以及子节点，都在**同一条 CLI 命令**里
+   *      完成（分两次写盘会留下"记了流水没写详情"这种自相矛盾的数据）；
+   *   ③ **写到哪就同步到哪**：拿主进程回读回来的真值（`qa` / `detail`）覆盖内存里的那一份，
+   *      再请渲染层按磁盘重读一次（新子节点要出现在导图上）——
+   *      少了这一步，下一次界面保存会拿旧内存把刚落盘的问答抹掉 ✓（与 assoc-edit 同一条纪律）。
+   *
+   * 失败一律**说出来**（状态栏 + 框里留痕）✗ 不许静默。
+   * 空回答也在这里挡住（按钮只在有回答时出现，这是第二道）。
+   */
+  function writeBack(box, index, act) {
+    // ⚠️ 一次性把"当前这条"解析出来（**不要**把 `box.ask` 存成局部量再用到异步之后 —— 见下）
+    const st0 = box.ask || (box.ask = { kind: 'ask', log: [] });
+    const entry = (st0.log || [])[index];
+    const api = window.desktop && window.desktop.app && window.desktop.app.askApply;
+    if (!api) { MM.setStatus('这个版本没有把问答落盘的通道（preload 没接上 app:askApply）', true); return null; }
+    const project = state().project && state().project.name;
+    if (!project) { MM.setStatus('没有打开的项目，写不进去', true); return null; }
+    if (!box.node || !box.node.id) {
+      // 项目级/多节点提问**不指定节点**：落盘必须说清"落到哪个节点" ⇒ 如实拒绝，不猜一个 ✗
+      MM.setStatus('这条问答不属于某一个节点（项目级或多节点提问）—— 先在导图上选一个节点再问，就能写入它', true);
+      box.ask.lastWrite = { ok: false, text: '没有落到任何节点：这条问答没有明确的节点目标' };
+      renderAskPage(box);
+      return null;
+    }
+    if (!entry || !entry.a || entry.pending || entry.err) {
+      MM.setStatus('这条还没有可落盘的回答', true);
+      return null;
+    }
+    /** ⚠️ 落痕必须**每次重新取 `box.ask`**，不能把上面那个 `st` 一直用下去 ✗
+     *  真因（本文件实测踩到）：`showAskBox` 每次都会把 `box.ask` **换成一个新对象**
+     *  （`box.ask = { kind, log: (box.ask && box.ask.log) || [] }`）。而写盘是**异步**的，
+     *  这中间只要 `showAskBox` 被调一次（本工程里它被冒烟、被工具栏同步、被"重开同一个节点的框"
+     *  各调一次），`st` 就指向一个**已经不属于这个框**的孤儿对象 —— 于是"已落盘"被写进孤儿，
+     *  界面按新的 `box.ask` 渲染 ⇒ **盘上写了、界面上看不见**（正是最该避免的那种"看起来没做"）。
+     *  ⇒ 判定与赋值都走这个取用函数，拿到的一定是当前那份。 */
+    const live = () => (box.ask || (box.ask = { kind: 'ask', log: [] }));
+    const asChild = act === 'child';
+    const at = new Date().toISOString();
+    const payload = {
+      answer: entry.a, question: entry.q || '', at: at,
+      // 模型名：一次问答里界面上知道的就是"思考强度"那一档（主进程 app:ask 的返回里没带 model）
+      // ⇒ 不编一个模型名 ✗（编出来的元数据比没有更坏：后人会以为那是真的）
+      asChild: asChild
+    };
+    MM.setStatus(asChild ? '正在把回答落成一个子节点…' : '正在把回答写进节点详情…');
+    return Promise.resolve(api(project, box.node.id, payload)).then((r) => {
+      if (!r || !r.ok) {
+        const why = (r && r.error) || '未知原因';
+        live().lastWrite = { ok: false, text: '没写进去：' + why };
+        MM.setStatus('没写进去：' + why, true);
+        renderAskPage(box);
+        return null;
+      }
+      // ③ 内存对齐：用回读到的真值覆盖（深拷贝，别把主进程返回的对象直接挂进内存树 ——
+      //    后面界面保存会整树写回，共享引用会带进一些不该落盘的形状）
+      if (box.node) {
+        const jmNow = state().jm;
+        const node = jmNow && MM.adapter.available(jmNow)
+          ? MM.adapter.getNode(jmNow, box.node.id) : null;
+        const target = node || box.node;
+        try {
+          target.detail = r.detail || '';
+          target.qa = JSON.parse(JSON.stringify(r.qa || []));
+        } catch (e) { /* 赋值失败不致命：真正的真值在磁盘上，重读会把它带回来 */ }
+      }
+      const childId = r.child && r.child.id;
+      live().lastWrite = {
+        ok: true,
+        text: asChild
+          ? ('已落盘：新建子节点 ' + (childId || '?') + '（标题取回答首行，详情放全文）；'
+            + '这条问答也记进了本节点（共 ' + ((r.qa || []).length) + ' 条）')
+          : ('已落盘：回答已追加到本节点详情末尾（带来源标记与时间）；'
+            + '问答记录共 ' + ((r.qa || []).length) + ' 条')
+      };
+      MM.setStatus(live().lastWrite.text);
+      renderAskPage(box);
+      // 导图上要出现新子节点 / 详情要跟上：请渲染层按磁盘重读一次（复用既有的脏冲突保护）
+      if (MM.requestReread) { try { MM.requestReread(); } catch (e) { /* 重读失败不改变"已写进盘"这个事实 */ } }
+      return r;
+    }).catch((err) => {
+      const why = (err && err.message) || String(err);
+      live().lastWrite = { ok: false, text: '没写进去：' + why };
+      MM.setStatus('没写进去：' + why, true);
+      renderAskPage(box);
+      return null;
+    });
+  }
+
   /* ================= 下方消息栏（功能 5a 入口③） =================
    * 用户原话：「在下方消息栏上方有一些虚体字，写『或者你可以直接向我描述要导入什么』，
    * 如果用户向里输入，就认为用户在向内嵌 DSH 发送提示词，自动补充情境信息」✓
@@ -479,6 +604,8 @@
   MM.showAskBox = showAskBox;
   MM.renderAskPage = renderAskPage;
   MM.askBoxes = () => askBoxes.filter((b) => b.el && b.el.parentElement);
+  // A：把一条回答落到节点上（**按钮与实际写盘共用这一个入口** ⇒ 断言点得到、人点得到）
+  MM.askWriteBack = writeBack;
 
   /* ================= 接在"选中节点"这件事上 =================
    * 钩子点选择与理由：本工程里"选中一个节点"的**唯一标志**是它有了详情框（`MM.showDetail`），

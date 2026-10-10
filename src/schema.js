@@ -216,6 +216,21 @@
       });
     }
     if (node.links !== undefined && !Array.isArray(node.links)) err('links 必须是数组', node.id);
+    // AI 问答记录（**可选字段**，不升 formatVersion；无则兼容 —— 见 docs/DATA-FORMAT.md §2.7）。
+    // 它回答的是"这个节点的这一段结论是哪一次 AI 交流得来的"，卖点 5 点名要它。
+    // 校验只判**形状**：`a` 必为非空字符串（一条没有回答的记录毫无意义，而且它会让
+    // "AI 产出是不是落进去了"这个判定永远为真 —— 本工程最忌的那种假绿）；
+    // `q` 允许空串（"解释这个节点"本来就没有提问文本）⇒ 用 `!== undefined` 而不是真值判定。
+    if (node.qa !== undefined) {
+      if (!Array.isArray(node.qa)) err('qa 必须是数组', node.id);
+      else node.qa.forEach((e, i) => {
+        if (!e || typeof e !== 'object' || Array.isArray(e)) { err('qa[' + i + '] 必须是对象', node.id); return; }
+        if (typeof e.a !== 'string' || !e.a.trim()) err('qa[' + i + '].a 必须是非空字符串', node.id);
+        if (e.q !== undefined && typeof e.q !== 'string') err('qa[' + i + '].q 必须是字符串', node.id);
+        if (typeof e.at !== 'string' || !e.at.trim()) err('qa[' + i + '].at 必须是非空字符串（ISO 时间）', node.id);
+        if (e.model !== undefined && typeof e.model !== 'string') err('qa[' + i + '].model 必须是字符串', node.id);
+      });
+    }
   }
 
   /** 重复 id 与环检测：对整棵树做**一次**迭代遍历（不递归，避免环导致栈溢出） */

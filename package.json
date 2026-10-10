@@ -26,6 +26,7 @@
     "dsh:maint": "node scripts/dsh-maintenance.js",
     "dsh:ratio": "node scripts/dsh-token-ratio.js",
     "dsh:probe": "node scripts/dsh-assembly-probe.js",
+    "dsh:prefill-stub": "electron scripts/dsh-prefill-stub.js",
     "dist": "electron-builder --win nsis",
     "dist:portable": "electron-builder --win portable"
   },

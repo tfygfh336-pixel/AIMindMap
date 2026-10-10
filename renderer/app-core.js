@@ -70,6 +70,11 @@
         // 本机文件夹路径：**必须在这里平铺**，否则界面保存（整树写回）会把这个字段丢掉 ——
         // 与曾经"保存不丢 assoc"是同一类静默数据丢失（有专门的冒烟断言守着）。
         if (n.data.localPath) out.localPath = n.data.localPath;
+        // AI 问答记录（可选字段，见 docs/DATA-FORMAT.md §2.7）：**同理必须平铺**。
+        // 漏了它的后果比 localPath 更重：`qa` 是"这段结论是哪次 AI 交流得来的"，而 AI 问答落盘
+        // 走的是 CLI（外部写盘）—— 只要用户随后在界面上按一次保存（整树写回），刚落盘的问答记录
+        // 就会被**静默抹掉**，而界面上一切正常（`scripts/smoke/38-ai-落盘.js` 断言⑤专治这一条）。
+        if (Array.isArray(n.data.qa) && n.data.qa.length) out.qa = n.data.qa;
       }
       if (n.children && n.children.length) out.children = n.children.map(walk);
       return out;

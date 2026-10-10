@@ -134,6 +134,19 @@ function init() {
   register({ name: 'remove', aliases: ['rm'], usage: 'remove <项目> <id> [--clean-assoc] [--clean-links]', options: ['cleanAssoc', 'cleanLinks'], desc: '删除节点（含子树）；被关联/链接引用时需 --clean-assoc / --clean-links', fn: loadFile('edit').remove });
   register({ name: 'clone', usage: 'clone <项目> <源id> <新父id> [--deep]', options: ['deep'], desc: '复制节点到新父节点（--deep 含子树）', fn: loadFile('edit').clone });
 
+  // AI 问答落盘（界面「写入本节点详情 / 新建子节点」两个动作的唯一出口；写操作只经 CLI）
+  register({
+    name: 'ask-apply',
+    usage: 'ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] '
+      + '[--answer-file 路径] [--as-child] [--child-id id] [--json]',
+    options: ['answer', 'question', 'model', 'at', 'answerFile', 'asChild', 'childId', 'json'],
+    desc: '把一次 AI 问答落进节点（**一次原子写**完成三件事）：追加 `qa` 记录（`{q,a,at,model?}`，'
+      + '追加不覆盖、完全相同的条目幂等）、把带来源标记与时间的问答追加到 detail 末尾（HTML 存储）、'
+      + '`--as-child` 时再建一个子节点（标题取回答首行截断、详情放全文）。'
+      + '空回答**响亮拒绝**（不许落一条空记录）。`--at` 由调用方给（界面上显示的时间就是落盘时间）',
+    fn: loadFile('qa').askApply
+  });
+
   // 导入导出
   register({ name: 'import-md', usage: 'import-md <项目> <md文件> [--parent id]', options: ['parent'], desc: '从 Markdown 导入节点（追加到 parent）', fn: loadFile('project').importMd });
   register({ name: 'import-project', usage: 'import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json]', options: ['title', 'dryRun', 'json'], desc: '功能 5a：**从大文档建一个新项目 + 一棵新树**（md/txt/docx；PDF **有书签走书签、无书签自动回退文字层**，两样都没有才响亮拒绝）；1 级标题成为顶层主题；一次原子写入，失败不留半个项目；--dry-run 只预览格式/规模/前几个标题与来源、不写盘', fn: loadFile('project').importProject });

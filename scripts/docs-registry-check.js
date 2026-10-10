@@ -293,7 +293,7 @@ const SCHEMA_FIELDS = [
   ['format', true], ['data', true], ['assoc', true],
   ['id', true], ['topic', true], ['children', true], ['detail', true],
   ['images', true], ['files', true], ['links', true], ['tags', true],
-  ['localPath', true], ['background', false]
+  ['localPath', true], ['qa', true], ['background', false]
 ];
 
 function checkContractCoverage(root) {

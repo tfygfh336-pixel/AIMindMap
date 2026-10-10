@@ -9,10 +9,30 @@
  *   · 网络要走策略代理，localhost 也未必通 ⇒ 两者都会把"能不能用"变成环境问题。
  *   文件 + 轮询是唯一在所有环境里都成立的通道，代价是几百毫秒延迟（这类操作完全够）。
  *
- * 协议（两个小 JSON，都在应用 userData 目录下）：
- *   mm-control.json         调用方写：{ cmd: 'dsh-only', on: true|false, at: '<iso>' }
- *   mm-control-result.json  界面写回：{ cmd, ok, state, at }（调用方据此判定"真生效了"）
- * 口径：**没有回执就等于没生效** —— CLI 会因此报错退出，而不是假装成功（本工程最重的损害类别是静默）。
+ * ---------------- 协议（v2：多槽 + 序号 + 取走即认领） ----------------
+ * 目录（都在应用 userData 下）：
+ *   control/pending/<token>.json     调用方写：{ token, cmd, … , at, by }
+ *   control/done/<token>.json        界面写回：{ token, cmd, ok, …, at }
+ *   control/consuming/<token>.json   界面**取走**时的认领位（原子 rename；正常情况下很快消失）
+ * 调用方只认 **自己那个 token** 的回执（`waitForResult(dir, token, ms)`）——
+ * 于是"两个 CLI 进程同时下命令"不再互相覆盖：它们各自写各自的槽 ✓。
+ *
+ * 为什么要改（实测取证 2026-10-10，本机 batch-1 报告 ⑦-2）：
+ *   · **单槽**：两个 CLI 同时 `dsh-prefill` 时都写同一个 `mm-control.json` —— 后写的把先写的覆盖掉，
+ *     先写的那一方**永远等不到回执**（而它其实什么都没做错）。这不是理论风险：本工程的常态就是
+ *     "多个 AI 会话同时在用同一个界面"。
+ *   · **重复派发**：旧实现的"取命令"是 `readCommand()`，而**清掉**命令要等异步工作做完 ——
+ *     这 400ms 轮询在这中间会**再读一遍同一条命令**并再派发一次（`dsh-prefill` 被派发两次 ⇒
+ *     `show()` / `executeJavaScript` 各跑两遍）。幂等不等于无害：多跑的那一遍会与第一遍抢同一个
+ *     webContents。
+ *   ⇒ 新协议把这两件事都做成**机械可判定**的：token 隔离写入、`rename` 原子认领（认领后原路径
+ *     就不存在了 ⇒ 同一条命令**至多**一个消费者）。
+ *
+ * 归档（为什么是三个状态而不是一个"已消费"标记文件）：标记文件要"读标记 + 写标记"，本身又是
+ *   一次竞态；而 `rename` 是文件系统层面的原子操作 —— **状态即路径**，没有中间态可被读到 ✓。
+ *
+ * 口径不变：**没有回执就等于没生效** —— CLI 会因此报错退出，而不是假装成功
+ *   （本工程最重的损害类别是静默）。
  *
  * **慢命令的调用方：先用 `dsh-status` 探活，再下慢命令**（`cli/commands/ui.js` 的 `dsh-prefill` 就这么做）。
  * 为什么：`dsh-prefill` 内部可能要把**侧栏服务起起来**（冷启动实测几秒，最坏 ≈12.4s），
@@ -29,18 +49,34 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
-const CMD_FILE = 'mm-control.json';
-const RESULT_FILE = 'mm-control-result.json';
+const DIR = 'control';
+const PENDING = 'pending';
+const DONE = 'done';
+const CONSUMING = 'consuming';
+/** 认领之后多久没写完回执 = 孤儿（进程被杀/崩溃）⇒ 清掉，**不**放回 pending。
+ *  为什么不放回：命令体可能已经执行到一半（"关一半"），重放比丢失更危险；而"没有回执"这条口径
+ *  本来就会让调用方判失败 ✓（宁可让调用方重下一次，也不要自己猜"它到底做没做"）。 */
+const ORPHAN_MS = 120000;
+/** pending 目录的硬上限：调用方崩在写之前会留下垃圾。超了只**如实告警**并清掉最老的，
+ *  免得一个坏掉的脚本把目录撑成几万个文件（诊断信息仍然出现在 stderr，不静默）。 */
+const MAX_PENDING = 200;
 
-/** 通道的两个文件路径（baseDir 用应用 userData 目录；CLI 与界面必须推导出同一个） */
+/** 通道目录（baseDir 用应用 userData 目录；CLI 与界面必须推导出同一个） */
 function paths(baseDir) {
-  return { cmd: path.join(baseDir, CMD_FILE), result: path.join(baseDir, RESULT_FILE) };
+  const root = path.join(baseDir, DIR);
+  return {
+    root: root,
+    pending: path.join(root, PENDING),
+    done: path.join(root, DONE),
+    consuming: path.join(root, CONSUMING)
+  };
 }
 
-/** 原子写：先写临时文件再改名（半截文件会被读成"无命令"，但绝不能读成半条命令） */
+/** 原子写：先写临时文件再改名（半截文件会被读成"没有命令"，但绝不能读成半条命令） */
 function writeJsonAtomic(file, obj) {
-  const tmp = file + '.tmp' + process.pid;
+  const tmp = file + '.tmp' + process.pid + '-' + Math.random().toString(36).slice(2, 8);
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf8');
   try {
     fs.renameSync(tmp, file);
@@ -58,19 +94,168 @@ function readJson(file) {
   } catch (err) { return null; }   // 不存在 / 半截 / 坏 JSON 一律当作"没有"
 }
 
-/** 写一条命令（调用方：CLI / MCP / 任何 AI 的脚本） */
+function ensureDirs(p) {
+  [p.root, p.pending, p.done, p.consuming].forEach((d) => fs.mkdirSync(d, { recursive: true }));
+}
+
+/**
+ * 新 token（**调用方生成**）。为什么由调用方生成而不是界面发号：
+ *   发号要"先问界面再下命令"多一个往返（界面没在跑时还会白等），而 token 只需要**唯一**，
+ *   pid + 计数 + 随机数已经足够（进程内自增防同毫秒重复）。
+ */
+let seq = 0;
+function newToken(prefix) {
+  seq = (seq + 1) % 100000;
+  return (prefix ? String(prefix) + '-' : '')
+    + process.pid.toString(36) + '-' + Date.now().toString(36) + '-' + seq.toString(36)
+    + '-' + crypto.randomBytes(3).toString('hex');
+}
+
+function tokenFile(p, token) { return path.join(p.pending, token + '.json'); }
+function doneFile(p, token) { return path.join(p.done, token + '.json'); }
+function consumingFile(p, token) { return path.join(p.consuming, token + '.json'); }
+
+/** 一条命令写进自己的槽（**绝不覆盖别人的**：文件名就是 token） */
 function writeCommand(baseDir, cmd) {
-  fs.mkdirSync(baseDir, { recursive: true });
-  writeJsonAtomic(paths(baseDir).cmd, cmd);
-  return cmd;
+  const p = paths(baseDir);
+  ensureDirs(p);
+  const token = (cmd && cmd.token) || newToken('cmd');
+  const body = Object.assign({}, cmd, { token: token });
+  writeJsonAtomic(tokenFile(p, token), body);
+  return body;
 }
 
-const readCommand = (baseDir) => readJson(paths(baseDir).cmd);
-const readResult = (baseDir) => readJson(paths(baseDir).result);
-const writeResult = (baseDir, result) => writeJsonAtomic(paths(baseDir).result, result);
+/** 调用方读**自己那条命令**的当前形态（诊断/断言用；不吃回执 ⇒ 不会与界面的认领抢） */
+const readPending = (baseDir, token) => {
+  const p = paths(baseDir);
+  return readJson(tokenFile(p, token)) || readJson(consumingFile(p, token));
+};
 
-function clearCommand(baseDir) {
-  try { fs.rmSync(paths(baseDir).cmd, { force: true }); } catch (err) { /* ignore */ }
+/**
+ * 界面侧：列出当前待处理的命令（按文件名排序 = token 里的时间序，先来先做）。
+ *
+ * ⚠️ 排序**必须在过滤之前**做（`filter` 会改变下标，先 map/filter 再 sort 拿到的是
+ *   「活下来的那几条之间」的顺序，而"先来先做"要的是**全部**文件名序）。
+ *   第一版写成了 `…sort().map(…).filter(Boolean)` ⇒ 只要有坏文件被丢掉，相对顺序就可能翻 ✗
+ *   （坏文件恰好排在前面时，两条好命令的先后会颠倒）。
+ *
+ * @param {(dropped:string[])=>void} [onDropped] 收到"当作没有命令"的文件名（半截/坏 JSON/没有 token）。
+ *   为什么要这个口子：丢弃**必须可见** —— 静默丢一条命令的表现是"调用方等到超时、而日志什么都没有"，
+ *   排查时无从下手（本工程最忌的"没做，却看不出没做"）。
+ * @returns {Array<object>} 可执行的命令对象（含 token）
+ */
+function listPending(baseDir, onDropped) {
+  const p = paths(baseDir);
+  const dropped = [];
+  let out = [];
+  try {
+    const names = fs.readdirSync(p.pending).filter((f) => f.slice(-5) === '.json').sort();
+    out = names.map((f) => {
+      const cmd = readJson(path.join(p.pending, f));
+      // 坏 JSON / 半截文件当"没有命令"（不能打断轮询）；缺 token 的同样不能派发 ——
+      // 回执是按 token 认的，没有 token 就没有"回执该写给谁"（派发它 = 调用方永远等不到）
+      if (!cmd || !cmd.token) { dropped.push(f); return null; }
+      return cmd;
+    }).filter(Boolean);
+  } catch (err) { out = []; }
+  if (dropped.length && typeof onDropped === 'function') onDropped(dropped);
+  return out;
 }
 
-module.exports = { CMD_FILE, RESULT_FILE, paths, writeCommand, readCommand, writeResult, readResult, clearCommand };
+/**
+ * 界面侧：**原子认领**一条命令。
+ * 返回 null = 这条已经被别人（或同一进程的上一拍）认领走了 ⇒ 调用方**不许**再执行它。
+ * 这是"同一条命令只被派发一次"的全部机制：认领靠 `rename`，而 rename 只有一个赢家 ✓。
+ */
+function claim(baseDir, token) {
+  const p = paths(baseDir);
+  ensureDirs(p);
+  try {
+    fs.renameSync(tokenFile(p, token), consumingFile(p, token));
+  } catch (err) {
+    return null;   // 已被认领 / 已消失 / 目录没了 —— 三种都一样：**不要重试**
+  }
+  return readJson(consumingFile(p, token));
+}
+
+/** 界面侧：写回执（按 token）；写完顺手把认领位清掉（正常情况下它只活一个来回） */
+function writeResult(baseDir, token, result) {
+  const p = paths(baseDir);
+  ensureDirs(p);
+  const body = Object.assign({}, result, { token: token });
+  writeJsonAtomic(doneFile(p, token), body);
+  try { fs.rmSync(consumingFile(p, token), { force: true }); } catch (err) { /* ignore */ }
+  return body;
+}
+
+/** 调用方：读**自己那条命令**的回执（读不到 = null ⇒ 判"没生效"） */
+const readResult = (baseDir, token) => readJson(doneFile(paths(baseDir), token));
+
+/** 调用方/界面都能用：丢掉某个 token 的痕迹（调用方读走回执后清理用） */
+function clear(baseDir, token) {
+  const p = paths(baseDir);
+  try { fs.rmSync(doneFile(p, token), { force: true }); } catch (err) { /* ignore */ }
+  try { fs.rmSync(tokenFile(p, token), { force: true }); } catch (err) { /* ignore */ }
+  try { fs.rmSync(consumingFile(p, token), { force: true }); } catch (err) { /* ignore */ }
+}
+
+/** 界面侧：清理孤儿（认领后一直没回执）与超量的 pending，返回**做了什么**（调用方决定要不要喊一声） */
+function sweep(baseDir, opts) {
+  const o = opts || {};
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const orphanMs = Number.isFinite(o.orphanMs) ? o.orphanMs : ORPHAN_MS;
+  const p = paths(baseDir);
+  const out = { orphans: [], dropped: [], donePruned: 0 };
+  let items = [];
+  try { items = fs.readdirSync(p.consuming); } catch (err) { items = []; }
+  items.forEach((f) => {
+    const abs = path.join(p.consuming, f);
+    try {
+      if (now - fs.statSync(abs).mtimeMs > orphanMs) { fs.rmSync(abs, { force: true }); out.orphans.push(f); }
+    } catch (err) { /* 单个失败不影响其余 */ }
+  });
+  let pending = [];
+  try { pending = fs.readdirSync(p.pending).sort(); } catch (err) { pending = []; }
+  if (pending.length > MAX_PENDING) {
+    const drop = pending.slice(0, pending.length - MAX_PENDING);
+    drop.forEach((f) => {
+      try { fs.rmSync(path.join(p.pending, f), { force: true }); out.dropped.push(f); }
+      catch (err) { /* ignore */ }
+    });
+  }
+  // 回执目录：调用方读走后一般自己删；这里兜底清掉**明显过期**的（界面没在跑时调用方也会超时放弃）
+  let doneItems = [];
+  try { doneItems = fs.readdirSync(p.done); } catch (err) { doneItems = []; }
+  doneItems.forEach((f) => {
+    const abs = path.join(p.done, f);
+    try {
+      if (now - fs.statSync(abs).mtimeMs > orphanMs) { fs.rmSync(abs, { force: true }); out.donePruned++; }
+    } catch (err) { /* ignore */ }
+  });
+  return out;
+}
+
+/** 调用方：等**自己那条命令**的回执。
+ *  ⚠️ 只认对应 token，且 `at` 必须落在本次等待窗口内 —— 旧实现是"只认 cmd 名 + 新鲜度"，
+ *  而**同名命令**在同一窗口里并发时两者会互相吃到对方的回执（多槽之后这一条必须一起改 ✗）。
+ *  真实事故记录：应用**没在运行**时，目录里留着的 4.5 小时前的旧回执被当成实时结果。
+ *  注入点：`sleep` 可注入（单测零等待覆盖分支），默认忙等 100ms。 */
+function waitForResult(baseDir, token, timeoutMs, sleep) {
+  const wait = typeof sleep === 'function' ? sleep : (() => { const t0 = Date.now(); while (Date.now() - t0 < 100) { /* spin */ } });
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    const r = readResult(baseDir, token);
+    const at = r && r.at ? Date.parse(r.at) : NaN;
+    const fresh = Number.isFinite(at) && at >= Date.now() - timeoutMs - 3000;
+    if (r && r.token === token && fresh) return r;
+    wait();
+  }
+  return null;
+}
+
+module.exports = {
+  CMD_FILE: DIR, RESULT_FILE: DIR,      // 兼容旧字段名（都指向同一个通道目录；不再有"单文件"语义）
+  DIR, ORPHAN_MS, MAX_PENDING,
+  paths, newToken, writeCommand, readPending, listPending, claim, writeResult, readResult, clear, sweep,
+  waitForResult
+};

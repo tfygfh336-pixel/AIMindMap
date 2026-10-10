@@ -1837,6 +1837,117 @@ function runSubprocess(args) {
   check('expand-depth 对不存在的子树报错', r.code !== 0 && /节点不存在/.test(r.out), r.out.trim().slice(0, 60));
 }
 
+/* ---------------- 46. AI 问答落盘 ask-apply（A：AI 产出直接落到节点与详情） ----------------
+ * 判据（对应任务书 A 的四条）：① 写入后**数据侧真的变**（`get --json` 读得到 qa 与详情）；
+ * ② 重复写入**追加不覆盖**（第二次把第一次留着）；③ `--as-child` 建子节点且标题/详情各就各位；
+ * ④ 非法输入（空回答 / 不存在的节点）**响亮拒绝且不写盘**。
+ * 为什么这里不写"界面侧也变了"：那一条只有冒烟（渲染层）能判 —— 见 `scripts/smoke/38-ai-落盘.js`。
+ *   ⚠️ 这个指针必须指向**真的存在**的文件：注释里写一个不存在的文件名，等于"照它去找、什么都找不到"，
+ *      与"没做"一样坏。本段上一版指向 `39-ai-落盘.js`（不存在，已改正）—— 写新指针前先确认文件在。
+ * （集成层只认数据侧真值：CLI 是写盘的唯一出口，`get --json` 是它的真值读口 ✓） */
+{
+  const qaCmds = require(path.join(ROOT, 'cli', 'commands', 'qa.js'));
+  const AT1 = '2026-10-10T12:00:00.000Z';
+  const AT2 = '2026-10-10T13:00:00.000Z';
+  run(['add', PROJ, 'a', '--topic', '问答落盘父节点', '--id', 'qa-p']);
+  const readQa = (id) => { try { return JSON.parse(run(['get', PROJ, id, '--json', '--detail']).out); } catch (e) { return null; } };
+
+  // 46.1 第一次写入：qa 记录 + 详情，两处都要真的变
+  r = run(['ask-apply', PROJ, 'qa-p', '--question', '三次握手为什么是三次？',
+    '--answer', '因为要同步双方的初始序号', '--model', 'deepseek-v4', '--at', AT1, '--json']);
+  let j1 = null;
+  try { j1 = JSON.parse(r.out); } catch (e) { j1 = null; }
+  const v1 = readQa('qa-p');
+  check('ask-apply 落盘：qa 记录字段齐备（q/a/at/model）且详情追加了回答',
+    ok(r.out) && !!j1 && j1.qaIndex === 0 && j1.qaCount === 1
+      && !!v1 && Array.isArray(v1.qa) && v1.qa.length === 1
+      && v1.qa[0].q === '三次握手为什么是三次？' && v1.qa[0].a === '因为要同步双方的初始序号'
+      && v1.qa[0].at === AT1 && v1.qa[0].model === 'deepseek-v4'
+      && typeof v1.detail === 'string' && v1.detail.indexOf('因为要同步双方的初始序号') >= 0
+      && v1.detail.indexOf('三次握手为什么是三次？') >= 0,
+    'qaCount=' + (j1 && j1.qaCount) + ' 读回条数=' + (v1 && v1.qa && v1.qa.length));
+
+  // 46.2 来源标记：追加的那一段必须**自己说明自己是 AI 写的、什么时候写的**（卖点 5 的"问答记录"）
+  check('ask-apply 落盘：详情里带来源标记与时间（🤖 AI 问答 · 本地时间）',
+    !!v1 && /🤖 AI 问答/.test(v1.detail) && /2026-10-10/.test(v1.detail) && /deepseek-v4/.test(v1.detail),
+    '详情片段=' + String(v1 && v1.detail).slice(0, 90));
+
+  // 46.3 第二次写入：**追加**，不是覆盖（第一次那条必须还在）
+  r = run(['ask-apply', PROJ, 'qa-p', '--question', '第二次提问', '--answer', '第二次回答', '--at', AT2]);
+  const v2 = readQa('qa-p');
+  check('ask-apply 重复写入 ⇒ 追加不覆盖（两条都在，详情里两段都在）',
+    ok(r.out) && !!v2 && v2.qa.length === 2 && v2.qa[0].a === '因为要同步双方的初始序号'
+      && v2.qa[1].a === '第二次回答'
+      && (v2.detail.match(/🤖 AI 问答/g) || []).length === 2,
+    '条数=' + (v2 && v2.qa && v2.qa.length) + ' 详情里标记数=' + ((v2 && v2.detail.match(/🤖 AI 问答/g)) || []).length);
+
+  // 46.4 完全相同的条目重复落盘 ⇒ **幂等**（不重复追加），且如实说"已存在"
+  r = run(['ask-apply', PROJ, 'qa-p', '--question', '第二次提问', '--answer', '第二次回答', '--at', AT2, '--json']);
+  const v3 = readQa('qa-p');
+  const idem = (function () { try { return JSON.parse(r.out).duplicate === true; } catch (e) { return false; } })();
+  check('ask-apply 同一条问答重复落盘 ⇒ 幂等（条数不变、duplicate:true）',
+    ok(r.out) && idem && v3.qa.length === 2, 'duplicate=' + idem + ' 条数=' + v3.qa.length);
+
+  // 46.5 --as-child：子节点标题 = 回答首行（截断），详情 = 全文；父节点的 qa 照记
+  //   首行**故意超过 40 字**（截断上限）：不超长的话这条断言就只是"标题等于首行"，
+  //   而"截断"这件事根本没被验到（第一版就是这么写的，读完数才发现首行只有 33 字 ⇒ 白验）
+  const line1 = '第一行就是标题所以它会被截断成比较短的一串文本用来验证截断确实生效'
+    + '而且这里还要再长一点才能真的越过四十个字的上限对不对';
+  const longAnswer = line1 + '\n第二行：这是正文，应该完整进 detail，不该出现在标题里。';
+  r = run(['ask-apply', PROJ, 'qa-p', '--question', '给我一个子节点', '--answer', longAnswer,
+    '--at', '2026-10-10T14:00:00.000Z', '--as-child', '--child-id', 'qa-child-1', '--json']);
+  const v4 = readQa('qa-p');
+  const child = readQa('qa-child-1');
+  check('ask-apply --as-child：子节点建成，标题取首行并截断、详情放全文、父节点 qa 也记上',
+    ok(r.out) && !!child && !!child.topic && child.topic.length <= 41 && /…$/.test(child.topic)
+      && child.topic.indexOf('第二行') < 0 && child.detail.indexOf('第二行') >= 0
+      && !!v4 && v4.qa.length === 3 && Array.isArray(child.qa) && child.qa.length === 1,
+    '首行=' + line1.length + ' 字 ⇒ 标题=「' + (child && child.topic) + '」('
+      + (child && child.topic && child.topic.length) + ' 字) 父 qa='
+      + (v4 && v4.qa && v4.qa.length) + ' 子 qa=' + (child && child.qa && child.qa.length));
+
+  // 46.6 非法输入：空回答 ⇒ 响亮拒绝，且**盘上一点没变**（不是"报了错但还是写了"）
+  const beforeBad = fs.readFileSync(projJson(PROJ), 'utf8');
+  r = run(['ask-apply', PROJ, 'qa-p', '--answer', '   ', '--at', '2026-10-10T15:00:00.000Z']);
+  const afterBad = fs.readFileSync(projJson(PROJ), 'utf8');
+  check('ask-apply 空回答 ⇒ 报错且盘上零改动（落一条空记录比报错危险得多）',
+    r.code !== 0 && /回答为空/.test(r.out) && beforeBad === afterBad,
+    'exit=' + r.code + ' 盘上未变=' + (beforeBad === afterBad));
+
+  // 46.7 非法输入：节点不存在 ⇒ 报错、盘上零改动
+  r = run(['ask-apply', PROJ, 'no-such-node-xyz', '--answer', '随便', '--at', AT1]);
+  check('ask-apply 节点不存在 ⇒ 报错且盘上零改动',
+    r.code !== 0 && /节点不存在/.test(r.out) && fs.readFileSync(projJson(PROJ), 'utf8') === beforeBad,
+    'exit=' + r.code + ' ' + r.out.trim().slice(0, 60));
+
+  // 46.8 回答里的 HTML 元字符必须被转义（详情是 innerHTML 注入的 ⇒ 不转义就是注入面）
+  r = run(['ask-apply', PROJ, 'qa-p', '--answer', '<img src=x onerror=alert(1)> 与 a&b',
+    '--at', '2026-10-10T16:00:00.000Z', '--json']);
+  const v5 = readQa('qa-p');
+  check('ask-apply 转义回答里的 HTML 元字符（详情以 innerHTML 注入，不转义 = 注入面）',
+    ok(r.out) && !!v5 && v5.detail.indexOf('&lt;img src=x onerror=alert(1)&gt;') >= 0
+      && v5.detail.indexOf('<img src=x') < 0 && v5.detail.indexOf('a&amp;b') >= 0,
+    '片段=' + String(v5 && v5.detail).slice(-140).replace(/\n/g, ' '));
+
+  // 46.9 写盘闸门仍然生效：造一条坏 qa（缺 at）直接写盘 ⇒ validate 必须判红
+  //   ⚠️ 索引不能写死：断言里用**建记录时的实际下标**（写死过一次，紧接着加了一条断言就漂了）
+  {
+    const d = readProj(PROJ);
+    const qaList = nodeOf(d, 'qa-p').qa;
+    const badIndex = qaList.length;
+    qaList.push({ q: '坏记录', a: '有回答但没有 at' });
+    const p = projJson(PROJ);
+    const good = fs.readFileSync(p, 'utf8');
+    fs.writeFileSync(p, JSON.stringify(d, null, 2), 'utf8');
+    const bad = run(['validate', PROJ]);
+    fs.writeFileSync(p, good, 'utf8');   // 立刻还原（后面的断言还要用这个项目）
+    check('qa 形状闸门：缺 at 的记录被判红（新字段真的在校验，不是只写进了 schema 注释）',
+      bad.code !== 0 && bad.out.indexOf('qa[' + badIndex + '].at') >= 0,
+      '坏记录下标=' + badIndex + ' 报文=' + bad.out.trim().slice(0, 90));
+  }
+  void qaCmds;   // 只 require 一次确认命令模块可加载（命令体本身经 run() 走 registry）
+}
+
 /* ---------------- 清理 ---------------- */
 run(['remove', PROJ2, 'root']);
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ6), { recursive: true, force: true }); } catch (e) {}

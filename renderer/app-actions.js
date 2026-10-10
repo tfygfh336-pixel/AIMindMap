@@ -611,6 +611,16 @@
   MM.closeMapPage = closeMapPage;      // **真关**导图页：先拦未保存编辑（保存成功才卸页）
   MM.setConfirmStub = setConfirmStub;  // 自动化用：换掉确认框（默认 window.confirm）
   MM.onProjectDiskChange = onProjectDiskChange;
+  /** 请求一次"按磁盘重读"（**不经过 fs.watch 的 300ms 防抖**）。
+   *  谁需要它：主进程写完盘、并且**已经知道**渲染层内存落后了的时候
+   *  （A 的问答落盘：`app:ask-apply` 写完立刻发 `app:project-reread`）——
+   *  被动等 fs.watch 会让界面上"晚一拍"才看见新子节点，而断言要判的正是"界面侧也变了"。
+   *  判定**仍然是 onProjectDiskChange 那一套**（有脏改动则拒绝覆盖、世代不一致则丢弃）：
+   *  这里只是把"该重读了"说出口，**不新增第二套冲突规则** ✓ */
+  function requestReread() {
+    return onProjectDiskChange(state.project ? state.project.name : null);
+  }
+  MM.requestReread = requestReread;
   MM.importMarkdown = importMarkdown;
   MM.exportMarkdown = exportMarkdown;
 })();

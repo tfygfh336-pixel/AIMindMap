@@ -40,6 +40,7 @@
 | `expand-depth` | expand-depth <项目> [--depth N] [--id 子树根id] |
 | `remove` | remove <项目> <id> [--clean-assoc] [--clean-links] |
 | `clone` | clone <项目> <源id> <新父id> [--deep] |
+| `ask-apply` | ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json] |
 | `import-md` | import-md <项目> <md文件> [--parent id] |
 | `import-project` | import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] |
 | `export-md` | export-md <项目> <输出目录> [--format heading|list] [--with-detail] |
@@ -220,6 +221,14 @@ node cli/mm-cli.js remove <项目> <id> [--clean-assoc] [--clean-links]
 
 ```
 node cli/mm-cli.js clone <项目> <源id> <新父id> [--deep]
+```
+
+### ask-apply
+
+把一次 AI 问答落进节点（**一次原子写**完成三件事）：追加 `qa` 记录（`{q,a,at,model?}`，追加不覆盖、完全相同的条目幂等）、把带来源标记与时间的问答追加到 detail 末尾（HTML 存储）、`--as-child` 时再建一个子节点（标题取回答首行截断、详情放全文）。空回答**响亮拒绝**（不许落一条空记录）。`--at` 由调用方给（界面上显示的时间就是落盘时间）
+
+```
+node cli/mm-cli.js ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json]
 ```
 
 ### import-md

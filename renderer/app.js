@@ -169,6 +169,14 @@
     if (window.desktop.onProjectDiskChange && MM.onProjectDiskChange) {
       window.desktop.onProjectDiskChange((filename) => MM.onProjectDiskChange(filename));
     }
+    // A（AI 产出直接落到节点）：问答落盘后**立刻**对齐内存树。
+    // 为什么复用 onProjectDiskChange 而不是自己改内存：那条路已经有脏冲突保护、
+    // 世代校验与"外部改了别覆盖人的编辑"三条判定（重写一遍必然漏一条 ✗）。
+    // 为什么还要显式触发：fs.watch 有 300ms 防抖 ⇒ 不触发的话界面上会"晚一拍"才看见
+    // 新子节点，而断言要判的就是"界面侧也变了"（一条 300–600ms 的延迟足以让断言随机红）。
+    if (MM.requestReread) {
+      window.desktop.on('app:project-reread', () => MM.requestReread());
+    }
   }
 
   /* ================= 对外 API（供 editor.js / 冒烟断言 / 未来 AI 注入使用） ================= */

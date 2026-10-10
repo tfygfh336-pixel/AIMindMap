@@ -328,6 +328,9 @@ module.exports = {
         if (Array.isArray(n.images) && n.images.length) node.images = JSON.parse(JSON.stringify(n.images));
         if (Array.isArray(n.files) && n.files.length) node.files = JSON.parse(JSON.stringify(n.files));
         if (Array.isArray(n.links) && n.links.length) node.links = JSON.parse(JSON.stringify(n.links));
+        // AI 问答记录：漏了它会让"复制出来的节点看起来从没被 AI 看过"（与 tags/files 那次的同一类缺陷）
+        if (Array.isArray(n.qa) && n.qa.length) node.qa = JSON.parse(JSON.stringify(n.qa));
+        if (Array.isArray(n.tags) && n.tags.length) node.tags = n.tags.slice();
         if (ctx.args.deep) node.children = (n.children || []).map(deepCopy);
         return node;
       };

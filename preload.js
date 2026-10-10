@@ -25,6 +25,9 @@
  *                                        question}）。**异步**、实测 20+ 秒；冒烟/`MM_ASK_STUB=1` 时返回
  *                                        `stub:true` 的桩（绝不冒充真答案）。走 `cli ask` ⇒
  *                                        "AI 收到什么"只有一处定义
+ *   desktop.app.askApply(name, nodeId, payload) → 把 AI 的回答**落进节点与详情**（A：问答记录 `qa`
+ *                                        + detail 追加 + 可建子节点）。**写操作只经 CLI**（`ask-apply`：
+ *                                        闸门 + 原子写 + 写后回读），返回回读到的 `qa/detail` 真值
  *   desktop.on(channel, cb)            → 订阅菜单事件
  * ============================================================ */
 'use strict';
@@ -60,6 +63,10 @@ contextBridge.exposeInMainWorld('desktop', {
       ipcRenderer.invoke('app:unlink-nodes', projectName, fromId, toProject, toId),
     nodes: (projectName) => ipcRenderer.invoke('app:nodes', projectName),
     ask: (projectName, nodeId, opts) => ipcRenderer.invoke('app:ask', projectName, nodeId, opts),
+    /* 功能 1 的下半截（A）：把 AI 的回答**落进节点与详情**（写操作走 CLI `ask-apply` 闸门）。
+     * payload = { answer, question?, model?, at?, asChild? }；返回 { ok, qa, detail, child, error? } ——
+     * `qa/detail` 是**写后回读**的真值（渲染层据此同步内存，不靠猜）。 */
+    askApply: (projectName, nodeId, payload) => ipcRenderer.invoke('app:ask-apply', projectName, nodeId, payload),
     // 功能 5a：把一个大文件导入成**新项目**（拖拽入口；菜单入口在主进程里直接调同一个实现）
     importDoc: (filePath) => ipcRenderer.invoke('app:import-doc', filePath),
     // Electron ≥32 起 `File.path` 已被移除 ⇒ 取拖拽文件的真实路径**只有** webUtils 这一条路

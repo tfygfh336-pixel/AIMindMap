@@ -20,7 +20,7 @@ const os = require('os');
 const control = require('../../src/control.js');
 
 /**
- * **慢命令的两步式执行骨架**：先探活，再下慢命令（纯逻辑；`wait`/`send` 注入 ⇒ 单测零等待覆盖全部分支）。
+ * **慢命令的两步式执行骨架**：先探活，再下慢命令（纯逻辑；`probe`/`wait`/`send` 注入 ⇒ 单测零等待覆盖全部分支）。
  *
  * 为什么必须分两步（实测取证 2026-10-10 本机）：
  *   · 修前 `dsh-prefill` 只有一个 12s 窗口，界面**没在跑**时也要等满它 —— 实测 12.56s，
@@ -35,20 +35,27 @@ const control = require('../../src/control.js');
  * 边界（如实写）：探活与下慢命令之间界面可能刚好退出 ⇒ 那时会白等一个 PREFILL_MS 才报
  * "界面在运行但没有回执"。这是有意的取舍：宁可慢一次，也不把"没干活"说成"干完了"。
  *
- * @param {()=>void} probeSend 发出**只读探针**命令（写 mm-control.json）
- * @param {(dir:string, cmd:string, ms:number)=>object|null} wait 等一拍回执
- * @param {()=>void} send 发出**慢命令**（探活通过后才调用）
- * @returns {{receipt:object|null, phase:'final'|'not-running'|'no-receipt'}}
+ * ⚠️ `probe` / `send` 收的是**一个 token**：`probe(token)` 发出只读探针命令（写 pending/<token>.json），
+ *   `send(token)` 发出慢命令。**回执按 token 认**（多槽协议，见 src/control.js）——
+ *   于是"两个 CLI 进程同时下命令"不会互相覆盖，也不会互相吃到对方的回执 ✓。
+ *
+ * @param {(token:string)=>void} probe 发出**只读探针**命令
+ * @param {(dir:string, token:string, ms:number)=>object|null} wait 等一拍回执（按 token）
+ * @param {(token:string)=>void} send 发出**慢命令**（探活通过后才调用）
+ * @returns {{receipt:object|null, phase:'final'|'not-running'|'no-receipt', token:string}}
  */
-function runAfterLivenessProbe(probeSend, wait, send, dir, probeCmd, cmd, timeoutMs) {
+function runAfterLivenessProbe(probe, wait, send, dir, probeCmd, cmd, timeoutMs) {
+  const token = control.newToken(cmd);
   if (probeCmd) {
-    probeSend();
-    const alive = wait(dir, probeCmd, UI_ACK_MS);
-    if (!alive) return { receipt: null, phase: 'not-running' };
+    probe(token);
+    const alive = wait(dir, token, UI_ACK_MS);
+    if (!alive) return { receipt: null, phase: 'not-running', token: token };
   }
-  send();
-  const receipt = wait(dir, cmd, timeoutMs || PREFILL_MS);
-  return receipt ? { receipt: receipt, phase: 'final' } : { receipt: null, phase: 'no-receipt' };
+  send(token);
+  const receipt = wait(dir, token, timeoutMs || PREFILL_MS);
+  return receipt
+    ? { receipt: receipt, phase: 'final', token: token }
+    : { receipt: null, phase: 'no-receipt', token: token };
 }
 
 /** 探活窗口：与另三条命令同一口径（2.5s）—— 只读探针没有慢路径，界面没在跑时它必然落空。 */
@@ -77,18 +84,27 @@ function userDataDir() {
 /**
  * 等回执（轮询；界面每 400ms 扫一次命令，2.5s 足够，超时即判"没生效"）。
  *
+ * ⚠️ **只认自己那个 token**（多槽协议）：旧实现按 `<cmd>` 名认回执 —— 单槽时够用，
+ *   多槽之后两条**同名**命令并发时会互相吃到对方的回执（那就是"至少一个拿到错回执" ✗）。
+ *   token 由 `newToken()` 生成（pid + 时间 + 随机），并发安全 ✓
+ *
+ * @param {string} token 本次调用生成的命令序号
  * @param {number} timeoutMs 本次等待窗口（见 UI_ACK_MS / PREFILL_MS）
  */
-function waitForResult(baseDir, wantCmd, timeoutMs) {
+function waitForResult(baseDir, token, timeoutMs) {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
-    const r = control.readResult(baseDir);
+    const r = control.readResult(baseDir, token);
     // ⚠️ 回执必须**新鲜** ✗ —— 本机真实事故：应用**没在运行**时，目录里留着的 4.5 小时前的旧回执
     //    被当成实时结果 ⇒ `dsh-status` 报 "running"、界面其实早关了 ✗✓（工程最忌的"假绿"）。
-    //    判据：回执自带的 `at` 必须落在**本次等待窗口**内 ✓（该字段本来就有 ⇒ 不改函数签名 ✓）
+    //    判据：回执自带的 `at` 必须落在**本次等待窗口**内 ✓
     const at = r && r.at ? Date.parse(r.at) : NaN;
     const fresh = Number.isFinite(at) && at >= Date.now() - timeoutMs - 3000;
-    if (r && r.cmd === wantCmd && fresh) return r;
+    if (r && r.token === token && fresh) {
+      // 读走即清理（回执留在盘上只会变成下次的"陈旧回执"素材）
+      try { control.clear(baseDir, token); } catch (e) { /* 清不掉不影响本次结论 */ }
+      return r;
+    }
     // 忙等一小会儿：本命令是人工/AI 一次性调用，不值得为它引入异步框架
     const t0 = Date.now();
     while (Date.now() - t0 < 100) { /* spin */ }
@@ -99,8 +115,9 @@ function waitForResult(baseDir, wantCmd, timeoutMs) {
 /** 两个方向的命令共用同一套"下命令 + 等回执 + 没回执就报错"的骨架 */
 function driveUI(ctx, cmd, wantOn, msgs) {
   const dir = userDataDir();
-  control.writeCommand(dir, { cmd: cmd, on: wantOn, at: new Date().toISOString(), by: 'cli' });
-  const res = waitForResult(dir, cmd, UI_ACK_MS);
+  const token = control.newToken(cmd);
+  control.writeCommand(dir, { cmd: cmd, on: wantOn, token: token, at: new Date().toISOString(), by: 'cli' });
+  const res = waitForResult(dir, token, UI_ACK_MS);
   if (!res || !res.ok) {
     // 两种失败必须分清（否则用户拿到的建议是错的 ✗）：
     //   · **界面拒绝了**（有回执、带原因，如"有未保存编辑"）⇒ 照实转述那个原因；
@@ -110,7 +127,7 @@ function driveUI(ctx, cmd, wantOn, msgs) {
       + '本命令只驱动**正在运行的**界面，不会自己去启动它');
   }
   if (ctx.args.json) {
-    ctx.outJson({ ok: true, cmd: cmd, state: res.state, dir: dir });
+    ctx.outJson({ ok: true, cmd: cmd, state: res.state, token: token, dir: dir });
     return;
   }
   ctx.out(wantOn ? msgs.on : msgs.off);
@@ -159,17 +176,13 @@ module.exports = {
     const dir = userDataDir();
     // ① 先发**只读探针**（dsh-status）并等回执：它当场可答、没有慢路径
     // ② 探活通过才把文本发出去（dsh-prefill），并给足 PREFILL_MS
+    //    ⚠️ 探针与慢命令**共用同一个 token**（同一个调用方、同一个等待位）—— 于是"探活的回执"
+    //       与"慢命令的回执"不会互相串（旧实现按 cmd 名认，两条同名命令并发时会串 ✗）。
     const r = runAfterLivenessProbe(
-      () => { control.writeCommand(dir, { cmd: 'dsh-status', at: new Date().toISOString(), by: 'cli' }); },
+      (token) => { control.writeCommand(dir, { cmd: 'dsh-status', token: token, at: new Date().toISOString(), by: 'cli' }); },
       waitForResult,
-      () => {
-        // 写慢命令前先把探针那一拍**放过去**：命令通道只有一个槽，界面读走探针后
-        // "写回执 + 清命令"是同一 tick 里的两步 —— 若我们的写恰好落在这两步之间，
-        // 慢命令会被界面的 clearCommand 顺手抹掉（概率极低，但后果是白等一整个窗口）。
-        // 200ms 的让步远小于界面的 400ms 轮询周期，正常路径的耗时几乎不变。
-        const t0 = Date.now();
-        while (Date.now() - t0 < 200) { /* spin：本命令是人工/AI 一次性调用，不值得引入异步框架 */ }
-        control.writeCommand(dir, { cmd: 'dsh-prefill', text: text, at: new Date().toISOString(), by: 'cli' });
+      (token) => {
+        control.writeCommand(dir, { cmd: 'dsh-prefill', text: text, token: token, at: new Date().toISOString(), by: 'cli' });
       },
       dir, 'dsh-status', 'dsh-prefill', PREFILL_MS);
     if (r.phase === 'not-running') {
@@ -186,7 +199,7 @@ module.exports = {
     // 也必须**响亮**失败，而不是去读一个 null（那就成了本工程最忌的"静默通过"）
     if (!res) throw new Error('内部错误：等待回执返回了空结果（phase=' + r.phase + '）');
     if (!res.ok) ctx.error('没有送进侧栏：' + (res.err || '未知原因'));
-    if (ctx.args.json) { ctx.outJson({ ok: true, result: res.result || null }); return; }
+    if (ctx.args.json) { ctx.outJson({ ok: true, token: r.token, result: res.result || null }); return; }
     ctx.out('已送进侧栏输入框：' + ((res.result && res.result.textLen) || text.length) + ' 字（'
       + ((res.result && res.result.tag) || '?') + '）—— 到侧栏按发送即可 ✓');
   },
@@ -198,8 +211,9 @@ module.exports = {
    * 窗口沿用第一段口径（2.5s）：它是**只读且当场可答**的，没有"起服务"这种慢路径。 */
   'dsh-status'(ctx) {
     const dir = userDataDir();
-    control.writeCommand(dir, { cmd: 'dsh-status', at: new Date().toISOString(), by: 'cli' });
-    const res = waitForResult(dir, 'dsh-status', UI_ACK_MS);
+    const token = control.newToken('dsh-status');
+    control.writeCommand(dir, { cmd: 'dsh-status', token: token, at: new Date().toISOString(), by: 'cli' });
+    const res = waitForResult(dir, token, UI_ACK_MS);
     if (!res || !res.ok || !res.status) {
       ctx.error('主界面没有响应或读不到状态（' + dir + '）：请确认 AI MindMap 正在运行');
     }
@@ -232,6 +246,7 @@ module.exports = {
   // 能在**零等待**下被覆盖，而窗口常量本身成为可断言的契约（必须覆盖 app 侧最坏路径）。
   __waitForResult: waitForResult,
   __runAfterLivenessProbe: runAfterLivenessProbe,
+  __driveUI: driveUI,
   __UI_ACK_MS: UI_ACK_MS,
   __PREFILL_MS: PREFILL_MS,
   __userDataDir: userDataDir

@@ -66,6 +66,10 @@
         // 本机文件夹路径（可选）：从文件夹结构建的树，每个结构节点挂一条。
         // 与 tags/links 同一档：skeleton（最窄那档）才省掉它 —— AI 靠它知道"这个节点对应哪个真目录"。
         localPath: withLinks && n.localPath ? n.localPath : undefined,
+        // AI 问答记录（可选）：与 tags/links 同一档（skeleton 才省掉）。**brief 不省** ——
+        // 它是"这段结论是哪次 AI 交流得来的"，属于导航信息而不是长文本（answer 可能长，
+        // 所以真嫌大就上 skeleton，别用 brief 半省）。
+        qa: withLinks && Array.isArray(n.qa) && n.qa.length ? n.qa : undefined,
         children: (n.children || []).map((c) => ({
           id: c.id, topic: c.topic, children: (c.children || []).length
         }))
@@ -109,6 +113,11 @@
     if (node.files && node.files.length) out.files = node.files;
     if (node.links && node.links.length) out.links = node.links;
     if (node.localPath) out.localPath = node.localPath;   // 本机文件夹路径（界面点击即打开该目录）
+    // AI 问答记录（可选，§2.7）：**总是带出**，不挂在 `opts.detail` 下 ——
+    // `get --json` 是"这个节点的实况"，而"这段详情是哪次 AI 交流写的"属于实况的一部分；
+    // 挂到 detail 下会让 `get --json`（不带 --detail）看不出它，而 MCP 的 get_node 正带 --detail，
+    // 两条路读到的字段集就会分叉（本工程反复治的"同一件事两处表达"）。
+    if (Array.isArray(node.qa) && node.qa.length) out.qa = node.qa;
     out.path = tree.pathTo(root, id) || [id];
     return out;
   }
