@@ -296,11 +296,23 @@ const STEPS = [
       + '必须有真判据（`elementFromPoint` 命中测试 / `scanRegion` 等真帧像素）或一行显式豁免'
       + '（`判据-豁免: <原因>`）—— 只用 rect / 类名 / `style.display` 判"可见"的断言对**裁切与遮挡是盲的**'
       + '（实测：同一元素被 `overflow:hidden` 裁掉时 rect 读数与正常显示完全相同，而真帧像素 81 vs 768）',
-    // 纯文本扫描（36 个冒烟域文件），实测 ≈0.3 s ⇒ 按本文件惯例取实测的十几倍仍是 10 s 档（廉价门禁）
+    // 纯文本扫描（37 个冒烟域文件，实测 ≈0.3 s）⇒ 按本文件惯例取实测的十几倍仍是 10 s 档（廉价门禁）
     budgetMs: 10000
   },
   {
-    step: 5, gate: 'G3', label: '单元测试',
+    step: 5, gate: 'V2', label: '冒烟域内自收尾',
+    cmd: 'node scripts/smoke-state-check.js', shown: '`node scripts/smoke-state-check.js`',
+    covers: '冒烟**域内自收尾**（跨域状态污染）：凡是会**留下浮层/模态**的动作（`addNode`/`addTopic` 会顺手'
+      + '打开「编辑节点」框；`openFilePreview`/`openAudit`/`openPalette`/… 各自留下浮层），域末必须给出收尾'
+      + '（共用入口 `closeDialogs(ctx)`，或产品自己的关闭口）或写一行豁免 —— 而"每域隔离"收不掉 DOM 模态'
+      + '（它只还原项目数据 + 重开项目）⇒ 模态会跨域存活、盖住后面域的画布'
+      + '（实测：域 16 一处漏关 ⇒ 域 36/37 连锁红 11 条，而那两个文件一行都没改过 ✗）。'
+      + '运行时兜底是 main.js 的"域开始的干净前置"（有残留 ⇒ 该域判红并**点名是哪个域留下的**）',
+    // 纯文本扫描（37 个文件，与 V1 同量级）⇒ 10 s 档
+    budgetMs: 10000
+  },
+  {
+    step: 6, gate: 'G3', label: '单元测试',
     // 与 `npm test` 等价，**外加** JSON reporter：把用例数交给第 6 步（doc-facts），
     // 于是整条链只需要跑**一次** vitest（以前 doc-facts 会再跑一次：慢约 5 s，
     // 而且正是那一次在负载高时偶发取不到真值、把 G6 判红）。
@@ -313,7 +325,7 @@ const STEPS = [
     resultsFile: TEST_RESULTS
   },
   {
-    step: 6, gate: 'G6', label: '文档数字与版本一致',
+    step: 7, gate: 'G6', label: '文档数字与版本一致',
     cmd: 'node scripts/doc-facts.js --check', shown: '`node scripts/doc-facts.js --check`',
     covers: '文档数字与真值一致、版本号四处一致',
     // 20 s：正常情况（采用链上用例数）约 0.7 s；**交接失效退化为自跑 vitest 时约 9.2 s**
@@ -322,25 +334,25 @@ const STEPS = [
     useUnitTests: true // 由第 4 步传入用例数，省掉这里的 vitest 重跑
   },
   {
-    step: 7, gate: 'G7', label: '生成物未过期',
+    step: 8, gate: 'G7', label: '生成物未过期',
     cmd: null, shown: '同上（重算比对）',
     covers: '生成物是否过期（`docs/CLI.md` 与 registry 一致）',
     budgetMs: 0 // 与 G6 同一次调用，单独不占预算
   },
   {
-    step: 8, gate: 'G4', label: 'CLI 集成断言',
+    step: 9, gate: 'G4', label: 'CLI 集成断言',
     cmd: 'node scripts/cli-integration.js', shown: '`node scripts/cli-integration.js`',
     covers: '全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理）',
     budgetMs: 30000
   },
   {
-    step: 9, gate: 'G2', label: '数据校验',
+    step: 10, gate: 'G2', label: '数据校验',
     cmd: 'node cli/mm-cli.js validate-all', shown: '`node cli/mm-cli.js validate-all`',
     covers: '全部项目结构 + 悬挂链接 + 环',
     budgetMs: 15000
   },
   {
-    step: 10, gate: 'G5', label: '冒烟（Electron 无头）',
+    step: 11, gate: 'G5', label: '冒烟（Electron 无头）',
     cmd: 'npm run smoke', shown: '`npm run smoke`',
     covers: '渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**',
     // 预算调整史（每次都带实测依据 ✓）：

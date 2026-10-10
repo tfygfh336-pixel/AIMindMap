@@ -830,6 +830,10 @@ function checkRegistry(root, registryMd) {
   // 而文档一直声称"值必须在取值表内"：声称 ≠ 实现，实测被复核抓到）
   checkLayerValues(headerEntries).forEach((p) => problems.push(p));
 
+  // ⑮ 稳定性表覆盖：契约里漏一个对象 = 谁都不知道能不能依赖它
+  //（⚠️ 标记只写这一处：判定标题与导出注释里都**不许**再出现 ⑮，否则 G9 判"标记重复"——实测踩到 ✗）
+  checkStabilityCoverage(root).forEach((p) => problems.push(p));
+
   return { problems, reg, docs };
 }
 
@@ -846,6 +850,121 @@ function checkLayerValues(entries) {
           + '要么把新层加进 `LAYER_ORDER` —— 新增层要**同批**改 `SKILL.md` B3 的取值表那一行' });
     }
   });
+  return problems;
+}
+
+/* ---------------- CLI 稳定性表的覆盖（本判定见 `checkRegistry()` 的 ⑮）----------------
+ * `cli/registry.js` 的每条命令都要落在 `docs/EXTENSIONS.md` §1.2 稳定性表的一级里。
+ * ⚠️ 本段标题**故意不带标记**：判定标记的**唯一来源**是 `checkRegistry()` 里的那一行
+ *    —— 同一段里再写一个标记会被 G9 判"标记重复"（实测踩到 ✗）。
+ * 缺陷取证（实测清单，2026-10-10）：`docs/EXTENSIONS.md` §1.2 的稳定性三级表里
+ *   **一条命令都不在**的有 12 条 —— `import-project`（上一批盘点里唯一被发现的那条）
+ *   外加同批清点出来的 `ask`/`ask-apply`/`theme-layout`/`expand-depth`/`ui-state`/
+ *   `sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`/`changelog`。
+ * 病根：这张表是**手写**的，而"命令有哪些"的真值在 `cli/registry.js` —— 两边没有守望者：
+ *   新增命令时忘了改表，**没有任何东西会红**（而这张表恰恰是"外部工具/AI 能依赖哪一级"的契约 ✗）。
+ * 与判定 ⑪（数据契约必须覆盖 schema 字段）同型：契约里漏一个对象，接手者就永远不知道它存在。
+ * 口径：**覆盖**（每条命令至少落在一级里），不判"放哪一级"—— 那是人的判断（表里写明取舍）。 */
+const STABILITY_DOC = 'docs/EXTENSIONS.md';
+/** 三级表所在的段：`## 1. 可依赖的稳定接口` 之下的 `### 1.2 CLI 命令…` 到下一个标题。
+ *  ⚠️ 标题形态是 `### 1.2 CLI 命令（稳定的自动化入口）` —— 编号与后面的字之间**没有空格**，
+ *     所以用 `\b` 收口而不是 `\s`（实测：写成 `1\.2\s` 会找不到这一段 ⇒ 判成"一条都没解析到"⇒ 假红）✗ */
+function stabilitySection(md) {
+  const lines = String(md).split(/\r?\n/);
+  const start = lines.findIndex((l) => /^###\s*1\.2\b/.test(l));
+  if (start < 0) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^###\s/.test(lines[i]) || /^##\s/.test(lines[i])) { end = i; break; }
+  }
+  return lines.slice(start, end);
+}
+
+/** 从稳定性表里抽命令名：只认**每个 `|` 行**里的 `` `名字` ``，且名字必须像命令名（小写+连字符）。
+ *  为什么要这么窄：1.2 节里还有正文与引用块，它们会提到 `.md` / `sidebar-only on` 这类词 ——
+ *  宽口径会把解释性文字当成"登记过了"，于是**漏登记的命令照样绿**（本工程踩过同型坑）✗。
+ *  ⚠️ 切分只看**分隔符**，不要拿空白当分隔符：命令名里本来就有 `-`，而表格里用 `</br>` 换行 ——
+ *     `backlinks`/`...` 与 `ask-apply` 都曾被切坏 ⇒ 判成"漏登记 12 条"的**假红**（实测踩到）✗
+ *  ⚠️ 剔除 `</br>` 之类的 HTML 片段：它们不是命令名，但会混进同一个 token。 */
+function parseStabilityTable(md) {
+  const sec = stabilitySection(md);
+  if (!sec) return null;
+  const cmds = new Set();
+  const levels = [];
+  sec.forEach((line) => {
+    if (!/^\s*\|/.test(line)) return;                       // 只认表格行（正文/引用块一律不看）
+    const cells = line.split('|');
+    if (cells.length < 4) return;                           // 表头分隔行 / 不完整行
+    const level = cells[1].replace(/\*\*/g, '').trim();
+    if (!level || /^-+$/.test(level)) return;               // `|---|` 分隔行
+    levels.push(level);
+    // 在每个 `|` 行里直接**逐个匹配反引号里的名字**，不切分、不拼接：
+    // 表里同一格内既有可能有说明词（"数据读写类："）也有命令名，靠"切分"必然把说明词粘到命令名上
+    // （实测：`read` 因为前面粘了"数据读写类："而判成漏登记 ⇒ 假红 ✗）。
+    const cellText = cells.slice(2).join('|').replace(/\*\*/g, '');
+    for (const m of cellText.matchAll(/`([^`\n]+)`/g)) {
+      const name = m[1].trim();
+      if (/^[a-z][a-z0-9-]*$/.test(name)) cmds.add(name);   // 像命令名的才算（`.md` / `sidebar-only on` 不算）
+    }
+  });
+  return { cmds, levels };
+}
+
+/** 判定函数（标记在 `checkRegistry()` 里，见那里的 ⑮）：注册表里的每条命令都必须出现在稳定性表的某一级里
+ *  （采不到真值 ⇒ 红）。
+ *  @param {string} root 工程根（找 `docs/EXTENSIONS.md`）
+ *  @param {string[]} [namesIn] 命令真值清单：不给就从本脚本所在工程的 `cli/registry.js` 现场读。
+ *         给它是**为了单测能验判定本身**（假工程里没有真注册表）；生产路径永远不传 ✓ */
+function checkStabilityCoverage(root, namesIn) {
+  const problems = [];
+  const docPath = path.join(root, STABILITY_DOC);
+  if (!fs.existsSync(docPath)) {
+    problems.push({ kind: 'stability', rel: STABILITY_DOC,
+      msg: '这份文档不存在 —— 稳定性等级表是"外部工具/AI 能依赖哪一级"的契约，缺了它门禁无法判定（**采不到真值＝红**）' });
+    return problems;
+  }
+  let md = '';
+  try { md = fs.readFileSync(docPath, 'utf8'); }
+  catch (e) {
+    problems.push({ kind: 'stability', rel: STABILITY_DOC,
+      msg: '读不出来（' + (e.code || '?') + '）—— **采不到真值＝红**，不许静默跳过' });
+    return problems;
+  }
+  const table = parseStabilityTable(md);
+  if (!table || !table.cmds.size) {
+    problems.push({ kind: 'stability', rel: STABILITY_DOC,
+      msg: '§1.2 的稳定性三级表里**一条命令都没解析到**（表被删/被改成别的写法？）—— '
+        + '本判定的真值就在这张表里，解析不到等于没判（**采不到真值＝红**）' });
+    return problems;
+  }
+  // 真值：注册表（`cli/registry.js` 的 list）——**运行时可数**，不是正则近似。
+  // ⚠️ 加载路径固定用**本脚本所在工程**（`path.resolve(__dirname,'..')`），不用入参 `root`：
+  //    单测里的假工程没有真注册表，用假根去找会 require 到不存在的文件（或更坏：找到别处一份）✗。
+  //    需要"换一份命令清单"来验判定的调用方，走下面第三个入参 `namesIn`（依赖注入）——判定逻辑与
+  //    "真值从哪来"由此分开，测试不必造一个假 registry.js。
+  let names = Array.isArray(namesIn) ? namesIn.slice() : null;
+  if (!names) {
+    try { names = require(path.join(path.resolve(__dirname, '..'), 'cli', 'registry.js')).list().map((c) => c.name); }
+    catch (e) {
+      problems.push({ kind: 'stability', rel: 'cli/registry.js',
+        msg: '加载注册表失败（' + (e && e.message) + '）—— **采不到真值＝红**，本判定不能自称已校验' });
+      return problems;
+    }
+  }
+  if (!names.length) {
+    problems.push({ kind: 'stability', rel: 'cli/registry.js',
+      msg: '注册表里一条命令都没有（require 副作用没跑完 / 注册被跳过？）—— 这种"真值为空"必须红，'
+        + '否则本判定会永远通过（空转）' });
+    return problems;
+  }
+  const missing = names.filter((n) => !table.cmds.has(n));
+  if (missing.length) {
+    problems.push({ kind: 'stability', rel: STABILITY_DOC,
+      msg: '稳定性三级表漏登记 ' + missing.length + ' 条命令：' + missing.join('、')
+        + '（注册表共 ' + names.length + ' 条）。这张表是"外部工具/AI 能依赖哪一级"的契约：'
+        + '漏登记的命令**谁都不知道能不能依赖**（`import-project` 就长期漏在这里 ✗）。'
+        + '处置：在 §1.2 的三级表里给它选一级（会被外部依赖的放「演进中」，工程自用放「内部」）' });
+  }
   return problems;
 }
 
@@ -942,6 +1061,13 @@ function main() {
   console.log('✓ 受管文档的章节编号连续（无断号）');
   console.log('✓ §5 登记表与各文档头部元信息一致（表是生成的，勿手改）');
   console.log('✓ 受管文档的 `层` 都在取值表内（' + LAYER_ORDER.join(' / ') + '）');
+  const stabCount = (() => {
+    try {
+      const t = parseStabilityTable(fs.readFileSync(path.join(ROOT, STABILITY_DOC), 'utf8'));
+      return t ? t.cmds.size : 0;
+    } catch (e) { return 0; }
+  })();
+  console.log('✓ CLI 稳定性表覆盖注册表全部命令（' + STABILITY_DOC + ' §1.2：' + stabCount + ' 条已登记）');
 
   // ---- 交接提示（不算违规，只提示） ----
   const notice = handoverNotice(ROOT);
@@ -996,6 +1122,8 @@ module.exports = {
   checkContractCoverage, checkSectionNumbering, handoverNotice, recentlyChanged,
   parseHeaderBlock, parseDocHeader, collectDocHeaders, renderRegistryTable, checkRegistryTable,
   writeRegistryTable, headerProblemLine, checkLayerValues,
+  // 稳定性表覆盖的判定与纯函数（标记在 checkRegistry 里；`parseStabilityTable` 导出给单测）
+  checkStabilityCoverage, parseStabilityTable, stabilitySection, STABILITY_DOC,
   section5, ROOT_DOCS, ROOT_FILES, TOP_DIRS, WORK_DIR, BANNER_RE, SCHEMA_FIELDS, RECENT_WINDOW_MIN,
   FUTURE_TOLERANCE_MS,
   REQUIRED_HEADER_KEYS, LAYER_ORDER, REG_BEGIN, REG_END

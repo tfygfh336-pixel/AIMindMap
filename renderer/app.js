@@ -232,6 +232,9 @@
     openFilePreview,
     closeFilePreview,
     openProject,
+    // 一次收干净所有模态/浮层（返回**本来开着哪些**，不静默关掉；见 app-actions.js 的说明）——
+    // 冒烟框架在每个域开始时用它做"干净前置"，并把上一次留下的模态**点名叫出来** ✓
+    closeAllDialogs: () => MM.closeAllDialogs(),
     runSearch,
     jumpToNode,
     // 未保存改动（供工具栏、菜单与冒烟断言使用）

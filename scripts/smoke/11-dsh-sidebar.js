@@ -16,6 +16,8 @@ const path = require('path');
 // 侧栏模块本身（主进程侧）：本域的"状态广播"断言要**直接驱动真实产品路径**，
 // 而不是只读渲染层的 status()（那只能证明"查询通"，证明不了"广播通"）
 const sidebar = require(path.join(__dirname, '..', '..', 'main-dsh-sidebar.js'));
+// 冒烟共用工具（收尾纪律与用法见 scripts/smoke-assertions.js 顶部）：动了 addNode 就要收模态
+const mm = require('../smoke-assertions.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -250,8 +252,11 @@ const assertions = [
         return { dirtyBefore, nodesBefore, nodesAfter, stillDirty, clean,
           ok: dirtyBefore && stillDirty && nodesAfter === nodesBefore && clean };
       })()`);
+      // 收尾：`addNode` 顺手开的「编辑节点」模态必须关掉（它跨域存活会盖住后面的真输入域；
+      // 共用工具见 scripts/smoke-assertions.js 的「收尾纪律」）
+      const closed = await mm.closeDialogs(ctx);
       return { ok: !!r.ok, text: '脏=' + r.dirtyBefore + ' 重读被拒(节点数不变)=' + (r.nodesAfter === r.nodesBefore)
-        + ' 撤销后干净=' + r.clean };
+        + ' 撤销后干净=' + r.clean + ' ｜ 收尾关掉的模态=' + closed.n };
     }
   }
 ];

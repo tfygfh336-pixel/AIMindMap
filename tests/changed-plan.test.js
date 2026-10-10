@@ -26,22 +26,22 @@ const verifySrc = fs.readFileSync(path.join(ROOT, 'scripts', 'verify.js'), 'utf8
 const plan = (...files) => planForFiles(files);
 
 describe('映射：已知范围内的改动只跑相关步骤', () => {
-  it('只改文档 ⇒ 卫生四件 + G3 + G6（**G3 必须带上**：不带时 G6 会自跑 vitest，耗时一样但单测没跑）', () => {
+  it('只改文档 ⇒ 卫生五件 + G3 + G6（**G3 必须带上**：不带时 G6 会自跑 vitest，耗时一样但单测没跑）', () => {
     const p = plan('docs/ARCHITECTURE.md', 'CHANGELOG.md', 'README.md');
     expect(p.full).toBe(false);
-    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'G3', 'G6']);
+    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'V2', 'G3', 'G6']);
     expect(p.steps).not.toContain('G5');
     expect(p.smokeOnly).toBe(null);
   });
 
-  it('只改单测 ⇒ 卫生四件 + G3 + G6（用例数变 ⇒ G6 必须看）', () => {
+  it('只改单测 ⇒ 卫生五件 + G3 + G6（用例数变 ⇒ G6 必须看）', () => {
     const p = plan('tests/schema.test.js');
-    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'G3', 'G6']);
+    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'V2', 'G3', 'G6']);
   });
 
-  it('只改一个冒烟域 ⇒ 卫生四件 + G5（**收窄到该域**）+ G6', () => {
+  it('只改一个冒烟域 ⇒ 卫生五件 + G5（**收窄到该域**）+ G6', () => {
     const p = plan('scripts/smoke/22-sidebar-gap.js');
-    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'G6', 'G5']);
+    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'V2', 'G6', 'G5']);
     expect(p.smokeOnly).toEqual(['22']);
   });
 
@@ -52,7 +52,7 @@ describe('映射：已知范围内的改动只跑相关步骤', () => {
 
   it('文档 + 单测混着改 ⇒ 取并集（保守：宁多跑）', () => {
     const p = plan('docs/RULES.md', 'tests/truth-floor.test.js');
-    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'G3', 'G6']);
+    expect(p.steps).toEqual(['G1', 'G8', 'G9', 'V1', 'V2', 'G3', 'G6']);
   });
 
   it('backslash 路径与前后空格照样识别（git 在 Windows 上给的是 /，但别赌）', () => {

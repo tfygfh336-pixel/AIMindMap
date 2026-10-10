@@ -11,6 +11,9 @@
  * ============================================================ */
 'use strict';
 
+// 冒烟共用工具（收尾纪律与用法见 scripts/smoke-assertions.js 顶部）：动了 addNode 就要收模态
+const mm = require('../smoke-assertions.js');
+
 const assertions = [
   {
     name: '写前协调：preload 暴露 app.uiState 通道（渲染层能上报，不再是死通道）',
@@ -68,10 +71,14 @@ const assertions = [
       })()`);
       const s2 = JSON.parse(ctx.runCli(['ui-state', 'comnet', '--json']));
 
+      // 收尾：本断言里的 `addNode` 会顺手打开「编辑节点」模态 ⇒ 当场关掉（它跨域存活会
+      // 盖住后面的真输入域；共用工具见 scripts/smoke-assertions.js 的「收尾纪律」）
+      const closed = await mm.closeDialogs(ctx);
       return {
         ok: dirty === true && s1.dirty === true && clean === true && s2.dirty === false,
         text: '内存脏=' + dirty + ' → CLI dirty=' + s1.dirty
           + ' ｜ 撤销后干净=' + clean + ' → CLI dirty=' + s2.dirty
+          + ' ｜ 收尾关掉的模态=' + closed.n
       };
     }
   },

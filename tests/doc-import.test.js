@@ -277,6 +277,21 @@ describe('doc-import：来源指纹 origin', () => {
     expect(di.outlineSha256('\uFEFF# 标题\n正文\n')).toBe(lf);
   });
 
+  /* ★ 规范化本身（`normalizeOutline`）—— 为什么单列一条：它是**导入正文与指纹共用的那一份**
+   * 转换，而 `import-md` 曾经漏调它（只拿它算指纹、把**原文**喂给建树）⇒ 带 BOM 的文件
+   * 导入后第一个标题被静默吃掉（实测：只剩「第二本书」）。所以这里钉住它的**全部**行为，
+   * 防止有人"顺手"往里加别的规范化（那会把指纹口径一起改掉，两处不一致又变成新的静默缺陷 ✗）。 */
+  it('normalizeOutline 只做两件事：CRLF/CR→LF、剥 BOM（不多做 —— 它的行为就是指纹口径）', () => {
+    expect(di.normalizeOutline('\uFEFF# 甲\r\n乙\r丙\n')).toBe('# 甲\n乙\n丙\n');
+    // 只剥**开头**那一个 BOM；正文中间出现的 U+FEFF 是内容，不许动
+    expect(di.normalizeOutline('甲\uFEFF乙')).toBe('甲\uFEFF乙');
+    // 不做 trim / 不去空行 / 不动全角空格（那些若被"顺手"加进来，指纹口径会与正文口径一起静默改变）
+    expect(di.normalizeOutline('  # 甲  \n\n')).toBe('  # 甲  \n\n');
+    // null/undefined 当空串（resolveOrigin 那条路上的旧数据可能是 undefined）
+    expect(di.normalizeOutline(null)).toBe('');
+    expect(di.normalizeOutline(undefined)).toBe('');
+  });
+
   it('originMatches：src 与 sha256 **都要**相同才算同一份来源', () => {
     const a = { kind: 'import', src: 'docs/a.md', sha256: 'x'.repeat(64), at: 'T', tool: 't' };
     expect(di.originMatches(a, { src: 'docs/a.md', sha256: 'x'.repeat(64) })).toBe(true);
@@ -349,5 +364,83 @@ describe('doc-import：导入源闸门（原因准确 + 给出路）', () => {
     try {
       expect(di.describeImportSourceProblem(f)).toBe(null);
     } finally { fsx.unlinkSync(f); }
+  });
+});
+
+/* ============================================================
+ * 体量闸门（⓪′）—— 几百 MB 的 txt/docx 不许整份读进内存
+ * ------------------------------------------------------------
+ * 为什么必须有单测：这条判据的**后果**只有两种，而两种都不能靠集成方便地验 ——
+ *   ① 判太松：`fs.readFileSync` 把几百 MB 读进来 ⇒ 进程被系统杀掉 ⇒ **什么都不打印**
+ *      （集成里只会看到"命令莫名退出"，分不清是上限没生效还是别的原因 ✗）；
+ *   ② 判太紧：正常文档被拒 ⇒ 导入全线变红。
+ * 所以判据本身（阈值、报文、边界）用单测钉住；真实文件只在集成里验"真的一份大文件会被拦"。
+ * ============================================================ */
+describe('doc-import：体量闸门（上限只有一份常量 + 报文说准原因并给三条出路）', () => {
+  const fsx = require('node:fs');
+  const pathx = require('node:path');
+  const osx = require('node:os');
+
+  it('上限是**一份常量**（CLI 与 docToOutline 共用；改一处就同时改两条路）', () => {
+    expect(di.MAX_SOURCE_MB).toBeGreaterThanOrEqual(16);      // 正常文档（几千页纯文本）要过得去
+    expect(di.MAX_SOURCE_BYTES).toBe(di.MAX_SOURCE_MB * 1024 * 1024);
+  });
+
+  it('★ 超限：报文**说准原因**（不是"文件坏了"）+ 三条出路（拆/转格式/取一段），且不读文件', () => {
+    const tooBig = di.describeOversizeSize((di.MAX_SOURCE_MB + 40) * 1048576, 'D:/big/某本书.txt');
+    expect(tooBig).not.toBe(null);
+    expect(tooBig.code).toBe('too-big');
+    expect(tooBig.message).toContain('超过导入上限');
+    expect(tooBig.message).toContain('没有读它');               // 关键：明确"没有读"
+    expect(tooBig.message).not.toMatch(/坏了|损坏|打不开|没有给出结果/);   // 不许把"超限"说成"文件坏了"
+    // 出路必须**可执行**（与目录闸门同一标准：不许只说"请想办法"）
+    expect(tooBig.message).toContain('拆成几份');
+    expect(tooBig.message).toContain('import-md');
+    expect(tooBig.message).toContain('docx');
+  });
+
+  it('边界（两个判据各自真在判文件/缓冲区的字节数）：-1 / 正好 / +1 三档', () => {
+    const fsx2 = require('node:fs');
+    const f = pathx.join(osx.tmpdir(), 'mm-edge-' + Date.now() + '.txt');
+    fsx2.writeFileSync(f, 'x', 'utf8');
+    try {
+      const setSize = (n) => fsx2.truncateSync(f, n);
+      setSize(di.MAX_SOURCE_BYTES - 1);
+      expect(di.describeOversizeSource(f)).toBe(null);
+      setSize(di.MAX_SOURCE_BYTES);
+      expect(di.describeOversizeSource(f)).toBe(null);                 // 正好等于 ⇒ 放行
+      setSize(di.MAX_SOURCE_BYTES + 1);
+      expect(di.describeOversizeSource(f)).not.toBe(null);             // 多一个字节 ⇒ 拦
+      // Buffer 那条入口同一口径（两个判据共用 MAX_SOURCE_BYTES，不许各写一份边界）
+      expect(di.describeOversizeBuffer(Buffer.alloc(di.MAX_SOURCE_BYTES), 'x')).toBe(null);
+      expect(di.describeOversizeBuffer(Buffer.alloc(di.MAX_SOURCE_BYTES + 1), 'x')).not.toBe(null);
+    } finally { fsx2.unlinkSync(f); }
+  });
+
+  it('`docToOutline` 真在**读之前**判：给一个超限文件 ⇒ 抛错且报文就是体量报文（不是 readFileSync 的错）', () => {
+    const f = pathx.join(osx.tmpdir(), 'mm-big-' + Date.now() + '.md');
+    // 稀疏文件：不真的占盘（writeFileSync 只写 1 字节，再用 truncate 撑到上限以上）
+    fsx.writeFileSync(f, 'x', 'utf8');
+    fsx.truncateSync(f, di.MAX_SOURCE_BYTES + 1024);
+    try {
+      expect(() => di.docToOutline(f)).toThrow(/超过导入上限/);
+      // 从内存 Buffer 那条入口（调用方已经读完）同样拦住 —— 判据只有一处，两条路都生效
+      const buf = Buffer.alloc(di.MAX_SOURCE_BYTES + 1);
+      expect(() => di.docToOutline('x.md', { buf: buf })).toThrow(/超过导入上限/);
+    } finally { fsx.unlinkSync(f); }
+  });
+
+  it('正常大小的文件不误杀（回归：闸门不能把常规导入全拒掉）', () => {
+    const f = pathx.join(osx.tmpdir(), 'mm-small-' + Date.now() + '.md');
+    fsx.writeFileSync(f, '# 标题\n正文\n', 'utf8');
+    try {
+      expect(di.describeOversizeSource(f)).toBe(null);
+      expect(di.describeOversizeBuffer(Buffer.from('# 标题\n', 'utf8'), f)).toBe(null);
+      expect(di.docToOutline(f).format).toBe('md');
+    } finally { fsx.unlinkSync(f); }
+  });
+
+  it('取不到 size（不存在的路径）⇒ 返回 null（报错归 ⓪ 的"文件不存在"，不双重报同一个问题）', () => {
+    expect(di.describeOversizeSource(pathx.join(osx.tmpdir(), 'mm-ghost-' + Date.now() + '.md'))).toBe(null);
   });
 });

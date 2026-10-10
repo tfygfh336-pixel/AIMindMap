@@ -341,6 +341,18 @@ Markdown 语法占比 **0%**。
   不是原始文件字节。所以同一份内容存成 CRLF、或带 BOM，指纹**一样**（重导不会被误判成新内容 ✓），
   而**改一个字节就变** ✓。规范化与指纹只有一处实现：`src/doc-import.js` 的
   `normalizeOutline` / `outlineSha256` / `makeOrigin`（写入方不许自己拼 origin）。
+- ⚠️ **同一个规范化必须同时喂给"建树用的正文"**（本轮修的一个静默数据丢失，2026-10-10）：
+  `normalizeOutline` 原先只被 `import-project` 那条路调（在 `docToOutline` 里），而 `import-md`
+  拿的是 `fs.readFileSync` 的**原文** ⇒ 同一份 BOM 文件经两条路得到**两棵不同的树**：
+  带 BOM 的 `# 第一本书\n正文一\n\n# 第二本书\n正文二` 经 `import-md` 导入后**只剩「第二本书」**
+  （第一个标题被当成正文吞掉，因为 `markdown.js` 的 `detectMode` 要求首行是 `#`），
+  而去掉 BOM 的同一内容两个标题都在 ✓。现在 `import-md` 先 `normalizeOutline` 再建树与算指纹
+  ⇒ **正文与指纹共用同一份规范化**（这正是上面那句"只有一处实现"的全部含义）。
+- **体量闸门**（`describeOversizeSource`，与导入格式无关的**入参约束**）：单文件超过上限常量
+  `MAX_SOURCE_MB` 时**响亮拒绝**并给三条出路（拆文件 / 转成压缩格式 / 只取需要的部分），
+  **不读进内存**（整份读进来会把进程拖垮 ⇒ 那正是"命令莫名退出、什么都没打印"的成因 ✗）。
+  该常量只有一份（`src/doc-import.js`），两条导入路（`import-project` / `import-md`）共用同一个判据；
+  **具体数值看常量本身**（文档不抄 —— 抄一份就是第二份会漂移的副本 ✗）。
 - **幂等闸门（写命令的行为，不是格式约束）**：`import-project` / `import-md` 在写盘**之前**
   比 `src` + `sha256`（`import-project` 扫**全部项目**，`import-md` 扫**本项目**）：
   命中就**拒绝**并非 0 退出，报文里**指名**上一次导到哪个项目的哪个节点，并给出 `--force` 出口。

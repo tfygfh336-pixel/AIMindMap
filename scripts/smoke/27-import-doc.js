@@ -31,12 +31,25 @@ async function waitFor(ctx, js, tries) {
   return last;
 }
 
-/** 写一个探针 md（在系统临时目录，随用随删） */
+/** 写一个探针 md（在系统临时目录）——返回 {file, dir}：
+ *  `dir` 一定要**自己删掉**（见 removeProbe）：本域每跑一轮会在 `%TEMP%` 下建 2–3 个
+ *  `mm-imp-*` 目录，原先从不清理 ⇒ 每跑一次全量冒烟就在系统临时目录里留 2–3 份垃圾，
+ *  跑一百轮就是两三百份（而且没人知道它们是谁留的 ✗）。自建自删是本工程对探针的一贯要求 ✓ */
 function writeProbe(name, text) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-imp-'));
   const p = path.join(dir, name);
   fs.writeFileSync(p, text, 'utf8');
-  return p;
+  return { file: p, dir: dir };
+}
+
+/** 收尾删掉探针目录（**必须自建自删**）；删不掉也如实返回 false，绝不静默当成功 ✓。
+ *  为什么不在 `run()` 里"最后删"：断言中途 return 的路径有 3 条，靠人记得每个出口都删必然漏 ✗；
+ *  这里每处用完**立刻**删（探针只在本断言存活期内被用到）✓ */
+function removeProbe(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    return !fs.existsSync(dir);
+  } catch (e) { return false; }
 }
 
 module.exports = [
@@ -62,10 +75,11 @@ module.exports = [
   {
     name: '导入：真导入一条链（探针 md ⇒ 新项目 ⇒ 能读回 ⇒ 界面自动打开它）',
     run: async (ctx) => {
-      const file = writeProbe('两本书.md', [
+      const probe = writeProbe('两本书.md', [
         '# 计算机网络（自顶向下方法）', '', '## 第 1 章 概述', '互联网的组成。', '',
         '# 数据结构与算法', '', '## 第 1 章 绪论', '复杂度分析。', ''
       ].join('\n'));
+      const file = probe.file;
       const before = await execJson(ctx, `window.desktop.projects().then(function (p) {
         return JSON.stringify({ ok: true, text: '导入前项目数=' + p.length, n: p.length });
       })`);
@@ -122,6 +136,8 @@ module.exports = [
             + ' ｜ 脏=' + dirty + ' ｜ 状态栏=' + JSON.stringify(status.slice(0, 40)) });
       })()`);
       const o = JSON.parse(opened);
+      // 收尾 ①：**探针文件自己删掉**（自建自删；判据里带上"删干净了"这一项，否则又会悄悄攒垃圾 ✗）
+      const probeGone = removeProbe(probe.dir);
       // 收尾：把界面切回原来的项目 —— 本域把 app 切到了新项目，而后面的视觉断言（ROI 截图）
       // 是按"当前项目"取景的 ✗。不留脏状态是本工程对每个冒烟域的要求 ✓
       const back = await execJson(ctx, `(function () {
@@ -134,9 +150,10 @@ module.exports = [
         });
       })()`);
       return {
-        ok: !!saved.ok && !!listed.ok && hasThemes && !!o.ok && !!back.ok,
+        ok: !!saved.ok && !!listed.ok && hasThemes && !!o.ok && !!back.ok && probeGone === true,
         text: saved.text + ' ｜ ' + res.text + ' ｜ ' + listed.text + ' ｜ CLI 读回两棵树=' + hasThemes
           + ' ｜ ' + o.text + ' ｜ 收尾=' + back.text
+          + ' ｜ 探针目录已删=' + probeGone
       };
     }
   },
@@ -150,7 +167,6 @@ module.exports = [
       return { ok: !!res.ok && hasErr, text: res.text };
     }
   },
-
   {
     // ⚠️ 名字里**不要**出现「可见/看不见/遮挡…」那几个词（V1 门禁会要求真判据）
     name: '导入：来源指纹 origin 记下来了，且**界面保存不会抹掉它**（整树写回是手挑字段，漏一个就静默丢）',
@@ -159,7 +175,8 @@ module.exports = [
       // 而导入走 CLI（外部写盘）、界面保存走 `serializeTree()` 的**手挑字段**整树写回 ——
       // 漏了它就会被静默抹掉 ⇒ 同一份文档又能被导入第二遍，而界面上一切正常 ✗。
       // 与 `qa` / `localPath` 完全同型（那两条各有一个冒烟断言守着，本条是第三个）。
-      const file = writeProbe('origin-keep-probe.md', ['# 只此一章', '', '正文。', ''].join('\n'));
+      const probe = writeProbe('origin-keep-probe.md', ['# 只此一章', '', '正文。', ''].join('\n'));
+      const file = probe.file;
       const res = await execJson(ctx, `window.MM.importDocFile(${JSON.stringify(file)}).then(function (r) {
         return JSON.stringify({ ok: !!r && r.ok === true, name: r && r.name,
           text: (r && r.ok) ? ('项目=' + r.name) : ('失败=' + ((r && r.error) || '?')) });
@@ -188,6 +205,9 @@ module.exports = [
         //    "命中测试命中圆钮=false（命中=overlay）" 与 "编辑框=true"（而这个文件本身**没被改过**）。
         //    这里走**用户关框的那条路**（点「取消」⇒ editor.js 的 closeEditDialog）。冒烟"每域不留脏状态"
         //    的既有要求：离开本域时界面必须回到进入时的样子。
+        //    （同一件事的**共用入口**是 smoke-assertions.js 导出的 closeDialogs(ctx)；
+        //     本域这条写在模板串里、与本域其它动作同一次 exec 完成，功能等价 ✓。
+        //     ⚠️ 本模板串里不许出现反引号 —— 会提前终止 JS 模板串、require 期直接 SyntaxError ✗）
         var dlg = document.getElementById('edit-dialog');
         var cancel = document.getElementById('edit-cancel');
         if (cancel) cancel.click();
@@ -225,13 +245,16 @@ module.exports = [
         fs.rmSync(dir, { recursive: true, force: true });
         cleaned = !fs.existsSync(dir);
       } catch (e) { cleaned = false; }
+      // ⑤ 探针文件也自建自删（见 writeProbe / removeProbe 的说明：本域原先每跑一轮留 2–3 个
+      //    `%TEMP%/mm-imp-*` 目录，从不清理 ✗）
+      const probeGone = removeProbe(probe.dir);
       return {
-        ok: shapeOk && !!saved.ok && kept && !!back.ok && cleaned,
+        ok: shapeOk && !!saved.ok && kept && !!back.ok && cleaned && probeGone === true,
         text: res.text + ' ｜ 导入时记下指纹=' + shapeOk
           + (o1 ? ('（' + o1.tool + ' / ' + String(o1.sha256).slice(0, 10) + '…）') : '（没有 origin）')
           + ' ｜ 界面当前项目=' + cur + ' ｜ ' + saved.text
           + ' ｜ 保存后指纹仍在=' + kept + (kept ? '' : '｜⚠️ 被整树写回丢掉了')
-          + ' ｜ 收尾=' + back.text + ' ｜ 探针项目已删=' + cleaned
+          + ' ｜ 收尾=' + back.text + ' ｜ 探针项目已删=' + cleaned + ' ｜ 探针目录已删=' + probeGone
       };
     }
   }

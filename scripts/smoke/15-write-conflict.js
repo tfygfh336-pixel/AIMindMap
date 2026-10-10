@@ -20,6 +20,9 @@
 
 const fs = require('fs');
 
+// 冒烟共用工具（收尾纪律与用法见 scripts/smoke-assertions.js 顶部）：动了 addNode 就要收模态
+const mm = require('../smoke-assertions.js');
+
 const PROBE_ID = 'cc-probe-1';        // 外部写入者加在**根**下的节点（与界面的改动不同父 ⇒ 不相交）
 const PROBE_ID2 = 'cc-probe-2';       // 外部写入者加在 **overview** 下的节点（与界面的改动同父 ⇒ 相交）
 const PROBE_TOPIC = '并发闸门探针';
@@ -70,10 +73,13 @@ const assertions = [
         var saved = await app.save();
         return { d: d, saved: saved, clean: !app.isDirty() };
       })()`);
+      // 收尾：`addNode` 顺手开的「编辑节点」模态必须当场关掉（跨域存活会盖住后面的真输入域；
+      // 共用工具见 scripts/smoke-assertions.js 的「收尾纪律」）
+      const closed = await mm.closeDialogs(ctx);
       return {
         ok: dirty.d === true && dirty.saved === true && dirty.clean === true,
         text: '内存脏=' + dirty.d + ' → save()=' + dirty.saved + ' → 保存后干净=' + dirty.clean
-          + '（无并发写时必须能存，否则闸门是废件）'
+          + '（无并发写时必须能存，否则闸门是废件）｜ 收尾关掉的模态=' + closed.n
       };
     }
   },
@@ -107,11 +113,14 @@ const assertions = [
       const overviewAfter = childCount(after, 'overview');
       const probeThere = cli(ctx, ['get', 'comnet', PROBE_ID, '--json']).ok === true;
       const mineThere = overviewAfter === overviewBefore + 1;
+      // 收尾（同第 1 条）：`addNode` 开的「编辑节点」模态关掉，别让它跨域存活
+      const closed = await mm.closeDialogs(ctx);
 
       return {
         ok: saved === true && probeThere === true && mineThere === true,
         text: 'save()=' + saved + ' · 外部节点仍在=' + probeThere + ' · 界面改动也落盘=' + mineThere
           + '（overview 子节点 ' + overviewBefore + '→' + overviewAfter + '）'
+          + ' ｜ 收尾关掉的模态=' + closed.n
           + (saved === false ? '｜⚠️ 仍被一律拒绝：用户的改动全丢了' : '')
       };
     }
@@ -155,6 +164,8 @@ const assertions = [
       const theirsWon = overviewAfter === overviewBefore + 1;   // 只有外部那个探针（我的被丢弃）
       const mineKept = rootAfter === rootBefore + 1;            // 我加在 root 下的节点保住了
       const probeThere = cli(ctx, ['get', 'comnet', PROBE_ID2, '--json']).ok === true;
+      // 收尾（同第 1 条）：本断言用了两次 `addNode`（各开一个模态）
+      const closed2 = await mm.closeDialogs(ctx);
 
       return {
         ok: saved === false && untouched === true && resolved === true && theirsWon === true
@@ -162,7 +173,7 @@ const assertions = [
         text: '首次 save()=' + saved + '（应 false）· 盘上逐字节未变=' + untouched
           + ' ｜ resolveConflict("theirs")=' + resolved + '（应 true）· 冲突对象取盘上=' + theirsWon
           + '（overview ' + overviewBefore + '→' + overviewAfter + '）· 我的其他改动保住=' + mineKept
-          + '（root ' + rootBefore + '→' + rootAfter + '）'
+          + '（root ' + rootBefore + '→' + rootAfter + '）· 收尾关掉的模态=' + closed2.n
           + (saved === true ? '｜⚠️ 同一对象被自动决定了 —— 那是"最后写者赢"，会静默丢数据' : '')
       };
     }
@@ -184,10 +195,13 @@ const assertions = [
       const last = (log.changes || [])[(log.changes || []).length - 1] || null;
       const isGui = !!last && /^gui/.test(String(last.writer));
       const named = !!last && !last.created && Array.isArray(last.changed) && last.changed.length > 0;
+      // 收尾（同第 1 条）：这条也用了 `addNode`
+      const closed3 = await mm.closeDialogs(ctx);
       return {
         ok: saved === true && isGui === true && named === true,
         text: 'save()=' + saved + ' · 日志最后一条写入者=' + (last ? last.writer : '（无）')
           + '（应 gui…）· 记下了改动的对象=' + (last ? last.changed.join(',') : '（无）')
+          + ' ｜ 收尾关掉的模态=' + closed3.n
       };
     }
   },
@@ -214,10 +228,13 @@ const assertions = [
       const gone = cli(ctx, ['get', 'comnet', PROBE_ID, '--json']);
       const gone2 = cli(ctx, ['get', 'comnet', PROBE_ID2, '--json']);
       const removed = gone.ok === false && gone2.ok === false;
+      // 收尾（同第 1 条）：这条也用了 `addNode`
+      const closed4 = await mm.closeDialogs(ctx);
 
       return {
         ok: again.saved === true && removed === true,
         text: '重新打开后 save()=' + again.saved + '（应 true，证明闸门可恢复）｜探针已清理=' + removed
+          + ' ｜ 收尾关掉的模态=' + closed4.n
       };
     }
   }

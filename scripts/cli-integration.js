@@ -164,6 +164,40 @@ function runSandboxWorker() {
     out.mdForced = go(['import-md', 'legacy', fB, '--force']);
     out.mdStatsAfterForce = statsOf('legacy');
 
+    /* ── C′. **带 BOM 的 md：第一个标题不许被静默吃掉**（本轮修的缺陷，2026-10-10 实测复现）──
+     * 取证：`# 第一本书` / `正文一` / `# 第二本书` / `正文二` 这份内容
+     *   · 带 BOM 走 `import-md` ⇒ 树里**只剩「第二本书」**（新增 1 个节点）；
+     *   · 同一内容去掉 BOM      ⇒ 两个标题都在（新增 2 个节点）。
+     * 根因：`markdown.js` 的 detectMode 要求首行是 `#`，而 BOM 让**首行**匹配不上 ⇒
+     * 第一个标题被当成正文吞掉；`import-project` 没这个毛病（它走 docToOutline，那里剥 BOM）。
+     * 这里同时钉**正例**（带 BOM 两个都在）与**对照**（无 BOM 两个也都在）——
+     * 只钉一边的话，"两边一样坏"也会通过 ✗。 */
+    const fBom = wf('docBom.md', '\uFEFF# 第一本书\n正文一\n\n# 第二本书\n正文二\n');
+    const fPlain = wf('docPlain.md', '# 第一本书\n正文一\n\n# 第二本书\n正文二\n');
+    out.bomBaseNodes = (statsOf('imp-a') || {}).nodes;   // 导入前的节点数（判"新增了几个"要基线）
+    out.bomFirst = go(['import-md', 'imp-a', fBom]);
+    out.bomStats = statsOf('imp-a');
+    out.bomBrief = go(['read', 'imp-a', '--brief']);
+    out.plainFirst = go(['import-md', 'imp-a', fPlain]);
+    out.plainStats = statsOf('imp-a');
+    out.plainBrief = go(['read', 'imp-a', '--brief']);
+    // 两份内容的**指纹必须相同**（BOM 不是内容）：否则"同一份文档"会被当成两份来源，
+    // 幂等闸门就废了（这条与上面那条同一个根因的两面）
+    out.bomOrigin = (() => {
+      const j = J(go(['read', 'imp-a', '--json', '--brief']));
+      const ns = ((j && j.nodes) || []).filter((x) => x.origin && /doc(Bom|Plain)\.md$/.test(x.origin.src));
+      return ns.map((x) => ({ src: String(x.origin.src).split('/').pop(), sha: x.origin.sha256 }));
+    })();
+
+    /* ── C″. 体量闸门：超大文件**响亮拒绝 + 说出路**，且**什么都没写**（⓪′）── */
+    const big = wf('too-big.txt', 'x');
+    try { fs.truncateSync(big, 65 * 1024 * 1024); } catch (e) { /* 撑不大就下面的断言自己红 ✓ */ }
+    out.bigImportMd = go(['import-md', 'imp-a', big]);
+    out.bigImportProject = go(['import-project', 'imp-big', big]);
+    out.bigStats = statsOf('imp-a');
+    out.bigProjects = projectNames();
+    try { fs.unlinkSync(big); } catch (e) { /* ignore */ }
+
     // ── D. 目录入参：两条命令都要响亮拒绝 + 给出路，且**一点都不许写** ──
     const projBeforeDir = projectNames();
     out.dirImportProject = go(['import-project', 'imp-dir', DIR]);
@@ -587,9 +621,9 @@ check('ask 的提示词**自动补齐了情境**：项目 / 树中路径 / 正�
     && /· 节点正文/.test(askDryJ.prompt)),
   askDryJ ? (askDryJ.prompt.match(/· 在树中的路径：[^\n]*/) || ['(没有路径行)'])[0].slice(0, 80) : '—');
 check('ask --kind ask 不给 --question ⇒ 非 0 且报错（不许发一个没有问题的"问题"）',
-  (() => { const r = run(['ask', PROJ, 'a', '--kind', 'ask', '--dry-run']); return r.status !== 0 && /需要 --question/.test(r.err + r.out); })());
+  (() => { const r = run(['ask', PROJ, 'a', '--kind', 'ask', '--dry-run']); return r.code !== 0 && /需要 --question/.test(r.out); })());
 check('ask 节点不存在 ⇒ 非 0 且点名原因',
-  (() => { const r = run(['ask', PROJ, 'no-such-node', '--dry-run']); return r.status !== 0 && /节点不存在/.test(r.err + r.out); })());
+  (() => { const r = run(['ask', PROJ, 'no-such-node', '--dry-run']); return r.code !== 0 && /节点不存在/.test(r.out); })());
 
 // 9.1.1 功能 5a 入口③：**项目级**提问（消息栏那条）—— 节点可选，情境里要告诉 AI"你能动手"
 const askProj = run(['ask', PROJ, '--question', '把 D:\\某处\\一本书.md 导入成新项目', '--dry-run', '--json']);
@@ -599,7 +633,7 @@ check('ask **项目级**（不给节点）：可用，且情境里说清"项目�
     && /import-project/.test(askProjJ.prompt) && /把 D:\\某处\\一本书\.md 导入成新项目/.test(askProjJ.prompt)),
   askProjJ ? ('提示词 ' + askProjJ.prompt.length + ' 字') : askProj.out.trim().slice(0, 140));
 check('ask 项目级但**不给问题** ⇒ 非 0 且说明原因（不许发一个空问题出去）',
-  (() => { const r = run(['ask', PROJ, '--dry-run']); return r.status !== 0 && /项目级提问要带/.test(r.err + r.out); })());
+  (() => { const r = run(['ask', PROJ, '--dry-run']); return r.code !== 0 && /项目级提问要带/.test(r.out); })());
 
 /* 9.1.3 多节点上下文（用户反馈④"把所有被框选的都给 AI 看"）：`--nodes a,b,c` ⇒ 情境逐个列出 ✓
  * 全离线（--dry-run）✓；节点不存在必须**响亮报错**（不许悄悄少给一个 ✗） */
@@ -622,7 +656,7 @@ check('ask 多节点（--nodes a,b,c）：情境里**逐个列出**并说明"放
     && /【节点 1】/.test(askMulti.prompt) && /【节点 2】/.test(askMulti.prompt)),
   askMulti ? ('节点 ' + multiIds.join(',') + ' ⇒ 提示词 ' + askMulti.prompt.length + ' 字') : '—');
 check('ask 多节点：其中有不存在的节点 ⇒ 非 0 且点名（不静默少给一个 ✗）',
-  (() => { const r = run(['ask', PROJ, '--nodes', (multiIds[0] || 'x') + ',no-such-node', '--kind', 'explain', '--dry-run']); return r.status !== 0 && /节点不存在/.test(r.err + r.out); })());
+  (() => { const r = run(['ask', PROJ, '--nodes', (multiIds[0] || 'x') + ',no-such-node', '--kind', 'explain', '--dry-run']); return r.code !== 0 && /节点不存在/.test(r.out); })());
 
 /* 9.1.2 思考强度（用户反馈③"太慢"）：解释默认 low；显式 --effort 生效；patch 必须**三项写全**
  *（实测教训：patch 是整行替换，只写 reasoningEffort 会把 provider/model 抹掉 ✗）。
@@ -637,7 +671,7 @@ check('ask 思考强度：显式 --effort xhigh 生效（对话栏那个下拉�
   !!(effHi && effHi.effort === 'xhigh' && /reasoningEffort:\s*xhigh/.test(effHi.effortPatch || '')),
   effHi ? ('effort=' + effHi.effort) : '—');
 check('ask 思考强度：未知取值 ⇒ 非 0 且列出可用值（不猜、不静默退回默认 ✗）',
-  (() => { const r = run(['ask', PROJ, 'a', '--kind', 'explain', '--effort', 'turbo', '--dry-run']); return r.status !== 0 && /未知的思考强度/.test(r.err + r.out) && /low \/ medium/.test(r.err + r.out); })());
+  (() => { const r = run(['ask', PROJ, 'a', '--kind', 'explain', '--effort', 'turbo', '--dry-run']); return r.code !== 0 && /未知的思考强度/.test(r.out) && /low \/ medium/.test(r.out); })());
 
 // 8.7 mentions --cross：跨项目「未链接提及」两个方向。
 // 用一个**临时第二项目**做对端，绝不触碰 comnet（真实数据）。
@@ -814,7 +848,12 @@ check('import-project 无书签但有文字层的 PDF ⇒ 回退文字层建成�
       && /第一章 概述/.test(rd.out) && ok(vd.out) && cleaned;
   })(), pdfTextDetail);
 check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已有项目）',
-  (() => { const r4 = run(['import-project', PROJ, BIGMD]); return r4.status !== 0 && /项目已存在/.test(r4.err + r4.out); })());
+  // ⚠️ 判据必须读 `run()` **真实返回的字段**：它给的是 `{ code, out }`（见文件上方 run 的定义），
+  //    而这条原先读 `r4.status` / `r4.err` —— 那两个字段**根本不存在** ⇒ `undefined !== 0` **恒真**，
+  //    "非 0" 那一半永远在通过（只是因为 `"undefined" + out` 里也含 "项目已存在" 才看着正常）✗。
+  //    属"门禁在空转"的一个变体：**判据的一半从来没生效过**。
+  //    `out` 本身已是 stdout+stderr 合并（与子进程模式同口径）⇒ 不需要 `.err` ✓
+  (() => { const r4 = run(['import-project', PROJ, BIGMD]); return r4.code !== 0 && /项目已存在/.test(r4.out); })());
 
 /* ---------------- 9.2 导入的**来源指纹**（origin）与目录入参：幂等 + 响亮拒绝 ----------------
  * ⚠️ **全部走 %TEMP% 沙箱的子进程**（见文件头的 `--sandbox-worker` 说明）：
@@ -911,6 +950,58 @@ check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已�
       && SBJ.mdStatsAfterForce.originSources === SBJ.mdStatsAfterRefuse.originSources),
     has(SBJ.mdStatsAfterForce) ? ('节点 ' + SBJ.mdStatsAfterRefuse.nodes + '→' + SBJ.mdStatsAfterForce.nodes
       + ' 来源数 ' + SBJ.mdStatsAfterRefuse.originSources + '→' + SBJ.mdStatsAfterForce.originSources) : sbFailDetail);
+
+  /* ── ④′ 带 BOM 的 md：**两个标题都要在**（本轮修的静默数据丢失）──
+   * 判据刻意三样一起看：① 退出码 0；② 树里真的有 **两个**顶层标题；③ 新增节点数 = 2。
+   * 为什么不能只看"退出码 0"：缺陷的形态正是**退出码 0 + 少一棵子树**（静默）✗。
+   * 为什么还要一条无 BOM 的对照：只验带 BOM 那份的话，若哪天 `markdownToTree` 整体坏了，
+   * "两个都不在"也会被判红（那是另一回事），而"两边都只认第二个标题"这种**一致地坏**
+   * 必须在对照里暴露出来 —— 两条一起看才知道判据真的在分辨 BOM 这一件事。 */
+  const bomBrief = has(SBJ.bomBrief) ? String(SBJ.bomBrief.out) : '';
+  const plainBriefOut = has(SBJ.plainBrief) ? String(SBJ.plainBrief.out) : '';
+  check('★ 带 BOM 的 md 经 import-md ⇒ **两个标题都在**（第一个标题不许被 BOM 静默吃掉），新增节点数=2',
+    has(SBJ.bomFirst && SBJ.bomFirst.code === 0
+      && /第一本书/.test(bomBrief) && /第二本书/.test(bomBrief)
+      && SBJ.bomStats && SBJ.bomStats.nodes === SBJ.bomBaseNodes + 2),
+    has(SBJ.bomStats) ? ('code=' + (SBJ.bomFirst || {}).code
+      + ' 节点数 ' + SBJ.bomBaseNodes + '→' + SBJ.bomStats.nodes
+      + ' ｜ 读回=' + JSON.stringify(bomBrief.split('\n').filter((l) => /书/.test(l)).join(' / ').slice(0, 160))) : sbFailDetail);
+  check('对照（无 BOM 的同一份内容）⇒ 也是**两个标题都在**、新增节点数=2（两边都一样才对）',
+    has(SBJ.plainFirst && SBJ.plainFirst.code === 0
+      && /第一本书/.test(plainBriefOut) && /第二本书/.test(plainBriefOut)
+      && SBJ.plainStats && SBJ.plainStats.nodes === (SBJ.bomStats || {}).nodes + 2),
+    has(SBJ.plainStats) ? ('code=' + (SBJ.plainFirst || {}).code
+      + ' 节点数 ' + ((SBJ.bomStats || {}).nodes) + '→' + SBJ.plainStats.nodes) : sbFailDetail);
+  check('BOM 不影响**来源指纹**：带 BOM 与不带 BOM 的同一份内容指纹相同（否则"同一份文档"会被当成两份）',
+    // 按 src 去重后再比：每份来源各留下**两棵**顶层子树（两个标题各挂一次 origin），
+    // 于是 `nodes` 里同一个 src 会出现两次 —— 直接取 [0]/[1] 比到的是同一份，等于没比 ✗
+    (() => {
+      const list = Array.isArray(SBJ.bomOrigin) ? SBJ.bomOrigin : [];
+      const bySrc = new Map();
+      list.forEach((x) => { if (!bySrc.has(x.src)) bySrc.set(x.src, x.sha); });
+      const bom = bySrc.get('docBom.md');
+      const plain = bySrc.get('docPlain.md');
+      return !!bom && !!plain && bom === plain;
+    })(),
+    has(SBJ.bomOrigin) ? JSON.stringify(SBJ.bomOrigin.map((x) => x.src + '@' + String(x.sha).slice(0, 8))) : sbFailDetail);
+
+  /* ── ④″ 体量闸门：超大文件**响亮拒绝 + 说出路**，且一点都不许写（⓪′）── */
+  const bigOk = (r) => !!(r && r.code !== 0
+    && /超过导入上限/.test(r.out) && /没有读它/.test(r.out)
+    && /拆成几份/.test(r.out) && /import-md/.test(r.out)
+    && !/坏了|损坏|EISDIR|ENOBUFS|maxBuffer/.test(r.out));   // 原因必须是"超限"，不许推给文件/子进程
+  check('★ 超大文件（65 MB）经 import-md ⇒ 非 0 + 说准"超过导入上限、没有读它" + 三条出路（不是"文件坏了"）',
+    bigOk(SBJ.bigImportMd),
+    has(SBJ.bigImportMd) ? SBJ.bigImportMd.out.slice(0, 200) : sbFailDetail);
+  check('超大文件经 import-project ⇒ 同一份报文（同一处实现，两条导入路一个口径）',
+    bigOk(SBJ.bigImportProject),
+    has(SBJ.bigImportProject) ? SBJ.bigImportProject.out.slice(0, 200) : sbFailDetail);
+  check('体量闸门在**写盘之前**：被拒之后项目数不变、目标项目节点数不变（拒绝是真的没写）',
+    has(SBJ.bigStats && SBJ.bigProjects)
+      && SBJ.bigStats.nodes === (SBJ.plainStats || {}).nodes
+      && SBJ.bigProjects.indexOf('imp-big') < 0,
+    has(SBJ.bigProjects) ? ('项目=[' + SBJ.bigProjects.join(' ') + '] 节点数=' + ((SBJ.bigStats || {}).nodes))
+      : sbFailDetail);
 
   // ── ⑤ 目录入参：响亮拒绝 + 给出路 + **一点都不许写** ──
   const dirOk = (r, cmd) => !!(r && r.code !== 0 && r.out.indexOf('目录') >= 0

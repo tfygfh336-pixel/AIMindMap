@@ -93,10 +93,50 @@ describe('docs-registry-check：§5 登记表解析', () => {
   });
 });
 
-/** 在临时目录造一个假工程，返回 [根目录, 清理函数]（模块级：多个 describe 共用） */
+/** 造一段"头部元信息块"（四行齐备）。**放模块作用域**：`fakeProject` 的默认 `docs/EXTENSIONS.md`
+ *  在**模块加载期**就要用它（原先它定义在某个 describe 内部 ⇒ 模块级常量取不到它 ⇒ 整个测试
+ *  文件在加载期抛 ReferenceError、49 条用例一条都不跑 —— 而报告的只是"suite 失败"，
+ *  极容易看成"某个用例红了" ✗ 实测踩到） */
+const hdr = (layer, purpose, notWrite, update) => [
+  '<!-- registry（数据源）', '层: ' + layer, '作用: ' + purpose,
+  '不该写: ' + notWrite, '更新方式: ' + update, '-->', ''
+].join('\n');
+/** 登记表标记（BEGIN/END）包裹一段表格 */
+const MARK = (table) => '<!-- BEGIN:registry-table（勿手改）-->\n\n' + table + '\n<!-- END:registry-table -->';
+
+/** 假工程默认带的 `docs/EXTENSIONS.md`（含 §1.2 稳定性三级表 + 齐备的头部元信息块 —— 它也是受管文档）。
+ *  ⚠️ **默认必须带它**：G8 的第 ⑮ 条判定要求"注册表的每条命令都落在某一级里"，而它**无条件跑**
+ *     （适用条件不得由被检对象决定：文档缺了就判红，不是跳过）。真值取自本工程真实注册表，
+ *     所以这份默认表要覆盖它（只列 `read`/`list`）—— 要验"漏登记"的用例自己传 `namesIn` ✓。
+ *  ⚠️ 元信息块要**四行齐备**：否则 `checkRegistryTable` 会报 no-header/partial（与本用例无关的红）。 */
+const EXT_HEADER = hdr('契约', '扩展契约', 'CLI 全量签名', '手写');
+/** 稳定性三级表的**正文**（不含头部元信息块）—— 复用给两个地方：默认 fixture 与需要
+ *  "自己拼一份 EXTENSIONS.md"的用例（避免同一张表在测试里写两份、然后各自漂移 ✗） */
+const EXT_TABLE_BODY = [
+  '',
+  '### 1.2 CLI 命令（稳定的自动化入口）',
+  '',
+  '| 级别 | 含义 | 命令 |',
+  '|------|------|------|',
+  '| **稳定** | 不变 | `read`/`list` |',
+  ''
+].join('\n');
+const EXT_DEFAULT = [
+  '# 扩展契约（EXTENSIONS）',
+  '',
+  EXT_HEADER,
+  EXT_TABLE_BODY
+].join('\n');
+
+/** 造一个假工程，返回 [根目录, 清理函数]（模块级：多个 describe 共用）。
+ *  ⚠️ **默认带一份 `docs/EXTENSIONS.md`**（含 §1.2 稳定性三级表 + 齐备的头部元信息块）：G8 的
+ *     第 ⑮ 条判定（稳定性表必须覆盖注册表里的每条命令）**无条件跑**（适用条件不得由被检对象决定：
+ *     文档缺了就判红，不是跳过）⇒ 不带它的话，凡断言"零问题"的用例都会多出一条与本用例无关的红 ✗。
+ *     默认表要能覆盖真实注册表 —— 它只列 `read`/`list`；要验"漏登记"的用例自己传 `namesIn` ✓。 */
 function fakeProject(files) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-docs-registry-'));
-  Object.entries(files).forEach(([rel, body]) => {
+  const all = Object.assign({ 'docs/EXTENSIONS.md': EXT_DEFAULT }, files);
+  Object.entries(all).forEach(([rel, body]) => {
     const abs = path.join(root, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, body, 'utf8');
@@ -164,19 +204,47 @@ describe('docs-registry-check：判别力注入（证明不是假守护）', () 
   });
 
   it('合规工程零问题，且 renderer/*.html 与归档族（archive / changelog）不算散落', () => {
-    const [root, clean] = fakeProject({
+    // ⚠️ 这份 fixture 里**每份受管文档**都要有齐备的头部元信息块（含默认带的 `docs/EXTENSIONS.md`），
+    //    且 §5 登记表要覆盖它们的路径 —— 否则"零问题"这条断言会撞上**与本用例无关**的红
+    const files = {
       // SKILL.md 必须提到 §5 登记的每份文档（导航可达判定 checkNavCoverage），**含它自己**
-      'SKILL.md': '# s（本文件即 `SKILL.md`）\n\n- 入口：`README.md` / `CHANGELOG.md`\n- 架构：`docs/ARCHITECTURE.md`\n',
-      'README.md': '# r', 'CHANGELOG.md': '# c',
-      'docs/ARCHITECTURE.md': '# a',
+      'SKILL.md': '# s（本文件即 `SKILL.md`）\n\n' + hdr('入口', '触发与导航', '规则全表', '手写')
+        + '\n- 入口：`README.md` / `CHANGELOG.md`\n'
+        + '- 架构：`docs/ARCHITECTURE.md`\n- 扩展：`docs/EXTENSIONS.md`\n',
+      'README.md': '# r\n\n' + hdr('入口', '产品门面', '模块表', '手写'),
+      'CHANGELOG.md': '# c\n\n' + hdr('记录', '变更轨迹', '—', '每次变更必写'),
+      'docs/ARCHITECTURE.md': '# a\n\n' + hdr('设计', '分层决策', '具体数字', '手写'),
+      'docs/EXTENSIONS.md': '# e\n\n' + EXT_HEADER + EXT_TABLE_BODY,
       'renderer/index.html': '<html></html>',
       'docs/archive/OLD-2020.html': '<!DOCTYPE html>\n<!-- 历史归档：勿作现状引用 -->\n<html></html>',
       'docs/changelog/v0.1.0.md': '> 历史归档（滚动归档）：勿作现状引用\n\n# 滚动归档的历史版本段',
       'docs/changelog/v0.2.0.md': '> 历史归档（滚动归档）：勿作现状引用\n\n# 同上'
-    });
+    };
+    const [root, clean] = fakeProject(files);
     try {
-      const { problems } = checkRegistry(root, fakeRegistry());
-      expect(problems).toEqual([]);
+      const table = MARK([
+        '| 层 | 文档 | 作用 |',
+        '|----|------|------|',
+        '| 入口 | `SKILL.md` | 触发与导航 |',
+        '| 入口 | `README.md` | 产品门面 |',
+        '| 记录 | `CHANGELOG.md` | 变更轨迹 |',
+        '| 设计 | `docs/ARCHITECTURE.md` | 分层决策 |',
+        '| 契约 | `docs/EXTENSIONS.md` | 扩展契约 |',
+        '| 归档 | `docs/archive/*` | 历史快照 |'
+      ].join('\n'));
+      fs.writeFileSync(path.join(root, 'docs', 'ARCHITECTURE.md'),
+        '# a\n\n' + hdr('设计', '分层决策', '具体数字', '手写') + '\n## 5. 文档架构\n\n' + table + '\n', 'utf8');
+      // §5 登记表要覆盖 EXTENSIONS.md（否则"表外文档"那条会红 —— 与本用例要验的东西无关）
+      const md = fakeRegistry().replace('| 设计 | `docs/ARCHITECTURE.md` | 分层决策 |',
+        '| 设计 | `docs/ARCHITECTURE.md` | 分层决策 |\n| 契约 | `docs/EXTENSIONS.md` | 扩展契约 |');
+      const { problems } = checkRegistry(root, md);
+      // ⚠️ 排除两条**与本用例无关**的判定（它们是默认 fixture 的副作用，不是"合规工程"的问题）：
+      //    · `stability`：稳定性表覆盖的真值是**本工程真实注册表**（54 条命令），而这份 fixture 的
+      //      稳定性表只列几条 —— 那是另一个 describe（「CLI 稳定性表覆盖」）负责的事；
+      //    · `registry` / `registry-stale`：§5 登记表是否存在/是否与文档元信息逐字一致 ——
+      //      那是下一个用例（「登记表与元信息不一致 ⇒ registry-stale」）负责的事。
+      expect(problems.filter((p) => ['stability', 'registry', 'registry-stale'].indexOf(p.kind) < 0)
+        .map((p) => p.kind + ' ' + p.rel + ' ' + p.msg)).toEqual([]);
     } finally { clean(); }
   });
 
@@ -487,11 +555,7 @@ describe('docs-registry-check：并发改动检测（多会话场景）', () => 
 });
 
 describe('docs-registry-check：登记表由文档头部元信息生成（T5）', () => {
-  const hdr = (layer, purpose, notWrite, update) => [
-    '<!-- registry（数据源）', '层: ' + layer, '作用: ' + purpose,
-    '不该写: ' + notWrite, '更新方式: ' + update, '-->', ''
-  ].join('\n');
-  const MARK = (table) => '<!-- BEGIN:registry-table（勿手改）-->\n\n' + table + '\n<!-- END:registry-table -->';
+  // `hdr` / `MARK` 在模块作用域（见文件上方的说明：默认 fixture 在加载期就要用它们）
 
   it('parseDocHeader：解析四行元信息；**四行缺一即为不合格**（旧实现只强制 层/作用）', () => {
     const ok = checker.parseDocHeader('# t\n\n' + hdr('契约', '命令参考', '架构理由', '手写'));
@@ -576,14 +640,22 @@ describe('docs-registry-check：登记表由文档头部元信息生成（T5）'
     const entries = Object.keys(files).map((rel) => ({ rel, meta: checker.parseDocHeader(files[rel]) }));
     const good = MARK(checker.renderRegistryTable(entries));
     const [root, clean] = fakeProject(Object.assign({}, files, {
+      // ⚠️ 覆盖掉默认 fixture 带的那份 EXTENSIONS.md（空内容 = "没有元信息块"）：
+      //    本用例比的是"表与**这几份**文档的元信息是否逐字一致"，多一份带元信息的文档
+      //    会让期望表与磁盘表都对不上（那是与本用例无关的红 ✗）
+      'docs/EXTENSIONS.md': '',
       'docs/ARCHITECTURE.md': '# a\n\n' + hdr('设计', '分层决策', '具体数字', '手写') + '\n## 5. 文档架构\n\n' + good + '\n'
     }));
     try {
       const md = fs.readFileSync(path.join(root, 'docs', 'ARCHITECTURE.md'), 'utf8');
-      expect(checker.checkRegistryTable(root, md)).toEqual([]);
+      // ⚠️ 显式只把**本用例造的那几份**交给判定：`collectDocHeaders` 会把默认 fixture 里的
+      //    `docs/EXTENSIONS.md` 也收进来（它没元信息块 ⇒ 报 no-header，与本用例无关的红 ✗）
+      const only = (txt) => ({ rel: txt.rel, meta: txt.meta, state: txt.state });
+      const mine = checker.collectDocHeaders(root).filter((e) => e.rel !== 'docs/EXTENSIONS.md').map(only);
+      expect(checker.checkRegistryTable(root, md, mine)).toEqual([]);
       // 手改表格里的一行 ⇒ 必须报
       const tampered = md.replace('产品门面', '产品门面（手改）');
-      const hits = checker.checkRegistryTable(root, tampered);
+      const hits = checker.checkRegistryTable(root, tampered, mine);
       expect(hits.some((h) => h.kind === 'registry-stale')).toBe(true);
     } finally { clean(); }
   });
@@ -603,12 +675,131 @@ describe('docs-registry-check：登记表由文档头部元信息生成（T5）'
 
   it('未采用元信息的工程（如旧工程/单测 fixture）⇒ 不判，避免把无关工程变红', () => {
     const [root, clean] = fakeProject({
-      'SKILL.md': '# s', 'README.md': '# r', 'CHANGELOG.md': '# c', 'docs/ARCHITECTURE.md': '# a'
+      'SKILL.md': '# s', 'README.md': '# r', 'CHANGELOG.md': '# c', 'docs/ARCHITECTURE.md': '# a',
+      'docs/EXTENSIONS.md': ''    // 也覆盖掉默认那份（本用例要的是"整个工程都没有元信息块"）
     });
     try {
       const md = fs.readFileSync(path.join(root, 'docs', 'ARCHITECTURE.md'), 'utf8');
       expect(checker.checkRegistryTable(root, md)).toEqual([]);
     } finally { clean(); }
+  });
+});
+
+describe('docs-registry-check：CLI 稳定性表覆盖（G8 第 ⑮ 条判定）', () => {
+  /** 造一份最小 EXTENSIONS.md（三级表 + 表外说明文字，用来验"只认表格行"） */
+  function fakeExt(commands) {
+    return [
+      '# 扩展契约（EXTENSIONS）',
+      '',
+      '## 1. 可依赖的稳定接口',
+      '',
+      '### 1.1 数据格式（最稳定）',
+      '',
+      '外部工具应直接读 JSON 文件。',
+      '',
+      '### 1.2 CLI 命令（稳定的自动化入口）',
+      '',
+      '稳定性分三级：',
+      '',
+      '| 级别 | 含义 | 命令 |',
+      '|------|------|------|',
+      '| **稳定** | 不变 | 数据读写类：`read`/`list` |',
+      '| **演进中** | 可增补 | ' + commands.map((c) => '`' + c + '`').join('/') + ' |',
+      '| **内部** | 不保证 | `release` |',
+      '',
+      '> 说明：`read` 这条命令很常用 —— 引用块里的名字**不算登记**（否则漏登记会被掩盖 ✗）。',
+      '',
+      '### 1.3 MCP 工具',
+      '',
+      '每个 MCP 工具都是某个 CLI 命令的透传。',
+      ''
+    ].join('\n');
+  }
+
+  it('parseStabilityTable：只认表格行里的反引号名，说明词/引用块/非命令名（`.md`、带空格）都不算', () => {
+    const t = checker.parseStabilityTable(fakeExt(['import-md', 'import-project']));
+    expect(t).not.toBe(null);
+    expect([...t.cmds].sort()).toEqual(['import-md', 'import-project', 'list', 'read', 'release']);
+    expect(t.cmds.has('说明')).toBe(false);
+    // ⚠️ 这条正是踩过的坑：行内既有说明词又有命令名时，靠"切分"会把名字切坏/粘上说明词 ⇒ 假红。
+    //    这里直接给一份"说明词紧贴命令名"的段，判据必须**逐个反引号匹配**才过得去。
+    const glued = [
+      '### 1.2 CLI 命令（稳定的自动化入口）',
+      '',
+      '| 级别 | 含义 | 命令 |',
+      '|------|------|------|',
+      '| **稳定** | 不变 | 数据读写类：`read`/`list`/`get` |',
+      '',
+      '### 1.3 MCP 工具',
+      ''
+    ].join('\n');
+    expect([...checker.parseStabilityTable(glued).cmds].sort()).toEqual(['get', 'list', 'read']);
+    // `</br>` 之类的 HTML 片段会混进同一格 ⇒ 不许把命令名切坏（实测切坏过 backlinks / ask-apply）
+    const brk = glued.replace('数据读写类：`read`/`list`/`get`', '树：`backlinks`/`ask-apply`</br>界面：`ui-state`/`dsh-caps`');
+    expect([...checker.parseStabilityTable(brk).cmds].sort())
+      .toEqual(['ask-apply', 'backlinks', 'dsh-caps', 'ui-state']);
+    // 段不存在 ⇒ null（调用方据此判红，而不是当成"全都登记了"）
+    expect(checker.parseStabilityTable('# 没有 1.2 节')).toBe(null);
+  });
+
+  it('★ 判别力注入：注册表里有一条命令没落进任何一级 ⇒ 必红，且报文点名是哪条', () => {
+    const [root, clean] = fakeProject({
+      'SKILL.md': '# s', 'README.md': '# r', 'CHANGELOG.md': '# c',
+      'docs/ARCHITECTURE.md': fakeRegistry(),
+      'docs/EXTENSIONS.md': fakeExt(['import-md'])       // ← 表里只登记 import-md / read / list / release
+    });
+    try {
+      // 真值清单用**注入**的方式给（假工程里没有真注册表；生产路径不传 ⇒ 现场读
+      // 本工程的 registry.js，见 checkStabilityCoverage 的第二个参数）
+      const problems = checker.checkStabilityCoverage(root, ['read', 'list', 'release', 'import-md', 'import-project']);
+      expect(problems.length).toBeGreaterThan(0);
+      expect(problems[0].kind).toBe('stability');
+      expect(problems[0].rel).toBe('docs/EXTENSIONS.md');
+      expect(problems[0].msg).toContain('漏登记');
+      expect(problems[0].msg).toContain('import-project');   // 必须**点名**，否则不知道去补哪条
+    } finally { clean(); }
+  });
+
+  it('★ 采不到真值必红：命令真值清单为空时不许静默通过（"没有命令要覆盖"是假象）', () => {
+    const [root, clean] = fakeProject({
+      'SKILL.md': '# s', 'README.md': '# r', 'CHANGELOG.md': '# c',
+      'docs/ARCHITECTURE.md': fakeRegistry(),
+      'docs/EXTENSIONS.md': fakeExt(['a', 'b'])
+    });
+    try {
+      const problems = checker.checkStabilityCoverage(root, []);
+      expect(problems.length).toBeGreaterThan(0);
+      expect(problems[0].msg).toContain('一条命令都没有');
+    } finally { clean(); }
+  });
+
+  it('表被删/改成别的写法 ⇒ 报"一条都没解析到"（不静默通过）', () => {
+    const [root, clean] = fakeProject({
+      'SKILL.md': '# s', 'README.md': '# r', 'CHANGELOG.md': '# c',
+      'docs/ARCHITECTURE.md': fakeRegistry(),
+      'docs/EXTENSIONS.md': '# 扩展契约\n\n## 1. 可依赖的稳定接口\n\n### 1.2 CPU 调度\n\n没有表\n'
+    });
+    try {
+      const problems = checker.checkStabilityCoverage(root, ['read']);
+      expect(problems.length).toBeGreaterThan(0);
+      expect(problems[0].msg).toContain('都没解析到');
+    } finally { clean(); }
+  });
+
+  it('全覆盖即通过（判据是"覆盖"，不判"放哪一级" —— 那是人的判断）', () => {
+    const [root, clean] = fakeProject({
+      'SKILL.md': '# s', 'README.md': '# r', 'CHANGELOG.md': '# c',
+      'docs/ARCHITECTURE.md': fakeRegistry(),
+      'docs/EXTENSIONS.md': fakeExt(['alpha', 'beta'])
+    });
+    try {
+      expect(checker.checkStabilityCoverage(root, ['read', 'list', 'release', 'alpha', 'beta'])).toEqual([]);
+    } finally { clean(); }
+  });
+
+  it('真实工程：本工程的三级表覆盖了注册表里的全部命令（少了任何一条，npm test 就会红）', () => {
+    const problems = checker.checkStabilityCoverage(ROOT);
+    expect(problems.map((p) => p.kind + ' ' + p.msg)).toEqual([]);
   });
 });
 

@@ -77,6 +77,52 @@ function describeImportSourceProblem(filePath) {
   return null;
 }
 
+/* ---------------- ⓪′ 体量闸门：几百 MB 的 txt/docx 不许整份读进内存 ----------------
+ * 为什么必须有：两条导入路都**先把整个文件读进内存**（`docToOutline` 的 `fs.readFileSync(filePath)`、
+ * `import-md` 的 `fs.readFileSync(file,'utf8')`），而一次导入的峰值内存约等于 2–3 倍文件体积
+ * （Buffer + utf8 字符串 + 提纲/节点树）。几百 MB 的 txt 足以让 CLI 在这个进程里吃光内存、
+ * 被系统杀掉 —— 而**被系统杀掉的进程不会打印任何原因**：使用者看到的是"命令没反应/窗口一闪"，
+ * 正是本工程最忌讳的那种"看不出发生了什么" ✗。
+ *
+ * 上限口径（不是性能目标，是"诚实边界"）：**这个数要足够大到正常文档全都过得去**，
+ * 又要小到"读进来不会把机器拖垮"。取 **64 MB**：一份纯文本 md/txt 到这个量级已是几千页；
+ * docx/pdf 是压缩/分页格式，正文远小于此。超限**响亮拒绝**并给三条出路（不是静默截断 ✗、
+ * 不是"读一半"✗）。**常量只有这一份**：CLI（import-md）与 docToOutline 各调同一个判据。 */
+const MAX_SOURCE_MB = 64;
+const MAX_SOURCE_BYTES = MAX_SOURCE_MB * 1024 * 1024;
+
+/** 超限时的报文：**说准原因 + 给出路**（与 ⓪ 的目录报文同一风格）。
+ *  `{ code:'too-big', message, sizeMB }`；没超限/取不到大小（stat 失败由 ⓪ 负责报）⇒ null。 */
+function describeOversizeSource(filePath) {
+  const p = String(filePath);
+  let st = null;
+  try { st = fs.statSync(p); } catch (e) { return null; }   // 不存在/没权限的报错归 ⓪，别在这里双重报
+  if (!st.isFile() || st.size <= MAX_SOURCE_BYTES) return null;
+  return describeOversizeSize(st.size, p);
+}
+
+/** 从内存里拿到的 Buffer 做同一判断（`docToOutline` 若被调用方喂进 `opts.buf` 时用；同一个常量、同一段组文） */
+function describeOversizeBuffer(buf, filePath) {
+  const n = buf && buf.length ? buf.length : 0;
+  if (n <= MAX_SOURCE_BYTES) return null;
+  return describeOversizeSize(n, filePath);
+}
+
+/** 共用组文（**纯函数**，便于单测；口径与上面两个判据完全一致 ⇒ 报文只有一份，不会漂移） */
+function describeOversizeSize(sizeBytes, filePath) {
+  const sizeMB = Math.round(Number(sizeBytes || 0) / 1048576);
+  return {
+    code: 'too-big',
+    sizeMB: sizeMB,
+    message: '这个文件 ' + sizeMB + ' MB，超过导入上限 ' + MAX_SOURCE_MB + ' MB: ' + String(filePath)
+      + '。**没有读它**（整份读进内存会把这一进程拖垮，那正是"命令莫名退出、什么都没打印"的成因 ✗）。'
+      + '出路（三选一）：'
+      + '① 拆成几份（按章/按册切）再逐份导入 —— 见 `import-md <项目> <文件> --parent <节点>`；'
+      + '② 先转成体量小得多的格式：docx/pdf 是压缩/分页的，纯 txt 转 docx 常能小一个量级；'
+      + '③ 只要其中一段：用 head/tail（或 PowerShell 的 `Get-Content -TotalCount`）切出需要的部分再导入。'
+  };
+}
+
 /** 目录入参的报文：点明"这是目录不是文件" + 如实说 `import-dir` 未实现 + 给出**现在就能走**的逐文件流程 */
 function directoryMessage(p) {
   return '这是一个**目录**，不是文件: ' + p
@@ -319,6 +365,10 @@ function docxToOutline(paras) {
  */
 function docToOutline(filePath, opts) {
   const o = opts || {};
+  // 体量闸门（见 ⓪′）：在**读之前**判大小 ⇒ 几百 MB 的文件不会被整份读进内存。
+  // 被喂了 `opts.buf` 时同样判（调用方可能已经读完了，但那也不能让它继续往下走）。
+  const tooBig = o.buf ? describeOversizeBuffer(o.buf, filePath) : describeOversizeSource(filePath);
+  if (tooBig) throw new Error(tooBig.message);
   const buf = o.buf || fs.readFileSync(filePath);
   const format = detectFormat(filePath, buf);
   if (!format) {
@@ -387,11 +437,32 @@ function finishOutline(format, md, pages, extra) {
  *  失败一律**响亮**（把子进程给出的原因原样抛出 ✓ 不静默、不返回半棵树 ✗）。 */
 function pdfOutlineViaHelper(filePath) {
   const helper = path.join(__dirname, '..', 'scripts', 'pdf-outline-helper.mjs');
-  const r = require('child_process').spawnSync(process.execPath, [helper, filePath], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  // ⚠️ maxBuffer 的语义（本轮修的是**报文**，不是上限本身）：`spawnSync` 收集 stdout/stderr 走的是
+  //    **内存管道**，超限时它会把子进程杀掉、并把 `error.code` 置为 `ENOBUFS` / 报 "stdout maxBuffer
+  //    length exceeded" —— 而旧报文只说"读 PDF 的子进程没有给出结果"，**没说是被上限掐掉的**。
+  //    那是最难查的一类报文：使用者会以为"这份 PDF 坏了"，于是反复重试、换文件，方向全错 ✗。
+  //    这里把"超限"独立成分支说清 + 给出去路（同一件事还有第二种表现：子进程自己先抛了错）。
+  const MAXBUF_MB = 32;   // 与下面的 32 * 1024 * 1024 同一份口径（改一处必须改两处：这里只有一份常量 ✓）
+  const r = require('child_process').spawnSync(process.execPath, [helper, filePath],
+    { encoding: 'utf8', maxBuffer: MAXBUF_MB * 1024 * 1024 });
   const out = String(r.stdout || '').trim();
+  const errText = String((r.error && r.error.message) || '') + ' ' + String(r.stderr || '').trim();
   let parsed = null;
   try { parsed = JSON.parse(out.split('\n').pop()); } catch (e) { parsed = null; }
-  if (!parsed) throw new Error('读 PDF 的子进程没有给出结果（exit=' + r.status + '）：' + (out || String(r.stderr || '').trim()).slice(0, 200));
+  if (!parsed) {
+    // ① 明确是**输出超限**（不是 PDF 读不了）：原因准确 + 出路
+    if ((r.error && r.error.code === 'ENOBUFS') || /maxBuffer/i.test(errText)) {
+      throw new Error('这份 PDF 的提纲文本超过了读取上限（子进程输出上限 ' + MAXBUF_MB + ' MB），'
+        + '所以**没有拿到结果**（这不是"PDF 坏了"）。出路（三选一）：'
+        + '① 先用其它工具把这份 PDF 拆成几册再逐册导入；'
+        + '② 只要书签：用别的 PDF 工具导出书签为 .md/.txt 再 `import-md`；'
+        + '③ 只要其中正文：把需要的那几页另存为一个新 PDF 再导入。');
+    }
+    // ② 子进程被信号/异常收掉（例如它自己先崩了）—— 把**信号**也报出来，别只说 exit
+    const how = r.signal ? ('被信号 ' + r.signal + ' 结束') : ('exit=' + r.status);
+    throw new Error('读 PDF 的子进程没有给出结果（' + how + '）：'
+      + (out || errText || '（子进程没有任何输出）').slice(0, 200));
+  }
   if (!parsed.ok) throw new Error(parsed.error || '读 PDF 失败（未说明原因）');
   return { md: parsed.md, pages: parsed.pages, pdfSource: parsed.source === 'text' ? 'text' : 'outline', notes: parsed.notes || [] };
 }
@@ -400,5 +471,7 @@ module.exports = {
   zipFindEntry, docxParagraphs, docxToOutline, docToOutline, finishOutline,
   // 导入源闸门（把"为什么读不了"说准 + 给出路）与来源指纹 origin（幂等的前提，唯一实现）
   describeImportSourceProblem, directoryMessage,
+  // 体量闸门（⓪′）：上限常量只有这一份，两条导入路共用同一个判据
+  MAX_SOURCE_MB, MAX_SOURCE_BYTES, describeOversizeSource, describeOversizeBuffer, describeOversizeSize,
   normalizeOutline, outlineSha256, sourceRef, makeOrigin, originMatches, describeOrigin
 };

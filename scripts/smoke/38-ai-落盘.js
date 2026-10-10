@@ -21,6 +21,9 @@
  * ============================================================ */
 'use strict';
 
+// 冒烟共用工具（收尾纪律与用法见 scripts/smoke-assertions.js 顶部）：动了 addNode 就要收模态
+const mm = require('../smoke-assertions.js');
+
 /** 夹具节点的前缀（便于人工核对"这些是冒烟造的"；沙箱副本里，每域隔离会还原） */
 const FIX = 'smoke-qa-';
 /** 传进界面的回答文本（首行会被拿去当子节点标题 ⇒ 写长一点，才能验到"截断"这件事） */
@@ -357,10 +360,14 @@ module.exports = [
       const survived = qa.length === 1 && qa[0].a === ANSWER2 && detail.indexOf('第二次回答') >= 0;
       // 反向证据：这次保存**确实写盘了**（子节点数从 0 变成 1 —— 证明走的不是"没改动的空保存"）
       const kids = childIdsFromDisk(ctx, id);
+      // 收尾：`addNode` 会顺手打开「编辑节点」模态 ⇒ 当场关掉（跨域存活会盖住后面的真输入域；
+      // 共用工具见 scripts/smoke-assertions.js 的「收尾纪律」）
+      const closed = await mm.closeDialogs(ctx);
       return {
         ok: survived && kids.length >= 1,
         text: so.text + ' ｜ 保存后盘上 qa 仍在=' + survived + '（条数=' + qa.length + '）'
           + ' ｜ 这次保存真的写了盘（子节点=' + kids.length + '）'
+          + ' ｜ 收尾关掉的模态=' + closed.n
       };
     }
   }

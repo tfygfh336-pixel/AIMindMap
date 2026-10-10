@@ -37,6 +37,9 @@ function findNode(file, id) {
 
 const NODE = 'tcp-handshake';   // comnet 里稳定存在的节点（多个分域都在用）
 
+/** 判别力证明开关（见下方「残留模态」段；默认空 ⇒ 正常跑完全不受影响 ✓） */
+const INJECT = process.env.MM_SMOKE_INJECT || '';
+
 const assertions = [
   {
     name: '本机文件夹：CLI 设了 localPath → 界面详情框出现可点链接',
@@ -72,16 +75,41 @@ const assertions = [
       const r = await ctx.exec(`(async () => {
         var app = window.MMApp;
         app.addNode('overview');           // 制造一个真实改动（否则可能走不到写盘）
+        /* ⚠️ addNode **顺手打开**「编辑节点」模态（app-actions.js 的 addNode 末尾调 MMEditor.editNode）；
+         * ⚠️ 本模板串里**不许出现反引号**（会提前终止 JS 模板串 ⇒ require 期就 SyntaxError，
+         *    整轮冒烟变成 SMOKE LOAD ERROR 一条断言都不跑 —— 本工程在别处踩过同一个坑，见
+         *    testing-for-ai 的 E5③；这里就是踩它踩出来的）。
+         * 它**不在**「每域隔离」的还原范围内（隔离只还原项目数据文件 + 重开项目，DOM 模态不在其中）
+         * ⇒ undo() 撤得掉节点、撤不掉那个框 ⇒ 它会**跨域存活**。
+         * 实测代价（2026-10-10，SMOKE_ONLY='16,36,37'）：域 36/37 是真鼠标输入 + elementFromPoint
+         * 命中测试，编辑框盖住画布 ⇒ 11 条断言连锁红（报文 "点不到 comp-net …→DIV.dialog-box"），
+         * 而那两个文件**一行都没改过** ✗。全量跑之所以还绿，只是因为后面的域**顺手**替本域擦了桌子
+         * （12-dsh-drag.js 的 strays、27-import-doc.js 的 edit-cancel）—— 运气不是隔离 ✗。
+         * 所以在这里按**用户关框的那条路**收尾（点「取消」⇒ editor.js 的 closeEditDialog；
+         * 与 27-import-doc.js / 03-edit-search.js 同一做法），并把结果写进报文（不许静默 ✓）。
+         *
+         * 判别力证明：MM_SMOKE_INJECT=16-leave-modal npm run smoke（配 SMOKE_ONLY='16,36,37'）
+         * ⇒ 本域**故意不关**它 ⇒ 框架在每个域开跑前的干净前置会收掉它，并按**框架级判据**
+         * 让域 36 直接红 + 点名"由 16-local-path.js 留下" ⇒ 证明那条判据真的能抓住跨域污染 ✓ */
+        var leave = ${JSON.stringify(INJECT.indexOf('16-leave-modal') >= 0)};
+        if (!leave) {
+          var cancel = document.getElementById('edit-cancel');
+          if (cancel) cancel.click();
+        }
+        var dlg0 = document.getElementById('edit-dialog');
+        var dialogClosed = !dlg0 || dlg0.style.display === 'none';
         var saved = await app.save();
         app.undo();                        // 撤掉探针改动
-        return { saved: saved };
+        return { saved: saved, dialogClosed: dialogClosed };
       })()`);
       const node = findNode(projFile, NODE);
       const kept = !!node && node.localPath === dir;
       return {
-        ok: r.saved === true && kept === true,
+        ok: r.saved === true && kept === true && r.dialogClosed === true,
         text: '界面 save()=' + r.saved + ' · 盘上该节点的 localPath 仍在=' + kept
           + (kept ? '' : '｜⚠️ 字段被整树写回丢掉了')
+          + ' · 「编辑节点」模态已关=' + r.dialogClosed
+          + (r.dialogClosed ? '' : '（⚠️ addNode 顺手开的框没关 ⇒ 会跨域存活、盖住后面的真输入域 ✗）')
       };
     }
   },

@@ -64,6 +64,13 @@
  *   要判"看得见"就用 ① `document.elementFromPoint(圆心)` 命中它自己，或
  *   ② 数真帧像素（`scripts/vision/frame-stats.js` 的 `scanRegion`）；
  *   `rect` **只用来判几何**（位置 / 尺寸 / 相对坐标）。范例：`scripts/smoke/37-圆钮工具栏绑定.js`。
+ *
+ * ★ **收尾纪律（动了 addNode/addTopic 的域必须读）**：`MMApp.addNode()`/`addTopic()` 会顺手
+ *   打开「编辑节点」模态，而"每域隔离"收不掉 DOM 模态（它只还原项目数据 + 重开项目）
+ *   ⇒ 那个框会**跨域存活**、盖住后面的真输入域（实测：域 16 一处漏关 ⇒ 域 36/37 连锁红 11 条）。
+ *   收尾一律调本文件导出的共用工具：`require('../smoke-assertions.js').closeDialogs(ctx)`
+ *   （渲染层的唯一实现在 `renderer/app-actions.js` 的 `closeAllDialogs`），并把条数写进报文。
+ *   框架侧还有一道判据（`main.js` 的"域开始的干净前置"）：**谁没收拾干净，下一个域开始时判红并点名**。
  * ============================================================ */
 'use strict';
 
@@ -77,7 +84,39 @@ const files = fs.readdirSync(smokeDir)
   .filter((f) => /^\d+-.+\.js$/.test(f))
   .sort();
 
-/** 每个文件各自的断言（供"单跑"选择器按文件取子集；仍是纯数据） */
+/* ================= 冒烟断言的**共用工具**（只放"每个域都要做、做错了会互相污染"的那件事） =================
+ * `mm.closeDialogs(ctx)`：收干净**产品自己打开的模态**（`window.MMApp.closeAllDialogs`，唯一实现在
+ * `renderer/app-actions.js`；渲染层侧一行 DOM 都不重复写 ✓）。
+ *
+ * 为什么必须有这么一个共用入口（它是本轮修的一个**真事故**的收口）：
+ *   `MMApp.addNode()` / `addTopic()` 会**顺手打开**「编辑节点」模态（产品行为，没错），
+ *   而冒烟里的"每域隔离"只还原**项目数据文件 + 重开项目** ⇒ DOM 模态**跨域存活**：
+ *   域 16 的 `addNode` 留下的编辑框盖住画布 ⇒ 域 36/37（真鼠标输入 + `elementFromPoint`）
+ *   连锁红 11 条（报文 `点不到 comp-net …→DIV.dialog-box`），而那两个文件一行都没改过 ✗。
+ *   全量跑当时还绿，只是因为后面的域**各自顺手**擦桌子（12-dsh-drag 扫 `.overlay`、
+ *   27-import-doc 点 `edit-cancel`）—— 五份拷贝、各写各的，于是必然有域漏掉（实测漏了 4 个）✗。
+ *
+ * 用法（**任何**动了 `addNode`/`addTopic` 的域都要在断言体结束前调一次，并把 `n` 写进报文）：
+ *   const mm = require('../smoke-assertions.js');
+ *   const cleaned = await mm.closeDialogs(ctx);     // → { n, names }
+ * 框架侧对应的是 main.js 的"域开始的干净前置"（**那一层是判据**：有残留 ⇒ 该域判红并点名）——
+ * 两者分工：域自己收尾（这里）；框架保证"谁没收尾"会被看见（main.js）。
+ * ⚠️ 只收模态/浮层（`.overlay` 一族 + 命令面板 + 审计面板）；浮动详情框、选区块、大小锁
+ *    是**另一类**状态，不在它的责任内（那些由各自的域收拾）。
+ *
+ * ⚠️⚠️ **它必须在本文件 `require` 各分域之前挂上**：分域文件在**加载期**就 `require` 本文件
+ *   拿这个函数（Node 的循环 require 会把"当前已填好的那份 exports"给它）——挂晚了拿到的是
+ *   `undefined`，域一跑就是 `mm.closeDialogs is not a function`（实测踩到：5 个域一起红 ✗）。
+ *   这也是本文件唯一一处"先给工具、后 require 分域"的顺序约束。 */
+module.exports.closeDialogs = async function closeDialogs(ctx) {
+  const raw = await ctx.exec('(function () { return (window.MMApp && window.MMApp.closeAllDialogs)'
+    + ' ? window.MMApp.closeAllDialogs() : []; })()');
+  const list = Array.isArray(raw) ? raw : [];
+  return { n: list.length, names: list.map((d) => d && d.name).filter(Boolean) };
+};
+
+/** 每个文件各自的断言（供"单跑"选择器按文件取子集；仍是纯数据）
+ *  ⚠️ 顺序：必须在上面挂好 `closeDialogs` **之后** —— 分域文件加载期就会用它 ✓ */
 const groups = files.map((f) => ({ file: f, assertions: require(path.join(smokeDir, f)) }));
 
 const assertions = [].concat(...groups.map((g) => g.assertions));
@@ -88,3 +127,30 @@ module.exports = assertions;
 // 不能因为加了单跑而改变（改的是"跑哪些"，不是"有多少条"）。
 module.exports.files = files;
 module.exports.groups = groups;
+
+/* ================= 冒烟断言的**共用工具**（只放"每个域都要做、做错了会互相污染"的那件事） =================
+ * `mm.closeDialogs(ctx)`：收干净**产品自己打开的模态**（`window.MMApp.closeAllDialogs`，唯一实现在
+ * `renderer/app-actions.js`；渲染层侧一行 DOM 都不重复写 ✓）。
+ *
+ * 为什么必须有这么一个共用入口（它是本轮修的一个**真事故**的收口）：
+ *   `MMApp.addNode()` / `addTopic()` 会**顺手打开**「编辑节点」模态（产品行为，没错），
+ *   而冒烟里的"每域隔离"只还原**项目数据文件 + 重开项目** ⇒ DOM 模态**跨域存活**：
+ *   域 16 的 `addNode` 留下的编辑框盖住画布 ⇒ 域 36/37（真鼠标输入 + `elementFromPoint`）
+ *   连锁红 11 条（报文 `点不到 comp-net …→DIV.dialog-box`），而那两个文件一行都没改过 ✗。
+ *   全量跑当时还绿，只是因为后面的域**各自顺手**擦桌子（12-dsh-drag 扫 `.overlay`、
+ *   27-import-doc 点 `edit-cancel`）—— 五份拷贝、各写各的，于是必然有域漏掉（实测漏了 4 个）✗。
+ *
+ * 用法（**任何**动了 `addNode`/`addTopic` 的域都要在断言体结束前调一次，并把 `n` 写进报文）：
+ *   const mm = require('../smoke-assertions.js');
+ *   const cleaned = await mm.closeDialogs(ctx);     // → { n, names }
+ * 框架侧对应的是 main.js 的"域开始的干净前置"（**那一层是判据**：有残留 ⇒ 该域判红并点名）——
+ * 两者分工：域自己收尾（这里）；框架保证"谁没收尾"会被看见（main.js）。
+ * ⚠️ 只收模态/浮层（`.overlay` 一族 + 命令面板 + 审计面板）；浮动详情框、选区块、大小锁
+ *    是**另一类**状态，不在它的责任内（那些由各自的域收拾）。
+ */
+module.exports.closeDialogs = async function closeDialogs(ctx) {
+  const raw = await ctx.exec('(function () { return (window.MMApp && window.MMApp.closeAllDialogs)'
+    + ' ? window.MMApp.closeAllDialogs() : []; })()');
+  const list = Array.isArray(raw) ? raw : [];
+  return { n: list.length, names: list.map((d) => d && d.name).filter(Boolean) };
+};

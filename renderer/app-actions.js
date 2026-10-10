@@ -609,6 +609,51 @@
   MM.isDirty = isDirty;
   MM.confirmDiscardIfDirty = confirmDiscardIfDirty;
   MM.closeMapPage = closeMapPage;      // **真关**导图页：先拦未保存编辑（保存成功才卸页）
+
+  /* ================= 一次收干净所有"模态"（自动化前置 / 隔离用） =================
+   * 为什么需要它（真实事故，2026-10-10）：`renderer/editor.js` 的 `openEditDialog` 是**纯 DOM**
+   * 模态 —— 它不在任何"每域隔离"的还原范围内（隔离只还原项目数据文件 + 重载项目），
+   * 于是「编辑节点」框会**跨域存活**：域 16 的 `addNode()` 顺手打开它、`undo()` 不关它，
+   * 下一个域（36/37，全是真鼠标输入 + `elementFromPoint` 命中测试）整片变红 ——
+   * 报文是 `点不到 comp-net …→DIV.dialog-box` 与 `命中测试命中圆钮=false（命中=overlay）`，
+   * 而那个文件**一行都没改过** ✗。实测：`SMOKE_ONLY='16,36,37'` 12/23。
+   * 全量运行之所以仍绿，只是因为后面的域**顺手**替别人擦了桌子（12-dsh-drag.js 的 `strays`、
+   * 27-import-doc.js 的 `edit-cancel` 点击）—— 那属于运气，不属于隔离 ✗。
+   *
+   * 口径（三层，缺一层就不算解决）：
+   *   ① 只收**真正打开着**的（`display !== 'none'`）⇒ 幂等，重复调用无副作用；
+   *   ② 走**产品自己的关闭路径**（`closeEditDialog` / `closePalette` / …），不新发明一套；
+   *   ③ **返回列表而不是静默关掉** ⇒ 调用方（冒烟框架）能把"谁留的"报出来；
+   *      静默收干净的后果是"下一个域莫名奇妙地红/绿"，与本工程最忌讳的那类缺陷同型。
+   * 边界（别以为它比实际更强）：只覆盖**模态/浮层**（`.overlay` 一族 + 命令面板 + 审计面板）。
+   *   浮动详情框、选区块、大小锁是**另一类**状态（不遮挡输入），不在本函数的责任内。 */
+  function closeAllDialogs() {
+    const open = [];
+    const log = (name, el, close) => {
+      if (!el || el.style.display === 'none') return;   // 没开着 ⇒ 不动（幂等）
+      open.push({ name: name, html: String(el.innerHTML || '').replace(/\s+/g, ' ').trim().slice(0, 60) });
+      try { close(); } catch (e) { /* 单个关不掉不阻断：整个函数是"尽力收干净"，收不掉的那条已经进了 open ✓ */ }
+    };
+    // 「编辑节点」：走**用户点取消**同一条路（editor.js 的 closeEditDialog 挂在 #edit-cancel 上）
+    log('edit-dialog', elemById('edit-dialog'), () => { elemById('edit-cancel').click(); });
+    // 图片 / 附件对话框：产品自己没有独立的 close 入口（只有各自的取消按钮）
+    log('image-dialog', elemById('image-dialog'), () => { elemById('image-cancel').click(); });
+    log('file-dialog', elemById('file-dialog'), () => { elemById('file-cancel').click(); });
+    // 关联笔记编辑框：产品有闭包级 closeAssocEditor（app-assoc.js 导出到 MM）
+    log('assoc-dialog', elemById('assoc-dialog'), () => { if (MM.closeAssocEditor) MM.closeAssocEditor(); });
+    // 灯箱 / 文件预览：MM 上本来就有公开关闭口
+    log('lightbox', elemById('lightbox'), () => { if (MM.closeLightbox) MM.closeLightbox(); });
+    log('file-preview', elemById('file-preview'), () => { if (MM.closeFilePreview) MM.closeFilePreview(); });
+    // 纯 JS 面板（不是 DOM 模态）：关掉它们要走各自的 API
+    if (MM.paletteIsOpen && MM.paletteIsOpen()) { open.push({ name: 'palette', html: '' }); MM.closePalette(); }
+    const au = elemById('audit-panel');
+    if (au && au.style.display !== 'none') { open.push({ name: 'audit-panel', html: '' }); MM.closeAudit(); }
+    return open;
+  }
+  MM.closeAllDialogs = closeAllDialogs;
+
+  /** 局部小工具：按 id 取元素（本文件其余地方走 MM.$，这里只为让上面的 `log(...)` 读起来不被选择器噪音淹没） */
+  function elemById(id) { return document.getElementById(id); }
   MM.setConfirmStub = setConfirmStub;  // 自动化用：换掉确认框（默认 window.confirm）
   MM.onProjectDiskChange = onProjectDiskChange;
   /** 请求一次"按磁盘重读"（**不经过 fs.watch 的 300ms 防抖**）。

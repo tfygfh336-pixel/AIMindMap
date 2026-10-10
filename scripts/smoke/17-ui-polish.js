@@ -14,6 +14,10 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+// 冒烟共用工具（收尾纪律与用法见 scripts/smoke-assertions.js 顶部）：本域第 ④ 条会打开文件预览，
+// 收尾必须关掉（跨域存活会盖住后面域的命中测试）
+const mm = require('../smoke-assertions.js');
+
 const settle = 'new Promise(function (r) { setTimeout(r, 260); })';
 
 /** 截图落盘（headless 下 capturePage 仍出有效帧，见 14-headless-window.js） */
@@ -209,6 +213,10 @@ const assertions = [
                  srcTail: String(pdf.getAttribute('src') || '').slice(-46) };
       })()`);
       const file = r.found ? await shot(ctx, ctx.win, '4-preview') : '（未打开）';
+      // 收尾：本断言把**文件预览**打开了 ⇒ 当场关掉（它跨域存活会盖住后面域的命中测试 ——
+      // 实测：不关它 ⇒ 域 18 开始时框架的干净前置收到 file-preview 并判红 ✗）。
+      // 顺序刻意放在截图**之后**（截图要的就是"预览打开着"的画面）。
+      const closed = await mm.closeDialogs(ctx);
       const big = r.found && r.w >= r.vw * 0.6 && r.h >= r.vh * 0.6;
       const filled = r.found && r.pdfW >= r.bodyW * 0.95;
       return {
@@ -217,6 +225,7 @@ const assertions = [
           ? '预览框 ' + r.w + '×' + r.h + '（视口 ' + r.vw + '×' + r.vh + '）· fp-body ' + r.bodyW + '(' + r.bodyDisplay + ')'
             + ' · PDF 框 ' + r.pdfW + '×' + r.pdfH + ' [flex=' + r.pdfFlex + ' width=' + r.pdfW2 + ' display=' + r.pdfDisplay + ']'
             + ' · src 尾=' + JSON.stringify(r.srcTail) + ' · 截图 ' + file
+            + ' · 收尾关掉的浮层=' + closed.n
           : '没找到 pdf 附件（comnet 应有 2 个）'
       };
     }

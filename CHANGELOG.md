@@ -14,6 +14,65 @@
 
 ## [Unreleased]
 
+### 批 4（三个真缺陷 + 三个小尾巴）：BOM 静默吃掉第一个标题 · 恒真断言 · 模态跨域污染（2026-10-10）
+
+**一句话**：三件**改代码**、不动措辞、不缩要求 —— ① `import-md` 不剥 BOM ⇒ **整个第一个标题被静默吃掉**（带 BOM 只剩「第二本书」，无 BOM 两个都在 —— 同一份内容两条导入路给出两棵树 ✗）；② `scripts/cli-integration.js` 有一条断言的**一半判据从来没生效过**（读的字段不存在 ⇒ `undefined !== 0` 恒真）；③ 冒烟的「每域隔离」**收不掉 DOM 模态** ⇒ 域 16 的 `addNode` 留下的「编辑节点」框跨域存活，把域 36/37 连锁弄红 **11 条**（而那两个文件一行都没改过）。三条各自做了**注入 ⇒ 必红 ⇒ 撤销 ⇒ 逐字节还原**的判别力证明（报文见下）。
+
+#### 一、三项各自：根因取证 → 改了什么
+
+| # | 根因取证（file:line + 实测报文） | 改了什么 |
+|---|--------------------------------|----------|
+| 1 | `cli/commands/project.js` 的 `importMd` 把 `fs.readFileSync(file,'utf8')` 的**原文**直接喂给 `markdown.markdownToTree`，而 `src/doc-import.js` 的 `normalizeOutline`（CRLF→LF + 剥 BOM，**唯一实现**）只在 `docToOutline` 里被调（第 356 行）⇒ 带 BOM 的 md 首行 `#` 匹配不上、被当成正文吞掉。实测（`%TEMP%` 沙箱、临时项目）：`# 第一本书\n正文一\n\n# 第二本书\n正文二` 带 BOM ⇒ `导入完成，新增 1 个节点` + `read --brief` 只有「第二本书」；同内容不带 BOM ⇒ `新增 2 个节点` + 两个标题都在 | `import-md` 先 `normalizeOutline(raw)` 再**建树 + 算指纹**（正文与指纹共用同一份规范化）；`describeOversizeSource(file)` 体量闸门加在**读之前**。**同类扫描**：全树只有这一处"原文直接进建树入口"——`import-project` 的 md/txt/docx/pdf 四条前端都经 `docToOutline`（已规范化）、PDF 文字层在 `src/pdf-text.js` 里自己拼 `#` 提纲后同样回到同一入口、`ask-apply`/`import-json` 不走建树 ⇒ **已逐条核对，只有这一处** ✓ |
+| 2 | `scripts/cli-integration.js:817` 写的是 `r4.status !== 0 && /项目已存在/.test(r4.err + r4.out)`，而同一文件第 84 行的 `run()` 只返回 `{ code, out }` ⇒ `.status`/`.err` **都是 undefined** ⇒ `undefined !== 0` **恒真**（只在 `"undefined" + out` 顺带命中文本时才没暴露）；机械扫同类又查出 **5 处**同型的 `r.status !== 0`（ask 段）与 **6 处** `r.err + r.out` | 全部改成真实字段（`r.code` / `r.out`；`out` 本就是 stdout+stderr 合并）。**改了几处 / 还剩几处**：`run()` 的调用点 **6 处**全改；文件里其余 `.status`/`.stdout`/`.stderr` 都是**真子进程结果**（`spawnSync`，第 836/838/1357/2004 行等）—— 那些字段真实存在，**留着不动** ✓ |
+| 3 | `main.js` 的「每域隔离」只做"还原沙箱数据文件 + 让应用重开当前项目"，而「编辑节点」模态是**纯 DOM** 的（`renderer/editor.js`）⇒ 跨域存活。实测（`SMOKE_ONLY='16,36,37'`）**12/23**：域 36 报文 `点不到 comp-net：该节点此刻没有可命中点…各候选：(382,540)→DIV.dialog-box[125,171 480x454]`、域 37 报文 `命中测试命中圆钮=false（命中=overlay）`；元凶是 **16-local-path.js** 的 `app.addNode('overview')`（`undo()` 撤得掉节点、撤不掉框）。全量跑当时还绿，只因后面的域**各自顺手**擦了桌子（`12-dsh-drag.js` 扫 `.overlay`、`27-import-doc.js` 点 `edit-cancel`）—— 五份拷贝、各写各的，实测漏了 **5 个域**（11/13/15/16/17） | ① **渲染层唯一入口** `MMApp.closeAllDialogs()`（`renderer/app-actions.js`）：走**产品自己的关闭路径**收干净模态/浮层，并**返回列表**（不静默关掉）；② 冒烟**共用工具** `require('../smoke-assertions.js').closeDialogs(ctx)`，5 个漏收尾的域逐条接上；③ **框架级干净前置**：每个域开始时（隔离之后）调它，**有残留 ⇒ 该域直接红并点名"是哪个域留下的"** —— 过滤运行照样生效（这正是当年漏掉的那条路）；④ 新门禁 **V2**（`scripts/smoke-state-check.js`，挂进 verify）：静态扫 37 个域文件，"会留下浮层的动作"在**域末**必须有收尾或显式豁免 `收尾-豁免: <原因>` |
+
+#### 二、三个小尾巴（都做完 ✓）
+
+- **`docs/EXTENSIONS.md` 的稳定性三级表**：补上 `import-project`，并顺带清点出**同型漏登记 11 条**（`ask`/`ask-apply`/`theme-layout`/`expand-depth`/`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`/`changelog`）；新增 G8 第 ⑮ 条判定 `checkStabilityCoverage`：`cli/registry.js` 的**每条命令必须落在某一级里**（真值运行时可数；解析不到表 / 注册表为空一律**判红**，不静默通过）。**判"放哪一级"仍是人的判断**，门禁只判"有没有落在某一级"。
+- **导入体量闸门**：新增 `MAX_SOURCE_MB`（64 MB，**一份常量**）+ `describeOversizeSource`/`describeOversizeBuffer`，两条导入路在**读之前**判 ⇒ 超限**响亮拒绝** + 三条出路（拆 / 转格式 / 取一段）"**没有读它**"。PDF 那条路另外修**报文**：子进程输出超 `maxBuffer`（32 MB）时原先只说"读 PDF 的子进程没有给出结果"（会让人以为 PDF 坏了），现在明确说"**提纲文本超过读取上限**，不是 PDF 坏了" + 出路。
+- **`scripts/smoke/27-import-doc.js` 的 `writeProbe()`**：改为返回 `{file, dir}` 并新增 `removeProbe(dir)`，探针用完**立刻自建自删**，"探针目录已删=true/false"进断言报文（原先每跑一轮全量冒烟就在 `%TEMP%` 留 2–3 个 `mm-imp-*` 目录 ✗）。
+
+#### 三、判别力证明（每条：注入 ⇒ 必红 ⇒ 撤销 ⇒ 逐字节还原）
+
+| # | 注入（改什么） | 期望红 | 实测报文 |
+|---|---------------|--------|----------|
+| 1 | 把 `importMd` 里的 `normalizeOutline(raw)` 还原成 `raw`（即回到不剥 BOM） | 集成 §9.2 的 BOM 断言必红 | `[FAIL] ★ 带 BOM 的 md 经 import-md ⇒ **两个标题都在**…` + 报文里可见"节点数只涨了 1"与读回只剩「第二本书」⇒ **第一个标题消失** ✓；撤销后 `290/290` |
+| 2 | 让"项目已存在"那条命令**返回 0**（让 `error()` 不改退出码） | 第 816 行那条断言必红 | 旧写法（读 `r4.status`）**不变红** —— 这就是"一半判据恒真"的直接证据；改成 `r4.code` 后同一注入 ⇒ `[FAIL] import-project 项目名已存在 ⇒ 非 0 且点名…` ✓；撤销后逐字节还原 |
+| 3 | ① `MM_SMOKE_INJECT=16-leave-modal`（域 16 故意不关模态）+ `SMOKE_ONLY='16,36,37'` | 域 36 必须红并**点名 16** | `[smoke] ⚠ 域开始的干净前置：收掉了 ["edit-dialog"] —— 这是域 16-local-path.js 留下的残留模态（它自己跑绿了 ✗）` + `[FAIL] 域开始的干净前置：域 36-real-input.js 开始时**没有**残留模态/浮层 … ← **由 16-local-path.js 留下**` ✓；不带注入 ⇒ `23/23`（修前 `12/23`）✓ |
+| 3b | 把域 17 的 `await mm.closeDialogs(ctx)` 抹掉（V2 门禁的注入自检） | **V2 门禁**必红 | `✗ 1 个冒烟域文件里，有断言打开了浮层/模态却没写收尾：[未收尾] scripts/smoke/17-ui-polish.js … 打开的：openFilePreview → 文件预览浮层（#file-preview）`（exit 1）；撤销后 sha256 **逐字节相同**（`088ce1259f5bfcf8`）⇒ 复绿 ✓。同一注入在**真实仓库**上由 `tests/smoke-state-check.test.js` 再演一遍（只改内存、磁盘不动 ✓） |
+| 4 | 稳定性表里删掉一条命令（`import-project`） | G8 第 ⑮ 条必红并**点名** | `✗ 稳定性三级表漏登记 1 条命令：import-project（注册表共 54 条）…处置：给它选一级` ✓；撤销后 `✓ CLI 稳定性表覆盖注册表全部命令（docs/EXTENSIONS.md §1.2：54 条已登记）` |
+| 5 | 体量闸门：把 65 MB 的 txt 喂给 `import-md` / `import-project` | 两条都要**响亮拒绝**且**不读** | `error: 这个文件 65 MB，超过导入上限 64 MB: …。**没有读它**…出路（三选一）：① 拆成几份…② 先转成体量小得多的格式…③ 只要其中一段…`；断言同时核对"项目数不变 / 目标项目节点数不变"（拒绝是真的没写）✓。边界由单测钉住 -1 / 正好 / +1 三档 |
+
+> ⚠️ **注入过程本身踩到两个坑（如实记，都是本工程记过的老形状）**：① 把反引号写进 JS **模板串**里的注释 ⇒ 提前终止字符串、`require` 期直接 SyntaxError，整轮冒烟变成 `SMOKE LOAD ERROR`（一条断言都不跑）——踩了**两次**（域 16、域 27），第二次是"解释这个坑的注释自己又踩了一遍" ✗；② `smoke-assertions.js` 里新加的共用工具挂在 `require` 各分域**之后** ⇒ 循环 require 让分域拿到 `undefined` ⇒ 5 个域一起报 `mm.closeDialogs is not a function`（已把挂载点提到 `require` 分域之前，并在注释里写明这是本文件唯一的顺序约束）。
+
+#### 四、改动即连带（RULES §3 R5）
+
+| 可见面 | 结论 |
+|--------|------|
+| **GUI 交互** | 新增对外 API `window.MMApp.closeAllDialogs()`（自动化/隔离用，**不新增任何界面入口**，也不改任何既有交互）；`import-md` 的**正常路径**行为不变（只是"带 BOM 的文件不再丢第一个标题"） |
+| **CLI 命令语义** | `import-md` 新增一条**入参拒绝**（>64 MB）；`import-project` 同样。成因与出路都写在报文里；`docs/CLI.md` 由 `docs-gen` 重生成（54 条命令，逐字无变化）✓ |
+| **MCP 工具** | 无变化（`import_markdown`/`import_project` 只是转发 CLI ⇒ 自动获得新报文） |
+| **数据格式** | 无新字段、`formatVersion` 不变；`origin.sha256` 的算法不变（BOM 本来就不参与指纹） |
+| **冒烟 / 集成断言** | 集成 **284 → 290**（+6：BOM 三条 + 体量三条）；冒烟 **204 → 204**（**条数不变** —— 域 16/17 只是把"收尾"写进既有断言的报文，不新增断言；框架级判据是**前置检查**，不进断言计数）；单测 **987 → 1012 / 54 → 55 文件**（`tests/smoke-state-check.test.js` 12 条 + `doc-import` 8 条 + `docs-registry` 5 条 + `changed-plan` 措辞）；`docs/VERIFY.md` 由 `npm run facts:write` 重生成 ✓ |
+| **门禁** | V1 之后新增 **V2**（`scripts/smoke-state-check.js`），挂进 `scripts/verify.js` 的 STEPS（第 5 步，10 s 预算）⇒ 全链 **10 步 → 11 步**；`scripts/changed-plan.js` 的 `ALWAYS`/`FULL_STEPS` 同批更新（+ 对应单测）✓；G8 新增第 ⑮ 条判定（`docs/RULES.md` §2 的 G8 行条数 14 → 15 同批改，G9 机械核对 ✓）。⚠️ V1/V2 的编号仍是 V 而不是 G：§2 是门禁编号的唯一权威，而该文件本轮仍被另一会话占用（脏文件）⇒ 待交回后并入（只改编号声明，不改实现） |
+
+#### 五、验证（全链原文数字）
+
+（本节以下数字为本轮实测，原文取自 runner 的逐段耗时表与各步汇总行 —— 易腐数字以 docs/VERIFY.md 为权威副本。）
+
+全链 `npm run verify`：**11 步全绿 / 263.6s**（预算 400s）—— G1 0.7s ｜ G8 0.7s ｜ G9 0.6s ｜ V1 0.6s ｜
+**V2 0.6s（本轮新增）** ｜ G3 **1012 用例 / 55 文件** ｜ G6+G7 0.7s ｜ G4 **290/290** ｜ G2 0.6s ｜
+G5 冒烟 **204/204** + 视觉 **2/2** ｜（逐段耗时表由 runner 每次打印）。另有：`SMOKE_ONLY='16,36,37'`
+**23/23**（修前 **12/23**）、`SMOKE_ONLY='08,11,12,13,15,16,25,27,36,37,38'` **79/79**（修前同一批里
+有 5 处"域开始的干净前置"判红）。
+
+#### 六、本轮**没动**的东西（诚实边界）
+
+- `import-dir`（整库导入）仍未实现（上一批的结论，本轮没碰）；
+- 体量闸门的上限是**人为约定的 64 MB**，不是性能测量结论；要按机器调就改 `MAX_SOURCE_MB` 一处（两条路共用）；
+- PDF 的 `maxBuffer` 上限（32 MB 提纲文本）**只改了报文**，没有改成流式/分块读 —— 超过它仍然失败，只是原因现在是准的；
+- 冒烟框架的"干净前置"收的是**模态/浮层**（`.overlay` 一族 + 命令面板 + 审计面板）：浮动详情框、选区块、大小锁属**另一类**状态，不在它的责任内（各有各的域在收拾）。
+
 ### 批 3（四件小事）：`broadcastStatus` 核实 + 导入来源指纹 `origin`（幂等）+ 目录入参响亮拒绝 + 单短横线选项原因准确（2026-10-10）
 
 **一句话**：四件事都**改代码**，不动措辞、不缩要求 —— ① 核实一个"疑似未定义"的广播函数（结论：**不是 bug**，
@@ -72,6 +131,8 @@
 | **详情框与关联笔记渲染入口** | **无影响**：`origin` 不进任何渲染路径（它是追溯字段，界面上不显示）✓ |
 
 #### 五、验证（全链原文数字）
+
+（本节以下数字为本轮实测，原文取自 runner 的逐段耗时表与各步汇总行 —— 易腐数字以 docs/VERIFY.md 为权威副本。）
 
 * 全链 `npm run verify`：**9 步全绿 / 259.7s**（预算 400s）—— G3 **987 用例 / 54 文件**、
   G4 **284/284** CLI 集成断言、G5 冒烟 **204/204** + 视觉 **2/2**、G8 **14 条判定**全绿。

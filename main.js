@@ -1481,6 +1481,24 @@ async function runSmoke(win) {
     } catch (e) { console.log("[smoke] 隔离快照失败：" + ((e && e.message) || e)); }
   }
   const smokeIsolateState = { lastDomain: null };
+  /** 每个**留下过模态**的域（name → 它开了哪几个）：谁制造的、谁才是要修的那个域 ✓
+   *  为什么不在"发现残留时"就报当前域：真正闯祸的是**上一个域**（它自己跑绿了），
+   *  当前域只是踩到的人。只报当前域 ⇒ 下一轮又从头找一遍（本工程吃过这个亏：
+   *  域 08 把审计面板开着留给域 25，域 25 的报文里看不出跟 08 有关 ✗）。 */
+  const modalCulprit = new Map();
+  /** 域开始的**干净前置**（`MMApp.closeAllDialogs`，见 app-actions.js 的说明）：
+   *  ① 把上一个域留下的模态/浮层收干净（走产品自己的关闭路径 ✓ 不新发明一套）；
+   *  ② **把"本来开着哪些"返回给调用方** ⇒ 残留不是被静默抹掉，而是被点名叫出来 ✓；
+   *  ③ 收不回来不算异常：**采不到真值 = 红**，由调用方处理（这里只保证"尽力收干净"）。 */
+  const resetDomainDialogs = async () => {
+    try {
+      const shown = await exec('(function () { return (window.MMApp && window.MMApp.closeAllDialogs)'
+        + ' ? window.MMApp.closeAllDialogs() : []; })()');
+      return Array.isArray(shown) ? shown : [];
+    } catch (e) {
+      return null;   // 渲染层没起来 / 窗口没了 ⇒ 调用方按"采不到"处理（不假装干净 ✓）
+    }
+  };
   const isolateDomain = async () => {
     if (!isolateOn || !sandboxSnap.size) return;
     let n = 0;
@@ -1506,9 +1524,38 @@ async function runSmoke(win) {
   };
   for (const a of assertions) {
     smokeState.last = a.name;
+    /* 域边界 = 干净前置。**过滤运行照样要做** —— 每域隔离（isolateDomain）在过滤运行下
+     * 是关的（隔离关 = 跨域状态会互相污染，正是 MM_SMOKE_NO_ISOLATE 记的那件事），
+     * 而 DOM 模态本来就不在"还原沙箱文件"的范围内 ⇒ 只靠隔离收不掉它 ✗。 */
     if (a.__domain !== smokeIsolateState.lastDomain) {
-      smokeIsolateState.lastDomain = a.__domain;
       await isolateDomain();   // **域变了才隔离**（域内顺序不受影响 ✓）
+      const leftOpen = await resetDomainDialogs();
+      if (leftOpen && leftOpen.length) {
+        // 记住"是谁留的"：若有域已经留过**同样名字**的模态，锅记在它身上更准（本轮实测过两次）
+        const prior = smokeIsolateState.lastDomain && modalCulprit.get(smokeIsolateState.lastDomain);
+        const names = leftOpen.map((d) => d.name).filter(Boolean);
+        const culprit = (prior && names.some((n) => prior.indexOf(n) >= 0))
+          ? smokeIsolateState.lastDomain
+          : (smokeIsolateState.lastDomain || '（上一个域）');
+        if (!modalCulprit.has(culprit)) modalCulprit.set(culprit, []);
+        names.forEach((n) => { if (modalCulprit.get(culprit).indexOf(n) < 0) modalCulprit.get(culprit).push(n); });
+        console.log('[smoke] ⚠ 域开始的干净前置：收掉了 ' + JSON.stringify(names)
+          + ' —— 这是域 ' + culprit + ' 留下的残留模态（它自己跑绿了 ✗）');
+        // **框架级判据**：域开始时有残留模态 ⇒ 该域直接红，并**点名是哪个域留下的** ✓。
+        // 为什么是红而不是"收干净就算"：残留会**掩盖真实缺陷**（真输入域会整片假红、
+        // 而判据被骗成绿的域更危险：它看着通过、实际什么都没验 ✗）。
+        // 为什么这条判据只在这里、不用注入：残留本身就是**真缺陷**，不需要人工注入才会出现
+        // （实测：域 16 的 addNode 留下的编辑框让域 36/37 连锁红 11 条）。
+        results.push({
+          name: '域开始的干净前置：域 ' + a.__domain + ' 开始时**没有**残留模态/浮层'
+            + '（残留 = 上位域没收拾干净 ⇒ 本域判红并点名，不替别人擦桌子）',
+          ok: false,
+          text: '残留=' + JSON.stringify(leftOpen) + ' ← **由 ' + culprit + ' 留下**；'
+            + '本域先做干净前置再跑断言（否则本域的命中测试/真输入会打到残留浮层上 ⇒ 假红一片 ✗）。'
+            + '修法：让留下它的那个域**自己收尾**（或让它调 `window.MMApp.closeAllDialogs()`）'
+        });
+      }
+      smokeIsolateState.lastDomain = a.__domain;
     }
     const memBefore = await readMem();
     // 仪器自检开关（只为证明"仪器确实能留下遗言" ✓ 不影响正常跑）：

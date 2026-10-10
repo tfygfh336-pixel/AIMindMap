@@ -93,6 +93,9 @@ const assertions = [
         // **模态开着时点不到保存是正常的**，不是本条要抓的损害（本条判的是"拖宽会不会把按钮
         // 挤出可视区 / 被侧栏盖住"）⇒ 先把残留模态收干净，并把"收了谁"写进报文 ——
         // 免得看起来像是把判据放宽了 ✗（\`display:none\` 正是产品自己 \`closeEditDialog\` 的做法 ✓）。
+        // ⚠️ 这层"自己擦桌子"现在**只剩防御意义**：冒烟框架在每个域开始时会统一做干净前置，
+        //    谁留下的会被**判红并点名**（见 main.js 的"域开始的干净前置"）。本域不再需要它
+        //    才能跑——只是为了报文里能看到"当时收了什么"，保留 ✓
         var strays = [];
         Array.prototype.slice.call(document.querySelectorAll('.overlay')).forEach(function (ov) {
           if (ov.style.display && ov.style.display !== 'none') {

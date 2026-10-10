@@ -85,7 +85,8 @@ describe('验证链定义自洽（scripts/verify.js 是唯一定义）', () => {
   it('门禁编号不重复，且顺序就是文档里承诺的那条链', () => {
     const gates = verify.STEPS.map((s) => s.gate);
     expect(new Set(gates).size).toBe(gates.length);
-    expect(gates).toEqual(['G1', 'G8', 'G9', 'V1', 'G3', 'G6', 'G7', 'G4', 'G2', 'G5']);
+    // V2（冒烟域内自收尾）与 V1 同档：都是"扫冒烟源码文本"的廉价卫生门禁，排在昂贵步骤之前 ✓
+    expect(gates).toEqual(['G1', 'G8', 'G9', 'V1', 'V2', 'G3', 'G6', 'G7', 'G4', 'G2', 'G5']);
   });
 
   it('除 G7（与 G6 同一次调用）外，每步都有可执行命令与预算', () => {

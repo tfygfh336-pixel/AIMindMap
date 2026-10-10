@@ -264,13 +264,28 @@ module.exports = {
     // 入参闸门（同 import-project，同一份实现）：目录 ⇒ 明确说"这是目录不是文件" + 给出路 ✓
     const bad = docImport.describeImportSourceProblem(file);
     if (bad) ctx.error(bad.message);
-    const md = fs.readFileSync(file, 'utf8');
+    const tooBig = docImport.describeOversizeSource(file);
+    if (tooBig) ctx.error(tooBig.message);
+    // ⚠️ 读到手的原文**必须先过 `normalizeOutline`**（CRLF→LF + 剥 BOM）再拿去建树与算指纹 ——
+    // 与 `import-project`（docToOutline 里同一处调用）**共用同一份规范化**。
+    // 不这么做的实测后果（2026-10-10 取证）：带 BOM 的 md（Windows 上编出来的极常见）
+    // 经本命令导入后**整个第一个标题被静默吃掉** ——
+    //   `# 第一本书 / 正文一 / # 第二本书 / 正文二` ⇒ 树里只剩「第二本书」（新增 1 个节点）；
+    //   同一份内容去掉 BOM ⇒ 两个标题都在 ✓。
+    // 根因：`markdown.js` 的 `detectMode` 要求「首行是 `#`」，而 BOM 让首行匹配不上 ⇒
+    // 第一个 `#` 标题被当成正文（后面每个标题正常）⇒ 丢的恰好是**第一棵子树**，
+    // 而命令照样打印"导入完成" ⇒ 正是本工程最忌讳的"静默给出错误结果" ✗。
+    // `import-project` 没有这个缺陷（它走 docToOutline，那里第 356 行就剥了 BOM）——
+    // 也就是说同一份 BOM 文件经两条导入路径会得到**两棵不同的树**，这本身就是个缺陷。
+    const raw = fs.readFileSync(file, 'utf8');
+    const md = docImport.normalizeOutline(raw);
     const parent = ctx.args.parent || 'root';
     // 预读一次：让"父节点不存在"这条错误**先于**转换与写入报出来（保持原有报错顺序）
     const pre = ctx.read();
     if (!ctx.tree.find(pre.data.data, parent)) ctx.error('父节点不存在: ' + parent);
     // 来源指纹 + 幂等闸门：只看**本项目**（这条命令是追加到已有项目，看不到别处；要看全库用
     // import-project —— 它按同一判据扫全部项目）。判据只在 docImport.originMatches 一处 ✓
+    // 指纹算的是**规范化后**的正文（两侧一致）：BOM/CRLF 不改变指纹 ⇒ "同一份内容"不会被误判成两份 ✓
     const origin = docImport.makeOrigin({ file: file, md: md, tool: 'import-md' });
     const dup = originHitIn(pre.data.data, origin);
     if (dup && !ctx.args.force) ctx.error(duplicateOriginError('本项目 ' + ctx.projectName + ' 的节点 ' + dup.id, dup.origin));

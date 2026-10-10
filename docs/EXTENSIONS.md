@@ -33,8 +33,18 @@
 | 级别 | 含义 | 命令 |
 |------|------|------|
 | **稳定** | 名称、参数、JSON 字段结构不会在非大版本中变更 | 数据读写类：`read`/`list`/`get`/`search`/`add`/`edit`/`move`/`remove`/`validate`/`validate-all`/`projects`/`stats`/`assets`/`files`/`init` |
-| **演进中** | 可用，但字段可能增补（不影响既有字段） | `backlinks`/`related`/`orphans`/`mentions`/`export-html`/`clone`/`add-root`/`import-md`/`export-md`/`export-json`/`import-json`/`add-image`/`remove-image`/`add-file`/`remove-file`/`link`/`unlink`/`links`/`links-prune`/`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`/`changes` |
+| **演进中** | 可用，但字段可能增补（不影响既有字段） | 树与资源：`backlinks`/`related`/`orphans`/`mentions`/`clone`/`add-root`/`expand-depth`/`theme-layout`/`link`/`unlink`/`links`/`links-prune`/`add-image`/`remove-image`/`add-file`/`remove-file`<br>导入导出：`import-md`/`import-project`/`export-md`/`export-json`/`export-html`/`import-json`<br>关联笔记：`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`<br>AI 问答：`ask`/`ask-apply`<br>界面协作：`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`<br>历史：`changes`/`changelog` |
 | **内部** | 工程维护用，不保证兼容 | `docs-gen`/`release` |
+
+> ⚠️ **本表必须覆盖 `cli/registry.js` 里的全部命令**（每条命令**恰好**落在某一级里）——
+> 门禁 G8 的第 ⑮ 条判定（`scripts/docs-registry-check.js` 的 `checkStabilityCoverage`）机械核对。
+> 加这条判定的原因是一次真实的漏登记：`import-project` 一度**不在任何一级**，
+> 而同批清点又查出 11 条同型漏登记（`ask`/`ask-apply`/`theme-layout`/`expand-depth`/
+> `ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`/`changelog`）。
+> 病根是老病：**表在文档里、命令在代码里，两边都没有守望者** —— 新增命令时忘了改文档，
+> 没有任何东西会红 ✗。现在有门禁了 ⇒ 新增/改名/删除命令时本表与 `cli/registry.js` 要**同批**改 ✓。
+> 判"放哪一级"是人的判断（门禁只判"有没有落在某一级"）：会被外部工具/AI 依赖的放**演进中**，
+> 工程自用的放**内部**。
 
 ### 1.3 MCP 工具（面向支持 MCP 的 agent）
 
