@@ -14,6 +14,48 @@
 
 ## [Unreleased]
 
+### 一轮「失败不许伪装成成功」治理：CLI 未知选项 / MCP 协议错 / `.review` 污染真值 / 注释反转 / dsh-prefill 白等，外加 `related` 多跳（2026-10-10）
+
+**一句话**：上一轮全功能重测报出 5 个"把失败伪装成成功（或把等待伪装成失败）"的缺陷 + 1 处**人为上限**，
+本轮全部改代码修掉（不是改措辞）：4 条可机械判定的缺陷各配**判别力证明**（注入 ⇒ 必红 ⇒ 撤销 ⇒ 逐字节还原）。
+
+#### 一、六条各自的根因（源码级 / 实测报文，先取证再动手）
+
+| # | 现象（修前实测） | 根因（file:line） | 修法 |
+|---|------------------|-------------------|------|
+| D1 | `add <项目> root --topic X --tags aaa,bbb` ⇒ **exit 0 +「已添加」**，而 `get` 里没有 tags、`stats.taggedNodes` 是 0；`--bogus xyz`、`--expanded=nonsense`（盘上落成默认 `true`）同样静默 | `cli/core.js` 的通用参数分支**没有白名单**（`git log -S` 只命中首次提交 `5888f90` ⇒ 旧遗留）；`--tags` 在 `edit`/`add-image` 上**是合法选项** ⇒ 跨命令误用极自然 | 每条命令在 `cli/registry.js` 声明 `options`；`cli/main.js` 的 dispatch **唯一一处**判未知选项 ⇒ exit 1 + 点名 + **打印支持集**（是别的命令的选项就点名那条命令）。`core.parseArgs` 支持 `--key=value`；`--expanded` 取值只认 true/false；`--index` 只认非负整数。新增 `tests/cli-options.test.js`（17 条：声明自洽 + 判定纯函数 + 报错文本 + 进程内行为） |
+| D2 | 原始报文 `{"jsonrpc":"2.0","id":4,"result":"method not found: no-such-method"}` —— 未知方法回 `result` 字符串，无 `error` 无 `code` ⇒ 标准客户端按成功处理 | `scripts/mcp-server.js` 默认分支漏传 `isError`（对照 `tools/call` 那条传了） | 抽出 `handleMessage`（唯一分流点）：未知方法/未知工具 ⇒ `error -32601`；缺必填参数/没给工具名 ⇒ `error -32602`；服务器异常 ⇒ `-32603`；**工具内部失败仍走 `result + isError:true`**（MCP 约定：失败原因要让模型看得见）。必填项取自 `inputSchema.required`（与工具定义同源）。两面都钉：`tests/mcp-protocol.test.js`（12 条）+ 真 stdio 一拍（集成 6 条） |
+| D3 | 新建一个 `.review/<目录>/`（哪怕只写它的 README）⇒ 全链 G6 判红：`✗ 生成物已过期：docs/VERIFY.md（第 98 行起不一致）` ⇒ 任何"只读仓库 + 只写 `.review/`"的核查任务**不可能让全链变绿** | `scripts/doc-facts.js` 把 `.review/` 的**目录清单 + 各自状态**渲染进受管文档 `docs/VERIFY.md` | 该行改为**不含清单**的语义指针（"见 `.review/*/README.md`"）。判据：**易变、可随时整目录删的工作区不得成为受管真值的一部分**。G8 对 `.review/<目录>/README.md` 的**死活声明**照旧保留（它管可删性，不管清单） |
+| D4 | `renderer/app-ask.js` 的函数 docblock 写"**不做上下翻转 / 不夹取**…由 overflow 裁掉"，而函数体正是 below → above → clamp + 水平夹取（行为是对的，注释是反的） | 该 docblock 是上一次改动前留下的（实现的兜底档位后加） | docblock 改成与实现一致的**真实档位语义**，并写清"为什么要兜底"（框可以比面板高 ⇒ 只放下方 = **看不见**，与圆钮那个真 bug 同类）。顺带发现同函数内**第二处**反转：`// 夹取只在这最后一档做` 与"水平夹取每一档都做"矛盾 ⇒ 一并改正 |
+| D5 | `dsh-prefill` 失败要等 **12.56s**，而同批 `dsh-status` / `dsh-sidebar` / `sidebar-only` 只需 ~3.0s | `cli/commands/ui.js` 只有这一条用 12s 窗口（另三条 2.5s），而等待是"轮询到窗口用完"；更隐蔽的是 app 侧最坏路径 ≈12.4s（起服务 ≤6s + 加宽 0.4s + `executeJavaScript` ≤6s）**> CLI 的 12s** ⇒ 界面还在干活就被判"没在运行"（**假原因**） | 两步式：先发**只读探针** `dsh-status`（当场可答、无慢路径）→ 没回执 = 没在跑（**立刻**报错，且**不发出**慢命令）；有回执 = 活着，再给 14s（> app 侧最坏路径）。实测：无界面 3.03s（−76%）、界面在跑 1.58–1.77s 成功 ✓ |
+| F1 | `related --depth` **只认 1/2**，`--depth 3` 静默退化成 1（回 `"depth": 1`）—— 而"多跳关系可查"是卖点原话 | `cli/commands/relations.js` 的 `depth === '2' ? 2 : 1` + `src/relations.js` 写死两跳展开 | `relatedAll` 改**逐层 BFS**：深度任意（1–100），**防环**（访问集合 ⇒ 每节点只以最短跳数入表一次），**结果上限** `MAX_ITEMS`=500（撞上限**响亮报错** + 给出缩小范围的办法，绝不静默截断）；深度越界给清晰用法；`byDepth` 分层计数（`depth2Count` 语义不变）；文本输出按跳数分组；MCP `related.depth` 同步（任意正整数 + 上限说明） |
+
+#### 二、判别力证明（每条：注入 ⇒ 必红 ⇒ 撤销 ⇒ 逐字节还原）
+
+| # | 注入 | 期望红 | 实测报文 |
+|---|------|--------|----------|
+| D1 | 还原旧语义（去掉 dispatch 的未知选项判定） | 集成 21b 段必红 | `[FAIL] 写命令的未知选项 ⇒ 非 0 退出…`（旧行为：exit 0 +「已添加」，盘上无 tags / `taggedNodes`=0） |
+| D2 | 还原默认分支（`respond('method not found: …')`） | 单测 + stdio 段必红 | `AssertionError: expected 'undefined' … error.code` / 真 stdio 报文回到 `{"result":"method not found: …"}` |
+| D3 | 还原 doc-facts 的目录清单行 + 注入 `.review/zz-d3-inject-probe/README.md` | G6 必红 | `✗ 生成物已过期：docs/VERIFY.md（第 98 行起不一致）`；改回后同一注入下**校验通过**；撤销后 SHA256 逐字节相同（`837EFA87…`） |
+| F1 | 还原 `depth === '2' ? 2 : 1` | 深 3 跳正例必红 | 旧断言本身写成"depth 3 ⇒ depth2Count 0"（正是被修的缺陷）⇒ 已按新语义改写为新断言 |
+| D5 | 旧窗口（第一段 12s、无探活） | 计时断言必红 | 修前实测 12.56s；修后 3.03s；单测断言 `< 6s`（旧值会飞到 ~12.5s） |
+
+#### 三、兼容性检查（"有没有用例依赖旧语义"）
+
+* 集成里**没有**依赖"未知选项被忽略"的断言，但**有两类被新语义碰到**、已按新语义改并说明：
+  `read --detail`（旧行为是"文本模式响亮报错 / --json 空操作"，属于**有意的兼容例外** ⇒ registry 里用
+  `compatOptions` 显式登记，本命令照旧支持）；F1 的 `depth 非 1/2 退化为 1` 断言（改成"真按该深度展开"）。
+* 顺带**抓到两处文档↔行为漂移**（新加的自洽门禁第一次跑就红）：`ask` 的 `--nodes` 是真实选项却没写进
+  usage、`projects --json` 能跑也没写 ⇒ 补进 usage（`docs/CLI.md` 由 docs-gen 重生成）。
+
+#### 四、验证
+
+* 单测 **946 用例 / 52 文件**（新增 `tests/cli-options.test.js`、`tests/mcp-protocol.test.js`、
+  `tests/dsh-prefill-wait.test.js`）；集成 **243 条**（新增 D1 负向/正向 10 条、F1 多跳 8 条、MCP 真 stdio 6 条）；
+  全链 `npm run verify` 见本轮提交信息里的原文数字。
+* ⚠️ 只能真机复核的项（本会话无法重启用户正在用的应用实例）：`dsh-prefill` 的 14s 窗口只在
+  "探活成功但界面迟迟不回"时才会走满 —— 探活成功路径已在本机真实实例上验证（1.58–1.77s 成功）。
+
 ### 可见性判据治理收口：V1 门禁在册的 **7 条盲判据逐条迁到真判据**（2026-10-09）
 
 **这件事是什么**：`aed73ab` 落地的 V1 门禁（`scripts/visibility-judge-check.js`）判"**名字里声称可见/看不见**的断言

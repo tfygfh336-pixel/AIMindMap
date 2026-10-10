@@ -43,6 +43,10 @@ const OUT_JSON = path.join(TMP, 'out.aimap.json');
  * 结尾统一 rm。但脚本被中断（Ctrl+C / 超时被杀 / 崩溃）时收尾不执行 ——
  * 残留的 `it-probe-*` 会出现在应用的**项目列表**里，还会被 validate-all 当项目数。
  * （实测残留：it-probe-mucp3f55 让 "全部 2 个项目校验通过" 多算一个假项目。）
+ * ⚠️ 崩在半路还会留下 **`it-broken-*`**（那份**故意写坏的** JSON 探针）—— 它比普通残留更毒：
+ *   `validate-all` 会因 JSON 解析失败而**整条链在 G2 判红**（实测 2026-10-10：一次改脚本时的
+ *   ReferenceError 中断，留下 `it-broken-mv1rcfov`，把全链从"绿"变成"步骤 9 退出码 1"）。
+ *   故两类前缀都清 —— 自己的残留要自己收干净，否则下一个跑链的人会以为工程坏了。
  * 只清扫**超过 10 分钟没动过**的：正在并发跑的另一份集成测试持有的是新鲜目录，
  * 不能误删（本工程存在并行 agent 同时跑门禁的常态）。 */
 function sweepStaleProbes() {
@@ -50,7 +54,7 @@ function sweepStaleProbes() {
   let removed = 0;
   try {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (!e.isDirectory() || !e.name.startsWith('it-probe-')) continue;
+      if (!e.isDirectory() || (e.name.indexOf('it-probe-') !== 0 && e.name.indexOf('it-broken-') !== 0)) continue;
       const p = path.join(dir, e.name);
       try {
         if (Date.now() - fs.statSync(p).mtimeMs < 10 * 60 * 1000) continue; // 可能是别人正在跑的
@@ -379,11 +383,96 @@ check('depth 2 的分层计数自洽',
 check('depth 2 下 outCount/inCount 仍只统计一跳（直接引用数语义不变）',
   !!(rel1 && rel2 && rel2.outCount === rel1.outCount && rel2.inCount === rel1.inCount),
   'd1: ' + (rel1 && rel1.outCount) + '/' + (rel1 && rel1.inCount) + '  d2: ' + (rel2 && rel2.outCount) + '/' + (rel2 && rel2.inCount));
-check('depth 非 1/2 的值退化为 1（不做无界展开）',
-  (() => { try { const j = JSON.parse(run(['related', PROJ, 'a', '--json', '--depth', '9']).out); return j.depth === 1 && j.depth2Count === 0; } catch (e) { return false; } })());
+// 修前实测（2026-10-10）：`--depth` 只认 1/2，其它值**静默退化成 1** ——
+// `related … --depth 9 --json` 回的是 `"depth": 1`（看起来成功，其实给的是另一件事）。
+// 用户要的"多跳关系可查"是卖点原话，故这里改成新语义：任意深度（防环 + 结果上限 + 越界报错）。
+check('depth 给大于 2 的值：真按该深度展开（旧的"静默退化成 1"已按新语义改）',
+  (() => {
+    try {
+      const j = JSON.parse(run(['related', PROJ, 'a', '--json', '--depth', '9']).out);
+      // 图是 a→c→rel-tail 的链：9 跳展开必须至少把 rel-tail 收到（它离 a 是两跳），
+      // 且**不能**绕回 a 自己（防环）；truncated 必须为 false（这点规模远不到上限）
+      return j.depth === 9 && j.truncated === false
+        && j.items.some((x) => x.node === 'rel-tail' && x.depth === 2)
+        && !j.items.some((x) => x.node === 'a');
+    } catch (e) { return false; }
+  })());
 run(['unlink', PROJ, 'a', '--to', PROJ, '--id', 'c']);
 run(['unlink', PROJ, 'c', '--to', PROJ, '--id', 'rel-tail']);
 run(['remove', PROJ, 'rel-tail']);   // 用后即删，不给后续断言留状态
+
+/* ---------------- 8.6b related --depth N：**任意深度**的多跳查询 ----------------
+ * 三段分别钉住三件事：深 3 跳的正例、环上的终止性、以及撞结果上限时的**响亮报错**。
+ * 夹具自建自删（不给后续断言留状态），且每条结论前先断言"前提真的成立了"。 */
+run(['add', PROJ, 'root', '--topic', '多跳一', '--id', 'mh-1']);
+run(['add', PROJ, 'root', '--topic', '多跳二', '--id', 'mh-2']);
+run(['add', PROJ, 'root', '--topic', '多跳三', '--id', 'mh-3']);
+run(['add', PROJ, 'root', '--topic', '多跳四', '--id', 'mh-4']);
+const mhBuilt = ['mh-2', 'mh-3', 'mh-4'].map((to, i) => run(['link', PROJ, 'mh-' + (i + 1), '--to', PROJ, '--id', to]));
+check('多跳前置条件：mh-1 → mh-2 → mh-3 → mh-4 三条链接都建成（先证前提再断言结论）',
+  mhBuilt.every((x) => ok(x.out) && /已添加链接/.test(x.out)),
+  mhBuilt.map((x) => x.out.trim().slice(0, 20)).join(' | '));
+const mh3 = (() => { try { return JSON.parse(run(['related', PROJ, 'mh-1', '--json', '--depth', '3']).out); } catch (e) { return null; } })();
+check('深 3 跳正例：mh-4 出现在 depth=3，且 via 指向上一跳 mh-3',
+  !!mh3 && mh3.items.some((x) => x.node === 'mh-4' && x.depth === 3 && x.via && x.via.node === 'mh-3'),
+  mh3 && mh3.items.map((x) => x.node + '@' + x.depth).join(','));
+check('深 3 跳的分层计数自洽（byDepth 每层一个 + depth2Count 只算正好二跳）',
+  !!(mh3 && mh3.byDepth['1'] === 1 && mh3.byDepth['2'] === 1 && mh3.byDepth['3'] === 1
+    && mh3.depth2Count === 1 && mh3.items.length === 3),
+  mh3 && JSON.stringify(mh3.byDepth));
+check('深度越界（0 / 负数 / 文字）⇒ 非 0 退出 + 说清取值范围与用法（不静默退化）',
+  ['0', '-1', 'x'].every((d) => {
+    const x = run(['related', PROJ, 'mh-1', '--depth', d]);
+    return x.code !== 0 && /--depth 必须是 1–/.test(x.out);
+  }), run(['related', PROJ, 'mh-1', '--depth', '0']).out.trim().slice(0, 120));
+run(['link', PROJ, 'mh-4', '--to', PROJ, '--id', 'mh-1']);   // 成环：mh-1 ⇄ … ⇄ mh-1
+check('环上不会死循环：--depth 20 照样返回，且起点不以任何跳数回到邻域里',
+  (() => {
+    const x = run(['related', PROJ, 'mh-1', '--json', '--depth', '20']);
+    if (x.code !== 0) return false;
+    try {
+      const j = JSON.parse(x.out);
+      return j.items.length > 0 && !j.items.some((it) => it.node === 'mh-1') && j.truncated === false;
+    } catch (e) { return false; }
+  })());
+run(['unlink', PROJ, 'mh-4', '--to', PROJ, '--id', 'mh-1']);   // 先拆环，再逐节点删（被链接指向的节点默认拒删）
+['mh-1', 'mh-2', 'mh-3', 'mh-4'].forEach((id) => run(['remove', PROJ, id]));
+check('多跳夹具已清理干净（四个探针节点都不在树里了）',
+  ['mh-1', 'mh-2', 'mh-3', 'mh-4'].every((id) => !ok(run(['get', PROJ, id]).out)));
+
+/* 结果上限：造一个 520 叶子的**星形**（直写 JSON，避免 520 次 CLI 写入的 O(n²) 抖动）——
+ * 从中心节点出发，**一跳**就有 519 条 ⇒ 必然撞上 500 条上限 ⇒ 必须**响亮报错**
+ * 并给出缩小范围的办法（绝不静默截断：残缺邻域会被读者当成完整邻域来解读）。 */
+const BIG = PROJ + '-big';
+run(['init', BIG, '--title', '大邻域探针']);
+{
+  // 直接用 fs 读写项目文件（本文件里的 readProj/projJson 助手声明在更下面，这里用不了）
+  const bigFile = path.join(ROOT, 'projects', BIG, BIG + '.json');
+  const d = JSON.parse(fs.readFileSync(bigFile, 'utf8'));
+  const kids = [];
+  for (let i = 1; i <= 520; i++) kids.push({ id: 'b' + i, topic: 'B' + i, expanded: true, children: [] });
+  // b1 是中心：它**引用** b2..b520（519 条出边 ⇒ 一跳就超过 500 的上限）
+  kids[0].links = kids.slice(1).map((k, i) => ({ project: BIG, id: k.id, caption: '→' + k.id }));
+  d.data.children = kids;
+  fs.writeFileSync(bigFile, JSON.stringify(d, null, 2), 'utf8');
+}
+check('上限前置条件：星形真的建成、且在**不超限**的查询上照常给出完整结果（先证前提）',
+  (() => {
+    const x = run(['related', BIG, 'b2', '--json', '--depth', '1']);
+    if (x.code !== 0) return false;
+    try {
+      const j = JSON.parse(x.out);
+      return j.items.length === 1 && j.truncated === false && j.items[0].node === 'b1' && j.items[0].dir === 'in';
+    } catch (e) { return false; }
+  })());
+r = run(['related', BIG, 'b1', '--json', '--depth', '1']);
+check('超出结果上限 ⇒ 非 0 退出 + 说清"在 500 条处停下" + 给出缩小范围的办法（不是静默截断）',
+  r.code !== 0 && /在 500 条处停下/.test(r.out) && /缩小范围的办法/.test(r.out), r.out.trim().slice(0, 190));
+check('上限报错时**没有**输出半个 JSON（失败就是失败，不给"看着像完整结果"的东西）',
+  !/"items"/.test(r.out));
+try { fs.rmSync(path.join(ROOT, 'projects', BIG), { recursive: true, force: true }); } catch (e) { /* 清理失败不影响断言 */ }
+check('大邻域探针项目已删除（不给后续 validate-all / 项目计数留垃圾）',
+  !fs.existsSync(path.join(ROOT, 'projects', BIG)));
 
 /* ---------------- 8.8 内置 AI 通道（功能 1 后端）：ask（**只测 dry-run**） ----------------
  * 为什么只测 dry-run：真跑一次要**烧真实额度 + 依赖网络**（实测一次解释 ~24s）——
@@ -1023,6 +1112,55 @@ check('MCP 暴露 assoc_prune（AI 删节点后能自救）且 remove_node 支�
     && (rm.inputSchema.properties.clean_assoc.type === 'boolean');
 })());
 
+/* ---------------- MCP 协议级报文（**真 stdio，一拍**） ----------------
+ * 为什么单独起一次真进程：`tests/mcp-protocol.test.js` 钉的是 `handleMessage` 的**纯逻辑**，
+ * 而"真 stdio + 逐行 JSON-RPC + stdin 结束时的 flush"这条路上还有自己的失败模式
+ * （粘连、丢行、收尾截断）。这里发一拍、按 id 取报文，断言**形状**。
+ * 修前实测报文（2026-10-10）：`{"jsonrpc":"2.0","id":2,"result":"method not found: no-such-method"}`
+ * —— 未知方法回了字符串 result ⇒ 标准客户端当成功处理 ⇒ 静默。 */
+{
+  const MCP_SRV = path.join(ROOT, 'scripts', 'mcp-server.js');
+  const reqs = [
+    { jsonrpc: '2.0', id: 1, method: 'initialize' },
+    { jsonrpc: '2.0', id: 2, method: 'no-such-method' },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'no-such-tool', arguments: {} } },
+    { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'stats', arguments: {} } },
+    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'stats', arguments: { project: 'no-such-project-xyz' } } },
+    { jsonrpc: '2.0', method: 'notifications/initialized' }
+  ];
+  const sp = spawnSync(process.execPath, [MCP_SRV], {
+    cwd: ROOT, encoding: 'utf8', timeout: 30000,
+    input: reqs.map((x) => JSON.stringify(x)).join('\n') + '\n'
+  });
+  const replies = String(sp.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+    try { return JSON.parse(l); } catch (e) { return null; }
+  });
+  const byId = (id) => replies.filter((x) => x && x.id === id)[0] || null;
+  check('真 stdio：五条请求各回一拍、都是合法 JSON-RPC 2.0，且**通知不产生响应**（5 拍，不是 6 拍）',
+    replies.length === 5 && replies.every((x) => x && x.jsonrpc === '2.0')
+      && [1, 2, 3, 4, 5].every((id) => !!byId(id)),
+    'replies=' + replies.length + ' ids=' + replies.map((x) => x && x.id).join(','));
+  check('真 stdio：未知方法 ⇒ error -32601（**没有** result 键）—— 这就是修前那条静默报文',
+    (() => { const x = byId(2); return !!x && !x.result && x.error && x.error.code === -32601; })(),
+    JSON.stringify(byId(2)).slice(0, 160));
+  check('真 stdio：未知工具 ⇒ error -32601', (() => {
+    const x = byId(3); return !!x && !x.result && x.error && x.error.code === -32601 && /no-such-tool/.test(x.error.message);
+  })(), JSON.stringify(byId(3)).slice(0, 160));
+  check('真 stdio：缺必填参数 ⇒ error -32602（并点名缺哪个）', (() => {
+    const x = byId(4); return !!x && !x.result && x.error && x.error.code === -32602 && /project/.test(x.error.message);
+  })(), JSON.stringify(byId(4)).slice(0, 160));
+  check('真 stdio：**业务失败仍是 result + isError**（不许把业务失败也变成协议错误 —— 那会让模型看不到原因）',
+    (() => {
+      const x = byId(5);
+      return !!x && !x.error && x.result && x.result.isError === true
+        && x.result.content && x.result.content[0] && String(x.result.content[0].text).length > 0;
+    })(), JSON.stringify(byId(5)).slice(0, 200));
+  check('真 stdio：initialize 握手照常（改协议分流没带坏握手）', (() => {
+    const x = byId(1); return !!x && !x.error && x.result && x.result.protocolVersion === '2024-11-05'
+      && x.result.serverInfo && x.result.serverInfo.name === 'ai-mind-map';
+  })(), JSON.stringify(byId(1)).slice(0, 160));
+}
+
 /* ---------------- 21. 链接 ×「删节点」：同项目清理与跨项目锁死自救 ----------------
  * 与 20 节同源的问题：**链接可以指向别的项目**，所以删节点会让"别人家"的项目悬空。
  * 而 validate 是写盘闸门 → 被判红的项目**所有**写操作都被挡住，界面又没有删链接入口。
@@ -1287,6 +1425,51 @@ check('窄读 --skeleton：连 tags/links/detail/images 都省，但**保留 chi
 })(), '这是它相对 list --json（扁平）的差别：仍有嵌套');
 
 run(['remove', PROJ, 'narrow-probe']);
+
+/* ---------------- 21b. 未知选项与非法值：一律响亮失败（不静默） ----------------
+ * 缺陷取证（2026-10-10 修前实测）：`add … --tags aaa,bbb` ⇒ **exit 0 +「已添加」**，
+ * 而 `get` 里没有 tags、`stats` 的 taggedNodes 是 0；`--bogus xyz`、`--expanded=nonsense` 同样静默。
+ * 根因：`cli/core.js` 的通用参数分支没有白名单，命令读不到的键就**什么都不发生**。
+ * 危险点：`--tags` 在 `edit` / `add-image` 上**是合法选项** ⇒ 跨命令误用极其自然。
+ * 修法：每条命令在 `cli/registry.js` 声明 options，dispatch 唯一一处判定（见 tests/cli-options.test.js）。
+ * 本节四条一组：**负向**（未知长选项 / 跨命令误用 / 非法值）+ **正向对照**（合法选项照旧通过）。 */
+const UOPT = 'unknown-opt-probe';
+r = run(['add', PROJ, 'root', '--topic', '不该被写入', '--id', UOPT, '--tags', 'aaa,bbb']);
+check('写命令的未知选项 ⇒ 非 0 退出 + 点名 + 支持集（旧行为：exit 0 +「已添加」）',
+  !ok(r.out) && r.code !== 0 && /未知选项 --tags/.test(r.out)
+    && /add 支持的选项/.test(r.out) && /edit/.test(r.out), r.out.trim().slice(0, 170));
+check('被拒的写命令**什么都没写**（不是"报错了但其实还是写进去了"）',
+  !ok(run(['get', PROJ, UOPT]).out));
+r = run(['add', PROJ, 'root', '--topic', '不该被写入', '--id', UOPT + '2', '--bogus', 'xyz']);
+check('未知长选项（--bogus）同样非 0 且点名', !ok(r.out) && r.code !== 0 && /未知选项 --bogus/.test(r.out),
+  r.out.trim().slice(0, 140));
+r = run(['read', PROJ, '--json', '--bogus2']);
+check('只读命令同样拒绝未知选项（守门在 dispatch，不是只在写命令里）',
+  !ok(r.out) && r.code !== 0 && /未知选项 --bogus2/.test(r.out), r.out.trim().slice(0, 120));
+r = run(['edit', PROJ, 'a', '--tags', 'aaa,bbb']);
+check('正向对照：合法选项照旧通过（edit --tags）', ok(r.out) && /已更新/.test(r.out), r.out.trim());
+check('正向对照：--tags 真的落到盘上（stats.taggedNodes 不再为 0）', (() => {
+  const s = run(['stats', PROJ, '--json']);
+  try { return JSON.parse(s.out).taggedNodes > 0; } catch (e) { return false; }
+})(), '这是修前那次的症状：exit 0 而 taggedNodes = 0');
+const expBefore = (() => {
+  try { return JSON.parse(run(['get', PROJ, 'a', '--json']).out).expanded; } catch (e) { return 'PARSE-FAIL'; }
+})();
+r = run(['edit', PROJ, 'a', '--expanded=nonsense']);
+check('非法值（--expanded=nonsense）⇒ 非 0 + 说清允许值（旧行为：静默落成默认 true）',
+  !ok(r.out) && r.code !== 0 && /只能是 true 或 false/.test(r.out), r.out.trim().slice(0, 130));
+check('被拒的非法值**没有改盘**（expanded 与拒绝前逐字相同）', (() => {
+  try { return JSON.parse(run(['get', PROJ, 'a', '--json']).out).expanded === expBefore; } catch (e) { return false; }
+})());
+r = run(['move', PROJ, 'a', 'root', '--index', 'abc']);
+check('非法 --index ⇒ 非 0（旧行为：静默退化成"插到末尾"）',
+  !ok(r.out) && r.code !== 0 && /--index 必须是非负整数/.test(r.out), r.out.trim().slice(0, 130));
+r = run(['add', '--help']);
+check('`<命令> --help` 打印该命令的支持集且不执行命令（退出码 0）',
+  r.code === 0 && /支持的选项:/.test(r.out) && /--topic/.test(r.out) && !/已添加/.test(r.out),
+  r.out.trim().split('\n').slice(0, 3).join(' ｜ '));
+r = run(['edit', PROJ, 'a', '--expanded', 'false']);
+check('正向对照：--expanded false（空格形态）照旧可用', ok(r.out) && /已更新/.test(r.out));
 
 /* ---------------- 22. 多路同时编辑（并发：不相交自动合并 / 相交指名拒绝） ----------------
  * 上面所有断言都是"单路"。本段专门跑**两路同时编辑**，而且走**真实的** ctx + 命令函数 + store：

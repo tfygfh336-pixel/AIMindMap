@@ -49,9 +49,10 @@ const TOOLS = [
   T('backlinks', '查看节点反向链接（谁引用了我，含跨项目反查）', {
     project: s('项目名或 JSON 文件路径'), id: s('节点 id')
   }, ['project', 'id']),
-  T('related', '查看节点相关知识点（我引用谁 + 谁引用我，双向合并去重；depth=2 扩到两跳邻域）', {
+  T('related', '查看节点相关知识点（我引用谁 + 谁引用我，双向合并去重；depth=N 扩到 N 跳邻域，任意正整数）', {
     project: s('项目名或 JSON 文件路径'), id: s('节点 id'),
-    depth: s('邻域半径：1（默认，仅直接关联）或 2（两跳，看间接关联的知识簇）')
+    depth: s('邻域半径（跳数）：默认 1（仅直接关联）；2 = 两跳/间接关联的知识簇；可给更大整数'
+      + '（防环、每节点只算最短跳数）。⚠ 邻域超过 500 条会**报错**（不是截断）—— 那时把 depth 调小或换个节点')
   }, ['project', 'id']),
   T('orphans', '关系审计：列出无任何引用关系的节点，并区分「含内容待处理」与「纯结构正常」（用于发现漏挂链接的笔记）', {
     project: s('项目名或 JSON 文件路径'), content_only: b('只返回含内容的那部分（真正该处理的）'), limit: s('最多返回条数，默认 40')
@@ -201,6 +202,24 @@ const TOOLS = [
   })
 ];
 
+/* ---------------- JSON-RPC 错误码（**协议级**） ----------------
+ * 边界（**只在这里判一次**，别在别处再判一遍）：
+ *   · **协议级** —— 方法不存在 / 工具不存在 / 参数不合法 ⇒ JSON-RPC `error`（-32601 / -32602）。
+ *     那是"你调错了"，不是"调用失败了"；报文形状必须先对，调用方（模型/宿主）才有可能据此纠正。
+ *   · **业务级** —— 工具存在、参数齐全，但执行结果失败（项目不存在 / 校验失败 / 文件读不到 /
+ *     CLI 退出码非 0）⇒ 仍是 `result` + `isError: true`（MCP 约定：失败内容要让模型**看见**并自行纠正）。
+ *   两者混了都坏事：业务失败变协议错误 ⇒ 模型看不到失败原因，只会重复调同一个错方法；
+ *   协议错误变 result ⇒ 调用方以为"工具成功返回了一段文字"。
+ *   **修前实测报文**（2026-10-10）：`{"jsonrpc":"2.0","id":4,"result":"method not found: no-such-method"}`
+ *   —— 未知方法回了 `result`（字符串），既没有 error 也没有 code，标准 MCP 客户端按 result 处理 ⇒ 静默。
+ */
+const RPC = {
+  PARSE: -32700,
+  METHOD_NOT_FOUND: -32601,   // 未知方法；以及 tools/call 里**未知工具名**（同一个"不存在"语义）
+  INVALID_PARAMS: -32602,     // 缺必填参数 / 没给工具名 / 参数形状不对
+  INTERNAL: -32603            // 服务器内部异常（本进程 bug，不是调用方的错）
+};
+
 /* ---------------- 执行：构造 mm-cli 参数并转发 ---------------- */
 function runCli(args) {
   const res = spawnSync(process.execPath, [CLI].concat(args), {
@@ -216,9 +235,31 @@ function runCli(args) {
   return { ok: true, text: text || '(empty)' };
 }
 
+/**
+ * 执行一个工具调用。
+ *
+ * 返回值有两种形态（**协议级 vs 业务级**的边界见上方 RPC 表的注释）：
+ *   · `{ protocol: true, code, text }` —— 调用方**调错了**（未知工具 / 缺必填参数）：
+ *     调用方要把它转成 JSON-RPC `error`（stdio 传输那条路会自动转）。
+ *   · `{ ok, text }` —— 调用对了但结果失败/成功：`ok:false` 时走 MCP 的
+ *     `result` + `isError:true`（让模型看见失败原因），**不是**协议错误 ✗。
+ *
+ * 必填参数由工具定义里的 `inputSchema.required` 机械核对（单一真源：schema 与判定同源，
+ * 不另写一份"哪些参数必填"的清单 —— 那种副本必然漂移）。
+ */
 function callTool(name, args) {
-  const argOf = (k) => (args[k] === undefined || args[k] === null) ? undefined : String(args[k]);
+  const tool = TOOLS.filter((t) => t.name === name)[0];
+  if (!tool) return { protocol: true, code: RPC.METHOD_NOT_FOUND, text: 'unknown tool: ' + name };
   const a = args || {};
+  const need = (tool.inputSchema && tool.inputSchema.required) || [];
+  const missing = need.filter((k) => a[k] === undefined || a[k] === null || a[k] === '');
+  if (missing.length) {
+    return {
+      protocol: true, code: RPC.INVALID_PARAMS,
+      text: '缺少必填参数: ' + missing.join(', ') + '（' + name + ' 的必填项：' + need.join(', ') + '）'
+    };
+  }
+  const argOf = (k) => (a[k] === undefined || a[k] === null) ? undefined : String(a[k]);
   switch (name) {
     case 'projects': return runCli(['projects', '--json']);
     case 'read_project': {
@@ -432,7 +473,7 @@ function callTool(name, args) {
       c.push('--json');
       return runCli(c);
     }
-    default: return { ok: false, text: 'unknown tool: ' + name };
+    default: return { protocol: true, code: RPC.METHOD_NOT_FOUND, text: 'unknown tool: ' + name };
   }
 }
 
@@ -440,6 +481,53 @@ function callTool(name, args) {
  * 仅在「作为入口直接运行」时启动：被其他脚本 require（如 scripts/doc-facts.js
  * 统计工具数）时不得占用 stdin，否则会干扰调用方的标准输入。
  */
+
+/**
+ * 处理**一拍** JSON-RPC 消息，把响应交给 `send`（纯逻辑：不读 stdin、不做 IO ⇒ 可单测）。
+ *
+ * 协议规定：**通知**（无 `id`）一律不响应；所以 reply/fail 都先看 id。
+ * 错误分流见上方 RPC 表的注释 —— 这里只做**分流**，不重新判定业务成败。
+ * @param {{id?:any, method?:string, params?:object}} msg
+ * @param {(obj:object)=>void} send 收到响应对象时调用（stdio 传输里就是写一行 JSON）
+ */
+function handleMessage(msg, send) {
+  const id = msg && msg.id;
+  const reply = (result) => { if (id === undefined) return; send({ jsonrpc: '2.0', id, result }); };
+  const fail = (code, message) => {
+    if (id === undefined) return;
+    send({ jsonrpc: '2.0', id, error: { code, message } });
+  };
+  try {
+    switch (msg && msg.method) {
+      case 'initialize':
+        return reply({ protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'ai-mind-map', version: VERSION } });
+      case 'notifications/initialized':
+        return;
+      case 'ping':
+        return reply({});
+      case 'tools/list':
+        return reply({ tools: TOOLS });
+      case 'tools/call': {
+        const p = (msg && msg.params) || {};
+        // 没给工具名属于**参数非法**（-32602），不是"未知方法"：调用方连名字都没传
+        if (typeof p.name !== 'string' || !p.name) {
+          return fail(RPC.INVALID_PARAMS, 'tools/call 缺少工具名（params.name 必须是字符串）');
+        }
+        const r = callTool(p.name, p.arguments || {});
+        if (r && r.protocol) return fail(r.code || RPC.INVALID_PARAMS, r.text);
+        // 业务失败照旧是 result + isError:true（MCP 约定；见 RPC 表注释）
+        return reply({ content: [{ type: 'text', text: r.text }], isError: !r.ok });
+      }
+      case 'tools/list-changed':
+        return reply({});
+      default:
+        return fail(RPC.METHOD_NOT_FOUND, 'method not found: ' + (msg && msg.method));
+    }
+  } catch (e) {
+    return fail(RPC.INTERNAL, 'internal error: ' + (e && e.message));
+  }
+}
+
 function startStdioServer() {
   const rl = require('readline').createInterface({ input: process.stdin });
   const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
@@ -449,37 +537,12 @@ function startStdioServer() {
     if (!line) return;
     let msg;
     try { msg = JSON.parse(line); } catch (e) { return; }
-    const respond = (result, isError) => {
-      if (msg.id === undefined) return; // notification 不响应
-      send(isError ? { jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: result } }
-        : { jsonrpc: '2.0', id: msg.id, result });
-    };
-    try {
-      switch (msg.method) {
-        case 'initialize':
-          return respond({ protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'ai-mind-map', version: VERSION } });
-        case 'notifications/initialized':
-          return;
-        case 'ping':
-          return respond({});
-        case 'tools/list':
-          return respond({ tools: TOOLS });
-        case 'tools/call': {
-          const r = callTool(msg.params && msg.params.name, (msg.params && msg.params.arguments) || {});
-          return respond({ content: [{ type: 'text', text: r.text }], isError: !r.ok });
-        }
-        case 'tools/list-changed':
-          return respond({});
-        default:
-          return respond('method not found: ' + msg.method);
-      }
-    } catch (e) {
-      respond('internal error: ' + (e && e.message), true);
-    }
+    handleMessage(msg, send);
   });
 }
 
 if (require.main === module) startStdioServer();
 
-// 导出供 scripts/doc-facts.js 等工具读取（工具数/签名是文档基线的一部分）
-module.exports = { TOOLS, callTool, runCli, startStdioServer, VERSION };
+// 导出供 scripts/doc-facts.js 等工具读取（工具数/签名是文档基线的一部分）；
+// `handleMessage` / `RPC` 导出是为了让协议形状能被单测直接钉住（见 tests/mcp-protocol.test.js）
+module.exports = { TOOLS, callTool, runCli, startStdioServer, handleMessage, RPC, VERSION };

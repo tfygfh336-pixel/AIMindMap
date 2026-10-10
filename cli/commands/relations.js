@@ -3,9 +3,10 @@
  * ------------------------------------------------------------
  *   backlinks <项目> <id> [--json]
  *     单向：谁引用了我 —— within（本项目）/ cross（其他项目）
- *   related <项目> <id> [--json] [--depth 2]
+ *   related <项目> <id> [--json] [--depth N]
  *     双向聚合：我引用谁（out）+ 谁引用我（in），互相引用记为 both
- *     --depth 2 = 两跳邻域（间接关联的知识簇），对应 Obsidian 的局部图；
+ *     --depth N = N 跳邻域（任意正整数；2 = 间接关联的知识簇，对应 Obsidian 的局部图）；
+ *     防环（每节点只以最短跳数入表一次）+ 结果上限（超限响亮报错，见 related 的注释）；
  *     刻意**不做全量图谱**（已在 docs/ROADMAP.md 否决）
  *   orphans <项目> [--json] [--content-only] [--limit n]
  *     关系审计：找出「无任何引用关系」的节点，并把其中**含实质内容**的挑出来
@@ -60,31 +61,63 @@ module.exports = {
     r.cross.forEach((x) => ctx.out('  [' + x.project + '] ' + x.node + '  ' + x.topic + (x.caption ? '  — ' + x.caption : '')));
   },
 
+  /**
+   * 「相关知识点」：双向邻域，**深度任意**（用户要的"多跳关系可查"是卖点原话）。
+   *
+   * 修前实测（2026-10-10）：`--depth` 只认 1 或 2，其它值**静默退化成 1**
+   * （`related <项目> <id> --depth 3 --json` ⇒ `"depth": 1`，看起来成功其实是另一件事）。
+   * 现在：1..MAX_DEPTH 的整数照深度展开（逐层 BFS，防环 = 每节点只以最短跳数入表一次），
+   * 越界/非整数 ⇒ 响亮报错并给出用法；结果超过 MAX_ITEMS ⇒ **响亮报错**并给出缩小范围的办法
+   * （绝不静默截断 —— 截断后的"邻域"会被当成完整邻域来解读）。
+   */
   related(ctx) {
     const id = ctx.args._[1];
-    if (!id) ctx.error('用法: related <项目> <id> [--json] [--depth 2]');
+    if (!id) ctx.error('用法: related <项目> <id> [--json] [--depth N]');
+    // 深度：默认 1；必须是 1..MAX_DEPTH 的整数（0/负数/小数/文字一律报错，不猜）
+    const rawDepth = ctx.args.depth;
+    let depth = 1;
+    if (rawDepth !== undefined) {
+      const n = Number(rawDepth);
+      if (!Number.isInteger(n) || n < 1 || n > relations.MAX_DEPTH) {
+        ctx.error('--depth 必须是 1–' + relations.MAX_DEPTH + ' 的整数（收到 ' + JSON.stringify(rawDepth) + '）。'
+          + '1 = 只看直接关联；2 = 两跳（间接关联的知识簇）；再大 = 继续往外扩，'
+          + '但邻域超过 ' + relations.MAX_ITEMS + ' 条会响亮报错（那时把 --depth 调小、或换个更靠叶子的节点）');
+      }
+      depth = n;
+    }
     const { data } = ctx.read();
     const self = ctx.tree.find(data.data, id);
     if (!self) ctx.error('节点不存在: ' + id);
-    // --depth 2 = 两跳邻域（Obsidian 的局部图默认深度）。只认 1/2：
-    // 本命令刻意**不做全量图谱**（已在 docs/ROADMAP.md 否决，孤点占比过高的信噪比问题）。
-    const depth = String(ctx.args.depth === undefined ? '1' : ctx.args.depth) === '2' ? 2 : 1;
     const all = loadAllProjects(ctx.PROJECTS_DIR);
-    const r = relations.relatedAll(ctx.projectName, self, all, { depth });
+    const r = relations.relatedAll(ctx.projectName, self, all, { depth, maxItems: relations.MAX_ITEMS });
+    // 超上限：**响亮报错**，且把"怎么缩小"写清楚（静默截断是最坏的选择：读者会把残缺邻域当全部）
+    if (r.truncated) {
+      // 建议按**当前深度**给：depth=1 时"把 --depth 调小"是废话（再小就没有邻域了）
+      const advice = depth > 1
+        ? '把 --depth 调小（如 --depth 2）｜从更靠叶子的节点开始｜'
+        : '从这个节点往外逐层看（它的**一跳邻居本身就超过上限**）｜换个更靠叶子的节点｜';
+      ctx.error('--depth ' + depth + ' 的邻域在 ' + relations.MAX_ITEMS + ' 条处停下（再往外扩会把这颗星滚成整张图）。'
+        + '缩小范围的办法：' + advice
+        + '或先用 backlinks <项目> <id> 只看直接引用，再逐层往外交替看');
+    }
     const out = Object.assign({ project: ctx.projectName, target: { id, topic: self.topic }, depth }, r);
     if (ctx.args.json) { ctx.outJson(out); return; }
-    ctx.out('「' + self.topic + '」的相关知识点（' + r.items.length + ' = 一跳 ' + r.depth1Count
-      + ' + 二跳 ' + r.depth2Count + '；直接引用 ' + r.outCount + ' / 被引用 ' + r.inCount + '）：');
+    const layered = Object.keys(r.byDepth).map((d) => Number(d)).filter((d) => r.byDepth[d] > 0);
+    ctx.out('「' + self.topic + '」的相关知识点（' + r.items.length + ' = '
+      + layered.map((d) => (d === 1 ? '一跳 ' : d + ' 跳 ') + r.byDepth[d]).join(' + ')
+      + '；直接引用 ' + r.outCount + ' / 被引用 ' + r.inCount + '）：');
     if (!r.items.length) { ctx.out('  （暂无相关节点）'); return; }
     const line = (x) => '  ' + arrowOf(x.dir) + ' ' + x.node + '  ' + x.topic
       + (x.project !== ctx.projectName ? '  [' + x.project + ']' : '')
       + (x.caption ? '  — ' + x.caption : '');
-    // 一跳（直接关联）优先，二跳归到「经由谁」之下，避免两类混在一起看不出远近
+    // 一跳（直接关联）优先，更远的按跳数分组、归到「经由谁」之下，避免远近混在一起看不出层次
     r.items.filter((x) => x.depth === 1).forEach((x) => ctx.out(line(x)));
-    const far = r.items.filter((x) => x.depth === 2);
-    if (far.length) {
+    const farDeps = layered.filter((d) => d > 1);
+    farDeps.forEach((d) => {
+      const far = r.items.filter((x) => x.depth === d);
+      if (!far.length) return;
       ctx.out('');
-      ctx.out('  ── 二跳（经由上述节点间接关联）──');
+      ctx.out('  ── ' + (d === 2 ? '二跳（经由上述节点间接关联）' : d + ' 跳（再往外一层）') + ' ──');
       const byVia = new Map();
       far.forEach((x) => {
         const k = x.via.project + '|' + x.via.node;
@@ -95,10 +128,10 @@ module.exports = {
         ctx.out('  经由「' + v.topic + '」：');
         v.items.forEach((x) => ctx.out(line(x)));
       });
-    }
+    });
     if (depth === 1 && r.items.some((x) => x.depth === 1)) {
       ctx.out('');
-      ctx.out('  提示：加 --depth 2 可查看两跳邻域（间接关联的知识簇）。');
+      ctx.out('  提示：加 --depth 2 看两跳邻域（间接关联的知识簇），再往上可给更大整数（深度越深越容易撞结果上限）。');
     }
   },
 

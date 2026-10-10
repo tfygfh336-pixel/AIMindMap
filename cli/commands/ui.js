@@ -19,6 +19,45 @@ const path = require('path');
 const os = require('os');
 const control = require('../../src/control.js');
 
+/**
+ * **慢命令的两步式执行骨架**：先探活，再下慢命令（纯逻辑；`wait`/`send` 注入 ⇒ 单测零等待覆盖全部分支）。
+ *
+ * 为什么必须分两步（实测取证 2026-10-10 本机）：
+ *   · 修前 `dsh-prefill` 只有一个 12s 窗口，界面**没在跑**时也要等满它 —— 实测 12.56s，
+ *     而同批 `dsh-status` / `dsh-sidebar` / `sidebar-only` 都只需 ~3.0s（窗口 2.5s）。
+ *     白等的原因很直接："没有回执"被同时当成了"也可能还在忙"。
+ *   · 而 12s < app 侧最坏路径 12.4s（起服务 ≤6s + 窄宽加宽 0.4s + executeJavaScript ≤6s）
+ *     ⇒ 界面**还在干活**时 CLI 就报"主界面没有响应…请确认在运行"，那是**假原因**。
+ *   ⇒ 先用只读探针 `dsh-status` 问一句（当场可答、无慢路径）：
+ *     没回执 ⇒ 界面确实没在跑 ⇒ **立刻**报错（~2.6s，与另三条命令同口径），且**不发出**慢命令；
+ *     有回执 ⇒ 界面活着 ⇒ 下慢命令，并给足 PREFILL_MS（> app 侧最坏路径）。
+ *
+ * 边界（如实写）：探活与下慢命令之间界面可能刚好退出 ⇒ 那时会白等一个 PREFILL_MS 才报
+ * "界面在运行但没有回执"。这是有意的取舍：宁可慢一次，也不把"没干活"说成"干完了"。
+ *
+ * @param {()=>void} probeSend 发出**只读探针**命令（写 mm-control.json）
+ * @param {(dir:string, cmd:string, ms:number)=>object|null} wait 等一拍回执
+ * @param {()=>void} send 发出**慢命令**（探活通过后才调用）
+ * @returns {{receipt:object|null, phase:'final'|'not-running'|'no-receipt'}}
+ */
+function runAfterLivenessProbe(probeSend, wait, send, dir, probeCmd, cmd, timeoutMs) {
+  if (probeCmd) {
+    probeSend();
+    const alive = wait(dir, probeCmd, UI_ACK_MS);
+    if (!alive) return { receipt: null, phase: 'not-running' };
+  }
+  send();
+  const receipt = wait(dir, cmd, timeoutMs || PREFILL_MS);
+  return receipt ? { receipt: receipt, phase: 'final' } : { receipt: null, phase: 'no-receipt' };
+}
+
+/** 探活窗口：与另三条命令同一口径（2.5s）—— 只读探针没有慢路径，界面没在跑时它必然落空。 */
+const UI_ACK_MS = 2500;
+/** 慢命令（dsh-prefill）的窗口：覆盖 app 侧最坏路径 ≈12.4s（起服务 ≤6s + 窄宽加宽 0.4s +
+ *  `executeJavaScript` 超时 6s），留一点余量。**比旧值 12s 更大**是有意的：旧值会在界面还在干活时
+ *  就宣布"没响应"（假原因）。这一窗口现在只会在"探活成功、界面却迟迟不回"时被走满。 */
+const PREFILL_MS = 14000;
+
 /** 应用 userData 目录：与主进程同规则。
  *  ⚠️ 实测踩坑：**不是** package.json 的 `name`（`ai-mind-map`），而是 Electron 的
  *  `app.getName()` ⇒ 本机真实目录是 `%APPDATA%\AI MindMap`（带空格、大写）。
@@ -35,7 +74,11 @@ function userDataDir() {
   return path.join(appData, candidates[0]);   // 都没建过：按主进程默认名给一个
 }
 
-/** 等界面回执（轮询；界面每 400ms 扫一次命令，2.5s 足够，超时即判"没生效"） */
+/**
+ * 等回执（轮询；界面每 400ms 扫一次命令，2.5s 足够，超时即判"没生效"）。
+ *
+ * @param {number} timeoutMs 本次等待窗口（见 UI_ACK_MS / PREFILL_MS）
+ */
 function waitForResult(baseDir, wantCmd, timeoutMs) {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
@@ -57,7 +100,7 @@ function waitForResult(baseDir, wantCmd, timeoutMs) {
 function driveUI(ctx, cmd, wantOn, msgs) {
   const dir = userDataDir();
   control.writeCommand(dir, { cmd: cmd, on: wantOn, at: new Date().toISOString(), by: 'cli' });
-  const res = waitForResult(dir, cmd, 2500);
+  const res = waitForResult(dir, cmd, UI_ACK_MS);
   if (!res || !res.ok) {
     // 两种失败必须分清（否则用户拿到的建议是错的 ✗）：
     //   · **界面拒绝了**（有回执、带原因，如"有未保存编辑"）⇒ 照实转述那个原因；
@@ -102,7 +145,10 @@ module.exports = {
 
   /** ⑩ 把一段文本送进侧栏的输入框（**不代替你发送** ✗ —— 那边按了发送才进它的会话历史 ✓）。
    *  用法：`dsh-prefill "要送过去的文本"`；也支持 `--file <路径>` 从文件读（长对话用）。
-   *  等**回执**才报成功 ✓（没有回执 = 没生效 ✗）。 */
+   *  等**回执**才报成功 ✓（没有回执 = 没生效 ✗）。
+   *
+   *  ⚠️ 它是**慢命令**（要先把侧栏服务起起来，app 侧最坏 ≈12.4s），故走"先探活、再下命令"两步
+   *  ——为什么、以及修前的实测数字（12.56s vs 另三条 ~3.0s）见 `runAfterLivenessProbe` 的注释。 */
   'dsh-prefill'(ctx) {
     // ⚠️ 位置参数从 `_[0]` 起（命令名不在里面 ✓ —— 隔壁 dsh-sidebar 用的就是 _[0] ✓）
     let text = String((ctx.args._ && ctx.args._[0]) || '');
@@ -111,22 +157,49 @@ module.exports = {
     }
     if (!text.trim()) ctx.error('用法：dsh-prefill "<文本>" 或 dsh-prefill --file <路径>（以 - 开头时用 --file）');
     const dir = userDataDir();
-    control.writeCommand(dir, { cmd: 'dsh-prefill', text: text, at: new Date().toISOString(), by: 'cli' });
-    const res = waitForResult(dir, 'dsh-prefill', 12000);   // 页面可能没加载完 ⇒ 给足超时 ✓
-    if (!res) ctx.error('主界面没有回执（' + dir + '）：确认 AI MindMap 正在运行、且侧栏已打开');
+    // ① 先发**只读探针**（dsh-status）并等回执：它当场可答、没有慢路径
+    // ② 探活通过才把文本发出去（dsh-prefill），并给足 PREFILL_MS
+    const r = runAfterLivenessProbe(
+      () => { control.writeCommand(dir, { cmd: 'dsh-status', at: new Date().toISOString(), by: 'cli' }); },
+      waitForResult,
+      () => {
+        // 写慢命令前先把探针那一拍**放过去**：命令通道只有一个槽，界面读走探针后
+        // "写回执 + 清命令"是同一 tick 里的两步 —— 若我们的写恰好落在这两步之间，
+        // 慢命令会被界面的 clearCommand 顺手抹掉（概率极低，但后果是白等一整个窗口）。
+        // 200ms 的让步远小于界面的 400ms 轮询周期，正常路径的耗时几乎不变。
+        const t0 = Date.now();
+        while (Date.now() - t0 < 200) { /* spin：本命令是人工/AI 一次性调用，不值得引入异步框架 */ }
+        control.writeCommand(dir, { cmd: 'dsh-prefill', text: text, at: new Date().toISOString(), by: 'cli' });
+      },
+      dir, 'dsh-status', 'dsh-prefill', PREFILL_MS);
+    if (r.phase === 'not-running') {
+      // 依据是**只读探针 dsh-status 也没有回执** ⇒ "没在运行"这句是有证据的，不是推断
+      ctx.error('主界面没有响应（' + dir + '）：确认 AI MindMap 正在运行、且侧栏已打开；'
+        + '本命令只驱动**正在运行的**界面，不会自己去启动它（只读探针 dsh-status 同样没有回执）');
+    }
+    if (r.phase === 'no-receipt') {
+      ctx.error('界面在运行（探针有回执），但 ' + Math.round(PREFILL_MS / 1000) + 's 内没送回结果（' + dir + '）：'
+        + '侧栏可能还在起服务、或页面没加载完 —— 到侧栏看一眼，或用 `node cli/mm-cli.js dsh-status` 查实况');
+    }
+    const res = r.receipt;
+    // 上面两种失败都走 ctx.error（抛错）⇒ 到这里必须有终局回执；万一将来 error 不再抛错，
+    // 也必须**响亮**失败，而不是去读一个 null（那就成了本工程最忌的"静默通过"）
+    if (!res) throw new Error('内部错误：等待回执返回了空结果（phase=' + r.phase + '）');
     if (!res.ok) ctx.error('没有送进侧栏：' + (res.err || '未知原因'));
     if (ctx.args.json) { ctx.outJson({ ok: true, result: res.result || null }); return; }
     ctx.out('已送进侧栏输入框：' + ((res.result && res.result.textLen) || text.length) + ' 字（'
       + ((res.result && res.result.tag) || '?') + '）—— 到侧栏按发送即可 ✓');
   },
 
-  /** **只读**诊断：读侧栏实况（可见性 / 总占宽 / 窄宽模式 / 是否横向溢出）。
-   *  为什么需要：窄宽适配（③）的效果以前只能靠肉眼看 ✗ —— 改布局不能拍脑袋，
-   *  要有数字。本命令不改任何状态，随便调 ✓。输出**不含 url/token** ✓。 */
+  /**
+   * **只读**诊断：读侧栏实况（可见性 / 总占宽 / 窄宽模式 / 是否横向溢出）。
+   * 为什么需要：窄宽适配（③）的效果以前只能靠肉眼看 ✗ —— 改布局不能拍脑袋，
+   * 要有数字。本命令不改任何状态，随便调 ✓。输出**不含 url/token** ✓。
+   * 窗口沿用第一段口径（2.5s）：它是**只读且当场可答**的，没有"起服务"这种慢路径。 */
   'dsh-status'(ctx) {
     const dir = userDataDir();
     control.writeCommand(dir, { cmd: 'dsh-status', at: new Date().toISOString(), by: 'cli' });
-    const res = waitForResult(dir, 'dsh-status', 2500);
+    const res = waitForResult(dir, 'dsh-status', UI_ACK_MS);
     if (!res || !res.ok || !res.status) {
       ctx.error('主界面没有响应或读不到状态（' + dir + '）：请确认 AI MindMap 正在运行');
     }
@@ -152,5 +225,14 @@ module.exports = {
     ctx.out('内核右栏: ' + (s.rightbarOpen ? '开着' : '关着')
       + '｜观察器 ' + (s.rightbarWatcher || '未装')
       + '｜自动加宽 ' + (s.autoWide ? ('生效中（原宽度 ' + s.autoWide.prev + '，现 ' + s.actualWidth + '）') : '未生效'));
-  }
+  },
+
+  // ---- 供单测直接钉住等待逻辑（不是命令；见 tests/dsh-prefill-wait.test.js）----
+  // 导出的是**纯判定骨架 + 两个窗口常量**：这样"探活失败/成功后超时/正常拿到结果"全部分支
+  // 能在**零等待**下被覆盖，而窗口常量本身成为可断言的契约（必须覆盖 app 侧最坏路径）。
+  __waitForResult: waitForResult,
+  __runAfterLivenessProbe: runAfterLivenessProbe,
+  __UI_ACK_MS: UI_ACK_MS,
+  __PREFILL_MS: PREFILL_MS,
+  __userDataDir: userDataDir
 };

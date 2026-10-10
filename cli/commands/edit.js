@@ -54,12 +54,31 @@ function localPathFromArgs(ctx) {
   return { set: true, value: s };
 }
 
+/**
+ * 取 `--expanded` 的布尔值（`add` / `add-root` / `edit` 共用）。
+ *
+ * 只认 `true` / `false`（裸写 `--expanded` 等价于 true，保留历史写法）；**别的值一律报错**。
+ *
+ * 为什么不能沿用"非 false 即 true"（实测缺陷，2026-10-10）：`--expanded=nonsense` 以前
+ * 连键都解析不出来，于是**静默落成默认值 true** —— 调用方以为"我关掉了展开"，
+ * 盘上写的却是展开（反之亦然）。这类"看起来生效、其实没生效"的设置比直接报错危险得多，
+ * 因为它会一路带到下一轮调试里。判定收窄到 true/false 两个字面量后，写错就当场红。
+ */
+function expandedFromArgs(ctx) {
+  const v = ctx.args.expanded;
+  if (v === undefined) return undefined;
+  if (v === true || v === 'true') return true;
+  if (v === false || v === 'false') return false;
+  ctx.error('--expanded 只能是 true 或 false（收到 ' + JSON.stringify(v) + '）');
+}
+
 /** 通用：在指定父节点下新增一个子节点 */
 function addUnder(ctx, parent) {
   const topic = ctx.args.topic;
   if (!topic) ctx.error('缺少 --topic 标题');
   const detail = detailFromArgs(ctx);
   const lp = localPathFromArgs(ctx);                    // 形状校验在写盘之前（错了就别动数据）
+  const exp = expandedFromArgs(ctx);                    // 同上：非法值在写盘之前就报错
   if (lp.set && lp.value && !fs.existsSync(lp.value)) {
     // 只是**警告**：目标可能还没建 / 盘没挂。数据照写，让用户自己看到风险（不静默、也不武断拒绝）
     ctx.out('⚠ 这个路径当前不存在（仍已记录，点击时会报错）：' + lp.value);
@@ -70,7 +89,7 @@ function addUnder(ctx, parent) {
     if (!parentNode) ctx.error('父节点不存在: ' + parent);
     const id = ctx.args.id || markdown.idGen(topic);
     if (ctx.tree.find(data.data, id)) ctx.error('id 已存在: ' + id);
-    const node = { id, topic, expanded: ctx.args.expanded !== 'false' && ctx.args.expanded !== false, children: [] };
+    const node = { id, topic, expanded: exp === undefined ? true : exp, children: [] };
     if (detail) node.detail = detail;
     if (lp.set && lp.value) node.localPath = lp.value;
     parentNode.children = (parentNode.children || []).concat(node);
@@ -123,6 +142,7 @@ module.exports = {
     const detailGiven = ctx.args.detail !== undefined || ctx.args.detailMd !== undefined;
     const detail = detailGiven ? detailFromArgs(ctx) : undefined;
     const lp = localPathFromArgs(ctx);
+    const exp = expandedFromArgs(ctx);                    // 非法值在写盘之前报错（见该函数注释）
     if (lp.set && lp.value && !fs.existsSync(lp.value)) {
       ctx.out('⚠ 这个路径当前不存在（仍已记录，点击时会报错）：' + lp.value);
     }
@@ -140,7 +160,7 @@ module.exports = {
       if (ctx.args.clearTags) delete node.tags;
       // 本机文件夹路径：--local-path 设置；--clear-local-path 清除
       if (lp.set) { if (lp.value) node.localPath = lp.value; else delete node.localPath; }
-      if (ctx.args.expanded !== undefined) node.expanded = ctx.args.expanded !== 'false' && ctx.args.expanded !== false;
+      if (exp !== undefined) node.expanded = exp;
       return data;
     });
     ctx.out('已更新: ' + id);
@@ -190,9 +210,18 @@ module.exports = {
     const id = ctx.args._[1];
     const parent = ctx.args._[2];
     if (!id || !parent) ctx.error('用法: move <项目> <id> <新父id> [--index n]');
+    // `--index` 必须显式校验：tree.moveNode 对非法索引（NaN / 负数 / 越界）**静默退化成末尾插入**
+    // ⇒ `move x y --index abc` 会"成功"地插到末尾，调用方却以为插到了第 abc 位。
+    let idx;
+    if (ctx.args.index !== undefined) {
+      idx = Number(ctx.args.index);
+      if (!Number.isInteger(idx) || idx < 0) {
+        ctx.error('--index 必须是非负整数（收到 ' + JSON.stringify(ctx.args.index) + '）');
+      }
+    }
     ctx.mutate((data) => {
-      const ok = ctx.tree.moveNode(data.data, id, parent, ctx.args.index !== undefined ? Number(ctx.args.index) : undefined);
-      if (!ok) ctx.error('移动失败（节点不存在 / 目标非法 / 移动到自身子树）');
+      const ok = ctx.tree.moveNode(data.data, id, parent, idx);
+      if (!ok) ctx.error('移动失败（节点不存在 / 目标非法 / 移动到自身子树 / 索引越界）');
       return data;
     });
     ctx.out('已移动: ' + id + ' → ' + parent);

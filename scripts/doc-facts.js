@@ -641,24 +641,17 @@ function docSystemSnapshot(facts) {
         + countFiles('docs/changelog') + ' 份 | 磁盘现场统计（只增不改，不逐份登记） |');
     } catch (e) { out.push('（登记表解析失败：' + (e && e.message) + '）'); }
   }
-  // 工作产物区：各目录的死活（读各自 README 的状态行）
-  const workRoot = path.join(ROOT, '.review');
-  if (fs.existsSync(workRoot)) {
-    const dirs = fs.readdirSync(workRoot, { withFileTypes: true }).filter((e) => e.isDirectory());
-    if (dirs.length) {
-      const rows = [];
-      dirs.forEach((d) => {
-        const rd = path.join(workRoot, d.name, 'README.md');
-        let status = '（无 README —— G8 会判红）';
-        if (fs.existsSync(rd)) {
-          const m = /状态\**：\**\s*([^\n*]+)/.exec(fs.readFileSync(rd, 'utf8'));
-          status = m ? m[1].trim() : '（README 未写状态）';
-        }
-        rows.push('`' + d.name + '` → ' + status);
-      });
-      out.push('| 工作产物区（`.review/`） | ' + rows.join(' · ') + ' | 各目录的 `README.md` |');
-    }
-  }
+  // 工作产物区（`.review/`）：**内容不进这份受管文档**。
+  // 为什么（实测缺陷，2026-10-10）：这一行原先把 `.review/` 的**目录清单 + 各自状态**渲染进来，
+  // 于是任何"只读仓库 + 只写 `.review/`"的核查任务 —— 而写 `.review/` 正是工作产物区的用途 ——
+  // 都会让这份生成物与现场不一致，全链在 G6/G7 判红：
+  //   `✗ 生成物已过期：docs/VERIFY.md（第 98 行起不一致）`
+  // 收口判据：**易变、可随时整目录删的工作区，不得成为受管真值的一部分**（否则"用它"就等于"改真值"）。
+  // 它真正的守卫是 G8（`scripts/docs-registry-check.js`）：`.review/<目录>/README.md` 必须声明
+  // 死活（在飞 / 已收口 / 已废弃）—— 那条**保留** ✓：它管的是"可删性与状态"，不是这份目录清单。
+  out.push('| 工作产物区（`.review/`） | 见 `.review/*/README.md` 的状态行（**目录清单刻意不进本文件**：'
+    + '工作区可随时整目录删除，清单写进来会让"新建/删除一个工作目录"变成"生成物过期" ✗） | '
+    + '各目录的 `README.md`，死活判定见 G8（`npm run check:docs`） |');
   // 上次全链（引用，不复制）
   // 上次全链：**只写指针**（值由 `verify` / `check:docs` 现场打印）——
   // 写值会让本文件变成"每天都不一样"，从而无法被 G7 逐字校验。

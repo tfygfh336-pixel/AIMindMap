@@ -193,12 +193,118 @@ describe('relations.relatedAll depth=2', () => {
     expect(r.depth2Count).toBe(0);
   });
 
-  it('depth 只认 1 与 2（其他值退化为 1，避免无界展开）', () => {
+  it('depth 任意：3 跳真能到达第 3 层（旧行为是"非 1/2 一律退化成 1"，已按新语义改）', () => {
+    // 旧断言是 `depth:3 ⇒ depth2Count === 0`（因为 3 被静默当成 1）—— 那正是被修的缺陷：
+    // 用户要"多跳关系可查"，而 --depth 3 看起来成功、给的却是另一件事（只有直接关联）。
     const projs = chain();
     const a = projs[0].data.data.children[0];
-    expect(relatedAll('self', a, projs, { depth: 3 }).depth2Count).toBe(0);
-    expect(relatedAll('self', a, projs, { depth: 0 }).depth2Count).toBe(0);
-    expect(relatedAll('self', a, projs, { depth: 'x' }).depth2Count).toBe(0);
+    const r = relatedAll('self', a, projs, { depth: 3 });
+    expect(r.items.map((x) => x.node + '@' + x.depth).sort()).toEqual(['b@1', 'c@2']);
+    expect(r.byDepth[1]).toBe(1);
+    expect(r.byDepth[2]).toBe(1);
+    expect(r.truncated).toBe(false);
+  });
+
+  it('depth 非法（0 / 负数 / 小数 / 文字）在模型层退化为 1（判定与报错由 CLI 负责，见 cli/commands/relations.js）', () => {
+    const projs = chain();
+    const a = projs[0].data.data.children[0];
+    [0, -3, 1.5, 'x'].forEach((bad) => {
+      const r = relatedAll('self', a, projs, { depth: bad });
+      expect(r.items.every((x) => x.depth === 1)).toBe(true);
+      expect(r.depth2Count).toBe(0);
+    });
+  });
+});
+
+/* —— 多跳邻域（用户卖点原话"多跳关系可查"）：任意深度 + 防环 + 结果上限 ——
+ * 修前实测（2026-10-10）：`--depth` 只认 1/2，其它值静默退化成 1。 */
+describe('relations.relatedAll 任意深度（多跳）', () => {
+  /** 一条 8 节点的链：n1 → n2 → … → n8（每层恰好 1 个新节点） */
+  const longChain = () => {
+    const kids = [];
+    for (let i = 1; i <= 8; i++) {
+      kids.push({ id: 'n' + i, topic: 'N' + i, links: i < 8 ? [{ project: 'self', id: 'n' + (i + 1) }] : [] });
+    }
+    return [{ name: 'self', data: { data: { id: 'root', topic: 'R', children: kids } } }];
+  };
+
+  it('深 3 跳的正例：n1 --depth 3 恰好到 n2/n3/n4，且每层一个', () => {
+    const projs = longChain();
+    const n1 = projs[0].data.data.children[0];
+    const r = relatedAll('self', n1, projs, { depth: 3 });
+    expect(r.items.map((x) => x.node + '@' + x.depth).sort()).toEqual(['n2@1', 'n3@2', 'n4@3']);
+    expect(r.byDepth).toMatchObject({ 1: 1, 2: 1, 3: 1 });
+    // 深 3 项必须带 via 指向上一个节点（否则读不出"经由谁"）
+    expect(r.items.find((x) => x.node === 'n4').via).toMatchObject({ node: 'n3' });
+    // 一跳的引用计数语义不变（只统计直接引用）
+    expect(r.outCount).toBe(1);
+    expect(r.inCount).toBe(0);
+  });
+
+  it('深 6 跳：链一直展开到 n7，`depth2Count` 仍是**正好二跳**的条数（不合并 3+ 跳）', () => {
+    const projs = longChain();
+    const n1 = projs[0].data.data.children[0];
+    const r = relatedAll('self', n1, projs, { depth: 6 });
+    expect(r.items.map((x) => x.node).sort()).toEqual(['n2', 'n3', 'n4', 'n5', 'n6', 'n7']);
+    expect(r.depth1Count).toBe(1);
+    expect(r.depth2Count).toBe(1);
+    expect(r.byDepth[6]).toBe(1);
+    expect(r.truncated).toBe(false);
+  });
+
+  it('防环：成环的图（a → b → c → a）不会死循环，也不把起点算回邻域', () => {
+    const projs = [{ name: 'self', data: { data: { id: 'root', topic: 'R', children: [
+      { id: 'a', topic: 'A', links: [{ project: 'self', id: 'b' }] },
+      { id: 'b', topic: 'B', links: [{ project: 'self', id: 'c' }] },
+      { id: 'c', topic: 'C', links: [{ project: 'self', id: 'a' }] }
+    ] } } }];
+    const a = projs[0].data.data.children[0];
+    // 深度给到 100（上限）：若没有访问集合，这里会一直转下去。
+    // 期望集说明：a 的出边是 b（一跳），而入边是 c（c→a）⇒ c 也是**一跳**；
+    // 再往外的 a（经 b→c 回到起点）被"不绕回自身 + 访问集合"双双挡住。
+    const r = relatedAll('self', a, projs, { depth: 100 });
+    expect(r.items.map((x) => x.node + '@' + x.depth).sort()).toEqual(['b@1', 'c@1']);
+  });
+
+  it('自环（节点引用自己）不把自身塞进邻域', () => {
+    const projs = [{ name: 'self', data: { data: { id: 'root', topic: 'R', children: [
+      { id: 'a', topic: 'A', links: [{ project: 'self', id: 'a' }, { project: 'self', id: 'b' }] },
+      { id: 'b', topic: 'B' }
+    ] } } }];
+    const a = projs[0].data.data.children[0];
+    const r = relatedAll('self', a, projs, { depth: 3 });
+    expect(r.items.map((x) => x.node)).toEqual(['b']);
+  });
+
+  it('结果上限：撞到 maxItems 就停并置 truncated（**由调用方报错**，模块自己绝不静默截断）', () => {
+    const kids = [];
+    for (let i = 1; i <= 20; i++) kids.push({ id: 'n' + i, topic: 'N' + i });
+    for (let i = 1; i < 20; i++) kids[i - 1].links = [{ project: 'self', id: 'n' + (i + 1) }];
+    const projs = [{ name: 'self', data: { data: { id: 'root', topic: 'R', children: kids } } }];
+    const n1 = projs[0].data.data.children[0];
+    const capped = relatedAll('self', n1, projs, { depth: 19, maxItems: 5 });
+    expect(capped.items).toHaveLength(5);
+    expect(capped.truncated).toBe(true);
+    const full = relatedAll('self', n1, projs, { depth: 19, maxItems: 100 });
+    expect(full.items).toHaveLength(19);
+    expect(full.truncated).toBe(false);
+    // 同一个图：默认上限（MAX_ITEMS=500）下不会被截断
+    expect(relatedAll('self', n1, projs, { depth: 19 }).truncated).toBe(false);
+  });
+
+  it('最短跳数优先：同一节点既可二跳也可三跳到 ⇒ 只以二跳出现（一次）', () => {
+    const projs = [{ name: 'self', data: { data: { id: 'root', topic: 'R', children: [
+      { id: 'a', topic: 'A', links: [{ project: 'self', id: 'b' }, { project: 'self', id: 'c' }] },
+      { id: 'b', topic: 'B', links: [{ project: 'self', id: 'd' }] },
+      { id: 'c', topic: 'C', links: [{ project: 'self', id: 'x' }] },
+      { id: 'x', topic: 'X', links: [{ project: 'self', id: 'd' }] },
+      { id: 'd', topic: 'D' }
+    ] } } }];
+    const a = projs[0].data.data.children[0];
+    const r = relatedAll('self', a, projs, { depth: 3 });
+    const ds = r.items.filter((it) => it.node === 'd');
+    expect(ds).toHaveLength(1);
+    expect(ds[0].depth).toBe(2);       // 经 b 两跳到，而不是经 c→x 三跳
   });
 });
 

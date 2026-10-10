@@ -21,8 +21,9 @@
  *
  * 对外契约（**与子进程模式逐字节一致**，不得改变）：
  *   - 返回 `{ code, stdout, stderr }`；`stdout` 与 `node cli/mm-cli.js <args>` 逐字节相同
- *   - `code`：0 = 成功；1 = 失败（未知命令 / 命令内 throw / 命令自行置非 0）
+ *   - `code`：0 = 成功；1 = 失败（未知命令 / **未知选项** / 命令内 throw / 命令自行置非 0）
  *   - 失败时 stdout 以 `error: ` 开头（文本辅助判据；**退出码是首选判据**）
+ *   - `<命令> --help` 打印该命令的用法与**支持集**（退出码 0，不执行命令）
  *
  * 两条硬约束：
  *   1. **不调用 `process.exit`** —— 会连带杀死宿主（MCP / Electron 主进程 / 测试进程）；
@@ -81,6 +82,20 @@ function usage() {
   return lines.join('\n');
 }
 
+/** 单命令帮助（`<命令> --help`）：把该命令**支持哪些选项**整份打印出来。
+ *  为什么必须有：未知选项现在会响亮报错（见下），那调用方就需要一个"我到底能写什么"的正规入口；
+ *  而报错文本里也只能给出支持集，讲不清每项的语义。 */
+function commandHelp(cmd) {
+  const keys = registry.allowedOptions(cmd.name);
+  const lines = ['AI MindMap CLI — ' + cmd.name, ''];
+  lines.push('用法: node cli/mm-cli.js ' + (cmd.usage || cmd.name));
+  lines.push('支持的选项: ' + (keys.length ? keys.map((k) => '--' + registry.kebab(k)).join(' ') : '（无）'));
+  if (cmd.desc) { lines.push(''); lines.push(cmd.desc); }
+  lines.push('');
+  lines.push('提示：`--compact` 与 `--json` 一起用（单行 JSON）；未列出的选项一律报错并非 0 退出。');
+  return lines.join('\n');
+}
+
 /** 选命令、建 ctx、调用。**刻意不 await** —— 由 `invoke` / `invokeSync` 各自决定。
  *  返回命令返回的 Promise（或 undefined，表示已就地处理完）。 */
 function dispatch(argv) {
@@ -93,6 +108,19 @@ function dispatch(argv) {
   const cmd = registry.get(name);
   if (!cmd) {
     process.stdout.write('error: 未知命令: ' + name + '（node cli/mm-cli.js --help 查看全部）\n');
+    process.exitCode = 1;
+    return undefined;
+  }
+  if (rest.indexOf('--help') >= 0 || rest.indexOf('-h') >= 0) {
+    process.stdout.write(commandHelp(cmd) + '\n');
+    return undefined;
+  }
+  // ---- 未知选项的唯一守门点（缺陷取证：写命令原先静默忽略不认识的选项，
+  //      `add … --tags a,b` 打印"已添加"且 exit 0，盘上却没有标签）----
+  // 为什么放在 dispatch 而不在各命令里：40+ 条命令各写一遍必然漏，且漏掉的那条**又是静默的**。
+  const unknown = core.unknownOptions(rest, registry.allowedOptions(name));
+  if (unknown.length) {
+    process.stdout.write('error: ' + registry.unknownOptionError(name, unknown) + '\n');
     process.exitCode = 1;
     return undefined;
   }

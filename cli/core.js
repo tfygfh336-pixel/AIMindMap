@@ -39,7 +39,7 @@ const PROJECTS_DIR = process.env.AI_MINDMAP_PROJECTS_DIR
   ? path.resolve(process.env.AI_MINDMAP_PROJECTS_DIR)
   : path.resolve(__dirname, '..', 'projects');
 
-/** 极简参数解析：--key value / --flag / 位置参数 */
+/** 极简参数解析：--key value / --key=value / --flag / 位置参数 */
 function parseArgs(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -68,8 +68,23 @@ function parseArgs(argv) {
     if (a === '--dry-run') { out.dryRun = true; continue; }
     if (a === '--clean-assoc') { out.cleanAssoc = true; continue; }
     if (a === '--clean-links') { out.cleanLinks = true; continue; }
+    // 其余纯布尔开关显式登记（否则会被通用分支按"--key value"吞掉下一个位置参数）
+    if (a === '--clear') { out.clear = true; continue; }
+    if (a === '--raw') { out.raw = true; continue; }
+    if (a === '--unmounted') { out.unmounted = true; continue; }
+    if (a === '--major') { out.major = true; continue; }
+    if (a === '--minor') { out.minor = true; continue; }
+    if (a === '--patch') { out.patch = true; continue; }
     if (a.startsWith('--')) {
-      const key = a.slice(2).replace(/-([a-z])/g, (m, c) => c.toUpperCase());
+      // `--key=value` 与 `--key value` 等价（**只有这一处归一**，见 optionKey）。
+      // 为什么必须支持 `=`：不支持时 `--expanded=nonsense` 会变成一个**键里带等号**的怪选项，
+      // 命令读不到 `args.expanded` ⇒ **静默当成默认值**（实测：盘上写的是默认 true）。
+      const eq = a.indexOf('=');
+      if (eq > 2) {
+        out[optionKey(a)] = a.slice(eq + 1);
+        continue;
+      }
+      const key = optionKey(a);
       const nxt = argv[i + 1];
       if (nxt !== undefined && !nxt.startsWith('--')) { out[key] = nxt; i++; }
       else out[key] = true;
@@ -77,6 +92,45 @@ function parseArgs(argv) {
       out._.push(a);
     }
   }
+  return out;
+}
+
+/**
+ * `--foo-bar` / `--foo-bar=值` → 归一后的键名 `fooBar`。
+ *
+ * **唯一的归一实现**：解析（parseArgs）与未知选项检查（unknownOptions）必须用同一套规则，
+ * 否则会出现"解析器认识、白名单不认识"的错杀（例如 `--detail-md` vs `detailMd`）。
+ */
+function optionKey(token) {
+  const raw = String(token).replace(/^--/, '');
+  const eq = raw.indexOf('=');
+  return (eq >= 0 ? raw.slice(0, eq) : raw).replace(/-([a-z])/g, (m, c) => c.toUpperCase());
+}
+
+/**
+ * 扫出 argv 里**这条命令不认识**的选项（纯函数、无 IO ⇒ 可单测）。
+ *
+ * 为什么需要它（本工程实测的缺陷，2026-10-10）：写命令对不认识的选项**静默忽略** ——
+ * `add <项目> root --topic X --tags aaa,bbb` 返回 exit 0 且打印"已添加"，
+ * 但 `get` 里根本没有 tags、`stats` 报 `taggedNodes: 0`。调用方是 AI，
+ * 它会把"退出码 0 + 成功话术"当成依据 ⇒ 一次静默 = 一条假数据 + 一个自以为成功的 AI。
+ * 危险点在于 `--tags` 在 `edit` / `add-image` 上**是合法选项**，跨命令误用极其自然。
+ *
+ * @param {string[]} argv 命令名之后的参数
+ * @param {string[]} allowed 该命令认识的选项键（camelCase，含全局输出开关）
+ * @returns {Array<{key:string, token:string}>} 去重后的未知选项（按出现顺序）
+ */
+function unknownOptions(argv, allowed) {
+  const known = new Set(allowed || []);
+  const out = [];
+  const seen = new Set();
+  (argv || []).forEach((a) => {
+    if (typeof a !== 'string' || a.length < 3 || a.slice(0, 2) !== '--') return;
+    const key = optionKey(a);
+    if (known.has(key) || seen.has(key)) return;   // 同一个未知选项重复出现只报一次
+    seen.add(key);
+    out.push({ key: key, token: a.split('=')[0] });
+  });
   return out;
 }
 
@@ -177,4 +231,4 @@ function createContext(argv, meta) {
   return ctx;
 }
 
-module.exports = { createContext, parseArgs, PROJECTS_DIR };
+module.exports = { createContext, parseArgs, optionKey, unknownOptions, PROJECTS_DIR };

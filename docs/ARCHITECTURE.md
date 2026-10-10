@@ -108,14 +108,14 @@ CLI `assoc-add`；二级页面本身仍只能从节点详情的「相关知识�
 |------|------|
 | `mm-cli.js` | **薄壳**：把 `process.argv` 交给 `main.js` 的 `invoke()`，再把 stdout/stderr 落地、把 code 写进 `process.exitCode`。拆薄的理由：集成断言原先只能靠 `spawnSync` 起子进程（实测每条 0.73 s 冷启动），导出纯函数后可在同进程内调用 |
 | `main.js` | **可进程内调用的入口**，两个：`invoke(argv)`（异步）与 `invokeSync(argv)`（同步，供直线式同步断言序列）—— 均返回 `{code, stdout, stderr}`；解析 argv → 查 registry → 执行；`--help`；错误输出 `error: <原因>` 约定。两条硬约束：**不调用 `process.exit`**（会连带杀死宿主：MCP / Electron 主进程 / 测试进程）；进出**隔离 `process.exitCode`**（它是全局态，且 `validate`/`validate-all` 会**自行置非 0** 表达失败，故 code 必须读回而不是只看抛没抛错）<br>⚠️ **`invokeSync` 依赖一条不变量**：`cli/commands/*` 的命令体**不得出现 `await`**（及 `.then()` / `fs.promises` / `setTimeout` 等）。JS 里 async 函数体在首个 `await` 前是同步执行的，所以这些命令实际同步完成。违反时 `invokeSync` **立刻抛错**（不静默降级），并由 `tests/cli-sync-invariant.test.js` **静态把守** |
-| `registry.js` | **命令注册表**：每条命令的 name/aliases/usage/desc/fn；**新增命令必须在此登记**（docs-gen 依赖它）。当前命令数见 `docs/VERIFY.md` |
-| `core.js` | 上下文工厂：参数解析（--key value / 位置参数）、DataStore、校验闸门、项目读写封装；**`ctx.mutate(fn)` = 多路同时编辑的入口**（读→改→写，并发时按 `src/concurrency.js` 的规则自动重放或指名拒绝） |
+| `registry.js` | **命令注册表**：每条命令的 name/aliases/usage/desc/**options**/compatOptions/fn；**新增命令必须在此登记**（docs-gen 依赖它）。当前命令数见 `docs/VERIFY.md`。<br>⚠️ **`options` 是"这条命令认识哪些选项"的唯一声明处**，`cli/main.js` 在 dispatch 里据此判未知选项（判定只有这一处，见下条）。`compatOptions` = 接受但**故意不写进 usage** 的旧写法（如 `read --detail`：`--json` 下空操作、文本模式响亮报错）。三者必须同步：usage（文档）/ options（判定）/ 命令体（实现）—— `tests/cli-options.test.js` 机械核对前两者，漏一处即红 |
+| `core.js` | 上下文工厂：参数解析（`--key value` / **`--key=value`** / 布尔 flag / 位置参数）、DataStore、校验闸门、项目读写封装；**`ctx.mutate(fn)` = 多路同时编辑的入口**（读→改→写，并发时按 `src/concurrency.js` 的规则自动重放或指名拒绝）。`--key=value` 的归一（`optionKey`）与未知选项扫描（`unknownOptions`）都是**无 IO 纯函数**（可单测）：解析与白名单判定必须共用同一套归一规则，否则会出现"解析器认识、白名单不认识"的错杀 |
 | `commands/project.js` | 项目级命令（只做"读参数 → 调 src/ 纯逻辑 → 输出"）：projects/read/list/get/search/stats/init/import-md/export-md/**export-html**/export-json/import-json/validate/validate-all |
 | `commands/edit.js` | 节点编辑：add/add-root/edit/move/remove/clone |
 | `commands/assets.js` | 图片与附件：add-image/remove-image/assets/add-file/remove-file/files |
 | `commands/links.js` | 跨项目链接：link/unlink/links/links-prune（清理悬空链接 —— 别的项目删了目标节点后本项目的自救路） |
-| `commands/ui.js` | 界面控制**三条命令**：`sidebar-only <on\|off>`（on = **真卸载导图页**（这一页的内存被释放，主窗口只剩占位页）、只留 DSH 侧栏；off = 重新加载导图页）、`dsh-sidebar <on\|off>`（**保留主界面**、关/开侧栏 DSH，off 连服务一起停并销毁侧栏视图）、`dsh-status`（**只读**诊断：视图在不在/导图页关没关/可见性/总占宽/窄宽模式/是否横向溢出，白名单输出不含 url/token）。存在理由：改哪一半就只关哪一半 ⇒ **不必重启整个应用**；改侧栏布局前先 `dsh-status` 拿数字，别凭肉眼。走文件式控制通道（`src/control.js`），**没有回执即报错**（界面没在运行时不许假装成功）；**被界面拒绝**（如导图页有未保存编辑）时转述原因，与"没响应"分开报 |
-| `commands/relations.js` | 引用关系：backlinks（单向反查）/ related（出边+入边双向合并）/ orphans（关系审计）/ mentions（未链接提及） |
+| `commands/ui.js` | 界面控制**三条命令**：`sidebar-only <on\|off>`（on = **真卸载导图页**（这一页的内存被释放，主窗口只剩占位页）、只留 DSH 侧栏；off = 重新加载导图页）、`dsh-sidebar <on\|off>`（**保留主界面**、关/开侧栏 DSH，off 连服务一起停并销毁侧栏视图）、`dsh-status`（**只读**诊断：视图在不在/导图页关没关/可见性/总占宽/窄宽模式/是否横向溢出，白名单输出不含 url/token）、`dsh-prefill`（把文本预填进侧栏输入框；**不代替用户发送**）。存在理由：改哪一半就只关哪一半 ⇒ **不必重启整个应用**；改侧栏布局前先 `dsh-status` 拿数字，别凭肉眼。走文件式控制通道（`src/control.js`），**没有回执即报错**（界面没在运行时不许假装成功）；**被界面拒绝**（如导图页有未保存编辑）时转述原因，与"没响应"分开报。<br>⚠️ **慢命令走"先探活、再下命令"两步**：`dsh-prefill` 可能要先把侧栏服务起起来（app 侧最坏 ≈12.4s），而"界面没在跑"与"界面在跑但慢"只看它自己的回执**分不开** ⇒ 先问一句只读的 `dsh-status`（当场可答、无慢路径）：没回执 = 没在跑（**立刻**报错，且不发出慢命令）；有回执 = 活着，再给足窗口（14s > 12.4s）。修前实测：失败路径 12.56s（同批另三条 ~3.0s），且 12s 窗口 < app 侧最坏路径 ⇒ 界面还在干活就被判"没响应"（**假原因**） |
+| `commands/relations.js` | 引用关系：backlinks（单向反查）/ related（出边+入边双向合并；**`--depth N` 深度任意**，逐层 BFS + 防环（每节点只以最短跳数入表一次）+ 结果上限（撞上限**响亮报错**并给出缩小范围的办法，绝不静默截断）/ orphans（关系审计）/ mentions（未链接提及） |
 | `commands/assoc.js` | 关联笔记（N 元关联实体）：assoc-list/assoc-add/assoc-edit/assoc-remove/assoc-prune（参数处理 + 读写 + 输出；纯逻辑在 `src/assoc.js`） |
 | `commands/release.js` | 工程命令：docs-gen（从 registry 重生成 `docs/CLI.md`）/ release（发版）/ **changelog**（CHANGELOG **只读**窄查询：段/条目索引或按关键词检索正文）。`changelog` 的索引从正文**现算**、不落生成物 —— 详见 `src/changelog.js` 的 `indexChangelog` 注释（为什么不做成生成文件） |
 | `commands/changes.js` | **变更可见性**（只读，阶段 3）：谁、何时、改了哪些对象。数据来自唯一写盘出口顺带产生的 `projects/<项目>/.changes.jsonl`；`--since <rev\|版本号>` 回答"自那以来改了什么"。⚠ **答不了时报错并非 0 退出**（锚点滑出窗口 / 本机无日志）——**不等于"没有变更"** |
@@ -142,7 +142,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `convert.js` | HTML ⇄ Markdown（**仅用于 import-md/export-md 边界与 .md 附件预览**；节点 detail 本身以 HTML 存储，见 DATA-FORMAT §2.4） | `htmlToMarkdown(html)` / `markdownToHtml(md)` |
 | `tree-utils.js` | 纯树函数（无副作用） | `walk/find/count/flatten/removeNode/moveNode/pathTo` |
 | `history.js` | 快照式撤销重做栈 | `UndoStack(limit)`：push/undo/redo/canUndo/canRedo/clear |
-| `relations.js` | 引用关系计算（纯逻辑，依赖注入） | `backlinksAll()`（谁引用我）/ `relatedAll()`（出边+入边合并、标注 out/in/both） |
+| `relations.js` | 引用关系计算（纯逻辑，依赖注入） | `backlinksAll()`（谁引用我）/ `relatedAll()`（出边+入边合并、标注 out/in/both；**`depth` 任意正整数**，逐层 BFS，返回 `byDepth` / `truncated`；`MAX_ITEMS`=500 —— 到了就停并置 `truncated`，**要不要报错由调用方决定**） |
 | `assoc.js` | 「关联笔记」实体（N 元关联，纯逻辑） | `parseMembers`/`includes`/`forNode`/`memberLabel`/`autoTitle`/`pruneMembers`/`validateAssoc`/`validateAll`/`genId`（`MIN_MEMBERS`=2；成员是否存在由 `schema.validateProject` 读盘检测） |
 | `links.js` | 链接剪枝纯逻辑（与 assoc 同源的"删节点→悬空"问题） | `pruneLinks(root, shouldRemove)`（**就地修改**树、删空则去键）/ `allLinks` / `inbound(root,project,id)` / `targetKey` |
 | `mentions.js` | 「未链接提及」计算（纯逻辑） | `findMentions(root, opts)` 本项目内；`findCrossMentions(projects, self, opts)` 跨项目 in/out（同名歧义标 `ambiguous` 而非乱猜） |
@@ -166,7 +166,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `dsh-capabilities.js` | DSH 能力边界（纯逻辑：解析装配清单 + 合成模型） | 支撑 `dsh-caps` 命令：回答"某能力到底挂没挂载"，防"以为不具备其实有"与反向误判 |
 | `dsh-sidebar-skill.js` | 侧栏 AI 的**指针 skill 内容生成**（纯函数） | `buildSidebarSkillContent(projectRoot)`：应用孵化内嵌实例时写入 `dsh-home/skills/ai-mind-map/SKILL.md` |
 | `ui-state.js` | 「界面有未保存编辑」的跨进程协调信号（纯逻辑 + 文件契约） | 读写 `projects/<项目>/.ui-state.json`，支撑"写前协调"（CLI 侧 `ui-state` 命令读它） |
-| `control.js` | **界面控制通道**（纯文件读写，不 require electron） | userData 下 `mm-control.json`（命令）/ `mm-control-result.json`（回执）；界面每 400ms 轮询执行一次。为什么不用 socket/命名管道：本机受限环境禁命名管道、网络要走代理 —— 文件是唯一到处都成立的通道。CLI 侧 `sidebar-only` / `dsh-sidebar` 都靠回执判"真生效"；**两个方向各关一半**（关左页留侧栏 / 留主界面关侧栏）⇒ 改一侧不必重启整个应用 |
+| `control.js` | **界面控制通道**（纯文件读写，不 require electron） | userData 下 `mm-control.json`（命令）/ `mm-control-result.json`（回执）；界面每 400ms 轮询执行一次。为什么不用 socket/命名管道：本机受限环境禁命名管道、网络要走代理 —— 文件是唯一到处都成立的通道。CLI 侧 `sidebar-only` / `dsh-sidebar` 都靠回执判"真生效"；**两个方向各关一半**（关左页留侧栏 / 留主界面关侧栏）⇒ 改一侧不必重启整个应用。**慢命令的调用方先探活**（用只读的 `dsh-status` 问一句）再下慢命令 —— 否则"界面没在跑"与"界面在跑但慢"分不开（见 §2.2 `commands/ui.js`） |
 **加载顺序**（与 `renderer/index.html` 里实际的 `<script src>` 顺序一致 = 依赖顺序）：
 `vendor/jsmind.js` → `history` → `tree-utils` → `schema` → `convert` → `config` →
 `palette-rank` → `related-model` → `sidebar-context` → `mindmap-adapter` → `app-core` →
@@ -244,6 +244,20 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 `mm-cli` 子进程调用，工具参数映射为 CLI 参数。新增 MCP 工具 = 加一条 TOOLS 定义 +
 一个 case 分支，转发即可。
 
+**错误分流（协议级 vs 业务级，边界只判一次）**：`handleMessage` 是唯一的判定点，
+`callTool` 用 `{protocol:true, code}` 标记"调用方调错了"：
+
+| 情形 | 报文 | 为什么 |
+|------|------|--------|
+| 未知方法 / 未知工具 | `error` + `-32601` | 那是"你调错了"，不是"调用失败了"；报文形状必须先对，客户端才可能纠正 |
+| 缺必填参数 / 没给工具名 | `error` + `-32602` | 同上。必填项取自 `inputSchema.required`（**与工具定义同源**，不另写一份清单） |
+| 工具内部的失败（项目不存在 / 校验失败 / CLI 非 0） | `result` + `isError:true` | MCP 约定：失败内容要让**模型看见**并自行纠正；变成协议错误反而让模型看不到原因 |
+| 服务器自身异常 | `error` + `-32603` | 本进程 bug，不是调用方的错 |
+
+修前实测报文：`{"jsonrpc":"2.0","id":4,"result":"method not found: no-such-method"}` ——
+未知方法回了 `result` 字符串，既无 `error` 也无 `code` ⇒ 标准客户端按成功处理（静默）。
+两面都钉住：纯逻辑单测 `tests/mcp-protocol.test.js` + 真 stdio 一拍（`scripts/cli-integration.js` 的 MCP 段）。
+
 ### 2.6 脚本层（scripts/ —— 验证链、门禁与一次性工具）
 
 > **新接手的 AI**：想知道"验证是怎么跑的、门禁在哪、工具怎么用"，看这张表即可。
@@ -308,6 +322,8 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | **DSH 侧边栏独立运行**（v0.16） | 应用自带完整 DSH 运行包（`vendor/dsh`，哈希清单锁定）与**独立数据目录**（`userData/dsh-home`）；侧栏只是视图容器 + 进程管理者（`main-dsh-sidebar.js`）。更新 = 新包装进 `userData/dsh-runtimes/` + `active.json` 原子切换（**换包流程**永不触碰 dsh-home ✓；但**插件/配置导入是另一条受控通道** —— 它就是往 dsh-home 写东西 ✓，见 `docs/DSH-EMBEDDED.md`） | 用户明确要求：独立于全局安装的 DSH；两实例并行实测无冲突（端口/数据/凭据全隔离） |
 | **服务驻留与单窗口假设**（v0.16 系列） | dsh web 以 `detached` 孵化（脱离主进程 Job Object，实测主界面退出后存活）；service-info（`userData/dsh-service.json`）承载 {pid,url}，新主界面启动先 adopt（pid+HTTP 双活探测）不新孵化；健康循环 5s pid+HTTP 双探。**当前假设单主窗口**：`state.view/handle` 为单例、`destroy()` 只收割本进程孵化的服务。若未来支持多主窗口，需把 view/handle 所有权改为引用计数 | 拖宽分隔条与服务接管都绑定"一个 contentView"的模型；解耦的价值（重启主界面不掉侧栏）在单窗口下已完整兑现 |
 | **token 不进渲染层** | DSH 服务的 token URL 只存在于主进程内存与 loadURL；渲染层只收「侧栏宽度」布局事件与结构化状态（status/visible/error） | 渲染层是高危面（innerHTML 注入 detail）；token 泄进渲染层等于把 DSH 控制权交给任何能执行 JS 的路径 |
+| **选项必须逐条声明**（v0.19 系列） | 每条 CLI 命令在 `registry.js` 的 `options` 里声明自己认识的选项；出现未知选项 ⇒ **退出码 1** + 点名 + **打印支持集**（若它是别的命令的选项则直接点名那条命令）。`--key=value` 与 `--key value` 等价；`--expanded` 这类**取值必须合法**（`true`/`false`），非法值当场报错 | 修前写命令对不认识的选项**静默忽略**：`add … --tags a,b` 打印"已添加"、退出码 0，而盘上没有标签（`stats` 的 `taggedNodes` 是 0）。调用方是 AI，它把"0 + 成功话术"当依据 ⇒ 一次静默 = 一条假数据 + 一个自以为成功的 AI。危险点在 `--tags` 在 `edit`/`add-image` 上**是合法选项** ⇒ 跨命令误用极自然 |
+| **工作产物区不进受管真值**（v0.19 系列） | `.review/` 的**内容**（目录清单等）不得渲染进受管文档（`docs/VERIFY.md`）；该文档只留一句"见 `.review/*/README.md`"的指针。`.review/<目录>/README.md` 的**死活声明**照旧由 G8 管（`npm run check:docs`） | 修前 `scripts/doc-facts.js` 把 `.review/` 的目录清单+状态渲染进 VERIFY.md ⇒ 任何"只读仓库 + 只写 `.review/`"的核查任务（而写 `.review/` 正是工作产物区的用途）都会让全链在 G6/G7 判红：`✗ 生成物已过期：docs/VERIFY.md`。易变、可随时整目录删的工作区**不能成为真值的一部分**，否则"用它"就等于"改真值" |
 | **两个 ✕ 都是"真关"（卸载，而不是隐藏）** | **导图页 ✕** ⇒ 主窗口导航到占位页 `renderer/map-closed.html`（旧文档连同 DOM/JS 堆被卸载）；**侧栏 ✕** ⇒ 收起 + **销毁** `WebContentsView` + 停 DSH 服务。两者重开都是**重新加载**，并还原停靠宽度与"上次的项目"。关之前一律**先拦未保存编辑**（界面弹「保存后关闭 / 取消」；CLI 那条路直接拒绝并带原因）。判据字段进 `getStatus()`：`hasView/viewId/viewEpoch/lastDestroyedViewId/mapPageClosed` | 用户明确选定："**内存里真的不留页面**"（明确否掉了"只隐藏"）。旧做法是两处都不卸载：导图页加 `body.dsh-only`（`#main` 仍 `display:none` 地活着）、侧栏只把 view 从窗口摘下来挂着 —— 渲染层都还在内存里，与"关掉"不是一件事。代价（重开要重新加载，比"隐藏了再显示"慢）**如实写进 README 与占位页** ✓。边界两条：① 渲染**进程**会被 Chromium 复用（实测 `getOSProcessId()` 前后相同）⇒ 文档只说"旧文档被卸载"，不说"进程被替换"；② 控制通道轮询在**主进程**，所以导图页卸载期间通道照常（受影响的只有"发给导图页渲染层"的菜单项，故把它们置灰） |
 | **运行包由哈希清单锁定** | `vendor/dsh/manifest.json`（schemaVersion 1）记录全部文件的 size+SHA256；`src/dsh-package.js` 的 `validateRuntime`/`installRuntime` 全量核验。vendor/ 因此**不进 G1 编码门禁与 G6 文档扫描**（2.6 万第三方文件的完整性由哈希清单负责，编码门禁会假红） | 门禁的职责边界：G1 防的是「我们自己写坏文件」，第三方运行时完整性是另一类问题，用另一把锁 |
 | **测试不碰真实数据** | 冒烟在 `os.tmpdir()` 的项目副本上运行；`verify` 全链不得修改 `projects/` | 历史上冒烟断言会在真实项目上 `app.save()`，中途崩溃会在真实笔记里残留测试节点 |

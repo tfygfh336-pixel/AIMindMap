@@ -22,7 +22,7 @@
 
 | 命令 | 说明 |
 |------|------|
-| `projects` | projects |
+| `projects` | projects [--json] |
 | `read` | read <项目> [--json] [--brief] [--skeleton] [--compact] [--subtree id] [--images] |
 | `list` | list <项目> [--json] |
 | `get` | get <项目> <id> [--json] [--detail] [--images] |
@@ -30,8 +30,8 @@
 | `stats` | stats <项目> [--json] |
 | `init` | init <项目> [--title 标题] |
 | `backlinks` | backlinks <项目> <id> [--json] |
-| `related` | related <项目> <id> [--json] [--depth 2] |
-| `ask` | ask <项目> [<节点id>] [--question "..."] [--kind explain|ask] [--effort low|medium|high|xhigh] [--json] [--timeout 秒] [--dry-run] |
+| `related` | related <项目> <id> [--json] [--depth N] |
+| `ask` | ask <项目> [<节点id>] [--nodes a,b,c] [--question "..."] [--kind explain|ask] [--effort low|medium|high|xhigh] [--json] [--timeout 秒] [--dry-run] |
 | `theme-layout` | theme-layout <项目> [--left a,b] [--right c,d] [--clear] |
 | `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] |
 | `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] |
@@ -52,8 +52,8 @@
 | `add-file` | add-file <项目> <id> --file 附件 --caption 备注 [--source 出处] |
 | `remove-file` | remove-file <项目> <id> <相对路径 attachments/x.md> |
 | `files` | files <项目> [--json] |
-| `sidebar-only` | sidebar-only <on|off> |
-| `dsh-sidebar` | dsh-sidebar <on|off> |
+| `sidebar-only` | sidebar-only <on|off> [--json] |
+| `dsh-sidebar` | dsh-sidebar <on|off> [--json] |
 | `dsh-status` | dsh-status [--json] |
 | `dsh-prefill` | dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json] |
 | `link` | link <项目> <id> --to 目标项目 --id 目标id [--caption 说明] |
@@ -67,7 +67,7 @@
 | `assoc-edit` | assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] |
 | `assoc-remove` | assoc-remove <项目> <assocId> |
 | `assoc-prune` | assoc-prune <项目> [--nodes a,b] [--dry-run] |
-| `validate` | validate <项目|json文件> |
+| `validate` | validate <项目|json文件> [--json] |
 | `validate-all` | validate-all |
 | `ui-state` | ui-state [<项目>] [--json] |
 | `changes` | changes [<项目>] [--since <rev|版本号>] [--json] [--limit n] |
@@ -83,12 +83,12 @@
 列出 projects/ 下全部项目（含 meta）
 
 ```
-node cli/mm-cli.js projects
+node cli/mm-cli.js projects [--json]
 ```
 
 ### read
 
-读取项目可读视图（树 + 详情 + 图片清单）。四个变窄开关可叠加：--brief 去长文本 / --skeleton 再去 tags+links（只要结构）/ --subtree <id> 只要某棵子树 / --compact 单行 JSON；实测全叠加比全量省约 86%（`--detail` 已从此处移除：--json 默认就含详情，它在 read 上是空操作）
+读取项目可读视图（树 + 详情 + 图片清单）。四个变窄开关可叠加：--brief 去长文本 / --skeleton 再去 tags+links（只要结构）/ --subtree <id> 只要某棵子树 / --compact 单行 JSON；实测全叠加比全量省约 86%（`--detail` 不再写进用法但**照旧可用**：--json 下是空操作、文本模式下响亮报错并给出替代路径 —— 老调用方不会因为"它被移除了"而突然失败）
 
 ```
 node cli/mm-cli.js read <项目> [--json] [--brief] [--skeleton] [--compact] [--subtree id] [--images]
@@ -144,18 +144,18 @@ node cli/mm-cli.js backlinks <项目> <id> [--json]
 
 ### related
 
-查看节点相关知识点（我引用谁 + 谁引用我，双向合并去重；--depth 2 扩到两跳邻域）
+查看节点相关知识点（我引用谁 + 谁引用我，双向合并去重；--depth N 扩到 N 跳邻域，N 任意正整数，防环 + 结果上限 500 条，超限响亮报错）
 
 ```
-node cli/mm-cli.js related <项目> <id> [--json] [--depth 2]
+node cli/mm-cli.js related <项目> <id> [--json] [--depth N]
 ```
 
 ### ask
 
-向内嵌 DSH 提一个问题（走 `dsh headless` 一次性通道，stdout 即为答案）；**节点可选** —— 不给节点就是项目级提问；**思考强度可调**（解释默认 low、问答默认 medium，经 `--patch` 覆盖 `agent-default-model`，取值由模型自己声明）；自动补齐情境；--dry-run 只打印提示词/思考强度 patch/命令行、**不调用模型**
+向内嵌 DSH 提一个问题（走 `dsh headless` 一次性通道，stdout 即为答案）；**节点可选** —— 不给节点就是项目级提问，--nodes 可一次问多个节点（情境逐个列出）；**思考强度可调**（解释默认 low、问答默认 medium，经 `--patch` 覆盖 `agent-default-model`，取值由模型自己声明）；自动补齐情境；--dry-run 只打印提示词/思考强度 patch/命令行、**不调用模型**
 
 ```
-node cli/mm-cli.js ask <项目> [<节点id>] [--question "..."] [--kind explain|ask] [--effort low|medium|high|xhigh] [--json] [--timeout 秒] [--dry-run]
+node cli/mm-cli.js ask <项目> [<节点id>] [--nodes a,b,c] [--question "..."] [--kind explain|ask] [--effort low|medium|high|xhigh] [--json] [--timeout 秒] [--dry-run]
 ```
 
 ### theme-layout
@@ -323,7 +323,7 @@ node cli/mm-cli.js files <项目> [--json]
 on = 关掉左边思维导图页（**真卸载这一页**：内存释放、主窗口只剩占位页），DSH 侧栏继续可用；off = 重新加载导图页（回到上次的项目与侧栏停靠宽度）。⚠️ 有未保存编辑时 on 会被**拒绝**（报错带原因、不弹模态框）—— 先让人保存，或让人点界面上的 ✕（那条路会先问「保存后关闭」）。无回执即报错（界面没在跑）
 
 ```
-node cli/mm-cli.js sidebar-only <on|off>
+node cli/mm-cli.js sidebar-only <on|off> [--json]
 ```
 
 ### dsh-sidebar
@@ -331,7 +331,7 @@ node cli/mm-cli.js sidebar-only <on|off>
 on = 打开侧栏 DSH；off = 关掉侧栏 DSH（连服务一起停、侧栏视图**销毁**；主界面与项目数据不受影响）。方向与 sidebar-only 相反
 
 ```
-node cli/mm-cli.js dsh-sidebar <on|off>
+node cli/mm-cli.js dsh-sidebar <on|off> [--json]
 ```
 
 ### dsh-status
@@ -443,7 +443,7 @@ node cli/mm-cli.js assoc-prune <项目> [--nodes a,b] [--dry-run]
 校验项目数据格式（含悬挂链接与悬挂关联成员）
 
 ```
-node cli/mm-cli.js validate <项目|json文件>
+node cli/mm-cli.js validate <项目|json文件> [--json]
 ```
 
 ### validate-all
