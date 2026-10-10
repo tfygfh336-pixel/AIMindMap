@@ -691,17 +691,25 @@ describe('doc-import：整库导入 —— 目录走查、跳过分类、容器�
     } finally { fsx.rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('★ 大目录的 id **不许重号**（中文主题会被 `idGen` 压成同一个 base ⇒ 不加兜底就会撞 id、整棵树校验失败）', () => {
+  it('uniqueIdGen：同一个中文主题连摇 5000 次**一次都不重**（`idGen` 把中文整段压成同一个 base，只剩 4 位随机在区分）', () => {
+    const g = di.uniqueIdGen();
+    const ids = new Set();
+    for (let i = 0; i < 5000; i++) ids.add(g('中文主题'));
+    expect(ids.size).toBe(5000);
+    expect(g('中文主题')).toMatch(/^[a-z0-9][a-z0-9-]*$/);   // 仍然合 schema 的 id 规范
+  });
+
+  it('★ 整库建树整条路上也不重号（真目录夹具；只 20 个目录 —— 强度由上一条纯函数负责，这里只验"这条路真的接上了 uniqueIdGen"）', () => {
     const spec = {};
-    for (let i = 0; i < 300; i++) spec['目录' + i + '/第' + i + '章.md'] = '# 第' + i + '章\n正文\n';
+    for (let i = 0; i < 20; i++) spec['目录' + i + '/第' + i + '章.md'] = '# 第' + i + '章\n正文\n';
     const root = makeTree(spec);
     try {
       const built = di.buildDirImportTree(di.scanImportDir(root, {}), { at: 'T' });
       const ids = [];
       const collect = (n) => { ids.push(n.id); (n.children || []).forEach(collect); };
       built.children.forEach(collect);
-      expect(ids.length).toBe(300 * 3);                // 300 个文件 × (容器 + 文件节点 + 文档标题)
-      expect(new Set(ids).size).toBe(ids.length);      // 一个都不许重
+      expect(ids.length).toBe(20 * 3);             // 20 个文件 × (容器 + 文件节点 + 文档标题)
+      expect(new Set(ids).size).toBe(ids.length);  // 一个都不许重
     } finally { fsx.rmSync(root, { recursive: true, force: true }); }
   });
 });
