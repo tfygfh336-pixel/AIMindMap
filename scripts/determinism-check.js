@@ -117,11 +117,16 @@ const ARTIFACTS = {
   }
 };
 
-/** 冻结的 facts 快照（字段与 `doc-facts.js` 的 `facts()` 同形；值取当前真值的字面量，只用于渲染） */
+/** 冻结的 facts 快照：**故意用假值**（1/2/3… 与 `0.0.0-fixture`）。
+ *  为什么不用真值：真值（命令数 / 用例数 / 断言数）**只准有一处权威**（`docs/VERIFY.md`，
+ *  由 `doc-facts --write` 生成）；把当前真值抄进这里就是**第二份会漂的副本** ✗
+ *  （本工程为同一类病修过多次）。这些值**不参与任何判定**，只用来把渲染函数跑起来 ——
+ *  本条判据问的是"同一个输入两次渲染是否逐字节相同"，输入值是多少无所谓。 */
 const FACTS_FIXTURE = {
-  commands: 55, mcpTools: 45, unitTests: 1034, unitFiles: 55,
-  cliAssertions: 310, smokeAssertions: 204, visionAssertions: 2,
-  version: '0.18.0', configVersion: '0.18.0', lockVersion: '0.18.0', lockRootVersion: '0.18.0'
+  commands: 1, mcpTools: 2, unitTests: 3, unitFiles: 4,
+  cliAssertions: 5, smokeAssertions: 6, visionAssertions: 7,
+  version: '0.0.0-fixture', configVersion: '0.0.0-fixture',
+  lockVersion: '0.0.0-fixture', lockRootVersion: '0.0.0-fixture'
 };
 
 /* ===============================================================
