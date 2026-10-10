@@ -186,6 +186,15 @@ const TOOLS = [
     title: s('可选，项目标题'), dry_run: b('只预览格式/规模/前几个标题与来源指纹，不写盘（建议先跑一次）'),
     force: b('同一个来源**故意**再建一棵（默认拒绝重复导入）')
   }, ['name', 'file']),
+  T('import_dir', '**整库导入：把一个文件夹的结构镜像成一棵树**（每一级子目录 = 一个容器节点，每个文件 = 该容器下的一个文件节点，标题取文件名去扩展名）。默认导 .md/.txt/.docx/.pdf（ext 覆盖）；隐藏文件/.git/node_modules/符号链接/空目录/无读权限/不支持的扩展名**一律跳过并逐类计数**（报告里有"导入了几个 / 跳过几个（按原因分组）"）。上限：合计 64 MB + 文件数 max_files（默认 200），超限**写盘之前**就拒绝并给出路；**一次原子写**，失败不留半个项目。**幂等**：同一个目录重复导 ⇒ 整体拒绝并指名；同一个文件被别的命令导过也拒绝；确实要第二份用 force=true。**建议先 dry_run=true 预览**', {
+    name: s('新项目名'),
+    dir: s('源目录路径（整库导入要的是**目录**，不是单个文件）'),
+    title: s('可选，项目标题（不写就用目录名）'),
+    ext: s('可选，逗号分隔的扩展名列表（默认 md,txt,docx,pdf；只许写真的能导的：md/markdown/txt/text/docx/pdf）'),
+    max_files: s('可选，允许导入的文件数上限（默认 200；超了要明确写大）'),
+    dry_run: b('只出报告、**绝不写盘**（并如实报总量超限与"这个目录已经导过了"）'),
+    force: b('同一个目录/同一个文件**故意**再导一份（默认拒绝重复导入）')
+  }, ['name', 'dir']),
   T('ask', '向内嵌 DSH 提**一次性问题**（stdout 即答案）：不给 id 就是项目级提问；kind=explain|ask；effort 调思考强度；dry_run=true 只打印提示词与命令行、**不调模型**（不烧额度）', {
     project: s('项目名或 JSON 文件路径'), id: s('可选，节点 id（给了就是针对该节点提问）'),
     question: s('问题原文'), kind: s('explain（解释该节点）或 ask（自由问答），默认 explain'),
@@ -449,6 +458,17 @@ function callTool(name, args) {
     case 'import_project': {
       const c = ['import-project', argOf('name'), argOf('file')];
       if (a.title) c.push('--title', argOf('title'));
+      if (a.dry_run) c.push('--dry-run');
+      // 与 CLI 的 --force 同一个开关（默认拒绝重复导入 ⇒ MCP 侧也必须有这条出路 ✓）
+      if (a.force === true) c.push('--force');
+      c.push('--json');
+      return runCli(c);
+    }
+    case 'import_dir': {
+      const c = ['import-dir', argOf('name'), argOf('dir')];
+      if (a.title) c.push('--title', argOf('title'));
+      if (a.ext) c.push('--ext', argOf('ext'));
+      if (a.max_files !== undefined) c.push('--max-files', argOf('max_files'));
       if (a.dry_run) c.push('--dry-run');
       // 与 CLI 的 --force 同一个开关（默认拒绝重复导入 ⇒ MCP 侧也必须有这条出路 ✓）
       if (a.force === true) c.push('--force');

@@ -33,7 +33,7 @@
 | 级别 | 含义 | 命令 |
 |------|------|------|
 | **稳定** | 名称、参数、JSON 字段结构不会在非大版本中变更 | 数据读写类：`read`/`list`/`get`/`search`/`add`/`edit`/`move`/`remove`/`validate`/`validate-all`/`projects`/`stats`/`assets`/`files`/`init` |
-| **演进中** | 可用，但字段可能增补（不影响既有字段） | 树与资源：`backlinks`/`related`/`orphans`/`mentions`/`clone`/`add-root`/`expand-depth`/`theme-layout`/`link`/`unlink`/`links`/`links-prune`/`add-image`/`remove-image`/`add-file`/`remove-file`<br>导入导出：`import-md`/`import-project`/`export-md`/`export-json`/`export-html`/`import-json`<br>关联笔记：`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`<br>AI 问答：`ask`/`ask-apply`<br>界面协作：`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`<br>历史：`changes`/`changelog` |
+| **演进中** | 可用，但字段可能增补（不影响既有字段） | 树与资源：`backlinks`/`related`/`orphans`/`mentions`/`clone`/`add-root`/`expand-depth`/`theme-layout`/`link`/`unlink`/`links`/`links-prune`/`add-image`/`remove-image`/`add-file`/`remove-file`<br>导入导出：`import-md`/`import-project`/`import-dir`/`export-md`/`export-json`/`export-html`/`import-json`<br>关联笔记：`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`<br>AI 问答：`ask`/`ask-apply`<br>界面协作：`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`<br>历史：`changes`/`changelog` |
 | **内部** | 工程维护用，不保证兼容 | `docs-gen`/`release` |
 
 > ⚠️ **本表必须覆盖 `cli/registry.js` 里的全部命令**（每条命令**恰好**落在某一级里）——

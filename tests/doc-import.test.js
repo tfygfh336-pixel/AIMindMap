@@ -331,7 +331,7 @@ describe('doc-import：导入源闸门（原因准确 + 给出路）', () => {
   const pathx = require('node:path');
   const osx = require('node:os');
 
-  it('★ 目录入参：说清"这是目录不是文件" + 如实说 import-dir 未实现 + 给出**可执行**的出路', () => {
+  it('★ 目录入参：说清"这是目录不是文件" + 指向**已实现**的 import-dir + 给出**可执行**的出路', () => {
     const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'mm-dirgate-'));
     try {
       const p = di.describeImportSourceProblem(dir);
@@ -340,7 +340,10 @@ describe('doc-import：导入源闸门（原因准确 + 给出路）', () => {
       expect(p.message).toContain('目录');
       expect(p.message).toContain('不是文件');
       expect(p.message).toContain('import-dir');
-      expect(p.message).toContain('尚未实现');
+      // 批 5 之前这句写的是"尚未实现"；`import-dir` 落地后它必须**指给真实的命令**，
+      // 并且把用法整句写出来（"提示去看某命令"和"能照着敲"是两回事 ✓）
+      expect(p.message).not.toContain('尚未实现');
+      expect(p.message).toContain('node cli/mm-cli.js import-dir');
       // 出路必须是**现在就能跑**的真实命令（不是"敬请期待"）
       expect(p.message).toContain('import-md');
       expect(p.message).toContain('import-project');
@@ -444,3 +447,262 @@ describe('doc-import：体量闸门（上限只有一份常量 + 报文说准原
     expect(di.describeOversizeSource(pathx.join(osx.tmpdir(), 'mm-ghost-' + Date.now() + '.md'))).toBe(null);
   });
 });
+
+/* ============================================================
+ * 整库导入（`import-dir`，批 5）：目录树 → 节点树的映射
+ * ------------------------------------------------------------
+ * 为什么这些必须是单测（而不是只靠集成）：转换与拼装是**纯逻辑 + 文件系统读**，
+ * 集成里一旦红了，分不清是"跳过分类算错""容器拼错层"还是"命令装错了"。
+ * 集成那边另有一条端到端（沙箱临时项目根）：导入后 `read --brief` 的结构、跳过计数、
+ * 幂等拒绝、`--dry-run` 不建项目 —— 两边各管一半，互不替代 ✓
+ *
+ * ⚠️ 本组**只读**：所有探针目录都建在系统临时目录里，用完立刻删（本工程对探针的一贯要求 ✓）
+ * ============================================================ */
+describe('doc-import：整库导入 —— 目录走查、跳过分类、容器拼装', () => {
+  const fsx = require('node:fs');
+  const pathx = require('node:path');
+  const osx = require('node:os');
+
+  /** 造一棵探针目录树（返回根路径）；`spec` 是 `{ 相对路径: 内容 }`，值为 `null` 表示建空目录 */
+  const makeTree = (spec) => {
+    const root = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'mm-dirit-'));
+    Object.keys(spec).forEach((rel) => {
+      const p = pathx.join(root, rel);
+      if (spec[rel] === null) { fsx.mkdirSync(p, { recursive: true }); return; }
+      fsx.mkdirSync(pathx.dirname(p), { recursive: true });
+      fsx.writeFileSync(p, spec[rel], 'utf8');
+    });
+    return root;
+  };
+  /** 把一个节点树压成 `主题(子主题…)` 的字符串 —— 结构断言的**唯一**写法（免得每处各写一套遍历） */
+  const shape = (n) => n.topic + ((n.children || []).length
+    ? '(' + n.children.map(shape).join(' ') + ')' : '');
+
+  it('★ 结构映射：**每一级子目录 = 一个容器节点**、每个文件 = 一个文件节点（标题取文件名去扩展名）', () => {
+    const root = makeTree({
+      'note-a.md': '# 甲的标题\n正文 A\n',
+      '笔记/第一章.md': '# 第一章\n正文一\n',
+      '笔记/深/更深处.txt': '没有可识别标题的一行\n第二行\n'
+    });
+    try {
+      const scan = di.scanImportDir(root, {});
+      expect(scan.counts).toEqual({});                       // 三类干扰项都没有 ⇒ 一个都不许跳
+      expect(scan.files.map((f) => f.rel).sort())
+        .toEqual(['note-a.md', '笔记/深/更深处.txt', '笔记/第一章.md']);   // 排序按码位：'深' < '第'
+      const built = di.buildDirImportTree(scan, { at: 'T' });
+      expect(built.containers).toBe(2);                       // `笔记` + `笔记/深`
+      expect(built.files).toBe(3);
+      // 目录在前、文件在后；目录层级**不许被拍平**（拍平就丢了"镜像文件夹"这个唯一的卖点 ✗）
+      expect(built.children.map(shape)).toEqual([
+        '笔记(深(更深处) 第一章(第一章))',
+        'note-a(甲的标题)'
+      ]);
+      // 文件节点的标题 = 文件名去扩展名（**不是**文档首个标题）—— 与原文件名一一对得上
+      expect(built.entries.map((e) => e.topic).sort()).toEqual(['note-a', '更深处', '第一章']);
+      expect(built.entries.every((e) => /^[0-9a-f]{64}$/.test(e.sha256))).toBe(true);
+    } finally { fsx.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('★ 一个标题都没有的文件**不许丢内容**：退到文件节点自己的 detail（实测缺口：markdownToTree 只在有标题时才收正文）', () => {
+    const root = makeTree({ '无标题.txt': '这行不是标题\n这行也不是\n' });
+    try {
+      const built = di.buildDirImportTree(di.scanImportDir(root, {}), { at: 'T' });
+      expect(built.files).toBe(1);
+      const fileNode = built.children[0];
+      expect(fileNode.children).toEqual([]);
+      expect(typeof fileNode.detail).toBe('string');
+      expect(fileNode.detail).toContain('这行不是标题');       // 内容真的在，不是"导了个空节点"
+      expect(built.skipped).toEqual([]);
+    } finally { fsx.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('★ 跳过逐类计数：隐藏 / 依赖目录 / 空目录 / 无可用文件 / 不支持的扩展名 / 符号链接 —— **每一类都点名**', () => {
+    const root = makeTree({
+      'ok.md': '# 好\n',
+      '.hidden.md': '# 藏\n',
+      '.git/config': 'x',
+      'node_modules/dep.md': '# 依赖\n',
+      '空目录': null,
+      '只有图片/img.png': 'binary',
+      '图.png': 'binary',
+      '笔记.markdown': '# markdown 后缀\n'
+    });
+    try {
+      // 造一个指向自己的 junction（Windows 上不需要管理员权限；Node 把 junction 也报成符号链接）
+      // ⇒ 环**不可能**造成死循环：符号链接一律不跟随 ✓
+      let linked = true;
+      try { fsx.symlinkSync(root, pathx.join(root, '自引用'), 'junction'); }
+      catch (e) { linked = false; }
+      const scan = di.scanImportDir(root, {});
+      const c = scan.counts;
+      expect(c.hidden).toBe(2);                    // .hidden.md + .git
+      expect(c['skip-dir']).toBe(1);               // node_modules
+      expect(c['empty-dir']).toBe(1);              // 空目录
+      expect(c['no-importable']).toBe(1);          // 只有图片/（里面有 png 但都不可导）
+      expect(c['unsupported-ext']).toBe(3);        // 图.png + 只有图片/img.png + 笔记.markdown（默认集合不含 .markdown）
+      if (linked) expect(c.symlink).toBe(1);       // 自引用 junction ⇒ 跳过且**没有死循环**
+      expect(di.skippedTotal(scan)).toBe(scan.skipped.length);
+      // 每一类都必须有"为什么"（报告里要打出来，不许只给个数字）
+      Object.keys(c).forEach((k) => { expect(di.SKIP_LABEL[k]).toBeTruthy(); });
+      // 被 `--ext` 排除、但本来能导的扩展名要单独记 + 给一句出路
+      expect(scan.otherImportableExt).toEqual({ '.markdown': 1 });
+      // 只导 .md/.markdown ⇒ 那个被排除的 .markdown 变成可导（同一个判据，不是两套）
+      const scan2 = di.scanImportDir(root, { ext: di.normalizeExtList('md,markdown').ext });
+      expect(scan2.files.map((f) => f.rel).sort()).toEqual(['ok.md', '笔记.markdown']);
+      expect(scan2.otherImportableExt).toEqual({});
+    } finally { fsx.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('跳过判据是**一个纯函数**（`entrySkipReason`）：六种形态各判一次，报告与走查不会各有一套', () => {
+    expect(di.entrySkipReason({ name: '.git', isDirectory: () => true })).toBe('hidden');
+    expect(di.entrySkipReason({ name: 'node_modules', isDirectory: () => true })).toBe('skip-dir');
+    expect(di.entrySkipReason({ name: 'link', isSymbolicLink: () => true, isDirectory: () => true })).toBe('symlink');
+    expect(di.entrySkipReason({ name: 'a.md', isFile: () => true })).toBe(null);
+    expect(di.entrySkipReason({ name: '笔记', isDirectory: () => true })).toBe(null);
+    expect(di.entrySkipReason({ name: 'dev', isDirectory: () => false, isFile: () => false })).toBe('not-regular-file');
+    expect(di.entrySkipReason({ name: '' })).toBe('unreadable');
+  });
+
+  it('空文件（0 字节）**单独计一类**（不是"静默导出一个空节点"，也不是混进"读失败"）', () => {
+    const root = makeTree({ 'a.md': '# 有\n', 'b.md': '', 'c.txt': '   \n\n' });
+    try {
+      const built = di.buildDirImportTree(di.scanImportDir(root, {}), { at: 'T' });
+      expect(built.files).toBe(1);
+      expect(built.skipped.map((s) => s.rel).sort()).toEqual(['b.md', 'c.txt']);
+      expect(built.skipped.every((s) => s.reason === 'empty-file')).toBe(true);
+    } finally { fsx.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('★ 目录清单指纹：**确定**（两次一样）、对增删改文件敏感、对文件改名敏感', () => {
+    const e1 = [{ rel: 'a.md', sha256: 'a'.repeat(64) }, { rel: 'b/c.md', sha256: 'b'.repeat(64) }];
+    const e2 = [{ rel: 'b/c.md', sha256: 'b'.repeat(64) }, { rel: 'a.md', sha256: 'a'.repeat(64) }];
+    const h = di.dirManifestSha256(e1);
+    expect(h).toMatch(/^[0-9a-f]{64}$/);
+    expect(di.dirManifestSha256(e2)).toBe(h);                       // 顺序无关（先排序再算）
+    expect(di.dirManifestSha256(e1.slice(0, 1))).not.toBe(h);       // 少一个文件 ⇒ 变
+    expect(di.dirManifestSha256([{ rel: 'a.md', sha256: 'c'.repeat(64) }, e1[1]])).not.toBe(h);  // 内容改 ⇒ 变
+    expect(di.dirManifestSha256([{ rel: 'a2.md', sha256: 'a'.repeat(64) }, e1[1]])).not.toBe(h);  // 改名 ⇒ 变
+    // 目录级 origin 与文件级 origin **同一个形状**（schema 只认这一套）
+    const o = di.makeDirOrigin({ dir: 'some/dir', entries: e1, at: 'T' });
+    expect(Object.keys(o).sort()).toEqual(['at', 'kind', 'sha256', 'src', 'tool']);
+    expect(o.kind).toBe('import');
+    expect(o.sha256).toBe(h);
+    expect(o.tool).toBe('import-dir');
+  });
+
+  it('originKey 与 originMatches **同一口径**（索引表按 key 查，逐个比对按 matches 判 ⇒ 两条路必须同结论）', () => {
+    const base = { kind: 'import', src: 'a/b.md', sha256: 'x'.repeat(64), at: 'T' };
+    const cases = [
+      [base, { src: 'a/b.md', sha256: 'x'.repeat(64) }],
+      [base, { src: 'a/other.md', sha256: 'x'.repeat(64) }],
+      [base, { src: 'a/b.md', sha256: 'y'.repeat(64) }],
+      [base, { sha256: 'x'.repeat(64) }],          // 缺 src（不是字符串）
+      [{ src: 'a/b.md' }, base],                   // 缺 sha256
+      [null, base], [base, undefined]
+    ];
+    cases.forEach(([a, b]) => {
+      const byKey = di.originKey(a) !== '' && di.originKey(a) === di.originKey(b);
+      expect(byKey).toBe(di.originMatches(a, b));
+    });
+  });
+
+  it('`--ext`：带不带点都行、去重、非法/导不了的**当场给出理由与支持集**（不静默退成默认）', () => {
+    expect(di.normalizeExtList('md,.txt,md')).toEqual({ ok: true, ext: ['.md', '.txt'] });
+    expect(di.normalizeExtList('.docx')).toEqual({ ok: true, ext: ['.docx'] });
+    const bad = di.normalizeExtList('py, epub');
+    expect(bad.ok).toBe(false);
+    expect(bad.reason).toContain('py');
+    expect(bad.reason).toContain('.md');                 // 支持集整份打出来
+    expect(di.normalizeExtList('').ok).toBe(false);       // 裸写 `--ext`（没给值）
+    expect(di.IMPORT_EXT_DEFAULT).toEqual(['.md', '.txt', '.docx', '.pdf']);
+    // 默认集合必须是"真的导得进来"的子集（否则默认就会把文件全判成读失败）
+    di.IMPORT_EXT_DEFAULT.forEach((e) => expect(di.IMPORTABLE_EXT).toContain(e));
+  });
+
+  it('★ 上限报文：**说准哪个上限 + 给出路**（不是"文件坏了/内存不够"），且体量上限与单文件**共用一份常量**', () => {
+    const many = di.describeTooManyFiles(9999, 200, 'D:/lib');
+    expect(many).toContain('超过整库导入上限');
+    expect(many).toContain('9999');
+    expect(many).toContain('200');
+    expect(many).toContain('没有读它们');
+    expect(many).toContain('--max-files');            // 出路必须可执行
+    expect(many).toContain('--ext md');
+    expect(many).not.toMatch(/坏了|损坏|内存不足/);
+    const big = di.describeDirOversize('D:/lib', (di.MAX_SOURCE_MB + 40) * 1048576, di.MAX_SOURCE_BYTES);
+    expect(big).toContain('超过整库导入上限');
+    expect(big).toContain('没有读它们');
+    expect(big).toMatch(new RegExp(String(di.MAX_SOURCE_MB)));   // 数字来自常量本身，文档不另抄一份
+    expect(big).toContain('import-dir');
+  });
+
+  it('目录里没有可导入的文件 ⇒ 响亮拒绝 + 把逐类计数摆出来 + 给出路（**不建空项目**）', () => {
+    const root = makeTree({ 'a.png': 'x', 'sub': null });
+    try {
+      const scan = di.scanImportDir(root, {});
+      expect(scan.totals.files).toBe(0);
+      const msg = di.describeNoImportableFiles(root, scan);
+      expect(msg).toContain('没有一个可导入的文件');
+      expect(msg).toContain('没有写任何东西');
+      expect(msg).toContain('扩展名不支持');            // 逐类计数摆出来了（不是只说"没有"）
+      expect(msg).toContain('--ext');
+    } finally { fsx.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('`import-dir` 的目录入参闸门：给**文件** ⇒ 说清"这是文件不是目录" + 点名两条单文件命令', () => {
+    const root = makeTree({ 'a.md': '# x\n' });
+    try {
+      const f = pathx.join(root, 'a.md');
+      const p = di.describeImportDirProblem(f);
+      expect(p).not.toBe(null);
+      expect(p.code).toBe('not-dir');
+      expect(p.message).toContain('文件');
+      expect(p.message).toContain('不是目录');
+      expect(p.message).toContain('import-project');
+      expect(p.message).toContain('import-md');
+      expect(di.describeImportDirProblem(root)).toBe(null);           // 目录 ⇒ 放行
+      // 不存在的路径：原因准确（目录不存在），不是权限问题
+      const ghost = di.describeImportDirProblem(pathx.join(osx.tmpdir(), 'mm-none-' + Date.now()));
+      expect(ghost.code).toBe('missing');
+      expect(ghost.message).toContain('目录不存在');
+      expect(ghost.message).not.toMatch(/权限/);
+    } finally { fsx.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('★ 走查与建树**都不写盘**（`--dry-run` 的"绝不写盘"靠的就是这一层：它们只读）', () => {
+    const root = makeTree({ 'a.md': '# 甲\n', 'sub/b.txt': '正文\n' });
+    try {
+      const before = [];
+      const snap = (dir) => fsx.readdirSync(dir, { withFileTypes: true }).forEach((e) => {
+        const p = pathx.join(dir, e.name);
+        before.push(p + '|' + (e.isDirectory() ? 'd' : fsx.readFileSync(p).length + ':' + fsx.statSync(p).mtimeMs));
+        if (e.isDirectory()) snap(p);
+      });
+      snap(root);
+      const scan = di.scanImportDir(root, {});
+      di.buildDirImportTree(scan, { at: 'T' });
+      const after = [];
+      const snap2 = (dir) => fsx.readdirSync(dir, { withFileTypes: true }).forEach((e) => {
+        const p = pathx.join(dir, e.name);
+        after.push(p + '|' + (e.isDirectory() ? 'd' : fsx.readFileSync(p).length + ':' + fsx.statSync(p).mtimeMs));
+        if (e.isDirectory()) snap2(p);
+      });
+      snap2(root);
+      expect(after).toEqual(before);          // 条目、字节数、mtime 全不变 ⇒ 没写过任何东西
+    } finally { fsx.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('★ 大目录的 id **不许重号**（中文主题会被 `idGen` 压成同一个 base ⇒ 不加兜底就会撞 id、整棵树校验失败）', () => {
+    const spec = {};
+    for (let i = 0; i < 300; i++) spec['目录' + i + '/第' + i + '章.md'] = '# 第' + i + '章\n正文\n';
+    const root = makeTree(spec);
+    try {
+      const built = di.buildDirImportTree(di.scanImportDir(root, {}), { at: 'T' });
+      const ids = [];
+      const collect = (n) => { ids.push(n.id); (n.children || []).forEach(collect); };
+      built.children.forEach(collect);
+      expect(ids.length).toBe(300 * 3);                // 300 个文件 × (容器 + 文件节点 + 文档标题)
+      expect(new Set(ids).size).toBe(ids.length);      // 一个都不许重
+    } finally { fsx.rmSync(root, { recursive: true, force: true }); }
+  });
+});
+

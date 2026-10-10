@@ -43,6 +43,7 @@
 | `ask-apply` | ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json] |
 | `import-md` | import-md <项目> <md文件> [--parent id] [--force] |
 | `import-project` | import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] [--force] |
+| `import-dir` | import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--dry-run] [--json] [--force] |
 | `export-md` | export-md <项目> <输出目录> [--format heading|list] [--with-detail] |
 | `export-json` | export-json <项目> <输出.json> |
 | `export-html` | export-html <项目> <输出目录> |
@@ -245,6 +246,14 @@ node cli/mm-cli.js import-md <项目> <md文件> [--parent id] [--force]
 
 ```
 node cli/mm-cli.js import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] [--force]
+```
+
+### import-dir
+
+批 5：**整库导入 —— 把一个文件夹的结构镜像成一棵树**（每一级子目录 = 一个容器节点，每个文件 = 该容器下的一个文件节点，标题取**文件名去扩展名**，文档自己的标题在它下面）。默认导 `.md/.txt/.docx/.pdf`（`--ext` 覆盖，只许写真的能导的扩展名）；隐藏文件/`.git`/`node_modules`/符号链接/空目录/无读权限/不支持的扩展名**一律跳过并逐类计数**（报告给"导入了 N 个文件 / 跳过 M 个（按原因分组）"，**不许静默**）；上限：合计 `MAX_SOURCE_MB`（与单文件闸门共用一份常量）+ 文件数 `--max-files`（默认 200），**超限在写盘之前响亮拒绝并给出路**；**一次原子写**，失败不留半个项目；`--dry-run` 只出报告、绝不写盘（并如实报超限与"这个目录已经导过了"）；**幂等**：项目根记**目录清单指纹**（同一个目录重复导 ⇒ **整体拒绝**并指名）、每个文件节点记自己的来源指纹（同一个文件被别的命令导过也拒绝）—— 确实要第二份就加 `--force`
+
+```
+node cli/mm-cli.js import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--dry-run] [--json] [--force]
 ```
 
 ### export-md

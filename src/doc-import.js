@@ -18,6 +18,10 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
+// 整库导入（`import-dir`）要"文件 → 提纲 → 子树"，而**建树只有一处实现**（`markdown.js`）——
+// 本文件只做目录走查与容器拼装，绝不另写一套解析/建树 ✗（依赖方向 src → src，无环 ✓）
+const markdown = require('./markdown.js');
+const convert = require('./convert.js');
 
 /** 工程根（`src/` 的上一层）。origin.src 记的是**相对它**的路径 ⇒ 与 cwd 无关、可复现 ✓ */
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -30,35 +34,42 @@ const REPO_ROOT = path.resolve(__dirname, '..');
  *
  * 所以这里统一成"原因准确 + 带出路"的报文，两条命令共用同一份实现
  * （各写一套必然漂移 —— 本工程反复治的就是"同一件事两处表达"）。
- * ⚠️ 本文件**不实现** `import-dir`（整库导入是另一件事，尚未批准 ✗）：只如实说"尚未实现" + 给出
- *    现在就能走的逐文件流程。把"没做"说成"做了"比不做更坏。
+ * `import-dir`（整库导入）**已实现**（批 5）⇒ 目录报文现在指的就是它 ✓（不再是"尚未实现"）。
  *
  * 返回 `null` = 这个源可以用；否则返回 `{ code, message }`（message 已含出路，调用方直接 ctx.error） */
+/** `statSync` 失败的**归类**（纯函数：只把 errno 翻成"原因准确 + 带出路"的一句话）。
+ *  `noun` 只影响"不存在"那一条（'文件不存在' / '目录不存在'）—— 其余几条本来就是路径级的原因。 */
+function classifyStatFailure(p, e, noun) {
+  const c = e && e.code;
+  if (c === 'ENOENT') {
+    return { code: 'missing', message: (noun || '文件') + '不存在: ' + p
+      + '（相对路径按**当前工作目录**解析，不是按工程根；也可以用绝对路径）' };
+  }
+  if (c === 'EACCES' || c === 'EPERM') {
+    return { code: 'denied', message: '没有权限读取这个路径: ' + p
+      + '（路径本身存在，是访问被拒 —— 检查文件权限，或换一个可读的位置再试）' };
+  }
+  if (c === 'ENOTDIR') {
+    return { code: 'notdir', message: '路径中间有一段不是目录: ' + p
+      + '（路经里某个"目录"其实是个文件 —— 逐段核对）' };
+  }
+  if (c === 'ELOOP') {
+    return { code: 'loop', message: '路径里的符号链接成环，读不了: ' + p
+      + '（换一个没有自引用链接的路径）' };
+  }
+  return { code: 'stat-failed', message: '读不了这个路径（' + (c || (e && e.message) || '未说明原因') + '）: ' + p };
+}
+
 function describeImportSourceProblem(filePath) {
   const p = String(filePath);
   let st = null;
   try {
     st = fs.statSync(p);
   } catch (e) {
-    const c = e && e.code;
-    // 每条都**分开说清**：`ENOENT` 是"没这个路径"，别让它和"没权限"共用一个含糊的文案
-    if (c === 'ENOENT') {
-      return { code: 'missing', message: '文件不存在: ' + p
-        + '（相对路径按**当前工作目录**解析，不是按工程根；也可以用绝对路径）' };
-    }
-    if (c === 'EACCES' || c === 'EPERM') {
-      return { code: 'denied', message: '没有权限读取这个路径: ' + p
-        + '（路径本身存在，是访问被拒 —— 检查文件权限，或换一个可读的位置再试）' };
-    }
-    if (c === 'ENOTDIR') {
-      return { code: 'notdir', message: '路径中间有一段不是目录: ' + p
-        + '（路经里某个"目录"其实是个文件 —— 逐段核对）' };
-    }
-    if (c === 'ELOOP') {
-      return { code: 'loop', message: '路径里的符号链接成环，读不了: ' + p
-        + '（换一个没有自引用链接的路径）' };
-    }
-    return { code: 'stat-failed', message: '读不了这个路径（' + (c || (e && e.message) || '未说明原因') + '）: ' + p };
+    // 每条都**分开说清**：`ENOENT` 是"没这个路径"，别让它和"没权限"共用一个含糊的文案。
+    // ⚠️ 归类只有这一处实现：`import-dir` 的目录入参闸门（describeImportDirProblem）走同一个函数，
+    //   只把名词换掉（'文件' / '目录'）—— 两条路各写一份 errno 映射必然漂移 ✗
+    return classifyStatFailure(p, e, '文件');
   }
 
   if (st.isDirectory()) return { code: 'is-dir', message: directoryMessage(p) };
@@ -123,16 +134,45 @@ function describeOversizeSize(sizeBytes, filePath) {
   };
 }
 
-/** 目录入参的报文：点明"这是目录不是文件" + 如实说 `import-dir` 未实现 + 给出**现在就能走**的逐文件流程 */
+/** 目录入参的报文（`import-project` / `import-md` 这两条**单文件**命令拿到目录时）：
+ *  点明"这是目录不是文件" + **指出真正要做这件事的命令**（`import-dir`，批 5 已实现 ✓）
+ *  + 给出现在就能走的逐文件流程。 */
 function directoryMessage(p) {
   return '这是一个**目录**，不是文件: ' + p
-    + '。当前只支持**单文件**导入（.md / .txt / .docx / .pdf）；整库导入（`import-dir`）**尚未实现** ✗。'
-    + '出路（现在就能做，逐文件导入）：'
-    + '① 合成一个项目：node cli/mm-cli.js import-md <项目> "<目录>\\某文件.md" --parent <父节点id>；'
-    + '② 一个文件一个项目：node cli/mm-cli.js import-project <新项目名> "<目录>\\某文件.md"；'
-    + '③ PowerShell 批量（先列一遍再逐个导）：Get-ChildItem "<目录>" -Filter *.md | ForEach-Object '
-    + '{ node cli/mm-cli.js import-md <项目> $_.FullName --parent root }'
+    + '。**单文件**导入（一个文件 → 一棵树）用 `import-project` / `import-md`；'
+    + '要把**整个文件夹的结构**镜像成一棵树，用**整库导入** `import-dir` ✓。'
+    + '出路（三选一）：'
+    + '① 整库导入（推荐，先预览再导）：node cli/mm-cli.js import-dir <新项目名> "' + p + '" --dry-run；'
+    + '② 合成一个项目（逐文件追加）：node cli/mm-cli.js import-md <项目> "<目录>\\某文件.md" --parent <父节点id>；'
+    + '③ 一个文件一个项目：node cli/mm-cli.js import-project <新项目名> "<目录>\\某文件.md"'
     + '（重复导入会被来源指纹挡住 ⇒ 逐文件跑可以随时中断、再跑不会导重 ✓）';
+}
+
+/** `import-dir` 的目录入参闸门：**必须是目录**（文件 ⇒ 指出单文件导入的那两条命令 + 给出路）。
+ *  与 `describeImportSourceProblem` 共用 stat 归类（见 `classifyStatFailure`），
+ *  区别只有两处口径：这里拒绝的是"不是目录"，那边拒绝的是"是目录"。 */
+function describeImportDirProblem(dir) {
+  const p = String(dir);
+  let st = null;
+  try { st = fs.statSync(p); } catch (e) { return classifyStatFailure(p, e, '目录'); }
+  if (st.isDirectory()) {
+    // stat 成功 ≠ 能读（Windows 的 ACL 要到 readdir 那一刻才报）；这里真探一次
+    try { fs.accessSync(p, fs.constants.R_OK); }
+    catch (e) {
+      return { code: 'denied', message: '这个目录存在，但没有读权限: ' + p
+        + '（用 icacls / 目录属性检查权限，或复制到可读位置再导入）' };
+    }
+    return null;
+  }
+  if (st.isFile()) {
+    return { code: 'not-dir', message: '这是一个**文件**，不是目录: ' + p
+      + '。整库导入（`import-dir`）要的是一个**目录**：它会把目录结构镜像成一棵树。'
+      + '出路（二选一）：① 单个文件建新项目：node cli/mm-cli.js import-project <新项目名> "' + p + '"；'
+      + '② 追加到一个已有项目：node cli/mm-cli.js import-md <项目> "' + p + '" --parent <父节点id>'
+      + '（复制文件再导入也行，但那样会多出一份来源不同的指纹记录 ⇒ 同名文件会被当成两份来源）' };
+  }
+  return { code: 'not-regular-file', message: '这不是一个普通文件或目录（可能是设备/命名管道/特殊节点）: ' + p
+    + '；整库导入只接受**普通目录**' };
 }
 
 /* ================= ⓪′ 来源指纹 origin：批量导入**幂等**的前提 =================
@@ -188,11 +228,35 @@ function makeOrigin(o) {
 
 /** 两个 origin 是否**指向同一份来源**：`src` 与 `sha256` **都要**相同。
  *  只比 sha256：两份内容相同但确实不同的文件会被误判成"导过了"（那是另一份来源 ✗）；
- *  只比 src：文件被改过就判不出来（正是最该拦住的那种重复 ✗）。故两个一起比。 */
+ *  只比 src：文件被改过就判不出来（正是最该拦住的那种重复 ✗）。故两个一起比。
+ *  实现只用 `originKey`（下面那个）—— 判据**只有这一处**，索引与逐个比对不会漂移 ✓ */
 function originMatches(a, b) {
-  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
-  if (typeof a.sha256 !== 'string' || !a.sha256) return false;
-  return a.sha256 === b.sha256 && typeof a.src === 'string' && a.src === b.src;
+  const k = originKey(a);
+  return k !== '' && k === originKey(b);
+}
+
+/** origin → **可当 Map 键**的字符串（`src` + NUL + `sha256`）。口径与 `originMatches` 完全一致：
+ *  缺 sha256 / src 不是字符串 ⇒ 返回 `''`（**永远不匹配**，与逐条比对的结论一样）。
+ *  为什么要有它：整库导入要按**文件粒度**逐个查全库（几百个文件 × 全部节点），
+ *  每个文件各扫一遍全库是 O(文件数 × 全库规模) ⇒ 先把全库收敛成一张索引表，一次扫盘 ✓ */
+function originKey(o) {
+  if (!o || typeof o !== 'object') return '';
+  if (typeof o.sha256 !== 'string' || !o.sha256) return '';
+  if (typeof o.src !== 'string') return '';
+  return o.src + '\u0000' + o.sha256;
+}
+
+/** **目录级** origin（整库导入的项目根用）：`src` = 目录的来源引用，`sha256` = **目录清单指纹**
+ *  （哪些文件、每个内容是什么，见 `dirManifestSha256`）。与 `makeOrigin` 同一个形状、同一份规范 ✓
+ *  —— 写入方（CLI）不许自己拼 origin，所以这里给一个专门的入口，而不是让它去改 makeOrigin 的字段。 */
+function makeDirOrigin(o) {
+  return {
+    kind: 'import',
+    src: (o && o.dir) ? sourceRef(o.dir) : '',
+    sha256: dirManifestSha256((o && o.entries) || []),
+    at: (o && o.at) || new Date().toISOString(),
+    tool: (o && o.tool) || 'import-dir'
+  };
 }
 
 /** 一句人话（报错与 --dry-run 都用它，不各写一套） */
@@ -466,11 +530,356 @@ function pdfOutlineViaHelper(filePath) {
   if (!parsed.ok) throw new Error(parsed.error || '读 PDF 失败（未说明原因）');
   return { md: parsed.md, pages: parsed.pages, pdfSource: parsed.source === 'text' ? 'text' : 'outline', notes: parsed.notes || [] };
 }
+/* ================= ⓪‴ 整库导入（`import-dir`）：目录 → 一棵容器树 =================
+ * 目标：把**文件夹结构**镜像成一个项目 —— **每一级子目录 = 一个容器节点**，每个文件 = 该容器下的一个子树。
+ * 三条取舍（都写在这里，改的人不必去翻提交信息）：
+ *   ① **每一级目录都建容器节点**（不是"只取第一层"）：镜像的语义就是"树与文件夹同构"；
+ *      只取一层的话，嵌套目录要么被拍平（结构信息丢失）、要么整条丢掉，两种都与"镜像"相反。
+ *   ② **文件节点标题取文件名（去扩展名）**，不取文档首个标题：文件名本身是文件夹结构的一部分
+ *      （两个目录下的 `第1章.md` 取首个标题会得到两个同名节点，而"这是哪个文件"没人答得出来），
+ *      且它与 `origin.src` 同构 ⇒ "这棵树是从哪个文件来的"一眼可对。文档自己的标题**不丢**：
+ *      它照样是文件节点的第一层子节点（正文走同一条 `markdownToTree` 入口）。
+ *   ③ **文件节点自己带 `origin`**（文件级幂等：同一个文件被别的命令导过也认得出），
+ *      项目根再带一份**目录清单指纹**（整库级幂等：整个目录重复导 ⇒ 整体拒绝并指名）。
+ *
+ * ⚠️ 复用**唯一入口**，本段**不做任何格式解析**：文件 → 提纲一律 `docToOutline`，
+ *    提纲 → 子树一律 `markdown.markdownToTree`。本段只做"目录走查 + 跳过分类 + 容器拼装"。
+ */
+
+/** 默认导入的扩展名。**只有这一份**：CLI 的默认值、`--ext` 的校验集、扫描判据都从这里取 */
+const IMPORT_EXT_DEFAULT = ['.md', '.txt', '.docx', '.pdf'];
+/** **真的导得进来**的扩展名（= `detectFormat` 认识的那几个）。`--ext` 只许在这些里选 ——
+ *  否则 `.py` 会被接受、然后每个文件都落到"读/转换失败"，等于把"不支持"伪装成"这个文件坏了" ✗ */
+const IMPORTABLE_EXT = ['.md', '.markdown', '.txt', '.text', '.docx', '.pdf'];
+/** 一律跳过的目录名：依赖/构建缓存目录（里面几乎不可能是笔记）。
+ *  隐藏目录（`.git`/`.svn`/`.obsidian`…）由"名字以 `.` 开头"那条规则统一覆盖，不在这里列 ✓ */
+const SKIP_DIR_NAMES = ['node_modules', '__pycache__', 'bower_components'];
+/** 整库导入的默认**文件数**上限（`--max-files` 可覆盖）。
+ *  为什么除了体积还要管条数：整库导入是**一次原子写**（整棵树先在内存里建好再落盘），
+ *  而且导完 200 个文件之后人已经很难核对结果了。取 200 —— 一份个人笔记库的常见量级过得去，
+ *  再多就明确要求调用方**自己说**要多少（`--max-files`），而不是我们偷偷放宽 ✗。 */
+const MAX_IMPORT_FILES_DEFAULT = 200;
+
+/** 跳过原因 → 一句人话（报告按它分组打印；**每一类都必须能说出"为什么"**，不许静默 ✗） */
+const SKIP_LABEL = {
+  hidden: '隐藏（名字以 . 开头：.git / .obsidian / .DS_Store 这类）',
+  'skip-dir': '依赖或缓存目录（node_modules 这类，不是笔记）',
+  symlink: '符号链接（**不跟随** ⇒ 指成的环不可能造成死循环；要这份内容请导它指向的真实目录）',
+  unreadable: '没有读权限（或读目录/文件时报错）',
+  'unsupported-ext': '扩展名不在本次导入范围内（用 --ext 放开）',
+  'empty-dir': '空目录（一个条目都没有）',
+  'no-importable': '目录里（含所有子目录）没有一个可导入的文件',
+  'empty-file': '空文件（0 字节或没有任何可导入的内容）',
+  'read-failed': '读/转换失败（原因见条目）',
+  'not-regular-file': '不是普通文件（设备/命名管道/特殊节点）'
+};
+
+/** 跳过原因 → 报告里的短名（表格用） */
+const SKIP_SHORT = {
+  hidden: '隐藏', 'skip-dir': '依赖目录', symlink: '符号链接', unreadable: '无读权限',
+  'unsupported-ext': '扩展名不支持', 'empty-dir': '空目录', 'no-importable': '无可导入文件',
+  'empty-file': '空文件', 'read-failed': '读/转换失败', 'not-regular-file': '非普通文件'
+};
+
+/** **一个目录项要不要跳过**（纯函数：只看名字与形态，不碰磁盘）—— 返回 `null` = 收下它继续走。
+ *  跳过判据**只有这一处**：目录走查、报告分组、单测都调它 ⇒ 不会出现"走查跳过一类、报告说另一类"。
+ *  @param {{name:string, isDirectory?:Function, isFile?:Function, isSymbolicLink?:Function}} e
+ *         形如 `fs.Dirent`（给它普通对象也能判 —— 所以判据本身可单测 ✓） */
+function entrySkipReason(e) {
+  const name = String((e && e.name) || '');
+  if (!name) return 'unreadable';
+  if (name.charAt(0) === '.') return 'hidden';                       // .git / .obsidian / .DS_Store …
+  if (e.isSymbolicLink && e.isSymbolicLink()) return 'symlink';      // **不跟随** ⇒ 环不可能存在
+  if (e.isDirectory && e.isDirectory()) {
+    return SKIP_DIR_NAMES.indexOf(name.toLowerCase()) >= 0 ? 'skip-dir' : null;
+  }
+  if (e.isFile && e.isFile()) return null;
+  return 'not-regular-file';
+}
+
+/** `--ext` 的解析与校验（纯函数）：每项带不带点都行；不认识/不支持的**当场报错**并列出能导的集合 */
+function normalizeExtList(raw) {
+  const parts = String(raw === undefined || raw === null ? '' : raw)
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  if (!parts.length) {
+    return { ok: false, reason: '需要一个逗号分隔的扩展名列表（如 `--ext md,txt`），收到 '
+      + JSON.stringify(raw) + '。能导的扩展名：' + IMPORTABLE_EXT.join(' / ') };
+  }
+  const out = [], bad = [];
+  parts.forEach((p) => {
+    const e = (p.charAt(0) === '.' ? p : '.' + p).toLowerCase();
+    if (IMPORTABLE_EXT.indexOf(e) < 0) { bad.push(p); return; }
+    if (out.indexOf(e) < 0) out.push(e);
+  });
+  if (bad.length) {
+    // 原因准确 + 给出路：把"导不了"与"这个文件坏了"分开（`.py` 不是坏文件，是格式不在支持集里）
+    return { ok: false, reason: '这些扩展名现在**导不进来**：' + bad.join(' / ')
+      + '。能导的只有 ' + IMPORTABLE_EXT.join(' / ')
+      + '（`.doc/.epub/.rtf/.html` 这类要先转成 md/txt，或把内容贴给内置 AI 让它整理后导入）' };
+  }
+  return { ok: true, ext: out };
+}
+
+/** 文件数超限的报文：说准原因 + 给出路（**在写盘之前**；与体量闸门同一形状） */
+function describeTooManyFiles(count, maxFiles, dir) {
+  return '这个目录里有 ' + count + ' 个可导入文件，超过整库导入上限 ' + maxFiles + ' 个: ' + String(dir)
+    + '。**没有读它们**（整库导入要把整棵树先建在内存里、再一次性原子写 ⇒ 一次导入必须有上界；'
+    + '而且一次导这么多之后人已经很难核对结果了 ✗）。出路（三选一）：'
+    + '① 明确接受这个量：加 `--max-files ' + count + '`；'
+    + '② 分批：按子目录分别导（`import-dir <新项目名> "<目录>\\某个子目录>"`）；'
+    + '③ 缩小范围：`--ext md`（先只导文本，docx/pdf 另批处理）或把不需要的部分移出这个目录。';
+}
+
+/** 目录总量超限的报文（同一份 `MAX_SOURCE_MB`：与单文件闸门共用一处常量 ✓） */
+function describeDirOversize(dir, totalBytes, limitBytes) {
+  const sizeMB = Math.round(Number(totalBytes || 0) / 1048576);
+  const limitMB = Math.round(Number(limitBytes || 0) / 1048576);
+  return '这个目录里的可导入文件合计约 ' + sizeMB + ' MB，超过整库导入上限 ' + limitMB + ' MB: ' + String(dir)
+    + '。**没有读它们**（整库导入要先把整棵树建在内存里再一次性写盘 ⇒ 总有一个瞬间它全在内存里；'
+    + '硬读进来正是"命令莫名退出、什么都没打印"的成因 ✗）。出路（三选一）：'
+    + '① 分批：按子目录分别导（`import-dir <新项目名> "<目录>\\某个子目录>"`）；'
+    + '② 缩小范围：`--ext md`（先只导文本，docx/pdf 这类大文件另批处理）；'
+    + '③ 先转成体量小得多的格式（docx/pdf 是压缩/分页的），或把不需要的部分移出这个目录。';
+}
+
+/**
+ * 扫一个目录（**只读**：不转换、不写盘、不建树）⇒ 清单 + 逐类跳过计数。
+ * 为什么先把"扫"和"建"分开：体量/条数闸门与 `--dry-run` 的预览都只需要这份清单，
+ * 而"读全部文件、真的去解析"是另一件更贵、且可能在闸门处被拒掉的事 ✓
+ *
+ * @param {string} dir 源目录
+ * @param {{ext?:string[]}} [opts] `ext` 是要导入的扩展名集合（元素形如 `.md`）
+ * @returns {{root, ext, tree, files, containers, skipped, counts, otherImportableExt, totals}}
+ */
+function scanImportDir(dir, opts) {
+  const o = opts || {};
+  const ext = (Array.isArray(o.ext) && o.ext.length) ? o.ext.slice() : IMPORT_EXT_DEFAULT.slice();
+  const rootAbs = path.resolve(String(dir));
+  const out = {
+    root: rootAbs,
+    ext: ext,
+    // 保留的层级（只含"最终真的有文件"的目录）；`tree` 本身是**合成的根**、不建节点
+    tree: { name: path.basename(rootAbs) || rootAbs, rel: '', dirs: [], files: [] },
+    files: [],
+    containers: 0,
+    skipped: [],
+    counts: {},
+    // 被 `--ext` 排除、但**本来是能导的**扩展名计数（报告里给一句"想一起导就加 --ext …"）
+    otherImportableExt: {},
+    totals: { files: 0, bytes: 0 }
+  };
+  const push = (rel, reason, message) => {
+    out.skipped.push({ rel: rel, reason: reason, label: SKIP_SHORT[reason] || reason, message: message || null });
+    out.counts[reason] = (out.counts[reason] || 0) + 1;
+  };
+
+  /** 递归走查。返回 'kept' | 'empty' | 'unreadable' | 'nothing' —— 由调用方决定怎么计数 ✓ */
+  const walk = (absDir, relDir, node) => {
+    let entries;
+    try { entries = fs.readdirSync(absDir, { withFileTypes: true }); }
+    catch (e) { return { code: 'unreadable', detail: (e && e.code) || (e && e.message) || '未说明原因' }; }
+    if (!entries.length) return { code: 'empty' };
+    // 排序：同输入两次产出**逐字节相同**的树（readdir 的顺序不保证稳定）✓
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+    for (const e of entries) {
+      const rel = (relDir ? relDir + '/' : '') + e.name;
+      const abs = path.join(absDir, e.name);
+      // 跳过判据只有一处（`entrySkipReason`）：走查与报告不会各有一套"什么该跳" ✓
+      const why = entrySkipReason(e);
+      if (why === 'hidden' || why === 'symlink' || why === 'not-regular-file') { push(rel, why); continue; }
+      if (why === 'skip-dir') { push(rel, why); continue; }
+      if (e.isDirectory()) {
+        const child = { name: e.name, rel: rel, dirs: [], files: [] };
+        const r = walk(abs, rel, child);
+        if (r.code === 'kept') { node.dirs.push(child); continue; }
+        if (r.code === 'empty') push(rel, 'empty-dir', null);
+        else if (r.code === 'unreadable') push(rel, 'unreadable', '读不了这个目录：' + r.detail);
+        else push(rel, 'no-importable', null);
+        continue;
+      }
+      if (why) { push(rel, why); continue; }
+      if (!e.isFile()) { push(rel, 'not-regular-file'); continue; }
+      const extName = path.extname(e.name).toLowerCase();
+      if (ext.indexOf(extName) < 0) {
+        push(rel, 'unsupported-ext', extName ? ('扩展名 ' + extName) : '没有扩展名');
+        // 可导但被本次 `--ext` 排除 ⇒ 单独记一笔（报告里告诉它怎么放开）
+        if (IMPORTABLE_EXT.indexOf(extName) >= 0) {
+          out.otherImportableExt[extName] = (out.otherImportableExt[extName] || 0) + 1;
+        }
+        continue;
+      }
+      let st = null;
+      try { st = fs.statSync(abs); } catch (err) { push(rel, 'unreadable', '取不到大小：' + ((err && err.code) || '')); continue; }
+      // stat 成功 ≠ 能打开（Windows 的 ACL 要到 open 那一刻才报）⇒ 真探一次可读性
+      try { fs.accessSync(abs, fs.constants.R_OK); }
+      catch (err) { push(rel, 'unreadable', '没有读权限'); continue; }
+      node.files.push({ name: e.name, rel: rel, abs: abs, ext: extName, size: st.size });
+    }
+    return { code: (node.dirs.length || node.files.length) ? 'kept' : 'nothing' };
+  };
+
+  const r = walk(rootAbs, '', out.tree);
+  /* 根目录自己要不要计一笔？**只计"真的读不了/真的空"这两种**：
+   *   · `nothing`（有条目但一个都没导成）时**不再补一笔** —— 那些条目已经各计一笔了，
+   *     再补一笔根目录等于同一次跳过数两遍（`counts` 是"逐条路径的跳过原因"，不是"原因种类"）✗；
+   *   · `empty`（根里一个条目都没有）与 `unreadable` 则必须计 —— 否则报告会说"跳过 0 项"而
+   *     真实情况是"这个目录读不了"（那正是本工程最忌的"看不出来"✗）。 */
+  if (r.code === 'empty') push('.', 'empty-dir', null);
+  else if (r.code === 'unreadable') push('.', 'unreadable', '读不了这个目录：' + r.detail);
+
+  // 扁平成一份清单（体量/条数闸门、清单指纹、报告都用它）+ 数容器节点
+  const flatten = (node) => {
+    out.containers += node.dirs.length;
+    node.files.forEach((f) => { out.files.push(f); out.totals.files++; out.totals.bytes += (f.size || 0); });
+    node.dirs.forEach(flatten);
+  };
+  flatten(out.tree);
+  return out;
+}
+
+/** **目录清单指纹**：把"这个目录里导了哪些文件、每个内容是什么"收敛成一个 sha256。
+ *  算法（要求**确定**：同输入必得同一个值）：按相对路径排序，取 `相对路径 sha256` 每行一条，
+ *  交给 `outlineSha256` 算 —— **不另写一套哈希**（规范化/哈希只有那一处实现 ✓）。
+ *  ⚠️ 用的是**相对源目录**的路径而不是 `origin.src`（后者含绝对位置）：指纹要回答的是
+ *  "这份目录内容变没变"，位置由 origin.src 自己承担 ✓ */
+function dirManifestSha256(entries) {
+  const lines = (entries || [])
+    .map((e) => String(e.rel) + ' ' + String(e.sha256))
+    .sort();
+  return outlineSha256(lines.join('\n'));
+}
+
+/** **不重号**的 id 生成器（`markdown.idGen` 的薄包装，不另立一套 id 方案 ✓）。
+ *  为什么整库导入必须有它：`idGen` 是 `base + 时间 + 4 位随机`，而它把**非 ASCII 的主题**整段
+ *  压成 `n`（`[^a-z0-9]+` 全抹掉）⇒ 中文笔记里成百上千个节点都会落到同一个 `base`，
+ *  只剩时间与 4 位随机在区分。同一毫秒里生成的节点一多就有生日碰撞，而 schema **判"全树 id 唯一"**
+ *  ⇒ 一次整库导入会以"id 重复"整体失败（而人完全看不出为什么）。这里加一个"见过就再摇一次"的
+ *  兜底，比事后让使用者面对一个校验错更划算。 */
+function uniqueIdGen() {
+  const seen = new Set();
+  return function (seed) {
+    let id = markdown.idGen(seed);
+    while (seen.has(id)) id = markdown.idGen(seed);
+    seen.add(id);
+    return id;
+  };
+}
+
+/**
+ * 目录 → 容器树（**建树唯一入口**：每个文件都走 `docToOutline`，每棵子树都由 `markdownToTree` 建）。
+ * 整棵树在**内存里**建好再交给调用方一次性落盘 ⇒ 中途失败不会留下半个项目 ✓
+ *
+ * @param {object} scan `scanImportDir` 的结果
+ * @param {{genId?:Function, at?:string, tool?:string}} [opts]
+ * @returns {{children:Array, nodes:number, containers:number, files:number, entries:Array, skipped:Array}}
+ *   `entries` 每项 = `{rel, name, id, topic, sha256, origin, format}`（清单指纹与报告都用它）；
+ *   `skipped` = **转换阶段**新产生的跳过（`read-failed` / `empty-file`），调用方与扫描阶段的合并计数。
+ */
+function buildDirImportTree(scan, opts) {
+  const o = opts || {};
+  const genId = o.genId || uniqueIdGen();
+  const at = o.at || new Date().toISOString();
+  const tool = o.tool || 'import-dir';
+  const built = { children: [], nodes: 0, containers: 0, files: 0, entries: [], skipped: [] };
+
+  const walk = (node, depth) => {
+    const children = [];
+    // 目录在前、文件在后（与资源管理器同序），两层各自按名字排 ⇒ 结构稳定可复现 ✓
+    node.dirs.forEach((sub) => {
+      const container = { id: genId(sub.name), topic: sub.name, expanded: depth + 1 <= 2, children: [] };
+      container.children = walk(sub, depth + 1);
+      // 子目录里所有文件都在转换阶段失败了 ⇒ **不画空容器**（那些失败已逐条计入 read-failed ✓）
+      if (!container.children.length) return;
+      built.nodes++; built.containers++;
+      children.push(container);
+    });
+    node.files.forEach((f) => {
+      let conv = null;
+      try { conv = docToOutline(f.abs); }
+      catch (e) {
+        built.skipped.push({ rel: f.rel, reason: 'read-failed', label: SKIP_SHORT['read-failed'],
+          message: String((e && e.message) || e) });
+        return;
+      }
+      const md = normalizeOutline(conv.md);   // docToOutline 已经规范化过；这里再过一次是**同一份**函数（幂等）
+      const topic = f.name.replace(/\.[^.]+$/, '');
+      const fileNode = {
+        id: genId(topic), topic: topic, expanded: depth + 1 <= 2, children: [],
+        // 每个文件节点都带来源指纹：这样"这份文件导过没有"在**文件**一级也答得出来
+        //（别的命令把同一个文件导到别处时，闸门也认得出）
+        origin: makeOrigin({ file: f.abs, md: md, at: at, tool: tool })
+      };
+      const sub = markdown.markdownToTree(md, fileNode.id, genId);
+      fileNode.children = (sub.data && sub.data.children) || [];
+      /* ⚠️ 兜底：**没有一个标题**的提纲（纯 .txt 笔记最常见）在 `markdownToTree` 里会**全部落空** ——
+       * 它只在"当前节点"存在时才接收正文（`if (!cur) continue`），没有标题就等于没有任何节点。
+       * 直接把这份文件丢掉 = **静默的数据丢失** ✗。所以退一步：把整份正文放进**文件节点自己的
+       * detail**（HTML 用 `convert.markdownToHtml` 转 —— 与 `markdownToTree` 内部**同一个**转换，
+       * 不另写解析 ✓）。真的什么都没有（0 字节/纯空白）才计成"空文件"跳过。 */
+      if (!fileNode.children.length) {
+        const html = convert.markdownToHtml(md);
+        if (!html) {
+          built.skipped.push({ rel: f.rel, reason: 'empty-file', label: SKIP_SHORT['empty-file'], message: null });
+          return;
+        }
+        fileNode.detail = html;
+      }
+      built.nodes += 1 + (sub.addedCount || 0);
+      built.files++;
+      built.entries.push({
+        rel: f.rel, name: f.name, id: fileNode.id, topic: topic,
+        sha256: fileNode.origin.sha256, origin: fileNode.origin, format: conv.format
+      });
+      children.push(fileNode);
+    });
+    return children;
+  };
+
+  built.children = walk(scan.tree, 0);
+  return built;
+}
+
+/** "这个目录里没有可导入的文件"（空目录 / 全被跳过 / `--ext` 把可导的都排除了）——
+ *  响亮拒绝 + **把逐类计数摆出来** + 给出路。绝不建一个空项目 ✗ */
+function describeNoImportableFiles(dir, scan) {
+  const parts = Object.keys(scan.counts).sort()
+    .map((k) => (SKIP_SHORT[k] || k) + ' ' + scan.counts[k]);
+  const more = Object.keys(scan.otherImportableExt).sort()
+    .map((e) => e + ' ' + scan.otherImportableExt[e] + ' 个');
+  return '这个目录里没有一个可导入的文件: ' + String(dir)
+    + '（本次范围：' + scan.ext.join(' / ') + '）。'
+    + (skippedTotal(scan) ? '跳过 ' + skippedTotal(scan) + ' 项' : '（目录里一个条目都没有）')
+    + (parts.length ? '：' + parts.join(' / ') : '')
+    + (more.length ? '。⚠️ 有可导入的扩展名被 `--ext` 排除了：' + more.join(' / ')
+      + ' ⇒ 想一起导就加上，如 `--ext ' + scan.ext.concat(Object.keys(scan.otherImportableExt))
+        .map((e) => e.replace(/^\./, '')).join(',') + '`' : '')
+    + '。**没有写任何东西**。出路：① 换一个目录；② 用 `--ext` 放开被排除的扩展名；'
+    + '③ 单个文件建项目用 `import-project <新项目名> <文件>`。';
+}
+
+/** 跳过项总数（扫描阶段 + 转换阶段合并后也算得出来；只有一处口径 ✓） */
+function skippedTotal(scan) {
+  return Object.keys(scan.counts || {}).reduce((n, k) => n + scan.counts[k], 0);
+}
+
+/** 把跳过项按原因分组（报告与 `--json` 共用；**每一组都要能打印出来**，不许只给个总数 ✗） */
+function groupSkips(skipped) {
+  const byReason = {};
+  (skipped || []).forEach((s) => { byReason[s.reason] = (byReason[s.reason] || 0) + 1; });
+  return byReason;
+}
+
 module.exports = {
   detectFormat, textToOutline, looksLikeHeading, headingLevelOf,
   zipFindEntry, docxParagraphs, docxToOutline, docToOutline, finishOutline,
   // 导入源闸门（把"为什么读不了"说准 + 给出路）与来源指纹 origin（幂等的前提，唯一实现）
-  describeImportSourceProblem, directoryMessage,
+  describeImportSourceProblem, directoryMessage, describeImportDirProblem, classifyStatFailure,
+  // 整库导入（import-dir）：目录走查 + 跳过分类 + 容器拼装（**建树仍只有 markdown.js 一处**）
+  IMPORT_EXT_DEFAULT, IMPORTABLE_EXT, SKIP_DIR_NAMES, MAX_IMPORT_FILES_DEFAULT,
+  SKIP_LABEL, SKIP_SHORT, entrySkipReason, normalizeExtList, scanImportDir, buildDirImportTree, uniqueIdGen,
+  dirManifestSha256, makeDirOrigin, describeTooManyFiles, describeDirOversize, describeNoImportableFiles,
+  skippedTotal, groupSkips, originKey,
   // 体量闸门（⓪′）：上限常量只有这一份，两条导入路共用同一个判据
   MAX_SOURCE_MB, MAX_SOURCE_BYTES, describeOversizeSource, describeOversizeBuffer, describeOversizeSize,
   normalizeOutline, outlineSha256, sourceRef, makeOrigin, originMatches, describeOrigin

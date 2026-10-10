@@ -207,6 +207,53 @@ function runSandboxWorker() {
     out.missingImportProject = go(['import-project', 'imp-gone', path.join(WORK, 'nope.md')]);
     out.missingImportMd = go(['import-md', 'legacy', path.join(WORK, 'nope.md')]);
     out.projectsAfterMissing = projectNames();
+
+    /* ── E. 整库导入（`import-dir`，批 5）：目录树 → **与文件夹同构**的一棵树 ──
+     * 夹具刻意把"该跳过的每一类"各放一个（隐藏文件 / node_modules / 空目录 / 不支持的扩展名），
+     * 外加一个**带 BOM 的 md**（它曾经让 import-md 静默吃掉第一个标题）和一份**没有任何标题的 txt**
+     * （正文只能落在文件节点自己的 detail 上，否则就是静默丢内容 ✗）。 */
+    const LIB = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-lib-'));
+    const lw = (rel, text, bom) => {
+      const p = path.join(LIB, rel);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, (bom ? '\uFEFF' : '') + text, 'utf8');
+      return p;
+    };
+    lw('note-a.md', '# 甲的主题\n正文 A\n');
+    lw('笔记/第一章.md', '# 第一章\n正文一\n');
+    lw('笔记/第二章.md', '# 第二章\n正文二\n', true);          // ← 带 BOM
+    lw('笔记/子目录/深层.txt', '第一章 概述\n正文。\n');          // ← 没有任何可识别标题 ⇒ 只能进 detail
+    lw('笔记/图片.png', 'binary');                              // ← 不支持的扩展名
+    fs.mkdirSync(path.join(LIB, '空目录'), { recursive: true });  // ← 空目录
+    lw('.隐藏.md', '# 藏起来\n');                                // ← 隐藏文件
+    lw('node_modules/dep.md', '# 依赖\n');                       // ← 依赖目录
+
+    out.libDir = LIB;
+    out.libProjectsBefore = projectNames();
+    out.libDry = J(go(['import-dir', 'lib1', LIB, '--title', '书库', '--dry-run', '--json']));
+    out.libProjectsAfterDry = projectNames();          // **必须与 before 逐字相同**（dry-run 绝不写盘）
+    out.libFirst = go(['import-dir', 'lib1', LIB, '--title', '书库']);
+    out.libBriefJson = J(go(['read', 'lib1', '--json', '--brief']));
+    /* 深层.txt 的文件节点：**没有子节点**（那份 txt 没有任何可识别标题）⇒ 正文只能落在它自己的
+     * detail 上（否则就是静默丢内容 ✗）。`--brief` 视图按设计省掉 detail ⇒ 用 `get --detail` 把它取回来。 */
+    const deepNode = ((out.libBriefJson && out.libBriefJson.nodes) || [])
+      .filter((n) => n.origin && /深层\.txt$/.test(n.origin.src))[0];
+    out.libDeepChildren = deepNode ? (deepNode.children || []).length : null;
+    out.libDeepGet = deepNode ? J(go(['get', 'lib1', deepNode.id, '--json', '--detail'])) : null;
+    out.libStats = statsOf('lib1');
+    out.libValidate = go(['validate', 'lib1']);
+    out.libSecond = go(['import-dir', 'lib2', LIB, '--title', '书库二号']);   // 整个目录重复导
+    out.libProjectsAfterSecond = projectNames();
+    out.libSubDir = go(['import-dir', 'lib3', path.join(LIB, '笔记')]);       // 子目录 ⇒ 文件级命中
+    out.libMaxFiles = go(['import-dir', 'lib9', LIB, '--max-files', '2']);
+    out.libMaxFilesDry = J(go(['import-dir', 'lib9', LIB, '--max-files', '2', '--dry-run', '--json']));
+    out.libExtMd = J(go(['import-dir', 'lib4', LIB, '--ext', 'md', '--dry-run', '--json']));
+    out.libExtHint = go(['import-dir', 'lib4', LIB, '--ext', 'md', '--dry-run']);   // 文本版（提示那一行）
+    out.libExtBad = go(['import-dir', 'lib4', LIB, '--ext', 'py']);
+    out.libFileArg = go(['import-dir', 'lib5', path.join(LIB, 'note-a.md')]);
+    out.libEmptyDir = go(['import-dir', 'lib6', path.join(LIB, '空目录')]);
+    out.libProjectsAfterErrors = projectNames();
+    out.dirImportProjectNow = go(['import-project', 'imp-dir2', LIB]);        // 单文件命令拿到目录
     out.ok = true;
   } catch (e) {
     out.ok = false;
@@ -1003,16 +1050,18 @@ check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已�
     has(SBJ.bigProjects) ? ('项目=[' + SBJ.bigProjects.join(' ') + '] 节点数=' + ((SBJ.bigStats || {}).nodes))
       : sbFailDetail);
 
-  // ── ⑤ 目录入参：响亮拒绝 + 给出路 + **一点都不许写** ──
-  const dirOk = (r, cmd) => !!(r && r.code !== 0 && r.out.indexOf('目录') >= 0
+  // ── ⑤ 目录入参：响亮拒绝 + 给出路 + **一点都不许写**（单文件命令拿到目录）──
+  const dirOk = (r) => !!(r && r.code !== 0 && r.out.indexOf('目录') >= 0
     && r.out.indexOf('不是文件') >= 0 && r.out.indexOf('import-dir') >= 0
-    && r.out.indexOf('尚未实现') >= 0 && r.out.indexOf('import-md') >= 0
+    && r.out.indexOf('node cli/mm-cli.js import-dir') >= 0
+    // 批 5 之前这句写的是"尚未实现"；现在它必须**指给真实的命令**（测试同步改，否则就是过期的绿）
+    && r.out.indexOf('尚未实现') < 0 && r.out.indexOf('import-md') >= 0
     && r.out.indexOf('EISDIR') < 0);
-  check('★ import-project 拿到**目录** ⇒ 退出 1 + 说清"这是目录不是文件" + 如实说 import-dir 未实现 + 给出逐文件流程（旧行为：露 EISDIR）',
-    has(dirOk(SBJ.dirImportProject, 'import-project')),
+  check('★ import-project 拿到**目录** ⇒ 退出 1 + 说清"这是目录不是文件" + 指向**已实现**的 import-dir 并给出逐文件流程（旧行为：露 EISDIR；再旧：说"尚未实现"）',
+    has(dirOk(SBJ.dirImportProject)),
     has(SBJ.dirImportProject) ? SBJ.dirImportProject.out.slice(0, 200) : sbFailDetail);
   check('★ import-md 拿到**目录** ⇒ 同一份报文（同一处实现，两条命令不各写一套）',
-    has(dirOk(SBJ.dirImportMd, 'import-md')),
+    has(dirOk(SBJ.dirImportMd)),
     has(SBJ.dirImportMd) ? SBJ.dirImportMd.out.slice(0, 200) : sbFailDetail);
   check('目录被拒之后**没有留下任何项目**（拒绝是真的没写）',
     has(SBJ.projectsAfterDir && SBJ.projectsBeforeDir
@@ -1028,6 +1077,157 @@ check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已�
   check('不存在路径也没有留下项目（两条命令的入参闸门都在**写盘之前**）',
     has(SBJ.projectsAfterMissing && SBJ.projectsAfterMissing.join(',') === 'imp-a,imp-b,imp-d,legacy'),
     sbFailDetail + ' 项目=[' + ((SBJ && SBJ.projectsAfterMissing) || []).join(' ') + ']');
+
+  /* ═══════════════════════════════════════════════════════════════════════
+   * 9.3 整库导入（`import-dir`，批 5）：把**文件夹结构镜像成一棵可用的树**
+   * -----------------------------------------------------------------------
+   * 与上面 §9.2 同一口径（同一个沙箱子进程、同一个临时项目根、真实 projects/ 零接触 ✓）。
+   * 这一节的断言分四组，每组对应一条**真实会出错的路径**：
+   *   ① 结构映射（目录层级 / 文件节点标题 / 内容不许丢）；
+   *   ② 跳过**逐类点名**（不许静默）；
+   *   ③ `--dry-run` **绝不写盘**（本工程硬规矩：无预览不许写入）；
+   *   ④ 闸门：整个目录重复导 ⇒ 整体拒绝并指名；文件级命中；上限（`--max-files`）在写盘之前拒。
+   * ⚠️ 抗空转：每条都写成 `has(...)` 的组合（worker 一崩 ⇒ 全红，而不是"看起来跑到绿"）✗
+   * ═══════════════════════════════════════════════════════════════════════ */
+  {
+    const brief = has(SBJ.libBriefJson) ? SBJ.libBriefJson : null;
+    /** 从 `read --json --brief` 还原**结构形状**（`主题(子 子)`）—— 只比主题、不比 id：
+     *  断言要守的是"目录树有没有被拍平"，不是 id 长什么样（id 是时间+随机，本来就不可比）✓ */
+    const shapeOfBrief = (j) => {
+      const nodes = (j && j.nodes) || [];
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      const walk = (s) => {
+        const full = byId.get(s.id) || {};
+        const kids = Array.isArray(full.children) ? full.children : [];
+        return s.topic + (kids.length ? '(' + kids.map(walk).join(' ') + ')' : '');
+      };
+      const rootNode = nodes.filter((n) => n.depth === 0)[0];
+      return rootNode ? walk(rootNode) : '';
+    };
+    const libShape = shapeOfBrief(brief);
+
+    // （批5-A）结构映射：**每一级目录都是容器节点**（拍平就丢掉"镜像文件夹"这个唯一的卖点 ✗）
+    check('★★ import-dir 建出来的树**与文件夹同构**：每一级子目录一个容器节点、每个文件一个文件节点，标题取文件名去扩展名',
+      has(!!brief && libShape === '书库(笔记(子目录(深层) 第一章(第一章) 第二章(第二章)) note-a(甲的主题))'),
+      has(!!brief) ? '实际结构=' + libShape : sbFailDetail);
+    check('★ 文件节点的标题是**文件名**（不是文档首个标题）：`note-a.md` 的节点叫 note-a，`甲的主题` 在它**下面**（文档标题没丢，只是不再当标题用）',
+      has(!!brief && libShape.indexOf('note-a(甲的主题)') >= 0),
+      has(!!brief) ? '实际结构=' + libShape : sbFailDetail);
+    check('★ 一个标题都没有的 .txt **不许丢内容**：文件节点没有子节点，但 detail 里必须有那两行正文',
+      has(SBJ.libDeepChildren === 0 && SBJ.libDeepGet
+        && typeof SBJ.libDeepGet.detail === 'string' && SBJ.libDeepGet.detail.indexOf('正文') >= 0),
+      has(SBJ.libDeepGet) ? ('子节点=' + SBJ.libDeepChildren + ' detail=' + String(SBJ.libDeepGet.detail || '').slice(0, 60)) : sbFailDetail);
+    check('★ 带 BOM 的 md 经 import-dir ⇒ 第一个标题**没被吃掉**（与 import-md 同一条规范化：CRLF→LF + 剥 BOM）',
+      has(!!brief && libShape.indexOf('第二章(第二章)') >= 0),
+      has(!!brief) ? '实际结构=' + libShape : sbFailDetail);
+
+    // （批5-B）报告：导入了几个 / 跳过几个（**按原因分组**）/ 逐条路径都点得出来
+    check('★ 报告给"导入了 N 个文件 / 跳过 M 个（按原因分组）"：4 个文件 / 2 个容器 / 9 个节点，跳过 4 项且每类都点名',
+      has(SBJ.libFirst && SBJ.libFirst.code === 0
+        && /导入了 4 个文件/.test(SBJ.libFirst.out) && /2 个容器节点/.test(SBJ.libFirst.out)
+        && /合计 9 个节点/.test(SBJ.libFirst.out)
+        && /跳过 4 项（按原因分组）/.test(SBJ.libFirst.out)
+        && /隐藏 1/.test(SBJ.libFirst.out) && /依赖目录 1/.test(SBJ.libFirst.out)
+        && /空目录 1/.test(SBJ.libFirst.out) && /扩展名不支持 1/.test(SBJ.libFirst.out)),
+      has(SBJ.libFirst) ? SBJ.libFirst.out.slice(0, 260) : sbFailDetail);
+    check('★ 跳过项**逐条点名**（不许只给个数字）：.隐藏.md / node_modules / 空目录 / 笔记/图片.png 四条路径都要在报文里',
+      has(SBJ.libFirst && /\.隐藏\.md/.test(SBJ.libFirst.out) && /node_modules/.test(SBJ.libFirst.out)
+        && /空目录/.test(SBJ.libFirst.out) && /图片\.png/.test(SBJ.libFirst.out)),
+      has(SBJ.libFirst) ? SBJ.libFirst.out.split('\n').filter((l) => l.indexOf('·') >= 0).join(' | ').slice(0, 300) : sbFailDetail);
+    check('导入后项目**过校验** + `stats` 数得出"多少节点带来源 / 涉及几份来源"（1 份目录清单 + 4 个文件 = 5/5）',
+      has(SBJ.libValidate && SBJ.libValidate.code === 0
+        && SBJ.libStats && SBJ.libStats.originNodes === 5 && SBJ.libStats.originSources === 5),
+      has(SBJ.libStats) ? ('validate=' + ((SBJ.libValidate || {}).code)
+        + ' originNodes=' + SBJ.libStats.originNodes + ' originSources=' + SBJ.libStats.originSources) : sbFailDetail);
+
+    // （批5-C）`--dry-run`：报告要全，盘上要**一个字节都不多**
+    check('★ `--dry-run` **绝不写盘**：报告照样给全（几个容器/几个文件子树/跳过/总量是否超限），而项目列表**逐字未变**',
+      has(SBJ.libDry && SBJ.libDry.dryRun === true && SBJ.libDry.containers === 2 && SBJ.libDry.files === 4
+        && SBJ.libDry.nodes === 9 && SBJ.libDry.skippedCount === 4
+        && SBJ.libDry.size && SBJ.libDry.size.over === false
+        && SBJ.libDry.fileCount && SBJ.libDry.fileCount.over === false
+        && Array.isArray(SBJ.libProjectsAfterDry) && Array.isArray(SBJ.libProjectsBefore)
+        && SBJ.libProjectsAfterDry.join(',') === SBJ.libProjectsBefore.join(',')),
+      has(SBJ.libDry) ? ('dry=' + JSON.stringify({ c: SBJ.libDry.containers, f: SBJ.libDry.files, n: SBJ.libDry.nodes,
+        s: SBJ.libDry.skippedCount, over: (SBJ.libDry.size || {}).over })
+        + ' 项目 ' + ((SBJ.libProjectsBefore || []).join(' ') || '(空)') + ' → '
+        + ((SBJ.libProjectsAfterDry || []).join(' ') || '(空)')) : sbFailDetail);
+
+    // （批5-D）闸门：整个目录重复导 ⇒ **整体拒绝**（推荐的那档）+ 指名 + 出路
+    check('★★ 整个目录**再导一次** ⇒ 非 0 + "这个目录已经导入过"（指名项目与节点）+ 按文件列明 + 给出 --force 出路',
+      has(SBJ.libSecond && SBJ.libSecond.code !== 0
+        && /这份文档已经导入过/.test(SBJ.libSecond.out) && /项目 lib1 的节点 root/.test(SBJ.libSecond.out)
+        && /这个目录里有 4 个文件已经被导入过/.test(SBJ.libSecond.out)
+        && /--force/.test(SBJ.libSecond.out)),
+      has(SBJ.libSecond) ? SBJ.libSecond.out.slice(0, 240) : sbFailDetail);
+    check('★★ 被拒之后**盘上没有第二个项目**（"拒绝"是真的没写）+ 一个新项目都没多出来',
+      has(Array.isArray(SBJ.libProjectsAfterSecond)
+        && SBJ.libProjectsAfterSecond.join(',') === 'imp-a,imp-b,imp-d,legacy,lib1'),
+      has(SBJ.libProjectsAfterSecond) ? '项目列表=[' + SBJ.libProjectsAfterSecond.join(' ') + ']' : sbFailDetail);
+    check('★ **子目录**重复导（同一个文件被导过）⇒ 也拒绝并**逐条点名是哪几个文件**、导到了哪个节点',
+      has(SBJ.libSubDir && SBJ.libSubDir.code !== 0
+        && /个文件已经被导入过/.test(SBJ.libSubDir.out)
+        && /第一章\.md → 项目 lib1 的节点/.test(SBJ.libSubDir.out)),
+      has(SBJ.libSubDir) ? SBJ.libSubDir.out.slice(0, 240) : sbFailDetail);
+
+    // （批5-D′）上限：**写盘之前**响亮拒绝 + 出路；dry-run 则如实报"会超限"
+    check('★ `--max-files 2`（4 个文件）⇒ 非 0 + 说准是**文件数上限**（不是"文件坏了"）+ 三条出路，且**一个项目都没建**',
+      has(SBJ.libMaxFiles && SBJ.libMaxFiles.code !== 0
+        && /超过整库导入上限 2 个/.test(SBJ.libMaxFiles.out)
+        && /没有读它们/.test(SBJ.libMaxFiles.out)
+        && /--max-files/.test(SBJ.libMaxFiles.out) && /--ext/.test(SBJ.libMaxFiles.out)
+        && !/坏了|损坏|内存不足/.test(SBJ.libMaxFiles.out)),
+      has(SBJ.libMaxFiles) ? SBJ.libMaxFiles.out.slice(0, 220) : sbFailDetail);
+    check('★ `--max-files 2 --dry-run` ⇒ **不写盘但仍如实报"会超限"**（wouldRefuse/over 都置位，converted=false）—— 预览与真导同一份判据',
+      has(SBJ.libMaxFilesDry && SBJ.libMaxFilesDry.wouldRefuse === true
+        && SBJ.libMaxFilesDry.refuseReason === 'over-max-files'
+        && SBJ.libMaxFilesDry.fileCount && SBJ.libMaxFilesDry.fileCount.over === true
+        && SBJ.libMaxFilesDry.converted === false),
+      has(SBJ.libMaxFilesDry) ? JSON.stringify({ wouldRefuse: SBJ.libMaxFilesDry.wouldRefuse,
+        reason: SBJ.libMaxFilesDry.refuseReason, fileCount: SBJ.libMaxFilesDry.fileCount }) : sbFailDetail);
+
+    // （批5-D″）`--ext`：覆盖生效 + 被排除的**可导扩展名**要给出路 + 完全导不了的当场报错
+    check('★ `--ext md` 覆盖生效：只导 3 个 md（.txt 变成跳过），并给出"想一起导就加 --ext md,txt"的提示',
+      has(SBJ.libExtMd && SBJ.libExtMd.files === 3
+        && SBJ.libExtMd.skippedByReason && SBJ.libExtMd.skippedByReason['unsupported-ext'] === 2
+        && SBJ.libExtHint && /另有可导入但被 `--ext` 排除的文件：\.txt 1 个/.test(SBJ.libExtHint.out)
+        && /--ext md,txt/.test(SBJ.libExtHint.out)),
+      has(SBJ.libExtMd) ? ('files=' + SBJ.libExtMd.files + ' 跳过=' + JSON.stringify(SBJ.libExtMd.skippedByReason)
+        + '｜' + (has(SBJ.libExtHint) ? String(SBJ.libExtHint.out).split('\n').filter((l) => /另有/.test(l)).join('') : '')) : sbFailDetail);
+    check('★ `--ext py` ⇒ 当场报错并**列出能导的集合**（不静默退成默认、不让每个文件都变成"读失败"）',
+      has(SBJ.libExtBad && SBJ.libExtBad.code !== 0 && /导不进来/.test(SBJ.libExtBad.out)
+        && /\.md/.test(SBJ.libExtBad.out) && /\.docx/.test(SBJ.libExtBad.out)),
+      has(SBJ.libExtBad) ? SBJ.libExtBad.out.slice(0, 200) : sbFailDetail);
+
+    // （批5-D‴）入参闸门：给文件 / 给空目录
+    check('★ `import-dir` 拿到**文件** ⇒ 非 0 + 说清"这是文件不是目录" + 点名 import-project / import-md',
+      has(SBJ.libFileArg && SBJ.libFileArg.code !== 0 && /不是目录/.test(SBJ.libFileArg.out)
+        && /import-project/.test(SBJ.libFileArg.out) && /import-md/.test(SBJ.libFileArg.out)),
+      has(SBJ.libFileArg) ? SBJ.libFileArg.out.slice(0, 220) : sbFailDetail);
+    check('★ 空目录 ⇒ 非 0 + "没有一个可导入的文件" + 把逐类计数摆出来 + "没有写任何东西"（**不建空项目**）',
+      has(SBJ.libEmptyDir && SBJ.libEmptyDir.code !== 0
+        && /没有一个可导入的文件/.test(SBJ.libEmptyDir.out)
+        && /空目录 1/.test(SBJ.libEmptyDir.out) && /没有写任何东西/.test(SBJ.libEmptyDir.out)),
+      has(SBJ.libEmptyDir) ? SBJ.libEmptyDir.out.slice(0, 220) : sbFailDetail);
+    check('★ 单文件命令 `import-project` 拿到目录 ⇒ 报文已改口指向 **import-dir**（不再是"尚未实现"）',
+      has(dirOk(SBJ.dirImportProjectNow)),
+      has(SBJ.dirImportProjectNow) ? SBJ.dirImportProjectNow.out.slice(0, 220) : sbFailDetail);
+    check('全部失败路径走完之后：项目列表里**一个空壳/半个项目都没有**（只有该有的那些，+0 个）',
+      has(Array.isArray(SBJ.libProjectsAfterErrors)
+        && SBJ.libProjectsAfterErrors.join(',') === 'imp-a,imp-b,imp-d,legacy,lib1'),
+      has(SBJ.libProjectsAfterErrors) ? '项目列表=[' + SBJ.libProjectsAfterErrors.join(' ') + ']' : sbFailDetail);
+
+    // 收尾：整库夹具目录自己删掉（**自建自删**是本工程对探针的一贯要求 ✓）
+    const libGone = (() => {
+      try {
+        if (!SBJ || !SBJ.libDir) return false;
+        fs.rmSync(SBJ.libDir, { recursive: true, force: true });
+        return !fs.existsSync(SBJ.libDir);
+      } catch (e) { return false; }
+    })();
+    check('整库夹具目录已删（探针自建自删，不给系统临时目录攒垃圾）', libGone,
+      SBJ ? String(SBJ.libDir) : sbFailDetail);
+  }
 
   // 收尾：沙箱子进程、它造的工作目录、以及**项目根沙箱**一起清掉（真实 projects/ 全程零接触）
   try { fs.rmSync(SBJ && SBJ.work ? SBJ.work : SANDBOX, { recursive: true, force: true }); } catch (e) { /* ignore */ }

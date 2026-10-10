@@ -42,18 +42,31 @@ function originHitIn(root, want) {
   return hit;
 }
 
-function originHitAcrossStore(ctx, want) {
-  let hit = null;
+/** **全库来源索引**：`originKey → {project, node}`（**一次扫盘**）。
+ *  为什么需要它（不是"顺手优化"）：整库导入要按**文件粒度**逐个问"这个文件导过没有"，
+ *  而 `originHitAcrossStore` 一次只回答**一个** want —— 逐个文件各扫一遍全库是
+ *  O(文件数 × 全库节点数)（200 个文件 × 几千节点）。索引把这件事变成一次扫盘 + N 次查表 ✓。
+ *  判据仍然是**同一处**（`docImport.originKey` / `originMatches`），这里只负责"一次扫完"。 */
+function originIndexAcrossStore(ctx) {
+  const map = new Map();
   ctx.store.list().forEach((p) => {
-    if (hit) return;
     let d = null;
     // 读不动的单个项目**不阻断**导入（那是别人的坏数据，不是我的问题）；也不出声 ——
     // 它只会让闸门"少查一处"，而导入本身仍然安全（大不了多一棵树，且有 origin 记着）
     try { d = ctx.store.read(p.name).data; } catch (e) { return; }
-    const got = originHitIn(d && d.data, want);
-    if (got) hit = { project: p.name, node: got };
+    tree.walk(d && d.data, (n) => {
+      const k = docImport.originKey(n && n.origin);
+      if (k && !map.has(k)) map.set(k, { project: p.name, node: n });   // 先到先得：与"逐项目找第一个"同序 ✓
+    });
   });
-  return hit;
+  return map;
+}
+
+/** 单个 want 的查询（`import-project` 用）—— 搭在索引上，两条命令共用同一份扫盘实现 ✓ */
+function originHitAcrossStore(ctx, want) {
+  const k = docImport.originKey(want);
+  if (!k) return null;
+  return originIndexAcrossStore(ctx).get(k) || null;
 }
 
 /** 重复导入的拒绝报文：**上一次导到哪** + **怎么继续**（与既有"项目已存在: X（换个名字，或先删掉它）"
@@ -255,6 +268,203 @@ module.exports = {
       + (ctx.args.force && dup ? '（--force：这是同一个来源的第 2 份）' : ''));
     ctx.out('来源指纹: ' + docImport.describeOrigin(origin));
     printNotes(ctx.out);
+    ctx.out('打开：node cli/mm-cli.js read ' + name + ' --brief');
+  },
+
+  /**
+   * 批 5：**整库导入** —— 一个**目录** → 新项目 + 一棵"与文件夹同构"的树。
+   *
+   * 与 `import-project` 的区别（两者都是"从零建项目"）：
+   *   · `import-project`：**一个文件** → 一棵树（文件里的 1 级标题成为顶层主题）；
+   *   · `import-dir`：**一个目录** → 一棵**与文件夹同构**的树 —— **每一级子目录 = 一个容器节点**，
+   *     每个文件 = 该容器下的一个文件节点（标题取**文件名去扩展名**），文档自己的标题在它下面。
+   *     取舍与理由写在 `src/doc-import.js` 的 ⓪‴ 段（那里是唯一权威，本处不复述）。
+   *
+   * 硬约束（照本工程既有规矩）：
+   *   · **建树只有一条路**：`docToOutline`（文件 → 提纲）+ `markdownToTree`（提纲 → 子树）；
+   *     本命令只做"走参数 → 调 src/ 纯逻辑 → 输出"，一行格式解析都不写 ✗；
+   *   · **一次 `ctx.write`**：整棵树先在内存里建好 ⇒ 中途失败不留半个项目 ✓；
+   *   · **闸门一律在写盘之前**：入参 / 体量 / 文件数 / 幂等 四道，全在先 ✓；
+   *   · `--dry-run` **绝不写盘**，并如实报告"会不会被拒"（预览说能导、真导被拒是最烦人的落差 ✗）。
+   */
+  importDir(ctx) {
+    const name = ctx.projectName;
+    if (!name) ctx.error('缺少项目名');
+    const dir = ctx.args._[1];
+    if (!dir) ctx.error('用法: import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] '
+      + '[--max-files N] [--dry-run] [--force]');
+    // ① 入参闸门：整库导入要的是**目录**（给成文件 / 不存在 / 没权限 ⇒ 各自原因准确 + 给出路）
+    const bad = docImport.describeImportDirProblem(dir);
+    if (bad) ctx.error(bad.message);
+    if (fs.existsSync(path.join(ctx.PROJECTS_DIR, name, name + '.json'))) {
+      ctx.error('项目已存在: ' + name + '（换个名字，或先删掉它）');
+    }
+    // ② 范围与上限：**读任何文件之前**就定下来（`--ext` 非法值是当场报错，不静默退成默认 ✗）
+    const extRes = ctx.args.ext === undefined
+      ? { ok: true, ext: docImport.IMPORT_EXT_DEFAULT.slice() }
+      : docImport.normalizeExtList(ctx.args.ext);
+    if (!extRes.ok) ctx.error('--ext ' + extRes.reason);
+    const maxFiles = ctx.intOption('maxFiles', { min: 1, max: 100000, def: docImport.MAX_IMPORT_FILES_DEFAULT });
+    // ③ 扫描（**只读**：走查目录、逐类计数跳过、算总量；不读文件内容、不写盘、不建树）
+    const scan = docImport.scanImportDir(dir, { ext: extRes.ext });
+    if (!scan.totals.files) ctx.error(docImport.describeNoImportableFiles(scan.root, scan));
+    const overFiles = scan.totals.files > maxFiles;
+    const overSize = !overFiles && scan.totals.bytes > docImport.MAX_SOURCE_BYTES;
+    const limitMsg = overFiles
+      ? docImport.describeTooManyFiles(scan.totals.files, maxFiles, scan.root)
+      : overSize ? docImport.describeDirOversize(scan.root, scan.totals.bytes, docImport.MAX_SOURCE_BYTES) : null;
+
+    // ④ 转换 + 建树（**整棵树在内存里建好**）。超限时**不转换** —— 反正马上要拒，
+    //    没必要把几十 MB 读进内存（那正是体量闸门要防的事 ✗）
+    const built = limitMsg ? null : docImport.buildDirImportTree(scan, { tool: 'import-dir' });
+    const skipped = (scan.skipped || []).concat(built ? built.skipped : []);
+    const counts = docImport.groupSkips(skipped);
+    // 扫得到文件、但**一个都没转换成功**（全是坏文件/全空）⇒ 与"目录里没有可导入的文件"同一处理：
+    // 响亮拒绝，绝不建一个空项目 ✗
+    if (built && !built.files) {
+      ctx.error(docImport.describeNoImportableFiles(scan.root,
+        Object.assign({}, scan, { skipped: skipped, counts: counts })));
+    }
+    const byFormat = { md: 0, txt: 0, docx: 0, pdf: 0 };
+    if (built) built.entries.forEach((e) => { if (byFormat[e.format] !== undefined) byFormat[e.format]++; });
+    const manifest = docImport.makeDirOrigin({ dir: scan.root, entries: built ? built.entries : [] });
+    // ⑤ 幂等闸门（写盘之前，两档一起看）：
+    //    · **整库级**：项目根上那份**目录清单指纹** ⇒ 同一个目录重复导**整体拒绝**（推荐的那档：
+    //      "重复导入不可察觉的污染"；按文件粒度跳过会在每一条上都要人自己判断，反而更容易漏）；
+    //    · **文件级**：任一文件已被**别的命令/别的项目**导过（同 src + 同 sha256）⇒ 也拒绝并指名。
+    const index = built ? originIndexAcrossStore(ctx) : null;
+    const dup = (built && index.get(docImport.originKey(manifest))) || null;
+    const collisions = [];
+    if (built) {
+      built.entries.forEach((e) => {
+        const hit = index.get(docImport.originKey(e.origin));
+        if (hit) collisions.push({ rel: e.rel, project: hit.project, id: hit.node.id, topic: hit.node.topic });
+      });
+    }
+    const forced = !!ctx.args.force;
+    const refused = !!(dup || collisions.length) && !forced;
+
+    const title = ctx.args.title || path.basename(scan.root) || name;
+    const dirRef = docImport.sourceRef(scan.root);
+    // 顶层一览（**从扫描结果算**，与"这次有没有转换"无关 ⇒ 超限预览也给得出）
+    const topLevel = [];
+    const countIn = (node) => node.files.length + node.dirs.reduce((n, d) => n + countIn(d), 0);
+    scan.tree.dirs.forEach((d) => topLevel.push({ topic: d.name, kind: 'dir', files: countIn(d) }));
+    scan.tree.files.forEach((f) => topLevel.push({
+      topic: f.name.replace(/\.[^.]+$/, ''), kind: 'file', files: 1
+    }));
+    const containers = built ? built.containers : scan.containers;
+    const filesImported = built ? built.files : scan.totals.files;
+    const nodes = built ? built.nodes : null;
+
+    /** 逐类跳过计数（**报告的一部分，不许省** ✗）—— 两种输出格式共用同一份数据 */
+    const printSkips = (out) => {
+      const keys = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+      if (!keys.length) { out('跳过 0 项'); return; }
+      out('跳过 ' + skipped.length + ' 项（按原因分组）：'
+        + keys.map((k) => (docImport.SKIP_SHORT[k] || k) + ' ' + counts[k]).join(' / '));
+      skipped.slice(0, 20).forEach((s) => out('  · ' + s.rel + ' —— '
+        + (docImport.SKIP_LABEL[s.reason] || s.reason) + (s.message ? '：' + s.message : '')));
+      if (skipped.length > 20) out('  · …另有 ' + (skipped.length - 20) + ' 项（`--json` 里有全部）');
+      const more = Object.keys(scan.otherImportableExt).sort();
+      if (more.length) {
+        out('  ⚠ 另有可导入但被 `--ext` 排除的文件：'
+          + more.map((e) => e + ' ' + scan.otherImportableExt[e] + ' 个').join(' / ')
+          + ' ⇒ 想一起导就加 `--ext '
+          + scan.ext.concat(more).map((e) => e.replace(/^\./, '')).join(',') + '`');
+      }
+    };
+    const printLimit = (out) => {
+      if (!limitMsg) return;
+      out('⚠ 总量超限：' + (overFiles ? '可导入文件 ' + scan.totals.files + ' 个 > 上限 ' + maxFiles + ' 个'
+        : '合计 ' + Math.round(scan.totals.bytes / 1048576 * 100) / 100 + ' MB > 上限 ' + docImport.MAX_SOURCE_MB + ' MB'));
+    };
+    const topBrief = '顶层 ' + scan.tree.dirs.length + ' 个目录 / ' + scan.tree.files.length + ' 个文件'
+      + (topLevel.length ? '：' + topLevel.slice(0, 12).map((t) => t.topic + (t.kind === 'dir' ? '/' : '')).join(' ') : '');
+
+    const report = {
+      ok: true, dryRun: !!ctx.args.dryRun, project: name, dir: dir, dirRef: dirRef, title: title,
+      ext: scan.ext, maxFiles: maxFiles,
+      containers: containers, files: filesImported, nodes: nodes,
+      formats: byFormat, topLevel: topLevel,
+      skippedCount: skipped.length, skippedByReason: counts, skippedDetail: skipped.slice(0, 200),
+      size: {
+        bytes: scan.totals.bytes, mb: Math.round(scan.totals.bytes / 1048576 * 100) / 100,
+        limitMB: docImport.MAX_SOURCE_MB, over: scan.totals.bytes > docImport.MAX_SOURCE_BYTES
+      },
+      fileCount: { count: scan.totals.files, limit: maxFiles, over: overFiles },
+      origin: manifest,
+      entries: built ? built.entries.map((e) => ({
+        rel: e.rel, id: e.id, topic: e.topic, sha256: e.sha256, format: e.format
+      })) : [],
+      duplicate: dup ? { project: dup.project, id: dup.node.id, topic: dup.node.topic } : null,
+      collisions: collisions.slice(0, 50),
+      converted: !!built,
+      wouldRefuse: refused || !!limitMsg,
+      refuseReason: limitMsg ? (overFiles ? 'over-max-files' : 'over-size')
+        : (dup ? 'duplicate-dir' : (collisions.length ? 'duplicate-file' : null)),
+      forced: forced
+    };
+
+    if (ctx.args.dryRun) {
+      if (ctx.args.json) { ctx.outJson(report); return; }
+      ctx.out('（--dry-run：只预览，**没有写盘** ✓ —— 预览会**真的读一遍**这些文件来算来源指纹，'
+        + '与真导用同一份判据，不各算一套）');
+      ctx.out('整库导入：' + dirRef + '  →  新项目「' + name + '」（标题：' + title + '）');
+      ctx.out('范围：' + scan.ext.join(' / ') + '（`--ext` 可覆盖）│ 文件数上限 ' + maxFiles
+        + '（`--max-files` 可覆盖）│ 体量上限 ' + docImport.MAX_SOURCE_MB + ' MB（与单文件共用一份常量）');
+      ctx.out('将建：' + containers + ' 个容器节点（目录）'
+        + (built ? ' / ' + filesImported + ' 个文件子树 / 合计 ' + nodes + ' 个节点'
+          : ' / ' + scan.totals.files + ' 个文件候选（**超限 ⇒ 没有转换**）'));
+      ctx.out('体量：' + report.size.mb + ' MB（' + scan.totals.bytes + ' 字节）'
+        + (report.size.over ? ' —— ⚠ **超限**' : ' —— 未超限 ✓'));
+      ctx.out('格式分布：' + Object.keys(byFormat).filter((k) => byFormat[k]).map((k) => k + ' ' + byFormat[k]).join(' / ')
+        + (Object.keys(byFormat).some((k) => byFormat[k]) ? '' : '（还没转换）'));
+      printLimit(ctx.out);
+      printSkips(ctx.out);
+      ctx.out(topBrief);
+      ctx.out('来源指纹：' + docImport.describeOrigin(manifest));
+      if (dup) {
+        ctx.out('⚠ 这个目录已经导入过：项目 ' + dup.project + ' 的节点 ' + dup.node.id
+          + (forced ? '（已给 --force ⇒ 仍会再建一棵）' : '（真导会被拒；真要再建一棵加 --force）'));
+      }
+      if (collisions.length) {
+        ctx.out('⚠ 其中 ' + collisions.length + ' 个文件已经导入过：'
+          + collisions.slice(0, 5).map((c) => c.rel + ' → 项目 ' + c.project + ' 的节点 ' + c.id).join('；')
+          + (collisions.length > 5 ? ' 等' : '') + (forced ? '' : '（真导会被拒）'));
+      }
+      return;
+    }
+
+    // ---- 真导：闸门全部在写盘之前 ----
+    if (limitMsg) { ctx.error(limitMsg); return; }
+    if (refused) {
+      const head = dup
+        ? duplicateOriginError('项目 ' + dup.project + ' 的节点 ' + dup.node.id, dup.node.origin) : '';
+      const coll = collisions.length
+        ? '这个目录里有 ' + collisions.length + ' 个文件已经被导入过：'
+          + collisions.slice(0, 5).map((c) => c.rel + ' → 项目 ' + c.project + ' 的节点 ' + c.id).join('；')
+          + (collisions.length > 5 ? ' 等' : '')
+          + '。**同一个文件再导一次**会得到第二棵不相交的子树（节点 id 由"时间+随机"生成，内容相同的两棵也不会重合）'
+          + '；确实想要第二份：加 --force（若想改的是已有的那一份，请直接 edit 那些节点）' : '';
+      ctx.error([head, coll].filter(Boolean).join(' '));
+      return;
+    }
+
+    const data = {
+      meta: { name: title, author: '', version: MMConfig.APP_VERSION, formatVersion: 2 },
+      format: 'node_tree',
+      // origin 挂在树的根上 = 这一份**目录清单指纹**（"这个目录导过没有"的唯一判据）；
+      // 每个文件节点另带自己的 origin（"这个文件导过没有"）—— 两个粒度各留一条痕 ✓
+      data: { id: 'root', topic: title, expanded: true, origin: manifest, children: built.children }
+    };
+    ctx.write(data);   // 一次写入（原子）⇒ 不会留下半个项目 ✓
+    if (ctx.args.json) { ctx.outJson(report); return; }
+    ctx.out('已整库导入 ' + dirRef + ' → 项目「' + name + '」：' + containers + ' 个容器节点 / 导入了 '
+      + filesImported + ' 个文件 / 合计 ' + nodes + ' 个节点'
+      + (forced && (dup || collisions.length) ? '（--force：这是同一个来源的第 2 份）' : ''));
+    printSkips(ctx.out);
+    ctx.out('来源指纹：' + docImport.describeOrigin(manifest));
     ctx.out('打开：node cli/mm-cli.js read ' + name + ' --brief');
   },
 
