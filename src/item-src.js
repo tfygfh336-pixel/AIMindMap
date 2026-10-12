@@ -8,9 +8,12 @@
  * 出处这一维有三个用法：`recheck` 逐条点名、`health` 报读数、`search --src` 过滤。
  * 三处各写一份「什么算同一个出处 / 什么算过期」⇒ 必然漂移，而漂移的后果是
  * "同一条数据在体检里是过期的、在检索里是命中的" —— 那种自相矛盾比不判还坏。
- * ⇒ **解析 / 判定 / 子串匹配只在这里**；**归一化**（`string|string[]` → 只留非空字符串的数组）
+ * ⇒ **解析 / 判定只在这里**；**归一化**（`string|string[]` → 只留非空字符串的数组）
  *   的唯一实现在 `src/item-index.js` 的 `srcList()`，本文件那一份是**薄适配**
- *   （第四批收口：改前是两份同口径实现，靠交叉断言兜着；现在只剩一处，方向与理由见 `normalizeSrc`）。
+ *   （第四批收口：改前是两份同口径实现，靠交叉断言兜着；现在只剩一处，方向与理由见 `normalizeSrc`）；
+ *   **子串匹配**（`--src` 那一维）的唯一实现在同一个模块的 `srcMatches()`，本文件的 `matchesSrc`
+ *   是**薄转发**（第五批收口：改前两份同口径实现**已经漂** —— 空 needle 一处判"不命中"、
+ *   另一处整段跳过；契约与两层分工见 `srcMatches` 的注释）。
  *
  * ## 判定口径（三条，都可执行）
  *   1. **文件在不在**：`file:line` 里的 file（相对**工程根**；绝对路径也认，但会标 `outside`/绝对
@@ -171,15 +174,23 @@ function parseSrcList(v) {
 }
 
 /**
- * `search --src` 的过滤口径（契约 §3.4：只命中 `src` 含**子串**的条目）。
- * 与 `src/item-index.js` 的 `passItemFilters` 里那条 `list.some(s => s.indexOf(f.src) >= 0)`
- * **逐字同义** —— 本模块是这一维的唯一实现处，检索面将来改成调它即可（不改行为）。
+ * `search --src` / `recheck --src` 的过滤口径（契约 §3.4：只命中 `src` 含**子串**的条目）。
+ *
+ * ⚠️ **匹配的唯一实现在 `src/item-index.js` 的 `srcMatches()`** —— 本函数是它的**薄转发**
+ * （**第五批收口**：改前这里与 `passItemFilters` 里那行 `list.some(s => s.indexOf(f.src) >= 0)`
+ * 是**两份同口径实现**，且**已经漂**：空 needle 这边判"不命中"、那边整段跳过 ⇒ 同一个输入两种裁断）。
+ * 方向：本模块 **Node-only**（要读盘）→ 那边 **UMD 双端**，与 `normalizeSrc` 同一条理由。
+ *
+ * **契约**（两层分工，逐字见 `srcMatches` 的注释）：**空 needle 不是过滤条件 —— 判断"有没有过滤"
+ * 归过滤层；匹配函数的契约是 needle 非空**。所以本函数的 `false` 只说"没命中"，
+ * 不回答"要不要过滤"（后者由过滤层的 `if (f.src)` / 命令层的"参数出现没出现"回答）。
+ *
+ * 为什么**留这个薄转发**而不是把它删掉：产品调用方在 `cli/commands/recheck.js` 的 `--src`
+ * 过滤那行走的是它（本批的文件边界到 `src/` 与 `tests/` 为止，改调用方是另一件事）；
+ * 转发后两处读数**必然一致**（同一个函数），所以留着不再构成"两处表达"。
  */
 function matchesSrc(itemOrSrc, needle) {
-  if (needle === undefined || needle === null || needle === '') return false;
-  const list = Array.isArray(itemOrSrc) ? normalizeSrc(itemOrSrc) : normalizeSrc(itemOrSrc && itemOrSrc.src);
-  const q = String(needle);
-  return list.some((s) => s.indexOf(q) >= 0);
+  return itemIndex.srcMatches(itemOrSrc, needle);
 }
 
 /* ============================================================================

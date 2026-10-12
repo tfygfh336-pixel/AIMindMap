@@ -155,6 +155,45 @@ describe('七个过滤参数（契约 §3.4，各至少一条断言）', () => {
     expect(itemIndex.searchItems(FIX(), { keyword: '闸门', src: 'RULES' }).hits.some((h) => h.itemId === null)).toBe(false);
   });
 
+  /* 「空 needle」这条边界 —— **两层分工**（第五批收口：`--src` 的匹配与"有没有给过滤"收成一处，
+   * 逐字契约见 `src/item-index.js` 的 `srcMatches()` 注释）：
+   *   · 匹配函数（`srcMatches`）的契约是 **needle 非空**；
+   *   · "这一维过滤没过滤"由**过滤层**（`passItemFilters` 开头的 `if (f.src)`）回答 —— 判的是
+   *     "**参数出现没出现**"，**不是**它的真值 ⇒ 空串 = **这条过滤不存在**（不是"过滤器是空串"）。
+   * 期望值**写死**在下面（不是"跑一遍看它返回啥"）：判别力已实测 —— 把 `if (f.src)` 改成
+   * `if (f.src !== undefined)` ⇒ 第一条断言**必红**；还原后文件 SHA-256 逐字节相同 ⇒ 复绿。 */
+  it('空 needle 不是过滤条件：过滤层说"没给过滤"，匹配函数说"不命中"', () => {
+    const item = { id: 'i-x', type: 'text', html: '<p>正文</p>', src: 'refs/spec.md:4::第一条' };
+    // ① 过滤层：`src: ''` ⇒ **这条过滤不存在** ⇒ 任何条目都通过（= 写死的期望值）
+    expect(itemIndex.passItemFilters(item, { type: null, verified: false, src: '', since: null })).toBe(true);
+    // 成对的一条（防空转：只断言 true 的判据恒真）：给了非空 needle 且不命中 ⇒ false
+    expect(itemIndex.passItemFilters(item, { type: null, verified: false, src: 'no-such-needle', since: null })).toBe(false);
+    expect(itemIndex.passItemFilters(item, { type: null, verified: false, src: 'spec.md', since: null })).toBe(true);
+    // ② 匹配函数自己的读数：契约外输入（空 needle）兜底成"**不命中**"——
+    //    它是"没命中"，**不是**"没给过滤"；后者只由①那一层回答（两个读数不许互换）
+    expect(itemIndex.srcMatches(item, '')).toBe(false);
+    expect(itemIndex.srcMatches(item, 'spec.md')).toBe(true);
+    expect(itemIndex.srcMatches(item, 'no-such-needle')).toBe(false);
+    expect(itemIndex.srcMatches({ src: ['CHANGELOG.md:713-717'] }, 'CHANGELOG')).toBe(true);   // 数组形状照旧
+    expect(itemIndex.srcMatches({}, 'CHANGELOG')).toBe(false);                                // 没有 src ⇒ 不命中
+  });
+
+  it('`--src` 的子串匹配只有一个实现：`passItemFilters` 只许调 `srcMatches`，不许自己再写一遍', () => {
+    const text = fs.readFileSync(path.join(ROOT_DIR, 'src', 'item-index.js'), 'utf8');
+    const bodyOf = (name) => {
+      const m = new RegExp('function ' + name + '\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n  \\}').exec(text);
+      return m && m[1];
+    };
+    const pf = bodyOf('passItemFilters');
+    // 锚点找不到 = 这条判据测不了任何东西 ⇒ 判红（绝不把"定位失败"当通过）
+    expect(pf, 'src/item-index.js 里必须能找到 `function passItemFilters(item, f) { … }`').toBeTruthy();
+    expect(pf).toContain('srcMatches(');       // 正：真的走那一处实现
+    expect(pf).not.toContain('indexOf');       // 反：没有自己那份子串判定
+    const sm = bodyOf('srcMatches');
+    expect(sm, 'src/item-index.js 里必须能找到 `function srcMatches(itemOrSrc, needle) { … }`').toBeTruthy();
+    expect(sm).toContain('indexOf');           // 唯一实现处就是它（`src/item-src.js` 的 matchesSrc 是薄转发）
+  });
+
   it('--verified：只要已核条目（缺失 = 未核）', () => {
     const r = itemIndex.searchItems(FIX(), { keyword: '闸门', verified: true });
     expect(ids(r.hits)).toEqual(['1c#' + I_A1]);

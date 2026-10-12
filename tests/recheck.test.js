@@ -6,6 +6,9 @@
  *   A. `src/item-src.js` 是"出处"这一维的**唯一实现处**：
  *      归一化**只有一处实现**（唯一实现在 `src/item-index.js` 的 `srcList`，`normalizeSrc` 只是
  *      薄适配）—— 那组断言守的是**这一处实现的形状**，不再是"两份实现互证"（第四批收口，见用例注释）；
+ *      **子串匹配（`--src`）同样只有一处实现**（唯一实现在 `src/item-index.js` 的 `srcMatches`，
+ *      `matchesSrc` 只是**薄转发**；空 needle 那条边界与两层分工见 `srcMatches` 的契约注释）
+ *      —— 第五批收口，改前两处**已经漂**（一个是"不命中"、一个是"整段跳过"）；
  *      `file:line` / `file:line::引文` / URL / 命令 / 认不出 五种形状都能解析；
  *      同一个文件在同一次运行里**只读一次**（廉价前置）。
  *   B. `recheck` 三态（ok / needs-recheck / src-gone）+ 计数 + 原因分布，**逐条点名**、给可执行下一步；
@@ -308,11 +311,65 @@ describe('S4-A item-src：归一化 / 解析 / 与检索面同口径', () => {
     expect(itemSrc.parseRef('「待做清单」A 档第一条').kind).toBe('unknown');
   });
 
-  it('matchesSrc 与检索面的 `--src` 子串口径同义（唯一实现处，将来检索面改成调它即可）', () => {
+  /* ⚠️ 这一组**改过口径**（第五批："空 needle"这一维收成一处实现 + 两层分工）：
+   *   · 改前：本侧 `matchesSrc` 与 `item-index.passItemFilters` 里那行
+   *     `list.some(s => s.indexOf(f.src) >= 0)` 是**两份同口径实现**，而且**已经漂** ——
+   *     空 needle 这边判 `false`（不命中）、那边整段跳过（= 没给过滤）⇒ 同一个输入两种裁断；
+   *   · 现在：匹配的唯一实现在 `src/item-index.js` 的 `srcMatches()`，本侧的 `matchesSrc`
+   *     是它的**薄转发**（方向：本模块 Node-only → 那边 UMD 双端，与 `normalizeSrc` 同一条理由）。
+   *     契约逐字见 `srcMatches()` 的注释：**空 needle 不是过滤条件 —— 判断"有没有过滤"归过滤层；
+   *     匹配函数的契约是 needle 非空**。
+   *   · 下面四条期望值是**收口前的原读数**（一条不动 ⇒ 证明"行为没变"），
+   *     另加"同一个函数"的逐样本对照 + 一条结构断言（这一侧不许再有自己那份子串判定）。
+   *   判别力：把过滤层那句 `if (f.src)` 改成 `if (f.src !== undefined)` ⇒
+   *   `tests/item-index.test.js` 里写死的那条期望值**必红**（实测读数见交付）。 */
+  it('`matchesSrc(x, \'\') === false`（空 needle 不是命中），且它是 `itemIndex.srcMatches` 的薄转发', () => {
     expect(itemSrc.matchesSrc({ src: ['CHANGELOG.md:713-717'] }, 'CHANGELOG')).toBe(true);
     expect(itemSrc.matchesSrc({ src: 'refs/spec.md:4::第一条' }, 'spec.md')).toBe(true);
     expect(itemSrc.matchesSrc({ src: 'refs/spec.md:4::第一条' }, 'nope')).toBe(false);
     expect(itemSrc.matchesSrc({ src: 'refs/spec.md' }, '')).toBe(false);
+    // 薄转发 ⇒ 同一批样本（含空 needle / 数组形状 / 没有 src）必须与**唯一实现**逐条同读数
+    [
+      [{ src: ['CHANGELOG.md:713-717'] }, 'CHANGELOG'],
+      [{ src: 'refs/spec.md:4::第一条' }, 'spec.md'],
+      [{ src: 'refs/spec.md:4::第一条' }, 'nope'],
+      [{ src: 'refs/spec.md' }, ''],
+      [{ src: null }, 'x'],
+      [{}, 'x'],
+      [['a', '', 'b'], 'b']
+    ].forEach((pair) => {
+      expect(itemSrc.matchesSrc(pair[0], pair[1]), JSON.stringify(pair)).toBe(itemIndex.srcMatches(pair[0], pair[1]));
+    });
+    // 结构断言：这一侧**不许**再有自己那份子串判定（抄回去就红）
+    const body = /function matchesSrc\(itemOrSrc, needle\)\s*\{([\s\S]*?)\n\}/.exec(fs.readFileSync(SRC_ITEM_SRC, 'utf8'));
+    expect(body, 'src/item-src.js 里必须能找到 `function matchesSrc(itemOrSrc, needle) { … }`').toBeTruthy();
+    expect(body[1]).toContain('itemIndex.srcMatches(');     // 正：真的走那一处实现
+    expect(body[1]).not.toContain('indexOf');               // 反：没有自己那份匹配谓词
+  });
+
+  /* 端到端（真的过 CLI 与命令层）：`search <项目> <关键词> --src=` 的读数**写死**在这里。
+   * 裁决口径（第五批）：空 needle 不是过滤条件 ⇒ `--src=` = **没给过滤**。
+   * 为什么必须端到端一条：`--src` 在**两处**被读（检索面 `search` / 复校面 `recheck`），
+   * 而且"给没给条目级过滤"还连带决定"要不要返回节点级命中"（`item-index` 的 `onlyItems`）——
+   * 只有真走一遍 CLI，才钉得住"空串既不变成 0 命中、也不变成'空串过滤器'"。 */
+  it('端到端：`search <项目> 关键词 --src=` = 没给过滤（条目面与节点面都不是"空串过滤器"）', () => {
+    const nodes = (j) => j.hits.map((h) => h.nodeId);
+    const all = runJson('search', P, '内容', '--json').json;                  // 条目面：12 条条目正文都含「内容」
+    const empty = runJson('search', P, '内容', '--src=', '--json').json;
+    expect(all.hitCount).toBe(P_ITEMS.length);                               // 写死的期望：12
+    expect(empty.hitCount).toBe(P_ITEMS.length);                             // `--src=` ⇒ 一条不少（不是 0 命中）
+    expect(nodes(empty)).toEqual(nodes(all));                                // 逐条同序
+    const filtered = runJson('search', P, '内容', '--src', 'spec.md', '--json').json;
+    expect(filtered.hitCount).toBe(5);                                       // 对照：非空 needle 真的在过滤
+    expect(empty.hitCount).not.toBe(filtered.hitCount);
+    expect(runJson('search', P, '内容', '--src', 'no-such-needle', '--json').json.hitCount).toBe(0);
+    // 节点面：`--src` 一旦算"给了"就只返回条目级命中 ⇒ 空串**不算给了**，节点命中照旧在
+    const nodeAll = runJson('search', P, '节点', '--json').json;
+    const nodeEmpty = runJson('search', P, '节点', '--src=', '--json').json;
+    expect(nodeAll.hits.every((h) => h.itemId === null)).toBe(true);
+    expect(nodeAll.hitCount).toBe(P_ITEMS.length);
+    expect(nodeEmpty.hitCount).toBe(nodeAll.hitCount);
+    expect(runJson('search', P, '节点', '--src', 'spec.md', '--json').json.hitCount).toBe(0);
   });
 
   it('judge() 是三态字符串；inspect() 给逐条 ref + reasons（同一份裁决，两处不漂移）', () => {

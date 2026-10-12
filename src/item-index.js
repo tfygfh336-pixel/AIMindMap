@@ -394,12 +394,46 @@
   }
 
   /**
+   * `--src` 的**子串匹配**（契约 §3.4：「只命中 `src` 含**子串**的条目」）。
+   *
+   * ⚠️ **这一维的匹配只有这一处实现**：`src/item-src.js` 的 `matchesSrc()` 是它的**薄转发**。
+   * 改前是两份同口径实现（那份与 `passItemFilters` 里那行 `list.some(s => s.indexOf(f.src) >= 0)`）
+   * ⇒ 第五批收成一处（方向与理由同第四批的 `normalizeSrc`）：本模块是 **UMD 双端**，
+   * `src/item-src.js` 是 **Node-only**（要读盘）—— 双端模块依赖 Node-only 模块，浏览器那一侧
+   * 会**静默失效**（那边既没有 `MMItemSrc` 可注入、也没有 `root.MMItemSrc` 可传）。
+   *
+   * ## 契约（**两层分工，别把两层的判据混起来**）
+   *   · **空 needle 不是过滤条件 —— 判断"有没有过滤"归过滤层；匹配函数的契约是 needle 非空**。
+   *     "这一维到底过滤没过滤"由 `passItemFilters` 开头的 `if (f.src)` 回答（命令层的
+   *     `--src` 有没有**出现**同理），判的是"**参数出现没出现**"，**不是**它的真值；
+   *   · 所以本函数只回答"命中不命中"，**不回答**"要不要过滤"。`needle` 为空串 / `null` /
+   *     `undefined` 属**契约外**输入，这里按"**不命中**"返回 `false` 兜底（与收口前
+   *     `matchesSrc` 的读数**逐字一致**）—— 这里的 `false` 意思是"没命中"，
+   *     **不是**"没给过滤"：后者只有过滤层能答（把 `false` 读成"有过滤且不通过"是误读）。
+   *
+   * @param {object|string[]} itemOrSrc 条目（读 `.src`）或 `src` 数组本身
+   * @param {string} needle 非空子串（契约要求；空值走上面的兜底）
+   */
+  function srcMatches(itemOrSrc, needle) {
+    if (needle === undefined || needle === null || needle === '') return false;
+    const list = Array.isArray(itemOrSrc) ? srcList({ src: itemOrSrc }) : srcList(itemOrSrc);
+    const q = String(needle);
+    return list.some((s) => s.indexOf(q) >= 0);
+  }
+
+  /**
    * 条目级过滤（契约 §3.4 的 `--src`/`--verified`/`--type`/`--since`）。
    *
    * **这四维只有条目有** ⇒ 给了它们就**只返回条目级命中**（未条目化节点、以及"节点级命中"
    * 一律不返回）。契约对 `--since` 明说了这条（"给了它就不返回未条目化的节点命中"），
    * 本实现把同一条规矩扩到另外三个：否则 `--type qa` 会连"没有 type 的节点命中"一起返回，
    * 那是同一类"过滤了却没真的过滤"的坑。
+   *
+   * **这一层就是"过滤层"**（`srcMatches` 的契约注释里的那两层分工）：四维各自用
+   * "**参数有没有给**"判有没有过滤 —— `if (f.type)` / `if (f.verified)` / `if (f.src)` /
+   * `if (f.since !== null)`。所以 `src` 为空串 ⇒ **这条过滤不存在**（不是"过滤条件是一个空串"）⇒
+   * 跳过这一段、任何条目都通过；**匹配本身**（needle 非空那个前提）一律走 `srcMatches`，
+   * 本函数里不许再写一遍子串判定。
    *
    * `--since` 的两个细节：① 比较 `item.at >= since`（ISO → 毫秒）；② **没有 `at` 的条目
    * 不返回** —— `at` 在契约 §1 里是可选字段，而"取不到时间"不能满足"新于某时刻"。
@@ -409,8 +443,7 @@
     if (f.type && item.type !== f.type) return false;
     if (f.verified && !item.verified) return false;
     if (f.src) {
-      const list = srcList(item);
-      if (!list.some((s) => s.indexOf(f.src) >= 0)) return false;
+      if (!srcMatches(item, f.src)) return false;
     }
     if (f.since !== null) {
       const t = item.at ? Date.parse(item.at) : NaN;
@@ -662,6 +695,10 @@
     RESUME_ADVICE: RESUME_ADVICE,
     // 口径
     utf8Bytes: utf8Bytes, estTokens: estTokens, itemText: itemText, srcList: srcList,
+    // `--src` 这条边界的**两层分工**（见 `srcMatches` 的契约注释：空 needle 不是过滤条件，
+    // "有没有给过滤"归过滤层）：`srcMatches` = 唯一匹配实现，`passItemFilters` = 过滤层。
+    // 两者都导出，是因为这条边界要能被**直接钉住**（`src/item-src.js` 的 `matchesSrc` 只是薄转发）。
+    srcMatches: srcMatches, passItemFilters: passItemFilters,
     // 选项解析
     parseFlag: parseFlag, parseSince: parseSince, parseType: parseType, normalizeItemIds: normalizeItemIds,
     // 索引
