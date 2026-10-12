@@ -448,5 +448,158 @@
     return out;
   }
 
-  return { validateProject, validateNode, checkIdsAndCycles, checkItemIds, flatten, ID_RE };
+  /* ==========================================================================
+   * 契约字段表（**「节点上有哪些字段」的唯一权威副本**）+ 节点复制写回的加注解析器
+   * --------------------------------------------------------------------------
+   * 为什么在这里：本工程**五次**栽在同一形态上 —— **手挑字段清单漏一个** ⇒ 那个字段被
+   * **静默抹掉**（没有门禁会红、事后极难发现，且往往不可逆）：
+   *   `qa` → `localPath` → `origin` → 界面的 `items`/`detailMode` → `clone` 的深拷贝
+   *   （`cli/commands/edit.js` 的 `cloneNode`，漏 `items`/`detailMode`/`localPath`/`origin`）。
+   * 一次教训可以只修缺陷；**五次是形态问题** ⇒ 要有一个"哪些字段存在"的**机器可读**副本，
+   * 供两类写回代码（界面整树保存、节点复制）的静态判据共用。
+   * 放在本文件（而不是另起一个 `src/node-fields.js` 之类的模块）有两个理由：
+   *   ① 本模块就是**节点字段形状的唯一校验处**（下面 `validateNode` 逐字段判的正是这张表）；
+   *   ② `src/` 的新增文件要同批登记进 `docs/ARCHITECTURE.md` §2（G8 的 module-cover），
+   *      而 `docs/**` 由人维护 ⇒ 能并入已登记模块就不新增文件。
+   * ⚠️ 连带（改本表时要知道）：`scripts/docs-registry-check.js` 的契约覆盖判定用
+   *    `NODE_FIELD_NAMES` 区分"节点级 / 非节点级"，并只把 `node.<名>` 当作"schema 校验了它"
+   *    —— 本表只是**数据**，不许被读成校验。
+   * 人读的权威仍是 `docs/DATA-FORMAT.md` §2（节点字段全表）与 `docs/ITEM-MODEL.md` §1/§2。
+   * 顺序按 DATA-FORMAT §2 的表序，追加字段接在尾部 ⇒ **改动看起来就是「加一行」**。
+   * 容器字段（`meta` / `assoc`）不在这里：它们不是节点字段，节点级覆盖判据管不到它们。
+   * 边界：本表只说"**哪些字段存在**"，不说形状（类型/必填/互斥）—— 那是上面 `validateNode` 的事；
+   *   于是"字段在不在"（静默丢失）与"字段合不合法"（判红）是两条独立的判据。
+   * ======================================================================== */
+
+  /** 每行一项：status = `required`（每个节点都该有的那一档）/ `optional`（可以不出现在节点上）。
+   *  ⚠️ `expanded` 的说明：省略等价于 `true`（合法），但复制时要写出来 —— status 只管"该不该在"，
+   *     不管"缺了算不算合法"。 */
+  const NODE_FIELDS = Object.freeze([
+    { name: 'id', status: 'required', desc: '节点 id（数据格式第 2 节：全树唯一）' },
+    { name: 'topic', status: 'required', desc: '节点标题（数据格式第 2 节）' },
+    { name: 'expanded', status: 'required', desc: '展开状态（缺省 true；第 2 节）' },
+    { name: 'children', status: 'required', desc: '子节点（递归同构；第 2 节）' },
+    { name: 'detail', status: 'optional', desc: '正文 HTML（数据格式第 2 节）' },
+    { name: 'tags', status: 'optional', desc: '标签数组（数据格式第 2 节）' },
+    { name: 'images', status: 'optional', desc: '图片引用（数据格式第 2 节）' },
+    { name: 'files', status: 'optional', desc: '附件引用（数据格式第 2 节）' },
+    { name: 'links', status: 'optional', desc: '跨项目链接（数据格式第 2 节）' },
+    { name: 'background', status: 'optional', desc: '节点底色（透传字段；数据格式第 2 节）' },
+    { name: 'localPath', status: 'optional', desc: '本机文件夹绝对路径（数据格式第 2 节）' },
+    { name: 'qa', status: 'optional', desc: 'AI 问答记录（v2 节点级；数据格式第 2 节）' },
+    { name: 'origin', status: 'optional', desc: '来源指纹（数据格式第 2 节）' },
+    { name: 'items', status: 'optional', desc: '条目层 v3 真源（条目模型第 1 节）' },
+    { name: 'detailMode', status: 'optional', desc: '富文本节点标记（条目模型第 2 节）' }
+  ]);
+
+  /** 全字段名（按契约表序）—— 判据与测试从这里取，**不要手抄一份** */
+  const NODE_FIELD_NAMES = Object.freeze(NODE_FIELDS.map((f) => f.name));
+
+  /** 「每个节点都该有」的那一档 */
+  const NODE_FIELDS_REQUIRED = Object.freeze(NODE_FIELDS.filter((f) => f.status === 'required').map((f) => f.name));
+
+  /** 「可以不出现在节点上」的那一档。
+   *  为什么两条判据取不同档（都在本表里取，**没有第二份清单**）：
+   *    · 节点复制（`cloneNode`）显式写全部四档必写字段 ⇒ 判据核**全表**；
+   *    · 界面整树写回（`renderer/app-core.js` 的 `walk()`）把 `id/topic/expanded/children`
+   *      写在对象字面量里、只有可选字段才逐条赋值 ⇒ 它**可核对的那一档**就是本数组。
+   *  换言之：档位由本表定，判据按现场取对应档 —— 而不是各自维护一份字段名。 */
+  const NODE_FIELDS_OPTIONAL = Object.freeze(NODE_FIELDS.filter((f) => f.status === 'optional').map((f) => f.name));
+
+  /** 字段名 → 一句人话（判据报文用它点名"缺了什么"，免得读者去翻契约） */
+  const NODE_FIELD_DESC = Object.freeze((() => {
+    const o = {};
+    NODE_FIELDS.forEach((f) => { o[f.name] = f.desc; });
+    return o;
+  })());
+
+  /* ---------------------------------------------------------------
+   * 加注解析器（两种写回现场、一个解析器）
+   *   · 界面（`renderer/app-core.js` 的 `walk()`）：显式设值 —— 一行 `out.<名> = …` 一个字段。
+   *   · 节点复制（`cli/commands/edit.js` 的 `cloneNode`）：一张**字段表**驱动，
+   *     一行一项，格式 `序号 / [必] [选] 档位 / 字段名 / 写法 / 说明`。
+   * 两处都用同一套加注语法（`[必] 名` / `[选] 名`）声明"这一行管的是哪个字段"，
+   * 于是解析只有一份实现，"覆盖了契约吗"的判定也只有一份（见 `analyzeCloneFieldCopy`）。
+   * ⚠️ 不匹配的行**不算错**（散文、标题、说明行都在这里通过）；"一条加注都没有"由
+   *    `analyzeCloneFieldCopy` 的锚点/计数态判红，绝不静默放过。
+   * @param {string} text 字段表正文（或含 `[必]/[选]` 加注的源码片段）
+   * @returns {Array<{name:string, status:string, line:number}>}
+   * --------------------------------------------------------------- */
+  const FIELD_LINE_RE = /\[(必|选)\]\s*([A-Za-z_$][\w$]*)/g;
+
+  function parseFieldLines(text) {
+    const out = [];
+    const lines = String(text === undefined || text === null ? '' : text).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      FIELD_LINE_RE.lastIndex = 0;                  // 正则带 g ⇒ 每次扫描前复位（否则匹配位置在调用间残留）
+      for (const m of lines[i].matchAll(FIELD_LINE_RE)) {
+        out.push({ name: m[2], status: m[1] === '必' ? 'required' : 'optional', line: i + 1 });
+      }
+    }
+    return out;
+  }
+
+  /* ---------------------------------------------------------------
+   * 判据：节点复制（`cloneNode`）写回的字段必须覆盖契约
+   *   `missing` = 契约里有、这份写回**不写** ⇒ 复制时**静默抹掉**（主判据）。
+   *     刻意按**代码那一份读数**算、而不是"表 ∪ 代码"：字段有没有被写进副本，只有代码说了算。
+   *   `unknown` = 这份写回有、契约里没有 ⇒ 写回代码先漂了，或契约表漏登记。
+   *   `drift`   =「加注表」与「真实赋值」逐项对不上（多一条少一条都算）⇒ 表在骗人（数据没丢）。
+   *   自洽      = 表行数 == 赋值个数，且两个锚点各**恰好**出现一次（定位失败 ⇒ 缺 = 全表，不许当通过）。
+   * 判别力：删掉任一字段的**赋值** ⇒ `missing` 点名它；只删表里那一行 ⇒ `drift` 点名它；
+   *   写一个契约外字段 ⇒ `unknown` 点名它；函数改名 ⇒ 锚点态判红。（单测里四档注入都有。）
+   * @param {string} src 整个文件的源码
+   * @returns {{ok:boolean, missing:string[], unknown:string[], drift:string[], seen:string[],
+   *            parsed:number, fields:number, anchors:{decl:number, ret:number}, label:string}}
+   * --------------------------------------------------------------- */
+  const CLONE_FN_DECL = 'function cloneNode(';
+  /** 函数体收尾锚点：函数里最后一个 `return node;`（签名 + 它 = 恰好夹住整张字段表与赋值正文） */
+  const CLONE_FN_END = 'return node;';
+
+  function analyzeCloneFieldCopy(src) {
+    const text = String(src === undefined || src === null ? '' : src);
+    const decl = text.split(CLONE_FN_DECL).length - 1;
+    const end = text.split(CLONE_FN_END).length - 1;
+    const res = {
+      ok: false, missing: [], unknown: [], drift: [], seen: [], parsed: 0, fields: 0,
+      anchors: { decl: decl, ret: end }, label: CLONE_FN_DECL
+    };
+    if (decl !== 1 || end !== 1) {
+      res.missing = NODE_FIELD_NAMES.slice();       // 看不见 = 缺（不许把"定位失败"当成"覆盖齐全"）
+      return res;
+    }
+    const body = text.slice(text.indexOf(CLONE_FN_DECL) + CLONE_FN_DECL.length, text.lastIndexOf(CLONE_FN_END));
+    /* 函数体切成两个区，各取一份读数（两份必须逐项对上）：
+     *   甲区 =「第一条 `node.<名> =` 之前」⇒ 加注表；乙区 = 从第一条赋值到最后 ⇒ 真实赋值。
+     * 按"第一条赋值"切、而不是要求加注与赋值同行：字段表要能**竖着读**才好逐行核对。
+     * ⚠️ 甲区（注释）里不要写出 `node.<名> =` 的样子，否则切点会落进注释里（判据自己的禁区）。 */
+    const cut = body.search(/\bnode\.[A-Za-z_$][\w$]*\s*=/);
+    const annotated = parseFieldLines(cut > 0 ? body.slice(0, cut) : '');
+    const seen = Array.from(new Set(Array.from((cut > 0 ? body.slice(cut) : '')
+      .matchAll(/\bnode\.([A-Za-z_$][\w$]*)\s*=/g)).map((m) => m[1])));
+    res.seen = seen;
+    res.parsed = annotated.length;
+    res.fields = seen.length;
+    if (!annotated.length || !seen.length) {        // 两条读数为零 = 判据在空转，判红
+      res.missing = NODE_FIELD_NAMES.slice();
+      return res;
+    }
+    const annotatedNames = new Set(annotated.map((a) => a.name));
+    const written = new Set(seen);
+    res.missing = NODE_FIELD_NAMES.filter((f) => !written.has(f));
+    const known = new Set(NODE_FIELD_NAMES);
+    res.unknown = seen.filter((f) => !known.has(f))
+      .concat(Array.from(annotatedNames).filter((f) => !known.has(f)));
+    res.drift = Array.from(new Set(annotated.map((a) => a.name).filter((f) => !written.has(f))
+      .concat(seen.filter((f) => !annotatedNames.has(f)))));
+    res.ok = res.missing.length === 0 && res.unknown.length === 0 && res.drift.length === 0
+      && res.parsed === res.fields;
+    return res;
+  }
+
+  return {
+    validateProject, validateNode, checkIdsAndCycles, checkItemIds, flatten, ID_RE,
+    NODE_FIELDS, NODE_FIELD_NAMES, NODE_FIELDS_REQUIRED, NODE_FIELDS_OPTIONAL, NODE_FIELD_DESC,
+    parseFieldLines, analyzeCloneFieldCopy
+  };
 });

@@ -159,6 +159,11 @@ afterAll(() => {
   });
   try {
     const dir = path.dirname(backupPathOf(P));
+    // 本命令**还会往目录里写一份自述 README.md**（G8 的判据；产品行为，见 `cli/commands/migrate.js`
+    // 的 `backupReadmeText`）。只删"仅剩自述"的那种目录 —— 里面有**别人的**备份文件时一律不动。
+    if (fs.existsSync(dir) && fs.readdirSync(dir).join(',') === 'README.md') {
+      fs.rmSync(path.join(dir, 'README.md'), { force: true });
+    }
     if (fs.existsSync(dir) && !fs.readdirSync(dir).length) fs.rmdirSync(dir);
   } catch (e) { /* ignore */ }
 });
@@ -229,6 +234,21 @@ describe('S1 迁移 · B. 真跑（写盘 / 一致性 / 备份可回退）', () 
     expect(path.isAbsolute(report.backup), '备份路径必须是绝对路径：' + report.backup).toBe(true);
     expect(report.backup).toBe(backupPathOf(P));
     expect(fs.existsSync(report.backup)).toBe(true);
+  });
+
+  it('备份目录里有**自述** README.md（G8 的判据就是"`.review/*/README.md` 存在" ⇒ 少了它下一次全链必红）', () => {
+    // 判据来源：`scripts/docs-registry-check.js` 的 `checkWorkDirStatus` —— `.review/` 的**直接子目录**
+    // 必须有 `README.md`（G8 报文原话："补三行（主题 / 开始日期 / 状态：在飞|已收口|已废弃）"）。
+    // 本命令跑一次就会**当场新建一个目录** ⇒ 自述必须由产品写：实测过的后果是"跑迁移那次全绿、
+    // 下一次全链在 G8 红"（G8 步 2 / G4 步 12），且绿的那次看不出任何异常。
+    const readme = path.join(path.dirname(backupPathOf(P)), 'README.md');
+    expect(fs.existsSync(readme), '备份目录缺自述：' + readme).toBe(true);
+    const md = fs.readFileSync(readme, 'utf8');
+    expect(md).toContain('主题:');                                  // 三行状态（G8 报错文案点名要的）
+    expect(md).toMatch(/开始日期: \d{4}-\d{2}-\d{2}/);
+    expect(md).toMatch(/状态: (在飞|已收口|已废弃)/);
+    expect(md).toContain('import-json');                            // 怎么回退（要能直接照抄）
+    expect(md).toContain('.review/');                               // 不进版本库 / 能整目录删
   });
 
   it('迁移后 validate exit 0（G2 绿）+ `meta.formatVersion === 3`', () => {

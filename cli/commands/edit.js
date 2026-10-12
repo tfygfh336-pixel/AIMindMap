@@ -13,6 +13,7 @@ const convert = require('../../src/convert.js');
 const assoc = require('../../src/assoc.js');
 const links = require('../../src/links.js');
 const tree = require('../../src/tree-utils.js');
+const itemIndex = require('../../src/item-index.js');   // 全项目条目 id 集合（§5.1 唯一性口径，一处实现）
 const concurrency = require('../../src/concurrency.js');
 const { SKIP_WRITE } = require('../core.js');
 
@@ -231,6 +232,114 @@ function addUnder(ctx, parent) {
     ctx.out('⚠ 已存在同父同题的节点 ' + st.dup.id + '，本次是 --force 下的**有意重复**');
   }
   ctx.out('已添加: ' + st.id + '（父 ' + parent + '）');
+}
+
+/* ============================================================================
+ * 节点复制（`clone` 命令与 `apply` 的 `clone` op **共用同一份实现**）
+ * ----------------------------------------------------------------------------
+ * ## 为什么是一张表，而不是一串 if
+ * 这个函数**第五次**踩在同一个坑上：**手挑字段清单漏一个** ⇒ 那个字段被静默抹掉
+ * （没有门禁会红、事后极难发现）。前四次：`qa` / `localPath` / `origin` /
+ * 界面的 `items`+`detailMode`（`renderer/app-core.js` 的 `walk()`）。
+ * 2026-10-12 实测的形态：`clone` 一个条目化节点（有 `items`）⇒ 副本退回 v2；
+ * 带 `localPath` / `origin` 的节点 ⇒ 副本上两者消失，而 `validate` 副本**照样通过**。
+ * ⇒ 改成"**契约字段表**驱动"：字段清单只有一处（`src/schema.js` 的 `NODE_FIELDS`），本表逐行对齐它，
+ *    并由 `scripts/cli-integration.js` 的「节点复制写回的字段清单」判据**机械核对**。
+ *
+ * ## 写法约定（判据靠它把"表"与"代码"对上，改这里要看那条判据）
+ * 每行一项：`行号 / 档位 / 字段名 / 写法 / 说明`。档位两档：
+ *   [必] = 每个节点都写（`id` / `topic` / `expanded` / `children`）；
+ *   [选] = **只在有值时写**（`undefined` 不产生键）。
+ * 后者是硬要求，不是风格：它对**不含这些字段的旧数据（v2）**保证
+ * **克隆结果与从前逐字节相同** —— 拿"顺手补个默认值"去动它，会改掉老数据的形状。
+ *
+ * ## 边界
+ *   · `expanded` 是唯一"缺省即 true"的字段 ⇒ 写出来与省略在语义上等价（都表示展开），
+ *     故它一直写在"必"档里（**不是**静默丢失：没有信息被丢掉）。
+ *   · `items` 整块**原样搬运**：含空数组与 `_` 起头的内部键（`_container` / `_groupStart` 等）
+ *     都照搬，不在这一层解释条目语义（那是 `src/item-model.js` 的事）。
+ *   · 但**条目 id 不能原样搬**：契约 §5.1 要求条目 id **全项目唯一**
+ *     （`supersededBy` / `links[].item` 只带条目 id ⇒ 不唯一则引用有歧义），
+ *     而写盘闸门真的会拦（实测：`clone` 条目化节点 ⇒ `error: 校验失败: [n1] 重复条目 id: …`）。
+ *     ⇒ 副本人每条条目**换新 id、其余字段逐字不动**；`detail` 是派生缓存、里面不含 id，
+ *       故 `detail === renderDetail(items)` 这条不变量照样成立（探针里 `validate` 复绿）。
+ *   · `links[].item` 指向**别人**的条目 id（跨节点），复制后仍然指向原物（原物还在，不是悬挂）；
+ *     本层不做"子树内重指向"——那是另一档语义，未做（如实标注）。
+ *
+ * @param {object} n 源节点
+ * @param {(base:string)=>string} mint 新**节点** id 生成器（注入：命令与 op 两条路径策略不同）
+ * @param {boolean} deep 是否连子树一起复制
+ * @param {(oldItemId:string)=>string} [mintItem] 新**条目** id 生成器；节点有 `items` 时**必需**
+ *   （缺了就连条目的唯一性都保证不了 ⇒ 宁可响亮报错，也不静默照搬旧 id 让闸门去拦）
+ * @returns {object} 副本节点（新 id）
+ * ========================================================================== */
+function cloneNode(n, mint, deep, mintItem) {
+  const node = {};
+  /* ---- 甲档：字段表（判据逐行解析这里；下面每一条赋值都要与它的加注对齐）----
+   * 只增字段 + 只在有值时写 ⇒ 不含这些字段的旧数据克隆结果与从前逐字节相同。 */
+  /*  1 [必] id          必写（无条件）     新 id（mint 注入：命令与 op 两条路径的去重策略不同） */
+  /*  2 [必] topic       必写（无条件）     标题原样搬运 */
+  /*  3 [必] expanded    必写（无条件）     缺省即 true，故写 `n.expanded !== false` */
+  /*  4 [必] children    必写（无条件）     先占位空数组（键序固定），deep 时在末尾递归填充 */
+  /*  5 [选] detail      条件设值（非空串）     正文 HTML */
+  /*  6 [选] background  条件设值（非空串）     节点底色（透传字段） */
+  /*  7 [选] detailMode  条件设值（非空串）     富文本节点标记 */
+  /*  8 [选] localPath   条件设值（非空串）     本机文件夹绝对路径 */
+  /*  9 [选] tags        必带长度闸门  标签数组（空数组不写键） */
+  /* 10 [选] images      必带长度闸门  图片引用（空数组不写键） */
+  /* 11 [选] files       必带长度闸门  附件引用（空数组不写键） */
+  /* 12 [选] links       必带长度闸门  跨项目链接（空数组不写键） */
+  /* 13 [选] qa          必带长度闸门  问答记录（v2 节点级） */
+  /* 14 [选] items       必带长度闸门  条目层真源（**含空数组**：这是"有它即条目化"，故这里判的只是 非数组） */
+  /* 15 [选] origin      条件设值（非空串）     来源指纹 */
+  /* ---- 乙档：赋值正文（注释在上、赋值只写一次 —— 判据会逐项比对两边的字段名）----
+   * 前四行的**键序**不要动：`id/topic/expanded/children` 依次先写，是"旧形状逐字节相同"的一半
+   * （另一半是下面那些"只在有值时写"）。 */
+  node.id = mint(n.id);
+  node.topic = n.topic;
+  node.expanded = n.expanded !== false;
+  node.children = [];
+  if (n.detail !== undefined) node.detail = n.detail;
+  if (n.background !== undefined) node.background = n.background;
+  if (n.detailMode !== undefined) node.detailMode = n.detailMode;
+  if (n.localPath !== undefined) node.localPath = n.localPath;
+  if (Array.isArray(n.tags) && n.tags.length) node.tags = n.tags.slice();
+  if (Array.isArray(n.images) && n.images.length) node.images = JSON.parse(JSON.stringify(n.images));
+  if (Array.isArray(n.files) && n.files.length) node.files = JSON.parse(JSON.stringify(n.files));
+  if (Array.isArray(n.links) && n.links.length) node.links = JSON.parse(JSON.stringify(n.links));
+  if (Array.isArray(n.qa) && n.qa.length) node.qa = JSON.parse(JSON.stringify(n.qa));
+  if (Array.isArray(n.items)) node.items = cloneItems(n.items, mintItem);
+  if (n.origin !== undefined) node.origin = JSON.parse(JSON.stringify(n.origin));
+  if (deep) node.children = (n.children || []).map((c) => cloneNode(c, mint, true, mintItem));
+  return node;
+}
+
+/**
+ * 全项目**条目 id** 集合 —— 签发新条目 id 时的查重集（ITEM-MODEL §5.1 的唯一性口径）。
+ * 用 `src/item-index.js` 的那份索引（`cli/commands/project.js` / `recheck.js` 同一处实现），
+ * **不在这里再走一遍树**：一类事实一处实现，是本工程的硬规矩。
+ */
+function projectItemIds(root) {
+  return new Set(Object.keys(itemIndex.buildIndexes(root).itemById));
+}
+
+/**
+ * 复制一整份条目集：**内容逐字照搬、身份重新签发**（条目 id 换新，见 `cloneNode` 的边界说明）。
+ * `_` 起头的内部键（`_container` / `_groupStart` / `_gap` / `_tail`）随深拷贝原样带走 ——
+ * 判据与需求都明确要求"原样搬运"，这里**不筛键**。
+ * @param {Array} items 源节点的 `items`
+ * @param {(oldId:string)=>string} mintItem 新条目 id 生成器（必需：全项目唯一由调用方查重）
+ */
+function cloneItems(items, mintItem) {
+  if (typeof mintItem !== 'function') {
+    throw new Error('复制条目化节点必须提供 mintItem：条目 id 是**全项目唯一**的（ITEM-MODEL §5.1），'
+      + '原样照搬会造出重复 id ⇒ 写盘闸门直接拒绝。');
+  }
+  return items.map((it) => {
+    const copy = JSON.parse(JSON.stringify(it));
+    if (copy && typeof copy === 'object' && !Array.isArray(copy)) copy.id = mintItem(it.id);
+    return copy;
+  });
 }
 
 module.exports = {
@@ -455,25 +564,21 @@ module.exports = {
         used.add(candidate);
         return candidate;
       };
-
-      // 深拷贝必须覆盖全部节点字段：曾漏掉 tags 与 files，
-      // 导致复制带标签/附件的节点后两者无声消失（附件物理文件变孤儿）。
-      const deepCopy = (n) => {
-        const node = { id: mintId(n.id), topic: n.topic, expanded: n.expanded !== false, children: [] };
-        if (n.detail !== undefined) node.detail = n.detail;
-        if (n.background !== undefined) node.background = n.background;
-        if (Array.isArray(n.tags) && n.tags.length) node.tags = n.tags.slice();
-        if (Array.isArray(n.images) && n.images.length) node.images = JSON.parse(JSON.stringify(n.images));
-        if (Array.isArray(n.files) && n.files.length) node.files = JSON.parse(JSON.stringify(n.files));
-        if (Array.isArray(n.links) && n.links.length) node.links = JSON.parse(JSON.stringify(n.links));
-        // AI 问答记录：漏了它会让"复制出来的节点看起来从没被 AI 看过"（与 tags/files 那次的同一类缺陷）
-        if (Array.isArray(n.qa) && n.qa.length) node.qa = JSON.parse(JSON.stringify(n.qa));
-        if (Array.isArray(n.tags) && n.tags.length) node.tags = n.tags.slice();
-        if (ctx.args.deep) node.children = (n.children || []).map(deepCopy);
-        return node;
+      // 条目 id 也要换新（全项目唯一，§5.1）—— 与节点 id 同一套「基名 + 后缀 + 查重」写法
+      const usedItems = projectItemIds(data.data);
+      let itemSeq = 0;
+      const mintItemId = (base) => {
+        let candidate;
+        do { candidate = base + '-c' + stamp + (itemSeq++ ? '-' + itemSeq : ''); } while (usedItems.has(candidate));
+        usedItems.add(candidate);
+        return candidate;
       };
 
-      const copy = deepCopy(src);
+      // ⚠️ 复制走**模块级** `cloneNode`（唯一实现，字段表见那里）：本处曾有一份**手挑字段**的
+      //    局部深拷贝 —— 它漏掉 `items` / `detailMode` / `localPath` / `origin`，
+      //     于是"复制一个条目化节点"会把整层条目静默抹掉（本工程第五次栽在同一形态上）。
+      //     别再就地写第二份：两份必然漂，而漂的那个方向是**静默丢字段**。
+      const copy = cloneNode(src, mintId, !!ctx.args.deep, mintItemId);
       parentNode.children = (parentNode.children || []).concat(copy);
       copyId = copy.id;
       return data;
@@ -482,7 +587,15 @@ module.exports = {
   },
 
   /** `apply <项目> --ops-file ops.json [--dry-run] [--idem 键]` —— 见下方 apply 段 */
-  apply
+  apply,
+
+  /** ⚠️ 导出给**单测**（`tests/clone-field-copy.test.js`）直接调用 —— 它们是本文件里
+   *  "复制一个节点"的**唯一实现**（`clone` 命令与 `apply` 的 clone op 共用）。
+   *  直接测它、而不是只测命令回显，是为了让"`undefined` 不产生键"这类**对象级**性质可断言
+   *  （写盘后的 JSON 看不见 `undefined`）。命令面照旧只认 registry 里登记的那几个键：
+   *  `cli/registry.js` 只按下标取具名函数，没有任何地方枚举本对象的键。 */
+  cloneNode: cloneNode,
+  cloneItems: cloneItems
 };
 
 /* ============================================================================
@@ -806,16 +919,19 @@ const OPS = {
         used.add(c);
         return c;
       };
-      const deepCopy = (n) => {
-        const node = { id: mint(), topic: n.topic, expanded: n.expanded !== false, children: [] };
-        ['detail', 'background'].forEach((f) => { if (n[f] !== undefined) node[f] = n[f]; });
-        ['tags', 'images', 'files', 'links', 'qa'].forEach((f) => {
-          if (Array.isArray(n[f]) && n[f].length) node[f] = JSON.parse(JSON.stringify(n[f]));
-        });
-        if (a.deep) node.children = (n.children || []).map(deepCopy);
-        return node;
+      // 条目 id 也要换新（全项目唯一，§5.1）；`index + 1` 让它**可复现**（同上游 id 的写法）
+      const usedItems = projectItemIds(data.data);
+      let itemSeq = 0;
+      const mintItem = (base) => {
+        let c;
+        do { c = base + '-c' + (index + 1) + (itemSeq++ ? '-' + itemSeq : ''); } while (usedItems.has(c));
+        usedItems.add(c);
+        return c;
       };
-      const copy = deepCopy(src);
+      // ⚠️ 与 `clone` 命令**同一份**实现（模块级 `cloneNode`）：这里原先另写了一份手挑字段的
+      //     深拷贝，同样漏 `items` / `detailMode` / `localPath` / `origin` —— `apply` 的 clone op
+      //     也会静默抹掉整层条目。两处必须共用一个实现，否则总有一处会漂。
+      const copy = cloneNode(src, mint, a.deep, mintItem);
       parentNode.children = (parentNode.children || []).concat(copy);
       a._newId = copy.id;
       return data;

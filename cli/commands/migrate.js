@@ -21,6 +21,9 @@
  *      （这是"回退 = 恢复迁移前那份 `.aimap.json`"能成立的硬前提）。
  *   ⑥ **备份**：写盘**之前**自动 export-json 一份到 `.review/<YYYYMMDD>-条目层迁移/<项目>.aimap.json`，
  *      打印**绝对路径**，并打印"工程外备份"的推荐命令。**不提供跳过备份的开关**。
+ *      同一步还会往那个目录写一份 `README.md`（自述：这是什么 / 能不能整目录删 / 怎么回退）——
+ *      **G8 要求 `.review/` 的每个直接子目录都有 `README.md`**，本命令会当场新建目录，
+ *      少了它 ⇒ 下一次全链的 G8 必红（G8 在链上第 2 步、G4 第 12 步：跑迁移那次却全绿）。
  *   ⑦ **报告**：文本与 `--json` 是**同一份数据**：
  *      `{ok, project, scanned, itemized, skipped:[{nodeId,reason}], items, changed:{nodes,items}, backup}`；
  *      `--dry-run` 只出报告（不写盘、不备份）。**跳过项逐条点名**。
@@ -256,11 +259,62 @@ function applyPlan(data, plan) {
  * ========================================================================== */
 
 /**
+ * 备份目录的**自述文件**。
+ *
+ * ⚠️ 为什么它必须由**产品**写（而不是给 G8 开豁免）：G8（`scripts/docs-registry-check.js`
+ * 的 `checkWorkDirStatus`）要求 `.review/` 的**每个直接子目录**都有 `README.md` 声明死活
+ * （在飞 / 已收口 / 已废弃）。本命令会在建备份时**当场新建一个目录** ⇒ 没有自述，
+ * 之后**任何一次** `npm run verify` 都会在 G8 红「[工作目录无状态]」，而**跑迁移的那一次却全绿**
+ * （G8 在链上排第 2 步、G4 排第 12 步）—— 这正是本批实测踩到的"绿链毒化下一次绿链"。
+ * 豁免是绕过；**让产物自己说清"我是什么、能不能删、怎么回退"**才是本工程的做法。
+ *
+ * 内容里的日期只到**天**（`YYYY-MM-DD`）⇒ 同一天重复迁移写出的内容**逐字节相同**，
+ * 不引入非确定性产物（判据：同状态连跑两次逐字节相同，见 `scripts/determinism-check.js`）。
+ */
+function backupReadmeText() {
+  const s = localStamp(new Date());
+  return [
+    '# 条目层迁移（v2 → v3）· 写盘前的自动备份',
+    '',
+    '- 主题: 条目层迁移（v2 → v3）的写盘前自动备份',
+    '- 开始日期: ' + s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8),
+    '- 状态: 已收口',
+    '',
+    '## 这是什么',
+    '`node cli/mm-cli.js migrate items <项目>` **真要写盘之前**自动导出的那一份 `<项目>.aimap.json`。',
+    '它用的是与 `export-json` **同一个**打包实现 ⇒ 能被 `import-json` 原样导回；',
+    '里面那份还是 **formatVersion 2**（回退就靠它）。',
+    '',
+    '## 能整目录删除吗',
+    '能。这是**工作产物区**：整个目录可以随时删掉，删它不影响任何项目数据',
+    '（它**不进版本库** —— `.review/` 已在 `.gitignore` 里）。下次真跑迁移会按当日重新建目录。',
+    '',
+    '## 怎么用它回退',
+    '1) 先停手，别再写那个项目；',
+    '2) `node cli/mm-cli.js import-json <项目>.aimap.json <新项目名>` 导成一份新项目核对，',
+    '   再 `node cli/mm-cli.js validate <新项目名>` 过一遍；',
+    '3) 确认要就地回退：先 `export-json` 当前状态留底，再删掉要回退的项目目录、把这份备份导回来。',
+    '',
+    '## 边界',
+    '- 它**不是**磁盘级事故的兜底：大改前请照 `docs/INCIDENTS.md` 第 4 条另导一份到**工程外**。',
+    '- 目录名里的日期 = 迁移当天；同一天多次迁移会**覆盖**同名文件。',
+    ''
+  ].join('\n');
+}
+
+/**
  * @returns {{file:string, missing:string[], bytes:number}}
  */
 function writeBackup(ctx, project, snapshot) {
   const dir = path.join(ROOT, '.review', localStamp(new Date()) + BACKUP_SUBDIR_SUFFIX);
   fs.mkdirSync(dir, { recursive: true });
+  // 目录自述（G8 的判据 = `.review/<目录>/README.md` **存在**）：与备份同一步、同样在**写盘之前**。
+  // 内容没变就不重复写（保持"不产生空写入"，也让同一天的多次迁移逐字节幂等）。
+  const readme = path.join(dir, 'README.md');
+  const readmeText = backupReadmeText();
+  let readmeOld = null;
+  try { readmeOld = fs.readFileSync(readme, 'utf8'); } catch (e) { /* 第一次：还没有 */ }
+  if (readmeOld !== readmeText) ctx.store.writeFileAtomic(readme, readmeText);
   const file = path.join(dir, project + '.aimap.json');
   const assets = {};
   const missing = [];

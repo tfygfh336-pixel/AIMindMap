@@ -32,6 +32,11 @@ const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
 const CLI = path.join(ROOT, 'cli', 'mm-cli.js');
+// 「契约允许出现在**节点**上的字段」的**唯一权威清单** + 节点复制写回的加注解析器，
+// 与节点字段**形状**校验同处一室（`src/schema.js` 是那张契约表的实现）。
+// ⚠️ 下面两条静态判据（界面整树写回 / 节点复制写回）**共用这一份** —— 各抄一份必然会漂，
+//    而漂的方向恰恰是"某处漏一个字段、谁也没发现"（本工程栽过五次的那一类）。
+const { NODE_FIELD_NAMES, NODE_FIELDS_OPTIONAL, NODE_FIELD_DESC, analyzeCloneFieldCopy } = require(path.join(ROOT, 'src', 'schema.js'));
 // 进程内同步入口 —— 见文件头「执行方式」与 `cli/main.js` 顶部关于同步不变量的说明
 const { invokeSync } = require(path.join(ROOT, 'cli', 'main.js'));
 const PROJ = 'it-probe-' + Date.now().toString(36);
@@ -3958,14 +3963,45 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
   const carried = (a > 0 && b > a)
     ? new Set(Array.from(src.slice(a, b).matchAll(/out\.([A-Za-z_$][\w$]*)\s*=/g)).map((m) => m[1]))
     : new Set();
-  // 契约允许出现在**节点**上的可选字段（docs/DATA-FORMAT.md §2 + docs/ITEM-MODEL.md §1/§2）
-  const REQUIRED = ['detail', 'tags', 'images', 'files', 'links', 'background',
-    'localPath', 'qa', 'origin', 'items', 'detailMode'];
-  const missing = REQUIRED.filter((f) => !carried.has(f));
+  // 字段清单从**共用**的那一处取（`src/schema.js` 的契约字段表 = 契约的可执行副本）——
+  // 本段原先自带一份 `REQUIRED` 数组，那正是"同一个清单两处表达"的病（会漂）。
+  // 取**可选**那一档：`walk()` 把 `id/topic/expanded/children` 写在对象字面量里，
+  // 只有可选字段才逐条 `out.<名> =`（档位由共用表定，见那里的说明）。
+  const missing = NODE_FIELDS_OPTIONAL.filter((f) => !carried.has(f));
   check('界面整树写回的字段清单覆盖契约里的节点字段（漏一个 = 保存时静默抹掉）',
     a > 0 && b > a && missing.length === 0,
     'app-core.js walk() 覆盖 ' + carried.size + ' 个字段；缺：' + (missing.join(',') || '（无）')
       + (a > 0 && b > a ? '' : '｜⚠️ 定位失败：serializeTree/walk 的锚点变了，判据要跟着改'));
+}
+
+/* ============================================================================
+ * 条目层 v3 · **节点复制写回的字段清单**（静态判据：不需要起界面、不需要写盘）
+ * ----------------------------------------------------------------------------
+ * 与上面那条**同型同源**（字段清单共用 `src/schema.js` 的契约字段表，别在判据里再抄一份）。
+ * 防的是同一个形态在本工程的**第五次**复发：`clone` 的深拷贝是"手挑字段"，
+ * 漏掉 `items` / `detailMode` / `localPath` / `origin` ⇒ 复制一个条目化节点后**整层条目消失**，
+ * 而 `validate` 副本**照样通过**（实测：副本 `items`=（无）、`localPath`=（无）、`origin`=（无），
+ * 退出码 0）。无门禁、不可逆、事后极难发现 —— 所以守在这里，而不是写进一条"以后记得"的铁律。
+ * 判据：`cloneNode` 的**字段表**（`[必] 名` / `[选] 名`）与**真实赋值**（`node.<名> =`）合起来必须覆盖
+ *      契约里的节点字段；两份读数还要逐项对得上（多一条少一条都判红 —— 否则"表说 A、代码做 B"能骗过去）。
+ * 判别力：把字段表里的 `items` 那一行（或它的赋值）删掉 ⇒ 本断言必红并**点名 items**；还原后复绿
+ *        （注入与还原的读数见本批交付说明；与上面那条 app-core 的注入证明同源：这边源码级、
+ *        冒烟域 39 那边行为级）。
+ * ⚠️ 段内不要写成"行内斜杠紧跟圈号"的样子（G9 会计数，见文件头）。
+ */
+{
+  const src = fs.readFileSync(path.join(ROOT, 'cli', 'commands', 'edit.js'), 'utf8');
+  const r = analyzeCloneFieldCopy(src);
+  // 缺哪个就点名哪个 + 那个字段是什么（读报的人不必回翻契约）
+  const named = (list) => list.map((f) => f + (NODE_FIELD_DESC[f] ? '（' + NODE_FIELD_DESC[f] + '）' : '')).join('、');
+  check('节点复制（clone 与 apply 的 clone op）写回的字段清单覆盖契约节点字段（漏一个 = 克隆时静默抹掉）',
+    r.ok,
+    'cloneNode：字段表 ' + r.parsed + ' 行 / 赋值 ' + r.fields + ' 个；缺：' + (named(r.missing) || '（无）')
+      + (r.unknown.length ? '｜契约里没有：' + r.unknown.join('、') : '')
+      + (r.drift.length ? '｜表与赋值对不上：' + r.drift.join('、') : '')
+      + ((r.anchors.decl !== 1 || r.anchors.ret !== 1)
+        ? '｜⚠️ 定位失败：`function cloneNode` 与收尾 `return node;` 的锚点各出现 '
+          + r.anchors.decl + ' / ' + r.anchors.ret + ' 次，判据要跟着改' : ''));
 }
 
 /* ---------------- 清理 ---------------- */

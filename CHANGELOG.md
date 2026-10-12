@@ -14,6 +14,14 @@
 
 ## [Unreleased]
 
+### 克隆不再静默丢字段 + 给这个形态补机械判据（2026-10-12）
+
+- **修**：`cli/commands/edit.js` 的 `clone`（以及 `apply` 的 clone op）原先各自**手挑字段**做深拷贝（漏 `items`/`detailMode`，还漏早已发货的 `localPath`/`origin`）⇒ 克隆一个条目化节点会**把条目层静默退回 v2**，而 `validate` 照样通过（**无门禁、不可逆、事后极难发现**）。这是本工程**第四次**栽在同一形态（`qa` → `localPath` → `origin` → 界面保存 → 现在 `clone`）。现在两份深拷贝合成**唯一实现** `cloneNode`：字段表逐行对齐契约，**只增字段 + 只在有值时写**（不含这些字段的旧数据克隆结果与从前**逐字节相同**）；`items` 整块搬运但**条目 id 重新签发**（否则撞"条目 id 全项目唯一"，实测会被写盘闸门拒）。
+- **判据（本条的真正价值）**：`src/schema.js` 里落了一份**契约字段表**（`NODE_FIELDS`，required 4 / optional 11）+ 纯函数 `analyzeCloneFieldCopy(src)`（`require` 零副作用、可单测）；集成里新增一条静态判据"**节点复制写回的字段清单必须覆盖契约节点字段**（漏一个 = 克隆时静默抹掉）"，并且**把界面那条同类判据的字段清单也换成同一份来源**（一份清单两处用，不再各写一份）。四档判定可分：`missing`（契约有而代码不写）/`drift`（表与代码对不上）/`unknown`（写了契约外字段）/锚点缺失 ⇒ 缺 = 全表（不许把"定位失败"当通过）。
+- **判别力证明**：把 `cloneNode` 里 `items` 的加注与赋值两处去掉 ⇒ 该判据 **FAIL** 且报文点名 `items`，行为级断言同时必红；还原后 **SHA-256 与注入前逐字节相同** ⇒ 复绿。
+- **顺带修的既有判据缺陷**：`scripts/docs-registry-check.js` 第 ⑪ 条原把"字段名在 `src/schema.js` 里出现过"当成"schema 校验了它"，于是纯数据表里的 `background` 会让它报红并**建议把分类改成 true —— 那会让清单说谎**；改成"**真被校验 = schema 真的读了 `node.<名>`**"。
+- **读数**：单测 **1385/1385**、集成 **427/427**（以实跑为准）、`validate-all` exit 0、`rules-consistency` exit 0。
+
 ### MCP：`item_remove` 恢复 `--json` 透传（返回形状**有意变化**，2026-10-12）
 
 - **修**：`item_remove` 从前**不传 `--json`**，唯一原因是带 `--clean-links/--clean-assoc` 时 CLI 会**先打一行文本再打 JSON**（stdout 成"半截 JSON"）。该缺陷已修（`cli/commands/item.js`：清理结果进 `cleaned`，`--json` 下 stdout 只有一份 JSON）。

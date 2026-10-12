@@ -306,16 +306,30 @@ function checkContractCoverage(root) {
   if (!fs.existsSync(schemaPath) || !fs.existsSync(dfPath)) return problems;
   const schema = fs.readFileSync(schemaPath, 'utf8');
   const df = fs.readFileSync(dfPath, 'utf8');
+  /* 节点级字段名单从 `src/schema.js` 取（**唯一一份**：那张契约字段表就在那里）——
+   * 不在本文件再抄一份字段名。非节点级（`meta.*` / `format` / `data` / `assoc`）不在那份表里。 */
+  let nodeFields = new Set();
+  try { nodeFields = new Set(require(path.join(root, 'src', 'schema.js')).NODE_FIELD_NAMES || []); }
+  catch (e) { nodeFields = new Set(); }
+  /* 「schema 校验了它」的判据 = schema 真的**读了节点的这个字段**（`node.<名>`），
+   * 而不是"这个词在这个文件里出现过"。为什么必须收紧（实测，2026-10-12）：
+   * `src/schema.js` 现在同时住着那张**契约字段表**（纯数据：字段名 + 档位 + 一句话），
+   * 于是 `background`（只出现在表里、schema 并不校验它）被旧判据当成"已校验"而报红，
+   * 报文的建议是"把分类改成 true" —— 那会让清单**说谎**。词出现过 ≠ 被校验。
+   * 反向读法也更准：真被校验的字段一定能看到 `node.<名>`（实测 13 个节点级字段全部命中）。 */
+  const inSchema = (leaf) => (nodeFields.has(leaf)
+    ? new RegExp('\\bnode\\.' + leaf + '\\b').test(schema)
+    : new RegExp('\\b' + leaf + '\\b').test(schema));
   SCHEMA_FIELDS.forEach(([f, validated]) => {
     const leaf = f.split('.').pop();
-    const inSchema = new RegExp('\\b' + leaf + '\\b').test(schema);
-    if (validated && !inSchema) {
+    const present = inSchema(leaf);
+    if (validated && !present) {
       problems.push({ kind: 'contract-stale', rel: 'scripts/docs-registry-check.js',
         msg: '字段清单检查表已过期：`' + f + '` 标为"schema 校验"，但 `src/schema.js` 里找不到 —— '
           + 'schema 改过名/删过字段？请同步 SCHEMA_FIELDS 常量（它必须与 schema 一起演进）' });
       return;
     }
-    if (!validated && inSchema) {
+    if (!validated && present) {
       problems.push({ kind: 'contract-stale', rel: 'scripts/docs-registry-check.js',
         msg: '字段清单检查表已过期：`' + f + '` 标为"仅契约、不校验"，但它已出现在 `src/schema.js` —— '
           + '请把 SCHEMA_FIELDS 里该条的第二项改成 true（分类要与实现一致）' });
