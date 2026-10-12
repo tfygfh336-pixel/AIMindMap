@@ -53,10 +53,20 @@ if (isSmoke) {
 const SMOKE_PROJECTS_DIR = isSmoke
   ? fs.mkdtempSync(path.join(os.tmpdir(), 'ai-mind-map-smoke-'))
   : null;
+/* 「撕裂快照」诊断的**读数**：在**拷贝刚完成那一刻**采好（采样点就是下面 cpSync 的下一行），
+ * 打印留在 runSmoke 里（输出位置与改前一致）。为什么采样点不能挪进 runSmoke ✗ ——
+ *   副本在**模块加载期**就拷好了（那时应用还没起来），而 runSmoke 要等 did-finish-load + 500ms；
+ *   这 2~3 秒的窗口里应用启动会把自己的界面状态写进**副本**（`projects/<项目>/.ui-state.json`；
+ *   实测 cpSync 后约 0.8 秒就写了一次，内容里带的是**本进程 pid**）⇒ 那个"不一致"读数是副本
+ *   自己的合法写入，跟撕裂快照无关。判据、证据与边界见 scripts/smoke/tear-snapshot.js 头注。 */
+let SMOKE_COPY_CHECK = null;   // null = 本次没走拷贝路径
 if (SMOKE_PROJECTS_DIR) {
   try {
     if (fs.existsSync(REAL_PROJECTS_DIR)) {
       fs.cpSync(REAL_PROJECTS_DIR, SMOKE_PROJECTS_DIR, { recursive: true });
+      // ← 采样必须**紧跟** cpSync（这一行的位置本身就是判据的一部分，别挪到 runSmoke 里 ✗）
+      try { SMOKE_COPY_CHECK = require('./scripts/smoke/tear-snapshot.js').compareTrees(REAL_PROJECTS_DIR, SMOKE_PROJECTS_DIR); }
+      catch (e) { SMOKE_COPY_CHECK = { error: (e && e.message) || String(e) }; }
     }
   } catch (err) {
     console.error('[smoke] 复制项目到沙箱目录失败，改用空目录:', err && err.message);
@@ -1408,35 +1418,26 @@ async function runSmoke(win) {
   // 为什么需要它：本机出现过**间歇**的 `THREW: Object has been destroyed` 连锁（含截图失败），
   // 但重跑不复现 ⇒ 只能靠现场留证 ✗（M 轮实测：三次跑都没复现，没有仪器就只能干等 ✓）
   const smokeState = { last: '(尚未开始)' };
-  /* 撕裂快照诊断（G5 卡死追查 ✓）：冒烟用的是真实 projects/ 的**拷贝**（见本文件顶部 SMOKE_PROJECTS_DIR），
-   * 但实测保存闸门报「悬挂关联成员」而域单独跑又是绿的 ⇒ 怀疑拷贝**发生在另一个进程正在写该文件时** ✗
-   * （拷到半截文件 ⇒ assoc 引用 data 里不存在的节点 ⇒ 任何保存都被闸门拒 ⇒ 冒烟卡死 ✗）。
-   * 这里在开跑那一刻比对两侧指纹：不一致 = 撕裂快照坐实 ✓；一致 = 运行中产生，另找 ✓。 */
-  try {
-    const crypto = require('crypto');
-    const sha = (p) => { try { return crypto.createHash('sha1').update(fs.readFileSync(p)).digest('hex').slice(0, 12); } catch (e) { return '?'; } };
-    if (SMOKE_PROJECTS_DIR && fs.existsSync(SMOKE_PROJECTS_DIR)) {
-      let same = 0, diff = 0, only = 0;
-      // 项目是**嵌套**布局（projects/<名字>/<名字>.json ✓）⇒ 递归收集（上一版平铺扫描漏光 ✗ 实测 0/0/0）
-      const collect = (dir, base) => {
-        const out = [];
-        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-          const p = path.join(dir, e.name);
-          const rel = base ? base + '/' + e.name : e.name;
-          if (e.isDirectory()) out.push(...collect(p, rel));
-          else if (e.name.endsWith('.json')) out.push(rel);
-        }
-        return out;
-      };
-      for (const rel of collect(SMOKE_PROJECTS_DIR, '')) {
-        const a = sha(path.join(REAL_PROJECTS_DIR, rel));
-        const b = sha(path.join(SMOKE_PROJECTS_DIR, rel));
-        if (a === '?') { only++; continue; }
-        if (a === b) same++; else { diff++; console.log('[smoke] ⚠ 拷贝与真实文件不一致：' + rel + ' 真实=' + a + ' 副本=' + b); }
-      }
-      console.log('[smoke] 快照一致性：一致 ' + same + ' / 不一致 ' + diff + ' / 真实缺失 ' + only);
-    } else { console.log('[smoke] 没有沙箱副本目录（本次没走拷贝路径 ✓）'); }
-  } catch (e) { console.log('[smoke] 快照一致性检查失败（不阻断）：' + ((e && e.message) || e)); }
+  /* 撕裂快照诊断（G5 卡死追查 ✓）——**读数在拷贝那一刻就采好了**，见文件顶部 SMOKE_COPY_CHECK。
+   * 目的不变：冒烟用的是真实 projects/ 的**拷贝**；若拷贝**发生在另一个进程正在写该文件时**，
+   * 副本就可能拷到半截（assoc 引用 data 里不存在的节点 ⇒ 任何保存都被闸门拒 ⇒ 冒烟卡死 ✗）。
+   * 改的只是**采样点**（原来在这里才两侧一起比 ⇒ 那时副本早已被应用自己改过 ✗，实测假红：
+   * comnet/.ui-state.json 真实=ed52d1bed2d2 副本=0534b5d67a1a，而真实侧自 10-11 起一个字节没变）。
+   * 现在两侧指纹都在 cpSync 返回的同一刻采 ⇒ 报到"不一致"时只可能是**源在拷贝期间被写过**。
+   * 判据实现在 scripts/smoke/tear-snapshot.js（纯函数 + 单测，含"这条判据真的会红"的判别力证明）。*/
+  if (!SMOKE_COPY_CHECK) {
+    console.log('[smoke] 没有沙箱副本目录（本次没走拷贝路径 ✓）');
+  } else if (SMOKE_COPY_CHECK.error) {
+    // A5 纪律：**采不到真值 = 响亮** —— 这一分支既不算"一致"也不算"不一致"，
+    // 措辞必须让人一眼看出"本项未验证"，别被读成"快照没问题" ✗（它只是诊断 ⇒ 不阻断冒烟）。
+    console.log('[smoke] ⚠ 快照指纹**未采到**（error: ' + SMOKE_COPY_CHECK.error + '）⇒ 快照一致性'
+      + ' **本项未验证**（没有"一致 N / 不一致 M"可报；别把它读成"快照没问题" ✗）');
+  } else {
+    SMOKE_COPY_CHECK.diffs.forEach((d) => console.log('[smoke] ⚠ 拷贝与真实文件不一致（采样点=拷贝完成那一刻）：'
+      + d.rel + ' 真实=' + d.real + ' 副本=' + d.copy));
+    console.log('[smoke] 快照一致性（采样点=拷贝完成那一刻）：一致 ' + SMOKE_COPY_CHECK.same
+      + ' / 不一致 ' + SMOKE_COPY_CHECK.diff + ' / 真实缺失 ' + SMOKE_COPY_CHECK.only);
+  }
   try {
     win.webContents.on('render-process-gone', (_e, d) => {
       console.log('[smoke] ✗ 渲染进程死亡 reason=' + (d && d.reason) + ' exitCode=' + (d && d.exitCode)

@@ -446,6 +446,83 @@ describe('【批6】D. 解析与复制只有一处实现；doc-import.js 只交"
  * ⚠️ **以实测为准**：边界② 的字面读数（`assets/` N → N+1）在 `import-dir` 上**不成立**，
  * 详见 E-② 的用例注释（那里逐档给出实读），交付说明里也如实记了"登记值错了、真实行为是什么"。
  * ========================================================================== */
+/* ============================================================================
+ * 【批8】E-① 的"撞名"那一档：概率型假红的识别与规避（判据**不放宽**）
+ * ==========================================================================
+ * 现象：资源新名 = `Date.now().toString(36) + Math.random().toString(36).slice(2, 6)`
+ *   （`src/markdown.js:139-141`，与 `cli/commands/assets.js` 的 copyAsset **逐字同一条**，
+ *   两处被防漂移断言钉在一起）。同一份 md 里两条引用**必然在同一毫秒**被复制（相邻两次
+ *   `copyFileSync`）⇒ 名字里的时间部分是同一个值，只剩 4 位随机后缀在区分
+ *   ⇒ **撞名概率 = 1/36⁴ = 1/1,679,616**。撞上时第二次复制会**覆盖**第一次
+ *   （`fs.copyFileSync` 到同一个路径，源码里没有目标存在性检查）⇒ 盘上只剩 1 个文件、
+ *   两条 `images[].file` 指向同一个名字 ⇒ E-① 的"两条不同路径"**偶发变红**。
+ * 为什么它对本组夹具只是一条**假红**：两条引用指向的是同一张图 ⇒ 覆盖前后内容相同、
+ *   没有数据损失，产品的"不去重"语义也没变（只是名字偶然相同）。
+ * 为什么**不能**直接放宽判据（用户明确否掉的那条 ✗）：把"两条路径不同"改成"路径集合势 ≥1"，
+ *   正好放过本组要抓的**去重回归**（注入"按源路径去重"时磁盘态就是"1 个文件 + 两条同名"）
+ *   ⇒ 判据被削弱成恒真、判别力归零。
+ * 本批处置（**测试侧**，判据不放宽）：命中"撞名签名" ⇒ 换一个**全新项目**重跑一次再判；
+ *   第二遍仍命中 ⇒ **判红**（结论：那不是随机撞名，而是**系统性**的去重/命名缺陷 —— 它每次都会中）。
+ *   签名 = 报告 `copy=2` **且** 盘上 1 个文件 **且** 两条引用同名 **且** 那个文件逐字节等于源。
+ *   为什么 `copy=2` 这一项很重要：去重实现若在 push 之前 return，报告就是 `copy=1` ⇒ **不进重试**、
+ *   当场判红 ⇒ 重试只赦免"随机"这一半，不赦免任何确定性行为（改前钉的是什么、改后为什么仍有
+ *   判别力，逐档写在下面的 `twoRefCaseWithRetry` / `isNameCollision` 上）。
+ * 产品侧根因（**登记，本批未改**：`src/markdown.js` 不在本会话边界内 ⇒ 原文交回用户）：
+ *   `src/markdown.js:288-290`
+ *     const dest = path.join(dirFn(), newResourceName(ext));
+ *     fs.mkdirSync(path.dirname(dest), { recursive: true });
+ *     fs.copyFileSync(r.srcPath, dest);
+ *   目标名不做**唯一性检查** ⇒ 同毫秒 + 同 4 位随机时，两个**不同**源文件会静默覆盖掉一个
+ *   （真·数据丢失，概率同上）。工程里已有同款修法的先例：`src/doc-import.js` 的 `uniqueIdGen()`
+ *   （"见过就再摇一次"）。真要修得同时改 `cli/commands/assets.js`（两处被防漂移断言钉在一起），
+ *   属跨文件的产品改动 ⇒ 不在本批"三件小事"的范围里。
+ * ========================================================================== */
+
+/** 跑一次"两条引用同一张图"的导入，把判定要点收成一个读数对象 */
+function readTwoRefCase(lib, name) {
+  const r = run(['import-dir', name, lib, '--json']);
+  if (r.code !== 0) {
+    return { name: name, code: r.code, stdout: r.stdout, planCopy: null, files: [], refs: [], bytesOk: false };
+  }
+  const files = assetsOf(name) || [];
+  const refs = refsOf(name).map((x) => x.file);
+  const bytesOk = files.length === 1
+    && fs.readFileSync(path.join(projDir(name), 'assets', files[0])).equals(pngBytes('good'));
+  return { name: name, code: r.code, stdout: r.stdout, planCopy: JSON.parse(r.stdout).resourceRefs.copy, files: files, refs: refs, bytesOk: bytesOk };
+}
+
+/** 撞名签名（**只有**这一种形态允许重试一次；其余任何形态都直接判红） */
+function isNameCollision(x) {
+  return x.code === 0 && x.planCopy === 2 && x.files.length === 1
+    && x.refs.length === 2 && x.refs[0] === x.refs[1] && x.bytesOk;
+}
+
+/** E-① 的判据本体（两条用例共用；与批7 的断言逐条相同，只是读数先组装过一次） */
+function judgeTwoRefCase(x, label) {
+  expect(x.code, x.stdout).toBe(0);
+  expect(x.planCopy, '两条引用 = **两次**复制（没有被去重成 1）').toBe(2);
+  assertDirRefsLanded(x.name, { assets: 2, attachments: 0 });
+  expect(x.files, 'assets/ 里两个文件').toHaveLength(2);
+  expect(x.refs, '两条引用都挂在 images[] 上').toHaveLength(2);
+  expect(new Set(x.refs).size, '两条**指向不同路径** —— 不是同一个文件被指两次').toBe(2);
+  x.files.forEach((f) => expect(fs.readFileSync(path.join(projDir(x.name), 'assets', f)), f + ' 的字节等于源')
+    .toEqual(pngBytes('good')));
+  console.log('[批7 实测·' + label + '] copy=' + x.planCopy + ' ｜ assets=' + JSON.stringify(x.files)
+    + ' ｜ images=' + JSON.stringify(x.refs) + ' ｜ 两条不同路径=' + (new Set(x.refs).size === 2));
+}
+
+/** 撞名 ⇒ 换一个**全新项目**重跑一次再判（见上面【批8】注）；不是撞名 ⇒ 直接判（含真缺陷） */
+function twoRefCaseWithRetry(lib, name, label) {
+  const x1 = readTwoRefCase(lib, name);
+  if (!isNameCollision(x1)) { judgeTwoRefCase(x1, label); return; }
+  console.log('[批8 撞名规避] ' + label + '：第一遍命中撞名签名（1/36⁴ ≈ 1/1.68M；两条引用必然同毫秒）'
+    + ' ⇒ 用全新项目重跑一次；判据未放宽 —— 同形缺陷会连中两遍 ⇒ 必红');
+  const x2 = readTwoRefCase(lib, name + '-r2');
+  expect(isNameCollision(x2), '撞名不可能连续两次（1/1.68M 的平方）：第二遍仍是"两次复制落成一个名字"'
+    + ' ⇒ 那是**系统性**的去重或命名缺陷，本组判据就是为它设的').toBe(false);
+  judgeTwoRefCase(x2, label + '（撞名重跑第二遍）');
+}
+
 describe('【批7】E-① 一条引用一份副本、**不做内容去重**（同一张图被两处引用 ⇒ 两份）', () => {
   /* 判据两条（都在**真复制**那一跳上，不是"报告里写了什么"）：
    *   · `assets/` 里**两个**文件 + 两条 `images[].file` **指向不同路径**（⇒ 不是同一个文件被指两次）；
@@ -465,23 +542,7 @@ describe('【批7】E-① 一条引用一份副本、**不做内容去重**（�
       '笔记/第一章.md': ['# 第一章', '', '![图：第一处](assets/good.png)', '',
         '![图：第二处](assets/good.png)', '', '正文一', '']
     });
-    const r = run(['import-dir', 'b7-e1-same', lib, '--json']);
-    expect(r.code, r.stdout).toBe(0);
-    const rep = JSON.parse(r.stdout);
-    expect(rep.resourceRefs.copy, '两条引用 = **两次**复制（没有被去重成 1）').toBe(2);
-    assertDirRefsLanded('b7-e1-same', { assets: 2, attachments: 0 });
-    const files = assetsOf('b7-e1-same');
-    expect(files, 'assets/ 里两个文件').toHaveLength(2);
-    const refs = refsOf('b7-e1-same').map((x) => x.file);
-    expect(refs, '两条引用都挂在 images[] 上').toHaveLength(2);
-    expect(new Set(refs).size, '两条**指向不同路径** —— 不是同一个文件被指两次').toBe(2);
-    files.forEach((f) => {
-      expect(fs.readFileSync(path.join(projDir('b7-e1-same'), 'assets', f)), f + ' 的字节等于源')
-        .toEqual(pngBytes('good'));
-    });
-    console.log('[批7 实测·边界①-同一文件两处] copy=' + rep.resourceRefs.copy
-      + ' ｜ assets=' + JSON.stringify(files) + ' ｜ images=' + JSON.stringify(refs)
-      + ' ｜ 两条不同路径=' + (new Set(refs).size === 2));
+    twoRefCaseWithRetry(lib, 'b7-e1-same', '边界①-同一文件两处');
   });
 
   it('两个文件各引用同一张图 ⇒ 同样两份（**跨文件**也不按内容去重）', () => {
@@ -489,18 +550,7 @@ describe('【批7】E-① 一条引用一份副本、**不做内容去重**（�
       '笔记/第一章.md': ['# 第一章', '', '![图：甲](assets/good.png)', '', '正文一', ''],
       '笔记/第二章.md': ['# 第二章', '', '![图：乙](assets/good.png)', '', '正文二', '']
     });
-    const r = run(['import-dir', 'b7-e1-two', lib, '--json']);
-    expect(r.code, r.stdout).toBe(0);
-    expect(JSON.parse(r.stdout).resourceRefs.copy, '两份文件各一处 = 两次复制').toBe(2);
-    assertDirRefsLanded('b7-e1-two', { assets: 2, attachments: 0 });
-    const files = assetsOf('b7-e1-two');
-    expect(files).toHaveLength(2);
-    const refs = refsOf('b7-e1-two').map((x) => x.file);
-    expect(new Set(refs).size, '两条指向不同路径').toBe(2);
-    files.forEach((f) => expect(fs.readFileSync(path.join(projDir('b7-e1-two'), 'assets', f)))
-      .toEqual(pngBytes('good')));
-    console.log('[批7 实测·边界①-两个文件各一处] assets=' + JSON.stringify(files)
-      + ' ｜ images=' + JSON.stringify(refs));
+    twoRefCaseWithRetry(lib, 'b7-e1-two', '边界①-两个文件各一处');
   });
 });
 

@@ -23,6 +23,8 @@
  *      资源行语法只有 1 个字面量）—— W12（Obsidian 直进）将来复用的就是这一份。
  *   H. **沙箱自证**：`AI_MINDMAP_PROJECTS_DIR` 必须在 require CLI **之前**生效，不生效就**当场红**
  *      （夹具写进真实 `projects/` 是本文件可能犯的最坏的错）。
+ *   J.【批8】`import-project` 的**同款边界三档**（对照 `import-dir` 的 E 组）：同一项目名再导 /
+ *      换新项目 + `--force` / 「往已有项目追加」这一档在本命令上**不可达** —— 判据与逐档读数见文件末尾。
  * ## 环境要点
  *   · 端到端一律走**进程内** `invokeSync`（同 tests/item-commands.test.js），不起子进程；
  *   · 沙箱与夹具都在 `os.tmpdir()` 下，`afterAll` 全清 —— 仓库根与真实 `projects/` 全程零接触。
@@ -614,5 +616,105 @@ describe('【W19】I. 一处实现与沙箱自证', () => {
     expect(path.resolve(WORK).startsWith(path.resolve(os.tmpdir()))).toBe(true);
     // 本项目下所有被测项目都落在沙箱里
     listDir(SANDBOX).forEach((n) => expect(path.resolve(projDir(n)).startsWith(path.resolve(SANDBOX))).toBe(true));
+  });
+});
+
+/* ============================================================================
+ * J. 【批8】`import-project` 的**同款边界三档**（对照 `import-dir` 的 E 组）
+ * ==========================================================================
+ * 批7 把 `import-dir` 的边界实测钉进了 `tests/import-dir-refs.test.js` 的 E 组，并在交付里
+ * **如实登记 `import-project` 未实测**。本组补上那一份，逐档与 E 组对齐（同样**进程内**
+ * `invokeSync` + `AI_MINDMAP_PROJECTS_DIR` 沙箱；不起子进程、不碰真实 `projects/`）：
+ *   档1｜同一项目名再导（带 `--force` 也一样）⇒ 被「项目已存在」闸拦下，`assets/` 计数 **N → N**；
+ *   档2｜同一来源换**新项目**：不带 `--force` 被**来源指纹**闸拒（零复制、连目录都没建）｜
+ *        带 `--force` ⇒ 新项目里**又各复制一份**（全库 **N → 2N**）；
+ *   档3｜「往已有项目再导一次」这一档在 `import-project` 上**不可达** —— 它只有"从零建项目"这一形态：
+ *        项目名重复一律**先**被名字闸拦下（连**换一份来源文件**、带 `--force` 都不行）
+ *        ⇒ `N → N+1` 的真路径仍只在 `import-md --force`（E-② 档3，本文件 G 组旁边那条路）。
+ * 与 E 组的关系（**同形 / 新型**，这是本组要回答的问题）：档1、档2 **同形**（连闸门都共用同一套
+ *   字面量：名字闸那句与 `import-dir` 逐字相同、`--force` 的分工也相同）；档3 是**新型**：
+ *   E 组档3 有一条真路径（`import-md --force`），而 `import-project` 上是"这一档不存在"。
+ * 判别力（逐档点名：哪一行坏了会让哪一条红）：
+ *   · 档1 ← `cli/commands/project.js:475` 的「项目已存在」闸（`--force` 不参与那一句的判断）；
+ *   · 档2 ← 同文件 `:500` 的 `const refused = !!dup && !ctx.args.force;`（去掉 `!ctx.args.force`
+ *     ⇒ 第二次仍 exit 1 ⇒ 档2 红）；反向：`resolveImportRefs` 若开始**跨项目复用**已有资源
+ *     ⇒ 新项目的 `assets/` 会是 0 ⇒ 档2 也红；
+ *   · 档3 ← `:475`（名字闸）与 `:496-500`（来源闸）的**先后顺序**：把名字闸挪到来源闸之后、
+ *     或给已存在项目加一条"追加"分支 ⇒ 档3 红（它同时用**用法行**把"没有追加开关"钉住）。
+ * ========================================================================== */
+describe('【批8】J. `import-project` 的同款边界三档（对照 E 组：同形 / 新型）', () => {
+  it('档1｜同一项目名再导（带 `--force` 也一样）⇒ 被「项目已存在」闸拦下，assets/ 计数 N → N', () => {
+    const dir = mkSource('j1');
+    fs.writeFileSync(path.join(dir, 'assets', 'x.png'), pngBytes('j1'));
+    const md = writeMd(dir, 'doc.md', ['# 第一章', '', '![图](assets/x.png)', '', '正文', '']);
+    const P = 'b8-j1';
+    expect(run(['import-project', P, md]).code).toBe(0);
+    const a1 = listDir(path.join(projDir(P), 'assets'));
+    expect(a1, '第一档起点：N=1').toHaveLength(1);
+    const again = run(['import-project', P, md, '--force']);
+    expect(again.code, '同一项目名再导 ⇒ 名字闸拦下（`--force` 不给它开口）').toBe(1);
+    expect(again.stdout).toContain('项目已存在');
+    const a2 = listDir(path.join(projDir(P), 'assets'));
+    expect(a2, 'assets/ 计数 N → N：一个字节都没多复制').toEqual(a1);
+    console.log('[批8 实测·J 档1] import-project 同项目名（--force）：exit=' + again.code
+      + ' ｜ assets ' + a1.length + '→' + a2.length + ' ｜ 与 E 档1 **同形**');
+  });
+
+  it('档2｜同一来源换新项目：不带 `--force` 被来源指纹闸拒（零复制）｜带 `--force` ⇒ 新项目里又各复制一份', () => {
+    const dir = mkSource('j2');
+    fs.writeFileSync(path.join(dir, 'assets', 'x.png'), pngBytes('j2'));
+    const md = writeMd(dir, 'doc.md', ['# 第一章', '', '![图](assets/x.png)', '', '正文', '']);
+    const A = 'b8-j2-a';
+    const B = 'b8-j2-b';
+    const C = 'b8-j2-c';
+    expect(run(['import-project', A, md]).code).toBe(0);
+    const a1 = listDir(path.join(projDir(A), 'assets'));
+    expect(a1).toHaveLength(1);
+
+    const noForce = run(['import-project', B, md]);
+    expect(noForce.code, '不带 `--force`：同一来源跨项目也被拒（来源指纹闸）').toBe(1);
+    expect(noForce.stdout).toMatch(/已经导入过/);
+    expect(fs.existsSync(projFile(B)), '被拒时项目文件一个字都没写').toBe(false);
+    expect(listDir(path.join(projDir(B), 'assets')), '被拒时一个资源都没复制（连目录都没建）').toBe(null);
+
+    const forced = run(['import-project', C, md, '--force']);
+    expect(forced.code, forced.stdout).toBe(0);
+    const c1 = listDir(path.join(projDir(C), 'assets'));
+    expect(c1, '新项目里**又各复制一份**（与第一档同量级 N）').toHaveLength(a1.length);
+    expect(c1, '靠**新名字**区分 ⇒ 不是复用第一份、也没有跨项目按内容去重').not.toEqual(a1);
+    expect(fs.readFileSync(path.join(projDir(C), 'assets', c1[0])), '第二份也是逐字节真复制').toEqual(pngBytes('j2'));
+    expect(listDir(path.join(projDir(A), 'assets')), '第一份一字不动').toEqual(a1);
+    expect(refsOf(A).map((x) => x.file)[0]).toMatch(/^assets\//);
+    expect(refsOf(C).map((x) => x.file)[0]).toMatch(/^assets\//);
+    expect(danglingOf(A)).toEqual([]);
+    expect(danglingOf(C)).toEqual([]);
+    console.log('[批8 实测·J 档2] import-project 换新项目（--force）：' + a1.length + '→' + c1.length
+      + ' ｜ 两个项目各自一份 ⇒ 全库 2N（不是 N+1）｜ 与 E 档2 **同形**');
+  });
+
+  it('档3（**新型**）｜「往已有项目追加」在 `import-project` 上不可达：换一份来源文件 + `--force` 也进不去', () => {
+    const dir = mkSource('j3');
+    fs.writeFileSync(path.join(dir, 'assets', 'x.png'), pngBytes('j3'));
+    const md1 = writeMd(dir, 'one.md', ['# 第一章', '', '![图](assets/x.png)', '']);
+    const md2 = writeMd(dir, 'two.md', ['# 另一章', '', '![图](assets/x.png)', '']);
+    const P = 'b8-j3';
+    expect(run(['import-project', P, md1]).code).toBe(0);
+    const beforeJson = fs.readFileSync(projFile(P));
+    const beforeAssets = listDir(path.join(projDir(P), 'assets'));
+
+    // 换一份**来源不同**的文件（不同 src + 不同 sha256 ⇒ 来源指纹闸根本不会触发）
+    const other = run(['import-project', P, md2, '--force']);
+    expect(other.code, '名字闸在来源闸**之前**：换了来源文件也进不去').toBe(1);
+    expect(other.stdout).toContain('项目已存在');
+    expect(fs.readFileSync(projFile(P)), '被拒时项目数据逐字节不变').toEqual(beforeJson);
+    expect(listDir(path.join(projDir(P), 'assets')), '被拒时一个资源都没多').toEqual(beforeAssets);
+
+    // 命令面：只有"新项目名 + 文件"这一种形态（没有 `--parent` 那类"往已有项目里挂"的开关）
+    const usage = run(['import-project', 'b8-j3-usage']);
+    expect(usage.code).toBe(1);
+    expect(usage.stdout, '用法里点名"新项目名"').toContain('新项目名');
+    expect(usage.stdout, '没有追加形态的开关（`import-md` 的 `--parent` 不在这一条命令上）').not.toContain('--parent');
+    console.log('[批8 实测·J 档3] import-project 往已有项目再导：exit=' + other.code
+      + '（换来源 + --force 也一样）⇒ 本命令**没有"追加"这一档**；N → N+1 仍只在 import-md --force（E 档3）');
   });
 });
