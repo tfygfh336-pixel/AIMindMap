@@ -11,9 +11,9 @@
  *   - assets/ 与 attachments/ 目录管理（确保存在）
  * ============================================================ */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('fs'), require('path'), require('crypto'), require('./concurrency.js'), require('./changes.js'));
-  else root.MMDataStore = factory(null, null, null, null, null);
-})(typeof self !== 'undefined' ? self : this, function (fs, path, crypto, concurrency, changes) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('fs'), require('path'), require('crypto'), require('./concurrency.js'), require('./changes.js'), require('./heat.js'));
+  else root.MMDataStore = factory(null, null, null, null, null, null);
+})(typeof self !== 'undefined' ? self : this, function (fs, path, crypto, concurrency, changes, heat) {
   'use strict';
 
   /**
@@ -119,6 +119,14 @@
     /** 变更日志的绝对路径（`src/changes.js` 定文件名；**路径只在这里算一次**，别处不再推导） */
     function changeLogFile(name) {
       return path.join(projectDir(name), changes.FILE_NAME);
+    }
+    /**
+     * 访问事件日志的绝对路径（`src/heat.js` 定文件名与格式）—— 与 `changeLogFile` 同一条规矩：
+     * **路径只在这里推导一次**，命令层（`cli/commands/heat.js`）不许自己拼 `projects/<项目>/.visits.jsonl`。
+     * 它同样是**旁路产物**：不是数据、不进 `export-json`、可随时删。
+     */
+    function visitLogFile(name) {
+      return path.join(projectDir(name), heat.FILE_NAME);
     }
 
     /**
@@ -306,6 +314,8 @@
       projectFile,
       /** 变更日志路径（读方 —— 如 `changes` 命令 —— 用它，别自己拼路径） */
       changeLogFile,
+      /** 访问事件日志路径（读方/写方 —— `heat` / `visit` —— 用它，别自己拼路径） */
+      visitLogFile,
       /** 记一条变更日志（GUI 保存那条不走 `write` 的路径也要调它 —— 实现只有一份） */
       recordChange,
       /** 给**最近那条**带 `idem` 的记录补上"首次回显"（S7 的延迟落账；见该函数注释） */

@@ -10,7 +10,7 @@
  * ============================================================ */
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell } = require('electron');
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, screen, shell } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -76,6 +76,47 @@ if (SMOKE_PROJECTS_DIR) {
   process.env.AI_MINDMAP_PROJECTS_DIR = SMOKE_PROJECTS_DIR;
 }
 const PROJECTS_DIR = SMOKE_PROJECTS_DIR || REAL_PROJECTS_DIR;
+
+/* 冒烟**启动时**清扫"上一轮留下的空壳"。
+ *
+ * 为什么非在**启动时**做不可（本批实测读数，别再猜机制）：退出时那份清理**清不掉自己的目录** ——
+ * `fs.rmSync()` 递归删之后，顶层 rmdir 一直 `EPERM`（实测连试 6 次、每次读数都是
+ * `{"code":"EPERM","left":1,"names":["comnet"]}`），也就是沙箱里那个**项目目录 `comnet` 被
+ * 本进程的某个句柄占着**（内容能删、这个目录不能删）⇒ 清到最后只剩一个**空壳**。
+ * 而**换一个进程就立刻能删**（实测：新进程对上一轮的壳 `rmdirSync` 一次成功）—— 所以阻塞方
+ * 只活在本进程生命周期内，唯一能清掉它的时机是**下一轮的启动**。
+ *
+ * 三条护栏（缺一条就别做这一条）：
+ *   ① 只认 `os.tmpdir()` 下的**直接子目录**且名字前缀是 `ai-mind-map-smoke-`（就是上面 mkdtemp 的命名）；
+ *   ② 只调 **`rmdirSync`（非递归）** ⇒ 有内容的目录**物理上删不掉**，不可能误删"正在跑的那一轮"的数据 ✓；
+ *   ③ 跳过 mtime 在最近 60 秒内的 —— 活着的沙箱只在"建好目录、还没拷项目"的**微秒窗口**里是空的，
+ *      60 秒的余量把"误删别人正在用的沙箱"这条风险压到实际为零。
+ * 读数照旧**打印**（清掉几个 / 还剩几个非空的没动），**不当门禁**：非空的那些是历史崩溃留下的
+ * （实测有 5 条：comnet 的 assets/attachments 都在），该不该删要人看，不该由冒烟替人决定 ✗。 */
+function sweepSmokeHusks() {
+  const tmp = os.tmpdir();
+  const mine = path.basename(SMOKE_PROJECTS_DIR || '');
+  const out = { swept: 0, kept: 0, held: 0, error: '' };
+  let entries = [];
+  try { entries = fs.readdirSync(tmp, { withFileTypes: true }); }
+  catch (err) { out.error = String((err && err.message) || err); return out; }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name === mine) continue;
+    if (e.name.indexOf('ai-mind-map-smoke-') !== 0) continue;
+    const p = path.join(tmp, e.name);
+    let st = null;
+    try { st = fs.statSync(p); } catch (err) { continue; }
+    if (Date.now() - st.mtimeMs < 60 * 1000) { out.held += 1; continue; }   // 可能是在跑的那一轮：不动 ✓
+    try { fs.rmdirSync(p); out.swept += 1; } catch (err) { out.kept += 1; } // 非空/被占用 ⇒ 不动 ✓（非递归）
+  }
+  return out;
+}
+if (SMOKE_PROJECTS_DIR) {
+  const husks = sweepSmokeHusks();
+  console.log('[smoke] 启动清扫上一轮的空壳：清掉 ' + husks.swept + ' 个 · 跳过（刚生成的）' + husks.held
+    + ' 个 · 非空残留没动 ' + husks.kept + ' 个（要清得人工确认）'
+    + (husks.error ? ' ｜⚠️ 列举失败：' + husks.error : ''));
+}
 
 /* 每域隔离：**默认开** ✓ —— 每个域开跑前还原沙箱副本，并让应用重载当前项目。
  * 为什么默认开：不隔离时全跑会随机炸（实测 137/167 · destroyed 30；真因是**跨域状态污染**，
@@ -194,13 +235,51 @@ app.on('second-instance', () => {
   dshSidebar.restoreWindow();
 });
 
-// 冒烟结束（含 app.exit 与异常退出）都要清掉临时项目目录，避免在系统 temp 里堆积。
+/* 冒烟结束（含 app.exit 与异常退出）都要清掉临时项目目录，避免在系统 temp 里堆积。
+ *
+ * ⚠️ **历史现象（本批实测）**：每个冒烟进程结束都会在 `%TEMP%` 留下一个**空**目录
+ *   （开工时实测 529 个，内容清掉了、**顶层目录**还在）。根因不是"没清"，而是三件事：
+ *   ① 顶层目录在本进程里**清不掉**：实测连试 6 次、每次读数都是
+ *      `{"code":"EPERM","left":1,"names":["comnet"]}` —— 沙箱里那个项目目录被本进程的某个句柄
+ *      占着（子内容能删、这个目录不能删），阻塞方随进程死亡才释放；
+ *   ② 一次 `rmSync` 失败就被 `catch` 吞掉 ⇒ 留下空壳，且**没有任何读数**；
+ *   ③ `app.exit()` **不触发 `will-quit`** ⇒ 只剩 `process.on('exit')` 这一次机会，没有第二次尝试。
+ * 对策（**分工要分清**，别指望其中任何一条单独修好它）：
+ *   · **重试 + 读数**（这一处）：自己写重试循环 + **同步**小睡（退出钩子没有 `await` 的机会 ⇒
+ *     `Atomics.wait`，Node 允许在主线程用它；不允的宿主退回忙等）。读数 = `{ ok, attempts, left, code, trace }`
+ *     —— 清掉了吗 / 第几次成功 / 还剩几条 / 每次尝试的错误码。⚠️ **实测：重试并不能清掉它**
+ *     （6 次全 EPERM），所以这里的作用是"**让现象可见**"，不是"修好"。
+ *   · **真正的修法在下一轮启动**：见下面 `sweepSmokeHusks()`（换进程就能删，实测一次成功）。
+ *   · 静默的泄漏与"没有泄漏"长得一样 ⇒ 两次读数都要打印（见 runSmoke 收尾那一行）✗。
+ * 边界：本次**不**把清理结果并进冒烟 exit code（那会给"杀毒/索引/另一个冒烟进程占着目录"造一个新的
+ *   假红源），判据只到"读数可见"这一档；要不要升级成门禁，等有跨机器读数再定。 */
+let cleanupSmokeTemp = () => ({ ok: true, attempts: 0, left: 0, code: '' });   // 非冒烟模式：空实现
 if (SMOKE_PROJECTS_DIR) {
-  const cleanup = () => {
-    try { fs.rmSync(SMOKE_PROJECTS_DIR, { recursive: true, force: true }); } catch (err) { /* ignore */ }
+  /** 同步小睡（只在**同步**上下文里用：will-quit / process.exit 里没有 await 的机会） */
+  const sleepSync = (ms) => {
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+    catch (e) { const until = Date.now() + ms; while (Date.now() < until) { /* 兜底忙等（极少数宿主不允许 Atomics.wait） */ } }
   };
-  app.on('will-quit', cleanup);
-  process.on('exit', cleanup);
+  cleanupSmokeTemp = () => {
+    const MAX = 6;
+    let code = '';
+    const trace = [];        // 每次尝试的读数（只在失败时被打印：它回答"到底卡在哪一条"）
+    for (let attempts = 1; attempts <= MAX; attempts++) {
+      code = '';
+      try {
+        fs.rmSync(SMOKE_PROJECTS_DIR, { recursive: true, force: true, maxRetries: 2, retryDelay: 20 });
+      } catch (err) { code = (err && err.code) || String((err && err.message) || err); }
+      if (!fs.existsSync(SMOKE_PROJECTS_DIR)) return { ok: true, attempts: attempts, left: 0, code: '', trace: trace };
+      let names = [];
+      try { names = fs.readdirSync(SMOKE_PROJECTS_DIR).slice(0, 6); } catch (err) { names = ['(目录读不到: ' + ((err && err.code) || err) + ')']; }
+      trace.push({ n: attempts, code: code, left: names.length, names: names });
+      if (attempts < MAX) sleepSync(60 * attempts);   // 让占用方（子进程 / 杀毒 / 索引）松手
+    }
+    const last = trace[trace.length - 1] || { code: code, left: -1 };
+    return { ok: false, attempts: MAX, left: (last.left === undefined ? -1 : last.left), code: code, names: last.names || [], trace: trace };
+  };
+  app.on('will-quit', () => { cleanupSmokeTemp(); });
+  process.on('exit', () => { cleanupSmokeTemp(); });
 }
 
 /* ---------------- 工具函数 ---------------- */
@@ -1168,6 +1247,34 @@ function registerIpc() {
     return { ok: true, text: texts.join('\n'), raw: raw };
   });
 
+  /* 系统剪贴板（**复制只有走这条路才不依赖窗口焦点**）。
+   * 为什么必须由主进程代写：渲染层的两条浏览器通道在**无焦点的隐藏窗口**里都不可靠 ——
+   * 实测（冒烟窗口按纪律隐藏且不抢焦点）`navigator.clipboard.writeText` 直接抛
+   * "Document is not focused"，而 `execCommand('copy')` **自报成功**却可能什么都没写进系统剪贴板
+   * ⇒ 复制的可靠性一度被绑在"窗口此刻有没有焦点"上（域 39 的判据因此只能降级成行为级）。
+   * 主进程的 `clipboard` 是**进程级**的 OS 剪贴板 API，与窗口焦点无关 ✓。
+   * 写后**回读**（与 assoc-edit 同一手法）：回给渲染层的是"真的写进去了"的读数，不是自报 ✓；
+   * ⚠️ Electron 44 的 `clipboard.readText()` 返回 Promise（实测：直接 String() 得到 "[object Promise]"）
+   * ⇒ 两种形状都接住。返回 `{ ok, value, readback, matched }`，**失败不静默** ✗。 */
+  ipcMain.handle('app:clipboard-write', async (_e, text) => {
+    const value = (typeof text === 'string') ? text : (text == null ? '' : String(text));
+    try {
+      clipboard.writeText(value);
+    } catch (err) {
+      return { ok: false, value: value, error: '写系统剪贴板失败：' + ((err && err.message) || String(err)) };
+    }
+    let back = null;
+    try {
+      const v = clipboard.readText();
+      back = (v && typeof v.then === 'function') ? await v : v;
+    } catch (err) { back = null; }   // 读不回来 ⇒ 如实报 null（不许冒充"写成功了"✓）
+    return {
+      ok: true, value: value,
+      readback: (back === null || back === undefined) ? null : String(back),
+      matched: back !== null && back !== undefined && String(back) === value
+    };
+  });
+
   ipcMain.handle('app:version', () => {
     try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version; }
     catch (err) { return '0.0.0'; }
@@ -1683,6 +1790,22 @@ async function runSmoke(win) {
   if (results.length > smokeCount) {
     console.log('==== 另有 ' + (results.length - smokeCount) + ' 条非冒烟结果（取景记录 + 视觉断言），不计入冒烟断言数 ====');
   }
+  /* 收尾读数：临时项目目录清掉了几个 / 还剩几个（见文件头 cleanupSmokeTemp 的说明）。
+   * 为什么**在这里显式跑一次**而不是只挂退出钩子：`app.exit()` 不触发 `will-quit`，而这一行是
+   * "读数可见"的唯一机会 —— 退出钩子里再清一次是**兜底**（它没法回报读数）。
+   * ⚠️ 实测：这一档**清不掉**（EPERM，见上面的读数）⇒ 残留的那个空壳由**下一轮启动的
+   * `sweepSmokeHusks()`** 收掉；本读数的作用是把"每跑留一个空壳"从静默变成看得见 ✓。
+   * ⚠️ 本读数**不并入 exit code**：清不掉多半是外部占用（杀毒/索引/另一个冒烟进程），
+   * 并进去等于给环境造一个新的假红源；但它**必须响亮**，否则还是没人看得见 ✗。 */
+  const tempSweep = cleanupSmokeTemp();
+  console.log('[smoke] 临时项目目录收尾：' + (tempSweep.ok
+    ? '已清掉 ' + (SMOKE_PROJECTS_DIR ? '1 个（第 ' + tempSweep.attempts + ' 次尝试时成功）' : '0 个（非冒烟模式）')
+      + ' · 剩余 0'
+    : '⚠️ **没清干净**：剩余 ' + tempSweep.left + ' 条 ' + JSON.stringify(tempSweep.names || [])
+      + '（' + (tempSweep.code ? '最后错误=' + tempSweep.code : '无异常，但目录还在')
+      + '）｜ 每次尝试的读数=' + JSON.stringify(tempSweep.trace || [])
+      + ' ｜ ' + SMOKE_PROJECTS_DIR
+      + ' ⇒ 这就是"每跑一次在 %TEMP% 留一个空壳"的现象；读数已如实打印（既不当 PASS 也不当 FAIL）'));
   app.exit((failed.length || realWriteLeak) ? 1 : 0);   // 真实数据被动过 ⇒ 即便断言全绿也判红 ✓
 }
 

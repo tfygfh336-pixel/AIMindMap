@@ -20,6 +20,10 @@
  *   desktop.app.assocEdit(...)         → 保存关联笔记（写操作，走 CLI 闸门；回读最新形态）
  *   desktop.app.assocPrune(name, ids)  → 删节点前在**磁盘上**剪掉这些节点在关联/链接里的引用
  *                                        （写操作只经 CLI —— 见 main.js 里的说明）
+ *   desktop.app.writeClipboard(text)   → 写**系统剪贴板**（**主进程实现，与窗口焦点无关**）：
+ *                                        写后回读，返回 `{ ok, value, readback, matched }`。
+ *                                        "复制 节点id#条目id"走的就是它（渲染层的浏览器通道
+ *                                        在无焦点的隐藏窗口里被拒/自报成功却什么都没写 ✗）
  *   desktop.app.version()              → 版本号
  *   desktop.app.ask(name, nodeId, opts) → 向内嵌 AI 问一个节点（功能 1 后端；opts={kind:'explain'|'ask',
  *                                        question}）。**异步**、实测 20+ 秒；冒烟/`MM_ASK_STUB=1` 时返回
@@ -82,6 +86,11 @@ contextBridge.exposeInMainWorld('desktop', {
     assocEdit: (projectName, assocId, title, noteMd) =>
       ipcRenderer.invoke('app:assoc-edit', projectName, assocId, title, noteMd),
     assocPrune: (projectName, ids) => ipcRenderer.invoke('app:pre-delete-cleanup', projectName, ids),
+    /* 写**系统剪贴板**（主进程实现，**与窗口焦点无关**）：渲染层的 navigator.clipboard / execCommand
+     * 在无焦点的隐藏窗口里"要么被拒、要么自报成功却没写进去"（实测）⇒ 复制走这一条。
+     * 主进程写后会**回读**，返回 `{ ok, value, readback, matched }` —— `matched:false` = 回读到的
+     * 不是这段文本（不算成功，别自报 ✓）；失败一律带 `error`，不静默 ✗。 */
+    writeClipboard: (text) => ipcRenderer.invoke('app:clipboard-write', text),
     version: () => ipcRenderer.invoke('app:version'),
     /* 界面状态上报（脏标记变化时推）：主进程写 projects/<项目>/.ui-state.json，
      * 侧栏 AI 用 `node cli/mm-cli.js ui-state --json` 读 —— 写前协调的可执行通道。 */

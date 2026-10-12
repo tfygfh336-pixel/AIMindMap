@@ -18,6 +18,11 @@
 'use strict';
 
 const path = require('path');
+/**
+ * 访问热度的**口径单源**（`src/heat.js`）—— 注册表只从它**现取**窗口天数 / 档位数 / 日志文件名，
+ * 用来拼 desc（desc 会进生成物 `docs/CLI.md`）：数字写在这里就等于抄了第二份、迟早漂移。
+ */
+const heatSpec = require('../src/heat.js');
 
 const COMMANDS = [];
 const BY_NAME = new Map();
@@ -276,6 +281,34 @@ function init() {
       + '（⚠ `read --json` 不含 version）。'
       + '⚠ 答不出来时**报错并非 0 退出**（锚点滑出窗口 / 本机无日志）—— 那**不等于"没有变更"**',
     fn: loadFile('changes').changes
+  });
+
+  // 访问热度（热度条第一件：先只做"能读出来" —— 事件日志 + 窗口/排名口径 + 读出来，不碰检索与界面）
+  // ⚠️ 窗口天数与档位数**从 `src/heat.js` 现取**（那是唯一一处定义）⇒ 改常量，用法里的数字跟着变，
+  //    不会出现"文档写 30 天、代码算 7 天"这种第二份副本。
+  register({
+    name: 'visit',
+    usage: 'visit <项目> <节点id> --channel <通道> [--json]',
+    options: ['channel', 'json'],
+    desc: '记一次**访问事件**（旁路日志 `' + heatSpec.FILE_NAME + '`，一行一条 JSON、不进 export-json、可随时删；'
+      + '**O(1) 追加**：只多写一行，不读全量、不重写文件）。「谁（人/AI）」由 `--channel` 决定，'
+      + '**不许调用方自报**；通道权重表只有一处（`src/heat.js` 的 `CHANNELS`），未知通道**响亮拒绝**。'
+      + '时间取**写入时刻**（一次访问不该有两个时间 ⇒ 本命令没有 `--at`）。合法通道与权重见报错报文',
+    fn: loadFile('heat').visit
+  });
+  register({
+    name: 'heat',
+    usage: 'heat <项目> [--json] [--limit <n>]',
+    options: ['json', 'limit'],
+    desc: '访问热度（只读，**热度条第一件**）：人 / AI 两条榜 + 每节点热度值 + **窗口内样本量**。'
+      + '窗口 = 最近 ' + heatSpec.WINDOW_DAYS + ' 天（滚动）；排名在「窗口内被访问过的节点」这个**子集内**做'
+      + '（零访问节点不进榜、不参与分位）；热度是**名次**的十档位置（1–' + heatSpec.HEAT_BANDS + '），'
+      + '**与次数的绝对值无关**（次数 ×10 而名次不变 ⇒ 热度不变）。AI 侧按通道**加权**（权重表见 '
+      + '`src/heat.js` 的 `CHANNELS`），人侧只算「打开详情框」。'
+      + '⚠ 日志损坏 / 认不出的通道 / 时间乱序 / 未来时间戳 ⇒ **报错并非 0 退出并点名**（不静默当 0）；'
+      + '本机没有该日志 ⇒ 明说"没有访问日志"，**不等于"热度为 0"**。`--limit` 只截断显示，'
+      + '热度一律按全量排名算',
+    fn: loadFile('heat').heat
   });
   register({ name: 'docs-gen', usage: 'docs-gen', options: [], desc: '从 registry 重生成 docs/CLI.md', fn: loadFile('release').docsGen });
   register({ name: 'release', usage: 'release [版本号] [--major|--minor|--patch]', options: ['major', 'minor', 'patch'], desc: '发版：CHANGELOG 段落版 → [Unreleased] 重建 + 四处版本号同步 + README 版本锁（拒绝版本倒退）', fn: loadFile('release').release });

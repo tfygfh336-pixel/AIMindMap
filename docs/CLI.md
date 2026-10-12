@@ -83,6 +83,8 @@
 | `validate-all` | validate-all |
 | `ui-state` | ui-state [<项目>] [--json] |
 | `changes` | changes [<项目>] [--since <rev|版本号>] [--json] [--limit n] |
+| `visit` | visit <项目> <节点id> --channel <通道> [--json] |
+| `heat` | heat <项目> [--json] [--limit <n>] |
 | `docs-gen` | docs-gen |
 | `release` | release [版本号] [--major|--minor|--patch] |
 | `changelog` | changelog [--grep 关键词] [--full] [--limit n] [--json] |
@@ -576,6 +578,22 @@ node cli/mm-cli.js ui-state [<项目>] [--json]
 
 ```
 node cli/mm-cli.js changes [<项目>] [--since <rev|版本号>] [--json] [--limit n]
+```
+
+### visit
+
+记一次**访问事件**（旁路日志 `.visits.jsonl`，一行一条 JSON、不进 export-json、可随时删；**O(1) 追加**：只多写一行，不读全量、不重写文件）。「谁（人/AI）」由 `--channel` 决定，**不许调用方自报**；通道权重表只有一处（`src/heat.js` 的 `CHANNELS`），未知通道**响亮拒绝**。时间取**写入时刻**（一次访问不该有两个时间 ⇒ 本命令没有 `--at`）。合法通道与权重见报错报文
+
+```
+node cli/mm-cli.js visit <项目> <节点id> --channel <通道> [--json]
+```
+
+### heat
+
+访问热度（只读，**热度条第一件**）：人 / AI 两条榜 + 每节点热度值 + **窗口内样本量**。窗口 = 最近 30 天（滚动）；排名在「窗口内被访问过的节点」这个**子集内**做（零访问节点不进榜、不参与分位）；热度是**名次**的十档位置（1–10），**与次数的绝对值无关**（次数 ×10 而名次不变 ⇒ 热度不变）。AI 侧按通道**加权**（权重表见 `src/heat.js` 的 `CHANNELS`），人侧只算「打开详情框」。⚠ 日志损坏 / 认不出的通道 / 时间乱序 / 未来时间戳 ⇒ **报错并非 0 退出并点名**（不静默当 0）；本机没有该日志 ⇒ 明说"没有访问日志"，**不等于"热度为 0"**。`--limit` 只截断显示，热度一律按全量排名算
+
+```
+node cli/mm-cli.js heat <项目> [--json] [--limit <n>]
 ```
 
 ### docs-gen

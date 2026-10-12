@@ -3799,6 +3799,8 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
   };
   /** 备份**文件**落点：`.review/<YYYYMMDD>-条目层迁移/<项目>.aimap.json` */
   const s9backup = (name) => path.join(s9backupDir(), name + '.aimap.json');
+  /** 备份目录的**自述文件名**（与 `cli/commands/migrate.js`、G8 的 `checkWorkDirStatus` 同一处口径） */
+  const S9_README = 'README.md';
   const s9clean = (name) => {
     try { fs.rmSync(path.join(ROOT, 'projects', name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
     try { fs.rmSync(s9backup(name), { force: true }); } catch (e) { /* 备份是自己写的，要自己收干净 */ }
@@ -3806,10 +3808,25 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
     //    （`scripts/verify.js` 的步骤表：G8 = 步 2、G4 = 步 12）⇒ 一个没有 `README.md` 的空目录会让
     //    **下一次**全链在 G8 红「[工作目录无状态] … `.review/<日期>-条目层迁移/`」，而这一次却是绿的
     //    （本批实测就是被这样"毒化"的：第一次全绿、下一次必红）。
-    //    只在**空**时删：里面若有别人的东西（真跑过 `migrate` 的备份）一律不动 —— 少删一次不等于漏维护。
+    //
+    // **改前**钉的是"不留空壳"：只在目录**空**时删 ⇒ 目录里**只剩** `migrate` 写的那份自述
+    //   `README.md` 时，这个壳会**合法地**留下来（G8 认它合法 ⇒ 没有任何门禁会红 ✗），
+    //   于是 `.review/<日期>-条目层迁移/` 永久留着一个"已收口、里头什么都没有"的目录。
+    //   （本批开工时实测就有这么一个：只有 `README.md`、备份文件早已被上一轮的收尾删掉。）
+    // **改后**：**仅剩自述时连自述一起删**（删完再把目录删掉）；**有别的东西一律不动** ——
+    //   真跑过 `migrate` 的备份、或任何第三方文件在场时，**连自述也不碰** ✓。
+    // 凭什么仍守得住：判据（S1 之九）从"不是空壳"升级成"**不留任何残留**"——目录要么不存在，
+    //   要么里面**有别人的东西**（那时不动它才是对的）。自述本身没有数据价值：`cli/commands/migrate.js`
+    //   写的那份自述里明说"能整目录删除"（`formatVersion 2` 的那份备份才是数据，它由上面两行删掉）。
     try {
       const dir = s9backupDir();
-      if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      if (!fs.existsSync(dir)) return;
+      const left = fs.readdirSync(dir);
+      if (left.length === 0) { fs.rmdirSync(dir); return; }
+      if (left.length === 1 && left[0] === S9_README) {
+        fs.rmSync(path.join(dir, S9_README), { force: true });   // 仅剩自述 ⇒ 连自述一起删
+        if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      }
     } catch (e) { /* 删不掉不在这里判红：下面有一条断言专门盯它 */ }
   };
   /** 可无损回放（多块 + 列表组 + 块间空白）；**不可**回放（根层裸文本） */
@@ -3925,20 +3942,27 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
         + ' ｜ rev=' + (rep3 && rep3.rev)
         + ' ｜ result 里是首跑那份报告=' + /"itemized"/.test(String((rep3 || {}).result || '')));
 
-    // （S1 之九）**收尾不留空壳**：本段自建的备份目录不许以"空目录"的形式留给下一个人。
-    // 判据 = 本段的两个备份文件都不在了 **且** 目录不是"空壳"（判据的由来见上面 `s9clean` 的注释：
-    // G8 在 G4 **之前**跑 ⇒ 空目录会毒化**下一次**全链，而这一次是绿的）。
+    // （S1 之九）**收尾不留任何残留**：本段自建的备份目录不许以"空目录"或"只剩自述"的形式留给下一个人。
+    // 判据 = 本段的两个备份文件都不在了 **且** 目录**不在了**（除非里面还有**别人的**文件 —— 那种情况
+    // 本段一个字节都不动，正是"有别的东西一律不动"）。
+    // 判据的由来见上面 `s9clean` 的注释：G8 在 G4 **之前**跑 ⇒ 空目录会毒化**下一次**全链，而这一次是绿的；
+    // 只剩自述的目录虽然 G8 认它合法（**没有任何门禁会红**），但那正是"改前留下的壳"。
     // ⚠️ 目录里若有**别人的**文件（真跑过 `migrate` 的备份）不判红 —— 那不是本段造的，也不该由本段删。
-    // 判别力：把 `s9clean` 里那段 `rmdirSync`（只在空时删）注释掉 = 改前的行为 ⇒ 本断言**必红**。
+    // 判别力（实测）：把 `s9clean` 里"仅剩自述 ⇒ 连自述一起删"那三行去掉 = 改前的行为 ⇒ 本断言**必红**
+    // （此刻目录只剩 `README.md`；报文见交付说明）。
     s9clean(P9);
     s9clean(P10);
     const s9dir = s9backupDir();
-    const s9left = fs.existsSync(s9dir) ? fs.readdirSync(s9dir) : [];
+    const s9exists = fs.existsSync(s9dir);
+    const s9left = s9exists ? fs.readdirSync(s9dir) : [];
     const s9ours = s9left.filter((f) => f === P9 + '.aimap.json' || f === P10 + '.aimap.json');
-    check('S1 收尾：`.review/<日期>-条目层迁移/` **不留空壳**（留了 ⇒ 下一次全链的 G8 必红）',
-      s9ours.length === 0 && !(fs.existsSync(s9dir) && s9left.length === 0),
+    const s9shell = s9exists && (s9left.length === 0 || (s9left.length === 1 && s9left[0] === S9_README));
+    check('S1 收尾：`.review/<日期>-条目层迁移/` **不留任何残留** —— 本段的备份文件收干净，且"仅剩自述"时'
+      + '连自述一起删（改前只删空目录 ⇒ 只剩自述的壳会永久留下，而 G8 认它合法 ⇒ 没有任何门禁会红）',
+      s9ours.length === 0 && !s9shell,
       '备份目录=' + s9dir + ' ｜ 本段残留文件=' + JSON.stringify(s9ours)
-        + ' ｜ 目录存在=' + fs.existsSync(s9dir) + ' ｜ 目录内容=' + JSON.stringify(s9left));
+        + ' ｜ 目录存在=' + s9exists + ' ｜ 目录内容=' + JSON.stringify(s9left)
+        + ' ｜ 只剩自述/空壳=' + s9shell);
   } finally {
     s9clean(P9);
     s9clean(P10);
@@ -4002,6 +4026,197 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
       + ((r.anchors.decl !== 1 || r.anchors.ret !== 1)
         ? '｜⚠️ 定位失败：`function cloneNode` 与收尾 `return node;` 的锚点各出现 '
           + r.anchors.decl + ' / ' + r.anchors.ret + ' 次，判据要跟着改' : ''));
+}
+
+/* ===== 访问热度（H1 第一件）：由编排会话原文贴入 ===== */
+/* ============================================================================
+ * 访问热度（热度条第一件）：事件日志 + 窗口与排名口径 + `visit` / `heat` 两条命令
+ * ----------------------------------------------------------------------------
+ * 判据（对应 `.review/20261012-热度条/规格与裁决.md` §四 的前四条 + 规格 §二的两条硬约束）：
+ *   （热度①）**排名而非绝对值**：同一节点次数 ×10 而名次不变 ⇒ 热度**不变**；名次上推 ⇒ 热度**变**
+ *              （并顺带查"别人跟着下沉" —— 证明热度是名次的函数、不是次数的函数）；
+ *   （热度②）**窗口**：31 天前的事件**不计入**（带它 / 不带它，两条榜逐字节相同）；
+ *   （热度③）**两条分开**：人 / AI 计数互换 ⇒ 两条读数**都**不同（证明人榜与 AI 榜各自算）；
+ *   （热度④）**失败响亮**：日志里有一行读不出来 ⇒ `heat` **非 0 退出并点名**（字节偏移 + 原文），
+ *              且**不打印任何看起来正常的榜**；而同一份日志下 `visit` 照常能写（写入不读日志
+ *              —— 这是 O(1) 追加的**有意**取舍，写入端不做任何"先读后判"）；
+ *   （热度⑤）写入是**追加一行**：坏前缀逐字节不变、文件大小只涨一行（不读全量、不重写文件）；
+ *   （热度⑥）本机没有该日志 ⇒ `heat` 退出码 0 且**明说**"没有访问日志（≠ 热度为 0）"；
+ *   （热度⑦）命令输出里的权重表 == `src/heat.js` 的 `CHANNELS`（口径只有一处，命令层不抄表）。
+ *
+ * ## 判别力（实测可复现，报文见本批交付说明）
+ * 把 `src/heat.js` 的 `defaultHeatMapper` 改成 `return i.count;`（= 热度直接取**绝对计数**）⇒
+ * （热度①）那两条 check **必红**（实测：5 条断言红，含本条）；还原后复绿（文件 SHA-256 复原）。
+ * 单测侧同源、可重复执行的注入证明在 `tests/heat.test.js` 的 J1（走 `__setHeatMapperForTest`）。
+ *
+ * ## 摆放与两条约定
+ *   · 接在**最后一段静态判据之后、`/* ---------------- 清理 ---------------- *\/` 之前**新起一节；
+ *     本段自带 `finally` 收尾、自删全部探针项目 ⇒ **不需要**动末尾的清理段。
+ *   · 探针项目一律 `it-probe-heat-` 前缀：文件顶部 `sweepStaleProbes()` 的前缀表覆盖 `it-probe-`
+ *     ⇒ 本段被中断留下的残留，下次跑链会被自动清掉（不新增前缀，那要改文件顶部那份表）。
+ *   · 项目根**不自己拼**：从 `cli/core.js` 的 `PROJECTS_DIR` 取（唯一推导处，且随
+ *     `AI_MINDMAP_PROJECTS_DIR` 走 ⇒ 本段在沙箱里也能整段复跑）。
+ * ⚠️ 段内**不要**写成"行内斜杠紧跟圈号"的样子（G9 会把那当判定标记计数，见文件头）。
+ * ========================================================================== */
+{
+  const heatLib = require(path.join(ROOT, 'src', 'heat.js'));
+  const heatCore = require(path.join(ROOT, 'cli', 'core.js'));      // PROJECTS_DIR：项目根的唯一推导处
+  const HTAG = Date.now().toString(36);
+  const PH1 = 'it-probe-heat-a-' + HTAG;      // 主探针（排名 / 追加 / 响亮）
+  const PH2 = 'it-probe-heat-b-' + HTAG;      // 窗口：不含窗口外事件
+  const PH3 = 'it-probe-heat-c-' + HTAG;      // 窗口：含一条 31 天前的事件
+  const PH4 = 'it-probe-heat-d-' + HTAG;      // 两条分开：人 3 / AI 1（甲），人 1 / AI 3（乙）
+  const PH5 = 'it-probe-heat-e-' + HTAG;      // 两条分开：把上一组**互换**
+  const PHALL = [PH1, PH2, PH3, PH4, PH5];
+  const hdir = (name) => path.join(heatCore.PROJECTS_DIR, name);
+  const hlog = (name) => path.join(hdir(name), heatLib.FILE_NAME);
+  const hjson = (out) => { try { return JSON.parse(String(out).trim()); } catch (e) { return null; } };
+  const hheat = (name, extra) => hjson(run(['heat', name, '--json'].concat(extra || [])).out);
+  const hrow = (list, node) => (list || []).filter((x) => x.node === node)[0] || null;
+  /** 按 `{通道: {节点: 次数}}` 追加事件（时间从 baseMs 起 +1 秒 ⇒ 非递减 = 日志的时序不变量） */
+  const hspec = (name, spec, baseMs) => {
+    const evs = [];
+    Object.keys(spec).forEach((ch) => Object.keys(spec[ch]).forEach((node) => {
+      for (let i = 0; i < spec[ch][node]; i++) evs.push({ node: node, ch: ch });
+    }));
+    fs.appendFileSync(hlog(name), evs.map((e, i) => heatLib.serializeEvent(heatLib.buildEvent({
+      node: e.node, ch: e.ch, at: new Date(baseMs + i * 1000).toISOString(), by: 'cli-integration'
+    }))).join(''), 'utf8');
+    return evs.length;
+  };
+  const hnew = (name, ids) => {
+    run(['init', name, '--title', '热度条探针']);
+    ids.forEach((id) => run(['add', name, 'root', '--topic', id, '--id', id]));
+  };
+
+  try {
+    hnew(PH1, ['it-heat-a', 'it-heat-b', 'it-heat-c']);
+
+    /* ---- （热度⑥）没有日志：退出码 0 + 明说"没有访问日志（≠ 热度为 0）" ---- */
+    const rNoLog = run(['heat', PH1, '--json']);
+    const jNoLog = hjson(rNoLog.out);
+    check('热度：本机没有访问日志 ⇒ 退出码 0，且**明说**"没有访问日志（≠ 热度为 0）"（不是给一份空榜）',
+      rNoLog.code === 0 && !!jNoLog && jNoLog.hasLog === false
+        && String(jNoLog.note || '').indexOf('不等于') >= 0,
+      'exit=' + rNoLog.code + ' ｜ hasLog=' + (jNoLog || {}).hasLog
+        + ' ｜ ' + String((jNoLog || {}).note || '').slice(0, 60));
+
+    /* ---- `visit` 端到端：记一次人访问（human-detail）⇒ 日志恰好多一行 ---- */
+    const rV = run(['visit', PH1, 'it-heat-a', '--channel', 'human-detail', '--json']);
+    const jV = hjson(rV.out);
+    check('热度 visit：记一次人访问（human-detail）⇒ 回显 who/权重，且日志恰好多**一行**',
+      ok(rV.out) && !!jV && jV.who === 'human' && jV.channel === 'human-detail'
+        && jV.weight === heatLib.channelInfo('human-detail').weight
+        && fs.readFileSync(hlog(PH1), 'utf8').split('\n').filter((l) => l.trim()).length === 1,
+      '回显=' + rV.out.trim().slice(0, 80));
+
+    /* ---- （热度⑤）追加语义：坏前缀逐字节不变 + 文件只涨一行 ---- */
+    const poison = '{"v":1,"at":"懒得写了"\n';                       // 手改日志：既不是合法 JSON 也不是合法形状
+    fs.appendFileSync(hlog(PH1), poison, 'utf8');
+    const bytesBefore = fs.readFileSync(hlog(PH1));
+    const wrote = heatLib.appendEvent(hlog(PH1), { node: 'it-heat-b', ch: 'ai-get', by: 'cli-integration' });
+    const bytesAfter = fs.readFileSync(hlog(PH1));
+    check('热度：写入是**追加一行** —— 坏前缀逐字节不变、文件大小只涨一行（不读全量、不重写文件）',
+      bytesAfter.length === bytesBefore.length + wrote.bytes
+        && bytesAfter.subarray(0, bytesBefore.length).equals(bytesBefore),
+      '涨 ' + (bytesAfter.length - bytesBefore.length) + ' 字节（期望 ' + wrote.bytes + '）');
+
+    /* ---- （热度④）读必须响亮：坏行 ⇒ 非 0 + 点名（偏移/行号 + 原文）+ 不给榜 ---- */
+    const rBad = run(['heat', PH1]);
+    check('热度：日志有一行读不出来 ⇒ `heat` **非 0 退出** + 点名（行号/字节偏移 + 原文）+ 不打印任何榜',
+      rBad.code !== 0 && rBad.out.indexOf('坏行') >= 0 && rBad.out.indexOf('字节') >= 0
+        && rBad.out.indexOf('懒得写了') >= 0 && rBad.out.indexOf('人榜') < 0
+        && rBad.out.indexOf('不等于') >= 0,                            // 明说"采不到 ≠ 热度 0"
+      'exit=' + rBad.code + ' ｜ ' + rBad.out.trim().split('\n').slice(1, 3).join(' ').slice(0, 110));
+    check('热度：同一份坏日志下 `visit` 照常能写（写入不读日志 = O(1) 追加的**有意**取舍，职责分开）',
+      ok(run(['visit', PH1, 'it-heat-c', '--channel', 'ai-get']).out)
+        && fs.readFileSync(hlog(PH1), 'utf8').split('\n').filter((l) => l.trim()).length === 4,
+      '日志行数=' + fs.readFileSync(hlog(PH1), 'utf8').split('\n').filter((l) => l.trim()).length
+        + '（1 条合法 + 1 条坏行 + 1 条 appendEvent + 1 条本次 visit）');
+
+    /* ---- （热度①）排名而非绝对值（重开一份干净日志） ---- */
+    fs.rmSync(hlog(PH1), { force: true });
+    hspec(PH1, { 'human-detail': { 'it-heat-a': 20, 'it-heat-b': 15, 'it-heat-c': 1 } }, Date.now() - 6 * 3600 * 1000);
+    const h1 = hheat(PH1);
+    check('热度（判据① 基准）：人榜按次数排名 ⇒ 20 / 15 / 1 的名次与档位 = 1/10、2/7、3/4（n=3）',
+      !!h1 && h1.human.map((x) => x.node + '#' + x.rank + '/' + x.heat).join(' ') === 'it-heat-a#1/10 it-heat-b#2/7 it-heat-c#3/4',
+      '人榜=' + (h1 ? h1.human.map((x) => x.node + '#' + x.rank + '/' + x.heat).join(' ') : 'null'));
+
+    hspec(PH1, { 'human-detail': { 'it-heat-c': 9 } }, Date.now() - 3 * 3600 * 1000);      // c: 1 → 10（仍少于 15）
+    const h2 = hheat(PH1);
+    const c2 = hrow(h2 && h2.human, 'it-heat-c');
+    check('热度（判据①）：次数 ×10 而**名次不变** ⇒ 热度**不变**（热度不是绝对值的函数）',
+      !!c2 && c2.visits === 10 && c2.rank === 3 && c2.heat === 4,
+      'c=' + JSON.stringify(c2 || {}));
+
+    hspec(PH1, { 'human-detail': { 'it-heat-c': 90 } }, Date.now() - 2 * 3600 * 1000);     // c → 100：名次上推
+    const h3 = hheat(PH1);
+    const c3 = hrow(h3 && h3.human, 'it-heat-c');
+    check('热度（判据①）：**名次上推**（3 → 1）⇒ 热度**变**（10），且别人跟着下沉一档（a=7、b=4）',
+      !!c3 && c3.rank === 1 && c3.heat === 10
+        && (hrow(h3.human, 'it-heat-a') || {}).heat === 7 && (hrow(h3.human, 'it-heat-b') || {}).heat === 4,
+      'c=' + JSON.stringify(c3 || {}) + ' ｜ a=' + JSON.stringify(hrow(h3.human, 'it-heat-a') || {})
+        + ' ｜ b=' + JSON.stringify(hrow(h3.human, 'it-heat-b') || {}));
+
+    /* ---- （热度②）窗口：31 天前的一条不进榜（带它 / 不带它，两条榜逐字节相同） ---- */
+    hnew(PH2, ['it-heat-a', 'it-heat-b', 'it-heat-c']);
+    hnew(PH3, ['it-heat-a', 'it-heat-b', 'it-heat-c']);
+    hspec(PH2, { 'human-detail': { 'it-heat-a': 2, 'it-heat-b': 1 } }, Date.now() - 2 * 3600 * 1000);
+    hspec(PH3, { 'human-detail': { 'it-heat-c': 1 } }, Date.now() - 31 * heatLib.DAY_MS);   // 31 天前：窗口外
+    hspec(PH3, { 'human-detail': { 'it-heat-a': 2, 'it-heat-b': 1 } }, Date.now() - 2 * 3600 * 1000);
+    const w2 = hheat(PH2);
+    const w3 = hheat(PH3);
+    check('热度（判据②）：31 天前的事件**不计入** —— 带它 / 不带它两条榜**逐字节相同**，且它不进榜',
+      !!w2 && !!w3 && JSON.stringify(w3.human) === JSON.stringify(w2.human)
+        && JSON.stringify(w3.ai) === JSON.stringify(w2.ai)
+        && w3.sample.events === 3 && w3.sample.dropped === 1 && hrow(w3.human, 'it-heat-c') === null,
+      '带窗口外事件 = ' + JSON.stringify((w3 || {}).sample) + ' ｜ 不含它 = ' + JSON.stringify((w2 || {}).sample)
+        + ' ｜ 两条榜相同=' + (!!w2 && !!w3 && JSON.stringify(w3.human) === JSON.stringify(w2.human)));
+
+    /* ---- （热度③）两条分开：人 / AI 计数互换 ⇒ 两条读数都不同 ---- */
+    hnew(PH4, ['it-heat-a', 'it-heat-b']);
+    hnew(PH5, ['it-heat-a', 'it-heat-b']);
+    hspec(PH4, { 'human-detail': { 'it-heat-a': 3, 'it-heat-b': 1 }, 'ai-get': { 'it-heat-a': 1, 'it-heat-b': 3 } },
+      Date.now() - 3 * 3600 * 1000);
+    hspec(PH5, { 'human-detail': { 'it-heat-a': 1, 'it-heat-b': 3 }, 'ai-get': { 'it-heat-a': 3, 'it-heat-b': 1 } },
+      Date.now() - 3 * 3600 * 1000);
+    const s4 = hheat(PH4);
+    const s5 = hheat(PH5);
+    check('热度（判据③）：人 / AI 计数互换 ⇒ 人榜与 AI 榜**都**反号（两条榜真的各自算，不是同一份的复印）',
+      !!s4 && !!s5
+        && (s4.human[0] || {}).node === 'it-heat-a' && (s4.ai[0] || {}).node === 'it-heat-b'
+        && (s5.human[0] || {}).node === 'it-heat-b' && (s5.ai[0] || {}).node === 'it-heat-a'
+        && JSON.stringify(s4.human) !== JSON.stringify(s4.ai)
+        && JSON.stringify(s5.human) !== JSON.stringify(s4.human)
+        && JSON.stringify(s5.ai) !== JSON.stringify(s4.ai),
+      'PH4 人榜首=' + ((s4 && s4.human[0]) ? s4.human[0].node : 'null')
+        + ' / AI 榜首=' + ((s4 && s4.ai[0]) ? s4.ai[0].node : 'null')
+        + ' ｜ PH5 人榜首=' + ((s5 && s5.human[0]) ? s5.human[0].node : 'null')
+        + ' / AI 榜首=' + ((s5 && s5.ai[0]) ? s5.ai[0].node : 'null'));
+
+    /* ---- （热度⑦）权重表只有一处：命令输出的表 == 模块的表；且逐项可核算 ---- */
+    const jW = hheat(PH4, ['--limit', '1']);
+    const sameWeights = !!jW && heatLib.CHANNELS.every((c) => {
+      const w = (jW.weights || {})[c.ch];
+      return !!w && w.who === c.who && w.weight === c.weight;
+    });
+    const byW = (jW && jW.byChannel) || [];
+    const calcOk = byW.every((x) => {
+      const w = (jW.weights || {})[x.channel];
+      return !!w && w.weight === x.weight && w.who === x.who;
+    });
+    check('热度：命令输出的权重表 == `src/heat.js` 的 `CHANNELS`（口径只有一处，命令层不抄表）；'
+      + '`--limit` 只截断显示、热度按全量排名算',
+      sameWeights && calcOk && !!jW && jW.human.length === 1 && (jW.limit || {}).totalHuman === 2
+        && JSON.stringify(jW.human[0]) === JSON.stringify((s4.human || [])[0])
+        && run(['heat', PH4, '--limit', '1']).out.indexOf('只截断显示') >= 0,
+      'weights 一致=' + sameWeights + ' ｜ byChannel 可核算=' + calcOk
+        + ' ｜ 显示 ' + ((jW || {}).human || []).length + '/' + (((jW || {}).limit) || {}).totalHuman);
+  } finally {
+    PHALL.forEach((name) => {
+      try { fs.rmSync(hdir(name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+    });
+  }
 }
 
 /* ---------------- 清理 ---------------- */

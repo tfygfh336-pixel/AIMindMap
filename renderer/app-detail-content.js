@@ -492,31 +492,57 @@
 
   /** 复制一条的 `节点id#条目id`；失败**不静默**（状态栏说清用了哪条路、为什么没成）
    *
-   * ⚠️ **两条通道都要窗口焦点**：`navigator.clipboard` 与 `execCommand('copy')` 在**无焦点的隐藏窗口**
-   * 里都会"返回成功、却什么都没写进系统剪贴板"（Chromium 的已知行为；本工程的离屏冒烟窗口按纪律
-   * **不抢焦点** ⇒ 这一档在冒烟环境里**采不到真值**）。所以 `lastCopy` 里多带两个**诊断**字段
-   * （`focus` / `why`）：成功判定仍然只看 `ok` 与 `value`，但"为什么只能走兜底"要看得见 ——
-   * 那正是"自报成功"与"真的写进去了"之间唯一的区别。 */
+   * ⚠️ **通道顺序是判据的一部分，别调换**：
+   *   ① `window.desktop.app.writeClipboard` → **主进程**的 `clipboard.writeText`：进程级 OS 剪贴板
+   *      API，**与窗口焦点无关** ✓ —— 离屏/隐藏窗口（冒烟窗口按纪律就是这种）里也能真的写进去；
+   *   ②③ 浏览器那两条（`navigator.clipboard` / `execCommand('copy')`）：**要求文档有焦点**，在无焦点的
+   *      隐藏窗口里实测"要么被拒（`Document is not focused`）、要么自报成功却什么都没写进系统剪贴板"✗。
+   *      ⇒ 它们只为"渲染层跑在非 Electron 宿主里"（那时 `window.desktop` 不存在）保留；
+   *      **冒烟域 39 的判据要求 `how === 'desktop-clipboard'`** ⇒ 一旦退回 ②③ 那条判据必红 ✓，
+   *      "焦点依赖"也就不再有资格冒充成功（曾经正是它让域 39 只能降级成行为级判据）。
+   * `lastCopy` 里的 `how` / `focus` / `why` / `readback` 是**诊断**字段：成功判定仍只看 `ok`，
+   * 但"为什么只能走兜底"要看得见 —— 那正是"自报成功"与"真的写进去了"之间唯一的区别。 */
   function fdCopyItem(box, itemId) {
     const value = fdCopyValue(box, itemId);
-    const done = (ok, how, why) => {
+    const done = (ok, how, why, extra) => {
       if (box && box.fdItems) {
-        box.fdItems.lastCopy = {
+        box.fdItems.lastCopy = Object.assign({
           value: value, ok: !!ok, how: how,
           focus: (typeof document.hasFocus === 'function') ? document.hasFocus() : null,
           why: why || ''
-        };
+        }, extra || {});
       }
       setStatus(ok ? ('已复制 ' + value) : ('复制失败（' + how + '）：' + value), !ok);
       return !!ok;
     };
+    let deskWhy = '';
+    try {
+      const desk = (window.desktop && window.desktop.app && window.desktop.app.writeClipboard)
+        ? window.desktop.app.writeClipboard : null;
+      if (desk) {
+        // ① 主进程那条（默认路径）。`matched === false` = 主进程**写后回读**发现剪贴板里不是这段文本
+        //   ⇒ 不算成功（宁可退回兜底也别自报 ✓）。
+        return Promise.resolve(desk(value)).then((res) => {
+          const r = res || {};
+          if (r.ok === true && r.matched !== false) {
+            return done(true, 'desktop-clipboard', '', { readback: r.readback });
+          }
+          return fdCopyFallback(value, done,
+            'desktop: ' + (r.error || ('写后回读不一致：' + JSON.stringify(r.readback))));
+        }).catch((e) => fdCopyFallback(value, done, 'desktop 通道抛错: ' + ((e && e.message) || e)));
+      }
+      deskWhy = '（没有 window.desktop ⇒ 只能走**要求焦点**的浏览器通道）';
+    } catch (e) {
+      deskWhy = 'desktop 通道同步抛错: ' + ((e && e.message) || e);
+    }
+    // ②③ 浏览器那两条（要焦点；只在非 Electron 宿主上才轮到它们）
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         return navigator.clipboard.writeText(value)
-          .then(() => done(true, 'clipboard', ''))
+          .then(() => done(true, 'clipboard', deskWhy))
           .catch((e) => fdCopyFallback(value, done, 'navigator.clipboard: ' + ((e && e.message) || e)));
       }
-      return fdCopyFallback(value, done, 'navigator.clipboard 不存在（非安全上下文？）');
+      return fdCopyFallback(value, done, 'navigator.clipboard 不存在（非安全上下文？）' + deskWhy);
     } catch (e) {
       return fdCopyFallback(value, done, 'navigator.clipboard 抛错: ' + ((e && e.message) || e));
     }
