@@ -84,7 +84,7 @@
 | `ui-state` | ui-state [<项目>] [--json] |
 | `changes` | changes [<项目>] [--since <rev|版本号>] [--json] [--limit n] |
 | `visit` | visit <项目> <节点id> --channel <通道> [--json] |
-| `heat` | heat <项目> [--json] [--limit <n>] |
+| `heat` | heat <项目> [--json] [--limit <n>] [--node <id>] [--derived <summary|keys>] |
 | `docs-gen` | docs-gen |
 | `release` | release [版本号] [--major|--minor|--patch] |
 | `changelog` | changelog [--grep 关键词] [--full] [--limit n] [--json] |
@@ -126,7 +126,7 @@ node cli/mm-cli.js get <项目> <id> [--json] [--item <itemId>] [--detail] [--im
 
 ### search
 
-搜索（**默认口径 = 搜条目**：节点 topic ∪ 条目正文；`--topic-only` 回退 v2 只搜标题）。命中形状：`{id,topic,nodeId,nodeTopic,itemId,type,itemized,matchIn,snippet,src,verified,score}`（`id`/`topic` 是 v2 兼容别名；未条目化节点 itemId=null/type=null/itemized=false）。过滤：`--tag`（条目级标签 → item-tag / 节点级 → node-tag；未条目化节点照 v2 报 tag）、`--src`（src 子串，字符串或数组任一项）、`--verified`（只要已核条目）、`--type`（text|rich|qa）、`--since <ISO>`（at >= ISO；不给未条目化的节点命中）；`--full` 在默认口径之上再并上 v2 的额外面（图片 caption / 节点级标签 / 链接说明）。排序：热度（人 / AI 两条，近 30 天窗口）作为**一个封顶向量**并入 —— 只重排、不改变命中与否，占总分 ≤ 8%（取值与理由的唯一一处：src/heat.js 的 SEARCH_RANK）；本机没有该日志时**不参考热度**（≠ 热度为 0，`--json` 的 heat.reason 会说明）。`--no-heat`：**显式**跳过热度日志（不读盘、不排序）—— 日志坏了 / 认不出通道 / 时间乱序时这是**先拿到结果**的出口；⚠ 它不改变默认档：默认遇到坏日志仍然**响亮失败**（不许静默降级成"按 0 排"）。预算：`--limit`（缺省 200，上界 1000）/ `--max-bytes`（缺省 65536，16–4194304）；`--json` 顶层 `{project,keyword,hits,hitCount,truncated,mode,budget:{bytes,estTokens,limit,maxBytes},heat:{applied,reason,weights,windowDays,rankedNodes,hitNodes,log}}`，超限截断并给续取方式（budget.resume）。非法值（含 --verified/--type/--since 写错）**当场报错**，不静默退化成默认值或"0 命中"
+搜索（**默认口径 = 搜条目**：节点 topic ∪ 条目正文；`--topic-only` 回退 v2 只搜标题）。命中形状：`{id,topic,nodeId,nodeTopic,itemId,type,itemized,matchIn,snippet,src,verified,score}`（`id`/`topic` 是 v2 兼容别名；未条目化节点 itemId=null/type=null/itemized=false）。过滤：`--tag`（条目级标签 → item-tag / 节点级 → node-tag；未条目化节点照 v2 报 tag）、`--src`（src 子串，字符串或数组任一项）、`--verified`（只要已核条目）、`--type`（text|rich|qa）、`--since <ISO>`（at >= ISO；不给未条目化的节点命中）；`--full` 在默认口径之上再并上 v2 的额外面（图片 caption / 节点级标签 / 链接说明）。排序：热度（人 / AI 两条，近 30 天窗口）作为**一个封顶向量**并入 —— 只重排、不改变命中与否，占总分 ≤ 8%（取值与理由的唯一一处：src/heat.js 的 SEARCH_RANK）；本机没有该日志时**不参考热度**（≠ 热度为 0，`--json` 的 heat.reason 会说明）。`--no-heat`：**显式**跳过热度日志 —— 本次调用**完全不碰它（不读、不写、不排序）**：日志坏了 / 认不出通道 / 时间乱序时这是**先拿到结果**的出口（往坏日志里再追加一条只会搅得更坏 ⇒ 写入这一半也必须一起关）；⚠ 它不改变默认档：默认遇到坏日志仍然**响亮失败**（不许静默降级成"按 0 排"）。预算：`--limit`（缺省 200，上界 1000）/ `--max-bytes`（缺省 65536，16–4194304）；`--json` 顶层 `{project,keyword,hits,hitCount,truncated,mode,budget:{bytes,estTokens,limit,maxBytes},heat:{applied,reason,weights,windowDays,rankedNodes,hitNodes,log}}`，超限截断并给续取方式（budget.resume）。非法值（含 --verified/--type/--since 写错）**当场报错**，不静默退化成默认值或"0 命中"
 
 ```
 node cli/mm-cli.js search <项目> <关键词|--tag 标签> [--json] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat]
@@ -590,10 +590,10 @@ node cli/mm-cli.js visit <项目> <节点id> --channel <通道> [--json]
 
 ### heat
 
-访问热度（只读，**热度条第一件**）：人 / AI 两条榜 + 每节点热度值 + **窗口内样本量**。窗口 = 最近 30 天（滚动）；排名在「窗口内被访问过的节点」这个**子集内**做（零访问节点不进榜、不参与分位）；热度是**名次**的十档位置（1–10），**与次数的绝对值无关**（次数 ×10 而名次不变 ⇒ 热度不变）。AI 侧按通道**加权**（权重表见 `src/heat.js` 的 `CHANNELS`），人侧只算「打开详情框」。⚠ 日志损坏 / 认不出的通道 / 时间乱序 / 未来时间戳 ⇒ **报错并非 0 退出并点名**（不静默当 0）；本机没有该日志 ⇒ 明说"没有访问日志"，**不等于"热度为 0"**。`--limit` 只截断显示，热度一律按全量排名算
+访问热度（只读，**热度条第一件**）：人 / AI 两条榜 + 每节点热度值 + **窗口内样本量**。窗口 = 最近 30 天（滚动）；排名在「窗口内被访问过的节点」这个**子集内**做（零访问节点不进榜、不参与分位）；热度是**名次**的十档位置（1–10），**与次数的绝对值无关**（次数 ×10 而名次不变 ⇒ 热度不变）。AI 侧按通道**加权**（权重表见 `src/heat.js` 的 `CHANNELS`），人侧只算「打开详情框」。`--derived summary|keys`（**只在 `--json` 里**）另给 **AI 侧的隐藏维度**：`tags` / `sections` / `trees` 三组，**全部由节点热度派生**（不是各记一套），每维带 `nodes/visited/events` 样本量；`keys` 是最省的一档（只要维度名）。**界面不显示这些维度**（渲染层只画节点自己的两条热度条）。每维至多列 20 项（**只截显示**，名次与档位一律按全量算；`total`/`truncated`/`keys` 仍是全量读数）。`--node <id>`（**只在 `--json` 里**）另给**这一个节点**的读数 `node`：`{heat,bands,rank,visits,listed,reason,sample}` —— 界面两条热度条读的就是它，折算（名次→档位→该亮几格）只有一处（`src/heat.js` 的 `heatProfile`）；**按全量排名算，不受 `--limit` 影响**（被访问过但没进显示窗口的节点也能取到）。⚠ 日志损坏 / 认不出的通道 / 时间乱序 / 未来时间戳 ⇒ **报错并非 0 退出并点名**（不静默当 0）；本机没有该日志 ⇒ 明说"没有访问日志"，**不等于"热度为 0"**。`--limit` 只截断显示，热度一律按全量排名算
 
 ```
-node cli/mm-cli.js heat <项目> [--json] [--limit <n>]
+node cli/mm-cli.js heat <项目> [--json] [--limit <n>] [--node <id>] [--derived <summary|keys>]
 ```
 
 ### docs-gen

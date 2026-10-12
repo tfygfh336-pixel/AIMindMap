@@ -23,6 +23,13 @@
    */
   const VERSION_CONFLICT = (concurrency && concurrency.VERSION_CONFLICT) || 'VERSION_CONFLICT';
 
+  /**
+   * 访问日志的**目录名**：`<项目根>/.visits/<项目名>.jsonl` —— 在项目目录**之外**
+   * （理由三条逐字写在 `visitLogFile` 的注释里：项目目录内的零字节不变量 / 痕迹不是内容 / 仍按项目分）。
+   * ⚠️ 带前导点 ⇒ 与本工程既有的点文件同一约定（不进列举、不进导出、不进 G6/G8 的数字扫描）。
+   */
+  const VISIT_DIR_NAME = '.visits';
+
   /** 解析项目 JSON：剥离 UTF-8 BOM（带 BOM 的文本 JSON.parse 会直接失败） */
   function parseProjectJson(text) {
     return JSON.parse(String(text).replace(/^\uFEFF/, ''));
@@ -122,11 +129,30 @@
     }
     /**
      * 访问事件日志的绝对路径（`src/heat.js` 定文件名与格式）—— 与 `changeLogFile` 同一条规矩：
-     * **路径只在这里推导一次**，命令层（`cli/commands/heat.js`）不许自己拼 `projects/<项目>/.visits.jsonl`。
+     * **路径只在这里推导一次**，命令层（`cli/commands/heat.js`）不许自己拼路径。
      * 它同样是**旁路产物**：不是数据、不进 `export-json`、可随时删。
+     *
+     * ## 为什么放在**项目目录之外**（`<项目根>/.visits/<项目名>.jsonl`）—— 三条理由，缺一不可
+     *   ① **"读命令在项目目录里零字节"是本工程硬挣来的不变量**（集成断言 `S3 只读查询不生成索引文件`
+     *      钉着它：跑完 search/get/read，项目目录清单与项目文件字节都不许变）。而第三件起
+     *      `get`/`read`/`search`/`related`/`ask` 会顺手记访问 ⇒ 日志放在项目目录里**必然**破掉它 ✗。
+     *   ② 访问日志是**本机使用痕迹，不是项目内容**：它描述"这台机器上的人/AI 怎么用它"，
+     *      而不是"这个项目里有什么"。放进项目目录会让人误以为它属于项目（会被拷进备份、
+     *      被别的机器当成事实读走）—— 那是把"痕迹"伪装成"内容"。
+     *   ③ 出口一样的轻：仍按项目分文件（一个项目一份，不混在一个大文件里），删一个项目就少一份。
+     * ⚠️ **只读路径的"零字节"仍然成立**：项目目录**内**一个字节都不写；写的是**平级的** `.visits/`。
      */
     function visitLogFile(name) {
-      return path.join(projectDir(name), heat.FILE_NAME);
+      if (typeof name !== 'string' || !name) throw new Error('非法项目名: ' + name);
+      if (/[\\/:*?"<>|]/.test(name) || name === '.' || name === '..') throw new Error('非法项目名: ' + name);
+      const dir = path.join(path.resolve(rootDir), VISIT_DIR_NAME);
+      // **目录必须在这里确保存在**：写入端是 `fs.appendFileSync`（O(1) 追加，绝不"先读后判"），
+      // 它**不会**建父目录 ⇒ 目录缺失就会 ENOENT。放在路径推导处而不是各调用方：
+      // 路径的唯一推导处也应当是"让它可写"的唯一处（否则 `visit` / 埋点 / 主进程三处各 mkdir 一次）。
+      // 代价 = 每次调用一次 `mkdirSync(recursive)`：目录已存在时是**一次 stat 级系统调用**（实测微秒级），
+      // 与"日志追加本身"同量级 ⇒ 对读路径不构成可测的负担。
+      fs.mkdirSync(dir, { recursive: true });
+      return path.join(dir, name + '.jsonl');
     }
 
     /**
@@ -316,6 +342,12 @@
       changeLogFile,
       /** 访问事件日志路径（读方/写方 —— `heat` / `visit` —— 用它，别自己拼路径） */
       visitLogFile,
+      /**
+       * 访问日志的**目录**（`<项目根>/.visits/`）—— 只为两件事存在：① 从项目目录**搬走**时
+       * 能定位旧位置；② 测试/维护脚本要清空全部访问痕迹时有个正规入口（不自己拼路径）。
+       * ⚠️ 它**不在**项目目录里，所以不会出现在任何"项目目录清单"判据里（那正是它的目的）。
+       */
+      visitDir() { return path.join(path.resolve(rootDir), VISIT_DIR_NAME); },
       /** 记一条变更日志（GUI 保存那条不走 `write` 的路径也要调它 —— 实现只有一份） */
       recordChange,
       /** 给**最近那条**带 `idem` 的记录补上"首次回显"（S7 的延迟落账；见该函数注释） */

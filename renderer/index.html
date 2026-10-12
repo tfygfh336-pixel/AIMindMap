@@ -61,6 +61,10 @@
             </span>
           </div>
           <div class="fd-scroll">
+            <!-- 热度条（第三件·A）：人 / AI 两条，各十格 + 数值 + 窗口内样本量。
+                 数据**全部**来自主进程 `app:heat`（它转发 CLI `heat --json`）—— 本容器里没有一个数
+                 是渲染层算出来的。它只是**展示**：改它不触发保存、不写项目数据 ✓ -->
+            <div class="fd-heat" data-heat="bars"></div>
             <div class="fd-tags"></div>
             <!-- 本机文件夹链接（有 localPath 才显示）：点击用系统文件管理器打开该目录 -->
             <div class="fd-localpath"></div>
@@ -225,6 +229,7 @@
   <script src="app-palette.js"></script>
   <script src="app-assoc.js"></script>
   <script src="app-related.js"></script>
+  <script src="app-heat-bars.js"></script>
   <script src="app-ask.js"></script>
   <script src="app-import.js"></script>
   <script src="app.js"></script>

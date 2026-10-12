@@ -148,6 +148,13 @@ function dispatch(argv) {
     return undefined;
   }
   const ctx = core.createContext(rest, { command: name });
+  /* 访问埋点（热度条第三件 · C）：给命令层一个**薄转发** —— `ctx.recordVisit` 与本块都要用到
+   * `ctx.store`（日志路径的唯一推导处）与 `ctx.writer`（"谁记的"）。命令层直接 import `ctx.store`
+   * 就是第二处路径推导，所以只交出"路径 + 谁在记"这两样，**不交出更宽的口子** ✓ */
+  ctx.heatContext = {
+    logFile: name ? (function () { try { return ctx.store.visitLogFile(ctx.projectName); } catch (e) { return null; } })() : null,
+    by: ctx.writer
+  };
   // ---- 写命令的幂等短路（S7）：`--idem` 命中时**这条命令根本不执行** ----
   // 为什么把回放放在这里（dispatch）而不是各命令里：与"未知选项守门"同一个理由 ——
   // 40+ 条写命令各写一遍必然漏，而漏掉的那条**又是静默的**（重试照样重复生效）。
@@ -158,11 +165,38 @@ function dispatch(argv) {
     // 命令体跑完 ⇒ 把"首次回显"补进那条幂等记录（写命令的收尾回执在写盘**之后**才打印，
     // 所以这一步只能在这里做；它只补日志的一个可选字段，不改数据、不改 stdout ✓）
     ctx.flushIdemRecord();
+    reportVisitErrors(ctx);
     return r;
   } catch (err) {
     if (err && err.name === 'IdemReplay') { replayIdem(ctx, name, err.idem); return undefined; }
+    reportVisitErrors(ctx);
     throw err;
   }
+}
+
+/**
+ * **访问埋点的失败要响亮**（热度条第三件 · C 块）。
+ *
+ * 为什么在这里、而不是各命令里：埋点（`ctx.recordVisit`）跨 5 个命令，
+ * 而"失败怎么报"必须**只有一处**（与 `cli/core.js` 的 `flushIdemRecord` 同一条理由）。
+ *
+ * 两条硬约束决定了这个落点：
+ *   ① **stdout 逐字节不变** —— 所以一个字节都不往 stdout 写（埋点是旁路的旁路，
+ *      它坏掉不许污染主干的输出）；打到 **stderr**：人是"黑底终端里能看见"，
+ *      MCP 侧 `runCli` 把 stderr 合并进 error 文本 ⇒ AI 也看得见；
+ *   ② **不阻断**：命令已经成功跑完了，这里只是把"没记上"这件事喊出来 ——
+ *      它不影响退出码（退出码仍由命令本身决定）。
+ *
+ * ⚠️ 与 `cli/core.js` 的变更日志失败同型：**警告进 stderr、数据/输出不动**。
+ */
+function reportVisitErrors(ctx) {
+  let list = [];
+  try { list = ctx.visitErrors ? ctx.visitErrors() : []; } catch (e) { list = []; }
+  if (!list.length) return;
+  const body = list.map((x) => '\n  · 通道 ' + x.channel + '：' + (x.reason || '失败')
+    + (x.errors && x.errors.length ? ' —— ' + x.errors.join('；') : '')).join('');
+  process.stderr.write('warning: 访问热度日志没能记上这次访问（读路径不受影响，热度会**少算**）'
+    + body + '\n  · 出处：src/heat-sensor.js（上限与失败口径的唯一一处）\n');
 }
 
 /**

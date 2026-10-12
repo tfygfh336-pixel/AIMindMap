@@ -398,6 +398,17 @@
   function showDetail(node) {
     if (!node) return;
     state.selectedNode = node;
+    /* ---- 采样点（热度条第三件 · A）：**人打开详情框**（裁决一里唯一算数的人类动作）----
+     * 为什么放在这里：本函数是"打开详情框"的**唯一入口** —— 节点点击（app-detail-content）、
+     * 搜索结果、关联视图、命令面板、审计面板、`showDetailItem` 全都汇到它 ⇒ 一处采样点覆盖全部路径。
+     * 三条纪律（都在 `renderer/app-heat-bars.js` 里）：
+     *   · **异步、不阻塞**：DOM 已经画完，这一步是 fire-and-forget（绝不 await，打开不许变慢）；
+     *   · **只往访问日志追加一行**（旁路产物，`<项目根>/.visits/<项目>.jsonl`，在项目目录**之外**）
+     *     ⇒ 不写项目数据、不触发保存、不产生未保存标记（判据：改/看热度条不写盘）；
+     *   · 失败**响亮**：控制台一条 + 状态栏可见提示（`app-heat-bars.js` 里做，不静默）。
+     * ⚠️ 框内的**重绘**（`renderFdBox` / `refreshNodeDetailBox` / 条目选择）**不经**本函数
+     * ⇒ 它们不会重复计数（"关掉/重开只算打开那一次"要区分的正是这两件事）。 */
+    if (MM.heatBarsRecordHumanOpen) MM.heatBarsRecordHumanOpen(node);
     // 该节点已在某个详情框里 → 直接刷新那个框（不重复开框，也不覆盖别的锁定框）
     // 注意排除 kind==='assoc'：关联页面的 box.node 只是**锚定节点**，不是"这个节点的详情框"，
     // 否则打开关联页面后，点同一节点会被误判成"已存在"，把关联页当成节点详情刷新掉。

@@ -12,14 +12,26 @@
  *   ② **派生热度**（本文件）：窗口 + 排名 + 名次→档位 —— 一定是**算出来的**，不许手写；
  *   ③ **进检索排序**（第二件，见下方 `SEARCH_RANK` / `searchBoost`）：本文件出**数值与口径**
  *      （三条上限、名次→档位），`src/item-index.js` 出**排序**（唯一一处重排命中顺序的地方），
- *      命令层只做"读一次 + 传进去"。界面（第三件）本文件**不做** ✗。
+ *      命令层只做"读一次 + 传进去"。界面（第三件）只**展示**：画两条热度条的那份读数由
+ *      `heatProfile()` 出（一个节点 → `{热度, 名次, 样本量}`），界面**不许自己算分位** ✗；
+ *      AI 侧的隐藏维度（标签 / 章节 / 节点树）由 `derivedHeat()` 出 —— 两者都**只吃** `computeHeat`
+ *      的结果，所以"热度一变、展示与派生一起变"是构造上成立的。
+ *
+ * ## 事件是谁写的（两处写点，都只调本文件的 `appendEvent`）
+ *   · `visit` 命令 —— **人**的那条通道（界面打开详情框）；
+ *   · `cli/core.js` 的 `ctx.recordVisit`（由 `get`/`read`/`search`/`related`/`ask` 调）—— AI 的五条通道。
+ *     上限口径在 `src/heat-sensor.js`（唯一一处）。本文件不知道"谁在什么时候记"，只保证写入 O(1)。
  *
  * ## 为什么是 sidecar、而不是项目文件里的字段
  * 同 `src/changes.js` 的理由：项目 JSON 是**当前事实的唯一真源**，把"访问流水"塞进去等于
  * ① 同一事实两处表达（当前状态 vs 流水）⇒ 必然漂移；② 文件无界增长；
  * ③ **每次访问都要重写整份项目文件** —— 而访问是最热的动作。
- * 所以落在 `projects/<项目>/.visits.jsonl`：一行一条 JSON、**只追加**、不进 `export-json`、
+ * 所以落在 `<项目根>/.visits/<项目名>.jsonl`：一行一条 JSON、**只追加**、不进 `export-json`、
  * 可随时删（删掉后 `heat` 会明说"本机没有访问日志"，**绝不把"采不到"说成"热度 0"**）。
+ * ⚠️ **它在项目目录之外**（平级的点目录里）—— 理由三条，逐字见 `src/data-store.js` 的
+ * `visitLogFile`：① "读命令在项目目录里零字节"是本工程硬挣来的不变量，日志放里面必然破掉它；
+ * ② 访问痕迹是**本机使用痕迹、不是项目内容**；③ 仍按项目分一份，删一个项目就少一份。
+ * 路径的**唯一推导处**是 `store.visitLogFile()`（本文件只定文件名与格式）。
  *
  * ## 两条硬约束（规格 §二）怎么满足的
  *   · **写入 O(1) 追加**：`appendEvent` 只有一次 `fs.appendFileSync` —— 不读全量、不重写文件、
@@ -50,7 +62,10 @@
 })(typeof self !== 'undefined' ? self : this, function (fs, schema) {
   'use strict';
 
-  /** 文件名固定带前导点：项目目录列举（store.list / 资源扫描）只认常规文件，点文件天然被忽略 */
+  /**
+   * 单个项目日志的**文件名**（`<项目根>/.visits/<项目名>.jsonl`，目录在项目目录**之外**）。
+   * 带前导点：与本工程既有的点文件同一约定（不进项目目录列举、不进资源扫描、不进导出）。
+   */
   const FILE_NAME = '.visits.jsonl';
   /** 条目版本。字段**只增不改**；升版本要有迁移口径（同 `src/changes.js` 的先例） */
   const ENTRY_VERSION = 1;
@@ -606,6 +621,290 @@
     };
   }
 
+  /* ============================================================================
+   * **单节点的热度读数**（界面两条热度条 / `search` 回显的唯一来源）
+   * ============================================================================
+   * 为什么要它：界面要画两条十格热度条，就必须拿到"这个节点在人榜 / AI 榜上的
+   * `{热度, 名次, 事件数, 加权值}` 与**窗口内样本量**。若让界面自己去 `human`/`ai` 两个数组里
+   * 找、自己算分位 —— 那就是第二份口径（改了 `heatFromRank` 界面不跟着变 ⇒ 迟早漂移 ✗）。
+   * 所以：**只有这一处**把"两条榜"折成"一个节点的读数"，界面/命令层只做展示。
+   *
+   * 关键取舍（诚实标注）：**没被访问过 ≠ 热度 0**。零访问节点不在榜上（裁决四），
+   * 所以这里如实返回 `listed:false` + `heat:0` + 原因 `never-visited-in-window`，
+   * 由显示层说清"是没采到，还是采到了但为 0"—— 不许静默画一根空条当成"热度 0"。
+   */
+  const NO_VISIT_REASON = 'never-visited-in-window';
+
+  function heatProfile(computed, nodeId) {
+    const id = String(nodeId === undefined || nodeId === null ? '' : nodeId).trim();
+    const c = computed || {};
+    const pick = (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      for (let i = 0; i < arr.length; i++) {
+        if (arr[i] && String(arr[i].node) === id) return arr[i];
+      }
+      return null;
+    };
+    const h = pick(c.human);
+    const a = pick(c.ai);
+    const one = (row, who) => {
+      if (!row) {
+        return {
+          listed: false, heat: 0, bandMax: HEAT_BANDS, bands: 0, rank: null,
+          visits: 0, weighted: 0, who: who, reason: NO_VISIT_REASON
+        };
+      }
+      return {
+        listed: true, heat: row.heat, bandMax: HEAT_BANDS,
+        // `bands` = 热度条要填几格 —— **派生的**（bandFraction 是同一处口径），界面不自己乘除
+        bands: Math.round(bandFraction(row.heat) * HEAT_BANDS),
+        rank: row.rank, visits: row.visits, weighted: round3(row.weighted), who: who
+      };
+    };
+    const human = one(h, 'human');
+    const ai = one(a, 'ai');
+    const s = c.sample || {};
+    const listed = human.listed || ai.listed;
+    return {
+      node: id,
+      listed: listed,
+      reason: listed ? 'listed' : NO_VISIT_REASON,
+      window: c.window || { days: WINDOW_DAYS },
+      sample: {
+        windowDays: WINDOW_DAYS,
+        events: Number(s.events) || 0,            // 窗口内事件总数（两条榜的样本面）
+        nodes: Number(s.nodes) || 0,              // 窗口内**被访问过**的节点数 = 排名子集的样本量
+        humanEvents: Number(s.humanEvents) || 0,
+        aiEvents: Number(s.aiEvents) || 0
+      },
+      human: human,
+      ai: ai
+    };
+  }
+
+  /**
+   * ============================================================================
+   * **AI 侧隐藏热度维度**（标签 / 章节 / 节点树）—— 热度条第三件 · B 块
+   * ============================================================================
+   * ## 一条硬要求：**必须由节点热度派生，绝不许各记一套** ✗
+   * 本函数不读盘、不碰日志、**不认识任何事件** —— 它只吃 `computeHeat()` 已经算好的两条榜，
+   * 所以"改节点热度 ⇒ 派生值跟着变"是**构造上成立**的，不是靠自觉。判据（注入证明）：
+   * 把 `__setHeatMapperForTest` 换成"档位 = 绝对次数"⇒ 节点档位变 ⇒ 本函数的档位/平均档位**必变**。
+   *
+   * ## 三个维度各自怎么分组（口径只在这里，别处不许再分一次）
+   *   · **标签 tags**    —— 节点自己的 `tags[]`（正交维度：一个节点可以挂多个标签）；
+   *   · **章节 sections** —— 该节点在树里的**每一级祖先**（root 的子树就是章节，逐级下钻到它自己）。
+   *                        这回答"这一章整体热不热"，而不只是"这一节"；
+   *   · **节点树 trees**  —— 该节点所属的**顶层主题**（root 的第一个孩子，逐级返回、直到顶层）。
+   *                        它是"整棵树"的热度 = 章节的最粗一档，保留它是因为
+   *                        「整棵树 vs 某一章」是两个不同的决策（要不要先读这棵树）。
+   *   ⚠️ **root 自己不算章节、也不算一棵树**：它是"整个项目"，不是某一章 / 某一棵。
+   *      把它算进去会让每一维都挂上一个恒热的超集（`root` 永远 = 全项目最热），读起来像噪音。
+   *
+   * ## 聚合方式（与节点热度**同一套排名口径**，不另发明一个平均分）
+   *   一个维度的热度 = **它名下最热的那个节点**的热度档位；维度之间按这个"最强成员"的**名次**排名，
+   *   再走 `heatFromRank` 折成十档（与节点榜同一个映射函数、同一个档位数）。
+   *   为什么取**最强成员**而不是成员平均：① 平均档位会造出"看起来有权威的 6.3"这种数
+   *   —— 而档位是**序数**，平均它没有意义（本工程反复治"假装精确"）；② 取最强 ⇒
+   *   "这个标签下有东西正在被读"这件事不会被一堆冷节点稀释掉；③ 口径与节点榜同源（都只由名次决定）。
+   *   成员明细照样给（`hot` / `avgHeat`），让调用方能看见"是不是只有一个节点在扛"。
+   *
+   * ## 样本量如实暴露（不许假装精确）
+   *   每一维都同时给 `nodes`（成员数）/ `visited`（其中窗口内被访问过的）/ `events`（相关事件数）。
+   *   少样本的那一类（例如"整个标签下只有 1 个节点被访问过"）档位会很高——`visited` 就是那条证据。
+   *
+   * ## 只给 AI
+   *   本函数只被 `heat --json`（CLI）调用 —— **渲染层一行都不调**（界面只画节点自己的两条热度条）。
+   *
+   * ⚠️ 桶内**热力**排序与节点榜**同名次同序**：榜的顺序（加权值降序、同值按 id 升序）直接复用，
+   *    不重新排序 ⇒ 不会出现"维度里说 A 比 B 热、榜单说反了"这种自相矛盾。
+   *
+   * @param {object} computed `computeHeat` 的返回值
+   * @param {object} root 节点树根（给不出 ⇒ 只有 tags 维度）
+   * @param {{top?:number}} [opts] `top` = 每维最多列几个成员（默认取 `DIM_TOP`），**只影响显示**
+   */
+  const DIM_TOP = 10;
+
+  function derivedHeat(computed, root, opts) {
+    const o = opts || {};
+    const top = (typeof o.top === 'number' && o.top > 0) ? o.top : DIM_TOP;
+    const b = treeBuckets(root);
+    const ownChain = b.ownChainOf;
+
+    const side = (list, who) => {
+      // 桶 → 成员（按榜序 append ⇒ 桶内顺序天然是"热力序"）
+      const mk = () => new Map();
+      const mkNode = (id) => ({ tagBuckets: new Map(), secBuckets: new Map(), treeBuckets: new Map(), id: id });
+      const index = new Map();   // nodeId → { 三个桶 → Map(维度键 → 成员数组) }
+      const bucketOf = (id) => {
+        if (!index.has(id)) index.set(id, mkNode(id));
+        return index.get(id);
+      };
+      (Array.isArray(list) ? list : []).forEach((row) => {
+        if (!row || !row.node) return;
+        const id = String(row.node);
+        const st = bucketOf(id);
+        const push = (map, key, label) => {
+          if (key === null || key === undefined || key === '') return;
+          const k = String(key);
+          if (!map.has(k)) map.set(k, { key: k, label: label === undefined ? k : label, members: [] });
+          map.get(k).members.push(row);
+        };
+        // ① 标签
+        const info = b.info.get(id);
+        ((info && info.tags) || []).forEach((t) => push(st.tagBuckets, t, t));
+        // ② 章节：每一级祖先（含自己）。**root 除外**（它是"整个项目"，不是某一章）。
+        //    不在树里（节点已删 / 树没给）⇒ 用节点自己兜底 —— "访问了一个后来被删的节点"照样能被
+        //    看见（不许静默丢，F1 的同一精神）；而"这个节点在树里但就是 root"什么都不记（它不属于任何章节）
+        const chain = ownChain(id);
+        (b.info.has(id) ? chain : [id]).forEach((aid) => {
+          const ai = b.info.get(aid);
+          push(st.secBuckets, aid, (ai && ai.topic) || aid);
+        });
+        // ③ 节点树：所属顶层主题（**root 不属于任何一棵树** ⇒ topOf 返回 null）
+        const t = b.topOf(id);
+        if (t) push(st.treeBuckets, t, (b.info.get(t) || {}).topic || t);
+      });
+
+      // 把"全部桶"收进一张表。**含没有任何榜上节点的桶**（`visited:0`）—— 遍历的是**节点树**，
+      // 不是榜单：所以"冷标签 / 冷章节"照样能被看见（同时它们不进排名：bestRank=null ⇒ heat=0）。
+      const all = { tags: mk(), sections: mk(), trees: mk() };
+      const seeBucket = (dim, key, label) => {
+        if (key === null || key === undefined || key === '') return;
+        const k = String(key);
+        if (!all[dim].has(k)) all[dim].set(k, { key: k, label: label === undefined ? k : label, members: [] });
+      };
+      b.info.forEach((info, id) => {
+        info.tags.forEach((t) => seeBucket('tags', t, t));
+        const chain = ownChain(id);
+        (b.info.has(id) ? chain : [id]).forEach((aid) => {
+          seeBucket('sections', aid, (b.info.get(aid) || {}).topic || aid);
+        });
+        const t = b.topOf(id);
+        if (t) seeBucket('trees', t, (b.info.get(t) || {}).topic || t);
+      });
+      // 榜上但**不在树里**的（节点已删 / 换了项目）：标签照样认，章节/树认不出 ⇒ 只并入标签维度
+      index.forEach((st, id) => {
+        st.tagBuckets.forEach((bucket, key) => seeBucket('tags', key, bucket.label));
+      });
+      // 成员回填：桶里放榜上的行（按榜序 ⇒ 桶内顺序 = 热力序，与节点榜同名次同序 ✓）
+      index.forEach((st) => {
+        st.tagBuckets.forEach((bucket, key) => { if (all.tags.has(key)) all.tags.get(key).members = bucket.members; });
+        st.secBuckets.forEach((bucket, key) => { if (all.sections.has(key)) all.sections.get(key).members = bucket.members; });
+        st.treeBuckets.forEach((bucket, key) => { if (all.trees.has(key)) all.trees.get(key).members = bucket.members; });
+      });
+
+      const build = (dim) => {
+        const rows = [...all[dim].values()].map((bucket) => {
+          const members = bucket.members;
+          const best = members.length ? members[0] : null;      // 榜序 ⇒ 首项就是最强成员
+          const sum = members.reduce((s, m) => s + (Number(m.heat) || 0), 0);
+          return {
+            key: bucket.key, label: bucket.label,
+            heatMax: best ? best.heat : 0, bestNode: best ? best.node : null,
+            bestRank: best ? best.rank : null,
+            avgHeat: members.length ? round3(sum / members.length) : 0,
+            nodes: totalMembers(dim, bucket.key, b),
+            visited: members.length,
+            events: members.reduce((s, m) => s + (Number(m.visits) || 0), 0),
+            hot: members.slice(0, top).map((m) => ({ node: m.node, heat: m.heat, rank: m.rank, visits: m.visits }))
+          };
+        });
+        // 维度之间排名：最强成员的名次（并列取最好名次）；`bestRank` 为空（没人被访问）排最后
+        rows.sort((x, y) => {
+          const rx = x.bestRank === null ? Infinity : x.bestRank;
+          const ry = y.bestRank === null ? Infinity : y.bestRank;
+          if (rx !== ry) return rx - ry;
+          return x.key < y.key ? -1 : x.key > y.key ? 1 : 0;
+        });
+        const n = rows.length;
+        rows.forEach((row, i) => {
+          if (row.bestRank === null) {
+            // 这一维里一个节点都没被访问过 —— 不给档位（**0 = 不在榜**，与节点榜同一语义）
+            row.heat = 0;
+            row.rank = null;
+            return;
+          }
+          const rank = (i > 0 && rows[i - 1].bestRank === row.bestRank) ? rows[i - 1].rank : i + 1;
+          row.rank = rank;
+          row.heat = heatFromRank(rank, n);
+        });
+        return rows;
+      };
+
+      const out = { who: who, tags: build('tags'), sections: build('sections'), trees: build('trees') };
+      out.sample = {
+        nodes: (Array.isArray(list) ? list : []).length,
+        tags: out.tags.length, sections: out.sections.length, trees: out.trees.length
+      };
+      return out;
+    };
+
+    return { human: side(computed && computed.human, 'human'), ai: side(computed && computed.ai, 'ai') };
+  }
+
+  /**
+   * 一个桶的**成员总数**（= 该维度下共有几个节点；榜上只出现被访问过的那些 ⇒ 两个数都要给）。
+   * 口径必须与建桶时**逐字一致**（同一套 `ownChain` / `topOf`）—— 否则 `visited` 可能大于 `nodes`。
+   */
+  function totalMembers(dim, key, b) {
+    let n = 0;
+    b.info.forEach((info, id) => {
+      if (dim === 'tags') { if (info.tags.indexOf(key) >= 0) n++; return; }
+      if (dim === 'sections') { if (b.ownChainOf(id).indexOf(key) >= 0) n++; return; }
+      if (b.topOf(id) === key) n++;
+    });
+    return n;
+  }
+
+  /**
+   * 从节点树里取"分组判据"（**只算一次**：标签 / 祖先链 / 顶层主题三个查询共用一张索引）。
+   * 树没给（`root` 为空）⇒ 三个查询都返回空 ⇒ 只剩标签维度（诚实降级，不假装知道章节）。
+   */
+  function treeBuckets(root) {
+    const info = new Map();     // id → { topic, tags, parent }
+    const childrenOf = new Map();
+    const rootId = (root && root.id) ? String(root.id) : null;
+    if (root && typeof root === 'object') {
+      (function walk(n, parent) {
+        if (!n || !n.id) return;
+        const id = String(n.id);
+        info.set(id, { topic: n.topic, tags: Array.isArray(n.tags) ? n.tags.slice() : [], parent: parent });
+        childrenOf.set(id, (n.children || []).filter((c) => c && c.id).map((c) => String(c.id)));
+        (n.children || []).forEach((c) => walk(c, id));
+      })(root, null);
+    }
+    const cache = new Map();
+    /** 节点 → 祖先链（含自己，从 root 起）。取不到（已删/不在树里）⇒ [] */
+    function chainOf(id) {
+      if (cache.has(id)) return cache.get(id);
+      const out = [];
+      let cur = id;
+      let guard = 0;
+      while (cur && info.has(cur) && guard++ < 100000) {
+        out.unshift(cur);
+        cur = info.get(cur).parent;
+      }
+      cache.set(id, out);
+      return out;
+    }
+    /** 顶层主题 = 祖先链的**第二个**（第一个是 root）。root 自己不属于任何一棵树 ⇒ null */
+    function topOf(id) {
+      const chain = chainOf(id);
+      if (chain.length >= 2) return chain[1];
+      return null;
+    }
+    /** 章节口径的祖先链：`chainOf` 去掉 root（**章节不是"整个项目"**） */
+    function ownChainOf(id) {
+      return chainOf(id).filter((x) => x !== rootId);
+    }
+    return {
+      rootId: rootId, info: info, childrenOf: childrenOf,
+      parentOf: (id) => (info.get(id) || {}).parent || null,
+      chainOf: chainOf, ownChainOf: ownChainOf, topOf: topOf
+    };
+  }
+
   /* ---------------- I/O：写入（O(1) 追加） ---------------- */
 
   function requireFs() {
@@ -626,7 +925,7 @@
    * 文件不存在 ⇒ `appendFileSync` 直接建；目录不存在 ⇒ 抛错（项目目录本来就该在，
    * 静默创建目录会把"项目名写错"变成一次看不到的写入）。
    *
-   * @param {string} file `.visits.jsonl` 的绝对路径（由 `store.visitLogFile` 推导，别处不许自己拼）
+   * @param {string} file 日志文件的**绝对路径**（由 `store.visitLogFile` 推导，别处不许自己拼）
    * @param {object} fields 见 `buildEvent`
    * @returns {{entry:object, line:string, bytes:number}}
    */
@@ -752,7 +1051,7 @@
   /**
    * **命令层用的唯一入口**：读日志（窄查询默认 / `full:true` 全量）→ 响亮校验 → 算出两条榜。
    *
-   * @param {string} file `.visits.jsonl` 的绝对路径
+   * @param {string} file 日志文件的**绝对路径**
    * @param {{now?:number, full?:boolean, chunk?:number, maxBytes?:number}} [opts]
    * @returns {{file:string, exists:boolean, now:number, heat?:object, log?:object, dropped?}}
    *          `exists:false` = 本机没有这份日志（**不是**"热度为 0"：调用方必须把这句话说出来）
@@ -799,6 +1098,7 @@
     SEARCH_RANK, searchRankOf, searchBoost, maxJump, bandFraction,
     buildEvent, serializeEvent, looksLikeEvent, parseEvents,
     heatFromRank, rankToHeat,
+    heatProfile, NO_VISIT_REASON, DIM_TOP, derivedHeat,
     computeHeat, appendEvent, readTail, readHeatFile,
     __setHeatMapperForTest, __resetHeatMapperForTest,
     __setSearchRankForTest, __resetSearchRankForTest

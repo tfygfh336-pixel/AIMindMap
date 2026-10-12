@@ -208,6 +208,15 @@ describe('CLI 命令：--dry-run 必须真的不调模型（实测教训）', ()
     out(s) { this.outs.push(String(s)); },
     outJson(o) { this.outs.push(JSON.stringify(o)); },
     error(m) { throw new Error('ctx.error: ' + m); },
+    /* 热度埋点（第三件 · C）：`ask` **答出来之后**会调它记一次 `ai-ask`。
+     * 桩里必须给出它 —— 少了它，命令会在"模型已经答完"之后抛 `recordVisit is not a function`，
+     * 报错指向的地方（成功路径的尾巴）和真因（桩缺一个方法）完全不是一回事（实测踩到）。
+     * 这里只记下调用供断言、返回一个"记上了"的读数，**不触碰任何盘**（桩就是桩）。 */
+    visits: [],
+    recordVisit(ch, ids) {
+      this.visits.push({ ch: ch, ids: (ids || []).slice() });
+      return { ok: true, reason: 'stub', channel: ch, recorded: (ids || []).length, dropped: 0, errors: [] };
+    },
     // 与真实 ctx 同一套语义（**委托给真实现**，别在桩里另写一份判定逻辑）：
     // 整数选项非法 ⇒ 报错；没给 ⇒ 默认值。`ask --timeout` 现在走它。
     intOption(key, opts) {
@@ -241,6 +250,26 @@ describe('CLI 命令：--dry-run 必须真的不调模型（实测教训）', ()
       askCmd.ask(ctx);
       expect(called).toBe(1);
       expect(ctx.outs.join('\n')).toContain('答案');
+      // 顺便钉住热度埋点那一刻的口径：**答出来了**才记，且记的是被问的那个节点（通道 ai-ask）
+      expect(ctx.visits.length).toBe(1);
+      expect(ctx.visits[0].ch).toBe('ai-ask');
+      expect(ctx.visits[0].ids).toEqual(['tcp-handshake']);
+    } finally { dshAsk.askOnce = orig; }
+  });
+
+  it('--dry-run 那条路**不记**访问（没调模型、没有内容被消耗）', () => {
+    const ctx = ctxStub({ _: ['ask', 'tcp-handshake'], kind: 'explain', dryRun: true });
+    askCmd.ask(ctx);
+    expect(ctx.visits.length).toBe(0);
+  });
+
+  it('模型答失败（ok:false）⇒ **也不记**（"叫了模型但没读到东西"不算一次访问）', () => {
+    const orig = dshAsk.askOnce;
+    dshAsk.askOnce = () => ({ ok: false, text: '', ms: 1, code: 2, error: '超时' });
+    try {
+      const ctx = ctxStub({ _: ['ask', 'tcp-handshake'], kind: 'explain' });
+      expect(() => askCmd.ask(ctx)).toThrow(/提问失败/);
+      expect(ctx.visits.length).toBe(0);
     } finally { dshAsk.askOnce = orig; }
   });
 

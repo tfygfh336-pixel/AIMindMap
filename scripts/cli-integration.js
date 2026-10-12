@@ -4069,7 +4069,13 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
   const PH5 = 'it-probe-heat-e-' + HTAG;      // 两条分开：把上一组**互换**
   const PHALL = [PH1, PH2, PH3, PH4, PH5];
   const hdir = (name) => path.join(heatCore.PROJECTS_DIR, name);
-  const hlog = (name) => path.join(hdir(name), heatLib.FILE_NAME);
+  /* ⚠️ 访问日志**不在项目目录里**（热度条第三件起搬到 `<项目根>/.visits/<项目名>.jsonl`）。
+   * 判据不该在这里自己拼路径 —— 与产品同一处推导：`store.visitLogFile`（唯一一处）。
+   * 实测踩到的形状：本段还按老形状拼 `projects/<项目>/.visits.jsonl` ⇒ 本段一跑就
+   * `ENOENT ... .visits.jsonl`（脚本直接崩，且报错指向的地方看着像产品坏了）。 */
+  const heatStore = require(path.join(ROOT, 'src', 'data-store.js'))
+    .createStore(heatCore.PROJECTS_DIR, () => { /* 这里只借它推日志路径，不写数据 */ });
+  const hlog = (name) => heatStore.visitLogFile(name);
   const hjson = (out) => { try { return JSON.parse(String(out).trim()); } catch (e) { return null; } };
   const hheat = (name, extra) => hjson(run(['heat', name, '--json'].concat(extra || [])).out);
   const hrow = (list, node) => (list || []).filter((x) => x.node === node)[0] || null;
@@ -4285,9 +4291,36 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
     }), 'utf8');
   };
   const s2search = (name, extra) => s2json(run(['search', name, S2KW, '--json'].concat(extra || [])).out);
+  /** 访问日志的**真位置**（热度条第三件起在项目目录**之外**）—— 与产品同一处推导，别自己拼路径。
+   *  ⚠️ 这里**就地建一个 store** 只为借它推路径；项目根用本段自己那份（`s2dir` 也是这么拼的）——
+   *  在 `const` 声明之前引用段外的同名变量会直接 ReferenceError（实测把脚本崩在定义处）。 */
+  const s2log = (name) => require(path.join(ROOT, 'src', 'data-store.js'))
+    .createStore(path.join(ROOT, 'projects'), () => {}).visitLogFile(name);
   const s2visit = (name, node, ch, times) => {
     for (let i = 0; i < (times || 1); i++) run(['visit', name, node, '--channel', ch]);
   };
+
+  /* ⚠️ **本段的夹具里关掉"自动埋点"**（热度条第三件 · C 块引入的一处**判据自污染**，2026-10-12 修）。
+   *
+   * 病灶（改前实测）：本段的每条断言都在测"**当前的热度状态**" —— 例如
+   * 「`nd-40` 拉满 ⇒ `heat.hitNodes === 1`」「删掉日志后 `reason === 'no-log'`」。
+   * 而第三件起 `search` 会把自己返回的命中**记进访问日志**（产品行为，默认开）⇒
+   * **被测的那次调用自己改写了被测的热度状态**：
+   *   · `s2hot` 那次 search 顺手把 40 条命中记进 S2P 的日志 ⇒ `hitNodes` 从 1 变 40（红）；
+   *   · S2N 那次 `--no-heat` 检索原本"不碰日志"，删掉日志后应为 `no-log`，但那一次又把日志写了回来 ⇒
+   *     `reason` 从 `no-log` 变 `ok`（红）。
+   * 这不是产品缺陷：埋点的**判据**（每条通道跑一次就该出现该通道事件、输出逐字节不变、
+   * 上限口径 20 条、坏日志路径一条都不记）在 `tests/heat-sensor.test.js` 里**开着埋点**逐条验。
+   * 本文件这里要的是"**热度状态**"的真值，所以让夹具自己造的这份热度不被本次调用扰动。
+   *
+   * 关的方式是**模块级显式开关**（`src/heat-sensor.js` 的 `__setEnabledForTest(false)`，
+   * 生产代码一次都不碰它 —— 由 `tests/heat-bars.test.js` 的 C2 与 `tests/heat-sensor.test.js`
+   * 的 D1 两条结构断言盯着"除定义处外没有别的引用"）。
+   * 本段的 `finally` 里**还原**（下面的 `s2RestoreSensor()`）：否则后面的段会被静默关掉埋点，
+   * 而"关掉"是看不见的 —— 那就是本工程最忌讳的那种静默失效。 */
+  const heatSensor = require(path.join(ROOT, 'src', 'heat-sensor.js'));
+  heatSensor.__setEnabledForTest(false);
+  const s2RestoreSensor = () => heatSensor.__setEnabledForTest(true);
 
   try {
     s2mk(S2P, 40);
@@ -4378,10 +4411,10 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
     const s2old = heatLib.serializeEvent(heatLib.buildEvent({
       node: 'nd-1', ch: 'ai-read-view', at: new Date(Date.now() - 40 * heatLib.DAY_MS).toISOString(), by: 'cli-integration'
     }));
-    fs.appendFileSync(path.join(s2dir(S2B), heatLib.FILE_NAME), s2old.repeat(40000), 'utf8');
+    fs.appendFileSync(s2log(S2B), s2old.repeat(40000), 'utf8');
     s2visit(S2B, 'nd-40', 'human-detail', 3);
     const s2big = s2search(S2B);
-    const s2fileBytes = fs.statSync(path.join(s2dir(S2B), heatLib.FILE_NAME)).size;
+    const s2fileBytes = fs.statSync(s2log(S2B)).size;
     check('热度条二·性能：大日志（窗口外前缀 ~3.8 MB）⇒ `search` 只读了**尾部一个 chunk**'
       + '（bytesRead ≪ 文件字节数、windowComplete=false），而排序与全量读同口径',
       !!s2big && s2big.heat.log.fileBytes > 3 * 1024 * 1024 && s2big.heat.log.windowComplete === false
@@ -4392,7 +4425,7 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
         + s2fileBytes + ' B）｜windowComplete=' + (s2big && s2big.heat && s2big.heat.log && s2big.heat.log.windowComplete));
 
     /* ---- （响亮）日志坏一行 ⇒ search 非 0 退出 + 点名，且一条命中都不打印 ---- */
-    fs.appendFileSync(path.join(s2dir(S2P), heatLib.FILE_NAME), '{"v":1,"at":"懒得写了"\n', 'utf8');
+    fs.appendFileSync(s2log(S2P), '{"v":1,"at":"懒得写了"\n', 'utf8');
     const s2bad = run(['search', S2P, S2KW]);
     check('热度条二·响亮：日志里有一行读不出来 ⇒ `search` **非 0 退出** + 点名（字节偏移 + 原文），'
       + '且**一条命中都不打印**（宁可失败，也不给一份"看起来正常"的检索结果）',
@@ -4411,7 +4444,7 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
     S2ALL.push(S2N);
     s2mk(S2N, 40);
     s2visit(S2N, 'nd-40', 'human-detail', 2);
-    const s2nLog = path.join(s2dir(S2N), heatLib.FILE_NAME);
+    const s2nLog = s2log(S2N);
     fs.appendFileSync(s2nLog, '{"v":1,"at":"懒得写了"\n', 'utf8');
     const s2eDefault = run(['search', S2N, S2KW]);
     const s2eEsc = run(['search', S2N, S2KW, '--no-heat']);
@@ -4455,7 +4488,7 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
     S2ALL.push(S2M);
     s2mk(S2M, 40);
     s2visit(S2M, 'nd-40', 'human-detail', 2);
-    fs.appendFileSync(path.join(s2dir(S2M), heatLib.FILE_NAME), '{"v":1,"at":"懒得写了"\n', 'utf8');
+    fs.appendFileSync(s2log(S2M), '{"v":1,"at":"懒得写了"\n', 'utf8');
     const s2mReqs = [
       { jsonrpc: '2.0', id: 1, method: 'initialize' },
       { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'search_nodes', arguments: { project: S2M, keyword: S2KW, no_heat: true } } },
@@ -4513,6 +4546,7 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
         + ' ｜ search_nodes.no_heat 类型='
         + (((((s2mSearch || {}).inputSchema || {}).properties || {}).no_heat) || {}).type);
   } finally {
+    s2RestoreSensor();      // ← 本段开头关掉的自动埋点在这里**还原**（否则后面各段会被静默关掉）
     S2ALL.forEach((name) => {
       try { fs.rmSync(s2dir(name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
     });
@@ -4534,6 +4568,17 @@ try { fs.rmSync(path.join(ROOT, 'projects', PROJ), { recursive: true, force: tru
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ2), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(XP_DIR, { recursive: true, force: true }); } catch (e) {}   // 8.7 的跨项目探针项目
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) {}
+/* 访问日志（热度条探针那几节钦的）：**在项目目录之外**（`<项目根>/.visits/<项目名>.jsonl`）⇒
+ * 删项目目录删不掉它。不删就每跑一次留一份（本机实测：连跑几轮后 `projects/.visits/` 里
+ * 堆了十几份 `it-probe-heat-*.jsonl`）—— 探针的收尾必须连**日志**一起清，否则读数与磁盘都会被污染。 */
+try {
+  const heatProbeLogs = require(path.join(ROOT, 'src', 'data-store.js'))
+    .createStore(path.join(ROOT, 'projects'), () => {}).visitDir();
+  if (fs.existsSync(heatProbeLogs)) {
+    fs.readdirSync(heatProbeLogs).filter((f) => /^it-probe-/.test(f))
+      .forEach((f) => { try { fs.rmSync(path.join(heatProbeLogs, f), { force: true }); } catch (e) { /* 收尾失败不判红 */ } });
+  }
+} catch (e) { /* 收尾失败不判红 */ }
 
 console.log('\n==== ' + passed + '/' + (passed + failed) + ' CLI 集成断言通过 ====');
 // 用 exitCode 而不是 process.exit()：后者**立即**终止，可能截断尚未 flush 的 stdout。

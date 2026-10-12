@@ -226,6 +226,10 @@
     closeAllFloatDetail,
     positionFloatDetail,
     getFloatDetailState,
+    /* 热度条（第三件·A）：给冒烟断言与排查读原始读数 —— **只读**，不改任何状态。
+     * `heatBarsState()` 回的是"最近一次拿到的 `heat --json` 载荷 + 最近一次采样结果"，
+     * 断言拿它与 CLI `heat --json` 对拍（判据①：界面显示的值与 CLI 逐字一致）。 */
+    heatBarsState: () => (MM.heatBarsState ? MM.heatBarsState() : null),
     openLightbox,
     closeLightbox,
     lightboxZoom,

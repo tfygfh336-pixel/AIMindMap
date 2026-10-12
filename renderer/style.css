@@ -49,6 +49,23 @@ body { display: flex; flex-direction: column; background: #f5f6f8; color: #1f232
 #search-results .sr-item .sr-snippet { color: #4e5969; font-size: 12px; margin-top: 2px; }
 #search-results .sr-empty { padding: 12px; color: #86909c; }
 
+/* ---------------- 热度条（第三件·A）：人 / AI 两条，各十格 + 数值 + 窗口内样本量 ----------------
+ * 纪律：这**只是展示**。格子数、数值、样本量全部由 `renderer/app-heat-bars.js` 把
+ * `desktop.app.heat`（→ CLI `heat --json --node <id>`）给的那一份读数**逐字**填进来 ——
+ * CSS 只负责样子，渲染层不算任何分位/名次（改热度条不触发保存、不写项目数据 ✓）。
+ * `data-bands` 是机器可读的那一份（冒烟断言与读数同源）。 */
+.fd-heat { margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px dashed #e4e7ec; }
+.fd-heat-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.fd-heat-who { flex: 0 0 auto; font-size: 11px; color: #86909c; width: 22px; }
+.fd-heat-bands { flex: 0 0 auto; display: flex; gap: 2px; }
+.fd-heat-cell { width: 9px; height: 11px; border-radius: 2px; background: #eef0f4; }
+.fd-heat-band-human .fd-heat-cell.on { background: #1664ff; }
+.fd-heat-band-ai .fd-heat-cell.on { background: #ff7d00; }
+.fd-heat-val { flex: 0 0 auto; font-size: 11px; color: #4e5969; font-weight: 600; }
+.fd-heat-note { font-size: 11px; color: #a9aeb8; }
+.fd-heat > .fd-heat-note { margin-top: 3px; }
+.fd-heat-err { font-size: 11px; color: #f53f3f; }
+
 /* ---------------- 标签 chips ---------------- */
 .fd-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .tag-chip {

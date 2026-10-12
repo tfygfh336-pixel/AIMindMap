@@ -177,6 +177,17 @@ module.exports = {
     const r = dshAsk.askOnce({
       runtime, prompt, effort, timeoutMs: timeoutSec ? timeoutSec * 1000 : undefined
     });
+    /* ---- 埋点（热度条第三件 · C）：把该节点当**情境**喂进模型**并真的产出了回答** ⇒
+     * 通道 `ai-ask`（AI 侧最强信号，权重理由见 src/heat.js 的 CHANNELS）。
+     * 口径三条（只有本命令知道这些事实）：
+     *   ① 记在**调用之后**，且只在 `r.ok` 时 —— 「答得出来」才算内容被消耗；
+     *      叫了模型却失败 = 没读到东西（那一条**不记**，也不假装记了）；
+     *   ② `--dry-run` **不记**（不调模型、没有产出）；
+     *   ③ 项目级提问（`--question` 无节点）**没有对象可记** ⇒ 不记（不是记到 root 上：root 不是答案的对象）。 */
+    if (r.ok) {
+      const ids = info.nodes && info.nodes.length ? info.nodes.map((n) => n.id) : (info.nodeId ? [info.nodeId] : []);
+      if (ids.length) ctx.recordVisit('ai-ask', ids);
+    }
     if (ctx.args.json) {
       ctx.outJson({ ok: r.ok, project: info.project, target: { id: info.nodeId, topic: info.topic },
         kind, effort, ms: r.ms, code: r.code, text: r.text, error: r.error || null });

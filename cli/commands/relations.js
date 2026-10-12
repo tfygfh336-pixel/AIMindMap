@@ -101,6 +101,13 @@ module.exports = {
         + '或先用 backlinks <项目> <id> 只看直接引用，再逐层往外交替看');
     }
     const out = Object.assign({ project: ctx.projectName, target: { id, topic: self.topic }, depth }, r);
+    // ---- 埋点（热度条第三件 · C）：顺着关系**走到**这些节点 ⇒ 通道 `ai-related-hop`（中间强度：
+    //      比搜索命中更有指向性，但不是按 id 直取）。记的是**本次真的返回的邻域**（含起点自己：
+    //      `related` 本来就把"我"的邻域一起交代了，起点也是被访问的对象）。
+    //      ⚠️ 上限截断（返回顺序的前缀）与失败口径都只有一处：src/heat-sensor.js。
+    //      `backlinks` **有意不记**：它读的是同一张关系图的另一个方向，而"一跳"这件事
+    //      若两条命令各记一次，同一个动作会被算两遍（宁可少记，不许重复计一次访问）。
+    ctx.recordVisit('ai-related-hop', [id].concat(r.items.map((x) => x.node)));
     if (ctx.args.json) { ctx.outJson(out); return; }
     const layered = Object.keys(r.byDepth).map((d) => Number(d)).filter((d) => r.byDepth[d] > 0);
     ctx.out('「' + self.topic + '」的相关知识点（' + r.items.length + ' = '

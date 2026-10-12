@@ -133,9 +133,13 @@
     //   清单与属性标注，**不拼第二份 HTML**（见下方 renderFdItems 段落）。
     //   未条目化节点 ⇒ 这里只做"清掉上一位节点留下的清单"，**一个字节都不加**（回归判据）。
     renderFdItems(box, node);
+    // 热度条（第三件·A）：**展示**两条热度（人 / AI），数据来自主进程 `app:heat`（= CLI `heat --json`）。
+    // ⚠️ 它写在**另一个容器**（`.fd-heat`）里，与上面那行 `dc.innerHTML = detail` **无关** ——
+    //   "正文只有一份"这条铁律不受影响（正文的字节一个都没变）；它**异步**刷新，不拖慢打开。
+    // ⚠️ 它**不改内存、不触发保存**（改热度条不写盘 ⇒ 用户只是想看热度，不该留下任何写）。
+    if (MM.heatBarsRefresh) MM.heatBarsRefresh(box, node);
     // 标签 chips（点击 → 按标签全文搜索）
-    const tc = fdQ(box, '.fd-tags');
-    const tags = (node.tags || (node.data && node.data.tags)) || [];
+    const tc = fdQ(box, '.fd-tags');    const tags = (node.tags || (node.data && node.data.tags)) || [];
     tc.innerHTML = '';
     (tags || []).forEach((t) => {
       const chip = document.createElement('span');

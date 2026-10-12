@@ -26,6 +26,7 @@ const concurrency = require('../src/concurrency.js');
 const schema = require('../src/schema.js');
 const tree = require('../src/tree-utils.js');
 const changes = require('../src/changes.js');
+const heatSensor = require('../src/heat-sensor.js');
 
 /**
  * projects 根目录。
@@ -397,6 +398,8 @@ function createContext(argv, meta) {
   let readVersion;
   /** `--idem` 的键（在 `replayCheck` 里定下来；落账时要用它） */
   let idem = null;
+  /** 埋点失败的记录（`ctx.recordVisit` 攒、`cli/main.js` 收尾统一报；见那里的说明） */
+  const visitErrors = [];
   /** 延迟落账槽（一次命令体里最多一条：第一次有效写的那条） */
   let pending = null;
   /**
@@ -459,6 +462,35 @@ function createContext(argv, meta) {
      * 走 `ctx.store.write` 而不走 `ctx.write`）。少了这个，那些写入在日志里会显示成 `unknown`。
      */
     writer,
+
+    /**
+     * **记一次「AI 访问」**（热度条第三件 · C 块）：把"这次命令真的返回了哪些节点"交给
+     * `src/heat-sensor.js`（上限口径与失败口径都只有那一处实现）。
+     *
+     * 为什么放在 ctx 上、而不是各命令自己 append：五条通道（`ai-get` / `ai-read-view` /
+     * `ai-search-hit` / `ai-related-hop` / `ai-ask`）在 5 个命令文件里各写一遍，
+     * 迟早有五份会漂移的口径（截断、去重、谁写 by、错了怎么办）。
+     *
+     * 三条边界（读这一条就够）：
+     *   · **只追加**：底层是 `heat.appendEvent`（一次 appendFileSync，不读日志、不读项目文件）；
+     *   · **不改输出**：本方法一个字节都不往 stdout / stderr 写 —— 失败只**记下**，
+     *     由 `cli/main.js` 在命令体跑完之后统一**响亮**报出（stdout 的逐字节不变靠这条保证）；
+     *   · **不阻断**：写失败 / id 不合法都**不抛**（旁路日志不许掐死读路径），但绝不静默。
+     *
+     * @param {string} channel `src/heat.js` 的 CHANNELS 里的通道 id（未知通道如实 dropped，不猜）
+     * @param {string[]|string} nodeIds 本次**真的返回**的节点 id（按返回顺序）
+     * @returns {object} 读数（`recorded` / `dropped` / `errors` …），**调用方应当看它**
+     */
+    recordVisit(channel, nodeIds) {
+      if (!projectName) return { ok: false, reason: 'no-project', channel: String(channel), recorded: 0, dropped: 0, errors: [] };
+      const r = heatSensor.recordVisit(store.visitLogFile(projectName), channel, nodeIds, { by: writer });
+      // 失败醒目（F1）：攒在 ctx 上，由 cli/main.js 在命令结束后**一处**打印 ——
+      // 不在这里 print（那会插进命令的输出中间，破坏"输出逐字节不变"）。
+      if (!r.ok) visitErrors.push({ channel: String(channel), reason: r.reason, errors: r.errors.slice() });
+      return r;
+    },
+    /** 本次执行里埋点失败的记录（`cli/main.js` 收尾时统一响亮报出；**不参与任何判定**） */
+    visitErrors() { return visitErrors.slice(); },
 
     /**
      * **自报项目名**：位置参数不是 `_[0]` 的命令（见文件头 `projectName` 的说明）必须在**读盘/写盘

@@ -193,6 +193,9 @@ function refreshVersionIfOwnWrite(name, before) {
 }
 
 const uiState = require('./src/ui-state.js');
+// 热度条（第三件·A）：界面那次"人打开详情框"的采样 —— 用的是与 CLI 埋点**同一个**记录实现
+// （上限/去重/失败口径只有一处：src/heat-sensor.js），不另起一套写盘逻辑。
+const heatSensor = require('./src/heat-sensor.js');
 
 // --export-image <项目> <输出.png>：离屏渲染整树并截图导出（headless 可测）
 const exportImageArgs = (() => {
@@ -964,6 +967,50 @@ function registerIpc() {
     const text = runCli(['related', projectName, nodeId, '--json']);
     try { return JSON.parse(text); }
     catch (err) { return { error: text }; }
+  });
+
+  /* ---- 热度条（第三件 · A）：界面的两条热度条 + 那次人类访问的采样 ----
+   * 两条通道都**只做展示/记录**，与"正文只有一份"（`dc.innerHTML = detail`）那条铁律**无关**：
+   *   · 读：结果来自 `heat --json`（**同一处口径**，界面绝不自己算分位/名次 ✗）；
+   *   · 写：只是往**访问日志**追加一行（旁路产物，不是项目数据）——
+   *     所以它**不触发** `project:save`、不产生脏标记、用户看不到"有未保存改动"。
+   * ⚠️ 两者都用 `runCliAsync`（不在主进程里同步跑）：打开详情框绝不能被一次 CLI 调用拖住。
+   */
+  ipcMain.handle('app:heat', (e, projectName, nodeId) => {
+    if (!projectName) return { ok: false, error: '缺少项目名' };
+    // 一次 CLI 拿"整份热度"（窗口 + 样本量 + 两条榜），**并把当前节点那一行一起端出来**
+    // （`--node <id>`：档位映射只有一处 —— `src/heat.js` 的 `heatProfile()`；界面不折算任何数）。
+    // 为什么不让界面在 `human`/`ai` 数组里自己找：那两个数组是**被 --limit 截断过的显示**，
+    // 被访问过的节点可能恰好不在里面 —— 那样界面就得自己算分位，等于第二份会漂移的口径 ✗。
+    const args = ['heat', projectName, '--json'];
+    if (nodeId) args.push('--node', String(nodeId));
+    return runCliAsync(args).then((r) => {
+      let j = null;
+      try { j = JSON.parse(r.out); } catch (err) { j = null; }
+      if (r.code !== 0 || !j) {
+        return { ok: false, error: ((r.err || r.out || '').trim() || ('CLI 退出码 ' + r.code)).slice(0, 400) };
+      }
+      return { ok: true, payload: j, nodeId: nodeId || null };
+    });
+  });
+
+  /* 记一次**人类访问**（裁决一：人只算"打开详情框"）。
+   * · 落点是 `store.visitLogFile()`（`<项目根>/.visits/<项目名>.jsonl`）——**项目目录之外**，
+   *   所以它不会在项目目录里留下任何字节（那是"只读路径零副作用"这条不变量的要求）；
+   * · 走 `src/heat-sensor.js` 的**同一个** `recordVisit`（上限/去重/失败口径只有那一处），
+   *   不另起一套写盘逻辑；通道固定 `human-detail`（唯一的人类通道）；
+   * · 返回 `{ ok, recorded, errors }`：失败**如实回报**（渲染层据此显示可见提示，见 app-heat-bars.js），
+   *   绝不静默吞掉 —— "没记上"与"记上了"必须可分辨。 */
+  ipcMain.handle('app:visit', (e, projectName, nodeId, channel) => {
+    const ch = channel || 'human-detail';
+    if (!projectName || !nodeId) return { ok: false, error: '缺少项目名或节点 id' };
+    try {
+      const r = heatSensor.recordVisit(store.visitLogFile(projectName), ch, [nodeId],
+        { by: 'gui-cli:' + ch });
+      return { ok: r.ok, recorded: r.recorded, reason: r.reason, errors: r.errors, channel: r.channel };
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) };
+    }
   });
 
   /* 功能 1：向内嵌 AI 问一个**节点**（界面「解释」/「问问AI」两个按钮的后端）。

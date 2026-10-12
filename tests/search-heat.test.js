@@ -41,8 +41,17 @@ process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 const { invokeSync } = require('../cli/main.js');
 const core = require('../cli/core.js');
 const heat = require('../src/heat.js');
+const heatSensor = require('../src/heat-sensor.js');
 const itemIndex = require('../src/item-index.js');
 const mcp = require('../scripts/mcp-server.js');
+
+/* ----------------------------------------------------------------------------
+ * **夹具自造日志 ⇒ 关掉自动埋点**（理由与 tests/heat.test.js 同一条，逐字见那里）：
+ * 本文件的每条判据都假定"日志里只有我写的那些事件"（零写断言、sample.events、
+ * 窄读的 readSync 计数…），而第三件起 `search` 会顺手把命中记进同一份日志（产品行为）。
+ * 自动埋点自己的判据在 `tests/heat-sensor.test.js`（那里**不**关它）。
+ * -------------------------------------------------------------------------- */
+heatSensor.__setEnabledForTest(false);
 
 /* 重定向必须**当场**生效：否则夹具会建进真实 projects/。 */
 if (path.resolve(core.PROJECTS_DIR) !== path.resolve(SANDBOX)) {
@@ -61,8 +70,14 @@ afterAll(() => {
 
 let seq = 0;
 const run = (argv) => invokeSync(argv);
+/**
+ * 访问日志的**真位置**：`<项目根>/.visits/<项目名>.jsonl`（在项目目录**之外**）。
+ * 与 tests/heat.test.js 同一条纪律：**只经 `store.visitLogFile` 推路径**，不自己拼 ——
+ * 拼错的那一版在日志搬家后整片假红（红的原因是夹具指错地方）。
+ */
+const store = require('../src/data-store.js').createStore(SANDBOX);
 const projFile = (name) => path.join(SANDBOX, name, name + '.json');
-const logFile = (name) => path.join(SANDBOX, name, heat.FILE_NAME);
+const logFile = (name) => store.visitLogFile(name);
 
 /**
  * 造一个项目：root 下 count 个**都含关键词**的节点（`nd-1…nd-count`）。
@@ -142,9 +157,12 @@ function spyFs() {
   });
   return {
     counters: counters, calls: calls,
-    /** 这些调用里，有几条是冲着**访问日志**去的 */
+    /** 这些调用里，有几条是冲着**访问日志**去的。
+     *  ⚠️ 判据不能写成 `endsWith(heat.FILE_NAME)`：日志现在住在 `<项目根>/.visits/<项目名>.jsonl`
+     *  （**项目目录之外**，见 `src/data-store.js` 的 `visitLogFile`），文件名不再叫 `.visits.jsonl`。
+     *  口径改成"**路径里带那个点目录**" —— 它同时覆盖了"日志住哪儿"这件事（搬回去就会红）。 */
     ofLog(p) {
-      const pick = (arr) => arr.filter((x) => String(x).endsWith(heat.FILE_NAME));
+      const pick = (arr) => arr.filter((x) => String(x).indexOf(path.sep + '.visits' + path.sep) >= 0);
       return {
         readFileSync: pick(calls.readFileSync), openSync: pick(calls.openSync),
         existsSync: pick(calls.existsSync), file: p

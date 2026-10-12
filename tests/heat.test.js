@@ -44,6 +44,22 @@ const { invokeSync } = require('../cli/main.js');
 const core = require('../cli/core.js');
 const registry = require('../cli/registry.js');
 const heat = require('../src/heat.js');
+const heatSensor = require('../src/heat-sensor.js');
+
+/* ----------------------------------------------------------------------------
+ * **夹具自造日志 ⇒ 关掉自动埋点**（热度条第三件 · C 块）
+ *
+ * 本文件里的每条读数都建立在"日志里**恰好**是我写进去的那几条事件"之上（`sample.events === 3`、
+ * `日志恰好 5 行`、`appendFileSync 恰好 1 次` …）。而第三件起，`get` / `read` / `search` / `related` /
+ * `ask` 会**自动**往同一份日志里记访问（那是产品行为，故意默认开着）。
+ * 两者同时成立是不可能的：夹具调 `search` 验排序，产品顺手记 20 行 ⇒ 夹具的判据被自己污染。
+ *
+ * 所以这里**显式**关掉它（`__setEnabledForTest` 是给测试的唯一口子，但**默认是开的**：
+ * 生产代码一次都不碰）。关掉之后本文件验的仍是热度第一件的全部口径 ——
+ * 自动埋点自己的判据（上限、逐字节不变、通道齐全）在 L 段与 integration 段里单独验，
+ * 那里**不**关它（关了就没得验）。
+ * -------------------------------------------------------------------------- */
+heatSensor.__setEnabledForTest(false);
 
 /* 重定向必须**当场**生效：否则夹具会建进真实 `projects/`（那是最坏的一类错误）。 */
 if (path.resolve(core.PROJECTS_DIR) !== path.resolve(SANDBOX)) {
@@ -62,7 +78,14 @@ afterAll(() => {
 
 let seq = 0;
 const run = (argv) => invokeSync(argv);
-const logFile = (name) => path.join(SANDBOX, name, heat.FILE_NAME);
+/**
+ * 访问日志的**真位置**：`<项目根>/.visits/<项目名>.jsonl` —— **在项目目录之外**。
+ * ⚠️ 读数必须与实现同一处推路径（`store.visitLogFile`），**不要在这里自己拼**
+ * —— 第一版拼成 `SANDBOX/<name>/.visits.jsonl`（旧的、日志还在项目目录里的形状），
+ * 日志一搬走整个文件 44 条判据全红，而红的原因是**夹具指错了地方**（不是产品坏了）。
+ */
+const store = require('../src/data-store.js').createStore(SANDBOX);
+const logFile = (name) => store.visitLogFile(name);
 const cliFile = (name) => path.join(SANDBOX, name, name + '.json');
 
 /** 建一个项目 + 三个节点（甲/乙/丙）——每次都是新项目名，测试之间互不干扰 */

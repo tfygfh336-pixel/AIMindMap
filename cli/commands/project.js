@@ -367,8 +367,15 @@ module.exports = {
       view = { meta: data.meta, data: node };
     }
 
+    // ---- 埋点（热度条第三件 · C）：一次 `read` 整页 / 整子树**顺带带出**这些节点 ⇒ 通道
+    //      `ai-read-view`（权重最低的一档，理由见 src/heat.js 的 CHANNELS）。
+    //      ⚠️ 位置：两条输出路（`--json` 与文本档）都要覆盖 ⇒ **先算视图、再记、最后打印**；
+    //      而 `ctx.recordVisit` 一个字节都不往 stdout 写 ⇒ 输出逐字节不变（判据②）。
+    //      上限口径（每次调用最多记几行、取返回顺序的前缀）只有一处：src/heat-sensor.js。
+    const readView = buildReadView(view, ctx.args);
+    ctx.recordVisit('ai-read-view', (readView.nodes || []).map((n) => n.id));
     if (js) {
-      ctx.outJson(buildReadView(view, ctx.args));
+      ctx.outJson(readView);
       return;
     }
     ctx.out('# ' + (data.meta.name || ctx.projectName) + (subId !== null ? '  ▸ ' + subId : ''));
@@ -401,6 +408,10 @@ module.exports = {
     // 导致返回「DFS 访问过的全部节点」——查 s-3-1 会得到 27 项而非 4 项）
     const out = query.getNodeView(data.data, id, ctx.args);
     if (!out) ctx.error('节点不存在: ' + id);
+    // ---- 埋点（热度条第三件 · C）：按 id 直取单个节点 ⇒ 通道 `ai-get`（与"人打开详情框"同等强度）
+    //      ⚠️ `--item` 那条分支**不记**：取一条**条目**是"读这一条内容"，不是"访问这个节点"
+    //      （条目级热度本件不做 ⇒ 不假装有）。未知通道 / 写失败一律响亮，见 cli/main.js。
+    ctx.recordVisit('ai-get', [id]);
     if (ctx.args.json) ctx.outJson(out);
     else ctx.out(JSON.stringify(out, null, 2));
   },
@@ -418,9 +429,13 @@ module.exports = {
      * · 本机没有日志 ⇒ 这次排序**不参考热度**：不是"热度为 0"，而是"本机没有采到数据"——
      *   所以 `heat.reason` 会如实说 `no-log`（`--json` 里永远给，不静默）。
      * ⚠️ MCP 的 `search_nodes` **不另写一份**：它转发到本命令 ⇒ 两边同源（判据③）。 */
-    // `--no-heat`：**显式**跳过热度日志（不读盘、不排序）—— 热度是**旁路**（日志可随时删），
-    // 旁路坏掉不该掐死主干的读路径；但它**不是**"默认降级"：默认档照旧响亮失败（F1），
-    // 关掉这件事必须由调用方**说出口**（`--json` 里如实写 `heat.reason`）。
+    // `--no-heat`：**显式**跳过热度日志 —— 语义是「本次调用**完全不碰热度日志**」：
+    // **不读**（不排序，排到零热度档）**且不写**（埋点也一起关掉）。
+    // · 为什么"不写"这一半是必须的（用户 2026-10-12 裁决②）：坏日志下这条出路的意义正是
+    //   "一个字节都别动它" —— 读了会响亮失败、写了（追加一条）会把坏日志**搅得更坏**
+    //   （再垫一行读不出来的东西进去），而调用方要的是"先拿到结果" ✓。
+    // · 它**不是**"默认降级"：默认档照旧响亮失败（F1），关掉这件事必须由调用方**说出口**
+    //   （`--json` 里如实写 `heat.reason`）。
     const nh = itemIndex.parseFlag(ctx.args.noHeat);   // 布尔开关照 --verified 先例：只认 true/false/裸写
     if (!nh.ok) ctx.error('--no-heat ' + nh.reason);
     let heatRead = null;
@@ -430,8 +445,9 @@ module.exports = {
       } catch (err) {
         // 报错里**点名出口**：只说"坏了"不够，调用方得知道还能怎么拿到结果（三条出路写在报文里）
         ctx.error(String((err && err.message) || err)
-          + '\n出路（三条任选）：① 加 `--no-heat` **先检索**（跳过热度日志：排序回到"零热度档"，'
-          + '与从来没有过热度的项目逐字相同）；② 修掉上面点名的那几行；③ 删掉该日志（旁路产物、可随时删）。');
+          + '\n出路（三条任选）：① 加 `--no-heat` **先检索**（跳过热度日志：不读、不写、不排序，'
+          + '排序回到"零热度档"，与从来没有过热度的项目逐字相同）；② 修掉上面点名的那几行；'
+          + '③ 删掉该日志（旁路产物、可随时删）。');
       }
     }
     const boost = (heatRead && heatRead.exists) ? heat.searchBoost(heatRead.heat) : null;
@@ -444,6 +460,16 @@ module.exports = {
     });
     // 缺关键词 / 非法 --verified,--type,--since / --topic-only 与条目级过滤同给 ⇒ 都由纯逻辑层给出完整报文
     if (!r.ok) ctx.error(r.message);
+    /* ---- 埋点（热度条第三件 · C）：搜索**命中并返回**的节点 ⇒ 通道 `ai-search-hit`。
+     * 口径三条（写在这里，因为"哪一刻算一次访问"只有本命令知道）：
+     *   ① 记的是**本次真的返回了的**命中（`r.hits`，已过 --limit / --max-bytes 预算），
+     *      不是全量命中面 —— "返回了"才是访问，"差点返回"不是；
+     *   ② 顺序 = 返回顺序（结果里排前面的更可能被真读）⇒ 上限截断时留下的是**前缀**；
+     *   ③ **在 `readHeatFile` 之后调**（代码位置就是这条）：本命令的热度已经读完了，
+     *      所以这次记的命中不会反过来抬升**本次**排序（否则每次 search 都会自激一次）。
+     * ⚠️ `--no-heat` ⇒ **一条都不记**（"别碰热度"是双向的：不读也不写，见上面那段裁决）；
+     *    日志坏了那一支在**上面**已经 ctx.error 退出了 ⇒ 报错路径一条都不记（与"不给半份结果"同一精神）。 */
+    if (!nh.value) ctx.recordVisit('ai-search-hit', r.hits.map((h) => h.nodeId));
     // 本次**返回的**命中里带热度的条数（只有它才可能与顺序有关；没带就是"这次排序没被热度推动"）
     const hotHits = boost ? r.hits.filter((h) => boost.byNode.has(h.nodeId)).length : 0;
     const heatInfo = {

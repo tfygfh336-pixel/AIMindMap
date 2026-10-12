@@ -11,6 +11,10 @@
  *   desktop.app.openFile(abs)          → 系统默认应用打开附件
  *   desktop.app.exportMd(...)          → 导出 Markdown（v0.16 起为文件夹导出）
  *   desktop.app.related(...)           → 某节点的相关知识点（出边+入边）
+ *   desktop.app.heat(name, nodeId)     → 热度读数（来自 `heat --json`：两条榜 + 窗口内样本量）——
+ *                                        界面两条热度条**只**显示它给的数，自己不计算（第三件·A）
+ *   desktop.app.visit(name, nodeId, ch) → 记一次人类访问（打开详情框）⇒ 访问日志追加一行；
+ *                                        **不碰项目数据、不触发保存**（改热度条不写盘）
  *   desktop.app.audit(name)            → 关系审计（orphans + mentions 两清单）
  *   desktop.app.linkNodes(...)         → 补一条链接（写操作，走 CLI 闸门）
  *   desktop.app.unlinkNodes(...)       → 摘掉一条链接（写操作，走 CLI 闸门；入边可指定**来源所在项目**）
@@ -60,6 +64,13 @@ contextBridge.exposeInMainWorld('desktop', {
     search: (projectName, keyword) => ipcRenderer.invoke('app:search', projectName, keyword),
     backlinks: (projectName, nodeId) => ipcRenderer.invoke('app:backlinks', projectName, nodeId),
     related: (projectName, nodeId) => ipcRenderer.invoke('app:related', projectName, nodeId),
+    /* 热度条（第三件·A）。两条通道都**只展示 / 只记录**，与"正文只有一份"无关：
+     *   heat(...)  → 读 `heat --json`（同一处口径；界面**绝不自己算**分位与名次）
+     *   visit(...) → 记一次**人类访问**（裁决一：人只算"打开详情框"）⇒ 往**访问日志**追加一行。
+     *                ⚠️ 它**不写项目数据**、不触发保存、不产生脏标记（用户只是看热度，不该留下任何写）。
+     *                失败如实回报 `{ok:false, errors}`（渲染层显示可见提示，不静默）。 */
+    heat: (projectName, nodeId) => ipcRenderer.invoke('app:heat', projectName, nodeId),
+    visit: (projectName, nodeId, channel) => ipcRenderer.invoke('app:visit', projectName, nodeId, channel),
     audit: (projectName) => ipcRenderer.invoke('app:audit', projectName),
     linkNodes: (projectName, fromId, toProject, toId, caption) =>
       ipcRenderer.invoke('app:link-nodes', projectName, fromId, toProject, toId, caption),

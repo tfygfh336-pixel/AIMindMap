@@ -56,6 +56,13 @@ projects/**/.changes.jsonl
 # 它的内容随界面开关变化，入库会变成恒定的噪音 diff；删掉没有任何损失（见 src/ui-state.js）
 projects/**/.ui-state.json
 
+# 访问事件日志（热度条：人 / AI 两条的原始素材）：**本机使用痕迹**，不是笔记数据。
+# 它描述"这台机器上的人/AI 怎么用过这个项目"，与"项目里有什么"无关 ⇒ 不该入库、不该跨机传播
+# （旁路产物、不进 export-json、可随时删：删掉后 heat 会明说"本机没有访问日志"）。
+# 位置在**项目目录之外**（`<projects 根>/.visits/<项目名>.jsonl`，见 src/data-store.js 的 visitLogFile），
+# 所以忽略规则针对的是项目根下那个点目录，而不是 `projects/**/` 里的某个文件。
+projects/.visits/
+
 # 工作产物区（AI 的分析稿/评审稿/读图记录/探针脚本；可随时整目录删除，不入库）
 # 落盘规矩的唯一杂物区 —— 见 SKILL.md 顶部「落盘规矩」与 docs/ARCHITECTURE.md §5
 .review/
