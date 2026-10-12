@@ -15,6 +15,7 @@ const markdown = require('../../src/markdown.js');
 const tree = require('../../src/tree-utils.js');    // 树遍历单源（本文件不再自写 walk）
 const query = require('../../src/query.js');       // 视图/搜索/统计纯逻辑
 const itemIndex = require('../../src/item-index.js');   // 条目层的长度/预算常量与视图（契约 §3.4：常量只在 src/item-index.js）
+const heat = require('../../src/heat.js');         // 热度向量：三条上限 + 名次→档位 + 窄查询（口径只在 src/heat.js）
 const bundle = require('../../src/bundle.js');     // aimap 打包格式纯逻辑
 const exportHtml = require('../../src/export-html.js');   // 静态站点 HTML 生成纯逻辑
 const MMConfig = require('../../src/config.js');   // 版本号单源（APP_VERSION）
@@ -408,16 +409,60 @@ module.exports = {
     // 整数形态的合法性由 core 的统一实现挡（含允许范围），**取值范围**来自 src/item-index.js 的常量
     const limit = ctx.intOption('limit', { min: 1, max: itemIndex.LIMIT_MAX, def: itemIndex.DEFAULT_LIMIT });
     const maxBytes = ctx.intOption('maxBytes', { min: itemIndex.MIN_MAX_BYTES, max: itemIndex.MAX_BYTES_MAX, def: itemIndex.DEFAULT_MAX_BYTES });
+
+    /* ---- 热度向量（热度条第二件）----
+     * 三条上限（人 / AI / 合并）与"名次→档位"全在 `src/heat.js`（唯一一处）——**这里不写任何数值**，
+     * 只做两件事：① **读**（窄查询：只读日志尾部，见 heat.js 的 readTail）；② 交给纯逻辑层排序。
+     * · 日志坏了 / 有认不出的通道 / 时间乱序 / 未来时间戳 ⇒ `readHeatFile` **响亮报错**（F1：
+     *   不许静默当 0）⇒ 本命令一起失败并点名，**并在报文末尾给出三条出路**（含 `--no-heat`）。
+     * · 本机没有日志 ⇒ 这次排序**不参考热度**：不是"热度为 0"，而是"本机没有采到数据"——
+     *   所以 `heat.reason` 会如实说 `no-log`（`--json` 里永远给，不静默）。
+     * ⚠️ MCP 的 `search_nodes` **不另写一份**：它转发到本命令 ⇒ 两边同源（判据③）。 */
+    // `--no-heat`：**显式**跳过热度日志（不读盘、不排序）—— 热度是**旁路**（日志可随时删），
+    // 旁路坏掉不该掐死主干的读路径；但它**不是**"默认降级"：默认档照旧响亮失败（F1），
+    // 关掉这件事必须由调用方**说出口**（`--json` 里如实写 `heat.reason`）。
+    const nh = itemIndex.parseFlag(ctx.args.noHeat);   // 布尔开关照 --verified 先例：只认 true/false/裸写
+    if (!nh.ok) ctx.error('--no-heat ' + nh.reason);
+    let heatRead = null;
+    if (!nh.value) {
+      try {
+        heatRead = heat.readHeatFile(ctx.store.visitLogFile(ctx.projectName), { now: Date.now() });
+      } catch (err) {
+        // 报错里**点名出口**：只说"坏了"不够，调用方得知道还能怎么拿到结果（三条出路写在报文里）
+        ctx.error(String((err && err.message) || err)
+          + '\n出路（三条任选）：① 加 `--no-heat` **先检索**（跳过热度日志：排序回到"零热度档"，'
+          + '与从来没有过热度的项目逐字相同）；② 修掉上面点名的那几行；③ 删掉该日志（旁路产物、可随时删）。');
+      }
+    }
+    const boost = (heatRead && heatRead.exists) ? heat.searchBoost(heatRead.heat) : null;
+
     const r = query.searchNodes(ctx.root, {
       keyword: ctx.args._[1], tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
       src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
-      limit: limit, maxBytes: maxBytes
+      limit: limit, maxBytes: maxBytes,
+      heat: boost
     });
     // 缺关键词 / 非法 --verified,--type,--since / --topic-only 与条目级过滤同给 ⇒ 都由纯逻辑层给出完整报文
     if (!r.ok) ctx.error(r.message);
+    // 本次**返回的**命中里带热度的条数（只有它才可能与顺序有关；没带就是"这次排序没被热度推动"）
+    const hotHits = boost ? r.hits.filter((h) => boost.byNode.has(h.nodeId)).length : 0;
+    const heatInfo = {
+      applied: !!(boost && hotHits > 0),
+      reason: nh.value ? '被 --no-heat 显式关闭'
+        : !heatRead.exists ? 'no-log'
+          : (!boost.rankedNodes ? 'log-empty' : (hotHits ? 'ok' : 'no-hit')),
+      weights: boost ? boost.weights : heat.searchRankOf(),
+      windowDays: heat.WINDOW_DAYS,
+      rankedNodes: boost ? boost.rankedNodes : 0,
+      hitNodes: hotHits,
+      log: (heatRead && heatRead.exists) ? {
+        bytesRead: heatRead.log.bytesRead, fileBytes: heatRead.log.fileBytes,
+        windowComplete: heatRead.log.complete
+      } : null
+    };
     if (ctx.args.json) {
       ctx.outJson({ project: ctx.projectName, keyword: ctx.args._[1] || null, hits: r.hits,
-        hitCount: r.hitCount, truncated: r.truncated, mode: r.mode, budget: r.budget });
+        hitCount: r.hitCount, truncated: r.truncated, mode: r.mode, budget: r.budget, heat: heatInfo });
       return;
     }
     r.hits.forEach((h) => ctx.out(h.nodeId + (h.itemId ? '#' + h.itemId : '') + '  ' + h.nodeTopic
@@ -426,6 +471,16 @@ module.exports = {
     ctx.out('命中 ' + r.hitCount + ' 条' + (r.truncated ? '（本次返回 ' + r.hits.length + ' 条，已截断）' : '')
       + '｜预算 ' + r.budget.bytes + ' B ≈ ' + r.budget.estTokens + ' token（--limit ' + r.budget.limit
       + ' / --max-bytes ' + r.budget.maxBytes + '，口径 ' + r.mode + '）');
+    // 用了热度才多说一行（没有日志时本命令的输出与从前逐字相同）—— 有日志就**必须**说，
+    // 否则"排序为什么是这个顺序"在文本档里看不出来。
+    if (boost && boost.rankedNodes) {
+      // 百分数只用于回显：`0.07*100 = 7.000000000000001` 这类噪音不许漏到读数里
+      const pc = (x) => Number((Number(x) * 100).toFixed(6));
+      ctx.out('热度：人 / AI 两条榜已并入排序（封顶占总分 ' + pc(heatInfo.weights.merged) + '%'
+        + ' · 人上限 ' + pc(heatInfo.weights.human) + '% / AI 上限 ' + pc(heatInfo.weights.ai) + '%'
+        + ' · 窗口最近 ' + heat.WINDOW_DAYS + ' 天 · 榜上 ' + boost.rankedNodes + ' 个节点）；'
+        + '本次返回到的命中里 ' + hotHits + ' 个带热度。口径见 src/heat.js 的 SEARCH_RANK（唯一一处）');
+    }
     if (r.truncated && r.budget.resume) ctx.out(r.budget.resume);
   },
 

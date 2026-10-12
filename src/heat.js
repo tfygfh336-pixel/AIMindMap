@@ -7,10 +7,12 @@
  * 与本件直接相关的三条：**人只算「打开详情框」**、**AI 各通道都计入并按通道加权**、
  * **排名在「窗口内被访问过的节点」这个子集内部做**（零访问节点不进榜、不参与分位）。
  *
- * ## 三层分工（本文件只做前两层）
+ * ## 三层分工
  *   ① **事件日志**（本文件）：一行一条"哪条通道在什么时候访问了哪个节点"，只追加；
  *   ② **派生热度**（本文件）：窗口 + 排名 + 名次→档位 —— 一定是**算出来的**，不许手写；
- *   ③ 进检索（第二件）、进界面（第三件）：本件**不做** ✗。
+ *   ③ **进检索排序**（第二件，见下方 `SEARCH_RANK` / `searchBoost`）：本文件出**数值与口径**
+ *      （三条上限、名次→档位），`src/item-index.js` 出**排序**（唯一一处重排命中顺序的地方），
+ *      命令层只做"读一次 + 传进去"。界面（第三件）本文件**不做** ✗。
  *
  * ## 为什么是 sidecar、而不是项目文件里的字段
  * 同 `src/changes.js` 的理由：项目 JSON 是**当前事实的唯一真源**，把"访问流水"塞进去等于
@@ -38,9 +40,9 @@
  *   2. **手改日志的乱序看不见**：读区内的乱序会报错，但"把一条窗口内的记录塞进文件最前面"
  *      这种手改会让读数**少算**而不报错 —— 日志是**旁路产物**（可随时删），要核对可以不信任它：
  *      `readHeatFile(file, {full:true})` 全量读并校验整个文件的时序（测试里拿它与窄读对拍）。
- *   3. **本件不碰检索、不碰界面**：下面的权重表只定义「**通道之间**的相对强度」与「谁（人/AI）」；
- *      **跨侧**的相对权重（裁决三：AI 那条进检索时更低、合并后仍封顶）是**第二件**的事 ——
- *      本文件里的数字**不要**被当成"检索向量权重"来用。
+ *   3. **一张表管一件事**：`CHANNELS` 只定义「**通道之间**的相对强度」与「谁（人/AI）」，
+ *      它**不是**检索向量权重（别拿 1.5 / 0.4 去当排序权重）；跨侧的边界是 `SEARCH_RANK`
+ *      （裁决三：人上限 / AI 上限 / 合并上限），两者各只有一处定义、互不解释对方。
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('fs'), require('./schema.js'));
@@ -168,6 +170,127 @@
       + (where ? '（' + where + '）' : '') + '。合法通道与权重（唯一一处定义：src/heat.js 的 CHANNELS）：'
       + CHANNELS.map((c) => c.ch + '(' + c.who + ' ' + c.weight + ')').join('、')
       + '。通道 id 不许自创 —— 自创会让这条事件在读数里变成"认不出的通道"，宁可现在报错。';
+  }
+
+  /* ============================================================================
+   * **检索向量权重（热度条第二件）** —— 全工程唯一一处（规格 §一.2 / §一.3）
+   * ============================================================================
+   * 热度是 `search` 排序里的**一个封顶向量**：它在"总分"里的**权重份额**有三条上限。
+   * 三条上限**只在这里定义一次**（取值与理由写在数字旁边）；`src/item-index.js` 只接受
+   * "一个已封顶的加数 + 它占总分的份额"这两个**数**，它不认识这里的任何取值；
+   * 命令层（`cli/commands/project.js` 的 `search`）也不写数字，只调 `searchBoost()`。
+   *
+   * ## 总分怎么构成（这就是"封顶"的可测含义）
+   *     总分(命中) = (1 − merged) × 基础分 + 热度项 ，  0 ≤ 热度项 ≤ merged
+   *   · **基础分** ∈ (0,1] = 该命中在**既有顺序**（`item-index.js` 的 `entries` 序 = 深度优先 +
+   *     条目序，本件之前检索**唯一**的排序依据）里的相对位置。所以"零热度 ⇒ 顺序逐字不变"。
+   *   · 于是 **merged 就是热度在总分里的权重份额上限**：基础分那份占 (1−merged) ≥ 92%、
+   *     热度那份 ≤ 8%。这不是"实测大概不超过"，是**构造出来的**（两份权重之和 = 1）。
+   *
+   * ## 三条上限的取值与理由（改任一条都要问用户：这是裁决三明写的边界）
+   *   · **human 0.06** —— 人侧上限。人的动作只有一个（`human-detail`，裁决一），信号**干净**：
+   *     人看过某节点，不会因此让该节点更容易被自己看到（没有环）。两档里给较高的一档。
+   *   · **ai 0.03** —— AI 侧上限 = **人的一半**。裁决三要求"AI 那条权重更低"，理由是**自激环**：
+   *     AI 检索命中 ⇒ 记一次 `ai-search-hit` ⇒ 该节点热度升 ⇒ 更容易被检索命中。
+   *     压到一半（不是"略低"）有两个用处：① 环增益只有人侧的 1/2；② "两条权重**不相等**"这件事
+   *     因此**可机械判别**（同一节点"人热 AI 冷"与"人冷 AI 热"给出**不同**顺序）—— 取同一个数
+   *     那条判据就恒真了，等于没有这条边界。
+   *   · **merged 0.08** —— 合并上限，**小于 human + ai = 0.09**。为什么不取 0.09：那样它只是前两条
+   *     的别名，"合并后仍封顶"这条判决就**没人守**（改它不会有任何读数变化 ⇒ 恒真）。0.08 在
+   *     "两条都拉满"时真的会咬住（0.06+0.03=0.09 → 截到 0.08）。为什么不取 0.10（规格的硬上限）：
+   *     位移上界是 merged/(1−merged)，0.10 会给出 11.1% > 10%，反而要解释；0.08 给出 8.7%，
+   *     让"权重份额 ≤ 10%"与"排序位移 ≤ 10%"两条口径**同时**成立且留有余量。
+   *
+   * ## 位移上界（`maxJump`，判据①的读数口径）
+   *   设 n = 本次命中数、c = merged、d = 两个命中的基础序位置差。一个"热度拉满"的命中要超过
+   *   另一个零热度的命中，必须总分更高 ⇒ (1−c)·d/n < c ⇒ d < n·c/(1−c) ⇒ 最多挪
+   *     d_max = ceil(n·c/(1−c)) − 1 个位置（同分时按文档序 ⇒ 平手不越位，所以是严格小于）。
+   *   c = 0.08、n 很大时 d_max/n → 8.7% ≤ 10% ✓。
+   *   ⚠️ 它与"权重份额"是**两条独立的口径**：份额 ≤ merged 是构造出来的，位移 ≤ d_max 是**推出来的**
+   *   —— 所以判据①两条都要钉（只钉份额的话，把基础分那份压成 0 也能过）。
+   * ========================================================================== */
+  const SEARCH_RANK = Object.freeze({
+    human: 0.06,
+    ai: 0.03,
+    merged: 0.08
+  });
+
+  /**
+   * 当前生效的向量权重。**所有用法都经它**（`searchBoost` / `maxJump`），生产代码永远不换 ——
+   * 换它的口子只有一个理由：**判据⑤（注入证明）必须可重复执行**
+   * （"把 merged 改成 1.0 ⇒ 判据①必红""把 ai 改成等于 human ⇒ 判据②必红" ⇒ 还原 ⇒ 复绿）。
+   * 不给这个口子，那两条证明就只能靠手改源码跑一次，进不了回归。
+   */
+  let searchRank = SEARCH_RANK;
+  function searchRankOf() { return searchRank; }
+
+  /** **只给测试用**：换掉三条上限。返回被换掉的那份，便于还原。 */
+  function __setSearchRankForTest(w) {
+    const o = w || {};
+    if (!Number.isFinite(o.human) || !Number.isFinite(o.ai) || !Number.isFinite(o.merged)) {
+      throw new Error('__setSearchRankForTest 需要 {human, ai, merged} 三个数');
+    }
+    const old = searchRank;
+    searchRank = Object.freeze({ human: o.human, ai: o.ai, merged: o.merged });
+    return old;
+  }
+  function __resetSearchRankForTest() { searchRank = SEARCH_RANK; }
+
+  /** 档位 → [0,1] 的分位（档位是 1–10；没被访问过 = 0 ⇒ 分位 0） */
+  function bandFraction(band) {
+    const b = Number(band);
+    if (!Number.isFinite(b) || b <= 0) return 0;
+    return Math.min(b, HEAT_BANDS) / HEAT_BANDS;
+  }
+
+  /**
+   * 把"两条榜"变成**排序加数**（纯函数，不读盘）：`{node → 热度项}` 与它占总分的份额。
+   *
+   * 三条上限都在这一个函数里落地：
+   *   · 人侧最多加 `human × 人侧分位`；
+   *   · AI 侧最多加 `ai × AI 侧分位`；
+   *   · 两者相加后与 `merged` 取小（"合并后仍封顶"**真的会咬住**）。
+   *
+   * ⚠️ 输入必须是 `computeHeat` / `readHeatFile` 的 `heat`（**名次→档位**已经算好了）——
+   * 这里**不重算名次**（"取值只有一处"：排名口径只在 `computeHeat`）。
+   *
+   * @param {object} computed `computeHeat` 的返回值（要 `.human` / `.ai` 两条榜）
+   * @returns {{scale:number, byNode:Map, weights:object, rankedNodes:number}}
+   *   `scale` = 热度项占总分的份额上限（排序公式用的就是它，**不是**常数）
+   */
+  function searchBoost(computed) {
+    const w = searchRankOf();
+    const byNode = new Map();
+    const add = (list, weight) => {
+      (Array.isArray(list) ? list : []).forEach((r) => {
+        if (!r || !r.node) return;
+        const k = String(r.node);
+        byNode.set(k, (byNode.get(k) || 0) + weight * bandFraction(r.heat));
+      });
+    };
+    add(computed && computed.human, w.human);
+    add(computed && computed.ai, w.ai);
+    byNode.forEach((v, k) => { byNode.set(k, Math.min(round3(v), w.merged)); });
+    return {
+      scale: w.merged,
+      byNode: byNode,
+      weights: { human: w.human, ai: w.ai, merged: w.merged },
+      rankedNodes: byNode.size
+    };
+  }
+
+  /**
+   * 位移上界：n 个命中时，一个"热度拉满"的命中最多能挪几个位置（推导见上方 `SEARCH_RANK` 注释）。
+   * merged ≥ 1 ⇒ 基础分那份被压成 0（顺序完全由热度决定）⇒ **不再有界**，返回 `Infinity`：
+   * 这是判据①"超限即红"的读数来源（封顶改成 1.0 时它必然红）。
+   */
+  function maxJump(n) {
+    const c = Number(searchRankOf().merged);
+    const total = Number(n);
+    if (!Number.isFinite(total) || total <= 1) return 0;
+    if (!Number.isFinite(c) || c >= 1) return Infinity;
+    if (c <= 0) return 0;
+    return Math.max(0, Math.ceil(total * c / (1 - c)) - 1);
   }
 
   /** UTF-8 字节长度（Node 用 Buffer；浏览器端退化成手工计数 —— 诊断用的偏移量要一致） */
@@ -672,9 +795,12 @@
     FILE_NAME, ENTRY_VERSION, WINDOW_DAYS, WINDOW_MS, DAY_MS, HEAT_BANDS, FUTURE_TOLERANCE_MS,
     READ_CHUNK_BYTES, MAX_READ_BYTES,
     CHANNELS, CHANNEL_NAMES, channelInfo, channelRow, unknownChannelError,
+    // 检索向量（第二件）：三条上限 + "两条榜 → 排序加数" + 位移上界（取值与推导都在上面那一处）
+    SEARCH_RANK, searchRankOf, searchBoost, maxJump, bandFraction,
     buildEvent, serializeEvent, looksLikeEvent, parseEvents,
     heatFromRank, rankToHeat,
     computeHeat, appendEvent, readTail, readHeatFile,
-    __setHeatMapperForTest, __resetHeatMapperForTest
+    __setHeatMapperForTest, __resetHeatMapperForTest,
+    __setSearchRankForTest, __resetSearchRankForTest
   };
 });

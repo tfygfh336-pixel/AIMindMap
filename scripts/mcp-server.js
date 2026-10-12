@@ -47,12 +47,18 @@ const TOOLS = [
   T('search_nodes', '搜索**条目**（默认口径：节点标题 ∪ 条目正文）。item_level=false 退回旧口径"只搜标题"'
     + '（对应 CLI 的反向开关 --topic-only）；full=true 再加全文面（detail / 图片 caption / 节点标签 / 链接说明）；'
     + 'tag 按标签过滤（条目级或节点级）；src / verified / type / since 是**条目级**过滤（给了它们就只返回条目命中）；'
-    + 'limit / max_bytes 卡预算（超限会截断并在结果里给续取方式）', {
+    + 'limit / max_bytes 卡预算（超限会截断并在结果里给续取方式）；'
+    + 'no_heat=true 跳过热度日志（**热度日志损坏时可用 no_heat:true 先检索**：排序回到零热度档，'
+    + '与从来没有过热度的项目逐字相同）—— 对应 CLI 的 --no-heat；不给它时日志坏了**照旧响亮失败**'
+    + '（失败原因里会点名这条出路）', {
     project: s('项目名或 JSON 文件路径'), keyword: s('关键词（与 tag 可组合）'),
     full: b('全文搜索（detail/caption/节点标签/链接说明）—— 对应 CLI 的 --full'),
     tag: s('按标签过滤：**条目级** `item.tags` 或**节点级** `tags` 含它即命中（对应 CLI 的 --tag）'),
     item_level: b('是否按**条目层**检索（对应 CLI 的反面 `--topic-only`）：默认 true = 搜条目；'
       + '显式给 false ⇒ 加上 --topic-only，退回 v2 的"只搜标题"口径'),
+    no_heat: b('**显式**跳过热度日志（不读盘、不排序）—— 对应 CLI 的 --no-heat；'
+      + '热度日志损坏 / 认不出通道 / 时间乱序时，这是**先拿到结果**的出口（排序回到零热度档）；'
+      + '不给它时默认档**仍然响亮失败**（不许静默降级成"按 0 排"）'),
     src: s('只要**出处**（条目 `src`，字符串或数组的任一项）含该子串的条目 —— 对应 CLI 的 --src'),
     verified: b('只要**已核**条目（没有 `verified` = 未核）—— 对应 CLI 的 --verified'),
     type: s('只要该 `type` 的条目：text | rich | qa —— 对应 CLI 的 --type'),
@@ -384,6 +390,11 @@ function callTool(name, args) {
       if (argOf('since')) c.push('--since', argOf('since'));
       if (a.limit !== undefined) c.push('--limit', argOf('limit'));
       if (a.max_bytes !== undefined) c.push('--max-bytes', argOf('max_bytes'));
+      // ---- 逃生门（热度条第二件）：**只加这一个参数**，直通 CLI 的 `--no-heat`（同一处语义）----
+      // 为什么必须有它：CLI 的坏日志报文里点名"加 --no-heat 先检索"—— 走 MCP 的调用方（AI）
+      // 若传不进这个开关，那条出路就是**指不到东西的死指针**（收报错的人用不了它）。
+      // ⚠️ 取值一律由 CLI 决定：MCP 侧**不复制**任何热度权重/上限（三串数字仍只在 src/heat.js）。
+      if (a.no_heat === true) c.push('--no-heat');
       c.push('--json');
       return runCli(c);
     }

@@ -452,6 +452,46 @@
     return true;
   }
 
+  /**
+   * **热度向量的排序**（热度条第二件）—— 命中顺序**只在这里**被重排（全工程唯一一处）。
+   *
+   * 为什么它在这里、数值却在 `src/heat.js`：
+   *   · **数值与口径**（人 / AI / 合并三条上限、名次→档位）只有一处 = `src/heat.js` 的
+   *     `SEARCH_RANK` + `searchBoost`（那里把"两条榜"折成一个已封顶的加数 + 它占总分的份额）；
+   *   · **排序**只有一处 = 本函数。它只认两个数，**不认识任何热度取值**（所以本模块仍是纯逻辑、
+   *     不读盘、不认识项目名 —— 见文件头三条纪律）。
+   *
+   * 公式（`scale` = 热度项占总分的份额上限，由 `heat.js` 给）：
+   *   总分(i) = (1 − scale) × 基础分(i) + 热度项[命中.nodeId]
+   *   基础分(i) = (n − i) / n —— i 是**既有顺序**（深度优先 + 条目序）里的位置。
+   * 三条性质（判据靠它们）：
+   *   ① **零热度 ⇒ 顺序逐字不变**：热度项全 0 时总分随 i 严格递减 ⇒ 排序结果与不排序相同；
+   *   ② **热度只是重排，不增删命中**：入参与出参是同一批对象（同一个数组元素），
+   *      `hitCount`（=截断前命中总数）与 `hits` 的内容都不受影响；
+   *   ③ **确定性**：同分按原位置（`a - b`）—— 不依赖 Array.sort 的稳定性，也不按 id 抢位。
+   *
+   * @param {Array} hits `searchItems` 收上来的命中（既有顺序）
+   * @param {{scale:number, byNode:Map}} [heat] `src/heat.js` 的 `searchBoost()` 产物；
+   *        不给 ⇒ 原样返回（既有调用方与 `--topic-only` 等路径行为不变）
+   */
+  function orderByHeat(hits, heat) {
+    const arr = Array.isArray(hits) ? hits : [];
+    if (!heat || arr.length < 2) return arr;
+    const raw = Number(heat.scale);
+    if (!Number.isFinite(raw) || raw <= 0) return arr;
+    const scale = Math.min(1, raw);            // 份额 >1 夹到 1（= 顺序全由热度决定，注入证明走这条）
+    const byNode = heat.byNode;
+    const boost = (h) => {
+      if (!byNode || typeof byNode.get !== 'function') return 0;
+      const v = byNode.get(h.nodeId);
+      return Number.isFinite(v) ? v : 0;
+    };
+    const n = arr.length;
+    const key = (i) => (1 - scale) * ((n - i) / n) + boost(arr[i]);
+    const order = arr.map((h, i) => i).sort((a, b) => (key(b) - key(a)) || (a - b));
+    return order.map((i) => arr[i]);
+  }
+
   /** 卡预算：先按 `--limit` 截，再按 `--max-bytes` 逐条回退（**不许静默少给**：截了就给 truncated） */
   function applyBudget(hits, limit, maxBytes) {
     let out = (limit > 0 && hits.length > limit) ? hits.slice(0, limit) : hits.slice();
@@ -474,6 +514,8 @@
    *   keyword, tag, full, topicOnly,
    *   src, verified, type, since,        // 条目级过滤（见 passItemFilters）
    *   limit, maxBytes,                   // 缺省值有界（常量在上方）；**合法性由调用方挡**（core.intOption）
+   *   heat,                              // 热度向量：{scale, byNode} —— 由 src/heat.js 的 searchBoost 造
+   *                                      // （本模块不认识"热度"的任何数值；不给 ⇒ 顺序与从前逐字相同）
    *   indexes                            // buildIndexes(root) 的结果（多次查询务必传）
    * }
    * @returns {ok, message?, mode, hits, hitCount, truncated, budget}
@@ -597,7 +639,8 @@
       }
     });
 
-    const b = applyBudget(raw, limit, maxBytes);
+    const ordered = orderByHeat(raw, o.heat);   // 热度：**只重排**，不增删命中（不改变"命中/不命中"）
+    const b = applyBudget(ordered, limit, maxBytes);
     const budget = { bytes: b.bytes, estTokens: estTokens(b.bytes), limit: limit, maxBytes: maxBytes };
     if (b.truncated) budget.resume = RESUME_ADVICE;     // 只增字段：截断时才出现
     return {
@@ -706,6 +749,8 @@
     // 视图
     itemView: itemView, itemSummary: itemSummary, qaFromItems: qaFromItems,
     // 检索与取回
-    searchItems: searchItems, getItemView: getItemView, readItemsView: readItemsView
+    searchItems: searchItems, getItemView: getItemView, readItemsView: readItemsView,
+    // 热度向量的**排序**唯一实现处（数值/口径在 src/heat.js：这里一个热度数字都没有）
+    orderByHeat: orderByHeat
   };
 });

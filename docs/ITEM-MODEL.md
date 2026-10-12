@@ -198,7 +198,7 @@ budget:{bytes, estTokens, limit, maxBytes}}`（预算报告口径只有一处实
 新增六个工具（**每个都是某条 CLI 命令的透传，不复制逻辑**）：
 `item_add` / `item_edit` / `item_remove` / `item_move` / `item_order` / `render_detail`。
 已有两个工具扩参：`get_node` 加 `item`；`search_nodes` 加 `item_level`（对应 `--topic-only` 的反面）/
-`tag`/`src`/`verified`/`type`/`since`/`limit`/`max_bytes`。
+`tag`/`src`/`verified`/`type`/`since`/`limit`/`max_bytes`/`no_heat`（`no_heat` 对应 CLI 的 `--no-heat`：**热度日志损坏时的逃生门**，排序回到零热度档；不给它时默认档照旧**响亮失败**）。
 
 - 参数名一律 snake_case，语义与 CLI **一一对应**；不新增 MCP 侧默认值。
 - 工具总数与稳定性分级**不写在本文件**：总数见 `docs/VERIFY.md`（生成物），分级表见 `docs/EXTENSIONS.md` §1.2/§1.3 —— 两者都由 I 同批更新（新命令不进分级表会被 G8 判红）。

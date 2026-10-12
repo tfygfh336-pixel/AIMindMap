@@ -101,11 +101,14 @@ describe('搜索：默认口径 = 搜条目（契约 §3.4）', () => {
     expect(full.hits[0]).toMatchObject({ nodeId: 'bl', matchIn: 'detail', itemId: null });
   });
 
-  it('条目顺序 = 深度优先 + 条目序（不许重排：排序权重是调用方的事）', () => {
+  it('条目顺序 = 深度优先 + 条目序（不给 opts.heat 就不重排：排序权重是调用方的事）', () => {
     const r = itemIndex.searchItems(FIX(), { keyword: '闸门' });
     expect(ids(r.hits)).toEqual([
       '1c', '1c#' + I_A1, '1c#' + I_A2, '1c#' + I_A3, '1c#' + I_A4, '1c-1', 'bl'
     ]);
+    // 唯一的例外是调用方**显式**给了热度向量（热度条第二件）：那时顺序按封顶加权排，
+    // 实现只有一处（src/item-index.js 的 orderByHeat），取值也只有一处（src/heat.js 的 SEARCH_RANK）
+    // —— 那条路的判据在 tests/search-heat.test.js（含"零热度 ⇒ 逐字不变"的回归）。
   });
 
   it('matchIn 一律落在封闭取值表里（契约 §3.4）', () => {

@@ -4219,6 +4219,306 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
   }
 }
 
+/* ===== 访问热度（H1 第二件：接进 search / CLI 与 MCP 同源）===== */
+/* ============================================================================
+ * 热度条（第二件）：热度作为**一个封顶向量**进 `search` 排序（CLI 与 MCP **同源**）
+ * ----------------------------------------------------------------------------
+ * 判据（对应 `.review/20261012-热度条/规格与裁决.md` §一.2 / §一.3 与 §四 的①②③④⑥）：
+ *   （热度条二·封顶）**封顶可测**：把某个节点的热度拉满 ⇒ 顺序**真的变了**（否则那条判据是恒真的空话），
+ *              而位移**不超过封顶比例** —— 两条口径各钉一次：位置数 ≤ `heat.maxJump(n)`、比例 ≤ 10%；
+ *   （热度条二·两条）**人 / AI 两条都真进、且权重不同**：同一节点"人热 AI 冷" vs "人冷 AI 热" ⇒ 顺序**不同**；
+ *   （热度条二·同源）**CLI 与 MCP 同源**：MCP 的 `search_nodes`（**真 stdio 一拍**）与 CLI 的
+ *              `search --json` 对**同一份数据**命中**逐条同序**（MCP 侧一行打分逻辑都没有）；
+ *   （热度条二·取舍）**只排序**：`hitCount` 与命中的多重集不因热度改变；`--limit` 截断照旧可见
+ *              （truncated + hitCount 全量），提高 limit 就能取到低热度的命中；
+ *   （热度条二·性能）3.8 MB 的日志只读了**尾部一个 chunk**（`heat.log.bytesRead` 远小于文件字节数）；
+ *   （热度条二·响亮）日志坏一行 ⇒ `search` **非 0 退出 + 点名**，且**一条命中都不打印**；
+ *   （热度条二·零热度）本机没有日志 ⇒ 既有行为**逐字不变**（`heat.applied=false` / `reason=no-log`）。
+ *
+ * ## 判别力（实测报文见本批交付说明；可重复执行的那一版在 `tests/search-heat.test.js` 的 E 节）
+ *   · `src/item-index.js` 里把 `orderByHeat`（把它的第一个实参换成 `raw`） 换成 `raw`（= 去掉热度项）⇒ 本段
+ *     「顺序真的变了」那条 **必红**；还原后 SHA-256 相同、复绿；
+ *   · 合并上限改成 1.0 ⇒ 「位移比例 ≤ 10%」必红（实测 39/39 = 1.0000 vs 0.10）；
+ *   · AI 权重改成与人相同 ⇒ 「两序不同」必红（实测两种顺序完全一样）。
+ *
+ * ## 摆放与两条约定
+ *   · 接在**既有最后一段静态判据之后、`/* ---------------- 清理 ---------------- *\/` 之前**新起一节；
+ *     本段自带 `finally` 收尾、自删全部探针项目 ⇒ **不需要**动末尾的清理段。
+ *   · 探针项目一律 `it-probe-heat2-` 前缀（文件顶部 `sweepStaleProbes()` 的前缀表已覆盖 `it-probe-`
+ *     ⇒ 被中断留下的残留下次跑链会被自动清掉）。
+ *   · 项目根**不自己拼**：从 `cli/core.js` 的 `PROJECTS_DIR` 取（唯一推导处，且随
+ *     `AI_MINDMAP_PROJECTS_DIR` 走 ⇒ 本段在沙箱里也能整段复跑；MCP 那一拍也靠 env 继承）。
+ *   · ⚠️ 本段**只增断言**：`scripts/doc-facts.js` 按 `/^\s*check\(/gm` 静态数集成断言数、
+ *     与 `docs/VERIFY.md` 对账（G6）⇒ 贴进来之后要跑一次 `npm run facts:write`。
+ * ⚠️ 段内**不要**写成"行内斜杠紧跟圈号"的样子（G9 会把那当判定标记计数，见文件头）。
+ * ========================================================================== */
+{
+  const heatLib = require(path.join(ROOT, 'src', 'heat.js'));       // 三条上限 / 位移上界：唯一一处
+  const s2core = require(path.join(ROOT, 'cli', 'core.js'));        // PROJECTS_DIR：项目根的唯一推导处
+  const MCP_SRV = path.join(ROOT, 'scripts', 'mcp-server.js');      // 判据③走**真 stdio**（见文件头）
+  const S2TAG = Date.now().toString(36);
+  const S2P = 'it-probe-heat2-a-' + S2TAG;      // 主探针：封顶 / 取舍 / 同源 / 响亮
+  const S2H = 'it-probe-heat2-h-' + S2TAG;      // 人热
+  const S2A = 'it-probe-heat2-i-' + S2TAG;      // AI 热
+  const S2B = 'it-probe-heat2-b-' + S2TAG;      // 性能：大日志（窗口外前缀先落，再记窗口内事件）
+  const S2ALL = [S2P, S2H, S2A, S2B];
+  const S2KW = '热度条关键词';
+  const s2dir = (name) => path.join(s2core.PROJECTS_DIR, name);
+  const s2json = (out) => { try { return JSON.parse(String(out).trim()); } catch (e) { return null; } };
+  const s2ids = (j) => ((j || {}).hits || []).map((h) => h.nodeId + (h.itemId ? '#' + h.itemId : ''));
+  /** 位移：a = 基线顺序、b = 加热度后的顺序 ⇒ 某个命中最多挪了几个位置 */
+  const s2moved = (a, b) => {
+    const pos = new Map((b || []).map((k, i) => [k, i]));
+    let m = 0;
+    (a || []).forEach((k, i) => { const j = pos.get(k); if (j !== undefined) m = Math.max(m, Math.abs(i - j)); });
+    return m;
+  };
+  /** 直接写盘造项目：root 下 count 个**同关键词**节点（命中顺序 = DFS 序，位移才有确定方向） */
+  const s2mk = (name, count) => {
+    const children = [];
+    for (let i = 1; i <= count; i++) children.push({ id: 'nd-' + i, topic: S2KW + ' 第 ' + i + ' 个', children: [] });
+    fs.mkdirSync(s2dir(name), { recursive: true });
+    fs.writeFileSync(path.join(s2dir(name), name + '.json'), JSON.stringify({
+      meta: { name: name, author: '', version: '0.18.0', formatVersion: 2 },
+      format: 'node_tree',
+      data: { id: 'root', topic: 'root', expanded: true, children: children }
+    }), 'utf8');
+  };
+  const s2search = (name, extra) => s2json(run(['search', name, S2KW, '--json'].concat(extra || [])).out);
+  const s2visit = (name, node, ch, times) => {
+    for (let i = 0; i < (times || 1); i++) run(['visit', name, node, '--channel', ch]);
+  };
+
+  try {
+    s2mk(S2P, 40);
+    s2mk(S2H, 100);
+    s2mk(S2A, 100);
+    s2mk(S2B, 40);
+
+    /* ---- （零热度）本机没有日志 ⇒ 既有行为逐字不变，且如实说"没采到"（不是"热度为 0"） ---- */
+    const s2base = s2search(S2P);
+    check('热度条二：本机没有访问日志 ⇒ `search` 顺序 = 既有 DFS 序（既有消费者逐字不变），'
+      + '并如实给 `heat.applied=false` / `reason=no-log`（不静默当"热度为 0"）',
+      !!s2base && s2ids(s2base).join(' ') === Array.from({ length: 40 }, (x, i) => 'nd-' + (i + 1)).join(' ')
+        && s2base.heat.applied === false && s2base.heat.reason === 'no-log'
+        && s2base.heat.weights.merged <= 0.10,
+      'applied=' + ((s2base || {}).heat || {}).applied + ' ｜ reason=' + ((s2base || {}).heat || {}).reason
+        + ' ｜ 前三个命中=' + s2ids(s2base).slice(0, 3).join(','));
+
+    /* ---- （封顶）把最末一个节点的热度拉满 ⇒ 顺序真的变了，而位移 ≤ 封顶比例 ---- */
+    s2visit(S2P, 'nd-40', 'human-detail', 3);
+    const s2hot = s2search(S2P);
+    const s2mv = s2moved(s2ids(s2base), s2ids(s2hot));
+    check('热度条二·封顶：热度拉满 ⇒ 顺序**真的变了**，而位移不超过封顶比例（两条口径都钉）',
+      !!s2hot && s2mv >= 1 && s2mv <= heatLib.maxJump(40)
+        && s2mv / 39 <= 0.10 && s2hot.heat.applied === true && s2hot.heat.hitNodes === 1,
+      '位移=' + s2mv + ' 位置（上界 maxJump(40)=' + heatLib.maxJump(40) + '）｜比例='
+        + (s2mv / 39).toFixed(4) + ' ≤ 0.10 ｜ nd-40 位置 '
+        + s2ids(s2base).indexOf('nd-40') + ' → ' + s2ids(s2hot).indexOf('nd-40')
+        + ' ｜ heat=' + JSON.stringify(s2hot && s2hot.heat && s2hot.heat.weights));
+
+    /* ---- （取舍）热度只排序：命中集合与 hitCount 不变；--limit 截断照旧、提高就能取到低热度命中 ---- */
+    const s2one = s2search(S2P, ['--limit', '1']);
+    const s2all = s2search(S2P, ['--limit', '40']);
+    check('热度条二·取舍：热度只排序 —— 命中多重集与 `hitCount` 不变、零热度命中照样在；'
+      + '`--limit` 截断可见（截断就是取前缀）、提高 limit 就能取到它们（可检索性没被挤掉）',
+      !!s2one && !!s2all && s2hot.hitCount === s2base.hitCount
+        && [...s2ids(s2hot)].sort().join(' ') === [...s2ids(s2base)].sort().join(' ')
+        && s2one.hits.length === 1 && s2one.truncated === true && s2one.hitCount === 40
+        && s2ids(s2one).join(' ') === s2ids(s2hot).slice(0, 1).join(' ')
+        && s2ids(s2all).indexOf('nd-1') >= 0 && s2ids(s2all).indexOf('nd-39') >= 0,
+      'hitCount ' + s2base.hitCount + '→' + s2hot.hitCount + ' ｜ --limit 1 返回 '
+        + s2ids(s2one).join(',') + '（拉满的那条还没到榜首=' + (s2ids(s2one)[0] !== 'nd-40')
+        + ' —— n=40 时位移上界只有 ' + heatLib.maxJump(40) + ' 个位置，封顶就是这个意思）'
+        + ' ｜ 全量里最低热度的 nd-1 仍在=' + (s2ids(s2all).indexOf('nd-1') >= 0));
+
+    /* ---- （两条都真进且权重不同）同一节点：人热 AI 冷 vs 人冷 AI 热 ⇒ 顺序不同 ---- */
+    s2visit(S2H, 'nd-100', 'human-detail', 1);
+    s2visit(S2A, 'nd-100', 'ai-get', 1);
+    const s2humanHot = s2ids(s2search(S2H));
+    const s2aiHot = s2ids(s2search(S2A));
+    const s2mvH = s2moved(Array.from({ length: 100 }, (x, i) => 'nd-' + (i + 1)), s2humanHot);
+    const s2mvA = s2moved(Array.from({ length: 100 }, (x, i) => 'nd-' + (i + 1)), s2aiHot);
+    check('热度条二·两条：人 / AI 两条都真进排序，且**权重不同**（同一位置同一节点，'
+      + '人热 ⇒ 挪得更远；两条给出的顺序**不同**）',
+      s2humanHot.join(' ') !== s2aiHot.join(' ') && s2mvH > s2mvA && s2mvH >= 1
+        && s2mvH <= heatLib.maxJump(100) && s2mvA <= heatLib.maxJump(100),
+      '人热位移=' + s2mvH + ' ｜ AI 热位移=' + s2mvA + ' ｜ 两序不同='
+        + (s2humanHot.join(' ') !== s2aiHot.join(' ')) + ' ｜ nd-100 落点：人热 '
+        + s2humanHot.indexOf('nd-100') + ' / AI 热 ' + s2aiHot.indexOf('nd-100'));
+
+    /* ---- （同源）MCP 的 search_nodes（真 stdio 一拍）与 CLI 的 search 对同一份数据逐条同序 ---- */
+    const s2reqs = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'search_nodes', arguments: { project: S2P, keyword: S2KW } } }
+    ];
+    const s2sp = spawnSync(process.execPath, [MCP_SRV], {
+      cwd: ROOT, encoding: 'utf8', timeout: 30000,
+      input: s2reqs.map((x) => JSON.stringify(x)).join('\n') + '\n'
+    });
+    const s2replies = String(s2sp.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+      try { return JSON.parse(l); } catch (e) { return null; }
+    });
+    const s2mcpReply = s2replies.filter((x) => x && x.id === 2)[0] || null;
+    const s2mcpText = s2mcpReply && s2mcpReply.result && s2mcpReply.result.content
+      && s2mcpReply.result.content[0] && s2mcpReply.result.content[0].text;
+    const s2viaMcp = s2json(s2mcpText);
+    check('热度条二·同源：MCP `search_nodes`（真 stdio）与 CLI `search --json` 对**同一份数据**'
+      + '命中**逐条同序**，hitCount / weights 也一致（MCP 侧一行打分逻辑都没有）',
+      !!s2viaMcp && !!s2hot && s2ids(s2viaMcp).join(' ') === s2ids(s2hot).join(' ')
+        && s2viaMcp.hitCount === s2hot.hitCount && s2viaMcp.heat.applied === true
+        && JSON.stringify(s2viaMcp.heat.weights) === JSON.stringify(s2hot.heat.weights),
+      'MCP 前三个=' + s2ids(s2viaMcp).slice(0, 3).join(',') + ' ｜ CLI 前三个=' + s2ids(s2hot).slice(0, 3).join(',')
+        + ' ｜ 逐条同序=' + (s2ids(s2viaMcp).join(' ') === s2ids(s2hot).join(' '))
+        + ' ｜ weights=' + JSON.stringify(s2viaMcp && s2viaMcp.heat && s2viaMcp.heat.weights));
+
+    /* ---- （性能）3.8 MB 的日志：只读尾部一个 chunk，且窄读与全量读给出同一个热度 ----
+     * ⚠️ 顺序要紧：**先落窗口外的大前缀、再记窗口内的事件** —— 反过来（先记新的、再塞旧的）
+     *    会让日志时间倒流，读方会**响亮报错**（那是 F1 的设计，不是本段要测的东西）。 */
+    const s2old = heatLib.serializeEvent(heatLib.buildEvent({
+      node: 'nd-1', ch: 'ai-read-view', at: new Date(Date.now() - 40 * heatLib.DAY_MS).toISOString(), by: 'cli-integration'
+    }));
+    fs.appendFileSync(path.join(s2dir(S2B), heatLib.FILE_NAME), s2old.repeat(40000), 'utf8');
+    s2visit(S2B, 'nd-40', 'human-detail', 3);
+    const s2big = s2search(S2B);
+    const s2fileBytes = fs.statSync(path.join(s2dir(S2B), heatLib.FILE_NAME)).size;
+    check('热度条二·性能：大日志（窗口外前缀 ~3.8 MB）⇒ `search` 只读了**尾部一个 chunk**'
+      + '（bytesRead ≪ 文件字节数、windowComplete=false），而排序与全量读同口径',
+      !!s2big && s2big.heat.log.fileBytes > 3 * 1024 * 1024 && s2big.heat.log.windowComplete === false
+        && s2big.heat.log.bytesRead < s2big.heat.log.fileBytes / 8 && s2big.heat.applied === true
+        && s2big.heat.rankedNodes === 1,
+      '读 ' + (s2big && s2big.heat && s2big.heat.log && s2big.heat.log.bytesRead) + ' B / 文件 '
+        + (s2big && s2big.heat && s2big.heat.log && s2big.heat.log.fileBytes) + ' B（实际 '
+        + s2fileBytes + ' B）｜windowComplete=' + (s2big && s2big.heat && s2big.heat.log && s2big.heat.log.windowComplete));
+
+    /* ---- （响亮）日志坏一行 ⇒ search 非 0 退出 + 点名，且一条命中都不打印 ---- */
+    fs.appendFileSync(path.join(s2dir(S2P), heatLib.FILE_NAME), '{"v":1,"at":"懒得写了"\n', 'utf8');
+    const s2bad = run(['search', S2P, S2KW]);
+    check('热度条二·响亮：日志里有一行读不出来 ⇒ `search` **非 0 退出** + 点名（字节偏移 + 原文），'
+      + '且**一条命中都不打印**（宁可失败，也不给一份"看起来正常"的检索结果）',
+      s2bad.code !== 0 && s2bad.out.indexOf('坏行') >= 0 && s2bad.out.indexOf('懒得写了') >= 0
+        && s2bad.out.indexOf('不等于') >= 0
+        && s2bad.out.split('\n').filter((l) => /^\s*nd-\d/.test(l)).length === 0,
+      'exit=' + s2bad.code + ' ｜ ' + s2bad.out.trim().split('\n').slice(0, 2).join(' ').slice(0, 130));
+
+    /* ---- （逃生门）坏日志 + `--no-heat` ⇒ 先拿到结果；而**默认档照旧响亮**（这一对就是判别力） ----
+     * 用户拍板：热度是**旁路**（日志可随时删），旁路坏掉不该掐死主干的读路径 ⇒ 给一条**显式**退路；
+     * 但**默认不许变成静默降级**（那会假装正常）⇒ 下面三条合起来才是那条判决：
+     *   · 不带 `--no-heat` ⇒ exit≠0 + 点名（谁把默认改软，第一条必红）；
+     *   · 带 `--no-heat` ⇒ exit 0 + 有命中；
+     *   · 它的那一档与"从来没有过热度的项目"**逐字节相同**。 */
+    const S2N = 'it-probe-heat2-n-' + S2TAG;
+    S2ALL.push(S2N);
+    s2mk(S2N, 40);
+    s2visit(S2N, 'nd-40', 'human-detail', 2);
+    const s2nLog = path.join(s2dir(S2N), heatLib.FILE_NAME);
+    fs.appendFileSync(s2nLog, '{"v":1,"at":"懒得写了"\n', 'utf8');
+    const s2eDefault = run(['search', S2N, S2KW]);
+    const s2eEsc = run(['search', S2N, S2KW, '--no-heat']);
+    const s2eEscJson = s2json(run(['search', S2N, S2KW, '--no-heat', '--json']).out);
+    check('热度条二·逃生门（默认不许变软）：坏日志 + **不带** `--no-heat` ⇒ 仍然 exit≠0 + 点名坏行，'
+      + '报错里**点名 `--no-heat`**（出口在报错里就能看见），且一条命中都不打印',
+      s2eDefault.code !== 0 && s2eDefault.out.indexOf('坏行') >= 0 && s2eDefault.out.indexOf('懒得写了') >= 0
+        && s2eDefault.out.indexOf('--no-heat') >= 0 && s2eDefault.out.indexOf('不等于') >= 0
+        && s2eDefault.out.split('\n').filter((l) => /^\s*nd-\d/.test(l)).length === 0,
+      'exit=' + s2eDefault.code + ' ｜ 点名出口=' + (s2eDefault.out.indexOf('--no-heat') >= 0)
+        + ' ｜ 末行：' + s2eDefault.out.trim().split('\n').slice(-1)[0].slice(0, 80));
+
+    check('热度条二·逃生门：坏日志 + `--no-heat` ⇒ **exit 0 且有 40 条命中**（顺序回到零热度档），'
+      + '`--json` 的 `heat.reason` 如实说"被 --no-heat 显式关闭"、`log=null`（它真的没读盘）',
+      s2eEsc.code === 0 && !!s2eEscJson && s2ids(s2eEscJson).length === 40
+        && s2ids(s2eEscJson).join(' ') === Array.from({ length: 40 }, (x, i) => 'nd-' + (i + 1)).join(' ')
+        && s2eEscJson.heat.applied === false && s2eEscJson.heat.reason === '被 --no-heat 显式关闭'
+        && s2eEscJson.heat.log === null && s2eEscJson.hitCount === 40,
+      'exit=' + s2eEsc.code + ' ｜ 命中 ' + s2ids(s2eEscJson).length + ' 条 ｜ reason='
+        + ((s2eEscJson || {}).heat || {}).reason);
+
+    fs.rmSync(s2nLog, { force: true });                      // 旁路整份删掉 = "从来没有过热度的项目"
+    const s2eZero = run(['search', S2N, S2KW]);
+    const s2eZeroJson = s2json(run(['search', S2N, S2KW, '--json']).out);
+    check('热度条二·逃生门：`--no-heat` 那一档与"零热度档"**逐字节相同**（文本档 + 命中数组 + hitCount + 预算）'
+      + '—— 逃生门只是跳过热度，不改检索语义',
+      s2eZero.code === 0 && s2eEsc.out === s2eZero.out
+        && !!s2eZeroJson && JSON.stringify(s2eEscJson.hits) === JSON.stringify(s2eZeroJson.hits)
+        && s2eEscJson.hitCount === s2eZeroJson.hitCount
+        && JSON.stringify(s2eEscJson.budget) === JSON.stringify(s2eZeroJson.budget)
+        && s2eZeroJson.heat.reason === 'no-log',
+      '文本档相同=' + (s2eEsc.out === s2eZero.out) + '（' + s2eEsc.out.length + ' B）｜零热度档 reason='
+        + ((s2eZeroJson || {}).heat || {}).reason);
+
+    /* ---- （MCP 逃生门）把 `--no-heat` 通到 MCP：报错里点名的出路，必须是**收报错的人真能用的** ----
+     * 走 MCP 的调用方（AI）看不见命令行：它只会收到一条 isError 文本。CLI 报错里点名了
+     * "加 `--no-heat` 先检索"，若 MCP 传不进这个开关，那条出路就是**指不到东西的死指针** ✗。
+     * 三条一起钉：① 用得上（真 stdio，不是 isError 且有命中）；② 默认没变软（不给参数仍 isError +
+     * 把出路带回）；③ 同源且只多这一个参数（MCP 侧不复制任何热度取值）。 */
+    const S2M = 'it-probe-heat2-m-' + S2TAG;
+    S2ALL.push(S2M);
+    s2mk(S2M, 40);
+    s2visit(S2M, 'nd-40', 'human-detail', 2);
+    fs.appendFileSync(path.join(s2dir(S2M), heatLib.FILE_NAME), '{"v":1,"at":"懒得写了"\n', 'utf8');
+    const s2mReqs = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'search_nodes', arguments: { project: S2M, keyword: S2KW, no_heat: true } } },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'search_nodes', arguments: { project: S2M, keyword: S2KW } } },
+      { jsonrpc: '2.0', id: 4, method: 'tools/list' }
+    ];
+    const s2mSp = spawnSync(process.execPath, [MCP_SRV], {
+      cwd: ROOT, encoding: 'utf8', timeout: 30000,
+      input: s2mReqs.map((x) => JSON.stringify(x)).join('\n') + '\n'
+    });
+    const s2mReplies = String(s2mSp.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+      try { return JSON.parse(l); } catch (e) { return null; }
+    });
+    const s2mById = (id) => s2mReplies.filter((x) => x && x.id === id)[0] || null;
+    const s2mTextOf = (rep) => (rep && rep.result && rep.result.content && rep.result.content[0]
+      && rep.result.content[0].text) || '';
+    const s2mEsc = s2json(s2mTextOf(s2mById(2)));
+    const s2mDef = s2mById(3);
+    const s2mTools = ((s2mById(4) || {}).result || {}).tools || [];
+    const s2mSearch = s2mTools.filter((t) => t && t.name === 'search_nodes')[0] || null;
+    const s2mCli = s2json(run(['search', S2M, S2KW, '--no-heat', '--json']).out);
+
+    check('热度条二·MCP 逃生门①：坏日志 + `no_heat:true`（**真 stdio**）⇒ 不是 isError、拿到 40 条命中'
+      + '（顺序=零热度档），且与 CLI `--no-heat` 的命中**逐字相同**（同一个开关、同一处排序实现）',
+      !!s2mEsc && s2mById(2).result.isError !== true && s2ids(s2mEsc).length === 40
+        && s2ids(s2mEsc).join(' ') === Array.from({ length: 40 }, (x, i) => 'nd-' + (i + 1)).join(' ')
+        && s2mEsc.heat.reason === '被 --no-heat 显式关闭'
+        && !!s2mCli && JSON.stringify(s2mEsc.hits) === JSON.stringify(s2mCli.hits)
+        && s2mEsc.hitCount === s2mCli.hitCount,
+      'isError=' + (s2mById(2) && s2mById(2).result && s2mById(2).result.isError)
+        + ' ｜ MCP 命中 ' + s2ids(s2mEsc).length + ' 条 / CLI ' + s2ids(s2mCli).length + ' 条 ｜ 逐字相同='
+        + (JSON.stringify(s2mEsc && s2mEsc.hits) === JSON.stringify(s2mCli && s2mCli.hits)));
+
+    check('热度条二·MCP 逃生门②（默认不许变软）：坏日志 + MCP **不给** `no_heat` ⇒ 仍然 isError，'
+      + '并把出路（`--no-heat`）随报错带回给调用方',
+      !!s2mDef && s2mDef.result && s2mDef.result.isError === true
+        && s2mTextOf(s2mDef).indexOf('坏行') >= 0 && s2mTextOf(s2mDef).indexOf('--no-heat') >= 0,
+      'isError=' + (s2mDef && s2mDef.result && s2mDef.result.isError) + ' ｜ 出路带回='
+        + (s2mTextOf(s2mDef).indexOf('--no-heat') >= 0) + ' ｜ 末行：'
+        + s2mTextOf(s2mDef).trim().split('\n').slice(-1)[0].slice(0, 70));
+
+    check('热度条二·MCP 逃生门③（结构）：只是给 `search_nodes` 加了**这一个**布尔参数 —— 没有新增工具、'
+      + '`no_heat` 不出现在别的工具上、MCP 侧也不抄任何热度取值（三串数字仍只在 src/heat.js）',
+      !!s2mSearch && s2mSearch.inputSchema.properties.no_heat
+        && s2mSearch.inputSchema.properties.no_heat.type === 'boolean'
+        && s2mSearch.inputSchema.properties.no_heat.description.indexOf('--no-heat') >= 0
+        && s2mTools.filter((t) => t && t.inputSchema && t.inputSchema.properties
+          && t.inputSchema.properties.no_heat).length === 1
+        && s2mTools.map((t) => t.name).filter((n) => n === 'search_nodes').length === 1
+        && [String(heatLib.SEARCH_RANK.human), String(heatLib.SEARCH_RANK.ai), String(heatLib.SEARCH_RANK.merged),
+          'byNode', 'maxJump'].every((x) => fs.readFileSync(MCP_SRV, 'utf8').indexOf(x) < 0),
+      '工具数=' + s2mTools.length + ' ｜ 带 no_heat 的工具数='
+        + s2mTools.filter((t) => t && t.inputSchema && t.inputSchema.properties
+          && t.inputSchema.properties.no_heat).length
+        + ' ｜ search_nodes.no_heat 类型='
+        + (((((s2mSearch || {}).inputSchema || {}).properties || {}).no_heat) || {}).type);
+  } finally {
+    S2ALL.forEach((name) => {
+      try { fs.rmSync(s2dir(name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+    });
+  }
+}
+
 /* ---------------- 清理 ---------------- */
 run(['remove', PROJ2, 'root']);
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ6), { recursive: true, force: true }); } catch (e) {}
