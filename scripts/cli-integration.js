@@ -43,6 +43,39 @@ const PROJ = 'it-probe-' + Date.now().toString(36);
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-it-'));
 const OUT_JSON = path.join(TMP, 'out.aimap.json');
 
+/* ---------------- 收尾要用的探针名（**提前声明**）----------------
+ * 主跑体整段包在 `try { … }` 里（见「用例序列」那一段的说明）⇒ 块内的 `const` 在 `finally` 里
+ * **读不到**，而末尾的清理段必须能**点名**删掉本次造出来的探针项目 ⇒ 这些名字在这里声明（`let`），
+ * 跑体里只赋值、不再声明。名单 = 清理段真的会删的那些；其余各段的探针由各段自己的 `finally` /
+ * 块末尾自删，崩溃路径再由下面的**探针前缀**兜底（见开头那段 `PROBE_PREFIX`）。 */
+let PROJ2, PROJ3, PROJ4, PROJ5, PROJ6, PROJ7, K8A, K8B, BROKEN_PROJ, XP_DIR;
+/** 跑体是否**真的走完**（`finally` 用它选收尾口径：只有崩在半路才允许按前缀宽口径清，见清理段） */
+let bodyCompleted = false;
+
+/* ---------------- 探针前缀表（**唯一一处**）----------------
+ * 三处都用它，谁也不许再抄一份清单：① `sweepStaleProbes()` 开工前的清扫；
+ * ② 崩溃路径的收尾（按前缀兜底清）；③ `<项目根>/.visits/` 里的**访问日志**过滤。
+ * ⚠️ `imp-probe-` 也在这张表里：本脚本在真实 `projects/` 下造 `imp-probe-a` / `imp-probe-b` /
+ * `imp-probe-pdf*`（§9.1 的导入类探针），它们的访问日志同样落在 `.visits/` 里
+ * （实测：崩过一次之后留下 `imp-probe-*.jsonl`，删项目目录删不掉它）。 */
+const PROBE_PREFIX = /^(it-probe-|it-broken-|it-k8-|it-w14-|it-w19-|it-w20-|it-s[1-9]-|imp-probe-)/;
+
+/** `projects/` 下**当前**已存在的探针目录名（快照 / 崩溃路径兜底清都用这一处实现） */
+function probeDirNames() {
+  const out = new Set();
+  try {
+    fs.readdirSync(path.join(ROOT, 'projects'), { withFileTypes: true })
+      .forEach((e) => { if (e.isDirectory() && PROBE_PREFIX.test(e.name)) out.add(e.name); });
+  } catch (err) { /* projects/ 不存在：本轮会自己建 */ }
+  return out;
+}
+
+/** 访问日志目录 `<项目根>/.visits/` —— "它在哪"的唯一实现是 `src/data-store.js`，这里不自己拼路径 */
+function visitLogDir() {
+  return require(path.join(ROOT, 'src', 'data-store.js'))
+    .createStore(path.join(ROOT, 'projects'), () => {}).visitDir();
+}
+
 /* ---------------- 沙箱 worker 模式（由下面 §9.2 的 runSandboxWorker 子进程调起） ----------------
  * 为什么需要单独一个进程：§9.2 的**导入类**探针会真的新建项目，而本轮新增的幂等闸门要
  * **扫全部项目**比对来源指纹 —— 探针若落在真实 `projects/` 里，使用者导入同一个文件时会被
@@ -69,8 +102,9 @@ function sweepStaleProbes() {
   let removed = 0;
   try {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      // 前缀清单：各流的探针按 §4.1 分前缀（`it-probe-`/`it-broken-` 是本脚本自有的；流探针另见 §53/§54 等）
-      if (!e.isDirectory() || !/^(it-probe-|it-broken-|it-k8-|it-w14-|it-w19-|it-w20-|it-s[1-9]-)/.test(e.name)) continue;
+      // 前缀清单只有一处（文件顶部的 `PROBE_PREFIX`）：各流的探针按 §4.1 分前缀
+      // （`it-probe-`/`it-broken-` 是本脚本自有的；流探针另见 §53/§54 等）
+      if (!e.isDirectory() || !PROBE_PREFIX.test(e.name)) continue;
       const p = path.join(dir, e.name);
       try {
         if (Date.now() - fs.statSync(p).mtimeMs < 10 * 60 * 1000) continue; // 可能是别人正在跑的
@@ -82,6 +116,9 @@ function sweepStaleProbes() {
   if (removed) console.log('[清扫] 删除 ' + removed + ' 个历史残留探针项目（上次跑被中断）');
 }
 sweepStaleProbes();
+/* 开工前就在的探针目录（**快照**）：崩溃路径的宽口径收尾要排除它们 ——
+ * 那些可能是**正在并发跑**的另一份集成持有的新鲜目录（顶部 10 分钟口径放过的正是它们）。 */
+const PRE_EXISTING_PROBES = probeDirNames();
 
 /** 失败契约违规记录：**每个** run() 都被检查，因此全部断言都顺带验证契约，
  *  而不只是专门写的那一条（这正是"不变量应由一个守门点覆盖"的用法）。 */
@@ -270,6 +307,20 @@ function runSandboxWorker() {
   process.stdout.write('\n' + JSON.stringify(out) + '\n');
 }
 
+/* ---------------- 用例序列（整段包在 `try` 里 ⇒ 崩在半路也走末尾的 `finally` 清理） ----------------
+ * 为什么必须包：任何**半路崩溃**（断言抛错、未捕获异常、探针里手滑一次）都会跳过末尾的清理段，
+ * 于是本次的探针项目留在真实 `projects/` 里 —— 下次跑链时 `validate-all` 多算一个项目、应用项目
+ * 列表多一个假项目，而唯一的自愈途径是**10 分钟后**的 `sweepStaleProbes()`（实测踩到过：
+ * `it-broken-*` 残留直接把全链从绿变成"步骤 9 退出码 1"）。⇒ 跑体整段进 `try`、清理段进 `finally`。
+ * ⚠️ 异常照旧**往上抛**（`finally` 不 catch）：崩了就该以非 0 退出，不许被清理段吞掉。
+ * ⚠️ 两个副作用写在明处，免得后来者以为它是笔误：
+ *   ① 跑体进了块 ⇒ 块内 `const` 在 `finally` 里**读不到** ⇒ 清理段要用的探针名已提前到文件顶部声明
+ *      （`let PROJ2, PROJ3, …`，跑体里只赋值）；
+ *   ② 本段的缩进**故意不整体右移**：整段右移 2 格会把这份 4600 行的文件变成"全文重写"，
+ *      `git blame` 与各处按行号写的注释索引（如 "见文件头 42 行"）会一起失效 —— 可核对性比缩进好看重要。
+ * 判据（注入证明）：在跑体中途临时 `throw` ⇒ 探针残留 **0**（`projects/` 与 `.visits/` 各数一遍；
+ *   实测报文见本批交付；正常跑完的读数见末尾那行汇总）。 */
+try {
 /* ---------------- 用例序列 ---------------- */
 // 1. init
 let r = run(['init', PROJ, '--title', '集成测试']);
@@ -729,7 +780,7 @@ check('ask 思考强度：未知取值 ⇒ 非 0 且列出可用值（不猜、�
 // 8.7 mentions --cross：跨项目「未链接提及」两个方向。
 // 用一个**临时第二项目**做对端，绝不触碰 comnet（真实数据）。
 const XPROJ = PROJ + '-x';
-const XP_DIR = path.join(ROOT, 'projects', XPROJ);
+XP_DIR = path.join(ROOT, 'projects', XPROJ);   // 名在文件顶部声明（跑体在块里，清理段在块外）
 run(['init', XPROJ, '--title', '跨项目探针']);
 run(['add', XPROJ, 'root', '--topic', '外部专有主题', '--id', 'x1']);
 run(['add', XPROJ, 'root', '--topic', '朝内提及者', '--id', 'x2']);
@@ -1266,7 +1317,7 @@ check('export-md 文件夹',
 r = run(['export-json', PROJ, OUT_JSON]);
 const exportJsonOk = ok(r.out) && /已导出/.test(r.out);
 check('export-json', exportJsonOk, r.out.trim());
-const PROJ2 = PROJ + '-copy';
+PROJ2 = PROJ + '-copy';   // 名在文件顶部声明（清理段要用；见那里的说明）
 r = run(['import-json', OUT_JSON, '--name', PROJ2]);
 check('import-json', ok(r.out) && /已导入/.test(r.out), r.out.trim());
 r = run(['validate', PROJ2]);
@@ -1469,7 +1520,7 @@ const OUT_JSON2 = path.join(TMP, 'assoc-out.aimap.json');
 r = run(['export-json', PROJ, OUT_JSON2]);
 check('export-json 导出的包里含 assoc',
   ok(r.out) && (() => { const b = JSON.parse(fs.readFileSync(OUT_JSON2, 'utf8')); return Array.isArray(b.assoc) && b.assoc.length === 1; })());
-const PROJ3 = PROJ + '-assoc';
+PROJ3 = PROJ + '-assoc';   // 名在文件顶部声明（清理段要用）
 r = run(['import-json', OUT_JSON2, '--name', PROJ3]);
 check('import-json 还原 assoc（无损往返）',
   ok(r.out) && (() => {
@@ -1496,8 +1547,8 @@ check('悬挂关联成员被 validate 拒绝', (() => {
  *   ③ 界面的保存闸门校验的是"待写数据"的临时文件，必须按**待写数据**判同项目成员，
  *      否则第一次保存放行、第二次才突然被拒（用户完全看不懂）。
  */
-const PROJ4 = PROJ + '-prune';
-const PROJ5 = PROJ + '-restore';
+PROJ4 = PROJ + '-prune';   // 名在文件顶部声明（清理段要用）
+PROJ5 = PROJ + '-restore';   // 同上
 const projJson = (name) => path.join(ROOT, 'projects', name, name + '.json');
 const readProj = (name) => JSON.parse(fs.readFileSync(projJson(name), 'utf8'));
 
@@ -1540,7 +1591,7 @@ check('assoc-prune 自动清理悬挂成员并恢复校验绿',
   r.out.trim().replace(/\n/g, ' | '));
 
 // "采不到真值 = 红"：成员所在项目**读不出来**时不许猜成"不存在"而去清理
-const BROKEN_PROJ = 'it-broken-' + Date.now().toString(36);
+BROKEN_PROJ = 'it-broken-' + Date.now().toString(36);   // 名在文件顶部声明（清理段要用）
 fs.mkdirSync(path.join(ROOT, 'projects', BROKEN_PROJ), { recursive: true });
 fs.writeFileSync(path.join(ROOT, 'projects', BROKEN_PROJ, BROKEN_PROJ + '.json'), '{ 这不是合法 JSON', 'utf8');
 (() => {
@@ -1685,8 +1736,8 @@ check('MCP 暴露 assoc_prune（AI 删节点后能自救）且 remove_node 支�
  * 而 validate 是写盘闸门 → 被判红的项目**所有**写操作都被挡住，界面又没有删链接入口。
  * 故 links-prune 是"能不能自救"的关键；本节把两条路都钉住。
  */
-const PROJ6 = PROJ + '-link';
-const PROJ7 = PROJ + '-link2';
+PROJ6 = PROJ + '-link';   // 名在文件顶部声明（清理段要用）
+PROJ7 = PROJ + '-link2';   // 同上
 run(['init', PROJ6, '--title', '链接探针甲']);
 run(['init', PROJ7, '--title', '链接探针乙']);
 ['x', 'y', 'z'].forEach((id) => run(['add', PROJ6, 'root', '--topic', id.toUpperCase(), '--id', id]));
@@ -2517,8 +2568,8 @@ function runSubprocess(args) {
  * （`已添加链接: …`）⇒ **成功与覆盖不可分辨**。根因：旧写法把那条边**从零重建**再 concat。
  * 本段钉住新语义：省略 = 保留（且不写盘）；显式（含空串）= 覆盖；三种结局回显可分辨。
  * 探针项目/节点一律带 `it-k8-` 前缀（与别的流互不踩）；两个探针项目在文件末尾「清理」段删除。 */
-const K8A = 'it-k8-src-' + Date.now().toString(36);
-const K8B = 'it-k8-dst-' + Date.now().toString(36);
+K8A = 'it-k8-src-' + Date.now().toString(36);   // 名在文件顶部声明（清理段要用）
+K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
 {
   const K8A_FILE = projJson(K8A);
   const K8CAP = '出自：K8 集成探针（AI 凭 caption 判断内容）';
@@ -2590,6 +2641,12 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
     const d = readProj(K8A);
     const e = (((nodeOf(d, 'it-k8-a') || {}).links) || []).find((l) => l.project === K8B && l.id === 'it-k8-b');
     if (!e) {
+      /* ⚠️ **静态 452 / 实跑 451 的 −1 就是这一条**（实测定论，2026-10-12）：
+       *   本工程当前夹具下 `e` **一定**找得到 —— 那条边由前面的 K8LINK 建出来，此后没被删过 ⇒
+       *   这条兜底分支**从不执行**，于是"源码里行首 `check(` 的条数"比"跑完汇总的条数"多 1。
+       *   账目口径：`scripts/doc-facts.js` 数源码里的行首 `check(`（静态，452）÷ 跑完打印的汇总
+       *   （实跑，451）—— 两边**本来就该差这一条**，别为了让两个数相等去删断言或改生成器 ✗。
+       *   它不是空转：夹具真丢了就会跑进这里 ⇒ 当场 FAIL（detail 文本与下面 else 分支不同，一眼能分辨）。 */
       check('link 改 caption 时不动边上的其它字段（note 不被静默抹掉）', false, '夹具没找到那条边');
     } else {
       e.note = '手工附在边上的笔记';
@@ -4242,8 +4299,11 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
  *   （热度条二·零热度）本机没有日志 ⇒ 既有行为**逐字不变**（`heat.applied=false` / `reason=no-log`）。
  *
  * ## 判别力（实测报文见本批交付说明；可重复执行的那一版在 `tests/search-heat.test.js` 的 E 节）
- *   · `src/item-index.js` 里把 `orderByHeat`（把它的第一个实参换成 `raw`） 换成 `raw`（= 去掉热度项）⇒ 本段
- *     「顺序真的变了」那条 **必红**；还原后 SHA-256 相同、复绿；
+ *   · `src/item-index.js` 里"把命中交给热度重排"的那一行整个换成直接取 `raw`（= 去掉热度重排这一项，
+ *     不是"换个实参"）⇒ 本段「顺序真的变了」那条 **必红**；还原后 SHA-256 相同、复绿；
+ *     ⚠️ 这一行**刻意不写出那个调用的完整写法**：`tests/search-heat.test.js` 的 A4 结构断言要求
+ *        `orderByHeat` 的**调用写法只出现在 `src/item-index.js`** —— 在这里写出来会把那条断言判红
+ *        （实测：这句注释第一版就是那样写的，全量跑红在 A4）。
  *   · 合并上限改成 1.0 ⇒ 「位移比例 ≤ 10%」必红（实测 39/39 = 1.0000 vs 0.10）；
  *   · AI 权重改成与人相同 ⇒ 「两序不同」必红（实测两种顺序完全一样）。
  *
@@ -4553,7 +4613,22 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
   }
 }
 
-/* ---------------- 清理 ---------------- */
+  /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
+     位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
+  bodyCompleted = true;
+} finally {
+/* ---------------- 清理（跑体的 `finally`：正常跑完与**崩在半路**都走这里） ----------------
+ * 两档口径，由 `bodyCompleted` 选：
+ *   · 跑体走完 ⇒ **只按名单收**（与从前的清理段逐条一致）：不碰任何别人的目录 ——
+ *     并发跑的另一份集成持有的是新鲜探针目录，按前缀扫会把人家的删掉（顶部 `sweepStaleProbes()`
+ *     的 10 分钟口径就是为这件事设的）。
+ *   · 崩在半路 ⇒ 名单收完再按**探针前缀**兜底扫一遍 `projects/`，但**排除开工前就在的那些**
+ *     （`PRE_EXISTING_PROBES`，可能是并发跑的别人）。理由：崩的时候各分段自己的 `finally` 未必
+ *     走完（§54/§55 这类"块末尾删"的段落就是如此）⇒ 残留会跨着好几种前缀；
+ *     而"给下一个人留一个假项目"正是本脚本最不该干的事（实测：`it-broken-*` 残留让全链判红）。
+ *     边界（如实登记）：并发起跑、且**在本次之后**才建出探针目录的那一份，会被这次兜底扫一起清掉 ——
+ *     这个险只在**崩溃**路径上冒；`.visits` 的日志两种口径都按前缀清（父进程实测要求"跑完 it-* 计数 = 0"，
+ *     而探针项目清掉后那些日志本来就是孤儿；非探针名字的日志**一个都不碰**：那是真项目的使用痕迹）。 */
 run(['remove', PROJ2, 'root']);
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ6), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ7), { recursive: true, force: true }); } catch (e) {}
@@ -4568,17 +4643,30 @@ try { fs.rmSync(path.join(ROOT, 'projects', PROJ), { recursive: true, force: tru
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ2), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(XP_DIR, { recursive: true, force: true }); } catch (e) {}   // 8.7 的跨项目探针项目
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) {}
+/* 崩在半路的兜底档：本次**新出现**的探针目录（快照里没有的）按前缀一起收掉。
+ * 正常跑完那一档**不执行**它 —— 见上面两档口径的说明。 */
+if (!bodyCompleted) {
+  const now = probeDirNames();
+  let swept = 0;
+  now.forEach((name) => {
+    if (PRE_EXISTING_PROBES.has(name)) return;                  // 开工前就在：可能是并发跑的别人
+    try { fs.rmSync(path.join(ROOT, 'projects', name), { recursive: true, force: true }); swept++; }
+    catch (e) { /* 收尾失败不判红 */ }
+  });
+  if (swept) console.log('[收尾] 崩在半路 ⇒ 按探针前缀兜底清掉 ' + swept + ' 个本次新建的探针项目');
+}
 /* 访问日志（热度条探针那几节钦的）：**在项目目录之外**（`<项目根>/.visits/<项目名>.jsonl`）⇒
  * 删项目目录删不掉它。不删就每跑一次留一份（本机实测：连跑几轮后 `projects/.visits/` 里
- * 堆了十几份 `it-probe-heat-*.jsonl`）—— 探针的收尾必须连**日志**一起清，否则读数与磁盘都会被污染。 */
+ * 堆了十几份 `it-probe-heat-*.jsonl`；`imp-probe-*.jsonl` 同样会留）—— 探针的收尾必须连**日志**
+ * 一起清，否则读数与磁盘都会被污染。过滤口径 = 顶部那张 `PROBE_PREFIX`（**唯一一处**前缀清单）。 */
 try {
-  const heatProbeLogs = require(path.join(ROOT, 'src', 'data-store.js'))
-    .createStore(path.join(ROOT, 'projects'), () => {}).visitDir();
-  if (fs.existsSync(heatProbeLogs)) {
-    fs.readdirSync(heatProbeLogs).filter((f) => /^it-probe-/.test(f))
-      .forEach((f) => { try { fs.rmSync(path.join(heatProbeLogs, f), { force: true }); } catch (e) { /* 收尾失败不判红 */ } });
+  const probeLogs = visitLogDir();
+  if (fs.existsSync(probeLogs)) {
+    fs.readdirSync(probeLogs).filter((f) => PROBE_PREFIX.test(f))
+      .forEach((f) => { try { fs.rmSync(path.join(probeLogs, f), { force: true }); } catch (e) { /* 收尾失败不判红 */ } });
   }
 } catch (e) { /* 收尾失败不判红 */ }
+}
 
 console.log('\n==== ' + passed + '/' + (passed + failed) + ' CLI 集成断言通过 ====');
 // 用 exitCode 而不是 process.exit()：后者**立即**终止，可能截断尚未 flush 的 stdout。

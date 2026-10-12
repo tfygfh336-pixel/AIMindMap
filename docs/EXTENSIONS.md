@@ -36,6 +36,16 @@
 | **演进中** | 可用，但字段可能增补（不影响既有字段） | 树与资源：`backlinks`/`related`/`orphans`/`mentions`/`clone`/`add-root`/`expand-depth`/`theme-layout`/`link`/`unlink`/`links`/`links-prune`/`add-image`/`remove-image`/`add-file`/`remove-file`<br>导入导出：`import-md`/`import-project`/`import-dir`/`export-md`/`export-json`/`export-html`/`import-json`<br>事务（操作清单一次生效）：`apply`<br>条目层写原语（契约 `docs/ITEM-MODEL.md` §3）：`item-add`/`item-edit`/`item-remove`/`item-move`/`item-order`/`render-detail`、`migrate`（`migrate items` 子命令：v2→v3 条目层迁移）<br>条目层复校与体检：`recheck`/`health`<br>关联笔记：`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`<br>AI 问答：`ask`/`ask-apply`<br>界面协作：`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`<br>历史：`changes`/`changelog`<br>访问热度：`visit`/`heat` |
 | **内部** | 工程维护用，不保证兼容 | `docs-gen`/`release` |
 
+> **`clone` 的条目级边口径（v3，2026-10）**：仍列「**演进中**」—— 名称、既有参数与既有 JSON 面未变，
+> 只**新增**了开关 `--repoint-items` 与 `--json` 的 `itemEdges` 字段。口径三态：副本上的条目 **id 重新签发**
+> （`docs/ITEM-MODEL.md` §5.1 的全项目唯一），而副本上的条目级边（`links[].item`）**默认逐字仍指原物**
+> （**引用语义**：克隆不改边自己的意思；`--json` 的 `itemEdges.kept` 逐条点名"未被重指向"的边，
+> 文本档**仅当副本上真有这类边**时多一行 —— 没有 ⇒ 输出与从前逐字相同）。
+> `--repoint-items` 把它们改指**副本自己那份新条目**的**同序号**条目（**语义改变**：引用原物 →
+> 副本内部指涉；目标节点与条目**两端一起换** —— 只换 `item` 会立刻变成悬挂），
+> 对不上（目标在别的项目 / 目标节点不在被复制范围 / 那个节点里没有这条条目）⇒ **拒绝并点名**、
+> **绝不按序号猜**。判据：`tests/clone-item-links.test.js`（含"无这类边时输出逐字不变"与注入证明）。
+>
 > ⚠️ **本表必须覆盖 `cli/registry.js` 里的全部命令**（每条命令**恰好**落在某一级里）——
 > 门禁 G8 的第 ⑮ 条判定（`scripts/docs-registry-check.js` 的 `checkStabilityCoverage`）机械核对。
 >

@@ -39,7 +39,7 @@
 | `move` | move <项目> <id> <新父id> [--index n] |
 | `expand-depth` | expand-depth <项目> [--depth N] [--id 子树根id] |
 | `remove` | remove <项目> <id> [--clean-assoc] [--clean-links] |
-| `clone` | clone <项目> <源id> <新父id> [--deep] |
+| `clone` | clone <项目> <源id> <新父id> [--deep] [--repoint-items] [--json] |
 | `apply` | apply <项目> --ops-file ops.json [--dry-run] |
 | `item-add` | item-add <项目> <节点id> --md "Markdown" | --html "HTML" [--src 出处] [--tags a,b] [--type text|rich] [--after itemId | --before itemId] [--force] |
 | `item-edit` | item-edit <项目> <节点id> <itemId> [--md "Markdown" | --html "HTML"] [--src 出处 | --clear-src] [--tags a,b | --clear-tags] [--type text|rich] [--verified --how "怎么核的" | --clear-verified] |
@@ -230,10 +230,10 @@ node cli/mm-cli.js remove <项目> <id> [--clean-assoc] [--clean-links]
 
 ### clone
 
-复制节点到新父节点（--deep 含子树）
+复制节点到新父节点（--deep 含子树）。副本上的**条目 id 重新签发**（全项目唯一，ITEM-MODEL §5.1），而副本上的条目级边（`links[].item`）**默认逐字仍指原物**（引用语义，克隆不改它）——`--json` 的 `itemEdges.kept` 会把"未被重指向"的条目级边逐条点名（副本节点 / 边下标 / 目标 / 源条目 id，并标 `repointable`），文本档**仅当副本上真有这类边**时多一行（没有 ⇒ 输出与从前逐字相同）。`--repoint-items`：把它们改指**副本自己那份新条目**的**同序号**条目（**语义改变**：引用原物 → 副本内部指涉）；对不上（目标在别的项目 / 目标节点不在被复制范围 / 那个节点里没有这条条目）⇒ **拒绝并点名**，**绝不按序号猜**（猜错就是换了一条边，而回显还说成功）
 
 ```
-node cli/mm-cli.js clone <项目> <源id> <新父id> [--deep]
+node cli/mm-cli.js clone <项目> <源id> <新父id> [--deep] [--repoint-items] [--json]
 ```
 
 ### apply

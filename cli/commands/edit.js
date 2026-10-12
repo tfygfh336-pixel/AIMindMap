@@ -12,6 +12,7 @@ const markdown = require('../../src/markdown.js');
 const convert = require('../../src/convert.js');
 const assoc = require('../../src/assoc.js');
 const links = require('../../src/links.js');
+const relations = require('../../src/relations.js');   // 条目级边：`itemKey` / `targetHasItem` 的唯一实现
 const tree = require('../../src/tree-utils.js');
 const itemIndex = require('../../src/item-index.js');   // 全项目条目 id 集合（§5.1 唯一性口径，一处实现）
 const concurrency = require('../../src/concurrency.js');
@@ -263,8 +264,9 @@ function addUnder(ctx, parent) {
  *     而写盘闸门真的会拦（实测：`clone` 条目化节点 ⇒ `error: 校验失败: [n1] 重复条目 id: …`）。
  *     ⇒ 副本人每条条目**换新 id、其余字段逐字不动**；`detail` 是派生缓存、里面不含 id，
  *       故 `detail === renderDetail(items)` 这条不变量照样成立（探针里 `validate` 复绿）。
- *   · `links[].item` 指向**别人**的条目 id（跨节点），复制后仍然指向原物（原物还在，不是悬挂）；
- *     本层不做"子树内重指向"——那是另一档语义，未做（如实标注）。
+ *   · `links[].item` **不在这里动**：副本上的条目级边**逐字仍指原物**（引用语义，原物还在、不是悬挂）。
+ *     要改指"副本自己那份条目"是**另一档语义**（`--repoint-items`），由命令层显式做、对不上就拒绝
+ *     —— 口径与判据见下面「条目级边（`links[].item`）在克隆时的三态语义」那一段。
  *
  * @param {object} n 源节点
  * @param {(base:string)=>string} mint 新**节点** id 生成器（注入：命令与 op 两条路径策略不同）
@@ -340,6 +342,115 @@ function cloneItems(items, mintItem) {
     if (copy && typeof copy === 'object' && !Array.isArray(copy)) copy.id = mintItem(it.id);
     return copy;
   });
+}
+
+/* ============================================================================
+ * 条目级边（`links[].item`）在克隆时的**三态语义**
+ * ----------------------------------------------------------------------------
+ * 岔口在哪：副本上的条目 **id 是重新签发的**（全项目唯一，ITEM-MODEL §5.1），于是副本上那些
+ * 条目级边要回答一个问题 —— **它们该指哪一条条目？** 本工程的口径（`docs/EXTENSIONS.md` §1.2）：
+ *
+ *   ① 默认（不给 `--repoint-items`）⇒ **引用语义**：边**逐字仍指原物**，克隆**不改它**。
+ *      理由：`links[].item` 表达的是"与**那一条**有关"，那是**边自己的意思**，不等于"副本内部的指涉"；
+ *      静默改掉 = 改掉数据的意思，而回显还会说"已复制"（本工程最重的一类损害）。
+ *      ⚠️ 但"没被重指向"必须**看得见**：`--json` 的 `itemEdges.kept` 逐条点名（副本节点 / 边下标 /
+ *      目标 / 源条目 id），文本档**仅当副本上真有这类边**时多一行 —— 没有 ⇒ 输出与从前**逐字相同**
+ *      （不许给不含这类边的数据加噪音）。
+ *   ② `--repoint-items` ⇒ **显式**改指**副本自己那份新条目**的对应条目。对应关系 = **同序号**：
+ *      目标节点里那条条目的下标 k → 那个目标节点的**副本**里的第 k 条（`cloneItems` 保序 ⇒ 下标一一对应）。
+ *      ⚠️ 改的是**两端**：边上的 `id`（目标**节点**）也要一起换成**那个节点的副本 id** ——
+ *      只换 `item` 会立刻变成**悬挂**（新条目 id 挂在旧节点上，`validate` 判红；实测踩过）。
+ *      换完这条边就真的成了"副本内部指涉"（两端都在副本子树里）。这是**语义改变**
+ *      （引用原物 → 副本内部指涉），故回显明写"语义改变"、registry 的 desc 同步写明。
+ *   ③ 对不上 ⇒ **拒绝并点名**（目标在别的项目 / 目标节点不在被复制范围 / 那个节点里没有这条条目）：
+ *      `--repoint-items` 是"整条做成，或整条不做"，**不许按序号猜一个位置对齐上去** ——
+ *      猜错就是把边指到了**另一条**条目上，而回显看起来是成功的。
+ *
+ * 判据（可执行）：`tests/clone-item-links.test.js` 的 ①②③⑤ + 注入证明 ④。
+ * 边界（如实登记）：`apply` 的 clone op **只走默认档**（它的回显面是"逐条 op 回执"，本批不给它
+ *   条目级边的清单，也不支持 repoint）—— 改它要走同一个函数，别在那边另写一份。
+ * ========================================================================== */
+
+/** 源子树 ↔ 副本子树**逐节点配对**（同形同序：`cloneNode` 的 children 就是按下标递归复制的）。
+ *  ⚠️ `--deep` 不给时副本的 `children` 是**空的** ⇒ 只按**副本真的有的**那一份往下走
+ *  （拿源的下标去索引副本 = 越界取到 `undefined`，那会让"克隆一个没深拷的节点"直接崩在半路）。 */
+function pairSubtree(src, copy, out) {
+  out.push({ src: src, copy: copy });
+  (src.children || []).forEach((c, i) => {
+    const cc = copy.children[i];
+    if (cc) pairSubtree(c, cc, out);
+  });
+  return out;
+}
+
+/**
+ * 扫出副本上**全部条目级边**，并逐条算出"重指向会指到哪一条 / 为什么指不了"。
+ * **纯计算：一个字节都不改**（改不改由调用方定）—— 默认档只拿它出清单，
+ * `--repoint-items` 档拿 `unmatched` 决定"拒"还是"改"，两档的读数来自**同一次计算**。
+ *
+ * @param {Array} pairs `pairSubtree(源, 副本, [])` 的结果
+ * @param {string} project 本次项目名（条目级边的 `project` 与它不同 ⇒ 这条边没有副本可指）
+ * @returns {{edges:Array, unmatched:Array}} `edges[]` 每项
+ *   `{node, at, targetNode, item, target, link, toNode, to, ordinal, reason}`：
+ *   `node`/`at` = 副本上的**哪个节点、哪条边**（点名用）；`targetNode`/`item`/`target` = 它**现在**指的那一条；
+ *   `toNode`/`to` = 重指向后会变成的那一条（`null` = 对不上，`reason` 说明为什么）。
+ */
+function planItemEdges(pairs, project) {
+  const bySrcId = new Map();
+  pairs.forEach((p) => { if (!bySrcId.has(p.src.id)) bySrcId.set(p.src.id, p); });
+  const edges = [];
+  pairs.forEach((p) => {
+    (Array.isArray(p.copy.links) ? p.copy.links : []).forEach((l, i) => {
+      if (!l || typeof l !== 'object') return;
+      const item = relations.itemKey(l.item);         // 归一（`undefined`/`null`/`''` = 没有条目层）
+      if (!item) return;                              // 节点级边：三态语义与它无关，一个字节都不动
+      const e = {
+        node: p.copy.id,
+        at: 'links[' + i + ']',
+        targetNode: String(l.id),
+        item: item,
+        target: String(l.project) + '/' + String(l.id) + '#' + item,
+        link: l, toNode: null, to: null, ordinal: null, reason: ''
+      };
+      if (l.project !== project) {
+        e.reason = '目标是**别的项目**（' + l.project + '）—— 本次复制不可能造出它的副本';
+      } else if (!bySrcId.has(l.id)) {
+        e.reason = '目标节点 ' + l.id + ' 不在本次复制的子树里（不存在"副本自己那份条目"可指）';
+      } else {
+        const t = bySrcId.get(l.id);
+        // "目标节点里有没有这条条目" = `relations.targetHasItem`（条目级悬挂的**唯一判据**，一处实现）
+        const has = relations.targetHasItem(t.src, item);
+        if (!has.ok) {
+          e.reason = '目标节点 ' + l.id + ' 里没有这条条目'
+            + (has.ids.length ? '（它现有：' + has.ids.join(', ') + '）' : '（它现在没有条目层）');
+        } else {
+          const k = t.src.items.findIndex((it) => it && it.id === item);   // 同序号：源下标 = 副本下标
+          const copied = (Array.isArray(t.copy.items) ? t.copy.items : [])[k];
+          // 构造上到不了（`cloneItems` 逐项 1:1 保序）—— 留着是为了"宁可点名拒绝，也不要半路 TypeError"
+          if (!copied || typeof copied.id !== 'string' || !copied.id) {
+            e.reason = '副本上同序号（第 ' + (k + 1) + ' 条）的位置没有条目 —— **序号对不上**';
+          } else {
+            e.toNode = t.copy.id;                     // ← 两端一起换：目标**节点**也要换成那个节点的副本
+            e.to = copied.id;
+            e.ordinal = k + 1;
+          }
+        }
+      }
+      edges.push(e);
+    });
+  });
+  return { edges: edges, unmatched: edges.filter((e) => !e.to) };
+}
+
+/** `--repoint-items` 对不上 ⇒ 一句**可照着处置**的拒绝文本（逐条点名 + 两条出口）。 */
+function repointRefusal(unmatched, srcId) {
+  return '--repoint-items 对不上：副本上有 ' + unmatched.length + ' 条条目级链接在"副本自己那份新条目"里'
+    + '找不到对应条目 ⇒ **本次复制整条拒绝**（盘上零改动）：\n'
+    + unmatched.map((e) => '    · ' + e.at + '（副本节点 ' + e.node + '，源 ' + srcId + '）→ '
+      + e.target + '：' + e.reason).join('\n')
+    + '\n**不许按序号猜一个位置对齐上去**：猜错就是把边指到**另一条**条目上，而回显还会说成功。\n'
+    + '两条出口：① 去掉 --repoint-items（默认档：边逐字仍指原物，属引用语义）；'
+    + '② 让目标节点一起被复制（--deep 覆盖到它）—— 那时才存在"副本自己那份条目"。';
 }
 
 module.exports = {
@@ -544,8 +655,21 @@ module.exports = {
   clone(ctx) {
     const id = ctx.args._[1];
     const parent = ctx.args._[2];
-    if (!id || !parent) ctx.error('用法: clone <项目> <源id> <新父id> [--deep]');
+    if (!id || !parent) ctx.error('用法: clone <项目> <源id> <新父id> [--deep] [--repoint-items] [--json]');
+    // `--repoint-items` 是**纯开关**（不带值）。`cli/core.js` 的纯布尔登记表（`--deep` 就登记在那里）
+    // **不在本批可改的边界内** ⇒ 只认布尔 true，并把"写成别的样子"响亮拒绝：
+    // 通用分支遇到"下一个 token 不是选项"时会把它吞成值（`--deep` 当年就是为这件事登记的），
+    // 于是 `clone 项目 --repoint-items a b` 会静默改成"repointItems='a'、位置参数少一个" —— 只认布尔，
+    // 这种写法就在这里现形（而不是变成一个看不懂的"源节点不存在: b"）。
+    const repointRaw = ctx.args.repointItems;
+    if (repointRaw !== undefined && repointRaw !== true) {
+      ctx.error('--repoint-items 是**纯开关**（不带值）：写法 '
+        + '`clone <项目> <源id> <新父id> [--deep] --repoint-items`（收到 '
+        + JSON.stringify(repointRaw) + '）');
+    }
+    const repoint = repointRaw === true;
     let copyId = null;
+    let edges = [];
     ctx.mutate((data) => {
       const src = ctx.tree.find(data.data, id);
       if (!src) ctx.error('源节点不存在: ' + id);
@@ -579,23 +703,71 @@ module.exports = {
       //     于是"复制一个条目化节点"会把整层条目静默抹掉 —— 本工程**同一形态第 5 次**（qa → localPath → origin → 界面 items/detailMode → clone）。
       //     别再就地写第二份：两份必然漂，而漂的那个方向是**静默丢字段**。
       const copy = cloneNode(src, mintId, !!ctx.args.deep, mintItemId);
+      // 条目级边：**先把话说清楚，再决定改不改**（口径见上面「三态语义」那一段）。
+      // 默认档 ⇒ 一个字节都不动，只把"没被重指向"这件事带出去；
+      // 重指向档 ⇒ 对不上就**在这里拒绝**（`ctx.error` 抛出 ⇒ 盘上零改动），对得上才逐条改指向。
+      const plan = planItemEdges(pairSubtree(src, copy, []), ctx.projectName);
+      if (repoint && plan.unmatched.length) ctx.error(repointRefusal(plan.unmatched, id));
+      // ← 本条命令里唯一的写点：**两端一起换**（只换 item 会立刻悬挂，见上面那段注释）
+      if (repoint) plan.edges.forEach((e) => { e.link.id = e.toNode; e.link.item = e.to; });
       parentNode.children = (parentNode.children || []).concat(copy);
       copyId = copy.id;
+      edges = plan.edges;
       return data;
     });
+    const kept = repoint ? [] : edges;
+    const repointed = repoint ? edges : [];
+    if (ctx.args.json) {
+      ctx.outJson({
+        ok: true, project: ctx.projectName, sourceId: id, parent: parent, copyId: copyId,
+        deep: !!ctx.args.deep, repointItems: repoint,
+        itemEdges: {
+          count: edges.length,
+          keptCount: kept.length,
+          // "未被重指向的条目级边"逐条点名（默认档 = 全部条目级边）：
+          // `repointable` 说这条边**能不能**被 --repoint-items 重指向，能的话 `wouldBe` 给出目标 id。
+          kept: kept.map((e) => {
+            const o = { node: e.node, at: e.at, item: e.item, target: e.target, repointable: !!e.to };
+            if (e.to) o.wouldBe = e.toNode + '#' + e.to; else o.reason = e.reason;
+            if (e.to) o.ordinal = e.ordinal;
+            return o;
+          }),
+          repointedCount: repointed.length,
+          repointed: repointed.map((e) => ({
+            node: e.node, at: e.at, from: e.targetNode + '#' + e.item,
+            to: e.toNode + '#' + e.to, ordinal: e.ordinal, target: e.target
+          }))
+        }
+      });
+      return;
+    }
     ctx.out('已复制: ' + id + ' → ' + parent + '（新 id ' + copyId + '）');
+    // ⚠️ 下面两行**只在副本上真有条目级边时**才出现（没有 ⇒ 输出与从前逐字相同，不许加噪音）
+    if (repoint && repointed.length) {
+      ctx.out('已重指向 ' + repointed.length + ' 条条目级链接（**语义改变**：原先指副本外的"原物"，'
+        + '现在指副本自己的节点与条目）：'
+        + repointed.map((e) => e.node + ' ' + e.at + ' ' + e.targetNode + '#' + e.item
+          + ' → ' + e.toNode + '#' + e.to + '（同序号 ' + e.ordinal + '）').join('；'));
+    } else if (!repoint && kept.length) {
+      ctx.out('⚠ 副本上 ' + kept.length + ' 条条目级链接**仍指原物**（引用语义，克隆不改它）：'
+        + kept.map((e) => e.node + ' ' + e.at + ' → ' + e.target).join('；')
+        + '（要改指副本自己的条目：加 --repoint-items）');
+    }
   },
 
   /** `apply <项目> --ops-file ops.json [--dry-run] [--idem 键]` —— 见下方 apply 段 */
   apply,
 
-  /** ⚠️ 导出给**单测**（`tests/clone-field-copy.test.js`）直接调用 —— 它们是本文件里
-   *  "复制一个节点"的**唯一实现**（`clone` 命令与 `apply` 的 clone op 共用）。
+  /** ⚠️ 导出给**单测**（`tests/clone-field-copy.test.js` 与 `tests/clone-item-links.test.js`）直接调用
+   *  —— 它们是本文件里"复制一个节点"与"算条目级边的重指向"的**唯一实现**
+   *  （`clone` 命令与 `apply` 的 clone op 共用）。
    *  直接测它、而不是只测命令回显，是为了让"`undefined` 不产生键"这类**对象级**性质可断言
    *  （写盘后的 JSON 看不见 `undefined`）。命令面照旧只认 registry 里登记的那几个键：
    *  `cli/registry.js` 只按下标取具名函数，没有任何地方枚举本对象的键。 */
   cloneNode: cloneNode,
-  cloneItems: cloneItems
+  cloneItems: cloneItems,
+  pairSubtree: pairSubtree,
+  planItemEdges: planItemEdges
 };
 
 /* ============================================================================

@@ -161,7 +161,21 @@ function init() {
   register({ name: 'move', usage: 'move <项目> <id> <新父id> [--index n]', options: ['index'], desc: '移动节点到新父节点', fn: loadFile('edit').move });
   register({ name: 'expand-depth', usage: 'expand-depth <项目> [--depth N] [--id 子树根id]', options: ['depth', 'id'], desc: '按深度规范化展开状态（默认前 2 层展开、更深的收起；--depth 0 = 全收起），一次原子写', fn: loadFile('edit').expandDepth });
   register({ name: 'remove', aliases: ['rm'], usage: 'remove <项目> <id> [--clean-assoc] [--clean-links]', options: ['cleanAssoc', 'cleanLinks'], desc: '删除节点（含子树）；被关联/链接引用时需 --clean-assoc / --clean-links', fn: loadFile('edit').remove });
-  register({ name: 'clone', usage: 'clone <项目> <源id> <新父id> [--deep]', options: ['deep'], desc: '复制节点到新父节点（--deep 含子树）', fn: loadFile('edit').clone });
+  register({
+    name: 'clone',
+    usage: 'clone <项目> <源id> <新父id> [--deep] [--repoint-items] [--json]',
+    options: ['deep', 'repointItems', 'json'],
+    desc: '复制节点到新父节点（--deep 含子树）。副本上的**条目 id 重新签发**（全项目唯一，ITEM-MODEL §5.1），'
+      + '而副本上的条目级边（`links[].item`）**默认逐字仍指原物**（引用语义，克隆不改它）——'
+      + '`--json` 的 `itemEdges.kept` 会把"未被重指向"的条目级边逐条点名'
+      + '（副本节点 / 边下标 / 目标 / 源条目 id，并标 `repointable`），'
+      + '文本档**仅当副本上真有这类边**时多一行（没有 ⇒ 输出与从前逐字相同）。'
+      + '`--repoint-items`：把它们改指**副本自己那份新条目**的**同序号**条目'
+      + '（**语义改变**：引用原物 → 副本内部指涉）；对不上'
+      + '（目标在别的项目 / 目标节点不在被复制范围 / 那个节点里没有这条条目）⇒ **拒绝并点名**，'
+      + '**绝不按序号猜**（猜错就是换了一条边，而回显还说成功）',
+    fn: loadFile('edit').clone
+  });
   // 事务：操作清单一次生效（S7 实现，整合流按 `docs/ITEM-MODEL.md` §3 契约收编登记）
   register({ name: 'apply', usage: 'apply <项目> --ops-file ops.json [--dry-run]', options: ['opsFile', 'dryRun'], desc: '按操作清单**一次事务**生效：一批改动在同一个 rev / 一次原子写 / 一条变更日志里完成 ⇒ 全成或全不动；逐条回执（应用/跳过/失败）。**只允许数据面操作**（需要外部副作用的动作必须留在事务外）。支持 `--idem <键>` 重试安全', fn: loadFile('edit').apply });
   // 条目层写原语（S2 实现，整合流按 `docs/ITEM-MODEL.md` §3 契约收编登记）
