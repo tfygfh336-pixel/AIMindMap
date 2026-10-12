@@ -14,6 +14,45 @@
 
 ## [Unreleased]
 
+### MCP：`item_remove` 恢复 `--json` 透传（返回形状**有意变化**，2026-10-12）
+
+- **修**：`item_remove` 从前**不传 `--json`**，唯一原因是带 `--clean-links/--clean-assoc` 时 CLI 会**先打一行文本再打 JSON**（stdout 成"半截 JSON"）。该缺陷已修（`cli/commands/item.js`：清理结果进 `cleaned`，`--json` 下 stdout 只有一份 JSON）。
+- **因此这条例外取消**：`item_remove` 现在与其他五个 `item_*` 透传**一致**地传 `--json`；返回从"一行中文文本"变成 **JSON 对象**（`{ok,project,nodeId,itemId,items}`，真清理时多 `cleaned:{links:[…],assoc:{…}}`）—— 这是**有意的形状变化**（"连带清了哪几条引用"从此是结构化的，不再只能字符串匹配），与前批"只增参数、不改既有参数语义"不冲突，但**形状确实变了，故单列**。
+- **同批反转的"守旧说法"**：`scripts/mcp-server.js` 三处都改成新口径 —— 工具清单头注释、`case 'item_remove'`、以及**工具描述正文**（模型实际读到的那段，改前它断言"回显是文本（点名 itemId），不带 `--json`"）；`docs/ITEM-MODEL.md` §3.2 的 `item-remove` 行补上此前**缺失的 `--json` 形状**（同表 `item-add`/`item-edit`/`render-detail` 都有）。
+- **判据**：`tests/item-commands.test.js` 新增 `S2-L` 四条（端到端 `JSON.parse` 成功 · 文本档逐字 · **假 ctx 结构判据**（JSON 档 `calls.out === []`，附文本档对照组防空转）· 注入证明两轮 + sha256 逐字节还原）；`tests/mcp-protocol.test.js` 12/12；真端到端探针（进程内 `tools/call` + 真 CLI 子进程）实读 `cleaned.links[0] = {node,target,caption,item}` ✓。
+
+### 条目层 v3 · 界面侧：详情框「逐条」呈现 + 修掉"界面保存把整层条目静默抹掉"（S5，2026-10-12）
+
+- **条目化节点上多出「逐条」呈现**（`renderer/app-detail-content.js` / `renderer/app-detail.js` / `renderer/style.css`）：详情框里给出**条目清单**（一条一行：序号/类型/正文摘要/id + 条目级标签、出处、核验「怎么核的」，右侧 ⧉ 复制 `节点id#条目id`），并在正文里给每条**贴归属** ⇒ 点一条即"清单行 + 正文那一段"同时高亮，`MM.showDetailItem(nodeId,itemId)` 供关联视图跳到具体条目。**正文只有一份**：渲染路径仍是 `dc.innerHTML = detail`（契约 `docs/ITEM-MODEL.md` §2/§12 点名给界面流的那句），正文里的条目分隔与序号由 CSS 生成内容画、**不往正文里塞元素**；把属性级装饰撤掉后正文逐字节等于 CLI 的 `detail`。归属用"两侧同一解析器 + `isEqualNode`"认领，**对不上就不贴**（只出清单、正文一字不动、原因进读数）。**未条目化节点一个字节都不加**（含"复用同一个跟随框"的真机路径）。**没有新增任何 IPC / 命令。**
+- **修掉一个静默数据丢失**（同类先例：`qa` / `localPath` / `origin`）：`renderer/app-core.js` 的 `serializeTree()` 是手挑字段的整树写回，它不带 `items` / `detailMode`、且把 `meta.formatVersion` 写死 2 ⇒ 打开条目化项目后**按一次保存**（或 Ctrl+Z / 重做，同走快照）就把整层条目抹掉：节点退回 v2、`detail` 还在 ⇒ **没有任何门禁会红**，条目级 id / src / verified / tags 永久丢失。现在 `items`（含空数组与 `_container` / `_groupStart` 等下划线键）与 `detailMode` **原样平铺**，`formatVersion` **继承载入时那一份**（载入时没有 ⇒ 2，不凭空造 3），只在有值时写 ⇒ v2 项目与旧文件**逐字节零差异**。
+- **判据**：冒烟域 `scripts/smoke/39-item-detail.js`（8 条；探针项目 `smoke-item-39` 自建自删，冒烟沙箱副本内，真实 `projects/` 零写入）⇒ 单域跑 **16/16 passed**（含预热域 01）。**注入证明**：去掉 `renderer/app-core.js` 的 `walk()` 里 `out.items` / `out.detailMode` 两行 ⇒ **13/16、exit 1**，断言⑤⑥⑦ 必红（报文见交付记录），还原后 **sha256 逐字节还原**（`4A6BFC9E…DBC63`）并复绿。**边界**：三方合并入口未覆盖（补法照 `scripts/smoke/15-write-conflict.js` 的手法）。
+
+### 关系与标签升层（S6，2026-10-12）
+
+- **`link` 支持 `--item <条目id>`**：边可以精确指向**目标节点里的某一条条目**（`links[].item`，契约 §7）；目标节点在、但那条条目不在 ⇒ **拒绝并点名**（绝不造出"节点在、条目不在"的悬挂引用）；`link --item ""` 与服务 K8 定的 `--caption ""` 是**同一套"显式空串才清空"** 与三态回显（`已添加链接` / `已更新链接` / `无变化`），**未新增** `--clear-item` 之类开关。
+- **`links-prune` 把"节点还在、条目已被删"与"节点整个不在了"用同一处判据抓出来，并在报告里分开点名**，新增 `--items 节点id#条目id` 精确档。顺带修掉一处**静默空转**：原 `--nodes` 谓词拿**源**项目名比**目标**项目名 ⇒ 恒不等、永远不命中，而回显照样说"没有需要清理的链接"。
+- **读口只增字段**：`links` / `backlinks` / `related` 里条目级的边多 `item` / `itemLabel`，**节点级的边一个键都不多**（v2 数据与渲染层零改动）。判定只有一处实现：`src/relations.js` 的 `refState()` / `targetHasItem()`。
+- **判据**：`tests/link-item.test.js` 35 条 + 既有 7 个测试文件 **204/204** 全绿；集成 **§51 九条**；依赖方向 `node scripts/dep-direction-check.js` ⇒ 124 条边全朝下（或同层）。
+
+### 条目层 v3 · 复校与体检：`recheck` / `health`（S4，2026-10-12）
+
+- **新增 `recheck <项目> [--src 子串] [--only i-a,i-b] [--limit n] [--root 目录] [--json]`**：条目级的"再核一遍" —— 逐条判「这件出处在今天还成不成立」，输出**三类**（`ok` / `needs-recheck` / `src-gone`）+ 原因分布（`no-src`/`src-gone`/`quote-missing`/`line-out-of-range`/`file-changed`/`unverifiable-url`/`unverifiable-command`/`unrecognized-src`/`unverified`/`superseded-unknown`），**逐条点名**（节点 + `itemId` + 出处）并给**可执行的下一步**（改 `--src` / 补出处 / 写核验 / 清悬挂，每条都是能直接粘的命令）。**只读是默认**（一次盘都不写，连 `.changes.jsonl` 也不动）；确认后用 `--write-verified --how "读了 src 指向的源码行"` 写回 `verified{at,by,how}`（三字段全必填 —— 取不到 `how` **就不写**，空核验记录会让"已核"永远为真）：默认只给"**出处这一维判得过**"的条目写（判据刻意不是"当前是绿的"—— 迁移刚落地时 `ok` 恒为 0，那样批量写回永远无事可做）；出处失效/引文找不到/行号漂移/源已改/无出处/不可机核的一律**不写并逐条点名原因**，要写用 `--only` 点名（`src-gone` 的还要 `--force`）；写回**只动 `verified`**（`detail` 逐字节不变、一次原子写、日志只多 1 条）。`--dry-run` 出计划不写盘。
+- **新增 `health [<项目>] [--project 项目名] [--all] [--root 目录] [--json]`**：条目层健康度的**真值出口**（契约 §11：迁移规模一类数字**不写进文档**）。报：条目化节点数/总节点数（富文本 / v2 分档）、条目数（按 `type`）、无出处·未核·需复核·出处失效·核验后源文件改过·被取代·**最后核验时间**、`items ↔ detail` **不一致的节点逐节点点名**（+ 修法 `render-detail`）、**悬挂引用**（`links[].item` / `assoc.members[].item` / `supersededBy` 逐处点名）、**`qa` 残留**（条目化节点上仍有 `qa[]`）与 `detailMode` 残留、以及迁移（契约 §6）的**五档**（可迁移 / 已条目化 / 无内容 / 不在范围 / **跳过**）—— 跳过项**逐节点点名 + 原因分布**（"回放不了"不许伪装成"没有要迁的"）。**是读数不是门禁**（有红项仍 exit 0；红绿由 G2 的 `validate-all` 判）；**确定性**（同状态连跑两次 `--json` **逐字节相同**、不带运行时刻 —— 契约 §10 AC14）。不给项目名 = **整个库**（按项目名排序 + 合计；读不了的项目如实进 `unreadable` 且**不计入合计** —— "没有"与"读不到"不是一回事）。
+- **实现落点**：新增 `src/item-src.js`（**"出处"这一维的唯一实现处**：归一化 / 解析 `file:line`·`file:line::引文`·URL·命令 / "过期"判定；读盘按绝对路径 memo ⇒ 同一次运行里同一个文件**只读一次**）、`cli/commands/recheck.js`（条目层复校判定的**唯一实现处**：`health` 直接复用它的 `scanProject()`，不重判一遍）、`cli/commands/health.js`（只做聚合与点名）。MCP 同步（见下）。
+- **判据**：单测 `tests/recheck.test.js` 35 条全绿（含**注入证明** —— 改一个源文件 ⇒ `needs-recheck(file-changed)`；引文消失 ⇒ `src-gone(quote-missing)`；`health --json` 两次逐字节相同；`recheck` 跑完项目文件与 `.changes.jsonl` 都不变）；集成 §50 二十一条交 I 串行落盘。
+- **MCP 面（契约 §4）**：`search_nodes` 增补 `item_level` / `src` / `verified` / `type` / `since` / `limit` / `max_bytes`（`tag` 的语义扩到**条目级**标签），`get_node` 加 `item`（按条目取回一条）；新增 `item_add` / `item_edit` / `item_remove` / `item_move` / `item_order` / `render_detail` 六个**透传**工具 —— **只增参数、不改既有参数语义与返回形状**，每个新参数都在工具描述里写明"是什么、对应哪个 `--xxx`"。工具数 **45 → 51**（`docs/VERIFY.md` 由 `doc-facts --write` 同步）。
+
+### 修掉 `import-md` / `import-project` 导入时的图片/附件坏引用（W19，2026-10-12）
+
+- **修**：两条命令从前把 md 里的资源行按**原样字符串**记进 `images[].file` / `files[].file`，而文件从没被复制进项目 ⇒ 悬空引用**静默落盘**（exit 0、回显不提、`assets/` 不存在，而 `validate` 照样通过 —— schema 只校验 `file` 是非空字符串）。现在：**能解析到** ⇒ 复制进 `projects/<项目>/assets|attachments/`（命名与图片格式规则同 `add-image` 那一条） + 引用改写为**项目内相对路径**；**已在项目内有效**（export-md 往返）⇒ 原样保留、不重复复制；**解析不到** ⇒ **拒绝整份导入**并逐条点名（节点 / 引用 / 原样路径 / 按序试过的路径）+ 三条出路，拒绝是**干净**的（判据在复制与写入之前：不建目录、不写盘、项目文件逐字节不变）；**非本地引用**（`https:` / `data:`）⇒ 不挂进 `images/files`（`file` 的规范是项目内相对路径，否则 GUI 会拼成`../projects/<项目>/https://…` 裂图），那一行**按正文**并入该节点 `detail` —— 不丢内容、不污染 `stats`。
+- **实现（一处）**：`src/markdown.js` 的 `resolveImportRefs()`（+ 纯收集 `collectResourceRefs`、资源行语法的唯一写出 `resourceLine`），`import-md` 与 `import-project` 共用；命令层只放 `refBlockedError` / `printRefReport`；`--dry-run` 报 `resourceRefs` 明细并把坏引用计入 `wouldRefuse`。
+- **判据**：`tests/import-refs.test.js` 29 条（含与 `add-image` 命名/格式白名单的**防漂移**断言、dry-run 零副作用、一处实现的源码级守卫）；集成 **§56 十一条**；**注入证明**：把 `resolveImportRefs` 打桩成旧行为 ⇒ 共用判据当场必红，复原后复绿。
+- **边界（如实登记）**：`import-dir` 仍是老口径（解析器已备好 `onMissing:'detail'`，下一轮一行接入）；`--force` **不绕过**这道闸；复制先于 `ctx.write`（同 `add-image` 形状）⇒ 只在写盘那一步失败会留孤儿资源文件（无悬空引用），本批不做回滚。
+
+### 条目层迁移（S1，2026-10-12）
+
+- **新增 `migrate items <项目> [--dry-run] [--json]`**（v2 → v3）：只迁"能逐字节回放"的节点（`renderDetail(parseDetail(detail)) === detail`），回放不了就**整节点跳过 + 逐条点名**（不许"修一下再写"）；`qa[]` 收敛成 `type:'qa'` 条目后删掉 `qa` 键；**不写** `detailMode`；写盘**之前**自动 `export-json` 一份到`.review/<日期>-条目层迁移/`（**没有跳过备份的开关**）；`meta.formatVersion` → 3（`validate` 同时接受 2 与 3 ⇒ 回退可走通）；幂等（第二次 `changed:{nodes:0,items:0}`、文件逐字节不变）。同批：`src/schema.js` 的 G2 补条目层判据（`formatVersion` 2|3、`items` 形状、`items`↔`detail` 逐字节一致且判红给修法 `render-detail`、`items` ⇄ `detailMode`/`qa[]` 互斥、条目 id **全项目唯一**）；`src/concurrency.js` 按 §8 加三个指纹键（`node:` 在条目化节点上排除 `detail`/`items`、`items:` 有序 id 表、`item:<节点>#<条目>`）并让 `mergeTrees`**逐条目挑来源 + 当场重建 detail**。实测（真实项目副本）：卖点讨论 182/186 条目化（+1572 条）/ comnet 220/220（+1329 条），跳过项逐条点名，两次 `validate` 绿、`detail ≠ renderDetail(items)` 0 个。
+
 ### 条目层 · 条目级写原语（S2，2026-10-12）
 
 - **新增 `item-add` / `item-edit` / `item-remove` / `item-move` / `item-order` / `render-detail` 六条命令**：改一条不必重写整块 detail。未条目化节点上 `item-add` 会**自动条目化**（且必须先通过**逐字节回放前置校验**，回放不了就拒绝、一个字节都不动）；`item-remove` 被 `links[].item` / `assoc.members[].item` 引用时**默认拒绝并逐个点名**（`--clean-links` / `--clean-assoc` 才连带清理）；一次 `item-move` 同时重渲染两侧 detail（一个 rev、一条日志）。单测 `tests/item-commands.test.js`。

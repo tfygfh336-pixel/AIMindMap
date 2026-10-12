@@ -19,17 +19,39 @@
  *   要么改写成幂等，要么显式声明 `replayable:false`（那样冲突时直接拒绝，不重放）。
  *
  * 指纹粒度（与 `docs/DATA-FORMAT.md` 的结构对齐，不是拍脑袋）：
- *   `node:<id>`     该节点**自身字段**（topic/detail/tags/images/files/links/background…，**不含 children**）
+ *   `node:<id>`     该节点**自身字段**（topic/tags/images/files/links/background…，**不含 children**；
+ *                   `items` 一律排除，条目化节点的 `detail` 也排除 —— 见下）
  *   `children:<id>` 该节点的**子 id 列表**（兄弟顺序有意义 ⇒ 顺序算改动）
+ *   `items:<id>`    该节点**条目 id 的有序列表**（顺序算改动；增删条目在这里可见）
+ *   `item:<节点id>#<条目id>`  **单个条目**（按 id，不看数组顺序）
  *   `assoc:<id>`    顶层关联笔记的**单个条目**（按 id，不看数组顺序）
  *   `meta` / `format` 项目级字段
  *   ⇒ 两个会话分别往**不同父节点**加内容、或改**不同节点**的详情，天然不相交 ⇒ 自动合并；
  *     同一父节点下同时加子节点（顺序会歧义）或改同一节点的同一字段 ⇒ 相交 ⇒ 指名拒绝。
+ *
+ * ## 条目层（v3）为什么必须有独立键（`docs/ITEM-MODEL.md` §8，**冻结**）
+ * 把 `items` 留在 `node:<id>` 里，"两个会话各改**同一节点的不同条目**"就会被判成同一个对象冲突 ⇒
+ * 自动合并失效 —— 而那正是"多会话同时补条目"最常见的形态。故：
+ *   · `node:<id>` 排除 `items`；**条目化节点（有 `items`）上还要排除 `detail`** ——
+ *     `detail` 是"`items` 的落盘派生缓存"，由门禁保证 `detail === renderDetail(items)`；
+ *     把它算进指纹会让"同一节点的不同条目"永远相撞。
+ *   · `item:<节点id>#<条目id>` 的**节点 id 必须进键**：条目移动（`item-move`）是"键改名 + 旧键消失"，
+ *     只用条目 id 会让移动**完全不可见**（条目自身内容一个字节都没变）。
+ *
+ * ⚠️ **安全论证（别弱化）**：上面两条排除成立，只因为"有 `items` ⇒ `detail === renderDetail(items)`"
+ * 是**门禁保证的不变量**（`src/schema.js` 判红、`render-detail` 是唯一修法）。若某天把那条门禁去掉，
+ * 这两个排除就变成**静默丢数据的通道**（对方改的 detail 会被无声丢掉）。改这里前先看门禁还在不在。
  * ============================================================ */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('crypto'));
-  else root.MMConcurrency = factory(null);
-})(typeof self !== 'undefined' ? self : this, function (crypto) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('crypto'), require('./item-model.js'));
+  } else {
+    // 浏览器侧：条目层的**唯一渲染实现**由 `src/item-model.js` 提供（UMD 全局 `MMItemModel`）。
+    // 没加载它时**不是**"降级合并"，而是合并条目化节点时**响亮拒绝**（见 renderItemsOf）——
+    // 宁可当场失败，也不写一份 `detail` 与 `items` 不一致的数据（那会被 G2 判红，且是静默变质）。
+    root.MMConcurrency = factory(null, root.MMItemModel || null);
+  }
+})(typeof self !== 'undefined' ? self : this, function (crypto, itemModel) {
   'use strict';
 
   /** data-store 抛出的版本冲突错误码；判定**只认错误码，不认错误文本**（文本会漂） */
@@ -46,10 +68,24 @@
   /** JSON 深拷贝：数据契约保证是纯 JSON（见 docs/DATA-FORMAT.md §1） */
   function clone(x) { return JSON.parse(JSON.stringify(x)); }
 
-  /** 节点自身字段的指纹（**排除 children** —— 结构另由 children: 键承载） */
+  /** 这个节点条目化了吗（**含空数组**都算：ITEM-MODEL §2 的判定规则） */
+  function isItemized(node) { return !!node && Array.isArray(node.items); }
+
+  /**
+   * 节点自身字段的指纹。
+   * **排除三样**（各有理由，别合并成"排除 children/detail/items"一句话）：
+   *   · `children` —— 结构另由 `children:<id>` 键承载；
+   *   · `items`    —— 另由 `items:<id>` / `item:<id>#<条目>` 键承载；
+   *   · `detail`   —— **仅当节点条目化时**（它是 items 的落盘派生缓存，见文件头"安全论证"）。
+   */
   function nodeOwnHash(node) {
     const o = {};
-    Object.keys(node || {}).forEach((k) => { if (k !== 'children') o[k] = node[k]; });
+    const itemized = isItemized(node);
+    Object.keys(node || {}).forEach((k) => {
+      if (k === 'children' || k === 'items') return;
+      if (k === 'detail' && itemized) return;
+      o[k] = node[k];
+    });
     return hash(o);
   }
 
@@ -61,8 +97,17 @@
     fp.format = hash(d.format);
     (function walk(node) {
       if (!node || typeof node !== 'object') return;
-      if (node.id) fp['node:' + node.id] = nodeOwnHash(node);
-      if (node.id) fp['children:' + node.id] = hash((node.children || []).map((c) => c && c.id));
+      if (node.id) {
+        fp['node:' + node.id] = nodeOwnHash(node);
+        fp['children:' + node.id] = hash((node.children || []).map((c) => c && c.id));
+        // 条目层（ITEM-MODEL §8）：有序 id 表 + 逐条目（按 id，不看数组顺序）
+        if (isItemized(node)) {
+          fp['items:' + node.id] = hash(node.items.map((it) => it && it.id));
+          node.items.forEach((it) => {
+            if (it && it.id) fp['item:' + node.id + '#' + it.id] = hash(it);
+          });
+        }
+      }
       (node.children || []).forEach(walk);
     })(d.data);
     (d.assoc || []).forEach((a) => { if (a && a.id) fp['assoc:' + a.id] = hash(a); });
@@ -161,11 +206,16 @@
   }
 
   /**
-   * 把项目数据摊平成"按 id 取节点自身字段 / 按父取子 id 列表 / 按 id 取 assoc 条目"。
+   * 把项目数据摊平成"按 id 取节点自身字段 / 按父取子 id 列表 / 按 id 取 assoc 条目 / 按节点取条目表"。
    * 三方合并要按 id 取用某一方的节点 —— 树是嵌套的，摊平后才能逐对象挑来源。
+   *
+   * 条目层（ITEM-MODEL §8）：`items` 是**按节点取条目表**（`Map<节点id, Map<条目id, 条目>>`），
+   * `itemIds` 是**有序 id 表**（`Map<节点id, string[]>`）—— 顺序也要能逐方取用（顺序算改动）。
+   * ⚠️ 表里存的是**原对象引用**（不拷贝）：摊平只用来"取用"，拷贝由调用方做（免得每方拷两遍）。
    */
   function flattenProject(data) {
     const nodes = new Map(), childIds = new Map(), assoc = new Map();
+    const items = new Map(), itemIds = new Map();
     (function walk(n) {
       if (!n || typeof n !== 'object') return;
       if (n.id) {
@@ -173,21 +223,38 @@
         Object.keys(n).forEach((k) => { if (k !== 'children') o[k] = n[k]; });
         nodes.set(n.id, o);
         childIds.set(n.id, (n.children || []).map((c) => c && c.id));
+        if (Array.isArray(n.items)) {
+          const table = new Map();
+          n.items.forEach((it) => { if (it && it.id) table.set(it.id, it); });
+          items.set(n.id, table);
+          itemIds.set(n.id, n.items.map((it) => it && it.id));
+        }
       }
       (n.children || []).forEach(walk);
     })(data && data.data);
     ((data && data.assoc) || []).forEach((a) => { if (a && a.id) assoc.set(a.id, a); });
     return {
-      nodes, childIds, assoc,
+      nodes, childIds, assoc, items, itemIds,
       meta: data ? data.meta : undefined,
       format: data ? data.format : undefined,
       rootId: data && data.data ? data.data.id : null
     };
   }
 
+  /** 条目的**可读名**：id + 一小段纯文本（报错要指名对象 —— 只给内部 id 人/调用方不认识） */
+  function itemLabel(it, itemId) {
+    if (!it || typeof it !== 'object') return String(itemId);
+    const raw = (it.type === 'qa')
+      ? String((it.qa && (it.qa.q || it.qa.a)) || '')
+      : String(it.html == null ? '' : it.html);
+    const text = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+    return String(itemId) + (text ? '：' + text : '');
+  }
+
   /** 把指纹键翻译成人能读的对象名（报错要**指名叫对象**，不是只说"有冲突"） */
   function describeKeys(data, keys) {
     const F = flattenProject(data);
+    const nodeName = (id) => { const n = F.nodes.get(id); return '节点「' + ((n && n.topic) || id) + '」'; };
     return keys.map((k) => {
       if (k === 'meta') return '项目元信息（meta）';
       if (k === 'format') return '数据格式标记（format）';
@@ -195,6 +262,14 @@
       if (m) { const n = F.nodes.get(m[1]); return '节点「' + ((n && n.topic) || m[1]) + '」'; }
       m = /^children:(.+)$/.exec(k);
       if (m) { const n = F.nodes.get(m[1]); return '节点「' + ((n && n.topic) || m[1]) + '」的子节点列表'; }
+      m = /^items:(.+)$/.exec(k);
+      if (m) return nodeName(m[1]) + '的条目顺序';
+      m = /^item:([^#]+)#(.+)$/.exec(k);
+      if (m) {
+        const table = F.items.get(m[1]);
+        const it = table ? table.get(m[2]) : null;
+        return nodeName(m[1]) + '的条目「' + itemLabel(it, m[2]) + '」';
+      }
       m = /^assoc:(.+)$/.exec(k);
       if (m) { const a = F.assoc.get(m[1]); return '关联笔记「' + ((a && a.title) || m[1]) + '」'; }
       return k;
@@ -258,10 +333,71 @@
     /* ---- 节点树：逐节点挑"自身字段"、逐父挑"子 id 列表"，再按选定结构重建 ---- */
     const own = (id) => (useMine('node:' + id) ? Fm.nodes.get(id) : Ft.nodes.get(id));
     const kids = (id) => (useMine('children:' + id) ? Fm.childIds.get(id) : Ft.childIds.get(id));
+
+    /**
+     * **条目层：逐条目挑来源**（照 `assoc` 的先例），返回 `null` = 两侧都没有条目层。
+     *
+     * 三条规则（ITEM-MODEL §8 的"同批要动的实现"第 3 条）：
+     *   ① **顺序**（`items:<id>`）：哪一侧改过顺序表就取哪一侧（顺序算改动）；
+     *   ② **单条**（`item:<节点>#<条目>`）：按 id 挑来源 —— 只有一方改过就取那一方，
+     *      我删掉的那条不推，我新增的那条补在后面；
+     *   ③ **`detail` 谁都不要**：它是被排除的派生字段 ⇒ 合并后由 `renderDetail` 当场重建。
+     *      ⚠️ 若让某一侧的 `detail` "赢"，写盘的缓存就会与 `items` 不一致 ⇒ G2 立刻判红。
+     */
+    function mergedItemsOf(id) {
+      const myHas = Fm.itemIds.has(id), thHas = Ft.itemIds.has(id);
+      if (!myHas && !thHas) return null;                    // 两侧都没条目层 ⇒ 不做条目层合并
+      const myOrder = Fm.itemIds.get(id) || [];
+      const thOrder = Ft.itemIds.get(id) || [];
+      // 顺序取"改过 `items:<id>` 的那一方"；那一方没有顺序表（未条目化）才退回另一方
+      const useMyOrder = useMine('items:' + id) && myHas;
+      const order = useMyOrder ? myOrder : (thHas ? thOrder : myOrder);
+      const myTable = Fm.items.get(id), thTable = Ft.items.get(id);
+      const outItems = [];
+      const seen = new Set();
+      const take = (itemId) => {
+        if (!itemId || seen.has(itemId)) return;
+        seen.add(itemId);
+        const key = 'item:' + id + '#' + itemId;
+        if (useMine(key)) {                                 // 我改过 / 我加过 / 我删过 ⇒ 以我为准
+          if (myTable && myTable.has(itemId)) outItems.push(clone(myTable.get(itemId)));
+          return;
+        }
+        if (thTable && thTable.has(itemId)) outItems.push(clone(thTable.get(itemId)));
+        else if (myTable && myTable.has(itemId)) outItems.push(clone(myTable.get(itemId)));  // 兜底：我这边有就带上
+      };
+      order.forEach(take);
+      // 我新增、而顺序表取自对方那一侧的条目 —— 照 assoc 的"我新增的"分支补在后面
+      myOrder.forEach(take);
+      return outItems;
+    }
+
+    /**
+     * 合并后重建 `detail` 派生缓存。
+     * ⚠️ **没有渲染实现就抛错**：浏览器侧若没加载 `src/item-model.js`，宁可不合并，
+     * 也不写一份 `detail` 与 `items` 不一致的数据（那会被 G2 判红，而且是"静默变质"那一类损害）。
+     */
+    function renderItemsOf(items) {
+      const f = itemModel && typeof itemModel.renderDetail === 'function' ? itemModel.renderDetail : null;
+      if (!f) {
+        throw new Error('并发合并失败：合并条目化节点需要 `src/item-model.js` 的 renderDetail'
+          + '（浏览器侧请先加载它）—— 没有它就无法重建派生缓存 detail，'
+          + '而写一份与 items 不一致的 detail 会被 gate G2 判红、且属于静默变质。');
+      }
+      const html = f(items);
+      return typeof html === 'string' ? html : '';
+    }
+
     const build = (id) => {
       const o = own(id);
       if (!o) return null;                         // 该来源里没有它 ⇒ 被那一方删了
       const node = clone(o);
+      const merged = mergedItemsOf(id);
+      if (merged !== null) {
+        node.items = merged;
+        const html = renderItemsOf(merged);        // 丢弃两侧的 detail，当场重建（见 mergedItemsOf ③）
+        if (html === '') delete node.detail; else node.detail = html;
+      }
       const list = (kids(id) || []).map(build).filter(Boolean);
       if (list.length) node.children = list;
       return node;
@@ -283,7 +419,7 @@
   return {
     VERSION_CONFLICT, REPLAY_CONFLICT,
     fingerprint, changedKeys, intersection, withReplay,
-    mergeTrees, flattenProject, describeKeys,
-    hash, clone, nodeOwnHash
+    mergeTrees, flattenProject, describeKeys, itemLabel,
+    hash, clone, nodeOwnHash, isItemized
   };
 });

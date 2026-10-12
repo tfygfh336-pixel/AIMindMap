@@ -49,6 +49,11 @@
           if (l && hit(l, n)) {
             const item = { node: n.id, target: targetKey(l) };
             if (l.caption !== undefined) item.caption = l.caption;
+            // 条目层（v3）：被删的这条边若精确指到某一条条目，把 `item` 一并带出 ——
+            // 与上面的 `caption` **同一策略**（可选字段，没有就不出现）。理由：报告要能写出
+            // "剪掉的是哪一条"（"节点还在、条目已被删"这一档必须看得见剪的是哪一层）；
+            // 让调用方拿标签文本反查是**错的**（同源同目标多条边时会配错，且看起来像"没标"）。
+            if (l.item !== undefined) item.item = l.item;
             removed.push(item);
           } else keep.push(l);
         });

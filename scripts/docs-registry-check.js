@@ -293,7 +293,10 @@ const SCHEMA_FIELDS = [
   ['format', true], ['data', true], ['assoc', true],
   ['id', true], ['topic', true], ['children', true], ['detail', true],
   ['images', true], ['files', true], ['links', true], ['tags', true],
-  ['localPath', true], ['qa', true], ['origin', true], ['background', false]
+  ['localPath', true], ['qa', true], ['origin', true], ['background', false],
+  // 条目层（v3）：`items` 与 `detailMode` 都是契约字段（docs/ITEM-MODEL.md §1/§2；DATA-FORMAT 亦已写）
+  ['items', true],
+  ['detailMode', true],
 ];
 
 function checkContractCoverage(root) {

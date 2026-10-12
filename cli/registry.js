@@ -167,6 +167,22 @@ function init() {
   register({ name: 'item-order', usage: 'item-order <项目> <节点id> --ids i-a,i-b,…', options: ['ids'], desc: '重排条目顺序（--ids 必须是该节点现有条目的**完整排列**；只重排、不增删）', fn: loadFile('item').itemOrder });
   register({ name: 'render-detail', usage: 'render-detail <项目> <节点id> | --all', options: ['all'], desc: '按 items 重新渲染 detail（**G2 判"detail 与 items 不一致"时的唯一修法**）。幂等：已一致 ⇒ 实际变化 0。只处理条目化节点（没有 items 的节点 detail 是真源，不碰）', fn: loadFile('item').renderDetail });
 
+  // 条目层复校与体检（S4 实现，整合流按契约收编登记）
+  register({ name: 'recheck', usage: 'recheck <项目> [--src 子串] [--only i-a,i-b] [--limit n] [--root 目录] [--json] [--write-verified --how "怎么核的"] [--dry-run]', options: ['src', 'only', 'limit', 'root', 'json', 'writeVerified', 'how', 'dryRun'], desc: '条目层复校：逐条点名 `ok` / `needs-recheck` / `src-gone` 与原因，并给出可执行的下一步。只读是默认；写回 `verified{at,by,how}` 必须显式 `--write-verified --how`，且**写回目标是「出处这一维判得过」**（判不过就不写并点名原因）', fn: loadFile('recheck').recheck });
+  register({ name: 'health', usage: 'health [<项目>] [--project 项目名] [--all] [--root 目录] [--json]', options: ['project', 'all', 'root', 'json'], desc: '条目层体检（**真值出口**，不是门禁）：条目化/总数、type 分布、`items ↔ detail` 不一致（逐节点点名）、悬挂引用、`qa` 残留、**迁移五档**（可迁移/已条目化/无内容/不在范围/**跳过**，跳过项逐节点点名 + 原因分布）。确定性：两次 `--json` 逐字节相同，不带运行时刻', fn: loadFile('health').health });
+
+  // 条目层迁移（S1 实现，整合流按 `docs/ITEM-MODEL.md` §6 契约收编登记）
+  register({
+    name: 'migrate',
+    usage: 'migrate items <项目> [--dry-run] [--json]',
+    options: ['dryRun', 'json'],
+    desc: '把 v2 节点的 detail **无损**迁成条目层 items（v2 → v3）：只迁"能逐字节回放"的节点，'
+      + '其余整节点跳过并逐条点名（不许"修一下再写"）；`qa[]` 收敛成 `type:\'qa\'` 条目后删掉 `qa` 键；'
+      + '写盘前自动 `export-json` 一份到 `.review/<日期>-条目层迁移/` 并打印绝对路径（**没有跳过备份的开关**）；'
+      + '`meta.formatVersion` → 3（validate 同时接受 2 与 3）。幂等：第二次跑 `changed:{nodes:0,items:0}`',
+    fn: loadFile('migrate').migrate
+  });
+
   // AI 问答落盘（界面「写入本节点详情 / 新建子节点」两个动作的唯一出口；写操作只经 CLI）
   register({
     name: 'ask-apply',
@@ -231,10 +247,10 @@ function init() {
   });
 
   // 跨项目链接
-  register({ name: 'link', usage: 'link <项目> <id> --to 目标项目 --id 目标id [--caption 说明]', options: ['to', 'id', 'caption'], desc: '添加跨项目链接。**重复添加同一条边**（同项目/同目标）分三种结局，回显可分辨：省略 --caption ⇒ **保留**原有说明（幂等，回显「无变化」且不写盘）；显式 --caption 新说明 ⇒ **覆盖**（回显「已更新链接」并写出 旧 → 新）；显式 `--caption ""` ⇒ **清空说明**（回显「已更新链接（caption 清空）」）。⚠️ 只写 `--caption` 不给值会被**响亮拒绝**（旧写法会把 `true` 写进数据）', fn: loadFile('links').link });
-  register({ name: 'unlink', usage: 'unlink <项目> <id> --to 目标项目 --id 目标id', options: ['to', 'id'], desc: '移除跨项目链接', fn: loadFile('links').unlink });
-  register({ name: 'links', usage: 'links <项目> [--json]', options: ['json'], desc: '列出项目全部跨项目链接', fn: loadFile('links').links });
-  register({ name: 'links-prune', usage: 'links-prune <项目> [--nodes a,b] [--dry-run]', options: ['nodes', 'dryRun'], desc: '清理悬空链接（目标已不存在，修好悬挂链接导致的校验红）', fn: loadFile('links').linksPrune });
+  register({ name: 'link', usage: 'link <项目> <id> --to 目标项目 --id 目标id [--item 目标条目id] [--caption 说明]', options: ['to', 'id', 'item', 'caption'], desc: '添加跨项目链接（`--item` ⇒ 边指向**目标节点里的某一条条目**，即 `{project,id,item}`）。**重复添加同一条边**（同项目/同目标/同条目）分三种结局，回显可分辨：省略 --caption/--item ⇒ **保留**原有值（幂等，回显「无变化」且不写盘）；显式给新值 ⇒ **覆盖**（回显「已更新链接」并写出 旧 → 新）；显式 `--caption ""` / `--item ""` ⇒ **清空**那一层（回显「已更新链接（caption 清空 / item 清空）」）。⚠️ 只写 `--caption` / `--item` 不给值会被**响亮拒绝**；目标节点在、但 `--item` 那条条目不在 ⇒ **拒绝并点名**（绝不造出"节点在、条目不在"的悬挂引用）', fn: loadFile('links').link });
+  register({ name: 'unlink', usage: 'unlink <项目> <id> --to 目标项目 --id 目标id', options: ['to', 'id'], desc: '移除跨项目链接（指向该目标的边一律移除，含条目级的）', fn: loadFile('links').unlink });
+  register({ name: 'links', usage: 'links <项目> [--json]', options: ['json'], desc: '列出项目全部跨项目链接（条目级的边多 `item` 字段并写成 `目标/节点#条目`；`--json` 另有 `itemEdges` 计数 —— **只增字段**，节点级的边形状不变）', fn: loadFile('links').links });
+  register({ name: 'links-prune', usage: 'links-prune <项目> [--nodes a,b] [--items a#i-1,b#i-2] [--dry-run]', options: ['nodes', 'items', 'dryRun'], desc: '清理悬空链接（目标已不存在，修好悬挂链接导致的校验红）。**条目级与节点级同一处判据**：节点整个不在了、或**节点还在但那一条条目已被删**，都会被抓出来剪掉，并在报告里**分开点名**（后者单独列出）；`--items 节点id#条目id` 是等价的精确档', fn: loadFile('links').linksPrune });
 
   // 引用关系（backlinks / related 已在下方「引用关系」区登记，此处只加 orphans）
   register({ name: 'orphans', usage: 'orphans <项目> [--json] [--content-only] [--limit n]', options: ['json', 'contentOnly', 'limit'], desc: '关系审计：列出无任何引用关系的节点，并区分「含内容待处理」与「纯结构正常」', fn: loadFile('relations').orphans });

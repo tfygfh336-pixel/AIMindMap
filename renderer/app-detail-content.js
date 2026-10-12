@@ -127,6 +127,12 @@
     fdQ(box, '.fd-title').textContent = '节点详情：' + node.topic;
     const dc = fdQ(box, '.fd-detail-content');
     dc.innerHTML = detail || '<span class="placeholder">（该节点无详情）</span>';
+    // 条目层（v3）：条目化节点额外给出「逐条」呈现（清单 + 正文归属）。
+    // ⚠️ 正文的渲染路径**就在这里结束**：上面那一行 `dc.innerHTML = detail` 仍是**唯一**的正文来源
+    //   （detail 是 renderDetail(items) 的落盘派生缓存，契约 §2）—— 本调用只加"条目级"的
+    //   清单与属性标注，**不拼第二份 HTML**（见下方 renderFdItems 段落）。
+    //   未条目化节点 ⇒ 这里只做"清掉上一位节点留下的清单"，**一个字节都不加**（回归判据）。
+    renderFdItems(box, node);
     // 标签 chips（点击 → 按标签全文搜索）
     const tc = fdQ(box, '.fd-tags');
     const tags = (node.tags || (node.data && node.data.tags)) || [];
@@ -282,6 +288,394 @@
 
   }
 
+  /* ============================================================
+   * 条目层（v3）：详情框里的「逐条」呈现（唯一实现）
+   * ------------------------------------------------------------
+   * 前提（契约 `docs/ITEM-MODEL.md` §2 与 §12 里点名给界面流的那一句）：
+   *   **`detail` 仍是渲染产物**（由 `renderDetail(items)` 派生）⇒ 详情框的渲染路径**不改**：
+   *   正文永远是 `dc.innerHTML = detail` 那一份字节。本段**绝不**用 items 拼第二份 HTML
+   *   （同一事实两处表达 ⇒ 必漂移），只做两件事：
+   *     ① 「条目清单」：一条一行（序号 / 类型 / 正文摘要 / id + 出处、标签、核验 + 复制键）——
+   *        于是"这是一条一条的条目"在框里看得见（条数与逐条分隔都在这里）；
+   *     ② 正文里的**条目归属**：只加属性（`data-item-id` / `data-item-no` / `class`），
+   *        **不插任何元素、不改一个字**；条目的分隔线与序号由 CSS 画（`::before` 的生成内容
+   *        不进 innerHTML）⇒ 正文与 `detail` 仍**逐字节同源**。
+   *
+   * ⚠️ 判据纪律（本段最要紧的一条）：**归属对不上就不贴**（fail-open）。
+   *   对法：把 `item.html` 用浏览器自己解析一遍（detached `<div>` 的片段解析），再与正文里
+   *   同序的元素做 `isEqualNode` 比较 —— 两侧过**同一个解析器**，故不受引号/大小写/实体归一等
+   *   序列化差异影响。对不上（qa 条目、纯文本条目、detail 与 items 不一致…）⇒ **只出清单**，
+   *   正文一字不动，并把 `aligned:false` + 原因写进读数（**不许猜、不许凑**）。
+   *   正常数据都能对上（契约保证 `detail === renderDetail(items)`）；对不上本身就说明有东西不对。
+   * ============================================================ */
+
+  /** 正文摘要的长度上限（只影响清单里那一行字，不影响任何数据） */
+  const FD_ITEM_SNIPPET = 60;
+
+  /** 这个节点是不是**条目化**节点：`items` 在场且是数组（**含空数组** ⇒ 已条目化，契约 §2）。
+   *  不是 ⇒ 返回 null —— 调用方据此**一个字节都不加**（未条目化节点的观感是回归判据）。 */
+  function fdItemsOf(node) {
+    const raw = (node && node.items !== undefined) ? node.items
+      : ((node && node.data) ? node.data.items : undefined);
+    return Array.isArray(raw) ? raw : null;
+  }
+
+  /** 清单容器（**唯一创建点**，插在正文之前）；已存在就复用（重绘不累积） */
+  function fdItemsPanel(box) {
+    const dc = fdQ(box, '.fd-detail-content');
+    if (!dc || !dc.parentElement) return null;
+    let el = fdQ(box, '.fd-items');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'fd-items';
+      dc.parentElement.insertBefore(el, dc);
+    }
+    return el;
+  }
+
+  /** 清掉清单。**未条目化节点必须走这里**：详情框是**复用**的（一个跟随框先后显示多个节点），
+   *  不清就会把上一位节点的条目挂在新节点上（那是"张冠李戴"，比不显示更糟）。 */
+  function fdItemsClear(box) {
+    if (!box || !box.el) return false;
+    const el = fdQ(box, '.fd-items');
+    if (el && el.parentElement) el.parentElement.removeChild(el);
+    box.fdItems = null;
+    return !!el;
+  }
+
+  /** 把一段 HTML 片段解析成**一个**元素（片段解析：上下文不可逃逸；**不挂进文档**）。
+   *  返回 null = 这段不是一个单独元素（纯文本 / 多块 / 表格片段被解析器移出…）⇒ 放弃归属。
+   *  ⚠️ 它**不是**"渲染正文"：产物只用于与正文 DOM 比对、取纯文本摘要，从不写回框里。 */
+  function fdParseOne(html) {
+    const s = String(html == null ? '' : html);
+    if (!s.trim()) return null;
+    const host = document.createElement('div');
+    host.innerHTML = s;
+    const els = Array.prototype.slice.call(host.children);
+    return (els.length === 1) ? els[0] : null;
+  }
+
+  /** 一段 HTML 的纯文本（只用于清单里的摘要） */
+  function fdTextOf(html) {
+    const s = String(html == null ? '' : html);
+    if (!s.trim()) return '';
+    const host = document.createElement('div');
+    host.innerHTML = s;
+    return String(host.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  /** 条目级 `src` → 字符串数组（契约：字符串或字符串数组；空 ⇒ 不显示） */
+  function fdSrcList(it) {
+    const s = it && it.src;
+    if (typeof s === 'string' && s.trim()) return [s.trim()];
+    if (Array.isArray(s)) return s.filter((x) => typeof x === 'string' && x.trim());
+    return [];
+  }
+
+  /** 清单里那一行摘要：qa 条目用 `q`/`a`，其余用 `html` 的纯文本 */
+  function fdItemSnippet(it) {
+    if (!it) return '';
+    if (it.type === 'qa' && it.qa && typeof it.qa === 'object') {
+      const q = String(it.qa.q == null ? '' : it.qa.q).replace(/\s+/g, ' ').trim();
+      const a = String(it.qa.a == null ? '' : it.qa.a).replace(/\s+/g, ' ').trim();
+      return (q || a).slice(0, FD_ITEM_SNIPPET);
+    }
+    return fdTextOf(it.html).slice(0, FD_ITEM_SNIPPET);
+  }
+
+  /**
+   * 把正文 DOM 里的元素按顺序认领给条目（**只比对，不渲染**）。
+   * 规则：正文里的块按文档序与条目一一对应；`<ul>`/`<ol>` 外壳里的每个 `<li>` 各属一条
+   * （条目可以共享一个外壳，见 `renderDetail` 的容器机制）。
+   * @returns {{ok:boolean, owners:Array<Element|null>|null, reason:string}}
+   */
+  function fdAlignItems(dc, items) {
+    const frags = items.map((it) => ((it && it.type === 'qa') ? null : fdParseOne(it && it.html)));
+    const owners = new Array(items.length).fill(null);
+    let i = 0;
+    let fail = '';
+    const kidsOf = (parent) => Array.prototype.slice.call(parent.children);
+    const matchLevel = (parent) => {
+      const kids = kidsOf(parent);
+      for (let k = 0; k < kids.length; k++) {
+        const el = kids[k];
+        const tag = String(el.tagName || '').toLowerCase();
+        if (i >= frags.length) { fail = '正文里多出没被认领的块 <' + tag + '>'; return false; }
+        const f = frags[i];
+        if (!f) {
+          fail = '第 ' + (i + 1) + ' 条没有可比的 html（type='
+            + ((items[i] && items[i].type) || '?') + '）';
+          return false;
+        }
+        if (el.isEqualNode(f)) { owners[i] = el; i += 1; continue; }
+        if ((tag === 'ul' || tag === 'ol') && el.children.length) {
+          const lis = kidsOf(el);
+          let j = 0;
+          while (j < lis.length && i < frags.length && frags[i] && lis[j].isEqualNode(frags[i])) {
+            owners[i] = lis[j]; i += 1; j += 1;
+          }
+          if (j === lis.length) continue;   // 外壳整块认领完 ⇒ 继续看同层的下一块
+          fail = '外壳 <' + tag + '> 里的第 ' + (j + 1) + ' 个块与第 ' + (i + 1) + ' 条对不上';
+          return false;
+        }
+        fail = '第 ' + (i + 1) + ' 条与正文里的 <' + tag + '> 对不上';
+        return false;
+      }
+      return true;
+    };
+    const ok = matchLevel(dc) && i === frags.length;
+    if (!ok && !fail) fail = '正文里的块比条目少（只认领了 ' + i + '/' + frags.length + ' 条）';
+    return { ok: !!ok, owners: ok ? owners : null, reason: ok ? '' : fail };
+  }
+
+  /** 贴归属：**只加属性**（正文的元素、文字、结构一个都不动） */
+  function fdDecorateItems(items, owners) {
+    let n = 0;
+    owners.forEach((el, idx) => {
+      if (!el) return;
+      el.classList.add('fd-item');
+      el.setAttribute('data-item-id', String((items[idx] && items[idx].id) || ''));
+      el.setAttribute('data-item-no', String(idx + 1));
+      n += 1;
+    });
+    return n;
+  }
+
+  /** 选中一条：清单行 + 正文里那条各自高亮（两处同一状态，避免"点了没反应"） */
+  function fdSelectItem(box, itemId, opts) {
+    const st = box && box.fdItems;
+    if (!st || !itemId) return false;
+    if (!st.items.some((it) => it && it.id === itemId)) return false;
+    st.selected = itemId;
+    const panel = fdQ(box, '.fd-items');
+    if (panel) {
+      panel.querySelectorAll('.fd-item-row').forEach((row) => {
+        row.classList.toggle('fd-item-active', row.getAttribute('data-item-id') === itemId);
+      });
+    }
+    const dc = fdQ(box, '.fd-detail-content');
+    if (dc) {
+      dc.querySelectorAll('.fd-item-active').forEach((el) => el.classList.remove('fd-item-active'));
+      const owner = dc.querySelector('[data-item-id="' + itemId + '"]');
+      if (owner) {
+        owner.classList.add('fd-item-active');
+        if (!(opts && opts.silent) && owner.scrollIntoView) {
+          try { owner.scrollIntoView({ block: 'nearest' }); } catch (e) { /* 老环境不支持对象参：忽略 */ }
+        }
+      }
+    }
+    if (!(opts && opts.silent)) setStatus('已选中条目 ' + itemId + '（' + (st.nodeId || '') + '#' + itemId + '）');
+    return true;
+  }
+
+  /** 复制值：**唯一实现**（`节点id#条目id` —— 复制键、行的 data-copy、读数三处同源） */
+  function fdCopyValue(box, itemId) {
+    return String((box && box.fdItems && box.fdItems.nodeId) || '') + '#' + String(itemId || '');
+  }
+
+  function fdCopyFallback(value, done, why) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.setAttribute('aria-hidden', 'true');
+      ta.style.position = 'fixed';
+      ta.style.left = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return done(ok, ok ? 'execCommand' : 'execCommand-refused', why);
+    } catch (e) {
+      return done(false, 'no-clipboard:' + ((e && e.message) || e), why);
+    }
+  }
+
+  /** 复制一条的 `节点id#条目id`；失败**不静默**（状态栏说清用了哪条路、为什么没成）
+   *
+   * ⚠️ **两条通道都要窗口焦点**：`navigator.clipboard` 与 `execCommand('copy')` 在**无焦点的隐藏窗口**
+   * 里都会"返回成功、却什么都没写进系统剪贴板"（Chromium 的已知行为；本工程的离屏冒烟窗口按纪律
+   * **不抢焦点** ⇒ 这一档在冒烟环境里**采不到真值**）。所以 `lastCopy` 里多带两个**诊断**字段
+   * （`focus` / `why`）：成功判定仍然只看 `ok` 与 `value`，但"为什么只能走兜底"要看得见 ——
+   * 那正是"自报成功"与"真的写进去了"之间唯一的区别。 */
+  function fdCopyItem(box, itemId) {
+    const value = fdCopyValue(box, itemId);
+    const done = (ok, how, why) => {
+      if (box && box.fdItems) {
+        box.fdItems.lastCopy = {
+          value: value, ok: !!ok, how: how,
+          focus: (typeof document.hasFocus === 'function') ? document.hasFocus() : null,
+          why: why || ''
+        };
+      }
+      setStatus(ok ? ('已复制 ' + value) : ('复制失败（' + how + '）：' + value), !ok);
+      return !!ok;
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(value)
+          .then(() => done(true, 'clipboard', ''))
+          .catch((e) => fdCopyFallback(value, done, 'navigator.clipboard: ' + ((e && e.message) || e)));
+      }
+      return fdCopyFallback(value, done, 'navigator.clipboard 不存在（非安全上下文？）');
+    } catch (e) {
+      return fdCopyFallback(value, done, 'navigator.clipboard 抛错: ' + ((e && e.message) || e));
+    }
+  }
+
+  /** 造一行（**DOM API 拼**，不用 innerHTML —— 清单里全是数据，转义漏一处就是注入） */
+  function fdBuildRow(box, node, it, idx, st) {
+    const itemId = (it && it.id) || '';
+    const row = document.createElement('div');
+    row.className = 'fd-item-row';
+    row.setAttribute('data-item-id', itemId);
+    row.setAttribute('data-item-no', String(idx + 1));
+    row.setAttribute('data-copy', node.id + '#' + itemId);
+    row.title = '点这条 ⇒ 在正文里定位并高亮；右侧 ⧉ 复制「节点id#条目id」';
+    const add = (cls, text, title) => {
+      const s = document.createElement('span');
+      s.className = cls;
+      s.textContent = text;
+      if (title) s.title = title;
+      row.appendChild(s);
+      return s;
+    };
+    add('fd-item-no', String(idx + 1));
+    add('fd-item-type', String((it && it.type) || '?'));
+    add('fd-item-snippet', fdItemSnippet(it) || '（正文为空）');
+    // 条目级标签 / 出处 / 核验：**有才显示**（没有就不显示，不造噪音字段）
+    if (it && Array.isArray(it.tags) && it.tags.length) {
+      const tags = it.tags.filter((t) => typeof t === 'string' && t.trim());
+      if (tags.length) { add('fd-item-tags', tags.map((t) => '#' + t).join(' '), '条目级标签'); st.counts.tags += 1; }
+    }
+    const srcs = fdSrcList(it);
+    if (srcs.length) { add('fd-item-src', '📄 ' + srcs.join(' · '), '出处：' + srcs.join(' · ')); st.counts.src += 1; }
+    const v = it && it.verified;
+    if (v && typeof v === 'object') {
+      const how = String(v.how == null ? '' : v.how);
+      const by = String(v.by == null ? '' : v.by);
+      const at = String(v.at == null ? '' : v.at);
+      add('fd-item-verified', '✔ 已核', '核验：' + how + (by ? '｜' + by : '') + (at ? '｜' + at : ''));
+      st.counts.verified += 1;
+    }
+    const copy = document.createElement('button');
+    copy.className = 'fd-item-copy';
+    copy.type = 'button';
+    copy.setAttribute('data-copy', node.id + '#' + itemId);
+    copy.textContent = '⧉';
+    copy.title = '复制 ' + node.id + '#' + itemId;
+    copy.addEventListener('click', (e) => { e.stopPropagation(); fdCopyItem(box, itemId); });
+    row.appendChild(copy);
+    row.addEventListener('click', (e) => {
+      if (e.target && e.target.closest && e.target.closest('.fd-item-copy')) return;  // 复制键自己处理
+      fdSelectItem(box, itemId);
+    });
+    return row;
+  }
+
+  /** 清单（表头 + 每条一行） */
+  function fdBuildPanel(box, node, items, st) {
+    const panel = fdItemsPanel(box);
+    if (!panel) return 0;
+    panel.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'fd-items-head';
+    const count = document.createElement('span');
+    count.className = 'fd-items-count';
+    count.textContent = '条目 ' + items.length + ' 条';
+    head.appendChild(count);
+    const hint = document.createElement('span');
+    hint.className = 'fd-items-hint';
+    hint.textContent = st.aligned
+      ? '（下面正文里每条各自成段）'
+      : '（正文与条目暂对不上，只列清单：' + st.reason + '）';
+    head.appendChild(hint);
+    panel.appendChild(head);
+    items.forEach((it, idx) => panel.appendChild(fdBuildRow(box, node, it, idx, st)));
+    return items.length;
+  }
+
+  /** 正文里的**点击选中**（挂在 `.fd-detail-content` 上，**只绑一次**：框是复用的） */
+  function fdBindContentClick(box) {
+    if (box.fdItemsClickBound) return false;
+    const dc = fdQ(box, '.fd-detail-content');
+    if (!dc) return false;
+    box.fdItemsClickBound = true;
+    dc.addEventListener('click', (e) => {
+      const el = (e.target && e.target.closest) ? e.target.closest('[data-item-id]') : null;
+      if (!el) return;
+      fdSelectItem(box, el.getAttribute('data-item-id'));
+    });
+    return true;
+  }
+
+  /**
+   * 详情框渲染的**条目层入口**（由 `renderFdBox` 调用，紧跟 `dc.innerHTML = detail` 之后）。
+   * 未条目化节点 ⇒ 只清掉上一位节点留下的清单，**别的一个字节都不加**（回归判据）。
+   * @param {object} box 详情框（`{el, node, …}`）
+   * @param {object} node 节点（`items` 在 `node.items` 或 `node.data.items`）
+   * @returns {object|null} 读数（条目化时）
+   */
+  function renderFdItems(box, node) {
+    const items = fdItemsOf(node);
+    const dc = fdQ(box, '.fd-detail-content');
+    if (!items || !dc) { fdItemsClear(box); return null; }
+    const prev = box.fdItems;
+    const same = !!(prev && prev.nodeId === node.id);
+    const st = {
+      nodeId: node.id,
+      items: items,
+      aligned: false,
+      reason: '尚未比对正文',
+      selected: same ? (prev.selected || null) : null,
+      lastCopy: same ? (prev.lastCopy || null) : null,
+      counts: { tags: 0, src: 0, verified: 0 }
+    };
+    box.fdItems = st;
+    // ① 正文归属（fail-open：对不上就一个字都不贴）
+    const al = fdAlignItems(dc, items);
+    st.aligned = al.ok;
+    st.reason = al.reason;
+    if (al.ok) fdDecorateItems(items, al.owners);
+    // ② 清单
+    st.rows = fdBuildPanel(box, node, items, st);
+    // ③ 点击选中（正文 + 清单行两处同一状态）；重绘保留原来的选中（那一条还在才留）
+    fdBindContentClick(box);
+    if (st.selected && items.some((it) => it && it.id === st.selected)) {
+      fdSelectItem(box, st.selected, { silent: true });
+    } else {
+      st.selected = null;
+    }
+    return fdItemsState(box);
+  }
+
+  /**
+   * 读数（冒烟断言与排查用；**不是**判据本身）：条目数 / 清单行数 / 正文归属数 / 是否对齐 / 选中 / 上次复制。
+   */
+  function fdItemsState(box) {
+    const st = box && box.fdItems;
+    if (!st) return { itemized: false };
+    const dc = fdQ(box, '.fd-detail-content');
+    const panel = fdQ(box, '.fd-items');
+    const attrs = (root, sel, name) => (root
+      ? Array.prototype.map.call(root.querySelectorAll(sel), (el) => el.getAttribute(name)) : []);
+    return {
+      itemized: true,
+      nodeId: st.nodeId,
+      count: st.items.length,
+      ids: st.items.map((it) => (it && it.id) || null),
+      rows: panel ? panel.querySelectorAll('.fd-item-row').length : 0,
+      rowIds: attrs(panel, '.fd-item-row', 'data-item-id'),
+      aligned: !!st.aligned,
+      reason: st.aligned ? '' : (st.reason || ''),
+      decorated: dc ? dc.querySelectorAll('[data-item-id]').length : 0,
+      contentIds: attrs(dc, '[data-item-id]', 'data-item-id'),
+      marks: { tags: st.counts.tags, src: st.counts.src, verified: st.counts.verified },
+      selected: st.selected || null,
+      copyValue: st.selected ? fdCopyValue(box, st.selected) : null,
+      lastCopy: st.lastCopy || null
+    };
+  }
+
   /* —— 只转发「定义在其他文件」的函数（其他模块后加载，故用包装函数而非解构）—— */
   const fdQ = (box, sel) => MM.fdQ(box, sel);
   const escHtml = (s) => MM.escHtml(s);
@@ -345,4 +739,10 @@
   MM.observeNodeLayer = observeNodeLayer;
   MM.renderFdBox = renderFdBox;
   MM.openLocalPath = openLocalPath;
+  // 条目层（v3）：清单/归属/选中/复制的对外入口（冒烟断言与关联视图跳转都用这四个）
+  MM.renderFdItems = renderFdItems;
+  MM.fdItemsState = fdItemsState;
+  MM.fdItemsClear = fdItemsClear;
+  MM.fdSelectItem = fdSelectItem;
+  MM.fdCopyItem = fdCopyItem;
 })();

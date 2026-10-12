@@ -17,6 +17,9 @@
  *   I. `render-detail`：**幂等**（已一致 ⇒ `changed:0` 且盘上逐字节不变）；
  *   J. 拒绝的出口必须**指路**（item-* / migrate / links-prune / assoc-prune）；
  *   K. `--idem` 重放 ⇒ 不重复执行、回显含「幂等命中」、项目文件逐字节不变、日志只多 1 条。
+ *   L. `--json` 的**报文纪律**（契约 §3）：`item-remove` 带 `--clean-*` 真清理时 stdout
+ *      只许有**一份**可解析 JSON（清理结果进 `cleaned`），不再是"半截文本 + JSON"；
+ *      含**结构判据**（JSON 档下 `ctx.out` 一次都没被调）与**注入证明**（见该段头注）。
  *
  * ## ⚠️ 当前读数（交付时如实登记：27 passed / 8 failed）
  * 8 条红**全部**来自两处**本流之外的**依赖，不是 S2 代码的问题（S2 自己的差异全部绿）：
@@ -863,6 +866,188 @@ describe('S2-F 被引用的条目：默认拒绝 + 点名引用者 + --clean-* �
     expect(idsOf(N_REF)).not.toContain(itemId);
     expect(nodeOf(N_REF).items.some((x) => x.id === itemId)).toBe(false);
     expect(run('validate', P).code).toBe(0);
+  });
+});
+
+/* ============================================================================
+ * L. `--json` 的报文纪律（契约 §3）：stdout 只许有**一份**可解析 JSON
+ *
+ * （放在 F 之后、不另起文件末尾：它与 F 是**同一条命令**的两面 —— F 管"默认拒绝 / 显式清理"，
+ *   本段管"清理结果在 JSON 档下的形态"。文件头的清单里它登记为 **L**。）
+ *
+ * 缺陷（S4 实测发现）：`item-remove` 带 `--clean-links/--clean-assoc` 真清理时，先
+ * `ctx.out('已同步清理链接…')` 再 `emit()` ⇒ stdout 成了"半截文本 + JSON" ⇒ 解析失败。
+ * MCP 因此不敢在 `item_remove` 上透传 `--json`（`scripts/mcp-server.js` 那边留着注释）——
+ * 那等于把"我清理了什么"这条事实从机器接口上抹掉。
+ *
+ * ⚠️ 修法**不是**"把两行 `ctx.out` 挪到 `emit()` 之后"：`ctx.out` 在 `--json` 下**照常**
+ * 写 stdout（`cli/core.js` 的 `out` 不看 `args.json`）⇒ 挪位置只是把"文本 + JSON"换成
+ * "JSON + 文本"，消费者**照样**解析失败。按本工程既有口径（§I 的 render-detail：
+ * **文本形态说人话、JSON 形态给字段**）：文本照旧**分行**打印，JSON 把同一份结果放进
+ * `cleaned` —— 信息一条不少，只是换了容器。
+ *
+ * 断言分三层，缺一层就只是"看起来绿"：
+ *   ① 端到端：`JSON.parse(stdout)` 必须成功，且 `cleaned` 里有清理结果；
+ *   ② 结构：**假 ctx 分开数两条通道** ⇒ JSON 档下 `ctx.out` 一次都没被调（谁挪回去谁红）；
+ *   ③ 注入：把修复前那半截文本加回去 ⇒ 同一句 `JSON.parse` 必红（判据不是空转）。
+ * ========================================================================== */
+describe('S2-L `--json` 的报文纪律：清理行不许先打出去', () => {
+  const NJ = 'it-s2-json-ref';        // 被引用条目所在节点
+  const NL = 'it-s2-json-linker';     // 引用者（那条边挂在它上面）
+  const NO = 'it-s2-json-other';      // 关联篇的第三个成员（让 assoc 剪完仍有 2 个，走 touched 档）
+
+  const ensure = (id, topic) => {
+    if (nodeOf(id)) return;
+    expect(run('add', P, 'root', '--id', id, '--topic', topic).code).toBe(0);
+  };
+  /** 造状态：NJ 上一条新条目 + NL 上一条指向它的**条目级**链接（与 F 段同款，直接改盘造边） */
+  const arm = () => {
+    ensure(NJ, 'S2 JSON 被引用条目');
+    ensure(NL, 'S2 JSON 引用者');
+    // 先把 NJ 清空：本段任何一处红都会**跳过收尾**（假 ctx 那一段尤其），盘上可能还留着
+    // 上一次那条 —— 不清掉，一处红会把后面几段连坐成"假红"（读数要能分得清主次）。
+    // 顺带它也钉住"清理真的生效"（每一条都必须 exit 0）。
+    itemsOf(NJ).forEach((x) => {
+      expect(run('item-remove', P, NJ, x.id, '--clean-links', '--clean-assoc').code).toBe(0);
+    });
+    const added = run('item-add', P, NJ, '--html', '<p>JSON 档的那一条</p>');
+    expect(added.code).toBe(0);
+    const itemId = itemIdFrom(added.out);
+    const raw = readJson(P);
+    (function patch(n) {
+      if (n.id === NL) n.links = [{ project: P, id: NJ, item: itemId, caption: '指向该条目' }];
+      (n.children || []).forEach(patch);
+    })(raw.data);
+    fs.writeFileSync(projFile(P), JSON.stringify(raw, null, 2));
+    return itemId;
+  };
+  /** 把 NL 上的边摘掉（关联篇只留 assoc 一处引用 —— 否则剪完 assoc 仍剩一条悬挂的链接边） */
+  const unlink = () => {
+    const raw = readJson(P);
+    (function patch(n) { if (n.id === NL) delete n.links; (n.children || []).forEach(patch); })(raw.data);
+    fs.writeFileSync(projFile(P), JSON.stringify(raw, null, 2));
+  };
+
+  /**
+   * 假 ctx：只提供 `itemRemove` 真正用到的那几项，**把两条输出通道分开计数**。
+   * 为什么值得手搭一个（house style，见 `tests/dsh-ask.test.js` 的 `outJson`）：
+   * `JSON.parse` 只是间接证据；"JSON 档下 `ctx.out` **一次都没被调**"是**结构证据** ——
+   * 谁把 `ctx.out` 挪回去、或漏了 `if (!ctx.args.json)` 守卫，它立刻红。
+   */
+  function fakeCtx(data, args) {
+    const calls = { out: [], json: [], idem: undefined };
+    const ctx = {
+      args: args,
+      projectName: P,
+      PROJECTS_DIR: SANDBOX,
+      error(msg) { throw new Error(msg); },
+      mutate(fn) { return fn(data); },          // 只跑改动函数，**不写盘**（这一档只验通道）
+      tree: {
+        find(root, id) {
+          return (function w(n) {
+            if (!n) return null;
+            if (n.id === id) return n;
+            for (const c of (n.children || [])) { const r = w(c); if (r) return r; }
+            return null;
+          })(root);
+        }
+      },
+      out(s) { calls.out.push(String(s)); },
+      outJson(o) { calls.json.push(o); },
+      setIdemResult(v) { calls.idem = v; }
+    };
+    return { ctx: ctx, calls: calls };
+  }
+
+  it('★`--clean-links` + `--json` ⇒ stdout 是**一份** JSON，清理结果在 `cleaned` 里', () => {
+    const itemId = arm();
+    const r = run('item-remove', P, NJ, itemId, '--clean-links', '--json');
+    expect(r.code).toBe(0);
+    expect(r.out.slice(0, 1)).toBe('{');                 // 首字符就是 `{`：前面一个文本字符都没有
+    const obj = JSON.parse(r.out);                       // ← 判据本体：必须能**一次性**解析
+    expect(obj.ok).toBe(true);
+    expect(obj.itemId).toBe(itemId);
+    expect(obj.items).toBe(0);
+    // 清理结果**进了 JSON**（不是只在文本里）：机器消费者要的正是"清理了哪几条"
+    expect(obj.cleaned).toBeTruthy();
+    expect(obj.cleaned.links).toHaveLength(1);
+    expect(obj.cleaned.links[0].node).toBe(NL);          // 点名**引用者**
+    expect(obj.cleaned.links[0].target).toBe(P + '/' + NJ);
+    expect(obj.cleaned.links[0].item).toBe(itemId);      // 以及**哪一层**（条目级，不是节点级）
+    expect(obj.cleaned.assoc).toBeUndefined();           // 没清 assoc ⇒ 不产生噪音键
+    expect(r.out).not.toContain('已同步清理链接');        // 文本形态的话不许混进来
+    expect(nodeOf(NL).links).toBeUndefined();            // 边确实剪了（不是只报了个数）
+    expect(run('validate', P).code).toBe(0);
+  });
+
+  it('文本形态**一个字没变**：清理话照旧分行打印（行数与措辞与修复前逐字相同）', () => {
+    const itemId = arm();
+    const r = run('item-remove', P, NJ, itemId, '--clean-links');
+    expect(r.code).toBe(0);
+    const lines = r.out.split('\n').filter(Boolean);
+    expect(lines).toHaveLength(2);                       // 就两行：清理行 + 收尾行
+    expect(lines[0]).toBe('已同步清理链接：' + NL + ' → ' + P + '/' + NJ);
+    expect(lines[1]).toBe('已删除条目 ' + itemId + '（节点 ' + NJ + '，剩 0 条）');
+  });
+
+  it('★结构判据（假 ctx 分开数两条通道）：`--json` 下 `ctx.out` **一次都没被调**', () => {
+    const itemId = arm();
+    const j = fakeCtx(readJson(P), {
+      _: ['item-remove', NJ, itemId], json: true, cleanLinks: true, cleanAssoc: false
+    });
+    itemCmd.itemRemove(j.ctx);
+    expect(j.calls.json).toHaveLength(1);                // JSON 通道：恰好一份对象
+    expect(j.calls.out).toEqual([]);                     // ★文本通道：一次都没走
+    expect(j.calls.json[0].cleaned.links).toHaveLength(1);
+
+    // 对照组：**同一份盘上数据**换文本档 ⇒ 同一个假 ctx 必须**看得见**那两行。
+    // 没有它，"out 是空数组"也可能只是探针失灵；有了它，上面那条才有判别力。
+    const t = fakeCtx(readJson(P), {
+      _: ['item-remove', NJ, itemId], json: false, cleanLinks: true, cleanAssoc: false
+    });
+    itemCmd.itemRemove(t.ctx);
+    expect(t.calls.json).toEqual([]);
+    expect(t.calls.out).toHaveLength(2);                 // 清理行 + 收尾行
+    expect(t.calls.out[0]).toContain('已同步清理链接：');
+    expect(t.calls.out[1]).toContain('已删除条目 ' + itemId);
+    // 两趟都只跑了改动函数（假 ctx 不写盘）⇒ 盘上仍是"待清理"的状态
+    expect(idsOf(NJ)).toContain(itemId);
+    expect(nodeOf(NL).links).toHaveLength(1);
+    // 收尾：假 ctx 不写盘，真跑一次把它清掉（后面两段还要用同一对节点重新造状态）
+    expect(run('item-remove', P, NJ, itemId, '--clean-links').code).toBe(0);
+  });
+
+  it('`--clean-assoc` + `--json` 同款：关联清理也进 `cleaned`，stdout 仍是一份 JSON', () => {
+    const itemId = arm();
+    unlink();                                            // 这一篇只留 assoc 一处引用
+    ensure(NO, 'S2 JSON 关联第三成员');
+    const raw = readJson(P);
+    raw.assoc = [{ id: 'a-s2-json', title: 'S2 JSON 关联', members: [
+      { project: P, id: NJ, item: itemId }, { project: P, id: NL }, { project: P, id: NO }
+    ] }];
+    fs.writeFileSync(projFile(P), JSON.stringify(raw, null, 2));
+
+    const r = run('item-remove', P, NJ, itemId, '--clean-assoc', '--json');
+    expect(r.code).toBe(0);
+    expect(r.out.slice(0, 1)).toBe('{');
+    expect(r.out).not.toContain('已同步清理关联');         // 关联那一行文本同样不许混进来
+    const obj = JSON.parse(r.out);
+    expect(obj.cleaned.assoc).toBeTruthy();
+    expect(obj.cleaned.assoc.touched).toHaveLength(1);    // 关联还在、只少了一个成员
+    expect(obj.cleaned.assoc.touched[0]).toEqual({ id: 'a-s2-json', removed: 1 });
+    expect(obj.cleaned.links).toBeUndefined();            // 没清链接 ⇒ 不产生噪音键
+    expect(readJson(P).assoc[0].members).toHaveLength(2); // 真剪了成员（不是只报了个数）
+    expect(run('validate', P).code).toBe(0);
+  });
+
+  it('★注入证明：把"修复前那半截文本"加回 stdout ⇒ 同一句 `JSON.parse` 必红', () => {
+    const itemId = arm();
+    const r = run('item-remove', P, NJ, itemId, '--clean-links', '--json');
+    expect(() => JSON.parse(r.out)).not.toThrow();       // 修好后：一份完整 JSON
+    // 修复前 stdout 的**实际形态**（S4 实测的那种"半截文本 + JSON"）：一行清理话 + 同一份 JSON
+    const before = '已同步清理链接：' + NL + ' → ' + P + '/' + NJ + '\n';
+    expect(() => JSON.parse(before + r.out)).toThrow();  // 加回去 ⇒ 必红
+    expect((before + r.out).slice(0, 1)).not.toBe('{');  // 首字符判据同样抓得住它
   });
 });
 

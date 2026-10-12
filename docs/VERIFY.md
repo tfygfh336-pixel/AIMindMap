@@ -15,11 +15,11 @@
 
 | 事实 | 值 | 来源 |
 |------|----|------|
-| CLI 命令数 | 62 | `cli/registry.js`（`registry.list().length`） |
-| MCP 工具数 | 45 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 1206 用例 / 62 文件 | `tests/*.test.js`（vitest） |
-| CLI 集成断言 | 377 | `scripts/cli-integration.js` |
-| 冒烟断言 | 204 | `scripts/smoke-assertions.js` |
+| CLI 命令数 | 65 | `cli/registry.js`（`registry.list().length`） |
+| MCP 工具数 | 51 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
+| 单元测试 | 1367 用例 / 67 文件 | `tests/*.test.js`（vitest） |
+| CLI 集成断言 | 427 | `scripts/cli-integration.js` |
+| 冒烟断言 | 212 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
 | 版本号 | 0.18.0 | `package.json` / `src/config.js` / `package-lock.json`（须一致） |
 

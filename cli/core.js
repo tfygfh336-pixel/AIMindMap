@@ -275,7 +275,12 @@ const WRITE_COMMANDS = Object.freeze([
   // 条目层写入（cli/commands/item.js / migrate.js，契约 docs/ITEM-MODEL.md §3）
   // 说明：这份清单是**手写的**（见上面注释：逐条登记才能被 `--idem` 的归属守门认得），
   // 新增写命令必须**同批**把名字加进来，否则它带 `--idem` 会被当成"只读命令"拒掉。
-  'item-add', 'item-edit', 'item-remove', 'item-move', 'item-order', 'render-detail'
+  'item-add', 'item-edit', 'item-remove', 'item-move', 'item-order', 'render-detail',
+  // `migrate`（v2 → v3 条目层迁移）**也写盘**：不写这一行，它带 `--idem` 会被当成"只读命令"响亮拒绝
+  'migrate',
+  // `recheck`（条目复校）**也会写盘**：显式 `--write-verified` 时写回 verified{at,by,how}。
+  // 不写这一行，它带 `--idem` 会被当成"只读命令"响亮拒绝（`health` 不写盘，故不在本清单里）。
+  'recheck'
 ]);
 
 /**
@@ -352,7 +357,11 @@ function optionFlag(key) {
  */
 function createContext(argv, meta) {
   const args = parseArgs(argv);
-  const projectName = args._[0];
+  // ⚠️ `projectName` 的默认口径是"**第一个位置参数**"（绝大多数命令如此）；位置参数不是 `_[0]` 的命令
+  //    （目前只有 `migrate items <项目>`：`_[0]` 是子命令名 `items`）必须在**读盘/写盘之前**用
+  //    `ctx.useProject(<真项目名>)` 自报 —— 否则"幂等键按哪个项目查/落"会落到一个不存在的项目名上，
+  //    而幂等守卫是**静默**的（查不到 = 不命中 ⇒ 第二次真又执行一遍，"重试安全"是假的）。
+  let projectName = args._[0];
   // 注意：`projectName` 必须在 store 之前取出 —— 校验器要拿它做 selfProject。
   // （`import-json` 的 `_[0]` 是文件路径而不是项目名，故校验器用的是 store.write 传进来的
   //   真实目标项目名 `name`，不是这里的闭包值。）
@@ -450,6 +459,23 @@ function createContext(argv, meta) {
      * 走 `ctx.store.write` 而不走 `ctx.write`）。少了这个，那些写入在日志里会显示成 `unknown`。
      */
     writer,
+
+    /**
+     * **自报项目名**：位置参数不是 `_[0]` 的命令（见文件头 `projectName` 的说明）必须在**读盘/写盘
+     * 之前**调它。影响面只有一处：**幂等键按哪个项目查/落**（`replayCheck` 的 `readChangeEntries`
+     * 与 `flushIdemRecord` 的落点）。
+     *
+     * 为什么要有这个口子：`migrate items <项目>` 的 `_[0]` 是子命令名 `items`，于是幂等查询会去
+     * "项目 `items`"的变更日志里找键 —— **永远查不到**，而"没命中"是**静默**的：第二次调用看起来
+     * 正常（exit 0）、其实**又真的执行了一遍**，调用方以为的"重试安全"根本不存在（实测抓到的形状：
+     * 第二次 `--json` 输出的是**首跑那份报告**、没有 `hit` 字段）。
+     */
+    useProject(name) {
+      if (name === undefined || name === null || String(name) === '') {
+        throw new Error('useProject 需要一个项目名');
+      }
+      projectName = String(name);
+    },
 
     out(text) {
       process.stdout.write(text + '\n');

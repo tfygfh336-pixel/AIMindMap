@@ -429,6 +429,9 @@
     let box = fdBoxes.find((b) => b.kind === 'assoc' && b.assoc && b.assoc.id === assoc.id);
     if (!box) box = fdBoxes.find((b) => b.kind === 'assoc' && b.lock === FD_LOCK.FOLLOW);
     if (!box) box = createFdBox();
+    // 这个框可能刚才是**节点详情框**（跟随框会在两种页面之间复用）⇒ 先摘掉条目清单，
+    // 否则上一位节点的"逐条"清单会挂在这篇关联笔记上（张冠李戴，比不显示更糟）。
+    if (MM.fdItemsClear) MM.fdItemsClear(box);
     box.kind = 'assoc';
     box.assoc = assoc;
     box.node = anchorNode || box.node;      // 定位靠它；没有锚点就沿用上一个
@@ -456,6 +459,25 @@
     if (!box || !box.el || !box.el.parentElement) return false;
     renderFdBox(box, box.node);
     return true;
+  }
+
+  /** 打开某节点的详情框，并**选中它的某一条**（条目层 v3）。
+   *
+   *  用途：从别处**指到具体条目**（关联视图/检索结果跳进来时高亮那一条）。
+   *  为什么放在这里：它只是"既有的 showDetail + 条目层的选中"两步编排 ——
+   *  **没有新增 IPC / 命令**（渲染层只读既有通道：`node.items` 来自项目数据本身）。
+   *  @returns {boolean} 是否真的选中了（节点或条目不存在 ⇒ false，并在状态栏说明）
+   */
+  function showDetailItem(nodeId, itemId) {
+    const jm = state.jm;
+    if (!jm || !nodeId) return false;
+    const node = MM.adapter.getNode(jm, nodeId);
+    if (!node) { MM.setStatus('节点不在当前视图：' + nodeId, true); return false; }
+    const box = showDetail(node);
+    if (!box || !MM.fdSelectItem) return false;
+    const ok = MM.fdSelectItem(box, itemId);
+    if (!ok) MM.setStatus('节点 ' + nodeId + ' 上没有条目 ' + itemId + '（未选中）', true);
+    return !!ok;
   }
 
   /* —— 只转发「定义在其他文件」的函数（其他模块后加载，故用包装函数而非解构）—— */
@@ -487,4 +509,5 @@
   MM.showAssocPage = showAssocPage;
   MM.refreshAssocPage = refreshAssocPage;
   MM.refreshNodeDetailBox = refreshNodeDetailBox;
+  MM.showDetailItem = showDetailItem;
 })();

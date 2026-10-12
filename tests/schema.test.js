@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { validateProject } from '../src/schema.js';
+import { renderDetail } from '../src/item-model.js';
 
 const wrap = (data, meta) => ({ meta: meta || { name: 'x' }, format: 'node_tree', data });
 
@@ -238,6 +239,93 @@ describe('schema.validateProject(..., selfProject)', () => {
       assoc: [{ id: 'a-1', members: [{ project: 'P', id: 'a' }, { project: 'P', id: 'b' }] }]
     };
     expect(validateProject(pack, root, 'P').ok).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------
+ * 条目级悬挂：**节点还在、条目已被删**（契约 §9 的 G2 ④ / `docs/ITEM-MODEL.md` §7）
+ *
+ * 为什么必须有这一档（缺口是实测出来的，不是推测）：`nodeExists` 只回 'yes'/'no'，
+ * 拿不到目标节点里的 `items` ⇒ `links[].item` 指的那一条被删掉后**目标节点还在**，
+ * 于是 G2 判不出来（补丁前实测：真悬挂、`validate` 仍 exit 0）。补丁给 `src/schema.js`
+ * 加了 `targetNodeOf`（把节点对象带出来）+ 一档判断 —— 判据**仍只有** `src/relations.js`
+ * 的 `targetHasItem` 那一份（本文件与 schema.js 都不另写第二处"条目在不在"）。
+ *
+ * 本组钉住两侧：**判红并点名 `项目/节点#条目`** 与 **零误报**（指向存在的那条 ⇒ 0 错）。
+ * 与 `tests/link-item.test.js` 的 F2 是同一件事的两端：那边走 CLI（退出码），
+ * 这边直接问 `validateProject`（报文逐字）。
+ * ------------------------------------------------------------ */
+describe('schema · 条目级悬挂（节点还在、条目已被删）', () => {
+  const tmpDirs = [];
+  const mkRoot = () => {
+    const r = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-schema-item-'));
+    tmpDirs.push(r);
+    return r;
+  };
+  const writeProj = (root, name, pack) => {
+    const dir = path.join(root, name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, name + '.json'), JSON.stringify(pack, null, 2), 'utf8');
+  };
+  afterAll(() => { tmpDirs.forEach((d) => { try { fs.rmSync(d, { recursive: true, force: true }); } catch (e) { /* ignore */ } }); });
+
+  // 目标节点的条目层：一条**真条目** + 与 `renderDetail()` **逐字节一致**的 `detail`
+  // （detail 是派生缓存，必须问唯一渲染实现要 —— 契约 §5.1 明令不许复制那段逻辑）
+  const ITEMS = [{ id: 'i-alive', type: 'text', html: '<p>还在的那一条</p>' }];
+  const nodeB = () => ({
+    id: 'b', topic: 'B',
+    items: ITEMS.map((x) => Object.assign({}, x)),
+    detail: String(renderDetail(ITEMS))
+  });
+  /** 源节点 a 上那条边：`item` 由参数给（'i-alive' = 好边，别的 = 真悬挂） */
+  const packWith = (item) => ({
+    meta: { name: 'P' }, format: 'node_tree',
+    data: { id: 'root', topic: 'R', children: [
+      { id: 'a', topic: 'A', links: [{ project: 'P', id: 'b', item: item }] },
+      nodeB()
+    ] }
+  });
+
+  it('条目级引用指向**存在**的条目 ⇒ 零误报（0 错）', () => {
+    const v = validateProject(packWith('i-alive'), mkRoot(), 'P');
+    expect(v.errors).toEqual([]);
+    expect(v.ok).toBe(true);
+  });
+
+  it('节点还在、条目已被删 ⇒ 判红，且**点名到 `项目/节点#条目`**（不许只写节点 id）', () => {
+    const v = validateProject(packWith('i-gone'), mkRoot(), 'P');
+    expect(v.ok).toBe(false);
+    const msgs = v.errors.join(';');
+    expect(msgs).toMatch(/悬挂链接: P\/b#i-gone 不存在/);   // 点名到条目（不是只到节点 b）
+    expect(msgs).toMatch(/节点还在、条目已被删/);            // 与"节点整个不在"分开报（修法不同）
+    expect(msgs).toMatch(/links-prune/);                    // 判红必须给修法（契约 §9）
+    expect(msgs).toMatch(/i-alive/);                        // 并把该节点现有条目一起给出来
+  });
+
+  it('节点整个不在 ⇒ 报**节点级**那一条，条目档不重复报（同一处坏数据不许报两遍）', () => {
+    const pack = packWith('i-gone');
+    pack.data.children[0].links[0].id = 'nope';
+    const v = validateProject(pack, mkRoot(), 'P');
+    expect(v.ok).toBe(false);
+    expect(v.errors).toHaveLength(1);                       // 有且只有节点级那一条
+    expect(v.errors[0]).toMatch(/悬挂链接: P\/nope 不存在/);
+  });
+
+  it('跨项目（读盘那一档）同款：目标在盘上、条目已被删 ⇒ 判红；换回存在的那条 ⇒ 复绿', () => {
+    const root = mkRoot();
+    writeProj(root, 'Q', { meta: { name: 'Q' }, format: 'node_tree',
+      data: { id: 'root', topic: 'Q', children: [nodeB()] } });
+    const pack = {
+      meta: { name: 'P' }, format: 'node_tree',
+      data: { id: 'root', topic: 'R', children: [
+        { id: 'a', topic: 'A', links: [{ project: 'Q', id: 'b', item: 'i-gone' }] }
+      ] }
+    };
+    const bad = validateProject(pack, root, 'P');
+    expect(bad.ok).toBe(false);
+    expect(bad.errors.join(';')).toMatch(/悬挂链接: Q\/b#i-gone 不存在/);
+    pack.data.children[0].links[0].item = 'i-alive';        // 撤销半步（注入证明）
+    expect(validateProject(pack, root, 'P').errors).toEqual([]);
   });
 });
 

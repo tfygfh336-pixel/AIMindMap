@@ -79,6 +79,112 @@ function duplicateOriginError(where, origin) {
     + '；确实要再来一份：加 --force（若想改的是已有的那一份，请直接 edit 那个节点）';
 }
 
+/* ---------------- 【W19】资源引用的落地与报告（两条导入路共用同一份） ----------------
+ * 分工：`src/markdown.js` 的 `resolveImportRefs` 只回答"这条引用解析成什么样、要不要复制、复制成什么"；
+ * **怎么说给人听**是命令层的事（与 origin 的 `describeOrigin` 同一个分工）。
+ * 两条命令（import-md / import-project）在下方各有一处调用 —— 解析与落地**只有那一份实现** ✓。 */
+
+/** 传给 `resolveImportRefs` 的公共参数（两条命令的差别只有"往哪个项目里落"）。
+ *  ⚠️ `assetDir` / `attachmentDir` 传**函数**：它们内部会 `mkdirSync`，惰性调用才能保证
+ *  "拒绝了/只是预览"时**一个目录都不建**（项目内目录的单源在 `src/data-store.js`，这里不拼路径）。 */
+function refResolveOpts(ctx, name, file) {
+  return {
+    baseDir: path.dirname(path.resolve(file)),        // 相对引用的基准 = md 文件所在目录
+    projectDir: ctx.store.projectDir(name),
+    assetDir: () => ctx.store.assetDir(name),
+    attachmentDir: () => ctx.store.attachmentDir(name)
+  };
+}
+
+/** 一条坏引用的说明（**哪个节点、哪一条引用、原样路径、为什么没解析到**）——报告与拒绝报文共用。 */
+function refIssueLine(r) {
+  return '节点「' + r.nodeTopic + '」（' + markdown.KIND_LABEL[r.kind] + '）' + r.raw + ' —— ' + r.reason
+    + ((r.candidates || []).length ? '；按序试过：' + r.candidates.join('、') : '');
+}
+
+/** 坏引用的**拒绝报文（报错即教程）**：逐条点名 + 给出路 + 说清"一个字都没写"。
+ *  为什么默认**拒绝整份导入**（而不是跳过那一条）：跳过 = 那条引用连同它的正文一起消失
+ *  （"用户 md 里有、项目里没有"，且难以事后发现）；拒绝则是**干净**的 —— 判据在规划阶段就停，
+ *  不复制、不建目录、不写盘，修好再导一次即可，没有任何半成品留在盘上 ✓（响亮 > 静默）。
+ *  出路必须具体到命令：光说"文件不存在"等于把问题丢回给调用方（本工程最忌讳的那种报错）。 */
+function refBlockedError(report, file) {
+  const missing = report.blocked.filter((r) => r.status === 'missing');
+  const badExt = report.blocked.filter((r) => r.status === 'bad-ext');
+  const lines = [
+    '这份文档（' + path.basename(file) + '）里有 ' + report.blocked.length + ' 条资源引用落不到项目里，'
+      + '导入**没有写盘**（不会多出一条指向不存在文件的坏引用；项目文件逐字节没动）：',
+    report.blocked.map((r) => '  · ' + refIssueLine(r)).join('\n')
+  ];
+  const dir = path.dirname(path.resolve(file));
+  if (missing.length) {
+    lines.push('出路（任一）：');
+    lines.push('  ① 把文件放到 md 同目录的 assets/（图片）或 attachments/（附件）下 —— 文件名与引用一致'
+      + '（' + path.join(dir, 'assets') + ' 或 ' + path.join(dir, 'attachments') + '），再导一次（最省事）；');
+    lines.push('  ② 先挂上再导：node cli/mm-cli.js add-image <项目> <节点id> --file <绝对路径> --caption "说明"'
+      + '（附件用 add-file），然后把 md 里那几行删掉或改成正文；');
+    lines.push('  ③ 那几行本来就不需要：改成远程链接（https://… —— 本工程**不复制**外链，按正文保留、'
+      + '不阻断导入）或直接删掉，再导一次。');
+  }
+  if (badExt.length) {
+    lines.push('出路：图片格式只支持 ' + markdown.IMAGE_EXT_TEXT + '（与 add-image 同一条规则）'
+      + '—— 先转成 png/webp 再导；或用 add-file 当附件挂（附件不限格式）。');
+  }
+  lines.push('（--force 不能绕过这道闸：它只用来允许"同一份来源再导一次"。这道闸在**复制与写入之前**，'
+    + '所以拒绝时既没有半份项目、也没有多出来的资源文件。）');
+  return lines.join('\n');
+}
+
+/** 成功导入时的资源回显（**如实报告**）：数字汇总 + 逐条（复制成了什么 / 哪条去了详情）。 */
+function printRefReport(out, rep, dry) {
+  if (!rep) return;
+  if (!rep.refs.length) {
+    if (dry) out('资源引用：这份文档里没有图片/附件引用（无）');
+    return;
+  }
+  const parts = [];
+  if (rep.copied.length) parts.push((dry ? '将复制 ' : '已复制 ') + rep.copied.length + ' 个文件进项目');
+  if (rep.inProject.length) parts.push('已在项目内 ' + rep.inProject.length + ' 条（未复制）');
+  if (rep.remote.length) parts.push('非本地引用 ' + rep.remote.length + ' 条（按正文保留）');
+  if (rep.dropped.length) parts.push('坏引用 ' + rep.dropped.length + ' 条（按正文保留）');
+  if (rep.blocked.length) {
+    parts.push('坏引用 ' + rep.blocked.length + ' 条'
+      + (rep.onMissing === 'detail' ? '（按正文保留）' : '（**会拒绝整份导入**）'));
+  }
+  out('资源引用（共 ' + rep.refs.length + ' 条）：' + parts.join('；'));
+  rep.refs.forEach((r) => {
+    const head = '  · 节点「' + r.nodeTopic + '」（' + markdown.KIND_LABEL[r.kind] + '）' + r.raw;
+    if (r.status === 'copy') {
+      out(head + ' → ' + (r.dest || markdown.RESOURCE_DIR[r.kind] + '/（真导时生成新文件名）'));
+    } else if (r.status === 'in-project') {
+      out(head + ' —— 已在项目内，未复制' + (r.file !== r.raw ? '（写法规范化为 ' + r.file + '）' : ''));
+    } else if (r.status === 'remote') {
+      out(head + ' —— ' + r.reason
+        + (dry ? '；真导时**按正文**并入该节点详情' : '；**已按正文**并入该节点详情（未挂进 images/files）'));
+    } else {
+      out('  · ' + refIssueLine(r) + (dry ? '（真导会被拒绝）' : '；已按正文并入该节点详情'));
+    }
+  });
+  if (dry) out('（以上是**预览**：--dry-run 不复制文件、不建目录、不改任何数据 ✓）');
+}
+
+/** 预览用的资源报告（机器可判：`import-project --dry-run --json`）—— 与真导同一份判据。 */
+function refReportJson(rep) {
+  if (!rep) return null;
+  return {
+    total: rep.refs.length,
+    copy: rep.copied.length,
+    inProject: rep.inProject.length,
+    remote: rep.remote.length,
+    missing: rep.blocked.filter((r) => r.status === 'missing').length,
+    badExt: rep.blocked.filter((r) => r.status === 'bad-ext').length,
+    blocked: rep.blocked.map((r) => ({
+      node: r.nodeId, topic: r.nodeTopic, kind: r.kind, ref: r.raw,
+      status: r.status, reason: r.reason, tried: r.candidates
+    })),
+    items: rep.refs.map((r) => ({ node: r.nodeId, kind: r.kind, ref: r.raw, status: r.status, dest: r.dest }))
+  };
+}
+
 module.exports = {
   projects(ctx) {
     const list = ctx.store.list();
@@ -229,7 +335,10 @@ module.exports = {
    *  · **一次 ctx.write** 落盘 ⇒ 中途失败不会留下半个项目 ✓；
    *  · 文档的 1 级标题变成**顶层主题**（"一个文件里几本书 ⇒ 几棵树"在 5a 这一级就成立 ✓）；
    *  · PDF：有书签走书签、**无书签走文字层**（P0 ✓）；两样都没有 ⇒ 转换阶段就**响亮拒绝** ✓；
-   *  · `--dry-run` 只报格式/规模/前几个标题，**不写盘**（可机械验证，也是使用者预览的第一入口 ✓）。 */
+   *  · `--dry-run` 只报格式/规模/前几个标题，**不写盘**（可机械验证，也是使用者预览的第一入口 ✓）。
+   *  · 【W19】md 里的图片/附件引用**落到项目里**（复制进 assets/ / attachments/ + 引用写项目内相对路径，
+   *    命名与格式规则与 `add-image` 同一条）；解析不到源文件 ⇒ **拒绝整份导入**并逐条点名 + 给出路
+   *    （判据在复制与写入**之前**：拒绝时不留半份项目、不多一个资源文件，见 `refBlockedError`）。 */
   importProject(ctx) {
     const name = ctx.projectName;
     if (!name) ctx.error('缺少项目名');
@@ -267,6 +376,14 @@ module.exports = {
     //（第二棵树长得和第一棵不一样，事后无法分辨）；`--force` 是给"我真的要第二份"的显式出口。
     const refused = !!dup && !ctx.args.force;
 
+    /* 【W19】资源引用：dry-run **只规划**（不复制、不建目录、不改树），真导才落地 ——
+     * 两侧是同一个函数、同一个 `ok` ⇒ 不会出现"预览说能导、真导被拒"（见 registry 里 import-dir 的
+     * 同类约定：预览与真导必须同一份判据）。 */
+    const refPlan = ctx.args.dryRun
+      ? markdown.resolveImportRefs(themes, Object.assign({ dryRun: true }, refResolveOpts(ctx, name, file)))
+      : null;
+    const refBlocked = !!(refPlan && !refPlan.ok);
+
     if (ctx.args.dryRun) {
       const heads = conv.md.split('\n').filter((l) => /^#{1,6}\s+\S/.test(l)).slice(0, 8);
       const out = {
@@ -274,10 +391,12 @@ module.exports = {
         pdfSource: conv.source || null,
         title: title, stats: conv.stats, themes: themes.length, nodes: built.addedCount || 0,
         notes: notes,
+        // 资源引用也一并预览（哪条会复制、哪条是远程、哪条落不到项目里 ⇒ 会不会被拒）
+        resourceRefs: refReportJson(refPlan),
         // 来源指纹与"会不会被拒"也一并预览 —— 否则预览说"能导"、真导被拒，是最烦人的那种落差 ✗
         origin: origin,
         duplicate: dup ? { project: dup.project, id: dup.node.id, topic: dup.node.topic } : null,
-        wouldRefuse: refused,
+        wouldRefuse: refused || refBlocked,
         forced: !!ctx.args.force,
         topHeadings: heads.map((l) => l.replace(/^(#+)\s+/, (m, g) => '#'.repeat(g.length) + ' '))
       };
@@ -294,6 +413,7 @@ module.exports = {
           + (ctx.args.force ? '（已给 --force ⇒ 仍会再建一棵）' : '（真导会被拒；真要再建一棵加 --force）'));
       }
       printNotes(ctx.out);
+      printRefReport(ctx.out, refPlan, true);
       ctx.out('前几个顶层主题：');
       themes.slice(0, 10).forEach((t) => ctx.out('  · ' + t.topic));
       return;
@@ -301,6 +421,12 @@ module.exports = {
 
     // ---- 幂等闸门（本批核心）：同一 src + 同一 sha256 二次导入 ⇒ 拒绝并**指名**上次导到哪 ----
     if (refused) ctx.error(duplicateOriginError('项目 ' + dup.project + ' 的节点 ' + dup.node.id, dup.node.origin));
+
+    /* 【W19】资源引用落地：解析 → 规划 → 复制 → 把 `images[].file` / `files[].file` 改写成
+     * **项目内相对路径**（复制这一步的命名/格式规则与 `add-image` 同一条，见 src/markdown.js）。
+     * 坏引用 ⇒ **拒绝整份导入**且此时**一个文件都还没复制、一个目录都还没建**（规划先行）✓。 */
+    const refs = markdown.resolveImportRefs(themes, refResolveOpts(ctx, name, file));
+    if (!refs.ok) ctx.error(refBlockedError(refs, file));
 
     const data = {
       meta: { name: title, author: '', version: MMConfig.APP_VERSION, formatVersion: 2 },
@@ -324,6 +450,8 @@ module.exports = {
     }
     ctx.out('来源指纹: ' + docImport.describeOrigin(origin));
     printNotes(ctx.out);
+    // 【W19】资源回显（如实报告）：复制了什么、哪条已在项目内、哪条远程引用被按正文保留
+    printRefReport(ctx.out, refs);
     ctx.out('打开：node cli/mm-cli.js read ' + name + ' --brief');
   },
 
@@ -570,6 +698,14 @@ module.exports = {
     // 来源痕挂在**这次导入产生的每棵子树的根**上（= `added` 的每一项）：
     // 条数 = 一次导入里的顶层主题数，而不是节点数 ⇒ 代价极低，但"这份文件导过没有"一眼可查 ✓
     added.forEach((n) => { if (n && typeof n === 'object') n.origin = origin; });
+    /* 【W19】资源引用落地（与 `import-project` **同一个函数**）：解析 → 规划 → 复制 →
+     * 把 `images[].file` / `files[].file` 从"md 里的原样字符串"改写成**项目内相对路径**。
+     * 两条顺序硬约束（都对着既有教训）：
+     *   ① **判据不通过就 `ctx.error`**，此时复制一个字节都还没发生（规划先行）⇒ 不会留半份资源；
+     *   ② 复制在 `ctx.mutate` **之外**（同 `cli/commands/assets.js` 的做法）：那个 fn 可能被并发重放，
+     *      放里面会复制出第二份孤儿文件 —— 改好的 `added` 已经捕获进闭包，重放看到的就是同一份 ✓ */
+    const refs = markdown.resolveImportRefs(added, refResolveOpts(ctx, ctx.projectName, file));
+    if (!refs.ok) ctx.error(refBlockedError(refs, file));
     ctx.mutate((cur) => {
       const parentNode = ctx.tree.find(cur.data, parent);
       // 读之后父节点被别人删了（罕见）⇒ 报错而不是凭空造一个父节点出来
@@ -590,6 +726,8 @@ module.exports = {
         + parent + ' 的**详情开头**');
     }
     ctx.out('来源指纹: ' + docImport.describeOrigin(origin));
+    // 【W19】资源回显（如实报告）：复制了什么、哪条已在项目内、哪条远程引用被按正文保留
+    printRefReport(ctx.out, refs);
   },
 
   exportMd(ctx) {

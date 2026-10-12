@@ -1,25 +1,56 @@
 /* ============================================================
  * src/schema.js — 数据格式校验（UMD）
  * ------------------------------------------------------------
- * 校验 projects/<name>/<name>.json（formatVersion 2）：
+ * 校验 projects/<name>/<name>.json（`meta.formatVersion` = 2 或 3）：
  *   - 整体结构（meta/format/data）
  *   - 节点字段（id/topic/children/detail/images/links）
+ *   - **条目层（v3）**：`items[]` 的形状、`items` ↔ `detail` 的派生一致性、`items` ⇄ `detailMode`/`qa[]` 互斥
  *   - id 规范（小写字母/数字/连字符，禁止空白与中文）
+ *   - **条目 id 的全项目唯一性**（`supersededBy` / `links[].item` 只带条目 id ⇒ 不唯一则引用有歧义）
  *   - 图片必填字段（file/caption）
  *   - 跨项目链接悬挂检测（links 指向的 project+id 必须存在）
  *   - 关联笔记（data.assoc）：结构与成员悬挂检测
  * 供 CLI validate / 主进程保存闸门 / 测试三方共用。
+ *
+ * ⚠️ **条目层的判定表在 `docs/ITEM-MODEL.md` §2（三档封闭表）**，本文按它实现，别另立一套：
+ *   有 `items`（含空数组） ⇒ items 是真源、`detail` 是**落盘派生缓存**（必须逐字节等于
+ *                            `renderDetail(items)`）、不得有 `detailMode`、不得有 `qa[]`；
+ *   无 items 且有 `detailMode:'rich'` ⇒ 富文本节点，**不得**出现 items；
+ *   无 items 且无 detailMode ⇒ v2 节点，语义与 v2 完全一致。
+ * 判红的**修法**也由契约指定：`detail` 不一致 ⇒ 跑 `render-detail`（唯一修法）。
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('fs'), require('path'), require('./assoc.js'));
+    // `./relations.js` 注入**只为**条目级悬挂的判据（targetHasItem）—— 见下 §2。
+    // ⚠️ 方向已核：`scripts/dep-direction-check.js` 的 LAYERS 里 `src` 是 rank 1、
+    //    `schema.js` 与 `relations.js` **同层**（同 rank 互不判方向），且
+    //    `src/relations.js` **零 require**（实测 Select-String 无任何 require/import 行）
+    //    ⇒ 不可能造出同层环。实测门禁：131 条相对边全部朝下（或同层）、无环、无图外边 ✓
+    //    （数字要与盘上事实一致：**补丁前 130 条 / 补丁后 131 条** —— 多出的那一条
+    //      **就是本补丁引入的** `require('./relations.js')` 这条同层边）
+    module.exports = factory(require('fs'), require('path'), require('./assoc.js'), require('./item-model.js'),
+      require('./relations.js'));
   } else {
-    root.MMSchema = factory(null, null, root.MMAssoc);   // 浏览器不校验；assoc 可能未加载，下方有守卫
+    // 浏览器不校验；assoc / itemModel / relations 都可能未加载，下方各有守卫
+    // （没有 itemModel 时条目层只判形状，不判 `detail` 一致性 —— 那条判据要求"唯一的渲染实现"，
+    //  不能在别处再写一份；没有 relations 时**跳过**条目级悬挂 —— 门禁在 CI 侧，那里一定有）
+    root.MMSchema = factory(null, null, root.MMAssoc, root.MMItemModel, root.MMRelations);
   }
-})(typeof self !== 'undefined' ? self : this, function (fs, path, assoc) {
+})(typeof self !== 'undefined' ? self : this, function (fs, path, assoc, itemModel, relations) {
   'use strict';
 
   const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+  /** 条目级悬挂的**唯一判据**（契约 §12：与节点级同一处逻辑）。
+   *  ⚠️ **绝不**在本文件再写一份"条目在不在"：第二处表达必然与 S6 那处漂移。 */
+  const targetHasItemOf = (relations && typeof relations.targetHasItem === 'function')
+    ? relations.targetHasItem : null;
+
+  /** 条目 id 的唯一渲染/校验实现（契约 §5.1 明令：**不许复制**那几段逻辑，只能取用） */
+  const renderDetailOf = (itemModel && typeof itemModel.renderDetail === 'function')
+    ? itemModel.renderDetail : null;
+  const validateItemsOf = (itemModel && typeof itemModel.validateItems === 'function')
+    ? itemModel.validateItems : null;
 
   /**
    * 每次校验用**自己的**数组，最后随结果一起返回。
@@ -48,7 +79,14 @@
     if (!data.meta || typeof data.meta !== 'object') err('缺少 meta');
     else {
       if (typeof data.meta.name !== 'string' || !data.meta.name.trim()) err('meta.name 必填');
-      if (data.meta.formatVersion !== undefined && data.meta.formatVersion !== 2) err('meta.formatVersion 必须为 2');
+      // 版本号：**2 与 3 都合法**（契约 §6/§9 第一条）。这是"迁移可回退"的硬前提 ——
+      // 回退 = 恢复迁移前那份 `.aimap.json`（里面是 2）⇒ 恢复之后所有写命令必须照常可用。
+      // 只写 3 或只写 2 都会让另一半数据变成"连读都读不了"，那是把回退路堵死。
+      if (data.meta.formatVersion !== undefined
+        && data.meta.formatVersion !== 2 && data.meta.formatVersion !== 3) {
+        err('meta.formatVersion 必须是 2 或 3（收到 ' + JSON.stringify(data.meta.formatVersion)
+          + '）—— 2 = v2 数据，3 = 已迁移条目层；两者都要接受，否则回退（恢复迁移前的备份）走不通');
+      }
       // 主题布局（可选）：meta.layout = { left: [主题id], right: [主题id] }，决定顶层主题的左右分侧
       if (data.meta.layout !== undefined) {
         if (typeof data.meta.layout !== 'object' || Array.isArray(data.meta.layout)) err('meta.layout 必须是对象');
@@ -104,6 +142,9 @@
         // 同一处重复 id 按祖先层数被**重复报多次**（3 层嵌套报 3 次，实测）。
         validateNode(data.data, err);
         checkIdsAndCycles(data.data, err);
+        // 条目 id 的**全项目唯一性**（契约 §5.1）。放在这里与 checkIdsAndCycles 并列：
+        // 两者都是"必须看整棵树"的判据，节点形状校验管不了它们。
+        checkItemIds(data.data, err);
       }
     }
 
@@ -144,6 +185,62 @@
         }
       };
 
+      /**
+       * 把上面那份"在不在"的判断**再走一遍、但把节点对象带出来**（条目级悬挂需要 `node.items`）。
+       * 为什么必须与 `nodeExists` **共用同一段解析**（而不是再读一次盘）：
+       *   · 同项目**必须走待写数据 `data`**（理由见上：读盘会把刚删掉的节点算成还在）；
+       *   · 跨项目的读盘只发生一次（这里返回对象；`nodeExists` 那边照旧只问在不在）。
+       * 返回值：`{ok:true, node}` | `{ok:false, reason:'no-project'|'no'|'unreadable', detail?}`。
+       * ⚠️ 节点不存在 / 项目读不出来 ⇒ 返回 `{ok:false}` 而**不在这里报错** ——
+       *   那一档上面（节点级）已经报过，重复报会把同一处坏数据报两遍，读者以为有两处坏。
+       */
+      const targetNodeOf = (proj, nodeId) => {
+        if (selfProject && proj === selfProject) {
+          let hit = null;
+          (function findNode(n) {
+            if (!n || hit) return;
+            if (n.id === nodeId) { hit = n; return; }
+            (n.children || []).forEach(findNode);
+          })(data && data.data);
+          return hit ? { ok: true, node: hit } : { ok: false, reason: 'no' };
+        }
+        const p = path.join(projectsRoot, proj, proj + '.json');
+        if (!fs.existsSync(p)) return { ok: false, reason: 'no-project' };
+        try {
+          const pd = JSON.parse(fs.readFileSync(p, 'utf8'));
+          let hit = null;
+          (function findNode(n) {
+            if (!n || hit) return;
+            if (n.id === nodeId) { hit = n; return; }
+            (n.children || []).forEach(findNode);
+          })(pd.data);
+          return hit ? { ok: true, node: hit } : { ok: false, reason: 'no' };
+        } catch (e) {
+          return { ok: false, reason: 'unreadable', detail: (e.message || e) };
+        }
+      };
+
+      /**
+       * 条目级悬挂：**同一处判据**（`relations.targetHasItem`）+ **分开的报文**。
+       * 为什么与"节点不存在"分开报：**修法不同** ——
+       *   节点不存在 ⇒ 这条边该剪（目标整个没了）；
+       *   节点还在、条目已删 ⇒ **这条边**该剪，但内容可能该恢复（或换个条目指向）。
+       * 报同一种会把修法指错；而"节点还在、条目不在"恰恰是最容易被当成"节点级没问题"漏过去的一档。
+       */
+      const itemDangling = (l, at) => {
+        if (!targetHasItemOf) return;                       // 浏览器侧未注入 ⇒ 跳过（门禁在 CI 侧）
+        if (!l || !l.item) return;                          // 节点级引用：上面那一档已经判过
+        const t = targetNodeOf(l.project, l.id);
+        if (!t.ok) return;                                  // 节点/项目那一档上面已报，不重复报
+        const chk = targetHasItemOf(t.node, l.item);
+        if (chk.ok) return;
+        err('悬挂链接: ' + l.project + '/' + l.id + '#' + l.item + ' 不存在'
+          + '（**节点还在、条目已被删**）—— 修法：`links-prune <项目>` 剪掉这条边；'
+          + '若只是条目被误删，先 `item-add` / `item-move` 把它恢复或改指向'
+          + (chk.ids.length ? '（该节点现有条目：' + chk.ids.join(', ') + '）' : '（该节点现在没有条目层）'),
+        at);
+      };
+
       flatten(data.data).forEach((n) => {
         (n.links || []).forEach((l, i) => {
           if (!l || typeof l !== 'object') { err('links[' + i + '] 不是对象', n.id); return; }
@@ -152,6 +249,7 @@
           if (r === 'no-project') err('悬挂链接: 项目不存在 ' + l.project, n.id);
           else if (r === 'no') err('悬挂链接: ' + l.project + '/' + l.id + ' 不存在', n.id);
           else if (r !== 'yes') err('悬挂链接: 无法读取 ' + l.project + '（' + r.slice(11) + '）', n.id);
+          itemDangling(l, n.id);          // ← 加这一行（条目级：节点在、条目不在）
         });
       });
 
@@ -166,6 +264,7 @@
           if (r === 'no-project') err('悬挂关联成员: 项目不存在 ' + m.project, at);
           else if (r === 'no') err('悬挂关联成员: ' + m.project + '/' + m.id + ' 不存在', at);
           else if (r !== 'yes') err('悬挂关联成员: 无法读取 ' + m.project + '（' + r.slice(11) + '）', at);
+          itemDangling(m, at);            // ← 加这一行（assoc 成员的条目级同款）
         });
       });
     }
@@ -183,6 +282,46 @@
       else node.children.forEach((c) => validateNode(c, err));
     }
     if (node.detail !== undefined && typeof node.detail !== 'string') err('detail 必须是字符串', node.id);
+    // ---- 条目层（v3，`docs/ITEM-MODEL.md` §1/§2）---------------------------------------------
+    // 三档封闭判定表（契约 §2），**判红必须给修法**（契约 §9 的 G2 ④）：
+    //   ① 有 items（**含空数组**）⇒ items 是真源：detail 必须逐字节 == renderDetail(items)，
+    //      且不得有 detailMode、不得有 qa[]（两处表达必漂移）；
+    //   ② 无 items 且有 detailMode:'rich' ⇒ 富文本节点，不得出现 items（③ 那一档由本段的下方守卫覆盖）；
+    //   ③ 无 items 且无 detailMode ⇒ v2 节点，语义与 v2 完全一致（本段一个字都不改它）。
+    // ⚠️ "缺 detail" 与 "空串" **等价**（契约 §2）—— 否则"把条目删空"的节点过不了闸门。
+    const itemized = Array.isArray(node.items);
+    if (node.items !== undefined) {
+      if (!itemized) err('items 必须是数组（有它即"条目化"，**含空数组**；契约 §2）', node.id);
+      else {
+        // 形状：逐节点自校验（唯一性**只管节点内**；全项目唯一由 checkItemIds 判，见契约 §5.1 的分工）
+        if (validateItemsOf) {
+          const ie = validateItemsOf(node.items) || [];
+          ie.forEach((m) => err('items 不合法：' + m, node.id));
+        }
+        if (node.detailMode !== undefined) {
+          err('条目化节点不得有 detailMode（`items` 与 `detailMode` **互斥**：契约 §2）'
+            + '—— 它是显式声明"整节点是富文本、没有条目"的标记；要条目化就先 `edit <项目> ' + node.id
+            + ' --clear-detail-mode`', node.id);
+        }
+        if (node.qa !== undefined) {
+          err('条目化节点不得有 qa[]（问答必须收敛成 `type:\'qa\'` 条目 —— 两处表达必漂移：契约 §6/§7）'
+            + '；跑 `migrate items <项目>` 收敛它', node.id);
+        }
+        // detail：**派生缓存**，必须逐字节等于 renderDetail(items)
+        if (renderDetailOf) {
+          const expect = renderDetailOf(node.items);
+          const actual = (typeof node.detail === 'string') ? node.detail : '';
+          if (actual !== String(expect)) {
+            err('detail 与 items 不一致：条目化节点的 detail 是**派生缓存**，必须逐字节等于 renderDetail(items)'
+              + '（修法：`node cli/mm-cli.js render-detail <项目> ' + node.id
+              + '`；契约 §2/§9 —— 这是 G2 判红时**唯一**的修法）', node.id);
+          }
+        }
+      }
+    }
+    if (node.detailMode !== undefined && node.detailMode !== 'rich') {
+      err('detailMode 的唯一合法取值是 \'rich\'（收到 ' + JSON.stringify(node.detailMode) + '）', node.id);
+    }
     if (node.tags !== undefined) {
       if (!Array.isArray(node.tags)) err('tags 必须是数组', node.id);
       else node.tags.forEach((t, i) => {
@@ -270,11 +409,44 @@
     }
   }
 
+  /**
+   * **条目 id 的全项目唯一性**（契约 §5.1 的"分工"那一节）。
+   *
+   * 为什么必须在这里判：`validateItems(items)` 只看得到一个节点的数组 ⇒ 它只能判"节点内唯一"；
+   * 而 `supersededBy` / `links[].item` / `assoc.members[].item` **只带条目 id、不带节点 id** ——
+   * 只有全项目唯一，引用才无歧义。撞了号时，`item-remove --clean-links` 之类的清理动作会
+   * 清错边（清掉"另一条同名条目"的引用），这是**静默**的（两边都不报错）。
+   *
+   * 与 `checkIdsAndCycles` 同款：对整棵树做**一次**迭代遍历（不递归 ⇒ 环不会栈溢出）。
+   * 形状问题（缺 id / 非法字符）不在这里报 —— 那是 `validateItems` 的职责，避免同一处报两遍。
+   */
+  function checkItemIds(root, err) {
+    const owner = new Map();                    // 条目 id → 首次出现它的节点 id
+    const seenNodes = new Set();
+    const stack = [root];
+    while (stack.length) {
+      const n = stack.pop();
+      if (!n || seenNodes.has(n)) continue;
+      seenNodes.add(n);
+      if (Array.isArray(n.items)) {
+        n.items.forEach((it) => {
+          const id = it && it.id;
+          if (typeof id !== 'string' || !id) return;          // 形状问题：validateItems 已逐条报过
+          if (owner.has(id)) {
+            err('重复条目 id: ' + id + '（节点 ' + owner.get(id) + ' 上已有一条同名条目）—— '
+              + '条目 id 必须**全项目唯一**（supersededBy / links[].item 只带条目 id，不唯一则引用有歧义）', n.id);
+          } else owner.set(id, n.id);
+        });
+      }
+      (n.children || []).forEach((c) => stack.push(c));
+    }
+  }
+
   function flatten(root) {
     const out = [];
     (function w(n) { if (!n) return; out.push(n); (n.children || []).forEach(w); })(root);
     return out;
   }
 
-  return { validateProject, validateNode, checkIdsAndCycles, flatten, ID_RE };
+  return { validateProject, validateNode, checkIdsAndCycles, checkItemIds, flatten, ID_RE };
 });

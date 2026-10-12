@@ -65,7 +65,7 @@ function sweepStaleProbes() {
   try {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       // 前缀清单：各流的探针按 §4.1 分前缀（`it-probe-`/`it-broken-` 是本脚本自有的；流探针另见 §53/§54 等）
-      if (!e.isDirectory() || !/^(it-probe-|it-broken-|it-k8-|it-w14-|it-s[1-9]-)/.test(e.name)) continue;
+      if (!e.isDirectory() || !/^(it-probe-|it-broken-|it-k8-|it-w14-|it-w19-|it-w20-|it-s[1-9]-)/.test(e.name)) continue;
       const p = path.join(dir, e.name);
       try {
         if (Date.now() - fs.statSync(p).mtimeMs < 10 * 60 * 1000) continue; // 可能是别人正在跑的
@@ -1720,10 +1720,14 @@ check('links-prune 清掉悬空链接，项目解锁',
   ok(r.out) && /已删除链接/.test(r.out) && ok(run(['validate', PROJ6]).out), r.out.trim().replace(/\n/g, ' | '));
 check('解锁后写操作恢复正常（自救成功）',
   ok(run(['add', PROJ6, 'root', '--topic', '新', '--id', 'new1']).out));
+// ⚠️ 这里的**文案**随 `--nodes` 谓词的修正一起变了（改前谓词恒不命中 = 静默空转）：改前打印的是
+// 「按 --nodes 清理指向本项目这些节点的链接」，现在打印「按 --nodes 清理指向这些节点的链接
+// （含指向其条目的）」。那是**有意的**行为改动（谓词从"恒不命中"改成按节点 id 匹配、并含条目级），
+// 所以断言跟着**改匹配新文案** —— 不许为了让它绿把产品文案改回去。
 check('links-prune --nodes 只清指向指定节点的链接', (() => {
   run(['link', PROJ6, 'x', '--to', PROJ6, '--id', 'y', '--caption', '同项目2']);
   const out = run(['links-prune', PROJ6, '--nodes', 'y', '--dry-run']);
-  return ok(out.out) && /指向本项目这些节点的链接/.test(out.out) && /x → /.test(out.out);
+  return ok(out.out) && /按 --nodes 清理指向这些节点的链接/.test(out.out) && /x → /.test(out.out);
 })());
 
 /* ---------------- 工程命令：changelog（CHANGELOG 只读窄查询） ----------------
@@ -2695,6 +2699,528 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
   try { fs.rmSync(path.join(ROOT, 'projects', W20P2), { recursive: true, force: true }); } catch (e) {}
 }
 
+/* ---------------- 56. 【W19】导入的图片/附件引用：不留坏引用（复制 + 逐条点名 + 注入证明） ----------------
+ * 修的是什么：`import-md` / `import-project` 从前把 md 里的 `![图](assets/x.png)` **按原样字符串**
+ * 记进 `images[].file`，而那个文件**从没被复制进项目** ⇒ 悬空引用静默落盘
+ *（取证：exit 0、回显里一个字都没说、`projects/<项目>/assets/` 不存在，而 `validate` **照样通过**）。
+ * 现在的口径（实现只有一处：`src/markdown.js` 的 `resolveImportRefs`，两条导入命令共用它）：
+ *   · 能解析到源文件 ⇒ 复制进 `projects/<项目>/assets|attachments/`（命名与图片格式规则与 `add-image` 同一条），
+ *     引用写**项目内相对路径**；
+ *   · 解析不到 ⇒ **拒绝整份导入** + 逐条点名（哪个节点 / 哪一条引用 / 原样路径 / 按序试过哪些路径）+ 给出路；
+ *     拒绝是**干净**的：判据在复制与写入之前 ⇒ 不复制、不建目录、不写盘；
+ *   · 非本地引用（`https:` / `data:`）⇒ 不挂进 images/files（`file` 的规范是项目内相对路径），
+ *     那一行**按正文**并入节点详情 —— 既不落坏引用，也不丢内容。
+ * 探针一律 `it-w19-` 前缀；本段自己收尾清干净（`sweepStaleProbes` 的前缀清单里暂时没有 `it-w19-`，
+ * 所以更要把清收尾做全 —— 顺带建议把那两个前缀补进清单）。 */
+{
+  const P = 'it-w19-proj';
+  const M = 'it-w19-md';
+  const BAD = 'it-w19-bad';
+  const DRY = 'it-w19-dry';
+  const REM = 'it-w19-remote';
+  const INJ = 'it-w19-inject';
+  const pdir = (name) => path.join(ROOT, 'projects', name);
+  const clean = (name) => { try { fs.rmSync(pdir(name), { recursive: true, force: true }); } catch (e) {} };
+  [P, M, BAD, DRY, REM, INJ].forEach(clean);
+  const W19 = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-w19-'));
+  fs.mkdirSync(path.join(W19, 'assets'), { recursive: true });
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+  fs.writeFileSync(path.join(W19, 'assets', 'x.png'), PNG);
+  const wmd = (name, text) => { const p = path.join(W19, name); fs.writeFileSync(p, text, 'utf8'); return p; };
+  const OKMD = wmd('ok.md', '# 第一章\n\n![图：示意图](assets/x.png)\n\n正文一段。\n');
+  const BADMD = wmd('bad.md', '# 第一章\n\n![图：丢了的图](assets/gone.png)\n');
+  const REMMD = wmd('remote.md', '# 外链章\n\n![图：外链](https://example.com/a.png)\n');
+  // 注入探针用**自己的一份 md**：import-project 有"同一份来源只导一次"的闸门，
+  // 复用 ok.md 会先被那道闸拦住（exit 1）⇒ 拿到的红是"重复导入"，不是"引用没落地"，证明就假了。
+  const INJMD = wmd('inject.md', '# 第一章\n\n![图：示意图](assets/x.png)\n\n注入探针正文。\n');
+  const projJson = (name) => { try { return fs.readFileSync(path.join(pdir(name), name + '.json'), 'utf8'); } catch (e) { return null; } };
+  const lsAssets = (name) => { try { return fs.readdirSync(path.join(pdir(name), 'assets')).sort(); } catch (e) { return null; } };
+  const refsIn = (name) => {
+    const t = projJson(name);
+    if (!t) return null;
+    const out = [];
+    try {
+      const d = JSON.parse(t);
+      (function w(n) { (n.images || []).forEach((i) => out.push(i.file)); (n.files || []).forEach((f) => out.push(f.file)); (n.children || []).forEach(w); })(d.data);
+    } catch (e) { return null; }
+    return out;
+  };
+  const allRefsExist = (name) => (refsIn(name) || []).every((f) => fs.existsSync(path.join(pdir(name), f)));
+  const jj = (out) => { try { return JSON.parse(String(out).trim()); } catch (e) { return null; } };
+
+  // 56.1 import-project：含引用（文件存在）⇒ 复制进 assets/ + 引用项目内相对路径 + validate 通过
+  const r1 = run(['import-project', P, OKMD]);
+  const a1 = lsAssets(P);
+  check('[W19] import-project：图片真被复制进 assets/、引用指向项目内那个文件、validate 通过（旧行为：原样字符串 + 文件不存在）',
+    ok(r1.out) && Array.isArray(a1) && a1.length === 1 && Array.isArray(refsIn(P)) && refsIn(P).length === 1
+      && refsIn(P)[0] !== 'assets/x.png' && /^assets\//.test(refsIn(P)[0]) && allRefsExist(P)
+      && ok(run(['validate', P]).out),
+    'assets/=' + JSON.stringify(a1) + ' ｜ refs=' + JSON.stringify(refsIn(P)));
+
+  // 56.2 复制的是**那一份**文件（不是空壳/占位）：字节相同
+  check('[W19] 复制的是源文件那一份（字节逐字节相同，不是空文件占位）',
+    Array.isArray(a1) && a1.length === 1
+      && Buffer.compare(fs.readFileSync(path.join(pdir(P), 'assets', a1[0])), PNG) === 0,
+    'assets/' + (a1 || [])[0] + ' ｜ ' + (a1 && a1.length ? fs.statSync(path.join(pdir(P), 'assets', a1[0])).size : '?') + ' B');
+
+  // 56.3 回显**如实报告**（复制了几条 + 明细），不是一声不响
+  check('[W19] 回显如实报告资源去向（复制了几条 + 逐条明细）',
+    /资源引用/.test(r1.out || '') && /已复制 1 个文件进项目/.test(r1.out || '') && /assets\//.test(r1.out || ''),
+    (r1.out || '').trim().replace(/\n/g, ' | ').slice(-160));
+
+  // 56.4 import-md：走**同一个函数** ⇒ 同样复制 + 引用项目内 + validate 通过
+  run(['init', M, '--title', 'W19 md 探针']);
+  const r2 = run(['import-md', M, OKMD, '--parent', 'root']);
+  check('[W19] import-md：与 import-project 同一份实现 ⇒ 同样复制、引用项目内、validate 通过',
+    ok(r2.out) && Array.isArray(lsAssets(M)) && lsAssets(M).length === 1 && allRefsExist(M)
+      && /^assets\//.test(refsIn(M)[0]) && ok(run(['validate', M]).out),
+    'refs=' + JSON.stringify(refsIn(M)));
+
+  // 56.5 坏引用（目标不存在）：非 0 + 逐条点名 + 给出路（报错即教程）
+  run(['init', BAD, '--title', 'W19 坏引用探针']);
+  const badBefore = projJson(BAD);
+  const r3 = run(['import-md', BAD, BADMD, '--parent', 'root']);
+  check('[W19] 坏引用 ⇒ 非 0 + 点明节点/原样路径/试过哪些路径 + 说出路（不许静默写脏）',
+    r3.code !== 0 && /节点「第一章」/.test(r3.out || '') && /assets\/gone\.png/.test(r3.out || '')
+      && /源文件不存在/.test(r3.out || '') && /按序试过/.test(r3.out || '')
+      && /add-image/.test(r3.out || '') && /没有写盘/.test(r3.out || ''),
+    (r3.out || '').trim().replace(/\n/g, ' | ').slice(0, 200));
+
+  // 56.6 拒绝是干净的：盘上**没有悬空引用**（项目文件逐字节不变 + 连 assets/ 都没建）
+  check('[W19] 坏引用被拒时盘上没有任何悬空引用（项目文件逐字节不变、没建 assets/）',
+    projJson(BAD) === badBefore && lsAssets(BAD) === null,
+    '文件不变=' + (projJson(BAD) === badBefore) + ' ｜ assets/=' + JSON.stringify(lsAssets(BAD)));
+
+  // 56.7 import-project 同一口径，且**项目目录都没建**（不留半份项目）
+  const r4 = run(['import-project', DRY, BADMD]);
+  check('[W19] import-project 同一口径：坏引用 ⇒ 非 0 且项目目录根本没建（不留半份项目）',
+    r4.code !== 0 && !fs.existsSync(pdir(DRY)) && /assets\/gone\.png/.test(r4.out || ''),
+    'exit=' + r4.code + ' ｜ 目录在?=' + fs.existsSync(pdir(DRY)));
+
+  // 56.8 --dry-run 与真导**同一份判据**（预览不许说"能导"）
+  const j5 = jj(run(['import-project', DRY, BADMD, '--dry-run', '--json']).out);
+  check('[W19] --dry-run 与真导同一判据：wouldRefuse=true + 逐条列出 + 仍然不写盘',
+    !!j5 && j5.dryRun === true && j5.wouldRefuse === true && !!j5.resourceRefs
+      && j5.resourceRefs.missing === 1 && j5.resourceRefs.blocked[0].ref === 'assets/gone.png'
+      && !fs.existsSync(pdir(DRY)),
+    j5 ? 'wouldRefuse=' + j5.wouldRefuse + ' missing=' + j5.resourceRefs.missing + ' tried=' + j5.resourceRefs.blocked[0].tried.length : 'JSON 解析失败');
+
+  // 56.9 非本地引用（https:）：不挂 images/files、不复制，那一行按正文保留（既不写坏引用也不丢内容）
+  const r6 = run(['import-project', REM, REMMD]);
+  check('[W19] 非本地引用（https:）⇒ images/files 里没有它、没复制文件、那一行按正文留在详情里',
+    ok(r6.out) && Array.isArray(refsIn(REM)) && refsIn(REM).length === 0 && lsAssets(REM) === null
+      && /https:\/\/example\.com\/a\.png/.test(projJson(REM) || ''),
+    'refs=' + JSON.stringify(refsIn(REM)) + ' ｜ assets/=' + JSON.stringify(lsAssets(REM)));
+
+  // 56.10 **注入证明**（判别力）：把"复制+校验"打桩成旧行为 ⇒ 悬空引用当场出现（56.1 的那批判据必红）
+  const markdown = require(path.join(ROOT, 'src', 'markdown.js'));
+  const realResolve = markdown.resolveImportRefs;
+  let injOut = null;
+  try {
+    markdown.resolveImportRefs = () => ({ ok: true, applied: false, dryRun: false, onMissing: 'refuse',
+      refs: [], blocked: [], copied: [], inProject: [], remote: [], dropped: [] });   // 旧行为替身
+    injOut = run(['import-project', INJ, INJMD]);
+  } finally {
+    markdown.resolveImportRefs = realResolve;                                          // 立即复原，绝不外泄
+  }
+  const injRefs = refsIn(INJ) || [];
+  check('[W19] 注入证明：还原旧行为 ⇒ "确已复制 + 引用项目内"两条判据当场不成立（断言有判别力）',
+    !!injOut && injOut.code === 0 && lsAssets(INJ) === null && injRefs.length === 1
+      && injRefs[0] === 'assets/x.png' && !allRefsExist(INJ),
+    '旧行为复现：exit=' + (injOut && injOut.code) + ' ｜ refs=' + JSON.stringify(injRefs)
+      + ' ｜ 文件在?=' + JSON.stringify(injRefs.map((f) => fs.existsSync(path.join(pdir(INJ), f)))));
+
+  [P, M, BAD, DRY, REM, INJ].forEach(clean);
+  check('[W19] 收尾：探针项目已清掉（不给下一次运行留"项目已存在"的假红）',
+    [P, M, BAD, DRY, REM, INJ].every((n) => !fs.existsSync(pdir(n))), '');
+  try { fs.rmSync(W19, { recursive: true, force: true }); } catch (e) { /* 临时目录清不掉不影响判定 */ }
+}
+
+/* ---------------- 50. 复校与体检（S4）：recheck / health ----------------
+ * 判据（S4 任务书的四条验收 + 契约 §10 的 AC14）：
+ *   · ① 改一个源文件 ⇒ 相关条目被报 `needs-recheck`（**注入证明**：先证前提，再断言结论）；
+ *   · ② 引文在那份文件里找不到了 ⇒ `src-gone`；
+ *   · ③ `health --json` **确定性**：同状态连跑两次**逐字节相同**（AC14）；
+ *   · ④ `recheck` **不写盘**（除非显式 `--write-verified`）—— 用项目文件字节 + `.changes.jsonl` 证明。
+ * 外加：三类 + 计数、逐条点名、**可执行的下一步**、写回只动 `verified`、悬挂引用、`qa` 残留、
+ *      迁移"跳过"的逐节点点名，以及"库级读数不被一个坏项目挡住"。
+ *
+ * 探针一律 `it-s4-` 前缀（`sweepStaleProbes` 的前缀表已覆盖 `it-s[1-9]-`）；
+ * 出处文件放 `TMP` 里并用 `--root` 指向它 ⇒ **绝不去核真实仓库**（既隔离，也好造"源文件被改过"）。
+ * 探针项目在本段 `finally` 里自删；本段排在 §14（validate-all）之后（夹具是条目化节点）。 */
+{
+  const S4TAG = Date.now().toString(36);
+  const P4 = 'it-s4-probe-' + S4TAG;
+  const S4DIR = path.join(TMP, 's4-refs-' + S4TAG);
+  const S4SPEC = path.join(S4DIR, 'spec.md');
+  const S4OTHER = path.join(S4DIR, 'other.md');
+  const s4json = (out) => { try { return JSON.parse(String(out).trim()); } catch (e) { return null; } };
+  const s4bytes = (name) => fs.readFileSync(projJson(name));
+  const s4log = (name) => {
+    try { return fs.readFileSync(path.join(ROOT, 'projects', name, '.changes.jsonl'), 'utf8'); } catch (e) { return ''; }
+  };
+  const s4logs = (name) => s4log(name).split('\n').filter(Boolean).length;
+  const s4items = (id) => ((nodeOf(readProj(P4), id) || {}).items) || [];
+  const s4item = (id, k) => s4items(id)[k || 0] || null;
+  const s4ver = (id) => ((s4item(id) || {}).verified) || null;
+  const S4R = ['--root', S4DIR];
+  const OLD = new Date('2019-01-01T00:00:00.000Z');   // 把"核验之后源文件没动过"钉成事实（不靠运行时刻）
+
+  try {
+    /* ---- 夹具：出处文件（在 TMP）+ 探针项目 ---- */
+    fs.mkdirSync(S4DIR, { recursive: true });
+    fs.writeFileSync(S4SPEC, '# 规格\n- 甲\n- 乙\n', 'utf8');
+    fs.writeFileSync(S4OTHER, '# 另一个\n- 丙\n', 'utf8');
+    fs.utimesSync(S4SPEC, OLD, OLD);
+    fs.utimesSync(S4OTHER, OLD, OLD);
+
+    run(['init', P4, '--title', 'S4 复校与体检探针']);
+    run(['add', P4, 'root', '--topic', 'S4 甲（有出处、已核）', '--id', 'it-s4-a']);
+    run(['add', P4, 'root', '--topic', 'S4 乙（有出处、未核）', '--id', 'it-s4-b']);
+    run(['add', P4, 'root', '--topic', 'S4 丙（无出处）', '--id', 'it-s4-c']);
+    run(['add', P4, 'root', '--topic', 'S4 丁（含 li 但回放不了 ⇒ 迁移会跳过）', '--id', 'it-s4-d',
+      '--detail', '<ul><li>甲</ul>']);                 // 未闭合 ⇒ parseDetail 判"这段回放不了"
+    const rFxA = run(['item-add', P4, 'it-s4-a', '--html', '<p>甲结论</p>', '--src', 'spec.md:2::甲']);
+    const rFxB = run(['item-add', P4, 'it-s4-b', '--html', '<p>乙结论</p>', '--src', 'other.md:2::丙']);
+    run(['item-add', P4, 'it-s4-c', '--html', '<p>没有出处的结论</p>']);
+    const A_ITEM = (s4item('it-s4-a') || {}).id;
+    const B_ITEM = (s4item('it-s4-b') || {}).id;
+    const rFxV = run(['item-edit', P4, 'it-s4-a', A_ITEM, '--verified', '--how', '读了 spec.md:2 那一行']);
+    fs.utimesSync(S4SPEC, OLD, OLD);                   // 核验之后源文件**没动过** ⇒ 甲那条应当判"就绪"
+    check('S4 夹具前提：三条条目落地 + 甲那条的核验记录写进去了（否则后面的断言是空转）',
+      ok(rFxA.out) && ok(rFxB.out) && ok(rFxV.out) && !!A_ITEM && !!B_ITEM && !!s4ver('it-s4-a'),
+      'A=' + A_ITEM + ' B=' + B_ITEM + ' verified=' + JSON.stringify(s4ver('it-s4-a')));
+
+    /* ---- 50.1 三类 + 计数 + 逐条点名 + 可执行的下一步 ---- */
+    const r1 = run(['recheck', P4].concat(S4R, ['--json']));
+    const j1 = s4json(r1.out);
+    check('S4 recheck：三类（ok / needs-recheck / src-gone）+ 计数给得出，`--json` 是一份可解析 JSON',
+      ok(r1.out) && !!j1 && !!j1.counts
+        && j1.counts.items === 3 && j1.counts.ok === 1 && j1.counts.needsRecheck === 2
+        && j1.counts.srcGone === 0 && j1.counts.noSrc === 1 && j1.counts.unverified === 2
+        && j1.counts.itemizedNodes === 3,
+      'counts=' + JSON.stringify(j1 && j1.counts));
+    const r1t = run(['recheck', P4].concat(S4R));
+    check('S4 recheck：判据随读数给出（criteria）+ **逐条点名** + **可执行的下一步**（不是只说"要复核"）',
+      !!j1 && typeof j1.criteria['needs-recheck'] === 'string'
+        && j1.byVerdict.needsRecheck.length === 2
+        && j1.byVerdict.needsRecheck.every((e) => e.nextSteps.length > 0)
+        && r1t.out.indexOf('it-s4-b') >= 0 && r1t.out.indexOf('it-s4-c') >= 0
+        && r1t.out.indexOf('下一步（可执行）') >= 0 && r1t.out.indexOf('--write-verified') >= 0,
+      r1t.out.split('\n').slice(0, 4).join(' | '));
+
+    /* ---- 50.2 只读证明（跑完盘上零改动） ---- */
+    {
+      const bBefore = s4bytes(P4);
+      const lBefore = s4log(P4);
+      const rRo = run(['recheck', P4].concat(S4R, ['--json']));
+      check('S4 recheck 是**只读**：跑完项目文件与 .changes.jsonl 都逐字节不变（写回要显式 --write-verified）',
+        ok(rRo.out) && s4bytes(P4).equals(bBefore) && s4log(P4) === lBefore,
+        '项目文件未变=' + s4bytes(P4).equals(bBefore) + ' 变更日志未变=' + (s4log(P4) === lBefore));
+    }
+
+    /* ---- 50.3 写回：--how 必填；只动 verified；写回后被算进去 ---- */
+    const rNoHow = run(['recheck', P4].concat(S4R, ['--write-verified']));
+    check('S4 recheck --write-verified 不给 --how ⇒ 非 0 退出 + 说清"取不到怎么核的就不写"',
+      rNoHow.code !== 0 && rNoHow.out.indexOf('--how') >= 0 && rNoHow.out.indexOf('verified') >= 0,
+      'exit=' + rNoHow.code + ' | ' + rNoHow.out.trim().slice(0, 90));
+    const detailsBefore = JSON.stringify([s4items('it-s4-a')[0].detail, (nodeOf(readProj(P4), 'it-s4-b') || {}).detail,
+      (nodeOf(readProj(P4), 'it-s4-c') || {}).detail]);
+    const logsBefore = s4logs(P4);
+    const rW = run(['recheck', P4].concat(S4R,
+      ['--write-verified', '--how', '把两处出处都读了一遍', '--json']));
+    const jw = s4json(rW.out);
+    check('S4 recheck --write-verified：只给"出处判得过"的条目写 `verified{at,by,how}`（三字段齐全、by=cli:recheck）',
+      ok(rW.out) && !!jw && jw.written === 2 && jw.itemIds.indexOf(A_ITEM) >= 0 && jw.itemIds.indexOf(B_ITEM) >= 0
+        && (() => { const v = s4ver('it-s4-b');
+          return !!v && typeof v.at === 'string' && Number.isFinite(Date.parse(v.at))
+            && v.by === 'cli:recheck' && typeof v.how === 'string' && v.how.length > 0; })(),
+      'written=' + (jw && jw.written) + ' 乙的 verified=' + JSON.stringify(s4ver('it-s4-b')));
+    check('S4 写回**只动 verified**：节点 detail 逐字节不变，且 .changes.jsonl 只多 1 条（一次原子写）',
+      JSON.stringify([s4items('it-s4-a')[0].detail, (nodeOf(readProj(P4), 'it-s4-b') || {}).detail,
+        (nodeOf(readProj(P4), 'it-s4-c') || {}).detail]) === detailsBefore
+        && s4logs(P4) === logsBefore + 1,
+      'detail 未变 + 日志 +1 = ' + (s4logs(P4) === logsBefore + 1));
+    const jAfter = s4json(run(['recheck', P4].concat(S4R, ['--json'])).out);
+    check('S4 写回后复查：乙那条从"未核"转「已就绪」（写回的记录真的被算进判定里）',
+      !!jAfter && jAfter.counts.ok === 2 && jAfter.byVerdict.ok.map((e) => e.itemId).indexOf(B_ITEM) >= 0,
+      'ok=' + (jAfter && jAfter.counts.ok));
+
+    /* ---- 50.4 注入证明 ①改源文件 ⇒ needs-recheck ②引文找不到 ⇒ src-gone ---- */
+    const vAt = Date.parse(s4ver('it-s4-a').at);
+    const mtBefore = fs.statSync(S4SPEC).mtimeMs;
+    fs.appendFileSync(S4SPEC, '- 追加一行\n', 'utf8');      // 之一：真改一个源文件
+    const mtAfter = fs.statSync(S4SPEC).mtimeMs;
+    check('S4 注入前提：源文件 mtime 确实晚于该条目的 verified.at（否则"过期"这条判据本来就判不了）',
+      mtAfter > vAt && mtAfter > mtBefore,
+      'mtime=' + mtAfter + ' verified.at=' + vAt + '（差 ' + (mtAfter - vAt) + ' ms）');
+    const jStale = s4json(run(['recheck', P4].concat(S4R, ['--json'])).out);
+    check('S4 注入证明①：改一个源文件 ⇒ 相关条目被报 **needs-recheck**（原因 file-changed，且点名到 itemId）',
+      !!jStale && jStale.counts.stale >= 1
+        && jStale.byVerdict.needsRecheck.some((e) => e.itemId === A_ITEM
+          && e.reasons.some((r) => r.code === 'file-changed')),
+      'stale=' + (jStale && jStale.counts.stale));
+    fs.writeFileSync(S4SPEC, '# 规格\n- 乙\n', 'utf8');     // 之二：引文「甲」整条没了
+    const jGone = s4json(run(['recheck', P4].concat(S4R, ['--json'])).out);
+    check('S4 注入证明②：引文在那份文件里找不到了 ⇒ `src-gone`（原因 quote-missing）',
+      !!jGone && jGone.counts.srcGone >= 1
+        && jGone.byVerdict.srcGone.some((e) => e.itemId === A_ITEM
+          && e.reasons.some((r) => r.code === 'quote-missing')),
+      'srcGone=' + (jGone && jGone.counts.srcGone));
+    const rForce = run(['recheck', P4].concat(S4R, ['--only', A_ITEM, '--write-verified', '--how', '核了']));
+    check('S4 出处失效的条目**默认不给写核验记录**（那会记下一条假话）：点名写 ⇒ 拒绝并指路 --force',
+      rForce.code !== 0 && rForce.out.indexOf('--force') >= 0,
+      'exit=' + rForce.code + ' | ' + rForce.out.trim().split('\n').slice(0, 2).join(' '));
+
+    /* ---- 50.5 悬挂引用（条目级：links[].item 指向不存在的条目） ---- */
+    {
+      const d = readProj(P4);
+      nodeOf(d, 'it-s4-c').links = [{ project: P4, id: 'it-s4-a', item: 'i-no-such-item' }];
+      fs.writeFileSync(projJson(P4), JSON.stringify(d, null, 2), 'utf8');
+      const jd = s4json(run(['recheck', P4].concat(S4R, ['--json'])).out);
+      check('S4 悬挂引用（条目级）：`links[].item` 指向不存在的条目 ⇒ 逐处点名（kind / reason / 目标都给出）',
+        !!jd && jd.counts.dangling === 1 && jd.dangling[0].kind === 'link'
+          && jd.dangling[0].reason === 'item-missing' && jd.dangling[0].item === 'i-no-such-item',
+        JSON.stringify(jd && jd.dangling));
+      const td = run(['recheck', P4].concat(S4R)).out;
+      check('S4 悬挂引用的**出路**在回显里（指 `links-prune` / `assoc-prune`，不是只报个错）',
+        td.indexOf('links-prune') >= 0 && td.indexOf('i-no-such-item') >= 0, '');
+    }
+
+    /* ---- 50.6 health：读数 / 一致性点名 / qa 残留 / 迁移五档 / 确定性 / 不写盘 / 库级 ---- */
+    {
+      const d = readProj(P4);
+      nodeOf(d, 'it-s4-b').detail = '<p>被别人改过</p>';       // 与 renderDetail(items) 不一致
+      nodeOf(d, 'it-s4-a').qa = [{ q: '', a: '答', at: '2026-01-01T00:00:00.000Z' }];   // 条目化节点上的 qa 残留
+      fs.writeFileSync(projJson(P4), JSON.stringify(d, null, 2), 'utf8');
+    }
+    const hBytes = s4bytes(P4);
+    const h1 = run(['health', P4].concat(S4R, ['--json']));
+    const hj = s4json(h1.out);
+    check('S4 health：条目化节点数/总节点数、条目数（按 type）、无出处·未核·需复核·出处失效·最后核验时间都给得出',
+      ok(h1.out) && !!hj && !!(hj.nodes && hj.items)
+        && hj.nodes.total === 5 && hj.nodes.itemized === 3 && hj.nodes.v2 === 2
+        && hj.items.total === 3 && hj.items.byType.text === 3 && hj.items.noSrc === 1
+        && hj.items.srcGone >= 1 && typeof hj.items.lastVerifiedAt === 'string',
+      'nodes=' + JSON.stringify(hj && hj.nodes) + ' items=' + JSON.stringify(hj && hj.items));
+    check('S4 health：`items ↔ detail` 不一致的节点**逐节点点名** + 修法（render-detail）',
+      hj.inconsistent.count === 1 && hj.inconsistent.nodes[0].nodeId === 'it-s4-b'
+        && hj.inconsistent.nodes[0].fix.indexOf('render-detail') >= 0
+        && run(['health', P4].concat(S4R)).out.indexOf('it-s4-b') >= 0,
+      JSON.stringify(hj.inconsistent.nodes));
+    check('S4 health：`qa` 残留（条目化节点上仍有 qa[]，契约 §2 判红项）被逐节点点名',
+      hj.qaResidue.count === 1 && hj.qaResidue.nodes[0].nodeId === 'it-s4-a',
+      JSON.stringify(hj.qaResidue.nodes));
+    check('S4 health：迁移**五档分开**报，跳过项逐节点点名 + 原因分布（不把"不可迁移"伪装成"没有要迁的"）',
+      hj.migration.itemized === 3 && hj.migration.skipped.length === 1
+        && hj.migration.skipped[0].nodeId === 'it-s4-d'
+        && hj.migration.skipped[0].reason === 'not-lossless'
+        && hj.migration.reasonCounts['not-lossless'] === 1,
+      'skipped=' + JSON.stringify(hj.migration.skipped) + ' 分布=' + JSON.stringify(hj.migration.reasonCounts));
+    const h2 = run(['health', P4].concat(S4R, ['--json']));
+    check('S4 health **确定性**（契约 §10 AC14）：同状态连跑两次 `--json` **逐字节相同**（且不带运行时刻）',
+      h2.out === h1.out && h1.out.indexOf('generatedAt') < 0,
+      '两次逐字节相同=' + (h2.out === h1.out) + ' 长度=' + h1.out.length);
+    check('S4 health 是**读数不是门禁**：有红项（不一致 + 残留 + 出处失效）仍 exit 0，且一个字节都不写盘',
+      h1.code === 0 && s4bytes(P4).equals(hBytes)
+        && run(['health', P4].concat(S4R)).out.indexOf('读数不是门禁') >= 0,
+      'exit=' + h1.code + ' 盘上未变=' + s4bytes(P4).equals(hBytes));
+    const hAll = s4json(run(['health'].concat(S4R, ['--json'])).out);
+    check('S4 health 不给项目名 = **整个库**（scope=library、本项目在内；坏项目如实进 unreadable 而不吞掉整份读数）',
+      !!hAll && hAll.scope === 'library' && Array.isArray(hAll.unreadable)
+        && hAll.projects.some((p) => p.project === P4) && hAll.total.projects === hAll.projects.length,
+      'projects=' + (hAll && hAll.projects.length) + ' unreadable=' + (hAll && hAll.unreadable.length));
+  } finally {
+    try { fs.rmSync(path.join(ROOT, 'projects', P4), { recursive: true, force: true }); } catch (e) { /* 收尾不判红 */ }
+    try { fs.rmSync(S4DIR, { recursive: true, force: true }); } catch (e) { /* 收尾不判红 */ }
+  }
+}
+
+/* ---------------- 51. 关系与标签升层（S6）：条目级链接 + 条目级悬挂 + 只增字段 ----------------
+ * 判据（对应 S6 任务书，**逐条一个 `check`**）：
+ *   （S6 之一）`link --item`：边指向**目标节点里的某一条条目**（`{project,id,item}`；回显写成 `目标/节点#条目`）；
+ *   （S6 之二）目标节点在、**条目不在** ⇒ 非 0 + 点名到 `项目/节点#条目` + **盘上零改动**
+ *              （写入口绝不造"节点在、条目不在"的悬挂引用 —— 那种引用会把它自己锁死）；
+ *   （S6 之三）**沿用 K8 的三态词**：重放**同一三元组**（项目, 节点, 条目）⇒「无变化」且盘上逐字节
+ *              不变（不产生空写入）；省略 `--item` 命中的是**节点级**那一条边（另一条边）⇒ 新建/命中
+ *              它，条目级那条的 item 一个字节不动；显式换条目 ⇒ 「已添加链接」（换条目 = 另一条边），
+ *              原有那条不被重建、不重排；
+ *   （S6 之四）**判定键含条目层**：同 (源,目标) 上"节点级一条 + 条目级两条"能并存、互不吞掉；
+ *   （S6 之五）读口**只增字段**：`links --json` 的条目级边带 `item`，节点级边**没有** `item` 键；
+ *              `backlinks --json` 的条目行带 `item` + `itemLabel`（标签优先，可读）；
+ *   （S6 之六）**条目级悬挂判据 = 一处**：`links-prune` 自动档把它与"节点整个不在了"一起抓出来，
+ *              且报告里**分开点名**（"节点还在、条目已被删"）；
+ *   （S6 之七）`links-prune --items 节点id#条目id`：只剪被点名的那一条，同目标另一条条目**一条都没动**；
+ *   （S6 之八）剪完 `validate` 必须 exit 0（闸门复绿）；
+ *   （S6 之九）标签两级：节点级 `tags` 与条目级 `item.tags` 并存、不合并、不互相复制
+ *              （`search --tag` 命中分别报 `item-tag` / `node-tag`）。
+ *
+ * 探针项目一律 `it-s6-` 前缀（§4.1 的锚点分配）；本段在 `finally` 里**自删** ——
+ * 夹具是**条目化**节点，中途抛错也不能留在真实 `projects/` 里。
+ * 本段排在 §14（`validate-all`）之后，免得 validate-all 在夹具存在期间扫到它。
+ * 判据一律**回读盘上真值**（`readProj` / `nodeOf`），不拿命令回显当数据结论。 */
+{
+  const S6TAG = Date.now().toString(36);
+  const S6SRC = 'it-s6-src-' + S6TAG;
+  const S6DST = 'it-s6-dst-' + S6TAG;
+  const s6file = (name) => path.join(ROOT, 'projects', name, name + '.json');
+  const s6text = (name) => fs.readFileSync(s6file(name), 'utf8');
+  const s6node = (proj, id) => nodeOf(readProj(proj), id);
+  const s6edges = (proj, id) => (s6node(proj, id).links) || [];
+  const s6itemKey = (x) => (typeof x === 'string' ? x : '');
+  const s6edge = (proj, nodeId, target, item) => s6edges(proj, nodeId)
+    .find((l) => l && l.id === target && s6itemKey(l.item) === s6itemKey(item)) || null;
+  const s6itemId = (out) => { const m = /(i-[a-z0-9-]+)/.exec(String(out)); return m ? m[1] : null; };
+  const s6json = (out) => { try { return JSON.parse(String(out).trim()); } catch (e) { return null; } };
+
+  try {
+    run(['init', S6SRC, '--title', 'S6 条目级链接探针源']);
+    run(['init', S6DST, '--title', 'S6 条目级链接探针目标']);
+    run(['add', S6SRC, 'root', '--topic', 'S6 源甲', '--id', 'it-s6-a']);
+    run(['add', S6SRC, 'root', '--topic', 'S6 源乙', '--id', 'it-s6-ae']);
+    run(['add', S6DST, 'root', '--topic', 'S6 目标（条目化）', '--id', 'it-s6-t']);
+    const rA = run(['item-add', S6DST, 'it-s6-t', '--html', '<p>甲条正文</p>', '--tags', '门禁,检索']);
+    const rB = run(['item-add', S6DST, 'it-s6-t', '--html', '<p>乙条正文</p>']);
+    const iA = s6itemId(rA.out);
+    const iB = s6itemId(rB.out);
+
+    // （S6 之一）+（S6 之二）写入口：条目级链接成立；目标条目不在 ⇒ 拒绝并点名、盘上零改动
+    const rLinkOk = run(['link', S6SRC, 'it-s6-a', '--to', S6DST, '--id', 'it-s6-t', '--item', iA]);
+    const bytesBeforeBad = s6text(S6SRC);
+    const rLinkBad = run(['link', S6SRC, 'it-s6-a', '--to', S6DST, '--id', 'it-s6-t', '--item', 'i-does-not-exist']);
+    const s6refusalZeroWrite = s6text(S6SRC) === bytesBeforeBad;
+    check('S6 `link --item`：边落成 `{project,id,item}`（回显点名 `目标/节点#条目`）；'
+      + '目标节点在、**条目不在** ⇒ 非 0 + 点名到 `项目/节点#条目` + **盘上零改动**',
+      ok(rLinkOk.out) && rLinkOk.out.indexOf('已添加链接: it-s6-a → ' + S6DST + '/it-s6-t#' + iA) >= 0
+        && JSON.stringify(s6edge(S6SRC, 'it-s6-a', 'it-s6-t', iA))
+          === JSON.stringify({ project: S6DST, id: 'it-s6-t', item: iA })
+        && rLinkBad.code !== 0 && rLinkBad.out.indexOf('目标条目不存在') >= 0
+        && rLinkBad.out.indexOf(S6DST + '/it-s6-t#i-does-not-exist') >= 0
+        && s6refusalZeroWrite,
+      '落盘=' + JSON.stringify(s6edge(S6SRC, 'it-s6-a', 'it-s6-t', iA))
+        + ' ｜ 拒绝 exit=' + rLinkBad.code + ' 盘上零改动=' + s6refusalZeroWrite);
+
+    // （S6 之三）三态词（沿用 K8）：**重放同一三元组**（项目, 节点, 条目）⇒「无变化」且逐字节不变。
+    // ⚠️ 改前这条写的是"省略 `--item` 重放 ⇒ 无变化且保留 item" —— 那等于把"同一条边"当成 (源,目标)
+    //    两元组，与 `--item` 的意义自相矛盾（同 (源,目标) 上"节点级一条 + 条目级两条"本是三条不同的边）；
+    //    实测后果：省略 `--item` 命中一条条目级边 ⇒ 节点级那条边**永远建不出来**（之四/之五跟着红）。
+    //    省略 `--item` 命中的是**节点级**那一条 ⇒ 它应当被**新建**，而条目级那条一个字节都不动。
+    const bytesBeforeReplay = s6text(S6SRC);
+    const rReplay = run(['link', S6SRC, 'it-s6-a', '--to', S6DST, '--id', 'it-s6-t', '--item', iA]);
+    // ⚠️ "逐字节不变"必须在**这一条之后立刻取样**：下面的 `省略 --item` 会**真的新建**一条节点级边
+    //    （那正是它的正确行为）⇒ 把取样点放到 check() 里就等于拿"后来的盘"去比"重放前的盘"。
+    const replayByteSame = s6text(S6SRC) === bytesBeforeReplay;
+    const rReplayNoItem = run(['link', S6SRC, 'it-s6-a', '--to', S6DST, '--id', 'it-s6-t']);
+    check('S6 三态词（**沿用 K8 的 `已添加链接`/`已更新链接`/`无变化`**）：重放**同一三元组** ⇒「无变化」'
+      + '且盘上**逐字节不变**；省略 `--item` 是**另一条边**（节点级）⇒ 新建它，条目级那条的 item 一个字节不动',
+      ok(rReplay.out) && rReplay.out.indexOf('无变化') >= 0 && rReplay.out.indexOf('已添加链接') < 0
+        && replayByteSame
+        && ok(rReplayNoItem.out) && rReplayNoItem.out.indexOf('已添加链接') >= 0
+        && s6edge(S6SRC, 'it-s6-a', 'it-s6-t', iA).item === iA
+        && s6edges(S6SRC, 'it-s6-a').filter((l) => !s6itemKey(l.item)).length === 1,
+      '重放=' + rReplay.out.trim().slice(0, 40) + ' ｜ 逐字节不变=' + replayByteSame
+        + ' ｜ 省略 --item 的回显=' + rReplayNoItem.out.trim().slice(0, 40)
+        + ' ｜ 条目级那条 item=' + JSON.stringify(s6edge(S6SRC, 'it-s6-a', 'it-s6-t', iA).item)
+        + ' ｜ 节点级边数=' + s6edges(S6SRC, 'it-s6-a').filter((l) => !s6itemKey(l.item)).length);
+
+    // （S6 之四）判定键含条目层：节点级一条 + 条目级两条并存、互不吞掉
+    run(['link', S6SRC, 'it-s6-ae', '--to', S6DST, '--id', 'it-s6-t', '--item', iA, '--caption', '甲注']);
+    run(['link', S6SRC, 'it-s6-ae', '--to', S6DST, '--id', 'it-s6-t', '--item', iB, '--caption', '乙注']);
+    const rLvl = run(['link', S6SRC, 'it-s6-ae', '--to', S6DST, '--id', 'it-s6-t']);
+    check('S6 判定键含条目层：同 (源,目标) 上"节点级一条 + 条目级两条"**并存、互不吞掉**'
+      + '（`--item` 只命中它自己那一档，不重建别的边、不重排数组）',
+      ok(rLvl.out) && ok(rLvl.out) && s6edges(S6SRC, 'it-s6-ae').length === 3
+        && JSON.stringify(s6edges(S6SRC, 'it-s6-ae').map((l) => s6itemKey(l.item)).sort())
+          === JSON.stringify([iA, iB, ''].sort())
+        && s6edge(S6SRC, 'it-s6-ae', 'it-s6-t', iA).caption === '甲注',
+      '该节点三档 item=' + JSON.stringify(s6edges(S6SRC, 'it-s6-ae').map((l) => s6itemKey(l.item))));
+
+    // （S6 之五）读口**只增字段**：条目级带 item（+ itemLabel），节点级一个键都不多
+    const rLinksJson = run(['links', S6SRC, '--json']);
+    const s6rows = (s6json(rLinksJson.out) || { links: [] }).links.filter((l) => l.node === 'it-s6-ae');
+    const s6bare = s6rows.filter((l) => !s6itemKey(l.item));
+    const s6itemRows = s6rows.filter((l) => s6itemKey(l.item));
+    const rBl = run(['backlinks', S6DST, 'it-s6-t', '--json']);
+    const s6blRows = ((s6json(rBl.out) || {}).cross || []).filter((x) => x.node === 'it-s6-ae');
+    check('S6 读口**只增字段**：`links --json` 的条目级边带 `item`，**节点级边没有 `item` 键**；'
+      + '`backlinks --json` 的条目行带 `item` + 可读标注 `itemLabel`（标签优先）',
+      ok(rLinksJson.out) && s6bare.length === 1 && !('item' in s6bare[0])
+        && s6itemRows.length === 2
+        && ok(rBl.out) && s6blRows.length === 3
+        && !('item' in s6blRows.filter((x) => !x.item)[0])
+        && (s6blRows.filter((x) => x.item === iA)[0] || {}).itemLabel.indexOf('门禁') >= 0
+        && (s6blRows.filter((x) => x.item === iB)[0] || {}).itemLabel.indexOf('乙条正文') >= 0,
+      '节点级行键=' + JSON.stringify(Object.keys(s6bare[0] || {}).sort())
+        + ' ｜ 条目级行数=' + s6itemRows.length + ' ｜ 甲条标注='
+        + JSON.stringify((s6blRows.filter((x) => x.item === iA)[0] || {}).itemLabel));
+
+    // （S6 之六）+（S6 之七）+（S6 之八）条目级悬挂：一处判据 + 分开点名 + 精确档 + 复绿
+    {
+      const d = readProj(S6SRC);
+      nodeOf(d, 'it-s6-ae').links = [
+        { project: S6DST, id: 'it-s6-t', item: iA, caption: '好的边' },
+        { project: S6DST, id: 'it-s6-t', item: 'i-gone', caption: '坏边：条目已删' }
+      ];
+      fs.writeFileSync(s6file(S6SRC), JSON.stringify(d, null, 2), 'utf8');
+    }
+    const bytesBeforePrune = s6text(S6SRC);
+    const rDry = run(['links-prune', S6SRC, '--dry-run']);
+    const s6dryNoWrite = s6text(S6SRC) === bytesBeforePrune;
+    const rPrune = run(['links-prune', S6SRC]);
+    check('S6 条目级悬挂**判据一处**：`links-prune` 自动档抓出"节点还在、条目已被删"并**分开点名**'
+      + '（与"节点整个不在"分开报）；`--dry-run` 不写盘；真跑后那条边被剪、`validate` 复绿',
+      ok(rDry.out) && rDry.out.indexOf('节点还在、条目已被删') >= 0
+        && rDry.out.indexOf(S6DST + '/it-s6-t#i-gone') >= 0 && s6dryNoWrite
+        && ok(rPrune.out) && rPrune.out.indexOf('#i-gone') >= 0
+        && s6edge(S6SRC, 'it-s6-ae', 'it-s6-t', 'i-gone') === null
+        && s6edge(S6SRC, 'it-s6-ae', 'it-s6-t', iA) !== null        // 好边一条不少
+        && run(['validate', S6SRC]).code === 0,
+      'dry-run 不写盘=' + s6dryNoWrite + ' ｜ 剪后剩余 item='
+        + JSON.stringify(s6edges(S6SRC, 'it-s6-ae').map((l) => s6itemKey(l.item))));
+
+    // （S6 之七）精确档 `--items 节点id#条目id`：只剪被点名的那一条
+    {
+      const d = readProj(S6SRC);
+      nodeOf(d, 'it-s6-ae').links = [
+        { project: S6DST, id: 'it-s6-t', item: iA, caption: '保住甲' },
+        { project: S6DST, id: 'it-s6-t', item: iB, caption: '点掉乙' }
+      ];
+      fs.writeFileSync(s6file(S6SRC), JSON.stringify(d, null, 2), 'utf8');
+    }
+    const rByItem = run(['links-prune', S6SRC, '--items', 'it-s6-t#' + iB]);
+    const rBadFmt = run(['links-prune', S6SRC, '--items', 'no-hash-here']);
+    check('S6 `links-prune --items 节点id#条目id`：只剪**被点名的那一条**，同目标另一条条目一条都没动；'
+      + '格式写错 ⇒ 响亮拒绝（不许静默当成"没有可清理的"）',
+      ok(rByItem.out) && rByItem.out.indexOf('按 --items 清理') >= 0
+        && s6edge(S6SRC, 'it-s6-ae', 'it-s6-t', iB) === null
+        && s6edge(S6SRC, 'it-s6-ae', 'it-s6-t', iA) !== null
+        && rBadFmt.code !== 0 && rBadFmt.out.indexOf('节点id#条目id') >= 0,
+      '点掉后剩余 item=' + JSON.stringify(s6edges(S6SRC, 'it-s6-ae').map((l) => s6itemKey(l.item)))
+        + ' ｜ 坏格式 exit=' + rBadFmt.code);
+
+    // （S6 之九）标签两级：节点级与条目级**并存、不合并、不互相复制**
+    const rTagItem = run(['search', S6DST, '--tag', '门禁', '--json']);
+    run(['edit', S6DST, 'it-s6-t', '--tags', '节点级标签S6']);
+    const rTagNode = run(['search', S6DST, '--tag', '节点级标签S6', '--json']);
+    const s6nodeAfter = s6node(S6DST, 'it-s6-t');
+    check('S6 标签两级：条目级 `item.tags` 与节点级 `tags` 并存且**可分辨**'
+      + '（`search --tag` 分别报 `item-tag` / `node-tag`）；**不合并、不互相复制**',
+      ok(rTagItem.out) && ok(rTagNode.out)
+        && ((s6json(rTagItem.out) || {}).hits || []).some((h) => h.itemId === iA && h.matchIn === 'item-tag')
+        && ((s6json(rTagNode.out) || {}).hits || []).some((h) => h.nodeId === 'it-s6-t' && h.matchIn === 'node-tag')
+        && JSON.stringify(s6nodeAfter.tags) === JSON.stringify(['节点级标签S6'])
+        && JSON.stringify((s6nodeAfter.items.filter((x) => x.id === iA)[0] || {}).tags)
+          === JSON.stringify(['门禁', '检索']),
+      '条目级 matchIn=' + (((s6json(rTagItem.out) || {}).hits || [])[0] || {}).matchIn
+        + ' ｜ 节点级 matchIn=' + (((s6json(rTagNode.out) || {}).hits || [])[0] || {}).matchIn
+        + ' ｜ 节点 tags=' + JSON.stringify(s6nodeAfter.tags));
+  } finally {
+    // 自收尾：探针项目自己删干净（它是**条目化**夹具，留在真实 projects/ 里会被后续读数算进去）
+    try { fs.rmSync(path.join(ROOT, 'projects', S6SRC), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+    try { fs.rmSync(path.join(ROOT, 'projects', S6DST), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+  }
+}
+
 /* ---------------- 49. 条目读与检索（S3）：search 的条目级命中 + `get --item` + `read --items` ----------------
  * 判据（对应 S3 任务书的四条验收）：
  *   · 默认口径 = **搜条目**：一个条目化节点里 n 条命中就出 n 条（v2 口径只出 1 条节点命中）；
@@ -3231,6 +3757,215 @@ const K8B = 'it-k8-dst-' + Date.now().toString(36);
     // 自收尾：探针项目自己删干净（它是条目化夹具，留在真实 projects/ 里会被后续读数算进去）
     try { fs.rmSync(path.join(ROOT, 'projects', P8), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
   }
+}
+
+/* ---------------- 47. 条目层迁移（S1）：`migrate items` 的幂等 / 准入门槛 / qa 收敛 / 备份 ----------------
+ * 判据（对应 S1 任务书的验收，逐条一个 `check`）：
+ *   （S1 之一）`migrate items <项目> --dry-run --json`：exit 0、stdout 是**一份** JSON、
+ *               逐条点名"将跳过"的节点（带原因），且**盘上零改动**、**不备份**；
+ *   （S1 之二）真跑：exit 0 + `validate` exit 0 + `meta.formatVersion` 3 + 被迁移节点
+ *               `detail === renderDetail(items)`（逐字节，用**同一个**渲染实现比对）+ 原 detail 内容未变；
+ *   （S1 之三）**幂等**：第二次跑 `changed:{nodes:0,items:0}` 且项目文件**逐字节不变**；
+ *   （S1 之四）**准入门槛**：不可逐字节回放的节点进 `skipped`（点名 + 原因），它的 detail 一个字节没动；
+ *   （S1 之五）`qa[]` 收敛：节点的 `qa` 键**消失**、内容成为 `type:'qa'` 条目（保序追加、`item.qa` 原样）；
+ *   （S1 之六）写盘前**自动备份**：路径绝对、落在 `.review/<日期>-条目层迁移/`、且那份 aimap 的
+ *               `formatVersion` 仍是 2（回退就靠它）；
+ *   （S1 之七）**位置参数陷阱**：项目名取的是 `args._[1]`（报错点真项目名，不点 `items`）；
+ *   （S1 之八）`migrate` 是**写命令**：`cli/core.js` 的 `WRITE_COMMANDS` 里有它 ⇒ 带 `--idem` 被接受，
+ *               且同键重放**命中**（`hit:true`、盘上零改动）。
+ *
+ * 探针项目一律 `it-s1-` 前缀（其它流的探针各有前缀，互不踩）；本段在 `finally` 里**自删**，
+ * 连它写下的那份备份一起 —— 备份落在工程的 `.review/` 下（不进版本库），但也不该留给下一个人。
+ * `detail` 的判据一律取自**盘上真值**（`readProj` / `nodeOf`），并调用与迁移**同一个**渲染实现
+ * （`src/item-model.js` 的 `renderDetail`）—— 用另一份实现去比对等于自说自话。 */
+{
+  const S1TAG = Date.now().toString(36);
+  const P9 = 'it-s1-migrate-' + S1TAG;
+  const P10 = 'it-s1-idem-' + S1TAG;
+  const S1MODEL = require(path.join(ROOT, 'src', 'item-model.js'));
+  const s9file = (name) => path.join(ROOT, 'projects', name, name + '.json');
+  const s9bytes = (name) => fs.readFileSync(s9file(name));
+  const s9node = (name, id) => nodeOf(readProj(name), id);
+  const s9json = (out) => { try { return JSON.parse(String(out).trim()); } catch (e) { return null; } };
+  /** 备份**目录**（与 `cli/commands/migrate.js` 同一处口径：`.review/<YYYYMMDD>-条目层迁移/`） */
+  const s9backupDir = () => {
+    const d = new Date(); const p = (n) => (n < 10 ? '0' + n : String(n));
+    return path.join(ROOT, '.review', d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-条目层迁移');
+  };
+  /** 备份**文件**落点：`.review/<YYYYMMDD>-条目层迁移/<项目>.aimap.json` */
+  const s9backup = (name) => path.join(s9backupDir(), name + '.aimap.json');
+  const s9clean = (name) => {
+    try { fs.rmSync(path.join(ROOT, 'projects', name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+    try { fs.rmSync(s9backup(name), { force: true }); } catch (e) { /* 备份是自己写的，要自己收干净 */ }
+    // ⚠️ **备份目录也要收**（只删文件会留下一个**空目录**）：G8（文档登记与家门）在链里排在 G4 **之前**
+    //    （`scripts/verify.js` 的步骤表：G8 = 步 2、G4 = 步 12）⇒ 一个没有 `README.md` 的空目录会让
+    //    **下一次**全链在 G8 红「[工作目录无状态] … `.review/<日期>-条目层迁移/`」，而这一次却是绿的
+    //    （本批实测就是被这样"毒化"的：第一次全绿、下一次必红）。
+    //    只在**空**时删：里面若有别人的东西（真跑过 `migrate` 的备份）一律不动 —— 少删一次不等于漏维护。
+    try {
+      const dir = s9backupDir();
+      if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+    } catch (e) { /* 删不掉不在这里判红：下面有一条断言专门盯它 */ }
+  };
+  /** 可无损回放（多块 + 列表组 + 块间空白）；**不可**回放（根层裸文本） */
+  const D9_OK = '<h3>标题</h3>\n<ul>\n<li>甲</li>\n<li>乙</li>\n</ul>\n<p>收尾</p>';
+  const D9_BAD = '<ul>\n<li>甲</li>\n</ul>\n根层裸文本\n<p>尾</p>';
+
+  try {
+    run(['init', P9, '--title', 'S1 条目层迁移探针']);
+    run(['add', P9, 'root', '--id', 'it-s1-ok', '--topic', '可回放', '--detail', D9_OK]);
+    run(['add', P9, 'root', '--id', 'it-s1-bad', '--topic', '不可回放', '--detail', D9_BAD]);
+    run(['add', P9, 'root', '--id', 'it-s1-qa', '--topic', '问答节点', '--detail', '<p>前言</p>']);
+    {
+      // `qa[]` 的写入口不在本条链路上（归 ask-apply）⇒ 这里只造**数据形状**（判据看形状，不看谁写的）
+      const d = readProj(P9);
+      nodeOf(d, 'it-s1-qa').qa = [{ q: '问', a: '答', at: '2026-10-01T00:00:00.000Z' }];
+      fs.writeFileSync(s9file(P9), JSON.stringify(d, null, 2), 'utf8');
+    }
+
+    // （S1 之一）--dry-run：如实 + 零改动 + 不备份
+    const bytes0 = s9bytes(P9);
+    const rDry = run(['migrate', 'items', P9, '--dry-run', '--json']);
+    const dry = s9json(rDry.out);
+    check('S1 migrate --dry-run：exit 0 + 一份可解析 JSON + 逐条点名"将跳过" + 盘上零改动 + 不备份',
+      rDry.code === 0 && ok(rDry.out) && !!dry
+        && dry.itemized === 2 && dry.changed.nodes === 2 && dry.items === 6
+        && dry.skipped.length === 1 && dry.skipped[0].nodeId === 'it-s1-bad'
+        && String(dry.skipped[0].reason).indexOf('回放') >= 0
+        && dry.backup === null && s9bytes(P9).equals(bytes0),
+      'itemized=' + (dry && dry.itemized) + ' skipped=' + JSON.stringify(dry && dry.skipped.map((s) => s.nodeId))
+        + ' 盘上零改动=' + s9bytes(P9).equals(bytes0));
+
+    // （S1 之二）真跑：一致 + 版本号 + 内容未变
+    const rRun = run(['migrate', 'items', P9, '--json']);
+    const rep = s9json(rRun.out);
+    const viRun = run(['validate', P9]);
+    const nOk = s9node(P9, 'it-s1-ok');
+    check('S1 migrate：真跑 exit 0 + validate exit 0 + formatVersion 3 + detail === renderDetail(items)（逐字节）',
+      rRun.code === 0 && ok(rRun.out) && !!rep && rep.changed.nodes === 2
+        && viRun.code === 0 && readProj(P9).meta.formatVersion === 3
+        && Array.isArray(nOk.items) && nOk.detail === S1MODEL.renderDetail(nOk.items)
+        && nOk.detail === D9_OK,
+      'exit=' + rRun.code + ' validate=' + viRun.code + ' changed=' + JSON.stringify(rep && rep.changed)
+        + ' 一致性=' + (Array.isArray(nOk.items) && nOk.detail === S1MODEL.renderDetail(nOk.items)));
+
+    // （S1 之三）幂等：第二次 0 改动 + 逐字节不变
+    const bytes1 = s9bytes(P9);
+    const rAgain = run(['migrate', 'items', P9, '--json']);
+    const rep2 = s9json(rAgain.out);
+    check('S1 migrate **幂等**：第二次 changed:{nodes:0,items:0} 且项目文件逐字节不变',
+      rAgain.code === 0 && !!rep2 && rep2.changed.nodes === 0 && rep2.changed.items === 0
+        && rep2.itemized === 0 && rep2.backup === null && s9bytes(P9).equals(bytes1),
+      'changed=' + JSON.stringify(rep2 && rep2.changed) + ' 逐字节不变=' + s9bytes(P9).equals(bytes1));
+
+    // （S1 之四）准入门槛：跳过项点名 + 一个字节没动
+    const nBad = s9node(P9, 'it-s1-bad');
+    check('S1 migrate **准入门槛**：不可逐字节回放的节点进 skipped（点名 + 原因），它的 detail 一个字节没动',
+      !!rep && rep.skipped.length === 1 && rep.skipped[0].nodeId === 'it-s1-bad'
+        && nBad.items === undefined && nBad.detail === D9_BAD,
+      'skipped=' + JSON.stringify(rep && rep.skipped) + ' 未动=' + (nBad.detail === D9_BAD));
+
+    // （S1 之五）qa 收敛
+    const nQa = s9node(P9, 'it-s1-qa');
+    check('S1 migrate **qa 收敛**：节点 qa 键消失、内容成为 type:\'qa\' 条目（保序追加、item.qa 原样）',
+      nQa.qa === undefined && nQa.items.map((x) => x.type).join(',') === 'rich,qa'
+        && JSON.stringify(nQa.items[1].qa) === JSON.stringify({ q: '问', a: '答', at: '2026-10-01T00:00:00.000Z' })
+        && nQa.detail === S1MODEL.renderDetail(nQa.items),
+      'qa 键=' + JSON.stringify(nQa.qa) + ' types=' + nQa.items.map((x) => x.type).join(','));
+
+    // （S1 之六）写盘前自动备份
+    const bak = s9backup(P9);
+    let packed = null;
+    try { packed = JSON.parse(fs.readFileSync(bak, 'utf8')); } catch (e) { packed = null; }
+    check('S1 migrate **写盘前自动备份**：绝对路径 + 落在 .review/<日期>-条目层迁移/ + formatVersion 仍是 2',
+      !!rep && !!rep.backup && path.isAbsolute(rep.backup)
+        && path.resolve(rep.backup) === path.resolve(bak)
+        && !!packed && packed.meta.formatVersion === 2,
+      'backup=' + (rep && rep.backup) + ' 是 aimap=' + !!packed);
+
+    // （S1 之七）位置参数陷阱：项目名取 args._[1]
+    const rBad = run(['migrate', 'items', 'no-such-project-xyz', '--json']);
+    check('S1 migrate **位置参数**：项目名取 `args._[1]`（报错点真项目名，不点 `items`）',
+      rBad.code !== 0 && rBad.out.indexOf('项目不存在: no-such-project-xyz') >= 0
+        && rBad.out.indexOf('项目不存在: items') < 0,
+      'exit=' + rBad.code + ' ｜ ' + rBad.out.trim().slice(0, 80));
+
+    // （S1 之八）写命令归属 + 幂等键：`migrate` 必须在 WRITE_COMMANDS 里（否则带 --idem 会被响亮拒绝）
+    run(['init', P10, '--title', 'S1 幂等键探针']);
+    run(['add', P10, 'root', '--id', 'it-s1-i1', '--topic', '可回放', '--detail', D9_OK]);
+    const key = 'it-s1-idem-' + S1TAG;
+    const rIdem1 = run(['migrate', 'items', P10, '--idem', key, '--json']);
+    const rep1 = s9json(rIdem1.out);
+    const bytes10 = s9bytes(P10);
+    const rIdem2 = run(['migrate', 'items', P10, '--idem', key, '--json']);
+    const rep3 = s9json(rIdem2.out);
+    check('S1 `migrate` 在 WRITE_COMMANDS 里：带 --idem 被接受，同键重放 ⇒ 命中（hit:true）且盘上零改动',
+      rIdem1.code === 0 && rIdem2.code === 0 && !!rep1 && rep1.hit === undefined
+        && !!rep3 && rep3.hit === true && s9bytes(P10).equals(bytes10),
+      '第一次 exit=' + rIdem1.code + '（报告键=' + Object.keys(rep1 || {}).join(',') + '）'
+        + '；第二次 exit=' + rIdem2.code + ' ｜ ' + rIdem2.out.trim().slice(0, 100));
+
+    // （S1 之八·二）**区分"命中回放"与"又执行了一遍"** —— 这一条才是钉住那个静默缺陷的判据：
+    // 命中回放给的是 `cli/main.js:181` 那个结构化对象（`{command,idem,hit,rev,version,result}`），
+    // 它**没有** migrate 自己的报告键（`scanned`/`itemized`/`skipped`）；而"又跑了一遍"给的正是那份报告。
+    // ⚠️ 改前只有 `rep3.hit === true` 这一条 ⇒ 缺陷只表现为"`hit` 是 undefined"，与"字段根本不存在"
+    //    长得一模一样，看不出是**实现空转**（真因：`ctx.projectName` 默认取 `_[0]` = 子命令名 `items`
+    //    ⇒ 幂等查询去"项目 `items`"的日志里找键 ⇒ 永远查不到；修法是 `ctx.useProject(project)`）。
+    check('S1 `--idem` 的命中是**真命中**（回放对象，不是又执行一遍）：键/rev 对得上，且没有 migrate 自己的报告键',
+      !!rep3 && rep3.command === 'migrate' && rep3.idem === key && rep3.hit === true
+        && typeof rep3.rev === 'number' && rep3.rev > 0
+        && rep3.scanned === undefined && rep3.itemized === undefined
+        && String(rep3.result || '').indexOf('"itemized"') >= 0,
+      '回放对象键=' + JSON.stringify(Object.keys(rep3 || {}).sort())
+        + ' ｜ rev=' + (rep3 && rep3.rev)
+        + ' ｜ result 里是首跑那份报告=' + /"itemized"/.test(String((rep3 || {}).result || '')));
+
+    // （S1 之九）**收尾不留空壳**：本段自建的备份目录不许以"空目录"的形式留给下一个人。
+    // 判据 = 本段的两个备份文件都不在了 **且** 目录不是"空壳"（判据的由来见上面 `s9clean` 的注释：
+    // G8 在 G4 **之前**跑 ⇒ 空目录会毒化**下一次**全链，而这一次是绿的）。
+    // ⚠️ 目录里若有**别人的**文件（真跑过 `migrate` 的备份）不判红 —— 那不是本段造的，也不该由本段删。
+    // 判别力：把 `s9clean` 里那段 `rmdirSync`（只在空时删）注释掉 = 改前的行为 ⇒ 本断言**必红**。
+    s9clean(P9);
+    s9clean(P10);
+    const s9dir = s9backupDir();
+    const s9left = fs.existsSync(s9dir) ? fs.readdirSync(s9dir) : [];
+    const s9ours = s9left.filter((f) => f === P9 + '.aimap.json' || f === P10 + '.aimap.json');
+    check('S1 收尾：`.review/<日期>-条目层迁移/` **不留空壳**（留了 ⇒ 下一次全链的 G8 必红）',
+      s9ours.length === 0 && !(fs.existsSync(s9dir) && s9left.length === 0),
+      '备份目录=' + s9dir + ' ｜ 本段残留文件=' + JSON.stringify(s9ours)
+        + ' ｜ 目录存在=' + fs.existsSync(s9dir) + ' ｜ 目录内容=' + JSON.stringify(s9left));
+  } finally {
+    s9clean(P9);
+    s9clean(P10);
+  }
+}
+
+/* ============================================================================
+ * 条目层 v3 · 界面整树写回的字段清单（S5 交付；静态判据，不需要起界面）
+ * ----------------------------------------------------------------------------
+ * 防的是本项目重复栽过四次的那一类：**手挑字段清单漏一个**（qa / localPath / origin / items
+ * 各一次）。它只在源码里看得见 —— 界面上一切正常、没有任何门禁会红，而字段被静默抹掉。
+ * 判据：serializeTree() 的 walk() 里出现的 `out.<字段> =` 必须覆盖契约允许的节点可选字段。
+ * 判别力：注释掉 walk 里 `out.items = …`（或 `out.detailMode = …`）⇒ 本断言必红
+ *        （与冒烟域 39 的注入证明同源：那边是行为级，这边是源码级）。
+ * ⚠️ 摆放位置与编号由集成流定；段内不要写成"行内斜杠紧跟圈号"的样子（G9 会计数，
+ *    scripts/cli-integration.js 顶部记过这个坑）。
+ */
+{
+  const src = fs.readFileSync(path.join(ROOT, 'renderer', 'app-core.js'), 'utf8');
+  const a = src.indexOf('const walk = (n) => {');
+  const b = src.indexOf('const root = MM.adapter.getRoot');
+  const carried = (a > 0 && b > a)
+    ? new Set(Array.from(src.slice(a, b).matchAll(/out\.([A-Za-z_$][\w$]*)\s*=/g)).map((m) => m[1]))
+    : new Set();
+  // 契约允许出现在**节点**上的可选字段（docs/DATA-FORMAT.md §2 + docs/ITEM-MODEL.md §1/§2）
+  const REQUIRED = ['detail', 'tags', 'images', 'files', 'links', 'background',
+    'localPath', 'qa', 'origin', 'items', 'detailMode'];
+  const missing = REQUIRED.filter((f) => !carried.has(f));
+  check('界面整树写回的字段清单覆盖契约里的节点字段（漏一个 = 保存时静默抹掉）',
+    a > 0 && b > a && missing.length === 0,
+    'app-core.js walk() 覆盖 ' + carried.size + ' 个字段；缺：' + (missing.join(',') || '（无）')
+      + (a > 0 && b > a ? '' : '｜⚠️ 定位失败：serializeTree/walk 的锚点变了，判据要跟着改'));
 }
 
 /* ---------------- 清理 ---------------- */

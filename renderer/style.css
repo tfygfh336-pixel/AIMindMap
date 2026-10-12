@@ -298,6 +298,46 @@ jmnode.mm-container-root { visibility: hidden !important; }
 .fd-detail-content code { background: #f2f3f5; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
 .fd-detail-content img { max-width: 100%; border-radius: 4px; }
 
+/* ---------------- 条目层（v3）：详情框里的「逐条」呈现 ----------------
+   只在**条目化**节点上出现（未条目化节点不会生成 `.fd-items`，正文也不会带 `data-item-id`）✓
+   ① `.fd-items` 清单（条数与逐条分隔都在这里）；
+   ② 正文里每条贴到的归属 `.fd-item`：**分隔线与序号全由 CSS 画**（`::before` 的生成内容
+      不进 innerHTML）⇒ 正文 DOM 与 `detail` 仍逐字节同源（判据在 scripts/smoke/39）。 */
+.fd-items { margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px dashed #e4e7ec; }
+.fd-items-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 3px; }
+.fd-items-count { font-size: 12px; font-weight: 600; color: #4e5969; }
+.fd-items-hint { font-size: 11px; color: #a9aeb8; }
+.fd-item-row {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px;
+  padding: 3px 4px; border-radius: 4px; cursor: pointer;
+}
+.fd-item-row:hover { background: #f2f3f5; }
+.fd-item-row.fd-item-active { background: #e8f0ff; box-shadow: inset 0 0 0 1px #8ab4ff; }
+.fd-item-no {
+  flex: 0 0 auto; min-width: 14px; text-align: center; font-size: 11px; color: #86909c;
+  background: #f2f3f5; border-radius: 3px; padding: 0 3px;
+}
+.fd-item-type { flex: 0 0 auto; font-size: 11px; color: #86909c; }
+.fd-item-snippet {
+  flex: 1 1 60px; min-width: 0; font-size: 12px; color: #1d2129;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fd-item-tags { flex: 0 0 auto; font-size: 11px; color: #1664ff; }
+.fd-item-src { flex: 0 0 auto; font-size: 11px; color: #86909c; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fd-item-verified { flex: 0 0 auto; font-size: 11px; color: #00875a; background: #e8f7ef; border-radius: 3px; padding: 0 4px; }
+.fd-item-copy {
+  flex: 0 0 auto; margin-left: auto; border: none; background: none; cursor: pointer;
+  font-size: 12px; color: #86909c; padding: 0 4px; border-radius: 3px;
+}
+.fd-item-copy:hover { background: #d6e4ff; color: #1664ff; }
+/* 正文里的条目归属：分隔线 + 序号（序号是 CSS 生成内容，**不进 DOM**） */
+.fd-detail-content .fd-item { border-left: 3px solid #e4e7ec; padding-left: 7px; margin: 3px 0; }
+.fd-detail-content .fd-item::before {
+  content: "第 " attr(data-item-no) " 条"; display: block;
+  font-size: 10px; line-height: 1.3; color: #b8bec9;
+}
+.fd-detail-content .fd-item.fd-item-active { border-left-color: #1664ff; background: #f3f7ff; }
+
 .fd-images-content { margin-top: 8px; border-top: 1px dashed #e4e7ec; padding-top: 8px; }
 .fd-images-content img {
   max-width: 100%; border-radius: 6px; margin-bottom: 8px; display: block;

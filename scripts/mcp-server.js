@@ -39,12 +39,26 @@ const TOOLS = [
     project: s('项目名或 JSON 文件路径'), brief: b('只要结构不要长文本')
   }, ['project']),
   T('list_nodes', '树形列出项目全部节点', { project: s('项目名或 JSON 文件路径') }, ['project']),
-  T('get_node', '查看节点（含路径/详情/图片）', {
-    project: s('项目名或 JSON 文件路径'), id: s('节点 id')
+  T('get_node', '查看节点（含路径/详情/图片）。给 item（= 条目 id）则**只取回那一条条目**（条目视图：'
+    + 'html/src/tags/verified/qa…，对应 CLI 的 `get … --item <itemId>`）；不给 item 时行为与从前完全一致', {
+    project: s('项目名或 JSON 文件路径'), id: s('节点 id'),
+    item: s('可选：条目 id（`i-…`）—— 对应 CLI 的 --item。条目不属于该节点会**指名它实际在哪个节点**')
   }, ['project', 'id']),
-  T('search_nodes', '搜索节点（默认标题；full=true 全文匹配 detail/图片caption/标签/链接说明；tag 按标签过滤）', {
+  T('search_nodes', '搜索**条目**（默认口径：节点标题 ∪ 条目正文）。item_level=false 退回旧口径"只搜标题"'
+    + '（对应 CLI 的反向开关 --topic-only）；full=true 再加全文面（detail / 图片 caption / 节点标签 / 链接说明）；'
+    + 'tag 按标签过滤（条目级或节点级）；src / verified / type / since 是**条目级**过滤（给了它们就只返回条目命中）；'
+    + 'limit / max_bytes 卡预算（超限会截断并在结果里给续取方式）', {
     project: s('项目名或 JSON 文件路径'), keyword: s('关键词（与 tag 可组合）'),
-    full: b('全文搜索（detail/caption/tags/链接说明）'), tag: s('按标签过滤')
+    full: b('全文搜索（detail/caption/节点标签/链接说明）—— 对应 CLI 的 --full'),
+    tag: s('按标签过滤：**条目级** `item.tags` 或**节点级** `tags` 含它即命中（对应 CLI 的 --tag）'),
+    item_level: b('是否按**条目层**检索（对应 CLI 的反面 `--topic-only`）：默认 true = 搜条目；'
+      + '显式给 false ⇒ 加上 --topic-only，退回 v2 的"只搜标题"口径'),
+    src: s('只要**出处**（条目 `src`，字符串或数组的任一项）含该子串的条目 —— 对应 CLI 的 --src'),
+    verified: b('只要**已核**条目（没有 `verified` = 未核）—— 对应 CLI 的 --verified'),
+    type: s('只要该 `type` 的条目：text | rich | qa —— 对应 CLI 的 --type'),
+    since: s('只要写入时间 `at >= ISO` 的条目（给了它就不返回未条目化的节点命中）—— 对应 CLI 的 --since'),
+    limit: s('命中条数上界（整数）—— 对应 CLI 的 --limit；非法值当场报错，不静默退化'),
+    max_bytes: s('单次返回的**字节**上界（整数）—— 对应 CLI 的 --max-bytes；超限截断 + 给续取方式')
   }, ['project']),
   T('backlinks', '查看节点反向链接（谁引用了我，含跨项目反查）', {
     project: s('项目名或 JSON 文件路径'), id: s('节点 id')
@@ -204,6 +218,77 @@ const TOOLS = [
   // ---- 缺口补齐结束 ----
 
 
+  /* ---- 条目层（v3）：六条写原语 + 按条目取回（契约 docs/ITEM-MODEL.md §4）----
+   * 每条都是某条 CLI 命令的**透传**（不复制任何判定：去重、回放前置校验、悬挂引用检查都在 CLI 侧），
+   * 参数名一律 snake_case 且与 CLI 选项**一一对应**（每个参数描述里都写明对应哪个 `--xxx`）。
+   * （`item_remove` 原先**不传 `--json`**：带 `--clean-links/--clean-assoc` 时它先打一行文本再打 JSON
+   *  ⇒ "半截 JSON"。**该缺陷已修**：文本形态照旧分行打印，JSON 形态把清理结果放进 `cleaned`
+   *  {links:[{node,target,item?}], assoc:{touched:[{id,removed}],dropped:[id]}}，stdout 现在只有一份 JSON。）
+   */
+  T('item_add', '新增**一条**条目（透传 CLI `item-add`）—— 改一条不必重写整块 detail。'
+    + 'md 与 html 互斥、必给其一（md 走 Markdown→HTML；表格/代码块这类富内容用 html 原样存）；'
+    + '未条目化的节点会**自动条目化**（要求旧 detail 能逐字节回放，回放不了就拒绝并说明）；'
+    + '同节点同 type 同正文默认拒绝并**点名那一条**，force=true 放行', {
+    project: s('项目名或 JSON 文件路径'),
+    id: s('节点 id（对应 CLI 的位置参数 `<节点id>`）'),
+    md: s('条目正文 Markdown —— 对应 CLI 的 --md（与 html 互斥）'),
+    html: s('条目正文 HTML —— 对应 CLI 的 --html（与 md 互斥；表格/代码块用它）'),
+    src: s('出处：`文件:行` / `文件:行::引文` / URL / 命令 —— 对应 CLI 的 --src'),
+    tags: a('条目级标签 —— 对应 CLI 的 --tags（逗号分隔）'),
+    type: s('条目类型 text | rich —— 对应 CLI 的 --type（qa 条目由 ask_apply 产出，不能手写）'),
+    after: s('插到该条目**之后**（必须在同一节点内）—— 对应 CLI 的 --after'),
+    before: s('插到该条目**之前** —— 对应 CLI 的 --before（与 after 二选一）')
+  }, ['project', 'id']),
+  T('item_edit', '改写**一条**条目（透传 CLI `item-edit`）—— 只动你给的字段，回显**真的变了的字段名**。'
+    + 'verified=true 时必须同时给 how（核验是三字段全必填的记录 at/by/how：**缺失 = 未核**）', {
+    project: s('项目名或 JSON 文件路径'),
+    id: s('节点 id（对应 CLI 的位置参数 `<节点id>`）'),
+    item_id: s('条目 id（对应 CLI 的位置参数 `<itemId>`；不在该节点会指名它在哪个节点）'),
+    md: s('新正文 Markdown —— 对应 CLI 的 --md（与 html 互斥）'),
+    html: s('新正文 HTML —— 对应 CLI 的 --html（与 md 互斥）'),
+    src: s('设置出处 —— 对应 CLI 的 --src'),
+    clear_src: b('清掉出处 —— 对应 CLI 的 --clear-src'),
+    tags: a('覆盖设置条目级标签 —— 对应 CLI 的 --tags'),
+    clear_tags: b('清空条目级标签 —— 对应 CLI 的 --clear-tags'),
+    type: s('改成 text | rich —— 对应 CLI 的 --type'),
+    verified: b('给这条**写核验记录** —— 对应 CLI 的 --verified（必须同时给 how）'),
+    how: s('一句话说清**怎么核的** —— 对应 CLI 的 --how（verified=true 时必给；取不到就别写）'),
+    clear_verified: b('清掉核验记录（回到"未核"）—— 对应 CLI 的 --clear-verified')
+  }, ['project', 'id', 'item_id']),
+  T('item_remove', '删除**一条**条目（透传 CLI `item-remove`）。被 `links[].item` 或 `assoc.members[].item` '
+    + '引用时**默认拒绝并逐个点名引用者**（不许静默删出悬挂引用）；clean_links / clean_assoc 才连带清理。'
+    + '返回 JSON（`--json` 透传）：点名 itemId；**带清理时**清理结果在 `cleaned` 里'
+    + '（`{links:[{node,target,item?}], assoc:{touched,dropped}}`）—— 于是"连带清了哪几条引用"是结构化的', {
+    project: s('项目名或 JSON 文件路径'),
+    id: s('节点 id（对应 CLI 的位置参数 `<节点id>`）'),
+    item_id: s('条目 id（对应 CLI 的位置参数 `<itemId>`）'),
+    clean_links: b('同时清掉引用了它的 links —— 对应 CLI 的 --clean-links'),
+    clean_assoc: b('同时清掉引用了它的关联成员 —— 对应 CLI 的 --clean-assoc')
+  }, ['project', 'id', 'item_id']),
+  T('item_move', '把一条条目移到**另一个节点**（透传 CLI `item-move`）—— 一次原子写同时重渲染两侧 detail。'
+    + '目标节点必须**已条目化**；只调顺序请用 item_order', {
+    project: s('项目名或 JSON 文件路径'),
+    id: s('源节点 id（对应 CLI 的位置参数 `<节点id>`）'),
+    item_id: s('条目 id（对应 CLI 的位置参数 `<itemId>`）'),
+    to: s('目标节点 id —— 对应 CLI 的 --to'),
+    after: s('插到**目标节点**里该条目之后 —— 对应 CLI 的 --after'),
+    before: s('插到**目标节点**里该条目之前 —— 对应 CLI 的 --before（与 after 二选一）')
+  }, ['project', 'id', 'item_id', 'to']),
+  T('item_order', '重排一个节点内部的条目顺序（透传 CLI `item-order`）—— `ids` 必须是该节点现有条目的'
+    + '**完整排列**（只重排、不增删；少了谁/多了谁/重复了谁都会被逐项点名）', {
+    project: s('项目名或 JSON 文件路径'),
+    id: s('节点 id（对应 CLI 的位置参数 `<节点id>`）'),
+    ids: a('条目 id 的**完整排列** —— 对应 CLI 的 --ids（CLI 要逗号分隔，这里可传数组）')
+  }, ['project', 'id', 'ids']),
+  T('render_detail', '按 `items` 重新渲染 `detail`（透传 CLI `render-detail`）—— **G2 判'
+    + '"detail 与 items 不一致"时的唯一修法**。幂等：已一致 ⇒ changed=0。只处理**条目化节点**'
+    + '（没有 items 的节点 detail 是真源，不碰）', {
+    project: s('项目名或 JSON 文件路径'),
+    id: s('节点 id（对应 CLI 的位置参数 `<节点id>`；与 all 二选一）'),
+    all: b('重建**全部**条目化节点 —— 对应 CLI 的 --all（与 id 二选一）')
+  }, ['project']),
+
+
   T('changes', '变更可见性（多路同时编辑的**事前避让**）：最近是谁、什么时候、改了哪些对象。'
     + '不带 since 时返回当前 rev/version（当作下次的锚点）；带上 since（上一次的 rev 或 version）'
     + '即回答"自那以来改了什么"。⚠ 报错表示**答不了**（锚点滑出窗口/本机无日志），'
@@ -279,12 +364,26 @@ function callTool(name, args) {
       return runCli(c);
     }
     case 'list_nodes': return runCli(['list', argOf('project'), '--json']);
-    case 'get_node': return runCli(['get', argOf('project'), argOf('id'), '--json', '--detail', '--images']);
+    case 'get_node': {
+      // 条目层（v3）：给了 `item` 就是"按条目取回"（`get … --item`）—— 只取那一条的条目视图。
+      // 不给 `item` 时这一支**逐字不变**（既有消费者看到的形状与从前完全一致）。
+      if (argOf('item')) return runCli(['get', argOf('project'), argOf('id'), '--item', argOf('item'), '--json']);
+      return runCli(['get', argOf('project'), argOf('id'), '--json', '--detail', '--images']);
+    }
     case 'search_nodes': {
       const c = ['search', argOf('project')];
       if (a.keyword) c.push(a.keyword);
       if (a.full) c.push('--full');
       if (a.tag) c.push('--tag', a.tag);
+      // ---- 条目层扩参（S4）：**只增参数**，既有参数（keyword/full/tag）的语义与返回形状不变 ----
+      // `item_level` 是 `--topic-only` 的**反面**：只有显式 false 才加那个开关（默认口径已是"搜条目"）
+      if (a.item_level === false) c.push('--topic-only');
+      if (argOf('src')) c.push('--src', argOf('src'));
+      if (a.verified === true) c.push('--verified');
+      if (argOf('type')) c.push('--type', argOf('type'));
+      if (argOf('since')) c.push('--since', argOf('since'));
+      if (a.limit !== undefined) c.push('--limit', argOf('limit'));
+      if (a.max_bytes !== undefined) c.push('--max-bytes', argOf('max_bytes'));
       c.push('--json');
       return runCli(c);
     }
@@ -487,6 +586,65 @@ function callTool(name, args) {
       return runCli(c);
     }
     /* ---- 补齐结束 ---- */
+
+    /* ---- 条目层（v3）：六条写原语（契约 docs/ITEM-MODEL.md §4）----
+     * 一律 `runCli(...)` 拼参数转发；判定（去重 / 回放前置校验 / 悬挂引用检查 / 重渲染）全在 CLI 侧。
+     */
+    case 'item_add': {
+      const c = ['item-add', argOf('project'), argOf('id')];
+      if (a.md !== undefined) c.push('--md', argOf('md'));
+      if (a.html !== undefined) c.push('--html', argOf('html'));
+      if (a.src !== undefined) c.push('--src', argOf('src'));
+      if (Array.isArray(a.tags)) c.push('--tags', a.tags.join(','));
+      if (a.type !== undefined) c.push('--type', argOf('type'));
+      if (a.after !== undefined) c.push('--after', argOf('after'));
+      if (a.before !== undefined) c.push('--before', argOf('before'));
+      if (a.force === true) c.push('--force');        // 语义去重的唯一出口（与 CLI 同一个开关）
+      c.push('--json');
+      return runCli(c);
+    }
+    case 'item_edit': {
+      const c = ['item-edit', argOf('project'), argOf('id'), argOf('item_id')];
+      if (a.md !== undefined) c.push('--md', argOf('md'));
+      if (a.html !== undefined) c.push('--html', argOf('html'));
+      if (a.src !== undefined) c.push('--src', argOf('src'));
+      if (a.clear_src === true) c.push('--clear-src');
+      if (Array.isArray(a.tags)) c.push('--tags', a.tags.join(','));
+      if (a.clear_tags === true) c.push('--clear-tags');
+      if (a.type !== undefined) c.push('--type', argOf('type'));
+      if (a.verified === true) c.push('--verified');
+      if (a.how !== undefined) c.push('--how', argOf('how'));
+      if (a.clear_verified === true) c.push('--clear-verified');
+      c.push('--json');
+      return runCli(c);
+    }
+    case 'item_remove': {
+      // `--json` 现在可以安全透传（缺陷已修，见 `cli/commands/item.js` 的 item-remove 尾段）：
+      // 带 `--clean-links/--clean-assoc` 时清理结果进 `cleaned`，stdout 只此一份 JSON ——
+      // 于是"连带清了哪几条引用"对调用方是**结构化**的（不再只有一行中文文本）。
+      const c = ['item-remove', argOf('project'), argOf('id'), argOf('item_id')];
+      if (a.clean_links === true) c.push('--clean-links');
+      if (a.clean_assoc === true) c.push('--clean-assoc');
+      c.push('--json');
+      return runCli(c);
+    }
+    case 'item_move': {
+      const c = ['item-move', argOf('project'), argOf('id'), argOf('item_id'), '--to', argOf('to')];
+      if (a.after !== undefined) c.push('--after', argOf('after'));
+      if (a.before !== undefined) c.push('--before', argOf('before'));
+      c.push('--json');
+      return runCli(c);
+    }
+    case 'item_order': {
+      const ids = Array.isArray(a.ids) ? a.ids.join(',') : argOf('ids');
+      return runCli(['item-order', argOf('project'), argOf('id'), '--ids', ids, '--json']);
+    }
+    case 'render_detail': {
+      const c = ['render-detail', argOf('project')];
+      if (a.all === true) c.push('--all'); else c.push(argOf('id'));
+      c.push('--json');
+      return runCli(c);
+    }
 
 
     case 'validate': return runCli(['validate', argOf('project')]);

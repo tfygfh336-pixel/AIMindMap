@@ -47,6 +47,9 @@
 | `item-move` | item-move <项目> <节点id> <itemId> --to 目标节点id [--after itemId | --before itemId] |
 | `item-order` | item-order <项目> <节点id> --ids i-a,i-b,… |
 | `render-detail` | render-detail <项目> <节点id> | --all |
+| `recheck` | recheck <项目> [--src 子串] [--only i-a,i-b] [--limit n] [--root 目录] [--json] [--write-verified --how "怎么核的"] [--dry-run] |
+| `health` | health [<项目>] [--project 项目名] [--all] [--root 目录] [--json] |
+| `migrate` | migrate items <项目> [--dry-run] [--json] |
 | `ask-apply` | ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json] |
 | `import-md` | import-md <项目> <md文件> [--parent id] [--force] |
 | `import-project` | import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] [--force] |
@@ -65,10 +68,10 @@
 | `dsh-sidebar` | dsh-sidebar <on|off> [--json] |
 | `dsh-status` | dsh-status [--json] |
 | `dsh-prefill` | dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json] |
-| `link` | link <项目> <id> --to 目标项目 --id 目标id [--caption 说明] |
+| `link` | link <项目> <id> --to 目标项目 --id 目标id [--item 目标条目id] [--caption 说明] |
 | `unlink` | unlink <项目> <id> --to 目标项目 --id 目标id |
 | `links` | links <项目> [--json] |
-| `links-prune` | links-prune <项目> [--nodes a,b] [--dry-run] |
+| `links-prune` | links-prune <项目> [--nodes a,b] [--items a#i-1,b#i-2] [--dry-run] |
 | `orphans` | orphans <项目> [--json] [--content-only] [--limit n] |
 | `mentions` | mentions <项目> [--json] [--min-length n] [--include-structural] [--cross] [--limit n] |
 | `assoc-list` | assoc-list <项目> [--node <id>] [--json] [--raw] |
@@ -287,6 +290,30 @@ node cli/mm-cli.js item-order <项目> <节点id> --ids i-a,i-b,…
 node cli/mm-cli.js render-detail <项目> <节点id> | --all
 ```
 
+### recheck
+
+条目层复校：逐条点名 `ok` / `needs-recheck` / `src-gone` 与原因，并给出可执行的下一步。只读是默认；写回 `verified{at,by,how}` 必须显式 `--write-verified --how`，且**写回目标是「出处这一维判得过」**（判不过就不写并点名原因）
+
+```
+node cli/mm-cli.js recheck <项目> [--src 子串] [--only i-a,i-b] [--limit n] [--root 目录] [--json] [--write-verified --how "怎么核的"] [--dry-run]
+```
+
+### health
+
+条目层体检（**真值出口**，不是门禁）：条目化/总数、type 分布、`items ↔ detail` 不一致（逐节点点名）、悬挂引用、`qa` 残留、**迁移五档**（可迁移/已条目化/无内容/不在范围/**跳过**，跳过项逐节点点名 + 原因分布）。确定性：两次 `--json` 逐字节相同，不带运行时刻
+
+```
+node cli/mm-cli.js health [<项目>] [--project 项目名] [--all] [--root 目录] [--json]
+```
+
+### migrate
+
+把 v2 节点的 detail **无损**迁成条目层 items（v2 → v3）：只迁"能逐字节回放"的节点，其余整节点跳过并逐条点名（不许"修一下再写"）；`qa[]` 收敛成 `type:'qa'` 条目后删掉 `qa` 键；写盘前自动 `export-json` 一份到 `.review/<日期>-条目层迁移/` 并打印绝对路径（**没有跳过备份的开关**）；`meta.formatVersion` → 3（validate 同时接受 2 与 3）。幂等：第二次跑 `changed:{nodes:0,items:0}`
+
+```
+node cli/mm-cli.js migrate items <项目> [--dry-run] [--json]
+```
+
 ### ask-apply
 
 把一次 AI 问答落进节点（**一次原子写**完成三件事）：追加 `qa` 记录（`{q,a,at,model?}`，追加不覆盖、完全相同的条目幂等）、把带来源标记与时间的问答追加到 detail 末尾（HTML 存储）、`--as-child` 时再建一个子节点（标题取回答首行截断、详情放全文）。空回答**响亮拒绝**（不许落一条空记录）。`--at` 由调用方给（界面上显示的时间就是落盘时间）
@@ -433,15 +460,15 @@ node cli/mm-cli.js dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json]
 
 ### link
 
-添加跨项目链接。**重复添加同一条边**（同项目/同目标）分三种结局，回显可分辨：省略 --caption ⇒ **保留**原有说明（幂等，回显「无变化」且不写盘）；显式 --caption 新说明 ⇒ **覆盖**（回显「已更新链接」并写出 旧 → 新）；显式 `--caption ""` ⇒ **清空说明**（回显「已更新链接（caption 清空）」）。⚠️ 只写 `--caption` 不给值会被**响亮拒绝**（旧写法会把 `true` 写进数据）
+添加跨项目链接（`--item` ⇒ 边指向**目标节点里的某一条条目**，即 `{project,id,item}`）。**重复添加同一条边**（同项目/同目标/同条目）分三种结局，回显可分辨：省略 --caption/--item ⇒ **保留**原有值（幂等，回显「无变化」且不写盘）；显式给新值 ⇒ **覆盖**（回显「已更新链接」并写出 旧 → 新）；显式 `--caption ""` / `--item ""` ⇒ **清空**那一层（回显「已更新链接（caption 清空 / item 清空）」）。⚠️ 只写 `--caption` / `--item` 不给值会被**响亮拒绝**；目标节点在、但 `--item` 那条条目不在 ⇒ **拒绝并点名**（绝不造出"节点在、条目不在"的悬挂引用）
 
 ```
-node cli/mm-cli.js link <项目> <id> --to 目标项目 --id 目标id [--caption 说明]
+node cli/mm-cli.js link <项目> <id> --to 目标项目 --id 目标id [--item 目标条目id] [--caption 说明]
 ```
 
 ### unlink
 
-移除跨项目链接
+移除跨项目链接（指向该目标的边一律移除，含条目级的）
 
 ```
 node cli/mm-cli.js unlink <项目> <id> --to 目标项目 --id 目标id
@@ -449,7 +476,7 @@ node cli/mm-cli.js unlink <项目> <id> --to 目标项目 --id 目标id
 
 ### links
 
-列出项目全部跨项目链接
+列出项目全部跨项目链接（条目级的边多 `item` 字段并写成 `目标/节点#条目`；`--json` 另有 `itemEdges` 计数 —— **只增字段**，节点级的边形状不变）
 
 ```
 node cli/mm-cli.js links <项目> [--json]
@@ -457,10 +484,10 @@ node cli/mm-cli.js links <项目> [--json]
 
 ### links-prune
 
-清理悬空链接（目标已不存在，修好悬挂链接导致的校验红）
+清理悬空链接（目标已不存在，修好悬挂链接导致的校验红）。**条目级与节点级同一处判据**：节点整个不在了、或**节点还在但那一条条目已被删**，都会被抓出来剪掉，并在报告里**分开点名**（后者单独列出）；`--items 节点id#条目id` 是等价的精确档
 
 ```
-node cli/mm-cli.js links-prune <项目> [--nodes a,b] [--dry-run]
+node cli/mm-cli.js links-prune <项目> [--nodes a,b] [--items a#i-1,b#i-2] [--dry-run]
 ```
 
 ### orphans

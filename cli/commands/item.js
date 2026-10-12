@@ -545,7 +545,11 @@ module.exports = {
       }
       if (inbound.length && ctx.args.cleanLinks) {
         const lr = links.pruneLinks(data.data, (l) => l && l.item === itemId);
-        pr.links = lr.removed.map((x) => x.node + ' → ' + x.target);
+        // 存 `pruneLinks` 的**原始形状**（`{node, target, caption?, item?}`，见 src/links.js L36-38）：
+        // 文本形态从它格式化、JSON 形态原样给 —— 一份数据两个出口，不各写一份（否则必漂移）。
+        // `item` 那一项是 S6 加的：报告必须看得见"剪掉的是**哪一层**"（同源同目标多条边时，
+        // 拿标签文本反查会配错）。
+        pr.links = lr.removed;
       }
       if (assocHits.length && ctx.args.cleanAssoc) {
         const ar = assoc.pruneMembers(data.assoc, (m) => m && m.item === itemId);
@@ -559,16 +563,37 @@ module.exports = {
       pr.left = node.items.length;
       return data;
     });
-    if (pr.links && pr.links.length) ctx.out('已同步清理链接：' + pr.links.join('；'));
-    if (pr.assoc) {
-      const parts = [];
-      if (pr.assoc.touched.length) {
-        parts.push(pr.assoc.touched.map((t) => t.id + '（- ' + t.removed + ' 成员）').join(', '));
+    // ---- 清理结果的**两个出口**（契约 §3：`--json` 下 stdout 必须是**一份**可解析 JSON）----
+    // ⚠️ 为什么**不是**"把这两行 `ctx.out` 挪到 `emit()` 之后"（那是当初最省事的想法）：
+    //    `ctx.out` 在 `--json` 下**照常写 stdout**（`cli/core.js` 的 `out` 不看 `args.json`，
+    //    见那边 L459）⇒ 挪位置只是把"半截文本 + JSON"变成"JSON + 半截文本"，消费者**照样**
+    //    解析失败（实测：S4 因此在 MCP 的 `item_remove` 上不敢传 `--json`）。
+    //    本工程已有的口径在 render-detail 那一档（`tests/item-commands.test.js` §I）：
+    //    **文本形态说人话、JSON 形态给字段**（"无需重建"只出现在文本里，JSON 下由 `changed:0`
+    //    表达）。这里照同一条规矩办：文本照旧**分行**打印（行数与措辞一个字不变）；JSON 把
+    //    **同一份结果**放进 `cleaned` —— 信息一条不少，只是换了容器（机器消费者要的正是
+    //    "清理了哪几条"，那本来就是这条命令最该给出的事实）。
+    const cleaned = {};
+    if (pr.links && pr.links.length) cleaned.links = pr.links;
+    if (pr.assoc) cleaned.assoc = pr.assoc;
+    if (!ctx.args.json) {
+      if (pr.links && pr.links.length) {
+        ctx.out('已同步清理链接：' + pr.links.map((x) => x.node + ' → ' + x.target).join('；'));
       }
-      if (pr.assoc.dropped.length) parts.push('整篇删除（成员不足）：' + pr.assoc.dropped.join(', '));
-      if (parts.length) ctx.out('已同步清理关联：' + parts.join('；'));
+      if (pr.assoc) {
+        const parts = [];
+        if (pr.assoc.touched.length) {
+          parts.push(pr.assoc.touched.map((t) => t.id + '（- ' + t.removed + ' 成员）').join(', '));
+        }
+        if (pr.assoc.dropped.length) parts.push('整篇删除（成员不足）：' + pr.assoc.dropped.join(', '));
+        if (parts.length) ctx.out('已同步清理关联：' + parts.join('；'));
+      }
     }
-    emit(ctx, { ok: true, project: ctx.projectName, nodeId: nodeId, itemId: itemId, items: pr.left },
+    const out = { ok: true, project: ctx.projectName, nodeId: nodeId, itemId: itemId, items: pr.left };
+    // `cleaned` 只在**真清理了东西**时出现（空值不产生噪音键 —— 与 `withItem` 同一条策略）：
+    // 不带 `--clean-*` 的老调用方看到的 JSON 逐字节不变，"没清理"与"清理了 0 条"也分得开。
+    if (cleaned.links || cleaned.assoc) out.cleaned = cleaned;
+    emit(ctx, out,
       '已删除条目 ' + itemId + '（节点 ' + nodeId + '，剩 ' + pr.left + ' 条）');
   },
 

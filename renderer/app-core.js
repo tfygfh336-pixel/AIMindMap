@@ -34,6 +34,13 @@
   const $ = (sel) => document.querySelector(sel);
   const UndoStack = (window.MMHistory && window.MMHistory.UndoStack) || function () { return { push: function () {}, canUndo: function () { return false; }, canRedo: function () { return false; }, undo: function () { return null; }, redo: function () { return null; } }; };
 
+  /* 载入时那份 `meta.formatVersion`（唯一真源 = 盘上/快照里读到的那份）。
+   * 为什么不能写死 2：条目层（v3）把项目的 `formatVersion` 升成 3，而界面保存是**整份写回** ⇒
+   * 写死 2 = 每次界面保存都把 v3 项目**降级**成 v2（`meta` 也是手挑字段的，见 serializeTree）。
+   * 载入时没有这个键 ⇒ 仍按 v2 写（**不凭空造 3**）；`renderMind` 是打开项目与
+   * undo/redo 的唯一入口 ⇒ 在这一处接管即可覆盖两者（快照里的 meta 也带着它回来 ✓）。 */
+  let metaFormatVersion = 2;
+
   const state = {
     jm: null,                // jsMind 实例
     project: null,           // { name, file }
@@ -82,6 +89,18 @@
         // 与 qa / localPath 同一类，判据在 `scripts/smoke/27-import-doc.js`。
         // 只在有值时写（保持旧形状：没导入过的节点与老文件零差异）。
         if (n.data.origin && typeof n.data.origin === 'object') out.origin = n.data.origin;
+        // 条目层（v3）：**原样平铺，一个字节都不改**。
+        // 为什么必须在这里（同一处漏字段的三个先例：qa / localPath / origin）：
+        //   条目层的**真源就是 `items`**，`detail` 只是它的落盘派生缓存（docs/ITEM-MODEL.md §2）；
+        //   界面保存是**整树写回**（`serializeTree` 手挑字段）—— 漏掉这一行，用户按一次保存
+        //   （或 Ctrl+Z/重做走同一份快照）就会把整层条目**静默抹掉**：节点退回 v2、detail 还在
+        //   ⇒ **没有任何门禁会红**，而条目级 id/src/verified/tags 永久丢失。
+        // ⚠️ 下划线键（`_container`/`_groupStart`/`_gap`/`_tail`）**一并原样带回去**：它们是
+        //   解析期事实、由 CLI 写入，界面**只负责搬运**，不许自己决定删或补（去留是契约问题）。
+        // ⚠️ 判据是 `Array.isArray`：空数组 `[]` 也是"有 items"（= 已条目化，见契约 §2），
+        //   必须写回；不是数组/不在场 ⇒ **一个字节都不写**（v2 项目与旧文件逐字节零差异）。
+        if (Array.isArray(n.data.items)) out.items = n.data.items;
+        if (n.data.detailMode) out.detailMode = n.data.detailMode;
       }
       if (n.children && n.children.length) out.children = n.children.map(walk);
       return out;
@@ -97,7 +116,9 @@
         // 版本号单源：读共享核心 src/config.js 的 APP_VERSION（index.html 已先加载）。
         // 历史上此处硬编码 '0.13.0'，导致界面每次保存都把 meta.version 回写成陈旧版本。
         version: (window.MMConfig && window.MMConfig.APP_VERSION) || '0.0.0',
-        formatVersion: 2,
+        // 版本号**继承载入时那一份**（见 metaFormatVersion 的说明）：写死 2 ⇒ 界面保存会把
+        // v3（条目层）项目静默降级成 v2。载入时没有这个键 ⇒ 仍是 2（不凭空造 3）。
+        formatVersion: metaFormatVersion,
         // 主题模式（顶层主题互相独立）需持久化，否则重新打开会退回单中心
         ...(state.rootMode === 'themes' ? { rootMode: 'themes' } : {}),
         // 主题布局（左右分侧）需持久化，否则重新打开会退回全右侧堆叠
@@ -169,6 +190,10 @@
     state.assoc = (data && Array.isArray(data.assoc)) ? data.assoc : [];
     // 主题布局随项目数据进来并持有（序列化时写回，防止界面保存丢失方向配置）
     state.metaLayout = (data && data.meta && data.meta.layout) || null;
+    // 载入时那份 `meta.formatVersion`（载入时没有 ⇒ 2）—— serializeTree 据此写回，
+    // 不许写死（见 metaFormatVersion 的说明）。这里是打开项目与 undo/redo 的共同入口 ✓。
+    metaFormatVersion = (data && data.meta && Number.isInteger(data.meta.formatVersion))
+      ? data.meta.formatVersion : 2;
     // 先清空容器：jsMind **不会**清理 container，重复建图会在同一容器里堆叠出多棵结构
     // 相同的 DOM 树（实测同一节点出现 2 份 jmnode），于是 document.querySelector 可能命中
     // 旧树 —— 详情框锚定、平移、滚动都会作用到错误的元素上。
