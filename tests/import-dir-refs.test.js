@@ -20,6 +20,15 @@
  *   D. **一处实现**：解析/复制/改名/降级成正文只有 `markdown.resolveImportRefs` 一处；
  *      `src/doc-import.js` 只交"落点"（`refTargets`），**不许出现复制调用或第二份命名表达式** ✗；
  *      `import-dir` 那条调用点在唯一的 `resolveDirImportRefs` 里，且口径只有一个字面量。
+ *   E. 【批7】**两条边界补成机械断言**（批6 只在交付说明里登记过，没有任何断言）：
+ *      ① **一条引用一份副本、不做内容去重**：同一张图被两处引用（同一文件两处 / 两个文件各一处）
+ *         ⇒ `assets/` 里**两个文件**、`images[].file` 两条**指向不同路径**、两个文件**字节都等于源**；
+ *      ② "同一来源连导两次（第二次 `--force`）⇒ 资源多一份"**以实测为准分三档**：
+ *         `import-dir` **同一项目名**再导 ⇒ 被"项目已存在"闸拦下（`assets/` 计数降 N → N，一个字节不多复制）；
+ *         `import-dir` 同一来源换**新项目**（`--force` 才过重复目录闸）⇒ 新项目里**又各复制一份**（全库 N → 2N）；
+ *         `N → N+1`（批6 登记的字面读数）**只在 `import-md --force`** 这条"往已有项目再导一次"的路径上成立。
+ *         ⚠️ 登记值"`--force` 重导会再复制一份（N+1）"在 `import-dir` 这条路上**不成立** —— 以实测为准，
+ *         详见 E-② 的用例注释与批7 交付说明。
  * ## 环境要点
  *   · 端到端一律走**进程内** `invokeSync`（同 tests/import-refs.test.js），不起子进程；
  *   · `AI_MINDMAP_PROJECTS_DIR` 必须在 require CLI **之前**生效，不生效就**当场红**
@@ -80,6 +89,29 @@ function mkLib(label) {
 const projDir = (name) => path.join(SANDBOX, name);
 const projFile = (name) => path.join(projDir(name), name + '.json');
 function listDir(d) { try { return fs.readdirSync(d).sort(); } catch (e) { return null; } }
+const assetsOf = (name) => listDir(path.join(projDir(name), 'assets'));
+
+/** 【批7】夹具的一种：`files` 决定目录里有哪些 md（`笔记/assets/good.png` 恒在，供引用解析） */
+function mkLibWith(label, files) {
+  const dir = path.join(WORK, label);
+  fs.mkdirSync(path.join(dir, '笔记', 'assets'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '笔记', 'assets', 'good.png'), pngBytes('good'));
+  Object.keys(files).forEach((rel) => {
+    const p = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, files[rel].join('\n'), 'utf8');
+  });
+  return dir;
+}
+/** 【批7】单文件夹具（`import-md` 那条用：它是"往**已有项目**里再导一次"唯一可达的路） */
+function mkOneFile(label) {
+  const dir = path.join(WORK, label);
+  fs.mkdirSync(path.join(dir, 'assets'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'assets', 'good.png'), pngBytes('good'));
+  const f = path.join(dir, 'doc.md');
+  fs.writeFileSync(f, ['# 文档', '', '![图](assets/good.png)', '', '正文', ''].join('\n'), 'utf8');
+  return f;
+}
 function readProj(name) { return JSON.parse(fs.readFileSync(projFile(name), 'utf8')); }
 function refsOf(name) {
   const out = [];
@@ -401,5 +433,159 @@ describe('【批6】D. 解析与复制只有一处实现；doc-import.js 只交"
     expect(path.resolve(core.PROJECTS_DIR)).toBe(path.resolve(SANDBOX));
     expect(path.resolve(SANDBOX).startsWith(path.resolve(os.tmpdir()))).toBe(true);
     listDir(SANDBOX).forEach((n) => expect(path.resolve(projDir(n)).startsWith(path.resolve(SANDBOX))).toBe(true));
+  });
+});
+
+/* ============================================================================
+ * E. 【批7】两条边界：把"交付说明里的登记值"补成**机械断言**
+ * ==========================================================================
+ * 批6 的交付说明（提交信息 ⑦）如实登记了两条边界副作用，但**一条机械断言都没有**：
+ *   · 边界①：一条引用一份副本、**不做内容去重**；
+ *   · 边界②：`--force` 重导**会再复制一份**资源。
+ * 本组把两条钉成端到端断言（进程内 `invokeSync`、沙箱 root、`AI_MINDMAP_PROJECTS_DIR` 已重定向）。
+ * ⚠️ **以实测为准**：边界② 的字面读数（`assets/` N → N+1）在 `import-dir` 上**不成立**，
+ * 详见 E-② 的用例注释（那里逐档给出实读），交付说明里也如实记了"登记值错了、真实行为是什么"。
+ * ========================================================================== */
+describe('【批7】E-① 一条引用一份副本、**不做内容去重**（同一张图被两处引用 ⇒ 两份）', () => {
+  /* 判据两条（都在**真复制**那一跳上，不是"报告里写了什么"）：
+   *   · `assets/` 里**两个**文件 + 两条 `images[].file` **指向不同路径**（⇒ 不是同一个文件被指两次）；
+   *   · 两个文件**逐字节等于源**（⇒ 不是"登记了两条、盘上只落一份"或落了空壳）。
+   * 判别力：把 `src/markdown.js` 的 `resolveImportRefs` 里 copy 那一段改成"按内容/按源路径去重"
+   * （例如先 `if (seen.has(r.srcPath)) { r.entry.file = seen.get(r.srcPath); return; }`），
+   * 或让 `collectResourceRefs` 先把同 `file` 的条目去重 ⇒ `assets/` 只剩 1 个、两条引用同一个名字
+   * ⇒ 本组**必红**（计数、`Set` 基数、两条各不相同 三处都会红）。
+   * 判别力（反向）：若复制那一步改成"只登记不复制"（不调 `copyFileSync`）⇒ 字节相等那两条与
+   * `assertDirRefsLanded` 的"引用指向的文件必须真的在"**必红**。
+   * **注入实测**（批7，2026-10；注入后撤销，三处源码 SHA-256 逐字节还原）：
+   *   · 注入"copy 分支按源路径去重"（**跨项目共用名字**）⇒ 4 failed / 22：本组两条 + E-② 档2、档3；
+   *   · 注入"只在**同一个项目目录**内按源路径去重" ⇒ 3 failed / 22：本组两条 + E-② 档3。
+   *     （报文：`assets/ 里的文件: expected [ '…png' ] to have a length of 2 but got 1`） */
+  it('同一文件两处引用同一张图 ⇒ assets/ 两个文件、两条 images[].file 指向**不同**路径、字节都等于源', () => {
+    const lib = mkLibWith('e1-same', {
+      '笔记/第一章.md': ['# 第一章', '', '![图：第一处](assets/good.png)', '',
+        '![图：第二处](assets/good.png)', '', '正文一', '']
+    });
+    const r = run(['import-dir', 'b7-e1-same', lib, '--json']);
+    expect(r.code, r.stdout).toBe(0);
+    const rep = JSON.parse(r.stdout);
+    expect(rep.resourceRefs.copy, '两条引用 = **两次**复制（没有被去重成 1）').toBe(2);
+    assertDirRefsLanded('b7-e1-same', { assets: 2, attachments: 0 });
+    const files = assetsOf('b7-e1-same');
+    expect(files, 'assets/ 里两个文件').toHaveLength(2);
+    const refs = refsOf('b7-e1-same').map((x) => x.file);
+    expect(refs, '两条引用都挂在 images[] 上').toHaveLength(2);
+    expect(new Set(refs).size, '两条**指向不同路径** —— 不是同一个文件被指两次').toBe(2);
+    files.forEach((f) => {
+      expect(fs.readFileSync(path.join(projDir('b7-e1-same'), 'assets', f)), f + ' 的字节等于源')
+        .toEqual(pngBytes('good'));
+    });
+    console.log('[批7 实测·边界①-同一文件两处] copy=' + rep.resourceRefs.copy
+      + ' ｜ assets=' + JSON.stringify(files) + ' ｜ images=' + JSON.stringify(refs)
+      + ' ｜ 两条不同路径=' + (new Set(refs).size === 2));
+  });
+
+  it('两个文件各引用同一张图 ⇒ 同样两份（**跨文件**也不按内容去重）', () => {
+    const lib = mkLibWith('e1-two', {
+      '笔记/第一章.md': ['# 第一章', '', '![图：甲](assets/good.png)', '', '正文一', ''],
+      '笔记/第二章.md': ['# 第二章', '', '![图：乙](assets/good.png)', '', '正文二', '']
+    });
+    const r = run(['import-dir', 'b7-e1-two', lib, '--json']);
+    expect(r.code, r.stdout).toBe(0);
+    expect(JSON.parse(r.stdout).resourceRefs.copy, '两份文件各一处 = 两次复制').toBe(2);
+    assertDirRefsLanded('b7-e1-two', { assets: 2, attachments: 0 });
+    const files = assetsOf('b7-e1-two');
+    expect(files).toHaveLength(2);
+    const refs = refsOf('b7-e1-two').map((x) => x.file);
+    expect(new Set(refs).size, '两条指向不同路径').toBe(2);
+    files.forEach((f) => expect(fs.readFileSync(path.join(projDir('b7-e1-two'), 'assets', f)))
+      .toEqual(pngBytes('good')));
+    console.log('[批7 实测·边界①-两个文件各一处] assets=' + JSON.stringify(files)
+      + ' ｜ images=' + JSON.stringify(refs));
+  });
+});
+
+describe('【批7】E-② 同一来源连导两次（第二次 `--force`）⇒ 资源**会不会再多一份**？—— 三档实测', () => {
+  /* 批6 登记的是"`--force` 重导会再复制一份资源"，字面读数 `assets/` **N → N+1**。
+   * **实测与它不符**（本用例即取证）——`--force` 在 `import-dir` 上打不开"同一个项目再导一次"那扇门：
+   *   `cli/commands/project.js` 的「项目已存在: <name>（换个名字，或先删掉它）」闸在 `--force`
+   *   **之前**、也与它无关（那个字面量在闸的报文里，`--force` 不参与判断）⇒ 第二次无论带不带
+   *   `--force` 都 exit 1，`assets/` 计数 **N → N**（一个字节都不多复制）。
+   *   这条命令上 `--force` 解开的是**重复目录/重复文件**那道幂等闸（`refused = !!(dup || collisions.length)
+   *   && !forced`）⇒ 它允许的是"同一来源导进**一个新项目**"，那时新项目里**又各复制一份**（全库 N → 2N）。
+   *   `N → N+1` 只出现在**能往已有项目里再导一次**的那条命令上：`import-md --force`（同一份 md 追加两次）。
+   * 三档都钉住 —— 后来人无论从哪条路问"会不会多一份"，都在这里读到实测答案（不用再翻交付说明）。
+   * 判别力（逐档点名**哪一行坏了会让哪一条红**）：
+   *   · 档1 ← `project.js` 的「项目已存在」闸（`if (fs.existsSync(path.join(ctx.PROJECTS_DIR, name, name + '.json')))`）：
+   *     有人给 `--force` 开了绕过口 / 删掉这条闸 ⇒ 第二次会往下走并再复制一份 ⇒ 档1 的"N → N"必红；
+   *   · 档2 ← 幂等闸那行 `&& !forced`（去掉 `!forced` 或 `forced` 恒 false）⇒ 第二次仍 exit 1 ⇒ 档2 必红；
+   *     反向：若 `resolveImportRefs` 或整库那条开始**跨项目复用/去重**已有资源 ⇒ 新项目 `assets/` 计数 0 ⇒ 档2 必红；
+   *   · 档3 ← 与边界①**同一处**（`markdown.js` 每次 copy 都新命名 + 真复制）：给单文件命令加"同项目同源复用"
+   *     ⇒ 第二次 `assets/` 不涨 ⇒ 档3 的 N → N+1 必红。 */
+  /* 三档**各一个用例**（不合成一条）：合在一起时前档一红就会**遮住后档**——实测注入
+   * "copy 分支按源路径去重"时，档2 先红、档3 的读数根本没被报出来（判别力被掩盖）。
+   * 拆开之后，谁坏了红的是哪一档，一眼能认。逐档**注入实测**（撤销后源码 SHA-256 逐字节还原）：
+   *   · 档1 ← 让 `--force` 绕过「项目已存在」闸 ⇒ **只**档1 红（1 failed / 21，`expected +0 to be 1`）；
+   *   · 档2 ← 把幂等闸那行的 `&& !forced` 改成 `&& true` ⇒ **只**档2 红（1 failed / 21，第二次 exit 1）；
+   *   · 档3 ← 只在**同一个项目目录**内按源路径去重 ⇒ 档3 红（`expected [ '…png' ] to have a length of 2 but got 1`）。 */
+  it('档1｜`import-dir` 同一项目名再导（带 `--force` 也一样）⇒ 被"项目已存在"闸拦下，assets/ 计数 N → N', () => {
+    const lib = mkLibWith('e2-a', { '笔记/第一章.md': ['# 第一章', '', '![图](assets/good.png)', '', '正文', ''] });
+    const A = 'b7-e2-a';
+    expect(run(['import-dir', A, lib]).code).toBe(0);
+    const a1 = assetsOf(A);
+    expect(a1, '第一档起点：N=1').toHaveLength(1);
+    const aAgain = run(['import-dir', A, lib, '--force']);
+    expect(aAgain.code, '同一项目名再导 ⇒ 被"项目已存在"闸拦下（`--force` 不给它开口）').toBe(1);
+    expect(aAgain.stdout).toContain('项目已存在');
+    const a2 = assetsOf(A);
+    expect(a2, 'assets/ 计数 N → N：一个字节都没多复制').toEqual(a1);
+    console.log('[批7 实测·边界②档1] import-dir 同项目名（--force）：exit=' + aAgain.code
+      + ' ｜ assets ' + a1.length + '→' + a2.length + ' ｜ 登记值"N+1"在这条路上不成立');
+  });
+
+  it('档2｜`import-dir` 同一来源换**新项目**：不带 `--force` 被幂等闸拒（零复制）｜带 `--force` ⇒ 新项目里又各复制一份（全库 N → 2N）', () => {
+    const lib = mkLibWith('e2-b', { '笔记/第一章.md': ['# 第一章', '', '![图](assets/good.png)', '', '正文', ''] });
+    const B1 = 'b7-e2-b1';
+    const B2 = 'b7-e2-b2';
+    const B3 = 'b7-e2-b3';
+    expect(run(['import-dir', B1, lib]).code).toBe(0);
+    const b1 = assetsOf(B1);
+    expect(b1).toHaveLength(1);
+    const bNo = run(['import-dir', B2, lib]);
+    expect(bNo.code, '不带 `--force`：重复目录闸当场拒绝').toBe(1);
+    expect(bNo.stdout).toMatch(/已经导入过/);
+    expect(fs.existsSync(projFile(B2)), '被拒时项目文件一个字都没写').toBe(false);
+    expect(assetsOf(B2), '被拒时一个资源都没复制（连目录都没建）').toBe(null);
+    const bForced = run(['import-dir', B3, lib, '--force']);
+    expect(bForced.code, bForced.stdout).toBe(0);
+    const b3 = assetsOf(B3);
+    expect(b3, '新项目里**又各复制一份**（计数与第一档同量级 N）').toHaveLength(b1.length);
+    expect(b3, '靠**新名字**区分 ⇒ 不是复用第一份、也没有跨项目按内容去重').not.toEqual(b1);
+    expect(fs.readFileSync(path.join(projDir(B3), 'assets', b3[0])), '第二份也是逐字节真复制').toEqual(pngBytes('good'));
+    expect(assetsOf(B1), '第一份一字不动').toEqual(b1);
+    console.log('[批7 实测·边界②档2] import-dir 换新项目（--force）：' + b1.length + '→' + b3.length
+      + ' ｜ 两个项目各自一份 ⇒ 全库 2N（不是 N+1）');
+  });
+
+  it('档3｜`N → N+1` 的真路径：`import-md --force`（同一份 md 追加进**同一个项目**两次）', () => {
+    const one = mkOneFile('e2-c');
+    const C = 'b7-e2-c';
+    expect(run(['init', C, '--title', '批7 单文件重导']).code).toBe(0);
+    expect(run(['import-md', C, one]).code).toBe(0);
+    const c1 = assetsOf(C);
+    expect(c1, '起点 N=1').toHaveLength(1);
+    const cNo = run(['import-md', C, one]);
+    expect(cNo.code, '不带 `--force`：同一来源的幂等闸拒绝').toBe(1);
+    expect(cNo.stdout).toMatch(/已经导入过/);
+    const cForced = run(['import-md', C, one, '--force']);
+    expect(cForced.code, cForced.stdout).toBe(0);
+    const c2 = assetsOf(C);
+    expect(c2, 'assets/ 计数第一次 N → 第二次 **N+1**（批6 那句登记值的真路径就在这里）')
+      .toHaveLength(c1.length + 1);
+    const cRefs = refsOf(C).map((x) => x.file);
+    expect(cRefs, '两条 images[].file（两个来源节点各一份）').toHaveLength(2);
+    expect(new Set(cRefs).size, '两条指向不同路径').toBe(2);
+    cRefs.forEach((f) => expect(fs.readFileSync(path.join(projDir(C), f))).toEqual(pngBytes('good')));
+    console.log('[批7 实测·边界②档3] import-md（--force）同项目：' + c1.length + '→' + c2.length
+      + ' ｜ images=' + JSON.stringify(cRefs));
   });
 });

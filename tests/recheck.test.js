@@ -12,7 +12,10 @@
  *      `file:line` / `file:line::引文` / URL / 命令 / 认不出 五种形状都能解析；
  *      同一个文件在同一次运行里**只读一次**（廉价前置）。
  *   B. `recheck` 三态（ok / needs-recheck / src-gone）+ 计数 + 原因分布，**逐条点名**、给可执行下一步；
- *      **只读默认**：跑一次，项目 JSON 与 `.changes.jsonl` **逐字节不变**。
+ *      **只读默认**：跑一次，项目 JSON 与 `.changes.jsonl` **逐字节不变**；
+ *      `--src` 的过滤口径与检索面**同一条**（**空 needle 不是过滤条件**）：`--src=`（显式空串）与
+ *      不给 `--src` 的 `--json` **逐字节相同**、回显 `filteredBySrc: null`（【批7】口径收准；
+ *      收准前回显 `""`，与 `search` 面同一个输入两种口径）。
  *   C. **注入证明（改一个源文件）**：同一条目 `ok` → 改源文件 ⇒ `needs-recheck`（file-changed）→
  *      再让引文消失 ⇒ `src-gone`（quote-missing）。
  *   D. `recheck --write-verified`：默认**零写盘**；`--how` 必填；`--dry-run` 不写；
@@ -448,6 +451,42 @@ describe('S4-B recheck：三类 / 计数 / 只读（不写盘）', () => {
     expect(all.length).toBeGreaterThan(0);
     all.forEach((e) => expect(e.src.join(' ')).toContain('refs/spec.md'));
     expect(j.listed.filteredBySrc).toBe('refs/spec.md');
+  });
+
+  /* 【批7】`--src=`（**显式空串**）这一档的口径收准：与"没给过滤"**同义**。
+   * 权威契约句在 `src/item-index.js` 的 `srcMatches()` 注释里：**空 needle 不是过滤条件 ——
+   * 判断"有没有过滤"归过滤层**（检索面 `passItemFilters` 开头的 `if (f.src)` 判的就是"给了没有"）。
+   * 收准前：`filteredBySrc` 回显 `""` ⇒ 同一个输入在 `search` 面是"没给过滤"、在 `recheck` 面回显成
+   * "给了一个空过滤器"（**两处口径漂移**）；现在两处同读数。判定与理由写在
+   * `cli/commands/recheck.js` 的 `srcFilter` 那一段上（动作现场）。
+   * 判别力（**已注入实测**）：把 `recheck.js` 那行改回
+   * `(…=== undefined || …=== true) ? null : String(…)` ⇒ 本用例**必红**，且注入下量的读数是：
+   * 两份 `--json` **只差 1 个字段**（`listed.filteredBySrc`：`null` → `""`），**文本面仍逐字节相同**
+   * （⇒ 这条口径只在机器可判的那一面看得出来，正是 `--json` 要把它收准的理由）。还原后 SHA-256 还原。 */
+  it('`--src=`（显式空串）= **没给过滤**：与不给 `--src` 的 `--json` 逐字节相同', () => {
+    const noSrc = runJson('recheck', P, '--root', SANDBOX, '--json');
+    const empty = runJson('recheck', P, '--root', SANDBOX, '--src=', '--json');
+    expect(empty.code, empty.out).toBe(0);
+    expect(empty.json.listed.filteredBySrc, 'null = 没给过滤（不是"空串过滤器"）').toBe(null);
+    expect(empty.out, '`--src=` 与不给 `--src` 的 --json 输出逐字节相同').toBe(noSrc.out);
+    // 文本面同样逐字节相同：两个输出面都不许留下"空串过滤器"的痕迹
+    expect(run('recheck', P, '--root', SANDBOX, '--src=').out)
+      .toBe(run('recheck', P, '--root', SANDBOX).out);
+    // 对照（防空转：只断言 null 的判据会在"永远 null"下恒真）：非空 needle **真的在过滤**
+    const filtered = runJson('recheck', P, '--root', SANDBOX, '--src', 'refs/spec.md', '--json');
+    expect(filtered.json.listed.filteredBySrc).toBe('refs/spec.md');
+    expect(filtered.out).not.toBe(empty.out);
+    // 裸写 `--src`（没有值）解析成 `true` ⇒ 同"没给过滤"（不是"拿 true 去 indexOf"）
+    expect(runJson('recheck', P, '--root', SANDBOX, '--src', '--json').json.listed.filteredBySrc).toBe(null);
+    /* 边界**只认字面空串、不 trim** —— 这条口径在两个面上都要成立（注释里的断言不许只是推断）：
+     * 空白串 `'  '` 是**真值** ⇒ 两个面都按"**给了过滤**"走（检索面真去匹配 ⇒ 0 命中；
+     * 复校面回显 `'  '`、清单空）。想统一成"按宽度判空"就得**连检索面一起改**，
+     * 不许只在一个面上 trim（那正是第五批收掉的那类"同一个输入两种口径"）。 */
+    expect(runJson('search', P, '内容', '--src', '  ', '--json').json.hitCount, '检索面：空白串算给了过滤（0 命中）').toBe(0);
+    const ws = runJson('recheck', P, '--root', SANDBOX, '--src', '  ', '--json');
+    expect(ws.json.listed.filteredBySrc, '复校面：空白串算给了过滤（原样回显，不 trim 成 null）').toBe('  ');
+    expect([].concat(ws.json.byVerdict.ok, ws.json.byVerdict.needsRecheck, ws.json.byVerdict.srcGone))
+      .toEqual([]);
   });
 
   it('`--only i-a,i-b`：只列点名的条目；点名不存在的 id ⇒ 响亮拒绝（exit 1 + 指名）', () => {

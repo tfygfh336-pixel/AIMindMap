@@ -8,6 +8,11 @@
  *   · §12（S4 那一句）：`verified` 是"**怎么核的**"的记录 ⇒ 复校**不猜**内容对不对，只判两件事：
  *       ① 出处（`src`）今天还指得着吗；② 有没有留下"怎么核的"的记录。
  *   · §3 通用约定：失败退出码 1 且 stdout 以 `error: ` 开头；`--json` 是**一份**可解析 JSON。
+ *   · `--src` 的过滤口径与本工程其它面**同一条**：**空 needle 不是过滤条件**（契约句的唯一权威在
+ *     `src/item-index.js` 的 `srcMatches()` 注释里；检索面 `passItemFilters` 的 `if (f.src)` 同理）
+ *     ⇒ `--src=`（显式空串）与不给 `--src` 同义，`--json` 回显 `filteredBySrc: null`
+ *     （收准前回显的是 `""` —— 那会被读成"给了一个空过滤器"，与 `search` 面同一个输入两种口径）。
+ *     判定与读数细节写在下面 `srcFilter` 那一段上（**动作现场**，别只活在这段文件头里）。
  *
  * ## 三个判定类（**= `src/item-src.js` 的 VERDICTS，别处不许另立一套**）
  *   · `ok`            —— 条目有出处、出处判得过（或本身没有文件型出处），**且有核验记录**
@@ -340,7 +345,17 @@ module.exports = {
         + '取不到就不写 —— 空核验记录会让"已核"永远为真（本工程最忌的假绿）。');
     }
     const only = onlyFromArgs(ctx);
-    const srcFilter = (ctx.args.src === undefined || ctx.args.src === true) ? null : String(ctx.args.src);
+    /* `--src` 的**两层分工**（契约句的**唯一权威**在 `src/item-index.js` 的 `srcMatches()` 注释里：
+     * **空 needle 不是过滤条件 —— 判断"有没有过滤"归过滤层**；检索面 `passItemFilters` 开头的
+     * `if (f.src)` 判的就是"**给了没有**"，判的不是它的真值）。本命令层同一语义：
+     *   · `--src=`（**显式空串**）与不给 `--src` 同义 ⇒ `filteredBySrc: null`（**不是 `""`** ——
+     *     空串会被读成"给了一个空过滤器"，与检索面**同一个输入两种口径**，正是第五批收掉的那类漂移）；
+     *   · 裸写 `--src`（没有值）解析成 `true` ⇒ 同样按"没给过滤"（`parseArgs` 的行 101）；
+     *   · 非空才真过滤（`listed` 与文本面的"过滤后 N 条"都据此）。
+     * ⚠️ 只认**字面空串**、**不 trim**：检索面对 `--src "  "` 是按"给了过滤"走的（`"  "` 为真值），
+     * 两边必须同口径 —— 想统一宽度口径就得连检索面一起改，不许只在这里 trim ✗。 */
+    const rawSrc = ctx.args.src;
+    const srcFilter = (rawSrc === undefined || rawSrc === true || rawSrc === '') ? null : String(rawSrc);
     const limit = ctx.intOption('limit', { min: 1, max: itemIndex.LIMIT_MAX, def: DEFAULT_LIST });
     const root = ctx.args.root === undefined
       ? REPO_ROOT : path.resolve(String(ctx.args.root));
@@ -483,6 +498,8 @@ module.exports = {
       counts: scan.counts,
       reasonCounts: scan.reasonCounts,
       criteria: CRITERIA,
+      // `filteredBySrc`：`null` = **没给过滤**（判据见上面 `srcFilter` 那段的两层分工契约句）；
+      // 只有非空子串才是"真的过滤了"，读数与 `search --src` 同一口径。
       listed: { limit: limit, filteredBySrc: srcFilter, filteredByOnly: only, truncated: needs.length > limit || gone.length > limit },
       byVerdict: {
         ok: okList.slice(0, limit).map((e) => publicEntry(e, project)),
