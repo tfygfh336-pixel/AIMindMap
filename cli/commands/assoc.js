@@ -2,7 +2,7 @@
  * cli/commands/assoc.js — 「关联笔记」命令
  * ------------------------------------------------------------
  *   assoc-list   <项目> [--node <id>] [--json]
- *   assoc-add    <项目> --members a,b,c [--title 标题] [--note html | --note-md md] [--id id]
+ *   assoc-add    <项目> --members a,b,c [--title 标题] [--note html | --note-md md] [--id id] [--force]
  *   assoc-edit   <项目> <assocId> [--title 标题] [--note html | --note-md md] [--clear-note] [--members a,b,c]
  *   assoc-remove <项目> <assocId>
  *
@@ -21,6 +21,8 @@ const fs = require('fs');
 const path = require('path');
 const assoc = require('../../src/assoc.js');
 const convert = require('../../src/convert.js');
+const concurrency = require('../../src/concurrency.js');
+const { SKIP_WRITE } = require('../core.js');
 
 /** 取本次命令要写入的 note（HTML）。与 edit.js 的 detailFromArgs 同规矩：互斥、显式声明。 */
 function noteFromArgs(ctx) {
@@ -57,6 +59,39 @@ function assertMembersExist(ctx, members) {
     const r = nodeExistsIn(ctx, m.project, m.id);
     if (!r.ok) ctx.error(r.reason);
   });
+}
+
+/**
+ * 「同一篇」指纹（S7 的语义去重）—— 成员集合 + 标题 + 正文三者都同才算。
+ *
+ * 与 `edit.js` 的节点去重同一条思路（宁窄勿宽：漏判比误判轻）：
+ *   · **成员集合**按 `项目/id` 排序后比较 —— 成员的**书写顺序**不参与判定
+ *     （`--members a,b` 与 `--members b,a` 是同一篇关联，这点与 `parseMembers` 的去重口径一致）；
+ *   · 标题去首尾空白后逐字比；note 比**内容指纹**（同 edit.js 的做法）。
+ * 为什么必须防这一条：`assoc-add` 的 id 由 `src/assoc.js` 的 `genId` 生成（含**时间 + 随机**），
+ * 重跑一次同一条命令**不会**撞 id、只会多出一篇一模一样的关联 —— 正是"重试变成重复生效"。
+ */
+function assocKeyOf(a) {
+  const members = (a && Array.isArray(a.members) ? a.members : [])
+    .map((m) => String((m && m.project) || '') + '/' + String((m && m.id) || ''))
+    .sort();
+  const note = (a && a.note !== undefined && a.note !== null && a.note !== '')
+    ? concurrency.hash(String(a.note)) : '';
+  return JSON.stringify({
+    m: members,
+    t: String((a && a.title) || '').trim(),
+    n: note
+  });
+}
+
+/** 「已有一篇相同的」拒绝文案（**点名那篇** + 两条出路） */
+function dupAssocRefusal(dup) {
+  return '已存在成员/标题/正文完全相同的关联笔记：' + dup.id
+    + (dup.title ? '（标题 ' + dup.title + '）' : '') + '。\n'
+    + '这是一次**重复新增**（重试/重跑最常见的形态）—— 默认拒绝，以免同一篇进两遍。\n'
+    + '两条出路：\n'
+    + '  · 想**加第二篇**：加 --force（那是有意的重复，不是手滑）；\n'
+    + '  · 想**改那一篇**：用 assoc-edit <项目> ' + dup.id + ' …，别再加一篇。';
 }
 
 /** 项目里所有节点的 项目→id→topic（用于把成员解析成可读标题） */
@@ -132,20 +167,35 @@ module.exports = {
     assertMembersExist(ctx, parsed.members);
     const note = noteFromArgs(ctx);
     let added = null;                                   // 闭包变量：带出实际落盘的条目（重放时 id 可能是新生成的）
+    // 语义去重（S7）：成员集合 + 标题 + 正文都同 ⇒ **拒绝**，但先把候选条目在本函数里
+    // **构造好**（但**不入 `data.assoc`**）—— 拒绝必须在不写盘的前提下发生。
+    // ⚠️ 不能"先 push 再返回 null 表示拒绝"：`mutate` 的返回值就是**要写盘的数据**，
+    //    返回 null 会让写入与 `changedKeys` 直接崩（实测形态：`Cannot read properties of null`）。
+    const candidate = { members: parsed.members };
+    if (ctx.args.title !== undefined) candidate.title = ctx.args.title;
+    if (note !== undefined) candidate.note = note;
+    let dup = null;
     ctx.mutate((data) => {
       if (!Array.isArray(data.assoc)) data.assoc = [];
+      const key = assocKeyOf(candidate);
+      const hit = data.assoc.find((a) => a && assocKeyOf(a) === key);
+      if (hit && !ctx.args.force) { dup = { id: hit.id, title: hit.title || '' }; return SKIP_WRITE; }  // 盘上零改动
       const id = ctx.args.id || assoc.genId(data.assoc);
       if (!assoc.ID_RE.test(String(id))) ctx.error('关联 id 不合规范（小写字母/数字/连字符）: ' + id);
       if (data.assoc.some((a) => a && a.id === id)) ctx.error('关联 id 已存在: ' + id);
 
-      const item = { id: id, members: parsed.members };
-      if (ctx.args.title) item.title = ctx.args.title;
-      if (note !== undefined) item.note = note;
-
+      const item = { id: id, members: parsed.members };          // 字段顺序与从前一致（落盘字节可比）
+      if (candidate.title !== undefined) item.title = candidate.title;
+      if (candidate.note !== undefined) item.note = candidate.note;
       data.assoc.push(item);
       added = item;
+      if (hit) added.duplicateOf = hit.id;                // --force 下的有意重复（回显里说明）
       return data;
     });
+    if (dup) ctx.error(dupAssocRefusal(dup));
+    if (added.duplicateOf) {
+      ctx.out('⚠ 已存在同一篇关联 ' + added.duplicateOf + '，本次是 --force 下的**有意重复**');
+    }
     const topicOf = topicResolver(ctx);
     ctx.out('已新增关联 ' + added.id + '：' + (added.title || assoc.autoTitle(added, topicOf))
       + '（' + parsed.members.length + ' 个成员）');

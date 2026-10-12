@@ -1,13 +1,20 @@
 /* ============================================================
  * cli/commands/edit.js — 节点编辑命令
+ * ------------------------------------------------------------
+ *   add / add-root / edit / move / remove / clone / expand-depth
+ *   **apply** —— 一批改动在**一次事务**里做完（S7，见本文件末尾那一段）
  * ============================================================ */
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 const markdown = require('../../src/markdown.js');
 const convert = require('../../src/convert.js');
 const assoc = require('../../src/assoc.js');
 const links = require('../../src/links.js');
+const tree = require('../../src/tree-utils.js');
+const concurrency = require('../../src/concurrency.js');
+const { SKIP_WRITE } = require('../core.js');
 
 /**
  * 取本次命令要写入的 detail。
@@ -72,7 +79,137 @@ function expandedFromArgs(ctx) {
   ctx.error('--expanded 只能是 true 或 false（收到 ' + JSON.stringify(v) + '）');
 }
 
-/** 通用：在指定父节点下新增一个子节点 */
+/* ============================================================
+ * 「同父同题」语义去重（S7）—— **重试安全**的第一道闸（第二道是 `--idem`）
+ * ------------------------------------------------------------
+ * ## 要修的问题（已实测）
+ * `add` 的 id 由 `src/markdown.js` 的 `idGen` 生成（**含时间 + 随机**）⇒ 同一条命令重跑一次，
+ * 得到的是**另一个 id 的另一个节点**：`add x root --topic 甲` 跑两遍就是两个「甲」，
+ * 而调用方看到的是两次"已添加"（退出码 0）。AI 重试 / 脚本重跑 / 手工再敲一遍都会撞上它。
+ *
+ * ## 判据（三个都要相同才算"同一件事"）
+ *   父节点 id ＋ 标题（去首尾空白后逐字）＋ 内容指纹（detail 的 sha1 前 16 位；没有 detail = 空）
+ * 为什么标题要**逐字**（不做大小写折叠、不做空格折叠）：折叠会引入"什么算一样"的第二套口径，
+ * 而本判据的用途是"这次是不是上一次的重放" —— 那要求**宁窄勿宽**：
+ * 漏判（放行一次真的重复）比误判（拒绝一次真的新增）轻得多，后者会把正常的新增堵死。
+ * 为什么内容也算：同父下"同标题不同正文"是**正常的**（同名条目在不同来源里内容不同），
+ * 只看标题会把它误判成重复。
+ *
+ * ## 命中之后
+ * **默认拒绝**并**指名那条**（id + 完整路径），而不是静默跳过 —— 静默跳过会让调用方
+ * 以为"我新加的那个节点在哪"，而实际上它根本没被创建。`--force` 是"我真的要第二份"的显式出口。
+ * ============================================================ */
+
+/** 标题归一：只去首尾空白（理由见上：不做折叠，避免引入第二套"什么算一样"的口径） */
+function normTopic(v) { return String(v === undefined || v === null ? '' : v).trim(); }
+
+/** 内容指纹：与 data-store 的版本指纹同源（`concurrency.hash` 是同一算法的唯一实现） */
+function contentFingerprint(v) {
+  return (v === undefined || v === null || v === '') ? '' : concurrency.hash(String(v));
+}
+
+/**
+ * 在 `parentNode.children` 里找**语义重复**的那个孩子。
+ * @returns {{id:string, topic:string, path:string}|null}
+ */
+function findDuplicateChild(ctx, data, parentNode, topic, detail) {
+  const wantTopic = normTopic(topic);
+  const wantFp = contentFingerprint(detail);
+  const kids = parentNode.children || [];
+  for (let i = 0; i < kids.length; i++) {
+    const k = kids[i];
+    if (!k) continue;
+    if (normTopic(k.topic) !== wantTopic) continue;
+    if (contentFingerprint(k.detail) !== wantFp) continue;
+    return { id: k.id, topic: k.topic, path: safePath(ctx, data, k.id) };
+  }
+  return null;
+}
+
+/** 节点路径（`root / 甲 / 乙`）；取不到就回落成 id —— 报错里**必须**能定位到那一条 */
+function safePath(ctx, data, id) {
+  try {
+    const p = ctx.tree.pathTo(data.data, id);
+    if (Array.isArray(p) && p.length) {
+      return p.map((n) => (n && n.topic) || (n && n.id)).join(' / ');
+    }
+  } catch (e) { /* 纯展示信息，取不到就算了 */ }
+  return id;
+}
+
+/** 「已有一条相同的」拒绝文案（**点名那条**：id + 路径 + 两条出路） */
+function dupRefusal(what, dup) {
+  return '已存在同父同题同内容的' + what + '：' + dup.id + '（路径 ' + dup.path + '）。\n'
+    + '这是一次**重复新增**（重试/重跑最常见的形态）—— 默认拒绝，以免同一个知识点进两遍。\n'
+    + '两条出路：\n'
+    + '  · 想**加第二份**：加 --force（那是有意的重复，不是手滑）；\n'
+    + '  · 想**改那一条**：用 edit <项目> ' + dup.id + ' …，别再加一条。';
+}
+
+/**
+ * `add` 的**数据面**：解析参数 → 定位父节点 → 语义去重 → 挂节点。
+ * 返回一个**可重复执行**的改动函数（并发重放会再调它一次，所以闭包外的东西只读不写）。
+ *
+ * 为什么抽成函数：`apply`（本文件末尾那段）要复用**同一份**新增语义（含去重与 `--force`），
+ * 复制一份必然漂移（本工程最忌讳的"同一事实两处表达"）。
+ */
+function makeAddOp(ctx, parent, opts) {
+  const topic = opts.topic;
+  const detail = opts.detail;
+  const exp = opts.expanded;
+  const lp = opts.localPath;                  // `{set:boolean, value?:string}`
+  // 结果用**闭包对象**带出（不是"返回 null 表示拒绝"）：`ctx.mutate` 的返回值就是**要写盘的数据**，
+  // 返回 null 会让写入与 changedKeys 直接崩（实测形态：`校验失败: 顶层必须是对象`）。
+  // ⇒ 拒绝的做法是"盘上零改动地把 data 原样交回去"，由调用方读 `state.dup` 决定怎么报错。
+  const state = { id: null, dup: null };
+  const fn = (data, index) => {
+    const parentNode = ctx.tree.find(data.data, parent);
+    if (!parentNode) ctx.error(opts.what + '父节点不存在: ' + parent);
+    const hit = findDuplicateChild(ctx, data, parentNode, topic, detail);
+    if (hit && !opts.force) { state.dup = hit; return SKIP_WRITE; }   // 拒绝：**一次盘都不写**
+    const id = opts.id || markdown.idGen(topic, index);
+    if (ctx.tree.find(data.data, id)) ctx.error('id 已存在: ' + id);
+    const node = { id: id, topic: topic, expanded: exp === undefined ? true : exp, children: [] };
+    if (detail) node.detail = detail;
+    if (lp.set && lp.value) node.localPath = lp.value;
+    parentNode.children = (parentNode.children || []).concat(node);
+    state.id = id;
+    state.dup = hit || null;                                          // --force 下的有意重复
+    return data;
+  };
+  fn.state = state;
+  return fn;
+}
+
+/** `add-root` 的数据面：挂在 `root` 下，并开启「主题模式」（与 add 的区别只有这两点） */
+function makeAddRootOp(ctx, opts) {
+  const topic = opts.topic;
+  const detail = opts.detail;
+  const lp = opts.localPath;
+  const state = { id: null, dup: null, themed: false };               // 同 makeAddOp：结果走闭包，不走返回值
+  const fn = (data, index) => {
+    const rootNode = ctx.tree.find(data.data, 'root');
+    if (!rootNode) ctx.error('找不到根节点 root');
+    const hit = findDuplicateChild(ctx, data, rootNode, topic, detail);
+    if (hit && !opts.force) { state.dup = hit; return SKIP_WRITE; }   // 拒绝：**一次盘都不写**
+    const id = opts.id || markdown.idGen(topic, index);
+    if (ctx.tree.find(data.data, id)) ctx.error('id 已存在: ' + id);
+    const node = { id: id, topic: topic, expanded: true, children: [] };
+    if (detail) node.detail = detail;
+    if (lp.set && lp.value) node.localPath = lp.value;
+    rootNode.children = (rootNode.children || []).concat(node);
+    data.meta = data.meta || {};
+    state.themed = data.meta.rootMode === 'themes';
+    data.meta.rootMode = 'themes';
+    state.id = id;
+    state.dup = hit || null;
+    return data;
+  };
+  fn.state = state;
+  return fn;
+}
+
+/** 通用：在指定父节点下新增一个子节点（`add` / `add-root` 共用前段参数校验） */
 function addUnder(ctx, parent) {
   const topic = ctx.args.topic;
   if (!topic) ctx.error('缺少 --topic 标题');
@@ -83,20 +220,17 @@ function addUnder(ctx, parent) {
     // 只是**警告**：目标可能还没建 / 盘没挂。数据照写，让用户自己看到风险（不静默、也不武断拒绝）
     ctx.out('⚠ 这个路径当前不存在（仍已记录，点击时会报错）：' + lp.value);
   }
-  let addedId = null;                                   // 闭包变量：报出**实际落盘**的 id（重放时可能是新生成的）
-  ctx.mutate((data) => {                                // 多路同时编辑：冲突时自动重放到最新版
-    const parentNode = ctx.tree.find(data.data, parent);
-    if (!parentNode) ctx.error('父节点不存在: ' + parent);
-    const id = ctx.args.id || markdown.idGen(topic);
-    if (ctx.tree.find(data.data, id)) ctx.error('id 已存在: ' + id);
-    const node = { id, topic, expanded: exp === undefined ? true : exp, children: [] };
-    if (detail) node.detail = detail;
-    if (lp.set && lp.value) node.localPath = lp.value;
-    parentNode.children = (parentNode.children || []).concat(node);
-    addedId = id;
-    return data;
+  const op = makeAddOp(ctx, parent, {
+    what: '', topic: topic, detail: detail, expanded: exp, localPath: lp,
+    id: ctx.args.id, force: !!ctx.args.force
   });
-  ctx.out('已添加: ' + addedId + '（父 ' + parent + '）');
+  ctx.mutate(op);
+  const st = op.state;
+  if (st.dup && !st.id) ctx.error(dupRefusal('节点', st.dup));   // 默认拒绝 —— 但**指名**是那一条
+  if (st.dup) {
+    ctx.out('⚠ 已存在同父同题的节点 ' + st.dup.id + '，本次是 --force 下的**有意重复**');
+  }
+  ctx.out('已添加: ' + st.id + '（父 ' + parent + '）');
 }
 
 module.exports = {
@@ -108,7 +242,9 @@ module.exports = {
 
   /** 新增顶层主题：不选父节点，直接挂在根节点下，并开启「主题模式」
    *  —— 主题模式下渲染层会隐藏容器根、跳过它的连线，于是各顶层主题互相独立。
-   *  这样同一个项目里可以放多个不同方面的笔记。 */
+   *  这样同一个项目里可以放多个不同方面的笔记。
+   *  ⚠️ 与 `add` 同款**语义去重**（父 = root、标题、内容三项都同 ⇒ 默认拒绝并指名那一条）：
+   *     "重跑一遍 add-root" 是重复新增最常见的形态之一，两种新增都得防住。 */
   addRoot(ctx) {
     const topic = ctx.args.topic;
     if (!topic) ctx.error('缺少 --topic 标题');
@@ -117,23 +253,16 @@ module.exports = {
     if (lp.set && lp.value && !fs.existsSync(lp.value)) {
       ctx.out('⚠ 这个路径当前不存在（仍已记录，点击时会报错）：' + lp.value);
     }
-    let addedId = null, alreadyThemed = false;
-    ctx.mutate((data) => {
-      const rootNode = ctx.tree.find(data.data, 'root');
-      if (!rootNode) ctx.error('找不到根节点 root');
-      const id = ctx.args.id || markdown.idGen(topic);
-      if (ctx.tree.find(data.data, id)) ctx.error('id 已存在: ' + id);
-      const node = { id, topic, expanded: true, children: [] };
-      if (detail) node.detail = detail;
-      if (lp.set && lp.value) node.localPath = lp.value;
-      rootNode.children = (rootNode.children || []).concat(node);
-      data.meta = data.meta || {};
-      alreadyThemed = data.meta.rootMode === 'themes';
-      data.meta.rootMode = 'themes';
-      addedId = id;
-      return data;
+    const op = makeAddRootOp(ctx, {
+      topic: topic, detail: detail, localPath: lp, id: ctx.args.id, force: !!ctx.args.force
     });
-    ctx.out('已添加顶层主题: ' + addedId + '（父 root）' + (alreadyThemed ? '' : '，并已开启主题模式'));
+    ctx.mutate(op);
+    const st = op.state;
+    if (st.dup && !st.id) ctx.error(dupRefusal('顶层主题', st.dup));
+    if (st.dup) {
+      ctx.out('⚠ 已存在同题同内容的顶层主题 ' + st.dup.id + '，本次是 --force 下的**有意重复**');
+    }
+    ctx.out('已添加顶层主题: ' + st.id + '（父 root）' + (st.themed ? '' : '，并已开启主题模式'));
   },
 
   edit(ctx) {
@@ -149,6 +278,15 @@ module.exports = {
     ctx.mutate((data) => {
       const node = ctx.tree.find(data.data, id);
       if (!node) ctx.error('节点不存在: ' + id);
+      // 条目化节点（有 items）上，detail 是**派生缓存**、items 才是真源（docs/ITEM-MODEL.md §2）
+      // ⇒ 整块改 detail 会把条目层冲掉（G2 会立刻判红）。这里只关 `--detail` / `--detail-md`
+      // 这两扇门：`--topic` / `--tags` / `--expanded` / `--local-path` 照常可用（§12）。
+      if (detailGiven && Array.isArray(node.items)) {
+        ctx.error('节点 ' + id + ' 已**条目化**（items 为真源）—— 整块改 detail 会把条目层冲掉。'
+          + '\n请用条目级命令：item-add / item-edit / item-remove / item-move / item-order；'
+          + '要整块重建 detail 用 `render-detail <项目> ' + id + '`。'
+          + '（`--topic` / `--tags` / `--expanded` / `--local-path` 照常可用。）');
+      }
       if (ctx.args.topic) node.topic = ctx.args.topic;
       if (detailGiven) node.detail = detail;
       if (ctx.args.clearDetail) delete node.detail;
@@ -341,5 +479,499 @@ module.exports = {
       return data;
     });
     ctx.out('已复制: ' + id + ' → ' + parent + '（新 id ' + copyId + '）');
+  },
+
+  /** `apply <项目> --ops-file ops.json [--dry-run] [--idem 键]` —— 见下方 apply 段 */
+  apply
+};
+
+/* ============================================================================
+ * apply —— 一批改动在**一次事务**里做完（S7）
+ * ----------------------------------------------------------------------------
+ * ## 它解决什么
+ * 一次"改 N 个节点"的意图，若逐条敲命令就是 **N 次原子写**：中途失败留下**半成品**
+ * （前 k 条生效、k+1 条没做），而调用方拿不到"做到哪了"—— 要么整批重跑（前 k 条重复生效），
+ * 要么手工查盘上现在是什么样。`apply` 把整批收进**一次 `ctx.mutate`**：
+ *   · **一个 rev**、**一次原子写**、**一条日志**（`.changes.jsonl` 只多 1 条，不是 N 条）；
+ *   · **全成或全不动**：任何一条非法 ⇒ 在写盘之前响亮拒绝（并**指名第几条**），盘上零改动；
+ *   · 逐条回执（应用了几条、跳过哪条、为什么）。
+ *
+ * ## 三条硬边界（写清楚，免得被当成"万能批处理"）
+ *   ① **只允许数据面操作**：本文件里那张 `OPS` 表就是全部（新增/编辑/移动/复制节点 +
+ *      关联的增改）。**外部副作用一律留在事务外** —— 复制物理文件（add-image/add-file）、
+ *      调外部进程（ask）、碰界面（sidebar-only / dsh-*）都**不在** `OPS` 里，写到 ops 文件里
+ *      会被**指名拒绝**（不是静默忽略）。理由：`ctx.mutate` 的改动函数在并发冲突时会被
+ *      **再调用一次**（自动重放到最新版）⇒ 里面做物理副作用的动作会**做两遍**
+ *      （留下孤儿文件/重复调用外部服务）。这条约束是架构口径（ARCHITECTURE §4b 的
+ *      "fn 里禁止 I/O"）在命令面上的直接体现。
+ *   ② **`remove` 与 `assoc-remove` 故意不在表里**：删节点要处理"被关联/链接引用"的连带清理
+ *      （`--clean-assoc` / `--clean-links`，见 remove 的注释），那是**判断+清理**，批处理里
+ *      无法安全表达 ⇒ 报文直接指向那两条命令，别在这里静默半做。
+ *   ③ **`ops` 数组没有嵌套事务**：它本身就是事务的粒度。
+ *
+ * ## ops 文件格式（版本 1）
+ * ```json
+ * { "version": 1,
+ *   "ops": [
+ *     { "op": "add",  "parent": "root", "id": "k1", "topic": "标题",
+ *       "detailMd": "## 小节\n正文", "expanded": true, "localPath": "E:\\资料" },
+ *     { "op": "edit", "id": "k1", "tags": "a,b", "clearDetail": true },
+ *     { "op": "move", "id": "k1", "parent": "root", "index": 0 },
+ *     { "op": "clone", "id": "k1", "parent": "root", "deep": true },
+ *     { "op": "assoc-add", "members": "k1,k2", "title": "关联", "noteMd": "…", "id": "a-k1k2" },
+ *     { "op": "assoc-edit", "id": "a-k1k2", "clearNote": true }
+ *   ] }
+ * ```
+ * 也接受**裸数组**（`[ {op:…}, … ]`，没有 version 包裹）—— 少一层包装更省事，两种都认。
+ * 字段名与各命令的**选项键**一致（camelCase），于是"命令怎么写、ops 里就怎么填"。
+ * `--ops-file` 也接受**内联 JSON 文本**（以 `{` 或 `[` 开头即视为文本）—— 给脚本与 AI 用。
+ *
+ * ## 幂等
+ * `--idem <键>` 与别的写命令同一套（机制在 `cli/core.js`）：同键重放 ⇒ 不重复执行、
+ * 回放首次回执。**注意**：`apply` 自己还有一层**免费的**幂等 —— `add` 的语义去重
+ * （同父/同题/同内容）会让"重跑同一份 ops"里的新增条目被拒，但那样整批会**报错**（而不是静默跳过）。
+ * 想要"重跑即无事发生"，就带 `--idem`。
+ * ========================================================================== */
+
+/** 解析并校验 `--ops-file`：接受文件路径或**内联 JSON 文本**；错误一律带出路 */
+function readOpsFile(ctx) {
+  const raw = ctx.args.opsFile;
+  if (raw === undefined || raw === true || raw === '') {
+    ctx.error('缺少 --ops-file（一个 JSON 文件路径，或**内联 JSON 文本**，如 --ops-file \'{"ops":[…]}\'）');
+  }
+  const text0 = String(raw).trim();
+  const inline = text0.charAt(0) === '{' || text0.charAt(0) === '[';
+  let text = text0;
+  const file = inline ? '(内联 JSON)' : path.resolve(text0);
+  if (!inline) {
+    if (!fs.existsSync(file)) {
+      ctx.error('--ops-file 指向的文件不存在: ' + file
+        + '（相对路径按**当前工作目录**解析；也可以直接内联 JSON 文本）');
+    }
+    try { text = fs.readFileSync(file, 'utf8'); }
+    catch (e) { ctx.error('--ops-file 读不了: ' + file + '（' + ((e && e.message) || e) + '）'); }
+  }
+  let parsed;
+  try { parsed = JSON.parse(text.replace(/^\uFEFF/, '')); }
+  catch (e) { ctx.error('--ops-file 不是合法 JSON（' + file + '）：' + ((e && e.message) || e)); }
+  if (Array.isArray(parsed)) parsed = { version: 1, ops: parsed };
+  if (!parsed || typeof parsed !== 'object') ctx.error('--ops-file 的顶层必须是对象或数组（收到 ' + typeof parsed + '）');
+  if (parsed.version !== undefined && Number(parsed.version) !== 1) {
+    ctx.error('--ops-file 的 version 只支持 1（收到 ' + JSON.stringify(parsed.version) + '）');
+  }
+  if (!Array.isArray(parsed.ops)) ctx.error('--ops-file 里缺少 ops 数组（形如 {"version":1,"ops":[{"op":"edit",…}]}）');
+  if (!parsed.ops.length) ctx.error('--ops-file 的 ops 是空的（一次事务至少要有一条操作）');
+  return { file: file, ops: parsed.ops };
+}
+
+/**
+ * 逐条预检：任何一条非法 ⇒ 返回 `{error, index}`（**在写盘之前**，所以盘上零改动）。
+ *
+ * ⚠️ 预检带着一棵**模拟树**（从盘上这份数据拷贝出来、随每条 op 在内存里推演）——
+ * 于是"第 2 条 add 出来、第 4 条 edit 引用它"这种**同一批内部的前后引用**能被正确接受，
+ * 而"引用一个这条事务里凭空捏造的 id"仍会被点名拒绝。没有模拟树就只能两种坏选择：
+ * 要么放行（错误推迟到执行期，报错就说不清第几条），要么误杀（合法的批内引用被拒 ✗）。
+ */
+function precheckOps(ctx, ops, root) {
+  const sim = tree.clone ? tree.clone(root) : JSON.parse(JSON.stringify(root));
+  const prepared = [];
+  for (let i = 0; i < ops.length; i++) {
+    const raw = ops[i];
+    const at = '第 ' + (i + 1) + ' 条操作';
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { error: at + ' 不是对象（每条形如 {"op":"edit","id":"x","topic":"新标题"}）', index: i };
+    }
+    if (typeof raw.op !== 'string' || !raw.op) return { error: at + ' 缺少 op 字段（这条操作是什么）', index: i };
+    const def = OPS[raw.op];
+    if (!def) {
+      return { error: at + '：不认识的 op「' + raw.op + '」。只允许**数据面**操作：'
+        + Object.keys(OPS).join(' / ')
+        + '。需要外部副作用的（图片/附件/导出/界面控制）与需要连带清理的（remove / assoc-remove）'
+        + '请用各自的命令单独做（见 docs/CLI.md）—— 它们**不在**事务里，别指望回滚。', index: i };
+    }
+    let checked;
+    try { checked = def.v(ctx, raw, sim); }
+    catch (e) { return { error: at + '（' + raw.op + '）：' + ((e && e.message) || e), index: i }; }
+    // 没给 id 的新增：id 由 `(标题, 本条序号)` 决定（可复现），这里按同一规则算出来进模拟树，
+    // 于是"同一标题新增两条"会在预检期就报「id 已存在」（而不是落盘时才炸）。
+    if (checked.simAdd === null && def === OPS.add) checked.simAdd = { parent: checked.parent, id: markdown.idGen(checked.topic, i + 1) };
+    if (checked.simAdd === null && def === OPS['add-root']) checked.simAdd = { parent: 'root', id: markdown.idGen(checked.topic, i + 1) };
+    if (checked.simAdd) {
+      if (tree.find(sim, checked.simAdd.id)) {
+        return { error: at + '（' + raw.op + '）新增的 id 已被占用: ' + checked.simAdd.id
+          + '（同一批里同标题的新增要各自给 id，或改标题）', index: i };
+      }
+      const p = tree.find(sim, checked.simAdd.parent);
+      if (p) p.children = (p.children || []).concat({ id: checked.simAdd.id, topic: '', children: [] });
+    } else if (checked.simMove) {
+      const n = tree.find(sim, checked.simMove.id);
+      const p = tree.find(sim, checked.simMove.parent);
+      if (n && p) p.children = (p.children || []).concat({ id: n.id, topic: n.topic, children: n.children || [] });
+    }
+    prepared.push({ index: i, op: raw.op, def: def, args: checked });
+  }
+  return { prepared: prepared };
+}
+
+/** 存在性检查（模拟树优先 —— 它代表"这一批做完之后"的树） */
+function needNode(sim, id, what) {
+  if (!tree.find(sim, id)) throw new Error((what || '节点') + '不存在: ' + id);
+}
+
+/** 收尾（关联 id 校验等"写盘后不该失败"的判定，与逐个执行前的最后一道检查合二为一） */
+function checkAssocId(val) {
+  if (String(val).length > 0 && !assoc.ID_RE.test(String(val))) {
+    return '关联 id 不合规范（小写字母/数字/连字符）: ' + val;
+  }
+  return null;
+}
+
+/** detail / note 的取值（与 edit.js 的 detailFromArgs、assoc.js 的 noteFromArgs 同一规矩：互斥 + 显式声明） */
+function detailOf(ctx, raw) {
+  const hasHtml = raw.detail !== undefined;
+  const hasMd = raw.detailMd !== undefined;
+  if (hasHtml && hasMd) ctx.error('detail 与 detailMd 不能同时给（前者 HTML 原样存、后者 Markdown 转）');
+  if (hasMd) {
+    if (typeof raw.detailMd !== 'string' || !raw.detailMd.trim()) ctx.error('detailMd 内容为空');
+    return convert.markdownToHtml(raw.detailMd);
+  }
+  return hasHtml ? raw.detail : undefined;
+}
+
+function noteOf(ctx, raw) {
+  const hasHtml = raw.note !== undefined;
+  const hasMd = raw.noteMd !== undefined;
+  if (hasHtml && hasMd) ctx.error('note 与 noteMd 不能同时给（前者 HTML 原样存、后者 Markdown 转）');
+  if (hasMd) {
+    if (typeof raw.noteMd !== 'string' || !raw.noteMd.trim()) ctx.error('noteMd 内容为空');
+    return convert.markdownToHtml(raw.noteMd);
+  }
+  return hasHtml ? raw.note : undefined;
+}
+
+/**
+ * **数据面操作表**（`apply` 的全部能力面 —— 也是"只允许数据面"这句断言的实现）。
+ * 每条三件事：`v(ctx, raw)` 预检并返回规范化参数（**不碰数据**）、`run(data, a, index)` 改动、
+ * `summary(a, out)` 回执文案。新增一条 op 时要同时想清楚：它在并发重放里被**再调一次**安全吗？
+ * （不安全 = 它不该进这张表，见文件头边界 ①）
+ */
+const OPS = {
+  add: {
+    v(ctx, raw, sim) {
+      if (!raw.topic) ctx.error('缺少 topic（新增节点必须有标题）');
+      const parent = raw.parent === undefined ? 'root' : String(raw.parent);
+      needNode(sim, parent, '父节点');
+      const id = raw.id === undefined ? null : String(raw.id);
+      if (id && tree.find(sim, id)) ctx.error('id 已存在: ' + id);
+      return {
+        parent: parent, topic: raw.topic, id: id,
+        detail: detailOf(ctx, raw), expanded: raw.expanded, localPath: raw.localPath,
+        force: !!raw.force,
+        // 供预检的**模拟树**推演（参数里那段"这一批做完之后"的世界）；null = id 自动生成，由预检补算
+        simAdd: id ? { parent: parent, id: id } : null
+      };
+    },
+    run(ctx, data, a, index) {
+      const op = makeAddOp(ctx, a.parent, {
+        what: '', topic: a.topic, detail: a.detail, expanded: a.expanded,
+        localPath: { set: a.localPath !== undefined, value: a.localPath },
+        id: a.id, force: a.force
+      });
+      a._fn = op;
+      const out = op(data, index + 1);
+      const st = op.state;
+      if (st.dup && !st.id) {
+        throw new Error('已存在同父同题同内容的节点 ' + st.dup.id + '（路径 ' + st.dup.path + '）——'
+          + '要么删掉那条，要么给这条 op 加 "force": true');
+      }
+      a._newId = st.id;
+      return out;
+    },
+    summary(a) { return '新增 ' + a._newId + '（父 ' + a.parent + '）'; }
+  },
+
+  'add-root': {
+    v(ctx, raw, sim) {
+      if (!raw.topic) ctx.error('缺少 topic（新增顶层主题必须有标题）');
+      needNode(sim, 'root', '根节点');
+      const id = raw.id === undefined ? null : String(raw.id);
+      if (id && tree.find(sim, id)) ctx.error('id 已存在: ' + id);
+      return {
+        topic: raw.topic, id: id, detail: detailOf(ctx, raw), localPath: raw.localPath, force: !!raw.force,
+        simAdd: id ? { parent: 'root', id: id } : null
+      };
+    },
+    run(ctx, data, a, index) {
+      const op = makeAddRootOp(ctx, {
+        topic: a.topic, detail: a.detail,
+        localPath: { set: a.localPath !== undefined, value: a.localPath },
+        id: a.id, force: a.force
+      });
+      const out = op(data, index + 1);
+      const st = op.state;
+      if (st.dup && !st.id) {
+        throw new Error('已存在同题同内容的顶层主题 ' + st.dup.id + '（路径 ' + st.dup.path + '）——'
+          + '要么删掉那条，要么给这条 op 加 "force": true');
+      }
+      a._newId = st.id;
+      return out;
+    },
+    summary(a) { return '新增顶层主题 ' + a._newId; }
+  },
+
+  edit: {
+    v(ctx, raw, sim) {
+      if (!raw.id) ctx.error('缺少 id（改哪个节点）');
+      needNode(sim, String(raw.id));
+      const k = ['topic', 'tags', 'expanded', 'localPath', 'clearDetail', 'clearTags', 'clearLocalPath']
+        .filter((x) => raw[x] !== undefined);
+      const hd = raw.detail !== undefined || raw.detailMd !== undefined;
+      if (!k.length && !hd) {
+        ctx.error('什么也没改（可用字段：topic / detail / detailMd / clearDetail / tags / '
+          + 'clearTags / localPath / clearLocalPath / expanded）');
+      }
+      return {
+        id: String(raw.id), topic: raw.topic, detail: detailOf(ctx, raw),
+        clearDetail: !!raw.clearDetail, tags: raw.tags, clearTags: !!raw.clearTags,
+        localPath: raw.localPath, clearLocalPath: !!raw.clearLocalPath, expanded: raw.expanded
+      };
+    },
+    run(ctx, data, a) {
+      const node = tree.find(data.data, a.id);
+      if (!node) throw new Error('节点不存在: ' + a.id);
+      const changed = [];
+      if (a.topic !== undefined && String(node.topic) !== String(a.topic)) { node.topic = a.topic; changed.push('topic'); }
+      if (a.detail !== undefined && node.detail !== a.detail) { node.detail = a.detail; changed.push('detail'); }
+      if (a.clearDetail && node.detail !== undefined) { delete node.detail; changed.push('-detail'); }
+      if (a.tags !== undefined) {
+        const tags = String(a.tags).split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+        if (tags.length) node.tags = tags; else delete node.tags;
+        changed.push('tags');
+      }
+      if (a.clearTags && node.tags !== undefined) { delete node.tags; changed.push('-tags'); }
+      if (a.localPath !== undefined) { node.localPath = String(a.localPath); changed.push('localPath'); }
+      if (a.clearLocalPath && node.localPath !== undefined) { delete node.localPath; changed.push('-localPath'); }
+      if (a.expanded !== undefined) { node.expanded = !!a.expanded; changed.push('expanded'); }
+      a._changed = changed;
+      return data;
+    },
+    summary(a) { return '改写 ' + a.id + '：' + (a._changed.join(' ') || '（无实际变化）'); }
+  },
+
+  move: {
+    v(ctx, raw, sim) {
+      if (!raw.id) ctx.error('缺少 id（移哪个节点）');
+      if (!raw.parent) ctx.error('缺少 parent（移到哪个父节点下）');
+      needNode(sim, String(raw.id));
+      needNode(sim, String(raw.parent), '父节点');
+      if (String(raw.id) === String(raw.parent)) ctx.error('不能把节点移到它自己下面: ' + raw.id);
+      if (String(raw.id) === 'root') ctx.error('根节点不可移动');
+      let idx;
+      if (raw.index !== undefined) {
+        idx = Number(raw.index);
+        if (!Number.isInteger(idx) || idx < 0) ctx.error('index 必须是非负整数（收到 ' + JSON.stringify(raw.index) + '）');
+      }
+      return {
+        id: String(raw.id), parent: String(raw.parent), index: idx,
+        simMove: { id: String(raw.id), parent: String(raw.parent) }
+      };
+    },
+    run(ctx, data, a) {
+      const ok = tree.moveNode(data.data, a.id, a.parent, a.index);
+      if (!ok) throw new Error('移动失败（目标非法 / 移到自身子树 / 索引越界）: ' + a.id + ' → ' + a.parent);
+      return data;
+    },
+    summary(a) { return '移动 ' + a.id + ' → ' + a.parent + (a.index === undefined ? '' : '（第 ' + a.index + ' 位）'); }
+  },
+
+  clone: {
+    v(ctx, raw, sim) {
+      if (!raw.id) ctx.error('缺少 id（复制哪个节点）');
+      if (!raw.parent) ctx.error('缺少 parent（复制到哪个父节点下）');
+      needNode(sim, String(raw.id), '源节点');
+      needNode(sim, String(raw.parent), '父节点');
+      return { id: String(raw.id), parent: String(raw.parent), deep: !!raw.deep };
+    },
+    run(ctx, data, a, index) {
+      const src = tree.find(data.data, a.id);
+      if (!src) throw new Error('源节点不存在: ' + a.id);
+      const parentNode = tree.find(data.data, a.parent);
+      if (!parentNode) throw new Error('父节点不存在: ' + a.parent);
+      const used = new Set(tree.flatten(data.data).map((n) => n.id));
+      let seq = 0;
+      // 新 id 由 `(源 id, 本条 op 的序号, 树内序号)` 决定 ⇒ **可复现**（同一份 ops 重跑得同一份数据）
+      const mint = () => {
+        let c;
+        do { c = a.id + '-c' + (index + 1) + (seq++ ? '-' + seq : ''); } while (used.has(c));
+        used.add(c);
+        return c;
+      };
+      const deepCopy = (n) => {
+        const node = { id: mint(), topic: n.topic, expanded: n.expanded !== false, children: [] };
+        ['detail', 'background'].forEach((f) => { if (n[f] !== undefined) node[f] = n[f]; });
+        ['tags', 'images', 'files', 'links', 'qa'].forEach((f) => {
+          if (Array.isArray(n[f]) && n[f].length) node[f] = JSON.parse(JSON.stringify(n[f]));
+        });
+        if (a.deep) node.children = (n.children || []).map(deepCopy);
+        return node;
+      };
+      const copy = deepCopy(src);
+      parentNode.children = (parentNode.children || []).concat(copy);
+      a._newId = copy.id;
+      return data;
+    },
+    summary(a) { return '复制 ' + a.id + ' → ' + a.parent + '（新 id ' + a._newId + '）'; }
+  },
+
+  'assoc-add': {
+    v(ctx, raw) {
+      if (raw.members === undefined) ctx.error('缺少 members（如 "a,b" 或 ["a","b"]；跨项目写 项目/节点id）');
+      const parsed = assoc.parseMembers(raw.members, ctx.projectName);
+      if (!parsed.ok) ctx.error(parsed.error);
+      parsed.members.forEach((m) => {
+        const r = nodeExistsIn(ctx, m.project, m.id);
+        if (!r.ok) ctx.error(r.reason);
+      });
+      const id = raw.id === undefined ? null : String(raw.id);
+      if (id) { const bad = checkAssocId(id); if (bad) ctx.error(bad); }
+      return {
+        members: parsed.members, id: id, title: raw.title, note: noteOf(ctx, raw),
+        force: !!raw.force
+      };
+    },
+    run(ctx, data, a) {
+      if (!Array.isArray(data.assoc)) data.assoc = [];
+      const candidate = { members: a.members };
+      if (a.title !== undefined) candidate.title = a.title;
+      if (a.note !== undefined) candidate.note = a.note;
+      const key = assocKeyOf(candidate);
+      const hit = data.assoc.find((x) => x && assocKeyOf(x) === key);
+      if (hit && !a.force) throw new Error('已存在成员/标题/正文完全相同的关联笔记 ' + hit.id
+        + ' —— 要么改那一条（assoc-edit），要么给这条 op 加 "force": true');
+      const id = a.id || assoc.genId(data.assoc);
+      if (data.assoc.some((x) => x && x.id === id)) throw new Error('关联 id 已存在: ' + id);
+      const item = { id: id, members: a.members };
+      if (candidate.title !== undefined) item.title = candidate.title;
+      if (candidate.note !== undefined) item.note = candidate.note;
+      data.assoc.push(item);
+      a._id = id;
+      return data;
+    },
+    summary(a) { return '新增关联 ' + a._id + '（' + a.members.length + ' 个成员）'; }
+  },
+
+  'assoc-edit': {
+    v(ctx, raw, sim) {
+      if (!raw.id) ctx.error('缺少 id（改哪一篇关联）');
+      const any = raw.title !== undefined || raw.members !== undefined
+        || raw.note !== undefined || raw.noteMd !== undefined || raw.clearNote;
+      if (!any) ctx.error('什么也没改（可用字段：title / members / note / noteMd / clearNote）');
+      let members;
+      if (raw.members !== undefined) {
+        const parsed = assoc.parseMembers(raw.members, ctx.projectName);
+        if (!parsed.ok) ctx.error(parsed.error);
+        // 改成员要能引用**这条 op 之前刚建出来的**节点 ⇒ 用模拟树判存在性
+        // （列表里没有它，但树里可能有）
+        parsed.members.forEach((m) => {
+          if (m.project !== ctx.projectName) {
+            const r = nodeExistsIn(ctx, m.project, m.id);
+            if (!r.ok) ctx.error(r.reason);
+          } else if (!tree.find(sim, m.id)) {
+            ctx.error('节点不存在: ' + m.project + '/' + m.id);
+          }
+        });
+        members = parsed.members;
+      }
+      return {
+        id: String(raw.id), title: raw.title, members: members,
+        note: noteOf(ctx, raw), clearNote: !!raw.clearNote
+      };
+    },
+    run(ctx, data, a) {
+      const list = Array.isArray(data.assoc) ? data.assoc : [];
+      const item = list.find((x) => x && x.id === a.id);
+      if (!item) throw new Error('关联不存在: ' + a.id);
+      const changed = [];
+      if (a.title !== undefined) { item.title = a.title; changed.push('title'); }
+      if (a.members !== undefined) { item.members = a.members; changed.push('members'); }
+      if (a.clearNote && item.note !== undefined) { delete item.note; changed.push('-note'); }
+      if (a.note !== undefined) { item.note = a.note; changed.push('note'); }
+      a._changed = changed;
+      return data;
+    },
+    summary(a) { return '改写关联 ' + a.id + '：' + a._changed.join(' '); }
   }
 };
+
+/**
+ * `apply <项目> --ops-file ops.json [--dry-run]`
+ *
+ * 事务性由两件事共同保证（**双层**，不是一层）：
+ *   ① 全部 op **先逐条预检**（参数形状 / 成员是否存在 / 引用的项目能不能读）——
+ *      任何一条不合法就**在写盘之前**返回，因而盘上零改动；
+ *   ② 执行阶段在**一份深拷贝**上做，全部成功才把结果交回 `ctx.mutate` ⇒ 即便执行期
+ *      出了预检看不出的事（如"移动到自己子树"要看树才知道），原数据对象也**没被碰过**，
+ *      抛错即整体不动。日志只有一条（一个 `ctx.mutate` = 一次写盘 = 一个 rev）。
+ */
+function apply(ctx) {
+  // ---- F0 冻结的接口纪律：**写盘前**要做任何盘面动作（读 ops 文件、预读项目、看别的项目）之前
+  //      先过幂等守卫 —— 命中时连那些读都不做（省掉真正的外部成本），且行为与别的写命令一致。
+  //      `ctx.mutate` / `ctx.write` 里还会各调一次 replayCheck（同一次调用只判一次，见那里的守卫）----
+  ctx.replayCheck();
+  if (!ctx.projectName) ctx.error('用法: apply <项目> --ops-file ops.json [--dry-run] [--idem 键]');
+  const rf = readOpsFile(ctx);
+  const pre = ctx.read();                     // 预读：项目不存在在这里就响亮报；预检也要读树/读成员
+  // ⚠️ `pre.data` 是**整个项目对象**（`{meta, format, data}`），要传给预检的是**根节点** `pre.data.data`
+  //    —— 传错这一层的形态很隐蔽：模拟树变成一个"id 为 undefined 的空根"，于是批里**每一条** edit
+  //    都被判「节点不存在」（实测踩到过；报错看起来像数据真的缺节点，实则是调用方少写一层）。
+  const checked = precheckOps(ctx, rf.ops, pre.data && pre.data.data);
+  if (checked.error) {
+    ctx.error('ops 文件里' + checked.error + '（文件：' + rf.file + '）——**整体未执行**，盘上零改动。');
+  }
+  const prepared = checked.prepared;
+
+  /* ---------- --dry-run：只预览（连 mutate 都不进） ---------- */
+  if (ctx.args.dryRun) {
+    ctx.out('（--dry-run：只预览，**没有写盘** ✓）');
+    const work = cloneJson(pre.data);
+    prepared.forEach((p) => {
+      try {
+        p.def.run(ctx, work, p.args, p.index);
+        ctx.out('  [' + (p.index + 1) + '/' + prepared.length + '] 将要 ' + p.def.summary(p.args));
+      } catch (e) {
+        ctx.out('  [' + (p.index + 1) + '/' + prepared.length + '] ✗ 第 ' + (p.index + 1)
+          + ' 条操作会失败：' + ((e && e.message) || e));
+      }
+    });
+    ctx.out('共 ' + prepared.length + ' 条操作；--dry-run 未写盘。去掉 --dry-run 才会真的应用。');
+    ctx.setIdemResult('apply --dry-run：' + prepared.length + ' 条操作（未写盘）');
+    return;
+  }
+
+  /* ---------- 执行：深拷贝上跑完，全成才交给 mutate（一次原子写） ---------- */
+  let results = null;
+  const line = 'apply 完成：' + prepared.length + ' 条操作在**一次事务**里应用（一个 rev、一条日志），'
+    + '全部成功、没有跳过';
+  // 幂等重放时原样复述这一行（逐条回执太长，日志是**有界产物**；回执在首次执行的 stdout 里，
+  // 由 cli/main.js 的 dispatch 一并记进 `idem` 那条日志的 `out`）。
+  // ⚠️ 必须在 `ctx.mutate` **之前**声明 —— 写盘那一刻要读它（写后才声明就永远是空的，实测踩到过）。
+  ctx.setIdemResult(line);
+  ctx.mutate((data) => {
+    const work = cloneJson(data);
+    results = prepared.map((p) => {
+      p.def.run(ctx, work, p.args, p.index);          // 抛错 ⇒ 整体不动（work 被丢弃，原 data 未被碰）
+      return { index: p.index, op: p.op, status: 'applied', detail: p.def.summary(p.args) };
+    });
+    // 把改好的**数据面**搬回原对象（只动 data.data，meta 保持原样 —— 与各命令的粒度一致）
+    data.data = work.data;
+    return data;
+  });
+
+  results.forEach((r) => {
+    ctx.out('  [' + (r.index + 1) + '/' + results.length + '] 已应用 ' + r.op + '：' + r.detail);
+  });
+  ctx.out(line);
+}
+
+/** 深拷贝（项目数据保证是纯 JSON，见 docs/DATA-FORMAT.md §1） */
+function cloneJson(x) { return JSON.parse(JSON.stringify(x)); }

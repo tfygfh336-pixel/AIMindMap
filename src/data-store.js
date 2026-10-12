@@ -132,8 +132,11 @@
      * 首次落盘 / 需要裁剪窗口时走整份原子写；平时只追加一行（有界窗口见 `changes.MAX_ENTRIES`）。
      *
      * @param {string} name 项目名
-     * @param {{oldText:(string|null), data:any, version:string, writer:string}} opts
+     * @param {{oldText:(string|null), data:any, version:string, writer:string,
+     *          idem?:(string|{key:string}), out?:string}} opts
      *        `oldText` = **本次写入之前**盘上的内容（null = 盘上原本没有 ⇒ 记为"新建"）
+     *        `idem` / `out` = 写命令的**幂等键**与**首次回显**（可选，见 `src/changes.js` 的 `buildEntry`；
+     *        调用方是 `cli/core.js` 的幂等守卫，这里只做**转交**，不判定、不解释）
      */
     function recordChange(name, opts) {
       if (!changes) return null;
@@ -147,6 +150,9 @@
       //    这是可见性功能最坏的失效形态（告诉会话"没人动过"，而其实动了）。有一条单测锁它。
       const changedSet = (oldData === null || !concurrency) ? null : concurrency.changedKeys(oldData, o.data);
       const changed = changedSet ? Array.from(changedSet) : [];
+      // 幂等键：两种形态都收（`{key}` 是核心层传的内部形状，字符串是直给）——
+      // 归一放在这里**一处**，免得每个写入方各判一次"给了没给"。
+      const idemRaw = o.idem && typeof o.idem === 'object' ? o.idem.key : o.idem;
       const file = changeLogFile(name);
       let text = '';
       try { text = fs.readFileSync(file, 'utf8'); } catch (e) { text = ''; }
@@ -155,11 +161,48 @@
         writer: o.writer,
         version: o.version,
         created: oldData === null,     // 盘上原本没有 ⇒ 这是"新建"，changed 为空是正常的
-        changed: changed
+        changed: changed,
+        idem: idemRaw,
+        out: o.out
       }, changes.MAX_ENTRIES);
       if (!text || r.trimmed > 0) writeFileAtomic(file, r.text);   // 首次 / 裁剪窗口 ⇒ 整份原子写
       else fs.appendFileSync(file, changes.serializeEntry(r.entry), 'utf8');
       return r.entry;
+    }
+
+    /**
+     * **补上一次写入的"首次回显"**（S7 的延迟落账）。
+     *
+     * 为什么需要"补"而不是"写的时候一起写"：写命令的收尾回执（`已添加: n-xxxx`）发生在
+     * `store.write` **返回之后** ⇒ 写盘那一刻还拿不到它（见 `cli/core.js` 的 `markRecord`）。
+     * 于是命令体跑完时用它把最后那几行补进**同一条**记录（按 `idem` 键定位），
+     * 幂等重放才能复述出"首次那个随机 id"。
+     *
+     * 定位靠 `idem` 键：只改**最后一条**且键相同的那条（找到就从尾往前改第一条）。
+     * 找不到就**什么都不做**（日志被裁剪 / 被删 / 键已被顶掉 ⇒ 宁可少一条回显，也不编造）。
+     * @returns {boolean} 是否真的补上了
+     */
+    function recordChangeOut(name, idemKey, outText) {
+      if (!changes || !idemKey) return false;
+      const file = changeLogFile(name);
+      let text = '';
+      try { text = fs.readFileSync(file, 'utf8'); } catch (e) { return false; }
+      const parsed = changes.parseLog(text);
+      const hit = changes.idemLookup(parsed.entries, idemKey);
+      if (!hit) return false;
+      // 逐行改写**最后一条**匹配记录（保留原行序、原条数 ⇒ 不破坏"日志是有界追加流"的性质）
+      const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].trim()) continue;
+        let raw;
+        try { raw = JSON.parse(lines[i]); } catch (e) { continue; }
+        if (!raw || raw.idem !== idemKey) continue;
+        raw.out = String(outText).slice(0, changes.OUT_MAX);
+        lines[i] = changes.serializeEntry(changes.buildEntry(raw)).replace(/\n$/, '');
+        writeFileAtomic(file, lines.join('\n') + '\n');
+        return true;
+      }
+      return false;
     }
 
     return {
@@ -234,7 +277,12 @@
         // 这是**辅助产物**（不是数据、不进 export-json、可随时删）。它失败**不能让本次写入失败**
         // —— 数据安全优先；但也**绝不静默**：打到 stderr，让调用方看得见（F1）。
         try {
-          recordChange(name, { oldText: oldText, data: data, version: version, writer: o.writer });
+          recordChange(name, {
+            oldText: oldText, data: data, version: version, writer: o.writer,
+            // 幂等键与首次回显：**只转交**（判定与回放都在 `cli/core.js` 的守卫里）。
+            // 不走 `store.write` 的调用方（如 `import-json`）自然拿不到它们 ⇒ 字段缺席，行为与从前一致 ✓
+            idem: o.idem, out: o.out
+          });
         } catch (err) {
           console.error('warning: 变更日志写入失败（本次数据已写入，日志缺一条）：'
             + ((err && err.message) || err));
@@ -260,6 +308,8 @@
       changeLogFile,
       /** 记一条变更日志（GUI 保存那条不走 `write` 的路径也要调它 —— 实现只有一份） */
       recordChange,
+      /** 给**最近那条**带 `idem` 的记录补上"首次回显"（S7 的延迟落账；见该函数注释） */
+      recordChangeOut,
       // 供 import-json 解包资源（图片/附件）使用，同样保证原子落盘
       writeFileAtomic
     };

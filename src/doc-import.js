@@ -782,7 +782,7 @@ function buildDirImportTree(scan, opts) {
   const genId = o.genId || uniqueIdGen();
   const at = o.at || new Date().toISOString();
   const tool = o.tool || 'import-dir';
-  const built = { children: [], nodes: 0, containers: 0, files: 0, entries: [], skipped: [] };
+  const built = { children: [], nodes: 0, containers: 0, files: 0, entries: [], skipped: [], preambles: 0 };
 
   const walk = (node, depth) => {
     const children = [];
@@ -813,10 +813,9 @@ function buildDirImportTree(scan, opts) {
       };
       const sub = markdown.markdownToTree(md, fileNode.id, genId);
       fileNode.children = (sub.data && sub.data.children) || [];
-      /* ⚠️ 兜底：**没有一个标题**的提纲（纯 .txt 笔记最常见）在 `markdownToTree` 里会**全部落空** ——
-       * 它只在"当前节点"存在时才接收正文（`if (!cur) continue`），没有标题就等于没有任何节点。
-       * 直接把这份文件丢掉 = **静默的数据丢失** ✗。所以退一步：把整份正文放进**文件节点自己的
-       * detail**（HTML 用 `convert.markdownToHtml` 转 —— 与 `markdownToTree` 内部**同一个**转换，
+      /* ⚠️ 兜底：**没有一个标题**的提纲（纯 .txt 笔记最常见）产出 0 个子节点（`markdownToTree` 里没有任何
+       * 标题就等于没有任何节点）。把这份文件丢掉 = **静默的数据丢失** ✗。所以退一步：把整份正文放进
+       * **文件节点自己的 detail**（HTML 用 `convert.markdownToHtml` 转 —— 与 `markdownToTree` 内部**同一个**转换，
        * 不另写解析 ✓）。真的什么都没有（0 字节/纯空白）才计成"空文件"跳过。 */
       if (!fileNode.children.length) {
         const html = convert.markdownToHtml(md);
@@ -825,6 +824,12 @@ function buildDirImportTree(scan, opts) {
           return;
         }
         fileNode.detail = html;
+      } else if (sub.preamble) {
+        /* 【W14】有标题时，**第一个标题之前**的正文同样不许丢：落到**文件节点自己的 detail** ——
+         * 与上面"无标题"那条**同一个落点规则**（都是"这个文件在这棵树里的代表节点"）✓
+         * 与上面那条互斥（无标题 ⇒ 走上面，整份正文已含前导）⇒ 同一段内容不会被写两遍。 */
+        fileNode.detail = sub.preamble;
+        built.preambles += 1;
       }
       built.nodes += 1 + (sub.addedCount || 0);
       built.files++;

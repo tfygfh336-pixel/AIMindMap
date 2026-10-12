@@ -14,6 +14,60 @@
 
 ## [Unreleased]
 
+### 条目层 · 条目级写原语（S2，2026-10-12）
+
+- **新增 `item-add` / `item-edit` / `item-remove` / `item-move` / `item-order` / `render-detail` 六条命令**：改一条不必重写整块 detail。未条目化节点上 `item-add` 会**自动条目化**（且必须先通过**逐字节回放前置校验**，回放不了就拒绝、一个字节都不动）；`item-remove` 被 `links[].item` / `assoc.members[].item` 引用时**默认拒绝并逐个点名**（`--clean-links` / `--clean-assoc` 才连带清理）；一次 `item-move` 同时重渲染两侧 detail（一个 rev、一条日志）。单测 `tests/item-commands.test.js`。
+
+### 条目层 v3 · 条目读与检索：`search` 默认搜条目 + `get --item` + `read --items`（S3，2026-10-12）
+
+- **`search` 默认口径改为「搜条目」**（节点 topic ∪ 条目正文，契约 `docs/ITEM-MODEL.md` §3.4）：命中形状在 v2 之上**只增字段** —— `{id,topic,nodeId,nodeTopic,itemId,type,itemized,matchIn,snippet,src,verified,score}`，新增 `--topic-only` 作为回退开关（同时把"同一命中 `itemId` 为 null"钉成断言）；`--full` 保留 v2 的额外面（detail / 图片 caption / 节点级标签 / 链接说明）。新增过滤 `--tag`/`--src`/`--verified`/`--type`/`--since` 与预算 `--limit`/`--max-bytes`（缺省有界；`--json` 顶层加 `hitCount`/`truncated`/`mode`/`budget{bytes,estTokens,limit,maxBytes}`，超限**截断并给续取方式**）；**非法值当场报错**（含 `--verified`/`--type`/`--since` 写错 —— 它们以前会静默变成"0 命中"）；给定条目级过滤时不再返回未条目化节点与节点级命中（契约对 `--since` 明说的那条规矩，同批扩到另外三维）。
+- **新增 `get --item <itemId>`**（单条条目视图：保真的 `html` / `qa`、`src` 归一成数组、真实 `path`；"条目不在该节点"⇒ **点名它实际属于哪个节点**）与 **`read --items <i-a,i-b>`**（只取这几条正文；任一 id 缺失 ⇒ **整体失败并逐个点名**，不给半份；与 `--brief`/`--skeleton`/`--subtree` 互斥）。`get` 对条目化节点额外带 `items` **摘要**（`{itemId,type,src,verified,at,bytes}`，不含正文）。`read --json` 的字节形状**不变**（节点视图不加 `items`；`qa` 字段在条目化节点上由 items 现场派生，形状与 v2 逐字段相同）。
+- **实现落点**：新增 `src/item-index.js`（UMD 纯逻辑、**不落盘**：索引只在内存里建、可复用；命中长度/预算/token 口径的常量**只有这一处**），`src/query.js` 只做视图组装与兼容转发。`--limit`（缺省 200 / 上界 1000）与 `--max-bytes`（缺省 65536 / 16–4194304）。
+- **判据**：单测 `tests/item-index.test.js` 44 条全绿（含 v2 口径兼容复刻、命中/视图键集逐字、`--max-bytes` 字节上界、只读不生成索引文件的静态守卫）；集成 §49 二十七条交 I 串行落盘。
+- **实测（只读，真实项目）**：「已有功能与设计（154 条）」那条 16864 字符的节点里定位一条 —— 改前整块 detail **31035 B**（整节点 `get --json` 40910 B）⇒ 改后一次 search 单条 **302 B** + `get --item` **214 B** = **516 B**（**60.1x** / 对整节点 **79.3x**）。
+
+### 写命令"重试安全"（幂等）+ 语义去重 + 新增 `apply` 事务（S7，2026-10-12）
+
+- **写命令"重试安全"（幂等，S7）**：任何写命令都可带 `--idem <键>` —— 同键重放**不重复执行**并原样复述首次结果（回显含「幂等命中」），键落进 `projects/<项目>/.changes.jsonl` 的**可选字段** `idem`（照 `origin` 先例：**可选字段、不升 formatVersion**、不写进项目文件；键按项目各自判、不能跨命令复用、只读命令带它会被**响亮拒绝**）。`add` / `add-root` / `assoc-add` 另有**语义去重**（父 + 标题 + 内容指纹；命中**默认拒绝并点名那一条**，`--force` 放行有意重复）。新增 **`apply <项目> --ops-file ops.json [--dry-run]`**：一批改动在**一次 `ctx.mutate`**（一个 rev / 一次原子写 / 一条日志）内完成 ⇒ **全成或全不动**，逐条回执，任何一条非法（含人为注入的第 k 条）**整体不动并指名第 k 条**；**只允许数据面操作**（新增/编辑/移动/复制节点 + 关联增改），需要外部副作用或连带清理的动作（图片/附件/导入/`remove`）**不在事务里**、写到 ops 文件里会被**指名拒绝**。**边界（如实写明）**：命令失败**不记键**（重试会照常执行，这是有意的）；键活在**有界窗口**的日志里（滑出窗口即"忘了"，同键重放会再执行一次）；`--dry-run` 不查也不记键。
+
+### 修掉 `link` 重复添加时**静默清掉已有说明**（K8，2026-10-12）
+
+- **修**：同一条边第二次 `link` 若**不给** `--caption`，盘上 `links[]` 会从 `{"project":…,"id":…,"caption":"出自：…"}`
+  变成 `{"project":…,"id":…}`（说明没了、无任何提示），而回显与第一次**逐字相同**（`已添加链接: …`）
+  ⇒ **成功与覆盖不可分辨** ✗。根因：`cli/commands/links.js` 旧写法把那条边**从零重建**再 concat
+  （"没给 `--caption`"与"没有 caption"在数据上不可区分）。新语义：**省略 = 保留原说明**（重复添加退化成幂等，
+  且**不产生空写入**）；**显式给（含空串）= 覆盖**；回显分三种：`已添加链接` / `已更新链接`（清空时点明
+  `caption 清空`）/ `无变化`。另：改说明只在**原对象**上改一个键（边上其它字段如 `note` 与数组顺序都不动）；
+  只写 `--caption` 不给值 ⇒ **响亮拒绝**（旧写法会把 `true` 写进数据）。
+- **判据**：`tests/link-caption.test.js` 13 条全过；**注入证明**（还原旧行为）⇒ 9 条红，撤销后 sha256 逐字节还原；
+  端到端读数（临时项目根，真实 `projects/` 零写入）见 `.review/20261010-卖点与功能-常驻讨论/K8-复现与读数.md`。
+- **文档**：`docs/DATA-FORMAT.md` 里"重跑 `link` 会整个替换该链接对象（`note` 被抹掉）"这句**已随本次修复改掉**
+  （现在只改 `caption` 一个键）；`link` 的 `--caption` 一键说明同步写进 `cli/registry.js`。
+
+### 修掉「第一个标题之前的正文会丢」（W14，2026-10-12）
+
+- **修**：`src/markdown.js` 的 `markdownToTree` 在"还没有任何节点"时直接跳过正文行（`if (!cur) continue`）
+  ⇒ 第一个标题**之前**的正文被**静默丢弃**（`import-project` / `import-md` / `import-dir` 三条路共有）。
+  现在按段收进 `preamble` 交回调用方，落点**三条路统一** = **本次导入的父/文件节点的 `detail` 开头**：
+  `import-project` → 根节点；`import-md` → `--parent` 节点（**前置**在原有 detail 之前，不覆盖）；
+  `import-dir` → 各自的**文件节点**（与既有的"无标题兜底"**互斥** ⇒ 同一段内容不会被写两遍）。
+  三条命令的**回显都点明落点**（静默落盘与静默丢弃同样不可查）。
+- **判据**：单元 6 条（`tests/markdown.test.js` +5、`tests/doc-import.test.js` +1，含 `built.preambles` 逐文件计数）
+  + 集成 §54 六条（含"前导正文在落盘文件里**只出现一处**"与负例"开头就是标题 ⇒ 不产生空字段"）；
+  **注入证明**：还原旧行为 ⇒ 5 条里 4 条判红（第 5 条两版都成立，作负例对照），撤销后全绿。
+- **边界**：前导区里的 `![图](…)` / `[附件](…)` 按**正文**处理（不当资源挂载）—— 导入资源的坏引用属 W19，另办。
+
+### 冻结「条目层 v3」契约（F0，2026-10-12）
+
+- **新增受管文档** `docs/ITEM-MODEL.md`（§5 登记为「**契约**」层）：条目形状（`formatVersion 3`）、
+  `items` 真源 ↔ `detail` 派生缓存的**互斥规则**、CLI/MCP 签名表（`item-add`/`item-edit`/`item-remove`/
+  `item-move`/`item-order`/`render-detail`/`migrate items` + `get --item`/`read --items`/`search` 条目级命中形状）、
+  `src/item-model.js` 与 `--idem` 的模块签名、v2→v3 迁移规则、与既有字段的边界，以及 **§8 并发粒度**：
+  新增三个指纹键 `node:<id>`（条目化节点上排除 `items`/`detail`）、`items:<id>`、`item:<节点id>#<条目id>`。
+- **`docs/DATA-FORMAT.md`** 加一行指针（v3 契约不重复表述）；**`SKILL.md`** 加一行导航
+  （G8 判定⑩「导航可达」机械要求"登记过的文档必须能从 `SKILL.md` 找到"）。
+- **未实现任何代码**：契约先冻结，供并行流互不等待地编码；断言与迁移实测留给 S1 及后续流。
+
 ### 内置 DSH 新增第二种作业模式「迭代模式」+ 修掉一处会让多模式误报的门禁（2026-10-10）
 
 - **新增**：`$presets.iterate`（标签「迭代模式」）—— 与既有的「aimindmap 模式」（**改笔记**）分工，它的人设是

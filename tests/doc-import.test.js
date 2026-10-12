@@ -516,6 +516,28 @@ describe('doc-import：整库导入 —— 目录走查、跳过分类、容器�
     } finally { fsx.rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('★【W14】有标题的文件：第一个标题**之前**的正文落"文件节点"detail（原先被静默丢掉）', () => {
+    const root = makeTree({ '带前言.md': '前言第一行\n\n前言第二段\n\n# 标题甲\n甲正文\n' });
+    try {
+      const built = di.buildDirImportTree(di.scanImportDir(root, {}), { at: 'T' });
+      expect(built.files).toBe(1);
+      const fileNode = built.children[0];
+      // 标题照旧建节点（这条修复**不改**原来的建树行为）
+      expect(fileNode.children.length).toBeGreaterThan(0);
+      expect(fileNode.children[0].topic).toBe('标题甲');
+      // 前导正文不许丢：落到文件节点自己的 detail（与"无标题"那条**同一个落点规则**）
+      expect(typeof fileNode.detail).toBe('string');
+      expect(fileNode.detail).toContain('前言第一行');
+      expect(fileNode.detail).toContain('前言第二段');
+      // 且不与标题后正文串味
+      expect(fileNode.detail).not.toContain('甲正文');
+      // 逐文件计数可查（报告要用）
+      expect(built.preambles).toBe(1);
+      expect(built.skipped).toEqual([]);
+    } finally { fsx.rmSync(root, { recursive: true, force: true }); }
+  });
+
+
   it('★ 跳过逐类计数：隐藏 / 依赖目录 / 空目录 / 无可用文件 / 不支持的扩展名 / 符号链接 —— **每一类都点名**', () => {
     const root = makeTree({
       'ok.md': '# 好\n',
@@ -713,4 +735,5 @@ describe('doc-import：整库导入 —— 目录走查、跳过分类、容器�
     } finally { fsx.rmSync(root, { recursive: true, force: true }); }
   });
 });
+
 

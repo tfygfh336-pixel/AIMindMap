@@ -14,6 +14,7 @@ const path = require('path');
 const markdown = require('../../src/markdown.js');
 const tree = require('../../src/tree-utils.js');    // 树遍历单源（本文件不再自写 walk）
 const query = require('../../src/query.js');       // 视图/搜索/统计纯逻辑
+const itemIndex = require('../../src/item-index.js');   // 条目层的长度/预算常量与视图（契约 §3.4：常量只在 src/item-index.js）
 const bundle = require('../../src/bundle.js');     // aimap 打包格式纯逻辑
 const exportHtml = require('../../src/export-html.js');   // 静态站点 HTML 生成纯逻辑
 const MMConfig = require('../../src/config.js');   // 版本号单源（APP_VERSION）
@@ -105,6 +106,23 @@ module.exports = {
       }
     }
 
+    // ---- --items：条目层（v3）的另一种口径——只取这几条正文（`docs/ITEM-MODEL.md` §3.3）----
+    // 判定与报文都在 src/item-index.js（任一 id 缺失 ⇒ 整体失败并逐个点名；与 --brief/--skeleton/--subtree
+    // 互斥）—— 命令层只负责把它接到 ctx 的输出上，别在这里再写一份判定。
+    if (ctx.args.items !== undefined) {
+      const r = query.readItemsView(data, ctx.args.items, {
+        project: ctx.projectName, brief: ctx.args.brief, skeleton: ctx.args.skeleton, subtree: ctx.args.subtree
+      });
+      if (!r.ok) ctx.error(r.message);
+      if (js) { ctx.outJson(r.view); return; }
+      r.view.items.forEach((it, i) => {
+        if (i) ctx.out('');
+        ctx.out(it.nodeId + '#' + it.itemId + '  ' + it.nodeTopic + '  [' + it.type + ']');
+        ctx.out(it.html !== undefined ? it.html : JSON.stringify(it.qa));
+      });
+      return;
+    }
+
     // ---- --subtree <id>：只读某一棵子树（定位到分支后的定点作业）----
     // 实测收益：全项目 --json 149 KB，而某棵大子树只要 24 KB（--brief --compact）⇒ 约 −84%。
     if (ctx.args.subtree === true) {
@@ -140,6 +158,15 @@ module.exports = {
     const id = ctx.args._[1];
     if (!id) ctx.error('缺少节点 id');
     const { data } = ctx.read();               // 只读一次，保证 path 与 node 同一快照
+    // ---- --item：条目层（v3）的定点取回（`docs/ITEM-MODEL.md` §3.1）----
+    // 报文由 src/item-index.js 定（"条目不在该节点 ⇒ 点名它实际属于哪个节点"）—— 单源，别另写一套。
+    if (ctx.args.item !== undefined) {
+      const r = query.getItemView(data.data, id, ctx.args.item);
+      if (!r.ok) ctx.error(r.message);
+      if (ctx.args.json) ctx.outJson(r.view);
+      else ctx.out(JSON.stringify(r.view, null, 2));
+      return;
+    }
     // path 由 tree-utils.pathTo 计算（曾内联手写 DFS 且缺回溯 pop，
     // 导致返回「DFS 访问过的全部节点」——查 s-3-1 会得到 27 项而非 4 项）
     const out = query.getNodeView(data.data, id, ctx.args);
@@ -149,12 +176,28 @@ module.exports = {
   },
 
   search(ctx) {
-    const kw = ctx.args._[1];
-    const tag = ctx.args.tag;
-    if (!kw && !tag) ctx.error('缺少关键词（或用 --tag 按标签搜索）');
-    const { hits } = query.searchNodes(ctx.root, { keyword: kw, tag, full: !!ctx.args.full });
-    if (ctx.args.json) ctx.outJson({ keyword: kw, tag, hits });
-    else hits.forEach((h) => ctx.out(h.id + '  ' + h.topic + (h.matchIn && h.matchIn !== 'topic' ? '  [' + h.matchIn + ']' : '') + (h.snippet ? '  …' + h.snippet + '…' : '')));
+    // 整数形态的合法性由 core 的统一实现挡（含允许范围），**取值范围**来自 src/item-index.js 的常量
+    const limit = ctx.intOption('limit', { min: 1, max: itemIndex.LIMIT_MAX, def: itemIndex.DEFAULT_LIMIT });
+    const maxBytes = ctx.intOption('maxBytes', { min: itemIndex.MIN_MAX_BYTES, max: itemIndex.MAX_BYTES_MAX, def: itemIndex.DEFAULT_MAX_BYTES });
+    const r = query.searchNodes(ctx.root, {
+      keyword: ctx.args._[1], tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
+      src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
+      limit: limit, maxBytes: maxBytes
+    });
+    // 缺关键词 / 非法 --verified,--type,--since / --topic-only 与条目级过滤同给 ⇒ 都由纯逻辑层给出完整报文
+    if (!r.ok) ctx.error(r.message);
+    if (ctx.args.json) {
+      ctx.outJson({ project: ctx.projectName, keyword: ctx.args._[1] || null, hits: r.hits,
+        hitCount: r.hitCount, truncated: r.truncated, mode: r.mode, budget: r.budget });
+      return;
+    }
+    r.hits.forEach((h) => ctx.out(h.nodeId + (h.itemId ? '#' + h.itemId : '') + '  ' + h.nodeTopic
+      + (h.matchIn && h.matchIn !== 'topic' ? '  [' + h.matchIn + ']' : '')
+      + (h.snippet ? '  …' + h.snippet + '…' : '')));
+    ctx.out('命中 ' + r.hitCount + ' 条' + (r.truncated ? '（本次返回 ' + r.hits.length + ' 条，已截断）' : '')
+      + '｜预算 ' + r.budget.bytes + ' B ≈ ' + r.budget.estTokens + ' token（--limit ' + r.budget.limit
+      + ' / --max-bytes ' + r.budget.maxBytes + '，口径 ' + r.mode + '）');
+    if (r.truncated && r.budget.resume) ctx.out(r.budget.resume);
   },
 
   stats(ctx) {
@@ -203,7 +246,11 @@ module.exports = {
     try { conv = docImport.docToOutline(file); }
     catch (e) { ctx.error(e.message); return; }
 
-    const built = markdown.markdownToTree(conv.md, 'root');
+    // 【W20】用**唯一性有保障**的 id 生成器（不是裸 `idGen`）：中文标题经 `idGen` 会被压成同一个 base，
+    // 只靠短随机后缀区分 ⇒ 中文标题多时**概率性撞号**，一撞就"以 id 重复整体导入失败"且人看不出原因。
+    // `uniqueIdGen()`（`src/doc-import.js`）是"见过就再摇一次"的兜底 —— `import-dir` 早已用它，
+    // 这里把**同一处修法**接过来 ⇒ 三条导入路行为一致 ✓
+    const built = markdown.markdownToTree(conv.md, 'root', docImport.uniqueIdGen());
     const themes = ((built.data && built.data.children) || []);
     const title = ctx.args.title
       || (themes[0] && themes[0].topic)
@@ -260,12 +307,21 @@ module.exports = {
       format: 'node_tree',
       // origin 挂在**这棵树的根**上：一次导入只留一个来源痕（不是每个节点都抄一遍 ⇒ 文件不膨胀）。
       // 它记的是"这棵树从哪一份文档、哪一次导入来"，是"这份文件导过没有"的唯一判据 ✓
-      data: { id: 'root', topic: title, expanded: true, origin: origin, children: themes }
+      data: Object.assign(
+        { id: 'root', topic: title, expanded: true, origin: origin, children: themes },
+        // 【W14】第一个标题**之前**的正文（前导正文）落到**项目根节点**的 detail —— 不再静默丢；
+        // 落点选根节点：它就是"这份文档"在这棵树里的代表（与 import-dir 落"文件节点"同一条规则）。
+        built.preamble ? { detail: built.preamble } : {}
+      )
     };
     ctx.write(data);   // 一次写入（原子）⇒ 不会留下半个项目 ✓
     ctx.out('已从 ' + path.basename(file) + '（' + srcLabel + '）创建项目「' + name + '」：'
       + themes.length + ' 个顶层主题 / ' + (built.addedCount || 0) + ' 个节点'
       + (ctx.args.force && dup ? '（--force：这是同一个来源的第 2 份）' : ''));
+    // 落点必须**如实报告**（前导正文去哪了）：静默落盘与静默丢弃一样不可查
+    if (built.preamble) {
+      ctx.out('前导正文（第一个标题之前的正文，' + built.preamble.length + ' 字符 HTML）已并入**根节点 root 的详情开头**');
+    }
     ctx.out('来源指纹: ' + docImport.describeOrigin(origin));
     printNotes(ctx.out);
     ctx.out('打开：node cli/mm-cli.js read ' + name + ' --brief');
@@ -422,6 +478,9 @@ module.exports = {
         + (Object.keys(byFormat).some((k) => byFormat[k]) ? '' : '（还没转换）'));
       printLimit(ctx.out);
       printSkips(ctx.out);
+      if (built && built.preambles) {
+        ctx.out('前导正文：' + built.preambles + ' 个文件的"第一个标题之前的正文"已并入各自**文件节点的详情开头**');
+      }
       ctx.out(topBrief);
       ctx.out('来源指纹：' + docImport.describeOrigin(manifest));
       if (dup) {
@@ -464,6 +523,9 @@ module.exports = {
       + filesImported + ' 个文件 / 合计 ' + nodes + ' 个节点'
       + (forced && (dup || collisions.length) ? '（--force：这是同一个来源的第 2 份）' : ''));
     printSkips(ctx.out);
+    if (built && built.preambles) {
+      ctx.out('前导正文：' + built.preambles + ' 个文件的"第一个标题之前的正文"已并入各自**文件节点的详情开头**');
+    }
     ctx.out('来源指纹：' + docImport.describeOrigin(manifest));
     ctx.out('打开：node cli/mm-cli.js read ' + name + ' --brief');
   },
@@ -502,7 +564,8 @@ module.exports = {
     // **转换只做一次**并捕获进闭包：fn 里禁止 I/O，且并发重放不该重新生成一遍节点 id。
     // 这使本命令的并发语义与 `add`（同一种"往某父节点下加内容"）完全一致：
     // 别人改的是**别的对象**时自动叠到最新版，撞同一个父节点时才拒绝。
-    const r = markdown.markdownToTree(md, parent);
+    // 【W20】同 `import-project`：这里也接**唯一性有保障**的生成器（三条导入路同一处修法）
+    const r = markdown.markdownToTree(md, parent, docImport.uniqueIdGen());
     const added = r.data.children || [];
     // 来源痕挂在**这次导入产生的每棵子树的根**上（= `added` 的每一项）：
     // 条数 = 一次导入里的顶层主题数，而不是节点数 ⇒ 代价极低，但"这份文件导过没有"一眼可查 ✓
@@ -511,11 +574,21 @@ module.exports = {
       const parentNode = ctx.tree.find(cur.data, parent);
       // 读之后父节点被别人删了（罕见）⇒ 报错而不是凭空造一个父节点出来
       if (!parentNode) throw new Error('父节点在并发改动后已不存在: ' + parent);
+      // 【W14】第一个标题**之前**的正文落在**父节点 detail 的开头**（在原有 detail 之前）——
+      // 同一批 mutate 内完成 ⇒ 与节点树的那批改动同版本、同一条日志 ✓
+      if (r.preamble) {
+        parentNode.detail = parentNode.detail ? r.preamble + '\n' + parentNode.detail : r.preamble;
+      }
       parentNode.children = (parentNode.children || []).concat(added);
       return cur;
     });
     ctx.out('导入完成，新增 ' + r.addedCount + ' 个节点（父节点 ' + parent + '）'
       + (ctx.args.force && dup ? '（--force：这是同一个来源的第 2 份）' : ''));
+    // 落点如实报告（前导正文去哪了）—— 静默落盘与静默丢弃一样不可查
+    if (r.preamble) {
+      ctx.out('前导正文（第一个标题之前的正文，' + r.preamble.length + ' 字符 HTML）已并入父节点 '
+        + parent + ' 的**详情开头**');
+    }
     ctx.out('来源指纹: ' + docImport.describeOrigin(origin));
   },
 

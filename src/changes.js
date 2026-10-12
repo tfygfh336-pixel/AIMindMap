@@ -19,6 +19,13 @@
  * 日志由**唯一写盘出口**（`src/data-store.js` 的 `write`）产生，"改了什么"不是谁手写的，
  * 而是用**与冲突判定同一套**指纹（`src/concurrency.js` 的 `changedKeys`）当场算出来的 ——
  * 于是"哪里算冲突"和"哪里报变更"永远是同一份定义。
+ *
+ * ## 顺带承载"写命令的幂等键"（S7，可选字段）
+ * 每条记录可多带两个**可选**字段：`idem`（调用方给的幂等键）与 `out`（首次执行的**回显**）。
+ * 为什么放在这里而不是项目文件里：项目 JSON 是**当前事实的唯一真源**，塞进幂等键等于给它加
+ * 第二套语义；而日志是**旁路产物**（可随时删、不进 export-json）⇒ 删掉即"忘了这个键"，
+ * 代价明确且可接受（窗口 `MAX_ENTRIES` 条 + 删日志，见 `cli/core.js` 的幂等契约）。
+ * 字段是**可选**的：不给键的写入路径落盘字节与从前完全一致，`ENTRY_VERSION` **不升**。详见 `buildEntry`。
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -36,12 +43,34 @@
   const MAX_ENTRIES = 200;
 
   /**
+   * 单条日志里 `out`（回显摘要）的字符上限。
+   *
+   * 为什么要截断：`out` 是给**幂等重放**原样复述的（见下），而日志是**有界窗口**的
+   * 辅助产物（`MAX_ENTRIES`），不该因为它变成一份体量不可控的账本。
+   * 取 400 的理由：本工程各写命令的回显都只有一两行（最长的 `apply` 逐条回执也在几十行内，
+   * 而那条回执本身会被摘要成一行统计）—— 400 字够原样复述，超出部分只影响"重放时少显一点"，
+   * **不影响幂等判定**（判定只认 `idem` 键）。
+   */
+  const OUT_MAX = 400;
+
+  /**
    * 构造一条日志条目。**字段名只在这里定义**（单一真源）。
    * `rev` 由 `appendLog` 分配（单调递增），不接受调用方指定 —— 否则会出现两种编号口径。
+   *
+   * ## `idem` / `out` 两个**可选字段**（为什么不升 `ENTRY_VERSION`）
+   * 它们是**写管道流（S7）的幂等键**：`idem` = 调用方给的键，`out` = 首次执行的**回显**。
+   * 照 `origin`（DATA-FORMAT §2.8）的先例办：**可选字段、不升版本号** ——
+   *   · 旧日志（没有这两个键）照旧解析 ✓ 新日志被旧读者读到也只是多两个不认识的键 ✓
+   *   · `looksLikeEntry` 的判据一个字没动 ⇒ 不存在"新旧不兼容"的迁移面
+   * 只有真的给了键才写进去（`buildEntry` 里判空），**不给键的老写入路径字节不变** ✓
+   *
+   * ⚠️ 幂等键**落在这里**而不是项目文件里：项目 JSON 是**当前事实的唯一真源**，
+   * 把"这次是谁第几次重试"塞进去等于给数据加第二套语义（本工程最忌的两处表达）。
+   * 日志是旁路产物（可随时删、不进 export-json），键放这里**删掉即"忘了"** ✓ 代价写在 core.js。
    */
   function buildEntry(o) {
     const e = o || {};
-    return {
+    const entry = {
       v: ENTRY_VERSION,
       rev: Number(e.rev) || 0,
       at: e.at || new Date().toISOString(),
@@ -50,6 +79,38 @@
       created: !!e.created,
       changed: Array.isArray(e.changed) ? e.changed.slice().sort() : []
     };
+    if (e.idem !== undefined && e.idem !== null && String(e.idem) !== '') {
+      entry.idem = String(e.idem);
+    }
+    if (e.out !== undefined && e.out !== null && String(e.out) !== '') {
+      entry.out = String(e.out).slice(0, OUT_MAX);
+    }
+    return entry;
+  }
+
+  /**
+   * 按幂等键找**最近一条**用那个键写成功的记录。
+   * 返回 `null` = 没见过这个键（调用方该真执行）；否则返回 `{rev, version, at, writer, out}`。
+   *
+   * 为什么取**最后一条**而不是第一条：日志是有界窗口，同键只该出现一次（core 的守卫保证）；
+   * 万一出现过两次（例如窗口裁剪后键被遗忘又重放了一次），"最近那次"才是与当前盘上数据对应的结果。
+   */
+  function idemLookup(entries, key) {
+    const k = (key === undefined || key === null) ? '' : String(key);
+    if (!k) return null;
+    const list = Array.isArray(entries) ? entries : [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const e = list[i];
+      if (e && e.idem === k) {
+        return { rev: e.rev, version: e.version, at: e.at, writer: e.writer, out: entryResult(e) };
+      }
+    }
+    return null;
+  }
+
+  /** 该条目记下的**首次回显**（没有就返回空串 —— 绝不编造一个"看起来像回显"的东西） */
+  function entryResult(entry) {
+    return entry && entry.out !== undefined && entry.out !== null ? String(entry.out) : '';
   }
 
   function serializeEntry(entry) { return JSON.stringify(entry) + '\n'; }
@@ -147,7 +208,9 @@
   }
 
   return {
-    FILE_NAME, ENTRY_VERSION, MAX_ENTRIES,
-    buildEntry, serializeEntry, parseLog, appendLog, since, groupByObject, lastEntry
+    FILE_NAME, ENTRY_VERSION, MAX_ENTRIES, OUT_MAX,
+    buildEntry, serializeEntry, parseLog, appendLog, since, groupByObject, lastEntry,
+    // ---- 写管道流（S7）：幂等键的读面 ----
+    idemLookup, entryResult
   };
 });

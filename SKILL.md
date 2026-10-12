@@ -106,6 +106,7 @@ AI 助手。你本身就是运行中的 AI agent（本机场景下正是 DSH）�
 |-----------|-------|
 | 查某条命令怎么用 | `docs/CLI.md`（生成物，勿手改）—— 不用读 README |
 | 了解数据字段含义 | `docs/DATA-FORMAT.md` —— 不用读源码 |
+| **动条目层（`items` / 条目级命令 / v2→v3 迁移）** | `docs/ITEM-MODEL.md`（v3 契约：条目形状、`items`↔`detail` 派生、CLI 与模块签名、迁移、并发粒度）—— v2 字段表仍在 `docs/DATA-FORMAT.md` |
 | 跑验证 / 看当前各项数字 | `docs/VERIFY.md`（生成物：权威计数 + 验证链） |
 | 要加命令 / 加 MCP 工具 | `docs/EXTENSIONS.md`（稳定性等级与扩展契约） |
 

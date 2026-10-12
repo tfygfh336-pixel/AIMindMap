@@ -137,8 +137,63 @@ function dispatch(argv) {
     process.exitCode = 1;
     return undefined;
   }
+  // ---- 幂等键的**归属守门**（S7）：只读命令带 `--idem` 一律响亮拒绝 ----
+  // 为什么不能默默忽略（那正是本次要修的那类病）：调用方带 `--idem` 的**意图**是"重试安全"，
+  // 而在不写盘的命令上它什么都不做 ⇒ 人家会以为自己拿到了重试安全（一次静默 = 一个错觉）。
+  // 判定放在 dispatch（与未知选项同一处），因为它是**跨命令**的横切规则，不是某条命令的语义。
+  if (core.parseArgs(rest).idem !== undefined && core.WRITE_COMMANDS.indexOf(name) < 0) {
+    process.stdout.write('error: --idem 只对**写命令**有意义：' + name + ' 不写盘（不会重复生效，'
+      + '因此不需要幂等键）。写命令清单见 cli/core.js 的 WRITE_COMMANDS。\n');
+    process.exitCode = 1;
+    return undefined;
+  }
   const ctx = core.createContext(rest, { command: name });
-  return cmd.fn(ctx, rest);
+  // ---- 写命令的幂等短路（S7）：`--idem` 命中时**这条命令根本不执行** ----
+  // 为什么把回放放在这里（dispatch）而不是各命令里：与"未知选项守门"同一个理由 ——
+  // 40+ 条写命令各写一遍必然漏，而漏掉的那条**又是静默的**（重试照样重复生效）。
+  // 判定在 `cli/core.js` 的 replayCheck（`ctx.mutate` / `ctx.write` 两条路径共用一个入口），
+  // 这里只负责**接住 IdemReplay 并回放首次结果**（回显里含「幂等命中」）。
+  try {
+    const r = cmd.fn(ctx, rest);
+    // 命令体跑完 ⇒ 把"首次回显"补进那条幂等记录（写命令的收尾回执在写盘**之后**才打印，
+    // 所以这一步只能在这里做；它只补日志的一个可选字段，不改数据、不改 stdout ✓）
+    ctx.flushIdemRecord();
+    return r;
+  } catch (err) {
+    if (err && err.name === 'IdemReplay') { replayIdem(ctx, name, err.idem); return undefined; }
+    throw err;
+  }
+}
+
+/**
+ * 回放"幂等命中"（首次执行的回显）。
+ *
+ * 三件事必须同时做到：
+ *   ① **说出来**：回显里含「幂等命中」四个字 —— 调用方（AI / 脚本）要靠它分辨
+ *      "这次没执行"与"执行成功了"（两者的退出码都是 0，只看码分不出来）；
+ *   ② **返回首次结果**：把第一次写成功时记在 `.changes.jsonl` 里的回显原样复述
+ *      （所以 `add` 重放会给出**首次**那个 id，而不是新造一个）；
+ *   ③ **不改数据**：命中路径一次盘都不写（守卫在写盘之前抛，见 core.js 的 replayCheck）。
+ *
+ * `--json` 时输出**结构化**的回放对象（`hit:true`）：机器可判、不必去解析中文文案。
+ * 末尾不再追加文本行 —— JSON 消费者的 stdout 必须仍然是**一份**可解析的 JSON。
+ */
+function replayIdem(ctx, name, info) {
+  const r = String((info && info.result) || '');
+  if (ctx.args.json) {
+    ctx.outJson({
+      command: name,
+      idem: info.key,
+      hit: true,
+      rev: info.rev,
+      version: info.version,
+      result: r
+    });
+    return;
+  }
+  if (r) ctx.out(r);
+  ctx.out('已在本项目生效过（第 ' + info.rev + ' 次写入）'
+    + ' ⇒ 幂等命中：本次**未执行** ' + name + '、盘上数据未改动（键 ' + info.key + '）。');
 }
 
 /** Promise 是否**尚未 settle**。实测：无 await 的 async 函数 → `Promise { 1 }`；

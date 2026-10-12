@@ -25,10 +25,21 @@
   const H_RE = /^(#{1,6})\s+(.*)$/;
   const L_RE = /^(\s*)[-*]\s+(.*)$/;
 
-  /** 生成符合 id 规范的 id */
-  function idGen(seed) {
+  /**
+   * 生成符合 id 规范的 id。
+   *
+   * `seq` 是**可选**的确定性序号（不传 = 老行为：时间戳 + 随机后缀，逐字节不变）——
+   * `apply` 的一次事务里若有多个 `add`，产出的 id 必须**可复现**（同一份 ops 文件重跑得同一份数据），
+   * 而"时间 + 随机"永远做不到。传了 `seq` 时 id 只由 `(标题, 序号)` 决定 ⇒ 重跑逐字节相同 ✓
+   * （`add` 重试会造重复的另一半根因 —— 重试安全 —— 在 `cli/commands/edit.js` 的去重段与 `--idem`。）
+   */
+  function idGen(seed, seq) {
     const base = String(seed || 'n')
       .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'n';
+    if (seq !== undefined && seq !== null) {
+      const n = Number(seq);
+      if (Number.isInteger(n) && n > 0) return base + '-' + n;
+    }
     return base + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   }
 
@@ -76,11 +87,22 @@
     let addedCount = 0;
     let cur = null;
     let seg = null; // 期望写入 cur.detail 的连续片段 { kind, lines }
+    /* 【W14】第一个标题**之前**的正文：原实现直接跳过（`if (!cur) continue`）⇒ **静默丢内容**。
+     * 现在按"段"收集起来（与原 seg 同一套聚合规则），末尾转成 HTML 交回调用方，
+     * 由调用方落到**本次导入的父/文件节点**的 detail 开头 —— 三条导入路同一条规则，落点在回显里说明。
+     * 边界：前导区里的 `![图](…)` / `[附件](…)` **不当资源挂载**（那属导入资源的坏引用问题，W19），
+     * 一律按正文处理 ⇒ 内容不丢，也不会凭空往 images/files 里塞一条指向不存在文件的引用。 */
+    const preSegs = [];
 
     function flushSeg() {
-      if (seg && cur && seg.lines.length) {
-        const html = convert.markdownToHtml(seg.lines.join('\n'));
-        if (html) cur.detail = cur.detail ? cur.detail + '\n' + html : html;
+      if (seg && seg.lines.length) {
+        const text = seg.lines.join('\n');
+        if (cur) {
+          const html = convert.markdownToHtml(text);
+          if (html) cur.detail = cur.detail ? cur.detail + '\n' + html : html;
+        } else {
+          preSegs.push(text);          // 前导段：先收原文，末尾统一转换（与上面同一个 convert）
+        }
       }
       seg = null;
     }
@@ -149,7 +171,12 @@
       }
       const t = line.trim();
       if (!t) { flushSeg(); continue; }
-      if (!cur) continue;
+      if (!cur) {
+        // 【W14】第一个标题之前的正文 —— **不丢**：收进前导段（见上面 preSegs 的说明）
+        if (!seg || seg.kind !== 'text') { flushSeg(); seg = { kind: 'text', lines: [] }; }
+        seg.lines.push(t);
+        continue;
+      }
       const res = parseResource(t);
       if (res) {
         flushSeg();
@@ -162,7 +189,10 @@
       seg.lines.push(kind === 'quote' ? t.replace(/^>\s?/, '') : t);
     }
     flushSeg();
-    return { data: stack[0], addedCount };
+    /* 【W14】前导正文 = 第一个标题之前的正文（整篇都没有标题时 = 全篇）。
+     * 用**同一个** convert 转换（不另写解析）⇒ 与 detail 的其它来源同源。 */
+    const preamble = preSegs.length ? convert.markdownToHtml(preSegs.join('\n\n')) : '';
+    return { data: stack[0], addedCount, preamble: preamble };
   }
 
   /**

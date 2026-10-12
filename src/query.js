@@ -7,15 +7,34 @@
  * 下沉到 src/ 后可直接单测（见 tests/query.test.js）。
  *
  * 全部函数对输入只读、不改树；不读盘、不写盘。
+ *
+ * 条目层（v3）起有一处**依赖方向**要记住：条目级的命中形状、长度/预算常量、条目视图与
+ * `qa` 派生化都实现在 `src/item-index.js`（契约 `docs/ITEM-MODEL.md` §3.1/§3.4/§7），
+ * 本模块只做视图组装与兼容转发（`searchNodes` / `getItemView` / `readItemsView`）——
+ * 两份实现会在"命中片段多长""什么算一条命中"上各说一套，那是本工程最贵的病。
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./tree-utils.js'), require('./convert.js'));
+    module.exports = factory(require('./tree-utils.js'), require('./convert.js'), require('./item-index.js'));
   } else {
-    root.MMQuery = factory(root.MMTree, root.MMConvert);
+    root.MMQuery = factory(root.MMTree, root.MMConvert, root.MMItemIndex);
   }
-})(typeof self !== 'undefined' ? self : this, function (tree, convert) {
+})(typeof self !== 'undefined' ? self : this, function (tree, convert, itemIndex) {
   'use strict';
+
+  /**
+   * `qa` 的**视图派生**（条目层契约 `docs/ITEM-MODEL.md` §7）：
+   *   · 条目化节点（有 `items`）⇒ 由 items 里 `type:'qa'` 的条目**按条目序**取 `item.qa`
+   *     —— 老消费者（界面、MCP）读的还是同一个字段，且迁移前后 `read --json` 逐字节不变；
+   *   · 未条目化节点 ⇒ 照旧读 `node.qa`（v2 读兼容）。
+   * 没有 qa 面时返回 `null`（调用方据此**不产生噪音键**）。
+   * 为什么条目化节点上**不再看** `node.qa`：契约 §2 判红"有 items 却有 qa[]"
+   * （同一事实两处表达）⇒ 读视图不能给这种数据第二个出口。
+   */
+  function qaView(node) {
+    if (node && Array.isArray(node.items)) return itemIndex.qaFromItems(node);
+    return (node && Array.isArray(node.qa) && node.qa.length) ? node.qa : null;
+  }
 
   /** 收集全部图片引用（扁平清单，附所属节点 id/topic） */
   function collectImages(root) {
@@ -53,6 +72,7 @@
     const withLinks = !skeleton;
     const nodes = [];
     tree.walk(data.data, (n, depth) => {
+      const qa = withLinks ? qaView(n) : null;
       nodes.push({
         id: n.id,
         topic: n.topic,
@@ -69,7 +89,9 @@
         // AI 问答记录（可选）：与 tags/links 同一档（skeleton 才省掉）。**brief 不省** ——
         // 它是"这段结论是哪次 AI 交流得来的"，属于导航信息而不是长文本（answer 可能长，
         // 所以真嫌大就上 skeleton，别用 brief 半省）。
-        qa: withLinks && Array.isArray(n.qa) && n.qa.length ? n.qa : undefined,
+        // ⚠️ 条目层（v3）起这里是**派生的**：条目化节点上由 items 现场算（见 qaView），
+        // 不是因为节点上不再存 qa[] 就少给东西 —— 形状与 v2 逐字段相同。
+        qa: qa || undefined,
         // 来源指纹（可选，§2.8）：与 qa 同一档（skeleton 才省掉，brief 不省）。
         // 它只挂在**一次导入产生的那几棵子树的根**上，条数 ≈ 导入次数（不是节点数）⇒ 代价极低，
         // 而"这个文件导过没有"正是批量导入必须先看得见的东西 ✓
@@ -121,7 +143,15 @@
     // `get --json` 是"这个节点的实况"，而"这段详情是哪次 AI 交流写的"属于实况的一部分；
     // 挂到 detail 下会让 `get --json`（不带 --detail）看不出它，而 MCP 的 get_node 正带 --detail，
     // 两条路读到的字段集就会分叉（本工程反复治的"同一件事两处表达"）。
-    if (Array.isArray(node.qa) && node.qa.length) out.qa = node.qa;
+    // 条目化节点上它是**派生**的（见 qaView），形状与 v2 逐字段相同 ⇒ 老消费者不用改。
+    const qa = qaView(node);
+    if (qa) out.qa = qa;
+    // 条目**摘要数组**（契约 §3.3）：条目化节点额外带一份 `{itemId,type,src,verified,at,bytes}`，
+    // **不含正文** —— 正文是长文本，取回它请走 `get --item` / `read --items`（那是条目层的定点入口）。
+    // 0 条的条目化节点不产生这个键（照"空数组不产生噪音键"的既有策略）。
+    if (Array.isArray(node.items) && node.items.length) {
+      out.items = node.items.map((it) => itemIndex.itemSummary(it));
+    }
     // 来源指纹（可选，§2.8）：与 qa 同一条策略 —— **总是带出**。理由也一样：它是"这个节点
     // 的实况"（这份内容是从哪个文件导进来的）的一部分，挂到 `opts.detail` 下会让
     // `get --json`（不带 --detail）看不见它，而幂等判定正需要它 ✓
@@ -157,45 +187,27 @@
   }
 
   /**
-   * 搜索节点。
-   * opts: { keyword, tag, full }
-   *   - keyword 为空且有 tag → 按标签过滤，matchIn 恒为 'tag'
-   *   - full 为真 → 额外匹配 detail 正文 / 图片 caption / 标签 / 链接说明
-   *     （默认只匹配 topic）
-   * 返回 { hits: [{id, topic, matchIn, snippet}] }，命中顺序为深度优先。
+   * 搜索（**内容已整体下沉到 `src/item-index.js`**；这里保留 v2 的名字当兼容入口，
+   * 老调用方与 `tests/query.test.js` 用的都是它）。
+   *
+   * 口径（契约 `docs/ITEM-MODEL.md` §3.4，**2026-10 起默认口径改了**）：
+   *   · 默认搜**条目**：节点 topic ∪ 条目正文；`--topic-only` 退回 v2（只搜标题）
+   *   · `--full` 在默认口径之上再并上 v2 的额外面（图片 caption / 节点级标签 / 链接说明）
+   *   · 命中形状与长度/预算的常量**只在 `src/item-index.js`**（别在这里再写一份）
+   * 返回 `{ok, mode, hits, hitCount, truncated, budget}`；`ok:false` 时 `message` 可直接打印。
    */
   function searchNodes(root, opts) {
-    const o = opts || {};
-    const kw = o.keyword;
-    const tag = o.tag;
-    const full = !!o.full;
-    const hits = [];
-    tree.walk(root, (n) => {
-      const tagPass = !tag || (Array.isArray(n.tags) && n.tags.indexOf(tag) >= 0);
-      if (!tagPass) return;                    // 只跳过本节点，walk 仍会继续其子树
-      if (kw) {
-        const detailText = convert.stripHtml(n.detail);
-        const inTopic = !!(n.topic && n.topic.indexOf(kw) >= 0);
-        const inDetail = full && detailText.indexOf(kw) >= 0;
-        const inCaption = full && (n.images || []).some((i) => i.caption && i.caption.indexOf(kw) >= 0);
-        const inTag = full && (n.tags || []).some((t) => t.indexOf(kw) >= 0);
-        const inLinkCaption = full && (n.links || []).some((l) => l.caption && l.caption.indexOf(kw) >= 0);
-        if (inTopic || inDetail || inCaption || inTag || inLinkCaption) {
-          const matchIn = [
-            inTopic ? 'topic' : '', inDetail ? 'detail' : '', inCaption ? 'caption' : '',
-            inTag ? 'tag' : '', inLinkCaption ? 'link' : ''
-          ].filter(Boolean);
-          const pos = inTopic ? n.topic.indexOf(kw) : (inDetail ? detailText.indexOf(kw) : -1);
-          hits.push({
-            id: n.id, topic: n.topic, matchIn: matchIn.join(','),
-            snippet: pos >= 0 ? (inTopic ? n.topic : detailText).slice(Math.max(0, pos - 20), pos + 60) : undefined
-          });
-        }
-      } else {
-        hits.push({ id: n.id, topic: n.topic, matchIn: 'tag', snippet: undefined });
-      }
-    });
-    return { hits };
+    return itemIndex.searchItems(root, opts);
+  }
+
+  /** `get <项目> <节点id> --item <itemId>` 的条目视图（契约 §3.1）—— 实现见 src/item-index.js */
+  function getItemView(root, nodeId, itemId, indexes) {
+    return itemIndex.getItemView(root, nodeId, itemId, indexes);
+  }
+
+  /** `read <项目> --items <i-a,i-b>` 的视图（契约 §3.3，任一 id 缺失 ⇒ 整体失败）—— 实现同上 */
+  function readItemsView(data, idsRaw, opts) {
+    return itemIndex.readItemsView(data, idsRaw, opts);
   }
 
   /** 树形文本（read/list 的非 JSON 输出用）：返回字符串数组，由调用方逐行输出。
@@ -211,5 +223,6 @@
     return lines;
   }
 
-  return { collectImages, buildReadView, buildNodeList, getNodeView, computeStats, searchNodes, treeLines };
+  return { collectImages, buildReadView, buildNodeList, getNodeView, computeStats, searchNodes, treeLines,
+    getItemView, readItemsView };
 });

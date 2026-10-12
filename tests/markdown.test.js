@@ -213,3 +213,82 @@ describe('markdown · 围栏代码块不被当结构解析（回归）', () => {
     expect(node.detail).toContain('line-2');
   });
 });
+
+/* 【W14】第一个标题**之前**的正文不许丢 —— 原实现里 `markdownToTree` 遇到"还没有任何节点"的正文行
+ * 直接跳过（`if (!cur) continue`）⇒ **静默丢内容**（待做清单 W14，A 档）。
+ * 现在改为按段收进 `preamble` 交回调用方，由调用方落到"本次导入的父/文件节点"的 detail 开头。 */
+describe('【W14】第一个标题之前的正文（前导正文）', () => {
+  it('有标题时：前导正文进 preamble，且**不**混进任何子节点', () => {
+    const r = markdownToTree('前言第一行\n\n前言第二段\n\n# 标题\n正文\n', 'root');
+    expect(r.preamble).toContain('前言第一行');
+    expect(r.preamble).toContain('前言第二段');
+    expect(r.data.children.length).toBe(1);
+    expect(r.data.children[0].topic).toBe('标题');
+    expect(r.data.children[0].detail || '').not.toContain('前言第一行');
+  });
+
+  it('整篇没有标题时：preamble = 全篇正文（调用方的"无标题兜底"仍走自己那条路）', () => {
+    const r = markdownToTree('只有一段正文\n\n还有一段\n', 'root');
+    expect(r.data.children.length).toBe(0);
+    expect(r.preamble).toContain('只有一段正文');
+    expect(r.preamble).toContain('还有一段');
+  });
+
+  it('前导区里的围栏代码：井号不被当标题，且一行不丢', () => {
+    const r = markdownToTree('前言\n\n```\n# 这行的井号是代码，不是标题\n```\n\n# 真标题\n', 'root');
+    expect(r.preamble).toContain('前言');
+    expect(r.preamble).toContain('# 这行的井号是代码，不是标题');
+    expect(r.data.children.length).toBe(1);
+    expect(r.data.children[0].topic).toBe('真标题');
+  });
+
+  it('没有前导正文时 preamble 是空串（不产生空 detail）', () => {
+    const r = markdownToTree('# 只有标题\n正文\n', 'root');
+    expect(r.preamble).toBe('');
+  });
+
+  it('前导区里的图片/附件引用按**正文**处理（不挂进 images/files）—— 坏引用属 W19 的口径', () => {
+    const r = markdownToTree('![图：x](assets/a.png)\n\n# 标题\n', 'root');
+    expect(r.preamble).toContain('assets/a.png');
+    expect(r.data.children[0].images || []).toEqual([]);
+    expect(r.data.children[0].files || []).toEqual([]);
+  });
+});
+
+/* 【W20】中文标题的 id 唯一性。
+ * 根因：`idGen` 把 seed 里非 [a-z0-9] 的字符全部抹掉 ⇒ **中文标题共用同一个 base**（`n`），
+ * 只靠短随机后缀区分 ⇒ 标题一多就**概率性撞号**，一撞就"以 id 重复整体导入失败"，而人完全看不出原因。
+ * 出口：`markdownToTree(md, parent, genId)` 第三参就是注入点 —— `import-project`/`import-md` 现在
+ * 与 `import-dir` 一样接 `uniqueIdGen()`（"见过就再摇一次"），三条路同一处修法。
+ * ⚠️ 证据性质说明：**"还原旧实现 ⇒ 必红"对这条不成立**（撞号是概率事件，400 个标题时仍有小概率全不撞），
+ * 所以本条的证明走两条路：① **唯一性由构造保证**（接上生成器后必然不重）；② **判别力**（生成器退化成常量 ⇒ 断言必须抓住）。 */
+describe('【W20】条目/节点 id 的唯一性（中文标题）', () => {
+  it('根因：两个不同的中文标题共用同一个 id base（只差随机后缀）', () => {
+    const a = idGen('中文标题甲');
+    const b = idGen('中文标题乙');
+    expect(a.split('-')[0]).toBe(b.split('-')[0]);   // 同为 'n' ⇒ 这就是撞号的根因
+  });
+
+  it('接上"唯一性有保障"的生成器后：200 个中文标题一次建树，**一个都不重**（构造保证，不是概率）', () => {
+    const seen = new Set();
+    const unique = (seed) => {
+      let id = idGen(seed);
+      while (seen.has(id)) id = idGen(seed);         // 与 `src/doc-import.js` 的 uniqueIdGen 同一策略
+      seen.add(id);
+      return id;
+    };
+    const md = Array.from({ length: 200 }, (_, i) => '# 中文标题' + i).join('\n');
+    const r = markdownToTree(md, 'root', unique);
+    const ids = r.data.children.map((c) => c.id);
+    expect(ids.length).toBe(200);
+    expect(new Set(ids).size).toBe(200);             // 一个都不重
+  });
+
+  it('判别力：生成器若退化成常量 ⇒ 断言必须抓得住（说明上一条不是空跑）', () => {
+    const md = Array.from({ length: 200 }, (_, i) => '# 中文标题' + i).join('\n');
+    const dup = markdownToTree(md, 'root', () => 'dup');
+    const dupIds = dup.data.children.map((c) => c.id);
+    expect(dupIds.length).toBe(200);
+    expect(new Set(dupIds).size).toBe(1);            // 全塌成一个 ⇒ 断言确实在看"唯一性"这件事
+  });
+});

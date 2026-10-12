@@ -23,23 +23,30 @@
 | 命令 | 说明 |
 |------|------|
 | `projects` | projects [--json] |
-| `read` | read <项目> [--json] [--brief] [--skeleton] [--compact] [--subtree id] [--images] |
+| `read` | read <项目> [--json] [--brief] [--skeleton] [--compact] [--subtree id] [--items <条目id,…>] [--images] |
 | `list` | list <项目> [--json] |
-| `get` | get <项目> <id> [--json] [--detail] [--images] |
-| `search` | search <项目> <关键词|--tag 标签> [--json] [--full] |
+| `get` | get <项目> <id> [--json] [--item <itemId>] [--detail] [--images] |
+| `search` | search <项目> <关键词|--tag 标签> [--json] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] |
 | `stats` | stats <项目> [--json] |
 | `init` | init <项目> [--title 标题] |
 | `backlinks` | backlinks <项目> <id> [--json] |
 | `related` | related <项目> <id> [--json] [--depth N] |
 | `ask` | ask <项目> [<节点id>] [--nodes a,b,c] [--question "..."] [--kind explain|ask] [--effort low|medium|high|xhigh] [--json] [--timeout 秒] [--dry-run] |
 | `theme-layout` | theme-layout <项目> [--left a,b] [--right c,d] [--clear] |
-| `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] |
-| `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] |
+| `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] |
+| `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--force] |
 | `edit` | edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false] |
 | `move` | move <项目> <id> <新父id> [--index n] |
 | `expand-depth` | expand-depth <项目> [--depth N] [--id 子树根id] |
 | `remove` | remove <项目> <id> [--clean-assoc] [--clean-links] |
 | `clone` | clone <项目> <源id> <新父id> [--deep] |
+| `apply` | apply <项目> --ops-file ops.json [--dry-run] |
+| `item-add` | item-add <项目> <节点id> --md "Markdown" | --html "HTML" [--src 出处] [--tags a,b] [--type text|rich] [--after itemId | --before itemId] [--force] |
+| `item-edit` | item-edit <项目> <节点id> <itemId> [--md "Markdown" | --html "HTML"] [--src 出处 | --clear-src] [--tags a,b | --clear-tags] [--type text|rich] [--verified --how "怎么核的" | --clear-verified] |
+| `item-remove` | item-remove <项目> <节点id> <itemId> [--clean-links] [--clean-assoc] |
+| `item-move` | item-move <项目> <节点id> <itemId> --to 目标节点id [--after itemId | --before itemId] |
+| `item-order` | item-order <项目> <节点id> --ids i-a,i-b,… |
+| `render-detail` | render-detail <项目> <节点id> | --all |
 | `ask-apply` | ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json] |
 | `import-md` | import-md <项目> <md文件> [--parent id] [--force] |
 | `import-project` | import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] [--force] |
@@ -65,7 +72,7 @@
 | `orphans` | orphans <项目> [--json] [--content-only] [--limit n] |
 | `mentions` | mentions <项目> [--json] [--min-length n] [--include-structural] [--cross] [--limit n] |
 | `assoc-list` | assoc-list <项目> [--node <id>] [--json] [--raw] |
-| `assoc-add` | assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id] |
+| `assoc-add` | assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id] [--force] |
 | `assoc-edit` | assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] |
 | `assoc-remove` | assoc-remove <项目> <assocId> |
 | `assoc-prune` | assoc-prune <项目> [--nodes a,b] [--dry-run] |
@@ -90,10 +97,10 @@ node cli/mm-cli.js projects [--json]
 
 ### read
 
-读取项目可读视图（树 + 详情 + 图片清单）。四个变窄开关可叠加：--brief 去长文本 / --skeleton 再去 tags+links（只要结构）/ --subtree <id> 只要某棵子树 / --compact 单行 JSON；实测全叠加比全量省约 86%（`--detail` 不再写进用法但**照旧可用**：--json 下是空操作、文本模式下响亮报错并给出替代路径 —— 老调用方不会因为"它被移除了"而突然失败）
+读取项目可读视图（树 + 详情 + 图片清单）。四个变窄开关可叠加：--brief 去长文本 / --skeleton 再去 tags+links（只要结构）/ --subtree <id> 只要某棵子树 / --compact 单行 JSON；实测全叠加比全量省约 86%（`--detail` 不再写进用法但**照旧可用**：--json 下是空操作、文本模式下响亮报错并给出替代路径 —— 老调用方不会因为"它被移除了"而突然失败）。**`--items <条目id,…>` 是条目层（v3）的另一档**：只取这几条的正文，返回 `{meta,project,itemCount,items:[条目视图]}`；任一条目 id 不存在 ⇒ **整体失败并逐个点名**（不给半份），且与 --brief/--skeleton/--subtree 互斥（两种口径不混）
 
 ```
-node cli/mm-cli.js read <项目> [--json] [--brief] [--skeleton] [--compact] [--subtree id] [--images]
+node cli/mm-cli.js read <项目> [--json] [--brief] [--skeleton] [--compact] [--subtree id] [--items <条目id,…>] [--images]
 ```
 
 ### list
@@ -106,18 +113,18 @@ node cli/mm-cli.js list <项目> [--json]
 
 ### get
 
-查看节点（路径/详情/图片）
+查看节点（路径/详情/图片）。`--item <itemId>` 取**单条条目**（条目视图：nodeId/nodeTopic/path/itemId/type/html|qa/src/tags/at/by/verified，空值不产生噪音键）；不给它时行为同 v2，**并且**条目化节点额外带 `items` 摘要数组（`{itemId,type,src,verified,at,bytes}`，不含正文）
 
 ```
-node cli/mm-cli.js get <项目> <id> [--json] [--detail] [--images]
+node cli/mm-cli.js get <项目> <id> [--json] [--item <itemId>] [--detail] [--images]
 ```
 
 ### search
 
-搜索节点（默认标题；--full 全文匹配 detail/图片caption/标签/链接说明；--tag 按标签过滤）
+搜索（**默认口径 = 搜条目**：节点 topic ∪ 条目正文；`--topic-only` 回退 v2 只搜标题）。命中形状：`{id,topic,nodeId,nodeTopic,itemId,type,itemized,matchIn,snippet,src,verified,score}`（`id`/`topic` 是 v2 兼容别名；未条目化节点 itemId=null/type=null/itemized=false）。过滤：`--tag`（条目级标签 → item-tag / 节点级 → node-tag；未条目化节点照 v2 报 tag）、`--src`（src 子串，字符串或数组任一项）、`--verified`（只要已核条目）、`--type`（text|rich|qa）、`--since <ISO>`（at >= ISO；不给未条目化的节点命中）；`--full` 在默认口径之上再并上 v2 的额外面（图片 caption / 节点级标签 / 链接说明）。预算：`--limit`（缺省 200，上界 1000）/ `--max-bytes`（缺省 65536，16–4194304）；`--json` 顶层 `{project,keyword,hits,hitCount,truncated,mode,budget:{bytes,estTokens,limit,maxBytes}}`，超限截断并给续取方式（budget.resume）。非法值（含 --verified/--type/--since 写错）**当场报错**，不静默退化成默认值或"0 命中"
 
 ```
-node cli/mm-cli.js search <项目> <关键词|--tag 标签> [--json] [--full]
+node cli/mm-cli.js search <项目> <关键词|--tag 标签> [--json] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>]
 ```
 
 ### stats
@@ -173,7 +180,7 @@ node cli/mm-cli.js theme-layout <项目> [--left a,b] [--right c,d] [--clear]
 在父节点下新增子节点（--detail 为 HTML；--detail-md 为 Markdown，命令内转 HTML；--local-path 记录本机文件夹，界面点击即打开）
 
 ```
-node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false]
+node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force]
 ```
 
 ### add-root
@@ -181,7 +188,7 @@ node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html 
 新增顶层主题（不选父节点，直接挂在根节点下）—— 一个项目里可放多个不同方面的笔记
 
 ```
-node cli/mm-cli.js add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径]
+node cli/mm-cli.js add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--force]
 ```
 
 ### edit
@@ -222,6 +229,62 @@ node cli/mm-cli.js remove <项目> <id> [--clean-assoc] [--clean-links]
 
 ```
 node cli/mm-cli.js clone <项目> <源id> <新父id> [--deep]
+```
+
+### apply
+
+按操作清单**一次事务**生效：一批改动在同一个 rev / 一次原子写 / 一条变更日志里完成 ⇒ 全成或全不动；逐条回执（应用/跳过/失败）。**只允许数据面操作**（需要外部副作用的动作必须留在事务外）。支持 `--idem <键>` 重试安全
+
+```
+node cli/mm-cli.js apply <项目> --ops-file ops.json [--dry-run]
+```
+
+### item-add
+
+新增**一条**条目（改一条不必重写整块 detail）。未条目化的节点会**自动条目化**（先把旧 detail 解析成条目，**且必须能逐字节回放**才动它）。--md 转 Markdown、--html 原样存（表格/代码块要用 --html）；同 type 同正文默认拒绝并点名，--force 放行
+
+```
+node cli/mm-cli.js item-add <项目> <节点id> --md "Markdown" | --html "HTML" [--src 出处] [--tags a,b] [--type text|rich] [--after itemId | --before itemId] [--force]
+```
+
+### item-edit
+
+改写**一条**条目（只动指定字段，回显**真的变了的字段名**）。--verified 必须同时给 --how（核验是三字段全必填的记录：at/by/how）
+
+```
+node cli/mm-cli.js item-edit <项目> <节点id> <itemId> [--md "Markdown" | --html "HTML"] [--src 出处 | --clear-src] [--tags a,b | --clear-tags] [--type text|rich] [--verified --how "怎么核的" | --clear-verified]
+```
+
+### item-remove
+
+删除**一条**条目。被 links[].item / assoc.members[].item 引用时**默认拒绝并逐个点名**，显式 --clean-links / --clean-assoc 才连带清理（不许静默删出悬挂引用）
+
+```
+node cli/mm-cli.js item-remove <项目> <节点id> <itemId> [--clean-links] [--clean-assoc]
+```
+
+### item-move
+
+把一条条目移到**另一个节点**（一次原子写同时重渲染两侧 detail）。目标节点必须已条目化；只调顺序请用 item-order
+
+```
+node cli/mm-cli.js item-move <项目> <节点id> <itemId> --to 目标节点id [--after itemId | --before itemId]
+```
+
+### item-order
+
+重排条目顺序（--ids 必须是该节点现有条目的**完整排列**；只重排、不增删）
+
+```
+node cli/mm-cli.js item-order <项目> <节点id> --ids i-a,i-b,…
+```
+
+### render-detail
+
+按 items 重新渲染 detail（**G2 判"detail 与 items 不一致"时的唯一修法**）。幂等：已一致 ⇒ 实际变化 0。只处理条目化节点（没有 items 的节点 detail 是真源，不碰）
+
+```
+node cli/mm-cli.js render-detail <项目> <节点id> | --all
 ```
 
 ### ask-apply
@@ -370,7 +433,7 @@ node cli/mm-cli.js dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json]
 
 ### link
 
-添加跨项目链接
+添加跨项目链接。**重复添加同一条边**（同项目/同目标）分三种结局，回显可分辨：省略 --caption ⇒ **保留**原有说明（幂等，回显「无变化」且不写盘）；显式 --caption 新说明 ⇒ **覆盖**（回显「已更新链接」并写出 旧 → 新）；显式 `--caption ""` ⇒ **清空说明**（回显「已更新链接（caption 清空）」）。⚠️ 只写 `--caption` 不给值会被**响亮拒绝**（旧写法会把 `true` 写进数据）
 
 ```
 node cli/mm-cli.js link <项目> <id> --to 目标项目 --id 目标id [--caption 说明]
@@ -429,7 +492,7 @@ node cli/mm-cli.js assoc-list <项目> [--node <id>] [--json] [--raw]
 新增关联笔记（成员 ≥2；跨项目写 项目/节点id）
 
 ```
-node cli/mm-cli.js assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id]
+node cli/mm-cli.js assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id] [--force]
 ```
 
 ### assoc-edit

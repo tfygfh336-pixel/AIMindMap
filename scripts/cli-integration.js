@@ -64,7 +64,8 @@ function sweepStaleProbes() {
   let removed = 0;
   try {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (!e.isDirectory() || (e.name.indexOf('it-probe-') !== 0 && e.name.indexOf('it-broken-') !== 0)) continue;
+      // 前缀清单：各流的探针按 §4.1 分前缀（`it-probe-`/`it-broken-` 是本脚本自有的；流探针另见 §53/§54 等）
+      if (!e.isDirectory() || !/^(it-probe-|it-broken-|it-k8-|it-w14-|it-s[1-9]-)/.test(e.name)) continue;
       const p = path.join(dir, e.name);
       try {
         if (Date.now() - fs.statSync(p).mtimeMs < 10 * 60 * 1000) continue; // 可能是别人正在跑的
@@ -2501,10 +2502,743 @@ function runSubprocess(args) {
   void qaCmds;   // 只 require 一次确认命令模块可加载（命令体本身经 run() 走 registry）
 }
 
+/* ---------------- 53. link 重复添加的 caption 语义（K8：静默清说明的修复） ----------------
+ * 缺陷（真机复现）：同一条边第二次 `link` 且**不给** `--caption` ⇒ 盘上 links[] 从
+ * `{project,id,caption}` 变成 `{project,id}`（说明没了、无任何提示），而回显与第一次**逐字相同**
+ * （`已添加链接: …`）⇒ **成功与覆盖不可分辨**。根因：旧写法把那条边**从零重建**再 concat。
+ * 本段钉住新语义：省略 = 保留（且不写盘）；显式（含空串）= 覆盖；三种结局回显可分辨。
+ * 探针项目/节点一律带 `it-k8-` 前缀（与别的流互不踩）；两个探针项目在文件末尾「清理」段删除。 */
+const K8A = 'it-k8-src-' + Date.now().toString(36);
+const K8B = 'it-k8-dst-' + Date.now().toString(36);
+{
+  const K8A_FILE = projJson(K8A);
+  const K8CAP = '出自：K8 集成探针（AI 凭 caption 判断内容）';
+  const k8LinksOf = () => {
+    const n = nodeOf(readProj(K8A), 'it-k8-a');
+    return (n && n.links) || null;
+  };
+  const k8Edge = (target) => (k8LinksOf() || []).find((l) => l.project === K8B && l.id === target) || null;
+  const k8File = () => fs.readFileSync(K8A_FILE, 'utf8');
+  run(['init', K8A, '--title', 'K8 链接探针源']);
+  run(['init', K8B, '--title', 'K8 链接探针目标']);
+  run(['add', K8A, 'root', '--topic', 'K8 源节点', '--id', 'it-k8-a']);
+  run(['add', K8B, 'root', '--topic', 'K8 目标节点', '--id', 'it-k8-b']);
+  const K8LINK = ['link', K8A, 'it-k8-a', '--to', K8B, '--id', 'it-k8-b'];
+
+  // 53.1 首次添加（带 caption）：回显与落盘都照旧
+  r = run(K8LINK.concat(['--caption', K8CAP]));
+  check('link 首次添加带 --caption：回显「已添加链接」且 caption 落盘',
+    ok(r.out) && /已添加链接/.test(r.out) && (k8Edge('it-k8-b') || {}).caption === K8CAP,
+    r.out.trim() + '｜盘上=' + JSON.stringify(k8Edge('it-k8-b')));
+
+  // 53.2 省略 --caption 重放：caption 必须保留（旧行为：静默清掉）
+  const k8Before = k8File();
+  const k8EdgesBefore = JSON.stringify(k8LinksOf());
+  r = run(K8LINK);
+  const k8EdgesAfter = JSON.stringify(k8LinksOf());
+  check('link 重复添加**不带** --caption ⇒ 原有 caption 保留、links 逐字节不变（旧行为这里必红）',
+    ok(r.out) && k8EdgesAfter === k8EdgesBefore && (k8Edge('it-k8-b') || {}).caption === K8CAP,
+    '盘上=' + JSON.stringify(k8Edge('it-k8-b')));
+
+  // 53.3 回显可分辨：不再是那句与首次逐字相同的「已添加链接」
+  check('link 重复添加不带 --caption ⇒ 回显「无变化」（成功与覆盖不再长得一样）',
+    ok(r.out) && /无变化/.test(r.out) && !/已添加链接/.test(r.out), r.out.trim());
+
+  // 53.4 不产生空写入：项目文件字节不变（否则变更日志会多一条假信号）
+  check('link 重复添加不带 --caption ⇒ 不产生空写入（项目文件字节不变）',
+    k8File() === k8Before, '字节未变=' + (k8File() === k8Before));
+
+  // 53.5 显式空串 = 清空（边还在），回显点明「已更新」+「caption 清空」
+  r = run(K8LINK.concat(['--caption', '']));
+  const k8Cleared = k8Edge('it-k8-b') || {};
+  check('link 显式 `--caption ""` ⇒ caption 被清空且回显可分辨（已更新 / caption 清空）',
+    ok(r.out) && /已更新链接/.test(r.out) && /caption 清空/.test(r.out)
+      && !!k8Edge('it-k8-b') && !('caption' in k8Cleared),
+    r.out.trim() + '｜盘上=' + JSON.stringify(k8Edge('it-k8-b')));
+
+  // 53.6 显式新说明 = 覆盖，回显带 old → new
+  r = run(K8LINK.concat(['--caption', '改过的说明']));
+  check('link 显式新说明 ⇒ 覆盖且回显带 old → new（覆盖这件事看得见）',
+    ok(r.out) && /已更新链接/.test(r.out) && /改过的说明/.test(r.out)
+      && (k8Edge('it-k8-b') || {}).caption === '改过的说明',
+    r.out.trim());
+
+  // 53.7 同说明重放 ⇒ 「无变化」且零改动（幂等）
+  const k8Before2 = k8File();
+  r = run(K8LINK.concat(['--caption', '改过的说明']));
+  check('link 同说明重放 ⇒ 「无变化」且盘上零改动（不是第二次「已更新」）',
+    ok(r.out) && /无变化/.test(r.out) && !/已更新链接/.test(r.out) && k8File() === k8Before2, r.out.trim());
+
+  // 53.8 只写 --caption 不给值 ⇒ 响亮拒绝（旧写法会把 true 写进 caption）
+  const k8Before3 = k8File();
+  r = run(K8LINK.concat(['--caption']));
+  check('link `--caption` 不给值 ⇒ 非 0 退出 + 说清两条正路，且盘上零改动',
+    r.code !== 0 && /--caption 需要一个说明文本/.test(r.out) && k8File() === k8Before3,
+    'exit=' + r.code + '｜' + r.out.trim().slice(0, 90));
+
+  // 53.9 边上的其它字段不许被顺手抹掉（旧写法重建对象 ⇒ note 丢）
+  {
+    const d = readProj(K8A);
+    const e = (((nodeOf(d, 'it-k8-a') || {}).links) || []).find((l) => l.project === K8B && l.id === 'it-k8-b');
+    if (!e) {
+      check('link 改 caption 时不动边上的其它字段（note 不被静默抹掉）', false, '夹具没找到那条边');
+    } else {
+      e.note = '手工附在边上的笔记';
+      fs.writeFileSync(K8A_FILE, JSON.stringify(d, null, 2), 'utf8');
+      r = run(K8LINK.concat(['--caption', '再改一次']));
+      check('link 改 caption 时不动边上的其它字段（note 不被静默抹掉）',
+        ok(r.out) && /已更新链接/.test(r.out) && (k8Edge('it-k8-b') || {}).note === '手工附在边上的笔记',
+        '盘上=' + JSON.stringify(k8Edge('it-k8-b')));
+    }
+  }
+
+  // 53.10 读口不受影响：links 仍报得出这条边与它的说明
+  const k8Links = (() => {
+    try { return JSON.parse(run(['links', K8A, '--json']).out); } catch (e) { return null; }
+  })();
+  check('link 语义改动不影响 links 读口（边还在、说明读得到）',
+    !!(k8Links && Array.isArray(k8Links.links) && k8Links.links.some((x) =>
+      x.node === 'it-k8-a' && x.project === K8B && x.id === 'it-k8-b' && x.caption === '再改一次')),
+    JSON.stringify((k8Links && k8Links.links) || null).slice(0, 160));
+}
+
+/* ---------------- 54. 【W14】第一个标题之前的正文：**不许静默丢**，且三条导入路落点一致 ---------------- */
+{
+  const W14P = 'it-w14-proj';
+  const W14N = 'it-w14-none';
+  try { fs.rmSync(path.join(ROOT, 'projects', W14P), { recursive: true, force: true }); } catch (e) {}
+  try { fs.rmSync(path.join(ROOT, 'projects', W14N), { recursive: true, force: true }); } catch (e) {}
+  const W14MD = path.join(TMP, 'w14-lead.md');
+  fs.writeFileSync(W14MD, '前导第一段\n\n前导第二段\n\n# 主题甲\n甲正文\n\n# 主题乙\n乙正文\n', 'utf8');
+
+  // （W14 之一）import-project（一个文件 → 新项目）：前导正文落**根节点**的 detail
+  const rp = run(['import-project', W14P, W14MD]);
+  const jget = (name, id) => {
+    try { return JSON.parse(run(['get', name, id, '--json', '--detail']).out); } catch (e) { return null; }
+  };
+  const jp = jget(W14P, 'root');
+  check('[W14] import-project：第一个标题之前的正文落**根节点 detail**（原先被 `if (!cur)` 静默跳过）',
+    ok(rp.out) && !!jp && /前导第一段/.test(jp.detail || '') && /前导第二段/.test(jp.detail || ''),
+    '回显=' + (rp.out || '').trim().slice(0, 60) + ' ｜ detail=' + String((jp && jp.detail) || '').slice(0, 60));
+  check('[W14] import-project：落点**如实报告**（点明落到哪个节点，不静默落盘）',
+    /前导正文/.test(rp.out || '') && /root/.test(rp.out || ''),
+    '回显=' + (rp.out || '').trim().replace(/\n/g, ' | ').slice(0, 120));
+  // 单一真源：同一段前导正文在**落盘文件里只许出现一处**（复制到多个节点 = 制造漂移源）
+  let occ = -1;
+  try { occ = (fs.readFileSync(path.join(ROOT, 'projects', W14P, W14P + '.json'), 'utf8').match(/前导第一段/g) || []).length; } catch (e) {}
+  check('[W14] 前导正文在落盘文件里**只出现一处**（不复制到多个节点）', occ === 1, '出现 ' + occ + ' 次');
+
+  // （W14 之二）import-md（追加到已有项目）：前导正文并入**父节点 detail 的开头**（在原 detail 之前，不覆盖）
+  const W14MD2 = path.join(TMP, 'w14-lead2.md');
+  fs.writeFileSync(W14MD2, '追加前导\n\n# 主题丙\n丙正文\n', 'utf8');
+  const rm2 = run(['import-md', W14P, W14MD2, '--parent', 'root']);
+  const d2 = String((jget(W14P, 'root') || {}).detail || '');
+  check('[W14] import-md：前导正文并入父节点 detail **开头**（不覆盖原有 detail）',
+    ok(rm2.out) && d2.includes('追加前导') && d2.indexOf('追加前导') >= 0
+      && d2.indexOf('追加前导') < d2.indexOf('前导第一段'),
+    '顺序：追加前导@' + d2.indexOf('追加前导') + ' vs 原有前导@' + d2.indexOf('前导第一段'));
+  check('[W14] import-md：落点如实报告（点明父节点 id）',
+    /前导正文/.test(rm2.out || '') && /root/.test(rm2.out || ''),
+    '回显=' + (rm2.out || '').trim().replace(/\n/g, ' | ').slice(0, 120));
+
+  // （W14 之三）负例对照：文档开头就是标题 ⇒ **不制造空的 detail 字段**
+  const W14MD3 = path.join(TMP, 'w14-none.md');
+  fs.writeFileSync(W14MD3, '# 只有标题\n正文\n', 'utf8');
+  const rn = run(['import-project', W14N, W14MD3]);
+  const jn = jget(W14N, 'root');
+  check('[W14] 负例：开头就是标题 ⇒ 不产生前导 detail（不制造空字段）',
+    ok(rn.out) && !!jn && !jn.detail,
+    'detail=' + JSON.stringify((jn && jn.detail) || null));
+
+  try { fs.rmSync(path.join(ROOT, 'projects', W14P), { recursive: true, force: true }); } catch (e) {}
+  try { fs.rmSync(path.join(ROOT, 'projects', W14N), { recursive: true, force: true }); } catch (e) {}
+}
+
+/* ---------------- 55. 【W20】中文标题的 id 唯一性：三条导入路同一处修法 ---------------- */
+{
+  const W20P = 'it-w20-proj';
+  const W20P2 = 'it-w20-md';
+  try { fs.rmSync(path.join(ROOT, 'projects', W20P), { recursive: true, force: true }); } catch (e) {}
+  try { fs.rmSync(path.join(ROOT, 'projects', W20P2), { recursive: true, force: true }); } catch (e) {}
+  const N = 400;
+  const CN = Array.from({ length: N }, (_, i) => '# 中文标题' + i + '\n第 ' + i + ' 条的正文\n').join('\n');
+  const W20MD = path.join(TMP, 'w20-cn.md');
+  fs.writeFileSync(W20MD, CN, 'utf8');
+  const idsOf = (name) => {
+    try {
+      const t = fs.readFileSync(path.join(ROOT, 'projects', name, name + '.json'), 'utf8');
+      return (t.match(/"id"\s*:\s*"[^"]+"/g) || []).map((s) => s.replace(/.*"([^"]+)"$/, '$1'));
+    } catch (e) { return null; }
+  };
+
+  // 55.1 import-project：400 个中文标题 ⇒ 导入成功 + 校验通过 + id 一个都不重
+  const rp = run(['import-project', W20P, W20MD]);
+  const ip = idsOf(W20P) || [];
+  check('[W20] import-project：400 个中文标题一次导入成功且 `validate` 通过（旧写法：概率性"id 重复"整体失败）',
+    ok(rp.out) && ok(run(['validate', W20P]).out),
+    '回显=' + (rp.out || '').trim().slice(0, 70));
+  check('[W20] import-project：落盘 id **一个都不重**（唯一性由构造保证）',
+    ip.length > N && new Set(ip).size === ip.length,
+    'id 总数=' + ip.length + ' 去重后=' + new Set(ip).size);
+
+  // 55.2 import-md：同一份内容追加到已有项目 ⇒ 同样不重号、同样通过校验
+  run(['init', W20P2, '--title', 'W20 md 探针']);
+  const rm2 = run(['import-md', W20P2, W20MD, '--parent', 'root']);
+  const im = idsOf(W20P2) || [];
+  check('[W20] import-md：400 个中文标题追加导入成功且 `validate` 通过',
+    ok(rm2.out) && ok(run(['validate', W20P2]).out), '回显=' + (rm2.out || '').trim().slice(0, 70));
+  check('[W20] import-md：落盘 id **一个都不重**（与 import-project 同一条修法）',
+    im.length > N && new Set(im).size === im.length,
+    'id 总数=' + im.length + ' 去重后=' + new Set(im).size);
+
+  try { fs.rmSync(path.join(ROOT, 'projects', W20P), { recursive: true, force: true }); } catch (e) {}
+  try { fs.rmSync(path.join(ROOT, 'projects', W20P2), { recursive: true, force: true }); } catch (e) {}
+}
+
+/* ---------------- 49. 条目读与检索（S3）：search 的条目级命中 + `get --item` + `read --items` ----------------
+ * 判据（对应 S3 任务书的四条验收）：
+ *   · 默认口径 = **搜条目**：一个条目化节点里 n 条命中就出 n 条（v2 口径只出 1 条节点命中）；
+ *     `--topic-only` 是回退开关（同一命中 itemId 为 null）；
+ *   · **字节上界**：`--max-bytes` 卡住 hits 的字节数（超限截断 + truncated + 续取方式）；
+ *   · 七个过滤参数（`--tag/--src/--verified/--type/--since/--limit/--max-bytes`）各至少一条断言，
+ *     非法值**当场报错**（不静默退化成默认值、不静默变成"0 命中"）；
+ *   · 只读查询**不生成索引文件**（跑完 search/get/read 后项目目录清单与文件字节都不变）。
+ *
+ * 探针一律 `it-s3-` 前缀（与别的流互不踩）；两个探针项目在本段的 `finally` 里自删
+ * （用 finally 而不是"块末尾删"：中途抛错也不会把条目化夹具留在真实 `projects/` 里）。
+ *
+ * 为什么条目夹具是**直接写盘**的：本条流不依赖 S1 的 `migrate items` 与 S2 的 `item-add`
+ * （读路径不做格式校验 —— 见 `src/data-store.js` 的"写前过 schema"），所以本段在 S1/S2
+ * 合并前后都能跑；写出来的那份 `formatVersion: 3` 也是它们落地后的**合法**形状。
+ * 本段必须排在 §14（`validate-all`）之后 —— 夹具是条目化的节点，别让 validate-all 在它存在期间扫到它。 */
+{
+  const S3TAG = Date.now().toString(36);
+  const P3A = 'it-s3-v2-' + S3TAG;          // 纯 v2 项目（init/add 建）：钉"默认口径不退化"
+  const P3B = 'it-s3-items-' + S3TAG;       // 条目化项目（直接写盘）：钉条目级命中与取回
+  const s3file = (name) => path.join(ROOT, 'projects', name, name + '.json');
+  const s3ls = (name) => { try { return fs.readdirSync(path.join(ROOT, 'projects', name)).sort(); } catch (e) { return []; } };
+  const s3json = (out) => { try { return JSON.parse(String(out).trim()); } catch (e) { return null; } };
+
+  try {
+    /* ---------------- 夹具 ---------------- */
+    run(['init', P3A, '--title', 'S3 v2 探针']);
+    run(['add', P3A, 'root', '--topic', 'S3 闸门节点（v2）', '--id', 'it-s3-a1']);
+    run(['add', P3A, 'it-s3-a1', '--topic', 'S3 子节点', '--id', 'it-s3-a2', '--detail', '<p>闸门写在 detail 里</p>']);
+    const V2HIT = ['search', P3A, 'S3 闸门', '--json'];
+
+    const S3FIX = {
+      meta: { name: 'S3 条目探针', author: '', version: '0.18.0', formatVersion: 3 },
+      format: 'node_tree',
+      data: {
+        id: 'root', topic: 'root', expanded: true, children: [
+          { id: 'it-s3-n1', topic: 'S3 条目节点（闸门）', tags: ['门禁'], items: [
+            { id: 'it-s3-i1', type: 'text', html: '<p>闸门：第一道是选项守门</p>',
+              src: 'CHANGELOG.md:713-717', tags: ['门禁'], at: '2026-10-11T04:00:00.000Z', by: 'cli:item-add',
+              verified: { at: '2026-10-11T05:00:00.000Z', by: 'cli:item-edit', how: '读了 src' } },
+            { id: 'it-s3-i2', type: 'text', html: '<p>闸门：第二道是写后回读</p>', tags: ['门禁'] },
+            { id: 'it-s3-i3', type: 'rich', html: '<table><tr><td>闸门表</td></tr></table>', src: ['docs/RULES.md:1-9'] },
+            { id: 'it-s3-i4', type: 'qa', qa: { q: '闸门是几道？', a: '两道。', at: '2026-09-01T00:00:00.000Z' } }
+          ], children: [{ id: 'it-s3-n1-1', topic: '闸门的子节点', children: [] }] },
+          { id: 'it-s3-n2', topic: 'S3 未条目化的节点（闸门）', detail: '<p>闸门写在 detail 里</p>',
+            tags: ['门禁'], children: [] }
+        ]
+      }
+    };
+    fs.mkdirSync(path.join(ROOT, 'projects', P3B), { recursive: true });
+    const s3fixtureText = JSON.stringify(S3FIX, null, 2);
+    fs.writeFileSync(s3file(P3B), s3fixtureText, 'utf8');
+    const s3lsBefore = s3ls(P3B);
+
+    /* ---------------- 49.1 默认口径 = 搜条目（验收第一条） ---------------- */
+    const s1 = s3json(run(['search', P3B, '闸门', '--json']).out);
+    check('S3 search 默认口径 = 搜条目：一个节点里的 4 条条目各出一条命中（v2 口径这里只有 1 条节点命中）',
+      !!s1 && s1.mode === 'items' && s1.hits.filter((h) => h.itemId).length === 4 && s1.hitCount === 7
+        && s1.truncated === false,
+      'mode=' + (s1 && s1.mode) + ' 条目命中=' + (s1 ? s1.hits.filter((h) => h.itemId).length : '-')
+        + ' 全量=' + (s1 && s1.hitCount));
+
+    const h1 = ((s1 || {}).hits || []).filter((h) => h.itemId === 'it-s3-i1')[0] || {};
+    check('S3 命中形状逐字（契约 §3.4）：v2 别名 + 条目级字段 + 恰好 12 个键（不多不少）',
+      h1.id === 'it-s3-n1' && h1.nodeId === 'it-s3-n1' && h1.topic === h1.nodeTopic && h1.type === 'text'
+        && h1.itemized === true && h1.matchIn === 'item' && h1.verified === true && h1.score >= 1
+        && Array.isArray(h1.src) && h1.src[0] === 'CHANGELOG.md:713-717'
+        && typeof h1.snippet === 'string' && h1.snippet.indexOf('第一道') >= 0
+        && Object.keys(h1).length === 12,
+      JSON.stringify(h1));
+
+    const s2 = s3json(run(['search', P3B, '闸门', '--json', '--topic-only']).out);
+    check('S3 `--topic-only` 回退 v2：只剩节点级命中，同一命中的 itemId 为 null（AC9）',
+      !!s2 && s2.mode === 'topic-only' && s2.hits.length === 3 && s2.hits.every((h) => h.itemId === null),
+      'mode=' + (s2 && s2.mode) + ' 命中=' + (s2 ? s2.hits.length : '-') + ' 全是 null='
+        + (!!s2 && s2.hits.every((h) => h.itemId === null)));
+
+    /* ---------------- 49.2 七个过滤参数（各至少一条） ---------------- */
+    const s3 = s3json(run(['search', P3B, '闸门', '--json', '--type', 'qa']).out);
+    check('S3 `--type`：只要该 type 的条目（qa 的检索面 = q + a ⇒ 问答正文可搜）',
+      !!s3 && s3.hits.length === 1 && s3.hits[0].itemId === 'it-s3-i4',
+      JSON.stringify((s3 || { hits: [] }).hits.map((h) => h.itemId)));
+
+    const s4 = s3json(run(['search', P3B, '闸门', '--json', '--verified']).out);
+    check('S3 `--verified`：只要已核条目（缺失 = 未核，不返回）',
+      !!s4 && s4.hits.length === 1 && s4.hits[0].itemId === 'it-s3-i1',
+      JSON.stringify((s4 || { hits: [] }).hits.map((h) => h.itemId)));
+
+    const s5 = s3json(run(['search', P3B, '闸门', '--json', '--src', 'RULES']).out);
+    check('S3 `--src`：按 src 子串命中（字符串与数组两种 src 都认），且给了条目级过滤就只出条目级命中',
+      !!s5 && s5.hits.length === 1 && s5.hits[0].itemId === 'it-s3-i3',
+      JSON.stringify((s5 || { hits: [] }).hits.map((h) => h.itemId)));
+
+    const s6 = s3json(run(['search', P3B, '闸门', '--json', '--since', '2026-10-01']).out);
+    check('S3 `--since`：at >= ISO；没有 at 的条目不返回、未条目化的节点命中也不返回',
+      !!s6 && s6.hits.length === 1 && s6.hits[0].itemId === 'it-s3-i1',
+      JSON.stringify((s6 || { hits: [] }).hits.map((h) => h.nodeId + '#' + h.itemId)));
+
+    const s7 = s3json(run(['search', P3B, '--tag', '门禁', '--json']).out);
+    check('S3 `--tag`：条目级标签 → item-tag、节点级标签 → node-tag、未条目化节点照 v2 报 tag（三种都出得来）',
+      !!s7 && s7.hits.map((h) => h.nodeId + (h.itemId ? '#' + h.itemId : '') + ':' + h.matchIn).join(',')
+        === 'it-s3-n1#it-s3-i1:item-tag,it-s3-n1#it-s3-i2:item-tag,it-s3-n1#it-s3-i3:node-tag,'
+          + 'it-s3-n1#it-s3-i4:node-tag,it-s3-n2:tag',
+      JSON.stringify((s7 || { hits: [] }).hits.map((h) => h.itemId + ':' + h.matchIn)));
+
+    const s8 = s3json(run(['search', P3B, '闸门', '--json', '--limit', '2']).out);
+    check('S3 `--limit`：本次只返回 2 条，但 hitCount 仍是全量 7 ⇒ 截断可见（不许静默少给）',
+      !!s8 && s8.hits.length === 2 && s8.hitCount === 7 && s8.truncated === true
+        && s8.budget.limit === 2 && typeof s8.budget.resume === 'string',
+      'hits=' + (s8 ? s8.hits.length : '-') + ' hitCount=' + (s8 && s8.hitCount)
+        + ' resume=' + (!!(s8 && s8.budget && s8.budget.resume)));
+
+    /* ---------------- 49.3 预算与 --max-bytes 上界（AC10） ---------------- */
+    const s9 = s3json(run(['search', P3B, '闸门', '--json', '--max-bytes', '320']).out);
+    const s9bytes = Buffer.byteLength(JSON.stringify((s9 || {}).hits || []), 'utf8');
+    check('S3 `--max-bytes`：hits 的实测字节 ≤ 上界 + truncated:true（口径 = hits 数组，见 budget）',
+      !!s9 && s9.truncated === true && s9bytes <= 320 && s9.budget.bytes === s9bytes
+        && s9.budget.estTokens === Math.ceil(s9bytes / 4) && s9.hitCount === 7,
+      'hits 字节=' + s9bytes + ' budget.bytes=' + (s9 && s9.budget && s9.budget.bytes)
+        + ' token≈' + (s9 && s9.budget && s9.budget.estTokens));
+
+    /* ---------------- 49.4 非法值当场报错（不静默退化） ---------------- */
+    const b1 = run(['search', P3B, '闸门', '--limit', '0']);
+    const b2 = run(['search', P3B, '闸门', '--limit', 'abc']);
+    const b3 = run(['search', P3B, '闸门', '--max-bytes', '1']);
+    check('S3 非法 `--limit` / `--max-bytes` ⇒ 当场报错并给出允许范围（不静默退化成默认值）',
+      b1.code !== 0 && b1.out.indexOf('--limit') >= 0 && b1.out.indexOf('1000') >= 0
+        && b2.code !== 0 && b2.out.indexOf('--limit') >= 0
+        && b3.code !== 0 && b3.out.indexOf('--max-bytes') >= 0 && b3.out.indexOf('16') >= 0,
+      'exit=' + b1.code + '/' + b2.code + '/' + b3.code + '｜' + b1.out.trim().slice(0, 70));
+
+    const b4 = run(['search', P3B, '闸门', '--verified=nonsense']);
+    const b5 = run(['search', P3B, '闸门', '--type', 'fact']);
+    const b6 = run(['search', P3B, '闸门', '--since', '昨天']);
+    check('S3 过滤条件写错 ⇒ 当场报错（不静默按错误方向过滤，也不静默变成"0 命中"）',
+      b4.code !== 0 && b4.out.indexOf('--verified 只能是 true 或 false') >= 0
+        && b5.code !== 0 && b5.out.indexOf('text / rich / qa') >= 0
+        && b6.code !== 0 && b6.out.indexOf('--since 需要一个能解析的时间') >= 0,
+      b4.out.trim().slice(0, 60) + '｜' + b5.out.trim().slice(0, 60));
+
+    const b7 = run(['search', P3B, '闸门', '--topic-only', '--type', 'qa']);
+    check('S3 `--topic-only` 与条目级过滤同给 ⇒ 拒绝（两种口径不混，同 `read --items` × `--brief` 的纪律）',
+      b7.code !== 0 && b7.out.indexOf('--topic-only 与 --type 不能同给') >= 0, b7.out.trim().slice(0, 90));
+
+    const b8 = run(['search', P3B]);
+    check('S3 既没关键词也没 `--tag` ⇒ 报错（不是静默的"0 命中"）',
+      b8.code !== 0 && b8.out.indexOf('缺少关键词') >= 0, b8.out.trim().slice(0, 60));
+
+    /* ---------------- 49.5 get --item（契约 §3.1 / §3.3） ---------------- */
+    const g1 = s3json(run(['get', P3B, 'it-s3-n1', '--item', 'it-s3-i1', '--json']).out);
+    check('S3 `get --item`：条目视图逐字段（html 保真 / src 归一成数组 / path 是真实层级 / 恰好 11 个键）',
+      !!g1 && g1.itemId === 'it-s3-i1' && g1.nodeId === 'it-s3-n1' && g1.type === 'text'
+        && g1.html === '<p>闸门：第一道是选项守门</p>' && g1.path.join('/') === 'root/it-s3-n1'
+        && Array.isArray(g1.src) && g1.src[0] === 'CHANGELOG.md:713-717'
+        && (g1.verified || {}).how === '读了 src' && Object.keys(g1).length === 11,
+      JSON.stringify(g1));
+
+    const g2 = run(['get', P3B, 'it-s3-n2', '--item', 'it-s3-i1']);
+    check('S3 `get --item` 给的是**别的节点**的条目 ⇒ 非 0 且点名它实际属于哪个节点（契约 §3.3 必错情形）',
+      g2.code !== 0 && g2.out.indexOf('it-s3-i1') >= 0 && g2.out.indexOf('it-s3-n1') >= 0,
+      g2.out.trim().slice(0, 100));
+
+    const g3 = s3json(run(['get', P3B, 'it-s3-n1', '--json']).out);
+    check('S3 `get`（不带 --item）：条目化节点额外带 items **摘要**（无正文、verified 是布尔、键序照契约）',
+      !!g3 && Array.isArray(g3.items) && g3.items.length === 4
+        && Object.keys(g3.items[0]).join(',') === 'itemId,type,src,verified,at,bytes'
+        && g3.items[0].verified === true && typeof g3.items[0].bytes === 'number'
+        && g3.items[0].html === undefined && JSON.stringify(g3).indexOf('第一道是选项守门') < 0,
+      JSON.stringify(g3 && g3.items && g3.items[0]));
+
+    /* ---------------- 49.6 read --items（契约 §3.3） ---------------- */
+    const r1 = s3json(run(['read', P3B, '--items', 'it-s3-i4,it-s3-i1', '--json']).out);
+    check('S3 `read --items`：只取这几条正文（顺序按给的那份）、顶层带 meta/project/itemCount',
+      !!r1 && r1.itemCount === 2 && r1.project === P3B
+        && r1.items.map((x) => x.itemId).join(',') === 'it-s3-i4,it-s3-i1'
+        && r1.items[0].qa.q === '闸门是几道？' && r1.items[0].html === undefined
+        && r1.items[1].html === '<p>闸门：第一道是选项守门</p>',
+      JSON.stringify(r1 && { itemCount: r1.itemCount, ids: r1.items.map((x) => x.itemId) }));
+
+    const r2 = run(['read', P3B, '--items', 'it-s3-i1,it-s3-none', '--json']);
+    check('S3 `read --items` 任一 id 不存在 ⇒ **整体失败**并逐个点名（不给半份：能取到的那条也不返回）',
+      r2.code !== 0 && r2.out.indexOf('it-s3-none') >= 0 && r2.out.indexOf('第一道是选项守门') < 0,
+      r2.out.trim().slice(0, 110));
+
+    const r3 = run(['read', P3B, '--items', 'it-s3-i1', '--brief']);
+    const r3b = run(['read', P3B, '--items', 'it-s3-i1', '--subtree', 'it-s3-n1']);
+    check('S3 `read --items` 与 `--brief` / `--subtree` 同给 ⇒ 拒绝（两种口径不混）',
+      r3.code !== 0 && r3.out.indexOf('--items 与 --brief 不能同给') >= 0
+        && r3b.code !== 0 && r3b.out.indexOf('--subtree') >= 0,
+      r3.out.trim().slice(0, 90));
+
+    const r4 = s3json(run(['read', P3B, '--json']).out);
+    check('S3 `read --json` 的节点视图**不含 items**、也不带条目正文（read 的字节形状承诺没变）',
+      !!r4 && r4.nodes.every((n) => !('items' in n))
+        && JSON.stringify(r4).indexOf('第一道是选项守门') < 0,
+      'nodes=' + (r4 ? r4.nodes.length : '-'));
+
+    const qa1 = ((r4 || { nodes: [] }).nodes.filter((n) => n.id === 'it-s3-n1')[0] || {}).qa;
+    check('S3 `qa` 派生化：条目化节点的 qa 由 items 现场派生，形状与 v2 逐字段相同（老消费者不用改）',
+      JSON.stringify(qa1) === JSON.stringify([{ q: '闸门是几道？', a: '两道。', at: '2026-09-01T00:00:00.000Z' }]),
+      JSON.stringify(qa1));
+
+    /* ---------------- 49.7 未条目化项目（v2 数据）不退化 ---------------- */
+    const v1 = s3json(run(V2HIT).out);
+    const v2 = s3json(run(V2HIT.concat(['--topic-only'])).out);
+    check('S3 纯 v2 数据：默认口径照旧按 topic 命中（itemId=null、itemized=false）—— 既有行为不退化',
+      !!v1 && v1.hits.length === 1 && v1.hits[0].itemId === null && v1.hits[0].itemized === false
+        && v1.hits[0].matchIn === 'topic',
+      JSON.stringify(v1 && v1.hits[0]));
+    check('S3 纯 v2 数据：`--topic-only` 与默认口径结果逐字节相同（回退开关在 v2 数据上无副作用）',
+      !!v1 && !!v2 && JSON.stringify(v2.hits) === JSON.stringify(v1.hits) && v2.mode === 'topic-only',
+      JSON.stringify(v2 && v2.hits.map((h) => h.nodeId)));
+
+    const v3 = run(['get', P3A, 'it-s3-a2', '--item', 'it-s3-none']);
+    check('S3 未条目化节点上 `get --item` ⇒ 非 0 且说清"未条目化"（指路，不是含糊的"条目不存在"）',
+      v3.code !== 0 && v3.out.indexOf('未条目化') >= 0, v3.out.trim().slice(0, 90));
+
+    /* ---------------- 49.8 选项面自洽 + 只读不落盘 ---------------- */
+    const u1 = run(['get', P3B, 'it-s3-n1', '--items', 'it-s3-i1']);
+    const u2 = run(['search', P3B, '闸门', '--media', 'x']);
+    check('S3 选项面自洽：`get` 不认识 `--items`（各命令只认自己声明的），未知选项给出支持集',
+      u1.code !== 0 && u1.out.indexOf('--items') >= 0 && u1.out.indexOf('未知选项') >= 0
+        && u2.code !== 0 && u2.out.indexOf('--topic-only') >= 0 && u2.out.indexOf('--max-bytes') >= 0,
+      u1.out.trim().slice(0, 70) + '｜' + u2.out.trim().slice(0, 70));
+
+    check('S3 只读查询**不生成索引文件**：跑完 search/get/read 后项目目录清单与项目文件字节都不变',
+      s3ls(P3B).join(',') === s3lsBefore.join(',') && fs.readFileSync(s3file(P3B), 'utf8') === s3fixtureText,
+      '目录=' + s3ls(P3B).join(','));
+  } finally {
+    // 自收尾（探针自己删干净；文件末尾「清理」段另有兜底）
+    try { fs.rmSync(path.join(ROOT, 'projects', P3A), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+    try { fs.rmSync(path.join(ROOT, 'projects', P3B), { recursive: true, force: true }); } catch (e) { /* 同上 */ }
+  }
+}
+
+/* ---------------- 52. 写管道流（S7）：写命令的**重试安全**（幂等） ----------------
+ * 判据（对应 S7 任务书的四条验收）：
+ *   ① 同 `--idem` 重放两次 ⇒ 数据**逐字节不变** + 回显含「幂等命中」；
+ *   ② `add` 同父同题同内容重放 ⇒ **默认拒绝并指出那一条**（不是静默跳过、不是造第二份）；
+ *   ③ 一次 `apply` 改 N 条 ⇒ `.changes.jsonl` **只多 1 条**（一个 rev、一次原子写）；
+ *   ④ 中途第 k 条非法 ⇒ **整体不动**且**指名第 k 条**（人为注入证明）。
+ * 另钉：幂等键落进日志的**可选字段** `idem`（不升 formatVersion）、只读命令带 `--idem` 被拒。
+ * 探针一律 `it-s7-` 前缀 —— 它们与别的流共用同一个 `projects/`（真实目录）或同一个沙箱，
+ * 前缀是**唯一**能避免互踩的手段（别改成别的名字）。 */
+{
+  const P7 = 'it-s7-idem-' + Date.now().toString(36);
+  const projJson = (name) => path.join(ROOT, 'projects', name, name + '.json');
+  const logJson = (name) => path.join(ROOT, 'projects', name, '.changes.jsonl');
+  const bytes = (p) => fs.readFileSync(p);
+  const text = (p) => fs.readFileSync(p, 'utf8');
+  const opsFile = (name, content) => {
+    const p = path.join(TMP, name);
+    fs.writeFileSync(p, typeof content === 'string' ? content : JSON.stringify(content, null, 2), 'utf8');
+    return p;
+  };
+  const logOf = (name) => {
+    try {
+      return text(logJson(name)).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+    } catch (e) { return []; }
+  };
+
+  run(['init', P7, '--title', 'S7 幂等探针']);
+  run(['add', P7, 'root', '--topic', 'k1', '--id', 'k1']);
+  run(['add', P7, 'root', '--topic', 'k2', '--id', 'k2']);
+  run(['add', P7, 'root', '--topic', 'k3', '--id', 'k3']);
+
+  // 52.1 同 --idem 重放 ⇒ 数据逐字节不变 + 回显「幂等命中」（+ 真的只落一个节点）
+  const before1 = bytes(projJson(P7));
+  const first1 = run(['add', P7, 'root', '--topic', '幂等节点', '--detail-md', '正文', '--idem', 's7-k1']);
+  const mid1 = bytes(projJson(P7));
+  const again1 = run(['add', P7, 'root', '--topic', '幂等节点', '--detail-md', '正文', '--idem', 's7-k1']);
+  const after1 = bytes(projJson(P7));
+  const sameCount = (JSON.parse(text(projJson(P7))).data.children || [])
+    .filter((c) => c.topic === '幂等节点').length;
+  check('S7 幂等：同 --idem 重放两次 ⇒ 盘上**逐字节不变** 且回显含「幂等命中」',
+    ok(first1.out) && ok(again1.out) && again1.out.indexOf('幂等命中') >= 0
+      && !before1.equals(mid1) && mid1.equals(after1) && sameCount === 1,
+    '第一遍写入=' + !before1.equals(mid1) + ' 第二遍未变=' + mid1.equals(after1)
+      + ' 命中=' + (again1.out.indexOf('幂等命中') >= 0) + ' 顶层同名节点=' + sameCount);
+
+  // 52.2 幂等重放**复述首次结果**（id 由时间+随机生成 ⇒ 复述得出"首次那个 id"才算真的没重跑）
+  const first2 = run(['add', P7, 'root', '--topic', '复述节点', '--idem', 's7-k2']);
+  const m2 = /已添加: (\S+)（父 root）/.exec(first2.out);
+  const again2 = run(['add', P7, 'root', '--topic', '复述节点', '--idem', 's7-k2']);
+  check('S7 幂等：重放给出的是**首次结果**（首次那个随机 id 被复述回来，不是新造一个）',
+    ok(first2.out) && !!m2 && ok(again2.out) && again2.out.indexOf(m2[1]) >= 0
+      && (again2.out.match(/已添加/g) || []).length === 1,
+    '首次 id=' + (m2 && m2[1]) + ' 重放里含它=' + (!!m2 && again2.out.indexOf(m2[1]) >= 0));
+
+  // 52.3 add 语义去重：同父同题同内容 ⇒ **默认拒绝并点名那一条**，盘上零改动；--force 才放行
+  const before3 = bytes(projJson(P7));
+  const a3 = run(['add', P7, 'k1', '--topic', '去重节点', '--detail-md', '同一段正文']);
+  const mid3 = bytes(projJson(P7));
+  const m3 = /已添加: (\S+)（父 k1）/.exec(a3.out);
+  const b3 = run(['add', P7, 'k1', '--topic', '去重节点', '--detail-md', '同一段正文']);
+  const after3 = bytes(projJson(P7));
+  check('S7 去重：add 同父同题同内容重放 ⇒ 默认拒绝、**点名那一条**、盘上零改动',
+    ok(a3.out) && !!m3 && b3.code !== 0 && b3.out.indexOf('已存在同父同题同内容的节点') >= 0
+      && b3.out.indexOf(m3[1]) >= 0 && after3.equals(mid3) && !mid3.equals(before3),
+    'exit=' + b3.code + ' 点名=' + (!!m3 && b3.out.indexOf(m3[1]) >= 0)
+      + ' 盘上未变=' + after3.equals(mid3));
+  const c3 = run(['add', P7, 'k1', '--topic', '去重节点', '--detail-md', '同一段正文', '--force']);
+  check('S7 去重：--force 是"我真的要第二份"的显式出口（放行 + 回显里说明是有意重复）',
+    ok(c3.out) && c3.out.indexOf('有意重复') >= 0,
+    c3.out.trim().split('\n')[0]);
+
+  // 52.4 一次 apply 改 N 条 ⇒ 日志**只多 1 条**（一个 rev、一次原子写），且 N 条都真的改了
+  const n4 = logOf(P7).length;
+  const r4 = run(['apply', P7, '--ops-file', opsFile('s7-52-4.json', {
+    version: 1,
+    ops: [
+      { op: 'edit', id: 'k1', topic: '52-改1' },
+      { op: 'edit', id: 'k2', topic: '52-改2' },
+      { op: 'edit', id: 'k3', topic: '52-改3' }
+    ]
+  })]);
+  const log4 = logOf(P7);
+  const last4 = log4[log4.length - 1] || {};
+  check('S7 apply：一次 apply 改 3 条 ⇒ .changes.jsonl **只多 1 条**（不是 3 条），writer=cli:apply',
+    ok(r4.out) && r4.out.indexOf('apply 完成：3 条操作') >= 0
+      && log4.length === n4 + 1 && last4.writer === 'cli:apply'
+      && (last4.changed || []).indexOf('node:k1') >= 0
+      && (last4.changed || []).indexOf('node:k2') >= 0
+      && (last4.changed || []).indexOf('node:k3') >= 0,
+    '日志 ' + n4 + ' → ' + log4.length + ' 条；changed=' + JSON.stringify(last4.changed));
+
+  // 52.5 注入证明：第 4 条非法（引用不存在的节点）⇒ **整体不动** + **指名第 4 条**
+  const before5 = bytes(projJson(P7));
+  const n5 = logOf(P7).length;
+  const r5 = run(['apply', P7, '--ops-file', opsFile('s7-52-5.json', {
+    version: 1,
+    ops: [
+      { op: 'edit', id: 'k1', topic: '不该生效-1' },
+      { op: 'edit', id: 'k2', topic: '不该生效-2' },
+      { op: 'edit', id: 'k3', topic: '不该生效-3' },
+      { op: 'edit', id: 'no-such-node-xyz', topic: '第4条非法' }
+    ]
+  })]);
+  const after5 = bytes(projJson(P7));
+  check('S7 apply：第 4 条非法 ⇒ **整体不动**（逐字节不变、日志零新增）且**点名第 4 条**',
+    r5.code !== 0 && r5.out.indexOf('第 4 条操作') >= 0 && r5.out.indexOf('no-such-node-xyz') >= 0
+      && r5.out.indexOf('整体未执行') >= 0 && after5.equals(before5) && logOf(P7).length === n5,
+    'exit=' + r5.code + ' 盘上未变=' + after5.equals(before5) + ' 日志=' + logOf(P7).length);
+
+  // 52.6 只允许数据面：`remove` 这类需要连带清理的 op 不在事务里 ⇒ 指名拒绝（不是静默忽略）
+  const r6 = run(['apply', P7, '--ops-file', opsFile('s7-52-6.json', { ops: [{ op: 'remove', id: 'k1' }] })]);
+  check('S7 apply：不在事务里的 op（remove）被**指名拒绝**并指路，节点没被删',
+    r6.code !== 0 && r6.out.indexOf('不认识的 op') >= 0 && r6.out.indexOf('remove') >= 0
+      && text(projJson(P7)).indexOf('"id": "k1"') >= 0,
+    'exit=' + r6.code + ' 报文=' + r6.out.trim().slice(0, 70));
+
+  // 52.7 幂等键的落点：日志的可选字段 `idem`（不给键 ⇒ 字段缺席，老写入路径落盘不变）
+  const r7a = run(['edit', P7, 'k2', '--topic', '52-不带键']);          // 先来一条**不带键**的
+  const r7 = run(['edit', P7, 'k2', '--topic', '52-带键', '--idem', 's7-k3']);
+  const log7 = logOf(P7);
+  const keyed = log7[log7.length - 1] || {};          // 带键的那条
+  const noKey = log7[log7.length - 2] || {};          // 它前面那条（没带键）
+  check('S7 幂等：键落进 .changes.jsonl 的**可选字段** idem（不给键的那条没有这个字段）',
+    ok(r7a.out) && ok(r7.out) && keyed.idem === 's7-k3' && noKey.idem === undefined
+      && keyed.writer === 'cli:edit' && keyed.writer === noKey.writer
+      && typeof keyed.out === 'string' && keyed.out.indexOf('已更新') >= 0,
+    '带键条目 idem=' + keyed.idem + ' out=' + JSON.stringify(keyed.out)
+      + '；上一条 idem=' + noKey.idem);
+  check('S7 幂等：键是**旁路产物** —— 不写进项目 JSON、formatVersion 不升（可选字段，照 origin 先例）',
+    text(projJson(P7)).indexOf('s7-k3') < 0
+      && JSON.parse(text(projJson(P7))).meta.formatVersion === 2,
+    '项目 JSON 里搜不到键=' + (text(projJson(P7)).indexOf('s7-k3') < 0));
+
+  // 52.8 只读命令带 --idem ⇒ **响亮拒绝**（别让调用方以为"带了键就重试安全"）
+  const r8 = run(['read', P7, '--idem', 's7-k9']);
+  check('S7 幂等：只读命令带 --idem ⇒ 响亮拒绝（默默忽略 = 让 AI 以为拿到了重试安全）',
+    r8.code !== 0 && r8.out.indexOf('--idem 只对') >= 0 && ok(run(['read', P7]).out),
+    'exit=' + r8.code + ' ' + r8.out.trim().slice(0, 60));
+
+  // ---- 自收尾（探针自己删干净；集成脚本末尾那一段也会兜底一次）----
+  try { fs.rmSync(path.join(ROOT, 'projects', P7), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+  void os;
+}
+
+/* ---------------- 48. 条目级写原语（S2）：改一条不用重写整块 detail ----------------
+ * 判据（对应 S2 任务书的九条验收，**逐条一个 `check`**）：
+ *   （S2 之一）`item-add` 在**未条目化**节点上会**自动条目化**（成功 + 回显点名 `i-…` 形式的 itemId）；
+ *   （S2 之二）`item-add` 缺正文 ⇒ 拒绝并说清 `--md`/`--html`；两个来源选项同给 ⇒ 拒绝（不许"取其一"）；
+ *   （S2 之三）`item-edit` 只动指定字段：回显列出真变了的字段名，其余条目**逐字节不变**；
+ *   （S2 之四）`item-order`：`--ids` 不是完整排列 ⇒ 拒绝并**点名少了谁**；给完整排列 ⇒ 顺序变、集合不变；
+ *   （S2 之五）`item-move`：搬到另一个条目化节点 ⇒ 回显点名源→目标、条目 id 不变、**只多一条变更日志**；
+ *   （S2 之六）`item-remove`：被 `links[].item` 引用时**默认拒绝 + 点名引用者 + 给 `--clean-links` 出路**；
+ *   （S2 之七）`render-detail`：**幂等**（第二次跑 `changed:0` 且盘上逐字节不变）；
+ *   （S2 之八）`edit --detail` 在条目化节点上**拒绝并指路 `item-*`**（条目层零损伤；`--topic` 照常可用）；
+ *   （S2 之九）收尾：该项目跑 `validate` 必须 exit 0。
+ *
+ * 探针项目一律 `it-s2-` 前缀（与别的流互不踩）；本段在 `finally` 里**自删** —— 夹具是**条目化**节点，
+ * 中途抛错也不能把它留在真实 `projects/` 里（那份残留会被项目列表与后续链路的读数算进去）。
+ * 本段排在 §14（`validate-all`）之后，同样是为了别让 validate-all 在夹具存在期间扫到它。
+ * `item-add` 落的是**条目层**（items 为真源、detail 是派生缓存），所以本段的判据一律**回读盘上真值**
+ * （`readProj` / `nodeOf`），不拿命令回显当数据结论。 */
+{
+  const S2TAG = Date.now().toString(36);
+  const P8 = 'it-s2-items-' + S2TAG;
+  const s2file = (name) => path.join(ROOT, 'projects', name, name + '.json');
+  const s2bytes = (name) => fs.readFileSync(s2file(name));                 // Buffer：**逐字节**判据
+  const s2logLines = (name) => {
+    try {
+      return fs.readFileSync(path.join(ROOT, 'projects', name, '.changes.jsonl'), 'utf8')
+        .split('\n').filter((l) => l.trim()).length;
+    } catch (e) { return 0; }
+  };
+  const s2node = (id) => nodeOf(readProj(P8), id);
+  const s2items = (id) => ((s2node(id) || {}).items) || [];
+  const s2ids = (id) => s2items(id).map((x) => x.id);
+  const s2itemId = (out) => { const m = /(i-[a-z0-9-]+)/.exec(String(out)); return m ? m[1] : null; };
+  const s2json = (out) => { try { return JSON.parse(String(out).trim()); } catch (e) { return null; } };
+
+  try {
+    run(['init', P8, '--title', 'S2 条目写原语探针']);
+    run(['add', P8, 'root', '--topic', 'S2 甲节点', '--id', 'it-s2-a']);
+    run(['add', P8, 'root', '--topic', 'S2 乙节点', '--id', 'it-s2-b']);
+
+    // （S2 之一）自动条目化：未条目化节点上直接加条目 ⇒ items 建起来 + 回显点名 itemId
+    const rA1 = run(['item-add', P8, 'it-s2-a', '--html', '<p>甲一</p>']);
+    const iA1 = s2itemId(rA1.out);
+    check('S2 item-add：未条目化节点 ⇒ **自动条目化**（items 落盘）+ 回显点名 i-… 形式的 itemId',
+      ok(rA1.out) && !!iA1 && /^i-[a-z0-9]/.test(iA1) && rA1.out.indexOf(iA1) >= 0
+        && s2ids('it-s2-a').length === 1 && s2ids('it-s2-a')[0] === iA1
+        && (s2items('it-s2-a')[0] || {}).html === '<p>甲一</p>',
+      '回显=' + rA1.out.trim().slice(0, 60) + ' ｜ 盘上 items=' + JSON.stringify(s2ids('it-s2-a')));
+
+    // （S2 之二）缺正文 / 两个来源选项同给 ⇒ 两种拒绝都点名那两条正路
+    const rNoBody = run(['item-add', P8, 'it-s2-a']);
+    const rBothSrc = run(['item-add', P8, 'it-s2-a', '--md', '甲', '--html', '<p>甲</p>']);
+    check('S2 item-add：缺正文 ⇒ 拒绝且说清 --md / --html；--md 与 --html 同给 ⇒ 拒绝（不许"取其一"）',
+      rNoBody.code !== 0 && rNoBody.out.indexOf('--md') >= 0 && rNoBody.out.indexOf('--html') >= 0
+        && rBothSrc.code !== 0 && rBothSrc.out.indexOf('不能同时给') >= 0
+        && s2ids('it-s2-a').length === 1,                       // 两次都没写进去
+      '缺正文 exit=' + rNoBody.code + '；同给 exit=' + rBothSrc.code + ' ｜ ' + rBothSrc.out.trim().slice(0, 60));
+
+    // （S2 之三）item-edit 只动指定字段：回显列出真变了的字段名，其余条目逐字节不变
+    const rA2 = run(['item-add', P8, 'it-s2-a', '--html', '<p>甲二</p>', '--src', 'CHANGELOG.md:1-2']);
+    const iA2 = s2itemId(rA2.out);
+    const othersBefore = JSON.stringify(s2items('it-s2-a').filter((x) => x.id !== iA2));
+    const rEd = run(['item-edit', P8, 'it-s2-a', iA2, '--tags', '改过的标签']);
+    const a2 = s2items('it-s2-a').filter((x) => x.id === iA2)[0] || {};
+    const othersAfter = JSON.stringify(s2items('it-s2-a').filter((x) => x.id !== iA2));
+    check('S2 item-edit：只动指定字段 —— 回显列出真变了的字段名（tags），其余条目**逐字节不变**',
+      ok(rEd.out) && rEd.out.indexOf('tags') >= 0 && rEd.out.indexOf('html') < 0
+        && s2ids('it-s2-a').length === 2
+        && JSON.stringify(a2.tags) === JSON.stringify(['改过的标签'])
+        && a2.html === '<p>甲二</p>' && a2.src === 'CHANGELOG.md:1-2'   // 没点名的字段一个都没动
+        && othersAfter === othersBefore,
+      '回显=' + rEd.out.trim().slice(0, 70) + ' ｜ 其余条目逐字节不变=' + (othersAfter === othersBefore));
+
+    // （S2 之四）item-order：缺项 ⇒ 点名少了谁；完整排列 ⇒ 顺序变、集合不变
+    const rA3 = run(['item-add', P8, 'it-s2-a', '--html', '<p>甲三</p>']);
+    const iA3 = s2itemId(rA3.out);
+    const idsBefore = s2ids('it-s2-a');                            // [iA1, iA2, iA3]
+    const rOrdBad = run(['item-order', P8, 'it-s2-a', '--ids', idsBefore.slice(0, 2).join(',')]);
+    const s2want = [iA3, iA1, iA2];
+    const rOrdOk = run(['item-order', P8, 'it-s2-a', '--ids', s2want.join(',')]);
+    const idsAfter = s2ids('it-s2-a');
+    check('S2 item-order：`--ids` 不是完整排列 ⇒ 拒绝并**点名少了谁**；给完整排列 ⇒ 顺序变、集合不变',
+      rOrdBad.code !== 0 && rOrdBad.out.indexOf('少了') >= 0 && rOrdBad.out.indexOf(iA3) >= 0
+        && ok(rOrdOk.out) && JSON.stringify(idsAfter) === JSON.stringify(s2want)
+        && JSON.stringify(idsAfter.slice().sort()) === JSON.stringify(idsBefore.slice().sort())
+        && s2items('it-s2-a').length === 3,
+      '缺项 exit=' + rOrdBad.code + '（报文点名 ' + iA3 + '）；重排后=' + JSON.stringify(idsAfter));
+
+    // （S2 之五）item-move：换节点 ⇒ 回显点名声→目标、id 不变、只多一条变更日志（一次原子写）
+    const rB1 = run(['item-add', P8, 'it-s2-b', '--html', '<p>乙一</p>']);
+    const iB1 = s2itemId(rB1.out);
+    const logBefore = s2logLines(P8);
+    const rMv = run(['item-move', P8, 'it-s2-a', iA1, '--to', 'it-s2-b']);
+    const logAfter = s2logLines(P8);
+    const moved = s2items('it-s2-b').filter((x) => x.id === iA1)[0] || {};
+    check('S2 item-move：搬到另一个条目化节点 ⇒ 回显点名源→目标、条目 id 不变、**只多一条变更日志**',
+      ok(rMv.out) && rMv.out.indexOf(iA1) >= 0 && /it-s2-a\s*→\s*it-s2-b/.test(rMv.out)
+        && s2ids('it-s2-a').indexOf(iA1) < 0 && s2ids('it-s2-b').indexOf(iA1) >= 0
+        && moved.html === '<p>甲一</p>'                            // id 与正文都原样跟过去
+        && s2ids('it-s2-b').length === 2 && logAfter === logBefore + 1,
+      '回显=' + rMv.out.trim() + ' ｜ 变更日志 ' + logBefore + ' → ' + logAfter);
+
+    // （S2 之六）item-remove：被 links[].item 引用 ⇒ 默认拒绝、点名引用者、给 --clean-links 出路
+    {
+      // 直接造一条带 item 的链接（**条目级链接的写入归 S6**，本段只造数据形状 —— 与
+      // tests/item-commands.test.js 的 F 段同一做法：判据看形状，不看这条边由谁写的）
+      const d = readProj(P8);
+      nodeOf(d, 'it-s2-b').links = [{ project: P8, id: 'it-s2-a', item: iA2, caption: '指向该条目' }];
+      fs.writeFileSync(s2file(P8), JSON.stringify(d, null, 2), 'utf8');
+    }
+    const bytesBeforeRm = s2bytes(P8);
+    const rRmBad = run(['item-remove', P8, 'it-s2-a', iA2]);
+    const rmZeroWrite = s2bytes(P8).equals(bytesBeforeRm);        // 拒绝 ⇒ 一个字节都不写
+    // ⚠️ "条目还在"必须在**清理之前**回读（清理之后它当然不在了 —— 判据别自己打自己）
+    const rmStillThere = s2ids('it-s2-a').indexOf(iA2) >= 0;
+    const rRmOk = run(['item-remove', P8, 'it-s2-a', iA2, '--clean-links']);
+    const s2linker = s2node('it-s2-b');
+    check('S2 item-remove：被 links[].item 引用 ⇒ 默认拒绝 + **点名引用者** + 给 --clean-links 出路；'
+      + '带 --clean-links 才连带剪掉那条引用',
+      rRmBad.code !== 0 && rRmBad.out.indexOf(iA2) >= 0 && rRmBad.out.indexOf('it-s2-b') >= 0
+        && rRmBad.out.indexOf('--clean-links') >= 0 && rRmBad.out.indexOf('links-prune') >= 0
+        && rmZeroWrite && rmStillThere                              // 拒绝 ⇒ 条目与盘上一个字节都没动
+        && ok(rRmOk.out) && s2ids('it-s2-a').indexOf(iA2) < 0 && !s2linker.links,
+      '拒绝 exit=' + rRmBad.code + ' 盘上零改动=' + rmZeroWrite + ' ｜ 清理出口 exit=' + rRmOk.code
+        + ' 清理后引用者 links=' + JSON.stringify(s2linker.links)
+        + ' ｜ 拒绝报文=' + rRmBad.out.trim().slice(0, 130));
+
+    // （S2 之七）render-detail：幂等（第二次 changed:0 且盘上逐字节不变）
+    const rRd1 = run(['render-detail', P8, 'it-s2-a', '--json']);
+    const bytesMid = s2bytes(P8);
+    const rRd2 = run(['render-detail', P8, 'it-s2-a', '--json']);
+    const rd1 = s2json(rRd1.out), rd2 = s2json(rRd2.out);
+    check('S2 render-detail：**幂等** —— 第二次跑 changed:0 且盘上逐字节不变',
+      ok(rRd1.out) && ok(rRd2.out) && !!rd1 && !!rd2 && rd2.changed === 0 && rd2.scanned >= 1
+        && s2bytes(P8).equals(bytesMid),
+      '第一次 changed=' + (rd1 && rd1.changed) + '；第二次 changed=' + (rd2 && rd2.changed)
+        + ' ｜ 第二次逐字节不变=' + s2bytes(P8).equals(bytesMid));
+
+    // （S2 之八）edit --detail 在条目化节点上拒绝并指路 item-*（条目层零损伤；--topic 照常可用）
+    const bIdsBefore = s2ids('it-s2-b');
+    const rEdDetail = run(['edit', P8, 'it-s2-b', '--detail', '<p>整块改写</p>']);
+    const rEdTopic = run(['edit', P8, 'it-s2-b', '--topic', 'S2 乙节点（改名）']);
+    check('S2 `edit --detail` 在条目化节点上**拒绝并指路 `item-*`**（条目层零损伤；`--topic` 照常可用）',
+      rEdDetail.code !== 0 && rEdDetail.out.indexOf('条目化') >= 0
+        && rEdDetail.out.indexOf('item-add') >= 0 && rEdDetail.out.indexOf('render-detail') >= 0
+        && JSON.stringify(s2ids('it-s2-b')) === JSON.stringify(bIdsBefore)
+        && ok(rEdTopic.out) && (s2node('it-s2-b') || {}).topic === 'S2 乙节点（改名）',
+      '拒绝 exit=' + rEdDetail.code + ' ｜ 条目 id 未变='
+        + (JSON.stringify(s2ids('it-s2-b')) === JSON.stringify(bIdsBefore)));
+
+    // （S2 之九）收尾：整段跑完的项目过数据闸门
+    const rVal = run(['validate', P8]);
+    check('S2 收尾：整段跑完的项目 `validate` exit 0（条目化数据没把 G2 写红）',
+      rVal.code === 0, 'exit=' + rVal.code + ' ｜ ' + rVal.out.trim().slice(0, 80));
+  } finally {
+    // 自收尾：探针项目自己删干净（它是条目化夹具，留在真实 projects/ 里会被后续读数算进去）
+    try { fs.rmSync(path.join(ROOT, 'projects', P8), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+  }
+}
+
 /* ---------------- 清理 ---------------- */
 run(['remove', PROJ2, 'root']);
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ6), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ7), { recursive: true, force: true }); } catch (e) {}
+try { fs.rmSync(path.join(ROOT, 'projects', K8A), { recursive: true, force: true }); } catch (e) {}
+try { fs.rmSync(path.join(ROOT, 'projects', K8B), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ4), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(path.join(ROOT, 'projects', BROKEN_PROJ), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ5), { recursive: true, force: true }); } catch (e) {}
