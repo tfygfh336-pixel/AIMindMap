@@ -15,27 +15,51 @@
 
 const fs = require('fs');
 const path = require('path');
+/* 资源新名字的**唯一实现**在 `src/markdown.js`（【批10】并入）。
+ * 为什么要 require 而不是在本文件再写一份：命名 + 唯一性是两个命令族（`add-image` / `add-file`
+ * 与 `import-md` / `import-project` / `import-dir`）**同一条规则**。从前这里各写了一份同形表达式
+ * （`Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + ext`），靠两条"逐字同形"
+ * 断言钉住；同形断言挡不住"只改一处"的漂移，更挡不住两份实现里只有一份拿到唯一性闸。
+ * 依赖方向：`cli/`(rank 2) → `src/`(rank 1) 合法，`node scripts/dep-direction-check.js` 实跑 135 条边全朝下、无环（本文件这条 `require` 就是新增的那一条）。
+ * 为什么**只能**走模块属性调用（`markdown.newResourceName(...)`）而不是 `const { newResourceName } = require(...)`：
+ * 那会把函数**取值一次**绑进本模块的局部名，判据"两处调的是同一个函数"就变成不可注入的空话
+ * （`tests/import-refs.test.js` 的【批10】T8 就是靠替换**模块导出项**来证明"只走这一处"的；
+ * 属性调用让那次替换对本模块同样生效 —— 这与 `cli/commands/project.js` 调 `markdown.resolveImportRefs` 的写法一致）。 */
+const markdown = require('../../src/markdown.js');
+
+/** 复制失败时的"出路"文案（图片/附件各一条，与本文件既有的两条"不存在/格式"报错同一个口气）。 */
+function uniqueNameError(ctx, kind, srcPath, err) {
+  return err.message + '  · 出路：本次 ' + kind + ' 没有落盘、引用也**没有**写进节点'
+    + '（错在"新名字是否已存在"这一步，不在源文件 —— 源文件 ' + srcPath + ' 没动）。'
+    + '先确认那个已存在的文件不是你要的，再重跑一次这条命令即可（新名字是随机的，重跑就会换一个）。';
+}
 
 function copyAsset(ctx, srcPath) {
   if (!fs.existsSync(srcPath)) ctx.error('图片文件不存在: ' + srcPath);
   const ext = path.extname(srcPath).toLowerCase();
   if (!/\.(png|jpe?g|gif|webp|svg|bmp)$/.test(ext)) ctx.error('不支持的图片格式: ' + ext);
   const assetDir = ctx.store.assetDir(ctx.projectName);
-  // 随机后缀防同毫秒重名覆盖
-  const base = Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + ext;
-  const dest = path.join(assetDir, base);
+  /* 【批10】目标名走唯一性闸（撞名就重摇、绝不覆盖已存在的文件、连撞到上界响亮报错）：
+   * 从前这里是裸 `path.join(assetDir, Date.now().toString(36) + Math.random()… + ext)` 直接
+   * `copyFileSync` —— 同一毫秒 + 同 4 位随机时第二个 `copyFileSync` 会**静默覆盖**掉第一个
+   * （两个不同源文件丢一份；取证与逐档读数见 tests/import-refs.test.js 的【批10】组）。
+   * 不撞名时拿到的就是原来那一个值 ⇒ **正常路径逐字节不变**。 */
+  let dest;
+  try { dest = markdown.uniqueResourcePath(assetDir, ext); }
+  catch (err) { ctx.error(uniqueNameError(ctx, '图片', srcPath, err)); }
   fs.copyFileSync(srcPath, dest);
-  return 'assets/' + base;
+  return 'assets/' + path.basename(dest);
 }
 
 function copyAttachment(ctx, srcPath) {
   if (!fs.existsSync(srcPath)) ctx.error('附件文件不存在: ' + srcPath);
-  const ext = path.extname(srcPath).toLowerCase() || '.bin';
-  // 随机名防重名；保留扩展名便于按类型预览/打开
-  const base = Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + ext;
-  const dest = path.join(ctx.store.attachmentDir(ctx.projectName), base);
+  const ext = path.extname(srcPath).toLowerCase() || /* 附件没有扩展名时的兜底（与 src/markdown.js 的 ATTACH_EXT_DEFAULT 同一条） */ '.bin';
+  // 【批10】与 copyAsset 同一道闸、同一个命名函数：保留扩展名便于按类型预览/打开
+  let dest;
+  try { dest = markdown.uniqueResourcePath(ctx.store.attachmentDir(ctx.projectName), ext); }
+  catch (err) { ctx.error(uniqueNameError(ctx, '附件', srcPath, err)); }
   fs.copyFileSync(srcPath, dest);
-  return 'attachments/' + base;
+  return 'attachments/' + path.basename(dest);
 }
 
 module.exports = {

@@ -139,7 +139,8 @@
   const IMAGE_EXT_TEXT = 'png/jpg/jpeg/gif/webp/svg/bmp';
   /** 附件没有扩展名时的兜底（同 assets.js 的 copyAttachment） */
   const ATTACH_EXT_DEFAULT = '.bin';
-  /** 资源文件的新名字 —— **与 assets.js 逐字同一条**（同上，有防漂移断言）：
+  /** 资源文件的新名字 —— 命名规则的**唯一实现**（`【批10】`起 `cli/commands/assets.js` 的
+   *  copyAsset / copyAttachment 不再各写一份，改成 require 本函数；见下面 `uniqueResourcePath` 的注释）：
    *  随机后缀防同毫秒重名覆盖；保留扩展名便于按类型预览/打开。 */
   function newResourceName(ext) {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + ext;
@@ -162,9 +163,11 @@
    *  概率小不等于可以不管：整库导入一次会做很多次复制，而丢的那一份**没有任何报错**。
    *
    *  ⚠️ **正常路径逐字节不变**（这是本闸的硬口径）：不撞名时返回的就是
-   *  `path.join(dir, newResourceName(ext))` 这**一个**值 —— 命名形状一个字都没动，与
-   *  `cli/commands/assets.js` 的 copyAsset / copyAttachment 仍是**同一条命名规则**（`tests/import-refs.test.js`
-   *  的防漂移断言照旧钉着那个表达式，改这里不会把它放飞）。
+   *  `path.join(dir, newResourceName(ext))` 这**一个**值 —— 命名形状一个字都没动。
+   *  【批10】起这条命名规则在**全工程只有这一份**：`cli/commands/assets.js` 的 copyAsset /
+   *  copyAttachment 也调这里（它俩原来各写了一份同形表达式，是唯一还剩的同形副本，已并入本处）；
+   *  判据从"两处表达式逐字同形"换成"**一处被两处调用**"（`tests/import-refs.test.js` D 组 +
+   *  【批10】T7/T8 的行为等价：同一注入条件下两条路摇出的名字逐字节相同、且真调了本函数）。
    *  ⚠️ 撞名时**只换名字**，内容仍是那条引用自己的源文件；**绝不覆盖**已存在的文件（上界到了就抛）。
    *  ⚠️ `dir` 由调用方**算一次**再传进来（不在这里重复调 `dirFn()`）：那个函数内部会 `mkdirSync`
    *  （目录布局的单源在 `src/data-store.js`），重摇时不该反复建目录。
@@ -176,7 +179,8 @@
         throw new Error('资源新名字连续 ' + (retries + 1) + ' 次都撞上盘上已存在的文件（' + path.basename(dest)
           + '）：这个命名函数已经不随机了（同毫秒 + 4 位随机后缀 = 1/36⁴，不该连撞这么多次）。'
           + '**绝不覆盖已有文件**，所以在这里停下 —— 请检查 src/markdown.js 的 newResourceName'
-          + '（它必须与 cli/commands/assets.js 的 copyAsset/copyAttachment 同一条命名规则，且没被打桩）。');
+          + '（全工程只有这一处命名规则：import-md / import-project / import-dir 与 cli/commands/assets.js'
+          + ' 的 copyAsset/copyAttachment 都调它；它若被打桩或不再随机，这里就会先炸）。');
       }
       dest = path.join(dir, newResourceName(ext));
     }
@@ -520,6 +524,13 @@
     markdownToTree, treeToMarkdown, idGen,
     // 【W19】导入资源的引用解析与落地（两条 import 命令 + 将来的 import-dir / W12 都调这里）
     resolveImportRefs, collectResourceRefs, resourceLine,
-    RESOURCE_DIR, IMAGE_EXT_RE, IMAGE_EXT_TEXT, KIND_LABEL
+    RESOURCE_DIR, IMAGE_EXT_RE, IMAGE_EXT_TEXT, KIND_LABEL,
+    /* 【批10】资源新名字的**唯一实现**（导出面只加这三项，命名/摇名逻辑一个字没动）：
+     * 导出是为了让 `cli/commands/assets.js` 的 copyAsset / copyAttachment **调用同一处**
+     * 而不是再写一份 —— `cli`(rank 2) → `src`(rank 1) 方向合法，单向门禁实跑无环。
+     * 漏了这三项的话：`require` 进来是 `undefined`、`node --check` 照样绿，只有
+     * **行为判据**（顶层 require 了这两个函数的模块，调用时必须走到这一处）才抓得住 ——
+     * 见 `tests/import-refs.test.js` 的【批10】T7/T8。 */
+    newResourceName, uniqueResourcePath, RESOURCE_NAME_MAX_TRIES
   };
 });
