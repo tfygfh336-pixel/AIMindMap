@@ -117,7 +117,18 @@
     return convert.stripHtml(item.html);
   }
 
-  /** `item.src` 归一成字符串数组（§1 允许"字符串或字符串数组"；读命令面统一成数组形状）。 */
+  /**
+   * `item.src` 归一成字符串数组（§1 允许"字符串或字符串数组"；读命令面统一成数组形状）。
+   *
+   * ⚠️ **`src` 归一化的唯一实现就在这里** —— 谓词只写这一遍：只留**非空字符串**、保序、
+   * **不去重**（同一个出处写两遍是数据的事，不是归一化该修的）。
+   * `src/item-src.js` 的 `normalizeSrc(v)` 是它的**薄适配**（把"值"包成条目形状再调这里），
+   * 两处因此是"同一份实现的两个用法"，不再是"两份同口径的实现互证"。
+   * 方向为什么是那一侧来调这一侧：本模块按 **UMD 双端**写（浏览器侧本可 `<script>` 直载；
+   * 今天 `renderer/index.html` 还没载它），那边是 **Node-only**（要读盘）—— 双端模块依赖
+   * Node-only 模块，浏览器侧会**静默失效**；
+   * 详见 `src/item-src.js` 里 `normalizeSrc` 的注释（含同层不成环的实测依据）。
+   */
   function srcList(item) {
     if (!item || item.src === undefined || item.src === null) return [];
     const raw = Array.isArray(item.src) ? item.src : [item.src];

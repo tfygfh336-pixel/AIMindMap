@@ -4,7 +4,8 @@
  * ------------------------------------------------------------
  * ## 这个文件守什么（每条都对着一个**能红**的判据）
  *   A. `src/item-src.js` 是"出处"这一维的**唯一实现处**：
- *      归一化与检索面（`src/item-index.js` 的 `srcList`）**同口径**（真模块对真模块交叉断言）；
+ *      归一化**只有一处实现**（唯一实现在 `src/item-index.js` 的 `srcList`，`normalizeSrc` 只是
+ *      薄适配）—— 那组断言守的是**这一处实现的形状**，不再是"两份实现互证"（第四批收口，见用例注释）；
  *      `file:line` / `file:line::引文` / URL / 命令 / 认不出 五种形状都能解析；
  *      同一个文件在同一次运行里**只读一次**（廉价前置）。
  *   B. `recheck` 三态（ok / needs-recheck / src-gone）+ 计数 + 原因分布，**逐条点名**、给可执行下一步；
@@ -39,8 +40,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
+
+/** A 组的**结构断言**要读这个文件的源码（归一化的谓词必须只有一处） */
+const SRC_ITEM_SRC = fileURLToPath(new URL('../src/item-src.js', import.meta.url));
 
 /* ---- ① 沙箱：必须在 require cli/main.js 之前设好 ---- */
 const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-s4-'));
@@ -247,14 +252,46 @@ function itemOfNode(j, id, k) { return (nodeOf(j, id).items || [])[k || 0]; }
  * A. `src/item-src.js` —— 出处这一维的唯一实现处
  * ========================================================================== */
 describe('S4-A item-src：归一化 / 解析 / 与检索面同口径', () => {
-  it('normalizeSrc 与 `src/item-index.js` 的 srcList **逐样本同结果**（同一维两份实现会漂移）', () => {
+  /* ⚠️ 这一组**改过口径**（第四批："出处"这一维的两份同口径实现收成一处）：
+   *   · 改前：`item-src.normalizeSrc` 与 `item-index.srcList` 是**两份实现**（各写一遍
+   *     "只留非空字符串"的谓词）⇒ 这里做**真模块对真模块的交叉断言**，守的是"两份实现一致"；
+   *   · 现在：归一化收成**一处实现**（唯一实现在 `src/item-index.js` 的 `srcList()`，
+   *     `normalizeSrc` 是它的薄适配）⇒ 再"比对两份实现"就是同一个函数对自己，**恒真 = 空转**。
+   *   · 故改成守**这一处实现的形状**：逐样本的期望值**写死在用例里**（谁改了归一化口径 ——
+   *     开始去重 / 开始把非字符串转成字符串 / 开始 trim / 开始折叠空串数组 —— 立刻红），
+   *     外加一条**结构断言**：适配层不许把那套谓词再抄一遍（抄回去就红）。
+   *   判别力（两条都不是空转，**已各自注入实测**）：
+   *     ① 把 `srcList` 的谓词放松成 `s.length >= 0`（不再剔空串）⇒ 第一组必红
+   *        （实测 1 failed / 35 passed，红的正是这个用例）；还原后文件 SHA-256 逐字节还原；
+   *     ② 在 `normalizeSrc` 里加一句 `Array.isArray(v);`（**行为不变**，只是这一侧又出现了那套谓词）
+   *        ⇒ 第二组必红（实测 1 failed / 35 passed）；还原后 SHA-256 逐字节还原。 */
+  it('归一化只有一个实现：`srcList` 的形状逐样本钉死，`normalizeSrc` 只许调它', () => {
     const samples = [
-      undefined, null, '', 'CHANGELOG.md:713', ['a', '', 'b'], ['a', 'a'], 42, [3, 'x'], {}, ['', ''],
-      'refs/spec.md:4::第一条'
+      [undefined, []],                    // 没有 src 键
+      [null, []],
+      ['', []],                           // 空串不是出处
+      ['CHANGELOG.md:713', ['CHANGELOG.md:713']],        // 单串 ⇒ 单元素数组（形状统一）
+      [['a', '', 'b'], ['a', 'b']],                      // 保序；空串剔掉
+      [['a', 'a'], ['a', 'a']],                          // **不去重**（重复是数据的事）
+      [42, []],                                          // 非字符串 ⇒ 剔掉，**不**变成 '42'
+      [[3, 'x'], ['x']],                                 // 数组里混非字符串：只留字符串
+      [{}, []],
+      [['', ''], []],
+      ['refs/spec.md:4::第一条', ['refs/spec.md:4::第一条']]   // 引文扩展形式逐字保留（不切、不 trim）
     ];
-    samples.forEach((v) => {
-      expect(itemSrc.normalizeSrc(v), JSON.stringify(v)).toEqual(itemIndex.srcList({ src: v }));
+    samples.forEach(([v, want]) => {
+      expect(itemSrc.normalizeSrc(v), 'normalizeSrc ' + JSON.stringify(v)).toEqual(want);
+      expect(itemIndex.srcList({ src: v }), 'srcList ' + JSON.stringify(v)).toEqual(want);
     });
+  });
+
+  it('`normalizeSrc` 是 `srcList` 的**薄适配**：归一化的谓词不许在这一侧再写一份', () => {
+    const text = fs.readFileSync(SRC_ITEM_SRC, 'utf8');
+    const body = /function normalizeSrc\(v\)\s*\{([\s\S]*?)\n\}/.exec(text);
+    // 锚点找不到 = 这条判据测不了任何东西 ⇒ 判红（绝不把"定位失败"当通过）
+    expect(body, 'src/item-src.js 里必须能找到 `function normalizeSrc(v) { … }`').toBeTruthy();
+    expect(body[1]).toContain('itemIndex.srcList(');           // 正：真的走那一处实现
+    expect(body[1]).not.toMatch(/Array\.isArray\(v\)/);        // 反：没有自己那份归一化谓词
   });
 
   it('parseRef：契约 §1 的三种形状 + 引文扩展 + 认不出的形状', () => {

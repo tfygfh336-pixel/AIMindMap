@@ -576,7 +576,7 @@ module.exports = {
 
       // ⚠️ 复制走**模块级** `cloneNode`（唯一实现，字段表见那里）：本处曾有一份**手挑字段**的
       //    局部深拷贝 —— 它漏掉 `items` / `detailMode` / `localPath` / `origin`，
-      //     于是"复制一个条目化节点"会把整层条目静默抹掉（本工程第五次栽在同一形态上）。
+      //     于是"复制一个条目化节点"会把整层条目静默抹掉 —— 本工程**同一形态第 5 次**（qa → localPath → origin → 界面 items/detailMode → clone）。
       //     别再就地写第二份：两份必然漂，而漂的那个方向是**静默丢字段**。
       const copy = cloneNode(src, mintId, !!ctx.args.deep, mintItemId);
       parentNode.children = (parentNode.children || []).concat(copy);

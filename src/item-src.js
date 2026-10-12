@@ -8,7 +8,9 @@
  * 出处这一维有三个用法：`recheck` 逐条点名、`health` 报读数、`search --src` 过滤。
  * 三处各写一份「什么算同一个出处 / 什么算过期」⇒ 必然漂移，而漂移的后果是
  * "同一条数据在体检里是过期的、在检索里是命中的" —— 那种自相矛盾比不判还坏。
- * ⇒ 归一化、解析、判定、子串匹配，**全部只在这里**。
+ * ⇒ **解析 / 判定 / 子串匹配只在这里**；**归一化**（`string|string[]` → 只留非空字符串的数组）
+ *   的唯一实现在 `src/item-index.js` 的 `srcList()`，本文件那一份是**薄适配**
+ *   （第四批收口：改前是两份同口径实现，靠交叉断言兜着；现在只剩一处，方向与理由见 `normalizeSrc`）。
  *
  * ## 判定口径（三条，都可执行）
  *   1. **文件在不在**：`file:line` 里的 file（相对**工程根**；绝对路径也认，但会标 `outside`/绝对
@@ -41,6 +43,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+/* 归一化的**唯一实现**在条目索引那一份（本文件只做薄适配）—— 方向与理由见 `normalizeSrc`：
+ * 同层（`scripts/dep-direction-check.js` 的 LAYERS 里两文件都是 rank 1、同 rank 互不判方向），
+ * 且 `src/item-index.js` **零依赖本文件** ⇒ 这条边不成环（S1 门禁实跑证明）。 */
+const itemIndex = require('./item-index.js');
 
 /* ============================================================================
  * 一、取值表（封闭；判定与报错文案共用一处 ⇒ 不许在命令里另写一份）
@@ -89,14 +95,22 @@ const PATH_EXT_RE = /^[^\s]+\.(md|markdown|js|cjs|mjs|json|txt|html|htm|css|yml|
 /**
  * `src` 归一成字符串数组。
  *
- * **与 `src/item-index.js` 的 `srcList()` 同口径**（那处服务检索面）：`string` 或 `string[]`
- * ⇒ 只留**非空字符串**，保序、**不去重**（同一个出处写两遍是数据的事，不是这里该修的）。
- * 两份实现的口径一致性由 `tests/recheck.test.js` 的交叉断言钉住（真模块对真模块比）。
+ * ⚠️ **归一化的唯一实现在 `src/item-index.js` 的 `srcList()`** —— 谓词（`string` 或
+ * `string[]` ⇒ 只留**非空字符串**，保序、**不去重**）只在那里写一遍；本函数是它的**薄适配**：
+ * 把"值"包成"条目形状"再交给那一处。**方向为什么是这个**（`scripts/dep-direction-check.js`
+ * 的 LAYERS 实测：`src` 是 rank 1，两个文件**同层**、同 rank 互不判方向 ⇒ 形式上下两个方向都行）：
+ *   · `src/item-index.js` 是 **UMD 双端**（那个模块的写法就为"浏览器侧 `<script>` 直载"，
+ *     同目录的 `schema.js` / `query.js` 都是这个样子），本模块是 **Node-only**（要读盘）——
+ *     双端模块若依赖 Node-only 模块，浏览器那一侧会**静默失效**（那边根本没有 `MMItemSrc`
+ *     全局可注入，也没有 `root.MMItemSrc` 可传）；边界如实说：`item-index.js` **今天**还没被
+ *     `renderer/index.html` 直载（只在 Node 侧被 require），但双端契约在，哪天被载进去就是坑；
+ *   · 反方向（Node-only → UMD）是本工程**既有先例**：`src/doc-import.js` → `./convert.js` / `./markdown.js`；
+ *   · 成环已核：`src/item-index.js` 只 require `./tree-utils.js` / `./convert.js`（都不指向本文件）
+ *     ⇒ 不可能造出同层环，实跑读数见交付（S1 门禁）。
+ * ⇒ 归一化留在双端那一侧；本文件只管这一维的**解析 / 判定 / 子串匹配**。
  */
 function normalizeSrc(v) {
-  if (v === undefined || v === null) return [];
-  const raw = Array.isArray(v) ? v : [v];
-  return raw.filter((s) => typeof s === 'string' && s.length > 0);
+  return itemIndex.srcList({ src: v });
 }
 
 /** 看着像文件路径吗（没有行号时的兜底判据） */
