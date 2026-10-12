@@ -125,6 +125,11 @@
    * 于是"拒绝了、却已经在 assets/ 里留了半份资源/半个项目"不会发生 ✓；`opts.dryRun` 就是
    * 只做规划、零副作用（不复制、不建目录、不改树）—— 预览与真导**同一份判据**，不会出现
    * "预览说能导、真导被拒"的落差。
+   *
+   * 落地时**新名字的唯一性**还有一道闸（【批9】）：撞名就**重摇**、**绝不覆盖**盘上已存在的文件、
+   * 重摇带**上界**（连撞就响亮报错，不死循环）；**不撞名时与从前逐字节相同**（命名形状一个字没动）。
+   * 为什么必须有、取证（修前实测：两条引用同名、先复制的那份内容静默消失）与三条口径
+   * 见 `uniqueResourcePath` 的注释。
    */
   const RESOURCE_DIR = { image: 'assets', file: 'attachments' };
   /** 图片扩展名白名单 —— **与 `cli/commands/assets.js` 的 copyAsset 逐字同一条**
@@ -138,6 +143,44 @@
    *  随机后缀防同毫秒重名覆盖；保留扩展名便于按类型预览/打开。 */
   function newResourceName(ext) {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + ext;
+  }
+  /** 【批9】"撞名就再摇一次"的**重摇上界**（同 `src/doc-import.js` 的 `uniqueIdGen()` 那一手，多一个上界）。
+   *  为什么必须有上界：撞名本身是随机的，正常**一次重摇**就够；但若名字**不再随机**（`newResourceName`
+   *  被动过或被打桩、两处命名规则漂移成同一个常量）⇒ 重摇会**永远撞下去**。上界把那时的行为定成
+   *  **响亮报错**：既不是死循环，也不是"算了，覆盖掉吧"。连撞 8 次的概率 ≈ (1/36⁴)⁷ ≈ 0 ⇒ 真走到
+   *  这里要查的是命名函数，不是运气。 */
+  const RESOURCE_NAME_MAX_TRIES = 8;
+  /** 在 `dir` 下要一个**盘上还不存在**的新资源名：见过（已存在）就**再摇一次**。
+   *
+   *  为什么要这道闸（【批8】实测登记、【批9】在产品侧修；取证与逐档读数在
+   *  `tests/import-dir-refs.test.js` 的【批8】注 + `tests/import-refs.test.js` 的【批9】组）：
+   *  新名 = `Date.now().toString(36)` + **4 位随机** + 扩展名 ⇒ 同一份 md 里的两条引用**必然在同一毫秒**
+   *  被复制（相邻两次 `copyFileSync`，中间没有别的同步点）⇒ 只剩那 4 位随机在区分，撞上
+   *  （1/36⁴ ≈ 1/1.68M）时第二次复制会**覆盖**第一次 ⇒ 两个**不同**源文件**静默丢一份**：
+   *  实测读数是"盘上 1 个文件、两条 `images[].file` 同名、先复制的那份内容消失"，而回显里还写着
+   *  "已复制 2 个文件进项目" —— 真·数据丢失，且盘上从外表看不出来。
+   *  概率小不等于可以不管：整库导入一次会做很多次复制，而丢的那一份**没有任何报错**。
+   *
+   *  ⚠️ **正常路径逐字节不变**（这是本闸的硬口径）：不撞名时返回的就是
+   *  `path.join(dir, newResourceName(ext))` 这**一个**值 —— 命名形状一个字都没动，与
+   *  `cli/commands/assets.js` 的 copyAsset / copyAttachment 仍是**同一条命名规则**（`tests/import-refs.test.js`
+   *  的防漂移断言照旧钉着那个表达式，改这里不会把它放飞）。
+   *  ⚠️ 撞名时**只换名字**，内容仍是那条引用自己的源文件；**绝不覆盖**已存在的文件（上界到了就抛）。
+   *  ⚠️ `dir` 由调用方**算一次**再传进来（不在这里重复调 `dirFn()`）：那个函数内部会 `mkdirSync`
+   *  （目录布局的单源在 `src/data-store.js`），重摇时不该反复建目录。
+   */
+  function uniqueResourcePath(dir, ext) {
+    let dest = path.join(dir, newResourceName(ext));
+    for (let retries = 0; fs.existsSync(dest); retries++) {
+      if (retries >= RESOURCE_NAME_MAX_TRIES) {
+        throw new Error('资源新名字连续 ' + (retries + 1) + ' 次都撞上盘上已存在的文件（' + path.basename(dest)
+          + '）：这个命名函数已经不随机了（同毫秒 + 4 位随机后缀 = 1/36⁴，不该连撞这么多次）。'
+          + '**绝不覆盖已有文件**，所以在这里停下 —— 请检查 src/markdown.js 的 newResourceName'
+          + '（它必须与 cli/commands/assets.js 的 copyAsset/copyAttachment 同一条命名规则，且没被打桩）。');
+      }
+      dest = path.join(dir, newResourceName(ext));
+    }
+    return dest;
   }
   /** 非本地引用（URL scheme）。**≥2 个字符才算 scheme** —— Windows 的盘符只有一个字母，
    *  写成 `c:` 若也当协议，绝对路径 `C:\a\x.png` 会被误判成远程引用（那种误判会让文件永远不被复制）。
@@ -285,7 +328,10 @@
         const ext = r.kind === 'image'
           ? path.extname(r.srcPath).toLowerCase()
           : (path.extname(r.srcPath).toLowerCase() || ATTACH_EXT_DEFAULT);
-        const dest = path.join(dirFn(), newResourceName(ext));
+        /* 目录算一次就传进去（`dirFn()` 内部会 mkdirSync，重摇时不该反复建目录）；
+         * 【批9】撞名就重摇、绝不覆盖已存在的文件 —— 为什么必须有这道闸见 `uniqueResourcePath` 的注释
+         * （同一毫秒的两条引用会撞名，从前第二次复制会**静默覆盖**掉第一次那份）。 */
+        const dest = uniqueResourcePath(dirFn(), ext);
         fs.mkdirSync(path.dirname(dest), { recursive: true });   // 兜底：目录必须真在（见函数头）
         fs.copyFileSync(r.srcPath, dest);
         r.dest = RESOURCE_DIR[r.kind] + '/' + path.basename(dest);

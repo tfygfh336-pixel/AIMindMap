@@ -25,6 +25,10 @@
  *      （夹具写进真实 `projects/` 是本文件可能犯的最坏的错）。
  *   J.【批8】`import-project` 的**同款边界三档**（对照 `import-dir` 的 E 组）：同一项目名再导 /
  *      换新项目 + `--force` / 「往已有项目追加」这一档在本命令上**不可达** —— 判据与逐档读数见文件末尾。
+ *   K.【批9】资源新名字的**唯一性闸**（产品侧已修）：同一毫秒的两条引用**不许互相覆盖** ——
+ *      撞名 ⇒ 只换名字、内容仍是那份源文件、**绝不覆盖**已有文件、重摇有上界（连撞就响亮报错）；
+ *      不撞名 ⇒ 命名与从前**逐字节相同**。判据 T1..T4 与逐条判别力（含"修前必红 / 去掉闸必红"的
+ *      注入记录）见文件末尾的【批9】组注。
  * ## 环境要点
  *   · 端到端一律走**进程内** `invokeSync`（同 tests/item-commands.test.js），不起子进程；
  *   · 沙箱与夹具都在 `os.tmpdir()` 下，`afterAll` 全清 —— 仓库根与真实 `projects/` 全程零接触。
@@ -716,5 +720,184 @@ describe('【批8】J. `import-project` 的同款边界三档（对照 E 组：�
     expect(usage.stdout, '没有追加形态的开关（`import-md` 的 `--parent` 不在这一条命令上）').not.toContain('--parent');
     console.log('[批8 实测·J 档3] import-project 往已有项目再导：exit=' + other.code
       + '（换来源 + --force 也一样）⇒ 本命令**没有"追加"这一档**；N → N+1 仍只在 import-md --force（E 档3）');
+  });
+});
+
+/* ============================================================================
+ * 【批9】资源新名字的**唯一性闸**：同一毫秒的两条引用不许互相覆盖（产品侧已修）
+ * ==========================================================================
+ * 缺陷（批8 实测登记，原文见 `tests/import-dir-refs.test.js` 的【批8】注；本批在**产品侧**修掉）：
+ *   `src/markdown.js` 的复制那一跳原来是
+ *     const dest = path.join(dirFn(), newResourceName(ext));
+ *     fs.mkdirSync(path.dirname(dest), { recursive: true });
+ *     fs.copyFileSync(r.srcPath, dest);
+ *   目标名**不做唯一性检查**；新名 = `Date.now().toString(36)` + **4 位随机** + 扩展名 ⇒ 同一份 md
+ *   里的两条引用**必然同一毫秒**被复制（相邻两次 `copyFileSync`，中间没有别的同步点）⇒ 只剩 4 位随机
+ *   在区分，撞上（1/36⁴ ≈ 1/1.68M）时第二次复制**覆盖**第一次 ⇒ 两个**不同**源文件**静默丢一份**
+ *   （真·数据丢失：盘上看不出异常，两条引用还都指得着一份文件）。
+ * 修法：目标名加唯一性闸 —— **照本工程既有先例** `src/doc-import.js` 的 `uniqueIdGen()`（"见过就
+ *   再摇一次"），并带**重摇上界**（撞不出新名字时响亮报错，而不是死循环）。三条口径：
+ *   ① **正常路径（不撞名）逐字节不变** —— 返回值就是 `path.join(dir, newResourceName(ext))` 那一个值，
+ *      命名形状一个字没动（T2 就是钉这一条的判据）；
+ *   ② 撞名时**只换名字**，内容仍是那份源文件（T1）；
+ *   ③ **绝不覆盖**已存在的文件；名字摇不动就报错（T3）。
+ * 四条判据的**判别力**（逐条点名"哪一行坏了会让哪一条红"）：
+ *   · T1 ← 把产品侧那道闸去掉（`uniqueResourcePath` 换回裸 `path.join(dir, newResourceName(ext))`）
+ *     ⇒ 第二次 `copyFileSync` 覆盖第一次 ⇒ 盘上 1 份、两条引用同名 ⇒ 三处断言同时红；
+ *   · T2 ← 为"防撞"顺手改掉命名形状（换 uuid / 加计数器后缀 / 把 4 位随机加长）⇒
+ *     "名字逐字节等于 `Date.now().toString(36)` + 4 位随机 + 扩展名"那条必红（**既有形状不许被修法改掉**）；
+ *   · T3 ← 把重摇上界去掉、或让撞名改成"覆盖"⇒ 本用例要么**挂死**、要么"响亮报错"那条红
+ *     （`Math.random` 打桩里带一条**摇名预算**，所以"死循环"会变成一条**可读的红**，不是超时）；
+ *   · T4 ← 端到端接线：`import-md` 走的就是同一条路（`cli/commands/project.js:849`）—— 这条的"撞不撞名"
+ *     由真随机决定 ⇒ 它只是**接线 + 同毫秒前置条件**的证据，**确定性的判别力在 T1**（这一条如实登记，不夸大）。
+ * ⚠️ 注入缝隙只有**全局**的 `Date.now` / `Math.random`（`newResourceName` 在模块闭包里，外部改不到它），
+ *   所以每个用例都在 `finally` 里逐字还原，且**只把被钉住的那一小段**交给被测代码。
+ * ========================================================================== */
+
+/** 钉住两个"随机源"，把"同一毫秒 + 同 4 位随机"变成一个**确定性**事件（不再靠概率撞）。
+ *  @param {number} ms `Date.now()` 的钉死值（= 两条引用共用同一个毫秒）
+ *  @param {number|number[]} rand 数字 ⇒ 钉成常量（永远摇出同一个名字）；数组 ⇒ 按队列给值、
+ *         用完**交回真随机** —— 交回真随机正是"重摇能摇出别的名字"的那一半
+ *  @param {number} [budget] 本用例允许的**摇名次数上界**：超了就在 `Math.random` 里抛错
+ *         ⇒ "重摇上界被删掉"的注入不会把用例挂死，而是变成一条可读的红
+ *  @returns {{draws:()=>number, restore:()=>void}} */
+function pinNaming(ms, rand, budget) {
+  const realNow = Date.now;
+  const realRandom = Math.random;
+  const q = Array.isArray(rand) ? rand.slice() : null;
+  const fixed = q ? null : rand;
+  const limit = budget || 4096;
+  let draws = 0;
+  Date.now = () => ms;
+  Math.random = () => {
+    draws++;
+    if (draws > limit) {
+      throw new Error('摇名次数超过本用例的预算 ' + limit + ' ⇒ 撞名之后没能"再摇一次"'
+        + '（上界被删掉，或撞名被改成了覆盖）：这条不是超时，是判据');
+    }
+    return q ? (q.length ? q.shift() : realRandom()) : fixed;
+  };
+  return { draws: () => draws, restore: () => { Date.now = realNow; Math.random = realRandom; } };
+}
+
+/** 单元级：直接调 `resolveImportRefs`（与三条导入命令同**一个**函数、同一条 copy 分支）。
+ *  为什么单元级也要有：这一次调用里 `Math.random` 的消耗是**可数**的（只有摇名在用它）
+ *  ⇒ "撞名"能被钉成确定事件，而不是等 1/1.68M 的概率。 */
+function unitImport(node, srcDir, destDir) {
+  return markdown.resolveImportRefs(node, {
+    baseDir: srcDir,
+    projectDir: destDir,
+    assetDir: () => path.join(destDir, 'assets'),
+    attachmentDir: () => path.join(destDir, 'attachments')
+  });
+}
+
+describe('【批9】资源新名字的唯一性闸（同一毫秒的两条引用不许互相覆盖）', () => {
+  const MS = 1730000000000;                 // 固定的毫秒值：两条引用"同一毫秒"的那个分母
+  const SAME = 0.5;                         // `(0.5).toString(36).slice(2, 6)` = 'i' ⇒ 两次摇名给出同一个名字
+
+  it('T1 同一毫秒 + 同 4 位随机（钉成常量）⇒ 两个**不同**源文件都落地、字节各对各、名字不同', () => {
+    const dir = mkSource('b9-t1');
+    fs.writeFileSync(path.join(dir, 'assets', 'jia.png'), pngBytes('甲'));
+    fs.writeFileSync(path.join(dir, 'assets', 'yi.png'), pngBytes('乙'));
+    const dest = fs.mkdtempSync(path.join(WORK, 'b9-t1-dest-'));
+    const node = { id: 'n-t1', topic: '双图章', children: [], images: [
+      { file: 'assets/jia.png', caption: '甲' }, { file: 'assets/yi.png', caption: '乙' }] };
+    const pin = pinNaming(MS, [SAME, SAME]);   // 前两次摇名 = 同一个名字（撞名）；之后交回真随机（重摇）
+    let rep = null;
+    try { rep = unitImport(node, dir, dest); } finally { pin.restore(); }
+
+    expect(rep.ok, '两条引用都解析得到 ⇒ 不该是"拒绝"').toBe(true);
+    expect(rep.copied, '两条引用 = **两次**复制（没有被去重成 1）').toHaveLength(2);
+    const files = listDir(path.join(dest, 'assets')) || [];
+    expect(files, '两个**不同**源文件 ⇒ 盘上必须**两份**（修前：只剩 1 份，另一份被静默覆盖）')
+      .toHaveLength(2);
+    const refs = node.images.map((i) => i.file);
+    expect(refs.length, '两条引用都挂在 images[] 上').toBe(2);
+    expect(new Set(refs).size, '两条引用必须指向**不同**的名字').toBe(2);
+    node.images.forEach((img, i) => {
+      expect(fs.readFileSync(path.join(dest, img.file)), '第 ' + (i + 1) + ' 条引用指到的文件 = **它自己的**源文件')
+        .toEqual(pngBytes(['甲', '乙'][i]));
+    });
+    expect(pin.draws(), '撞名 ⇒ 多摇了一次（不是"去重"也不是"覆盖"）').toBe(3);
+    console.log('[批9 实测·T1] 摇名次数=' + pin.draws() + '（1 正常 + 1 撞名 + 1 重摇）'
+      + ' ｜ 落地=' + JSON.stringify(files) + ' ｜ images=' + JSON.stringify(refs)
+      + ' ｜ 重摇出的名字 ' + refs[1] + ' ≠ 若不去重/不重摇本会得到的名字 ' + refs[0]);
+  });
+
+  it('T2 口径：**不撞名**时命名与从前**逐字节相同**（形状一个字没动、也不多摇）', () => {
+    const dir = mkSource('b9-t2');
+    fs.writeFileSync(path.join(dir, 'assets', 'a.png'), pngBytes('正常'));
+    fs.writeFileSync(path.join(dir, 'attachments', 'no-ext'), textBytes('附件无扩展名'));
+    const dest = fs.mkdtempSync(path.join(WORK, 'b9-t2-dest-'));
+    const node = { id: 'n-t2', topic: '正常章', children: [],
+      images: [{ file: 'assets/a.png', caption: '正常' }],
+      files: [{ file: 'attachments/no-ext', caption: '附件' }] };
+    // 图片进 assets/、附件进 attachments/：**两个不同目录** ⇒ 同一个名字也不构成撞名（正常路径）
+    const pin = pinNaming(MS, SAME);
+    let rep = null;
+    try { rep = unitImport(node, dir, dest); } finally { pin.restore(); }
+
+    expect(rep.ok).toBe(true);
+    const base = MS.toString(36) + (SAME).toString(36).slice(2, 6);   // 与产品**同一个表达式**，不另抄一份形状
+    expect(node.images[0].file, '图片名 = `Date.now()` 的 36 进制 + 4 位随机 + 扩展名（与修前逐字节相同）')
+      .toBe('assets/' + base + '.png');
+    expect(node.files[0].file, '附件的扩展名兜底仍是 .bin（同 assets.js 的 copyAttachment）')
+      .toBe('attachments/' + base + '.bin');
+    expect(listDir(path.join(dest, 'assets')), '盘上就是这个名字（没有括号/计数器之类的新形状）')
+      .toEqual([base + '.png']);
+    expect(listDir(path.join(dest, 'attachments'))).toEqual([base + '.bin']);
+    expect(pin.draws(), '不撞名 ⇒ 每条引用**只摇一次**：唯一性闸在正常路径上不多摇').toBe(2);
+    expect(fs.readFileSync(path.join(dest, node.images[0].file))).toEqual(pngBytes('正常'));
+    expect(fs.readFileSync(path.join(dest, node.files[0].file))).toEqual(textBytes('附件无扩展名'));
+    console.log('[批9 实测·T2] 不撞名时的名字=' + node.images[0].file + ' / ' + node.files[0].file
+      + '（= `Date.now()` 的 36 进制 + 4 位随机 + 扩展名）｜ 摇名次数=' + pin.draws());
+  });
+
+  it('T3 撞名**绝不覆盖**：目标名已被占、名字又摇不动 ⇒ 响亮报错（不死循环），被占的文件一字不改', () => {
+    const dir = mkSource('b9-t3');
+    fs.writeFileSync(path.join(dir, 'assets', 'a.png'), pngBytes('源'));
+    const dest = fs.mkdtempSync(path.join(WORK, 'b9-t3-dest-'));
+    const assets = path.join(dest, 'assets');
+    fs.mkdirSync(assets, { recursive: true });
+    const taken = MS.toString(36) + (SAME).toString(36).slice(2, 6) + '.png';    // 钉死的那一个名字
+    fs.writeFileSync(path.join(assets, taken), pngBytes('占位'));
+    const node = { id: 'n-t3', topic: '占位章', children: [], images: [{ file: 'assets/a.png', caption: '源' }] };
+    const pin = pinNaming(MS, SAME, 64);       // 名字**永远**是同一个 ⇒ 重摇也撞（预算 64 防"挂死"）
+    let err = null;
+    try { unitImport(node, dir, dest); } catch (e) { err = e; } finally { pin.restore(); }
+
+    expect(err, '撞名且摇不出新名字 ⇒ 必须**响亮报错**（不许死循环、更不许覆盖）').toBeTruthy();
+    expect(err.message, '报错要指得出"撞上盘上已存在的文件"').toContain('撞上盘上已存在的文件');
+    expect(err.message, '报错要指回唯一的修法现场').toContain('newResourceName');
+    expect(fs.readFileSync(path.join(assets, taken)), '被占的那个文件**一个字节都没改**').toEqual(pngBytes('占位'));
+    expect(listDir(assets), '没有多出第二个文件、也没留下临时物').toEqual([taken]);
+    expect(pin.draws(), '重摇有上界（8 次）⇒ 摇名次数有限，报错**及时**').toBeLessThanOrEqual(16);
+    console.log('[批9 实测·T3] ' + err.message + ' ｜ 摇名次数=' + pin.draws() + '（上界=8 ⇒ 不是死循环）');
+  });
+
+  it('T4 端到端接线：`import-md` 在"同一毫秒"条件下两条引用各落一份、字节都对、名字不同', () => {
+    const dir = mkSource('b9-t4');
+    fs.writeFileSync(path.join(dir, 'assets', 'jia.png'), pngBytes('甲'));
+    fs.writeFileSync(path.join(dir, 'assets', 'yi.png'), pngBytes('乙'));
+    const md = writeMd(dir, 'two.md', ['# 双图章', '', '![图：甲](assets/jia.png)', '',
+      '![图：乙](assets/yi.png)', '']);
+    const P = 'b9-t4';
+    expect(run(['init', P]).code).toBe(0);
+    const pin = pinNaming(MS, []);             // 只钉毫秒（两条引用必然同一毫秒）；随机仍是**真随机**
+    let r = null;
+    try { r = run(['import-md', P, md, '--parent', 'root']); } finally { pin.restore(); }
+
+    expect(r.code, r.stdout).toBe(0);
+    assertRefsLanded(P, { assets: 2, attachments: 0 });
+    const refs = refsOf(P).filter((x) => x.kind === 'image').map((x) => x.file);
+    expect(new Set(refs).size, '两条引用指向**不同**路径').toBe(2);
+    refs.forEach((f) => expect(f.startsWith('assets/' + MS.toString(36)),
+      '毫秒部分 = **被钉死的那个值** ⇒ 这两条引用确实是"同一毫秒"（本用例的前置条件成立）').toBe(true));
+    const got = refs.map((f) => fs.readFileSync(path.join(projDir(P), f)).toString('base64')).sort();
+    expect(got, '两个源文件的内容都在（**丢一份**在这里就会红 —— 那正是这条修的东西）')
+      .toEqual([pngBytes('甲').toString('base64'), pngBytes('乙').toString('base64')].sort());
+    console.log('[批9 实测·T4] import-md 同一毫秒两条引用：images=' + JSON.stringify(refs)
+      + ' ｜ assets=' + JSON.stringify(listDir(path.join(projDir(P), 'assets'))));
   });
 });
