@@ -547,6 +547,32 @@ function pdfOutlineViaHelper(filePath) {
  *    提纲 → 子树一律 `markdown.markdownToTree`。本段只做"目录走查 + 跳过分类 + 容器拼装"。
  */
 
+/* ================= ⓪⁗ 整库导入的资源引用：为什么整库选 `detail`、单文件选**拒绝** =================
+ * ⚠️ **契约句（改这条口径前先读完本段）** —— 三条导入命令共用**同一处**解析/复制实现，
+ *    差的只有 `onMissing` 一个入参；"用哪个口径"是有理由的取舍，不是一个可以随手改的开关。
+ *
+ *  · **单文件导入**（`import-md` / `import-project`）⇒ `onMissing:'refuse'`：**一份文档坏了就不导**。
+ *    只有一份文档，坏引用无非两种：源文件放错位置（本该能修好）、或那几行本来就不该引用文件。
+ *    两者都该由人**当场**决定，而不是让命令替它猜。拒绝是**干净**的：判据在"复制 + 写盘"之前就停，
+ *    盘上不留半份项目、不多一个资源文件（见 `cli/commands/project.js` 的 `refBlockedError`）。
+ *    它因此换来一条硬保证：**只要 exit 0，这份 md 里的引用就全都落了地**（没有"半份"）。
+ *  · **整库导入**（`import-dir`）⇒ `onMissing:'detail'`：**整库不该为一条坏引用全灭**。
+ *    一次导入几百份文档，其中任何一份里的一行旧引用（图早删了、附件挪过位置）都不该让使用者
+ *    "一个文件都导不进来" —— 那等于用最坏的那一份惩罚其余全部 ✗。
+ *    代价必须**如实摆进报告**：坏引用**逐条点名**（哪个文件 / 哪个节点 / 原样路径 / 按序试过哪些
+ *    路径 / 为什么没解析到），并从 `images/files` 里摘掉、**按正文并入该节点的 detail**
+ *    （内容不丢，也绝不落一条指向不存在文件的**悬空引用** ✗）。"放过"不等于"不说"。
+ *
+ *  · 两条口径**不是两套代码**：解析（相对谁、试哪些候选路径、什么算远程引用）、图片格式白名单、
+ *    复制命名（与 `add-image` 同一条：时间36进制 + 4 位随机 + 扩展名）、引用改写成项目内相对路径、
+ *    降级成正文 —— **全部只有一处实现**：`src/markdown.js` 的 **`resolveImportRefs(roots, opts)`**。
+ *    本文件（`doc-import.js`）**不解析、不复制、不改名、不改写任何引用**：它只把"每个文件节点 +
+ *    该文件的基准目录"交出去（`buildDirImportTree` 的 `refTargets`，见下），
+ *    由命令层**逐文件**调那**唯一一处**实现（`cli/commands/project.js` 的 `resolveDirImportRefs`）
+ *    —— 与单文件那两条命令调的是同一个函数、同一份 `refResolveOpts`，三条路不会漂移 ✓。
+ *    ⚠️ 谁要是想在下面这几十行里"顺手写个复制"：那正是本工程反复治的第二种表达，别做 ✗。
+ */
+
 /** 默认导入的扩展名。**只有这一份**：CLI 的默认值、`--ext` 的校验集、扫描判据都从这里取 */
 const IMPORT_EXT_DEFAULT = ['.md', '.txt', '.docx', '.pdf'];
 /** **真的导得进来**的扩展名（= `detectFormat` 认识的那几个）。`--ext` 只许在这些里选 ——
@@ -773,16 +799,24 @@ function uniqueIdGen() {
  *
  * @param {object} scan `scanImportDir` 的结果
  * @param {{genId?:Function, at?:string, tool?:string}} [opts]
- * @returns {{children:Array, nodes:number, containers:number, files:number, entries:Array, skipped:Array}}
+ * @returns {{children:Array, nodes:number, containers:number, files:number, entries:Array, skipped:Array,
+ *            refTargets:Array}}
  *   `entries` 每项 = `{rel, name, id, topic, sha256, origin, format}`（清单指纹与报告都用它）；
- *   `skipped` = **转换阶段**新产生的跳过（`read-failed` / `empty-file`），调用方与扫描阶段的合并计数。
+ *   `skipped` = **转换阶段**新产生的跳过（`read-failed` / `empty-file`），调用方与扫描阶段的合并计数；
+ *   `refTargets` 每项 = `{rel, baseDir, node}` —— **该到哪去解析这个文件的图片/附件引用**
+ *   （`node` 是那个文件节点本身，`baseDir` 是它所在目录：引用是相对 md 文件解析的）。
+ *   ⚠️ 本函数**只交出落点**，解析与复制由调用方逐条调 `markdown.resolveImportRefs` 完成 ——
+ *   理由见上面 ⓪⁗ 的契约句（唯一实现，不许在这里另起一套 ✗）。
  */
 function buildDirImportTree(scan, opts) {
   const o = opts || {};
   const genId = o.genId || uniqueIdGen();
   const at = o.at || new Date().toISOString();
   const tool = o.tool || 'import-dir';
-  const built = { children: [], nodes: 0, containers: 0, files: 0, entries: [], skipped: [], preambles: 0 };
+  const built = {
+    children: [], nodes: 0, containers: 0, files: 0, entries: [], skipped: [], preambles: 0,
+    refTargets: []
+  };
 
   const walk = (node, depth) => {
     const children = [];
@@ -837,6 +871,11 @@ function buildDirImportTree(scan, opts) {
         rel: f.rel, name: f.name, id: fileNode.id, topic: topic,
         sha256: fileNode.origin.sha256, origin: fileNode.origin, format: conv.format
       });
+      /* 【批6】把这个文件节点的**引用落点**交出去（节点 + 基准目录 = 它所在的那个目录）：
+       * 图片/附件引用是**相对该 md 文件**解析的 ⇒ 每个文件各有一个基准，不能全库共用一个。
+       * 落地（解析 → 复制 → 改写引用 / 坏引用降级成正文）由命令层逐条调
+       * `markdown.resolveImportRefs`（唯一实现）完成 —— **本文件一行复制都不写** ✗（见 ⓪⁗ 契约句）。 */
+      built.refTargets.push({ rel: f.rel, baseDir: path.dirname(f.abs), node: fileNode });
       children.push(fileNode);
     });
     return children;

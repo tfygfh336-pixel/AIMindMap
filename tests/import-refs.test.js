@@ -573,12 +573,16 @@ describe('【W19】I. 一处实现与沙箱自证', () => {
   const cmdSrc = fs.readFileSync(path.join(REPO, 'cli', 'commands', 'project.js'), 'utf8');
   const mdSrc = fs.readFileSync(path.join(REPO, 'src', 'markdown.js'), 'utf8');
 
-  it('两条导入命令调的是 `src/markdown.js` 的**同一个函数**（3 处调用 / 1 处定义）', () => {
-    // import-project 调 2 次（dry-run 的规划 + 真导的落地）、import-md 调 1 次 —— 同一个函数
-    expect((cmdSrc.match(/markdown\.resolveImportRefs\(/g) || [])).toHaveLength(3);
+  it('两条导入命令调的是 `src/markdown.js` 的**同一个函数**（4 处调用 / 1 处定义）', () => {
+    // import-project 调 2 次（dry-run 的规划 + 真导的落地）、import-md 调 1 次；
+    // 【批6】import-dir 调 1 次 —— 在唯一的 `resolveDirImportRefs` 里**逐文件**调同一个函数
+    //（口径两样、实现一处：为什么整库选 "detail" 见 src/doc-import.js 的 ⓪⁗ 契约段）
+    expect((cmdSrc.match(/markdown\.resolveImportRefs\(/g) || [])).toHaveLength(4);
     expect((mdSrc.match(/function resolveImportRefs\(/g) || [])).toHaveLength(1);     // 实现只有这一处
     expect(cmdSrc).toContain('refResolveOpts(ctx, name, file)');
     expect(cmdSrc).toContain('refResolveOpts(ctx, ctx.projectName, file)');
+    // 整库那条的调用点**只有一处**，且与上面两条共用一个函数（不是另写一份复制/改名）
+    expect((cmdSrc.match(/function resolveDirImportRefs\(/g) || [])).toHaveLength(1);
   });
 
   it('资源行的语法只有 1 个字面量（`resourceLine`）——导出与"降级成正文"不会各写一套', () => {

@@ -79,21 +79,62 @@ function duplicateOriginError(where, origin) {
     + '；确实要再来一份：加 --force（若想改的是已有的那一份，请直接 edit 那个节点）';
 }
 
-/* ---------------- 【W19】资源引用的落地与报告（两条导入路共用同一份） ----------------
+/* ---------------- 【W19】资源引用的落地与报告（三条导入路共用同一份） ----------------
  * 分工：`src/markdown.js` 的 `resolveImportRefs` 只回答"这条引用解析成什么样、要不要复制、复制成什么"；
  * **怎么说给人听**是命令层的事（与 origin 的 `describeOrigin` 同一个分工）。
- * 两条命令（import-md / import-project）在下方各有一处调用 —— 解析与落地**只有那一份实现** ✓。 */
+ * 三条命令（import-md / import-project / import-dir）在下方各有一处调用 —— 解析与落地**只有那一份实现** ✓。
+ * `import-dir` 的**口径**（`onMissing:'detail'`：坏引用按正文保留、不阻断，但逐条点名）与理由写在
+ * `src/doc-import.js` 的 ⓪⁗ 契约段（那里是唯一权威，本处不复述）。 */
 
-/** 传给 `resolveImportRefs` 的公共参数（两条命令的差别只有"往哪个项目里落"）。
- *  ⚠️ `assetDir` / `attachmentDir` 传**函数**：它们内部会 `mkdirSync`，惰性调用才能保证
- *  "拒绝了/只是预览"时**一个目录都不建**（项目内目录的单源在 `src/data-store.js`，这里不拼路径）。 */
-function refResolveOpts(ctx, name, file) {
+/** 传给 `resolveImportRefs` 的**项目侧**参数（与"相对谁解析"无关的那一半）。
+ *  为什么单列一层：三条命令都要 `projectDir` + 两个**惰性**目录函数，而基准目录有两种来源
+ *  （单文件命令给文件、整库导入给"该文件所在目录"）—— 拼路径的地方只留这一处，不各写一套 ✓。 */
+function refResolveOptsAt(ctx, name, baseDir) {
   return {
-    baseDir: path.dirname(path.resolve(file)),        // 相对引用的基准 = md 文件所在目录
+    baseDir: baseDir,                                 // 相对引用的基准目录（单文件 = 该文件所在目录）
     projectDir: ctx.store.projectDir(name),
     assetDir: () => ctx.store.assetDir(name),
     attachmentDir: () => ctx.store.attachmentDir(name)
   };
+}
+
+/** 传给 `resolveImportRefs` 的公共参数（两条单文件命令的差别只有"往哪个项目里落"）。
+ *  ⚠️ `assetDir` / `attachmentDir` 传**函数**：它们内部会 `mkdirSync`，惰性调用才能保证
+ *  "拒绝了/只是预览"时**一个目录都不建**（项目内目录的单源在 `src/data-store.js`，这里不拼路径）。 */
+function refResolveOpts(ctx, name, file) {
+  return refResolveOptsAt(ctx, name, path.dirname(path.resolve(file)));
+}
+
+/** 【批6】整库导入的资源引用口径（`dirRefReportJson` 的报告字段与 `resolveDirImportRefs` 的实参
+ *  **共用这一个字面量** —— 否则会出现"报告说按正文保留、实际传的却是拒绝"这种两头各说一套 ✗）。
+ *  为什么整库选 `detail` 而单文件命令选 `refuse`：见 `src/doc-import.js` 的 ⓪⁗ 契约段（唯一权威）。 */
+const DIR_REF_ON_MISSING = 'detail';
+
+/** 【批6】整库导入的资源引用：**逐文件**调同一个 `resolveImportRefs`（唯一实现，与上面两条命令同一个函数）。
+ *  两个差别，都写得出理由：
+ *   · **逐文件**而不是整棵一次：引用是相对**该 md 文件**解析的，每个文件各有一个 `baseDir`
+ *     （`buildDirImportTree` 的 `refTargets` 就是为此交出来的落点清单）；
+ *   · 口径固定 `onMissing:'detail'`：整库不该为一条坏引用全灭 —— 坏引用逐条点名 + 按正文保留，
+ *     理由与代价写在 `src/doc-import.js` 的 ⓪⁗ 契约段（唯一权威，本处不复述）。
+ *  ⚠️ 调用点必须在**闸门之后**：被拒（超限 / 重复导入）时**一个资源文件都不复制** ✓。 */
+function resolveDirImportRefs(ctx, name, built, dryRun) {
+  if (!built) return [];
+  return (built.refTargets || []).map((t) => {
+    const rep = markdown.resolveImportRefs(t.node, Object.assign(
+      { onMissing: DIR_REF_ON_MISSING, dryRun: !!dryRun }, refResolveOptsAt(ctx, name, t.baseDir)));
+    /* ⚠️ 不变量：口径写死成 `detail` ⇒ 这里**不可能**拿到 `ok:false`。
+     * 为什么必须当场拦（而不是"反正不会发生"）：`ok:false` 时那个函数**什么都不改**（不复制、不摘引用、
+     * 不降级成正文）⇒ 若照旧往下走，报告会说"已按正文保留"（**假话**），而盘上留下的恰好是悬空引用 ✗。
+     * 真拿到 ⇒ 要么口径被改成了 `refuse`、要么换了实现：**响亮拒绝**并指回契约段，绝不静默写脏。 */
+    if (!rep.ok) {
+      ctx.error('整库导入的资源引用口径必须是 ' + DIR_REF_ON_MISSING + '（坏引用按正文保留 + 逐条点名、'
+        + '不阻断整库），但 ' + t.rel + ' 的引用解析返回了拒绝（ok:false）⇒ **拒绝写盘**'
+        + '（项目文件一个字都不写；坏引用一条都不会被静默写进去）。'
+        + '这是内部不变量被破坏：口径与理由见 src/doc-import.js 的 ⓪⁗ 契约段 —— '
+        + '"拒绝整份导入"是**单文件**命令的口径，整库导入不该为一条坏引用全灭。');
+    }
+    return { rel: t.rel, rep: rep };
+  });
 }
 
 /** 一条坏引用的说明（**哪个节点、哪一条引用、原样路径、为什么没解析到**）——报告与拒绝报文共用。 */
@@ -183,6 +224,88 @@ function refReportJson(rep) {
     })),
     items: rep.refs.map((r) => ({ node: r.nodeId, kind: r.kind, ref: r.raw, status: r.status, dest: r.dest }))
   };
+}
+
+/* ---------------- 【批6】整库导入的资源报告与回显（按**文件**分组，逐条点名） ----------------
+ * 为什么另给一份而不是复用上面两个：那两个是"**一份**文档"的视图（总数 + 一张清单）。
+ * 整库导入是 N 份文档 ⇒ 每条都必须回答"**这是哪个文件里的引用**"，否则报告指不回源文件 ✗。
+ * 口径（计数与状态名）与单文件那份完全一致：都取自 `resolveImportRefs` 的同一个结果对象。 */
+
+/** 机器可判的聚合报告（`import-dir --json`，与真导/预览同一份数据） */
+function dirRefReportJson(reps) {
+  const items = [], bad = [];
+  (reps || []).forEach((r) => {
+    r.rep.refs.forEach((x) => {
+      items.push({ file: r.rel, node: x.nodeId, topic: x.nodeTopic, kind: x.kind,
+        ref: x.raw, status: x.status, dest: x.dest });
+      // 坏引用（解析不到 / 图片格式不受支持）单独一列：报告要能**逐条定位**到文件与试过的路径
+      if (x.status === 'missing' || x.status === 'bad-ext') {
+        bad.push({ file: r.rel, node: x.nodeId, topic: x.nodeTopic, kind: x.kind,
+          ref: x.raw, status: x.status, reason: x.reason, tried: x.candidates });
+      }
+    });
+  });
+  const count = (st) => items.filter((i) => i.status === st).length;
+  return {
+    onMissing: DIR_REF_ON_MISSING,             // 口径本身也要看得见（与实参共用同一个字面量 ✓）
+    files: (reps || []).filter((r) => r.rep.refs.length).length,
+    total: items.length,
+    copy: count('copy'), inProject: count('in-project'), remote: count('remote'),
+    missing: count('missing'), badExt: count('bad-ext'),
+    // ⚠️ 这两个数组有上限（一份大库的清单可以很长）⇒ **把总数一并给出**：
+    //    截断必须**看得见**（`itemsTotal > items.length` 就是"被截了"），不许静默少几条 ✗
+    badTotal: bad.length, itemsTotal: items.length,
+    bad: bad.slice(0, 200), items: items.slice(0, 400)
+  };
+}
+
+/** 整库导入的资源回显（**如实报告**）：汇总一行 + 逐条点名（每条前面带上是哪个文件）。
+ *  取舍：**坏引用一律全部列出**（它要人去修，藏起来等于把它变成下一次的意外），
+ *  已正常落地的那些最多列 20 条（剩下的在 `--json` 里，避免一份大库刷屏）。 */
+function printDirRefReport(out, reps, dry) {
+  const list = reps || [];
+  const total = list.reduce((n, r) => n + r.rep.refs.length, 0);
+  if (!total) {
+    if (dry) out('资源引用：这个目录里没有图片/附件引用（无）');
+    return;
+  }
+  const nOf = (k) => list.reduce((n, r) => n + r.rep[k].length, 0);
+  const parts = [];
+  if (nOf('copied')) parts.push((dry ? '将复制 ' : '已复制 ') + nOf('copied') + ' 个文件进项目');
+  if (nOf('inProject')) parts.push('已在项目内 ' + nOf('inProject') + ' 条（未复制）');
+  if (nOf('remote')) parts.push('非本地引用 ' + nOf('remote') + ' 条（按正文保留）');
+  if (nOf('dropped')) parts.push('坏引用 ' + nOf('dropped') + ' 条（**不阻断**，按正文保留）');
+  out('资源引用（共 ' + total + ' 条，来自 ' + list.filter((r) => r.rep.refs.length).length + ' 个文件）：'
+    + parts.join('；'));
+  const ok = [], issue = [];
+  list.forEach((r) => r.rep.refs.forEach((x) => {
+    const head = r.rel + ' · 节点「' + x.nodeTopic + '」（' + markdown.KIND_LABEL[x.kind] + '）' + x.raw;
+    if (x.status === 'copy') {
+      // 真导时 `dest` 一定已生成（复制是同一个函数做的）；dry-run 时还没有新文件名 ⇒ 只说清"复制进哪一类目录"
+      ok.push('  · ' + head + ' → ' + (x.dest
+        || (dry ? markdown.RESOURCE_DIR[x.kind] + '/…（真导时生成新文件名）'
+          : markdown.RESOURCE_DIR[x.kind] + '/?（复制却没给出新文件名 —— 不该发生，请报告）')));
+    } else if (x.status === 'in-project') {
+      ok.push('  · ' + head + ' —— 已在项目内，未复制'
+        + (x.file !== x.raw ? '（写法规范化为 ' + x.file + '）' : ''));
+    } else if (x.status === 'remote') {
+      issue.push('  · ' + head + ' —— ' + x.reason + '；'
+        + (dry ? '真导时**按正文**并入该节点详情' : '**已按正文**并入该节点详情（未挂进 images/files）'));
+    } else {
+      // 坏引用：复用单文件那份的 `refIssueLine`（哪个节点 / 原样路径 / 为什么 / 按序试过哪些路径）
+      issue.push('  · ' + r.rel + ' · ' + refIssueLine(x)
+        + (dry ? '（真导时**按正文**并入该节点详情，不阻断）' : '；已按正文并入该节点详情'));
+    }
+  }));
+  issue.forEach((l) => out(l));
+  if (issue.length) {
+    out('  ⚠ 上面 ' + issue.length + ' 条**没有**落成项目内引用（也就不会有悬空引用）：'
+      + '内容都在，只是变成了正文。要把图片/附件找回来：把它指向的文件放到那个 md **同目录**的 '
+      + 'assets/（图片）或 attachments/（附件）下 —— 文件名与引用一致 —— 再导一次。');
+  }
+  ok.slice(0, 20).forEach((l) => out(l));
+  if (ok.length > 20) out('  · …另有 ' + (ok.length - 20) + ' 条已正常落地的引用（`--json` 里有全部）');
+  if (dry) out('（以上是**预览**：--dry-run 不复制文件、不建目录、不改任何数据 ✓）');
 }
 
 module.exports = {
@@ -470,6 +593,10 @@ module.exports = {
    *   · **一次 `ctx.write`**：整棵树先在内存里建好 ⇒ 中途失败不留半个项目 ✓；
    *   · **闸门一律在写盘之前**：入参 / 体量 / 文件数 / 幂等 四道，全在先 ✓；
    *   · `--dry-run` **绝不写盘**，并如实报告"会不会被拒"（预览说能导、真导被拒是最烦人的落差 ✗）。
+   *   · 【批6】文档里的图片/附件引用**逐文件落地**（`resolveDirImportRefs` → `markdown.resolveImportRefs`
+   *     唯一实现，命名与规则同 `add-image`）；**口径是 `onMissing:'detail'`**：坏引用逐条点名 +
+   *     按正文保留 + **不阻断**（整库不该为一条坏引用全灭）—— 为什么与单文件命令不同，
+   *     写在 `src/doc-import.js` 的 ⓪⁗ 契约段（唯一权威，本处不复述）。
    */
   importDir(ctx) {
     const name = ctx.projectName;
@@ -591,6 +718,10 @@ module.exports = {
     };
 
     if (ctx.args.dryRun) {
+      /* 【批6】资源引用也一并**预览**：`dryRun` ⇒ 只规划（不复制文件、不建目录、不改树），
+       * 走的是与真导**同一个函数、同一份判据** ⇒ 不会出现"预览说会落、真导没落"的落差 ✓ */
+      const dirRefs = resolveDirImportRefs(ctx, name, built, true);
+      report.resourceRefs = dirRefReportJson(dirRefs);
       if (ctx.args.json) { ctx.outJson(report); return; }
       ctx.out('（--dry-run：只预览，**没有写盘** ✓ —— 预览会**真的读一遍**这些文件来算来源指纹，'
         + '与真导用同一份判据，不各算一套）');
@@ -606,6 +737,8 @@ module.exports = {
         + (Object.keys(byFormat).some((k) => byFormat[k]) ? '' : '（还没转换）'));
       printLimit(ctx.out);
       printSkips(ctx.out);
+      if (built) printDirRefReport(ctx.out, dirRefs, true);
+      else ctx.out('资源引用：（超限 ⇒ 没有转换，本次不解析引用）');
       if (built && built.preambles) {
         ctx.out('前导正文：' + built.preambles + ' 个文件的"第一个标题之前的正文"已并入各自**文件节点的详情开头**');
       }
@@ -638,6 +771,13 @@ module.exports = {
       return;
     }
 
+    /* 【批6】资源引用落地：**逐文件**调同一个 `resolveImportRefs`（唯一实现；口径与理由见
+     * `src/doc-import.js` 的 ⓪⁗ 契约段）。位置在**闸门之后** —— 被拒（超限/重复导入）时
+     * **一个资源文件都不复制**，与单文件命令"拒绝是干净的"同一条底线 ✓。
+     * 坏引用（`onMissing:'detail'`）不阻断：摘出 `images/files` + 按正文并入详情 + 逐条点名（见 `printDirRefReport`）。 */
+    const dirRefs = resolveDirImportRefs(ctx, name, built, false);
+    report.resourceRefs = dirRefReportJson(dirRefs);
+
     const data = {
       meta: { name: title, author: '', version: MMConfig.APP_VERSION, formatVersion: 2 },
       format: 'node_tree',
@@ -651,6 +791,8 @@ module.exports = {
       + filesImported + ' 个文件 / 合计 ' + nodes + ' 个节点'
       + (forced && (dup || collisions.length) ? '（--force：这是同一个来源的第 2 份）' : ''));
     printSkips(ctx.out);
+    // 【批6】资源回显（如实报告）：复制了什么、哪条已在项目内、哪条远程/坏引用被按正文保留
+    printDirRefReport(ctx.out, dirRefs, false);
     if (built && built.preambles) {
       ctx.out('前导正文：' + built.preambles + ' 个文件的"第一个标题之前的正文"已并入各自**文件节点的详情开头**');
     }
