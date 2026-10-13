@@ -6222,6 +6222,326 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   }
 }
 
+/* ============================================================
+ * W4b-集成断言原文.js —— 【W4b】扩召回 + 开 `matchIn` 封闭取值表的**集成断言原文**
+ * （放行窗口由整合流贴进 `scripts/cli-integration.js`；本文件**不是**可执行脚本，只是那段源码的存放处）
+ * ------------------------------------------------------------
+ * 判据出处：`.review/20261010-卖点与功能-常驻讨论/待做清单.md` 的
+ *          `## W4｜混合检索与"权重怎么处理"` 一节（W4 只做了重排；本件是它被裁出去的**另一半**：
+ *          **扩召回** + 随之要开的 `matchIn` 封闭取值表 —— 那是一次契约变更，`docs/ITEM-MODEL.md` §3.4）。
+ * 单测侧（可重复执行、进程内、`AI_MINDMAP_PROJECTS_DIR` 临时沙箱）：`tests/search-recall.test.js`
+ * （默认档逐字节不变 / 只增不许变差 / 上界取自路由表 / 硬过滤正交 / `--explain` 逐路点名 /
+ * 黄金集里"非字面命中"那一类的读前读后 / 注入证明 / 结构断言 / 端到端沙箱），
+ * 以及契约那一半（**键仍 12**）在 `tests/item-index.test.js`。
+ * 本段**不重复**那些用例，只把"必须在**真实工程 + 真实 `projects/` 根**上跑一遍才作数"的几条接到集成链上。
+ *
+ * 服务哪条卖点：`卖点.md` **卖点 1**（"给 AI 的可写可校知识库：AI 不再每次都去网上检索"）——
+ *   "答案只写在邻居里、它自己的正文里没有那个词"以前**连结果都不在**（不是"排在后面"），
+ *   那正是"AI 只好再上网搜一次"的处境；实现形态上同时兑现**卖点 6** 的"一份事实一处实现"。
+ *
+ * 怎么贴（四句话）
+ *   1) 位置：**W4（混合检索）那一段之后、末尾清理段之前**，整段原样粘
+ *      （已写成独立块 `{ … }`：自带 `finally` 收尾、自删全部探针、**不需要动末尾的清理段**）。
+ *   2) 探针只有一个项目、前缀 `it-probe-w4b-` ⇒ 文件顶部 `sweepStaleProbes()` 的前缀表（`it-probe-`）
+ *      **已覆盖**，被中断留下的残留下次跑链会被自动清掉。
+ *   3) 贴完**必须**跑一次 `npm run facts:write`：`scripts/doc-facts.js` 按 `/^\s*check\(/gm` 静态数集成断言数，
+ *      本段新增的 check 都会被算进去 ⇒ 不重生成 `docs/VERIFY.md` 就会在 G6 报"断言数对不上"（那正是 G6 该做的事）。
+ *   4) 本段**只增断言**，不改任何既有断言的语义；不动 `scripts/cli-integration.js` 的其它任何地方。
+ *
+ * 这一节守什么（每条对着本件的一条硬要求）
+ *   · **默认档逐字节不变**：不给 `--recall` 时输出与"只开字面那一路"的权重档**逐字节相同**，
+ *     且 `--json` 顶层不多 `explain` 键（本件最承重的那条性质：既有判据一条都没被放宽）；
+ *   · **扩召回是显式档**：开了它 `hitCount` 与 `hits` 真的**变多**，新命中的 `matchIn` = 路由表那一行
+ *     声明的取值（**现取**，不写死名字），而命中对象的键集仍是契约那 12 个键里挑（**开取值表 ≠ 加键**）；
+ *   · **上界取自路由表**：夹具造一条链，`bound` 之内的节点进来、之外的**正好不进来**（两侧都断言）；
+ *   · **`--explain` 逐路点名**：`explain.recall` 逐路在（含没点名的），`added` 与返回命中里那个取值的
+ *     条数**现算相符**；新命中的逐条读数里 `text` 那一路名次是 `null`（"不是字面命中"看得见）；
+ *   · **硬过滤正交**：`--tag` 与关键词照旧 AND —— 没标签的邻居**不许**被扩召回带回来（另一侧对照也断言）；
+ *   · **MCP 一层透传**：真 stdio 一拍 `search_nodes` 带 `recall`，与 CLI **逐条同序**、`explain.recall` 同源，
+ *     且**没有新增工具**（工具数 = 真值出口 `docs/VERIFY.md` 现取的那个数，不是写在断言里的字面量）；
+ *   · **一处实现**：跳数表（`graphHopsFrom`）与"能扩召回的路由表"各只有一个定义处。
+ *     ⚠️ **扫描面声明**（照"门禁不许把自己数成第二处实现"那条教训）：本检查只扫仓库的 `src/` 与 `cli/`
+ *     两个目录下的 `.js`，**不扫** `scripts/`、`tests/`、`.review/`（本文件就在 `.review/` 里 ⇒ 不在扫描面内）；
+ *     扫描**不剥注释/字符串**（与 `tests/search-recall.test.js` 的结构断言同一条口径：needle 原文匹配）。
+ *     即便如此，本段里的 needle 与它自己的标签文本**都用拼接构造**（`'function ' + 'graphHopsFrom('`）——
+ *     这样"这个文件里出现两个 needle"这件事在结构上不可能发生，不必依赖上面那条扫描面声明。
+ *   · 既有不变量：跑完这些只读检索，探针**项目目录逐字节 + mtime 不变**；`--no-heat` 全程不写访问日志。
+ *
+ * 为什么一律带 `--no-heat`（写清原因，免得下一个人以为漏了热度）
+ *   本段跑在**真实** `projects/` 根上，而库里可能有别的段落留下的、**故意写坏的热度日志**
+ *   （例如热度那几段的探针）。热度日志坏了 ⇒ `search` 照纪律**响亮失败**（产品行为，不是缺陷）
+ *   ⇒ 本段若默认读热度就会被**别人的探针**牵连成假红。
+ *
+ * 段内**不写**"行内斜杠紧跟圈号"的样子（G9 会把那当判定标记计数，见 `cli-integration.js` 文件头）。
+ * ============================================================ */
+{
+  const W4BTAG = Date.now().toString(36);
+  /** 探针前缀表（**唯一一处**：建、清、断言残留都只认这张表） */
+  const W4B_PROBES = ['it-probe-w4b-' + W4BTAG];
+  const W4BP = W4B_PROBES[0];
+  const W4B_KW = '构建缓存';                      // 夹具与查询共用同一个词（下面每条断言都从它出发）
+  const w4bCore = require(path.join(ROOT, 'cli', 'core.js'));            // PROJECTS_DIR：项目根的唯一推导处
+  const w4bRank = require(path.join(ROOT, 'src', 'palette-rank.js'));    // 路由表 / 权重 / 上界 / 新取值：唯一实现处
+  const w4bItems = require(path.join(ROOT, 'src', 'item-index.js'));     // 封闭取值表：唯一实现处
+  const w4bDir = (name) => path.join(w4bCore.PROJECTS_DIR, name);
+  const w4bLog = (name) => require(path.join(ROOT, 'src', 'data-store.js'))
+    .createStore(w4bCore.PROJECTS_DIR, () => {}).visitLogFile(name);
+  const w4bJ = (r) => { try { return JSON.parse(String(r.out).trim()); } catch (e) { return null; } };
+  const w4bSearch = (kw, extra) => w4bJ(run(['search', W4BP, kw, '--no-heat', '--json'].concat(extra || [])));
+  const w4bIds = (j) => ((j || {}).hits || []).map((h) => h.nodeId);
+  /** 能扩召回的路由（**从路由表现取**：本段不写死路由名，将来多一路也能跟着走） */
+  const w4bRoutes = w4bRank.RECALL_ROUTE_IDS.slice();
+  const w4bRid = w4bRoutes[0];
+  const w4bRow = w4bRank.ROUTES.filter((r) => r.id === w4bRid)[0] || {};
+  const w4bValue = w4bRow.recallHit;               // 新取值名（现取）
+  const w4bBound = w4bRow.bound;                   // 深度上界（现取 —— 本段不写死跳数）
+  const w4bArgs = ['--mode', w4bRank.DEFAULT_MODE, '--recall', w4bRid];
+  /** 契约里那 12 个键（判据是**只增不改**：新命中一个契约外的键都不许有） */
+  const w4bKeys = ['id', 'topic', 'nodeId', 'nodeTopic', 'itemId', 'type', 'itemized', 'matchIn',
+    'snippet', 'src', 'verified', 'score'];
+  /** 字面那一路的权重名单（**从路由表现取 id 清单**，本段不写死任何 route 名或权重数字） */
+  const w4bOnlyText = w4bRank.ROUTE_IDS.map((id) => id + '=' + (id === 'text' ? 1 : 0)).join(',');
+  /** 目录树快照（逐文件 字节 + mtime）：钉"只读检索在项目目录里零字节" */
+  const w4bSnap = (dir) => {
+    const out = [];
+    const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))
+      .forEach((e) => {
+        const abs = path.join(d, e.name);
+        if (e.isDirectory()) { walk(abs); return; }
+        out.push(path.relative(dir, abs).split(path.sep).join('/') + '|' + fs.readFileSync(abs).length
+          + '|' + fs.statSync(abs).mtimeMs);
+      });
+    walk(dir);
+    return out.join('\n');
+  };
+  /** 收尾的**唯一入口**（建/清都只认前缀表；访问日志在项目目录之外 ⇒ 一并删） */
+  const w4bClean = () => W4B_PROBES.forEach((name) => {
+    try { fs.rmSync(w4bDir(name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+    try { fs.rmSync(w4bLog(name), { force: true }); } catch (e) { /* 同上 */ }
+  });
+
+  try {
+    /* ---- 夹具（直接写盘造项目，同 S2 / W1 / W4 / W6 段的手法）----
+     * 形状刻意造成"只有扩召回那一路能分辨"：
+     *   nd-lead    头名（关键词**唯一**的字面命中 ⇒ 扩召回以它为心向外数跳数）；
+     *   nd-hop1    **一跳**邻居、正文里没有那个词 ⇒ 从前连结果都不在（本件要接回来的就是它）；
+     *   nd-hop2    **两跳**邻居（'经由一个中介'，上界之内）；
+     *   nd-far     链接挂在 nd-hop2 上 —— 它是"上界之外"的对照项（三跳起与头名的关系只剩同在一个库里）；
+     *   nd-plain   与头名**没有任何边**、正文也命中不了 ⇒ 两条档里都不该出现（判别力的另一半）；
+     *   nd-tagged  带标签的一跳邻居 / nd-untagged 没标签的一跳邻居 ⇒ 用来看 `--tag` 这道硬过滤。 */
+    const w4bNodes = [
+      { id: 'nd-lead', topic: W4B_KW, tags: ['demo'] },
+      { id: 'nd-hop1', topic: 'W4b 一跳邻居',
+        items: [{ id: 'i-hop1', type: 'text', html: '<p>这条只靠一条 links 边挂在头名近旁</p>' }],
+        links: [{ project: W4BP, id: 'nd-lead' }], tags: ['demo'] },
+      { id: 'nd-hop2', topic: 'W4b 两跳邻居',
+        items: [{ id: 'i-hop2', type: 'text', html: '<p>经由一个中介够得着头名（上界之内）</p>' }],
+        links: [{ project: W4BP, id: 'nd-hop1' }], tags: ['demo'] },
+      { id: 'nd-far', topic: 'W4b 上界之外的节点',
+        items: [{ id: 'i-far', type: 'text', html: '<p>三跳起关系只剩同在一个库里</p>' }],
+        links: [{ project: W4BP, id: 'nd-hop2' }], tags: ['demo'] },
+      { id: 'nd-plain', topic: 'W4b 无关节点',
+        items: [{ id: 'i-plain', type: 'text', html: '<p>离头名既没有边、正文也命中不了</p>' }] },
+      { id: 'nd-tagged', topic: 'W4b 带标签的邻居',
+        items: [{ id: 'i-tagged', type: 'text', html: '<p>这一条带 demo 标签</p>' }],
+        links: [{ project: W4BP, id: 'nd-lead' }], tags: ['demo'] },
+      { id: 'nd-untagged', topic: 'W4b 没标签的邻居',
+        items: [{ id: 'i-untagged', type: 'text', html: '<p>这一条不带任何标签</p>' }],
+        links: [{ project: W4BP, id: 'nd-lead' }] }
+    ];
+    fs.mkdirSync(w4bDir(W4BP), { recursive: true });
+    fs.writeFileSync(path.join(w4bDir(W4BP), W4BP + '.json'), JSON.stringify({
+      meta: { name: W4BP, author: '', version: '0.18.0', formatVersion: 3 },
+      format: 'node_tree',
+      data: { id: 'root', topic: 'root', expanded: true, children: w4bNodes }
+    }, null, 2), 'utf8');
+
+    /* ---- 默认档不变：不给 `--recall` 时的输出 == "只开字面那一路"的权重档（逐字节相同）---- */
+    {
+      const plain = run(['search', W4BP, W4B_KW, '--no-heat', '--json']);
+      const explicit = run(['search', W4BP, W4B_KW, '--no-heat', '--json', '--weights', w4bOnlyText]);
+      const withMode = run(['search', W4BP, W4B_KW, '--no-heat', '--json', '--mode', w4bRank.DEFAULT_MODE]);
+      const j = w4bJ(plain);
+      check('W4b·默认档 不给 `--recall` 时：①输出与"只开字面那一路"的权重档**逐字节相同**；'
+        + '②与"给了 --mode 但没给 --recall"的输出也**逐字节相同**（扩召回没有偷偷进候选集）；'
+        + '③`--json` 顶层不多 `explain` 键 —— 这一层是**显式启用**的，既有判据一条都没被放宽',
+        plain.code === 0 && explicit.code === 0 && withMode.code === 0
+          && plain.out === explicit.out && plain.out === withMode.out
+          && !!j && Object.keys(j).indexOf('explain') < 0
+          && (j.hits || []).every((h) => h.matchIn !== w4bValue),
+        'exit=' + plain.code + '/' + explicit.code + '/' + withMode.code
+          + ' ｜ 字节数 ' + plain.out.length + '/' + explicit.out.length + '/' + withMode.out.length
+          + ' ｜ 顶层键=' + JSON.stringify(j ? Object.keys(j) : null));
+    }
+
+    /* ---- 扩召回是**显式档**：开了真的"扩召回"（候选集变大），且新命中仍在 12 键契约里 ---- */
+    {
+      const off = w4bSearch(W4B_KW, ['--mode', w4bRank.DEFAULT_MODE]);
+      const on = w4bSearch(W4B_KW, w4bArgs);
+      const near = ((on || {}).hits || []).filter((h) => h.matchIn === w4bValue);
+      const before = w4bIds(off);
+      const extraKeys = [];
+      ((on || {}).hits || []).forEach((h) => Object.keys(h).forEach((k) => {
+        if (w4bKeys.indexOf(k) < 0) extraKeys.push(k);
+      }));
+      check('W4b·扩召回 开了 `--recall ' + w4bRid + '` 之后：①`hitCount` 与 `hits` **真的变多**'
+        + '（扩召回不是重排）；②新命中的 `matchIn` = 路由表那一行声明的取值 `' + w4bValue
+        + '`（现取，不是写死的名字）；③原来的命中一个都不丢；④命中对象的键仍在契约那 12 个键里'
+        + '（**开取值表 ≠ 加键**）；⑤没边的那条节点两条档里都不出现（判别力的另一半）',
+        !!off && !!on && near.length > 0 && on.hitCount > off.hitCount
+          && w4bItems.MATCH_IN.indexOf(w4bValue) >= 0
+          && before.every((id) => w4bIds(on).indexOf(id) >= 0)
+          && extraKeys.length === 0
+          && w4bIds(on).indexOf('nd-plain') < 0 && w4bIds(off).indexOf('nd-plain') < 0,
+        '关着：hitCount=' + ((off || {}).hitCount) + ' 顺序=' + JSON.stringify(before)
+          + ' ｜ 开着：hitCount=' + ((on || {}).hitCount) + ' 顺序=' + JSON.stringify(w4bIds(on))
+          + ' ｜ 新取值条数=' + near.length + ' ｜ 契约外的键=' + JSON.stringify(extraKeys));
+    }
+
+    /* ---- 上界取自**路由表那一行**（现取）：之内进来、之外不进来（两侧都断言）---- */
+    {
+      const got = w4bIds(w4bSearch(W4B_KW, w4bArgs));
+      const hop = { 'nd-hop1': 1, 'nd-hop2': 2, 'nd-far': 3 };
+      const inSide = Object.keys(hop).filter((id) => hop[id] <= w4bBound);
+      const outSide = Object.keys(hop).filter((id) => hop[id] > w4bBound);
+      check('W4b·上界 扩召回的深度上界就是路由表那一行（`' + w4bRid + '`）的 `bound`：'
+        + '上界是 ' + w4bBound + ' 跳 ⇒ ' + JSON.stringify(inSide) + ' 该进来、'
+        + JSON.stringify(outSide) + ' 不许进来（两侧都断言 ⇒ 这一条不是空转）',
+        inSide.length > 0 && outSide.length > 0
+          && inSide.every((id) => got.indexOf(id) >= 0)
+          && outSide.every((id) => got.indexOf(id) < 0),
+        '顺序=' + JSON.stringify(got) + ' ｜ bound=' + w4bBound);
+    }
+
+    /* ---- `--explain` 逐路点名新取值（读数只增，不改排序）---- */
+    {
+      const on = w4bSearch(W4B_KW, w4bArgs.concat(['--explain']));
+      const ex = (on || {}).explain || {};
+      const rec = ex.recall || {};
+      const asked = (rec.routes || []).filter((r) => r.asked);
+      const nearRows = ((on || {}).hits || []).filter((h) => h.matchIn === w4bValue);
+      const textNull = nearRows.every((h) => {
+        const at = w4bIds(on).indexOf(h.nodeId);
+        const row = (ex.hits || [])[at] || { parts: [] };
+        const text = (row.parts || []).filter((p) => p.route === 'text')[0] || {};
+        const self = (row.parts || []).filter((p) => p.route === w4bRid)[0] || {};
+        return (text.rank === null || text.rank === undefined)
+          && Number.isInteger(self.rank) && self.rank >= 1;
+      });
+      const noExplain = w4bIds(w4bSearch(W4B_KW, w4bArgs));
+      const withExplain = w4bIds(on);
+      check('W4b·归因 `--explain` 逐路点名"新取值是哪一路接回来的"：①`explain.recall.routes` 逐路都在'
+        + '（路由表里能扩召回的几路一个不少）；②点名的那些路由 `added` 与返回命中里该取值的条数'
+        + '**现算相符**；③新命中的逐条读数里 `text` 那一路名次是 `null`、扩召回那一路有 1 起的整数名次'
+        + '（"它不是字面命中"看得见）；④有/无 `--explain` **逐条同序**（读数不改排序）',
+        !!ex.recall && rec.asked && JSON.stringify(rec.asked) === JSON.stringify([w4bRid])
+          && (rec.routes || []).map((r) => r.id).join('|') === w4bRoutes.join('|')
+          && asked.length > 0 && asked[0].added === nearRows.length
+          && textNull
+          && withExplain.join('|') === noExplain.join('|'),
+        'explain.recall=' + JSON.stringify(rec) + ' ｜ 顺序=' + JSON.stringify(withExplain));
+    }
+
+    /* ---- 硬过滤正交：`--tag` 与关键词照旧 AND ⇒ 没标签的邻居不许被带回来 ---- */
+    {
+      const withTag = w4bIds(w4bSearch(W4B_KW, w4bArgs.concat(['--tag', 'demo'])));
+      const noTag = w4bIds(w4bSearch(W4B_KW, w4bArgs));
+      check('W4b·硬过滤 扩召回**不许绕过**硬过滤：`--tag demo` 与关键词照旧是 AND ⇒ 带标签的邻居'
+        + '`nd-tagged` 照旧被带回来、不带标签的 `nd-untagged` **不许**出现；'
+        + '而同一份数据不给标签时它本来就该被带回来（另一侧对照 ⇒ 这一条不是空转）',
+        withTag.indexOf('nd-tagged') >= 0 && withTag.indexOf('nd-untagged') < 0
+          && noTag.indexOf('nd-untagged') >= 0,
+        '带 --tag 的顺序=' + JSON.stringify(withTag) + ' ｜ 不带 --tag 的顺序=' + JSON.stringify(noTag));
+    }
+
+    /* ---- 经 MCP 一层透传：同源同序 + 没有新增工具（工具数现取真值出口） ---- */
+    {
+      const w4bSrv = path.join(ROOT, 'scripts', 'mcp-server.js');
+      const reqs = [
+        { jsonrpc: '2.0', id: 1, method: 'initialize' },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'search_nodes',
+          arguments: { project: W4BP, keyword: W4B_KW, no_heat: true,
+            mode: w4bRank.DEFAULT_MODE, recall: w4bRid, explain: true } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/list' }
+      ];
+      const sp = spawnSync(process.execPath, [w4bSrv], {
+        cwd: ROOT, encoding: 'utf8', timeout: 30000,
+        input: reqs.map((x) => JSON.stringify(x)).join('\n') + '\n'
+      });
+      const replies = String(sp.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch (e) { return null; } });
+      const call = replies.filter((x) => x && x.id === 2)[0] || null;
+      const list = replies.filter((x) => x && x.id === 3)[0] || null;
+      const viaMcp = call && call.result && call.result.content ? w4bJ({ out: call.result.content[0].text }) : null;
+      const viaCli = w4bSearch(W4B_KW, w4bArgs.concat(['--explain']));
+      const tools = (list && list.result && list.result.tools) || [];
+      const verify = fs.readFileSync(path.join(ROOT, 'docs', 'VERIFY.md'), 'utf8');
+      const m = /^\|\s*MCP 工具数\s*\|\s*(\d+)\s*\|/m.exec(verify);
+      check('W4b·MCP 透传 `search_nodes` 带 `recall`：与 CLI **逐条同序**、`explain.recall` 同源，'
+        + '且**没有新增工具**（工具数 = `docs/VERIFY.md` 现取的那个数：'
+        + (m ? m[1] : '（那一行没找到 ⇒ 下面这条必红）') + '，本件只加参数）',
+        !!viaMcp && !!viaCli && !!m
+          && JSON.stringify(w4bIds(viaMcp)) === JSON.stringify(w4bIds(viaCli))
+          && JSON.stringify(((viaMcp.explain || {}).recall || {}).routes || [])
+            === JSON.stringify(((viaCli.explain || {}).recall || {}).routes || [])
+          && tools.length === Number(m[1]),
+        'MCP 顺序=' + JSON.stringify(viaMcp ? w4bIds(viaMcp) : null)
+          + ' ｜ CLI 顺序=' + JSON.stringify(w4bIds(viaCli)) + ' ｜ 工具数=' + tools.length
+          + '（真值 ' + (m ? m[1] : '?') + '）');
+    }
+
+    /* ---- "一处实现"：跳数表与"能扩召回的路由表"各只有一个定义处（nowhere 声明见文件头；needle 用拼接构造）---- */
+    {
+      const needles = ['function ' + 'graphHopsFrom(', 'const ' + 'RECALL_ROUTE_IDS ='];
+      const found = needles.map((needle) => {
+        const files = [];
+        ['src', 'cli'].forEach((dir) => {
+          const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).forEach((e) => {
+            const abs = path.join(d, e.name);
+            if (e.isDirectory()) { if (e.name !== 'vendor') walk(abs); return; }
+            if (!/\.js$/.test(e.name)) return;
+            if (fs.readFileSync(abs, 'utf8').indexOf(needle) >= 0) {
+              files.push(path.relative(ROOT, abs).split(path.sep).join('/'));
+            }
+          });
+          walk(path.join(ROOT, dir));
+        });
+        return { needle: needle, files: files.sort() };
+      });
+      check('W4b·一处实现 跳数表（' + needles[0] + '）与"能扩召回的路由表"（' + needles[1] + '）'
+        + '**各只有一个定义处**：扫描面 = 仓库 src/ 与 cli/（不扫 scripts/、tests/、.review/ ⇒ 本文件不在面内），'
+        + '不剥注释/字符串',
+        found.every((f) => f.files.length === 1)
+          && found[0].files[0] === 'src/item-index.js' && found[1].files[0] === 'src/palette-rank.js',
+        JSON.stringify(found));
+    }
+
+    /* ---- 既有不变量：只读检索在探针项目目录里**零字节**；`--no-heat` 不写访问日志 ---- */
+    {
+      const before = w4bSnap(w4bDir(W4BP));
+      w4bSearch(W4B_KW, w4bArgs.concat(['--explain']));
+      run(['search-all', W4B_KW, '--scope', W4BP, '--no-heat', '--mode', w4bRank.DEFAULT_MODE,
+        '--recall', w4bRid, '--json']);
+      const after = w4bSnap(w4bDir(W4BP));
+      const logFile = w4bLog(W4BP);
+      check('W4b·既有不变量 扩召回（含 `--explain`）与 `search-all` 在探针**项目目录里逐字节 + mtime 不变**；'
+        + '全程 `--no-heat` ⇒ 该项目**没有访问日志**（`.visits/` 那个目录是被路径推导顺带建出来的，不算写入）',
+        before === after && !fs.existsSync(logFile),
+        '快照相同=' + (before === after) + ' ｜ 项目文件数=' + before.split('\n').length
+          + ' ｜ 访问日志存在=' + fs.existsSync(logFile));
+    }
+  } finally {
+    w4bClean();
+    /* 收尾后**逐个点名**确认没有残留（前缀表一处：建/清/断言都认它） */
+    W4B_PROBES.forEach((name) => {
+      if (fs.existsSync(w4bDir(name))) {
+        check('W4b·收尾 探针「' + name + '」没能清掉（下次跑链会被 sweepStaleProbes 兜底，'
+          + '但这里必须当场红）', false, '目录仍在=' + w4bDir(name));
+      }
+    });
+  }
+  }
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;

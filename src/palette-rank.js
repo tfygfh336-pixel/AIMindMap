@@ -31,6 +31,16 @@
  * （**最后一道**封顶重排，`src/item-index.js` 的 `orderByHeat`）—— 两者是两条独立的裁决，
  * 混起来会让"热度 ≤10%"那条变成"一路而已"。细节与理由见下面 `ROUTES` / `MODES` 那一段。
  *
+ * ## 【W4b】本模块还是"**哪几路能把非字面命中接回来**"的唯一实现处
+ * 扩召回（清单 W4 被裁出去的另一半）**不改变**上面那套"怎么排"：它只回答"候选集从哪来"。
+ * 三件事写在这里，别处再写一份就会漂：
+ *   · **哪几路能扩召回**：`ROUTES` 那一行的 `recall`（现取 `RECALL_ROUTE_IDS`）；
+ *   · **接回来的命中报什么 `matchIn` 取值**：同一行的 `recallHit`（现取；`src/item-index.js` 的
+ *     封闭取值表 `MATCH_IN` 必须含它 —— `tests/item-index.test.js` 有一条"表与实现不许漂"的断言）；
+ *   · **深度上界**：同一行的 `bound`（与"图距离"这一路**同一个数**：能进来的是"名次表里本来就有、
+ *     只是从前没有候选位"的那批节点）。
+ * `--recall` 的解析（取值合法性、写错的报文）也只有这里的 `parseRecall` 一份。
+ *
  * 面板自己的排序规则（有明确的理由，不是随手写的）：
  *   1. 空查询 → **命令在前、节点在后**：还没打字时人最可能想"执行一个动作"，
  *      而 131 个节点里盲找没有意义。两组各自保持原顺序。
@@ -165,23 +175,41 @@
    */
   const ROUTES = Object.freeze([
     Object.freeze({ id: 'text', label: '字面匹配',
-      source: '本模块的 rankRows（命令面板同一份打分）', installed: true }),
+      source: '本模块的 rankRows（命令面板同一份打分）', installed: true,
+      recall: false }),
     Object.freeze({ id: 'graph', label: '图距离',
       source: 'node.links 与 assoc.members 的跳数（项目内、无向）', installed: true,
       // 这一路自己的**深度上界**（跳数；唯一一处，`src/item-index.js` 的 graphHopsFrom 从这里现取）：
       // 一跳 = 与最佳命中直接相关的知识点，两跳 = "经由一个中介"。三跳起与字面匹配的关系就只剩
       // "同在一个库里"，而且名次越靠后 RRF 贡献越小 ⇒ 让它继续扩只有成本没有信号。
+      // 【W4b】这个 `bound` 同时是**扩召回**的深度上界（同一件事只有这一个数：能进来的是"名次表里
+      // 本来就有、只是从前没有候选位"的那批节点 —— 上界不一样就会出现"排得上名次却进不了候选集"）。
       bound: 2,
-      boundWhy: '一跳=直接相关，两跳=经由一个中介；三跳起关系只剩"同在一个库里"' }),
+      boundWhy: '一跳=直接相关，两跳=经由一个中介；三跳起关系只剩"同在一个库里"',
+      /* 【W4b】这一路**能扩召回**（`recall: true`）+ 它接回来的命中报哪个 `matchIn` 取值。
+       * 为什么只有它：另外几路（trust / time / semantic）都只对**已经进来的候选**打分，它们
+       * 手上没有"一条新候选"这个概念；而这一路手上有那张跳数表（`graphHopsFrom`），
+       * 表里的近邻本来就已经排好了顺序 —— 扩召回只是把"从前被丢掉的那半张表"接回来。 */
+      recall: true, recallHit: 'near' }),
     Object.freeze({ id: 'trust', label: '来源可信度',
-      source: 'item.verified（已核）/ node.origin（导入而来，见 src/schema.js）', installed: true }),
+      source: 'item.verified（已核）/ node.origin（导入而来，见 src/schema.js）', installed: true,
+      recall: false }),
     Object.freeze({ id: 'time', label: '时效',
-      source: 'item.at（**只取既有真值**；W2 落地后由 W2 扩来源）', installed: true }),
+      source: 'item.at（**只取既有真值**；W2 落地后由 W2 扩来源）', installed: true,
+      recall: false }),
     Object.freeze({ id: 'semantic', label: '语义近似',
       source: 'W3（向量 / 语义）——**未安装**，权重收下但不产生名次',
-      installed: false, why: 'W3 未落地：本工程零必需运行时依赖，语义那一路是可选组件（清单 W3 一节）' })
+      installed: false, recall: false,
+      why: 'W3 未落地：本工程零必需运行时依赖，语义那一路是可选组件（清单 W3 一节）' })
   ]);
   const ROUTE_IDS = Object.freeze(ROUTES.map((r) => r.id));
+
+  /**
+   * 【W4b】**能扩召回**的路由（`ROUTES` 里 `recall: true` 的；唯一一处）。
+   * `--recall` 的取值合法性、命令登记表的描述、`--explain` 的读数全部从它现取 ——
+   * 别处再写一份"哪几路能扩召回"就会漏（病根同 `ROUTES` 本身）。
+   */
+  const RECALL_ROUTE_IDS = Object.freeze(ROUTES.filter((r) => r.recall).map((r) => r.id));
 
   /**
    * RRF 的平滑常数 `k`（唯一一处）。取值 **60**：照 RRF 原论文（Cormack 等，2009）的默认。
@@ -299,32 +327,91 @@
   }
 
   /**
+   * 【W4b】`--recall <路由[,路由]>` 的解析（纯函数 ⇒ 可单测；**响亮**：写错就报，不悄悄退回默认档）。
+   *
+   * 口径（三条，理由都写在报文里，免得读的人猜）：
+   *   · 取值只能是 `ROUTES` 里标了 `recall: true` 的路由（现取 `RECALL_ROUTE_IDS`）；
+   *   · 认得出但**不能**扩召回的路由（trust / time / semantic）**不静默忽略**：它们是"排序信号"，
+   *     只在既有候选内部定序，手上没有"一条新候选"这件事 ⇒ 点名说清，并给出能用的那几路；
+   *   · 同一个路由写两遍 ⇒ 报错（同 `parseWeights` 的纪律：别让"后写的赢"决定候选集）。
+   *
+   * @returns {{ok:true, routes:string[]} | {ok:false, message:string}}
+   */
+  function parseRecall(v) {
+    const can = RECALL_ROUTE_IDS.join(' / ');
+    if (v === true || v === undefined || v === null || String(v).trim() === '') {
+      return { ok: false, message: '--recall 需要一个（或几个）**能扩召回的路由**名：' + can
+        + '（只有把"非字面命中"接回来的那几路才配点名它；它们各自的上界取自 src/palette-rank.js 的 ROUTES）' };
+    }
+    const routes = [];
+    const parts = String(v).split(',');
+    for (let i = 0; i < parts.length; i++) {
+      const key = parts[i].trim();
+      if (!key) continue;
+      if (ROUTE_IDS.indexOf(key) < 0) {
+        return { ok: false, message: '--recall 里不认识的 route `' + key + '`：路由表里有 '
+          + ROUTE_IDS.join(' / ') + '，其中**能扩召回**的只有 ' + can
+          + '（表在 src/palette-rank.js 的 ROUTES，唯一一处）' };
+      }
+      if (RECALL_ROUTE_IDS.indexOf(key) < 0) {
+        return { ok: false, message: '`' + key + '` 这一路**不能扩召回**：它只在**既有候选内部**定序'
+          + '（手上没有"一条新候选"这件事）⇒ 点它没有意义，也不会被静默忽略。'
+          + '能扩召回的是 ' + can + '（判据在 src/palette-rank.js 的 ROUTES 那一行）' };
+      }
+      if (routes.indexOf(key) >= 0) {
+        return { ok: false, message: '--recall 里 `' + key + '` 写了两次 —— 哪个说了算？删掉一个'
+          + '（它决定**候选集**，不是"重一点/轻一点"那种事）' };
+      }
+      routes.push(key);
+    }
+    if (!routes.length) {
+      return { ok: false, message: '--recall 里一个路由名都没有（给的是 `' + String(v) + '`）：可选 ' + can };
+    }
+    return { ok: true, routes: routes };
+  }
+
+  /**
    * 把调用方给的 `{mode, weights}` 归一成**一份生效配置**（唯一一处：CLI / MCP / 测试都走它）。
    * 两种写法都给了 ⇒ `--weights` 就是完整名单（见 `parseWeights` 的口径），`--mode` 只用来
    * 在 `--explain` 里说明"这批权重出自哪一档"这件事……**不**——那会让同一个参数有两种作用。
    * 所以：两个都给 ⇒ **报错**（两种口径不混），与 `--topic-only` × 条目级过滤同一条纪律。
    *
-   * @returns {{ok:true, spec:{enabled, mode, weights, k}} | {ok:false, message:string}}
+   * 【W4b】这里多收一个 `recall`（= `--recall <路由>` 的原文），并把它归一成 `spec.recall`。
+   * 为什么扩召回**要求同时给 `--mode` / `--weights`**：它改变的是**候选集**，而"新接回来的候选
+   * 与既有候选怎么排到同一个顺序"是这一层（RRF）的事。只给 `--recall` 就等于要这里**偷偷挑一个
+   * 默认预设**去排——那正是 W4 一直在消灭的那种静默（"我没给权重，但它在替我用一套"）。
+   * ⇒ 明说：要扩召回就同时说要怎么排（`--mode balanced --recall graph`）。
    */
   function hybridSpecOf(opts) {
     const o = opts || {};
     const hasMode = o.mode !== undefined && o.mode !== null && o.mode !== false;
     const hasWeights = o.weights !== undefined && o.weights !== null && o.weights !== false;
+    const hasRecall = o.recall !== undefined && o.recall !== null && o.recall !== false;
+    const rc = hasRecall ? parseRecall(o.recall) : null;
+    if (rc && !rc.ok) return { ok: false, message: rc.message };
     if (hasMode && hasWeights) {
       return { ok: false, message: '--mode 与 --weights 不能同给：前者是**预设**、后者是**完整权重名单**，'
         + '两个都给就等于两种口径（选一个：要预设写 --mode，要自己定就整份写 --weights）' };
     }
-    if (!hasMode && !hasWeights) {
-      return { ok: true, spec: { enabled: false, mode: null, weights: null, k: rrfKOf() } };
+    if (!hasMode && !hasWeights && !hasRecall) {
+      return { ok: true, spec: { enabled: false, mode: null, weights: null, k: rrfKOf(),
+        recall: { on: false, routes: [] } } };
     }
+    if (hasRecall && !hasMode && !hasWeights) {
+      return { ok: false, message: '--recall 要配合 --mode 或 --weights 一起给：它改变的是**候选集**'
+        + '（多接回几条），而"这批候选怎么排"是**融合那一层**的事 —— 只给 --recall 就等于替你偷偷挑一个'
+        + '默认预设，那是隐性口径。比如：`--mode ' + DEFAULT_MODE + ' --recall ' + rc.routes.join(',') + '`'
+        + '（不给 --mode / --weights 时混合检索整层是关的：输出与从前逐字节相同）' };
+    }
+    const recall = rc ? { on: true, routes: rc.routes } : { on: false, routes: [] };
     if (hasMode) {
       const m = parseMode(o.mode);
       if (!m.ok) return { ok: false, message: m.message };
-      return { ok: true, spec: { enabled: true, mode: m.mode, weights: MODES[m.mode], k: rrfKOf() } };
+      return { ok: true, spec: { enabled: true, mode: m.mode, weights: MODES[m.mode], k: rrfKOf(), recall: recall } };
     }
     const w = parseWeights(o.weights);
     if (!w.ok) return { ok: false, message: w.message };
-    return { ok: true, spec: { enabled: true, mode: null, weights: w.weights, k: rrfKOf() } };
+    return { ok: true, spec: { enabled: true, mode: null, weights: w.weights, k: rrfKOf(), recall: recall } };
   }
 
   /**
@@ -405,6 +492,8 @@
     ROUTES: ROUTES, ROUTE_IDS: ROUTE_IDS, RRF_K: RRF_K, rrfKOf: rrfKOf, MODES: MODES,
     DEFAULT_MODE: DEFAULT_MODE,
     parseMode: parseMode, parseWeights: parseWeights, hybridSpecOf: hybridSpecOf,
+    // 【W4b】**扩召回**：能扩召回的路由（`ROUTES` 里标了 `recall` 的那几行，唯一一处）与它的解析
+    RECALL_ROUTE_IDS: RECALL_ROUTE_IDS, parseRecall: parseRecall,
     fuse: fuse, contributionsOf: contributionsOf,
     // 只给测试：k 的注入口（照 `src/heat.js` 里那个"只给测试换数值"的先例：判据可重复执行，
     // 不必手改源码跑一次）。生产代码永不调它；名字与那个先例也不同 —— 免得撞红

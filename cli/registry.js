@@ -47,6 +47,25 @@ function modeLine(id) {
   return id + '(' + paletteSpec.ROUTE_IDS.map((r) => r + '=' + w[r]).join(',') + ')';
 }
 
+/**
+ * 【W4b】把**能扩召回的路由**渲染成 `graph(matchIn=near，上界 2 跳)`（**只回显，不判断**）。
+ * 路由名 / 新取值名 / 跳数上界三件全部从 `src/palette-rank.js` 的 ROUTES **现取** ——
+ * 抄一份进 desc 就等于第二份副本，而漂移的方向恰好是"AI 照着文档给的取值跟实际报的不一样"。
+ */
+function recallLine() {
+  return paletteSpec.RECALL_ROUTE_IDS.map((id) => {
+    const r = paletteSpec.ROUTES.filter((x) => x.id === id)[0];
+    return id + '(matchIn=' + r.recallHit + '，上界 ' + r.bound + ' 跳)';
+  }).join(' / ');
+}
+
+/** 【W4b】扩召回接回来的命中报的 `matchIn` 取值（从路由表现取；可能是不止一个 —— 逐路各自声明） */
+function recallHitNames() {
+  return paletteSpec.RECALL_ROUTE_IDS
+    .map((id) => (paletteSpec.ROUTES.filter((x) => x.id === id)[0] || {}).recallHit)
+    .join(' / ');
+}
+
 const COMMANDS = [];
 const BY_NAME = new Map();
 /** 选项键 → 认识它的命令名（用于"你是不是把它用错了命令"的提示；init 后填） */
@@ -169,7 +188,7 @@ function init() {
   register({ name: 'read', usage: 'read <项目> [--json] [--brief] [--skeleton] [--compact] [--subtree id] [--items <条目id,…>] [--images]', options: ['json', 'brief', 'skeleton', 'subtree', 'items', 'images'], compatOptions: ['detail'], desc: '读取项目可读视图（树 + 详情 + 图片清单）。四个变窄开关可叠加：--brief 去长文本 / --skeleton 再去 tags+links（只要结构）/ --subtree <id> 只要某棵子树 / --compact 单行 JSON；实测全叠加比全量省约 86%（`--detail` 不再写进用法但**照旧可用**：--json 下是空操作、文本模式下响亮报错并给出替代路径 —— 老调用方不会因为"它被移除了"而突然失败）。**`--items <条目id,…>` 是条目层（v3）的另一档**：只取这几条的正文，返回 `{meta,project,itemCount,items:[条目视图]}`；任一条目 id 不存在 ⇒ **整体失败并逐个点名**（不给半份），且与 --brief/--skeleton/--subtree 互斥（两种口径不混）', fn: loadFile('project').read });
   register({ name: 'list', aliases: ['tree'], usage: 'list <项目> [--json]', options: ['json'], desc: '树形列出项目全部节点', fn: loadFile('project').list });
   register({ name: 'get', usage: 'get <项目> <id> [--json] [--item <itemId>] [--detail] [--images]', options: ['json', 'item', 'detail', 'images'], desc: '查看节点（路径/详情/图片）。`--item <itemId>` 取**单条条目**（条目视图：nodeId/nodeTopic/path/itemId/type/html|qa/src/tags/at/by/verified，空值不产生噪音键）；不给它时行为同 v2，**并且**条目化节点额外带 `items` 摘要数组（`{itemId,type,src,verified,at,bytes}`，不含正文）', fn: loadFile('project').get });
-  register({ name: 'search', usage: 'search <项目> <关键词|--tag 标签> [--json] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] [--mode <预设>] [--weights <路由=权重,…>] [--explain]', options: ['json', 'topicOnly', 'tag', 'full', 'src', 'verified', 'type', 'since', 'limit', 'maxBytes', 'noHeat', 'mode', 'weights', 'explain'], desc: '搜索（**默认口径 = 搜条目**：节点 topic ∪ 条目正文；`--topic-only` 回退 v2 只搜标题）。**命中 = 关键词是命中面的「非连续子序列」**（大小写不敏感 —— 与界面命令面板**同一个谓词、同一份打分**，`src/palette-rank.js` 是唯一实现处）：`闸门` 命中 `闸 与 门` 之间隔了字的标题，`tp` 命中 `TCP`；纯 `--tag`（无关键词）不参与这套排序。**顺序 = 那份模糊打分升序，同分保持「深度优先 + 条目序」** ⇒ 本机没有热度日志（或加 `--no-heat`）时，同一查询的节点顺序与命令面板**逐条相同**。命中形状：`{id,topic,nodeId,nodeTopic,itemId,type,itemized,matchIn,snippet,src,verified,score}`（`id`/`topic` 是 v2 兼容别名；未条目化节点 itemId=null/type=null/itemized=false；`score` 仍是**子串出现次数**，模糊命中回落 1）。过滤：`--tag`（条目级标签 → item-tag / 节点级 → node-tag；未条目化节点照 v2 报 tag）、`--src`（src 子串，字符串或数组任一项）、`--verified`（只要已核条目）、`--type`（text|rich|qa）、`--since <ISO>`（at >= ISO；不给未条目化的节点命中）；`--full` 在默认口径之上再并上 v2 的额外面（图片 caption / 节点级标签 / 链接说明）。排序：模糊打分（上面那一条）先定基线，热度（人 / AI 两条，近 30 天窗口）作为**一个封顶向量**在其上重排 —— 只重排、不改变命中与否，占总分 ≤ 8%（取值与理由的唯一一处：src/heat.js 的 SEARCH_RANK）；本机没有该日志时**不参考热度**（≠ 热度为 0，`--json` 的 heat.reason 会说明）。`--no-heat`：**显式**跳过热度日志 —— 本次调用**完全不碰它（不读、不写、不排序）**：日志坏了 / 认不出通道 / 时间乱序时这是**先拿到结果**的出口（往坏日志里再追加一条只会搅得更坏 ⇒ 写入这一半也必须一起关）；⚠ 它不改变默认档：默认遇到坏日志仍然**响亮失败**（不许静默降级成"按 0 排"）。预算：`--limit`（缺省 200，上界 1000）/ `--max-bytes`（缺省 65536，16–4194304）；`--json` 顶层 `{project,keyword,hits,hitCount,truncated,mode,budget:{bytes,estTokens,limit,maxBytes},heat:{applied,reason,weights,windowDays,rankedNodes,hitNodes,log}}`，超限截断并给续取方式（budget.resume）。非法值（含 --verified/--type/--since 写错）**当场报错**，不静默退化成默认值或"0 命中"。'
+  register({ name: 'search', usage: 'search <项目> <关键词|--tag 标签> [--json] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] [--mode <预设>] [--weights <路由=权重,…>] [--recall <路由>] [--explain]', options: ['json', 'topicOnly', 'tag', 'full', 'src', 'verified', 'type', 'since', 'limit', 'maxBytes', 'noHeat', 'mode', 'weights', 'recall', 'explain'], desc: '搜索（**默认口径 = 搜条目**：节点 topic ∪ 条目正文；`--topic-only` 回退 v2 只搜标题）。**命中 = 关键词是命中面的「非连续子序列」**（大小写不敏感 —— 与界面命令面板**同一个谓词、同一份打分**，`src/palette-rank.js` 是唯一实现处）：`闸门` 命中 `闸 与 门` 之间隔了字的标题，`tp` 命中 `TCP`；纯 `--tag`（无关键词）不参与这套排序。**顺序 = 那份模糊打分升序，同分保持「深度优先 + 条目序」** ⇒ 本机没有热度日志（或加 `--no-heat`）时，同一查询的节点顺序与命令面板**逐条相同**。命中形状：`{id,topic,nodeId,nodeTopic,itemId,type,itemized,matchIn,snippet,src,verified,score}`（`id`/`topic` 是 v2 兼容别名；未条目化节点 itemId=null/type=null/itemized=false；`score` 仍是**子串出现次数**，模糊命中回落 1）。过滤：`--tag`（条目级标签 → item-tag / 节点级 → node-tag；未条目化节点照 v2 报 tag）、`--src`（src 子串，字符串或数组任一项）、`--verified`（只要已核条目）、`--type`（text|rich|qa）、`--since <ISO>`（at >= ISO；不给未条目化的节点命中）；`--full` 在默认口径之上再并上 v2 的额外面（图片 caption / 节点级标签 / 链接说明）。排序：模糊打分（上面那一条）先定基线，热度（人 / AI 两条，近 30 天窗口）作为**一个封顶向量**在其上重排 —— 只重排、不改变命中与否，占总分 ≤ 8%（取值与理由的唯一一处：src/heat.js 的 SEARCH_RANK）；本机没有该日志时**不参考热度**（≠ 热度为 0，`--json` 的 heat.reason 会说明）。`--no-heat`：**显式**跳过热度日志 —— 本次调用**完全不碰它（不读、不写、不排序）**：日志坏了 / 认不出通道 / 时间乱序时这是**先拿到结果**的出口（往坏日志里再追加一条只会搅得更坏 ⇒ 写入这一半也必须一起关）；⚠ 它不改变默认档：默认遇到坏日志仍然**响亮失败**（不许静默降级成"按 0 排"）。预算：`--limit`（缺省 200，上界 1000）/ `--max-bytes`（缺省 65536，16–4194304）；`--json` 顶层 `{project,keyword,hits,hitCount,truncated,mode,budget:{bytes,estTokens,limit,maxBytes},heat:{applied,reason,weights,windowDays,rankedNodes,hitNodes,log}}`，超限截断并给续取方式（budget.resume）。非法值（含 --verified/--type/--since 写错）**当场报错**，不静默退化成默认值或"0 命中"。'
       /* 【W4】混合检索：**何时用** + "不给就逐字节不变" + 数字一律从 `src/palette-rank.js` **现取** */
       + '混合检索（**W4**）：**不给 `--mode` / `--weights` 时这一层是关的 —— 输出与从前逐字节相同**；'
       + '给了才启用，且只在**既有命中内部**重排（不增删命中、不改命中形状与 hitCount）。'
@@ -182,13 +201,27 @@ function init() {
       + '融合是 **RRF**：总分 = Σ 权重/(k + 名次)，k = ' + paletteSpec.RRF_K
       + '（只吃名次 ⇒ 不含量纲、不需要归一化；k 与理由只有 src/palette-rank.js 一处）。'
       + '`--explain` 只**多给读数**、**不改排序**：文本档逐路 + 逐条列出"由哪几路贡献、各自什么排名"，'
-      + '`--json` 多一个顶层 `explain:{enabled,mode,k,weights,routes,hits}`（`explain.hits` 与 `hits` '
-      + '逐条同长同序；命中对象**不加任何键** —— 12 键契约不动）', fn: loadFile('project').search });
+      + '`--json` 多一个顶层 `explain:{enabled,mode,k,weights,recall,routes,hits}`（`explain.hits` 与 `hits` '
+      + '逐条同长同序；命中对象**不加任何键** —— 12 键契约不动）。'
+      /* 【W4b】扩召回：**何时用** + "不给就逐字节不变" + 新取值从 `src/palette-rank.js` **现取** */
+      + '扩召回（**W4b**）：`--recall <路由>` —— **不给它时输出与从前逐字节相同**（候选集、`hitCount`、'
+      + '`matchIn` 取值集合都不变，与 W4 那条"默认关"同一条纪律）。给了才**真的扩召回**：把'
+      + '"非字面命中"（头名在有界邻域里的近邻 —— 上界就是路由表那一行的 `bound`）也接进结果 ⇒ '
+      + '`hitCount` 与 `hits` **会因此变多**，新命中的 `matchIn` = 该路声明的取值（' + recallLine() + '）。'
+      + '能扩召回的只有路由表里标了 `recall` 的那几路（' + paletteSpec.RECALL_ROUTE_IDS.join(' / ') + '）；'
+      + '它必须与 `--mode` / `--weights` **同给**（它改变的是**候选集**，而"这批候选怎么排"是融合那一层的事 —— '
+      + '只给 --recall 就等于替你偷偷挑一个默认预设）；不认识的 route / 不能扩召回的路由 / 写两遍 ⇒ **当场报错**。'
+      + '硬过滤仍正交：`--tag` 与关键词照旧 AND，给了条目级过滤（--src/--verified/--type/--since）就只允许条目命中 '
+      + '⇒ 扩召回不参与（它不许绕过过滤）。`--explain` 里逐路报"这次接回来几条 / 为什么是 0"（没点名的那几路也在，'
+      + '标 `asked:false`）。**命中形状仍是 12 键**：本件是**开** `matchIn` 的取值表（多一个 `'
+      + recallHitNames() + '`），**不是加键**。'
+      + '判据与读数：`tests/search-recall.test.js`（默认档逐字节不变 / 上界来自路由表 / 硬过滤不被绕过 / '
+      + '黄金集扩量给读前读后 / 注入证明 / 一处实现的静态把守），语料 `tests/fixtures/hybrid-golden.json`。', fn: loadFile('project').search });
   /* 【W1】`search-all` —— 一次检索**扫全库**（跨项目）。选项面 = `search` 那一套 + `--scope`：
    * 相同的选项在这里**逐字同一个语义**（它们逐个项目转发给同一个 `searchItems`），所以多出来的
    * 只有"范围"这一维 —— 不新增第二套过滤/排序/预算口径。两条硬上限的数字从 `src/item-index.js`
    * **现取**（desc 会进 `docs/CLI.md`；抄一份数字在这里迟早漂移）。 */
-  register({ name: 'search-all', usage: 'search-all <关键词|--tag 标签> [--scope 项目名,…] [--json] [--compact] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] [--mode <预设>] [--weights <路由=权重,…>] [--explain]', options: ['json', 'topicOnly', 'tag', 'full', 'src', 'verified', 'type', 'since', 'scope', 'limit', 'maxBytes', 'noHeat', 'mode', 'weights', 'explain'], desc: '**跨项目检索**：一次调用扫**全库**（`projects/` 下全部项目，按**项目名升序**），每条命中带 `project` —— 这是卖点 1 那句"AI 不必每次上网搜"的技术前提（从前 `search` 必须点名**单个**项目）。`--scope 项目甲,项目乙` 把范围收回来（名单里的项目不存在 ⇒ **报错并逐个点名**；`--scope` 裸写/空名单 ⇒ 报错，不静默当"全库"）；其余选项与 `search` **同一个语义**（同一条 `searchItems` 实现）：`--tag` / `--full` / `--topic-only` / `--src` / `--verified` / `--type` / `--since` / `--limit` / `--max-bytes`；**命中口径与排序口径也逐字同一条**（命中 = 关键词是命中面的**非连续子序列**；项目内顺序 = 模糊打分升序、同分保持「深度优先 + 条目序」—— 打分与定序的唯一实现在 `src/palette-rank.js`，界面命令面板吃的是同一份）。顺序 = **项目名升序 × 项目内既有顺序**（项目内与 `search <该项目>` 逐条同序，含它自己的热度榜）；**不做跨项目重排**（**热度重排**的唯一实现是 `src/item-index.js` 的 `orderByHeat`；跨项目比分数会是第二份排序实现，且 nodeId 只在项目内唯一）。热度**逐项目各算各的榜**（人 / AI 两条，窗口 ' + heatSpec.WINDOW_DAYS + ' 天，封顶见 `src/heat.js` 的 SEARCH_RANK）；`--no-heat` = `search` 的同名开关（本次完全不碰任何项目的热度日志）。两条**硬上限**（调用方改不了，越限 ⇒ **响亮报错 + 一条命中都不返回**，与"截断"是两件事）：命中总数 ' + itemIndexSpec.SCAN_MAX_HITS + ' 条、扫描耗时 ' + itemIndexSpec.SCAN_MAX_MS + ' ms（取值与报文都在 `src/item-index.js` 的 `scanGate`）。`--limit` / `--max-bytes` 是**调用方预算**：截断时如实写 `truncated` 并给续取方式。**不许静默少扫**：某个项目的**数据读不出来** ⇒ 跳过它，但在 `skipped` 里逐个点名（文本档一行 `⚠ 跳过项目「…」`，汇总行写"⚠ 另有 N 个项目没扫成"）；它的**热度日志坏了** ⇒ 整体失败并点名那个项目（与 `search` 同一条纪律，出路 `--no-heat`）。无命中时**明确报"0 条"**（不是空输出）。`--json` 顶层 `{keyword,tag,scoped,scope,scanned,skipped,hits,hitCount,truncated,mode,budget,heat:{applied,reason,weights,windowDays,rankedNodes,hitNodes,perProject}}`'
+  register({ name: 'search-all', usage: 'search-all <关键词|--tag 标签> [--scope 项目名,…] [--json] [--compact] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] [--mode <预设>] [--weights <路由=权重,…>] [--recall <路由>] [--explain]', options: ['json', 'topicOnly', 'tag', 'full', 'src', 'verified', 'type', 'since', 'scope', 'limit', 'maxBytes', 'noHeat', 'mode', 'weights', 'recall', 'explain'], desc: '**跨项目检索**：一次调用扫**全库**（`projects/` 下全部项目，按**项目名升序**），每条命中带 `project` —— 这是卖点 1 那句"AI 不必每次上网搜"的技术前提（从前 `search` 必须点名**单个**项目）。`--scope 项目甲,项目乙` 把范围收回来（名单里的项目不存在 ⇒ **报错并逐个点名**；`--scope` 裸写/空名单 ⇒ 报错，不静默当"全库"）；其余选项与 `search` **同一个语义**（同一条 `searchItems` 实现）：`--tag` / `--full` / `--topic-only` / `--src` / `--verified` / `--type` / `--since` / `--limit` / `--max-bytes`；**命中口径与排序口径也逐字同一条**（命中 = 关键词是命中面的**非连续子序列**；项目内顺序 = 模糊打分升序、同分保持「深度优先 + 条目序」—— 打分与定序的唯一实现在 `src/palette-rank.js`，界面命令面板吃的是同一份）。顺序 = **项目名升序 × 项目内既有顺序**（项目内与 `search <该项目>` 逐条同序，含它自己的热度榜）；**不做跨项目重排**（**热度重排**的唯一实现是 `src/item-index.js` 的 `orderByHeat`；跨项目比分数会是第二份排序实现，且 nodeId 只在项目内唯一）。热度**逐项目各算各的榜**（人 / AI 两条，窗口 ' + heatSpec.WINDOW_DAYS + ' 天，封顶见 `src/heat.js` 的 SEARCH_RANK）；`--no-heat` = `search` 的同名开关（本次完全不碰任何项目的热度日志）。两条**硬上限**（调用方改不了，越限 ⇒ **响亮报错 + 一条命中都不返回**，与"截断"是两件事）：命中总数 ' + itemIndexSpec.SCAN_MAX_HITS + ' 条、扫描耗时 ' + itemIndexSpec.SCAN_MAX_MS + ' ms（取值与报文都在 `src/item-index.js` 的 `scanGate`）。`--limit` / `--max-bytes` 是**调用方预算**：截断时如实写 `truncated` 并给续取方式。**不许静默少扫**：某个项目的**数据读不出来** ⇒ 跳过它，但在 `skipped` 里逐个点名（文本档一行 `⚠ 跳过项目「…」`，汇总行写"⚠ 另有 N 个项目没扫成"）；它的**热度日志坏了** ⇒ 整体失败并点名那个项目（与 `search` 同一条纪律，出路 `--no-heat`）。无命中时**明确报"0 条"**（不是空输出）。`--json` 顶层 `{keyword,tag,scoped,scope,scanned,skipped,hits,hitCount,truncated,mode,budget,heat:{applied,reason,weights,windowDays,rankedNodes,hitNodes,perProject}}`'
       /* 【W4】混合检索：与 `search` **同一个开关、同一处语义**（逐项目各算各的融合） */
       + '。混合检索（**W4**）：`--mode` / `--weights` / `--explain` = `search` 的同名开关'
       + '（同一处解析与同一份路由表，`src/palette-rank.js`）；**不给 `--mode` / `--weights` 时这一层是关的**'
@@ -196,7 +229,14 @@ function init() {
       + '（每路的名次都是项目内的）⇒ 每个项目的分片与 `search <该项目> --mode/--weights …` 逐条同序；'
       + '**仍然不做跨项目重排**（跨项目比分数/名次会是第二份排序实现，且 nodeId 只在项目内唯一）。'
       + '`--explain` 的 `routes[].ranked` 是**跨项目合计** + 逐项目分账（名次不能跨项目相加，'
-      + '所以分账也一并给），`explain.hits` 每条带 `project`', fn: loadFile('project').searchAll });
+      + '所以分账也一并给），`explain.hits` 每条带 `project`'
+      /* 【W4b】扩召回：与 `search` 同名同义、逐项目各算各的；`explain.recall[].added` 同样给合计 + 分账 */
+      + '。扩召回（**W4b**）：`--recall <路由>` = `search` 的同名开关（同一处解析；能扩召回的是 '
+      + paletteSpec.RECALL_ROUTE_IDS.join(' / ') + '，报 `matchIn` = ' + recallHitNames() + '）；'
+      + '**不给它时输出与从前逐字节相同**；给了也**逐项目各算各的**（邻域是项目内的 ⇒ 每个项目的'
+      + '命中与 `search <该项目> --recall …` 逐条相同）。`--explain` 的 `recall.routes[].added` '
+      + '同样是**跨项目合计 + 逐项目分账**；命中形状仍是 **12 键**（开的是 `matchIn` 取值表，不是加键）',
+    fn: loadFile('project').searchAll });
   register({ name: 'stats', usage: 'stats <项目> [--json]', options: ['json'], desc: '项目统计（节点数/深度/图片数/链接数）', fn: loadFile('project').stats });
   register({ name: 'init', usage: 'init <项目> [--title 标题] [--dry-run]', options: ['title'], desc: '创建空项目（meta + root 节点）', fn: loadFile('project').init });
   register({ name: 'backlinks', usage: 'backlinks <项目> <id> [--json]', options: ['json'], desc: '查看节点反向链接（谁引用了我，跨项目）', fn: loadFile('relations').backlinks });

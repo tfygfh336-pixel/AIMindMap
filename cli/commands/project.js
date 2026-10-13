@@ -431,7 +431,9 @@ function scanAll(ctx, opts) {
       // 【W4】混合检索**逐个项目各算各的**（与热度同一形状）：每路的名次都是项目内的
       // ⇒ 每个项目的分片与 `search <该项目> --mode/--weights …` 逐条同序（判据靠它）。
       // `selfProject` 只用于判"这条 links 边是不是本项目的"；`assoc` 是图距离的另一半边。
-      mode: o.hybridMode, weights: o.weights, explain: o.explain,
+      // 【W4b】`--recall` 同一条路各算各的：扩召回的邻域是**项目内**的（nodeId 只在项目内唯一、
+      // 跨项目节点也不在候选集里）⇒ 每个项目接回来的候选与单项目档逐条相同。
+      mode: o.hybridMode, weights: o.weights, explain: o.explain, recall: o.recall,
       selfProject: name, assoc: root && root.assoc
     });
     // 参数错（缺关键词 / --verified 写错 / --topic-only 与条目级过滤同给…）在这一层按项目重复出现，
@@ -544,6 +546,20 @@ function printExplain(ctx, ex) {
       + idle.map((r) => r.id + '（' + (r.note || '权重 0') + '）').join('；')
       + ' —— 这是**能力 / 数据边界**，不等于"这一维没有问题"（口径见 docs/EXTENSIONS.md §1.2 的 W4 一段）');
   }
+  /* 【W4b】扩召回读数（**逐路点名**）：没给 `--recall` 时也要说清"这几路能扩召回、这次没点名它们"；
+   * 给了就要报"这一路接回来几条、接回来的命中报什么 `matchIn`、上界几跳"。
+   * 一条都没接回来时必须说**为什么**（没有那份数据 / 这一批不需要扩）—— 少一个开关 / 少一路都要看得见。 */
+  const rec = ex.recall;
+  if (rec) {
+    const asked = rec.routes.filter((r) => r.asked);
+    ctx.out(rec.on
+      ? '  · 扩召回（--recall ' + rec.asked.join(',') + '）：'
+        + asked.map((r) => '路 `' + r.id + '` 接回 ' + r.added + ' 条新候选'
+          + '（它们报 matchIn=' + r.hitValue + '，上界 ' + r.bound + ' 跳 = 路由表那一行的 bound）').join('；')
+      : '  · 扩召回：**未启用**（不给 --recall 时它不参与，候选集与从前逐字节相同）；能扩召回的路：'
+        + rec.routes.map((r) => r.id + '（报 ' + r.hitValue + '，上界 ' + r.bound + ' 跳）').join(' / '));
+    asked.forEach((r) => { if (r.note) ctx.out('    ⚠ 路 `' + r.id + '` 一条都没接回来：' + r.note); });
+  }
   ex.hits.forEach((h, i) => {
     const known = h.parts.filter((p) => p.rank !== null);
     ctx.out('  ' + (i + 1) + '. ' + h.nodeId + (h.itemId ? '#' + h.itemId : '')
@@ -580,9 +596,25 @@ function mergeExplain(ofEach, shown) {
     });
     return Object.assign({}, r, { ranked: ranked, perProject: perProject });
   });
+  /* 【W4b】扩召回的读数同样是**逐项目各算各的**（邻域是项目内的）⇒ `added` 给"合计 + 逐项目分账"
+   * （与上面 `routes[].ranked` 同一形状、同一条理由：不同项目的跳数/名次不能相加）。 */
+  const rec = first.recall ? {
+    on: first.recall.on,
+    asked: first.recall.asked,
+    routes: first.recall.routes.map((r) => {
+      let added = 0;
+      const perProject = used.map((x) => {
+        const rows = (x.explain.recall && x.explain.recall.routes) || [];
+        const row = rows.filter((y) => y.id === r.id)[0] || {};
+        added += Number(row.added) || 0;
+        return { project: x.project, added: row.added || 0, note: row.note || null };
+      });
+      return Object.assign({}, r, { added: added, perProject: perProject });
+    })
+  } : null;
   return {
     enabled: first.enabled, mode: first.mode, k: first.k, weights: first.weights,
-    routes: routes, hits: hits.slice(0, shown)
+    routes: routes, recall: rec, hits: hits.slice(0, shown)
   };
 }
 
@@ -736,6 +768,9 @@ module.exports = {
       limit: limit, maxBytes: maxBytes,
       heat: boost,
       mode: ctx.args.mode, weights: ctx.args.weights, explain: !!ctx.args.explain,
+      // 【W4b】扩召回：`--recall <路由>` 原样交给纯逻辑层（取值合法性、上界、新取值名都在
+      // `src/palette-rank.js` 一处；命令层不复制一份条件表 —— `recall` 写错的报文与 `--weights` 同源）
+      recall: ctx.args.recall,
       selfProject: ctx.projectName, assoc: data.assoc
     });
     // 缺关键词 / 非法 --verified,--type,--since / --topic-only 与条目级过滤同给 ⇒ 都由纯逻辑层给出完整报文
@@ -834,7 +869,8 @@ module.exports = {
       keyword: ctx.args._[0], tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
       src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
       // 【W4】混合检索的参数闸门也在那一处：`--mode` / `--weights` 写错的报文与 `search` 逐字同源
-      mode: ctx.args.mode, weights: ctx.args.weights
+      // 【W4b】`--recall` 同走这一个闸门（"必须与 --mode/--weights 同给"、取值合法性都只有那一份）
+      mode: ctx.args.mode, weights: ctx.args.weights, recall: ctx.args.recall
     });
     if (!probe.ok) ctx.error(probe.message);
 
@@ -849,7 +885,8 @@ module.exports = {
       src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
       noHeat: nh.value, mode: probe.mode,
       // 【W4】混合检索：逐个项目各自融合（`--mode` / `--weights` / `--explain` 与 `search` 同名同义）
-      hybridMode: ctx.args.mode, weights: ctx.args.weights, explain: !!ctx.args.explain
+      // 【W4b】扩召回也逐个项目各自算（`--recall` 与 `search` 同名同义；邻域是项目内的）
+      hybridMode: ctx.args.mode, weights: ctx.args.weights, recall: ctx.args.recall, explain: !!ctx.args.explain
     });
 
     // ---- 卡预算（**合并之后**一次算；实现与 `searchItems` 共用同一个 `budgeted`）----

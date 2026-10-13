@@ -327,11 +327,12 @@ describe('C. 判据②③：黄金集 + 改权重的前后对比', () => {
       { label: 'recent', extra: ['--mode', 'recent'] },
       { label: 'conceptual', extra: ['--mode', 'conceptual'] }
     ];
-    // ⚠️ 自带 args 的那几条（--tag / 自带 --mode / 自带 --weights）**不进这张对比表**：
+    // ⚠️ 自带 args 的那几条（--tag / 自带 --mode / 自带 --weights / 【W4b】自带 --recall）**不进这张对比表**：
     //    它们的档是问题自己指定的，再叠一个 --mode/--weights 就是"两种口径同给"（那会响亮报错 —— 对的）。
     const rows = table.map((t) => Object.assign({ label: t.label }, metrics(t.extra)));
     console.log('\n[W4 黄金集] 各档读数（hit@1 / hit@3 / MRR，共 ' + rows[0].n
-      + ' 条不吃自带档的问题；另有 ' + (GOLDEN.queries.length - rows[0].n) + ' 条自带 --tag/--mode/--weights，'
+      + ' 条不吃自带档的问题；另有 ' + (GOLDEN.queries.length - rows[0].n)
+      + ' 条自带 --tag/--mode/--weights/--recall，'
       + '只在 C1 里按自己的档判）：\n'
       + rows.map((r) => '  ' + r.label.padEnd(34) + ' hit@1 ' + String(r.hit1).padStart(2) + '/' + r.n
         + '   hit@3 ' + String(r.hit3).padStart(2) + '/' + r.n + '   MRR ' + r.mrr).join('\n'));
@@ -497,7 +498,12 @@ describe('F. 融合 / 权重 / 路由表只有一处实现（结构断言）', (
     const src = read('src/item-index.js');
     expect(src, '必须真的走共享融合').toContain('paletteRank.fuse(');
     expect(src, '必须真的走共享解析').toContain('paletteRank.hybridSpecOf(');
-    expect(src, '图距离的深度上界必须从路由表现取').toContain('gRow ? gRow.bound : 0');
+    /* ⚠️ 【W4b】**如实改口径**（不是放宽）：上界从"图距离那一段里现取"变成**同一处 `hopsOf` 里现取** ——
+     * 因为扩召回与图距离这一路问的是同一个问题（头名的有界邻域）⇒ 共用同一张跳数表，
+     * 两处各算一遍必然出现"排得上名次却进不了候选集"。判据仍然是那两条：
+     *   ① 上界必须**从路由表那一行现取**；② 不许把跳数写死在 `src/item-index.js` 里。 */
+    expect(src, '图距离 / 扩召回的深度上界必须从路由表现取').toContain('maxHops: row.bound');
+    expect(src.includes('maxHops: 2'), '不许把跳数写死在 item-index 里').toBe(false);
     // 它自己一个 RRF 公式都不许有（`/(k + rank)` 那种写法一旦回到这里就红）
     expect(src.includes('/(k + rank)'), 'item-index 里不许出现第二份 RRF 公式').toBe(false);
     expect(src.includes('RRF_K'), 'item-index 里不许出现 k').toBe(false);

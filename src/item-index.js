@@ -90,8 +90,15 @@
    * `detail` 是**v2 兼容值**：`--full` 下"未条目化节点的正文命中"从 v2 起就报它，
    * 而 `tests/query.test.js` 钉着这个字面量 ⇒ 不能改（改了要动别人的文件，那是越界）。
    * `item-tag` / `node-tag` 只出现在 mode='items'；mode='topic-only' 一律用 v2 那五个值。
+   *
+   * 【W4b】**表开了新值 `near`**（扩召回接回来的近邻）—— 这是**开取值表**、不是**加键**：
+   * 命中的键仍然是 12 个（`tests/item-index.test.js` 逐键数过，`docs/ITEM-MODEL.md` §3.4 也是 12）。
+   * `near` 只在**显式**给了 `--recall` 时才会出现（默认档一个字节都不变）。
+   * ⚠️ 取值名本身不在这里定死归属：它由 `src/palette-rank.js` 的 `ROUTES` 里那一行 `recallHit` 声明，
+   * 本表必须含它 —— 两边不许漂（`tests/item-index.test.js` 有一条断言把"表 ⇄ 路由表"钉在一起）。
    */
-  const MATCH_IN = Object.freeze(['topic', 'item', 'item-tag', 'node-tag', 'caption', 'tag', 'link', 'detail']);
+  const MATCH_IN = Object.freeze(['topic', 'item', 'item-tag', 'node-tag', 'caption', 'tag', 'link', 'detail',
+    'near']);
 
   /** `type` 的取值表（封闭，契约 §1）：别的值判红。 */
   const TYPES = Object.freeze(['text', 'rich', 'qa']);
@@ -547,9 +554,11 @@
    *   ② 交给 `paletteRank.fuse`（RRF）合成**一个**顺序 —— 顺序就是那一个函数的结果。
    * ⚠️ 本模块**不写任何权重、预设、`k` 或融合公式**（那些数字与理由只有 `src/palette-rank.js` 一处；
    *   这里连 `k` 都不算，`--explain` 里也是从那一处**现取**再报出来）。
-   * ⚠️ **只重排、不增删命中**：每一路都只在**既有候选集内部**定序 ⇒ 命中形状（契约 §3.4 的 12 键）、
-   *   `hitCount`、`matchIn` 封闭取值表**一个字都不动**。把"非字面命中"也带回来是**召回扩展**，
-   *   它要动 `matchIn` 那张封闭表 ⇒ 那是契约变更（本件不做，`--explain` 的报文里明说这件事）。
+   * ⚠️ **W4 那一层只重排、不增删命中**：每一路都只在**既有候选集内部**定序 ⇒ 命中形状（契约 §3.4 的
+   *   12 键）、`hitCount`、`matchIn` 封闭取值表**一个字都不动**。
+   * 【W4b】把"非字面命中"也带回来是**召回扩展**（另一件，已落地）：它由 `--recall <路由>` **显式**点名
+   *   —— 开了它 `hitCount` 与 `hits` 才会变多（那是它的用途），`matchIn` 多一个封闭取值 `near`；
+   *   **不给 `--recall` 时这一段整段不生效**（候选集与从前逐字节相同，见 `searchItems` 里那段实现）。
    */
 
   /**
@@ -779,16 +788,24 @@
    *                                      // `paletteRank.hybridSpecOf` 解析 —— 解析、权重表、RRF 都在那一处；
    *                                      // 两个都不给 ⇒ 不启用 ⇒ 顺序与从前逐字相同）
    *   explain,                           // 【W4】要"每路贡献"的读数（不影响排序，只多返回一个 `explain`）
+   *   recall,                            // 【W4b】**扩召回**：能扩召回的路由名单（`--recall` 的原文，
+   *                                      // **原样**交给同一个 `hybridSpecOf` 解析）。不给 ⇒ 不扩召回
+   *                                      // ⇒ 候选集与从前逐字节相同；给了 ⇒ 头名有界邻域里"还没进
+   *                                      // 候选集"的节点也进结果（`matchIn` = 路由表那一行的 `recallHit`）。
+   *                                      // ⚠️ 它必须与 `mode` / `weights` 同给（理由见 `hybridSpecOf`）
    *   selfProject, assoc                 // 【W4】图距离这一路要的两样数据：本项目名（只用于判"这条边
    *                                      // 是不是本项目的"）与项目文件里的 `assoc` 集合（`data.assoc`）。
    *                                      // 不给 ⇒ 图距离那一路恒空（如实记 ranked:0，不假装排过）
    * }
    * @returns {ok, message?, mode, hits, hitCount, truncated, budget, explain?}
    *   · `hitCount` = **截断前的命中总数**（"全量命中数"）；`hits.length` 才是本次返回数
+   *     （⚠️ 扩召回**真的会**让它变大 —— 那是它的用途；不开 `--recall` 时与从前同一个数）
    *   · `budget` = `{bytes, estTokens, limit, maxBytes}`，截断时另加 `resume`（续取方式）
-   *   · `explain`（只在 `opts.explain` 时出现）= `{enabled, mode, k, weights, routes[], hits[]}`：
-   *     `routes` 逐路给 `{id,label,source,installed,weight,ranked,note}`，`hits` 与**返回的** `hits`
-   *     逐条同长同序、每项 `{nodeId,itemId,total,parts:[{route,rank,weight,add}]}` ——
+   *   · `explain`（只在 `opts.explain` 时出现）= `{enabled, mode, k, weights, recall, routes[], hits[]}`：
+   *     `routes` 逐路给 `{id,label,source,installed,weight,ranked,note}`，`recall` 给
+   *     `{on, asked[], routes:[{id,hitValue,bound,asked,added,note}]}`（扩召回那一路的读数，见
+   *     `recallReport`），`hits` 与**返回的** `hits` 逐条同长同序、每项
+   *     `{nodeId,itemId,total,parts:[{route,rank,weight,add}]}` ——
    *     ⚠️ 它**不是**命中对象上的键（契约 §3.4 的 12 键一个字不动）。
    *   · `ok:false` 时 `hits` 为空数组，`message` 是**完整可打印**的报错（命令层只需 `ctx.error(r.message)`）
    */
@@ -810,10 +827,14 @@
     const sf = parseSince(o.since);
     if (!sf.ok) return fail('bad-option', '--since ' + sf.reason);
     /* 【W4】混合检索的**参数闸门也在这一处**（与上面三条同一条纪律）：`--mode` / `--weights`
-     * 写错了就在碰任何东西之前红，而且报文来自唯一那一份解析（命令层不复制一份条件表）。 */
-    const hs = paletteRank.hybridSpecOf({ mode: o.mode, weights: o.weights });
+     * 写错了就在碰任何东西之前红，而且报文来自唯一那一份解析（命令层不复制一份条件表）。
+     * 【W4b】`--recall` 走的是同一个闸门（同一个 `hybridSpecOf`）：取值合法性、以及"它必须与
+     * `--mode` / `--weights` 同给"这条口径的报文，都只有 `src/palette-rank.js` 一份。 */
+    const hs = paletteRank.hybridSpecOf({ mode: o.mode, weights: o.weights, recall: o.recall });
     if (!hs.ok) return fail('bad-option', hs.message);
     const hybrid = hs.spec;
+    /** 【W4b】扩召回的生效配置（`{on, routes}`；不给 `--recall` ⇒ `on:false` ⇒ 下面整段不生效） */
+    const recall = hybrid.recall || { on: false, routes: [] };
     if (!kw && !tag) return fail('no-criteria', '缺少关键词（或用 --tag 按标签搜索）');
 
     // 条目级过滤 × topic-only：**两种口径不混**（同 `read --items` × `--brief` 的纪律）
@@ -845,6 +866,10 @@
      * （`origin`）、有没有时间真值 —— 三路各取自己需要的那一格（见 `factOf`）。
      * 与 `faceTexts` 同一条纪律：**必须同时 push**，所以也走 `addHit`。 */
     const facts = [];
+    /* 【W4b】扩召回的**候选池**（只有显式给了 `--recall` 时才被读）：只收**已经过了标签闸门**的 entry
+     * —— 硬过滤（`--tag` 与关键词是 AND）是正交的，扩召回**不许**绕过它；而"过没过"这件事只判一次
+     * （就在下面主循环那道闸门处，判过了才 push 进来），免得同一个谓词在文件里写两遍慢慢漂。 */
+    const recallPool = [];
     const addHit = (hit, faceText, fact) => { raw.push(hit); faceTexts.push(faceText); facts.push(fact); };
 
     idx.entries.forEach((entry) => {
@@ -876,6 +901,10 @@
       // ---------------- 关键词检索 ----------------
       // `--tag` 与关键词是 **AND**（v2 口径：两者都要满足）
       if (tag && !nodeTag && !anyItemTag) return;
+      /* 【W4b】过了这道闸门 ⇒ 也允许被扩召回带回来（**同一道硬过滤只判一次**，见 `recallPool`）。
+       * 注意：这里只决定"有没有资格进候选池"，**入池 ≠ 进结果** —— 进结果还要看它是否真在
+       * 头名的有界邻域里（那一步在下面的扩召回段，条件只有"跳数 ≤ 路由表那一行的 `bound`"）。 */
+      recallPool.push(entry);
 
       /* 【W6】命中判定 = 非连续子序列（`faceMatch` ⇒ `src/palette-rank.js` 的 `fuzzyMatch`）。
        * 改前这里是 `n.topic.indexOf(kw) >= 0` 一类**字面子串**判定 —— 于是"tcp"在 CLI 能命中
@@ -951,18 +980,94 @@
     textOrder.forEach((i, k) => { if (!textRank.has(i)) textRank.set(i, k + 1); });
     const textRankOf = (i) => (textRank.has(i) ? textRank.get(i) : Number.MAX_SAFE_INTEGER);
 
+    /* 【W4b】头名 = 文本那一路的第 1 名（无关键词 ⇒ 没有头名）。扩召回与"图距离"这一路**共用**它。 */
+    const leaderId = (kw && textOrder.length) ? facts[textOrder[0]].nodeId : '';
+    /**
+     * 【W4b】某一路的**跳数表**（每次 BFS 只算一遍、被复用）：扩召回与"图距离"这一路问的是
+     * 同一个问题（"头名的有界邻域里有哪些节点、各几跳"）⇒ **同一个函数、同一张表**（`graphHopsFrom`），
+     * 上界也从该路由那一行的 `bound` 现取。两处各算一遍必然出现"排得上名次却进不了候选集"。
+     */
+    const hopCache = new Map();
+    const hopsOf = (rid) => {
+      if (hopCache.has(rid)) return hopCache.get(rid);
+      const row = paletteRank.ROUTES.filter((r) => r.id === rid)[0];
+      const map = (leaderId && row)
+        ? graphHopsFrom(leaderId, root, { selfProject: o.selfProject, assoc: o.assoc, maxHops: row.bound })
+        : new Map();
+      hopCache.set(rid, map);
+      return map;
+    };
+
+    /* ---------------- 【W4b】扩召回：把"名次表里本来就有、只是从前没有候选位"的节点接回来 ----------------
+     * 清单出处：`## W4｜混合检索与"权重怎么处理"`（本件是它被裁出去的另一半）。**显式档**：
+     * 不给 `--recall` 时这里整段不执行 ⇒ 候选集、`hitCount`、`matchIn` 取值集合与从前逐字节相同
+     * （与 W4 的"不给 --mode / --weights 就不启用"同一条纪律；理由见 `docs/EXTENSIONS.md` §1.2）。
+     *
+     * ⭐ **一处实现**（本工程铁律 1）——这一段**没有**任何自己的打分 / 排序 / 命中构造：
+     *   · 候选从哪来 = `graphHopsFrom`（与"图距离"那一路**同一个函数、同一张表、同一个上界**）；
+     *   · 命中对象 = `hitOf`（与字面命中**同一个构造**；只把 `matchIn` 换成路由表那一行声明的
+     *     `recallHit`）—— 所以命中形状仍是契约 §3.4 的那 12 个键（**开的是取值表，不是加键**）；
+     *   · 命中面原文 = 空串 ⇒ `rankRows`（上面那一行）本来就会把它从"文本那一路"里丢掉，
+     *     **不需要**另写一套"这不是字面命中"的判定；它只由扩召回那一路给名次；
+     *   · 顺序 = 下面 `paletteRank.fuse`（**原样**处理新候选），权重 / `k` 仍只有那一处；
+     *   · 硬过滤照旧 = 标签闸门（`recallPool` 只收过了闸门的 entry）+ 条目级过滤
+     *     （给了 `--src/--verified/--type/--since` 就只允许条目命中 ⇒ 扩召回不参与）。
+     *
+     * 三条如实登记的性质（判据靠它们，`tests/search-recall.test.js` 钉着）：
+     *   ① **默认档一个字节都不变**（没给 `--recall`）；
+     *   ② **真的扩召回**：`hitCount` 与 `hits` 都会变多，新命中的 `matchIn` = 那一行的 `recallHit`
+     *      （扩召回**不是**"重排"：它改变"哪些节点算命中"）；
+     *   ③ **上界就是路由表那一行的 `bound`**：`bound` 跳之外的不接（"三跳起关系只剩同在一个库里"）。
+     * 为什么"没接回来"必须逐路说明（`recallNote`）：空结果有两种（本项目没有那份数据 / 这一批确实
+     * 不需要扩）—— 不说清，读的人会把它误读成"扩召回没生效"。 */
+    const recallAdded = {};                        // routeId → 接回来的节点 id（**进候选集的顺序**）
+    const recallNote = {};                         // routeId → "一条都没接回来"的原因（读数逐路点名用）
+    if (recall.on) {
+      const haveNode = new Set();
+      raw.forEach((h) => { if (h.nodeId !== undefined && h.nodeId !== null) haveNode.add(String(h.nodeId)); });
+      recall.routes.forEach((rid) => {
+        const row = paletteRank.ROUTES.filter((r) => r.id === rid)[0];
+        const hitValue = row ? row.recallHit : '';
+        if (!hitValue) {                           // 表说它能扩召回、却没声明取值 ⇒ 不静默跳过
+          recallNote[rid] = '这一路在路由表里标了能扩召回，却没有声明 `recallHit` 取值 ⇒ 不接回任何东西';
+          return;
+        }
+        if (onlyItems) {
+          recallNote[rid] = '条目级过滤给了（' + itemOnly.join(' / ') + '）⇒ 候选集只允许条目命中，扩召回不参与';
+          return;
+        }
+        if (!kw) { recallNote[rid] = '没有关键词（纯 --tag 检索）⇒ 没有头名可扩'; return; }
+        if (!leaderId) { recallNote[rid] = '本批没有字面命中（没有头名）⇒ 这一路无从扩起'; return; }
+        const map = hopsOf(rid);
+        const added = [];
+        recallPool.forEach((entry) => {
+          const nodeId = String(entry.node.id);
+          if (!map.has(nodeId) || haveNode.has(nodeId)) return;   // 不在有界邻域里 / 已经在命中里
+          haveNode.add(nodeId);                                   // 同一节点只接一次（跨路去重）
+          addHit(hitOf(entry, null, hitValue, {}), '', factOf(entry.node, null));
+          added.push(nodeId);
+        });
+        recallAdded[rid] = added;
+        if (!added.length) {
+          recallNote[rid] = (map.size <= 1)
+            ? '头名在 links / assoc 上没有可用的本项目邻居（或本项目没给 selfProject ⇒ 一条边都不敢认）'
+            : '头名的有界邻居**都已经在命中里**（这一批不需要扩召回）';
+        }
+      });
+      /* ⚠️ `idxOfHit` 是在扩召回**之前**建好的（文本名次要用它），新候选得补进去 ——
+       * 补法就是"再过一遍 `raw`"（已有的原值不动、新键补上），别手写第二个映射。 */
+      raw.forEach((h, i) => { if (!idxOfHit.has(h)) idxOfHit.set(h, i); });
+    }
+
     let fused = null;
     if (hybrid.enabled && raw.length) {
       const allIdx = raw.map((h, i) => i);
       const orderings = {};
       if (kw) orderings.text = textOrder;           // 纯 --tag：没有可打分的东西 ⇒ 这一路不给名次
       /* 图距离：以**文本那一路的头名**为心（无关键词 ⇒ 没有心 ⇒ 这一路恒空，如实记 ranked:0）。
-       * 深度上界从路由表现取（`bound`），本模块不写这个数字。 */
-      const gRow = paletteRank.ROUTES.filter((r) => r.id === 'graph')[0];
-      const leader = (kw && textOrder.length) ? facts[textOrder[0]].nodeId : '';
-      const hops = graphHopsFrom(leader, root, {
-        selfProject: o.selfProject, assoc: o.assoc, maxHops: gRow ? gRow.bound : 0
-      });
+       * 深度上界从路由表现取（`bound`），本模块不写这个数字。
+       * 【W4b】这张表就是扩召回用的那一张（`hopsOf` 缓存）—— 两处不可能算出两个答案。 */
+      const hops = hopsOf('graph');
       orderings.graph = routeOrder(allIdx.filter((i) => hops.has(facts[i].nodeId)),
         (i) => hops.get(facts[i].nodeId), textRankOf);
       // 来源可信度：档位高者先（档位判定只有 trustBucket 一处）
@@ -980,8 +1085,38 @@
       ok: true, mode: mode, hits: b.hits, hitCount: raw.length,
       truncated: b.truncated, budget: b.budget
     };
-    if (o.explain) out.explain = explainPayload(fused, hybrid, b.hits, idxOfHit);
+    if (o.explain) out.explain = explainPayload(fused, hybrid, b.hits, idxOfHit, recallReport(recall, recallAdded, recallNote));
     return out;
+  }
+
+  /**
+   * 【W4b】`--explain` 里的**扩召回读数**（唯一一处）：逐路回答"这一路这次接回来几条、为什么是 0"。
+   *
+   * 形状（判据靠它，别改）：
+   *   `{on, asked:[路由id…], routes:[{id, hitValue, bound, asked, added, note}]}`
+   * 三条口径：
+   *   · `routes` 列**路由表里所有能扩召回的路由**（不是"只列这次点名的") —— 没点名的那几行也要
+   *     在（`asked:false` + 说明"只定序、不扩召回"）：**少一路必须看得见**（同 W4 的 EMPTY_ROUTE_NOTE）；
+   *   · `hitValue` / `bound` 从路由表**现取**（本模块不写这两个数）；
+   *   · `added` = 这一路真接回来几条（0 时 `note` 必须说明是"没有那份数据"还是"不需要扩"）。
+   */
+  function recallReport(recall, addedOf, noteOf) {
+    const spec = recall || { on: false, routes: [] };
+    const asked = Array.isArray(spec.routes) ? spec.routes.slice() : [];
+    return {
+      on: !!spec.on,
+      asked: asked,
+      routes: paletteRank.RECALL_ROUTE_IDS.map((rid) => {
+        const row = paletteRank.ROUTES.filter((r) => r.id === rid)[0] || {};
+        const isAsked = asked.indexOf(rid) >= 0;
+        const added = (isAsked && addedOf && addedOf[rid]) ? addedOf[rid].length : 0;
+        return {
+          id: rid, hitValue: row.recallHit, bound: row.bound, asked: isAsked, added: added,
+          note: isAsked ? (added ? null : ((noteOf && noteOf[rid]) || '这一路没有接回任何候选'))
+            : '本次没点名它（--recall 没给 / 没列它）⇒ 只定序、不扩召回'
+        };
+      })
+    };
   }
 
   /**
@@ -1006,13 +1141,17 @@
    *     （"少了一路"必须看得见，而不是那一行不存在 ✗）；
    *   · `hits[]` 与**返回的** `hits` 逐条同长同序（入参就是已经过预算的那一批）。
    *     ⚠️ 它**不是**命中对象上的键：契约 §3.4 的 12 键一个字不动（平行数组，理由同 `faceTexts`）。
+   * 【W4b】`recall` 读数由调用方（`searchItems` 的 `recallReport`）算好交进来 —— **只读不改**：
+   * 这里只补一条"这一路权重是 0 时，接回来的候选实际上不出力"的说明（否则读到
+   * `added: 2` 的人会以为它们被公平排过名次）。
    */
-  function explainPayload(fused, hybrid, shownHits, idxOfHit) {
+  function explainPayload(fused, hybrid, shownHits, idxOfHit, recall) {
     const spec = hybrid || { enabled: false, mode: null, k: null, weights: null };
+    const rec = recall || null;
     const routes = paletteRank.ROUTES.map((r) => {
       const row = fused ? fused.routes.filter((x) => x.id === r.id)[0] : null;
-      const raw = spec.weights ? spec.weights[r.id] : 0;
-      const weight = (Number.isFinite(raw) && raw > 0) ? raw : 0;
+      const rawW = spec.weights ? spec.weights[r.id] : 0;
+      const weight = (Number.isFinite(rawW) && rawW > 0) ? rawW : 0;
       let note = null;
       if (!r.installed) note = '未安装（' + r.why + '）：权重收下，但不产生名次';
       else if (!spec.enabled) note = '混合检索未启用（给 --mode 或 --weights 才启用这一层）';
@@ -1022,6 +1161,15 @@
         weight: weight, ranked: row ? row.ranked : 0, note: note
       };
     });
+    if (rec) {
+      rec.routes.forEach((rr) => {
+        const line = routes.filter((x) => x.id === rr.id)[0];
+        if (line && rr.added > 0 && line.weight === 0) {
+          line.note = '这一路**权重是 0** ⇒ 它接回来的候选（扩召回 ' + rr.added + ' 条）排在末尾：'
+            + '名次算了，但 RRF 里它不出力（要它们参与排序就给这一路一个 > 0 的权重）';
+        }
+      });
+    }
     const hits = (Array.isArray(shownHits) ? shownHits : []).map((h) => {
       const i = idxOfHit.get(h);
       const known = (i !== undefined && fused);
@@ -1031,10 +1179,15 @@
         parts: known ? paletteRank.contributionsOf(fused, i) : []
       };
     });
-    return {
+    const out = {
       enabled: !!spec.enabled, mode: spec.mode, k: spec.k, weights: spec.weights,
       routes: routes, hits: hits
     };
+    /* 【W4b】扩召回读数（**只在给了 `--explain` 时出现**，且**不是**命中对象上的键 —— 12 键不动）。
+     * ⚠️ 它**总是**出现在 explain 里（哪怕没给 `--recall`）：读的人要能看见"这几路能扩召回、
+     * 这次没点名它们" —— 少一路 / 少一个开关都必须看得见（同 W4 的逐路纪律）。 */
+    if (rec) out.recall = rec;
+    return out;
   }
 
   /* ---------------- 取回（契约 §3.1 / §3.3 的读命令面） ---------------- */
@@ -1147,6 +1300,9 @@
      * （端到端只看得见合成后的顺序，看不见"某一路恒空"这类事实）。 */
     graphHopsFrom: graphHopsFrom, trustBucket: trustBucket, itemTimeOf: itemTimeOf,
     explainPayload: explainPayload,
+    /* 【W4b】扩召回的 `--explain` 读数（唯一一处）：`{on,asked,routes[{id,hitValue,bound,asked,added,note}]}`。
+     * 导出它，是为了让"没接回来时必须逐路说明原因"这条口径能被**直接钉住**（端到端只看得到 `added`）。 */
+    recallReport: recallReport,
     // 预算与预算报告的**唯一实现处**（`searchItems` 自己走的就是它；`search-all` 的合并批也走它）
     budgeted: budgeted,
     /** 【W1】全库检索的两条硬上限 + 扫描闸门（唯一实现处；命令层与登记表都不许再写一份数字） */

@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import itemIndex from '../src/item-index.js';
 import query from '../src/query.js';
+import paletteRank from '../src/palette-rank.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.join(HERE, '..');
@@ -141,6 +142,43 @@ describe('搜索：默认口径 = 搜条目（契约 §3.4）', () => {
         expect(itemIndex.MATCH_IN).toContain(h.matchIn);
       });
     });
+  });
+
+  /* 【W4b】契约 §3.4 的**取值表被打开**了一个口子（扩召回）；写清它到底是"改了什么"：
+   * ⭐ **键仍是 12 个**（本件**不是加键**）—— 变的是 `matchIn` 的**取值集合**：
+   *    旧 8 个值原样保留，新增的正是"能扩召回的那几路"各自声明的取值（现取路由表，唯二两处不许漂）。 */
+  it('【W4b】matchIn 取值表开了新值（扩召回），而命中的**键仍然只有 12 个** —— 开取值表 ≠ 加键', () => {
+    const BASE = ['topic', 'item', 'item-tag', 'node-tag', 'caption', 'tag', 'link', 'detail'];
+    BASE.forEach((v) => expect(itemIndex.MATCH_IN, '旧取值一个都不许丢：' + v).toContain(v));
+    const declared = paletteRank.ROUTES.filter((r) => r.recall).map((r) => r.recallHit);
+    expect(declared.length, '路由表里必须至少有一路能扩召回（否则这条断言是空转）').toBeGreaterThan(0);
+    expect(itemIndex.MATCH_IN.filter((v) => BASE.indexOf(v) < 0),
+      '取值表里多出来的，必须正好是路由表声明的扩召回取值（两处不许漂）').toEqual(declared);
+
+    // 语料：一条字面命中（头名）+ 一个只靠一跳够得着它的邻居（links 边；正文里没有那个关键词）
+    const tree = { id: 'root', topic: '根', children: [
+      { id: 'n-lead', topic: '闸门与门控', children: [] },
+      { id: 'n-nbr', topic: '旁的机制', children: [], links: [{ project: 'p', id: 'n-lead' }] }
+    ]};
+    const opts = { keyword: '闸门', mode: paletteRank.DEFAULT_MODE, selfProject: 'p' };
+    const off = itemIndex.searchItems(tree, opts);
+    const on = itemIndex.searchItems(tree, Object.assign({}, opts, { recall: paletteRank.RECALL_ROUTE_IDS[0] }));
+    expect(off.hits.map((h) => h.matchIn), '不给 --recall ⇒ 新取值一个都不出现').toEqual(['topic']);
+    const nbr = on.hits.filter((h) => h.nodeId === 'n-nbr')[0];
+    expect(nbr, '给了 --recall ⇒ 一跳邻居被接回结果里').toBeTruthy();
+    expect(nbr.matchIn, '新取值 = 路由表那一行为它声明的那个（不是另起一个名字）').toBe(declared[0]);
+    expect(itemIndex.MATCH_IN).toContain(nbr.matchIn);
+    // ---- 逐键：与字面命中**同一套键**（少的只是"没有命中面原文"那个可选键）----
+    const CONTRACT = ['id', 'topic', 'nodeId', 'nodeTopic', 'itemId', 'type', 'itemized', 'matchIn',
+      'snippet', 'src', 'verified', 'score'];
+    expect(CONTRACT.length, '契约键数就是 12（本件一个字没动它）').toBe(12);
+    Object.keys(nbr).forEach((k) => expect(CONTRACT, '扩召回命中上有契约外的键：' + k).toContain(k));
+    CONTRACT.forEach((k) => {
+      if (k !== 'src' && k !== 'snippet') expect(Object.keys(nbr), '必有的键：' + k).toContain(k);
+    });
+    expect(nbr.itemId).toBe(null);
+    expect(nbr.type).toBe(null);
+    expect(Object.keys(nbr).indexOf('snippet'), '没有命中面原文 ⇒ 不产生噪音键（既有口径）').toBe(-1);
   });
 
   it('qa 条目的检索面 = q + a（正文由 src/qa.js 渲染，检索面不复制那段逻辑）', () => {

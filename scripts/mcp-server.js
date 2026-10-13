@@ -98,9 +98,21 @@ const TOOLS = [
       + '没提到的路由权重按 0；可选路由 ' + paletteSpec.ROUTE_IDS.join(' / ')
       + '（semantic = W3 未落地 ⇒ 未安装，权重收下但不产生名次）。与 mode **不能同给**'),
     explain: b('可选：只要"每路贡献"的读数（对应 CLI 的 --explain）—— **只多给读数、不改排序**：'
-      + '结果里多一个顶层 explain:{enabled,mode,k,weights,routes,hits}，逐路给权重与有名次条数'
-      + '（含"这一路为什么没出力"），explain.hits 与 hits 逐条同长同序（每条的逐路名次与贡献）。'
-      + '命中对象**不加任何键**（12 键契约不动）')
+      + '结果里多一个顶层 explain:{enabled,mode,k,weights,recall,routes,hits}，逐路给权重与有名次条数'
+      + '（含"这一路为什么没出力"），`recall` 那一栏逐路报"扩召回接回来几条 / 为什么是 0"，'
+      + 'explain.hits 与 hits 逐条同长同序（每条的逐路名次与贡献）。'
+      + '命中对象**不加任何键**（12 键契约不动）'),
+    /* 【W4b】扩召回：**只加参数、不新增工具**（工具数不变）。语义与 CLI 逐字相同
+     * （它最后落到同一个 `src/item-index.js` 的 `searchItems` ⇒ 解析、上界、新取值名都只有一处）。 */
+    recall: s('可选：**扩召回**（对应 CLI 的 --recall）—— 把"非字面命中"（最佳字面命中在有界邻域里的'
+      + '近邻，上界取自 src/palette-rank.js 的路由表）也接进结果：hitCount / hits **会因此变多**，'
+      + '新命中的 matchIn = 该路声明的取值（'
+      + paletteSpec.RECALL_ROUTE_IDS.map((id) => {
+        const r = paletteSpec.ROUTES.filter((x) => x.id === id)[0];
+        return id + ' → ' + r.recallHit + '（上界 ' + r.bound + ' 跳）';
+      }).join(' / ')
+      + '）。**不给它时结果与从前逐字相同**；它改变的是候选集 ⇒ 必须与 mode / weights **同给**'
+      + '（"这批候选怎么排"是融合那一层的事）')
   }, []),
   T('backlinks', '查看节点反向链接（谁引用了我，含跨项目反查）', {
     project: s('项目名或 JSON 文件路径'), id: s('节点 id')
@@ -464,6 +476,10 @@ function searchNodeFlags(a, argOf) {
   // ⚠️ 取值一律由 CLI 决定：这里只拼参数，不复制任何预设权重/k/路由表（那些数字仍只在 src/palette-rank.js）。
   if (argOf('mode')) c.push('--mode', argOf('mode'));
   if (argOf('weights')) c.push('--weights', argOf('weights'));
+  // 【W4b】扩召回：**只加这一个参数**（工具数不变），直通 CLI 的 `--recall`（同一处解析与上界）。
+  // 为什么 AI 需要它：不扩召回时"答案只写在邻居里、正文里没有那个词"的问题**一条都搜不到**
+  // （W4b 之前就是这么工作的）—— 这是"AI 不必每次上网搜"那一条在**换了个说法/只写在邻域里**时的补丁。
+  if (argOf('recall')) c.push('--recall', argOf('recall'));
   if (a.explain === true) c.push('--explain');
   return c;
 }

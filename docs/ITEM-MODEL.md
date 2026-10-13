@@ -172,13 +172,28 @@
   "nodeId": "1c", "nodeTopic": "①c 关键判据",
   "itemId": "i-3f2k9a", "type": "text",      // 未条目化节点：itemId=null, type=null, itemized=false
   "itemized": true,
-  "matchIn": "item",                          // 取值表：topic / item / item-tag / node-tag / caption / tag / link
+  "matchIn": "item",                          // 取值表（**封闭**，见本节的表）：topic / item /
+                                              // item-tag / node-tag / caption / tag / link / detail / near
   "snippet": "…闸门…",                         // 长度上界只有一处实现（src/item-index.js 的常量）
   "src": ["CHANGELOG.md:713-717"],
   "verified": false,
   "score": 3
 }
 ```
+
+**`matchIn` 是封闭取值表**（键数**不是**它管的 —— 命中形状**固定 12 键**，取值表管的是这 12 键里
+`matchIn` 那一格能取什么值）。W4b 把这张表**从 8 个值开到 9 个**：新增的 `near` 只有一个来源 ——
+**显式**给了 `--recall` 时，由那一路（`src/palette-rank.js` 的 `ROUTES` 里标了 `recall` 的行，
+当前是 `graph`）按 `links` / `assoc.members` 的跳数接回来的**近邻**（跳数上界就是那一行的 `bound`）。
+
+| `matchIn` 取值 | 含义 | 什么时候出现 |
+|----------------|------|--------------|
+| `topic` / `item` / `item-tag` / `node-tag` / `caption` / `tag` / `link` / `detail` | 关键词落在**哪一个命中面**上（标题 / 条目正文 / 条目标签 / 节点标签 / 图片说明 / 节点标签（v2 口径）/ 链接说明 / 正文（v2 兼容值）） | 一直是这一套 |
+| **`near`** | **不是字面命中**：关键词在这条命中的任何命中面上都**不存在**；它是由扩召回那一路按**跳数**接回来的近邻 | 只在显式给了 `--recall <路由>` 时（见参数表）；其余任何调用都**不会**出现 |
+
+`near` 那类命中形状上的三条（与其它取值同一套键，**没有**新键）：`itemId`/`type` 一律 `null`
+（它没有"命中在哪一段正文"这回事）、`snippet` 不出现（没有命中面原文 ⇒ 按既有口径不产生噪音键）、
+`score` 回落 `1`（与模糊命中同一个回落口径 —— `score` 本来就不是排序键）。
 
 | 参数 | 语义 |
 |------|------|
@@ -187,6 +202,7 @@
 | `--verified` | 只要**已核**条目（未核 = 没有 `verified`） |
 | `--type <t>` | 只要该 `type` 的条目 |
 | `--since <ISO>` | 只要 `at >= ISO` 的条目。**给了它就不返回未条目化的节点命中**（节点没有写入时间） |
+| `--recall <路由>` | **扩召回**（W4b）：让那一路把**非字面命中**也接进结果（`matchIn` = 该路声明的取值，见上表）。**默认关**：不给它时候选集、`hitCount`、`matchIn` 取值集合与从前**逐字节相同**；给了它 `hitCount` 与 `hits` **会变多**（这是它的用途，不是缺陷）。只有 `ROUTES` 里标了 `recall` 的那几路能被点名（当前 `graph`），上界就是那一行的 `bound`；**必须与 `--mode`/`--weights` 同给**（它改的是候选集，"怎么排"是融合那一层的事）。硬过滤仍正交：`--tag` 照旧 AND，给了条目级过滤（`--src`/`--verified`/`--type`/`--since`）⇒ 扩召回不参与 |
 | `--limit <n>` | 命中条数上界；`--max-bytes <n>` 单次返回**字节**上界。两者缺省值都有界（常量只在 `src/item-index.js`，本文不抄数值） |
 | `--max-bytes` 超限 | 截断 + 顶层 `truncated:true` + 给**续取方式**（收窄关键词 / 加 `--since` / 下调 `--limit`）。**不许**静默少给 |
 
@@ -198,7 +214,10 @@ budget:{bytes, estTokens, limit, maxBytes}}`（预算报告口径只有一处实
 新增六个工具（**每个都是某条 CLI 命令的透传，不复制逻辑**）：
 `item_add` / `item_edit` / `item_remove` / `item_move` / `item_order` / `render_detail`。
 已有两个工具扩参：`get_node` 加 `item`；`search_nodes` 加 `item_level`（对应 `--topic-only` 的反面）/
-`tag`/`src`/`verified`/`type`/`since`/`limit`/`max_bytes`/`no_heat`（`no_heat` 对应 CLI 的 `--no-heat`：**热度日志损坏时的逃生门**，排序回到零热度档；不给它时默认档照旧**响亮失败**）。
+`tag`/`src`/`verified`/`type`/`since`/`limit`/`max_bytes`/`no_heat`（`no_heat` 对应 CLI 的 `--no-heat`：**热度日志损坏时的逃生门**，排序回到零热度档；不给它时默认档照旧**响亮失败**），
+以及混合检索的 `mode` / `weights` / `explain`（W4）与**扩召回的 `recall`**（W4b，对应 `--recall`）。
+这些都只是**一层透传**：取值合法性、权重/路由表、上界、新取值名全由 CLI 那一处解析决定，
+**工具数不变**（本文件不写总数：总数见 `docs/VERIFY.md`，生成物）。
 
 - 参数名一律 snake_case，语义与 CLI **一一对应**；不新增 MCP 侧默认值。
 - 工具总数与稳定性分级**不写在本文件**：总数见 `docs/VERIFY.md`（生成物），分级表见 `docs/EXTENSIONS.md` §1.2/§1.3 —— 两者都由 I 同批更新（新命令不进分级表会被 G8 判红）。
