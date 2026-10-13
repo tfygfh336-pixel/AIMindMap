@@ -980,6 +980,17 @@
     if (bb && bb.style.display !== 'none') { open.push({ name: 'bind-banner', html: '' }); if (MM.closeBindBanner) MM.closeBindBanner(); }
     const cb = elemById('conc-banner');
     if (cb && cb.style.display !== 'none') { open.push({ name: 'conc-banner', html: '' }); closeConcBanner(); }
+    /* 【W13】界面侧导入入口那两处，理由与上面 bind-* 两条逐字相同：
+     *   · `import-preview` 是**真模态**（挡输入）⇒ 走产品自己的取消路径（`MM.importPreviewCancel`）；
+     *   · `import-banner` 是**会占布局的 banner**（每域隔离只重载项目、不重载页面 ⇒ 会跨域存活）⇒ 收起。 */
+    const ip = elemById('import-preview');
+    if (ip && ip.style.display !== 'none') {
+      open.push({ name: 'import-preview', html: '' });
+      if (MM.importPreviewCancel) MM.importPreviewCancel();
+      else ip.style.display = 'none';
+    }
+    const ib = elemById('import-banner');
+    if (ib && ib.style.display !== 'none') { open.push({ name: 'import-banner', html: '' }); if (MM.importCloseBanner) MM.importCloseBanner(); }
     return open;
   }
   MM.closeAllDialogs = closeAllDialogs;

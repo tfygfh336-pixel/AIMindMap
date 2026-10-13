@@ -124,6 +124,19 @@ contextBridge.exposeInMainWorld('desktop', {
     /* 只读状态探针：引擎里唯一"只报告、不写盘"的读法是 `--dry-run`（CLI 的中央短路）——
      * 状态区的"上次同步 / 待确认删 K / 未转换 K"由它给，界面一个数都不自己算 ✓。 */
     bindProbe: (projectName) => ipcRenderer.invoke('app:bind-probe', projectName),
+    /* 【W13】界面侧导入入口（**入口 + 预览 + 播报**三件事；判定与写盘全在 CLI 的两条既有命令上）：
+     *   importPick(kind, opts)      → 原生对话框：kind='files' 多选 Markdown / kind='dir' 选一个文件夹。
+     *                                 `opts.where` = 落点那句人话（写进对话框标题 ⇒ 选的时候就知道导到哪）。
+     *                                 `--smoke` 下改读脚本化答案（返回里带 `stub:true`，如实说明这一跳是桩）。
+     *   importPreview(项目, 计划)    → 导入前预览：在**演练副本**上跑既有 `--dry-run`（用户项目零写入）。
+     *                                 计划 = {kind:'files', files:[…], parent} | {kind:'dir', dir, name, title}
+     *   importApply(项目, 计划)      → 真导入：文件走 `import-md`（逐文件 ⇒ 一个坏文件拖不垮整批）、
+     *                                 目录走 `import-dir`（**新建一个项目**并按既有路径打开它）。
+     *                                 回执带"这次加了哪些节点"的键与人话名（播报面板点一行能跳过去）。
+     * 三个入口都**不做导入判定**（判定在 CLI；读数形状的归一在 scripts/import-reading.js），界面只显示。 */
+    importPick: (kind, opts) => ipcRenderer.invoke('app:import-pick', kind, opts),
+    importPreview: (projectName, plan) => ipcRenderer.invoke('app:import-preview', projectName, plan),
+    importApply: (projectName, plan) => ipcRenderer.invoke('app:import-apply', projectName, plan),
     version: () => ipcRenderer.invoke('app:version'),
     /* 界面状态上报（脏标记变化时推）：主进程写 projects/<项目>/.ui-state.json，
      * 侧栏 AI 用 `node cli/mm-cli.js ui-state --json` 读 —— 写前协调的可执行通道。 */

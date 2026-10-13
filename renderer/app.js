@@ -163,6 +163,10 @@
     /* 【R4】绑定工作区文件夹的入口（菜单「文件 → 绑定工作区文件夹…」）：
      * 与命令面板里那条命令**同一个实现**（`MM.bindWorkspace()`，见 renderer/app-bindings.js）✓ */
     window.desktop.on('menu:bind-workspace', () => { if (MM.bindWorkspace) MM.bindWorkspace(); });
+    /* 【W13】界面侧导入入口（菜单「文件 → 导入 Markdown 文件… / 导入文件夹成新项目…」）：
+     * 与命令面板里那两条**同一个实现**（`MM.importIntoMap({kind})`，见 renderer/app-import.js）✓ */
+    window.desktop.on('menu:import-files', () => { if (MM.importIntoMap) MM.importIntoMap({ kind: 'files' }); });
+    window.desktop.on('menu:import-dir', () => { if (MM.importIntoMap) MM.importIntoMap({ kind: 'dir' }); });
     // 菜单「视图 → 关闭思维导图页」：与工具栏那个 ✕ **同一条路**（先拦未保存编辑 ⇒ 保存成功才卸页）
     window.desktop.on('menu:close-map-page', () => { MM.closeMapPage(); });
     // 主进程 toast（导入导出结果提示）与项目列表刷新（导入 JSON 后）

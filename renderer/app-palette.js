@@ -63,6 +63,14 @@
      * 挤成两行、连带把"跨状态比绝对坐标"的判据挤红（域 37 实机踩到）✗。 */
     { id: 'bind-workspace', label: '绑定工作区文件夹…（把文件夹同步进导图）', hint: '命令',
       run: () => { if (MM.bindWorkspace) MM.bindWorkspace(); } },
+    /* 【W13】界面侧导入入口：与原生菜单「文件 → 导入 Markdown 文件… / 导入文件夹成新项目…」
+     * **同一个实现**（`MM.importIntoMap({kind})`，见 renderer/app-import.js）——
+     * 四条入口（菜单两条 + 这里两条）都调那一个函数 ✓。
+     * 同样**不占工具栏**（理由同上那条 bind-workspace）：那一段在侧栏开着时只剩 ~1000px。 */
+    { id: 'import-files', label: '导入 Markdown 文件…（可多选，先看预览）', hint: '命令',
+      run: () => { if (MM.importIntoMap) MM.importIntoMap({ kind: 'files' }); } },
+    { id: 'import-dir', label: '导入文件夹成新项目…（整库，先看预览）', hint: '命令',
+      run: () => { if (MM.importIntoMap) MM.importIntoMap({ kind: 'dir' }); } },
   ];
 
   /** 只读：给冒烟断言判"当前是哪个模式" ✓ */

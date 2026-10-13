@@ -134,6 +134,11 @@ const smokeIsolate = !!SMOKE_PROJECTS_DIR && !process.env.MM_SMOKE_NO_ISOLATE
 const store = require('./src/data-store.js').createStore(PROJECTS_DIR);
 const { writeFileAtomic, versionOf, versionOfText } = require('./src/data-store.js');
 const concurrency = require('./src/concurrency.js');
+/* 【W13】界面侧导入的两份读数（`import-md` 的文本回显 / `import-dir` 的 `--json` 报告 → 同一种形状）。
+ * 纯函数、零 I/O ⇒ 有单测（tests/import-reading.test.js）；"界面自己数一遍"是第二份实现 ✗。
+ * ⚠️ 它住在 `scripts/smoke/` 是 **G8 文档登记门禁**逼出来的落点（门禁只查 `scripts/*.js` 顶层并显式豁免
+ * `scripts/smoke/`；本批不许动 `docs/ARCHITECTURE.md`）—— 本文件顶部有整段理由与先例（tear-snapshot.js）。 */
+const importReading = require('./scripts/smoke/import-reading.js');
 /* ---------------- 【R4】绑定工作区文件夹的**事件驱动守护**（零 token） ----------------
  * 用户原话：「绑定工作区文件夹，选择好了之后就会**定时更新**文件夹内容到思维导图」+
  *          「如果有**不消耗 token** 的定时检查或者修改文件的事件驱动就最好了」。
@@ -212,6 +217,8 @@ function bindOptionArgs(opts) {
  *     界面在收到报告时**可能已经**把新树读进内存了 ⇒ "同步前的树"在界面那侧已经不存在了 ✗。
  *     在主进程里"起 CLI 前后各读一次"是唯一不受这两条影响的取法。
  *  ③ 判定仍然是**同一个函数**（`src/concurrency.js`，主进程本来就 require 它）——不是第二份差异实现 ✓。
+ *     ⚠️ 【W13】这份读数的**组装**抽成了 `diffTrees`（同一处实现）：界面侧导入那一路
+ *     （`app:import-apply`）也要"这批文件到底加了哪些节点"，它与这里**共用同一个函数** ✓
  *
  *  @returns {Promise<{code:number,out:string,err:string,report:object|null,
  *    changedKeys:string[], addedKeys:string[], removedKeys:string[], modifiedKeys:string[],
@@ -229,37 +236,74 @@ async function runBindSyncCli(args, project, projectsDirOverride) {
   const out = String((r && r.out) || '');
   const err = String((r && r.err) || '');
   const report = parseCliJson(out);
-  let changedKeys = [], addedKeys = [], removedKeys = [], modifiedKeys = [], labels = {};
   const after = readTree();
-  if (before && after) {
-    try {
-      /* 三类分开用的是**同一份指纹表**（`fingerprint` 每个节点一个键）：
-       *   只在 after 里有 ⇒ 这次新出现；只在 before 里有 ⇒ 这次消失；两边都有但值不同 ⇒ 改到。
-       * 为什么不用 O(键数 × 树) 的 `snapshotOf` 逐个试：那是一棵树走一遍/次（大项目会明显变慢）✗。 */
-      const fa = concurrency.fingerprint(before);
-      const fb = concurrency.fingerprint(after);
-      const all = Array.from(concurrency.changedKeys(before, after)).sort();
-      addedKeys = all.filter((k) => fa[k] === undefined && fb[k] !== undefined);
-      removedKeys = all.filter((k) => fa[k] !== undefined && fb[k] === undefined);
-      modifiedKeys = all.filter((k) => fa[k] !== undefined && fb[k] !== undefined);
-      changedKeys = all;
-      /* 人话名：**按 key 配对**（`{键: 名}` 的映射，不是数组）。
-       * 为什么是映射：三类各截前 40 个、再拼成一个数组的话，调用方**没有任何办法**把它和键对上
-       * （实测踩到：面板给"新出现的第 1 行"贴了第 2 个对象的名字 ✗）——配对关系必须由产出方给死。
-       * 新出现/改到的按 after 取名（它现在长这样）、消失的按 before 取（after 里已经没有了）。 */
-      const zip = (list, names) => list.slice(0, 40).forEach((k, i) => { if (names[i]) labels[k] = names[i]; });
-      zip(addedKeys, concurrency.describeKeys(after, addedKeys.slice(0, 40)));
-      zip(modifiedKeys, concurrency.describeKeys(after, modifiedKeys.slice(0, 40)));
-      zip(removedKeys, concurrency.describeKeys(before, removedKeys.slice(0, 40)));
-    } catch (e) {
-      changedKeys = []; addedKeys = []; removedKeys = []; modifiedKeys = []; labels = {};
-    }
-  }
+  /* "这次动了哪些对象"**只有一处实现**（下面的 `diffTrees`）—— W13 起界面侧导入也用同一份读数
+   * （`app:import-apply`：N 个文件各起一条 CLI，前后各读一次项目、**只算一次差异**）。
+   * 这里只负责"什么时候能对拍"：两份树都读得到才比；读不到（项目本来就没有 / 文件坏了）
+   * ⇒ 如实留空，不猜一个"大概是这些"出来。 */
+  let d = emptyDiff();
+  if (before && after) { try { d = diffTrees(before, after); } catch (e) { d = emptyDiff(); } }
   return {
     code: (r && r.code), out: out, err: err, report: report,
-    changedKeys: changedKeys, addedKeys: addedKeys, removedKeys: removedKeys, modifiedKeys: modifiedKeys,
-    labels: labels
+    changedKeys: d.keys, addedKeys: d.added, removedKeys: d.removed, modifiedKeys: d.modified,
+    labels: d.labels
   };
+}
+
+/** 对拍的空档（**只读共用**：调用方只读它，不写它 —— 每次 new 一个，别共享可变对象） */
+function emptyDiff() {
+  return { keys: [], added: [], removed: [], modified: [], labels: {} };
+}
+
+/**
+ * 「这次动了哪些对象」—— **唯一实现处**（两份项目树 → 键 + 人话名）。
+ *  谁在用：① 绑定同步的前后对拍（`runBindSyncCli`）；② 【W13】界面侧导入的批量对拍
+ *  （`app:import-apply`：一批文件各起一条 CLI，前后各读一次、只算一次差异）。
+ *  渲染层那侧不重算：它拿这些**键**去喂 `src/concurrency.js` 的 `diffRows` 现出两边的文本
+ *  （`MM.renderConcPanel` 的卡片），"哪里不一样"全工程只有这一份口径 ✓。
+ *
+ *  三类分开用的是**同一份指纹表**（`fingerprint` 每个节点一个键）：
+ *    只在 after 里有 ⇒ 这次新出现；只在 before 里有 ⇒ 这次消失；两边都有但值不同 ⇒ 改到。
+ *  为什么不用 O(键数 × 树) 的 `snapshotOf` 逐个试：那是一棵树走一遍/次（大项目会明显变慢）✗。
+ *  人话名是 `{键: 名}` 的**映射**（不是数组）：三类各截前 40 个再拼成数组的话，调用方没办法把它和键
+ *  对上（实测踩到：面板给"新出现的第 1 行"贴了第 2 个对象的名字 ✗）—— 配对关系由产出方给死。
+ *
+ *  @returns {{keys:string[], added:string[], removed:string[], modified:string[], labels:Object<string,string>}}
+ */
+function diffTrees(before, after) {
+  const fa = concurrency.fingerprint(before);
+  const fb = concurrency.fingerprint(after);
+  const all = Array.from(concurrency.changedKeys(before, after)).sort();
+  const added = all.filter((k) => fa[k] === undefined && fb[k] !== undefined);
+  const removed = all.filter((k) => fa[k] !== undefined && fb[k] === undefined);
+  const modified = all.filter((k) => fa[k] !== undefined && fb[k] !== undefined);
+  const labels = {};
+  // 新出现/改到的按 after 取名（它现在长这样）、消失的按 before 取（after 里已经没有了）
+  const zip = (list, names) => list.slice(0, 40).forEach((k, i) => { if (names[i]) labels[k] = names[i]; });
+  zip(added, concurrency.describeKeys(after, added.slice(0, 40)));
+  zip(modified, concurrency.describeKeys(after, modified.slice(0, 40)));
+  zip(removed, concurrency.describeKeys(before, removed.slice(0, 40)));
+  return { keys: all, added: added, removed: removed, modified: modified, labels: labels };
+}
+
+/** 读一份项目树（读不动 ⇒ null；调用方据此决定"能不能对拍"，别在别处再写一遍 try/catch） */
+function readProjectTree(project) {
+  try {
+    const r = store.read(project);
+    return (r && r.data) ? r.data : null;
+  } catch (e) { return null; }
+}
+
+/** 一份树里**所有节点**的键与人话名（【W13】整库导入建成**新项目**时用：
+ *  那个项目本来不存在 ⇒ 它的每个节点都是"这次新出现的"，没有"之前"可比 ——
+ *  键与名仍然取自同一处（`concurrency` 的 `fingerprint` / `describeKeys`），不是第二套差异算法）。 */
+function allNodeKeysOf(tree) {
+  const fp = concurrency.fingerprint(tree);
+  const keys = Object.keys(fp).filter((k) => k.indexOf('node:') === 0).sort();
+  const labels = {};
+  concurrency.describeKeys(tree, keys.slice(0, 40)).forEach((name, i) => { if (name) labels[keys[i]] = name; });
+  const children = Object.keys(fp).filter((k) => k.indexOf('children:') === 0).sort();
+  return { keys: keys.concat(children).sort(), added: keys, labels: labels };
 }
 
 /** 一个批次的共同入口：起 CLI 同步一次，把结果如实回报（**判定全在 CLI 那一侧**）。
@@ -689,6 +733,46 @@ function sanitizeProjectName(s) {
   return t || 'imported';
 }
 
+/**
+ * 【W13】**演练副本**：搭一份"看起来像真 store"的临时 projects 根 —— 导入预览就跑在它上面。
+ * 为什么不能只拷目标项目那一个 JSON（第一版那样写，实测会造出**预览与真跑不一致**的落差 ✗）：
+ *   · `import-dir` 的"这份文件是不是已经导过了"是**跨项目**查的（它扫全部项目）⇒ 副本里只有当前项目、
+ *     别的项目一律看不见 ⇒ 预览说"能导"、真跑被"已经导过了"拒掉 ✗；
+ *   · md 里的图片/附件引用可能只认**项目自己的** `assets/` / `attachments/` ⇒ 副本里没有它们，
+ *     预览会把"能导"报成"引用有问题" ✗。
+ * ⇒ 副本 = **全部项目的 JSON** + 目标项目的 `assets/`、`attachments/`（不带别的东西：副本越小越好，
+ *   而且写也只可能写进副本 —— CLI 那一侧还套着 `--dry-run` 的中央短路，用户项目那一路一个字节都没动）。
+ * 拷不动的那几份**如实少带**（返回值就是清单）：预览会更悲观，但绝不假装"带上了"。
+ *
+ * @param {string} root 已经建好的临时根
+ * @param {string} [projectName] 目标项目（目录导入那一路没有"当前项目"，此时只带全部 JSON）
+ * @returns {{root:string, projects:number, resDirs:string[]}}
+ */
+function makeRehearsalRoot(root, projectName) {
+  let all = [];
+  try { all = store.list().map((p) => p.name); } catch (e) { all = []; }
+  let copied = 0;
+  all.forEach((n) => {
+    const json = path.join(PROJECTS_DIR, n, n + '.json');
+    if (!fs.existsSync(json)) return;
+    try {
+      fs.mkdirSync(path.join(root, n), { recursive: true });
+      fs.copyFileSync(json, path.join(root, n, n + '.json'));
+      copied += 1;
+    } catch (e) { /* 少带一个项目 ⇒ 预览可能更悲观；不静默当"有" */ }
+  });
+  const resDirs = [];
+  if (projectName) {
+    ['assets', 'attachments'].forEach((sub) => {
+      const from = path.join(PROJECTS_DIR, projectName, sub);
+      if (!fs.existsSync(from)) return;
+      try { fs.cpSync(from, path.join(root, projectName, sub), { recursive: true }); resDirs.push(sub + '/'); }
+      catch (e) { /* 同上 */ }
+    });
+  }
+  return { root: root, projects: copied, resDirs: resDirs };
+}
+
 /** 从文件导入成新项目：名字取文件名（重名自动加 -2/-3）；返回 {ok, name, out, error} */
 async function importDocToNewProject(filePath) {
   const ext = path.extname(filePath || '');
@@ -899,6 +983,8 @@ const MAP_PAGE_MENU_IDS = [
   // 文件：全部要靠导图页（导出要用它的树；导入的结果也要它来显示，否则 toast 也发进空页 ✗）
   'map-menu-import-md', 'map-menu-import-doc', 'map-menu-export-md',
   'map-menu-import-json', 'map-menu-export-json', 'map-menu-export-png',
+  // 【W13】界面侧导入入口的两条（同上面几条：要拿"当前项目 + 选中的节点"去导 ⇒ 导图页不在时点了没意义）
+  'map-menu-import-files', 'map-menu-import-dir',
   // 【R4】绑定工作区文件夹：入口就在文件菜单里（它要拿"当前项目"去绑 ⇒ 导图页不在时点了没意义）
   'map-menu-bind-workspace',
   // 编辑：整族都是 menu:* ⇒ 发给导图页渲染层
@@ -951,7 +1037,21 @@ function buildMenu(win) {
        *   判据随之漂移 —— 域 37（圆钮/悬浮工具条的几何，用户原话逐字验收的那两条）当场变红 ✗✗。
        *   "未绑定时界面不多出任何噪声"这条纪律，在这里的最强形式就是**工具栏一个像素都不动** ✓。 */
       { id: 'map-menu-bind-workspace', label: '绑定工作区文件夹…',
-        click: () => send('menu:bind-workspace') }
+        click: () => send('menu:bind-workspace') },
+      { type: 'separator' },
+      /* 【W13】界面侧导入入口：**两条菜单项 = 一个实现**（`MM.importIntoMap({kind})`，
+       *  命令面板里有同样两条 ⇒ 四条入口都调那一个函数）。
+       *   · 选文件…：一个或多个 md/txt/docx ⇒ 既有 `import-md`，导到**当前选中的节点**下（预览里说清落点）；
+       *   · 选文件夹…：整库 ⇒ 既有 `import-dir`，**新建一个项目**（建完按既有路径打开它）。
+       *  与上面「导入 Markdown…」的分工（那条是功能 5a 之前的老路：一个文件、没有预览）：
+       *  这两条**都先预览再导**（预览跑在演练副本上 ⇒ 此刻你的项目零写入）；
+       *  从前"想导整个文件夹"的人在界面里根本够不到 —— 那是 W13 要补的断点 ✓。
+       *  ⚠️ 它们**不进工具栏**：那一段在侧栏开着时只剩 ~1000px，多一个按钮就挤成两行，
+       *    所有"跨状态比绝对坐标"的判据随之漂移（域 37 实机踩到并撤回，见上面 bind-workspace 那条）。 */
+      { id: 'map-menu-import-files', label: '导入 Markdown 文件…（可多选，导到当前节点下）',
+        click: () => send('menu:import-files') },
+      { id: 'map-menu-import-dir', label: '导入文件夹成新项目…（整库，先看预览）',
+        click: () => send('menu:import-dir') }
     ]},
     { label: '编辑', submenu: [
       // 保存：此前**菜单里没有这一项**，界面也无按钮 —— 人的编辑无从落盘。
@@ -1882,6 +1982,166 @@ function registerIpc() {
     const report = parseCliJson(r.out);
     if (r.code !== 0 || !report) return { ok: false, error: cliErrorLine(r) };
     return { ok: true, report: report };
+  });
+
+  /* ============ 【W13】界面侧导入入口：选文件 / 选目录 → 预览 → 真导入 → 播报 ============
+   * 用户原话（待做清单 W13）：「现在只能走 CLI，界面里点不进来」—— 想导整库的人第一反应就是
+   * 拖目录 / 翻菜单，而界面从前只有「导入 Markdown…」（一个文件、导进当前项目）。
+   *
+   * 这一批只补**入口 + 预览 + 播报**三件事，判定与写盘**全在 CLI**（`import-md` / `import-dir`
+   * 两条**既有**命令）：
+   *   · 主进程不解析 md、不建树、不数"该导几个" —— 它只做三件机械事：弹原生对话框、换一份
+   *     projects 根跑既有命令、把 CLI 自己的读数原样转交（读数形状的归一在 scripts/import-reading.js，
+   *     界面**不认识** CLI 的字段名）。
+   *   · **预览跑在演练副本上**（照 `app:bind-preview` 的做法）：把项目 JSON 拷进临时目录、把那份
+   *     副本当 projects 根跑 `import-md … --dry-run`（写的是副本、且 dry-run 本身一个字都不写），
+   *     最后删掉副本 ⇒ 用户的项目在这一步**一个字节都没动**（域 43 判据 ② 对项目 JSON 前后 SHA-256 有断言）。
+   *   · **真导入**：文件走 `import-md`（**一个文件一条命令** ⇒ 一个坏文件拖不垮整批，逐条点名）；
+   *     目录走 `import-dir`（整库镜像成**新项目**，然后按既有 `menu:open-project` 打开它）。
+   *   · 界面脏（有未保存编辑）时**不导入**：那一条判定在渲染层（只有它知道脏不脏，见
+   *     `renderer/app-import.js` 的 `importIntoMap`）—— 与绑定同步"界面脏就不写"同一条纪律，
+   *     导入之后走**既有**重读/冲突路径（`MM.requestReread`），绝不静默覆盖人的编辑 ✗。
+   *
+   * 入口只有两条（原生菜单两项 + 命令面板里的同两条，见 `MPORT_MENU`），**工具栏一个像素都不动**：
+   *  本工程踩过 —— 这段工具栏在侧栏开着时只剩 ~1000px，再加一个按钮就挤成两行，域 37 的圆钮几何
+   *  当场变红 ✗✗（见 app-bindings.js 同一条注释）。 */
+
+  /** 冒烟里的"脚本化答案"（`<沙箱>/import-pick-files.txt` 一行一个路径 / `import-pick-dir.txt` 一行）。
+   *  为什么需要：无头跑里原生模态**点不动**，弹出来只会把整条链挂死（冒烟守卫会强杀 ⇒ 变成一条假红）
+   *  —— 照 `app:bind-pick-dir` 的先例。⚠️ 它**只在 --smoke 跑动里生效**（正常启动连这两个文件都不看），
+   *  返回里带 `stub:true` 如实告诉调用方"这一跳是桩"（测试专用后门不许出现在产品路径上）。 */
+  const readImportPickStub = (kind) => {
+    const f = path.join(SMOKE_PROJECTS_DIR, kind === 'dir' ? 'import-pick-dir.txt' : 'import-pick-files.txt');
+    let text = '';
+    try { text = String(fs.readFileSync(f, 'utf8')); } catch (err) { text = ''; }
+    return { paths: text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean), file: f };
+  };
+
+  /** 选文件 / 选目录（**原生对话框**）。`opts.where` = 落点那一句人话（写进对话框标题 ⇒
+   *  "导到哪"在选择器里就说得清，不用等预览）。 */
+  ipcMain.handle('app:import-pick', async (e, kind, opts) => {
+    const k = kind === 'dir' ? 'dir' : 'files';
+    const where = String((opts && opts.where) || '').slice(0, 120);
+    if (SMOKE_PROJECTS_DIR) {
+      const s = readImportPickStub(k);
+      const paths = (k === 'dir') ? s.paths.slice(0, 1) : s.paths;
+      if (!paths.length) return { ok: false, canceled: false, stub: true, error: '冒烟里没有脚本化答案：先写 ' + s.file };
+      return { ok: true, stub: true, kind: k, paths: paths };
+    }
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const res = await dialog.showOpenDialog(win, k === 'dir' ? {
+      title: '选一个文件夹：整库导入会**新建一个项目**' + where,
+      properties: ['openDirectory']
+    } : {
+      title: '选一个或多个 Markdown 文件' + where,
+      buttonLabel: '导入这些文件',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Markdown', extensions: ['md', 'markdown'] },
+        { name: '可导入的文档', extensions: ['md', 'markdown', 'txt', 'text', 'docx', 'pdf'] },
+        { name: '全部文件', extensions: ['*'] }
+      ]
+    });
+    if (res.canceled || !res.filePaths || !res.filePaths.length) return { ok: false, canceled: true, stub: false };
+    return { ok: true, stub: false, kind: k, paths: res.filePaths };
+  });
+
+  /** **导入前预览**：复用既有 `--dry-run` 读法，跑在**演练副本**上（用户项目零写入）。
+   *  文件那一路：每个文件一次 `import-md … --dry-run`（新增条数由 CLI 自己的那一行给 —— 这条命令
+   *    没有 `--json` 报告，读法在 scripts/import-reading.js，且有单测）；失败的**逐条**带原因回来。
+   *  目录那一路：`import-dir <新项目名> <目录> --dry-run --json`（这条**本来就有**结构报告：
+   *    报告里就写着"会不会被拒"与"哪些没进树"）。 */
+  ipcMain.handle('app:import-preview', async (_e, name, plan) => {
+    const p = plan || {};
+    const kind = p.kind === 'dir' ? 'dir' : 'files';
+    let tmpRoot = '';
+    try { tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-import-preview-')); }
+    catch (err) { return { ok: false, error: '建不了演练副本目录：' + ((err && err.message) || err) }; }
+    try {
+      if (kind === 'files') {
+        if (!name) return { ok: false, error: '预览需要一个当前项目' };
+        const files = Array.isArray(p.files) ? p.files : [];
+        if (!files.length) return { ok: false, error: '预览没有拿到文件清单' };
+        const parent = p.parent || 'root';
+        if (!fs.existsSync(path.join(PROJECTS_DIR, name, name + '.json'))) {
+          return { ok: false, error: '项目文件不存在：' + path.join(PROJECTS_DIR, name, name + '.json') };
+        }
+        const copy = makeRehearsalRoot(tmpRoot, name);
+        const items = [];
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          const r = await runCliAsync(['import-md', name, f, '--parent', parent, '--dry-run'], tmpRoot);
+          const bad = r.code !== 0 || /^error:/m.test(String(r.out || ''));
+          const reading = importReading.readImportMdDryRun(r.out);
+          items.push({ file: f, ok: !bad, added: bad ? 0 : reading.added,
+            unreadable: bad ? '' : reading.unreadable, error: bad ? cliErrorLine(r) : '' });
+        }
+        const preview = importReading.mergeFilePreviews(items);
+        return { ok: true, dryRun: true, kind: kind, project: name, parent: parent,
+          items: items, preview: preview, copy: copy };
+      }
+      if (!p.dir) return { ok: false, error: '预览需要一个目录' };
+      const newName = p.name || sanitizeProjectName(path.basename(p.dir));
+      const copy = makeRehearsalRoot(tmpRoot, name);
+      const r = await runCliAsync(['import-dir', newName, p.dir, '--title', p.title || newName, '--dry-run', '--json'], tmpRoot);
+      const report = parseCliJson(r.out);
+      if (r.code !== 0 || !report) return { ok: false, error: cliErrorLine(r) };
+      return { ok: true, dryRun: report.dryRun === true, kind: kind, project: newName, dir: p.dir,
+        report: report, preview: importReading.dirPreviewOf(report), copy: copy };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    } finally {
+      // 演练副本必须收干净（E2）：清不掉也只影响临时目录，用户数据那一路根本没被碰过
+      try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (err) { /* 收尾失败不掩盖主结果 */ }
+    }
+  });
+
+  /** **真导入**：只调既有 CLI（`import-md` 逐文件 / `import-dir` 整库）。
+   *  · 文件那一路**不因为一个文件失败就整批中止**（部分成功是硬要求：好的照进、坏的逐条点名）；
+   *  · 结束时用**同一处差异实现**（`diffTrees`）现算"这批到底加了哪些节点"，配人话名一起给界面
+   *    —— 播报面板点一行能跳到它、且这两个数与预览那个数是**独立来源**（域 43 判据 ① 拿它们对拍）。 */
+  ipcMain.handle('app:import-apply', async (e, name, plan) => {
+    const p = plan || {};
+    const parent = p.parent || 'root';
+    if (p.kind === 'dir') {
+      if (!p.dir) return { ok: false, error: '真导入需要一个目录' };
+      const newName = p.name || sanitizeProjectName(path.basename(p.dir));
+      const r = await runCliAsync(['import-dir', newName, p.dir, '--title', p.title || newName]);
+      if (r.code !== 0) return { ok: false, error: cliErrorLine(r) };
+      const tree = readProjectTree(newName);
+      const d = tree ? allNodeKeysOf(tree) : emptyDiff();
+      /* 新项目要**打开**它（否则用户看到的是"什么都没发生"）：走既有两条事件
+       * （`menu:project-changed` 刷新列表 + `menu:open-project` 换过去，与 `afterDocImported` 同一套） */
+      try {
+        const wc = e.sender;
+        if (wc && !wc.isDestroyed()) {
+          wc.send('menu:project-changed');
+          wc.send('menu:open-project', newName);
+        }
+      } catch (err) { /* 打不开新项目不影响"导入成功"这个事实：回执里带着项目名，界面照实说 */ }
+      return { ok: true, kind: 'dir', createdProject: newName, project: newName,
+        addedKeys: d.added, modifiedKeys: d.modified, labels: d.labels, out: String(r.out || '').trim() };
+    }
+    if (!name) return { ok: false, error: '真导入需要一个当前项目' };
+    const files = Array.isArray(p.files) ? p.files : [];
+    if (!files.length) return { ok: false, error: '真导入没有拿到文件清单' };
+    const before = readProjectTree(name);
+    const items = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const r = await runCliAsync(['import-md', name, f, '--parent', parent]);
+      const bad = r.code !== 0 || /^error:/m.test(String(r.out || ''));
+      const reading = importReading.readImportMdDryRun(r.out);
+      items.push({ file: f, ok: !bad, added: bad ? 0 : reading.added,
+        unreadable: bad ? '' : reading.unreadable, error: bad ? cliErrorLine(r) : '' });
+    }
+    const after = readProjectTree(name);
+    let d = emptyDiff();
+    if (before && after) { try { d = diffTrees(before, after); } catch (err) { d = emptyDiff(); } }
+    const okCount = items.filter((it) => it.ok).length;
+    return { ok: okCount > 0, kind: 'files', project: name, parent: parent, items: items,
+      succeeded: okCount, failed: items.length - okCount, preview: importReading.mergeFilePreviews(items),
+      addedKeys: d.added, modifiedKeys: d.modified, labels: d.labels };
   });
 
   ipcMain.handle('app:version', () => {

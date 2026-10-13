@@ -105,6 +105,35 @@
     </div>
   </div>
 
+  <!-- 【W13】导入入口的变更播报（与绑定播报**同一套视觉（.mm-banner）与同一个面板渲染器**）：
+       点「看这次加了哪些」⇒ 打开只读面板（MM.renderConcPanel），逐条列出这次**新出现**的节点，
+       点一行跳到它。默认 display:none ⇒ 不占布局、不进命中测试、工具栏一个元素都不加。 -->
+  <div id="import-banner" class="mm-banner" style="display:none">
+    <span class="mm-banner-icon" aria-hidden="true">📥</span>
+    <span id="import-banner-text"></span>
+    <button id="import-banner-open" type="button" class="mm-banner-btn" title="打开只读面板：这次导入加进来/改到的是哪些节点（点一条跳到它）">看这次加了哪些</button>
+    <button id="import-banner-close" type="button" class="mm-banner-close" title="收起这条播报（节点都在导图上，数据没有变）">✕</button>
+  </div>
+
+  <!-- 【W13】导入前预览（**这一层里没有一个字是界面估算的**）：三个数与逐条点名全部来自 CLI 既有的
+       `--dry-run` 读法，而它跑在**演练副本**上（拷一份项目 JSON + 资源目录到临时目录再跑）⇒
+       打开这一层时用户的项目一个字节都没动、取消也什么都不会留。
+       落点（导到哪个项目的哪个节点下 / 会新建一个项目）在选择器的标题里就说清了，这里再复述一遍。 -->
+  <div id="import-preview" class="overlay" style="display:none">
+    <div class="dialog-box bind-card">
+      <h3>导入到导图 —— 先看将要做什么</h3>
+      <p id="import-what" class="bind-line"></p>
+      <div id="import-preview-plan" class="bind-plan"></div>
+      <p class="bind-hint">这份预览用的是**既有 `--dry-run` 读法**，而且跑在一份**演练副本**上：
+        你的项目此刻**一个字节都没动**；取消也不会留下任何东西。
+        「确认导入」才真的调既有命令（`import-md` 逐文件 / `import-dir` 整库）—— 判定与写盘全在 CLI 那一侧。</p>
+      <div class="dialog-actions">
+        <button id="import-preview-cancel" type="button">取消</button>
+        <button id="import-preview-ok" type="button" class="primary">确认导入</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 「外部改动预览」入口（v0.20「让 AI 的编辑看得见」）：界面**有未保存编辑**时，外部
        （侧栏 AI / CLI / 另一个会话）改了盘上的内容，不再被一句状态提示悄悄吞掉 ——
        这里常驻一条**可点**的 banner，点开是**只读**的两侧差异面板（不写盘、不重载树：
