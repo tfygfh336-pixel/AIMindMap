@@ -282,6 +282,23 @@
     renderMind(json);
   }
 
+  /** 在**工程 JSON**（`serializeTree` 产的那个形状 / 盘上读回来的那一份）里按 id 找节点。
+   *  谁需要它：AI 落盘后把"盘上刚长出来的子节点"接进内存（app-ask.js 的 syncMemoryAfterWriteBack）
+   *  —— 节点数据整份取自磁盘（id / 标题取回答首行 / 详情放全文这三条规则都在 CLI 那边，
+   *  渲染层**不许**自己重算一遍 ✗）。
+   *  ⚠️ 这是**唯一实现**：editor.js 里那份同型的小 findNode 是历史包袱，别再添第三份 ✗。
+   *  容忍两种入参：整份工程 JSON（带 `data`）或已经是一棵节点子树。 */
+  function findJsonNode(json, id) {
+    if (!json || !id) return null;
+    let hit = null;
+    (function walk(n) {
+      if (!n || hit) return;
+      if (n.id === id) { hit = n; return; }
+      (n.children || []).forEach(walk);
+    })(json.data || json);
+    return hit;
+  }
+
   /* ================= 详情 / 图片面板 ================= */
   function escHtml(s) {
     return String(s == null ? '' : s)
@@ -426,6 +443,7 @@
   MM.state = state;
   MM.getState = getState;
   MM.serializeTree = serializeTree;
+  MM.findJsonNode = findJsonNode;   // 工程 JSON 里按 id 找节点（**唯一实现**，见函数说明）
   MM.renderMind = renderMind;
   MM.rebuildFromJson = rebuildFromJson;
   MM.escHtml = escHtml;

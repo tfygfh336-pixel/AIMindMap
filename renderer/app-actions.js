@@ -108,6 +108,29 @@
     if (!state.jm || lastSavedSnapshot === null) return false;
     return snapshot() !== lastSavedSnapshot;
   }
+  /** 「界面已与盘上内容对齐」——把"未保存改动"的基线推进到**当前内存**。
+   *
+   *  "盘上变了"这件事本来有三种来源，语义必须分开：**外部改动**（别人写的）、**人的编辑**
+   *  （界面上改的）、**界面已与盘上对齐**（界面自己改成了盘上那一版）。这个入口就是第三种
+   *  —— 它是唯一没有名字的那个，所以单立出来 ✓。唯一调用方：AI 落盘之后按 CLI 回读的真值
+   *  对齐内存（app-ask.js 的 syncMemoryAfterWriteBack）。
+   *
+   *  为什么必须有它（缺了就是一条实测缺陷，判据见 scripts/smoke/38-ai-落盘.js 的 ②）：
+   *  AI 落盘走的是 CLI（渲染层**外部**改盘），于是"把内存对齐到盘上那一版"这件事本身会被
+   *  isDirty() 判成**人的编辑** ⇒ 紧接着的按盘重读会以"有未保存改动、不许覆盖人的编辑"为由
+   *  **拒绝采纳** ⇒ 新子节点不出现在导图上、详情也不更新；而保存闸门那边（版本号已经由
+   *  `refreshVersionIfOwnWrite` 推进到落盘后那一版）又认为"没有外部改动" ⇒ 下一次整树写回
+   *  把刚落盘的 qa / 详情 / 子节点**静默抹掉**，save() 还返回 true。
+   *
+   *  ⚠️ 调用方**必须先确认当前内存真的等于盘上那一版**（同步完成、且界面本来没有别的未保存改动）：
+   *  用户的未保存改动一旦被这一步说成"已保存"，随后的重读就会拿盘上那份盖掉人的编辑 ——
+   *  那比"少合并一次"坏得多 ✗。 */
+  function markAlignedBaseline() {
+    if (!state.jm || lastSavedSnapshot === null) return false;
+    lastSavedSnapshot = snapshot();
+    reportUiState();   // dirty 归零要立刻让侧栏 AI 看到（与 save() 同一口径）
+    return true;
+  }
 
   /** 未决的并发冲突：等用户选择（headless 下没人能选 ⇒ 只报状态、不弹模态框） */
   let pendingConflict = null;
@@ -606,6 +629,7 @@
   MM.deleteNode = deleteNode;
   MM.loadProjects = loadProjects;
   MM.openProject = openProject;
+  MM.markAlignedBaseline = markAlignedBaseline;   // "界面已与盘上内容对齐"（见函数说明；AI 落盘用）
   MM.isDirty = isDirty;
   MM.confirmDiscardIfDirty = confirmDiscardIfDirty;
   MM.closeMapPage = closeMapPage;      // **真关**导图页：先拦未保存编辑（保存成功才卸页）

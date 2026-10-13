@@ -452,6 +452,8 @@
    *   ③ **写到哪就同步到哪**：拿主进程回读回来的真值（`qa` / `detail`）覆盖内存里的那一份，
    *      再请渲染层按磁盘重读一次（新子节点要出现在导图上）——
    *      少了这一步，下一次界面保存会拿旧内存把刚落盘的问答抹掉 ✓（与 assoc-edit 同一条纪律）。
+   *      ⚠️ 这一步有三个不能省的细节（写错对象 / 基线没说名字 / 子节点没搬上树），
+   *      每一条都对应一个实测缺陷 ⇒ 实现只有一处：`syncMemoryAfterWriteBack`（见它头顶的说明）。
    *
    * 失败一律**说出来**（状态栏 + 框里留痕）✗ 不许静默。
    * 空回答也在这里挡住（按钮只在有回答时出现，这是第二道）。
@@ -500,32 +502,44 @@
         renderAskPage(box);
         return null;
       }
-      // ③ 内存对齐：用回读到的真值覆盖（深拷贝，别把主进程返回的对象直接挂进内存树 ——
-      //    后面界面保存会整树写回，共享引用会带进一些不该落盘的形状）
-      if (box.node) {
-        const jmNow = state().jm;
-        const node = jmNow && MM.adapter.available(jmNow)
-          ? MM.adapter.getNode(jmNow, box.node.id) : null;
-        const target = node || box.node;
-        try {
-          target.detail = r.detail || '';
-          target.qa = JSON.parse(JSON.stringify(r.qa || []));
-        } catch (e) { /* 赋值失败不致命：真正的真值在磁盘上，重读会把它带回来 */ }
-      }
-      const childId = r.child && r.child.id;
-      live().lastWrite = {
-        ok: true,
-        text: asChild
+      // ③ 内存对齐 + 基线推进（**两条必须一起做**，只做一条都会留下一个实测缺陷）：
+      //    只写内存不推基线 ⇒ 紧接着的按盘重读以"界面脏着"为由拒绝采纳 ⇒ 新子节点不出现
+      //      （判别力证据：只把下面 ① 那两行改成写 node.data ⇒ 冒烟 38 的 ② 红、⑤ 绿）；
+      //    只想推基线不写内存（在 node 级赋值）⇒ 内存永远没对齐 ⇒ 下一次整树写回把刚落盘的
+      //      qa/详情静默抹掉，save() 还返回 true（冒烟 38 的 ⑤ 专治这一条）。
+      //    ⚠️ 顺序要紧：**先对齐（含把新子节点搬上树），再 requestReread()** ——
+      //       否则那次重读拿到的还是"界面脏着"的结论。
+      return syncMemoryAfterWriteBack(project, box.node.id, r, asChild).then((sync) => {
+        const childId = r.child && r.child.id;
+        const qaCount = (r.qa || []).length;
+        const done = asChild
           ? ('已落盘：新建子节点 ' + (childId || '?') + '（标题取回答首行，详情放全文）；'
-            + '这条问答也记进了本节点（共 ' + ((r.qa || []).length) + ' 条）')
+            + '这条问答也记进了本节点（共 ' + qaCount + ' 条）')
           : ('已落盘：回答已追加到本节点详情末尾（带来源标记与时间）；'
-            + '问答记录共 ' + ((r.qa || []).length) + ' 条')
-      };
-      MM.setStatus(live().lastWrite.text);
-      renderAskPage(box);
-      // 导图上要出现新子节点 / 详情要跟上：请渲染层按磁盘重读一次（复用既有的脏冲突保护）
-      if (MM.requestReread) { try { MM.requestReread(); } catch (e) { /* 重读失败不改变"已写进盘"这个事实 */ } }
-      return r;
+            + '问答记录共 ' + qaCount + ' 条');
+        // 对齐成了就照旧；**没对齐就响亮说**（界面没对齐 = 现在保存会少内容，不许静默 ✗）
+        live().lastWrite = {
+          ok: true,   // 落盘本身是成功的（这条留痕说的是"写盘成不成功"）
+          text: done + (sync.aligned ? '' : '｜⚠ 界面内存没跟上这次落盘：' + sync.why
+            + (sync.kept
+              ? '。这次写进去的内容已经在内存里（对应的节点已对齐）—— 保存时两边的改动都在'
+              : '。**先别保存**：盘上那一版还没有进内存，现在保存会把刚写的内容抹掉；'
+                + '请关掉再打开这个项目（或走菜单「重新加载思维导图页」）让界面读回盘上那一版'))
+        };
+        MM.setStatus(live().lastWrite.text, !sync.aligned);
+        renderAskPage(box);
+        // 导图上要出现新子节点 / 详情要跟上：请渲染层按磁盘重读一次（复用既有的脏冲突保护）
+        if (MM.requestReread) { try { MM.requestReread(); } catch (e) { /* 重读失败不改变"已写进盘"这个事实 */ } }
+        return r;
+      }, (err) => {
+        // 对齐那段自己抛了（不该发生）：落盘是成功的，但内存没跟上 ⇒ 如实说 ✗ 不假装
+        const why = (err && err.message) || String(err);
+        live().lastWrite = { ok: true, text: '已落盘（盘上内容已写入），但界面内存没跟上：' + why
+          + '｜⚠ 先别保存：现在保存会把刚写的内容抹掉；请关掉再打开这个项目' };
+        MM.setStatus(live().lastWrite.text, true);
+        renderAskPage(box);
+        return r;
+      });
     }).catch((err) => {
       const why = (err && err.message) || String(err);
       live().lastWrite = { ok: false, text: '没写进去：' + why };
@@ -533,6 +547,108 @@
       renderAskPage(box);
       return null;
     });
+  }
+
+  /* ================= 落盘之后的**内存对齐**（唯一实现：三条缺一条就对应一个实测缺陷） =================
+   * 落盘走的是 CLI（`ask-apply`：闸门校验 + 原子写都在那边），所以"界面内存"必须自己跟上。
+   * 三条都是实测过的（判据在 scripts/smoke/38-ai-落盘.js 的 ② ③ ④ ⑤）：
+   *
+   *   ① **写对对象**：jsMind 的节点自定义字段只活在**可序列化袋** `node.data` 上
+   *      （库的 `_extract_data()`；`serializeTree` 读的正是 `n.data.detail/qa/items` ——
+   *      见 app-core.js 的平铺白名单，editor.js 也写在 `node.data.detail`）。
+   *      写到 node 级（`target.detail`）**对序列化完全不可见** ⇒ 界面内存永远没对齐 ⇒
+   *      用户随后按一次保存（整树写回）就把刚落盘的 qa 与追加的详情**静默抹掉**，
+   *      而 save() 返回 true、界面还显示"已保存" ✗✗。
+   *
+   *   ② **对齐要有名字**（`MM.markAlignedBaseline()`）：AI 落盘是**外部**改盘，
+   *      于是"把内存对齐到盘上那一版"这件事本身会被 isDirty() 判成**人的编辑** ⇒
+   *      紧接着的按盘重读会以"有未保存改动、不许覆盖人的编辑"为由**拒绝采纳** ⇒
+   *      新子节点不出现在导图上、详情也不更新；而保存闸门那边又认为"没有外部改动" ⇒
+   *      下一次整树写回抹盘 ✗。⚠️ 只在"界面本来没有**别的**未保存改动"时才敢声称对齐：
+   *      用户自己那份还没落盘的改动只能靠保存时的三方合并保住 —— 声称对齐会让随后的重读
+   *      拿盘上那份盖掉人的编辑（比少合并一次坏得多 ✗）。
+   *
+   *   ③ **新建子节点**那次内存里还没有这个节点（id / 标题取回答首行 / 详情放全文这三条规则
+   *      都在 CLI 那边，渲染层**不重算** ✗）⇒ 用只读探视（`project:peek`，无副作用）把盘上
+   *      那一份取回来，**只把这一个节点**按盘上的数据接进内存（数据整份来自磁盘 = 一个真源）。
+   *      少了它：界面有未保存改动时重读会（正确地）拒绝采纳，而盘上那个新子节点不在内存里
+   *      ⇒ 下一次保存把它抹掉 ✗。
+   *
+   * 任何一条没做到都**不留白**：返回 `{aligned:false, why}`，调用方把 why 原样留在浮窗里
+   * （"界面没对齐 = 现在保存会少内容"这件事必须有人看得见 ✗ 不许静默）。
+   * @returns {Promise<{aligned:boolean, why:string, kept?:boolean}>} */
+  function syncMemoryAfterWriteBack(project, nodeId, r, asChild) {
+    const childId = (r.child && r.child.id) || null;
+    /** 真正改内存的那一段 —— **同步做完**（中间不留 await）：判脏与改内存之间若夹着一个 await，
+     *  用户在这期间敲进去的字会被基线说成"已保存"，随后的重读就会把它盖掉 ✗。 */
+    function apply(childFromDisk) {
+      const jm = state().jm;
+      const node = (jm && MM.adapter.available(jm)) ? MM.adapter.getNode(jm, nodeId) : null;
+      if (!node) return { aligned: false, why: '内存里没有这个节点（导图已重建 / 项目已切走）' };
+      // 判脏必须在**改内存之前**：这正是"界面还有没有别的未保存改动"的判据
+      const hadOwnEdits = (typeof MM.isDirty === 'function') ? MM.isDirty() : true;
+      try {
+        node.data = node.data || {};                      // ① 可序列化袋（AI 结果的真源）
+        node.data.detail = r.detail || '';
+        // 深拷贝：后面界面保存会整树写回，共享引用会把主进程那边的对象形状带进内存树
+        node.data.qa = JSON.parse(JSON.stringify(r.qa || []));
+      } catch (e) {
+        return { aligned: false, why: '写进节点数据袋失败：' + ((e && e.message) || e) };
+      }
+      if (childId && !MM.adapter.getNode(jm, childId)) {   // ③ 把盘上那个新子节点接进内存
+        if (!childFromDisk) return { aligned: false, why: '读不回盘上那一版 ⇒ 新子节点没能接进导图' };
+        try {
+          const data = Object.assign({}, childFromDisk);
+          // id / 标题 / children 走 add_node 的位置参数 —— 别塞进数据袋（塞了就是同一件事两处表达）
+          delete data.id; delete data.topic; delete data.children;
+          const added = MM.adapter.addNode(jm, nodeId, childId, childFromDisk.topic || childId, data);
+          if (!added) return { aligned: false, why: '新子节点没能挂到「' + (node.topic || nodeId) + '」上' };
+        } catch (e) {
+          return { aligned: false, why: '新子节点接进内存失败：' + ((e && e.message) || e) };
+        }
+      }
+      // ④ 自检：序列化出来的那一份里必须**真的**带上刚写进去的东西（写错对象在这里立刻红）
+      const bad = verifySerialized(childId);
+      if (bad) return { aligned: false, why: '对齐自检没过：' + bad + '（写入点错了对象 / 没接上树？）' };
+      if (hadOwnEdits) {
+        // 用户还有别的未保存改动 ⇒ 不许声称"界面已与盘上一致"（那会让随后的重读盖掉人的编辑）。
+        // 但这次落盘的内容**已经进了内存** ⇒ 保存时两边都在（界面基线没动，闸门走三方合并）✓
+        return { aligned: false, kept: true, why: '界面还有别的未保存改动 —— 没有整树对齐（不覆盖你的编辑）' };
+      }
+      if (!(MM.markAlignedBaseline && MM.markAlignedBaseline())) {
+        return { aligned: false, why: '没有可推进的保存基线（项目可能还没载入完）' };
+      }
+      return { aligned: true, why: '' };
+    }
+    /** 自检（**机械判据，不是装饰**）：`serializeTree()` 出的那一份里必须真的带上刚写进去的
+     *  detail / qa（新建子节点时还要有那个节点）—— 这正是"写对对象"的判据：写到 node 级
+     *  （或压根没接上树）时序列化里看不见它们。返回 '' = 通过；否则是一句能留在浮窗里的原因。
+     *  ⚠️ 它把"写得看不见 ⇒ 下一次保存静默抹盘"挡在**落盘那一刻**，不必等用户按了保存才发现。 */
+    function verifySerialized(childIdToCheck) {
+      try {
+        const snap = MM.findJsonNode(MM.serializeTree(), nodeId);
+        if (!snap) return '序列化出来的那一份里没有这个节点';
+        if (String(snap.detail || '') !== String(r.detail || '')) return '序列化里没有刚写进去的 detail';
+        const want = (r.qa || []).length;
+        const got = Array.isArray(snap.qa) ? snap.qa.length : 0;
+        if (got !== want) return '序列化里没有刚写进去的 qa（期望 ' + want + ' 条，实得 ' + got + ' 条）';
+        if (childIdToCheck && !MM.findJsonNode(MM.serializeTree(), childIdToCheck)) {
+          return '序列化里没有刚建出来的子节点 ' + childIdToCheck;
+        }
+        return '';
+      } catch (e) {
+        return '自检跑不起来：' + ((e && e.message) || e);
+      }
+    }
+    // 子节点还不在树上 ⇒ 先去盘上把它取回来（**只读**：peek 不推进任何基线，取不到也不留后遗症）
+    const jm0 = state().jm;
+    const childInTree = !!(jm0 && childId && MM.adapter.getNode(jm0, childId));
+    if (!asChild || !childId || childInTree) return Promise.resolve(apply(null));
+    const api = window.desktop && window.desktop.project;
+    if (!api || typeof api.peek !== 'function') return Promise.resolve(apply(null));
+    return Promise.resolve(api.peek(project))
+      .then((pr) => apply((pr && pr.ok && MM.findJsonNode) ? MM.findJsonNode(pr.data, childId) : null))
+      .catch(() => apply(null));
   }
 
   /* ================= 下方消息栏（功能 5a 入口③） =================
