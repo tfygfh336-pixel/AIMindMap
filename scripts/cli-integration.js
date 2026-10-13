@@ -5763,6 +5763,186 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   }
 }
 
+/* ============================================================
+ * 【SMOKE39·T1】域 39 断言④的 **T1 独立交叉读者**（2026-10-13 那一片的待并入原文）
+ * ------------------------------------------------------------
+ * ## 这一件守的是什么（为什么要单独立一条集成断言）
+ * 域 39 的剪贴板判据从"T0 探针 + **一次**主进程读"变成了"T0 探针 + **T1 交叉读者（进程外）**"，
+ * 判定的**答案空间**也从"一个红点"变成**三档**（判红 / 未验证（环境瞬态）/ 未验证（交叉读者不可用））。
+ * 三档里有两档**不进通过/总数** ⇒ 出现本工程最熟悉的形状：**门禁修好之后，没人能保证下一批人
+ * 不会把它改回"一律判红"，或者改回"环境坏就一律未验证"**（后者等于给产品开脱 ✗）。
+ * ⇒ 用一条**源码级**断言把"形状"钉住：毫秒级、零子进程、零 Electron ✓。
+ *
+ * ## ⚠️ 边界（别把这条读得比实际强）
+ *   · 它判的是**源码形状**，不是"真跑起来判成什么"：后者由**乙档**（真 Electron 两次）与域 39
+ *     自己的**五格判别力证明**负责。源码级断言有**恒真风险** ⇒ 本片实跑过一次"注入违规"：
+ *     把"通道判据不许被读者开脱"那一支删掉 ⇒ 甲-3 **必红**（读数见交付说明）；
+ *   · 它**不**校验报文措辞（措辞会改，且改措辞不该红）：只钉"三档同时在、红那一支没被读者接走"
+ *     这个**结构** ⇒ 判据与措辞分离 ✓；
+ *   · 它**不**判"真机上读者到底读得到什么"（那是环境的答案），只判"读者被放在正确的位置上"。
+ *
+ * ## 并入位置
+ *   `scripts/cli-integration.js` 由另一条流托管 ⇒ 本文件是**待并入的断言原文**。
+ *   并入位置：`try { … }` 主跑体内、任意位置；**不要**碰末尾的收尾段。
+ *
+ * ## 本片实跑读数（甲档）
+ *   真仓库：`checked=6 failed=0`；变异树（删掉"通道判据不许被读者开脱"那一支）：**failed=1** ⇒ 不是恒真 ✓
+ * ============================================================ */
+{
+  const fixtRel = path.join('scripts', 'smoke', '39-item-detail.js');
+  /* 打印用的那两个字面量同样**拼接构造** —— 于是本文件（**含标签文本**、也含注释）
+   * 一个字节都不含它 ⇒ 并入 `scripts/` 后，甲-6 的扫描不会把门禁自己数成第二处实现 ✓。 */
+  const NAMED = ['Get-Clip', 'board -Raw'].join('');
+  const fixtSrc = fs.readFileSync(path.join(ROOT, fixtRel), 'utf8');
+  /* 扫描面与被钉的对象**一起声明**（B4b）：只扫这一个文件（域 39 的判据住在它里面）；
+   * **先剥注释再扫**结构 —— 注释里的示例写法不是实现（本工程吃过两次这个坑 ✗）。 */
+  const fixtCode = fixtSrc.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^[ \t]*\/\/.*$/gm, ' ');
+
+  /* ── 甲-1 交叉读者的**形状**：另一个进程 + 另一套 API 栈 + 自带超时 + 临时件用完即清 ──
+   * 为什么"进程内再读一次"不算：产品那条读与断言那次读是**同一 API、同一进程**（主进程
+   * `clipboard.readText()`）⇒ 同一失效源读两次证不出"值其实写进去了" ✗（这正是这一片要证的事）。 */
+  check('[SMOKE39·T1] 交叉读者形状：`execFile` 起 **powershell.exe**（5.1/STA、外部进程）'
+    + ' · 读数走 `' + NAMED + '` · **自带超时** · 落 %TEMP% 且**用完即清**'
+    + '（四条缺一条，这个"独立观察者"就退化成同一失效源的第二次读）',
+    /const\s*\{\s*execFile\s*\}\s*=\s*require\('child_process'\)/.test(fixtCode)
+      && /execFile\('powershell\.exe'/.test(fixtCode)
+      && /'-STA'/.test(fixtCode)
+      && /Get-Clipboard\s+-Raw/.test(fixtCode)
+      && /timeout:\s*XREAD_TIMEOUT_MS/.test(fixtCode)
+      && /os\.tmpdir\(\)/.test(fixtCode)
+      && /fs\.rmSync\(outPath,\s*\{\s*force:\s*true\s*\}\)/.test(fixtCode),
+    JSON.stringify({
+      execFile: /execFile\('powershell\.exe'/.test(fixtCode), sta: /'-STA'/.test(fixtCode),
+      getClip: /Get-Clipboard\s+-Raw/.test(fixtCode), timeout: /timeout:\s*XREAD_TIMEOUT_MS/.test(fixtCode),
+      temp: /os\.tmpdir\(\)/.test(fixtCode), clean: /fs\.rmSync\(outPath,/.test(fixtCode) }));
+
+  /* ── 甲-2 三档齐（判定档数 ≥ 状态数 ✗：少一档就会把两种状态压成同一个数）── */
+  const hasRed = /这是产品回归/.test(fixtSrc);
+  const hasTransient = /环境瞬态/.test(fixtSrc);
+  const hasDeadReader = /交叉读者不可用/.test(fixtSrc);
+  check('[SMOKE39·T1] 三档齐：① **判红（产品回归）** ② **未验证（环境瞬态）** ③ **未验证（交叉读者不可用）**'
+    + '（缺 ② ⇒ 环境瞬态又变回"产品回归"误判 ✗；缺 ③ ⇒ 读者坏掉时只能二选一，两个都不对 ✗）',
+    hasRed && hasTransient && hasDeadReader,
+    JSON.stringify({ '①产品回归': hasRed, '②环境瞬态': hasTransient, '③读者不可用': hasDeadReader }));
+
+  /* ── 甲-3 ⭐ 本片最重的一条：**通道判据不许被读者开脱** ──
+   * 兜底的 `execCommand` 也能把**同一串文本**写进剪贴板（本机实测过）⇒ 一旦让"独立读者读得到"
+   * 去救"通道不是 desktop-clipboard"，"不依赖窗口焦点"这条**产品判据就被悄悄放宽** ✗✗。
+   * 判据两条一起：① 那一支 `return { ok: false … }`（不许变成 unverified）；② 它**排在**读者那一支
+   * **之前**（顺序反了 = 被读者接走，一模一样是开脱）。 */
+  const iChan = fixtCode.search(/if\s*\(clipOk\s*&&\s*!viaDesktop\)/);
+  const iReader = fixtCode.search(/if\s*\(!clipOk\)/);
+  const chanSeg = (iChan >= 0 && iReader > iChan) ? fixtCode.slice(iChan, iReader) : '';
+  check('[SMOKE39·T1] ⭐ 通道判据**独立于读者**：值对了但走的不是主进程那条 ⇒ 该支 `return { ok: false, … }`，'
+    + '且**排在**"读者那一支"**之前**（兜底通道能写同一串文本 ⇒ 让读者去救它 = 放宽产品判据 ✗✗）',
+    iChan >= 0 && iReader > iChan && /return\s*\{\s*ok:\s*false/.test(chanSeg)
+      && !/unverified/.test(chanSeg),
+    JSON.stringify({ '通道支位置': iChan, '读者支位置': iReader,
+      '通道支 return ok:false': /return\s*\{\s*ok:\s*false/.test(chanSeg),
+      '通道支误带 unverified': /unverified/.test(chanSeg) }));
+
+  /* ── 甲-4 读者**只在"要判红"那一刻**才请（花费纪律 `G1`：正常跑/环境不可用都不起子进程）── */
+  check('[SMOKE39·T1] 读者只在"环境可用 + 环境无关那几档通过 + 值这条没读回"时才起子进程'
+    + '（否则正常跑与"环境坏"那两档都会被拖上一次进程外调用 ✗）',
+    /env\.available\s*&&\s*baseOk\s*&&\s*!\(clip\.ok/.test(fixtCode),
+    '守卫在位=' + /env\.available\s*&&\s*baseOk\s*&&\s*!\(clip\.ok/.test(fixtCode));
+
+  /* ── 甲-5 **fail-safe**：每一个"未验证"出口都必须挂在"另一档真的通过"上 ──
+   * 形状照 `tally()` 的硬要求：`unverified` 只许出现在通过的结果上 ⇒ 否则"未验证"会变成
+   * "既报未验证又报失败"的掩盖后门（本工程最重的损害类别 ✗）。
+   * 出口只有两种合法形状（**不写死条数**：判"有没有说不清的出口"这个恒等式 ✓）：
+   *   · 本片新增的两档：`ok: true, unverified: '…'`（读者不可用 / 环境瞬态）；
+   *   · 既有那一档（环境不可用）：`ok: baseOk, unverified: baseOk ? '…' : null`。 */
+  const okTrueUnv = (fixtCode.match(/ok:\s*true,\s*unverified:/g) || []).length;
+  const okBaseUnv = (fixtCode.match(/ok:\s*baseOk,\s*unverified:\s*baseOk\s*\?/g) || []).length;
+  const unvTotal = (fixtCode.match(/unverified:/g) || []).length;
+  check('[SMOKE39·T1] 每个"未验证"出口都是 **fail-safe**（只挂在"另一档真的通过"上）：'
+    + '新增两档走 `ok: true, unverified:`，既有那一档走 `ok: baseOk, unverified: baseOk ? … : null`，'
+    + '**没有第三种种形状的出口**（说不清的出口 = "未验证"能掩盖真失败 ✗）',
+    okTrueUnv >= 2 && okBaseUnv >= 1 && unvTotal === okTrueUnv + okBaseUnv,
+    JSON.stringify({ 'ok:true 形状': okTrueUnv, 'ok:baseOk 形状': okBaseUnv, 'unverified: 总处数': unvTotal }));
+
+  /* ── 甲-6 独立读者**唯一实现**（`H1b`：各域各写一套 `Get-Clipboard` 就是第二份会漂的口径 ✗）──
+   * 扫描面**一起声明**：`main.js` / `preload.js` / `scripts/**` / `cli/**` / `src/**` / `renderer/**` /
+   * `tests/**`（递归；**不含** `.review/**`（草稿会写这个字符串）、`docs/**`（散文）、`node_modules/**`）。
+   * needle 是**实现形状**（`Get-Clip` + `board -Raw` 拼出来的正则；且先剥注释）而不是裸子串 ✓。
+   * ⚠️ **扫描面剥注释、但不剥字符串** ⇒ `check(...)` 的**标签文本也在面内** ★：因此 needle 与**两处标签**
+   *   里的那两个字面量**都**用拼接构造（`NEEDLE` / `NAMED`）⇒ 本文件（**含标签文本**，也含注释）一个
+   *   字节都不含它 ⇒ 并入 `scripts/` 后不会扫到自己 ✓。（首版只拼了 needle、**漏了标签** ⇒ 并入后甲-6
+   *   把门禁自己数成第二处实现而判红 —— F16 同族：**结构断言被自己的字符串绊倒**。） */
+  const NEEDLE = new RegExp(['Get-Clip','board\\s+-Raw'].join(''));
+  const scanRoots = ['scripts', 'cli', 'src', 'renderer', 'tests']
+    .map((d) => path.join(ROOT, d)).concat([path.join(ROOT, 'main.js'), path.join(ROOT, 'preload.js')]);
+  const hits = [];
+  const walk = (p) => {
+    let st = null;
+    try { st = fs.statSync(p); } catch (e) { return; }
+    if (st.isDirectory()) {
+      let kids = [];
+      try { kids = fs.readdirSync(p); } catch (e) { return; }
+      kids.forEach((k) => { if (k !== 'node_modules' && k !== '.review') walk(path.join(p, k)); });
+      return;
+    }
+    if (!/\.js$/.test(p)) return;
+    let t = '';
+    try { t = fs.readFileSync(p, 'utf8'); } catch (e) { return; }
+    if (NEEDLE.test(t.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^[ \t]*\/\/.*$/gm, ' '))) {
+      hits.push(path.relative(ROOT, p).replace(/\\/g, '/'));
+    }
+  };
+  scanRoots.forEach(walk);
+  check('[SMOKE39·T1] 独立读者**全库只有一处实现**（`' + NAMED + '` 只许出现在域 39 的夹具里）'
+    + '（扫描面=scripts/cli/src/renderer/tests + main.js/preload.js，先剥注释；`.review/` 与 `docs/` 不在面内）',
+    hits.length === 1 && hits[0] === 'scripts/smoke/39-item-detail.js',
+    '命中=' + JSON.stringify(hits));
+
+  /* ── 乙档（重 · 显式开关）：真 Electron 跑两次，判"两档各自的退出码与三个数" ──
+   * 两次都用**打桩**（不依赖真剪贴板时好时坏 ⇒ 判据不变成偶发 ✗）：
+   *   · `39-clip-t1-transient` ⇒ **未验证（环境瞬态）**：exit 0、未验证 1、通过 == 总数；
+   *   · `39-clip-xread-dead`   ⇒ **未验证（交叉读者不可用）**：同样不阻断，且**点名**读者不可用。
+   * 判据**不写死任何计数**（只比"通过 == 总数"，并从三态行里取数 ✓）。 */
+  let t1Exit = '(没跑)', t1Line = '(没跑)', d1Exit = '(没跑)', d1Line = '(没跑)';
+  if (process.env.MM_IT_SMOKE39_T1 === '1') {
+    const ELECTRON = require('electron');
+    const spawnSync = require('child_process').spawnSync;
+    const once = (inject) => spawnSync(ELECTRON, ['.', '--smoke'], {
+      cwd: ROOT, encoding: 'utf8', timeout: 240000,
+      env: Object.assign({}, process.env, { SMOKE_ONLY: '39', MM_SMOKE_INJECT: inject })
+    });
+    const parse = (out) => {
+      const m = String(out || '').match(/冒烟三态：通过\s*(\d+)\s*\/\s*总数\s*(\d+)\s*｜\s*未验证\s*(\d+)/);
+      return m ? { passed: +m[1], total: +m[2], unverified: +m[3], raw: m[0] } : null;
+    };
+    try {
+      const a = once('39-clip-t1-transient');
+      t1Exit = a.status; t1Line = String(a.stdout || '');
+      const ta = parse(a.stdout);
+      check('[SMOKE39·T1·乙] 真跑"T1 瞬态"档 ⇒ **未验证（环境瞬态）**、exit 0、'
+        + '**未验证不进通过/总数**（通过 == 总数）、且响亮行点名"环境瞬态"',
+        a.status === 0 && !!ta && ta.passed === ta.total && ta.unverified === 1
+          && /环境瞬态/.test(t1Line),
+        'exit=' + a.status + ' ｜ 三态行=' + (ta ? ta.raw : '(没解析到)'));
+      const b = once('39-clip-xread-dead');
+      d1Exit = b.status; d1Line = String(b.stdout || '');
+      const tb = parse(b.stdout);
+      check('[SMOKE39·T1·乙] 真跑"读者不可用"档 ⇒ **未验证（交叉读者不可用）**、exit 0、'
+        + '**不阻断**、且点名"缺的是外部依赖（Windows PowerShell 5.1/STA）"',
+        b.status === 0 && !!tb && tb.passed === tb.total && tb.unverified === 1
+          && /交叉读者不可用/.test(d1Line),
+        'exit=' + b.status + ' ｜ 三态行=' + (tb ? tb.raw : '(没解析到)'));
+    } finally {
+      /* 收尾（本档**不落临时件**：两次跑的报文直接从 stdout 判）——但"跑了什么"必须无条件打出来：
+       * 否则中途抛错时，读者会把"没跑"读成"跑绿了"（`A5`：没跑 ≠ 通过 ✗）。 */
+      console.log('[SMOKE39·T1·乙] 本轮真跑：transient exit=' + t1Exit + ' ｜ xread-dead exit=' + d1Exit);
+    }
+  } else {
+    console.log('[SKIP·**不是通过**] [SMOKE39·T1·乙] 真 Electron 两次跑未执行'
+      + '（要 `MM_IT_SMOKE39_T1=1` 才跑；理由：一次真 Electron 是百秒量级的墙钟，G4 默认不该被它拖慢）'
+      + '—— 甲档（源码级 6 条）本轮已跑 ✓；「真跑一轮里这两档究竟判成什么」本轮**没有验**'
+      + '（别把这里读成"验过了"）。');
+  }
+}
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;

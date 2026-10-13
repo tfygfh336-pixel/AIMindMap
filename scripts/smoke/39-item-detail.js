@@ -69,6 +69,27 @@
  *     （`scripts/smoke-assertions.js` 的 `tally()` 里那一行 `if (strict) failed++` 去掉）⇒ ①**必红**
  *     （退出码回到 0 = 这条判据在空转）⇒ 还原后 SHA-256 逐字节相同 ⇒ 复绿。
  *     开关值由 `scripts/smoke-assertions.js` 的 `parseStrictEnv` **一处**解析；非法值当场 exit 1。
+ *   · **T1 交叉读者的判别力证明（本片新增，四个方向各实跑一次 ✓ 读数见交付说明）**：
+ *     它补的是上面三态**剩下的盲区**：T0 探针判的是**点之前**，而结论落在 **T1**（点 ⧉ 之后
+ *     那次读）⇒ T0 健康、T1 那一瞬不一致时，旧形状会把**环境侧瞬态**判成"产品回归" ✗
+ *     （2026-10-13 就发生过一次）。现在 T1 由 `crossReadClipboard`（**进程外**：
+ *     `powershell.exe -STA` + `Get-Clipboard`，形态与论证见它的头注）回答
+ *     "值到底在不在系统剪贴板上"。四个开关（默认空 ⇒ 完全不起作用 ✓）：
+ *       · `39-clip-t1-readfail` —— T0 打桩"可用" + **只把被断言的那一次 T1 读**打桩成读不回，
+ *         **读者真跑**（这是"真读数版"）：实跑落 **"未验证（环境瞬态）"**，报文里读者那一栏
+ *         `=可用 · 它读到的剪贴板="si39-a#i-mv6…" · 期望值=同一串`，三态行 `通过 15 / 总数 15
+ *         ｜ 未验证 1`、**exit 0 不阻断** ✓；
+ *       · `39-clip-t1-transient` —— 同上，但**读者也打桩**成"读到了期望值"（**确定性**那一版：
+ *         "环境把期望值放上剪贴板"在本机时有时无 ⇒ 只靠真环境会变成**偶发**判据 ✗）⇒ 同一个档 ✓；
+ *       · `39-clip-xread-dead` —— 读者打桩成"起不来/自检不过" ⇒ 落"未验证（**交叉读者不可用**）"
+ *         （响亮 + 不计入通过/总数 + 不阻断；**绝不**因此判红或判绿 ✓）；
+ *       · `39-clip-fallback-off` —— **夹具侧**掐掉兜底那两条浏览器写通道（`navigator.clipboard` /
+ *         `document.execCommand`），配合手工把 `main.js` 的 `clipboard.writeText(value)` 吞掉 ⇒
+ *         三条写通道全废 ⇒ 值**绝不可能**落到剪贴板上 ⇒ 读者真跑也读不回 ⇒ **判红：这是产品回归**
+ *         （三态行 `通过 15 / 总数 16`，exit 1）✓。`B4`：**概率型掩盖要用强制构造逼到边界** ——
+ *         不掐兜底的话，兜底偶尔真能把值写进剪贴板，于是"写被吞掉"会被**掩盖**成通道问题。
+ *     手工注入那两次分别实跑到两条不同的红：**通道判据那一支**（值对了但走的不是主进程那条）
+ *     与**读者那一支**（独立读者也读不回）；两次 `main.js` 还原后 **sha256 逐字节相同** ⇒ 复绿 ✓。
  * ⚠️ 本域**没有**提供"让条目归属不贴"的注入开关：`fdDecorateItems` 是闭包内的局部函数，
  *    测试侧替换不了（`MM.*` 上没有那个引用）。要它就得让产品代码读环境变量 —— 那比没有更糟。
  *    所以断言①的归属判据靠的是"逐字节同源 + 三处 id 一致"，而不是"能被人为关掉"。
@@ -85,29 +106,58 @@
  *     多显示器仍只能真机复核）。
  *   · `formatVersion` 的"不降级"判据要求探针项目是 v3（契约：`{2,3}` 都接受）；探针里直接写成 3，
  *     若某天门禁收紧到"v3 必须全节点条目化"，这条会先红 —— 那时改探针，别改判据。
- *   · ⚠️ **系统剪贴板这一档是"三态"（本批改）**：改前的形状是"主进程读到的系统剪贴板 == 期望值
- *     + 通道必须是 `desktop-clipboard`" ⇒ 本机**稳定红**（主进程 `clipboard.writeText()` 之后回读为空；
- *     单跑复现；同机 `Get-Clipboard` 与 `[System.Windows.Forms.Clipboard]::GetText()` **两个独立 API
- *     也全都失败** ⇒ 那一刻**系统剪贴板本身不可用**，不是产品回归）。这条红连着多批把全链按在 13/14。
- *     现在改成：**先用独立探针判环境，再决定这条读数算不算判据**（形状照第八批"撕裂快照指纹
- *     采不到"那一档）——
- *       ① 探针**可用** + 我们没写进去 ⇒ **判红**（真回归，报文点名"环境可用但我们没写进去"）；
- *       ② 探针**不可用**（环境坏）⇒ 响亮打印"剪贴板本项**未验证**"、**不计入通过/总数、不阻断**
+ *   · ⚠️ **系统剪贴板这一档是"三态 + T1 再分一层"（本片改）**：改前的形状是"主进程读到的系统剪贴板
+ *     == 期望值 + 通道必须是 `desktop-clipboard`" ⇒ 本机**稳定红**（主进程 `clipboard.writeText()`
+ *     之后回读为空；单跑复现；同机 `Get-Clipboard` 与 `[System.Windows.Forms.Clipboard]::GetText()`
+ *     **两个独立 API 也全都失败** ⇒ 那一刻**系统剪贴板本身不可用**，不是产品回归）。这条红连着多批
+ *     把全链按在 13/14。现在有两跳：**T0 独立探针**（点之前：这份剪贴板此刻能不能当证据来源）+
+ *     **T1 独立交叉读者**（点之后：值到底在不在剪贴板上）——
+ *       ① T0 **不可用**（环境坏）⇒ 响亮打印"剪贴板本项**未验证**"、**不计入通过/总数、不阻断**
  *          （`main.js` 打 `[smoke]` 响亮行；计数见 `scripts/smoke-assertions.js` 的 `tally()`）；
- *       ③ 探针可用 + 写进去了 **且** 通道是 `desktop-clipboard` ⇒ 通过 ✓。
+ *       ② T0 可用 + 值读回了 **且** 通道是 `desktop-clipboard` ⇒ **通过** ✓；
+ *       ③ T0 可用 + 值**没读回** ⇒ 交给 T1 读者，**再分三层**：
+ *            · 读者**起不来/自检不过** ⇒ 未验证（**交叉读者不可用**）；
+ *            · 读者**读到期望值** ⇒ 未验证（**环境瞬态**）；
+ *            · 读者**能跑且也读不回** ⇒ **判红：这是产品回归** ✓（这一支一个字不许松 ✗）；
+ *       ④ T0 可用 + 值读回了但**通道不对** ⇒ **判红**，**不进**未验证档 ✗ —— 值在剪贴板上
+ *          **证明不了**是主进程那条写的（兜底的 `execCommand` 也能把同一串文本写进去，本机实测过），
+ *          拿它开脱等于把"不依赖窗口焦点"这条产品判据**悄悄放宽** ✗。
  *     采得到真值时**照旧判红**（`A5`）—— 这一档**没有**"降级成行为级"的口子；变的只是"环境坏"
- *     不再冒充产品缺陷，也不再静默当通过。探针本身与产品链路**无关**（本进程直接 writeText→readText），
- *     否则产品一回归、探针跟着坏，真回归会被洗成"环境问题" ✗。
- *     边界（**别把这一档读得比实际强**）：探针判的是"此刻这份系统剪贴板能不能当证据来源"，
- *     它**答不了**"另一个应用程序能不能粘出这段文本"（剪贴板格式跨进程互操作、剪贴板历史/同步
- *     是 OS 的事）；那几项只能真机人肉复核。
- *   · ⚠️ **三态本身还有一个盲区，得靠环境开关关掉**：环境坏的时候，"我们没写进去"这件事**采不到真值**
- *     ⇒ **产品真回归会被降级成"未验证"**（上面第 ② 档）⇒ 在 CI / 受控环境里等于**悄悄放过** ✗。
- *     要"宁可红，不许悄悄放过"就开 `MM_SMOKE_CLIP_STRICT=1`（**默认关**；语义、判别力证明与读数
- *     见上面「判别力证明」段；开关只改"算不算失败"，**不改原因** —— 环境坏仍然如实点名 ✓）。
+ *     不再冒充产品缺陷，也不再静默当通过。两个探针都与产品链路**无关**：T0 是本进程直接
+ *     `writeText→readText`；T1 是**另一个进程 + 另一套 API 栈**（`Get-Clipboard`）—— 否则产品一
+ *     回归、探针跟着坏，真回归会被洗成"环境问题" ✗。
+ *     **五格判定矩阵（哪一格由谁决定，写清楚；本片每一格都实跑过 —— 读数见交付说明）**：
+ *       | 情形 | 判定 | 谁决定 |
+ *       |---|---|---|
+ *       | (a) 主进程那条写了 + 通道 `desktop-clipboard` | **通过** | 两条产品判据都要满足 ✓ |
+ *       | (b) 主进程那条没写、但**兜底通道把值写进了剪贴板** | **判红** | **通道判据单独决定，与读者无关** ✗ |
+ *       | (c) 主进程那条**读不回**、兜底没把值写进去、**交叉读者读得到** | **未验证（环境瞬态）** | 读者 |
+ *       | (d) 主进程那条**读不回**、兜底没把值写进去、**交叉读者也读不回** | **判红（产品回归）** | 读者 |
+ *       | (e) 交叉读者**起不来 / 自检不过** | **未验证（交叉读者不可用）**（**绝不许**判红或判绿 ✗✗） | 读者自检 |
+ *     为什么 (b) 不能被读者开脱：兜底的 `execCommand` 也能把**同一串文本**写进剪贴板（本机实测过）
+ *     ⇒ 拿"读者读得到"去救通道失败，等于把"不依赖窗口焦点"这条产品判据**悄悄放宽** ✗✗。
+ *     **能力边界（三档一起声明，别把这一档读得比实际强）**：
+ *       · 判**不了**"这个值是谁写的"（OS 剪贴板没有作者字段：主进程那条 / 兜底 `execCommand` /
+ *         别的应用 / 剪贴板历史与云同步，看到的都是**同一串文本**）⇒ 上面 ③ 的第二层（环境瞬态）
+ *         **天然包含**"其实是兜底通道写的"这种可能；这是**已知的判别力缺口**，要"宁可红"就开
+ *         `MM_SMOKE_CLIP_STRICT=1`；
+ *       · 判**不了**"哪个进程先写"、也判不了"另一个应用程序能不能粘出这段文本"（跨进程粘贴互操作
+ *         是 OS 的事）；这几项只能真机人肉复核；
+ *       · T1 读者是**采样**（只判它读的那一刻），不是全程录像；
+ *       · **环境依赖照实说**：T1 读者要本机有可用的 **Windows PowerShell 5.1/STA**（`powershell.exe`
+ *         + 显式 `-STA`）。本片实测：从 Electron 主进程起它 ⇒ **可用**（真读到了期望值）；
+ *         而同一台机上另一层 shell 里 `Set-Clipboard`/`Get-Clipboard` **双报**
+ *         `Requested Clipboard operation did not succeed.`（那层 shell 的公寓状态**未核实**，
+ *         只作旁证）。读者不可用时这一档**只报未验证、不给结论**（既不判红也不判绿 ✓）。
+ *   · ⚠️ **两个"未验证"档的盲区（本片如实登记，别把它读成"没问题"）**：
+ *     ① 环境坏的时候，"我们没写进去"这件事**采不到真值** ⇒ **产品真回归会被降级成"未验证"**
+ *        （上面第 ① 档）；
+ *     ② 当"产品那条读"与"我们那条读"是同一时刻**同一个失效源**时，"产品真的没写"与"环境把读
+ *        打空了"**在观测上不可分辨** ⇒ 那种状态落"未验证（环境瞬态）"（上面 ③ 的第二层）。
+ *     ⇒ 两档都**不是"过"**（**不进通过/总数** ✓），但在 CI / 受控环境里等于**悄悄放过** ✗。
+ *     要"宁可红、不许悄悄放过"就开 `MM_SMOKE_CLIP_STRICT=1`（**默认关**；语义、判别力证明与读数
+ *     见上面「判别力证明」段；开关只改"算不算失败"，**不改原因** —— 未验证仍然如实点名 ✓）。
  *     它管的是**所有域**的第三态，不是本域专属（名字里的 `CLIP` 只是来历）。
- *   · 断言④仍然**没有**验的：另一个**应用程序**能不能粘出这段文本（剪贴板格式跨进程互操作、
- *     剪贴板历史/同步是 OS 的事）；这几项只能真机人肉复核。
  *   · ⚠️ **域间耦合是实测坑**（`C4` 的落点）：窄跑 `SMOKE_ONLY=39`（并入 `01-core`）⇒ 15/16；
  *     全量 `npm run smoke` ⇒ 205/212，7 条红**全在本域**，其中 6 条只是 `前置失败：节点不在视图：
  *     si39-a` 的级联（连"items 被抹掉 / formatVersion 降级"那条也是它的**后果** —— 窄跑同一条是绿的，
@@ -117,7 +167,12 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');                       // 交叉读者的读数落 %TEMP%（见 crossReadClipboard：用完即清）
 const path = require('path');
+// ⚠️ 只给断言④的 **T1 交叉读者**用（异步起一个**独立进程**读系统剪贴板，见 `crossReadClipboard`）：
+//    必须 `execFile`（异步）而不是 `spawnSync` —— 同步子进程会把主进程卡住 1s+，
+//    而那正是"剪贴板读数会不会被打空"的可疑因子之一（同批 probe2 专门测过这一点）。
+const { execFile } = require('child_process');
 
 // 冒烟共用工具（收尾纪律与用法见 scripts/smoke-assertions.js 顶部）：动了 addNode 就要收模态
 const mm = require('../smoke-assertions.js');
@@ -151,6 +206,10 @@ function writeClip(s) {
     return true;
   } catch (e) { return false; }
 }
+
+/** 通道判据（**唯一口径**：断言④里"要不要起交叉读者"与"最后怎么判"两处都用它）：
+ *  渲染层报的通道是**主进程那条**（= 不依赖窗口焦点 ✓）。 */
+function viaDesktopOf(l) { return !!(l && l.how === 'desktop-clipboard' && l.ok === true); }
 
 /* ============================================================================
  * 系统剪贴板的**环境可用性探针**（断言④的第一跳；**独立于产品那条链路** ✓）
@@ -193,6 +252,16 @@ async function clipboardEnvProbe() {
       reason: '注入 MM_SMOKE_INJECT=39-clip-env-up（判别力证明 (a)：本机系统剪贴板已死，'
         + '"环境可用"这个前提只能这样补出来）' };
   }
+  /* 本片新增的两个"T1 档判别力证明"入口：它们同样要先站在"环境可用"这个前提上，
+   * 才走得到断言④里的**交叉读者**那一层（理由与 `clip-env-up` 同：本机 in-process 剪贴板
+   * 读数不稳 ⇒ "环境可用"在本机无法真实取得，只能打桩补出来）。 */
+  if (MY_KEY('clip-t1-transient') || MY_KEY('clip-xread-dead') || MY_KEY('clip-t1-readfail')) {
+    return { available: true, measured: false,
+      how: '（注入：探针被打桩成"可用"）',
+      reason: '注入 MM_SMOKE_INJECT='
+        + INJECT
+        + '（判别力证明：它只负责把这一档推到 T1 交叉读者那一层，读者读数见断言④的报文）' };
+  }
   if (!electronClipboard || typeof electronClipboard.writeText !== 'function'
     || typeof electronClipboard.readText !== 'function') {
     return { available: false, measured: true, how: '主进程拿不到 electron.clipboard 的 writeText/readText',
@@ -217,6 +286,145 @@ async function clipboardEnvProbe() {
   }
   return { available: true, measured: true,
     how: '主进程直接 writeText→readText 往返成立（唯一值原样回读）', reason: '' };
+}
+
+/* ============================================================================
+ * T1 的**独立交叉读者**（`crossReadClipboard`）—— 断言④在"要判红"那一刻请的外面那个人
+ * ----------------------------------------------------------------------------
+ * ## 它回答的是 T0 探针答不了的那个问题
+ * T0 探针（`clipboardEnvProbe`）判的是**点之前**"这份系统剪贴板此刻能不能当证据来源"；
+ * 而结论落在 **T1**（点 ⧉ 之后那次读，实测落在 50ms–1.2s 这一档）。T0 健康、T1 那一刻不一致
+ * （环境侧瞬态）时，旧形状会把**环境问题判成产品回归** ✗。⇒ 交叉读者在 T1 从**另一个进程**
+ * 再读一次系统剪贴板，直接回答"**这个值到底在不在剪贴板上**"。
+ *
+ * ## 为什么"进程内再读一次"不算独立（论证，不是口味）
+ * 诊断片实测（`H4`：改结论先取证）：旧实现的两条读路径 —— 产品那条 `app:clipboard-write` 里的
+ * **写后回读**，与断言里那次 `clipboard.readText()` —— 是**同一 API、同一进程**（主进程
+ * `clipboard.readText()`）。同一失效源读两次，只能测出"这一次调用抖了一下"，测不出
+ * "这份剪贴板整个读不回来" ✗ ⇒ 它**证不出**本档要证的那件事（"值其实已经写进去了"）。
+ * 换 API 也没用：`readBuffer`/`has`/`availableFormats` 仍在同一进程同一模块里，共享失效源 ✗。
+ * ⇒ 要换的是**进程与 API 栈**，不是调用次数。
+ *
+ * ## 形态（本机实测选出来的，不是拍脑袋）
+ * `execFile('powershell.exe', ['-NoProfile','-NonInteractive','-STA','-EncodedCommand', <b64>])`：
+ *   · **另一个进程 + 另一套 API 栈**：`Get-Clipboard` 走的是 WinForms/Win32 那条，与 Electron 的
+ *     `clipboard` 模块不是同一个实现 ⇒ 真·独立观察者 ✓（诊断片用它做过 171 样本的外部观察）；
+ *   · **Windows PowerShell 5.1（`powershell.exe`）而不是 `pwsh`(PS7)**：剪贴板 API 要 **STA**。
+ *     诊断片的外部观察者（`%TEMP%\mm-clip-probe\pollv3.ps1`，5.1/STA）同期 **1062 样本 0 错误**、
+ *     14:37:09 读到产品复制值 ✓；而本片实测本机另一层 shell（PS 5.1 家族）里
+ *     `Set-Clipboard`/`Get-Clipboard` **双双**报 `Requested Clipboard operation did not succeed.` ✗
+ *     ⇒ 用 `-STA` 把公寓状态**显式钉死**，不赌默认值（默认值随宿主变）。
+ *     ⚠️ 如实登记：**"公寓状态是这两次读数差异的原因"这一条本片未核实** —— 两次观测还隔了
+ *     约 20 分钟，剪贴板也可能是**时好时坏**（本机确实出现过两种状态）⇒ 两条都写进边界，不编因果。
+ *   · **异步**（`execFile`，不是 `spawnSync`）：同步子进程会把主进程卡住 1s+，而那正是
+ *     "读数会不会被打空"的可疑因子之一（同批 probe2 专门测过这一点）；
+ *   · **读数落 %TEMP% 的一个唯一文件、用完即清**（ASCII 路径 + base64 载荷）：避开 Windows
+ *     控制台编码（`E5`：临时物也会被编码门禁扫）⇒ 读回来是**字节级**的，不是猜的；
+ *   · **自带超时 + `windowsHide`**：别让冒烟被它拖住、也别弹窗（`E1`：不弹窗/不抢焦点）。
+ *
+ * ## 它自己也有三档（`F19`/`A5` 套在读者自己身上：外部观察者当然也会起不来）
+ *   · `usable:false`（起不来 / 超时 / 它自己那次剪贴板读报错 / 输出读不回来）⇒ 调用方落
+ *     **"未验证（交叉读者不可用）"**：响亮 + **不计入通过/总数、不阻断**；**绝不许**因此判红或判绿 ✗；
+ *   · `usable:true` 且 `observed === 期望值` ⇒ 值在剪贴板上 ⇒ 调用方落"未验证（环境瞬态）"；
+ *   · `usable:true` 且 `observed !== 期望值` ⇒ 调用方**判红（产品回归）** ✓✓。
+ *
+ * ## 边界（**它答不了什么**，别把它读得比实际强）
+ *   · **判不了"这个值是谁写的"**：OS 剪贴板没有作者字段 ⇒ 桌面通道写的、兜底的 `execCommand`
+ *     写的、别的应用写的、剪贴板历史/云同步塞进去的，读者看到的都是**同一串文本**；
+ *   · 因此它也**判不了**"是本进程先写还是别的进程先写"、"是不是剪贴板历史/别的应用动了手"、
+ *     "粘到另一个应用程序里会是什么样"（跨进程粘贴互操作是 OS 的事）；
+ *   · 它只判**这一刻**的剪贴板内容；两档形态之间隔着的几十毫秒里剪贴板还能再变（所以它是"采样"，
+ *     不是"全程录像"）；
+ *   · **环境依赖照实说**：本档需要本机有可用的 **Windows PowerShell 5.1/STA**；它不可用时本档
+ *     只报"未验证（交叉读者不可用）"，**不给任何结论**（既不判红也不判绿 ✓）；
+ *   · **唯一实现**（`H1b`）：全库只有这一份独立读者；别的域要做同类交叉读就引用它，别各写一套 ✗。
+ * ========================================================================== */
+const XREAD_TIMEOUT_MS = 8000;
+
+/** 交叉读者要跑的那段 PowerShell（**纯 ASCII**；读数用 base64 运出 ⇒ 与控制台编码无关） */
+function xreadScript(outPath) {
+  return [
+    '$ErrorActionPreference = "Stop"',
+    'try {',
+    '  $v = Get-Clipboard -Raw -ErrorAction Stop',
+    '  if ($null -eq $v) { $v = "" }',
+    '  $b = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$v))',
+    '  [IO.File]::WriteAllText("' + outPath + '", "XREAD-OK " + $b)',
+    '} catch {',
+    '  $m = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.Exception.Message))',
+    '  [IO.File]::WriteAllText("' + outPath + '", "XREAD-ERR " + $m)',
+    '  exit 4',
+    '}'
+  ].join('\r\n') + '\r\n';
+}
+
+/** base64 → 字符串（解不出来就如实给"(解不出)"，别静默当空串 ✗） */
+function xreadDecode(b64) {
+  try { return Buffer.from(String(b64), 'base64').toString('utf8'); } catch (e) { return '(解不出)'; }
+}
+
+/**
+ * T1 的独立交叉读者：从**另一个进程**读一次系统剪贴板。
+ * 三档见上面头注（`usable` + `observed`）；**不抛错**：任何异常都折成 `usable:false` 的如实读数。
+ * @returns {Promise<{usable:boolean, observed:(string|null), how:string, raw:string}>}
+ */
+async function crossReadClipboard() {
+  const outPath = path.join(os.tmpdir(),
+    'mm-smoke39-xread-' + process.pid + '-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '.txt');
+  const args = ['-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand',
+    Buffer.from(xreadScript(outPath), 'utf16le').toString('base64')];
+  const run = await new Promise((resolve) => {
+    let settled = false;
+    const fin = (o) => { if (!settled) { settled = true; resolve(o); } };
+    try {
+      const ch = execFile('powershell.exe', args, { timeout: XREAD_TIMEOUT_MS, windowsHide: true },
+        (err, stdout, stderr) => fin({ err: err, stdout: String(stdout || ''), stderr: String(stderr || '') }));
+      if (ch && typeof ch.on === 'function') ch.on('error', (e) => fin({ err: e, stdout: '', stderr: '' }));
+    } catch (e) { fin({ err: e, stdout: '', stderr: '' }); }
+  });
+  let txt = '';
+  try { txt = fs.readFileSync(outPath, 'utf8'); } catch (e) { txt = ''; }
+  try { fs.rmSync(outPath, { force: true }); } catch (e) { /* 收尾失败不判红：读数已经拿到了 */ }
+  const raw = String(txt).replace(/^\uFEFF/, '').trim();
+  if (/^XREAD-OK /.test(raw)) {
+    return { usable: true, observed: xreadDecode(raw.slice('XREAD-OK '.length)),
+      how: 'powershell.exe -STA 起得来，且它自己那次 Get-Clipboard 成功读到了剪贴板',
+      raw: raw.slice(0, 200) };
+  }
+  if (/^XREAD-ERR /.test(raw)) {
+    return { usable: false, observed: null,
+      how: 'powershell.exe -STA 起得来，但它读系统剪贴板那一跳**自己报错**（读者自检不过）',
+      raw: '读者自报：' + xreadDecode(raw.slice('XREAD-ERR '.length)) };
+  }
+  const e = run.err;
+  const bits = [];
+  if (e) {
+    if (e.code) bits.push('code=' + e.code);
+    if (e.killed) bits.push('超时被杀(signal=' + String(e.signal || '?') + '，超时=' + XREAD_TIMEOUT_MS + 'ms)');
+    if (e.message) bits.push(String(e.message).slice(0, 200));
+  }
+  if (run.stderr && String(run.stderr).trim()) bits.push('stderr=' + JSON.stringify(String(run.stderr).trim().slice(0, 160)));
+  return { usable: false, observed: null, how: '交叉读者**没能跑起来/没写出结果**',
+    raw: (bits.length ? bits.join(' · ') : '（execFile 没报错，但 %TEMP% 里没有读者写出的读数）')
+      + ' · 输出文件读数=' + JSON.stringify(raw ? raw.slice(0, 120) : '(空/不存在)') };
+}
+
+/**
+ * 判别力证明用的**读者打桩**（默认空 ⇒ 完全不起作用 ✓）。
+ * ⚠️ 打桩的读数**绝不是真读数** ⇒ 调用方必须把"打桩"两个字打出来（下面 `readerStub` 的 how 里带着）。
+ */
+function readerStub(expected) {
+  if (MY_KEY('clip-t1-transient')) {
+    return { usable: true, observed: expected,
+      how: '**注入**：把交叉读者打桩成"起得来 + 读到了期望值"（构造 T1 瞬态，见头注"判别力证明"）',
+      raw: '注入 MM_SMOKE_INJECT=39-clip-t1-transient' };
+  }
+  if (MY_KEY('clip-xread-dead')) {
+    return { usable: false, observed: null,
+      how: '**注入**：把交叉读者打桩成"起不来/自检不过"（构造"交叉读者不可用"那一档）',
+      raw: '注入 MM_SMOKE_INJECT=39-clip-xread-dead' };
+  }
+  return null;
 }
 
 /* ---------------- 探针常量（前缀 smoke-item- 按派发附页 §4.1） ---------------- */
@@ -754,31 +962,81 @@ const assertions = [
        * 期望值 = 行上的 `data-copy` = `fdCopyValue()` 的那一份（三处同源：见 fdCopyValue 的注释）。
        * ⚠️ **顺序不可交换**：`clipBefore`（原值）必须在**探针之前**读（探针自己会覆盖剪贴板）；
        *    哨兵必须写在**探针之后**（否则被探针的探测值覆盖掉）。判完一律把原值还回去 ✓。 */
+      /* ⚠️ 这三条"环境无关"的判据**提前**算（它们只依赖"点行那一步"的读数，与剪贴板无关）——
+       * 因为下面 T1 交叉读者**只在"这一档要判红"时才花那个钱**：正常跑（绿）与环境不可用
+       * （未验证）都**不起子进程** ✓。算得早一点不改变任何含义：判据本体仍只有这一处 ✗。 */
+      const hitOk = geo.rowHit === true && geo.copyHit === true;
+      const rowOk = afterRow.ok && afterRow.selected === firstId && afterRow.ownExists === true
+        && afterRow.rowActive === true && afterRow.ownActive === true && afterRow.otherActive === 1;
+      const baseOk = hitOk && rowOk && geo.copyValue === expectCopy;
       const clipBefore = await readClip();          // 原值：判完**还回去**（冒烟不该把人剪贴板留在测试值上）
       const env = await clipboardEnvProbe();        // ① 独立探针（这一步会覆盖剪贴板）
       const sentinel = '⛔smoke39-不是这条-' + Date.now();
       const seeded = env.available ? writeClip(sentinel) : false;
       let landed = null;
       let clip = { ok: false, text: null, error: '（还没读到剪贴板）' };
+      let xread = null;                             // T1 交叉读者（见 `crossReadClipboard` 头注）
       let restored = false;
       try {
+        /* 判别力证明用的"夹具侧掐掉兜底那两条浏览器写通道"（默认空 ⇒ 完全不起作用 ✓）：
+         * 与"手工把 `main.js` 的 `clipboard.writeText(value)` 吞掉"配合 ⇒ **三条写通道全废**
+         * ⇒ 值**绝不可能**落到系统剪贴板上 ⇒ 用来**确定性地**证明"独立读者也读不回 ⇒ 判红" 那一支 ✓
+         * （`B4`：概率型掩盖要用**强制构造**逼到边界；不掐兜底的话，兜底偶尔真能把值写进去）。
+         * ⚠️ 它只打桩**写**通道，与判据无关；跑完在 `finally` 里原样还回（`execCommand` 产品别处也用它 ✗）。 */
+        if (MY_KEY('clip-fallback-off')) {
+          await ctx.exec(`(function () {
+            window.__mm39Orig = {
+              nc: (navigator.clipboard && navigator.clipboard.writeText) || null,
+              ec: document.execCommand
+            };
+            try { if (navigator.clipboard) navigator.clipboard.writeText = function () { return Promise.reject(new Error('注入：夹具把兜底通道掐掉')); }; } catch (e) {}
+            try { document.execCommand = function () { return false; }; } catch (e) {}
+            return 1;
+          })()`);
+        }
         await ctx.input.click(geo.copyPt);         // ③ 真鼠标点 ⧉（两档都点：环境坏也要把这一跳的读数如实记下来）
         await ctx.input.settle();
         // 等这一跳落地：旧的 `execCommand` 是渲染层**同步**动作，而现在剪贴板由**主进程**写
         // ⇒ 多一次 IPC 往返，只等固定时长会变成**偶发**红/绿（判据必须确定性 ✓）。
         landed = await waitCopyLanded(ctx, expectCopy);
         clip = await readClip();
+        /* 判别力证明的"T1 瞬态"打桩（默认空 ⇒ 完全不起作用 ✓）：把**被断言的那一次 T1 读**
+         * 打桩成"读不回"，形状照本机实测的瞬态（主进程 readText 回 ""）—— 只动夹具，
+         * **不动产品语义** ✗（产品那条链一个字节都不碰）。
+         * `clip-t1-readfail` 只打桩"我们那次读"，**读者真跑** ⇒ 专门用来实测交叉读者机制本身 ✓。 */
+        if (MY_KEY('clip-t1-transient') || MY_KEY('clip-xread-dead') || MY_KEY('clip-t1-readfail')) {
+          clip = { ok: true, text: '', error: '',
+            injected: '注入：把"被断言的那一次 T1 读"打桩成读不回（本机实测瞬态的形状）' };
+        }
+        /* —— T1 独立交叉读者 ——
+         * 位置是判据的一部分：**必须在 `finally` 还原原值之前**读（还原会把期望值覆盖掉，
+         * 之后就再也读不到 ✓）。花费：只在"环境可用 + 环境无关那几档都通过 + 值这条没读回"
+         * 时才起子进程；其余档位根本不请这位读者（`G1`：门禁里不做无谓的重活）。 */
+        if (env.available && baseOk && !(clip.ok && clip.text === expectCopy && viaDesktopOf(landed))) {
+          xread = readerStub(expectCopy) || await crossReadClipboard();
+        }
       } finally {
         // ⚠️ 原值必须在 `finally` 里还 —— **探针自己就覆盖了剪贴板**，中途抛错也要还回去，
         //    否则冒烟会把用户剪贴板留在我们的探测值/测试值上（那是真打扰，且不可逆 ✗）。
         restored = (clipBefore.ok && clipBefore.text !== null) ? writeClip(clipBefore.text) : false;
+        // 夹具侧掐掉的写通道也在这里原样还回（判据与它无关；抛错不吞，但收尾失败不判红 ✓）
+        if (MY_KEY('clip-fallback-off')) {
+          try {
+            await ctx.exec(`(function () {
+              var o = window.__mm39Orig || null;
+              if (o) {
+                try { if (o.nc && navigator.clipboard) navigator.clipboard.writeText = o.nc; } catch (e) {}
+                try { if (o.ec) document.execCommand = o.ec; } catch (e) {}
+                window.__mm39Orig = null;
+              }
+              return 1;
+            })()`);
+          } catch (e) { /* 收尾失败不判红：判据已经在上面判完了 */ }
+        }
       }
       const lc = landed || {};
-      const hitOk = geo.rowHit === true && geo.copyHit === true;
-      const rowOk = afterRow.ok && afterRow.selected === firstId && afterRow.ownExists === true
-        && afterRow.rowActive === true && afterRow.ownActive === true && afterRow.otherActive === 1;
-      // **环境无关**的那几档（命中 / 选中 / 复制值三处同源）：任何环境下都按判据判 ✓
-      const baseOk = hitOk && rowOk && geo.copyValue === expectCopy;
+      // **环境无关**的那几档（命中 / 选中 / 复制值三处同源）：已在上面算好（`hitOk`/`rowOk`/`baseOk`）
+      // ⇒ 任何环境下都按判据判 ✓（口径只有一处，这里不重算 ✗）
       const baseText = '命中测试（V1 判据）：行命中=' + geo.rowHit + ' 复制键命中=' + geo.copyHit
         + ' ｜ 几何 行=' + JSON.stringify(geo.geom.row) + ' 复制键=' + JSON.stringify(geo.geom.copy)
         + ' 面板=' + JSON.stringify(geo.geom.panel)
@@ -821,28 +1079,79 @@ const assertions = [
        *   ① 硬判据：主进程读到的**系统剪贴板**就是期望值（且哨兵证明它是这次点击写进去的）；
        *   ② 通道判据：渲染层报的是走了**主进程那条**（`how==='desktop-clipboard'`）—— 只判 ① 的话，
        *      退回"要求焦点"的浏览器通道也能把值写对（实测在本机 execCommand 偶尔真能写）
-       *      ⇒ 那会让"焦点依赖"重新有资格冒充成功，正是要消灭的东西。两条都要才判绿 ✓。 */
+       *      ⇒ 那会让"焦点依赖"重新有资格冒充成功，正是要消灭的东西。两条都要才判绿 ✓。
+       * ---- 本片把"①没成立"这一档**再分一层**（T1 独立交叉读者；形态与三档见 `crossReadClipboard`）----
+       *   · 读者**起不来/自检不过** ⇒ 未验证（**交叉读者不可用**）：响亮 + 不计入通过/总数 + 不阻断；
+       *   · 读者**读到期望值** ⇒ 未验证（**环境瞬态**）：值真的在剪贴板上 ⇒ 我们这条读不回是环境那侧的事；
+       *   · 读者**能跑且也读不回** ⇒ **判红（产品回归）**（这一支一个字不许松 ✗）。
+       * ⚠️ ②通道判据**不进**这一档：值在剪贴板上**证明不了**是主进程那条写的 —— 兜底的 `execCommand`
+       *    也能把同一串文本写进去（本机实测过）⇒ 拿它给通道失败开脱，等于把"不依赖窗口焦点"这条
+       *    产品判据悄悄放宽 ✗（`B4`：修法必须对着真根因，别拿新机制盖住旧判据）。 */
       const clipOk = clip.ok && clip.text === expectCopy;
-      const viaDesktop = lc.how === 'desktop-clipboard' && lc.ok === true;
+      const viaDesktop = viaDesktopOf(lc);
       const ok = baseOk && clipOk && viaDesktop;
+      const clipText = baseText
+        + ' ｜ 点之前先塞哨兵=' + JSON.stringify(sentinel) + '（写入=' + seeded + '）'
+        + ' ⇒ 真点 ⧉ 后**主进程读系统剪贴板**=' + JSON.stringify(clip.text) + '（应 ' + expectCopy + '）'
+        + ' · 与期望值相等=' + clipOk
+        + (clip.ok ? '' : '｜⚠️ **采不到真值**（读剪贴板出错：' + clip.error + '）')
+        + ' · 渲染层 lastCopy=' + JSON.stringify(lc)
+        + ' · 走的是主进程那条（how=desktop-clipboard）=' + viaDesktop
+        + ' · 判完还原原值=' + restored + (restored ? '' : '（原值读不到/写不回 ⇒ 本次测试值留在了剪贴板上）')
+        + (baseOk ? '' : '｜⚠️ 取景/命中/选中没通过 ⇒ 这一条的读数不构成判据');
+      /* ⓪ 环境无关的那几档本身没通过 ⇒ 判红（判据在这几档上；不许拿环境或剪贴板给它开脱 ✗） */
+      if (!baseOk) {
+        return { ok: false, text: clipText
+          + ' ⇒ ⚠️ **环境无关**的那几档（命中 / 选中 / 复制值同源）本身没通过 ⇒ **判红**' };
+      }
+      /* ② 通道判据单独失败（值读到了、但走的不是主进程那条）⇒ **照旧判红**，**不进**未验证档 ✗ */
+      if (clipOk && !viaDesktop) {
+        return { ok: false, text: clipText
+          + ' ⇒ ⚠️ 值对了但**不是**走主进程那条（how=' + JSON.stringify(lc.how) + '）⇒ **判红：这是产品回归**'
+          + '（通道判据是产品判据：只要走了"要求焦点"的浏览器通道，就**不许**算成功 —— 本机实测兜底的'
+          + '`execCommand` 也能把同一串文本写进去 ⇒ 光看"值对不对"分不出这两件事 ✗）'
+          + '：这一档又落回"要求焦点"的浏览器通道了' };
+      }
+      /* ① 没成立（"产品那条读不回"）⇒ **T1 交叉读者那一层**（本片新增；读数在 try 里、还原原值之前取的） */
+      if (!clipOk) {
+        const x = xread || { usable: false, observed: null, raw: '',
+          how: '（调用方没拿到交叉读者的读数 —— 走到这里说明上面的守卫没生效，照"读者不可用"处置 ✓）' };
+        const xText = ' ｜ T1 **独立交叉读者**（进程外 · `powershell.exe -STA` · `Get-Clipboard`）='
+          + (x.usable ? '**可用**' : '**不可用**') + '（' + x.how + '）'
+          + (x.usable ? ' · 它读到的剪贴板=' + JSON.stringify(String(x.observed)) : '')
+          + (x.raw ? ' · 读者原始读数=' + JSON.stringify(String(x.raw).slice(0, 240)) : '')
+          + ' · 期望值=' + JSON.stringify(expectCopy);
+        if (!x.usable) {
+          return {
+            ok: true,
+            unverified: '剪贴板本项**未验证**（**交叉读者不可用**：' + x.how + '；读者原始读数='
+              + String(x.raw).slice(0, 160) + '）⇒ **不参与"通过/失败"计数、不阻断** '
+              + '（外部观察者起不来 ⇒ 这一档**没有真值**：不判红（不许拿"读者坏了"冒充产品缺陷）、'
+              + '也不判绿（不许静默当通过）✗；本档需要本机有可用的 **Windows PowerShell 5.1/STA** ✓）',
+            text: clipText + xText
+              + ' ⇒ 环境可用、但我们这条读没读回值，而**交叉读者又起不来** ⇒ 这一档**本项未验证**：'
+              + '既不判绿、也不判红、不计入总数 ✓（要"宁可红、不许放过"就开 MM_SMOKE_CLIP_STRICT=1）'
+          };
+        }
+        if (x.observed === expectCopy) {
+          return {
+            ok: true,
+            unverified: '剪贴板本项**未验证**（**环境瞬态**：值**确实在**系统剪贴板上 —— 进程外读者读到了期望值 '
+              + JSON.stringify(expectCopy) + '，而我们这条主进程读回的是 ' + JSON.stringify(clip.text)
+              + '）⇒ **不参与"通过/失败"计数、不阻断**；⚠️ 本档**判不了"这个值是谁写的"**'
+              + '（兜底通道 / 别的应用 / 剪贴板历史都能写同一串文本）= 已知边界 ✓',
+            text: clipText + xText
+              + ' ⇒ **环境瞬态**：独立读者读得到期望值 ⇒ 值真的写进去了、我们这条读没读回来 '
+              + '⇒ 这一档**本项未验证**：既不判绿（我们没读回真值）、也不判红（不是产品没写）✓'
+          };
+        }
+        return { ok: false, text: clipText + xText
+          + ' ⇒ **独立读者也读不回这个值** ⇒ **判红**：这是产品回归 —— 主进程那条写没落到系统剪贴板上'
+          + '（不是环境问题：环境可用，且外部进程能正常读这份剪贴板）✗' };
+      }
       return {
         ok: ok,
-        text: baseText
-          + ' ｜ 点之前先塞哨兵=' + JSON.stringify(sentinel) + '（写入=' + seeded + '）'
-          + ' ⇒ 真点 ⧉ 后**主进程读系统剪贴板**=' + JSON.stringify(clip.text) + '（应 ' + expectCopy + '）'
-          + ' · 与期望值相等=' + clipOk
-          + (clip.ok ? '' : '｜⚠️ **采不到真值**（读剪贴板出错：' + clip.error + '）')
-          + ' · 渲染层 lastCopy=' + JSON.stringify(lc)
-          + ' · 走的是主进程那条（how=desktop-clipboard）=' + viaDesktop
-          + ' · 判完还原原值=' + restored + (restored ? '' : '（原值读不到/写不回 ⇒ 本次测试值留在了剪贴板上）')
-          + (baseOk ? '' : '｜⚠️ 取景/命中/选中没通过 ⇒ 这一条的读数不构成判据')
-          + (clipOk && viaDesktop
-            ? ' ⇒ **真的写进系统剪贴板，且不依赖窗口焦点** ✓'
-            : (clipOk
-              ? ' ⇒ ⚠️ 值对了但**不是**走主进程那条（how=' + JSON.stringify(lc.how) + '）⇒ 判红：'
-                + '这一档又落回"要求焦点"的浏览器通道了'
-              : ' ⇒ **环境可用**（独立探针的写-读往返成立）但我们没写进去 ⇒ **判红**：这是产品回归，'
-                + '不是环境问题 ✗'))
+        text: clipText + ' ⇒ **真的写进系统剪贴板，且不依赖窗口焦点** ✓'
       };
     }
   },
