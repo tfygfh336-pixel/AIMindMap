@@ -134,7 +134,194 @@ const smokeIsolate = !!SMOKE_PROJECTS_DIR && !process.env.MM_SMOKE_NO_ISOLATE
 const store = require('./src/data-store.js').createStore(PROJECTS_DIR);
 const { writeFileAtomic, versionOf, versionOfText } = require('./src/data-store.js');
 const concurrency = require('./src/concurrency.js');
-/**
+/* ---------------- 【R4】绑定工作区文件夹的**事件驱动守护**（零 token） ----------------
+ * 用户原话：「绑定工作区文件夹，选择好了之后就会**定时更新**文件夹内容到思维导图」+
+ *          「如果有**不消耗 token** 的定时检查或者修改文件的事件驱动就最好了」。
+ *
+ * ## 这一层只做三件事（判定一行都不在这里）
+ *   ① `fs.watch(dir, {recursive:true})` 盯住每个**进行中**绑定的目录（Windows/macOS 原生支持递归）；
+ *   ② **防抖**：一次保存会触发好几个 fs 事件 ⇒ 合并成一个批次再动手（防抖毫秒数**来自绑定记录**，
+ *      缺省 `src/schema.js` 的 `BINDING_DEBOUNCE_DEFAULT`，不是这里写死的数字）；
+ *   ③ 触发时**起一条 CLI**（`bind-sync <项目>`）—— 于是"同步一次"只有一处实现（`cli/commands/project.js`），
+ *      版本闸门/并发重放/写盘前校验/界面脏就停**全都复用**，主进程不碰数据面一个字节 ✓。
+ *      主进程**不**知道"哪些文件该转成节点"、也**不**读项目 JSON 里的 bindings 去自己判 —— 那会变成第二份实现 ✗。
+ *
+ * ## 为什么是"起 CLI"而不是"在主进程里直接写"
+ *   `ARCHITECTURE.md` §4 的接线边界：**数据改动走 CLI**（唯一写盘出口 + 校验闸门 + 并发版本闸门）。
+ *   主进程里再写一条写盘路径 ⇒ 两道闸门同时失效，且"同步"变成第三套导入实现（本批最想避免的）。
+ *   代价如实说：每次批次是一次子进程（`ELECTRON_RUN_AS_NODE` 的 node）—— 事件是**低频**的
+ *   （人保存一次文件才一次），换来的是"判定只有一处"。
+ *
+ * ## 三条纪律
+ *   ① **零 token**：这条链路上没有任何 LLM 调用（CLI 里也只做字符串处理）；`ask` 那一类**绝不**在这里被调 ✓；
+ *   ② **失败要看得见**：CLI 非 0 / 输出 `error:` ⇒ 记下最后一条原因并**发事件**给界面（不静默吞）——
+ *      但**不弹模态**（没人应答会把调用方挂死，这是本工程踩过的坑）；
+ *   ③ **应用开着才守护**：进程退出即停（用户要的"应用开着时守护"就是这条语义；"应用没开也同步"
+ *      需要外部常驻进程/计划任务 —— 那是另开一项，本批不做 ✗）。
+ *
+ * ## 兜底巡检（`fs.watch` 会漏事件）
+ *   某些磁盘/网络盘上 `fs.watch` 会漏事件（设计文档 §二 明确写着）⇒ 配一条**低频**定时器，
+ *   每 `BINDING_SWEEP_MS`（10 分钟）对**同一个**目录再跑一次那次同样的 CLI。
+ *   为什么是 10 分钟：它是"漏一次也还能在可接受的延迟内补上"与"不做事的时候几乎零代价"之间的取值；
+ *   扫描本身按 mtime/大小**增量**（没变的文件一个字节都不读）⇒ 巡检几乎不花 CPU ✓。
+ *   为什么选择"同一个入口再跑一次"而不是"另写一套巡检"：巡检若自己判"变没变"，就有了第二份增量口径 ✗。
+ */
+const BINDING_SWEEP_MS = 10 * 60 * 1000;       // 兜底巡检周期（设计文档 §二：低频扫 mtime，同样零 token）
+const bindingWatchers = new Map();             // `${项目}::${绑定id}` → { watcher, timer, debounceMs, dir }
+const bindingSweep = { timer: null, running: false };
+/** 每个项目**当前挂着哪一批目录**（重挂的判据：只有指纹变了才真重挂 —— 见 bindWatchersFor） */
+const recentBindFingerprint = new Map();
+
+/** 一个批次的共同入口：起 CLI 同步一次，把结果如实回报（**判定全在 CLI 那一侧**）。
+ *  ⚠️ 回调必须带上 `project`：一批子进程要跑几百毫秒到几秒，期间用户可能**已经切了项目** ——
+ *  用"当前窗口那个项目"去解释一个旧批次的结果，会把事件发到错的页面上。 */
+function runBindSyncFor(project, why, onDone) {
+  if (!project) return;
+  runCliAsync(['bind-sync', project])
+    .then((r) => {
+      const out = String((r && r.out) || '');
+      const err = String((r && r.err) || '');
+      const bad = !!(r && r.code !== 0) || /^error:/m.test(out);
+      if (bad) {
+        const last = (err || out).trim().split('\n').filter(Boolean).pop() || ('CLI 退出码 ' + (r && r.code));
+        console.error('[bind-sync] 项目 ' + project + ' 同步失败（' + why + '）：' + last);
+      }
+      try { if (typeof onDone === 'function') onDone({ ok: !bad, out: out, err: err, why: why, project: project }); }
+      catch (e) { console.error('[bind-sync] 回调失败：' + ((e && e.message) || e)); }
+    })
+    .catch((e) => { console.error('[bind-sync] 起 CLI 失败：' + ((e && e.message) || e)); });
+}
+
+/** 把某个项目的绑定**全量重挂**：先全停，再按 CLI 报的"该盯哪些目录"重新挂。
+ *  为什么每次都用 CLI 问一遍：绑定会被 `--bind` / `--unbind` / `--pause` 改（CLI 侧写的），
+ *  主进程不该自己解析项目 JSON 去猜（那是第二份"绑定是什么"的实现 ✗）。 */
+function bindWatchersFor(project, onSync) {
+  const prefix = (project || '') + '::';
+  const mine = () => Array.from(bindingWatchers.keys()).filter((k) => k.indexOf(prefix) === 0);
+  if (!project) return;
+  /* 一个**便宜**的前置判据（省掉绝大多数项目的一次子进程）：这个项目的 JSON 里根本没有"进行中"的
+   * 绑定时，连 CLI 都不起。⚠️ 这里**只读、只判"有没有"**：取值表/暂停语义/该盯哪个目录仍然是
+   * CLI（`--watch-dirs`）说了算 —— 主进程不复制"绑定是什么"的判定（那会变成第二份实现 ✗）。 */
+  let fingerprint = '';
+  try {
+    const pj = path.join(PROJECTS_DIR, project, project + '.json');
+    const raw = JSON.parse(fs.readFileSync(pj, 'utf8').replace(/^\uFEFF/, ''));
+    const list = Array.isArray(raw.bindings) ? raw.bindings : [];
+    const active = list.filter((b) => b && b.dir && (b.status === undefined || b.status === 'watching'));
+    if (!active.length) return;
+    fingerprint = active.map((b) => b.id + '|' + b.dir + '|' + (b.debounceMs || '')).join('\n');
+  } catch (e) { return; }                      // 读不了/没这个项目：不挂（CLI 侧另有如实报错）
+  /* **已经挂着同一批目录就别重挂**：`project:read` 会被反复调用（每次同步完都会让界面重读一次），
+   * 每读一次就关掉再开一遍 fs.watch 是无意义的句柄churn，而且会在两次重挂的缝里漏事件。 */
+  if (mine().length && recentBindFingerprint.get(project) === fingerprint) return;
+  recentBindFingerprint.set(project, fingerprint);
+  // 全停（换了绑定/换了目录 ⇒ 旧的必须收干净，否则一个目录会被两份 watcher 同时盯着）
+  mine().forEach((k) => {
+    const w = bindingWatchers.get(k);
+    try { if (w && w.watcher) w.watcher.close(); } catch (e) { /* 关不掉不影响别的 */ }
+    if (w && w.timer) clearTimeout(w.timer);
+    bindingWatchers.delete(k);
+  });
+  let out = '';
+  try {
+    out = runCli(['bind-sync', project, '--watch-dirs']);
+  } catch (e) {
+    // 没有绑定 / 项目读不了 / 命令行不通 ⇒ 一个都不挂（**这不是错误**：绝大多数项目根本没绑定）
+    if (process.env.MM_BINDINGS_DEBUG === '1') console.error('[bind-sync] 取绑定目录失败：' + ((e && e.message) || e));
+    return;
+  }
+  const rows = String(out).split('\n').map((l) => l.trim()).filter(Boolean);
+  if (!rows.length) return;
+  rows.forEach((line) => {
+    const parts = line.split('\t');
+    const id = parts[0], dir = parts[1];
+    const debounceMs = Number(parts[2]) || 800;
+    const mode = parts[3] || 'flat';
+    const key = project + '::' + id;
+    if (!dir || !fs.existsSync(dir)) return;              // 目录没了：不挂（CLI 侧会如实报 dir-missing）
+    let timer = null;
+    let watcher = null;
+    /* ⚠️ **必须先把路径规范化**（`fs.realpathSync.native`）—— 这是本批**实机踩到的一个崩溃**：
+     *   Windows 上把**8.3 短名**路径（如 `C:\Users\JUNNAN~1.TAN\…`，`os.tmpdir()` 给的就是它）
+     *   交给 `fs.watch(dir, {recursive:true})`，libuv 会在 `src/win/fs-event.c:72` 抛原生断言
+     *   （`!_wcsnicmp(filename, dir, dirlen)`，见 nodejs/node#46794）—— 整台 Electron 进程当场死掉，
+     *   用户看到的只是"应用突然没了"。`realpathSync.native` 把短名摊成长名 ⇒ 断言不成立。
+     *   npm 模块的 `require.resolve` 与临时目录都可能带 `~1`，所以这不是"只影响测试"的坑。
+     *   规范化失败（权限/路径消失）⇒ 用原路径试一次（行为与从前一致，不因此不守护）。 */
+    let watchDir = dir;
+    try {
+      const native = fs.realpathSync.native ? fs.realpathSync.native(dir) : fs.realpathSync(dir);
+      if (native) watchDir = native;
+    } catch (e) { /* 用原路径 */ }
+    const fire = () => {
+      timer = null;
+      runBindSyncFor(project, 'fs.watch', onSync);
+    };
+    /* 递归优先（能报"哪个子目录变了"），**退化时如实说出来**：递归不可用时退到单层监听 ——
+     * 单层监听照样能收到整棵树的事件（`fs.watch` 对子树里的文件创建/修改会报出该文件名的名字），
+     * 而同步本身是**整目录重扫 + 增量**，不依赖事件带来的路径 ⇒ 功能不受影响，只是少一条诊断信息。
+     * ⚠️ 不许静默退化：这条日志就是"为什么没看到子目录名"的答案。 */
+    const startWatch = (recursive) => fs.watch(watchDir, { recursive: recursive, persistent: false }, () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(fire, debounceMs);
+    });
+    try {
+      watcher = startWatch(true);
+    } catch (e) {
+      console.error('[bind-sync] 递归监听 ' + watchDir + ' 起不来（' + ((e && e.message) || e)
+        + '）—— **退化到单层监听**（同步功能不受影响：那是整目录重扫 + 增量）');
+      try { watcher = startWatch(false); }
+      catch (e2) { console.error('[bind-sync] 单层监听也起不来 ' + watchDir + '：' + ((e2 && e2.message) || e2)); return; }
+    }
+    if (watcher && typeof watcher.on === 'function') {
+      watcher.on('error', (e) => {
+        // 监听失败不致命（兜底巡检还在）：但**必须说出来** —— 静默的守护等于没有守护 ✗
+        console.error('[bind-sync] 监听 ' + watchDir + ' 出错（'+ ((e && e.message) || e) + '）—— 改靠兜底巡检（每 '
+          + Math.round(BINDING_SWEEP_MS / 60000) + ' 分钟一次）');
+      });
+    }
+    bindingWatchers.set(key, { watcher: watcher, timer: null, debounceMs: debounceMs, dir: watchDir, mode: mode, project: project });
+  });
+  if (process.env.MM_BINDINGS_DEBUG === '1') {
+    console.error('[bind-sync] 项目 ' + project + ' 挂了 ' + rows.length + ' 个目录监听');
+  }
+}
+
+/** 兜底巡检（**同一个入口再跑一次**，不另写一套判定）：每 BINDING_SWEEP_MS 把有绑定的项目各同步一次 */
+function startBindingSweep(onSync) {
+  if (bindingSweep.timer) return;
+  bindingSweep.timer = setInterval(() => {
+    if (bindingSweep.running) return;                 // 上一轮还没跑完 ⇒ 这一拍跳过（不排队堆积）
+    const projects = Array.from(new Set(Array.from(bindingWatchers.keys()).map((k) => k.split('::')[0])));
+    if (!projects.length) return;
+    bindingSweep.running = true;
+    Promise.all(projects.map((p) => runCliAsync(['bind-sync', p])))
+      .then((rs) => {
+        rs.forEach((r, i) => {
+          const ok = r && r.code === 0 && !/^error:/m.test(String(r.out || ''));
+          if (!ok) console.error('[bind-sync] 兜底巡检失败（项目 ' + projects[i] + '）：' + String((r && (r.err || r.out)) || ''));
+        });
+        if (typeof onSync === 'function') onSync({ ok: true, why: 'sweep' });
+      })
+      .catch((e) => console.error('[bind-sync] 兜底巡检异常：' + ((e && e.message) || e)))
+      .then(() => { bindingSweep.running = false; });
+  }, BINDING_SWEEP_MS);
+  // 定时器不该拖住进程退出（应用关了就不守护 —— 这是本批明确的边界）
+  if (bindingSweep.timer && typeof bindingSweep.timer.unref === 'function') bindingSweep.timer.unref();
+}
+
+/** 收尾：进程退出前把监听与定时器全关掉（不留孤儿句柄） */
+function stopBindingWatchers() {
+  Array.from(bindingWatchers.values()).forEach((w) => {
+    try { if (w && w.watcher) w.watcher.close(); } catch (e) { /* ignore */ }
+    if (w && w.timer) clearTimeout(w.timer);
+  });
+  bindingWatchers.clear();
+  recentBindFingerprint.clear();
+  if (bindingSweep.timer) { clearInterval(bindingSweep.timer); bindingSweep.timer = null; }
+}
+
+/*
  * 每个项目「渲染层手里那份数据是从哪个版本读来的」。
  *
  * 为什么记在**主进程**而不是渲染层：渲染层不需要知道版本的存在，也就不会漏传。
@@ -741,6 +928,18 @@ function registerIpc() {
    *   · **只在盘上版本 ≠ 界面读到的那一版时才发**（相等还发 ⇒ 每次切回窗口都白重读一遍）。 */
   let watchedFile = null;
   let watchedWin = null;
+  /* 【R4】绑定守护的接线：**同步真的写过盘**时才发既有的 `project:disk-changed`
+   * —— 渲染层对这条事件已经有一整套判定（无脏 ⇒ 静默重读；有脏 ⇒ 只提示 + 外部改动预览），
+   * 所以"自动同步进来的节点出现在界面上"这件事**不需要新事件、也不需要 preload 加通道** ✓
+   * （第④步的界面只做"选目录/状态/暂停"这些**入口**，不该为了显示去复制一套同步逻辑）。
+   * 判据"有没有写过盘"取自 CLI 的回显（`synced` 那一行）—— 不猜、不另算一份。 */
+  const onBindingsSynced = (r) => {
+    if (!r || !r.ok) return;
+    if (!/\bsynced\b/.test(String(r.out || ''))) return;      // 没写过盘 ⇒ 不发（避免无意义的重读）
+    if (!watchedWin || watchedWin.isDestroyed()) return;
+    // ⚠️ 用**这次批次自己的项目名**（不是"当前窗口那个"）：一批要跑几百毫秒到几秒，期间可能已切项目
+    watchedWin.webContents.send('project:disk-changed', String(r.project || '') + '.json');
+  };
   const focusProbed = new WeakSet();
   function onWatcherFocus() {
     if (!watchedFile || !watchedWin || watchedWin.isDestroyed()) return;
@@ -794,6 +993,13 @@ function registerIpc() {
     versionAtRead.set(name, r.version);
     // 同时记下**内容基线**：并发时要做三方合并（阶段 2），只有指纹是不够的
     baseAtRead.set(name, r.data);
+    /* 【R4】顺手重挂这个项目的**绑定守护**：打开/切换项目走的就是这条通道（渲染层所有读路径都经它）
+     * ⇒ "守护跟着项目走"不需要新通道、也不需要渲染层配合（第④步的界面只补入口与状态显示）。
+     * 判定与写盘全在 CLI 那一侧（`bind-sync`），这里只挂/收 `fs.watch` + 一个低频兜底巡检。 */
+    try {
+      bindWatchersFor(name, onBindingsSynced);
+      startBindingSweep(onBindingsSynced);
+    } catch (err) { /* 守护起不来不影响项目打开：如实打一条，别静默（F1） */ console.error('[bind-sync] 重挂失败：' + ((err && err.message) || err)); }
     // 导图页的"上次项目"由**主进程**存住：导图页被卸载后重开时，页面自己不知道原来开的是哪个
     // （页面 boot 时只会默认开 projects[0] ⇒ 重开后项目会跑掉）⇒ 在这里记，重开时还回去 ✓
     try { dshSidebar.setCurrentProject(name); } catch (err) { /* 记不住不阻断读项目 */ }
@@ -1509,6 +1715,8 @@ function registerIpc() {
   });
   // 应用退出：界面不再持有任何未保存编辑（否则崩溃/退出前的 dirty=true 会永久吓住 AI）
   app.on('will-quit', () => {
+    // 【R4】绑定守护也要收干净：监听句柄与兜底定时器都是进程级的（留着会拖住退出/留孤儿）
+    try { stopBindingWatchers(); } catch (err) { /* 收尾失败不阻断退出 */ }
     try {
       const names = [];
       fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }).forEach((d) => {

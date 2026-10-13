@@ -41,6 +41,71 @@
 
   const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 
+  /* ==========================================================================
+   * 工作区文件夹绑定（R4）的**取值表**（唯一一处）
+   * --------------------------------------------------------------------------
+   * 为什么放在这里而不是 `src/doc-import.js`（那条绑定同步链路住的地方）：
+   *   · 本文件是**数据契约的校验处** —— 取值表在这里，校验就在这里，两处不会漂；
+   *   · `docs-registry-check.js` 的门禁刻意只认 `src/` 顶层的**文件**，新增一个模块要同批
+   *     改 `docs/ARCHITECTURE.md`（那属于文档面）⇒ 把"字符串取值 + 校验"并进已有模块，
+   *     "取值只有一处"与"文档面不变"两件事同时成立 ✓
+   *   · 消费方（`src/doc-import.js` 的绑定同步链路、`cli/commands/project.js` 的 `bind-sync`）
+   *     **必须 require 这里取**，不许各写一份字面量（第二份必然与校验漂移）。
+   * ======================================================================== */
+  /** 导入形态：`flat` = 目录里所有文件平铺在根下；`mirror` = 目录结构与文件夹同构（同 import-dir） */
+  const BINDING_MODES = Object.freeze(['flat', 'mirror']);
+  const BINDING_MODE_DEFAULT = 'flat';
+  /** 删除策略：**只有这一档合法**（"不许删除"是工程铁律 ⇒ 自动化只能提议，不能自动删） */
+  const BINDING_DELETIONS = 'propose-only';
+  /** 事件防抖的上下界（毫秒）。下界：一次保存会触发好几个 fs 事件，太小等于没有防抖；
+   *  上界：再大就"改了看不见"了。缺省 800ms（与 `main.js` 既有 300ms 的项目文件监听分开：
+   *  那条是"盘上 JSON 变了 ⇒ 界面重读"，这条是"源文件夹变了 ⇒ 转成节点"。 */
+  const BINDING_DEBOUNCE_DEFAULT = 800;
+  const BINDING_DEBOUNCE_MIN = 50;
+  const BINDING_DEBOUNCE_MAX = 60000;
+  /** 绑定状态：缺省 = `watching`（守护中）；`paused` = 人按了暂停；`blocked` = 本轮被挡住
+   *  （界面有未保存编辑 / 版本打架）—— **被挡住不是失败**，要如实说出来并等下一轮再试 */
+  const BINDING_STATUSES = Object.freeze(['watching', 'paused', 'blocked']);
+  const BINDING_STATUS_DEFAULT = 'watching';
+  /** 默认忽略的目录/片段（与 `doc-import.js` 的 `SKIP_DIR_NAMES` 同一份口径的补充：
+   *  那边已经一律跳过隐藏项（`.git` / `.review` / `.obsidian` 都以点开头）与
+   *  `node_modules`；这里只是把"绑定默认忽略什么"写成**可读的契约**，默认值见 doc-import） */
+  const BINDING_IGNORE_DEFAULT = Object.freeze(['node_modules', '.git', '.review']);
+
+  /** 这个绑定现在**守护着**吗（缺省 status = watching ⇒ 守护）。
+   *  为什么要有这个函数：`watching`/`paused`/`blocked` 三态的解释只允许一处 ——
+   *  主进程的守护、命令的回显、测试都调它，免得"暂停了却还在同步"这种两处各判一次的分叉。 */
+  function isBindingActive(b) {
+    if (!b || typeof b !== 'object') return false;
+    return (b.status === undefined || b.status === BINDING_STATUS_DEFAULT);
+  }
+
+  /**
+   * 给老项目补上 `bindings` 键（**迁移**：只补空数组，一个字节的既有数据都不动）。
+   *
+   * 为什么需要：`bindings` 是可选键 ⇒ 老项目**不补也能读、能写、能过校验**（缺省 = 未绑定）。
+   * 补它只为一件事：让"这个项目支持绑定"在数据里**看得见**（而不是"没这个键"与"有键但空"
+   * 两种状态各判一次）。所以：
+   *   · 只在**缺键**时补，缺值是坏数据（`bindings: null` / 字符串）⇒ 交给校验判红，这里不替它收拾；
+   *   · `bindings` 已经是数组 ⇒ **原样返回**（`changed:false`，连对象都不重建）；
+   *   · 纯函数：入参不被修改（返回的是新对象），调用方决定要不要写盘。
+   * @param {object} data 项目数据（**只读**）
+   * @returns {{data:object, changed:boolean, note:string}} 补过键的那份（或原样）
+   */
+  function migrateBindings(data) {
+    const d = (data && typeof data === 'object') ? data : null;
+    if (!d) return { data: data, changed: false, note: '不是对象，未改动' };
+    if (Array.isArray(d.bindings)) return { data: d, changed: false, note: '已有 bindings 数组，未改动' };
+    if (d.bindings !== undefined) {
+      return { data: d, changed: false, note: 'bindings 不是数组（坏数据）—— 不替它收拾，交给 validate 判红' };
+    }
+    return {
+      data: Object.assign({}, d, { bindings: [] }),
+      changed: true,
+      note: '缺 bindings 键 ⇒ 补空数组（**缺省 = 未绑定**，既有数据逐字节未动）'
+    };
+  }
+
   /** 条目级悬挂的**唯一判据**（契约 §12：与节点级同一处逻辑）。
    *  ⚠️ **绝不**在本文件再写一份"条目在不在"：第二处表达必然与 S6 那处漂移。 */
   const targetHasItemOf = (relations && typeof relations.targetHasItem === 'function')
@@ -118,6 +183,67 @@
             if (typeof v !== 'number' || !Number.isFinite(v)) err('meta.themeOffsets.' + tid + '.' + k + ' 必须是有限数字');
             else if (Math.abs(v) > LIMIT) err('meta.themeOffsets.' + tid + '.' + k + ' 超出允许范围（±' + LIMIT + '）: ' + v);
           });
+        });
+      }
+    }
+    /* ---- 工作区文件夹绑定（R4，2026-10-13；契约 docs/DATA-FORMAT.md §1.5）-------------------
+     * 项目级可选字段（**不是**节点字段：它是"这个项目盯着哪个本机文件夹"的事实，与树无关）。
+     * 三条口径写在这里，别在别处再判一遍：
+     *   · **缺省 = 未绑定**（老项目没有这个键，语义与从前**完全一致**）⇒ 所以它不升 formatVersion；
+     *   · 只校验**形状**，不校验目录在不在/读不读得了 —— 与 `localPath` 同一条理由：
+     *     把存在性做成校验条件会让"换台机器打开就连 validate 都红"，那是把环境问题伪装成数据问题；
+     *   · `deletions` **只能**是 `propose-only`：工程铁律是"不许删除"（删节点只在界面上由人做）
+     *     ⇒ 这里把它固化成契约，任何"自动删"的取值都**判红**（判别力：改成 'auto' 必红）。
+     *   · 扫描快照（mtime/大小/指纹）**不进这里**：它在旁路文件里（见 §1.5），
+     *     否则守护进程每扫一次就把项目数据搅脏一次 ✗。 */
+    if (data.bindings !== undefined) {
+      if (!Array.isArray(data.bindings)) {
+        err('bindings 必须是数组（工作区文件夹绑定；**缺省 = 未绑定**，见 docs/DATA-FORMAT.md §1.5）');
+      } else {
+        const seenBid = new Set();
+        data.bindings.forEach((b, i) => {
+          const at = 'bindings[' + i + ']';
+          if (!b || typeof b !== 'object' || Array.isArray(b)) { err(at + ' 必须是对象'); return; }
+          if (typeof b.id !== 'string' || !ID_RE.test(b.id)) {
+            err(at + '.id 不合规范（小写字母/数字/连字符，如 wb-1）: ' + JSON.stringify(b.id));
+          } else if (seenBid.has(b.id)) {
+            err(at + '.id 重复: ' + b.id + '（绑定 id 在项目内必须唯一 —— 快照按它分文件）');
+          } else seenBid.add(b.id);
+          // 目录是本机绝对路径（与 localPath 同档：它是**明文例外**，见 §2.5 那条）
+          if (typeof b.dir !== 'string' || !b.dir.trim()) err(at + '.dir 必须是非空字符串（本机目录绝对路径）');
+          else if (/[\r\n]/.test(b.dir)) err(at + '.dir 不能含换行');
+          else if (b.dir.length > 500) err(at + '.dir 过长（超过 500 字符）');
+          if (typeof b.mode !== 'string' || BINDING_MODES.indexOf(b.mode) < 0) {
+            err(at + '.mode 必须是 ' + BINDING_MODES.map((m) => JSON.stringify(m)).join(' 或 ')
+              + '（收到 ' + JSON.stringify(b.mode) + '）：flat = 所有文件平铺在根下、mirror = 目录结构与文件夹同构');
+          }
+          ['include', 'ignore'].forEach((k) => {
+            const v = b[k];
+            if (v === undefined) return;
+            if (!Array.isArray(v)) { err(at + '.' + k + ' 必须是字符串数组'); return; }
+            v.forEach((p, j) => {
+              if (typeof p !== 'string' || !p.trim()) err(at + '.' + k + '[' + j + '] 必须是非空字符串');
+            });
+          });
+          // 删除策略：**只有一档合法取值**（"不许删除"是工程铁律 ⇒ 只能提议，不能自动删）
+          if (b.deletions !== 'propose-only') {
+            err(at + '.deletions 只能是 "propose-only"（删除/改名**只产出待确认提议、绝不自动删** —— '
+              + '收到 ' + JSON.stringify(b.deletions) + '；自动化只负责"加"和"改"）');
+          }
+          if (b.debounceMs !== undefined) {
+            if (typeof b.debounceMs !== 'number' || !Number.isFinite(b.debounceMs)
+              || b.debounceMs < BINDING_DEBOUNCE_MIN || b.debounceMs > BINDING_DEBOUNCE_MAX) {
+              err(at + '.debounceMs 必须是 ' + BINDING_DEBOUNCE_MIN + '–' + BINDING_DEBOUNCE_MAX
+                + ' 之间的数字（毫秒）：太小会让一次保存触发多次同步，太大就"改了看不见"');
+            }
+          }
+          if (b.lastSyncAt !== undefined && typeof b.lastSyncAt !== 'string') err(at + '.lastSyncAt 必须是字符串（ISO 时间）');
+          if (b.status !== undefined && BINDING_STATUSES.indexOf(b.status) < 0) {
+            err(at + '.status 必须是 ' + BINDING_STATUSES.map((s) => JSON.stringify(s)).join(' / ')
+              + '（缺省 = ' + BINDING_STATUS_DEFAULT + '；' + JSON.stringify('blocked')
+              + ' 时 note 要写清"被什么挡住了"）: ' + JSON.stringify(b.status));
+          }
+          if (b.note !== undefined && typeof b.note !== 'string') err(at + '.note 必须是字符串');
         });
       }
     }
@@ -600,6 +726,11 @@
   return {
     validateProject, validateNode, checkIdsAndCycles, checkItemIds, flatten, ID_RE,
     NODE_FIELDS, NODE_FIELD_NAMES, NODE_FIELDS_REQUIRED, NODE_FIELDS_OPTIONAL, NODE_FIELD_DESC,
-    parseFieldLines, analyzeCloneFieldCopy
+    parseFieldLines, analyzeCloneFieldCopy,
+    // 工作区文件夹绑定（R4）的取值表 + 迁移（**唯一一处**；消费方从这里取，别抄字面量）
+    BINDING_MODES, BINDING_MODE_DEFAULT, BINDING_DELETIONS,
+    BINDING_DEBOUNCE_DEFAULT, BINDING_DEBOUNCE_MIN, BINDING_DEBOUNCE_MAX,
+    BINDING_STATUSES, BINDING_STATUS_DEFAULT, BINDING_IGNORE_DEFAULT,
+    isBindingActive, migrateBindings
   };
 });

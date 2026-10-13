@@ -313,6 +313,25 @@ function init() {
   register({ name: 'import-project', usage: 'import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] [--force]', options: ['title', 'json', 'force'], desc: '功能 5a：**从大文档建一个新项目 + 一棵新树**（md/txt/docx；PDF **有书签走书签、无书签自动回退文字层**，两样都没有才响亮拒绝）；1 级标题成为顶层主题；一次原子写入，失败不留半个项目；--dry-run 只预览格式/规模/前几个标题与来源、不写盘（并如实报"这份文档已经导过了"）；入参是**目录**或路径读不了时**响亮拒绝并给出路**；**同一份来源默认只导一次**（`origin.src`+`origin.sha256` 全库比对，重复会拒绝并指名是哪个项目导的）—— 真的想再建一棵就加 `--force`', fn: loadFile('project').importProject });
   register({ name: 'import-dir', usage: 'import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--dry-run] [--json] [--force]', options: ['title', 'ext', 'maxFiles', 'json', 'force'], desc: '批 5：**整库导入 —— 把一个文件夹的结构镜像成一棵树**（每一级子目录 = 一个容器节点，每个文件 = 该容器下的一个文件节点，标题取**文件名去扩展名**，文档自己的标题在它下面）。默认导 `.md/.txt/.docx/.pdf`（`--ext` 覆盖，只许写真的能导的扩展名）；隐藏文件/`.git`/`node_modules`/符号链接/空目录/无读权限/不支持的扩展名**一律跳过并逐类计数**（报告给"导入了 N 个文件 / 跳过 M 个（按原因分组）"，**不许静默**）；上限：合计 `MAX_SOURCE_MB`（与单文件闸门共用一份常量）+ 文件数 `--max-files`（默认 200），**超限在写盘之前响亮拒绝并给出路**；**一次原子写**，失败不留半个项目；`--dry-run` 只出报告、绝不写盘（并如实报超限与"这个目录已经导过了"）；**幂等**：项目根记**目录清单指纹**（同一个目录重复导 ⇒ **整体拒绝**并指名）、每个文件节点记自己的来源指纹（同一个文件被别的命令导过也拒绝）—— 确实要第二份就加 `--force`', fn: loadFile('project').importDir });
   register({ name: 'export-md', usage: 'export-md <项目> <输出目录> [--format heading|list] [--with-detail]', options: ['format', 'withDetail'], desc: '导出为文件夹：<项目>.md + assets/ + attachments/（v0.16 起）', fn: loadFile('project').exportMd });
+  register({
+    name: 'bind-sync',
+    usage: 'bind-sync <项目> [--bind --dir <目录> --mode flat|mirror --include <模式,…> --ignore <模式,…> '
+      + '--ext <扩展名,…> --debounce <毫秒> --id <绑定id>] [--binding <绑定id>] [--pause|--resume|--unbind|--list] '
+      + '[--watch-dirs] [--forget-snapshot] [--json] [--dry-run]',
+    options: ['bind', 'dir', 'mode', 'include', 'ignore', 'ext', 'debounce', 'id',
+      'binding', 'pause', 'resume', 'unbind', 'list', 'watchDirs', 'forgetSnapshot', 'json'],
+    desc: '【R4】**绑定工作区文件夹 → 定时/有变化就同步进思维导图**（零 token：纯本地文件事件 + 字符串处理，'
+      + '**不经 LLM**）。形态：不带开关 ⇒ **同步一次**（增量：按 mtime/大小只处理变过的文件）；`--bind --dir <目录>` '
+      + '新建一条绑定；`--pause` / `--resume` / `--unbind` 暂停/继续/解绑（**都只影响"要不要同步"，已导入的节点一个都不动**）；'
+      + '`--list` 只看状态。**三条纪律**：① **界面有未保存编辑 ⇒ 本轮一个字节都不写**（回显报 `blocked-dirty`，'
+      + '下一轮自己再来 —— 否则你保存时会撞冲突）；② **删除/改名只产出"待确认"提议，绝不自动删节点**（改名 = 新增 + 提议删旧）；'
+      + '③ **转不了的文件逐条点名**进"未转换"清单（不静默跳过、也不拖垮同一批里别的文件）。'
+      + '导入复用**同一条**既有管线（`import-dir` 的 `docToOutline` + `markdownToTree` + 资源引用解析），本命令不写第二套转换。'
+      + '扫描快照落在**旁路文件** `<项目目录>/.bindings.json`（可随时删；丢了会从树里的 `origin` 重建，不会重复建节点）—— '
+      + '**不进项目数据**，所以守护进程不会把项目 JSON 搅脏。事件驱动由主进程守护（`fs.watch` 递归 + 防抖 + 低频巡检兜底），'
+      + '应用开着才守护',
+    fn: loadFile('project').bindSync
+  });
   register({ name: 'export-json', usage: 'export-json <项目> <输出.json>', options: [], desc: '导出为 aimap 单文件（图片 base64 内嵌，可移植）', fn: loadFile('project').exportJson });
   register({ name: 'export-html', usage: 'export-html <项目> <输出目录>', options: [], desc: '导出为静态站点（index.html + assets/，可分享部署；相关知识点已内联为可跳转链接）', fn: loadFile('project').exportHtml });
   register({ name: 'import-json', usage: 'import-json <aimap.json> [--name 项目名]', options: ['name'], desc: '从 aimap 单文件导入为新项目（解包图片）', fn: loadFile('project').importJson });

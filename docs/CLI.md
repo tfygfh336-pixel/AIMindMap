@@ -56,6 +56,7 @@
 | `import-project` | import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] [--force] |
 | `import-dir` | import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--dry-run] [--json] [--force] |
 | `export-md` | export-md <项目> <输出目录> [--format heading|list] [--with-detail] |
+| `bind-sync` | bind-sync <项目> [--bind --dir <目录> --mode flat|mirror --include <模式,…> --ignore <模式,…> --ext <扩展名,…> --debounce <毫秒> --id <绑定id>] [--binding <绑定id>] [--pause|--resume|--unbind|--list] [--watch-dirs] [--forget-snapshot] [--json] [--dry-run] |
 | `export-json` | export-json <项目> <输出.json> |
 | `export-html` | export-html <项目> <输出目录> |
 | `import-json` | import-json <aimap.json> [--name 项目名] |
@@ -363,6 +364,14 @@ node cli/mm-cli.js import-dir <新项目名> <目录> [--title 标题] [--ext md
 
 ```
 node cli/mm-cli.js export-md <项目> <输出目录> [--format heading|list] [--with-detail]
+```
+
+### bind-sync
+
+【R4】**绑定工作区文件夹 → 定时/有变化就同步进思维导图**（零 token：纯本地文件事件 + 字符串处理，**不经 LLM**）。形态：不带开关 ⇒ **同步一次**（增量：按 mtime/大小只处理变过的文件）；`--bind --dir <目录>` 新建一条绑定；`--pause` / `--resume` / `--unbind` 暂停/继续/解绑（**都只影响"要不要同步"，已导入的节点一个都不动**）；`--list` 只看状态。**三条纪律**：① **界面有未保存编辑 ⇒ 本轮一个字节都不写**（回显报 `blocked-dirty`，下一轮自己再来 —— 否则你保存时会撞冲突）；② **删除/改名只产出"待确认"提议，绝不自动删节点**（改名 = 新增 + 提议删旧）；③ **转不了的文件逐条点名**进"未转换"清单（不静默跳过、也不拖垮同一批里别的文件）。导入复用**同一条**既有管线（`import-dir` 的 `docToOutline` + `markdownToTree` + 资源引用解析），本命令不写第二套转换。扫描快照落在**旁路文件** `<项目目录>/.bindings.json`（可随时删；丢了会从树里的 `origin` 重建，不会重复建节点）—— **不进项目数据**，所以守护进程不会把项目 JSON 搅脏。事件驱动由主进程守护（`fs.watch` 递归 + 防抖 + 低频巡检兜底），应用开着才守护
+
+```
+node cli/mm-cli.js bind-sync <项目> [--bind --dir <目录> --mode flat|mirror --include <模式,…> --ignore <模式,…> --ext <扩展名,…> --debounce <毫秒> --id <绑定id>] [--binding <绑定id>] [--pause|--resume|--unbind|--list] [--watch-dirs] [--forget-snapshot] [--json] [--dry-run]
 ```
 
 ### export-json

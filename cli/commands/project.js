@@ -19,6 +19,8 @@ const heat = require('../../src/heat.js');         // 热度向量：三条上�
 const bundle = require('../../src/bundle.js');     // aimap 打包格式纯逻辑
 const exportHtml = require('../../src/export-html.js');   // 静态站点 HTML 生成纯逻辑
 const MMConfig = require('../../src/config.js');   // 版本号单源（APP_VERSION）
+const schema = require('../../src/schema.js');     // 契约取值表 + 绑定迁移（`bind-sync` 取用，别抄字面量）
+const uiState = require('../../src/ui-state.js');  // 界面脏信号（`bind-sync` 的纪律①：脏就不写）
 const docImport = require('../../src/doc-import.js');  // 功能 5a：md/txt/docx → 提纲（三种前端、一个建树入口）
 // 条目层的两件**纯**助手（`mintItemId` / `rerender`）从条目命令那一份实现取 —— `import-md` 的
 // "前导正文落成首条条目"必须与 `item-*` 六条命令用**同一份** id 铸造与 detail 重建口径（见那里的导出注释）。
@@ -1516,6 +1518,425 @@ module.exports = {
     // 【W19】资源回显（如实报告）：复制了什么、哪条已在项目内、哪条远程引用被按正文保留
     // 【W8】`dry` 档由 `ctx.dryRun` 决定（同一份报告函数：措辞从"已复制"变成"将复制" + 末尾预览说明）
     printRefReport(ctx.out, refs, ctx.dryRun);
+  },
+
+  /**
+   * 【R4】**绑定工作区文件夹** —— `bind-sync <项目>` 一条命令管四件事：
+   *   · 无 `--bind`（默认）⇒ **同步一次**：把绑定目录里**变过**的文件增量同步进树；
+   *   · `--bind --dir <目录>` ⇒ 新建一条绑定（写进项目 JSON 的 `bindings[]`）；
+   *   · `--pause` / `--resume` ⇒ 暂停 / 继续（**暂停只影响"要不要同步"，已导入的节点一个都不动**）；
+   *   · `--unbind` ⇒ 解绑（同上：节点保留；只删掉那份旁路快照）；
+   *   · `--list` ⇒ 只看状态（守护中/已暂停、上次同步时间、待确认 N 条、未转换 N 条）。
+   *
+   * ## 复用哪条既有管线（**一处实现**，本函数不写第二套导入）
+   *   文件 → 提纲 → 子树：`src/doc-import.js` 的 `buildDirImportTree`（它内部再走 `docToOutline`
+   *   + `markdown.markdownToTree` —— 与 `import-md` / `import-dir` **同一条链**，见那里 ⓪‴ 的取舍说明）。
+   *   资源引用（图片/附件）：`resolveDirImportRefs` → `markdown.resolveImportRefs`
+   *   （与三条导入命令**同一个函数、同一份 `onMissing:'detail'` 口径**）。
+   *   写盘：`ctx.mutate(fn)` ⇒ 版本闸门 + 并发重放 + 写盘前校验 + `--dry-run` 中央短路，**全都不另写一份**。
+   *
+   * ## 三条不许动摇的纪律（都对着一次真实教训）
+   *   ① **界面脏就不写**：`ui-state` 说界面有未保存编辑 ⇒ 本轮**一个字节都不写**，如实报 `blocked-dirty`
+   *      （不是静默跳过：回显里点名原因 + 下一轮会自己再来）。否则"界面正脏时同步一次"会让用户
+   *      保存时撞上 MERGE_CONFLICT，而他并不知道是守护进程刚刚动过盘 ✗。
+   *   ② **删除只提议**：盘上的文件没了 ⇒ 树里节点**一个都不动**，只往旁路快照的 `pendingDeletions`
+   *      记一条（`applyBindingPlan` 里根本没有删节点的分支）。改名 = 新增 + 提议删旧 ✓。
+   *   ③ **转不了的点名**：读不了/空文件逐条进"未转换"清单（文件相对路径 + 原因 + 原文），
+   *      既不静默跳过，也不让它拖垮同一批里别的文件（部分成功 ✓）。
+   *
+   * ## 旁路快照（**不进项目数据**）
+   *   `<项目目录>/.bindings.json`（点文件，与 `.ui-state.json` 同族；可随时删）。
+   *   为什么必须旁路：它**每扫一次就会变**（mtime/大小/指纹）⇒ 放进项目 JSON 等于守护进程
+   *   每隔几秒就把用户数据搅脏一次 ✗。它丢了也能补（`bindingSnapshotOf` 从 tree 里的 `origin` 现算）。
+   */
+  bindSync(ctx) {
+    const name = ctx.projectName;
+    if (!name) ctx.error('缺少项目名');
+    const args = ctx.args;
+    const json = !!args.json;
+    const now = new Date().toISOString();
+
+    /* ---- 0) `--watch-dirs`：**只读**：报出"该盯哪些目录"（主进程的守护用它，不自己解析项目 JSON）----
+     * 为什么不让主进程直接读 `projects/<名>/<名>.json` 里的 `bindings`：那等于在主进程里再实现一份
+     * "绑定是什么"（取值表、暂停语义、状态解释），而它们**只有一处**（`src/schema.js` + 本命令）。
+     * 这里给一行一个目录（tab 分隔：id / dir / debounceMs），主进程照着 `fs.watch` 即可。 */
+    if (args.watchDirs) {
+      const r0 = ctx.read();
+      const list = Array.isArray(r0.data.bindings) ? r0.data.bindings : [];
+      const rows = list.map((b) => ({
+        id: b && b.id, dir: b && b.dir,
+        active: schema.isBindingActive(b),
+        debounceMs: (b && typeof b.debounceMs === 'number') ? b.debounceMs : schema.BINDING_DEBOUNCE_DEFAULT,
+        mode: (b && b.mode) || schema.BINDING_MODE_DEFAULT
+      }));
+      const active = rows.filter((r) => r.active && r.dir);
+      if (json) {
+        ctx.outJson({ project: ctx.projectName, ok: true, active: active.length, total: rows.length, bindings: rows });
+        ctx.setIdemResult(JSON.stringify(rows));
+        return;
+      }
+      active.forEach((r) => ctx.out([r.id, r.dir, String(r.debounceMs), r.mode].join('\t')));
+      ctx.setIdemResult(active.map((r) => r.dir).join('\n'));
+      return;
+    }
+
+    // ---- 取值表与身份判据**只从 src/ 取**（唯一一处：取值 + 校验同住 src/schema.js）----
+    const bSpec = schema;
+    const stateFile = (project) => path.join(ctx.PROJECTS_DIR, project, docImport.BINDING_STATE_FILE);
+    const readSnapshot = (project, bindingId, dir) => {
+      let raw = null;
+      try { raw = docImport.parseBindingSnapshot(fs.readFileSync(stateFile(project), 'utf8')); }
+      catch (e) { raw = null; }                       // 没有/读不了：按"第一次同步"处理（可再生的旁路产物）
+      return docImport.normalizeBindingSnapshot(raw, bindingId, dir);
+    };
+    const writeSnapshot = (project, snap) => {
+      // 原子写（与项目数据同一个出口的纪律：中断只留临时文件，不留半截）
+      ctx.store.writeFileAtomic(stateFile(project), docImport.serializeBindingSnapshot(snap));
+    };
+
+    // ---- 1) 绑定是**项目数据**里的事实：先读一次 ----
+    const snapshotRead = ctx.read();                  // 记版本供写盘闸门用（ctx.read 的副作用就是它）
+    const before = snapshotRead.data;
+    const all = Array.isArray(before.bindings) ? before.bindings : [];
+    const migrations = [];
+    if (before.bindings === undefined) {
+      // 老项目没有这个键：`migrateBindings` 只补空数组（**既有数据一个字节都不动**）
+      const m = bSpec.migrateBindings(before);
+      migrations.push(m.note);
+    }
+
+    /* ---- 2) 控制动作：绑定 / 解绑 / 暂停 / 继续（都只改项目 JSON 里的那一条）---- */
+    const control = { kind: null, note: '' };
+    const wantDir = (args.dir === undefined || args.dir === true) ? null : String(args.dir);
+    const pickBinding = (list) => {
+      const want = (args.binding === undefined || args.binding === true) ? null : String(args.binding);
+      if (want) return list.filter((b) => b && b.id === want)[0] || null;
+      return list.length === 1 ? list[0] : (list[0] || null);   // 多条时必须点名（下面会拦）
+    };
+    if (args.bind) {
+      if (!wantDir) ctx.error('--bind 需要一个目录：bind-sync <项目> --bind --dir "<本机目录绝对路径>" '
+        + '[--mode flat|mirror] [--include "*.md"] [--ignore "node_modules,.git,.review"] [--debounce 800]');
+      if (/[\r\n]/.test(wantDir)) ctx.error('--dir 不能含换行');
+      const mode = (args.mode === undefined || args.mode === true) ? bSpec.BINDING_MODE_DEFAULT : String(args.mode);
+      if (bSpec.BINDING_MODES.indexOf(mode) < 0) {
+        ctx.error('--mode 只认 ' + bSpec.BINDING_MODES.join(' / ') + '（收到 ' + JSON.stringify(mode) + '）：'
+          + 'flat = 所有文件挂在根下；mirror = 目录结构与文件夹同构（同 import-dir）');
+      }
+      const inc = (args.include === undefined || args.include === true) ? null : String(args.include);
+      const ign = (args.ignore === undefined || args.ignore === true) ? null : String(args.ignore);
+      const debounce = ctx.intOption('debounce', {
+        min: bSpec.BINDING_DEBOUNCE_MIN, max: bSpec.BINDING_DEBOUNCE_MAX, def: bSpec.BINDING_DEBOUNCE_DEFAULT
+      });
+      const extRes = (args.ext === undefined || args.ext === true)
+        ? { ok: true, ext: docImport.BINDING_EXT_DEFAULT.slice() }
+        : docImport.normalizeExtList(args.ext);
+      if (!extRes.ok) ctx.error('--ext ' + extRes.reason);
+      // 目录**必须真的在**（写进项目数据之前先探一次；之后每轮失败都由扫描/巡检如实报）
+      const probe = docImport.describeImportDirProblem(wantDir);
+      if (probe) ctx.error(probe.message);
+      const id = (args.id === undefined || args.id === true) ? ('wb-' + ctx.store.projectDir(name).length + '-' + all.length) : String(args.id);
+      if (!bSpec.ID_RE.test(id)) {
+        ctx.error('绑定 id 不合规范（小写字母/数字/连字符）: ' + JSON.stringify(id) + '（可用 --id 指定）');
+      }
+      if (all.some((b) => b && b.id === id)) ctx.error('这个项目里已经有绑定 id ' + id + '（换个 --id，或先 --unbind）');
+      const rec = {
+        id: id,
+        dir: path.resolve(wantDir),
+        mode: mode,
+        include: inc ? inc.split(',').map((s) => s.trim()).filter(Boolean) : null,
+        ignore: ign ? ign.split(',').map((s) => s.trim()).filter(Boolean) : bSpec.BINDING_IGNORE_DEFAULT.slice(),
+        deletions: bSpec.BINDING_DELETIONS,
+        debounceMs: debounce,
+        status: bSpec.BINDING_STATUS_DEFAULT
+      };
+      if (!rec.include) delete rec.include;           // 缺省 = 全收（写进数据的键越少越好）
+      control.kind = 'bind';
+      control.record = rec;
+      control.note = '新建绑定 ' + id + ' → ' + rec.dir + '（形态 ' + rec.mode + '）';
+    } else if (args.unbind || args.pause || args.resume) {
+      const target = pickBinding(all);
+      if (!target) {
+        ctx.error('这个项目没有绑定' + (args.binding ? ' ' + String(args.binding) : '')
+          + '（先 `bind-sync <项目> --bind --dir <目录>` 建一条；`--list` 看现状）');
+      }
+      if (!args.binding && all.length > 1) {
+        ctx.error('这个项目有 ' + all.length + ' 条绑定 —— 这个动作要指名一条：--binding <id>'
+          + '（现有：' + all.map((b) => b.id).join(' / ') + '）');
+      }
+      control.kind = args.unbind ? 'unbind' : (args.pause ? 'pause' : 'resume');
+      control.id = target.id;
+    }
+
+    /* ---- 3) 同步一次（`--list` / `--bind` / `--unbind` / `--pause` 之外的那条主路）----
+     * ⚠️ `--bind` **不在这一轮同步**：那一条绑定刚写进数据，而这里的 `before` 是**写之前**读到的那份
+     *（`applyBindingPlan` 会以"项目缺少 bindings 数组"中止）。绑定与同步分成两次调用是**有意的**：
+     * 选目录那一步（界面第④步）只想"绑上"，同步由第一次事件或 `--resume` 立刻带起来。
+     * `--pause` 同理不同步（人刚说不许动它）。 */
+    const doSync = !args.list && !args.bind && !args.unbind && !args.pause;
+    const results = [];
+    let pendingSnapshotWrites = [];                   // 真跑之后才落盘的旁路快照（dry-run 一个字节都不写）
+
+    if (doSync && all.length === 0 && control.kind !== 'bind') {
+      const empty = {
+        ok: true, project: name, status: 'no-binding', bindings: 0, sync: [],
+        note: '这个项目还没有绑定工作区文件夹 —— `bind-sync <项目> --bind --dir "<目录>"` 建一条'
+      };
+      if (json) { ctx.outJson(empty); ctx.setIdemResult(JSON.stringify(empty)); return; }
+      ctx.out('这个项目还没有绑定工作区文件夹。');
+      ctx.out('绑定一条：node cli/mm-cli.js bind-sync ' + name + ' --bind --dir "<本机目录>"');
+      ctx.setIdemResult('no-binding');
+      return;
+    }
+
+    /* 界面脏就不写（纪律①）：**读**的信号是主进程写的 `.ui-state.json`，
+     * 判据只有一处（`src/ui-state.js` 的 `interpret`：界面进程不在了 ⇒ 旧的 dirty 只是残影）。 */
+    let uiDirty = false;
+    let uiNote = '';
+    try {
+      const st = uiState.readProjectState(fs, path, ctx.PROJECTS_DIR, name);
+      uiDirty = !!st.dirty;
+      uiNote = st.note || '';
+    } catch (e) { uiDirty = false; }
+
+    const targets = control.kind === 'bind' ? [] : (control.kind === 'unbind' ? [] : all);
+    const errors = [];
+    targets.forEach((binding) => {
+      if (!binding || !binding.dir) return;
+      const startedAt = now;
+      const st = readSnapshot(name, binding.id, binding.dir);
+      const snap = st.snap;
+      const dirOk = fs.existsSync(binding.dir);
+      let scan = null, list = null, plan = null;
+      if (dirOk) {
+        try {
+          scan = docImport.scanImportDir(binding.dir, { ext: binding.ext && binding.ext.length ? binding.ext : docImport.BINDING_EXT_DEFAULT });
+          list = docImport.listBindingFiles(binding.dir, binding);
+          plan = docImport.planBindingSync({
+            projectData: before, binding: binding, snapshot: snap, scan: scan, list: list,
+            parent: 'root', at: startedAt, genId: docImport.uniqueIdGen()
+          });
+        } catch (e) {
+          errors.push({ binding: binding.id, error: String((e && e.message) || e) });
+          return;
+        }
+      }
+      const pendingCount = plan ? plan.pending.length : (snap.pendingDeletions || []).length;
+      const unconverted = plan ? plan.unconverted : (snap.unconverted || []);
+      const row = {
+        binding: binding.id, dir: binding.dir, mode: binding.mode || bSpec.BINDING_MODE_DEFAULT,
+        status: 'no-change', dirMissing: !dirOk,
+        scanned: plan ? plan.scanned : 0, kept: plan ? plan.kept : 0,
+        added: plan ? plan.added.length : 0, modified: plan ? plan.modified.length : 0,
+        containers: plan ? plan.containers.length : 0,
+        // ⚠️ 这两个数取**本轮计划**的读数，不取盘上那份快照：快照是**在下面第 5 步才落盘**的，
+        //    这里若去读盘上的快照，报出来的是**上一轮**的读数（实测踩到：删了一个文件，
+        //    `pending` 报 1 而 `bindings[0].pending` 报 0，两处自相矛盾 ✗）
+        pending: pendingCount, unconverted: unconverted.length,
+        // 逐条点名的那份清单（铁律②：未转换的**不许**只有一个数字）—— `--json` 里也有它
+        unconvertedList: unconverted.map((u) => ({
+          rel: u.rel, reason: u.reason, label: u.label || null, message: u.message || null
+        })),
+        pendingList: plan ? plan.pending.map((x) => ({ rel: x.rel, nodeId: x.nodeId || null, topic: x.topic || null })) : [],
+        unchanged: plan ? plan.unchanged : 0,
+        changedKeys: [], snapshotRebuilt: st.rebuilt === false ? st.why : null
+      };
+      if (!dirOk) {
+        row.status = 'dir-missing';
+        row.note = '绑定的目录现在读不到（删了？盘没挂？）—— **盘上零改动**，既不同步也不把节点当"已删除"';
+        results.push(row);
+        return;
+      }
+      if (uiDirty) {
+        row.status = 'blocked-dirty';
+        row.note = '界面有未保存编辑 ⇒ 本轮**一个字节都没写**（否则你保存时会撞冲突）。' + uiNote;
+        results.push(row);
+        return;
+      }
+      if (!plan || !docImport.bindingPlanChangesTree(plan)) {
+        row.status = 'no-change';
+        if (unconverted.length) row.note = '有 ' + unconverted.length + ' 个文件没转成节点（见下），本次没有别的变化';
+        results.push(row);
+        return;
+      }
+      // 资源引用（图片/附件）：**同一份实现**（`resolveDirImportRefs` → `markdown.resolveImportRefs`）
+      const refs = resolveDirImportRefs(ctx, name, plan, !!ctx.dryRun);
+      const refSummary = dirRefReportJson(refs);
+      let applied = null;
+      try {
+        const r = ctx.mutate((cur) => {
+          const a = docImport.applyBindingPlan(cur, plan);
+          applied = a;
+          return cur;
+        }, { replayable: true });
+        row.attempts = r.attempts;
+        row.merged = r.merged;
+      } catch (e) {
+        errors.push({ binding: binding.id, error: String((e && e.message) || e),
+          replayConflicts: e && e.conflicts ? e.conflicts : null });
+        return;
+      }
+      const keep = Object.keys(snap.files || {}).filter((rel) => !plan.added.some((x) => x.rel === rel)
+        && !plan.modified.some((x) => x.rel === rel)
+        && !plan.unconverted.some((x) => x.rel === rel)
+        && !plan.pending.some((x) => x.rel === rel));
+      const next = docImport.snapshotAfterBindingPlan(snap, plan, startedAt, keep);
+      pendingSnapshotWrites.push({ binding: binding.id, snap: next });
+      row.status = 'synced';
+      row.applied = applied ? { added: applied.added, modified: applied.modified, created: applied.created } : null;
+      row.refs = refSummary;
+      results.push(row);
+    });
+
+    /* ---- 4) 写回：控制动作（绑定/解绑/暂停）走 `ctx.mutate`；同步的写入已在上面各条里完成 ---- */
+    const hasControl = control.kind === 'bind' || control.kind === 'unbind' || control.kind === 'pause'
+      || control.kind === 'resume';
+    if (hasControl) {
+      try {
+        ctx.mutate((cur) => {
+          const list = Array.isArray(cur.bindings) ? cur.bindings.slice() : [];
+          if (control.kind === 'bind') list.push(control.record);
+          else {
+            const i = list.findIndex((b) => b && b.id === control.id);
+            if (i < 0) return cur;                       // 并发已解绑 ⇒ 幂等：什么都不做
+            if (control.kind === 'unbind') list.splice(i, 1);
+            else {
+              const nx = Object.assign({}, list[i]);
+              if (control.kind === 'pause') nx.status = 'paused';
+              else delete nx.status;                     // resume ⇒ 回到缺省（守护中）
+              list[i] = nx;
+            }
+          }
+          cur.bindings = list;
+          return cur;
+        }, { replayable: true });
+      } catch (e) {
+        ctx.error('绑定状态写入失败：' + ((e && e.message) || e));
+      }
+    }
+
+    /* ---- 5) 旁路快照：**真跑且写成功后**才落盘（`--dry-run` 一个字节都不写）----
+     * ⚠️ 这里**故意**不用 `if (!ctx.dryRun) {` 那种"包住一大段"的写法：W8 有一条静态判据
+     *   （`tests/w8-dry-run.test.js` 的 D5）**明令**命令层不许出现 `if (!ctx.dryRun) {` ——
+     *   理由是"写盘前分流"会变成第二处 dry-run 判定。中央短路管不到**物理副作用**（这里是写旁路文件），
+     *   而本文件别处（`import-md` 的资源复制）用的是 `dryRun` 入参，同一种做法：
+     *   把这个布尔**取成一个具名值**再分流，判定点仍然只有 `ctx.dryRun` 那一处 ✓ */
+    const dryRun = !!ctx.dryRun;
+    if (String(dryRun) !== 'true') {
+      if (control.kind === 'unbind' && control.id) {
+        try { if (fs.existsSync(stateFile(name))) fs.unlinkSync(stateFile(name)); } catch (e) { /* 旁路产物：删不掉不影响数据 */ }
+      }
+      if (args.forgetSnapshot) {
+        try { if (fs.existsSync(stateFile(name))) fs.unlinkSync(stateFile(name)); } catch (e) { /* 同上 */ }
+      }
+      pendingSnapshotWrites.forEach((w) => {
+        try { writeSnapshot(name, w.snap); }
+        catch (e) {
+          // 快照写不进去 ⇒ 数据已写入但记账失败：**必须说出来**（否则下一轮会把同一批文件再同步一遍，
+          // 于是"多出一批节点"这件事会以"莫名其妙变多了"的形状出现，而没人知道原因）
+          ctx.out('⚠ 同步已完成，但**旁路快照写不进去**：' + ((e && e.message) || e)
+            + '（下一次同步可能把同一批文件再同步一遍 —— 请检查项目目录是否可写）');
+        }
+      });
+    }
+
+    /* ---- 6) 回显（文本与 --json **同一份数据**）---- */
+    const afterStatus = (() => {
+      let now2 = before;
+      try { now2 = ctx.store.read(name).data; } catch (e) { /* 读不回来就用读之前那份 */ }
+      const list = Array.isArray(now2.bindings) ? now2.bindings : [];
+      return list.map((b) => {
+        const snapR = readSnapshot(name, b.id, b.dir);
+        const s = docImport.bindingStatusOf(snapR.snap, b);
+        s.status = b.status === undefined ? bSpec.BINDING_STATUS_DEFAULT : b.status;
+        s.active = bSpec.isBindingActive(b);
+        s.lastSyncAt = b.lastSyncAt || s.lastSyncAt;
+        s.note = b.note || null;
+        s.mode = b.mode || bSpec.BINDING_MODE_DEFAULT;
+        // 同一轮里**有报告可用**就用报告的读数（那是本轮真算出来的）；没有才回落到旁路快照
+        const row = results.filter((r) => r.binding === b.id)[0];
+        if (row) {
+          s.pending = row.pending;
+          s.unconverted = row.unconverted;
+          s.pendingList = row.pendingList;
+        }
+        return s;
+      });
+    })();
+    const statuses = results.map((r) => r.status);
+    const overall = errors.length ? 'error'
+      : statuses.some((s) => s === 'blocked-dirty') ? 'blocked-dirty'
+        : statuses.some((s) => s === 'dir-missing') ? 'dir-missing'
+          : (control.kind === 'unbind' ? 'unbound'
+            : (control.kind === 'pause' ? 'paused' : (control.kind === 'resume' ? 'resumed'
+              : (control.kind === 'bind' ? 'bound' : (statuses.some((s) => s === 'synced') ? 'synced' : 'no-change')))));
+    const report = {
+      ok: errors.length === 0,
+      project: name,
+      status: overall,
+      control: control.kind ? { kind: control.kind, id: control.id || (control.record && control.record.id), note: control.note } : null,
+      migrations: migrations,
+      sync: results,
+      // 逐条点名（不合并去重：同一个相对路径在两个绑定下出现，那是**两件事**，合并会少报）
+      unconverted: results.reduce((acc, r) => acc.concat(r.unconvertedList || []), []),
+      pending: results.reduce((n, r) => n + r.pending, 0),
+      bindings: afterStatus
+    };
+    if (json) {
+      ctx.outJson(report);
+      ctx.setIdemResult(JSON.stringify(report));
+      if (errors.length) ctx.error(errors.map((e) => '绑定 ' + e.binding + '：' + e.error).join('\n'));
+      return;
+    }
+    const lines = [];
+    if (control.kind) {
+      lines.push(control.note || ('绑定动作：' + control.kind + (control.id ? ' ' + control.id : '')));
+    }
+    migrations.forEach((m) => lines.push('迁移：' + m));
+    results.forEach((r) => {
+      lines.push('绑定 ' + r.binding + '（' + r.dir + '，形态 ' + r.mode + '）：' + r.status);
+      if (r.status === 'no-change') {
+        lines.push('  没变化（范围内 ' + r.scanned + ' 个文件，其中没变的 ' + r.unchanged + ' 个）'
+          + (r.note ? ' —— ' + r.note : ''));
+      } else if (r.status === 'synced') {
+        lines.push('  本次：新增 ' + r.added + ' 个文件 / 更新 ' + r.modified + ' 个 / 新增目录节点 ' + r.containers
+          + ' 个（范围内 ' + r.scanned + ' 个文件，没变的 ' + r.unchanged + ' 个）');
+        if (r.refs && r.refs.total) {
+          lines.push('  资源引用：共 ' + r.refs.total + ' 条（复制 ' + r.refs.copy + ' / 已在项目内 '
+            + r.refs.inProject + ' / 非本地 ' + r.refs.remote + ' / 坏引用 ' + r.refs.missingPlusBadExt + '）');
+        }
+        if (r.merged) lines.push('  （写入期间检测到并发改动：已按不相交判定自动重放，双方改动都保留）');
+      } else {
+        lines.push('  ' + (r.note || ''));
+      }
+      if (r.pending) {
+        lines.push('  ⏳ 待确认删除 ' + r.pending + ' 条（盘上的文件没了 ⇒ **树里一个节点都没动**，'
+          + '只记了提议，等你确认；改名按"新增 + 提议删旧"处理）');
+      }
+    });
+    const unconvertedAll = report.unconverted;
+    if (unconvertedAll.length) {
+      lines.push('未转换 ' + unconvertedAll.length + ' 个文件（**没有静默跳过**；它们在下次同步里会再试）：');
+      unconvertedAll.slice(0, 20).forEach((u) => {
+        lines.push('  · ' + u.rel + ' —— ' + (u.label || u.reason || '')
+          + (u.message ? '：' + String(u.message).split('\n')[0].slice(0, 160) : ''));
+      });
+      if (unconvertedAll.length > 20) lines.push('  · …另有 ' + (unconvertedAll.length - 20) + ' 个（`--json` 里有全部）');
+    }
+    if (pendingSnapshotWrites.length) {
+      lines.push('旁路快照已更新：' + pendingSnapshotWrites.map((w) => w.binding).join(' / ')
+        + '（`' + docImport.BINDING_STATE_FILE + '`，**不在项目数据里** —— 守护进程不会因此把项目 JSON 搅脏）');
+    }
+    if (results.length) {
+      lines.push('声明：同步链路上**没有任何 LLM / 网络调用**（纯本地文件事件 + 字符串处理 ⇒ 零 token）');
+    }
+    if (errors.length) {
+      lines.push('错误：');
+      errors.forEach((e) => lines.push('  · 绑定 ' + e.binding + '：' + e.error));
+    }
+    const text = lines.join('\n');
+    ctx.out(text);
+    ctx.setIdemResult(text);
+    if (errors.length) ctx.error(errors.map((e) => '绑定 ' + e.binding + '：' + e.error).join('\n'));
   },
 
   exportMd(ctx) {

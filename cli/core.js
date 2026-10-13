@@ -294,7 +294,10 @@ const WRITE_COMMANDS = Object.freeze([
   'migrate',
   // `recheck`（条目复校）**也会写盘**：显式 `--write-verified` 时写回 verified{at,by,how}。
   // 不写这一行，它带 `--idem` 会被当成"只读命令"响亮拒绝（`health` 不写盘，故不在本清单里）。
-  'recheck'
+  'recheck',
+  // 【R4】`bind-sync`（绑定工作区文件夹的同步/绑定/解绑）**也写盘**：同步走 `ctx.mutate`、
+  // 绑定动作走 `ctx.mutate` ⇒ 与别的写命令同一条闸门（不写这一行，它带 `--idem` 会被当成只读命令拒掉）。
+  'bind-sync'
 ]);
 
 /* ============================================================================
@@ -377,7 +380,11 @@ const DRY_RUN_COMMANDS = Object.freeze([
   // ③ 清理型
   'links-prune', 'assoc-prune',
   // ④ 已有自备预览（原样保留）
-  'apply', 'recheck', 'migrate', 'import-project', 'import-dir', 'ask', 'ask-apply'
+  'apply', 'recheck', 'migrate', 'import-project', 'import-dir', 'ask', 'ask-apply',
+  // ⑤ 中央短路 + 命令层关物理副作用（【R4】绑定同步）：`ctx.mutate` 会自动短路 ⇒ 数据面零改动；
+  //    而**旁路快照**（`.bindings.json`）是命令层的物理副作用，由命令层读同一个 `ctx.dryRun` 关掉
+  //    （与 `add-image` / `import-md` 的"资源复制"同一形状）
+  'bind-sync'
 ]);
 
 /**
