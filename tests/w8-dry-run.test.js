@@ -684,3 +684,85 @@ describe('W8-F 与既有机制的关系', () => {
     expect(Object.keys(map).length, '映射表里的工具数 == 挂 dry_run 参数的工具数').toBe(withFlag.length);
   });
 });
+
+/* ============================================================================
+ * W8-G 【W14】判据③的**同判**推广：预览与真跑跑**同一份写盘前校验**
+ * ==========================================================================
+ * W8 原本保证的是"报告里那份**改动清单**与真跑一致"（W8-C）。W14 实测发现另一处更大的落差：
+ * `--dry-run` 在**任何写盘动作之前**短路（`cli/core.js` 的两条写路径）⇒ 从前**跑不到**
+ * 写盘前校验（`src/data-store.js` 的 `validate` ⇒ `src/schema.js`）⇒ 出现
+ * **真跑 exit 1、预览 exit 0 并回显"已并入父节点 …的**详情开头**"**这种"预览说谎"
+ * （比报错更贵：调用方会照预览做决定）。
+ *
+ * 本组钉的两个方向：
+ *   ① **真跑必失败 ⇒ 预览必须也失败**，而且**报文逐字相同**（同一份判据、同一份输入）；
+ *      并且**不许先报一份计划再失败**（真跑根本不会打印任何"将改动 N 个对象"）。
+ *   ② **预览说能成 ⇒ 真跑必能成** —— 这一半用 W14 的真实缺陷钉在
+ *      `tests/import-md-landing.test.js` 的 G1（`import-md` 撞"已条目化的父节点"）：
+ *      修前真跑 1 / 预览 0，修后两边都是 0；本文件不重复造那条夹具。
+ *
+ * ⚠️ 覆盖范围**如实登记**（别把它当成"全仓已覆盖"）：走 `ctx.write` / `ctx.mutate` 这两条写路径
+ *    的命令都在内（`DRY_RUN_COMMANDS` 的 ①②③ 三类 + `recheck` / `ask-apply` / `init` /
+ *    `theme-layout`）；**自带预览、不走这两条路**的四条命令仍不在内 ——
+ *    `import-project` / `import-dir`（预览里直接 return）/ `migrate items`（自己走 `ctx.store.write`）/
+ *    `apply`（`ctx.dryRun` 分支提前 return）。`ask` 的 dry-run 不写盘，不存在这条性质。
+ *    出路（下一批）：让那四条命令的预览**复用同一份校验入口**，而不是各拼一份"我觉得会成"的清单。
+ * ========================================================================== */
+describe('W8-G 【W14】判据③推广：预览与真跑跑同一份写盘前校验（真跑必失败 ⇒ 预览必失败）', () => {
+  /* 脏项目：一个**已条目化**的节点，`detail` 与 `renderDetail(items)` 不一致（写前校验必判红）。
+   * 用"外部工具写坏数据"的形态造 —— 这是这类数据唯一真实的来源（本工程自己的写路径都有闸门）。 */
+  const SICK = 'w8-sick';
+  function writeSickFixture() {
+    fs.rmSync(projDir(SICK), { recursive: true, force: true });
+    const items = [{ id: 'i-sick', type: 'text', html: '<p>真源是这一条</p>', at: '2026-01-01T00:00:00.000Z', by: 'test' }];
+    writeProject(SICK, {
+      meta: { name: 'W8 脏项目（detail 与 items 不一致）', author: '', version: '0.18.0', formatVersion: 2 },
+      format: 'node_tree',
+      data: {
+        id: 'root', topic: 'W8 脏项目', expanded: true,
+        children: [{ id: 'n-sick', topic: '缓存被写坏的条目化节点', expanded: true, children: [], items: items, detail: '<p>与 items 对不上</p>' }]
+      }
+    });
+  }
+
+  it('G1 真跑必失败（写盘前校验判红）⇒ 同一条 `--dry-run` **必须也失败**，报文**逐字相同**、且不报计划',
+    () => {
+      writeSickFixture();
+      const argv = ['add', SICK, 'root', '--topic', '新主题'];
+      const real = run(argv);
+      expect(real.code, '对照组：这条真跑必须失败（否则本用例什么都没证明）: ' + real.out).toBe(1);
+      expect(real.out).toContain('校验失败');
+      expect(real.out).toMatch(/detail 与 items 不一致/);
+
+      const dry = run(argv.concat(['--dry-run']));
+      expect(dry.code, '预览必须报出真跑会失败（修前这里是 exit 0）: ' + dry.out).toBe(1);
+      expect(dry.out, '同一份判据、同一份输入 ⇒ 报文逐字相同').toBe(real.out);
+      expect(planOf(dry.out), '失败的那一次不许先报一份"将改动 N 个对象"（真跑也不会报）').toBe(null);
+      expect(dry.out.indexOf('这次写盘将改动')).toBeLessThan(0);
+      // 盘上零改动（判据①在失败档上同样成立）
+      const before = fs.readFileSync(projFile(SICK), 'utf8');
+      run(argv.concat(['--dry-run']));
+      expect(fs.readFileSync(projFile(SICK), 'utf8')).toBe(before);
+      fs.rmSync(projDir(SICK), { recursive: true, force: true });
+    });
+
+  it('G2 对照：**同一个项目**上把那条坏数据修好 ⇒ 真跑与预览都 exit 0，且计划的类型计数与真跑日志一致',
+    () => {
+      writeSickFixture();
+      // 修法就是留档的那一条：按 items 重建 detail（`render-detail`）
+      const fix = run(['render-detail', SICK, 'n-sick']);
+      expect(fix.code, fix.out).toBe(0);
+      const argv = ['add', SICK, 'root', '--topic', '修好之后再试'];
+      const dry = run(argv.concat(['--dry-run']));
+      expect(dry.code, dry.out).toBe(0);
+      const real = run(argv);
+      expect(real.code, real.out).toBe(0);
+      expect(dry.code).toBe(real.code);
+      const entries = journal(SICK);
+      const lastKeys = (entries[entries.length - 1] || {}).changed || [];
+      const kinds = {};
+      lastKeys.forEach((k) => { const kind = k.indexOf(':') < 0 ? k : k.slice(0, k.indexOf(':')); kinds[kind] = (kinds[kind] || 0) + 1; });
+      expect(planOf(dry.out).byKind).toEqual(kinds);
+      fs.rmSync(projDir(SICK), { recursive: true, force: true });
+    });
+});

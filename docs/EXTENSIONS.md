@@ -63,6 +63,14 @@
 > ⚠️ `--no-heat` 也进 `cli/core.js` 的**纯布尔登记表**（2026-10）：`search 项目 --no-heat <关键词>` 这种
 > 摆法不再把关键词吞成开关的值（与 `--deep` / `--repoint-items` 同一处登记、同一个理由）；
 > 带等号的两态写法（`--no-heat=false` / `=true`）语义**一个字不变**。
+>
+> **导入类的「前导正文落点」口径（2026-10）**：`import-md` / `import-project` / `import-dir` 仍列
+> 「**演进中**」—— 名称、参数与既有 JSON 面**未变**，只是把"**第一个标题之前**的那段正文（前导正文）
+> 往哪儿放"从"代码注释里的约定"升成**明文规则**：目标节点**没有** `items` ⇒ 前置进它的 `detail`；
+> 目标节点**有** `items`（已条目化）⇒ 成为 **`items[0]`** 并按其重建派生缓存 `detail`
+> （条目化节点上 `detail` 是派生缓存、真源是 `items`）。规则全文与三条落地纪律**只有一处**：
+> `docs/ITEM-MODEL.md` §2.1 —— **新增加导入入口的流照抄那一节，别在导入命令里另写一套**
+> （同批还钉住了"`--dry-run` 与真跑**同一份判据**"，覆盖范围见那一节的如实登记）。
 > 加这条判定的原因是一次真实的漏登记：`import-project` 一度**不在任何一级**，
 > 而同批清点又查出 11 条同型漏登记（`ask`/`ask-apply`/`theme-layout`/`expand-depth`/
 > `ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`/`changelog`）。

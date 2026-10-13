@@ -196,6 +196,13 @@ Markdown 语法占比 **0%**。
 > 路径（`--detail-md` / `import-md`）时不要在 Markdown 里混写 HTML 标签，否则标签会显示为字面量。
 > 反之，直接写 `--detail` 时内容是 HTML，不会被转义——**两条路径不要混用**。
 
+> **前导正文（第一个标题**之前**的正文）落在哪** —— 三条导入路（`import-project` / `import-md` /
+> `import-dir`）都**不丢**它，落点由"目标节点有没有 `items`"决定：没有 `items` ⇒ **前置进 `detail`**
+> （`前导 + '\n' + 原 detail`）；有 `items` ⇒ 作为**首条条目**插进 `items[0]`，`detail` 随之按
+> `renderDetail(items)` 重建（`items` 是真源、`detail` 是派生缓存，见
+> `docs/ITEM-MODEL.md` §2 的三档表）。**规则与三条落地纪律的全文只有一处**：
+> `docs/ITEM-MODEL.md` §2.1（给将来新增加导入入口的流照抄，别在导入命令里另写一套）。
+
 ### 2.5 links 项
 
 ```json
@@ -436,6 +443,10 @@ projects/
     ├── assets/          # 图片文件（节点 images[].file 指向这里）
     ├── attachments/     # 附件文件（节点 files[].file 指向这里）
     └── .ui-state.json   # 运行时协调信号（「界面有未保存编辑」），不是数据；可随时删
+                         # 键：schemaVersion / project / dirty / uiPid / updatedAt
+                         #     + seenVersion / baseVersion（v0.20 增：两个**盘上版本指纹**，
+                         #       与写盘闸门同一值空间 —— 读方拿项目文件当前指纹与它们比字符串，
+                         #       即可判「界面所见落后盘上多少」；缺值一律空串，老文件不编版本）
     └── .changes.jsonl   # 变更日志（谁/何时/改了哪些对象，多路同时编辑的事前避让依据），不是数据；
                          # 由唯一写盘出口顺带产生、有界（最近 N 条）、不进 export-json；可随时删
 ```

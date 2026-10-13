@@ -20,6 +20,97 @@ const bundle = require('../../src/bundle.js');     // aimap 打包格式纯逻�
 const exportHtml = require('../../src/export-html.js');   // 静态站点 HTML 生成纯逻辑
 const MMConfig = require('../../src/config.js');   // 版本号单源（APP_VERSION）
 const docImport = require('../../src/doc-import.js');  // 功能 5a：md/txt/docx → 提纲（三种前端、一个建树入口）
+// 条目层的两件**纯**助手（`mintItemId` / `rerender`）从条目命令那一份实现取 —— `import-md` 的
+// "前导正文落成首条条目"必须与 `item-*` 六条命令用**同一份** id 铸造与 detail 重建口径（见那里的导出注释）。
+const itemCommands = require('./item.js');
+
+/* ============================================================================
+ * 【W14】前导正文的**落点规则**（第一个标题之前的正文往哪儿放）
+ * ==========================================================================
+ * 判据（唯一两处，都在这里读得到，别再各写一份）：
+ *   · 父节点**没有** `items` 键 ⇒ v2 语义：`detail` 是**真源** ⇒ 前导**前置**进 detail
+ *     （`preamble + '\n' + 原 detail`，原有内容在其后，一个字都不覆盖）。
+ *   · 父节点**有** `items` ⇒ 条目化（`docs/ITEM-MODEL.md` §2 的三档表）：`items` 是真源、
+ *     `detail` 只是**派生缓存**，必须逐字节等于 `renderDetail(items)` ⇒ 前导只能当**一条条目**：
+ *     新增 `{id,type:'rich',html:preamble}` 插到 `items[0]`，再把 `detail` 整块重建。
+ *
+ * 为什么非这样不可（W14 的实测形状）：条目化父节点上前置拼 `detail` 字符串 ⇒ **写前校验当场判红**
+ * （`src/schema.js` 判 `detail === renderDetail(items)`）⇒ 整个导入 `exit 1`，而回显/预览还说
+ * "前导正文已并入父节点详情开头"。而它给出的出路（`render-detail`）会把**刚导进来的前导删掉** ✗ ——
+ * 一份会丢内容的报错比不报错更贵。
+ * ========================================================================== */
+
+/**
+ * 把前导正文落成**条目化父节点**的首条条目（"条目化感知落点"）。
+ *
+ * 三条规则（都在**同一个事务**内完成）：
+ *   ① 新条目插到 `items[0]`（前导正文本来就是一段块级 HTML ⇒ `type:'rich'`）；
+ *   ② 前导与原有内容之间那个 `\n` 按 `src/item-model.js` 的拼装表落在**后一条**条目的 `_gap` 上
+ *      （`_gap` 的语义是"这一条**之前**的空白"，`validateItems` 放行 `_` 起头的内部键）——
+ *      **不手拼 detail**（手拼出来的那份与 items 对不上，就是本批要修的缺陷本身）；
+ *   ③ `detail` 由 `renderDetail(items)` 整块重建（走 `item-*` 那一份 `rerender`）。
+ *
+ * 落点与"非条目化父节点"那条路**逐字节等价**：`_gap` 恰好补回那个分隔换行 ⇒ 结果都是
+ * `preamble + '\n' + 原内容`（原内容为空时就是 `preamble`，不多一个换行）。
+ *
+ * 边界（**响亮拒绝、给出路**，绝不静默降级）：父节点虽有 `items` 但当前 `detail` 与
+ * `renderDetail(items)` 不一致 ⇒ 拒绝。理由：那条数据里 **items 不是 detail 的完整真源**，继续下去
+ * 只能用 renderDetail 重建 `detail` ⇒ 缓存里**多出来的那部分内容会被悄悄抹掉**（静默丢内容是本工程
+ * 最重的损害类别）。同样地，`items` 存在但**不是数组**（外部工具写坏的形态）也拒绝。
+ * @param {object} ctx 命令上下文（只为 `ctx.error`；本函数自身不做 I/O、不打印）
+ * @param {object} projectData 本次 mutate 里的整份项目数据（`mintItemId` 要在**全项目**里查重）
+ * @param {object} node 父节点
+ * @param {string} html 前导正文（HTML）
+ * @param {string} parent 父节点 id（只用于报文里点名）
+ * @returns {boolean} `true` = 走了"条目化"这条路（调用方据此选回显文案）
+ */
+function landPreambleIntoParent(ctx, projectData, node, html, parent) {
+  /** 拒绝（**永远抛**，`ctx.error` 的语义就是"打印 error: 行并终止"，见 cli/core.js） */
+  const refuse = (why) => {
+    ctx.error('父节点 ' + parent + ' 已**条目化**（它有 `items`：真源是 items，`detail` 只是派生缓存，'
+      + '见 docs/ITEM-MODEL.md §2）—— 本次导入**无法**把前导正文（第一个标题之前的正文）放进去：'
+      + why + '\n**盘上零改动**：这次导入整体未执行，也没有任何内容被丢弃。\n两条真出路：\n'
+      + '  · 换一个**没有** items 的父节点：`import-md <项目> <md文件> --parent <别的节点id>`；\n'
+      + '  · 或先把前导正文自己加成一条条目 —— `item-add <项目> ' + parent + ' --md "<前导正文>"`，'
+      + '再把 md **从第一个标题开始**截掉前导后导入（条目化节点只认 items，不认整块 detail）。');
+  };
+  const items = node.items;
+  // `items` 存在但不是数组：**坏数据**（写前校验同样判红）⇒ 不走"非条目化"那条路，响亮拒绝
+  if (!Array.isArray(items)) {
+    refuse('它的 `items` 不是数组（收到 ' + (items === null ? 'null' : typeof items)
+      + '）。这份数据本身已经是坏的，先修父节点再导（`node cli/mm-cli.js validate <项目>` 会点名）。');
+    return false;
+  }
+  /* 一致性前置检查：`detail` 必须**正是** items 的渲染结果。
+   * 判据用 `rerender` 现算（与 item-* 同一份"怎么重建"的实现），不另写一份渲染。 */
+  const actualDetail = (typeof node.detail === 'string') ? node.detail : '';
+  const probe = { items: items };
+  let rebuilt = '';
+  try {
+    itemCommands.rerender(probe);
+    rebuilt = (typeof probe.detail === 'string') ? probe.detail : '';
+  } catch (e) {
+    refuse('它的 items 无法渲染成 detail（`renderDetail` 报错：' + ((e && e.message) || e) + '）。');
+    return false;
+  }
+  if (actualDetail !== rebuilt) {
+    refuse('它的 `detail` 与 `renderDetail(items)` **不一致**（缓存被写坏了）—— 这种状态下 items 不是 '
+      + 'detail 的完整真源，重建 detail 就会把缓存里**多出来的内容**抹掉（静默丢内容）。'
+      + '先把这份数据修好再来：确认缓存里多出来那部分不要了，就 '
+      + '`node cli/mm-cli.js render-detail <项目> ' + parent + '` 重建它。');
+    return false;
+  }
+  // ---- 落点：新增一条条目到 items[0]，再把 detail 整块重建 ----
+  const item = { id: itemCommands.mintItemId(projectData), type: 'rich', html: html };
+  // ② 那个分隔换行落在**后一条**条目的 `_gap` 上（`_gap` = "这一条**之前**的空白"）；
+  //    旧首条没有 `_gap` 时补的也正是 `'\n'` ⇒ 结果与"非条目化"那条路的字节排布一致。
+  if (items.length) items[0]._gap = '\n' + (items[0]._gap || '');
+  items.unshift(item);
+  itemCommands.rerender(node);
+  // 形状兜底：items 不合法就当场拦下（此时还没写盘 ⇒ 盘上零改动）
+  itemCommands.assertItemsOk(ctx, node);
+  return true;
+}
 
 /** 树形打印（缩进由 src/query.js 的 treeLines 生成） */
 function printTree(ctx, root) {
@@ -1387,24 +1478,39 @@ module.exports = {
     const refs = markdown.resolveImportRefs(added, Object.assign(
       { dryRun: ctx.dryRun }, refResolveOpts(ctx, ctx.projectName, file)));
     if (!refs.ok) ctx.error(refBlockedError(refs, file));
+    // 【W14】前导正文的落点（判据见 `landPreambleIntoParent` 上方的"落点规则"整段）：
+    // 条目化父节点 ⇒ 落成**首条条目**；非条目化父节点 ⇒ **逐字节沿用既有行为**（前置进 detail）。
+    // 同一批 mutate 内完成 ⇒ 与节点树的那批改动同版本、同一条日志 ✓
+    // `preambleLanded` 只是给回显用（并发重放时赋值幂等；报告不在 fn 里打印 ⇒ 不会重复）
+    let preambleLanded = null;
     ctx.mutate((cur) => {
       const parentNode = ctx.tree.find(cur.data, parent);
       // 读之后父节点被别人删了（罕见）⇒ 报错而不是凭空造一个父节点出来
       if (!parentNode) throw new Error('父节点在并发改动后已不存在: ' + parent);
-      // 【W14】第一个标题**之前**的正文落在**父节点 detail 的开头**（在原有 detail 之前）——
-      // 同一批 mutate 内完成 ⇒ 与节点树的那批改动同版本、同一条日志 ✓
       if (r.preamble) {
-        parentNode.detail = parentNode.detail ? r.preamble + '\n' + parentNode.detail : r.preamble;
+        if (parentNode.items === undefined) {
+          parentNode.detail = parentNode.detail ? r.preamble + '\n' + parentNode.detail : r.preamble;
+          preambleLanded = 'detail';
+        } else {
+          landPreambleIntoParent(ctx, cur.data, parentNode, r.preamble, parent);
+          preambleLanded = 'items';
+        }
       }
       parentNode.children = (parentNode.children || []).concat(added);
       return cur;
     });
     ctx.out('导入完成，新增 ' + r.addedCount + ' 个节点（父节点 ' + parent + '）'
       + (ctx.args.force && dup ? '（--force：这是同一个来源的第 2 份）' : ''));
-    // 落点如实报告（前导正文去哪了）—— 静默落盘与静默丢弃一样不可查
+    // 落点如实报告（前导正文去哪了）—— 静默落盘与静默丢弃一样不可查。
+    // ⚠️ 非条目化那条**一个字都不许改**（跨版本逐字节不变是承重性质）。
     if (r.preamble) {
-      ctx.out('前导正文（第一个标题之前的正文，' + r.preamble.length + ' 字符 HTML）已并入父节点 '
-        + parent + ' 的**详情开头**');
+      if (preambleLanded === 'items') {
+        ctx.out('前导正文（第一个标题之前的正文，' + r.preamble.length + ' 字符 HTML）已作为**首条条目**'
+          + '并入父节点 ' + parent + ' 的 items（`detail` 已按 renderDetail(items) 重建）');
+      } else {
+        ctx.out('前导正文（第一个标题之前的正文，' + r.preamble.length + ' 字符 HTML）已并入父节点 '
+          + parent + ' 的**详情开头**');
+      }
     }
     ctx.out('来源指纹: ' + docImport.describeOrigin(origin));
     // 【W19】资源回显（如实报告）：复制了什么、哪条已在项目内、哪条远程引用被按正文保留

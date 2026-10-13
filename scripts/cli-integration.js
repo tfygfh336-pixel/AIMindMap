@@ -6542,6 +6542,334 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   }
   }
 
+/* ============================================================
+ * W14-集成断言原文.js —— 「前导正文的落点规则」的**集成断言原文**
+ * （放行窗口由整合流贴进 `scripts/cli-integration.js`；本文件**不是**可执行脚本，只是那段源码的存放处）
+ * ------------------------------------------------------------
+ * 判据出处：`.review/20261010-卖点与功能-常驻讨论/待做清单.md` 的 W14 一行 + 本批工单的 D1/D2。
+ * 单测侧（可重复执行、进程内、临时沙箱）：`tests/import-md-landing.test.js` 全篇 +
+ * `tests/w8-dry-run.test.js` 的 W8-G 组。本段**不重复**那些断言，只把"必须在**真实工程 +
+ * 真实 projects/ 根**上跑一遍才作数"的几条接到集成链上：
+ *   · `import-md` 落在**已条目化的父节点**上（D1 的主场景）—— 端到端跑真 CLI；
+ *   · ⭐ **"一个字符都不许丢"**（哨兵段：中英标点 + 强调 + 围栏（围栏里还有一行 `# …`）+ 图片行）；
+ *   · **预览与真跑同判**（D2）在**真实项目**上的形态；
+ *   · **非条目化父节点**的落点与 §54 的 occ 判据（承重性质：既有行为逐字节不变）；
+ *   · 负例（开头即标题 ⇒ 不产生空条目/空 detail）与**坏数据父节点的响亮拒绝 + 两条真出路**。
+ *
+ * ## 怎么贴（四句话）
+ *   1) 位置：**§54（W14 第一段）之后**任意一处独立块旁都行；整段原样粘（已写成独立块 `{ … }`：
+ *      自带 `finally` 收尾 + 残留自检 + 夹具 md 自删，**不需要动末尾的清理段**）。
+ *   2) 探针一律 `it-probe-w14-` 前缀 ⇒ 文件顶部 `sweepStaleProbes()` 的前缀表（`it-probe-`）**已覆盖**，
+ *      被中断留下的残留下次跑链会被自动清掉 ✓。
+ *   3) 贴完**必须**跑一次 `npm run facts:write`：`scripts/doc-facts.js` 按 `/^\s*check\(/gm` 静态数集成
+ *      断言数，本段新增的 check 都会被算进去 ⇒ 不重生成 `docs/VERIFY.md` 就会在 G6 报"断言数对不上"
+ *      （那正是 G6 该做的事）。
+ *   4) 本段**一条写死计数都没有**：条数、用例数、工具数都不出现；与别的读数挂钩时一律**现算**。
+ *
+ * ## 判别力（每条断言"哪行代码坏了会让它红"）
+ *   · 把 `cli/commands/project.js` 的落点改回"前导字符串拼进 `detail`" ⇒ `W14·落点（条目化父节点）`、
+ *     `W14·一个字符都不许丢`、`W14·同判（预览 vs 真跑）` **必红**（修前 HEAD fa884f3 上的真实报文：
+ *     真跑 `exit 1`（`校验失败: [n-…] detail 与 items 不一致…`）/ 预览 `exit 0`，见交付说明）。
+ *   · 还原 `src/markdown.js` 里前导正文的收集（把那段收进 `preSegs` 的代码换回 `if (!cur) continue`）⇒
+ *     `W14·一个字符都不许丢` **必红**（同一处注入在单测侧的读数：`tests/markdown.test.js` 的 W14 组
+ *     4 条红、端到端 4 条红，见交付说明）。
+ *   · 把 `cli/core.js` dry-run 分支里的写盘前校验删掉 ⇒ `W14·同判（预览 vs 真跑）` 与
+ *     `W14·拒绝（坏数据父节点）` 里"预览报同一句话"那半句 **必红**。
+ *   · 让前导被复制到两个节点（单一真源破了）⇒ `W14·单一真源` **必红**。
+ *
+ * ## 扫描面声明（本段有"字面量只许出现一处"这类结构断言，故把量具说清）
+ *   `W14·单一真源` 与 `W14·承重（非条目化父节点）` 里的 occ 都扫**落盘的项目 JSON 文件全文**：
+ *   · **不剥注释、不剥字符串** —— JSON 里没有注释，字符串字面量就是数据本身（那才是要数的一面）；
+ *   · 要找的标签文本**在本文件里拼接构造**（`W14NEEDLE`），免得本文件自己的说明文字被算进去；
+ *   · 条目化节点上前导**按契约有两处表示**（`items[0].html` 与它的派生缓存 `detail`，二者逐字节
+ *     相等，见 `docs/ITEM-MODEL.md` §2）⇒ 那一档的量具是"**只有一个节点**带它"，而不是"字面只出现一次"。
+ *
+ * ⚠️ 本段**只增断言**，不改任何既有断言的语义；不新增工具、不动 MCP 面。
+ * ============================================================ */
+{
+  const w14core = require(path.join(ROOT, 'cli', 'core.js'));          // 只读：写路径/dry-run 标记的唯一实现处
+  const w14im = require(path.join(ROOT, 'src', 'item-model.js'));      // renderDetail：条目化节点的 detail 真源
+  /* 访问日志的**路径推导只有一处**（`DataStore.visitLogFile`）—— 本段自己造一个 store 来问它，
+   * 不在这里拼 `.visits/<名字>.jsonl`（那会是第二份路径推导）。
+   * ⚠️ 为什么必须是这一处：热度日志在**项目目录之外**，删项目目录删不掉它 ⇒ 不按它删就会留残留，
+   *    而残留检查若只查项目目录，这种"漏删"会**静默通过**（实测踩到过）。 */
+  const w14store = require(path.join(ROOT, 'src', 'data-store.js')).createStore(w14core.PROJECTS_DIR);
+
+  const w14stamp = Date.now().toString(36);
+  const W14P = 'it-probe-w14-itemized-' + w14stamp;   // 条目化父节点（真跑）
+  const W14Q = 'it-probe-w14-dry-' + w14stamp;        // 同构项目（预览）
+  const W14R = 'it-probe-w14-plain-' + w14stamp;      // 非条目化父节点（承重性质的对照）
+  const W14N = 'it-probe-w14-nolead-' + w14stamp;     // 负例（md 开头就是标题）
+  const W14B = 'it-probe-w14-bad-' + w14stamp;        // 坏数据父节点（拒绝档）
+  const W14ALL = [W14P, W14Q, W14R, W14N, W14B];
+  const w14dir = (n) => path.join(w14core.PROJECTS_DIR, n);
+  const w14file = (n) => path.join(w14dir(n), n + '.json');
+  const w14json = (n) => JSON.parse(fs.readFileSync(w14file(n), 'utf8'));
+
+  /* ---- 夹具：**带哨兵段**的 md（第一个标题之前的正文里塞进四类构造）+ 一份没有前导的 md ---- */
+  const w14lead = [
+    '哨兵甲：中文、英文；标点（全角）与半角, . !? 混排。Sentinel-Alpha-2026。',
+    '**加粗哨兵**与普通文字相邻。',
+    '',
+    '```js',
+    '# 这行的井号是代码，不是标题',
+    "const sentinel = 'SENTINEL-CODE-7f3a';",
+    '```',
+    '',
+    '![图：哨兵](assets/a.png)',
+    '',
+    '# 主题甲',
+    '甲正文',
+    ''
+  ].join('\n');
+  const w14nolead = '# 一级标题\n一级正文\n\n## 二级标题\n二级正文\n';
+  const W14LEAD = path.join(TMP, 'w14-lead-' + w14stamp + '.md');
+  const W14NOLEAD = path.join(TMP, 'w14-nolead-' + w14stamp + '.md');
+  fs.writeFileSync(W14LEAD, w14lead, 'utf8');
+  fs.writeFileSync(W14NOLEAD, w14nolead, 'utf8');
+
+  /** 要找的标签文本：**在这里拼接构造**（本文件自己的说明文字里不出现它的连写形态） */
+  const W14NEEDLE = '哨兵' + '甲';
+  const W14NEEDLE_RE = new RegExp(W14NEEDLE, 'g');
+  /** 围栏里那句代码的片段（"一行都不许丢"的探针串，同样拼接构造） */
+  const W14CODE = 'SENTINEL-' + 'CODE-7f3a';
+
+  /* ---- 判据侧量具（**测量工具**，不是生产实现：生产那两份是 `src/convert.js` 与 `src/markdown.js`） ----
+   * `w14expect`：从夹具切出第一个 `^#{1,6} ` **之前**的原文，按下面**声明的**三条剥壳规则变纯文本：
+   *   ① 围栏定界行 ```… 是语法不是正文（围栏**里面**的行是正文，一个字都不许少）；
+   *   ② 图片行 `![alt](src)` 不给正文贡献文本（`<img>` 的 alt 落在属性里，没有文本内容）；
+   *   ③ `**加粗**` 的强调标记剥离。
+   *   切点 = 第一个**不在围栏内**的 `^#{1,6} ` 行（围栏里的 `#` 本来就不是标题 —— 夹具里那一行
+   *   正是用来钉这一点的），口径与 `src/markdown.js` 的建树主循环一致。
+   * `w14text`：落盘 HTML 的文本还原（剥标签替换成**空串**，不是空格 —— 这里要的是文本还原、
+   *   不是搜索用的分词边界；再解实体）。两者最后都归一化空白（空白**单独声明为不参与**这条判据）。 */
+  const w14norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  const w14expect = (() => {
+    const kept = [];
+    let fenced = false;
+    let stopped = false;
+    w14lead.split('\n').forEach((line) => {
+      if (stopped) return;
+      const t = line.trim();
+      if (/^```/.test(t)) { fenced = !fenced; return; }
+      if (!fenced && /^#{1,6} /.test(t)) { stopped = true; return; }
+      if (/^!\[/.test(t)) return;
+      kept.push(line);
+    });
+    return w14norm(kept.join('\n').replace(/\*\*/g, ''));
+  })();
+  const w14text = (html) => w14norm(String(html == null ? '' : html)
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"')
+    .replace(/&#0*39;/g, "'").replace(/&#x0*27;/gi, "'")
+    .replace(/&amp;/gi, '&'));
+
+  /** 按 topic 找一个节点（递归） */
+  const w14find = (root, topic) => {
+    let hit = null;
+    (function walk(n) { if (hit) return; if (n.topic === topic) { hit = n; return; } (n.children || []).forEach(walk); })(root);
+    return hit;
+  };
+  /** `get <项目> <节点> --json --detail` —— 不带 `--detail` 时 detail 根本不出现，读回必须走这条口 */
+  const w14get = (name, id) => {
+    const r = run(['get', name, id, '--json', '--detail']);
+    try { return JSON.parse(r.out); } catch (e) { return null; }
+  };
+  /** 建一个"父节点已条目化"的项目：init → import-md(无前导) → item-add 一条 */
+  const w14build = (name) => {
+    run(['init', name, '--title', 'W14 集成探针']);
+    run(['import-md', name, W14NOLEAD, '--parent', 'root']);
+    const id = w14find(w14json(name).data, '一级标题').id;
+    run(['item-add', name, id, '--md', '原有详情：导之前就在。']);
+    return id;
+  };
+  /** 同一个节点的**内容**指纹（只用 items 的 id 序列 + detail）：用来比"预览有没有动过盘面" */
+  const w14same = (a, b) => JSON.stringify([(a.items || []).map((it) => it.id), a.detail])
+    === JSON.stringify([(b.items || []).map((it) => it.id), b.detail]);
+
+  try {
+    /* ---- ① D1：条目化父节点上能导，前导落在 items[0] ---- */
+    const w14pid = w14build(W14P);
+    const w14qid = w14build(W14Q);
+    const w14before = w14find(w14json(W14P).data, '一级标题');
+    const w14oldIds = w14before.items.map((it) => it.id).join(',');
+    const w14real = run(['import-md', W14P, W14LEAD, '--parent', w14pid]);
+    const w14node = w14find(w14json(W14P).data, '一级标题');
+    const w14it0 = (w14node.items || [])[0] || {};
+    check('W14·落点（条目化父节点） import-md 落到**已条目化**的父节点上：真跑成功（修前 exit 1 ——'
+      + '前导被字符串拼进 detail ⇒ 写前校验判 `detail 与 items 不一致`，整个导入失败），'
+      + '前导成为 **items[0]**（type=rich）、原有条目**顺序不变**地跟在后面、'
+      + '`detail` 逐字节等于 `renderDetail(items)`、且落点在 detail 的**开头**（不是末尾、不是覆盖）',
+      ok(w14real.out) && (w14node.items || []).length === w14before.items.length + 1
+        && w14it0.type === 'rich'
+        && String(w14it0.html).indexOf(W14NEEDLE) >= 0
+        && w14node.items.slice(1).map((it) => it.id).join(',') === w14oldIds
+        && w14node.detail === w14im.renderDetail(w14node.items)
+        && String(w14node.detail).indexOf(String(w14it0.html)) === 0,
+      'exit=' + w14real.code + ' ｜ items=' + (w14node.items || []).length
+        + '（原 ' + w14before.items.length + '）｜ 首条 type=' + w14it0.type
+        + ' ｜ detail===renderDetail=' + (w14node.detail === w14im.renderDetail(w14node.items))
+        + ' ｜ 首行=' + String(w14real.out).split('\n')[0].slice(0, 70));
+
+    /* ---- ② ⭐ "一个字符都不许丢"：落盘文本 == 夹具里第一个标题之前的原文（归一化空白后逐字相等） ---- */
+    {
+      const w14view = w14get(W14P, w14pid);
+      const w14got = w14text(w14it0.html);
+      const w14kids = w14find(w14json(W14P).data, '一级标题').children || [];
+      check('W14·一个字符都不许丢 从夹具切出的"第一个标题**之前**的原文"与**落盘文本**归一化后'
+        + '**逐字相等**（不是探针短语包含：哨兵段里含中英标点混排、`**加粗**`、``` 围栏（围栏里还有'
+        + '一行 `# …`）与图片行；切点与三条剥壳规则见本文件顶部的量具声明）。'
+        + '⚠️ 读口用 `get --json --detail`（不带 `--detail` 时 detail 根本不出现）；'
+        + '围栏里那行 `#` **不许**变成节点（本次只该多出「主题甲」一个顶层主题）',
+        w14got === w14expect
+          && w14got.indexOf('半角, . !?') >= 0                    // 中英标点混排
+          && w14got.indexOf('加粗哨兵') >= 0                       // 强调的**文本**在
+          && w14got.indexOf('**') < 0                             // …强调**标记**不在
+          && w14got.indexOf('# 这行的井号是代码，不是标题') >= 0     // 围栏里的 `#` 是正文
+          && w14got.indexOf(W14CODE) >= 0
+          && !!w14view && typeof w14view.detail === 'string'
+          && w14kids.map((c) => c.topic).join(',') === '二级标题,主题甲'
+          && !w14find(w14json(W14P).data, '这行的井号是代码，不是标题'),
+        '落盘=' + JSON.stringify(w14got.slice(0, 92)) + '… ｜ 期望='
+          + JSON.stringify(String(w14expect).slice(0, 92)) + '… ｜ 逐字相等=' + (w14got === w14expect)
+          + ' ｜ 顶层主题=' + JSON.stringify(w14kids.map((c) => c.topic)));
+    }
+
+    /* ---- ③ D2：预览与真跑**同判**（各跑一个同构项目 —— 盘面状态一致，两次读数才可比） ---- */
+    {
+      const w14qBefore = w14find(w14json(W14Q).data, '一级标题');
+      const w14dry = run(['import-md', W14Q, W14LEAD, '--parent', w14qid, '--dry-run']);
+      const w14qAfter = w14find(w14json(W14Q).data, '一级标题');
+      check('W14·同判（预览 vs 真跑） 同一条命令在**两个同构项目**上的 exit 码必须相等；'
+        + '预览必须**看得见条目变化**（计划里出现 `item:` / `items:` 前缀 —— 旧实现只报 children/node，'
+        + '因为它走的是"拼 detail"那条路）；预览打的是 `[dry-run 未写盘]` 标记且**盘面一个字节没动**。'
+        + '修前这一个用例是"真跑 1 / 预览 0，且回显说前导已并入父节点详情开头"',
+        w14dry.code === w14real.code
+          && w14dry.out.indexOf('item:') >= 0
+          && w14dry.out.indexOf('items:') >= 0
+          && w14dry.out.indexOf(w14core.DRY_RUN_TAG) >= 0
+          && w14same(w14qBefore, w14qAfter),
+        '真跑 exit=' + w14real.code + ' ｜ 预览 exit=' + w14dry.code
+          + ' ｜ 预览首行=' + String(w14dry.out).split('\n')[0].slice(0, 120)
+          + ' ｜ 预览后盘面未动=' + w14same(w14qBefore, w14qAfter));
+    }
+
+    /* ---- ④ 承重性质①：**非条目化**父节点的落点逐字节不变 + §54 的 occ 判据 ---- */
+    {
+      run(['init', W14R, '--title', 'W14 普通父节点']);
+      run(['add', W14R, 'root', '--id', 'p-plain', '--topic', '普通父节点', '--detail', '<p>原有详情</p>']);
+      const w14plainRun = run(['import-md', W14R, W14LEAD, '--parent', 'p-plain']);
+      const w14plain = w14find(w14json(W14R).data, '普通父节点');
+      // §54 的 occ 判据：**非条目化**父节点上字面只许出现一次（没有 items ⇒ 没有派生副本）
+      const w14occ = (fs.readFileSync(w14file(W14R), 'utf8').match(W14NEEDLE_RE) || []).length;
+      check('W14·承重（非条目化父节点） 父节点**没有** `items` 时落点与从前**逐字节相同**：'
+        + '`detail === 前导 HTML + 换行 + 原 detail`（原内容在其后，一个字都不覆盖）、'
+        + '**不出现 items 键**；且 §54 的 occ 判据照旧成立（前导在落盘文件里**字面只出现一处**）',
+        ok(w14plainRun.out) && w14plain.items === undefined
+          && w14plain.detail === w14it0.html + '\n<p>原有详情</p>'
+          && w14occ === 1,
+        'items 键=' + String(w14plain.items) + ' ｜ occ=' + w14occ
+          + ' ｜ 逐字节相同（前导+换行+旧 detail）=' + (w14plain.detail === w14it0.html + '\n<p>原有详情</p>'));
+    }
+
+    /* ---- ⑤ 负例（§54 的既有负例）：开头就是标题 ⇒ 不产生空条目 / 不产生空 detail ---- */
+    {
+      const w14nid = w14build(W14N);
+      const w14nBefore = w14find(w14json(W14N).data, '一级标题');
+      const w14nRun = run(['import-md', W14N, W14NOLEAD, '--parent', w14nid, '--force']);
+      const w14nAfter = w14find(w14json(W14N).data, '一级标题');
+      check('W14·负例（开头即标题） md 的**第一个标题之前没有正文** ⇒ 父节点**一条条目都不多**、'
+        + '`detail` 一个字节都不动（不制造空条目、不制造空 detail）；'
+        + '对照组：子节点**真的多了**（证明这不是"什么都没做"）',
+        ok(w14nRun.out)
+          && w14nAfter.items.length === w14nBefore.items.length
+          && w14nAfter.detail === w14nBefore.detail
+          && (w14nAfter.children || []).length > (w14nBefore.children || []).length,
+        'items ' + w14nBefore.items.length + '→' + w14nAfter.items.length
+          + ' ｜ detail 未变=' + (w14nAfter.detail === w14nBefore.detail)
+          + ' ｜ 子节点 ' + (w14nBefore.children || []).length + '→' + (w14nAfter.children || []).length);
+    }
+
+    /* ---- ⑥ 拒绝档：坏数据父节点 ⇒ 响亮拒绝 + 点名 + 两条真出路 + 盘上零改动 + 预览报同一句话 ---- */
+    {
+      const w14items = [{ id: 'i-w14', type: 'text', html: '<p>真源是这一条</p>', at: '2026-01-01T00:00:00.000Z', by: 'it' }];
+      fs.mkdirSync(w14dir(W14B), { recursive: true });
+      fs.writeFileSync(w14file(W14B), JSON.stringify({
+        meta: { name: 'W14 坏父节点探针', author: '', version: '0.18.0', formatVersion: 2 },
+        format: 'node_tree',
+        data: {
+          id: 'root', topic: 'W14 坏父节点探针', expanded: true,
+          children: [{
+            id: 'n-w14bad', topic: '坏掉的条目化父节点', expanded: true, children: [],
+            items: w14items, detail: '<p>与 items 对不上</p>'
+          }]
+        }
+      }, null, 2), 'utf8');
+      const w14badBefore = fs.readFileSync(w14file(W14B));
+      const w14rejReal = run(['import-md', W14B, W14LEAD, '--parent', 'n-w14bad']);
+      const w14rejDry = run(['import-md', W14B, W14LEAD, '--parent', 'n-w14bad', '--dry-run']);
+      check('W14·拒绝（坏数据父节点） 父节点**已条目化**但它的 `detail` 与 `renderDetail(items)` 不一致 ⇒'
+        + '响亮拒绝（exit 1）、报文**点名「已**条目化**」并给出两条真出路**（换父节点 / 先 item-add 把前导'
+        + '自己加成条目再导）、盘上**逐字节零改动**；且 `--dry-run` 报的是**同一句话**（不是"预览说能成"）。'
+        + '⚠️ 这条同时钉住"旧报文的误导"：不许再把出路说成"用 render-detail 修一下"'
+        + '（在失败之后照做，删掉的正是刚导进来的前导）',
+        w14rejReal.code === 1 && /已\*\*条目化\*\*/.test(w14rejReal.out)
+          && w14rejReal.out.indexOf('item-add') >= 0
+          && w14rejReal.out.indexOf('--parent') >= 0
+          && w14rejReal.out.indexOf('盘上零改动') >= 0
+          && w14rejDry.code === w14rejReal.code
+          && w14rejDry.out === w14rejReal.out
+          && Buffer.compare(fs.readFileSync(w14file(W14B)), w14badBefore) === 0,
+        '真跑 exit=' + w14rejReal.code + ' ｜ 预览 exit=' + w14rejDry.code
+          + ' ｜ 报文逐字相同=' + (w14rejDry.out === w14rejReal.out)
+          + ' ｜ 盘上未动=' + (Buffer.compare(fs.readFileSync(w14file(W14B)), w14badBefore) === 0)
+          + ' ｜ 首行=' + String(w14rejReal.out).split('\n')[0].slice(0, 88));
+    }
+
+    /* ---- ⑦ 单一真源（结构判据；扫描面见文件顶部声明） ---- */
+    {
+      const w14hits = [];
+      (function walk(n) {
+        let c = (String(n.detail || '').match(W14NEEDLE_RE) || []).length;
+        (Array.isArray(n.items) ? n.items : []).forEach((it) => {
+          c += (String(it.html || '').match(W14NEEDLE_RE) || []).length;
+        });
+        if (c) w14hits.push(n.id + '×' + c);
+        (n.children || []).forEach(walk);
+      })(w14json(W14P).data);
+      check('W14·单一真源 同一段前导正文**只落在一个节点**里（复制到多个节点 = 制造两个会漂移的真相）。'
+        + '扫描面：落盘的项目 JSON 全文，**不剥注释、不剥字符串**（JSON 无注释，字符串就是数据本身）；'
+        + '要找的标签文本在本文件里**拼接构造** ⇒ 本文件自己的说明文字不会被算进去。'
+        + '条目化节点上前导**按契约有两处表示**（`items[0].html` 与派生缓存 `detail`，二者逐字节相等）'
+        + '⇒ 量具是"只有一个节点带它"，每次数 2',
+        w14hits.length === 1 && /×2$/.test(w14hits[0]),
+        '带它的节点=' + JSON.stringify(w14hits)
+          + '（次数 = items 正文 + 该节点 detail 的派生副本）');
+    }
+  } finally {
+    /* 自收尾：探针项目 **+ 它们在 `.visits/` 里的旁路日志**（读口 `get` 会记一条访问热度；
+     * 那个日志在**项目目录之外**，删目录删不掉它 —— 路径推导只走 `DataStore.visitLogFile` 一处）。
+     * 与既有各段同一条纪律：正常路径必须自己清干净，前缀表只兜"被中断"。 */
+    W14ALL.forEach((n) => {
+      try { fs.rmSync(w14dir(n), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+      try { fs.rmSync(w14store.visitLogFile(n), { force: true }); } catch (e) { /* 同上 */ }
+    });
+    /* 残留自检：**项目目录与访问日志两样都要查**（只查目录的话，"漏删日志"会静默通过）。
+     * ⚠️ 这段的 check 也走 `finally` ⇒ 前面若抛异常，它照样会给出一条读数（不静默）。 */
+    const w14left = W14ALL.filter((n) => fs.existsSync(w14dir(n)));
+    const w14leftLog = W14ALL.filter((n) => fs.existsSync(w14store.visitLogFile(n)));
+    check('W14·收尾 探针项目与其访问日志都清干净（残留：项目 ' + w14left.length + ' 个 / 日志 '
+      + w14leftLog.length + ' 个 —— **现算**）',
+      w14left.length === 0 && w14leftLog.length === 0,
+      '残留项目=' + JSON.stringify(w14left) + ' ｜ 残留日志=' + JSON.stringify(w14leftLog));
+    /* 夹具 md（在 TMP 里，不在 projects/ 下；删掉免得留在临时目录里） */
+    [W14LEAD, W14NOLEAD].forEach((f) => {
+      try { fs.rmSync(f, { force: true }); } catch (e) { /* 同上 */ }
+    });
+  }
+}
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;

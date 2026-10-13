@@ -512,10 +512,26 @@ function createContext(argv, meta) {
   // 注意：`projectName` 必须在 store 之前取出 —— 校验器要拿它做 selfProject。
   // （`import-json` 的 `_[0]` 是文件路径而不是项目名，故校验器用的是 store.write 传进来的
   //   真实目标项目名 `name`，不是这里的闭包值。）
-  const store = createStore(PROJECTS_DIR, (data, name) => {
+  /* 【W14】写盘前校验（安全闸门）—— **具名**，因为 dry-run 也要跑**同一份**（见下面两条写路径的
+   * `if (this.dryRun)` 分支里的 `validateBeforeWrite`）。
+   *
+   * 为什么必须抽出来：`--dry-run` 在**任何写盘动作之前**短路（W8 的设计）⇒ 从前它跑不到这道闸，
+   * 于是出现"预览说能成、真跑被拒"—— W14 实测的形状：`import-md` 的父节点已条目化且 md 有前导正文时，
+   * 真跑 `exit 1`（`校验失败: detail 与 items 不一致…`），而 `--dry-run` `exit 0` 并回显"前导正文…
+   * 已并入父节点 …的详情开头"✗✗（**预览说谎**比报错更贵：调用方会照它做决定）。
+   *
+   * 「预览与真跑**同一份判据**」是 W8 早就写进 registry 的承重性质（`import-dir` 那条 desc 的原话），
+   * 只是在写盘前校验这一环上漏掉了。这里的做法是**不给 dry-run 另写一份校验**，而是把它接到
+   * **真跑用的那一个函数**上（`store.write` 的 `validate` 参数就是它）⇒ 两边不可能分叉。
+   *
+   * ⚠️ 覆盖范围（如实说，别声称全仓）：走 `ctx.write` / `ctx.mutate` 两条写路径的命令都在内；
+   *    自带预览、**不走**这两条路的命令（`import-project` / `import-dir` / `migrate items` / `apply`）
+   *    仍不在内 —— 清单与出路见 `docs/ITEM-MODEL.md` 的「预览与真跑同一份判据」一节。 */
+  function validateBeforeWrite(data, name) {
     const v = schema.validateProject(data, PROJECTS_DIR, name);
     if (!v.ok) throw new Error('校验失败: ' + v.errors.join('; '));
-  });
+  }
+  const store = createStore(PROJECTS_DIR, validateBeforeWrite);
   /**
    * 「**谁在写**」—— 变更日志里那一列，多路同时编辑时用来回答"是谁改的"。
    * 外壳（MCP / 侧栏 / 界面代写）设 `MM_WRITER` 声明自己是谁；没设就是 `cli`。
@@ -848,7 +864,9 @@ function createContext(argv, meta) {
       if (data === SKIP_WRITE) return data;      // 命令明确说"这次别写"（见 SKIP_WRITE 的注释）
       // ---- 【W8】--dry-run：**在任何写盘动作之前短路**（两条写路径里的一条；另一条见 mutate）----
       // 位置：在 SKIP_WRITE **之后** —— 命令自己说"这次别写"时不必报一份计划（它随后会抛拒绝原因）。
-      if (this.dryRun) { planWrite(readBeforeForPlan(), data); return data; }
+      // ⚠️ 校验**在报计划之前**：真跑就是"写盘时校验不过 ⇒ 整条命令失败、一个字节不写、也不报清单"，
+      //    dry-run 要复现的是同一个结局（报出一份计划再失败 = 又一种"预览与真跑不一致"）。
+      if (this.dryRun) { validateBeforeWrite(data, projectName); planWrite(readBeforeForPlan(), data); return data; }
       beginWrite();
       markRecord();                              // 回显在命令体跑完时才补全（见 markRecord）
       // expectVersion 来自本 ctx 最近一次 read()。命令若没读过就直接写（如 import-json
@@ -894,7 +912,15 @@ function createContext(argv, meta) {
         const pre = store.read(projectName);          // 只读；项目不存在 ⇒ 这里就响亮报（与真跑一致）
         readVersion = pre.version;
         const planned = fn(concurrency.clone(pre.data));
-        if (planned !== SKIP_WRITE) planWrite(pre.data, planned);
+        if (planned !== SKIP_WRITE) {
+          /* 【W14】dry-run 还必须过**写盘前校验**——同一份实现（`validateBeforeWrite`）、同一份输入
+           * （"将要写下去的那份数据"）⇒ 「预览说能成 ⇒ 真跑必能成；真跑必失败 ⇒ 预览必须也失败」。
+           * 不跑它的实测形状见 `validateBeforeWrite` 的注释（预览 exit 0、真跑 exit 1）。
+           * ⚠️ 顺序与真跑一致：真跑在 `store.write` 里**先校验、后落盘/记日志** ⇒ 这里也是
+           *    **先校验、后报计划**（计划意味着"这份数据能落盘"，报在前就等于在说谎）。 */
+          validateBeforeWrite(planned, projectName);
+          planWrite(pre.data, planned);
+        }
         // 返回值形状与 withReplay 逐字一致（命令体读 `data` / `attempts` / `merged` 三样）
         return { data: planned, attempts: 1, merged: false };
       }

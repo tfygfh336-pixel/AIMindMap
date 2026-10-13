@@ -153,7 +153,7 @@ const TOOLS = [
     clean_assoc: b('同时清理引用了该节点的关联成员'),
     clean_links: b('同时清理指向该节点的链接')
   }, ['project', 'id']),
-  T('import_markdown', '从 Markdown 文件导入节点（追加到 parent）。**同一份来源默认只导一次**：命令会记下来源路径 + 内容指纹，重复导入会被拒并指名上次导到哪去了；确实要第二份就 force=true', {
+  T('import_markdown', '从 Markdown 文件导入节点（追加到 parent）。**第一个标题之前的正文（前导正文）不会丢**：父节点没有 `items` ⇒ 前置进它的 detail；父节点**已条目化**（有 `items`）⇒ 作为**首条条目**插进 items[0]、detail 随之重建（落点规则全文见 docs/ITEM-MODEL.md §2.1）。**同一份来源默认只导一次**：命令会记下来源路径 + 内容指纹，重复导入会被拒并指名上次导到哪去了；确实要第二份就 force=true', {
     project: s('项目名或 JSON 文件路径'), file: s('Markdown 文件路径'), parent: s('可选，目标父节点 id，默认 root'),
     force: b('同一个来源**故意**再导一次（默认拒绝重复导入）')
   }, ['project', 'file']),

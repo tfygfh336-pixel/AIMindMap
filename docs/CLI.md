@@ -335,7 +335,7 @@ node cli/mm-cli.js ask-apply <项目> <id> --answer "回答" [--question "提问
 
 ### import-md
 
-从 Markdown 导入节点（追加到 parent）。**同一份来源默认只导一次**：本命令会给导入的子树的根写上 `origin`（来源路径 + 内容指纹，见 docs/DATA-FORMAT.md §2.8），再次导入同一 `src`+`sha256` 会**被拒并指名**上一次导到哪去了 —— 真的想要第二份就加 `--force`（那是有意的重复，不是手滑）
+从 Markdown 导入节点（追加到 parent）。**第一个标题之前的正文（前导正文）不会丢**，落点由父节点决定：父节点**没有 `items`** ⇒ 前置进它的 `detail`（`前导 + \n + 原 detail`，原有内容一个字节都不覆盖）；父节点**有 `items`**（已条目化）⇒ 作为**首条条目**插进 `items[0]`，`detail` 随之按 `renderDetail(items)` 重建（条目化节点上 `detail` 是派生缓存，真源是 `items`）。父节点已是**坏数据**（`detail` 与 `renderDetail(items)` 不一致）或 `items` 不是数组时**响亮拒绝并给出两条真出路**（换父节点 / 先 `item-add` 再导），盘上零改动 —— 规则全文见 docs/ITEM-MODEL.md §2.1。**同一份来源默认只导一次**：本命令会给导入的子树的根写上 `origin`（来源路径 + 内容指纹，见 docs/DATA-FORMAT.md §2.8），再次导入同一 `src`+`sha256` 会**被拒并指名**上一次导到哪去了 —— 真的想要第二份就加 `--force`（那是有意的重复，不是手滑）。`--dry-run` 与真跑**同一份判据**（写盘前校验也一起跑：预览说能成 ⇒ 真跑必能成，真跑必失败 ⇒ 预览也必失败）
 
 ```
 node cli/mm-cli.js import-md <项目> <md文件> [--parent id] [--force] [--dry-run]

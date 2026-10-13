@@ -368,6 +368,15 @@ function emit(ctx, obj, text) {
 }
 
 module.exports = {
+  /* ---- 两件**纯**助手，给别的命令复用（本批的使用者：`import-md` 的"前导正文落成首条条目"）----
+   * 为什么导出而不是各写一份：条目 id 的铸造口径（"`newItemId()` 只产候选，唯一性由调用方在
+   * **全项目**集合里查重，不许靠概率"）与"detail 是 items 的派生缓存、必须整块重建"这两条，
+   * 一旦出现第二份实现就必然漂移（其中一条漂了 = 写出一份门禁判红的数据）。 */
+  mintItemId,
+  rerender,
+  assertItemsOk,
+  itemIndex,
+
   /* ------------------------------------------------------------------ item-add */
   itemAdd(ctx) {
     const nodeId = ctx.args._[1];
