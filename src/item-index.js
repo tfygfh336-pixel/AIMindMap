@@ -50,6 +50,23 @@
   const MIN_MAX_BYTES = 16;
 
   /**
+   * 【W1 · `search-all` 跨项目检索】的**两条硬上限**：越限 ⇒ **响亮报错**（不返回半份结果），
+   * 与 `--limit` / `--max-bytes` 的"截断可见"是**两件事**，别互相冒充：
+   *   · `--limit` / `--max-bytes` = **调用方给的预算** ⇒ 截断 + 非静默地报出来（`truncated` / `budget.resume`）；
+   *   · 这两条 = **能力上限**（调用方改不了）⇒ 整次检索**被拒绝**，报文里给读数与出路。
+   * 为什么上限必须"拒绝"而不是"截断"：跨项目检索的调用方是 AI，`hitCount` 会被它当成
+   * "库里关于这个关键词的全部" —— 悄悄少给一部分，它后面所有推理都建立在一个虚假的完整上 ✗。
+   *
+   * 值为什么在这里：本模块是"检索预算与长度上界"这一类事实的**唯一实现处**（见文件头），
+   * 这两条与 `DEFAULT_LIMIT` 同族 ⇒ 命令层、文档、测试都不许再写一份数字（`cli/registry.js`
+   * 的 desc 也是从本模块**现取**这两个数）。
+   */
+  /** 全库命中总数上界（超过 ⇒ 报错：让人收窄关键词 / 用 `--scope` 收窄项目） */
+  const SCAN_MAX_HITS = 2000;
+  /** 全库扫描耗时上界（毫秒；超过 ⇒ 报错 —— 越过它意味着这次检索已不适合"顺手扫一遍"） */
+  const SCAN_MAX_MS = 3000;
+
+  /**
    * 预算报告里 "估算 token" 的换算口径：`ceil(bytes / 4)`。
    * 为什么是 4：照本机 DSH 的既有启发式（`CHARS_PER_TOKEN = 4`，见
    * `docs/changelog/v0.16.0.md`）—— 一份口径好过两份。
@@ -506,6 +523,64 @@
   }
 
   /**
+   * **卡预算 + 组预算报告**（唯一实现处）：`searchItems` 与 `search-all` 都走它。
+   *
+   * 为什么把它单列并导出：跨项目检索（`search-all`）要在**合并后的整批命中**上卡同一套预算 ——
+   * 若命令层自己再拼一个 `budget` 对象，那"截断时给续取方式"这条口径就有两份会漂的副本 ✗
+   * （本工程的老病：同一份清单多副本）。数字仍是 `applyBudget` 算的那一份，这里只补 token 估算与 resume。
+   *
+   * @returns {hits, truncated, budget:{bytes,estTokens,limit,maxBytes,resume?}}（`resume` 只在截断时出现）
+   */
+  function budgeted(hits, limit, maxBytes) {
+    const arr = Array.isArray(hits) ? hits : [];
+    const b = applyBudget(arr, limit, maxBytes);
+    const budget = { bytes: b.bytes, estTokens: estTokens(b.bytes), limit: limit, maxBytes: maxBytes };
+    if (b.truncated) budget.resume = RESUME_ADVICE;     // 只增字段：截断时才出现
+    return { hits: b.hits, truncated: b.truncated, budget: budget };
+  }
+
+  /**
+   * 【W1】`search-all` 的**扫描闸门**（唯一实现处）：把"扫到现在"的读数交进来 ⇒ 放行 / 拦下。
+   *
+   * 三条性质（`tests/search-all.test.js` 靠它们判，别改口径）：
+   *   ① 两条上限**各自独立**判：命中越限与耗时越限是两种失败，`code` 分别是 `scan-hits` / `scan-time`
+   *      （调用方据此分辨"改关键词"还是"改范围/换时间"）；
+   *   ② 边界口径是 `>` 不是 `>=`：**等于上限放行**、**大于上限**才拦（"上限"= 允许的最大值）；
+   *   ③ 报文三件套：**读数**（命中 / 项目 / 毫秒）+ 越过的是**哪一条**（含上限值）+ **出路**
+   *      （`--scope` 收窄项目 / `--tag`、更长关键词 收窄命中）—— 只说"超限了"等于没说（F1 响亮）。
+   *
+   * ⚠️ 本函数**不读时钟**（本模块三条纪律之一）：`elapsedMs` 由命令层读 `Date.now()` 算好送进来
+   * —— 纯函数 ⇒ 越限判定可被单测直接钉，不必靠"跑得够慢"。
+   *
+   * @param {{hits?:number, projects?:number, elapsedMs?:number, project?:string}} reading
+   * @returns {{ok:true, hits, projects, elapsedMs}} 或 {ok:false, code:'scan-hits'|'scan-time', message, …读数}
+   */
+  function scanGate(reading) {
+    const o = reading || {};
+    const hits = Number(o.hits) || 0;
+    const projects = Number(o.projects) || 0;
+    const ms = Number(o.elapsedMs) || 0;
+    const out = { hits: hits, projects: projects, elapsedMs: ms };
+    const at = projects
+      ? '（扫到第 ' + projects + ' 个项目' + (o.project ? '「' + o.project + '」' : '') + '时）'
+      : '';
+    const ways = '出路三条（任选）：① `--scope 项目名,项目名` 只扫某几个项目；'
+      + '② `--tag` 或**更长**的关键词（越长命中越少）；③ 逐个项目 `search` 分开取。';
+    if (hits > SCAN_MAX_HITS) {
+      return Object.assign({ ok: false, code: 'scan-hits',
+        message: '跨项目检索被**上限**拦下：命中 ' + hits + ' 条 > 上限 ' + SCAN_MAX_HITS + ' 条' + at
+          + '。这不是截断 —— 本次**一条都不返回**（少给一部分会让"库里关于它的全部"变成假话）。' + ways }, out);
+    }
+    if (ms > SCAN_MAX_MS) {
+      return Object.assign({ ok: false, code: 'scan-time',
+        message: '跨项目检索被**上限**拦下：已扫 ' + ms + ' ms > 上限 ' + SCAN_MAX_MS + ' ms' + at
+          + '。这不是截断 —— 本次**一条都不返回**。' + ways
+          + '④ 若库本来就大，请把"全库扫一遍"改成按项目的 `search`（单项目有它自己的预算口径）。' }, out);
+    }
+    return Object.assign({ ok: true }, out);
+  }
+
+  /**
    * 检索条目（契约 §3.4）。**默认口径 = 搜条目**（节点 topic ∪ 条目正文）；
    * `topicOnly:true` 退回 v2（只搜标题）。
    *
@@ -640,12 +715,11 @@
     });
 
     const ordered = orderByHeat(raw, o.heat);   // 热度：**只重排**，不增删命中（不改变"命中/不命中"）
-    const b = applyBudget(ordered, limit, maxBytes);
-    const budget = { bytes: b.bytes, estTokens: estTokens(b.bytes), limit: limit, maxBytes: maxBytes };
-    if (b.truncated) budget.resume = RESUME_ADVICE;     // 只增字段：截断时才出现
+    // 预算与预算报告只有一处实现（`budgeted`）：`search-all` 的合并批走的是同一个函数
+    const b = budgeted(ordered, limit, maxBytes);
     return {
       ok: true, mode: mode, hits: b.hits, hitCount: raw.length,
-      truncated: b.truncated, budget: budget
+      truncated: b.truncated, budget: b.budget
     };
   }
 
@@ -751,6 +825,10 @@
     // 检索与取回
     searchItems: searchItems, getItemView: getItemView, readItemsView: readItemsView,
     // 热度向量的**排序**唯一实现处（数值/口径在 src/heat.js：这里一个热度数字都没有）
-    orderByHeat: orderByHeat
+    orderByHeat: orderByHeat,
+    // 预算与预算报告的**唯一实现处**（`searchItems` 自己走的就是它；`search-all` 的合并批也走它）
+    budgeted: budgeted,
+    /** 【W1】全库检索的两条硬上限 + 扫描闸门（唯一实现处；命令层与登记表都不许再写一份数字） */
+    scanGate: scanGate, SCAN_MAX_HITS: SCAN_MAX_HITS, SCAN_MAX_MS: SCAN_MAX_MS
   };
 });

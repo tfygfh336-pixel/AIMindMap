@@ -16,6 +16,16 @@
  *   （例：`scripts/smoke/39-item-detail.js` 的 `clipboardEnvProbe`：本进程直接 writeText→readText 往返，
  *   **不走**产品那条 IPC）⇒ 探针说可用而产品没写进去，照样**判红** ✓。
  *
+ * ⚠️ **严格档 `MM_SMOKE_CLIP_STRICT`（2026-10-13 加，默认关）** —— 上面这套三态有一个已知盲区：
+ *   **环境坏的时候，产品真回归会被降级成"未验证"**（探针说不可用 ⇒ 我们连"值对不对"都无从判）
+ *   ⇒ 在 CI / 受控环境里想要"**宁可红，不许悄悄放过**"。开关的语义只有一条：
+ *     · **关（未设 / `0` / `false`）** ⇒ 与加它之前**逐字节相同**（三个数、报文、退出码全都不动 ✓）；
+ *     · **开（`1` / `true` / 裸写空串）** ⇒ `unverified` 那几条**如实打印、仍点名原因**，
+ *       但**按失败计**（进 `failed`、进 `total`、并让退出码 ≠ 0）。
+ *   解析只有一处（本文件导出的 `parseStrictEnv`，纯函数）：**值非法当场报错**，绝不静默当 false/true
+ *   （照 `src/item-index.js` 的 `parseFlag` 先例）—— 一个写错的开关值若是静默失效，
+ *   等于"你以为在受控环境里跑，其实没有"。接线（校验 / 响亮行 / 退出码）在 `main.js` 的 `runSmoke`。
+ *
  * ── 为什么是"自动发现"而不是硬编码 require 列表 ──
  * 原先是一串手写的 `require('./smoke/NN-*.js')`。它有一个**静默失效**模式：
  * 新增 `scripts/smoke/NN-*.js` 却忘了在本文件登记时，该文件的断言**一条都不会跑**，
@@ -159,6 +169,27 @@ module.exports = assertions;
 module.exports.files = files;
 module.exports.groups = groups;
 
+/* ================= 冒烟「严格档」开关的解析（纯函数，零副作用 ⇒ 可被单测引入 ✓） =================
+ * 环境变量只有一个名字：`MM_SMOKE_CLIP_STRICT`（名字的来历：域 39 的剪贴板判据是最先吃三态、
+ * 也是"环境坏会把真回归洗成未验证"这个盲区第一次被看见的地方；它管的是**所有**域的第三态）。
+ * 接受的值**只有下面这几种**，别的**当场报错**（让调用方 exit 1，不许静默落回某一档）：
+ *   · 未设 / `undefined` / `null` ⇒ **关（默认）**，且**一条额外输出都不打** ⇒ 与加这个开关之前逐字节相同 ✓
+ *   · `0` / `false` ⇒ 关（显式关：与默认档走同一条路径，也不打额外输出）
+ *   · `1` / `true` / 空串（**裸写**：`bash` 里 `MM_SMOKE_CLIP_STRICT= npm run smoke` 拿到的就是空串）⇒ 开
+ *   · 其它（`nonsense` / `yes` / `2` / `True` …）⇒ `{ok:false}` ⇒ 调用方**当场报错 + exit 1**
+ * 为什么把值收窄（照 `src/item-index.js` 的 `parseFlag` 先例）：一个写错的开关值若被静默当成 false，
+ * "我这一轮真的在严格档里跑"就永远不成立 —— 而这正是**没人会去核对**的那一类静默失效 ✗。
+ * @param {string|boolean|undefined|null} raw 环境变量的原值（**由调用方读**：本函数不碰 `process.env` ✓）
+ * @returns {{ok:boolean, strict:boolean, reason:string}}
+ */
+module.exports.parseStrictEnv = function parseStrictEnv(raw) {
+  if (raw === undefined || raw === null) return { ok: true, strict: false, reason: '' };
+  if (raw === true || raw === '' || raw === '1' || raw === 'true') return { ok: true, strict: true, reason: '' };
+  if (raw === false || raw === '0' || raw === 'false') return { ok: true, strict: false, reason: '' };
+  return { ok: false, strict: false,
+    reason: '只能是 1 / true / 空串（裸写=开）或 0 / false（关），收到 ' + JSON.stringify(String(raw)) };
+};
+
 /* ================= 冒烟结果的**三态计数**（纯函数，零副作用 ⇒ 可被单测引入 ✓） =================
  * 为什么需要第三档（真实形状，2026-10-12）：域 39 的剪贴板判据在本机**稳定红**，
  * 而根因是**环境**（系统剪贴板不可用：主进程写后回读为空，同机 `Get-Clipboard` 与
@@ -173,11 +204,19 @@ module.exports.groups = groups;
  *     通过的结果上；一条结果既说"未验证"又说"失败"时**按失败计**，绝不能让"未验证"变成掩盖真失败的后门
  *     （本工程最重的损害类别："没做，却看不出没做"）。
  *
+ * **严格档**（`opts.strict`，对应环境变量 `MM_SMOKE_CLIP_STRICT`，默认关）：`unverified` 那一档
+ * 从"两个数都不进"改成"**进失败**"（`failed` +1、`total` +1、`unverified` 照样单独计数并列出原因）
+ * —— 这就是"宁可红，不许悄悄放过"。两档用的是**同一个函数**，不许在别处再算一份（`B1`）。
+ * ⚠️ 默认档（`opts` 不给 / `strict` 假）**一个字节都不许变**：它是既有口径，改了就是改读数。
+ *
  * @param {Array<{ok?:boolean, unverified?:string}>} results
+ * @param {{strict?:boolean}} [opts] 不给 ⇒ 默认档（未验证不进通过/总数，见上面口径）
  * @returns {{passed:number, failed:number, unverified:number, total:number, unverifiedList:string[]}}
- *   `total` = **参与计数**的条数（= passed + failed，**不含**未验证）；`unverifiedList` 给"响亮行"用。
+ *   `total` = **参与计数**的条数（= passed + failed）；默认档**不含**未验证，严格档**含**（它已进 failed）；
+ *   `unverifiedList` 给"响亮行"用（**两档都照列**：严格档也要看得见"是哪几条、为什么"）。
  */
-module.exports.tally = function tally(results) {
+module.exports.tally = function tally(results, opts) {
+  const strict = !!(opts && opts.strict);
   const list = Array.isArray(results) ? results : [];
   let passed = 0;
   let failed = 0;
@@ -186,7 +225,12 @@ module.exports.tally = function tally(results) {
   list.forEach((r) => {
     const ok = !!(r && r.ok);
     const why = (r && typeof r.unverified === 'string' && r.unverified) ? r.unverified : null;
-    if (ok && why) { unverified++; unverifiedList.push(why); return; }   // 不计入通过/总数（见上面口径）
+    if (ok && why) {
+      unverified++;
+      unverifiedList.push(why);
+      if (strict) failed++;      // 严格档：未验证**按失败计**（不再有"两个数都不进"的第三档）
+      return;                    // 默认档：不计入通过/总数（见上面口径）
+    }
     if (ok) { passed++; return; }
     failed++;                                                            // fail-safe：ok:false 一律算失败
   });

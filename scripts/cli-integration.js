@@ -4107,7 +4107,299 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
  * 单测侧同源、可重复执行的注入证明在 `tests/heat.test.js` 的 J1（走 `__setHeatMapperForTest`）。
  *
  * ## 摆放与两条约定
- *   · 接在**最后一段静态判据之后、`/* ---------------- 清理 ---------------- *\/` 之前**新起一节；
+ *   · 接在**最后一段静态判据之后、`
+/* ============================================================
+ * W1-集成断言原文.js —— `search-all` 跨项目检索的**集成断言原文**（放行窗口由整合流贴进
+ * `scripts/cli-integration.js`；本文件**不是**可执行脚本，只是那段源码的存放处）
+ *
+ * ⚠️ **本文件是 v2（2026-10-13 修 A/B/C 之后）**：拼贴时请把此前贴进去的 **v1 那一块整段替换**为本文件内容
+ * （v1 有 4 处待填的 MCP 工具数，集成脚本会硬崩；v2 已写成真值 51，且两条判据的期望值改成**现算真值**）。
+ * v2 相对 v1 的三处差别：① MCP 工具数 = 写死的真值 `W1_TOOLS = 51`（全文无待填字样）；
+ * ② 判据3-甲的期望总数**现算**（= 上限+1 + W1A 命中 + W1B 命中，因为全库扫描会把它们一起扫进来），
+ * 并**逐字比对**报文报出的两个数字；③ "不许静默少扫"的跳过个数**现算**（= `j.skipped.length`，
+ * 盘上还有常驻的 `it-broken-*` 探针 ⇒ 写死个数必假红）。
+ * ------------------------------------------------------------
+ * 判据出处：`.review/20261010-卖点与功能-常驻讨论/待做清单.md` 的 `## W1｜search-all 跨项目检索 ⭐`。
+ * 单测侧（可重复执行、进程内、临时沙箱）：`tests/search-all.test.js`（**26 用例**）。本段**不重复**那 26 条，
+ * 只把"必须在**真实工程 + 真实 projects/ 根**上跑一遍才作数"的那几条接到集成链上。
+ *
+ * ## 怎么贴（四句话）
+ *   1) **整段替换** `scripts/cli-integration.js` 里此前贴进去的 v1 那一块（别与新块并存 ⇒ 会重复计数）。
+ *   2) 位置：**S2（热度条第二件）那一段之后、`/* ---------------- 清理 ---------------- *\/` 之前**，
+ *      整段原样粘（已写成独立块 `{ … }`：自带 `finally` 收尾、自删全部探针、**不需要动末尾的清理段**）。
+ *   3) 探针一律 `it-probe-w1-` 前缀 ⇒ 文件顶部 `sweepStaleProbes()` 的前缀表（`it-probe-`）**已覆盖**，
+ *      被中断留下的残留下次跑链会被自动清掉 ✓。
+ *   4) 贴完**必须**跑一次 `npm run facts:write`：`scripts/doc-facts.js` 按 `/^\s*check\(/gm` 静态数集成断言数，
+ *      本段新增的 check 都会被算进去 ⇒ 不重生成 `docs/VERIFY.md` 就会在 G6 报"断言数对不上"（那正是 G6 该做的事）。
+ *
+ * ## 这一节守什么（每条对着 W1 的判据；编号与单测文件一致）
+ *   · 判据1（同时命中两侧 + 每条带项目名 + 分片与单项目 search **逐条同序**）
+ *   · 判据2（无命中 ⇒ 明确的"零结果"，不是空输出）
+ *   · 判据3（两条**硬上限**：命中总数 / 扫描耗时，越限 ⇒ **报错 + 一条都不返回**）
+ *   · 判据4（`--scope` 收得回来；点名不存在的项目 ⇒ 响亮）
+ *   · 判据5（MCP **同名工具**一层透传：`search_nodes` 不给 `project` ⇒ 全库档；工具数不变）
+ *   · 判据6（既有不变量：读命令在**项目目录里零字节**；命中**按项目**分记进各自的热度日志）
+ *   · 另加一条"不许静默少扫"：读不动的项目 ⇒ **跳过但逐个点名**（`skipped`；汇总行写"另有 N 个没扫成"）
+ *
+ * ## 为什么全库那几条一律带 `--no-heat`（写清原因，免得下一个人以为漏了热度）
+ *   本段跑在**真实** `projects/` 根上，而库里可能有别的段落留下的、**故意写坏的热度日志**（例如热度那两段的
+ *   `it-probe-heat*` 探针）。热度日志坏了 ⇒ `search-all` 照 `search` 的纪律**响亮失败**（这是产品行为，
+ *   不是缺陷）⇒ 全库那几条若默认读热度，就会被**别人的探针**牵连成假红。所以：
+ *   · 全库断言一律 `--no-heat`（不碰任何日志）；
+ *   · 真热度那一条用 `--scope` 只扫**本段自己的**探针（确定性，谁也不牵连谁）。
+ *
+ * ## 判别力（可重复执行的注入证明在 `tests/search-all.test.js`）
+ *   · 把 `scanAll` 的循环改成"只扫第一个项目"（`for (let i = 0; i < 1; i++)`）⇒ 判据1 / 判据5 的
+ *     "两侧命中"**必红**；还原 ⇒ 复绿（本件交付说明里有真实报文与还原后的 SHA-256）。
+ *   · 把 `itemIndex.scanGate` 的两条比较改成 `>=` ⇒ 判据3 的边界那条**必红**。
+ *   · 去掉"`skipped` 的文本点名"⇒ "不许静默少扫"那条**必红**。
+ *
+ * ⚠️ 段内**不要**写成"行内斜杠紧跟圈号"的样子（G9 会把那当判定标记计数，见 cli-integration.js 文件头）。
+ * ⚠️ 本段**只增断言**，不改任何既有断言的语义；MCP 那一拍是**真 stdio**（与 S2 段同一条路）。
+ * ============================================================ */
+{
+  const w1core = require(path.join(ROOT, 'cli', 'core.js'));          // PROJECTS_DIR：项目根的唯一推导处
+  const w1idx = require(path.join(ROOT, 'src', 'item-index.js'));     // 两条上限 + scanGate：唯一实现处
+  const W1_MCP_SRV = path.join(ROOT, 'scripts', 'mcp-server.js');
+  /** MCP 工具数：**写死值**（本件落地的当天 `docs/VERIFY.md` 的「MCP 工具数」= 51；"工具数不变"是本件的判据）
+   *  —— 刻意不写成 `require(...).TOOLS.length` 那种自指式（那样谁把工具数改大了，断言会跟着一起变 ⇒ 没有判别力；
+   *  与 `tests/recheck.test.js` 里 `expect(mcp.TOOLS.length).toBe(51)` 同一用意）。贴上之后若它变了，G6 会先红。 */
+  const W1_TOOLS = 51;
+  const W1TAG = Date.now().toString(36);
+  const W1A = 'it-probe-w1-a-' + W1TAG;
+  const W1B = 'it-probe-w1-b-' + W1TAG;
+  const W1BAD = 'it-probe-w1-broken-' + W1TAG;
+  const W1BIG = 'it-probe-w1-cap-' + W1TAG;
+  const W1KW = 'W1跨项目检索词' + W1TAG;
+  const w1dir = (name) => path.join(w1core.PROJECTS_DIR, name);
+  const w1J = (r) => { try { return JSON.parse(String(r.out).trim()); } catch (e) { return null; } };
+  /** 直接写盘造项目（同 S2 段的手法：命中顺序 = DFS 序 ⇒ 顺序断言才有确定方向） */
+  const w1mk = (name, topics) => {
+    fs.mkdirSync(w1dir(name), { recursive: true });
+    fs.writeFileSync(path.join(w1dir(name), name + '.json'), JSON.stringify({
+      meta: { name: name, author: '', version: '0.18.0', formatVersion: 2 },
+      format: 'node_tree',
+      data: { id: 'root', topic: 'root', expanded: true,
+        children: topics.map((t, i) => ({ id: 'nd-' + (i + 1), topic: t, children: [] })) }
+    }, 'utf8'), 'utf8');
+  };
+  const w1all = (extra) => w1J(run(['search-all', W1KW, '--no-heat', '--json'].concat(extra || [])));
+  const w1one = (name) => w1J(run(['search', name, W1KW, '--no-heat', '--json']));
+  const w1ids = (j) => ((j || {}).hits || []).map((h) => h.nodeId);
+  /** 目录树快照（含每个文件的 sha256 + mtime）：钉"读命令在项目目录里零字节" */
+  const w1snap = (dir) => {
+    const out = [];
+    const walk = (d) => {
+      fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1)).forEach((e) => {
+        const abs = path.join(d, e.name);
+        if (e.isDirectory()) { walk(abs); return; }
+        out.push(path.relative(dir, abs).split(path.sep).join('/') + '|' + fs.readFileSync(abs).length
+          + '|' + fs.statSync(abs).mtimeMs);
+      });
+    };
+    walk(dir);
+    return out.join('\n');
+  };
+  /** 访问日志的真位置（产品里路径的唯一推导处是 data-store，这里不自己拼） */
+  const w1log = (name) => require(path.join(ROOT, 'src', 'data-store.js'))
+    .createStore(w1core.PROJECTS_DIR, () => {}).visitLogFile(name);
+
+  try {
+    /* 夹具：A 三个命中 / B 两个命中 / BIG = 上限 + 1 个命中（判据3 用，用完立刻删） */
+    w1mk(W1A, [W1KW + ' 甲一', W1KW + ' 甲二', W1KW + ' 甲三']);
+    w1mk(W1B, [W1KW + ' 乙一', W1KW + ' 乙二']);
+
+    /* ---- 判据1：一次调用同时命中两侧；每条带 project；分片与单项目 search **逐条同序** ---- */
+    {
+      const all = w1all();
+      const expectHits = [W1A, W1B].reduce((acc, p) => acc.concat(
+        w1one(p).hits.map((h) => Object.assign({ project: p }, h))), []);
+      check('W1·判据1 一次调用同时命中两侧（每条带 project），且分片与 `search <该项目>` **逐条同序**'
+        + '（合并顺序 = 项目名升序 × 项目内既有顺序 ⇒ 没有第二份排序实现）',
+        !!all && all.hits.filter((h) => h.project === W1A).length === 3
+          && all.hits.filter((h) => h.project === W1B).length === 2
+          && all.hits.every((h) => typeof h.project === 'string' && h.project)
+          && JSON.stringify(all.hits) === JSON.stringify(expectHits),
+        '命中=' + (all ? all.hits.length : 'null') + ' ｜ A=' + (all ? all.hits.filter((h) => h.project === W1A).length : '?')
+          + ' / B=' + (all ? all.hits.filter((h) => h.project === W1B).length : '?')
+          + ' ｜ 与单项目逐字同序=' + (!!all && JSON.stringify(all.hits) === JSON.stringify(expectHits)));
+    }
+
+    /* ---- 判据2：无命中 ⇒ 明确的"零结果"（不是空输出） ---- */
+    {
+      const r = run(['search-all', 'W1这个词谁都不命中' + W1TAG, '--no-heat']);
+      const j = w1J(run(['search-all', 'W1这个词谁都不命中' + W1TAG, '--no-heat', '--json']));
+      check('W1·判据2 无命中 ⇒ 一行**明确的零结果**（不是空输出），JSON 里 hits=[] 且 scanned 非空',
+        r.code === 0 && r.out.trim().length > 0 && r.out.indexOf('命中 0 条') >= 0
+          && r.out.indexOf('明确的零结果') >= 0
+          && !!j && j.hits.length === 0 && j.hitCount === 0 && j.scanned.length > 0,
+        'exit=' + r.code + ' ｜ 文本含"命中 0 条"=' + (r.out.indexOf('命中 0 条') >= 0)
+          + ' ｜ JSON hitCount=' + (j ? j.hitCount : 'null'));
+    }
+
+    /* ---- 判据3-甲：命中总数越限 ⇒ 报错 + **一条都不返回** ----
+     * ⚠️ 期望值**现算，不写死**：全库检索扫的是**整库**，本次关键词还命中 W1A / W1B 两个探针
+     *   ⇒ 真总数 = (上限+1) + W1A 的命中数 + W1B 的命中数（各用单项目 `search` 现场取），
+     *   而**不许**写死 `SCAN_MAX_HITS + 1`（放行窗口实测：写死 2001 而真值 2006 ⇒ 假红）。
+     * 判据同时要求**报文里报出的两个数字 == 真实总数 / 真实上限**（不是"含某个数字"的弱口径）。 */
+    {
+      const w1hitA = w1one(W1A).hits.length;                       // 现算：W1A 与 W1B 用的是同一个关键词
+      const w1hitB = w1one(W1B).hits.length;
+      const w1big = w1idx.SCAN_MAX_HITS + 1;
+      const w1total = w1big + w1hitA + w1hitB;                     // 本次全库扫描的**真实**命中总数
+      w1mk(W1BIG, Array.from({ length: w1big }, (x, i) => W1KW + ' 上限 ' + (i + 1)));
+      const r = run(['search-all', W1KW, '--no-heat', '--json']);
+      const m = /命中 (\d+) 条 > 上限 (\d+) 条/.exec(r.out);
+      check('W1·判据3-甲 命中总数越限（真造 ' + w1big + ' 条，本次全库真总数 ' + w1total + '）⇒ exit 1 + '
+        + '**报文里的两个数字逐字等于真实总数与真实上限** + `一条都不返回`（**不许**静默截断成前 N 条）',
+        r.code === 1 && /^error:/.test(r.out.trim()) && r.out.trim().split('\n').length === 1
+          && !!m && Number(m[1]) === w1total && Number(m[2]) === w1idx.SCAN_MAX_HITS
+          && r.out.indexOf('一条都不返回') >= 0 && r.out.indexOf('--scope') >= 0,
+        'exit=' + r.code + ' ｜ 真总数=' + w1total + '（探针 ' + w1big + ' + A ' + w1hitA + ' + B ' + w1hitB
+          + '）｜ 报文报出=' + (m ? m[1] + ' / 上限 ' + m[2] : '（没匹配到）')
+          + ' ｜ 行数=' + r.out.trim().split('\n').length
+          + ' ｜ 报错首行=' + r.out.trim().slice(0, 90));
+      fs.rmSync(w1dir(W1BIG), { recursive: true, force: true });     // 立刻删：不留"必然越限"给后面的断言
+    }
+
+    /* ---- 判据3-乙：扫描耗时越限 ⇒ 报错（**时钟注入**，确定性，不靠真的跑慢） ---- */
+    {
+      const realNow = Date.now;
+      const T0 = realNow();
+      let calls = 0;
+      Date.now = () => { calls++; return calls === 1 ? T0 : T0 + w1idx.SCAN_MAX_MS + 1; };
+      let r = null;
+      try {
+        r = run(['search-all', W1KW, '--no-heat', '--json']);
+      } finally {
+        Date.now = realNow;
+      }
+      check('W1·判据3-乙 扫描耗时越限（时钟推快到 上限+1 ms）⇒ exit 1 + 点名 ms 读数与出路；'
+        + '同一查询恢复时钟后照常命中（红的不是命令本身）',
+        r.code === 1 && r.out.indexOf(String(w1idx.SCAN_MAX_MS)) >= 0 && r.out.indexOf('ms > 上限') >= 0
+          && r.out.indexOf('一条都不返回') >= 0 && calls > 1
+          && !!w1all() && w1all().hits.length === 5,
+        'exit=' + r.code + ' ｜ 读时钟次数=' + calls + ' ｜ 时钟恢复后命中='
+          + (w1all() ? w1all().hits.length : 'null'));
+    }
+
+    /* ---- 判据4：`--scope` 收得回来；点名不存在的项目 ⇒ 响亮 ---- */
+    {
+      const j = w1all(['--scope', W1B]);
+      const bad = run(['search-all', W1KW, '--no-heat', '--scope', 'it-probe-w1-不存在-' + W1TAG]);
+      const bare = run(['search-all', W1KW, '--no-heat', '--scope']);
+      check('W1·判据4 `--scope` 只扫点名的那几个（scoped/scanned/命中都收窄）；点名的项目不存在或名单为空 ⇒ '
+        + 'exit 1 并**逐个点名**（不静默当"全库"）',
+        !!j && j.scoped === true && j.scanned.length === 1 && j.scanned[0] === W1B
+          && j.hits.every((h) => h.project === W1B) && j.hits.length === 2
+          && bad.code === 1 && bad.out.indexOf('it-probe-w1-不存在-' + W1TAG) >= 0
+          && bare.code === 1 && bare.out.indexOf('需要一个项目名列表') >= 0,
+        'scope 命中=' + (j ? j.hits.length : 'null') + ' / scanned=' + (j ? j.scanned.join(',') : 'null')
+          + ' ｜ 不存在 exit=' + bad.code + ' ｜ 裸写 exit=' + bare.code);
+    }
+
+    /* ---- 判据5：MCP 同名工具一层透传（**真 stdio 一拍**）+ 工具数不变 ---- */
+    {
+      const reqs = [
+        { jsonrpc: '2.0', id: 1, method: 'initialize' },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call',
+          params: { name: 'search_nodes', arguments: { keyword: W1KW, no_heat: true } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/list' }
+      ];
+      const sp = spawnSync(process.execPath, [W1_MCP_SRV], {
+        cwd: ROOT, encoding: 'utf8', timeout: 30000,
+        input: reqs.map((x) => JSON.stringify(x)).join('\n') + '\n'
+      });
+      const replies = String(sp.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+        try { return JSON.parse(l); } catch (e) { return null; }
+      });
+      const byId = (id) => replies.filter((x) => x && x.id === id)[0] || null;
+      const textOf = (rep) => (rep && rep.result && rep.result.content && rep.result.content[0]
+        && rep.result.content[0].text) || '';
+      const viaMcp = w1J({ out: textOf(byId(2)) });
+      const tools = (((byId(3) || {}).result || {}).tools) || [];
+      const cliSame = w1all();
+      check('W1·判据5 MCP `search_nodes` **少给 `project`** ⇒ 全库档（真 stdio 一拍）：两侧命中、每条带 project、'
+        + '与 CLI 逐字同源；且**没有新增工具**（工具数仍 ' + W1_TOOLS + '、`search_nodes` 只有一个）',
+        !!viaMcp && viaMcp.hits.filter((h) => h.project === W1A).length === 3
+          && viaMcp.hits.filter((h) => h.project === W1B).length === 2
+          && !!cliSame && JSON.stringify(viaMcp.hits) === JSON.stringify(cliSame.hits)
+          && tools.length === W1_TOOLS
+          && tools.filter((t) => t.name === 'search_nodes').length === 1,
+        'MCP 命中=' + (viaMcp ? viaMcp.hits.length : 'null') + ' ｜ 与 CLI 逐字相同='
+          + (!!viaMcp && !!cliSame && JSON.stringify(viaMcp.hits) === JSON.stringify(cliSame.hits))
+          + ' ｜ 工具数=' + tools.length);
+    }
+
+    /* ---- 判据6：读命令在**项目目录里零字节**；命中**按项目**分记进各自的热度日志 ---- */
+    {
+      const snapA = w1snap(w1dir(W1A));
+      const snapB = w1snap(w1dir(W1B));
+      const sizeOf = (f) => { try { return fs.statSync(f).size; } catch (e) { return 0; } };
+      const a0 = sizeOf(w1log(W1A));
+      const b0 = sizeOf(w1log(W1B));
+      run(['search-all', W1KW, '--scope', W1A + ',' + W1B, '--json']);     // 这一次**读热度也写埋点**（默认档）
+      const nodesIn = (name) => {
+        const f = w1log(name);
+        if (!fs.existsSync(f)) return [];
+        return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean)
+          .map((l) => { try { return JSON.parse(l); } catch (e) { return null; } })
+          .filter((e) => e && e.ch === 'ai-search-hit').map((e) => e.node);
+      };
+      check('W1·判据6 跑一次 `search-all`：两个探针的**项目目录逐字节 + mtime 不变**（读命令零字节），'
+        + '而项目目录**之外**的 `.visits/` 里**各自**记到了自己的命中（A 三条 / B 两条，不串项目）',
+        w1snap(w1dir(W1A)) === snapA && w1snap(w1dir(W1B)) === snapB
+          && sizeOf(w1log(W1A)) > a0 && sizeOf(w1log(W1B)) > b0
+          && nodesIn(W1A).sort().join(',') === 'nd-1,nd-2,nd-3' && nodesIn(W1B).sort().join(',') === 'nd-1,nd-2',
+        '目录不变=' + (w1snap(w1dir(W1A)) === snapA && w1snap(w1dir(W1B)) === snapB)
+          + ' ｜ A 日志 ' + a0 + '→' + sizeOf(w1log(W1A)) + ' B 日志 ' + b0 + '→' + sizeOf(w1log(W1B))
+          + ' ｜ A 记到=' + nodesIn(W1A).sort().join(',') + ' ｜ B 记到=' + nodesIn(W1B).sort().join(','));
+    }
+
+    /* ---- 不许静默少扫：读不动的项目 ⇒ **跳过但逐个点名**（skipped + 文本档 ⚠ 行 + 汇总行） ----
+     * ⚠️ 跳过**个数**同样**现算，不写死**：整脚本跑时盘上还有常驻探针（如第 20 节的 `it-broken-*`，
+     *   它到脚本末尾才删）⇒ 真个数 = `j.skipped.length`。放行窗口实测：写死"另有 1 个"而真值 2 ⇒ 假红。 */
+    {
+      w1mk(W1BAD, [W1KW + ' 坏']);
+      fs.writeFileSync(path.join(w1dir(W1BAD), W1BAD + '.json'), '{这不是合法 JSON', 'utf8');
+      const r = run(['search-all', W1KW, '--no-heat']);
+      const j = w1all();
+      const w1n = (j && j.skipped) ? j.skipped.length : 0;          // 现算：本次真的跳过了几个
+      check('W1·不许静默少扫 某个项目的 JSON 读不出来 ⇒ **跳过它但看得见**：`skipped` 逐个点名 + 文本档 '
+        + '`⚠ 跳过项目「…」` + 汇总行"另有 ' + w1n + ' 个项目没扫成"（个数**现算**；exit 0 —— '
+        + '别人项目的坏数据不该让整库检索不可用）',
+        r.code === 0 && r.out.indexOf('⚠ 跳过项目「' + W1BAD + '」') >= 0
+          && r.out.indexOf('validate ' + W1BAD) >= 0 && r.out.indexOf('--scope') >= 0
+          && r.out.indexOf('另有 ' + w1n + ' 个项目没扫成') >= 0     // ← 报出的个数 == 真个数（少报/多报都红）
+          && !!j && j.skipped.map((s) => s.project).indexOf(W1BAD) >= 0
+          && j.scanned.indexOf(W1BAD) < 0,
+        'exit=' + r.code + ' ｜ skipped(' + w1n + ')=' + (j ? j.skipped.map((s) => s.project).join(',') : 'null')
+          + ' ｜ 汇总行含"另有 ' + w1n + ' 个项目没扫成"=' + (r.out.indexOf('另有 ' + w1n + ' 个项目没扫成') >= 0)
+          + ' ｜ 点名 W1BAD=' + (r.out.indexOf(W1BAD) >= 0));
+    }
+  } finally {
+    /* 自收尾：探针项目 + 它们的访问日志（日志在项目目录之外，删目录删不掉它 ⇒ 一并删） */
+    [W1A, W1B, W1BAD, W1BIG].forEach((name) => {
+      try { fs.rmSync(w1dir(name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+      try { fs.rmSync(w1log(name), { force: true }); } catch (e) { /* 同上 */ }
+    });
+  }
+}
+
+/* ============================================================
+ * 两处**已落实、无需你改**（放行窗口踩过，这里记下来免得下次再踩）：
+ *   1) MCP 工具数是**写死的真值 51**（见段内 `W1_TOOLS`，与 `docs/VERIFY.md` 的「MCP 工具数」、
+ *      `tests/recheck.test.js` 的 `toBe(51)` 一致）—— 本文件里**一个待填占位符都没有**
+ *      （拼贴前那道"扫占位符"检查在本文件上应是 0 命中），整段可直接拼贴。
+ *      刻意不写成 `require(…mcp-server.js).TOOLS.length` 那种自指式：那样谁把工具数改大了，
+ *      断言会跟着一起变 ⇒ 没有判别力。
+ *   2) 判据3-甲的期望值**现算**：全库扫描会把 W1A / W1B 也算进来 ⇒ 真总数
+ *      = (上限 + 1) + W1A 命中数 + W1B 命中数，由现场的单项目 `search` 求出；并**逐字比对**
+ *      报文里报出的两个数字（不是"含某个数字"的弱口径）。写死 `SCAN_MAX_HITS + 1` 会在放行窗口假红
+ *      （实测：写死 2001、真值 2006）。
+ * ============================================================ */
+
+/* ---------------- 清理 ---------------- *\/` 之前**新起一节；
  *     本段自带 `finally` 收尾、自删全部探针项目 ⇒ **不需要**动末尾的清理段。
  *   · 探针项目一律 `it-probe-heat-` 前缀：文件顶部 `sweepStaleProbes()` 的前缀表覆盖 `it-probe-`
  *     ⇒ 本段被中断留下的残留，下次跑链会被自动清掉（不新增前缀，那要改文件顶部那份表）。
@@ -4610,6 +4902,128 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
     S2ALL.forEach((name) => {
       try { fs.rmSync(s2dir(name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
     });
+  }
+}
+
+/* ---------------- 【STRICT】冒烟「严格档」`MM_SMOKE_CLIP_STRICT`：环境坏时宁可红，不许悄悄放过 ----------------
+ * 这一件补的是什么（**已知盲区**，不是新功能）：域 39 的剪贴板判据自 2026-10-12 起是三态 ——
+ *   ① 独立环境探针**不可用** ⇒ 响亮"未验证"（**不计入通过/总数、不阻断**）；
+ *   ② 探针**可用而我们没写进去** ⇒ 判红（真回归）；
+ *   ③ 探针可用 + 写进去了 + 通道是 `desktop-clipboard` ⇒ 通过。
+ * 三态修掉了"环境问题冒充产品缺陷" ✓，但它同时开了一个**新口子**：
+ *   **环境坏的时候，"我们没写进去"这件事根本采不到真值** ⇒ 产品真回归会被**降级成"未验证"**
+ *   ⇒ 在 CI / 受控环境里等于**悄悄放过**（本工程最重的损害类别："没做，却看不出没做"）。
+ * 现在的口径（开关语义只有一条，实现在两处、各自单一职责）：
+ *   · `scripts/smoke-assertions.js` 的 `parseStrictEnv(raw)` —— **唯一**的值解析（纯函数，可单测）：
+ *     未设 / `0` / `false` ⇒ 关；`1` / `true` / 空串（裸写）⇒ 开；**别的值 ⇒ `ok:false`**（绝不静默落回某一档）；
+ *   · 同文件 `tally(results, {strict})` —— 计数**唯一**口径：开时 `unverified` 进 `failed`（于是也进 `total`），
+ *     默认档**一个字节都不变**（未验证仍不进通过/总数）；
+ *   · `main.js` 的 `runSmoke` —— 接线：非法值当场 `SMOKE STRICT FLAG ERROR` + exit 1（**一条断言都不跑**）；
+ *     开时打响亮行；每条"未验证"**仍如实打印、仍点名原因**，紧跟一行说明它这回算失败；汇总打第二行读数；
+ *     退出码多一项 `strictFailures`（关着时短路为 0 ⇒ 与加开关之前完全一致）。
+ * ⚠️ 本文件是**待并入的断言原文（草稿）**，`scripts/cli-integration.js` 由另一条流托管 ⇒ 我没有直接改它
+ *   （见交付说明；并入位置：`try { … }` 主跑体内、任意位置，**不要**碰末尾的收尾段）。
+ *
+ * ## 为什么这条判据必须"注入过一次违规"才算数（本批实跑，读数见交付说明）
+ * 把 `tally()` 里那一行 `if (strict) failed++` 去掉（= 严格档**只打印、不影响计数**）⇒
+ * `MM_SMOKE_CLIP_STRICT=1` + 环境坏那一跑**退出码回到 0** ⇒ 判据在空转 ⇒ 必须红 ✓；还原后 SHA-256 逐字节相同、复绿。
+ *
+ * ## 成本（**自己量过再决定要不要挂链**，别把 G4 拖慢）
+ * 甲档（纯函数 + 源码接线）：**毫秒级**，零子进程、零 Electron —— 建议**无开关常跑**。
+ * 乙档（真 Electron 离屏跑两次）：本机实测**每跑 ≈ 40 s**（两次 ≈ 80 s）。G4 现在**不依赖 Electron**
+ *   （`cli-integration.js` 是纯 node + 进程内 CLI 调用）⇒ 乙档若并入，会让 G4 多一个 "Electron 能不能起"
+ *   的前置，**代价要明说**：故本节把乙档放在 `MM_IT_SMOKE_STRICT=1` 的显式开关后面（默认跳过 ≠ 静默通过：
+ *   跳过时**必须打印一行说"乙档没跑"**，照 `A5` 的纪律，别让"没跑"看着像"跑绿了"）。
+ */
+{
+  const S = require(path.join(ROOT, 'scripts', 'smoke-assertions.js'));   // 复用冒烟入口（load 零副作用）
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+
+  /* ── 甲-1 值解析：只有五种输入合法，非法值必须 `ok:false`（静默落回某一档 = 受控环境根本没受控 ✗） ── */
+  const cases = [
+    [undefined, false, true], ['', true, true], ['1', true, true], ['true', true, true],
+    ['0', false, true], ['false', false, true], [false, false, true],
+    ['nonsense', false, false], ['yes', false, false], ['2', false, false], ['True', false, false]
+  ];
+  const badParse = cases.filter((c) => {
+    const r = S.parseStrictEnv(c[0]);
+    return r.strict !== c[1] || r.ok !== c[2];
+  });
+  check('[STRICT] `parseStrictEnv`：未设/0/false=关，1/true/裸写(空串)=开，**别的值当场 ok:false**'
+    + '（防"开关值写错了却静默当 false"）',
+    badParse.length === 0,
+    '不合约的输入=' + JSON.stringify(badParse.map((c) => c[0])) + ' ｜ 解析=' + JSON.stringify(
+      cases.map((c) => [c[0], S.parseStrictEnv(c[0]).strict, S.parseStrictEnv(c[0]).ok])));
+
+  /* ── 甲-2 计数口径：**同一份输入**两档的差只有"未验证那几条算不算失败" ──
+   * 这是"默认档逐字节不变"的**机械判据**：默认档那三个数必须与历史口径完全相同，
+   * 严格档必须把 1 条"未验证"变成 1 条失败（且 `unverified` 与原因**照样列出** ⇒ 不许靠"看不见"来变红）。 */
+  const rows = [{ ok: true, text: '' }, { ok: false, text: '' },
+    { ok: true, unverified: '剪贴板本项未验证（环境：系统剪贴板不可用）', text: '' }];
+  const d = S.tally(rows);
+  const st = S.tally(rows, { strict: true });
+  check('[STRICT] `tally()` 默认档：未验证**不进**通过/总数（passed=1 / total=2 / unverified=1）—— 与加开关之前同口径',
+    d.passed === 1 && d.failed === 1 && d.total === 2 && d.unverified === 1,
+    JSON.stringify(d));
+  check('[STRICT] `tally()` 严格档：同一条"未验证"**按失败计**（failed=2 / total=3），且 `unverified` 与原因**照样列出**',
+    st.passed === 1 && st.failed === 2 && st.total === 3 && st.unverified === 1
+      && st.unverifiedList.length === 1,
+    JSON.stringify(st));
+  /* fail-safe 不许被"严格档"改写：`ok:false` 带 `unverified` 仍是失败、且**不算**未验证（两档都如此）。 */
+  const fsRows = [{ ok: false, unverified: '环境坏', text: '' }];
+  check('[STRICT] fail-safe 两档都在：`ok:false` 带 `unverified` ⇒ 一律算失败、不许被算成"未验证"（真失败的后门 ✗）',
+    S.tally(fsRows).failed === 1 && S.tally(fsRows).unverified === 0
+      && S.tally(fsRows, { strict: true }).failed === 1 && S.tally(fsRows, { strict: true }).unverified === 0,
+    JSON.stringify({ def: S.tally(fsRows), strict: S.tally(fsRows, { strict: true }) }));
+
+  /* ── 甲-3 接线（源码级）：开关真的接了退出码、真的打了响亮行；且严格档那几行额外输出**全在门槛之内** ──
+   * 为什么这条也要（本工程吃过的形状）：断言返回了 `unverified` 而 runner 不认 ⇒ 那条结果**静默落回 PASS**。
+   * ⚠️ 切不到就必须红（`B4` ③）：正则失配会让这条检查变成恒真。
+   * ⚠️ **这条只证明"那三行额外输出各自有门槛"**；"默认档与加开关之前逐字节相同"的**真正判据是实测对拍**
+   *   （同一份输入跑两次比输出/计数），不是这段源码正则 —— 别把这里的绿读成"已证明逐字节相同" ✗。 */
+  check('[STRICT] 接线：`main.js` 里 ① 解析走 `parseStrictEnv` ② 非法值 exit 1 ③ 严格档把未验证计进退出码',
+    /allAssertions\.parseStrictEnv\(process\.env\.MM_SMOKE_CLIP_STRICT\)/.test(mainSrc)
+      && /SMOKE STRICT FLAG ERROR/.test(mainSrc)
+      && /const strictFailures = strictOn \? smokeStrict\.failed : 0;/.test(mainSrc)
+      && /app\.exit\(\(failed\.length \|\| realWriteLeak \|\| strictFailures\)/.test(mainSrc),
+    '解析=' + /parseStrictEnv\(process\.env/.test(mainSrc) + ' ｜ 非法值红=' + /SMOKE STRICT FLAG ERROR/.test(mainSrc)
+      + ' ｜ 退出码接线=' + /strictFailures/.test(mainSrc));
+  check('[STRICT] 默认档：严格档的**每一行额外输出**都在 `if (strictOn)` / `strictOn ?` 门槛之内'
+    + '（拆掉任一门槛 ⇒ 默认档就多打一行 ⇒ 判红）',
+    /if \(strictOn\) \{\r?\n\s+console\.log\('\[smoke\] \*\*严格档已开\*\*/.test(mainSrc)
+      && /if \(r\.unverified && strictOn\) \{/.test(mainSrc)
+      && /const smokeStrict = strictOn \? tally\(results, \{ strict: true \}\) : smokeT;/.test(mainSrc)
+      && /冒烟三态：通过 /.test(mainSrc) && /' ｜ 未验证 ' \+ smokeT\.unverified/.test(mainSrc),
+    '门槛数=' + (mainSrc.match(/if \(strictOn\)/g) || []).length
+      + ' ｜ 默认档三态行仍在=' + /冒烟三态：通过 /.test(mainSrc));
+
+  /* ── 乙档（重，显式开关）：真 Electron 离屏跑两次，判的才是**退出码**（甲档判不了的那一跳） ──
+   * 两次的口径要"只差一个变量"：同样 `SMOKE_ONLY=39`、同样把探针**打桩成环境不可用**
+   * （`MM_SMOKE_INJECT=39-clip-env-down`；本机剪贴板时好时坏，靠真实环境会变成**偶发**判据 ✗），
+   * 唯一差别是 `MM_SMOKE_CLIP_STRICT`。⇒ 严格档必须 1（未验证按失败计）、默认档必须 0（未验证不阻断）。 */
+  if (process.env.MM_IT_SMOKE_STRICT === '1') {
+    const ELECTRON = require('electron');                       // 纯 node 里拿到 electron.exe 的路径（字符串）
+    const runSmoke = (env1) => {
+      const sp = spawnSync(ELECTRON, ['.', '--smoke'], {
+        cwd: ROOT, encoding: 'utf8', timeout: 240000,
+        env: Object.assign({}, process.env, { SMOKE_ONLY: '39', MM_SMOKE_INJECT: '39-clip-env-down' }, env1)
+      });
+      return { code: sp.status, out: String(sp.stdout || '') + String(sp.stderr || '') };
+    };
+    const def = runSmoke({});                                   // 默认档：环境坏 ⇒ 未验证、不阻断
+    const str = runSmoke({ MM_SMOKE_CLIP_STRICT: '1' });        // 严格档：环境坏 ⇒ 未验证按失败计 ⇒ 非 0
+    check('[STRICT·乙] 默认档（开关关）+ 环境坏 ⇒ **exit 0**，且三个数里"未验证 1"可见（既不通过也不算失败）',
+      def.code === 0 && /未验证 1/.test(def.out) && /\[未验证\]/.test(def.out),
+      'exit=' + def.code + ' ｜ 三态行=' + (def.out.split('\n').find((l) => /冒烟三态：通过/.test(l)) || '(无)'));
+    check('[STRICT·乙] 严格档（MM_SMOKE_CLIP_STRICT=1）+ 环境坏 ⇒ **exit ≠ 0**，报文点名"严格档：未验证按失败计"'
+      + '（防"环境坏被降级成未验证 ⇒ 真回归悄悄放过"）',
+      str.code !== 0 && /严格档/.test(str.out) && /未验证按失败计|按失败计/.test(str.out)
+        && /\[未验证\]/.test(str.out),
+      'exit=' + str.code + ' ｜ 严格档行=' + (str.out.split('\n').find((l) => /严格档/.test(l)) || '(无)').slice(0, 160));
+  } else {
+    console.log('[SKIP·**不是通过**] [STRICT·乙] 真 Electron 两次跑未执行（要 `MM_IT_SMOKE_STRICT=1` 才跑；'
+      + '理由：它会让 G4 多一个 Electron 前置、每跑 ≈ 80 s）—— 甲档（纯函数 + 接线）本轮已跑 ✓，'
+      + '退出码那一跳本轮**没有验**（别把这里读成"验过了"）。');
   }
 }
 

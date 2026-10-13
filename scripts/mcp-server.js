@@ -50,8 +50,16 @@ const TOOLS = [
     + 'limit / max_bytes 卡预算（超限会截断并在结果里给续取方式）；'
     + 'no_heat=true 跳过热度日志（**热度日志损坏时可用 no_heat:true 先检索**：排序回到零热度档，'
     + '与从来没有过热度的项目逐字相同）—— 对应 CLI 的 --no-heat；不给它时日志坏了**照旧响亮失败**'
-    + '（失败原因里会点名这条出路）', {
-    project: s('项目名或 JSON 文件路径'), keyword: s('关键词（与 tag 可组合）'),
+    + '（失败原因里会点名这条出路）。'
+    + '**不给 project ⇒ 扫全库**（跨项目检索，对应 CLI 的 `search-all`）：命中来自所有项目、每条带 project，'
+    + '可用 scope 收窄范围（对应 CLI 的 --scope）；跨项目时不合并排序（顺序 = 项目名升序 × 项目内既有顺序），'
+    + '热度逐项目各算各的榜；读不动的项目会被**跳过并在结果里的 skipped 点名**。'
+    + '给了 project 时行为与从前**逐字相同**', {
+    project: s('项目名或 JSON 文件路径。**不给它** ⇒ 扫全库（跨项目检索，对应 CLI 的 `search-all`），'
+      + '每条命中带 project 字段；给了它 ⇒ 只搜这一个项目（行为与从前逐字相同）'),
+    scope: a('可选：**只扫这几个项目**（项目名数组，对应 CLI 的 --scope）—— 只在"不给 project"'
+      + '（扫全库）时有意义；名字写目录名，名单里有库里不存在的项目会**报错并逐个点名**'),
+    keyword: s('关键词（与 tag 可组合）'),
     full: b('全文搜索（detail/caption/节点标签/链接说明）—— 对应 CLI 的 --full'),
     tag: s('按标签过滤：**条目级** `item.tags` 或**节点级** `tags` 含它即命中（对应 CLI 的 --tag）'),
     item_level: b('是否按**条目层**检索（对应 CLI 的反面 `--topic-only`）：默认 true = 搜条目；'
@@ -66,7 +74,7 @@ const TOOLS = [
     since: s('只要写入时间 `at >= ISO` 的条目（给了它就不返回未条目化的节点命中）—— 对应 CLI 的 --since'),
     limit: s('命中条数上界（整数）—— 对应 CLI 的 --limit；非法值当场报错，不静默退化'),
     max_bytes: s('单次返回的**字节**上界（整数）—— 对应 CLI 的 --max-bytes；超限截断 + 给续取方式')
-  }, ['project']),
+  }, []),
   T('backlinks', '查看节点反向链接（谁引用了我，含跨项目反查）', {
     project: s('项目名或 JSON 文件路径'), id: s('节点 id')
   }, ['project', 'id']),
@@ -343,6 +351,39 @@ function runCli(args) {
 }
 
 /**
+ * `search_nodes` 的**共用选项拼装**（`search` 与 `search-all` 两个模式各用一次，但映射只写这一份）。
+ *
+ * 为什么单列：全库档（不给 `project`）与单项目档的差别**只有范围这一维**，其余参数逐字同一个语义
+ * （它们最后落到同一个 `src/item-index.js` 的 `searchItems`）—— 两处各写一遍这份映射，
+ * 迟早一边加参数另一边没加（那正是"同一个开关在两条路上不一样"的病）。
+ *
+ * ⚠️ 取值一律由 CLI 决定：这里只拼参数，**不复制**任何权重/上限（三串热度数字仍只在 `src/heat.js`）。
+ * @param {object} a MCP 工具实参
+ * @param {(k:string)=>string|undefined} argOf 取字符串参数的小助手（与 `callTool` 同一份）
+ * @returns {string[]} 追加在位置参数之后的开关序列
+ */
+function searchNodeFlags(a, argOf) {
+  const c = [];
+  if (a.full) c.push('--full');
+  if (a.tag) c.push('--tag', a.tag);
+  // ---- 条目层扩参（S4）：**只增参数**，既有参数（keyword/full/tag）的语义与返回形状不变 ----
+  // `item_level` 是 `--topic-only` 的**反面**：只有显式 false 才加那个开关（默认口径已是"搜条目"）
+  if (a.item_level === false) c.push('--topic-only');
+  if (argOf('src')) c.push('--src', argOf('src'));
+  if (a.verified === true) c.push('--verified');
+  if (argOf('type')) c.push('--type', argOf('type'));
+  if (argOf('since')) c.push('--since', argOf('since'));
+  if (a.limit !== undefined) c.push('--limit', argOf('limit'));
+  if (a.max_bytes !== undefined) c.push('--max-bytes', argOf('max_bytes'));
+  // ---- 逃生门（热度条第二件）：**只加这一个参数**，直通 CLI 的 `--no-heat`（同一处语义）----
+  // 为什么必须有它：CLI 的坏日志报文里点名"加 --no-heat 先检索"—— 走 MCP 的调用方（AI）
+  // 若传不进这个开关，那条出路就是**指不到东西的死指针**（收报错的人用不了它）。
+  // ⚠️ 取值一律由 CLI 决定：MCP 侧**不复制**任何热度权重/上限（三串数字仍只在 src/heat.js）。
+  if (a.no_heat === true) c.push('--no-heat');
+  return c;
+}
+
+/**
  * 执行一个工具调用。
  *
  * 返回值有两种形态（**协议级 vs 业务级**的边界见上方 RPC 表的注释）：
@@ -382,26 +423,25 @@ function callTool(name, args) {
       return runCli(['get', argOf('project'), argOf('id'), '--json', '--detail', '--images']);
     }
     case 'search_nodes': {
+      // 选项拼装**只有一份**（`searchNodeFlags`）：两个模式（全库 / 单项目）共用它，避免"一边加了
+      // 参数另一边没加"的漂移。位置参数在各自那一支里拼（关键词必须在开关之前）。
+      const flags = searchNodeFlags(a, argOf);
+      // ---- 【W1】不给 `project` ⇒ **扫全库**（= CLI 的 `search-all`）----
+      // 为什么用"省掉 project"而不是新增一个布尔开关：`search-all` 与 `search` 的差别**只有范围这一维**
+      // （其余参数逐字同一个语义），"没有指定项目"就是"全库"最自然的表达。
+      // 工具数不变（51）—— 这是给既有工具**加一个模式**，不是新增工具（判据⑤：一层透传）。
+      // `scope` 只在这个模式里有意义（数组 → CLI 的逗号列表）。
+      if (!argOf('project')) {
+        const c = ['search-all'];
+        if (a.keyword) c.push(a.keyword);
+        const scope = Array.isArray(a.scope) ? a.scope.join(',') : argOf('scope');
+        if (scope) c.push('--scope', scope);
+        return runCli(c.concat(flags, ['--json']));
+      }
+      // 给了 `project` ⇒ 只搜这一个项目（行为与从前**逐字相同**：同一个命令、同一组开关）
       const c = ['search', argOf('project')];
       if (a.keyword) c.push(a.keyword);
-      if (a.full) c.push('--full');
-      if (a.tag) c.push('--tag', a.tag);
-      // ---- 条目层扩参（S4）：**只增参数**，既有参数（keyword/full/tag）的语义与返回形状不变 ----
-      // `item_level` 是 `--topic-only` 的**反面**：只有显式 false 才加那个开关（默认口径已是"搜条目"）
-      if (a.item_level === false) c.push('--topic-only');
-      if (argOf('src')) c.push('--src', argOf('src'));
-      if (a.verified === true) c.push('--verified');
-      if (argOf('type')) c.push('--type', argOf('type'));
-      if (argOf('since')) c.push('--since', argOf('since'));
-      if (a.limit !== undefined) c.push('--limit', argOf('limit'));
-      if (a.max_bytes !== undefined) c.push('--max-bytes', argOf('max_bytes'));
-      // ---- 逃生门（热度条第二件）：**只加这一个参数**，直通 CLI 的 `--no-heat`（同一处语义）----
-      // 为什么必须有它：CLI 的坏日志报文里点名"加 --no-heat 先检索"—— 走 MCP 的调用方（AI）
-      // 若传不进这个开关，那条出路就是**指不到东西的死指针**（收报错的人用不了它）。
-      // ⚠️ 取值一律由 CLI 决定：MCP 侧**不复制**任何热度权重/上限（三串数字仍只在 src/heat.js）。
-      if (a.no_heat === true) c.push('--no-heat');
-      c.push('--json');
-      return runCli(c);
+      return runCli(c.concat(flags, ['--json']));
     }
     case 'backlinks': return runCli(['backlinks', argOf('project'), argOf('id'), '--json']);
     case 'related': {

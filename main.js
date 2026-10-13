@@ -1468,6 +1468,27 @@ async function runSmoke(win) {
     app.exit(1);
     return;
   }
+  // ── 严格档开关（`MM_SMOKE_CLIP_STRICT`，**默认关**；解析只有一处 = 上面那个模块的 `parseStrictEnv`）──
+  /* 为什么要有它（补的是三态判据的已知盲区）：第三态"未验证"让环境问题不再冒充产品缺陷 ✓，
+   * 但它同时开了一个口子 —— **环境坏的时候，产品真回归也会被降级成"未验证"**（探针说不可用 ⇒
+   * 我们连"值对不对"都无从判）⇒ 在 CI / 受控环境里我们想要"**宁可红，不许悄悄放过**"。
+   * 语义（开关打开时）：`unverified` 那几条**如实打印、仍点名原因**，但**按失败计**
+   * （进失败计数、进总数、并让退出码 ≠ 0）；关着时与加它之前**逐字节相同**（三个数、报文、退出码都不动 ✓）。
+   * ⚠️ 值非法必须**当场红**：静默落回某一档等于"你以为在受控环境里跑，其实没有" ✗
+   *   （照 `SMOKE SELECTION ERROR` / `SMOKE ENV ERROR` 先例：不打任何断言、exit 1 ✓）。 */
+  const strictFlag = allAssertions.parseStrictEnv(process.env.MM_SMOKE_CLIP_STRICT);
+  if (!strictFlag.ok) {
+    console.log('SMOKE STRICT FLAG ERROR — MM_SMOKE_CLIP_STRICT 的值非法：' + strictFlag.reason);
+    console.log('（本轮**没有**跑任何断言，绝不能算通过；开关语义见 scripts/smoke-assertions.js 的 `parseStrictEnv`）');
+    app.exit(1);
+    return;
+  }
+  const strictOn = strictFlag.strict;
+  if (strictOn) {
+    console.log('[smoke] **严格档已开**（MM_SMOKE_CLIP_STRICT='
+      + JSON.stringify(process.env.MM_SMOKE_CLIP_STRICT) + '）：任何"未验证"一律**按失败计**'
+      + '（进失败计数、进总数、并让退出码 ≠ 0）—— 环境坏时宁可红，不许悄悄放过 ✓');
+  }
   // ── 环境守卫：跑不了就必须**响亮失败** ──────────────────────────────────────
   // 教训（本轮真的发生了）：单实例锁一度把冒烟那个实例挡在门外，冒烟**一条断言都没跑**，
   // 而 G5 只用 2.2s 就被判"通过" ✗ —— 门禁静默空转比报错危险得多。
@@ -1758,6 +1779,10 @@ async function runSmoke(win) {
    * 后者才是"这一轮验了多少条"。两个数都打印，别拿一个替代另一个（`B1`：计数口径一处定义 = `tally()`）。 */
   const tally = allAssertions.tally;
   const smokeT = tally(results);
+  /* 严格档读数：**同一个 `tally()`**，只是换一档口径（开关关着时直接复用上面那份，不再算一遍）——
+   * 未验证在这一档进 `failed`，于是也进 `total`：默认档那个"两个数都不进"的口子在严格档里被关掉 ✓。
+   * 两档都由 `tally()` 算（`B1` 计数口径一处定义），这里**不许**自己再数一份 ✗。 */
+  const smokeStrict = strictOn ? tally(results, { strict: true }) : smokeT;
   let visionStart = -1;   // 视觉断言在 results 里的起始下标（-1 = 没跑）
   // 截图（工程根 smoke-shot.png）+ 落一份**旁路取景记录** smoke-frame.json。
   // 顺序不可交换：先做取景准备（展开全树/禁过渡/清状态栏/等 ≥2 帧），再截图 —— 见 prepareCapture。
@@ -1857,6 +1882,14 @@ async function runSmoke(win) {
     // 「未验证」**必须响亮**：形状照第八批"快照指纹没采到"那一档 —— 既不打 PASS 也不打 FAIL，
     // 单独一行说清"本项未验证 + 为什么"，免得被读成"这条没问题"（比不打更危险的是**打错**）。
     if (r.unverified) console.log('[smoke] ' + r.unverified);
+    /* 严格档：上面那句"不计入通过/失败计数、不阻断"是**默认档**的口径 ⇒ 这里必须当场改口，
+     * 否则报文会自相矛盾（读的人会以为这条真的没进失败）。**如实打印与点名原因一个字都不少** ✓，
+     * 变的只是"它算不算失败"（这条判据的存在意义就是这个）。 */
+    if (r.unverified && strictOn) {
+      console.log('[smoke] ⚠ **严格档**（MM_SMOKE_CLIP_STRICT 已开）：上面这条"未验证"**按失败计**'
+        + '（进失败计数、进总数、并让 exit code ≠ 0）；上一行那句"不计入总数、不阻断"是**默认档**的口径。'
+        + '环境坏时宁可红，不许悄悄放过 ✓');
+    }
   });
   const head = filtered ? '==== 过滤运行 ' : '==== ';
   console.log(head + part(0, smokeCount) + ' passed ====');
@@ -1870,6 +1903,17 @@ async function runSmoke(win) {
       ? '不计入前两个数、也不阻断（exit code 不看它）；理由见上面的 `[smoke]` 行'
       : '一条也没有')
     + '）====');
+  /* 严格档的**第二行读数**（开关关着时一行都不打 ⇒ 与加它之前逐字节相同 ✓）：
+   * 它把"未验证"从"既不算通过也不算失败"改成"算失败"，所以两个数都会变 —— 必须**同批打出来**，
+   * 否则读的人会拿默认档的"通过/总数"去解释一个非 0 的退出码（那是同一份输出的两种说法 ✗）。 */
+  if (strictOn) {
+    console.log('==== 严格档（MM_SMOKE_CLIP_STRICT 开）：未验证按失败计 ⇒ 通过 ' + smokeStrict.passed
+      + ' / 总数 ' + smokeStrict.total + '（总数**含**那 ' + smokeStrict.unverified + ' 条未验证）'
+      + (smokeStrict.unverified
+        ? ' ｜ 本轮"未验证"不再享受默认档的豁免 ⇒ exit code = 1 ✓'
+        : ' ｜ 本轮没有"未验证"项 ⇒ 与默认档读数一致 ✓')
+      + ' ====');
+  }
   console.log('==== 视觉断言（L2 关键区域）: ' + part(visionFrom, results.length) + ' passed ====');
   if (results.length > smokeCount) {
     console.log('==== 另有 ' + (results.length - smokeCount) + ' 条非冒烟结果（取景记录 + 视觉断言），不计入冒烟断言数 ====');
@@ -1890,7 +1934,11 @@ async function runSmoke(win) {
       + '）｜ 每次尝试的读数=' + JSON.stringify(tempSweep.trace || [])
       + ' ｜ ' + SMOKE_PROJECTS_DIR
       + ' ⇒ 这就是"每跑一次在 %TEMP% 留一个空壳"的现象；读数已如实打印（既不当 PASS 也不当 FAIL）'));
-  app.exit((failed.length || realWriteLeak) ? 1 : 0);   // 真实数据被动过 ⇒ 即便断言全绿也判红 ✓
+  /* 退出码 = 三样：真失败的断言 · 真实数据被动过 · **严格档下被计成失败的"未验证"**。
+   * ⚠️ 开关关着时这一项恒为 0（短路）⇒ 退出码与加它之前完全一致 ✓；数量由 `tally()` 的严格档读数给，
+   * 这里不自己数（`B1`）。 */
+  const strictFailures = strictOn ? smokeStrict.failed : 0;
+  app.exit((failed.length || realWriteLeak || strictFailures) ? 1 : 0);   // 真实数据被动过 ⇒ 即便断言全绿也判红 ✓
 }
 
 /* ---------------- 离屏导出 PNG（--export-image <项目> <输出.png>） ----------------

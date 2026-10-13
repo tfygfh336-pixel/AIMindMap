@@ -33,7 +33,7 @@
 | 级别 | 含义 | 命令 |
 |------|------|------|
 | **稳定** | 名称、参数、JSON 字段结构不会在非大版本中变更 | 数据读写类：`read`/`list`/`get`/`search`/`add`/`edit`/`move`/`remove`/`validate`/`validate-all`/`projects`/`stats`/`assets`/`files`/`init` |
-| **演进中** | 可用，但字段可能增补（不影响既有字段） | 树与资源：`backlinks`/`related`/`orphans`/`mentions`/`clone`/`add-root`/`expand-depth`/`theme-layout`/`link`/`unlink`/`links`/`links-prune`/`add-image`/`remove-image`/`add-file`/`remove-file`<br>导入导出：`import-md`/`import-project`/`import-dir`/`export-md`/`export-json`/`export-html`/`import-json`<br>事务（操作清单一次生效）：`apply`<br>条目层写原语（契约 `docs/ITEM-MODEL.md` §3）：`item-add`/`item-edit`/`item-remove`/`item-move`/`item-order`/`render-detail`、`migrate`（`migrate items` 子命令：v2→v3 条目层迁移）<br>条目层复校与体检：`recheck`/`health`<br>关联笔记：`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`<br>AI 问答：`ask`/`ask-apply`<br>界面协作：`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`<br>历史：`changes`/`changelog`<br>访问热度：`visit`/`heat` |
+| **演进中** | 可用，但字段可能增补（不影响既有字段） | 树与资源：`backlinks`/`related`/`orphans`/`mentions`/`clone`/`add-root`/`expand-depth`/`theme-layout`/`link`/`unlink`/`links`/`links-prune`/`add-image`/`remove-image`/`add-file`/`remove-file`<br>导入导出：`import-md`/`import-project`/`import-dir`/`export-md`/`export-json`/`export-html`/`import-json`<br>事务（操作清单一次生效）：`apply`<br>条目层写原语（契约 `docs/ITEM-MODEL.md` §3）：`item-add`/`item-edit`/`item-remove`/`item-move`/`item-order`/`render-detail`、`migrate`（`migrate items` 子命令：v2→v3 条目层迁移）<br>条目层复校与体检：`recheck`/`health`<br>关联笔记：`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`<br>AI 问答：`ask`/`ask-apply`<br>界面协作：`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`<br>历史：`changes`/`changelog`<br>访问热度：`visit`/`heat`<br>跨项目检索：`search-all`（一次扫全库，每条命中带 `project`；`--scope` 收窄范围） |
 | **内部** | 工程维护用，不保证兼容 | `docs-gen`/`release` |
 
 > **`clone` 的条目级边口径（v3，2026-10）**：仍列「**演进中**」—— 名称、既有参数与既有 JSON 面未变，
@@ -70,6 +70,16 @@
 > 没有任何东西会红 ✗。现在有门禁了 ⇒ 新增/改名/删除命令时本表与 `cli/registry.js` 要**同批**改 ✓。
 > 判"放哪一级"是人的判断（门禁只判"有没有落在某一级"）：会被外部工具/AI 依赖的放**演进中**，
 > 工程自用的放**内部**。
+>
+> **新增的那条命令是 `search-all`（W1，2026-10-13）** —— 为什么是「**演进中**」：它会被外部 AI 当检索
+> 入口长期依赖，但**返回面还在长**（本件只保证 `{keyword,tag,scoped,scope,scanned,hits,hitCount,truncated,mode,budget,heat}`
+> 这些字段先生效；W4 的混合检索/权重、W2 的时效、W3 的语义一路一路都会往这里加**新字段**），
+> 所以不放进「**稳定**」那一格（那一格的承诺是"字段结构不在非大版本中变更"）。
+> 它**不是**新的一套检索：选项面 = `search` 那一套 + `--scope`，逐个项目转发给**同一个**
+> `src/item-index.js` 的 `searchItems` ⇒ 过滤/命中形状/预算口径/热度排序都只有那一份实现
+> （排序唯一实现处仍是 `orderByHeat`；跨项目**不做重排**，理由写在 `cli/commands/project.js` 的 `scanAll`）。
+> 两条硬上限（命中总数 / 扫描耗时）与它们的报文在 `src/item-index.js` 的 `scanGate`（唯一一处）；
+> MCP 侧**不新增工具**（仍是 51 个）：`search_nodes` 少给 `project` 即走全库档、`scope` 收窄。
 
 ### 1.3 MCP 工具（面向支持 MCP 的 agent）
 

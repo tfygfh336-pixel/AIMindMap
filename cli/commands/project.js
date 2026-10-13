@@ -309,6 +309,202 @@ function printDirRefReport(out, reps, dry) {
   if (dry) out('（以上是**预览**：--dry-run 不复制文件、不建目录、不改任何数据 ✓）');
 }
 
+/* ---------------- 【W1】跨项目检索（`search-all`）的两块命令层零件 ----------------
+ * 为什么在命令层而不是 `src/`：这里要**读盘**（`ctx.store.list()` / `store.read` / 热度日志路径），
+ * 而 `src/item-index.js` 的三条纪律里明写"不读盘、不认识项目名"（命中对象的 `project` 由命令层附加，
+ * 与 `src/query.js` 的 computeStats 先例同一个分工）。
+ * 判定与数值**一处都不在这里**：匹配/命中形状/预算/上限/热度权重全在上游那一份实现里 ✓
+ *   · 匹配与命中形状：`src/item-index.js` 的 `searchItems`（**唯一实现**，本文件不再写第二套匹配）
+ *   · 排序：`orderByHeat`（**唯一实现**）—— 本命令**不做跨项目重排**（理由见 `searchAll` 的注释）
+ *   · 两条硬上限与扫描闸门：`itemIndex.scanGate`（数字与报文都在那里）
+ */
+
+/** 项目名比较：**升序**（`store.list()` 是 readdir 序，跟着文件系统漂 ✗ ⇒ 扫描顺序必须自己定死） */
+function compareProjectNames(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }
+
+/** 库里全部项目名（升序 = **确定序**，与"哪个项目先被扫到"这件事绑死 ⇒ 输出可复现） */
+function storeProjectNames(ctx) {
+  return ctx.store.list().map((p) => p.name).sort(compareProjectNames);
+}
+
+/**
+ * `--scope a,b` → 要扫的项目名列表（**唯一实现处**，纯函数 ⇒ 可单测）。
+ *
+ * 三条口径（都为了"不静默"）：
+ *   ① 逗号分隔、trim、丢空串；重复项按**第一次出现**算（`--scope a,a` 不扫两遍）；
+ *   ② 给了 `--scope` 却**一个名字都没有**（裸写 / 空串 / 只有逗号）⇒ **报错**，
+ *      绝不"当成全库"—— 那是"参数写错了却拿到全量结果"的静默 ✗；
+ *   ③ 名单里有库里**不存在**的项目 ⇒ 报错并**逐个点名** + 列出库里现有什么（"我怎么写才对"）。
+ * 没给 `--scope` ⇒ 全库（全部名字）。
+ * ⚠️ 返回的名单**一律升序**（= 扫描顺序）：这样"顺序 = 项目名升序"这条承诺**与调用方给的顺序无关**，
+ *    由本函数自己成立（调用方少排一次也不会悄悄改变输出顺序）。
+ *
+ * @param {*} raw `ctx.args.scope`（`true` = 裸写；`string` = 用户给的值；`undefined` = 没给）
+ * @param {string[]} all 库里全部项目名
+ * @returns {{ok:true, names:string[], scoped:boolean} | {ok:false, message:string}}
+ */
+function scopeList(raw, all) {
+  const names = (Array.isArray(all) ? all.slice() : []).sort(compareProjectNames);
+  if (raw === undefined || raw === null) return { ok: true, names: names, scoped: false };
+  if (raw === true || String(raw).trim() === '') {
+    return { ok: false, message: '--scope 需要一个项目名列表（逗号分隔，如 `--scope 项目甲,项目乙`）'
+      + '；想扫全库就别给 --scope。' };
+  }
+  const want = [];
+  String(raw).split(',').forEach((x) => {
+    const n = x.trim();
+    if (n && want.indexOf(n) < 0) want.push(n);
+  });
+  if (!want.length) {
+    return { ok: false, message: '--scope 里一个项目名都没有（给的是 `' + String(raw) + '`）—— '
+      + '它要么写成 `--scope 项目甲,项目乙`，要么整个去掉（去掉 = 扫全库）。' };
+  }
+  const missing = want.filter((n) => names.indexOf(n) < 0);
+  if (missing.length) {
+    return { ok: false, message: '--scope 点名的项目不在库里：' + missing.join(' / ')
+      + '。库里现有 ' + names.length + ' 个项目：' + (names.length ? names.join(' / ') : '（一个都没有）')
+      + ' —— 名字要写目录名（`projects/` 下那一层），不是 meta.name。' };
+  }
+  return { ok: true, names: want.slice().sort(compareProjectNames), scoped: true };
+}
+
+/**
+ * **全库扫描**（`searchAll` 的骨架；单列出来是为了让命令体只剩"参数 → 输出"这一段）。
+ *
+ * 契约（判据靠它们，见 `.review/20261010-卖点与功能-常驻讨论/待做清单.md` W1 一节）：
+ *   · 逐个项目调**同一个** `searchItems`（匹配/过滤/预算口径全在那一处）⇒ 每个项目的分片与
+ *     `search <项目> <关键词>` **逐条同序**（含它自己的热度榜）；
+ *   · **不做跨项目重排**：合并顺序 = 项目名升序 × 项目内既有顺序。理由两条：① 排序的唯一实现是
+ *     `src/item-index.js` 的 `orderByHeat`，跨项目比分数会是**第二份排序实现** ✗；② nodeId 只在
+ *     项目内唯一，跨项目按 nodeId 取热度会串项目（p1 的 `nd-1` 与 p2 的 `nd-1` 会互相冒充）。
+ *   · 命中对象**加一个 `project` 字段**（其余字段逐字来自 `searchItems`，不改名不改义）；
+ *   · 两条硬上限每扫完一个项目判一次 ⇒ 越限**响亮报错**（`ctx.error` ⇒ 退出码 1 + stdout 以
+ *     `error: ` 开头），**不返回半份结果**；
+ *   · **读不动的单个项目：跳过，但必须看得见**（`skipped[]` + 文本档点名 + 汇总行写"跳过 N 个"）——
+ *     为什么不是"整体失败"：那是**别人项目**的坏数据（与 `originIndexAcrossStore` 面对"读不动的项目"
+ *     同一个处境），为一个无关文件让整库检索不可用并不划算；但**也绝不静默**：调用方（AI）
+ *     必须能看出"这次命中里没有它的内容"（否则它会把 `hitCount` 当成整库的全部 ✗）。
+ *
+ * @returns {{hits:Array, hitCount:number, scanned:string[], skipped:Array, mode:string, heatOf:Array, heatInfo:object}}
+ */
+function scanAll(ctx, opts) {
+  const o = opts || {};
+  const nh = o.noHeat;
+  const scanned = [];
+  const skipped = [];
+  const hits = [];
+  const heatOf = [];
+  let hitCount = 0;
+  let weights = null;                          // 任一项目取到的热度权重表（各项目同一个常量表；取到就用它）
+  const t0 = Date.now();                       // ← 唯一读时钟的地方（判定本身在 itemIndex.scanGate，纯函数）
+
+  for (let i = 0; i < o.names.length; i++) {
+    const name = o.names[i];
+    let root = null;
+    try {
+      root = ctx.store.read(name).data;
+    } catch (err) {
+      const why = String((err && err.message) || err);
+      // 坏了就跳过 —— 但记进 `skipped`，由输出层**逐个点名**（"少扫一个项目"这件事必须可见）
+      skipped.push({ project: name, reason: why });
+      continue;
+    }
+    // ---- 热度：**逐项目**读它自己那份日志 ----
+    // 读法/坏日志判定与 `search` **共用 `readHeatBoostFor`**（连报文与三条出路都只有那一份）。
+    // 日志坏了 ⇒ 与 `search` 同一条纪律（F1：不许静默当 0）：一起失败，并点名**是哪个项目**。
+    const heatOne = readHeatBoostFor(ctx, name, !!nh);
+    const heatRead = heatOne.read;
+    const boost = heatOne.boost;
+    if (heatOne.weights) weights = heatOne.weights;
+
+    const r = itemIndex.searchItems(root && root.data, {
+      keyword: o.keyword, tag: o.tag, full: o.full, topicOnly: o.topicOnly,
+      src: o.src, verified: o.verified, type: o.type, since: o.since,
+      // 本次**不卡调用方预算**（预算在合并之后一次算）：给"上限+1"与不设字节上限，
+      // 于是每个项目的 `hits` 是完整的、`hitCount` 更是截断前的真值 ⇒ 上游超限绝不会被这里藏住 ✓
+      limit: itemIndex.SCAN_MAX_HITS + 1, maxBytes: Number.MAX_SAFE_INTEGER,
+      heat: boost
+    });
+    // 参数错（缺关键词 / --verified 写错 / --topic-only 与条目级过滤同给…）在这一层按项目重复出现，
+    // 报文本身就点名了问题 ⇒ 点名项目后一起抛出（第一条就停，不会刷屏）
+    if (!r.ok) ctx.error('项目「' + name + '」：' + r.message);
+
+    r.hits.forEach((h) => hits.push(Object.assign({ project: name }, h)));
+    hitCount += r.hitCount;
+    scanned.push(name);
+    const hotHits = boost ? r.hits.filter((h) => boost.byNode.has(h.nodeId)).length : 0;
+    heatOf.push({
+      project: name,
+      applied: !!(boost && hotHits > 0),
+      reason: nh ? '被 --no-heat 显式关闭'
+        : !heatRead.exists ? 'no-log'
+          : (!boost.rankedNodes ? 'log-empty' : (hotHits ? 'ok' : 'no-hit')),
+      rankedNodes: boost ? boost.rankedNodes : 0,
+      hitNodes: hotHits,
+      log: (heatRead && heatRead.exists) ? {
+        bytesRead: heatRead.log.bytesRead, fileBytes: heatRead.log.fileBytes,
+        windowComplete: heatRead.log.complete
+      } : null
+    });
+
+    // ---- 两条硬上限：**每扫完一个项目判一次** ⇒ 越限当场停、不返回半份（判据③）----
+    const gate = itemIndex.scanGate({ hits: hitCount, projects: scanned.length, elapsedMs: Date.now() - t0, project: name });
+    if (!gate.ok) ctx.error(gate.message);
+  }
+
+  return {
+    hits: hits, hitCount: hitCount, scanned: scanned, skipped: skipped, heatOf: heatOf,
+    mode: o.mode,
+    heatInfo: {
+      applied: heatOf.some((h) => h.applied),
+      reason: nh ? '被 --no-heat 显式关闭'
+        : heatOf.every((h) => h.reason === 'no-log') ? 'no-log'
+          : (!heatOf.some((h) => h.rankedNodes > 0) ? 'log-empty'
+            : (heatOf.some((h) => h.reason === 'ok') ? 'ok' : 'no-hit')),
+      // 权重表只从 `src/heat.js` 现取（本文件一个热度数字都不写）
+      weights: o.weights || heat.searchRankOf(),
+      windowDays: heat.WINDOW_DAYS,
+      rankedNodes: heatOf.reduce((n, h) => n + h.rankedNodes, 0),
+      hitNodes: heatOf.reduce((n, h) => n + h.hitNodes, 0),
+      perProject: heatOf
+    }
+  };
+}
+
+/**
+ * 读**一个项目**的热度榜，并折成排序向量（`search` 与 `search-all` **共用的唯一一处**）。
+ *
+ * 为什么必须共用：`src/heat.js` 的 `searchBoost(` 在命令层只许有**一个调用点**
+ * （`tests/search-heat.test.js` 的 A4 机械钉着它）—— 那是"排序只由热度**重排**、不由第二处打分"
+ * 的结构保证；而"坏日志 ⇒ 响亮失败 + 三条出路"的报文同理（两处各写一遍迟早变成两种行为）。
+ *
+ * 口径（与从前逐字一致，只是搬进了这里）：
+ *   · `noHeat = true` ⇒ **完全不碰**（不读、不排序）—— 这就是 `--no-heat` 的语义，返回全空；
+ *   · 读失败（坏行 / 未知通道 / 乱序 / 未来时间戳）⇒ **响亮报错**并点名**是哪个项目**的日志，
+ *     报文末尾给三条出路（含 `--no-heat`）—— 只说"坏了"不够，调用方得知道还能怎么拿到结果；
+ *   · 本机没有日志 ⇒ 不是"热度为 0"，而是"本机没有采到数据"（`no-log`），如实带回。
+ *
+ * @param {object} ctx
+ * @param {string} name 项目名（`store.visitLogFile` 是日志路径的**唯一推导处**，这里不拼路径）
+ * @param {boolean} noHeat `--no-heat` 的取值
+ * @returns {{read:object|null, boost:object|null, weights:object|null}}
+ *   `read` = `heat.readHeatFile` 的原样结果（没日志时 `exists:false`）；`boost` = `heat.searchBoost` 产物
+ */
+function readHeatBoostFor(ctx, name, noHeat) {
+  if (noHeat) return { read: null, boost: null, weights: null };
+  let read = null;
+  try {
+    read = heat.readHeatFile(ctx.store.visitLogFile(name), { now: Date.now() });
+  } catch (err) {
+    ctx.error('项目「' + name + '」的热度日志读不了：' + String((err && err.message) || err)
+      + '\n出路三条（任选）：① 加 `--no-heat` **先检索**（跳过热度日志：不读、不写、不排序，'
+      + '排序回到"零热度档"，与从来没有过热度的项目逐字相同）；② 修掉上面点名的那几行；'
+      + '③ 删掉该日志（旁路产物、可随时删）。');
+  }
+  const boost = read.exists ? heat.searchBoost(read.heat) : null;
+  return { read: read, boost: boost, weights: boost ? boost.weights : null };
+}
+
 module.exports = {
   projects(ctx) {
     const list = ctx.store.list();
@@ -438,19 +634,11 @@ module.exports = {
     //   （`--json` 里如实写 `heat.reason`）。
     const nh = itemIndex.parseFlag(ctx.args.noHeat);   // 布尔开关照 --verified 先例：只认 true/false/裸写
     if (!nh.ok) ctx.error('--no-heat ' + nh.reason);
-    let heatRead = null;
-    if (!nh.value) {
-      try {
-        heatRead = heat.readHeatFile(ctx.store.visitLogFile(ctx.projectName), { now: Date.now() });
-      } catch (err) {
-        // 报错里**点名出口**：只说"坏了"不够，调用方得知道还能怎么拿到结果（三条出路写在报文里）
-        ctx.error(String((err && err.message) || err)
-          + '\n出路（三条任选）：① 加 `--no-heat` **先检索**（跳过热度日志：不读、不写、不排序，'
-          + '排序回到"零热度档"，与从来没有过热度的项目逐字相同）；② 修掉上面点名的那几行；'
-          + '③ 删掉该日志（旁路产物、可随时删）。');
-      }
-    }
-    const boost = (heatRead && heatRead.exists) ? heat.searchBoost(heatRead.heat) : null;
+    // 读榜与折成排序向量：**与 `search-all` 共用这一处**（见 `readHeatBoostFor`：坏日志的报文与三条出路
+    // 也只有一份 —— 两处各写一遍必然漂移成两种行为）
+    const heatOfOne = readHeatBoostFor(ctx, ctx.projectName, nh.value);
+    const heatRead = heatOfOne.read;                   // 原本那份 `readHeatFile` 结果（--no-heat 时是 null）
+    const boost = heatOfOne.boost;
 
     const r = query.searchNodes(ctx.root, {
       keyword: ctx.args._[1], tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
@@ -508,6 +696,126 @@ module.exports = {
         + '本次返回到的命中里 ' + hotHits + ' 个带热度。口径见 src/heat.js 的 SEARCH_RANK（唯一一处）');
     }
     if (r.truncated && r.budget.resume) ctx.out(r.budget.resume);
+  },
+
+  /**
+   * 【W1】`search-all` —— **一次检索扫全库**（跨项目），每条命中带 `project`。
+   *
+   * 为什么它值（`卖点.md` 卖点 1）：卖点 1 那句"**AI 不必每次上网搜**"的技术前提就是它 ——
+   * 从前 `search` 必须点名**单个**项目，"整库当一库用"便无从谈起（跨项目只能靠 `mentions --cross` /
+   * `backlinks` 这类专门命令）。它是"经验库"被人/AI 当作**一个**知识库检索的入口。
+   *
+   * 形状（**复用 `search` 那一套，不另起**）：
+   *   · 关键词/标签/过滤/匹配/命中形状/预算口径 = 逐个 项目 调同一个 `itemIndex.searchItems`；
+   *   · 热度 = 逐项目读**它自己**那份日志（`heat.readHeatFile` + `heat.searchBoost`），
+   *     排序仍由 `orderByHeat` 在 `searchItems` 内部完成 ⇒ 每个项目的分片与 `search <该项目>` 逐条同序；
+   *   · **不做跨项目重排**（理由写在 `scanAll` 的契约段：那是第二份排序实现 ✗，且 nodeId 项目内唯一）；
+   *   · `--no-heat` 与 `search` **同一个开关、同一处语义**（完全不碰热度日志：不读、不写、不排序）。
+   *
+   * 三条"不许静默"（判据③，见待做清单 W1 一节）：
+   *   ① 两条硬上限（`itemIndex.scanGate`：命中总数 / 扫描耗时）越限 ⇒ **报错**，不是截断；
+   *   ② `--limit` / `--max-bytes` 截断 ⇒ 如实说（`truncated` + 续取方式）—— 它不是错误，是调用方的预算；
+   *   ③ 某个项目的**热度日志坏了** ⇒ **整体失败并点名那个项目**（与 `search` 同一条纪律：不许静默按 0 排，
+   *      出路是 `--no-heat`）；某个项目的**数据读不出来** ⇒ **跳过它，但在 `skipped` 与文本档里逐个点名**
+   *      （理由见 `scanAll` 的契约段：那是别人项目的坏数据，不该让整库检索不可用；但**绝不当它不存在**）。
+   */
+  searchAll(ctx) {
+    const limit = ctx.intOption('limit', { min: 1, max: itemIndex.LIMIT_MAX, def: itemIndex.DEFAULT_LIMIT });
+    const maxBytes = ctx.intOption('maxBytes', { min: itemIndex.MIN_MAX_BYTES, max: itemIndex.MAX_BYTES_MAX, def: itemIndex.DEFAULT_MAX_BYTES });
+    const js = !!ctx.args.json;
+
+    const nh = itemIndex.parseFlag(ctx.args.noHeat);
+    if (!nh.ok) ctx.error('--no-heat ' + nh.reason);
+
+    // ---- 参数闸门**前置**（在碰任何盘之前的唯一一次判定）----
+    // 为什么拿一棵空树跑一次同一个 `searchItems`：① 缺关键词 / --verified 写错 / --topic-only 与
+    // 条目级过滤同给 —— 这些**纯参数**错的判定与报文只有那一处实现，命令层不再复制一份条件表 ✗；
+    // ② `mode` 也从那一处拿（不在命令层重写 'items' / 'topic-only' 的映射，否则就是第二份口径）。
+    const probe = itemIndex.searchItems({ id: '', topic: '', children: [] }, {
+      keyword: ctx.args._[0], tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
+      src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since
+    });
+    if (!probe.ok) ctx.error(probe.message);
+
+    // ---- 范围：库里的项目（名字升序 = 确定序）+ `--scope` 收窄 ----
+    const names = storeProjectNames(ctx);
+    const sc = scopeList(ctx.args.scope, names);
+    if (!sc.ok) ctx.error(sc.message);
+
+    const scan = scanAll(ctx, {
+      names: sc.names, keyword: ctx.args._[0],
+      tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
+      src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
+      noHeat: nh.value, mode: probe.mode
+    });
+
+    // ---- 卡预算（**合并之后**一次算；实现与 `searchItems` 共用同一个 `budgeted`）----
+    const b = itemIndex.budgeted(scan.hits, limit, maxBytes);
+
+    /* ---- 埋点（热度条第三件 · C）：按**项目**分组记 `ai-search-hit`。
+     * 口径与 `search` 一致且只有这一处：记的是**本次真的返回了的**命中（已过 --limit/--max-bytes），
+     * 顺序 = 返回顺序；`--no-heat` ⇒ 一条都不记（"别碰热度"是双向的）。
+     * ⚠️ 与 `search` 的差别只有一个、且是必须的：命中跨项目 ⇒ 逐个项目记进**它自己**那份日志
+     * （p1 的命中记进 p1 的榜；`store.visitLogFile` 仍是路径的唯一推导处）。
+     * ⚠️ 位置：在**两条硬上限的闸门之后**（越限时一条都不记）：报错路径与"不给半份结果"同一精神。 */
+    if (!nh.value) {
+      const byProject = new Map();
+      b.hits.forEach((h) => {
+        if (!byProject.has(h.project)) byProject.set(h.project, []);
+        byProject.get(h.project).push(h.nodeId);
+      });
+      byProject.forEach((ids, pname) => ctx.recordVisit('ai-search-hit', ids, { project: pname }));
+    }
+
+    const heatInfo = scan.heatInfo;
+    const scopeShown = sc.names;
+    if (js) {
+      ctx.outJson({
+        keyword: ctx.args._[0] === undefined ? null : ctx.args._[0], tag: ctx.args.tag || null,
+        scoped: sc.scoped, scope: scopeShown, scanned: scan.scanned, skipped: scan.skipped,
+        hits: b.hits, hitCount: scan.hitCount, truncated: b.truncated, mode: scan.mode,
+        budget: b.budget, heat: heatInfo
+      });
+      return;
+    }
+
+    b.hits.forEach((h) => ctx.out(h.project + '/' + h.nodeId + (h.itemId ? '#' + h.itemId : '')
+      + '  ' + h.nodeTopic
+      + (h.matchIn && h.matchIn !== 'topic' ? '  [' + h.matchIn + ']' : '')
+      + (h.snippet ? '  …' + h.snippet + '…' : '')));
+    // ---- 汇总行：**零结果也必须有一行**（判据②：不是空输出）----
+    // 一页里最多列 12 个项目名（库很大时那行会长到看不清）；更多就明说全名单在 --json 里 —— 列表被省掉这件事本身可见 ✓
+    const shown = scan.scanned.length > 12
+      ? scan.scanned.slice(0, 12).join(' / ') + ' …（还有 ' + (scan.scanned.length - 12) + ' 个，完整名单在 --json 的 scanned）'
+      : scan.scanned.join(' / ');
+    // 跳过的项目**必须出现在汇总行里**（否则"命中 N 条"会被读成整库的全部 ✗）
+    const skipNote = scan.skipped.length ? '（⚠ 另有 ' + scan.skipped.length + ' 个项目没扫成，见下）' : '';
+    if (scan.hitCount === 0) {
+      ctx.out('命中 0 条 —— 这是**明确的零结果**（不是空输出）：关键词「' + (ctx.args._[0] || '') + '」'
+        + (ctx.args.tag ? '标签「' + ctx.args.tag + '」' : '')
+        + '在扫过的 ' + scan.scanned.length + ' 个项目里都没有命中' + skipNote
+        + (scan.scanned.length ? '（' + shown + '）' : '——**库里一个项目都没有**（`projects/` 下还没有 `<项目>/<项目>.json`）')
+        + '。换个关键词 / 去掉 --tag / 用 `search <项目> <关键词>` 到单个项目里再确认一次。');
+    } else {
+      ctx.out('命中 ' + scan.hitCount + ' 条' + (b.truncated ? '（本次返回 ' + b.hits.length + ' 条，已截断）' : '')
+        + '｜扫了 ' + scan.scanned.length + ' 个项目' + skipNote + '：' + shown
+        + '｜预算 ' + b.budget.bytes + ' B ≈ ' + b.budget.estTokens + ' token（--limit ' + b.budget.limit
+        + ' / --max-bytes ' + b.budget.maxBytes + '，口径 ' + scan.mode + '，顺序 = 项目名升序 × 项目内既有顺序）');
+    }
+    scan.skipped.forEach((s) => ctx.out('⚠ 跳过项目「' + s.project + '」：' + s.reason
+      + ' —— 它的内容**不在**上面的命中里；修它（`node cli/mm-cli.js validate ' + s.project + '`）'
+      + '或加 `--scope` 明确排除。'));
+    if (heatInfo.rankedNodes) {
+      const pc = (x) => Number((Number(x) * 100).toFixed(6));
+      const per = heatInfo.perProject.filter((h) => h.rankedNodes).map((h) => h.project + ' ' + h.rankedNodes + ' 个');
+      ctx.out('热度：人 / AI 两条榜已并入排序（**逐项目各算各的榜** —— 不同项目的热度不会互相比较）；'
+        + '封顶占总分 ' + pc(heatInfo.weights.merged) + '%（人上限 ' + pc(heatInfo.weights.human) + '%'
+        + ' / AI 上限 ' + pc(heatInfo.weights.ai) + '% · 窗口最近 ' + heat.WINDOW_DAYS + ' 天）；'
+        + '榜上有节点的是：' + per.join(' / ') + '；本次返回到的命中里 ' + heatInfo.hitNodes + ' 个带热度。'
+        + '口径见 src/heat.js 的 SEARCH_RANK（唯一一处）');
+    }
+    // 截断时给续取方式（与 `search` 同一份建议文本 —— 口径只有 src/item-index.js 一处）
+    if (b.truncated && b.budget.resume) ctx.out(b.budget.resume);
   },
 
   stats(ctx) {
@@ -1204,5 +1512,11 @@ module.exports = {
     ctx.out(dirty.length
       ? '⚠ 有未保存编辑的项目: ' + dirty.join(', ') + ' —— 先请用户在界面里保存（或确认丢弃）再写入'
       : '全部项目界面均无未保存编辑 —— 可以安全写入');
-  }
+  },
+
+  /* ---- 【W1】导出的**纯助手**（不是命令）：`--scope` 的范围解算 ---------------
+   * 为什么导出：这条判定有三种"不许静默"的形状（裸写 / 空名单 / 点名了不存在的项目），
+   * 而它们都能被**直接**钉死（不必靠端到端造出那些参数组合）。`__` 前缀 = 测试专用入口，
+   * 与 `src/heat.js` 里那个 `__set…ForTest` 注入口同一约定；命令面只经 `search-all` 用它。 */
+  __scopeList: scopeList
 };

@@ -488,11 +488,18 @@ function createContext(argv, meta) {
      *
      * @param {string} channel `src/heat.js` 的 CHANNELS 里的通道 id（未知通道如实 dropped，不猜）
      * @param {string[]|string} nodeIds 本次**真的返回**的节点 id（按返回顺序）
+     * @param {{project?:string}} [opts] 记进**哪一个项目**的日志（默认本项目）。
+     *        为什么需要这个口子：`search-all` 一次返回**多个项目**的命中，而热度日志是**按项目分**的
+     *        （`store.visitLogFile(name)`）—— 逐个项目调它，才能保证"p1 的命中记进 p1 的榜"。
+     *        路径推导仍只有 `store.visitLogFile` 一处，本方法不拼路径 ✓
      * @returns {object} 读数（`recorded` / `dropped` / `errors` …），**调用方应当看它**
      */
-    recordVisit(channel, nodeIds) {
-      if (!projectName) return { ok: false, reason: 'no-project', channel: String(channel), recorded: 0, dropped: 0, errors: [] };
-      const r = heatSensor.recordVisit(store.visitLogFile(projectName), channel, nodeIds, { by: writer });
+    recordVisit(channel, nodeIds, opts) {
+      const o = opts || {};
+      const target = (o.project === undefined || o.project === null || String(o.project) === '')
+        ? projectName : String(o.project);
+      if (!target) return { ok: false, reason: 'no-project', channel: String(channel), recorded: 0, dropped: 0, errors: [] };
+      const r = heatSensor.recordVisit(store.visitLogFile(target), channel, nodeIds, { by: writer });
       // 失败醒目（F1）：攒在 ctx 上，由 cli/main.js 在命令结束后**一处**打印 ——
       // 不在这里 print（那会插进命令的输出中间，破坏"输出逐字节不变"）。
       if (!r.ok) visitErrors.push({ channel: String(channel), reason: r.reason, errors: r.errors.slice() });
