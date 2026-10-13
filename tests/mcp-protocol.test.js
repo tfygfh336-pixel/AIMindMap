@@ -144,3 +144,47 @@ describe('握手与通知（回归：别被上面的改动带坏）', () => {
     expect(oneShot({ jsonrpc: '2.0', id: 0, method: 'no-such-method' })[0].error.code).toBe(-32601);
   });
 });
+
+/* ============================================================
+ * 工具面**文案**：`search_nodes` 的 desc 必须写上 W6 的两条检索口径
+ * ------------------------------------------------------------
+ * 为什么钉在 desc 上：`inputSchema` 是机器可读的参数面，而 **desc 是模型唯一读得到的口径** ——
+ * 行为改成"命中 = 非连续子序列 + 与命令面板同序"之后，desc 若仍是旧口径（只写"搜条目"），
+ * 模型看到模糊命中会当成误召回。**只判文案**：行为由 `tests/search-fuzzy.test.js`（A/B/E2）与
+ * `scripts/cli-integration.js` 的 W6 段守着，本组不重复、也不替代它们。
+ * 口径边界（照 B8 声明）：本组判"这两条口径写没写进 desc"，**判不了**"写得对不对"。
+ * 计数口径：**工具数不写死**，与 `docs/VERIFY.md` 的真值出口逐字对齐（现算）。
+ * ============================================================ */
+describe('工具面文案：`search_nodes` 的 desc 与检索口径同源（W6 的边界外遗留）', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { fileURLToPath } = require('node:url');
+  const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const searchTool = () => TOOLS.filter((t) => t.name === 'search_nodes')[0];
+
+  it('工具数不变（现算：与 `docs/VERIFY.md` 的真值出口一致）且 `search_nodes` 只有一个', () => {
+    const verify = fs.readFileSync(path.join(ROOT, 'docs', 'VERIFY.md'), 'utf8');
+    const m = /^\|\s*MCP 工具数\s*\|\s*(\d+)\s*\|/m.exec(verify);
+    expect(m, 'docs/VERIFY.md 里必须有「MCP 工具数」那一行（否则这条判据测不了任何东西）').toBeTruthy();
+    expect(TOOLS.length, '工具数必须等于真值出口报的那个数（本次只改文案，一格不动）').toBe(Number(m[1]));
+    expect(TOOLS.filter((t) => t.name === 'search_nodes'), '同名工具只有一个').toHaveLength(1);
+    // 参数面**一格不动**：没有为这两条口径发明新参数；`search_nodes` 仍无必填项（project 自 W1 起可选）
+    const props = Object.keys(searchTool().inputSchema.properties || {});
+    expect(props.filter((k) => /fuzzy|subsequence|rank|order/i.test(k)), '没有为文案里的口径新增参数').toEqual([]);
+    expect(searchTool().inputSchema.required, '必填项没变').toEqual([]);
+  });
+
+  it('desc 写明两条 W6 口径：非连续子序列也算命中 + 零热度档与命令面板逐条同序', () => {
+    const desc = String(searchTool().description || '');
+    // ① 命中口径：非连续子序列（子串是它的特例）
+    expect(desc, '正文没写"非连续子序列"这条命中口径').toContain('非连续子序列');
+    // ② 顺序口径：可断言形态 = **零热度档**（有热度时会被重排，只写"顺序一致"是过度承诺）
+    expect(desc, '正文没写零热度档（"与面板逐条相同"只在没有热度 / no_heat 时成立）').toContain('零热度档');
+    expect(desc, '正文没写"逐条相同"这个可断言的顺序口径').toContain('逐条相同');
+    // 两条口径的来源要能被读者追到：面板侧同一个谓词 + 唯一实现处
+    expect(desc, '正文没写"与界面命令面板同一个谓词/同一份打分"').toContain('命令面板');
+    expect(desc, '正文没点名打分与定序的唯一实现处（读者会以为 AI 侧另有一套排序）').toContain('palette-rank.js');
+    // 反例面：旧口径的措辞不该只剩"只搜标题"那半句（命中口径必须写出来）
+    expect(desc.indexOf('非连续子序列') < desc.indexOf('item_level'), '命中口径要写在旧口径那句之前').toBe(true);
+  });
+});
