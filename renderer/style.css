@@ -803,20 +803,23 @@ jmnode.mm-sel-raw { outline: 2px dashed #1664ff; outline-offset: 2px; }
  * 为什么要有这一层：界面**有未保存编辑**时，外部（侧栏 AI/CLI）改盘以前只落一句状态提示
  * （用户原话："AI 编辑的我看不到"✗）。现在改成"看得见"：banner 常驻可点，点开是**只读**两侧差异。
  * ⚠️ 真因之一是**坐标系**：面板会跟其它弹窗一样让位给原生侧栏（`.overlay` 右边扣掉
- *   `--dsh-sidebar-width`）—— 所以下面的卡片不许自己写死宽度基准（照 `.audit-card` 的写法 ✓）。 */
-#conc-banner {
+ *   `--dsh-sidebar-width`）—— 所以下面的卡片不许自己写死宽度基准（照 `.audit-card` 的写法 ✓）。
+ * 【R4 起】banner 的样式改成**类选择器 `.mm-banner`**（id 规则原样保留）：
+ *   绑定工作区文件夹的变更播报是**同一种**东西（一条常驻可点、点开看"哪里不一样"的提示条）——
+ *   让它共用同一份声明，而不是抄一遍颜色/间距（同一件事两处表达 ⇒ 必然漂）。 */
+#conc-banner, .mm-banner {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 6px 12px; font-size: 13px;
   background: #fff7e6; border-bottom: 1px solid #ffd591; color: #874d00;
 }
-#conc-banner .conc-banner-icon { font-weight: 700; }
-#conc-banner-text { flex: 1 1 auto; }
-#conc-banner-open, #conc-banner-close {
+#conc-banner .conc-banner-icon, .mm-banner .mm-banner-icon { font-weight: 700; }
+#conc-banner-text, .mm-banner > span:not(.mm-banner-icon) { flex: 1 1 auto; }
+#conc-banner-open, #conc-banner-close, .mm-banner-btn, .mm-banner-close {
   padding: 3px 10px; border-radius: 4px; border: 1px solid #d46b08;
   background: #fff; color: #d46b08; cursor: pointer; font-size: 12px;
 }
-#conc-banner-open:hover { background: #d46b08; color: #fff; }
-#conc-banner-close { border-color: #e8d3b0; color: #86909c; }
+#conc-banner-open:hover, .mm-banner-btn:hover { background: #d46b08; color: #fff; }
+#conc-banner-close, .mm-banner-close { border-color: #e8d3b0; color: #86909c; }
 
 .conc-card {
   width: 860px; max-width: min(94vw, calc(100vw - var(--dsh-sidebar-width, 0px) - 32px));
@@ -836,6 +839,10 @@ jmnode.mm-sel-raw { outline: 2px dashed #1664ff; outline-offset: 2px; }
 .conc-group h3 { font-size: 13px; color: #1f2329; margin: 12px 0 6px; }
 .conc-group h3:first-child { margin-top: 0; }
 .conc-row { border: 1px solid #eef0f3; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+/* 可点的行（v0.20 起只有"绑定同步播报"用它）：光标与悬停给一个明确的可点感 ——
+ * 它只做视图跳转（不改数据、不写盘），与面板"只看不写"的声明不矛盾。 */
+.conc-row.clickable { cursor: pointer; }
+.conc-row.clickable:hover { border-color: #1664ff; background: #f5f8ff; }
 .conc-row-head { font-size: 13px; color: #1f2329; font-weight: 600; margin-bottom: 6px; }
 .conc-sides { display: flex; gap: 10px; flex-wrap: wrap; }
 .conc-side { flex: 1 1 320px; min-width: 240px; }
@@ -855,3 +862,46 @@ jmnode.mm-sel-raw { outline: 2px dashed #1664ff; outline-offset: 2px; }
 }
 .conc-actions button.primary { background: #1664ff; color: #fff; border-color: #1664ff; }
 .conc-actions button.primary:hover { background: #0e50d4; }
+
+/* ---------------- 【R4】绑定工作区文件夹（界面侧：入口 + 状态区 + 绑定前预览） ----------------
+ * 三条纪律（与 renderer/app-bindings.js 的文件头同一份口径）：
+ *   · 未绑定时状态条 `display:none`（**不占布局**）⇒ 界面与从前一样，不多一点噪声；
+ *   · 状态条只是**显示**：每个数都直接来自 CLI 报告，界面不算任何数；
+ *   · 预览框里的"将要做什么"来自既有 `--dry-run` 读法（在一份演练副本上算）——打开它时用户项目零改动。 */
+#bind-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 5px 12px; font-size: 12px;
+  background: #f2f7ff; border-bottom: 1px solid #d6e4ff; color: #1d39c4;
+  flex: 0 0 auto; row-gap: 4px;
+}
+/* 侧栏开着时与工具栏同样让位（否则状态条会被原生侧栏盖住一截 ✗） */
+body.dsh-sidebar-on #bind-bar { padding-right: calc(var(--dsh-sidebar-width) + 8px); }
+/* 「导图页 ✕ = 真关」那一档：整页都藏起来时状态条也一起藏（它与工具栏同族） */
+body.dsh-only #bind-bar, body.dsh-only #bind-banner { display: none !important; }
+#bind-bar-icon { font-weight: 700; }
+#bind-bar-text { flex: 1 1 auto; }
+#bind-bar-btns { display: flex; gap: 6px; flex: 0 0 auto; }
+#bind-bar-btns button {
+  padding: 2px 9px; border-radius: 4px; border: 1px solid #a3bffa;
+  background: #fff; color: #1d39c4; cursor: pointer; font-size: 12px;
+}
+#bind-bar-btns button:hover { background: #1d39c4; color: #fff; border-color: #1d39c4; }
+#bind-bar-btns button[disabled] { opacity: .5; cursor: not-allowed; }
+
+/* 绑定前预览：复用既有 `.dialog-box`（同一种弹窗，不另造一套外观），只加内容区的排版 */
+.bind-card { width: 620px; }
+.bind-line { font-size: 13px; color: #1f2329; margin: 0 0 10px; word-break: break-all; }
+.bind-opt { margin: 0 0 10px; }
+.bind-opt-title { display: block; font-size: 12px; color: #86909c; margin-bottom: 4px; }
+.bind-opt .chk { font-size: 13px; color: #1f2329; margin-bottom: 3px; cursor: pointer; }
+.bind-plan {
+  border: 1px solid #eef0f3; border-radius: 6px; background: #f7f8fa;
+  padding: 10px 12px; font-size: 13px; color: #1f2329; margin-bottom: 8px;
+}
+.bind-plan.busy { color: #86909c; }
+.bind-plan.err { color: #cf1322; border-color: #ffccc7; background: #fff2f0; }
+.bind-plan-line { font-weight: 600; margin-bottom: 4px; }
+.bind-plan-note { color: #4e5969; }
+.bind-plan-unconv { margin-top: 6px; color: #874d00; }
+.bind-plan-unconv-item { font-size: 12px; }
+.bind-hint { font-size: 12px; color: #86909c; margin: 0 0 6px; }

@@ -652,6 +652,16 @@
       (g.rows || []).forEach((row) => {
         const r = document.createElement('div'); r.className = 'conc-row';
         r.setAttribute('data-key', row.key);          // 判据点名用（断言读**内容**，不读样式 ✓）
+        /* 可点的行（v0.20 起只有绑定播报用它）：点一行跳到那个节点 —— 面板仍然是**只读**的，
+         * "跳转"只改视图（不改数据、不写盘），与差异面板"只看不写"的声明不矛盾 ✓ */
+        if (typeof g.onRowClick === 'function') {
+          r.classList.add('clickable');
+          r.setAttribute('title', '点这里跳到这个节点');
+          r.addEventListener('click', () => {
+            try { g.onRowClick(row.key); }
+            catch (e) { setStatus('跳转失败：' + ((e && e.message) || e), true); }
+          });
+        }
         const rh = document.createElement('div'); rh.className = 'conc-row-head'; rh.textContent = row.label;
         r.appendChild(rh);
         const sides = document.createElement('div'); sides.className = 'conc-sides';
@@ -955,7 +965,19 @@
     // v0.20 并发差异/冲突面板：也是 `.overlay` 一族（同一条关闭口，别再各写一套）
     if (concPanelOpen()) { open.push({ name: 'conc-panel', html: '' }); closeConcPanel(); }
     /* banner 不是模态，但它是**会占布局的一层**：域末留着会让后面的域看到非预期的几何
-     * （每域隔离只重载项目、不重载页面 ⇒ 它会**跨域存活**）⇒ 一并收，并如实报出来。 */
+     * （每域隔离只重载项目、不重载页面 ⇒ 它会**跨域存活**）⇒ 一并收，并如实报出来。
+     * 【R4 界面侧】绑定工作区文件夹那两条同理由同一处理：
+     *   · `bind-preview` 是**真模态**（挡输入）⇒ 走产品自己的取消路径（`MM.bindPreviewCancel`）；
+     *   · `bind-banner` 是会占布局的 banner ⇒ 收起（与 conc-banner 同款）。
+     * ⚠️ **状态条 `bind-bar` 故意不在这一族里**：它不是"开着/关着"的东西，而是**当前项目有无绑定的派生显示** ——
+     *   把它"收起来"会变成一句谎话（绑着却显示没有）。它由项目重载自己纠正（每域隔离会重载项目 ⇒ 自动收起）✓。 */
+    if (elemById('bind-preview') && elemById('bind-preview').style.display !== 'none') {
+      open.push({ name: 'bind-preview', html: '' });
+      if (MM.bindPreviewCancel) MM.bindPreviewCancel();
+      else elemById('bind-preview').style.display = 'none';
+    }
+    const bb = elemById('bind-banner');
+    if (bb && bb.style.display !== 'none') { open.push({ name: 'bind-banner', html: '' }); if (MM.closeBindBanner) MM.closeBindBanner(); }
     const cb = elemById('conc-banner');
     if (cb && cb.style.display !== 'none') { open.push({ name: 'conc-banner', html: '' }); closeConcBanner(); }
     return open;
@@ -965,6 +987,10 @@
    * （判据仍然读**内容与命中测试**，不靠这些 getter 自证 ✓）。 */
   MM.showDiskDiffPanel = showDiskDiffPanel;
   MM.showConflictPanel = showConflictPanel;
+  /* 【R4 界面侧】只读面板的**唯一渲染器**：绑定同步的"变更播报"复用它（同一张卡片、同一套行、
+   * 同一个 src/concurrency.js 差异行构造）—— 界面里**不许**再写第二套"哪里不一样"的渲染 ✓。
+   * 行点击是**可选**能力（`group.onRowClick`）：差异预览/冲突面板不传 ⇒ 行不可点（行为与从前一致）。 */
+  MM.renderConcPanel = renderConcPanel;
   MM.closeConcPanel = closeConcPanel;
   MM.concPanelOpen = concPanelOpen;
   MM.closeConcBanner = closeConcBanner;

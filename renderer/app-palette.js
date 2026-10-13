@@ -57,6 +57,12 @@
       if (!sel) { if (MM.setStatus) MM.setStatus('请先选中一个节点，再执行「关联节点视图」', true); return; }
       if (MM.showRelated) MM.showRelated(sel);
     } },
+    /* 【R4】绑定工作区文件夹：与原生菜单「文件 → 绑定工作区文件夹…」**同一个实现**
+     * （`MM.bindWorkspace()`）—— 命令面板在本工程里的定位就是"与工具栏/菜单等价的另一个入口"
+     * （见本文件头）。**它不占工具栏**：那一段在"侧栏开着"时只剩 ~1000px，多一个按钮会把工具栏
+     * 挤成两行、连带把"跨状态比绝对坐标"的判据挤红（域 37 实机踩到）✗。 */
+    { id: 'bind-workspace', label: '绑定工作区文件夹…（把文件夹同步进导图）', hint: '命令',
+      run: () => { if (MM.bindWorkspace) MM.bindWorkspace(); } },
   ];
 
   /** 只读：给冒烟断言判"当前是哪个模式" ✓ */

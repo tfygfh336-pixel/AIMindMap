@@ -172,32 +172,150 @@ const bindingSweep = { timer: null, running: false };
 /** 每个项目**当前挂着哪一批目录**（重挂的判据：只有指纹变了才真重挂 —— 见 bindWatchersFor） */
 const recentBindFingerprint = new Map();
 
+/** 把 CLI 的 `--json` 输出解析成对象；解析不出来 ⇒ `null`（**由调用方如实报**，不静默当成功）。
+ *  为什么单独一个函数：主进程有三处要读 `bind-sync --json` 的报告（事件驱动 / 巡检 / 界面动作），
+ *  "怎么把 CLI 的回显变成结构"只该有一处，否则三处会各自漂。 */
+function parseCliJson(out) {
+  try {
+    const s = String(out || '').trim();
+    return s ? JSON.parse(s) : null;
+  } catch (e) { return null; }
+}
+
+/** CLI 失败时给人看的那一句（取最后一行非空输出；与 `importDocToNewProject` 同一条口径） */
+function cliErrorLine(r) {
+  const out = String((r && (r.err || r.out)) || '').trim();
+  return out.split('\n').filter(Boolean).pop() || ('CLI 退出码 ' + (r && r.code));
+}
+
+/** 【R4 界面侧】把界面的"导入形态"选项翻成 `bind-sync --bind` 的参数。
+ *  为什么翻译只放在主进程：界面不该知道 CLI 的参数名（那是"同一件事两处表达"⇒ 必然漂）——
+ *  界面只说 `{mode, include}`，翻参数这一处唯一。**取值合法性不在这里判**：CLI 自己会拒
+ *  （`--mode` 只认 flat/mirror），原话回到界面 ⇒ "什么是合法取值"仍然只有 CLI/schema 一处。 */
+function bindOptionArgs(opts) {
+  const o = opts || {};
+  const args = [];
+  if (o.mode) args.push('--mode', String(o.mode));
+  if (o.include) args.push('--include', String(o.include));
+  return args;
+}
+
+/** 【R4 界面侧】**一次绑定同步的"前后对拍"读数**：起 CLI 之前读一次项目、回来再读一次，
+ *  用 `src/concurrency.js` 的 `changedKeys`（**渲染层"外部改动预览"用的同一个函数**）算出
+ *  "这次同步真的动了哪些对象"，并配 `describeKeys` 的人话名。
+ *
+ *  为什么主进程要算这一份（而不是让界面自己前后比）：
+ *  ① **"这次"只有这里说得准**：界面的"基线"只在它自己 `project:read` 时前进，而同步之后界面走的
+ *     是**只读探视**（`project:peek`，不推进基线）⇒ 拿界面基线当"同步前"会把上几轮同步的结果
+ *     也算成"这次加的" ✗；
+ *  ② **没有时序竞态**：`project:disk-changed` 的重读与"同步报告"是两条并发到达的事件，
+ *     界面在收到报告时**可能已经**把新树读进内存了 ⇒ "同步前的树"在界面那侧已经不存在了 ✗。
+ *     在主进程里"起 CLI 前后各读一次"是唯一不受这两条影响的取法。
+ *  ③ 判定仍然是**同一个函数**（`src/concurrency.js`，主进程本来就 require 它）——不是第二份差异实现 ✓。
+ *
+ *  @returns {Promise<{code:number,out:string,err:string,report:object|null,
+ *    changedKeys:string[], addedKeys:string[], removedKeys:string[], modifiedKeys:string[],
+ *    labels:Object<string,string>}>}   `labels` 是**键→人话名的映射**（配对由这里给死，见下）
+ */
+async function runBindSyncCli(args, project, projectsDirOverride) {
+  const readTree = () => {
+    try {
+      const r = (projectsDirOverride ? null : store.read(project));
+      return (r && r.data) ? r.data : null;
+    } catch (e) { return null; }         // 读不到（首次同步前文件坏了等）⇒ 只影响"对拍"那一份，不影响同步本身
+  };
+  const before = readTree();
+  const r = await runCliAsync(args, projectsDirOverride);
+  const out = String((r && r.out) || '');
+  const err = String((r && r.err) || '');
+  const report = parseCliJson(out);
+  let changedKeys = [], addedKeys = [], removedKeys = [], modifiedKeys = [], labels = {};
+  const after = readTree();
+  if (before && after) {
+    try {
+      /* 三类分开用的是**同一份指纹表**（`fingerprint` 每个节点一个键）：
+       *   只在 after 里有 ⇒ 这次新出现；只在 before 里有 ⇒ 这次消失；两边都有但值不同 ⇒ 改到。
+       * 为什么不用 O(键数 × 树) 的 `snapshotOf` 逐个试：那是一棵树走一遍/次（大项目会明显变慢）✗。 */
+      const fa = concurrency.fingerprint(before);
+      const fb = concurrency.fingerprint(after);
+      const all = Array.from(concurrency.changedKeys(before, after)).sort();
+      addedKeys = all.filter((k) => fa[k] === undefined && fb[k] !== undefined);
+      removedKeys = all.filter((k) => fa[k] !== undefined && fb[k] === undefined);
+      modifiedKeys = all.filter((k) => fa[k] !== undefined && fb[k] !== undefined);
+      changedKeys = all;
+      /* 人话名：**按 key 配对**（`{键: 名}` 的映射，不是数组）。
+       * 为什么是映射：三类各截前 40 个、再拼成一个数组的话，调用方**没有任何办法**把它和键对上
+       * （实测踩到：面板给"新出现的第 1 行"贴了第 2 个对象的名字 ✗）——配对关系必须由产出方给死。
+       * 新出现/改到的按 after 取名（它现在长这样）、消失的按 before 取（after 里已经没有了）。 */
+      const zip = (list, names) => list.slice(0, 40).forEach((k, i) => { if (names[i]) labels[k] = names[i]; });
+      zip(addedKeys, concurrency.describeKeys(after, addedKeys.slice(0, 40)));
+      zip(modifiedKeys, concurrency.describeKeys(after, modifiedKeys.slice(0, 40)));
+      zip(removedKeys, concurrency.describeKeys(before, removedKeys.slice(0, 40)));
+    } catch (e) {
+      changedKeys = []; addedKeys = []; removedKeys = []; modifiedKeys = []; labels = {};
+    }
+  }
+  return {
+    code: (r && r.code), out: out, err: err, report: report,
+    changedKeys: changedKeys, addedKeys: addedKeys, removedKeys: removedKeys, modifiedKeys: modifiedKeys,
+    labels: labels
+  };
+}
+
 /** 一个批次的共同入口：起 CLI 同步一次，把结果如实回报（**判定全在 CLI 那一侧**）。
  *  ⚠️ 回调必须带上 `project`：一批子进程要跑几百毫秒到几秒，期间用户可能**已经切了项目** ——
- *  用"当前窗口那个项目"去解释一个旧批次的结果，会把事件发到错的页面上。 */
+ *  用"当前窗口那个项目"去解释一个旧批次的结果，会把事件发到错的页面上。
+ *
+ *  【R4 界面侧】这一轮加了 `--json`（**只多要一份机器可读的回显**，判定与写盘一个字节都没变）：
+ *  第④步的界面要显示"本次 +N 改 M / 待确认 K"，还要能**点出这次自动加进来的节点** ——
+ *  纯文本回显里没有这些数，只能靠正则去抠（那就成了第二份"格式约定"⇒ 必然漂）。
+ *  于是：主进程转发 CLI 报的那一份结构，界面只负责显示（判定仍然只有 CLI 一处 ✓）。 */
 function runBindSyncFor(project, why, onDone) {
   if (!project) return;
-  runCliAsync(['bind-sync', project])
+  runBindSyncCli(['bind-sync', project, '--json'], project)
     .then((r) => {
-      const out = String((r && r.out) || '');
-      const err = String((r && r.err) || '');
-      const bad = !!(r && r.code !== 0) || /^error:/m.test(out);
+      const bad = !!r.code || /^error:/m.test(r.out) || !!(r.report && r.report.ok === false);
       if (bad) {
-        const last = (err || out).trim().split('\n').filter(Boolean).pop() || ('CLI 退出码 ' + (r && r.code));
+        const last = String(r.err || r.out || '').trim().split('\n').filter(Boolean).pop() || ('CLI 退出码 ' + r.code);
         console.error('[bind-sync] 项目 ' + project + ' 同步失败（' + why + '）：' + last);
       }
-      try { if (typeof onDone === 'function') onDone({ ok: !bad, out: out, err: err, why: why, project: project }); }
-      catch (e) { console.error('[bind-sync] 回调失败：' + ((e && e.message) || e)); }
+      try {
+        if (typeof onDone === 'function') {
+          onDone({
+            ok: !bad, out: r.out, err: r.err, why: why, project: project,
+            report: r.report, changedKeys: r.changedKeys, addedKeys: r.addedKeys,
+            removedKeys: r.removedKeys, modifiedKeys: r.modifiedKeys, labels: r.labels
+          });
+        }
+      } catch (e) { console.error('[bind-sync] 回调失败：' + ((e && e.message) || e)); }
     })
     .catch((e) => { console.error('[bind-sync] 起 CLI 失败：' + ((e && e.message) || e)); });
 }
 
 /** 把某个项目的绑定**全量重挂**：先全停，再按 CLI 报的"该盯哪些目录"重新挂。
  *  为什么每次都用 CLI 问一遍：绑定会被 `--bind` / `--unbind` / `--pause` 改（CLI 侧写的），
- *  主进程不该自己解析项目 JSON 去猜（那是第二份"绑定是什么"的实现 ✗）。 */
+ *  主进程不该自己解析项目 JSON 去猜（那是第二份"绑定是什么"的实现 ✗）。
+ *
+ *  ⚠️ 【R4 界面侧】这里修了一个**会让"暂停"名存实亡**的洞（实机在界面第④步才发现）：
+ *  原实现在"没有任何进行中的绑定"时**直接 return**，于是已经把 `fs.watch` 挂上的那些目录
+ *  **一个都不收** ⇒ 用户按下「暂停」之后，文件一变，那个还活着的 watcher 照旧起 CLI 去同步；
+ *  而 CLI 的同步**不认 paused**（`isBindingActive` 只在 `--watch-dirs` 那处过滤，见 `bind-sync` 的实现）
+ *  ⇒ "暂停"在界面上显示为已暂停、数据却还在被改。这不是显示问题，是**控制失效** ✗。
+ *  修法只有一条：没有进行中的绑定时，把属于这个项目的 watcher **全部关掉**（并清掉指纹记录），
+ *  让"该盯哪些目录"这件事只有 CLI 一个来源、主进程只负责执行"没有就收干净"。
+ *  判据：域 42 的判据 3（暂停 ⇒ 改文件**不同步**）+ 判别力证明①（把暂停短路 ⇒ 必红）。 */
 function bindWatchersFor(project, onSync) {
   const prefix = (project || '') + '::';
   const mine = () => Array.from(bindingWatchers.keys()).filter((k) => k.indexOf(prefix) === 0);
+  /** 关掉属于本项目的那批 watcher（**唯一**的收口：重挂与"没有进行中的绑定"两条路都走它） */
+  const closeMine = () => {
+    mine().forEach((k) => {
+      const w = bindingWatchers.get(k);
+      try { if (w && w.watcher) w.watcher.close(); } catch (e) { /* 关不掉不影响别的 */ }
+      if (w && w.timer) clearTimeout(w.timer);
+      bindingWatchers.delete(k);
+    });
+  };
   if (!project) return;
   /* 一个**便宜**的前置判据（省掉绝大多数项目的一次子进程）：这个项目的 JSON 里根本没有"进行中"的
    * 绑定时，连 CLI 都不起。⚠️ 这里**只读、只判"有没有"**：取值表/暂停语义/该盯哪个目录仍然是
@@ -208,20 +326,24 @@ function bindWatchersFor(project, onSync) {
     const raw = JSON.parse(fs.readFileSync(pj, 'utf8').replace(/^\uFEFF/, ''));
     const list = Array.isArray(raw.bindings) ? raw.bindings : [];
     const active = list.filter((b) => b && b.dir && (b.status === undefined || b.status === 'watching'));
-    if (!active.length) return;
-    fingerprint = active.map((b) => b.id + '|' + b.dir + '|' + (b.debounceMs || '')).join('\n');
+    // 一个"进行中"的都没有 ⇒ `fingerprint` 留空 ⇒ 走下面的"收干净"分支（**不再直接 return**）
+    if (active.length) fingerprint = active.map((b) => b.id + '|' + b.dir + '|' + (b.debounceMs || '')).join('\n');
   } catch (e) { return; }                      // 读不了/没这个项目：不挂（CLI 侧另有如实报错）
+  // 收起：这个项目要盯的目录**恰好是空集**（全部暂停 / 已解绑 / 从来没有）⇒ 一个都不许留着
+  if (!fingerprint) {
+    if (mine().length) {
+      closeMine();
+      if (process.env.MM_BINDINGS_DEBUG === '1') console.error('[bind-sync] 项目 ' + project + ' 没有进行中的绑定 ⇒ 已收掉监听');
+    }
+    recentBindFingerprint.delete(project);
+    return;
+  }
   /* **已经挂着同一批目录就别重挂**：`project:read` 会被反复调用（每次同步完都会让界面重读一次），
    * 每读一次就关掉再开一遍 fs.watch 是无意义的句柄churn，而且会在两次重挂的缝里漏事件。 */
   if (mine().length && recentBindFingerprint.get(project) === fingerprint) return;
   recentBindFingerprint.set(project, fingerprint);
   // 全停（换了绑定/换了目录 ⇒ 旧的必须收干净，否则一个目录会被两份 watcher 同时盯着）
-  mine().forEach((k) => {
-    const w = bindingWatchers.get(k);
-    try { if (w && w.watcher) w.watcher.close(); } catch (e) { /* 关不掉不影响别的 */ }
-    if (w && w.timer) clearTimeout(w.timer);
-    bindingWatchers.delete(k);
-  });
+  closeMine();
   let out = '';
   try {
     out = runCli(['bind-sync', project, '--watch-dirs']);
@@ -292,16 +414,35 @@ function startBindingSweep(onSync) {
   if (bindingSweep.timer) return;
   bindingSweep.timer = setInterval(() => {
     if (bindingSweep.running) return;                 // 上一轮还没跑完 ⇒ 这一拍跳过（不排队堆积）
+    /* 【R4 界面侧】动手之前**先按当前状态重挂一次**（`bindWatchersFor` 只读项目 JSON + CLI，零写盘）：
+     * 绑定可能被**外部 CLI** 暂停/解绑（不是经界面按的），那种情况下上面的 watcher 集合是旧的 ——
+     * 而 CLI 的同步不认 paused ⇒ 巡检会替一个"人已经按了暂停"的绑定去同步（又是"暂停名存实亡"）✗。
+     * 重挂一次就自动收干净（见 `bindWatchersFor` 的"收起"分支），这一轮只对**仍然该守护**的项目动手。 */
+    Array.from(new Set(Array.from(bindingWatchers.keys()).map((k) => k.split('::')[0]))).forEach((p) => {
+      try { bindWatchersFor(p, onSync); } catch (e) { /* 重挂失败不阻断本轮：下面按现有集合继续 */ }
+    });
     const projects = Array.from(new Set(Array.from(bindingWatchers.keys()).map((k) => k.split('::')[0])));
     if (!projects.length) return;
     bindingSweep.running = true;
-    Promise.all(projects.map((p) => runCliAsync(['bind-sync', p])))
+    Promise.all(projects.map((p) => runBindSyncCli(['bind-sync', p, '--json'], p)))
       .then((rs) => {
         rs.forEach((r, i) => {
-          const ok = r && r.code === 0 && !/^error:/m.test(String(r.out || ''));
-          if (!ok) console.error('[bind-sync] 兜底巡检失败（项目 ' + projects[i] + '）：' + String((r && (r.err || r.out)) || ''));
+          const out = String((r && r.out) || '');
+          const report = r && r.report;
+          const ok = r && r.code === 0 && !/^error:/m.test(out) && !(report && report.ok === false);
+          if (!ok) {
+            console.error('[bind-sync] 兜底巡检失败（项目 ' + projects[i] + '）：'
+              + String((r && (r.err || r.out)) || ''));
+            return;
+          }
+          // 巡检也是"自动同步"⇒ 同样要把报告交出去（第④步的变更播报与状态区都吃它）
+          if (typeof onSync === 'function') {
+            onSync({
+              ok: true, out: out, err: '', why: 'sweep', project: projects[i],
+              report: report, changedKeys: r.changedKeys, labels: r.labels
+            });
+          }
         });
-        if (typeof onSync === 'function') onSync({ ok: true, why: 'sweep' });
       })
       .catch((e) => console.error('[bind-sync] 兜底巡检异常：' + ((e && e.message) || e)))
       .then(() => { bindingSweep.running = false; });
@@ -515,7 +656,12 @@ function listProjects() {
 /* ---------------- 功能 5a：大文件 → 新项目（菜单与拖拽**共用这一段**） ----------------
  * 为什么共用：两条入口若是各写一份，行为迟早分叉（一个会去重项目名、另一个不会 ✗）。
  * 为什么**异步**跑 CLI：大文件（几十 MB 的 txt/md）解析要几秒，spawnSync 会把界面卡住 ✗。 */
-async function runCliAsync(args) {
+/**
+ * @param {string[]} args CLI 参数
+ * @param {string} [projectsDirOverride] 只给【R4 绑定前预览】用：把子进程的 `AI_MINDMAP_PROJECTS_DIR`
+ *   指到一份**演练副本**上（`app:bind-preview` 的解释见那里）。不给 ⇒ 与从前逐字节相同（走真实沙箱根）。
+ */
+async function runCliAsync(args, projectsDirOverride) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -523,7 +669,7 @@ async function runCliAsync(args) {
         cwd: ROOT,
         env: Object.assign({}, process.env, {
           ELECTRON_RUN_AS_NODE: '1',
-          AI_MINDMAP_PROJECTS_DIR: PROJECTS_DIR,
+          AI_MINDMAP_PROJECTS_DIR: projectsDirOverride || PROJECTS_DIR,
           MM_WRITER: 'gui-cli'
         })
       });
@@ -753,6 +899,8 @@ const MAP_PAGE_MENU_IDS = [
   // 文件：全部要靠导图页（导出要用它的树；导入的结果也要它来显示，否则 toast 也发进空页 ✗）
   'map-menu-import-md', 'map-menu-import-doc', 'map-menu-export-md',
   'map-menu-import-json', 'map-menu-export-json', 'map-menu-export-png',
+  // 【R4】绑定工作区文件夹：入口就在文件菜单里（它要拿"当前项目"去绑 ⇒ 导图页不在时点了没意义）
+  'map-menu-bind-workspace',
   // 编辑：整族都是 menu:* ⇒ 发给导图页渲染层
   'map-menu-save', 'map-menu-undo', 'map-menu-redo',
   'map-menu-add-node', 'map-menu-edit-node', 'map-menu-delete-node',
@@ -795,7 +943,15 @@ function buildMenu(win) {
       { type: 'separator' },
       { id: 'map-menu-import-json', label: '导入 JSON 打包…', click: () => importJsonDialog(win) },
       { id: 'map-menu-export-json', label: '导出 JSON 打包…', click: () => exportJsonDialog(win) },
-      { id: 'map-menu-export-png', label: '导出当前导图为 PNG…', click: () => exportImageDialog(win) }
+      { id: 'map-menu-export-png', label: '导出当前导图为 PNG…', click: () => exportImageDialog(win) },
+      { type: 'separator' },
+      /* 【R4】绑定工作区文件夹的**入口**（设计 §五：设置/菜单一处；命令面板里也有一条同一个实现 ✓）。
+       * ⚠️ 为什么**不**做成工具栏按钮（本批实机踩到并撤回）：这一段工具栏在"侧栏开着"时可用宽度只剩
+       *   ~1000px，**再加一个按钮就会把整条工具栏挤成两行**（实测 +33px 高）⇒ 所有"跨状态比绝对坐标"的
+       *   判据随之漂移 —— 域 37（圆钮/悬浮工具条的几何，用户原话逐字验收的那两条）当场变红 ✗✗。
+       *   "未绑定时界面不多出任何噪声"这条纪律，在这里的最强形式就是**工具栏一个像素都不动** ✓。 */
+      { id: 'map-menu-bind-workspace', label: '绑定工作区文件夹…',
+        click: () => send('menu:bind-workspace') }
     ]},
     { label: '编辑', submenu: [
       // 保存：此前**菜单里没有这一项**，界面也无按钮 —— 人的编辑无从落盘。
@@ -935,10 +1091,40 @@ function registerIpc() {
    * 判据"有没有写过盘"取自 CLI 的回显（`synced` 那一行）—— 不猜、不另算一份。 */
   const onBindingsSynced = (r) => {
     if (!r || !r.ok) return;
-    if (!/\bsynced\b/.test(String(r.out || ''))) return;      // 没写过盘 ⇒ 不发（避免无意义的重读）
-    if (!watchedWin || watchedWin.isDestroyed()) return;
-    // ⚠️ 用**这次批次自己的项目名**（不是"当前窗口那个"）：一批要跑几百毫秒到几秒，期间可能已切项目
-    watchedWin.webContents.send('project:disk-changed', String(r.project || '') + '.json');
+    /* "有没有写过盘"：优先看 CLI 报告里那一行的 `status`（同一个判定的机器可读形态），
+     * 没有报告时回落到回显里的 `synced` 字样 —— 两条都是**CLI 自己说的**，主进程不猜、不另算一份。 */
+    const rows = (r.report && Array.isArray(r.report.sync)) ? r.report.sync : [];
+    const wrote = rows.length ? rows.some((x) => x && x.status === 'synced') : /\bsynced\b/.test(String(r.out || ''));
+    /* 【R4 界面侧】**没写过盘也要发报告**的那一类：这一轮有"人必须看见"的读数 ——
+     *   · `pending > 0`（盘上文件没了 ⇒ 引擎只记了"待确认删"，树**一个节点都没动**，
+     *     而这条提议**不会写盘**：项目文件因此一个字节都不变 ⇒ 界面上那条"待确认 N"没有别的来源，
+     *     只能靠这份报告（`bindings[].pending`）说出来。少了它，用户永远看不到"有文件被删了"✗）；
+     *   · `unconverted > 0`（转不了的文件逐条点名，同上：不该只躺在 CLI 的 stdout 里）；
+     *   · `blocked-dirty` / `dir-missing`（引擎停住了，必须说出来）。 */
+    const hasNews = rows.some((x) => x && ((x.pending || 0) > 0 || (x.unconverted || 0) > 0
+      || x.status === 'blocked-dirty' || x.status === 'dir-missing'));
+    if (!wrote && !hasNews) return;                          // 没事可说 ⇒ 不发（避免无意义的重读/刷新）
+    const target = (watchedWin && !watchedWin.isDestroyed())
+      ? watchedWin
+      : BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed())[0];
+    if (!target) return;
+    // ① 既有的"盘上变了"通道：渲染层对它已有一整套判定（无脏 ⇒ 静默重读；有脏 ⇒ 只提示 + 外部改动预览）
+    //    ⚠️ 只在**真的写过盘**时发：没写盘却让界面重读一遍是无意义的（还可能把一个正在编辑的人打扰一次）
+    if (wrote) target.webContents.send('project:disk-changed', String(r.project || '') + '.json');
+    /* ② 【R4 界面侧】把**这次同步的报告**一并交出去（同一个事件源，不新开一条判定）：
+     *    第④步的"变更播报"要能点出"这次自动加进来的节点"，而 added/modified/pending/unconverted
+     *    是 **CLI 算出来的**读数（界面只显示，不自己再数一遍 ✓）。
+     *    ⚠️ 用**这次批次自己的项目名**（同 ① 的理由：期间用户可能已经切了项目）。 */
+    target.webContents.send('app:bind-synced', {
+      project: String(r.project || ''), why: String(r.why || ''), report: r.report || null,
+      // "这次同步动了哪些对象"的键（主进程在起 CLI 前后各读一次算的，见 runBindSyncCli）——
+      // 界面据此**点得出**这次自动加进来的节点；键→人话名也一并给（describeKeys）
+      changedKeys: Array.isArray(r.changedKeys) ? r.changedKeys : [],
+      addedKeys: Array.isArray(r.addedKeys) ? r.addedKeys : [],
+      removedKeys: Array.isArray(r.removedKeys) ? r.removedKeys : [],
+      modifiedKeys: Array.isArray(r.modifiedKeys) ? r.modifiedKeys : [],
+      labels: Array.isArray(r.labels) ? r.labels : []
+    });
   };
   const focusProbed = new WeakSet();
   function onWatcherFocus() {
@@ -1581,6 +1767,121 @@ function registerIpc() {
     };
   });
 
+  /* ============ 【R4 界面侧】绑定工作区文件夹：三条入口（**判定与写盘全在 CLI**） ============
+   * 这一批是"2/2 界面"：界面只做【入口 + 状态 + 播报】三件事 ——
+   *   · 选目录（原生对话框）；
+   *   · 绑定前预览（复用既有 `--dry-run` 读法，见下面 app:bind-preview 的说明）；
+   *   · 暂停 / 继续 / 立即同步 / 解绑（四个动作各打在 `bind-sync` 的一个**既有**开关上）。
+   * 界面侧**没有**任何"哪些文件要导进来""该不该写盘"的判断 —— 那全在 CLI（`bind-sync`）那一侧；
+   * 连"绑定是什么"（取值表、暂停语义）也没有第二份：主进程只做"重挂/收掉 fs.watch"与转发读数。 */
+
+  /** 选目录。正常路径是**原生对话框**（`dialog.showOpenDialog({properties:['openDirectory']})`）。
+   *  ⚠️ `--smoke` 下改读一个**脚本化答案**文件（`<沙箱 projects>/bind-pick.txt`，内容 = 要返回的目录）：
+   *  无头跑里原生模态**点不动**，弹出来只会把整条链挂死（冒烟守卫会强杀 ⇒ 变成一条假红）。
+   *  它**只在 --smoke 跑动里生效**（正常启动连这个文件都不看）—— 照 `MM_ASK_STUB` 的先例：
+   *  测试专用后门不许出现在产品路径上；返回里带 `stub:true`，如实告诉调用方"这一跳是桩"。 */
+  ipcMain.handle('app:bind-pick-dir', async (e) => {
+    if (SMOKE_PROJECTS_DIR) {
+      const f = path.join(SMOKE_PROJECTS_DIR, 'bind-pick.txt');
+      let dir = '';
+      try { dir = String(fs.readFileSync(f, 'utf8')).trim(); } catch (err) { dir = ''; }
+      if (!dir) return { ok: false, canceled: false, stub: true, error: '冒烟里没有脚本化目录：先写 ' + f };
+      return { ok: true, stub: true, dir: dir };
+    }
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const res = await dialog.showOpenDialog(win, {
+      title: '绑定工作区文件夹：选一个目录（它里面的内容会同步进这个项目）',
+      properties: ['openDirectory']
+    });
+    if (res.canceled || !res.filePaths || !res.filePaths.length) return { ok: false, canceled: true, stub: false };
+    return { ok: true, stub: false, dir: res.filePaths[0] };
+  });
+
+  /* **绑定前预览**：复用既有 `--dry-run` 读法，但**不写用户的项目**。
+   * 为什么"直接对真项目 `--bind --dry-run`"不够（实测过）：`--bind` 那一轮**不算计划**
+   *   （它只写绑定记录 ⇒ 报出来的 added/modified 恒为 0）⇒ 三个数（新增 N / 更新 M / 未转换 K）拿不到。
+   * 为什么也不能"先绑上、再 dry-run 预览、再让用户确认"：那样**用户还没确认，绑定记录就已经进项目数据**，
+   *   主进程的守护会照它挂 `fs.watch` ⇒ 确认之前就可能真同步一次 ⇒ "确认才绑定"就成了假话 ✗。
+   * 做法：把项目 JSON **拷一份**进临时目录，把那份**演练副本**当 projects 根，跑
+   *   `bind-sync <项目> --bind --dir … --json`（写的是副本）⇒ 再 `--dry-run --json`（一个字节都不写）
+   *   ⇒ 把 CLI 自己报的那一行计划原样转交界面；最后删掉副本。
+   *   用户的项目在这一步**一个字节都没动**（域 42 的判据 1 里对项目文件前后 SHA-256 有断言）。
+   * 算法仍然**全在 CLI**（主进程不数"该导几个"），这里只是"换一份 projects 根 + 转交读数"。 */
+  ipcMain.handle('app:bind-preview', async (_e, name, dir, opts) => {
+    if (!name || !dir) return { ok: false, error: '预览需要一个项目和目录' };
+    const mode = (opts && opts.mode) || 'flat';
+    const src = path.join(PROJECTS_DIR, name, name + '.json');
+    if (!fs.existsSync(src)) return { ok: false, error: '项目文件不存在：' + src };
+    let tmpRoot = '';
+    try { tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-bind-preview-')); }
+    catch (err) { return { ok: false, error: '建不了演练副本目录：' + ((err && err.message) || err) }; }
+    try {
+      fs.mkdirSync(path.join(tmpRoot, name), { recursive: true });
+      fs.copyFileSync(src, path.join(tmpRoot, name, name + '.json'));
+      const b = await runCliAsync(['bind-sync', name, '--bind', '--dir', dir]
+        .concat(bindOptionArgs(opts), ['--json']), tmpRoot);
+      if (b.code !== 0) return { ok: false, error: cliErrorLine(b) };
+      const p = await runCliAsync(['bind-sync', name, '--dry-run', '--json'], tmpRoot);
+      if (p.code !== 0) return { ok: false, error: cliErrorLine(p) };
+      const report = parseCliJson(p.out);
+      if (!report) return { ok: false, error: '预览没有拿到 CLI 的报告（`--json` 解析失败）' };
+      const row = (report.sync || [])[0] || null;
+      if (!row) return { ok: false, error: '预览没有算出计划（CLI 报告里没有 sync 行）' };
+      return { ok: true, dryRun: report.dryRun === true, dir: dir, mode: mode, plan: row };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    } finally {
+      // 演练副本必须收干净（E2）：清不掉也只影响临时目录，用户数据这一路根本没被碰过
+      try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (err) { /* 收尾失败不掩盖主结果 */ }
+    }
+  });
+
+  /* **确认绑定**：先写绑定记录（CLI `--bind`，**不动树**），再**立刻同步一次**。
+   * 为什么是两次调用：引擎刻意把"绑上"与"同步"分开（`--bind` 那一轮不算计划，见 `bind-sync` 的实现），
+   *   而"立刻同步"那条既有入口就是 `--resume`（它同时把状态复位回"守护中" —— 与用户刚点的确认同义）。
+   * 打完**重挂守护**：新绑定要马上开始被盯（不重挂就要等到下一次 `project:read`）。 */
+  ipcMain.handle('app:bind-apply', async (_e, name, dir, opts) => {
+    if (!name || !dir) return { ok: false, error: '绑定需要一个项目和目录' };
+    const o = opts || {};
+    const b = await runCliAsync(['bind-sync', name, '--bind', '--dir', dir]
+      .concat(bindOptionArgs(o)), undefined);
+    if (b.code !== 0) return { ok: false, error: cliErrorLine(b) };
+    const s = await runBindSyncCli(['bind-sync', name, '--resume', '--json'], name);
+    try { bindWatchersFor(name, onBindingsSynced); } catch (err) { /* 守护起不来不阻断绑定本身 */ }
+    if (s.code !== 0) return { ok: false, error: cliErrorLine(s), report: s.report };
+    return { ok: true, report: s.report, changedKeys: s.changedKeys, addedKeys: s.addedKeys,
+      removedKeys: s.removedKeys, modifiedKeys: s.modifiedKeys, labels: s.labels };
+  });
+
+  /* **控制动作**：暂停 / 继续 / 立即同步 / 解绑 —— 一个动作一个**既有**开关（没有第五条路）。
+   * ⚠️ 打完**必须重挂守护**：暂停与解绑都要让 `fs.watch` 立刻收掉 —— 否则"文件一变照旧同步"
+   *   （CLI 的同步不认 paused），"暂停"就只剩界面上好看 ✗（`bindWatchersFor` 的"收起"分支）。 */
+  ipcMain.handle('app:bind-cmd', async (_e, name, action) => {
+    const flags = { pause: ['--pause'], resume: ['--resume'], unbind: ['--unbind'], sync: [] };
+    if (!Object.prototype.hasOwnProperty.call(flags, action) || !name) {
+      return { ok: false, error: '不认识的绑定动作：' + JSON.stringify(String(action)) };
+    }
+    const r = await runBindSyncCli(['bind-sync', name].concat(flags[action], ['--json']), name);
+    try { bindWatchersFor(name, onBindingsSynced); } catch (err) { /* 同上 */ }
+    if (r.code !== 0) return { ok: false, error: cliErrorLine(r), report: r.report };
+    return { ok: true, report: r.report, changedKeys: r.changedKeys, addedKeys: r.addedKeys,
+      removedKeys: r.removedKeys, modifiedKeys: r.modifiedKeys, labels: r.labels };
+  });
+
+  /* **只读状态探针**：界面显示"守护中/已暂停 · 上次同步 · 待确认删 K · 未转换 K"要一份**当前的**
+   * 读数，而引擎里唯一"只报告、不写盘"的读法就是 `--dry-run`（W8 的中央短路：`ctx.mutate` 不落盘、
+   * 旁路快照也在 dry-run 下不写 —— 实测项目文件 SHA-256 前后相同）。
+   * ⚠️ **不许**拿 `bind-sync --list` 当"只看状态"用：它其实**会同步**（PLAN 把 `--list` 只当"不算计划"，
+   *   targets 仍然是全部绑定）⇒ 拿它刷新状态会在用户按了暂停之后**照旧改数据** ✗。
+   * 返回的就是 CLI 的整份报告（`dryRun:true`），界面**只显示**，一个数都不自己算 ✓。 */
+  ipcMain.handle('app:bind-probe', async (_e, name) => {
+    if (!name) return { ok: false, error: '状态探针需要一个项目' };
+    const r = await runCliAsync(['bind-sync', name, '--dry-run', '--json']);
+    const report = parseCliJson(r.out);
+    if (r.code !== 0 || !report) return { ok: false, error: cliErrorLine(r) };
+    return { ok: true, report: report };
+  });
+
   ipcMain.handle('app:version', () => {
     try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version; }
     catch (err) { return '0.0.0'; }
@@ -1873,13 +2174,16 @@ async function runSmoke(win) {
    * 却在 **300s** 被守卫掐红；真因是**全机同时慢 20–30%**（同两次读数：G3 30.8→38.9s、G4 23.8→26.5s）。
    * 反过来的代价是：真挂死会**先被预算报成"太慢"**再被杀 —— 报文用词不够准，但**不会把绿色结果判红**。
    * 两者代价不对等（重跑一整条链 ~6 分钟 vs 报文用词不够准）⇒ 取「守卫 > 预算」。
-   * 取值：**G5 预算 450s × 1.2 = 540s**，留 90s 给"预算判定 → 打印 → 退出"这一段 ⇒ 先由预算发声。
+   * 取值：**G5 预算 540s × 1.22 = 660s**（2026-10-14 由 540s 上调，与 `scripts/verify.js` 的 G5 预算
+   * 450s→540s **同批**：R4 界面批新增的域 42 给 G5 净增 ≈40s，而最近 10 条成功链的 G5 是 342–421s
+   * ⇒ 旧 450s 预算会在慢日越线；两个数一起调，本不变量（守卫 > 预算）继续成立 ✓）。
+   * 留 120s 给"预算判定 → 打印 → 退出"这一段 ⇒ 先由预算发声。
    * 不隔离档（逃生口 `MM_SMOKE_NO_ISOLATE=1` / `MM_SMOKE_ISOLATE=0`，**只用于诊断** ✗）**同口径、同值**：
    * 两档共用一个预算（不隔离同样受同一份负载影响），而旧值 140s 连"不隔离跑一次全量"的正常耗时
    * 都容不下 ⇒ 那不是"更快发现挂死"，只是换个姿势误红 ✗。
    * 想验"守卫还活着"（判别力证明，别只信注释）：把下面那个数字临时改成 `5000` 跑一次 `npm run smoke`
    * ⇒ 必须看到 `SMOKE GUARD TIMEOUT — force exit` 且退出码非 0 ✓；改回来再跑必须复绿。 */
-  const SMOKE_GUARD_MS = 540000;
+  const SMOKE_GUARD_MS = 660000;
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);

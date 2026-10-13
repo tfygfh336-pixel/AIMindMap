@@ -110,6 +110,20 @@ contextBridge.exposeInMainWorld('desktop', {
      * 主进程写后会**回读**，返回 `{ ok, value, readback, matched }` —— `matched:false` = 回读到的
      * 不是这段文本（不算成功，别自报 ✓）；失败一律带 `error`，不静默 ✗。 */
     writeClipboard: (text) => ipcRenderer.invoke('app:clipboard-write', text),
+    /* 【R4 界面侧】绑定工作区文件夹（**界面只做入口/状态/播报**；判定与写盘全在 CLI `bind-sync`）：
+     *   bindPickDir()                 → 原生选目录对话框（`dialog.showOpenDialog({properties:['openDirectory']})`；
+     *                                   `--smoke` 下改读脚本化答案，返回里带 `stub:true` 如实说明这一跳是桩）
+     *   bindPreview(项目, 目录, 形态) → 绑定前预览：在**演练副本**上跑既有 `--dry-run`（用户项目零写入）
+     *   bindApply(项目, 目录, 形态)   → 确认绑定（写绑定记录 + 立刻同步一次）
+     *   bindCmd(项目, 动作)           → 暂停/继续/立即同步/解绑（动作 ∈ pause|resume|sync|unbind）
+     * 四个入口**都不做同步判定**：各自打到 `bind-sync` 的一个既有开关上（见 main.js 的注释）。 */
+    bindPickDir: () => ipcRenderer.invoke('app:bind-pick-dir'),
+    bindPreview: (projectName, dir, opts) => ipcRenderer.invoke('app:bind-preview', projectName, dir, opts),
+    bindApply: (projectName, dir, opts) => ipcRenderer.invoke('app:bind-apply', projectName, dir, opts),
+    bindCmd: (projectName, action) => ipcRenderer.invoke('app:bind-cmd', projectName, action),
+    /* 只读状态探针：引擎里唯一"只报告、不写盘"的读法是 `--dry-run`（CLI 的中央短路）——
+     * 状态区的"上次同步 / 待确认删 K / 未转换 K"由它给，界面一个数都不自己算 ✓。 */
+    bindProbe: (projectName) => ipcRenderer.invoke('app:bind-probe', projectName),
     version: () => ipcRenderer.invoke('app:version'),
     /* 界面状态上报（脏标记变化时推）：主进程写 projects/<项目>/.ui-state.json，
      * 侧栏 AI 用 `node cli/mm-cli.js ui-state --json` 读 —— 写前协调的可执行通道。 */
@@ -125,6 +139,15 @@ contextBridge.exposeInMainWorld('desktop', {
     const wrap = (_e, filename) => cb(filename);
     ipcRenderer.on('project:disk-changed', wrap);
     return () => ipcRenderer.removeListener('project:disk-changed', wrap);
+  },
+  /* 【R4】工作区文件夹**自动同步**的报告（`why` = fs.watch / sweep）—— 变更播报与状态区吃它。
+   * 与 onProjectDiskChange 的分工：那条管"盘上变了 ⇒ 界面该重读"（既有判定，一个字没改）；
+   * 这一条只是**多带一份 CLI 的读数**（本次 +N 改 M / 待确认删 K / 未转换 K），
+   * 界面据此显示，并允许"点开看这次自动加进来的是哪些节点"。 */
+  onBindSynced: (cb) => {
+    const wrap = (_e, payload) => cb(payload);
+    ipcRenderer.on('app:bind-synced', wrap);
+    return () => ipcRenderer.removeListener('app:bind-synced', wrap);
   },
   /* DSH 侧边栏：状态查询、布局事件、toggle 与拖宽（token/URL 永不进渲染层） */
   dsh: {

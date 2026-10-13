@@ -21,7 +21,64 @@
     <button id="btn-collapse" title="收起全部">收起</button>
     <button id="btn-reset-view" title="还原视图：把导图移回初始位置（根节点居中），防止把画布挪丢后找不到">还原视图</button>
     <button id="btn-palette" title="命令面板（Ctrl+P）：一个框里搜节点与命令">⌘ 命令</button>
+    <!-- 【R4】绑定工作区文件夹的**入口不在这里**（不在工具栏）：这一段工具栏在"侧栏开着"时可用宽度
+         只剩 ~1000px，再加一个按钮就会把它挤成两行（实测 +33px 高）⇒ 所有"跨状态比绝对坐标"的判据
+         随之漂移（域 37 的圆钮几何当场变红 ✗）。
+         入口 = 原生菜单「文件 → 绑定工作区文件夹…」（**唯一入口**）+ 命令面板里的同一条命令
+         （`renderer/app-palette.js` 的 COMMANDS；两者调的都是 `MM.bindWorkspace()` 这**一个**实现 ✓）。
+         未绑定时这里**一个像素都不多**：状态条/播报/预览面板都是 display:none（不占布局、不进命中测试）。 -->
     <span id="status-text" title="最近操作状态"></span>
+  </div>
+
+  <!-- 【R4】绑定状态区（只有**真的有绑定**时才出现；未绑定时 display:none ⇒ 界面与从前逐字节相同）。
+       字段全部来自 CLI 的报告（`bindings[]`）：守护中/已暂停 · 已收录 N 文件 · 上次同步 hh:mm:ss ·
+       本次 +N 改 M · 待确认删 K · 未转换 K —— 界面一个数都不自己算（判定在 CLI 侧）。
+       按钮各打在 `bind-sync` 的一个既有开关上：暂停/继续 · 立即同步 · 解绑（解绑保留已导入内容）。 -->
+  <div id="bind-bar" style="display:none">
+    <span id="bind-bar-icon" aria-hidden="true">📁</span>
+    <span id="bind-bar-text"></span>
+    <span id="bind-bar-btns">
+      <button id="bind-btn-toggle" type="button" data-bind-act="pause">暂停</button>
+      <button id="bind-btn-sync" type="button" data-bind-act="sync">立即同步</button>
+      <button id="bind-btn-unbind" type="button" data-bind-act="unbind">解绑</button>
+    </span>
+  </div>
+
+  <!-- 【R4】变更播报（每次**自动**同步真改过树就亮；与并发可见性的「外部改动预览」同一套 banner 视觉）：
+       点「看这次加了哪些」⇒ 打开**同一个只读面板渲染器**（MM.renderConcPanel），逐条列出这次加进来的节点，
+       点一条跳到它。默认 display:none ⇒ 不占布局。 -->
+  <div id="bind-banner" class="mm-banner" style="display:none">
+    <span class="mm-banner-icon" aria-hidden="true">⇄</span>
+    <span id="bind-banner-text"></span>
+    <button id="bind-banner-open" type="button" class="mm-banner-btn" title="打开只读面板：这次同步加进来/改到的是哪些节点（点一条跳到它）">看这次加了哪些</button>
+    <button id="bind-banner-close" type="button" class="mm-banner-close" title="收起这条播报（节点都在导图上，数据没有变）">✕</button>
+  </div>
+
+  <!-- 【R4】绑定前预览（**这一层里没有一个字是界面估算的**）：数字来自 CLI 既有的 `--dry-run` 读法，
+       而它在一份**演练副本**上算 —— 打开这一层时用户的项目一个字节都没动，取消也什么都不会留。 -->
+  <div id="bind-preview" class="overlay" style="display:none">
+    <div class="dialog-box bind-card">
+      <h3>绑定工作区文件夹 —— 先看将要做什么</h3>
+      <p id="bind-preview-dir" class="bind-line"></p>
+      <div class="bind-opt">
+        <span class="bind-opt-title">导入形态</span>
+        <label class="chk"><input id="bind-mode-flat" type="radio" name="bind-mode" value="flat" checked> 只要文件（每个文件挂成一个节点，全挂在根下）</label>
+        <label class="chk"><input id="bind-mode-mirror" type="radio" name="bind-mode" value="mirror"> 整目录树（与文件夹结构同构，子目录成容器节点）</label>
+      </div>
+      <div class="bind-opt">
+        <span class="bind-opt-title">收录范围</span>
+        <label class="chk"><input id="bind-include-default" type="radio" name="bind-include" value="" checked> 引擎缺省清单（md / markdown / txt / docx / pdf）</label>
+        <label class="chk"><input id="bind-include-md" type="radio" name="bind-include" value="*.md"> 只要 md（`--include "*.md"`）</label>
+      </div>
+      <div id="bind-preview-plan" class="bind-plan"></div>
+      <p class="bind-hint">这份预览是用**既有 `--dry-run` 读法**在一份演练副本上算出来的：
+        你的项目此刻**一个字节都没动**；取消也不会留下任何东西（连绑定记录都还没有）。
+        ⚠️ 目录里的隐藏项 / node_modules / .git / .review / 符号链接一律不收（引擎缺省忽略清单）。</p>
+      <div class="dialog-actions">
+        <button id="bind-preview-cancel" type="button">取消</button>
+        <button id="bind-preview-ok" type="button" class="primary">确认绑定</button>
+      </div>
+    </div>
   </div>
 
   <!-- 「外部改动预览」入口（v0.20「让 AI 的编辑看得见」）：界面**有未保存编辑**时，外部
@@ -267,6 +324,10 @@
   <script src="app-detail-content.js"></script>
   <script src="app-media.js"></script>
   <script src="app-actions.js"></script>
+  <!-- 【R4】绑定工作区文件夹（界面侧）：入口 + 状态区 + 变更播报。
+       它**不含任何同步逻辑**（判定与写盘全在 CLI `bind-sync`）；位置必须在 app-actions.js 之后
+       （要用那里导出的**同一个**只读面板渲染器 MM.renderConcPanel —— 界面里不许有第二套卡片） -->
+  <script src="app-bindings.js"></script>
   <script src="app-audit.js"></script>
   <script src="app-palette.js"></script>
   <script src="app-assoc.js"></script>

@@ -160,6 +160,9 @@
     window.desktop.on('menu:export-md', exportMarkdown);
     window.desktop.on('menu:palette', () => openPalette());
     window.desktop.on('menu:audit', () => openAudit());
+    /* 【R4】绑定工作区文件夹的入口（菜单「文件 → 绑定工作区文件夹…」）：
+     * 与命令面板里那条命令**同一个实现**（`MM.bindWorkspace()`，见 renderer/app-bindings.js）✓ */
+    window.desktop.on('menu:bind-workspace', () => { if (MM.bindWorkspace) MM.bindWorkspace(); });
     // 菜单「视图 → 关闭思维导图页」：与工具栏那个 ✕ **同一条路**（先拦未保存编辑 ⇒ 保存成功才卸页）
     window.desktop.on('menu:close-map-page', () => { MM.closeMapPage(); });
     // 主进程 toast（导入导出结果提示）与项目列表刷新（导入 JSON 后）
@@ -254,6 +257,7 @@
     openPalette,
     closePalette,
     paletteIsOpen,
+    /* 【R4】绑定工作区文件夹：入口由 app-bindings.js 注册（工具栏那个按钮的**同一条实现**） */
     /* 并发可见性（v0.20）：只读差异预览 / 冲突面板的公开入口（冒烟断言与排查用）。
      * ⚠️ 这几个都**只读**：面板自己不写盘 —— "用盘上"仍然走 resolveConflict（上面那一条）✓ */
     showDiskDiffPanel: () => MM.showDiskDiffPanel(),
@@ -261,6 +265,22 @@
     concPanelOpen: () => MM.concPanelOpen(),
     closeConcBanner: () => MM.closeConcBanner(),
     refreshDiskDiff: () => MM.refreshDiskDiff(),
+    /* 【R4】绑定工作区文件夹（界面侧）。这几个入口与工具栏那个按钮**同一条实现**
+     * （`renderer/app-bindings.js`）—— 冒烟断言与排查用它驱动同一条产品路径，
+     * 判据仍然读**内容 / 命中测试 / 盘上字节**，不靠这些 getter 自证。
+     * ⚠️ 它们**都不含同步判定**：绑定/暂停/立即同步/解绑各自打到 CLI `bind-sync` 的一个既有开关上。 */
+    bindWorkspace: () => MM.bindWorkspace(),
+    bindRefresh: () => MM.bindRefresh(),
+    bindAct: (action) => MM.bindAct(action),
+    bindPreviewRun: () => MM.bindPreviewRun(),
+    bindPreviewCancel: () => MM.bindPreviewCancel(),
+    bindPreviewConfirm: () => MM.bindPreviewConfirm(),
+    bindPreviewShown: () => MM.bindPreviewShown(),
+    bindShowBroadcast: () => MM.showBindPanel(),
+    bindCloseBanner: () => MM.closeBindBanner(),
+    bindBannerShown: () => MM.bindBannerShown(),
+    bindBannerText: () => MM.bindBannerText(),
+    bindState: () => MM.bindState(),
     setStatus
   };
 
