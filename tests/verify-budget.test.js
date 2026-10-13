@@ -5,6 +5,13 @@
  * 为什么需要它：计时本身不可单测（依赖机器与负载），但**判定逻辑**可以，
  * 而判定逻辑写错会让这个门禁变成"永远通过"或"随机红灯" —— 两种都会让它被无视。
  *
+ * 【批 J（2026-10-13）加】三件事，都是"把写下来的说法变成机械守卫"：
+ *   · 两条结构性不变量从**注释**升级成**守卫**：① `main.js` 的冒烟守卫 > G5 预算；
+ *     ② 合计预算 ≥ 各步预算之和（两条都**从代码现读**，不抄数字）；
+ *   · "预算留足余量"那条的 `measured` 不再**写死**，改为现读 `.review/verify-history.jsonl`
+ *     的真读数（写死过一次：表里还写着 G5≈51s，而真值早已是 235–421s ⇒ 它一直在守一个
+ *     不存在的世界，绿着但什么都没守 ✗ 本工程最重的损害类别）。
+ *
  * 最要紧的一条在最末：**`docs/RULES.md` 里声明的每个门禁，必须真的挂在
  * `scripts/verify.js` 的链上**。否则"在规则表里加了个门禁、却忘了挂进 verify"
  * 会静默失效 —— 规则文件说它守着，实际它一次都不跑。这与本工程反复修过的
@@ -27,6 +34,48 @@ const ROOT = path.resolve(__dirname, '..');
 const res = (gate, ms, budgetMs, skipped) => ({
   step: 0, gate, label: gate, ms, code: 0, budgetMs, skipped: !!skipped
 });
+
+/** 从验证历史（`.review/verify-history.jsonl`）取**真读数**：最近 K 次**成功**的全链，
+ *  逐门禁取**最小**耗时。返回 `{ runs, byGate }`（没有可用历史 ⇒ `runs: 0, byGate: {}`）。
+ *
+ *  为什么**现读**而不是写死一张表：写死的表会静静过期 —— 本文件原先那张记的是 G5≈51s，
+ *  而被取代时真值已是 235–421s（差 5–8 倍），于是"余量 > 1.8×"这条守卫**绿着却什么都没守** ✗。
+ *
+ *  为什么每门禁取**最小值**：
+ *   · 负载只会把读数抬高，抬不高最小值 ⇒ 它回答的是"**同一份代码**在最好条件下要多久"，
+ *     这正是预算基线该用的口径（本文件头②：预算 = 实测的 2–3 倍，止涨线）。
+ *   · 若取中位数/最近一次：2026-10-13 最后一次全链 G5=**421.2s**（当天其余绿链 235–250s 的 1.7 倍）
+ *     ⇒ 再遇上两个慢日，G5 的比值就会被压到 1.8 以下而**假红**，那正是本批要治的病 ✗。
+ *     最小值不会被某几天的慢机器抬起来 ⇒ 只有**真的变慢**（近期读数整体上移）才会判红 ✓
+ *     （"太慢"与"变慢"要分得开，这正是本批的目标）。
+ *
+ *  为什么是最近 **K=10** 次：太远的历史会掩盖"最近真的变慢了"；只取最近 1 次则等于拿一天的
+ *  负载当基线。本工程一天内跑 10+ 次全链（2026-10-13 实测），10 次≈一两天，量级合适。
+ *
+ *  为什么只认"成功且非 partial"的记录：失败/中断那次步骤没跑完，`--changed` 只跑了几步 ——
+ *  两种都不是真值口径（与 `scripts/verify.js` 的 `pickHistoryBaseline` 同一口径 ✓）。 */
+function recentMeasured(k) {
+  let text;
+  try { text = fs.readFileSync(path.join(ROOT, verify.VERIFY_HISTORY), 'utf8'); }
+  catch (e) { return { runs: 0, byGate: {} }; }   // `.review/` 是可随时整包删掉的工作产物区
+  const ok = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let r;
+    try { r = JSON.parse(line); } catch (e) { continue; }   // 坏行跳过（历史里可能有半截行）
+    if (r && r.ok === true && r.partial !== true && Array.isArray(r.steps)) ok.push(r);
+  }
+  const win = ok.slice(-k);
+  const byGate = {};
+  for (const r of win) {
+    for (const s of r.steps) {
+      // skipped 的步骤 ms=0（与上一步共用一次调用）⇒ 不能读成"这一步很快"
+      if (!s || s.skipped === true || typeof s.ms !== 'number' || s.ms <= 0) continue;
+      if (byGate[s.gate] === undefined || s.ms < byGate[s.gate]) byGate[s.gate] = s.ms;
+    }
+  }
+  return { runs: win.length, byGate };
+}
 
 describe('验证链耗时预算：判定逻辑', () => {
   it('全在预算内 → 不报超预算，合计正确', () => {
@@ -71,13 +120,25 @@ describe('验证链耗时预算：判定逻辑', () => {
     expect(old.totalMs).toBeGreaterThan(150000);
   });
 
-  it('预算留足余量：当前实测值不应逼近预算（否则会变成随机红灯）', () => {
-    // 当前实测（本机）：G1~0.7s G8~0.7s G9~0.6s G3~6s G4~4.5s G5~51s G2~0.6s G6~7.3s
-    const measured = { G1: 700, G8: 700, G9: 600, G3: 6000, G4: 4500, G5: 51000, G2: 600, G6: 7300 };
-    for (const s of verify.STEPS) {
-      if (!s.budgetMs || !measured[s.gate]) continue;
-      expect(s.budgetMs / measured[s.gate], s.gate + ' 的预算余量').toBeGreaterThan(1.8);
+  it('预算留足余量：实测值不应逼近预算（否则会变成随机红灯）', () => {
+    // 实测**现读** `.review/verify-history.jsonl` 的真读数，**不写死数字**（原因见 recentMeasured 上方）✓
+    const { runs, byGate } = recentMeasured(10);
+    if (!runs) {
+      // 没有历史（首次运行 / `.review/` 被清理过）⇒ 本项**未判定**，**不是**"通过" ✗（措辞必须让人看出区别）。
+      // 为什么不判红：`.review/` 是工程既定、可随时整包删除的工作产物区，缺了只当"未知"
+      // —— 与本工程既有约定一致（见 `scripts/verify.js` 的 LAST_VERIFY 注释）。
+      console.warn('⚠️ 预算余量：**未判定** —— 没有可用的验证历史（' + verify.VERIFY_HISTORY
+        + ' 不存在 / 还没有成功记录）。要判定请先跑一次全链（`npm run verify`）。这一条**不是**通过 ✗');
+      return;
     }
+    let judged = 0;
+    for (const s of verify.STEPS) {
+      if (!s.budgetMs || !byGate[s.gate]) continue;   // 历史里没有读数的门禁（如新增步骤）无从判定
+      judged++;
+      expect(s.budgetMs / byGate[s.gate], s.gate + ' 的预算余量（实测 = 最近 ' + runs
+        + ' 次成功全链里的最小值 ' + byGate[s.gate] + 'ms）').toBeGreaterThan(1.8);
+    }
+    expect(judged, '至少要判定一个门禁（否则这条守卫等于空转 ✗）').toBeGreaterThan(0);
   });
 });
 
@@ -130,6 +191,45 @@ describe('验证链定义自洽（scripts/verify.js 是唯一定义）', () => {
   it('package.json 的 verify 指向本 runner（不是又一份手抄的 && 链）', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
     expect(pkg.scripts.verify).toBe('node scripts/verify.js');
+  });
+});
+
+/* ============================================================================
+ * 两条**结构性不变量**的机械守卫（批 J，2026-10-13）
+ * ----------------------------------------------------------------------------
+ * 这两条原先只写在注释里（`scripts/verify.js` 的 `TOTAL_BUDGET_MS`、`main.js` 的 `SMOKE_GUARD_MS`）。
+ * **注释不是守卫**：有人改坏它时不会变红 —— 而这两条恰恰是"改坏了也看不出"的典型，
+ * 因为坏掉的形状是**假红 / 假崩**（2026-10-13 两次真红就是这样来的：G5 用 304.6s 跑完、
+ * 判据全绿，却在 300s 被守卫掐掉，报文里只剩 `SMOKE GUARD TIMEOUT — force exit` ✗）。
+ *
+ * 两条都**从代码现读**、不抄数字。抄一份进测试 = 同一件事有两处表达 ⇒ 下次改预算时，
+ * 测试里那份**不会自动跟着变**，于是它守的只是那份抄本，而不是线上真正生效的那个数
+ * （本工程反复修过的同型病：文档与代码各写一份事实）。
+ * ⚠️ 读不到（正则不匹配 / 找不到 G5）**判红**，不跳过：那不是"没违反"，而是"**这条不变量没被验证**" ✗。
+ * ========================================================================= */
+describe('两条不变量的机械守卫（从代码现读，不抄数字）', () => {
+  it('① `main.js` 的冒烟守卫 > G5 预算（守卫先触发会把"跑完且全绿、只是机器慢"报成崩溃）', () => {
+    // 为什么解析源码而不是 require：main.js 是 Electron 主进程入口，require 它会在测试进程里
+    // 启动应用（app / BrowserWindow 都要真的跑起来）⇒ 只能文本现读（与 G8 读 main.js 的方式同类）。
+    const src = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+    const m = src.match(/const\s+SMOKE_GUARD_MS\s*=\s*(\d+)\s*;/);
+    expect(m, 'main.js 里找不到 `const SMOKE_GUARD_MS = <数字>;` —— 读不到不算"没违反"，'
+      + '而是"这条不变量没被验证" ⇒ 判红（也别让守卫随一次重命名静默消失 ✗）').toBeTruthy();
+    const guardMs = Number(m[1]);
+    const g5 = verify.STEPS.find((s) => s.gate === 'G5');
+    expect(g5, 'scripts/verify.js 的 STEPS 里应有 G5').toBeTruthy();
+    expect(guardMs, '冒烟守卫（main.js 的 SMOKE_GUARD_MS = ' + guardMs + 'ms）必须**大于** G5 的预算（'
+      + g5.budgetMs + 'ms）：守卫先触发会把"其实跑完了、判据全绿、只是机器慢"的一次报成崩溃，'
+      + '报文里只剩 SMOKE GUARD TIMEOUT — force exit ✗（预算判"太慢"、守卫只拦"真挂死"，'
+      + '两者代价不对等 ⇒ 守卫必须永远更大）').toBeGreaterThan(g5.budgetMs);
+  });
+
+  it('② 合计预算 ≥ 各步预算之和（否则合计会抢在单步前面报红，盖掉真正慢的那一步）', () => {
+    const sum = verify.STEPS.reduce((n, s) => n + (s.budgetMs || 0), 0);
+    expect(sum, '各步预算之和应大于 0（STEPS 读坏了？）').toBeGreaterThan(0);
+    expect(verify.TOTAL_BUDGET_MS, '合计预算（' + verify.TOTAL_BUDGET_MS + 'ms）必须 ≥ 各步预算之和（'
+      + sum + 'ms，从 STEPS 现算）：合计红只说"整条链慢了"、说不出是哪一步 ⇒ 它不许抢在单步前面发声')
+      .toBeGreaterThanOrEqual(sum);
   });
 });
 

@@ -385,7 +385,17 @@ const STEPS = [
     step: 12, gate: 'G4', label: 'CLI 集成断言',
     cmd: 'node scripts/cli-integration.js', shown: '`node scripts/cli-integration.js`',
     covers: '全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理）',
-    budgetMs: 30000
+    // 预算调整史（每次都带实测依据 ✓）：
+    //   · 原值 30s：按 2026-09 的实测（≈4.5–11s）取 2–3 倍余量，当时很宽 ✓。
+    //   · 2026-10-13：**30s→60s**。当天实测（`.review/verify-history.jsonl` 真读数）：
+    //     两次失败运行里 G4 = 26.6s / 26.5s、另一次 29.3s；最近一次成功全链（15:28）**29.5s**
+    //     ⇒ 距 30s 只剩 **0.5s** ✗。而当天全机同时慢 20–30%（同几轮读数：G3 30.8→38.9s），
+    //     即"30s 预算在慢档里**必然假红**"（29.5×1.2 ≈ 35s）：判据全绿、只是机器慢，
+    //     却以"CLI 集成断言太慢"的形状报出来 —— 那不是止涨线，是随机红灯 ✗（与 G5 那次同型）。
+    //     60s = 快档基线 23.8s 的 **2.5×**、慢档 29.5s 的 **2.0×** ⇒ 先止住假红，
+    //     再由"预算 = 止涨线"抓真正的变慢（真涨到 60s+ 仍然红 ✓）。
+    //   · ⚠️ 只有**这一步**的预算动了：其余步骤原值不动，G5 的 450s 与 main.js 的守卫 540s 也未动 ✓。
+    budgetMs: 60000
   },
   {
     step: 13, gate: 'G2', label: '数据校验',
@@ -434,10 +444,14 @@ const STEPS = [
  *  2026-10-13：**400s→700s**，并补一条结构性依据（原先没人写下来）：
  *  **合计预算必须 ≥ 各步预算之和** —— 否则"每步都接近各自预算"的那一刻，会**先由合计报红**，
  *  把真正慢的那一步盖掉 ✗（合计红只说"整条链慢了"，说不出是哪一步）。
- *  新账：各步预算之和 = **655s**（G5 一个就 450s）⇒ 旧 400s 连**一步**的预算都容不下
- *  （G5 顶到 450s ⇒ 必然同时触发合计红）；700s 才让"单步先发声"成立 ✓。
+ *  新账：各步预算之和 = **685s**（G4 30→60s 之后；G5 一个就 450s）⇒ 旧 400s 连**一步**的预算
+ *  都容不下（G5 顶到 450s ⇒ 必然同时触发合计红）；700s 才让"单步先发声"成立 ✓。
  *  实测依据：2026-10-13 全链实测 375.0 / 377.0s ⇒ 700s ≈ 1.86×；而"每步都顶到预算"的
- *  极端总和 655s < 700s ⇒ 合计不会抢在单步前面报红 ✓。 */
+ *  极端总和 685s < 700s ⇒ 合计不会抢在单步前面报红 ✓。
+ *  ⚠️ 上面两条不变量**不只是注释**（批 J，2026-10-13）：`tests/verify-budget.test.js` 里各有一条
+ *  **机械守卫** —— 它从 `main.js` 现读冒烟守卫、从本 `STEPS` 现算各步预算之和再断言（**不抄数字**）。
+ *  ⇒ 以后改任何一步的预算，**必须同批**让这两条关系继续成立，否则单测直接红（而不是等下一批
+ *  真的踩到时才发现 ✓）。 */
 const TOTAL_BUDGET_MS = 700000;
 
 const fmt = (ms) => (ms / 1000).toFixed(1) + 's';
@@ -454,6 +468,36 @@ function checkBudgets(results, totalBudgetMs) {
   const overStep = ran.filter((r) => r.budgetMs > 0 && r.ms > r.budgetMs);
   const overTotal = totalMs > totalBudgetMs;
   return { totalMs, overStep, overTotal, totalBudgetMs, ranCount: ran.length };
+}
+
+/**
+ * 打印「超预算」报表（**只打印，不决定退出码** —— 退出码归调用方）。
+ *
+ * 为什么抽成函数（批 J，2026-10-13）：原先这段**写在"某步失败已 return 之后"** ⇒
+ * **失败步骤抢先返回，预算判定整段不执行** ✗（批 G 的两次红就是这个形状：报文里只剩
+ * `SMOKE GUARD TIMEOUT — force exit`，没有任何"哪一步、超了多少"的读数）。而"某步失败"
+ * 与"某步变慢"常常同源（跑到被守卫掐 / 超时 / 真挂死）⇒ 最需要看读数的那一次，恰恰没有读数。
+ * 现在两条路径共用这份报表，**语义不变**：失败仍以失败报文与 exit 1 收口。
+ *
+ * @param {{overStep:Array,overTotal:boolean,totalMs:number,totalBudgetMs:number,ranCount:number}} chk checkBudgets 的返回
+ * @param {{stepsOnly?:boolean, note?:string}} opts stepsOnly ⇒ **合计不作判定**（链没跑完时合计不是真值 ✗）
+ * @returns {boolean} 是否打印了超预算内容（调用方据此说一句"没有一步超预算"）
+ */
+function printOverBudget(chk, opts) {
+  const o = opts || {};
+  const totalOver = o.stepsOnly ? false : chk.overTotal;
+  if (!chk.overStep.length && !totalOver) return false;
+  console.error('验证链超出耗时预算（' + chk.overStep.length + ' 步 + ' + (totalOver ? '合计' : '0') + '）：');
+  for (const r of chk.overStep) {
+    console.error('  [超预算] ' + r.gate + ' ' + r.label + ' 用 ' + fmt(r.ms)
+      + '，预算 ' + fmt(r.budgetMs) + '（超 ' + fmt(r.ms - r.budgetMs) + '）');
+  }
+  if (totalOver) {
+    console.error('  [超预算] 合计 ' + fmt(chk.totalMs) + '，预算 ' + fmt(chk.totalBudgetMs)
+      + '（超 ' + fmt(chk.totalMs - chk.totalBudgetMs) + '）');
+  }
+  if (o.note) console.error(o.note);
+  return true;
 }
 
 function main() {
@@ -609,6 +653,17 @@ function main() {
   if (failed) {
     console.error((partial ? '部分验证失败（--changed）' : '验证失败')
       + '：步骤 ' + failed.step.step + '（' + failed.step.gate + '）退出码 ' + failed.code);
+    /* 批 J 的账（批 G 实测）：这里原先紧接着就走记录与 return ⇒ **失败步骤抢先返回，预算判定
+     * 整段不执行** ✗ —— 而"失败"与"变慢"常常同源（跑到被守卫掐 / 超时 / 真挂死），
+     * 最需要看读数的那一次反而只有一句"退出码 1"。现在**失败也把预算读数打出来**；
+     * 判定权仍归失败这一边，且合计**不作判定**（链没跑完 ⇒ 合计不是真值 ✓）。 */
+    if (!printOverBudget(chk, {
+      stepsOnly: true,
+      note: '（以上是**读数**：本次以失败收口 ⇒ 预算不参与本次判定；链没跑完，合计也不作判定 ✓）'
+    })) {
+      console.log('预算读数：已跑的 ' + chk.ranCount + ' 步都没超过各自预算'
+        + '（失败与"变慢"不同源 —— 先按上面的失败报文查原因 ✓）');
+    }
     const run = {
       finishedAt: new Date().toISOString(), ok: false, failedGate: failed.step.gate,
       totalMs: chk.totalMs, version: pkgVersion(), partial,
@@ -624,17 +679,8 @@ function main() {
   }
 
   // ---- 预算判定 ----
-  if (chk.overStep.length || chk.overTotal) {
-    console.error('验证链超出耗时预算（' + chk.overStep.length + ' 步 + '
-      + (chk.overTotal ? '合计' : '0') + '）：');
-    for (const r of chk.overStep) {
-      console.error('  [超预算] ' + r.gate + ' ' + r.label + ' 用 ' + fmt(r.ms)
-        + '，预算 ' + fmt(r.budgetMs) + '（超 ' + fmt(r.ms - r.budgetMs) + '）');
-    }
-    if (chk.overTotal) {
-      console.error('  [超预算] 合计 ' + fmt(chk.totalMs) + '，预算 ' + fmt(chk.totalBudgetMs)
-        + '（超 ' + fmt(chk.totalMs - chk.totalBudgetMs) + '）');
-    }
+  // 报表抽在 printOverBudget()（**只打印**），因为失败路径也要用它 —— 见那个函数上方的账 ✓
+  if (printOverBudget(chk, {})) {
     console.error('');
     console.error('这不一定是错：预算的作用是**防止耗时悄悄涨回去**（本链曾从 176 s 压到 77 s）。');
     console.error('若这次增长是合理的（新增了断言/功能/步骤），请改 scripts/verify.js 的');

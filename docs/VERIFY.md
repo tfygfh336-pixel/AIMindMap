@@ -17,7 +17,7 @@
 |------|----|------|
 | CLI 命令数 | 68 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 51 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 1780 用例 / 84 文件 | `tests/*.test.js`（vitest） |
+| 单元测试 | 1782 用例 / 84 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 523 | `scripts/cli-integration.js` |
 | 冒烟断言 | 223 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
@@ -46,7 +46,7 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 | 9 | G3 | `npm test`（附加 JSON reporter 把用例数交给 G6，省一次 vitest 重跑） | 60s | 共享核心 `src/` 各模块（含 data-store 原子写、BOM 容错与并发版本闸门） |
 | 10 | G6 | `node scripts/doc-facts.js --check` | 20s | 文档数字与真值一致（含**第一屏 `SKILL.md` 自报的验证链步骤数** == `STEPS.length`）、版本号四处一致 |
 | 11 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |
-| 12 | G4 | `node scripts/cli-integration.js` | 30s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |
+| 12 | G4 | `node scripts/cli-integration.js` | 60s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |
 | 13 | G2 | `node cli/mm-cli.js validate-all` | 15s | 全部项目结构 + 悬挂链接 + 环 |
 | 14 | G5 | `npm run smoke` | 450s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离** |
 
