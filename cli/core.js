@@ -73,6 +73,10 @@ function parseArgs(argv) {
     // ⚠️ 带等号的两态写法（`--no-heat=false` / `--no-heat=true`）走**通用 `=` 分支**、语义一个字不变
     //   —— `tests/search-heat.test.js` 的 J5 钉着这两条；这里只接管**裸写**那一种。
     if (a === '--no-heat') { out.noHeat = true; continue; }
+    // 【W4】`search` / `search-all` 的 `--explain`：也是**纯布尔** ⇒ 同样登记
+    //   （不登记就会被通用分支按"--key value"吞掉后面的关键词 —— 与 `--no-heat` 同一种病）。
+    if (a === '--explain') { out.explain = true; continue; }
+    // ⚠️ `--mode` / `--weights` **带值**，故意**不**在这里登记（走通用分支：`--mode x` / `--mode=x`）。
     // 纯布尔 flag 显式登记：否则会被通用分支按"--key value"处理，
     // 一旦后面跟了位置参数（如 `mentions 项目 --include-structural 5`）就被误吞成值。
     if (a === '--content-only') { out.contentOnly = true; continue; }

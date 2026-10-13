@@ -541,6 +541,152 @@
     return order.map((i) => arr[i]);
   }
 
+  /* ---------------- 【W4】排序信号：每路只出**名次**（融合、权重、预设全在 `src/palette-rank.js`） ----------------
+   * 清单出处：`## W4｜混合检索与"权重怎么处理"`。这一段只做两件事：
+   *   ① 把**每路自己的名次**算出来（各路口径写在各自函数头，**不许互相借用分数**）；
+   *   ② 交给 `paletteRank.fuse`（RRF）合成**一个**顺序 —— 顺序就是那一个函数的结果。
+   * ⚠️ 本模块**不写任何权重、预设、`k` 或融合公式**（那些数字与理由只有 `src/palette-rank.js` 一处；
+   *   这里连 `k` 都不算，`--explain` 里也是从那一处**现取**再报出来）。
+   * ⚠️ **只重排、不增删命中**：每一路都只在**既有候选集内部**定序 ⇒ 命中形状（契约 §3.4 的 12 键）、
+   *   `hitCount`、`matchIn` 封闭取值表**一个字都不动**。把"非字面命中"也带回来是**召回扩展**，
+   *   它要动 `matchIn` 那张封闭表 ⇒ 那是契约变更（本件不做，`--explain` 的报文里明说这件事）。
+   */
+
+  /**
+   * **图距离**（W4 的 `graph` 路）：以"文本那一路的头名"为心，在 `node.links` 与 `assoc.members`
+   * 上做**无向** BFS，返回 `节点id → 跳数`（跳数 = 最短距离，与 `related --depth` 的语义同源）。
+   *
+   * 五条口径与理由：
+   *   · ⭐ **头名自己算 0 跳、并且在名次里**（`hops.get(头名) === 0`）—— 这条是**实测出来**的：
+   *     第一版把"距离 0"排除在外，于是"最相关的那个节点"在这一路上**反而没有名次**，
+   *     而它的邻居们白得一份贡献 ⇒ 黄金集里"共享内存"那条的头名被自己的邻居挤到第 3 名
+   *     （`tests/fixtures/hybrid-golden.json` 第 1 条期望：#1）。**距离 0 是一段真实的名次**，
+   *     不是"没有名次"（一个节点的"相关邻居"排在它前面，本来就说不通）。
+   *   · **无向**：`related` / `backlinks` 这套"相关知识点"本来就是双向读的（我引用谁 + 谁引用我），
+   *     "隔几个人"更与边的方向无关 ⇒ 两向都算。
+   *   · **只算本项目内的边**：跨项目节点**不在候选集里**（候选 = 本项目本次命中的那几条），
+   *     算了也用不上，而且 nodeId 只在项目内唯一 ⇒ 不过滤会串项目（与 `search-all` 不做跨项目重排
+   *     是同一条理由）。`selfProject` 由命令层给：它只回答"这条边是不是本项目的"，
+   *     与 `src/relations.js` 的 `selfProject` 同形（那一个参数也是这个用途）。
+   *   · **深度有界**：上界取 `src/palette-rank.js` 路由表里那一行的 `bound`（取值与理由都在那里）。
+   *   · **拿不到头名 ⇒ 这一路恒空**：如实记 `ranked: 0`（不许假装排过 ✗）。
+   *
+   * @returns {Map<string, number>} 节点 → 跳数（**含头名自己的 0**）
+   */
+  function graphHopsFrom(leaderId, root, opts) {
+    const hops = new Map();
+    const o = opts || {};
+    const maxHops = Number(o.maxHops);
+    const leader = (leaderId === undefined || leaderId === null) ? '' : String(leaderId);
+    if (!leader) return hops;
+    hops.set(leader, 0);                        // ⭐ 距离 0：头名自己（见上面第一条口径）
+    if (!(maxHops > 0)) return hops;
+    const self = (o.selfProject === undefined || o.selfProject === null) ? '' : String(o.selfProject);
+    if (!self) return hops;                     // 不知道"本项目叫什么" ⇒ 一条边都不敢认（如实恒空）
+
+    // ---- 邻接表（无向）：node.links 是一条有向边（`project` = 目标项目）；assoc 的一组成员两两相关 ----
+    const adj = new Map();
+    const link2 = (a, b) => {
+      if (!a || !b || a === b) return;
+      if (!adj.has(a)) adj.set(a, new Set());
+      if (!adj.has(b)) adj.set(b, new Set());
+      adj.get(a).add(b);
+      adj.get(b).add(a);
+    };
+    (function walk(n) {
+      if (!n) return;
+      (n.links || []).forEach((l) => {
+        if (l && l.id !== undefined && String(l.project) === self) link2(String(n.id), String(l.id));
+      });
+      (n.children || []).forEach(walk);
+    })(root);
+    (Array.isArray(o.assoc) ? o.assoc : []).forEach((a) => {
+      const local = ((a && a.members) || [])
+        .filter((m) => m && m.id !== undefined && String(m.project) === self)
+        .map((m) => String(m.id));
+      for (let i = 0; i < local.length; i++) {
+        for (let j = i + 1; j < local.length; j++) link2(local[i], local[j]);
+      }
+    });
+
+    // ---- 逐层 BFS（同层按键序展开 ⇒ 结果与遍历顺序无关，可复现；防环靠 seen）----
+    const seen = new Set([leader]);
+    let ring = [leader];
+    for (let d = 1; d <= maxHops && ring.length; d++) {
+      const next = [];
+      ring.forEach((id) => {
+        const nb = adj.get(id);
+        if (!nb) return;
+        Array.from(nb).sort().forEach((x) => {
+          if (seen.has(x)) return;
+          seen.add(x);
+          hops.set(x, d);
+          next.push(x);
+        });
+      });
+      ring = next;
+    }
+    return hops;
+  }
+
+  /**
+   * **来源可信度**的档位（W4 的 `trust` 路；**判据只有这一处**）：数越大越先看。
+   *   3 = 命中带 `verified`（**已核**：`src/item-model.js` §1 的 `{at,by,how}` 三件套）
+   *   2 = 人写的（节点上没有 `origin`）
+   *   1 = 导入来的（节点带 `origin` —— `src/schema.js`：origin 目前只有 `kind:'import'` 一种）
+   * ⚠️ 这是**排序**用的强弱档，**不是**"可信 / 不可信"的判定（导入的同样可以是对的）：
+   *   它只兑现"同等相关时，人核过 / 人写过的先看"这一条启发式，且在 `--explain` 里逐条可见。
+   */
+  function trustBucket(fact) {
+    if (fact && fact.verified) return 3;
+    if (fact && fact.imported) return 1;
+    return 2;
+  }
+
+  /**
+   * 按 `key` 升序给一批候选**定名次**（`key` 越小越优；同 `key` 时按**文本那一路的名次**兜底，
+   * 再不行按输入序 —— 于是任何一路的"平手"都不会打乱基线方向，也不依赖 sort 的稳定性）。
+   * @param {number[]} indexes 参与这一路的候选下标（没进这个数组 = 这一路**没给它名次**）
+   * @param {(i:number)=>number} keyOf
+   * @param {(i:number)=>number} textRankOf 文本那一路的名次（缺 = 很大）
+   */
+  function routeOrder(indexes, keyOf, textRankOf) {
+    return indexes.slice().sort((a, b) => {
+      const ka = keyOf(a);
+      const kb = keyOf(b);
+      if (ka !== kb) return ka - kb;
+      return (textRankOf(a) - textRankOf(b)) || (a - b);
+    });
+  }
+
+  /**
+   * **时效**的取值（W4 的 `time` 路）：只取条目上**现成的那一格** —— `at`；
+   * 没有 `at` 的 `qa` 条目回落到 `qa.at`（同一条记录上现成的时间真值）。
+   *   · **不派生**（不看变更日志、不加字段）：那是 W2 的活（清单 W2 一节给了两条路线与取舍），
+   *     本件只兑现"这一路已经在跑、来源是既有真值"这件事，别抢它的设计权 ✗；
+   *   · 取不到时间 ⇒ 返回 `null` = **"没有时间信息"**（不是"时间 = 0"）⇒ 这一条**不参与**这一路，
+   *     `--explain` 里如实体现（"时间未知"这件事看得见，不是被静默排到末尾 ✗）。
+   */
+  function itemTimeOf(item) {
+    if (!item) return null;
+    const cands = [item.at, item.qa && item.qa.at];
+    for (let i = 0; i < cands.length; i++) {
+      const t = cands[i] ? Date.parse(cands[i]) : NaN;
+      if (Number.isFinite(t)) return t;
+    }
+    return null;
+  }
+
+  /** 【W4】一条命中的排序信号原料（图 / 可信度 / 时效三路各取一格；**取值只有这一处**） */
+  function factOf(node, item) {
+    return {
+      nodeId: (node && node.id !== undefined) ? String(node.id) : '',
+      verified: !!(item && item.verified),
+      imported: !!(node && node.origin),
+      time: itemTimeOf(item)
+    };
+  }
+
   /** 卡预算：先按 `--limit` 截，再按 `--max-bytes` 逐条回退（**不许静默少给**：截了就给 truncated） */
   function applyBudget(hits, limit, maxBytes) {
     let out = (limit > 0 && hits.length > limit) ? hits.slice(0, limit) : hits.slice();
@@ -628,11 +774,22 @@
    *   limit, maxBytes,                   // 缺省值有界（常量在上方）；**合法性由调用方挡**（core.intOption）
    *   heat,                              // 热度向量：{scale, byNode} —— 由 src/heat.js 的 searchBoost 造
    *                                      // （本模块不认识"热度"的任何数值；不给 ⇒ 顺序 = 模糊分序）
-   *   indexes                            // buildIndexes(root) 的结果（多次查询务必传）
+   *   indexes,                           // buildIndexes(root) 的结果（多次查询务必传）
+   *   mode, weights,                     // 【W4】混合检索：预设名 / 权重名单（**原样**交给
+   *                                      // `paletteRank.hybridSpecOf` 解析 —— 解析、权重表、RRF 都在那一处；
+   *                                      // 两个都不给 ⇒ 不启用 ⇒ 顺序与从前逐字相同）
+   *   explain,                           // 【W4】要"每路贡献"的读数（不影响排序，只多返回一个 `explain`）
+   *   selfProject, assoc                 // 【W4】图距离这一路要的两样数据：本项目名（只用于判"这条边
+   *                                      // 是不是本项目的"）与项目文件里的 `assoc` 集合（`data.assoc`）。
+   *                                      // 不给 ⇒ 图距离那一路恒空（如实记 ranked:0，不假装排过）
    * }
-   * @returns {ok, message?, mode, hits, hitCount, truncated, budget}
+   * @returns {ok, message?, mode, hits, hitCount, truncated, budget, explain?}
    *   · `hitCount` = **截断前的命中总数**（"全量命中数"）；`hits.length` 才是本次返回数
    *   · `budget` = `{bytes, estTokens, limit, maxBytes}`，截断时另加 `resume`（续取方式）
+   *   · `explain`（只在 `opts.explain` 时出现）= `{enabled, mode, k, weights, routes[], hits[]}`：
+   *     `routes` 逐路给 `{id,label,source,installed,weight,ranked,note}`，`hits` 与**返回的** `hits`
+   *     逐条同长同序、每项 `{nodeId,itemId,total,parts:[{route,rank,weight,add}]}` ——
+   *     ⚠️ 它**不是**命中对象上的键（契约 §3.4 的 12 键一个字不动）。
    *   · `ok:false` 时 `hits` 为空数组，`message` 是**完整可打印**的报错（命令层只需 `ctx.error(r.message)`）
    */
   function searchItems(root, opts) {
@@ -652,6 +809,11 @@
     if (!tf.ok) return fail('bad-option', '--type ' + tf.reason);
     const sf = parseSince(o.since);
     if (!sf.ok) return fail('bad-option', '--since ' + sf.reason);
+    /* 【W4】混合检索的**参数闸门也在这一处**（与上面三条同一条纪律）：`--mode` / `--weights`
+     * 写错了就在碰任何东西之前红，而且报文来自唯一那一份解析（命令层不复制一份条件表）。 */
+    const hs = paletteRank.hybridSpecOf({ mode: o.mode, weights: o.weights });
+    if (!hs.ok) return fail('bad-option', hs.message);
+    const hybrid = hs.spec;
     if (!kw && !tag) return fail('no-criteria', '缺少关键词（或用 --tag 按标签搜索）');
 
     // 条目级过滤 × topic-only：**两种口径不混**（同 `read --items` × `--brief` 的纪律）
@@ -679,7 +841,11 @@
      * 挂上去就是加键；挂成不可枚举属性又是"看不见的字段"，比平行数组更难查。
      * ⚠️ 两个数组**必须同时 push** ⇒ 统一走下面的 `addHit`（手写 `raw.push` 会漏掉同步）。 */
     const faceTexts = [];
-    const addHit = (hit, faceText) => { raw.push(hit); faceTexts.push(faceText); };
+    /* 【W4】与命中**逐条平行**的"排序信号原料"：落在哪个节点、带不带 `verified`、是不是导入来的
+     * （`origin`）、有没有时间真值 —— 三路各取自己需要的那一格（见 `factOf`）。
+     * 与 `faceTexts` 同一条纪律：**必须同时 push**，所以也走 `addHit`。 */
+    const facts = [];
+    const addHit = (hit, faceText, fact) => { raw.push(hit); faceTexts.push(faceText); facts.push(fact); };
 
     idx.entries.forEach((entry) => {
       const n = entry.node;
@@ -696,14 +862,14 @@
             if (!itemTag && !nodeTag) return;
             if (!passItemFilters(rec.item, f)) return;
             addHit(hitOf(entry, rec.item, itemTag ? 'item-tag' : 'node-tag',
-              { snippet: clip(rec.text, -1), score: 1 }), rec.text);
+              { snippet: clip(rec.text, -1), score: 1 }), rec.text, factOf(n, rec.item));
           });
           return;
         }
         // 未条目化节点：节点级标签命中，报 v2 的 `tag`（`tests/query.test.js` 钉着这个字面量）
         if (!nodeTag) return;
         if (onlyItems) return;
-        addHit(hitOf(entry, null, 'tag', {}), '');
+        addHit(hitOf(entry, null, 'tag', {}), '', factOf(n, null));
         return;
       }
 
@@ -749,7 +915,7 @@
           // `score` 的口径**没变**（契约 §3.4 的示例就是"出现次数"，`>= 1`）：模糊命中取不到子串
           // 出现次数，`countOccurrences` 会回落成 1 —— 它不是排序键（排序键是上面那份打分）
           score: countOccurrences(face.text, kw)
-        }), face.text);
+        }), face.text, factOf(n, null));
       }
 
       // 条目面（**只有默认口径才有**：--topic-only 是"回到 v2 的只搜标题"）
@@ -760,7 +926,7 @@
           if (tag && !hasTag(rec.item.tags, tag) && !nodeTag) return;
           if (!passItemFilters(rec.item, f)) return;
           addHit(hitOf(entry, rec.item, 'item',
-            { snippet: clip(rec.text, m.start), score: countOccurrences(rec.text, kw) }), rec.text);
+            { snippet: clip(rec.text, m.start), score: countOccurrences(rec.text, kw) }), rec.text, factOf(n, rec.item));
         });
       }
     });
@@ -772,17 +938,106 @@
      * · 排名在**热度之前**：热度（H1）是**最后一道**重排、且封顶，它把这里的顺序当作基线 ——
      *   于是 `--no-heat` / 本机没有热度日志时，CLI 顺序与命令面板**逐条相同**。 */
     const ranked = kw ? paletteRank.rankRows(raw, kw, (h, i) => faceTexts[i]) : raw;
-    const ordered = orderByHeat(ranked, o.heat);   // 热度：**只重排**，不增删命中（不改变"命中/不命中"）
+
+    /* ---- 【W4】多路融合（**融合只在 `src/palette-rank.js` 一处**；这里只把每路的名次算出来）----
+     * 顺序：**文本那一路先定基线**（它同时是候选集的定义，见文件头）⇒ 其余各路在这一批候选内部
+     * 各自出名次 ⇒ `fuse()`（RRF）合成一个顺序 ⇒ 最后才轮到热度（H1，封顶、只重排）。
+     * ⚠️ `--mode` / `--weights` **都不给 ⇒ 这里整段不生效**（`hybrid.enabled === false`）⇒
+     *   `ordered` 与从前逐字相同（W6 判据② 与 H1 的判据都不受影响）。 */
+    const idxOfHit = new Map();                     // 命中对象 → 下标（同一条命中是**不同**的对象）
+    raw.forEach((h, i) => idxOfHit.set(h, i));
+    const textOrder = kw ? ranked.map((h) => idxOfHit.get(h)) : [];
+    const textRank = new Map();
+    textOrder.forEach((i, k) => { if (!textRank.has(i)) textRank.set(i, k + 1); });
+    const textRankOf = (i) => (textRank.has(i) ? textRank.get(i) : Number.MAX_SAFE_INTEGER);
+
+    let fused = null;
+    if (hybrid.enabled && raw.length) {
+      const allIdx = raw.map((h, i) => i);
+      const orderings = {};
+      if (kw) orderings.text = textOrder;           // 纯 --tag：没有可打分的东西 ⇒ 这一路不给名次
+      /* 图距离：以**文本那一路的头名**为心（无关键词 ⇒ 没有心 ⇒ 这一路恒空，如实记 ranked:0）。
+       * 深度上界从路由表现取（`bound`），本模块不写这个数字。 */
+      const gRow = paletteRank.ROUTES.filter((r) => r.id === 'graph')[0];
+      const leader = (kw && textOrder.length) ? facts[textOrder[0]].nodeId : '';
+      const hops = graphHopsFrom(leader, root, {
+        selfProject: o.selfProject, assoc: o.assoc, maxHops: gRow ? gRow.bound : 0
+      });
+      orderings.graph = routeOrder(allIdx.filter((i) => hops.has(facts[i].nodeId)),
+        (i) => hops.get(facts[i].nodeId), textRankOf);
+      // 来源可信度：档位高者先（档位判定只有 trustBucket 一处）
+      orderings.trust = routeOrder(allIdx, (i) => -trustBucket(facts[i]), textRankOf);
+      // 时效：有时间真值者按新→旧；**没有的整条不参与这一路**（后面在 --explain 里说明）
+      orderings.time = routeOrder(allIdx.filter((i) => Number.isFinite(facts[i].time)),
+        (i) => -facts[i].time, textRankOf);
+      fused = paletteRank.fuse(orderings, hybrid.weights, raw.length);
+    }
+    const baseline = fused ? fused.order.map((i) => raw[i]) : ranked;
+    const ordered = orderByHeat(baseline, o.heat);   // 热度：**只重排**，不增删命中（不改变"命中/不命中"）
     // 预算与预算报告只有一处实现（`budgeted`）：`search-all` 的合并批走的是同一个函数
     const b = budgeted(ordered, limit, maxBytes);
-    return {
+    const out = {
       ok: true, mode: mode, hits: b.hits, hitCount: raw.length,
       truncated: b.truncated, budget: b.budget
+    };
+    if (o.explain) out.explain = explainPayload(fused, hybrid, b.hits, idxOfHit);
+    return out;
+  }
+
+  /**
+   * 【W4】"某一路在这一批里为什么没出力"的**固定说法**（键 = 路由 id；措辞不含量值 ⇒ 不构成第二份真值）。
+   * 为什么必须有：清单 W4 的判据要求"每路贡献可见"，而 W3 那一节又明写"**不许静默少一路**"——
+   * 一路恒空（没有那个维度的数据 / 这一路没装）与"这一路算了但没有贡献"是**两件事**，
+   * 必须分开说，否则读到 `add: 0` 的人会猜（而猜错的方向通常是"库里的数据没问题"）。
+   */
+  const EMPTY_ROUTE_NOTE = Object.freeze({
+    text: '这一路没参与：没有关键词（纯 --tag 检索没有可打分的东西）',
+    graph: '这一路恒空：没有文本头名（无关键词）或本项目没有任何 links / assoc 边可用',
+    trust: '这一路恒空：候选一条都没有（不可能出现，出现即数据有问题）',
+    time: '这一路恒空：本批命中里没有一条带时间信息（取值只认 item.at / qa.at；W2 未落地不派生）',
+    semantic: '这一路没装（W3 未落地）'
+  });
+
+  /**
+   * 【W4】`--explain` 的读数（**只读** `fuse()` 的产物：名次、权重、总分都不在这里重算）。
+   *
+   * 两条形状约定（判据靠它们，别改）：
+   *   · `routes[]` **逐路都在** —— 未安装的、恒空的、权重为 0 的都要出现并各自说明原因
+   *     （"少了一路"必须看得见，而不是那一行不存在 ✗）；
+   *   · `hits[]` 与**返回的** `hits` 逐条同长同序（入参就是已经过预算的那一批）。
+   *     ⚠️ 它**不是**命中对象上的键：契约 §3.4 的 12 键一个字不动（平行数组，理由同 `faceTexts`）。
+   */
+  function explainPayload(fused, hybrid, shownHits, idxOfHit) {
+    const spec = hybrid || { enabled: false, mode: null, k: null, weights: null };
+    const routes = paletteRank.ROUTES.map((r) => {
+      const row = fused ? fused.routes.filter((x) => x.id === r.id)[0] : null;
+      const raw = spec.weights ? spec.weights[r.id] : 0;
+      const weight = (Number.isFinite(raw) && raw > 0) ? raw : 0;
+      let note = null;
+      if (!r.installed) note = '未安装（' + r.why + '）：权重收下，但不产生名次';
+      else if (!spec.enabled) note = '混合检索未启用（给 --mode 或 --weights 才启用这一层）';
+      else if (!row || row.ranked === 0) note = EMPTY_ROUTE_NOTE[r.id] || '这一路在本批没有名次';
+      return {
+        id: r.id, label: r.label, source: r.source, installed: !!r.installed,
+        weight: weight, ranked: row ? row.ranked : 0, note: note
+      };
+    });
+    const hits = (Array.isArray(shownHits) ? shownHits : []).map((h) => {
+      const i = idxOfHit.get(h);
+      const known = (i !== undefined && fused);
+      return {
+        nodeId: h.nodeId, itemId: (h.itemId === undefined) ? null : h.itemId,
+        total: known ? fused.totals[i] : 0,
+        parts: known ? paletteRank.contributionsOf(fused, i) : []
+      };
+    });
+    return {
+      enabled: !!spec.enabled, mode: spec.mode, k: spec.k, weights: spec.weights,
+      routes: routes, hits: hits
     };
   }
 
   /* ---------------- 取回（契约 §3.1 / §3.3 的读命令面） ---------------- */
-
   /**
    * `get <项目> <节点id> --item <itemId>` 的条目视图（契约 §3.1）。
    * **报文也在这里定**（单源）：调用方只做 `if (!r.ok) ctx.error(r.message)`，
@@ -887,6 +1142,11 @@
     searchItems: searchItems, getItemView: getItemView, readItemsView: readItemsView,
     // 热度向量的**排序**唯一实现处（数值/口径在 src/heat.js：这里一个热度数字都没有）
     orderByHeat: orderByHeat,
+    /* 【W4】混合检索的三路原料与 `--explain` 读数（**融合/权重/预设/`k` 都不在本模块**，
+     * 它们在 `src/palette-rank.js` 一处）。导出这三件是为了让"每路怎么出名次"能被**直接钉住**
+     * （端到端只看得见合成后的顺序，看不见"某一路恒空"这类事实）。 */
+    graphHopsFrom: graphHopsFrom, trustBucket: trustBucket, itemTimeOf: itemTimeOf,
+    explainPayload: explainPayload,
     // 预算与预算报告的**唯一实现处**（`searchItems` 自己走的就是它；`search-all` 的合并批也走它）
     budgeted: budgeted,
     /** 【W1】全库检索的两条硬上限 + 扫描闸门（唯一实现处；命令层与登记表都不许再写一份数字） */

@@ -397,6 +397,7 @@ function scanAll(ctx, opts) {
   const skipped = [];
   const hits = [];
   const heatOf = [];
+  const explainOf = [];                        // 【W4】逐项目的 `--explain` 读数（合并与截断在命令层）
   let hitCount = 0;
   let weights = null;                          // 任一项目取到的热度权重表（各项目同一个常量表；取到就用它）
   const t0 = Date.now();                       // ← 唯一读时钟的地方（判定本身在 itemIndex.scanGate，纯函数）
@@ -426,13 +427,21 @@ function scanAll(ctx, opts) {
       // 本次**不卡调用方预算**（预算在合并之后一次算）：给"上限+1"与不设字节上限，
       // 于是每个项目的 `hits` 是完整的、`hitCount` 更是截断前的真值 ⇒ 上游超限绝不会被这里藏住 ✓
       limit: itemIndex.SCAN_MAX_HITS + 1, maxBytes: Number.MAX_SAFE_INTEGER,
-      heat: boost
+      heat: boost,
+      // 【W4】混合检索**逐个项目各算各的**（与热度同一形状）：每路的名次都是项目内的
+      // ⇒ 每个项目的分片与 `search <该项目> --mode/--weights …` 逐条同序（判据靠它）。
+      // `selfProject` 只用于判"这条 links 边是不是本项目的"；`assoc` 是图距离的另一半边。
+      mode: o.hybridMode, weights: o.weights, explain: o.explain,
+      selfProject: name, assoc: root && root.assoc
     });
     // 参数错（缺关键词 / --verified 写错 / --topic-only 与条目级过滤同给…）在这一层按项目重复出现，
     // 报文本身就点名了问题 ⇒ 点名项目后一起抛出（第一条就停，不会刷屏）
     if (!r.ok) ctx.error('项目「' + name + '」：' + r.message);
 
     r.hits.forEach((h) => hits.push(Object.assign({ project: name }, h)));
+    // 【W4】`explain.hits` 与这个项目的 `r.hits` **逐条同序同长** ⇒ 直接按同一顺序并进来，
+    // 合并后的对齐关系就是构造保证（预算截断只砍尾巴，见 `mergeExplain`）。
+    if (o.explain && r.explain) explainOf.push({ project: name, explain: r.explain });
     hitCount += r.hitCount;
     scanned.push(name);
     const hotHits = boost ? r.hits.filter((h) => boost.byNode.has(h.nodeId)).length : 0;
@@ -457,6 +466,7 @@ function scanAll(ctx, opts) {
 
   return {
     hits: hits, hitCount: hitCount, scanned: scanned, skipped: skipped, heatOf: heatOf,
+    explainOf: explainOf,
     mode: o.mode,
     heatInfo: {
       applied: heatOf.some((h) => h.applied),
@@ -506,6 +516,74 @@ function readHeatBoostFor(ctx, name, noHeat) {
   }
   const boost = read.exists ? heat.searchBoost(read.heat) : null;
   return { read: read, boost: boost, weights: boost ? boost.weights : null };
+}
+
+/**
+ * 【W4】`--explain` 的**文本档打印**（`search` 与 `search-all` 共用这一处）。
+ *
+ * 它必须回答清单 W4 那句"**这条命中由哪几路贡献、各自什么排名**"——所以三段都有：
+ *   ① 这一批按什么权重、什么 `k` 融合（`k` 与权重都从纯逻辑层现取，命令层一个数字都不写）；
+ *   ② **逐路**读数（含"没出力"的那几路与原因：未安装 / 恒空 / 没启用）—— 少了哪一路必须看得见 ✗；
+ *   ③ **逐条**命中的各路名次与贡献（总分只是读数，不是判据）。
+ * ⚠️ 命中对象本身一个键都不加（契约 §3.4 的 12 键）：`explain.hits` 是与 `hits` **平行**的数组。
+ */
+function printExplain(ctx, ex) {
+  const num = (x) => Number(Number(x).toFixed(6));   // 只用于回显：别让 0.01639344262295082 这类噪音漏进读数
+  ctx.out(ex.enabled
+    ? '混合检索：' + (ex.mode ? '预设 `' + ex.mode + '`' : '自定义权重') + '（RRF：总分 = Σ 权重/(k+名次)，'
+      + 'k = ' + ex.k + '；k 与权重表的唯一一处是 src/palette-rank.js）'
+    : '混合检索**未启用**（不给 --mode / --weights 时它就是关的，顺序与从前逐字相同）：'
+      + '下面只有"字面匹配"这一路的读数');
+  ex.routes.forEach((r) => {
+    ctx.out('  · 路 `' + r.id + '`（' + r.label + '）权重 ' + num(r.weight)
+      + '｜有名次 ' + r.ranked + ' 条' + (r.note ? '｜' + r.note : ''));
+  });
+  const idle = ex.routes.filter((r) => !r.installed || (r.weight > 0 && r.ranked === 0));
+  if (idle.length) {
+    ctx.out('  ⚠ 有 ' + idle.length + ' 路**没出力**：'
+      + idle.map((r) => r.id + '（' + (r.note || '权重 0') + '）').join('；')
+      + ' —— 这是**能力 / 数据边界**，不等于"这一维没有问题"（口径见 docs/EXTENSIONS.md §1.2 的 W4 一段）');
+  }
+  ex.hits.forEach((h, i) => {
+    const known = h.parts.filter((p) => p.rank !== null);
+    ctx.out('  ' + (i + 1) + '. ' + h.nodeId + (h.itemId ? '#' + h.itemId : '')
+      + '  总分 ' + num(h.total) + '  ← '
+      + (known.length
+        ? known.map((p) => p.route + ' #' + p.rank + '×' + num(p.weight) + '=' + num(p.add)).join(' + ')
+        : '没有任何一路给它名次'));
+  });
+}
+
+/**
+ * 【W4】把逐项目的 `explain` 合并成**一份**（`search-all` 用）：`hits` 截到与预算后的命中同长，
+ * 每条读数补上 `project`（跨项目结果里"哪个项目"是必须的，与命中对象上补 `project` 同一口径）。
+ * 为什么能直接切前缀：`budgeted` 的截断只会**砍尾巴**（先按 limit 切、再逐条回退）⇒
+ * "合并顺序与命中顺序逐条对齐"是构造保证，不是巧合并肩。
+ */
+function mergeExplain(ofEach, shown) {
+  const used = ofEach.filter((x) => x && x.explain);
+  if (!used.length) return null;
+  const first = used[0].explain;
+  const hits = [];
+  used.forEach((x) => {
+    x.explain.hits.forEach((h) => hits.push(Object.assign({ project: x.project }, h)));
+  });
+  // 逐路读数：名次是**项目内**的 ⇒ 跨项目那一栏给"合计 + 逐项目分账"（别把不同项目的名次相加当名次）
+  const routes = first.routes.map((r) => {
+    let ranked = 0;
+    let weight = r.weight;
+    const perProject = used.map((x) => {
+      const row = x.explain.routes.filter((y) => y.id === r.id)[0] || {};
+      ranked += Number(row.ranked) || 0;
+      if (row.weight !== undefined && row.weight !== null) weight = row.weight;
+      return { project: x.project, ranked: row.ranked || 0, note: row.note || null };
+    });
+    return Object.assign({}, r, { ranked: ranked, perProject: perProject });
+  });
+  return {
+    enabled: first.enabled, mode: first.mode, k: first.k, weights: first.weights,
+    routes: routes, hits: hits.slice(0, shown)
+  };
 }
 
 module.exports = {
@@ -643,11 +721,22 @@ module.exports = {
     const heatRead = heatOfOne.read;                   // 原本那份 `readHeatFile` 结果（--no-heat 时是 null）
     const boost = heatOfOne.boost;
 
-    const r = query.searchNodes(ctx.root, {
+    /* ---- 【W4】混合检索的两样数据 ----
+     * ① 本项目名（只用来判"node.links 里的这条边是不是本项目的" —— 跨项目节点不在候选集里，
+     *    算了也用不上，而且 nodeId 只在项目内唯一）；
+     * ② 项目文件里的 `assoc` 集合（图距离那一半的边）。
+     * 两者都从**这一次** `ctx.read()` 里取（与 `ctx.root` 是同一个 `data.data`，不读第二次）。
+     * ⚠️ 三个开关（`--mode` / `--weights` / `--explain`）**原样**交给纯逻辑层：解析、权重表、
+     *    路由表、融合都在 `src/palette-rank.js` / `src/item-index.js` 那两处，命令层不复制一份条件表
+     *    （所以 `--weights` 写错的报文与 `--verified` 写错同源）。 */
+    const { data } = ctx.read();
+    const r = query.searchNodes(data.data, {
       keyword: ctx.args._[1], tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
       src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
       limit: limit, maxBytes: maxBytes,
-      heat: boost
+      heat: boost,
+      mode: ctx.args.mode, weights: ctx.args.weights, explain: !!ctx.args.explain,
+      selfProject: ctx.projectName, assoc: data.assoc
     });
     // 缺关键词 / 非法 --verified,--type,--since / --topic-only 与条目级过滤同给 ⇒ 都由纯逻辑层给出完整报文
     if (!r.ok) ctx.error(r.message);
@@ -678,8 +767,11 @@ module.exports = {
       } : null
     };
     if (ctx.args.json) {
-      ctx.outJson({ project: ctx.projectName, keyword: ctx.args._[1] || null, hits: r.hits,
-        hitCount: r.hitCount, truncated: r.truncated, mode: r.mode, budget: r.budget, heat: heatInfo });
+      const payload = { project: ctx.projectName, keyword: ctx.args._[1] || null, hits: r.hits,
+        hitCount: r.hitCount, truncated: r.truncated, mode: r.mode, budget: r.budget, heat: heatInfo };
+      // 【W4】`explain` **只在要的时候出现**（既有消费者的 JSON 面一个键都不多）
+      if (r.explain) payload.explain = r.explain;
+      ctx.outJson(payload);
       return;
     }
     r.hits.forEach((h) => ctx.out(h.nodeId + (h.itemId ? '#' + h.itemId : '') + '  ' + h.nodeTopic
@@ -699,6 +791,8 @@ module.exports = {
         + '本次返回到的命中里 ' + hotHits + ' 个带热度。口径见 src/heat.js 的 SEARCH_RANK（唯一一处）');
     }
     if (r.truncated && r.budget.resume) ctx.out(r.budget.resume);
+    // 【W4】`--explain`：放在**最后**（顺序、热度、预算都说完之后）—— 读它的人先看结果、再看归因
+    if (r.explain) printExplain(ctx, r.explain);
   },
 
   /**
@@ -738,7 +832,9 @@ module.exports = {
     // ② `mode` 也从那一处拿（不在命令层重写 'items' / 'topic-only' 的映射，否则就是第二份口径）。
     const probe = itemIndex.searchItems({ id: '', topic: '', children: [] }, {
       keyword: ctx.args._[0], tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
-      src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since
+      src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
+      // 【W4】混合检索的参数闸门也在那一处：`--mode` / `--weights` 写错的报文与 `search` 逐字同源
+      mode: ctx.args.mode, weights: ctx.args.weights
     });
     if (!probe.ok) ctx.error(probe.message);
 
@@ -751,7 +847,9 @@ module.exports = {
       names: sc.names, keyword: ctx.args._[0],
       tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
       src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
-      noHeat: nh.value, mode: probe.mode
+      noHeat: nh.value, mode: probe.mode,
+      // 【W4】混合检索：逐个项目各自融合（`--mode` / `--weights` / `--explain` 与 `search` 同名同义）
+      hybridMode: ctx.args.mode, weights: ctx.args.weights, explain: !!ctx.args.explain
     });
 
     // ---- 卡预算（**合并之后**一次算；实现与 `searchItems` 共用同一个 `budgeted`）----
@@ -774,13 +872,17 @@ module.exports = {
 
     const heatInfo = scan.heatInfo;
     const scopeShown = sc.names;
+    // 【W4】`--explain`：逐项目读数合一（`hits` 截到与预算后的命中**逐条对齐**）
+    const ex = ctx.args.explain ? mergeExplain(scan.explainOf, b.hits.length) : null;
     if (js) {
-      ctx.outJson({
+      const payload = {
         keyword: ctx.args._[0] === undefined ? null : ctx.args._[0], tag: ctx.args.tag || null,
         scoped: sc.scoped, scope: scopeShown, scanned: scan.scanned, skipped: scan.skipped,
         hits: b.hits, hitCount: scan.hitCount, truncated: b.truncated, mode: scan.mode,
         budget: b.budget, heat: heatInfo
-      });
+      };
+      if (ex) payload.explain = ex;             // 只在要的时候出现（既有 JSON 面一个键都不多）
+      ctx.outJson(payload);
       return;
     }
 
@@ -821,6 +923,8 @@ module.exports = {
     }
     // 截断时给续取方式（与 `search` 同一份建议文本 —— 口径只有 src/item-index.js 一处）
     if (b.truncated && b.budget.resume) ctx.out(b.budget.resume);
+    // 【W4】`--explain`：逐项目读数的合并（与 `search` 同一份打印实现 `printExplain`）
+    if (ex) printExplain(ctx, ex);
   },
 
   stats(ctx) {

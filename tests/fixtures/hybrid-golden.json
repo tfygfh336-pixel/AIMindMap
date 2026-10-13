@@ -1,0 +1,210 @@
+{
+  "_note": [
+    "【W4】黄金查询集：15 条以上**真实问题** + 它们**该命中哪个节点**（人工判定的真值，不是从实现里抄的）。",
+    "用途：清单 W4 那句'改权重就跑它，给前后对比数字'——没有它，调权重就是玄学。",
+    "怎么用：tests/search-hybrid.test.js 把它建成一个沙箱项目，逐条跑 search（--no-heat --json），",
+    "        按下表算每条问题期望命中的**名次**，再按档位（balanced / recent / conceptual /",
+    "        以及自定义 --weights）打一张对比表（hit@1 / hit@3 / MRR 现算，不写死在任何地方）。",
+    "口径：expect = **这条问题的最佳答案**（一个节点 id）；topN = 它至少要在前几名里。",
+    "      topN 是'这个问题能容忍的模糊度'（人工判定），不是'实现当前排到第几'——",
+    "      实现排不到就说明默认权重没兑现这条期望，那是**信号**，不许把 topN 挪到刚好过。",
+    "⭐ 实测出来的一条量级事实（改这张表前先读它）：RRF **只吃名次**，所以辅助路的权重必须与 text",
+    "   **同量级**才可能翻动**相邻**名次（相邻两条的文本贡献差 ≈ 1/(k+1)²，而辅助路把 #1 与 #m",
+    "   拉开的幅度只有 w·(1/(k+1) − 1/(k+m))）。⇒ 在 balanced 档（text=1, graph=0.5, trust=0.2, time=0.2）",
+    "   下，'几条辅助路一致'**会真的改变前几名的次序**（例：'TCP' 那条问题里，人核过 + 更新 +",
+    "   与头名相邻的那条会上来）。这不是缺陷，是 RRF 的本来面目；本条表的 topN 因此按 **'答案仍在前 N 名'**",
+    "   来定（而不是'答案必须是第一名'），除了那些语义上无歧义的（topN=1）。",
+    "   要看它到底怎么变的：`search <项目> <关键词> --mode balanced --explain`。",
+    "语料：本项目是**造的**一个小库（多域混合），为的是让每一条期望都能被独立验证；",
+    "      真值来自'这两条笔记在语义上是什么关系'，与打分实现无关。"
+  ],
+  "corpus": {
+    "version": "0.18.0",
+    "formatVersion": 3,
+    "nodes": [
+      {
+        "id": "nd-shm",
+        "topic": "共享内存段",
+        "items": [
+          { "id": "i-shm1", "text": "System V 共享内存段的创建与挂接（shmget / shmat）", "at": "2026-09-20T00:00:00Z" }
+        ],
+        "links": [{ "id": "nd-ipc", "caption": "IPC 方式对比" }]
+      },
+      {
+        "id": "nd-ipc",
+        "topic": "进程间通信 IPC",
+        "items": [
+          { "id": "i-ipc1", "text": "常见 IPC：管道、消息队列、共享内存之外还有信号与套接字", "at": "2026-10-02T00:00:00Z",
+            "verified": { "at": "2026-10-02T03:00:00Z", "by": "junnan", "how": "manual" } }
+        ]
+      },
+      {
+        "id": "nd-mmap",
+        "topic": "内存映射 mmap",
+        "items": [
+          { "id": "i-mmap1", "text": "mmap 把文件映射进地址空间，与共享内存是同一条路", "at": "2026-10-11T00:00:00Z" }
+        ],
+        "links": [{ "id": "nd-shm" }]
+      },
+      {
+        "id": "nd-memwall",
+        "topic": "内存墙与 NUMA",
+        "items": [
+          { "id": "i-mem1", "text": "NUMA 下的远程内存访问延迟：跨 socket 的代价", "at": "2026-08-02T00:00:00Z" }
+        ]
+      },
+      {
+        "id": "nd-shmapi",
+        "topic": "POSIX 接口",
+        "_why": "⭐ 这一条是**专门为'图距离这一路在干活'造的**：它是 nd-shm 的一跳邻居，但 ① 正文很长 ⇒ 字面名次靠后；② **没有 `at`** ⇒ 时效那一路根本不给它名次；③ 既不是已核、也不是导入来的 ⇒ 可信度那一路只把它排在中段。于是「它能不能进前三」只可能由图距离决定（注入证明 D1 就打在它身上）。",
+        "items": [
+          { "id": "i-shmapi1", "text": "shm_open 与 ftruncate：POSIX 共享内存的创建流程（比 System V 更要注意生命周期）" }
+        ],
+        "links": [{ "id": "nd-shm" }]
+      },
+      {
+        "id": "nd-tcp",
+        "topic": "TCP 连接管理",
+        "items": [
+          { "id": "i-tcp1", "text": "三次握手、四次挥手与 TIME_WAIT", "at": "2026-09-01T00:00:00Z" },
+          { "id": "i-tcp2", "text": "半连接队列与 SYN flood 的防御", "at": "2026-09-25T00:00:00Z" }
+        ],
+        "links": [{ "id": "nd-http", "caption": "HTTP 就建在它上面" }]
+      },
+      {
+        "id": "nd-http",
+        "topic": "HTTP 超文本传输协议",
+        "items": [
+          { "id": "i-http1", "text": "HTTP/1.1 建立在 TCP 之上：请求响应与流水线", "at": "2026-10-09T00:00:00Z",
+            "verified": { "at": "2026-10-09T02:00:00Z", "by": "junnan", "how": "manual" } }
+        ]
+      },
+      {
+        "id": "nd-import-tcp",
+        "topic": "从 PDF 导入的 TCP 笔记",
+        "imported": true,
+        "items": [
+          { "id": "i-rep1", "text": "TCP 拥塞控制：慢启动与 AIMD（转载，未核）", "at": "2026-10-08T00:00:00Z" }
+        ]
+      },
+      {
+        "id": "nd-verify-tcp",
+        "topic": "TCP 拥塞控制（人核过）",
+        "items": [
+          { "id": "i-ver1", "text": "TCP 拥塞控制：慢启动、拥塞避免、快重传、快恢复", "at": "2026-10-07T00:00:00Z",
+            "verified": { "at": "2026-10-07T06:00:00Z", "by": "junnan", "how": "manual" } }
+        ]
+      },
+      {
+        "id": "nd-quic",
+        "topic": "QUIC 与传输层演进",
+        "imported": true,
+        "items": [
+          { "id": "i-quic1", "text": "QUIC 用 UDP 重写了 TCP 的那些机制：0-RTT 与多路复用", "at": "2026-10-12T00:00:00Z" }
+        ]
+      },
+      {
+        "id": "nd-db",
+        "topic": "数据库索引",
+        "tags": ["db", "存储"],
+        "items": [
+          { "id": "i-db1", "text": "B+ 树索引与页分裂：为什么随机插入会变慢", "at": "2026-08-15T00:00:00Z", "tags": ["db"] }
+        ]
+      },
+      {
+        "id": "nd-lock",
+        "topic": "锁与并发",
+        "items": [
+          { "id": "i-lock1", "text": "自旋锁、互斥量与内存屏障：谁在等谁", "at": "2026-07-30T00:00:00Z" }
+        ]
+      },
+      {
+        "id": "nd-tool",
+        "topic": "本地工具链",
+        "tags": ["工具"],
+        "items": [
+          { "id": "i-tool1", "text": "db 迁移脚本与本地回滚演练", "at": "2026-10-10T00:00:00Z", "tags": ["工具", "db"] }
+        ]
+      },
+      {
+        "id": "nd-coffee",
+        "topic": "咖啡机的清洗周期",
+        "items": [
+          { "id": "i-cof1", "text": "除垢剂用量与清洗间隔（与上面任何一条都无关）", "at": "2026-06-01T00:00:00Z" }
+        ]
+      },
+      {
+        "id": "nd-icp",
+        "topic": "索引下推",
+        "_why": "⭐ 图距离那条黄金问题的**头名**（topic-only 节点：没有 items ⇒ 它只占一个候选位，邻居的名次不被它自己的条目挤掉）",
+        "children": []
+      },
+      {
+        "id": "nd-idx1",
+        "topic": "索引下推与覆盖索引",
+        "_why": "干扰项：字面名次比邻居好，但**与头名没有任何边** ⇒ 图距离这一路不给它名次",
+        "children": []
+      },
+      {
+        "id": "nd-idx2",
+        "topic": "MySQL 优化器笔记",
+        "items": [
+          { "id": "i-idx2", "text": "索引下推（ICP）在 5.6 之后默认开启", "at": "2026-10-03T00:00:00Z" }
+        ]
+      },
+      {
+        "id": "nd-merge",
+        "topic": "索引合并 index merge",
+        "_why": "⭐ 图距离那条黄金问题的**期望命中**：正文很长（字面名次末位）、**没有 `at`**（时效不给名次）、不是已核也不是导入（可信度只给中段）—— 只有它链回头名 nd-icp（一跳）这一件事能把它抬进前二",
+        "items": [
+          { "id": "i-merge1", "text": "索引合并与索引下推：优化器怎么选（这条正文刻意写长，好让字面名次靠后）" }
+        ],
+        "links": [{ "id": "nd-icp" }]
+      }
+    ],
+    "assoc": [
+      { "id": "a-tcp", "title": "", "note": "", "members": ["nd-tcp", "nd-http", "nd-quic"] }
+    ]
+  },
+  "queries": [
+    { "q": "共享内存", "expect": "nd-shm", "topN": 1,
+      "why": "直问'共享内存'，那条以它为主题、且最短的命中就该是第一（字面这一路自己就能做到）" },
+    { "q": "共享内存", "expect": "nd-ipc", "topN": 2,
+      "why": "IPC 那一条**是同一件事的另一面**（nd-shm 直接链到它、正文里也有'共享内存'）：只按字面被长正文压低，靠图距离该上来" },
+    { "q": "共享内存", "expect": "nd-mmap", "topN": 3,
+      "why": "mmap 与共享内存'是同一条路'（它链回 nd-shm）——一跳邻居，该进前三" },
+    { "q": "索引下推", "args": ["--weights", "text=1,graph=1"], "expect": "nd-merge", "topN": 2,
+      "dependsOn": "graph",
+      "why": "⭐ 只留'字面 + 图距离'两路（关掉可信度/时效）时，**一跳邻居 nd-merge 必须进前二**：它字面末位（正文长），既没有时间信息、也不是已核/导入的 ⇒ **只有图距离能抬它上来**。判据④（注入'某一路恒空'⇒ 必红）就打在它身上：这一路恒空时它掉到第 3 名之外。" },
+    { "q": "shmat", "expect": "nd-shm", "topN": 1,
+      "why": "子序列/子串都命中的精确词：只有它写了 shmat" },
+    { "q": "IPC", "expect": "nd-ipc", "topN": 1,
+      "why": "标题里就是它" },
+    { "q": "三次握手", "expect": "nd-tcp", "topN": 1,
+      "why": "只有 nd-tcp 谈握手；它同时是 nd-http 与 assoc 组的邻居（图距离再把同簇的带上）" },
+    { "q": "TCP", "expect": "nd-tcp", "topN": 3,
+      "why": "直问 TCP 时，'连接管理'这条必须在前三名里（它字面第一；辅助诸路会把'更近、更可信、更新'的邻居顶上来 —— 前三名是这条问题的容忍度，见 _note 里那条量级事实）" },
+    { "q": "TCP", "expect": "nd-http", "topN": 3,
+      "why": "HTTP 建立在 TCP 之上（nd-tcp 链到它 + assoc 同组）⇒ 应该在头几条里" },
+    { "q": "TCP 拥塞控制", "expect": "nd-verify-tcp", "topN": 1,
+      "why": "两条几乎同名的笔记：**人核过的那条**该排在前面（trust 这一路存在的理由）" },
+    { "q": "TCP 拥塞控制", "expect": "nd-import-tcp", "topN": 3,
+      "why": "转载那条仍要在前三（它也是这个问题的答案，只是次一档）" },
+    { "q": "慢启动", "expect": "nd-verify-tcp", "topN": 2,
+      "why": "'慢启动'在两条里都有，人核的那条该在前二" },
+    { "q": "0-RTT", "expect": "nd-quic", "topN": 1,
+      "why": "只有 QUIC 那条写了 0-RTT（子序列命中的边界样例）" },
+    { "q": "页分裂", "expect": "nd-db", "topN": 1,
+      "why": "只有索引笔记写了页分裂" },
+    { "q": "内存屏障", "expect": "nd-lock", "topN": 1,
+      "why": "只有锁那条写了内存屏障" },
+    { "q": "页分裂", "args": ["--tag", "db", "--mode", "balanced"], "expect": "nd-db", "topN": 1,
+      "why": "硬过滤（--tag）与排序是两层：带上标签过滤，答案不该变" },
+    { "q": "db", "args": ["--tag", "db", "--mode", "balanced"], "expect": "nd-tool", "topN": 2,
+      "why": "带标签的两个节点里，标题/正文直接写 db 的那个（迁移脚本）该先出现" },
+    { "q": "内存", "expect": "nd-shm", "topN": 3,
+      "why": "宽词：共享内存 / mmap / NUMA / 内存屏障 都沾边 —— 期望是'以内存为主题的几条在前几名里'，不苛求第一" },
+    { "q": "拥塞", "args": ["--mode", "recent"], "expect": "nd-verify-tcp", "topN": 1,
+      "why": "近期档：两条拥塞笔记里更新的那条（10-08 的转载）与该在前，但**人核过**的那条仍是这个问题的答案 —— 这条专门用来看两档的差别" }
+  ]
+}

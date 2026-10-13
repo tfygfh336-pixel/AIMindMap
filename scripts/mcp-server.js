@@ -19,6 +19,12 @@ const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const CLI = path.join(ROOT, 'cli', 'mm-cli.js');
+/**
+ * 【W4】混合检索的**预设权重 / 路由表**单源（`src/palette-rank.js`）—— 只用来拼 `search_nodes` 的
+ * 参数描述（**现取**，与 cli/registry.js 同一条纪律）：数字抄进 desc 就是第二份副本，
+ * 而它漂移的方向恰好是"AI 照描述传的权重与实际生效的不是一批"。
+ */
+const paletteSpec = require(path.join(ROOT, 'src', 'palette-rank.js'));
 const VERSION = (() => {
   try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version || '0.0.0'; }
   catch (e) { return '0.0.0'; }
@@ -79,7 +85,22 @@ const TOOLS = [
     type: s('只要该 `type` 的条目：text | rich | qa —— 对应 CLI 的 --type'),
     since: s('只要写入时间 `at >= ISO` 的条目（给了它就不返回未条目化的节点命中）—— 对应 CLI 的 --since'),
     limit: s('命中条数上界（整数）—— 对应 CLI 的 --limit；非法值当场报错，不静默退化'),
-    max_bytes: s('单次返回的**字节**上界（整数）—— 对应 CLI 的 --max-bytes；超限截断 + 给续取方式')
+    max_bytes: s('单次返回的**字节**上界（整数）—— 对应 CLI 的 --max-bytes；超限截断 + 给续取方式'),
+    /* 【W4】混合检索：**只加参数、不新增工具**（工具数不变）。三个参数的语义与 CLI 逐字相同
+     * （它们最后落到同一个 `src/item-index.js` 的 `searchItems` ⇒ 解析、权重表、RRF 都只有一处）。 */
+    mode: s('可选：混合检索预设（对应 CLI 的 --mode）——' + Object.keys(paletteSpec.MODES).join(' | ')
+      + '。**不给 mode 也不给 weights ⇒ 这一层是关的**（排序与从前逐字相同）；'
+      + '给了它就在既有命中内部按多路信号重排（不增删命中）：'
+      + Object.keys(paletteSpec.MODES).map((m) => m + '(' + paletteSpec.ROUTE_IDS
+        .map((r) => r + '=' + paletteSpec.MODES[m][r]).join(',') + ')').join(' / ')
+      + ' —— 预设表与理由的唯一一处是 src/palette-rank.js 的 MODES'),
+    weights: s('可选：自己定权重（对应 CLI 的 --weights），形如 `text=1,graph=.5`；它是**完整名单**，'
+      + '没提到的路由权重按 0；可选路由 ' + paletteSpec.ROUTE_IDS.join(' / ')
+      + '（semantic = W3 未落地 ⇒ 未安装，权重收下但不产生名次）。与 mode **不能同给**'),
+    explain: b('可选：只要"每路贡献"的读数（对应 CLI 的 --explain）—— **只多给读数、不改排序**：'
+      + '结果里多一个顶层 explain:{enabled,mode,k,weights,routes,hits}，逐路给权重与有名次条数'
+      + '（含"这一路为什么没出力"），explain.hits 与 hits 逐条同长同序（每条的逐路名次与贡献）。'
+      + '命中对象**不加任何键**（12 键契约不动）')
   }, []),
   T('backlinks', '查看节点反向链接（谁引用了我，含跨项目反查）', {
     project: s('项目名或 JSON 文件路径'), id: s('节点 id')
@@ -437,6 +458,13 @@ function searchNodeFlags(a, argOf) {
   // 若传不进这个开关，那条出路就是**指不到东西的死指针**（收报错的人用不了它）。
   // ⚠️ 取值一律由 CLI 决定：MCP 侧**不复制**任何热度权重/上限（三串数字仍只在 src/heat.js）。
   if (a.no_heat === true) c.push('--no-heat');
+  // ---- 【W4】混合检索：**只加三个参数**（工具数不变），直通 CLI 的同名开关 ----
+  // 为什么 AI 需要它们：清单 W4 要的是"AI 才敢据此推理"——而走 MCP 的调用方若传不进 mode/weights，
+  // 那套权重与归因就只对敲 CLI 的人可见（与 `--no-heat` 那次"出路是指不到东西的死指针"同一条理由）。
+  // ⚠️ 取值一律由 CLI 决定：这里只拼参数，不复制任何预设权重/k/路由表（那些数字仍只在 src/palette-rank.js）。
+  if (argOf('mode')) c.push('--mode', argOf('mode'));
+  if (argOf('weights')) c.push('--weights', argOf('weights'));
+  if (a.explain === true) c.push('--explain');
   return c;
 }
 
