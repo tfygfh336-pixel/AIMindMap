@@ -5,8 +5,16 @@
  * main.js 的 --smoke 分支加载本清单逐条执行并汇总 PASS/FAIL。
  * **新增渲染层功能时，到对应分域文件（scripts/smoke/NN-*.js）追加一条断言**：
  *   { name: '描述', run: async (ctx) => ({ ok: boolean, text: string }) }
- * ctx.exec(js) 封装 win.webContents.executeJavaScript（返回 Promise）。
+ * `ctx.exec(js)` 封装 win.webContents.executeJavaScript（返回 Promise）。
  * ctx.runCli(args) 跑一次 CLI 并拿回 stdout。
+ *
+ * ⚠️ **可选的第三态** `unverified: '<为什么本项未验证>'`（2026-10-12 加，域 39 的剪贴板判据先吃）：
+ *   只在"环境坏了、真值根本采不到"时用 —— 它让这条结果**响亮地说"本项未验证"、不计入
+ *   "通过/总数"、也不阻断**（形状照第八批"撕裂快照指纹采不到"那一档；计数在下面的 `tally()`）。
+ *   两条铁律：① 它**只许**出现在 `ok === true` 的结果上（fail-safe，见 `tally()`）；
+ *   ② 用之前先证明"这是**环境**问题而不是产品问题"——判据里要有一条**独立于产品链路**的环境探针
+ *   （例：`scripts/smoke/39-item-detail.js` 的 `clipboardEnvProbe`：本进程直接 writeText→readText 往返，
+ *   **不走**产品那条 IPC）⇒ 探针说可用而产品没写进去，照样**判红** ✓。
  *
  * ── 为什么是"自动发现"而不是硬编码 require 列表 ──
  * 原先是一串手写的 `require('./smoke/NN-*.js')`。它有一个**静默失效**模式：
@@ -150,6 +158,41 @@ module.exports = assertions;
 // 不能因为加了单跑而改变（改的是"跑哪些"，不是"有多少条"）。
 module.exports.files = files;
 module.exports.groups = groups;
+
+/* ================= 冒烟结果的**三态计数**（纯函数，零副作用 ⇒ 可被单测引入 ✓） =================
+ * 为什么需要第三档（真实形状，2026-10-12）：域 39 的剪贴板判据在本机**稳定红**，
+ * 而根因是**环境**（系统剪贴板不可用：主进程写后回读为空，同机 `Get-Clipboard` 与
+ * `[System.Windows.Forms.Clipboard]::GetText()` 两个独立 API 也全都失败）。这种红既不是产品缺陷，
+ * 也不该静默当通过 —— 它把全链按在 13/14 连着好几批，而两边都是错的答案。
+ * 口径（照第八批"撕裂快照指纹采不到"那一档）：**采不到真值 ⇒ 响亮说"本项未验证"、不计入、不阻断**。
+ *
+ * 三档 = { 通过, 失败, 未验证 }（`B4c`：数数型判据也要数清"能输出几种判定"）：
+ *   · `ok:true` 且**没有** `unverified` ⇒ 通过（进分子分母）；
+ *   · `ok:true` 且**有** `unverified`   ⇒ **未验证**（两个数都不进！只进第三个计数）；
+ *   · `ok:false`（哪怕同时带了 `unverified`）⇒ **失败** —— **fail-safe**：`unverified` 只允许出现在
+ *     通过的结果上；一条结果既说"未验证"又说"失败"时**按失败计**，绝不能让"未验证"变成掩盖真失败的后门
+ *     （本工程最重的损害类别："没做，却看不出没做"）。
+ *
+ * @param {Array<{ok?:boolean, unverified?:string}>} results
+ * @returns {{passed:number, failed:number, unverified:number, total:number, unverifiedList:string[]}}
+ *   `total` = **参与计数**的条数（= passed + failed，**不含**未验证）；`unverifiedList` 给"响亮行"用。
+ */
+module.exports.tally = function tally(results) {
+  const list = Array.isArray(results) ? results : [];
+  let passed = 0;
+  let failed = 0;
+  let unverified = 0;
+  const unverifiedList = [];
+  list.forEach((r) => {
+    const ok = !!(r && r.ok);
+    const why = (r && typeof r.unverified === 'string' && r.unverified) ? r.unverified : null;
+    if (ok && why) { unverified++; unverifiedList.push(why); return; }   // 不计入通过/总数（见上面口径）
+    if (ok) { passed++; return; }
+    failed++;                                                            // fail-safe：ok:false 一律算失败
+  });
+  return { passed: passed, failed: failed, unverified: unverified, total: passed + failed,
+    unverifiedList: unverifiedList };
+};
 
 /* ================= 冒烟断言的**共用工具**（只放"每个域都要做、做错了会互相污染"的那件事） =================
  * `mm.closeDialogs(ctx)`：收干净**产品自己打开的模态**（`window.MMApp.closeAllDialogs`，唯一实现在

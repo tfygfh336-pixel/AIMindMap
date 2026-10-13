@@ -195,9 +195,13 @@ const TOOLS = [
     project: s('项目名或 JSON 文件路径'), depth: s('保留展开的层数，默认 2；0 = 全收起'),
     id: s('可选，只规范化这棵子树')
   }, ['project']),
-  T('clone_node', '复制节点到新父节点（deep=true 连子树一起）—— 注意与 move_node 的区别：clone 是**新增副本**', {
+  T('clone_node', '复制节点到新父节点（deep=true 连子树一起）—— 注意与 move_node 的区别：clone 是**新增副本**；'
+    + '要拿副本上的**条目级边**（`itemEdges`：默认档逐条点名 kept/repointable/wouldBe，即"哪几条链接仍指原物"）'
+    + '就传 json:true', {
     project: s('项目名或 JSON 文件路径'), id: s('源节点 id'), parent: s('新父节点 id'),
-    deep: b('是否连子树一起复制')
+    deep: b('是否连子树一起复制'),
+    json: b('返回 JSON —— 要取 `itemEdges`（副本上的条目级链接清单与"能不能重指向"）就传它；'
+      + '对应 CLI 的 --json（文本档只在副本上真有这类边时多一行 ⚠）')
   }, ['project', 'id', 'parent']),
   T('remove_file', '移除节点上的**附件引用**（文件本身留不留由调用方决定；与 remove_image 对称）', {
     project: s('项目名或 JSON 文件路径'), id: s('节点 id'), file: s('相对路径，如 attachments/x.md')
@@ -563,6 +567,9 @@ function callTool(name, args) {
     case 'clone_node': {
       const c = ['clone', argOf('project'), argOf('id'), argOf('parent')];
       if (a.deep) c.push('--deep');
+      // `--json`：让 MCP 侧也能拿到 `itemEdges`（副本上的条目级边清单）。⚠️ 与 `no_heat` 同款写法：
+      // 只认 `=== true`，免得 `false` 被当字符串传下去（那会让 CLI 收到一个"看起来像开关"的值）。
+      if (a.json === true) c.push('--json');
       return runCli(c);
     }
     case 'remove_file': return runCli(['remove-file', argOf('project'), argOf('id'), argOf('file')]);

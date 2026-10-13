@@ -228,6 +228,19 @@ describe('乙组 · ② --repoint-items = 语义改变（两端都换成副本�
     expect(r.out).toContain('纯开关');
     expect(fs.readFileSync(projFile(P), 'utf8'), '拒绝时盘上零改动').toBe(before);
   });
+
+  it('它是**登记过的纯布尔**：`clone P --repoint-items <源> <新父>` 与 `--deep` **同待遇**（位置参数一个都不被吞）', () => {
+    /* 这条钉的是 `cli/core.js` 的纯布尔登记表（`--deep` 就在那里）：没登记时，通用分支会把紧跟
+       `--repoint-items` 的第一个 token（源 id）吞成它的**值**，于是位置参数少一个 ⇒ 用户看到
+       「缺源 id / 源节点不存在: <新父>」这种看不懂的话。登记之后，选项摆哪儿都一样 ✓。 */
+    const r = run('clone', P, '--repoint-items', 'src-kid', 'outside', '--json');
+    expect(r.code, r.out).toBe(0);
+    const j = json(r);
+    expect(j.sourceId, '第一个位置参数仍是"项目"之后的**源 id**').toBe('src-kid');
+    expect(j.parent, '第二个位置参数仍是**新父 id**').toBe('outside');
+    expect(j.repointItems, '裸写 ⇒ true（真跑的是重指向那一档，不是被吞成字符串）').toBe(true);
+    expect(j.itemEdges.repointedCount).toBe(1);
+  });
 });
 
 /* ============================================================
@@ -312,5 +325,74 @@ describe('丁组 · ⑤ 无条目级边时输出逐字不变', () => {
     expect(r.code, r.out).toBe(0);
     expect(r.out.split('\n').length).toBe(1);
     expect(r.out).not.toContain('条目级');
+  });
+});
+
+/* ============================================================
+ * 戊组 · ④ `apply` 的 clone op：与命令面**同一对函数**
+ *   （`planItemEdges` / `repointRefusal`，不另写一份）；失败形状 = **整份 ops 拒绝、盘上零改动**
+ * ============================================================ */
+describe('戊组 · ④ apply 的 clone op 支持 repointItems（同一判定 + 同一事务语义）', () => {
+  const ops = (...list) => run('apply', P, '--ops-file', JSON.stringify({ version: 1, ops: list }));
+  const newIdOf = (out) => (out.match(/新 id ([A-Za-z0-9_-]+)/) || [])[1];
+
+  it('对得上 ⇒ 副本上的边**两端**都换成副本自己的（`get --item` 能解引用），回执点名"语义改变"', () => {
+    const r = ops({ op: 'clone', id: 'src-kid', parent: 'outside', repointItems: true });
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain('语义改变');
+    const copyId = newIdOf(r.out);
+    expect(copyId, '回执里要看得见新 id').toBeTruthy();
+    const copy = nodeOnDisk(P, copyId);
+    expect(copy.links[0].id, '目标**节点**也是副本（只换 item 会立刻悬挂）').toBe(copyId);
+    expect(copy.links[0].item).toBe(copy.items[1].id);          // 同序号 = 第 2 条
+    expect(copy.links[0].item).not.toBe('i-k2');
+    const g = run('get', P, copyId, '--item', copy.links[0].item, '--json');
+    expect(g.code, g.out).toBe(0);
+    expect(json(g).html).toBe('<p>K2</p>');
+    expect(run('validate', P).code).toBe(0);
+  });
+
+  it('对不上 ⇒ **整份 ops 拒绝**（同批前一条 op 也不生效）、盘上逐字节零改动，并逐条点名', () => {
+    const before = fs.readFileSync(projFile(P), 'utf8');
+    const r = ops(
+      { op: 'edit', id: 'plain', topic: '这条**绝不许**生效' },
+      { op: 'clone', id: 'src', parent: 'root', deep: true, repointItems: true }   // 两条对不上
+    );
+    expect(r.code, '对不上必须拒绝（不许猜一个序号对齐上去）').toBe(1);
+    expect(r.out).toMatch(/^error: /);
+    expect(r.out).toContain('clone op（源 src）');
+    expect(r.out).toContain('--repoint-items 对不上');
+    expect(r.out).toContain(P + '/outside#i-o2');            // 点名：目标不在被复制范围
+    expect(r.out).toContain(OTHER + '/b1#i-b1');             // 点名：跨项目
+    expect(r.out).toContain('两条出口');
+    expect(fs.readFileSync(projFile(P), 'utf8'), '整份事务零改动（这是"与其他 op 失败同一形状"的判据）')
+      .toBe(before);
+    expect(nodeOnDisk(P, 'plain').topic, '第 1 条 op 也不许生效').toBe('无条目级边');
+  });
+
+  it('`--dry-run` 里同样看得见"会对不上"，且**不写盘**（同一份判定，不必先落盘才知道）', () => {
+    const before = fs.readFileSync(projFile(P), 'utf8');
+    const r = run('apply', P, '--dry-run', '--ops-file',
+      JSON.stringify({ ops: [{ op: 'clone', id: 'src', parent: 'root', deep: true, repointItems: true }] }));
+    expect(r.code, r.out).toBe(0);                            // dry-run 本身成功（它只预览）
+    expect(r.out).toContain('会失败');
+    expect(r.out).toContain('第 1 条操作');
+    expect(r.out).toContain('对不上');
+    expect(fs.readFileSync(projFile(P), 'utf8')).toBe(before);
+  });
+
+  it('`repoint_items`（snake_case 别名）与 `repointItems` 等价；两者冲突或非布尔 ⇒ 响亮拒绝', () => {
+    const alias = ops({ op: 'clone', id: 'src-kid', parent: 'outside', repoint_items: true });
+    expect(alias.code, alias.out).toBe(0);
+    expect(alias.out).toContain('语义改变');
+
+    const conflict = ops({ op: 'clone', id: 'src-kid', parent: 'outside',
+      repointItems: true, repoint_items: false });
+    expect(conflict.code).toBe(1);
+    expect(conflict.out).toContain('不一致');
+
+    const notBool = ops({ op: 'clone', id: 'src-kid', parent: 'outside', repointItems: 'true' });
+    expect(notBool.code).toBe(1);
+    expect(notBool.out).toContain('必须是布尔');
   });
 });

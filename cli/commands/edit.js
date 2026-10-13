@@ -366,9 +366,12 @@ function cloneItems(items, mintItem) {
  *      `--repoint-items` 是"整条做成，或整条不做"，**不许按序号猜一个位置对齐上去** ——
  *      猜错就是把边指到了**另一条**条目上，而回显看起来是成功的。
  *
- * 判据（可执行）：`tests/clone-item-links.test.js` 的 ①②③⑤ + 注入证明 ④。
- * 边界（如实登记）：`apply` 的 clone op **只走默认档**（它的回显面是"逐条 op 回执"，本批不给它
- *   条目级边的清单，也不支持 repoint）—— 改它要走同一个函数，别在那边另写一份。
+ * 判据（可执行）：`tests/clone-item-links.test.js` 的 ①②③⑤ + 注入证明 ④；`apply` 的 clone op 走
+ *   **同一对函数**（判据在同文件的"apply 的 clone op"那一段：对得上 / 对不上 / 别名等价）。
+ * 边界（如实登记）：`apply` 的 clone op 的**回显面**只有"逐条 op 回执"—— 它**不**给条目级边的清单
+ *   （默认档不说"哪几条边仍指原物"）⇒ 想看清"哪些边没被重指向"要用 `clone --json` 看 `itemEdges`。
+ *   重指向**是**支持的（op 里 `"repointItems": true`，别名 `repoint_items`）：走的就是下面这一对
+ *   函数，对不上同样**整份 ops 拒绝**（见 `OPS.clone.run`）。
  * ========================================================================== */
 
 /** 源子树 ↔ 副本子树**逐节点配对**（同形同序：`cloneNode` 的 children 就是按下标递归复制的）。
@@ -656,11 +659,12 @@ module.exports = {
     const id = ctx.args._[1];
     const parent = ctx.args._[2];
     if (!id || !parent) ctx.error('用法: clone <项目> <源id> <新父id> [--deep] [--repoint-items] [--json]');
-    // `--repoint-items` 是**纯开关**（不带值）。`cli/core.js` 的纯布尔登记表（`--deep` 就登记在那里）
-    // **不在本批可改的边界内** ⇒ 只认布尔 true，并把"写成别的样子"响亮拒绝：
-    // 通用分支遇到"下一个 token 不是选项"时会把它吞成值（`--deep` 当年就是为这件事登记的），
-    // 于是 `clone 项目 --repoint-items a b` 会静默改成"repointItems='a'、位置参数少一个" —— 只认布尔，
-    // 这种写法就在这里现形（而不是变成一个看不懂的"源节点不存在: b"）。
+    // `--repoint-items` 是**纯开关**（不带值），已进 `cli/core.js` 的纯布尔登记表（`--deep` 就在那里）
+    // ⇒ 裸写恒为 `true`，且 `clone 项目 --repoint-items 源 新父` 与 `--deep` **同待遇**（三个位置参数
+    // 各就各位，不会被吞成 repointItems 的值）。
+    // ⚠️ 仍然保留下面这道闸门：带 `=` 的写法（`--repoint-items=yes`）走的是**通用 `=` 分支**，
+    // 登记表管不到它 ⇒ 那种形态在这里**响亮拒绝**（`tests/clone-item-links.test.js` 钉着它），
+    // 而不是让 `repointItems='yes'` 这种值悄悄流进"只认布尔"的地方。
     const repointRaw = ctx.args.repointItems;
     if (repointRaw !== undefined && repointRaw !== true) {
       ctx.error('--repoint-items 是**纯开关**（不带值）：写法 '
@@ -803,12 +807,16 @@ module.exports = {
  *     { "op": "edit", "id": "k1", "tags": "a,b", "clearDetail": true },
  *     { "op": "move", "id": "k1", "parent": "root", "index": 0 },
  *     { "op": "clone", "id": "k1", "parent": "root", "deep": true },
+ *     { "op": "clone", "id": "k1", "parent": "root", "deep": true, "repointItems": true },
  *     { "op": "assoc-add", "members": "k1,k2", "title": "关联", "noteMd": "…", "id": "a-k1k2" },
  *     { "op": "assoc-edit", "id": "a-k1k2", "clearNote": true }
  *   ] }
  * ```
  * 也接受**裸数组**（`[ {op:…}, … ]`，没有 version 包裹）—— 少一层包装更省事，两种都认。
  * 字段名与各命令的**选项键**一致（camelCase），于是"命令怎么写、ops 里就怎么填"。
+ * clone op 的 `repointItems`（别名 `repoint_items`，见 `repointFlagOf`）与 `clone --repoint-items`
+ * 是**同一个开关、同一份判定**：对不上 ⇒ 这一条 op 抛错 ⇒ **整份 ops 拒绝、盘上零改动**并点名第几条
+ * （与 move 的"移到自身子树"同一形状；`--dry-run` 里同样看得见）。
  * `--ops-file` 也接受**内联 JSON 文本**（以 `{` 或 `[` 开头即视为文本）—— 给脚本与 AI 用。
  *
  * ## 幂等
@@ -1075,7 +1083,11 @@ const OPS = {
       if (!raw.parent) ctx.error('缺少 parent（复制到哪个父节点下）');
       needNode(sim, String(raw.id), '源节点');
       needNode(sim, String(raw.parent), '父节点');
-      return { id: String(raw.id), parent: String(raw.parent), deep: !!raw.deep };
+      // `repointItems`（别名 `repoint_items`，解析只有一处 = repointFlagOf）：与命令面
+      // `clone --repoint-items` 是**同一个开关**、同一份判定 —— 改指"副本自己那份条目"。
+      // ⚠️ 这里只做**参数形状**校验；"对得上对不上"要等副本造出来才知道 ⇒ 在 `run()` 里判（见那里）。
+      return { id: String(raw.id), parent: String(raw.parent), deep: !!raw.deep,
+        repointItems: repointFlagOf(ctx, raw) };
     },
     run(ctx, data, a, index) {
       const src = tree.find(data.data, a.id);
@@ -1104,11 +1116,29 @@ const OPS = {
       //     深拷贝，同样漏 `items` / `detailMode` / `localPath` / `origin` —— `apply` 的 clone op
       //     也会静默抹掉整层条目。两处必须共用一个实现，否则总有一处会漂。
       const copy = cloneNode(src, mint, a.deep, mintItem);
+      /* 条目级边：与命令面**同一对函数**（`planItemEdges` / `repointRefusal`），**不在这里另写一份** ✗：
+       *   · 默认档（不给 repointItems）⇒ **引用语义**：边逐字仍指原物，一个字节都不动
+       *     （`apply` 的回显面是"逐条 op 回执"，本就不给条目级边的清单 —— 与命令面一致）；
+       *   · `repointItems: true` ⇒ 改指**副本自己那份新条目**的同序号条目（两端一起换）；
+       *   · 对不上 ⇒ **在这里抛**：`apply` 的 `ctx.mutate` 会把**整份 ops 拒绝、盘上零改动**，
+       *     与别的 op 的执行期失败（如 move 的"移动到自己子树"）**同一形状** ✓ ——
+       *     绝不"做一半"、也绝不按序号猜一个位置对齐上去（猜错等于把边指到另一条条目上，回显还说成功）。 */
+      const plan = planItemEdges(pairSubtree(src, copy, []), ctx.projectName);
+      if (a.repointItems && plan.unmatched.length) {
+        // ⚠️ 报文**不重复 ops 的下标**（与 `move` 的执行期失败同一形状）—— 下标由 `apply` 自己
+        //    在 `--dry-run`/执行期报错里加（"第 N 条操作会失败：clone op（源 …）：…"）。
+        throw new Error('clone op（源 ' + a.id + '）：' + repointRefusal(plan.unmatched, a.id));
+      }
+      if (a.repointItems) plan.edges.forEach((e) => { e.link.id = e.toNode; e.link.item = e.to; });
       parentNode.children = (parentNode.children || []).concat(copy);
       a._newId = copy.id;
+      a._repointed = a.repointItems ? plan.edges.length : 0;
       return data;
     },
-    summary(a) { return '复制 ' + a.id + ' → ' + a.parent + '（新 id ' + a._newId + '）'; }
+    summary(a) { return '复制 ' + a.id + ' → ' + a.parent + '（新 id ' + a._newId + '）'
+      + (a._repointed
+        ? '，并把 ' + a._repointed + ' 条条目级链接改指副本自己的条目（**语义改变**）'
+        : ''); }
   },
 
   'assoc-add': {
@@ -1263,3 +1293,30 @@ function apply(ctx) {
 
 /** 深拷贝（项目数据保证是纯 JSON，见 docs/DATA-FORMAT.md §1） */
 function cloneJson(x) { return JSON.parse(JSON.stringify(x)); }
+
+/**
+ * `apply` 的 clone op 里"要不要重指向条目级边"这**一个**开关的**唯一解析处**。
+ *
+ * 两种拼写都收（**输入别名**，归一之后判定与执行只有一份 —— 就是 `clone` 命令用的那对
+ * `planItemEdges` / `repointRefusal`，绝不在这里另写一份重指向逻辑 ✗）：
+ *   · `repointItems`  —— 规范写法：ops 的字段名与**命令选项键**一一对应（camelCase），
+ *                        与同表里的 `detailMd` / `localPath` / `clearDetail` 同一套；
+ *   · `repoint_items` —— snake_case 别名（照 MCP 参数名写的调用方会顺手这么写）。
+ * 两个都给且**冲突** ⇒ 响亮拒绝（同一件事两种说法不一致时，选哪个都是猜 ✗）。
+ * 值必须是**布尔**：写成 `"true"` 这种字符串会让"要不要改语义"变成一个看不懂的开关。
+ */
+function repointFlagOf(ctx, raw) {
+  const a = raw.repointItems;
+  const b = raw.repoint_items;
+  if (a !== undefined && b !== undefined && !!a !== !!b) {
+    ctx.error('repointItems 与 repoint_items 同时给了且**不一致**（' + JSON.stringify(a) + ' / '
+      + JSON.stringify(b) + '）：它们指的是同一个开关，只写一个（或写成同一个值）');
+  }
+  const v = (a !== undefined) ? a : b;
+  if (v === undefined || v === null) return false;
+  if (typeof v !== 'boolean') {
+    ctx.error('repointItems 必须是布尔（收到 ' + JSON.stringify(v) + '）—— 它是"要不要把副本上的'
+      + '条目级链接改指副本自己那份条目"的开关（**语义改变**），不是值');
+  }
+  return v;
+}

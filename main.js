@@ -1723,7 +1723,18 @@ async function runSmoke(win) {
     }
     try {
       const r = await a.run(ctx);
-      results.push({ name: a.name, ok: !!r.ok, text: String(r.text || '') });
+      /* 三态（2026-10-12 加，见 `scripts/smoke-assertions.js` 的 `tally()` 与域 39 的剪贴板判据）：
+       * `unverified` 是**可选的第三态** —— "环境坏了、真值采不到"时由断言自己给出原因串。
+       * ⚠️ **fail-safe**：它只许出现在 `ok:true` 的结果上；一条结果既报"未验证"又报失败时**按失败计**，
+       * 并把矛盾**响亮**打出来 —— 否则"未验证"就成了掩盖真失败的后门（本工程最重的损害类别 ✗）。 */
+      let unv = (r && typeof r === 'object' && typeof r.unverified === 'string' && r.unverified)
+        ? r.unverified : null;
+      if (unv && !r.ok) {
+        console.log('[smoke] ⚠ 断言同时报"未验证"与"失败" ⇒ **按失败计**（未验证不许掩盖真失败）：'
+          + a.name + ' ｜ ' + unv);
+        unv = null;
+      }
+      results.push({ name: a.name, ok: !!r.ok, text: String(r.text || ''), unverified: unv });
       if (memOn) {
         const memAfter = await readMem();
         if (memBefore !== null || memAfter !== null) {
@@ -1741,6 +1752,12 @@ async function runSmoke(win) {
   // 冒烟断言的条数**到此为止** —— 后面追加的"取景记录/视觉断言"不是冒烟断言，
   // 不能混进这个数字（否则 `docs/VERIFY.md` 的冒烟真值会与运行输出对不上）。
   const smokeCount = results.length;
+  /* 三态读数（**通过 / 总数 / 未验证**）：`total` **不含**未验证 ⇒ 环境坏掉的那条"从总条数里分出去"。
+   * ⚠️ `smokeCount`（跑过的断言**槽位数**）与 `smokeT.total`（这一轮**真的判过**的条数）的差别是
+   * **有意的**：前者与 `docs/VERIFY.md` 的冒烟真值（`scripts/smoke-assertions.js` 的 `.length`）同口径，
+   * 后者才是"这一轮验了多少条"。两个数都打印，别拿一个替代另一个（`B1`：计数口径一处定义 = `tally()`）。 */
+  const tally = allAssertions.tally;
+  const smokeT = tally(results);
   let visionStart = -1;   // 视觉断言在 results 里的起始下标（-1 = 没跑）
   // 截图（工程根 smoke-shot.png）+ 落一份**旁路取景记录** smoke-frame.json。
   // 顺序不可交换：先做取景准备（展开全树/禁过渡/清状态栏/等 ≥2 帧），再截图 —— 见 prepareCapture。
@@ -1773,6 +1790,10 @@ async function runSmoke(win) {
         // 断言计数也落进来：读图留痕（阶段 4）要引用"这次是哪些断言跑出来的画面"，
         // 而这两个数字**机器可读**地留在这里，读图记录就不必手写任何数字（"易腐事实不手写"）。
         smokeAssertions: smokeCount,
+        // 「未验证」的条数（三态里的第三档，口径见 `scripts/smoke-assertions.js` 的 `tally()`）：
+        // 它落进取景记录是为了**机器可读地**说清"这 219 个槽位里有多少条这一轮没判"，
+        // 免得下游把槽位数误读成"都验过了"（同理见 `docs/VERIFY.md` 的冒烟真值口径）。
+        smokeUnverified: smokeT.unverified,
         // 视觉断言用 `ROIS.length`（**计划数 ≡ 实际数**：`roi.run()` 的返回条数恒等于清单长度，
         // 这是该模块的契约 —— 所以这里不需要等它跑完，也不存在"计划与实跑不符"的窗口）。
         visionAssertions: require('./scripts/vision/roi-assertions.js').ROIS.length
@@ -1820,19 +1841,35 @@ async function runSmoke(win) {
     realWriteLeak = { error: String((e && e.message) || e) };
     console.log('[smoke] ✗ 真实数据复核失败（采不到真值 ⇒ 不能自称已校验 ✗）：' + realWriteLeak.error);
   }
-  const failed = results.filter((r) => !r.ok);
+  const failed = results.filter((r) => !r.ok);   // 未验证那几条是 ok:true ⇒ 不进这里（口径见 tally() 的 fail-safe）
   // 输出**显式给出构成**：冒烟断言 / 视觉断言 / 取景记录 分开报。
   // 为什么必须分开：`docs/VERIFY.md` 的"冒烟断言"真值就是 `scripts/smoke-assertions.js` 的条数，
   // 若把视觉断言混进总数，运行输出会与文档真值对不上（这条数字对不上正是 G6 要防的）。
   const part = (from, to) => {
-    const seg = results.slice(from, to);
-    return (seg.filter((r) => r.ok).length) + '/' + seg.length;
+    // 计数口径**只有一处**：`tally()`（未验证不进分子分母 —— 它既不通过也不算失败）
+    const seg = tally(results.slice(from, to));
+    return seg.passed + '/' + seg.total;
   };
   const visionFrom = visionStart < 0 ? results.length : visionStart;
   console.log('\n==== SMOKE RESULTS ====');
-  results.forEach((r) => console.log('[' + (r.ok ? 'PASS' : 'FAIL') + '] ' + r.name + ' :: ' + r.text));
+  results.forEach((r) => {
+    console.log('[' + (r.unverified ? '未验证' : (r.ok ? 'PASS' : 'FAIL')) + '] ' + r.name + ' :: ' + r.text);
+    // 「未验证」**必须响亮**：形状照第八批"快照指纹没采到"那一档 —— 既不打 PASS 也不打 FAIL，
+    // 单独一行说清"本项未验证 + 为什么"，免得被读成"这条没问题"（比不打更危险的是**打错**）。
+    if (r.unverified) console.log('[smoke] ' + r.unverified);
+  });
   const head = filtered ? '==== 过滤运行 ' : '==== ';
   console.log(head + part(0, smokeCount) + ' passed ====');
+  /* 三态**同时在汇总行里可见**（通过 / 总数 / 未验证，三个数都贴）——
+   * 只报"通过/总数"时，"环境坏了没判"会被读成"少了点东西"甚至"都通过了" ✗。
+   * ⚠️ `total` **不含**未验证（= 通过 + 失败）；它与 `smokeCount`（跑过的**槽位数**，与
+   * `docs/VERIFY.md` 的冒烟真值同口径）是两个不同的读数，别互相替代（口径一处 = `tally()`）。 */
+  console.log('==== 冒烟三态：通过 ' + smokeT.passed + ' / 总数 ' + smokeT.total
+    + ' ｜ 未验证 ' + smokeT.unverified + '（'
+    + (smokeT.unverified
+      ? '不计入前两个数、也不阻断（exit code 不看它）；理由见上面的 `[smoke]` 行'
+      : '一条也没有')
+    + '）====');
   console.log('==== 视觉断言（L2 关键区域）: ' + part(visionFrom, results.length) + ' passed ====');
   if (results.length > smokeCount) {
     console.log('==== 另有 ' + (results.length - smokeCount) + ' 条非冒烟结果（取景记录 + 视觉断言），不计入冒烟断言数 ====');

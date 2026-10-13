@@ -46,12 +46,23 @@
 > 对不上（目标在别的项目 / 目标节点不在被复制范围 / 那个节点里没有这条条目）⇒ **拒绝并点名**、
 > **绝不按序号猜**。判据：`tests/clone-item-links.test.js`（含"无这类边时输出逐字不变"与注入证明）。
 >
+> **同一条口径的接线面（v3，2026-10）**：① `--repoint-items` 已进 `cli/core.js` 的**纯布尔登记表**
+> ⇒ `clone 项目 --repoint-items <源> <新父>` 与 `--deep` **同待遇**（选项写在位置参数之前也不会把源 id
+> 吞成它的值；带 `=` 的写法照旧**响亮拒绝**）；② `apply` 的 clone op 支持同一个开关
+> （`"repointItems": true`，别名 `repoint_items`，解析只有一处 = `repointFlagOf`）—— 判定与执行就是
+> 上面这两条命令面实现（`planItemEdges` / `repointRefusal`，**不另写一份**），对不上 ⇒ **整份 ops 拒绝、
+> 盘上零改动**并点名（与别的 op 的执行期失败同一形状；`--dry-run` 里同样看得见）；
+> ③ MCP `clone_node` 增补 `json: true`（拿 `itemEdges`；**只加参数、不新增工具**，工具数不变）。
+>
 > ⚠️ **本表必须覆盖 `cli/registry.js` 里的全部命令**（每条命令**恰好**落在某一级里）——
 > 门禁 G8 的第 ⑮ 条判定（`scripts/docs-registry-check.js` 的 `checkStabilityCoverage`）机械核对。
 >
 > **`search` 的条目层增补（v3，2026-10）**：仍列「**稳定**」—— 名称、参数、**既有**字段结构未变；
 > 但默认搜索口径从"只搜节点"改为"**默认搜条目**"（`--topic-only` 回退到旧口径），并**增补**了命中字段
 > `itemId`/`type`/`itemized`/`matchIn`（只增不改、不影响既有字段消费方）。理由与签名冻结在 `docs/ITEM-MODEL.md` §3。
+> ⚠️ `--no-heat` 也进 `cli/core.js` 的**纯布尔登记表**（2026-10）：`search 项目 --no-heat <关键词>` 这种
+> 摆法不再把关键词吞成开关的值（与 `--deep` / `--repoint-items` 同一处登记、同一个理由）；
+> 带等号的两态写法（`--no-heat=false` / `=true`）语义**一个字不变**。
 > 加这条判定的原因是一次真实的漏登记：`import-project` 一度**不在任何一级**，
 > 而同批清点又查出 11 条同型漏登记（`ask`/`ask-apply`/`theme-layout`/`expand-depth`/
 > `ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`/`changelog`）。

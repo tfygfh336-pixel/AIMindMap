@@ -64,6 +64,15 @@ function parseArgs(argv) {
     if (a === '--full') { out.full = true; continue; }
     if (a === '--with-detail') { out.withDetail = true; continue; }
     if (a === '--deep') { out.deep = true; continue; }
+    // `clone` 的另一档语义开关（`--repoint-items`）：同样是**纯布尔** ⇒ 同样必须登记。
+    // ★ 实测形状（不登记时）：`clone 项目 --repoint-items 源id 新父id` 会被通用分支吞成
+    //   `repointItems='源id'`、位置参数少一个 ⇒ 用户看到的是「源节点不存在: 新父id」这种
+    //   看不懂的话（而不是"照 --deep 那样写就行"）。
+    if (a === '--repoint-items') { out.repointItems = true; continue; }
+    // `search` 的热度逃生门（`--no-heat`）：也是纯布尔 ⇒ 一并登记（同一类病：裸写时吞掉后面的关键词）。
+    // ⚠️ 带等号的两态写法（`--no-heat=false` / `--no-heat=true`）走**通用 `=` 分支**、语义一个字不变
+    //   —— `tests/search-heat.test.js` 的 J5 钉着这两条；这里只接管**裸写**那一种。
+    if (a === '--no-heat') { out.noHeat = true; continue; }
     // 纯布尔 flag 显式登记：否则会被通用分支按"--key value"处理，
     // 一旦后面跟了位置参数（如 `mentions 项目 --include-structural 5`）就被误吞成值。
     if (a === '--content-only') { out.contentOnly = true; continue; }
