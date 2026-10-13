@@ -905,3 +905,22 @@ body.dsh-only #bind-bar, body.dsh-only #bind-banner { display: none !important; 
 .bind-plan-unconv { margin-top: 6px; color: #874d00; }
 .bind-plan-unconv-item { font-size: 12px; }
 .bind-hint { font-size: 12px; color: #86909c; margin: 0 0 6px; }
+
+/* 【R4 第⑥步】待确认的删除：逐条点名的那张清单（一行一个**节点**，不是文件）。
+   样式与 bind-plan 同族 —— 这一层要传达的是"这是一份要你负责的清单"，不是又一个面板。 */
+.bind-pending-list {
+  border: 1px solid #ffe0b2; border-radius: 6px; background: #fffbf5;
+  padding: 8px 12px; font-size: 13px; color: #1f2329; margin-bottom: 8px;
+  max-height: 40vh; overflow: auto;
+}
+.bind-pending-item { padding: 3px 0; border-bottom: 1px dashed #f0e0c8; }
+.bind-pending-item:last-child { border-bottom: none; }
+.bind-pending-name { font-weight: 600; }
+.bind-pending-src { color: #4e5969; }
+.bind-pending-id { color: #86909c; font-size: 12px; }
+.bind-pending-revived { color: #ad4e00; font-size: 12px; }
+.bind-pending-empty { color: #86909c; }
+.bind-pending-err { color: #cf1322; }
+#bind-btn-pending { border-color: #ffd591; background: #fff7e6; color: #ad4e00; }
+#bind-btn-pending:hover { background: #fa8c16; color: #fff; border-color: #fa8c16; }
+#bind-btn-pending[disabled] { opacity: .5; cursor: not-allowed; }

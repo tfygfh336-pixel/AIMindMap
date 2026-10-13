@@ -1585,9 +1585,22 @@ module.exports = {
     const stateFile = (project) => path.join(ctx.PROJECTS_DIR, project, docImport.BINDING_STATE_FILE);
     const readSnapshot = (project, bindingId, dir) => {
       let raw = null;
-      try { raw = docImport.parseBindingSnapshot(fs.readFileSync(stateFile(project), 'utf8')); }
-      catch (e) { raw = null; }                       // 没有/读不了：按"第一次同步"处理（可再生的旁路产物）
-      return docImport.normalizeBindingSnapshot(raw, bindingId, dir);
+      let unreadable = null;
+      const file = stateFile(project);
+      /* ⚠️ 「文件不在」与「文件在、但读不出来」是**两件事**，本批把它们分开（原来都退化成"还没有快照"✗）：
+       * 前者是正常状态（第一次同步），后者意味着**提议读不到** —— 确认流必须在后者上 fail closed，
+       * 而不是把一份坏快照解释成"没有任何提议"然后照常往下走。 */
+      if (fs.existsSync(file)) {
+        try { raw = docImport.parseBindingSnapshot(fs.readFileSync(file, 'utf8')); }
+        catch (e) { unreadable = '旁路快照读不出来：' + String((e && e.message) || e); }
+        if (!unreadable && raw === null) {
+          unreadable = '旁路快照里没有可读的内容（空文件，或不是 JSON 对象）';
+        }
+      }
+      const st = docImport.normalizeBindingSnapshot(raw, bindingId, dir);
+      // 形状不对（版本不认识 / 不是对象）同样是"读不到这份提议" ⇒ 如实说，不假装"第一次同步"
+      if (!unreadable && raw !== null && st.rebuilt === false) unreadable = st.why;
+      return { snap: st.snap, rebuilt: st.rebuilt, why: st.why, unreadable: unreadable };
     };
     const writeSnapshot = (project, snap) => {
       // 原子写（与项目数据同一个出口的纪律：中断只留临时文件，不留半截）
@@ -1676,6 +1689,23 @@ module.exports = {
     const results = [];
     let pendingSnapshotWrites = [];                   // 真跑之后才落盘的旁路快照（dry-run 一个字节都不写）
 
+    /* ---- 3.5) 【R4 排期第⑥步】确认删除提议：**把读得到的提议喂给引擎那一条既有出口** ✓ ----
+     * 这一节里**一行删除逻辑都没有**，它只做三件事：读提议 ⇒ 把节点 id 交给 `plan.confirmedNodeIds`
+     * ⇒ 把"删掉了哪几个"如实报出来。摘节点在 `src/doc-import.js` 的 `applyBindingPlan` 第 0 段
+     * （**唯一出口**：id 必须出现在提议的并集里，手写一个 id 进来删不掉东西）。
+     * 为什么是"一次确认全部"而不是逐条：引擎的出口吃的是**这一轮的一张集合**，而"逐条确认"要求
+     * 快照里能存一份"半清空的提议"——那就是**第二份删除状态**（第二条删除路 ✗）。逐条的要求用
+     * "确认前**逐条点名**"来满足（名字 + 来源文件 + 来源节点 id，界面与回显各一份、同一份数据）。
+     * 三条 fail-closed（读不到就**不猜**，此刻盘上一个节点都不动）：
+     *   ① 目录读不到（盘没挂/目录被删）⇒ **不确认**（读不到今天的盘面，没法判断那些文件是不是真的没了）；
+     *   ② 快照读不出来（文件在、内容坏了/版本不认识）⇒ **不确认**（提议就存在那里，读不到 ≠ 没有）；
+     *   ③ 提议里 `nodeId` 为空的 ⇒ **不确认那一条**，单独点名（它本来就没有节点可摘）。 */
+    const wantConfirm = !!args.confirmDeletions;
+    if (wantConfirm && (args.bind || args.unbind || args.pause || args.resume || args.list || args.watchDirs)) {
+      ctx.error('--confirm-deletions 要单独跑一轮：它不能与 --bind / --unbind / --pause / --resume / --list '
+        + '/ --watch-dirs 同时用（一边改绑定状态一边删节点，事后没人说得清数据是被哪一半动的）');
+    }
+
     if (doSync && all.length === 0 && control.kind !== 'bind') {
       const empty = {
         ok: true, project: name, status: 'no-binding', bindings: 0, sync: [],
@@ -1698,7 +1728,18 @@ module.exports = {
       uiNote = st.note || '';
     } catch (e) { uiDirty = false; }
 
-    const targets = control.kind === 'bind' ? [] : (control.kind === 'unbind' ? [] : all);
+    /* 确认删除要**指名一条**（与 --pause/--unbind 同一条纪律）：删节点是人的决定，
+     * 不该因为"这个项目恰好有两条绑定"就一次动两棵树。（界面在 >1 条时也把这一处置灰 ✓） */
+    let targets = control.kind === 'bind' ? [] : (control.kind === 'unbind' ? [] : all);
+    if (wantConfirm) {
+      const want = (args.binding === undefined || args.binding === true) ? null : String(args.binding);
+      if (want) targets = all.filter((b) => b && b.id === want);
+      else if (all.length > 1) {
+        ctx.error('这个项目有 ' + all.length + ' 条绑定 —— 确认删除要指名一条：--binding <id>'
+          + '（现有：' + all.map((b) => (b && b.id) || '?').join(' / ') + '）；'
+          + '没指名就一条都不确认（一个节点都不删）');
+      }
+    }
     const errors = [];
     targets.forEach((binding) => {
       if (!binding || !binding.dir) return;
@@ -1720,7 +1761,17 @@ module.exports = {
           return;
         }
       }
-      const pendingCount = plan ? plan.pending.length : (snap.pendingDeletions || []).length;
+      /* 提议的**并集**（引擎算的**那一份** `plan.pendingAll`）：确认流与回显都只读它 ⇒
+       * "待确认删 K"的 K 与"逐条点名"的清单永远出自同一份数据，谁也不再自己拼。
+       * 目录读不到时没有计划 ⇒ 回落到快照里那份（那正是"提议存哪儿"的地方，如实读它、也如实说它读不到）。 */
+      const union = Array.isArray(plan && plan.pendingAll) ? plan.pendingAll
+        : (snap.pendingDeletions || []).map((x) => ({
+          rel: docImport.toRelSlash(x.rel), nodeId: x.nodeId || null, topic: x.topic || null,
+          at: x.at || null, revived: false
+        }));
+      const pendingListOf = (u) => u.map((x) => ({
+        rel: x.rel, nodeId: x.nodeId || null, topic: x.topic || null, revived: !!x.revived
+      }));
       const unconverted = plan ? plan.unconverted : (snap.unconverted || []);
       const row = {
         binding: binding.id, dir: binding.dir, mode: binding.mode || bSpec.BINDING_MODE_DEFAULT,
@@ -1728,33 +1779,68 @@ module.exports = {
         scanned: plan ? plan.scanned : 0, kept: plan ? plan.kept : 0,
         added: plan ? plan.added.length : 0, modified: plan ? plan.modified.length : 0,
         containers: plan ? plan.containers.length : 0,
-        // ⚠️ 这两个数取**本轮计划**的读数，不取盘上那份快照：快照是**在下面第 5 步才落盘**的，
-        //    这里若去读盘上的快照，报出来的是**上一轮**的读数（实测踩到：删了一个文件，
-        //    `pending` 报 1 而 `bindings[0].pending` 报 0，两处自相矛盾 ✗）
-        pending: pendingCount, unconverted: unconverted.length,
+        // 这两个数取**提议的并集**（本轮新提议 ∪ 快照里的旧提议），不取盘上那份快照：
+        // 快照是**在下面第 5 步才落盘**的，这里去读盘上的它，报出来的是**上一轮**的读数
+        //（实测踩到：删了一个文件，`pending` 报 1 而 `bindings[0].pending` 报 0，两处自相矛盾 ✗）；
+        // 而只取"本轮新提议"会漏掉**已经记进快照**的那几条（实测踩到，本批修：
+        //  删一个文件之后再自动同步一次，界面上的"待确认删 K"会变成 0，而提议还在 ✗✗）。
+        pending: union.length, pendingBefore: union.length, unconverted: unconverted.length,
         // 逐条点名的那份清单（铁律②：未转换的**不许**只有一个数字）—— `--json` 里也有它
         unconvertedList: unconverted.map((u) => ({
           rel: u.rel, reason: u.reason, label: u.label || null, message: u.message || null
         })),
-        pendingList: plan ? plan.pending.map((x) => ({ rel: x.rel, nodeId: x.nodeId || null, topic: x.topic || null })) : [],
+        pendingList: pendingListOf(union),
         unchanged: plan ? plan.unchanged : 0,
-        changedKeys: [], snapshotRebuilt: st.rebuilt === false ? st.why : null
+        changedKeys: [], snapshotRebuilt: st.rebuilt === false ? st.why : null,
+        // 旁路快照在盘上、但读不出来 ⇒ **响亮**（不许静默退回"没有提议"）
+        snapshotUnreadable: st.unreadable || null
       };
       if (!dirOk) {
         row.status = 'dir-missing';
         row.note = '绑定的目录现在读不到（删了？盘没挂？）—— **盘上零改动**，既不同步也不把节点当"已删除"';
+        if (wantConfirm) {
+          row.confirmError = 'dir-missing';
+          row.note = '**不能确认删除**：绑定的目录现在读不到 ⇒ 读不到今天的盘面，就没法判断这些文件'
+            + '是不是真的没了 ⇒ 这一轮**一个节点都没删**（提议原样保留）。盘没挂/目录恢复之后再来一次。';
+          errors.push({ binding: binding.id, error: row.note });
+        }
         results.push(row);
         return;
       }
       if (uiDirty) {
         row.status = 'blocked-dirty';
-        row.note = '界面有未保存编辑 ⇒ 本轮**一个字节都没写**（否则你保存时会撞冲突）。' + uiNote;
+        row.note = '界面有未保存编辑 ⇒ 本轮**一个字节都没写**（否则你保存时会撞冲突）。' + uiNote
+          + (wantConfirm ? ' ⚠️ 这一轮**确认没有生效**：提议还在，节点一个都没删。' : '');
         results.push(row);
         return;
       }
+      /* ---- 确认：把并集里点名的那几个 id 交给引擎唯一的出口（命令层不删任何东西）---- */
+      if (wantConfirm) {
+        if (st.unreadable) {
+          row.confirmError = 'snapshot-unreadable';
+          row.note = '**不能确认删除**：' + st.unreadable + ' ⇒ 提议读不到就不许当成"没有提议"'
+            + ' ⇒ 这一轮**一个节点都没删**。两条出路：① 修好/恢复那份旁路快照（`'
+            + docImport.BINDING_STATE_FILE + '`）再确认；② 确实不要这些提议了 ⇒ 用 '
+            + '`--forget-snapshot` 把快照丢掉重来（⚠️ 那会把全部文件当新增，可能多出一批节点，不自动做 ✗）。';
+          errors.push({ binding: binding.id, error: row.note });
+          results.push(row);
+          return;
+        }
+        const ids = union.map((p) => p.nodeId).filter(Boolean);
+        const noNode = union.filter((p) => !p.nodeId);
+        plan.confirmedNodeIds = ids;                                  // ← 唯一出口的唯一入参
+        row.confirmed = {
+          requested: true, declared: ids.length, dropped: 0,
+          noNode: noNode.map((p) => p.rel), list: pendingListOf(union)
+        };
+        if (!ids.length) {
+          row.note = '没有待确认的删除提议' + (noNode.length ? ('（有 ' + noNode.length + ' 条提议读不到对应的节点）') : '')
+            + ' ⇒ 这一轮**一个节点都没删**（未确认之前，盘上一个节点都不动）';
+        }
+      }
       if (!plan || !docImport.bindingPlanChangesTree(plan)) {
         row.status = 'no-change';
-        if (unconverted.length) row.note = '有 ' + unconverted.length + ' 个文件没转成节点（见下），本次没有别的变化';
+        if (!row.note && unconverted.length) row.note = '有 ' + unconverted.length + ' 个文件没转成节点（见下），本次没有别的变化';
         results.push(row);
         return;
       }
@@ -1781,7 +1867,18 @@ module.exports = {
         && !plan.pending.some((x) => x.rel === rel));
       const next = docImport.snapshotAfterBindingPlan(snap, plan, startedAt, keep);
       pendingSnapshotWrites.push({ binding: binding.id, snap: next });
-      row.status = 'synced';
+      /* 这一轮真写过盘 ⇒ "还剩几条待确认"取**这一轮之后**那份快照的读数（界面上的 K 立刻回 0，
+       * 与盘上那份快照是同一个数）。没写盘的那几条早退分支不重算：那时"还是原来那些"。 */
+      row.pending = (next.pendingDeletions || []).length;
+      row.pendingList = pendingListOf((next.pendingDeletions || []).map((x) => ({
+        rel: docImport.toRelSlash(x.rel), nodeId: x.nodeId || null, topic: x.topic || null, revived: false
+      })));
+      const dropped = applied && Array.isArray(applied.dropped) ? applied.dropped : [];
+      if (row.confirmed) row.confirmed.dropped = dropped.length;
+      row.dropped = dropped.length;
+      const touched = !!(applied && (applied.added || applied.modified || applied.created));
+      // 只确认、没有别的变化 ⇒ 这一轮不是"同步"（别让"上次同步"和"本次 +N 改 M"被一次确认推进）
+      row.status = touched ? 'synced' : (dropped.length ? 'confirmed' : 'no-change');
       row.applied = applied ? { added: applied.added, modified: applied.modified, created: applied.created } : null;
       row.refs = refSummary;
       results.push(row);
@@ -1863,12 +1960,17 @@ module.exports = {
       });
     })();
     const statuses = results.map((r) => r.status);
+    const declaredTotal = results.reduce((n, r) => n + ((r.confirmed && r.confirmed.declared) || 0), 0);
+    const droppedTotal = results.reduce((n, r) => n + (r.dropped || 0), 0);
     const overall = errors.length ? 'error'
       : statuses.some((s) => s === 'blocked-dirty') ? 'blocked-dirty'
         : statuses.some((s) => s === 'dir-missing') ? 'dir-missing'
           : (control.kind === 'unbind' ? 'unbound'
             : (control.kind === 'pause' ? 'paused' : (control.kind === 'resume' ? 'resumed'
-              : (control.kind === 'bind' ? 'bound' : (statuses.some((s) => s === 'synced') ? 'synced' : 'no-change')))));
+              : (control.kind === 'bind' ? 'bound'
+                : (statuses.some((s) => s === 'synced') ? 'synced'
+                  : (statuses.some((s) => s === 'confirmed') ? 'confirmed'
+                    : (wantConfirm ? 'no-pending' : 'no-change')))))));
     const report = {
       ok: errors.length === 0,
       project: name,
@@ -1879,6 +1981,17 @@ module.exports = {
       // 逐条点名（不合并去重：同一个相对路径在两个绑定下出现，那是**两件事**，合并会少报）
       unconverted: results.reduce((acc, r) => acc.concat(r.unconvertedList || []), []),
       pending: results.reduce((n, r) => n + r.pending, 0),
+      /* 确认那一轮的读数（**"删了几个"是这里唯一一处给的**）：`declared` = 人点名确认的条数、
+       * `dropped` = 真从树里摘掉的节点数（两者不等时**照实分别报**，不粉饰）。 */
+      deletions: wantConfirm ? {
+        requested: true, dryRun: !!ctx.dryRun,
+        declared: declaredTotal, dropped: droppedTotal,
+        remaining: results.reduce((n, r) => n + r.pending, 0),
+        rows: results.map((r) => ({ binding: r.binding, declared: (r.confirmed && r.confirmed.declared) || 0,
+          dropped: r.dropped || 0, noNode: (r.confirmed && r.confirmed.noNode) || [],
+          error: r.confirmError || null })),
+        list: results.reduce((acc, r) => acc.concat((r.confirmed && r.confirmed.list) || []), [])
+      } : null,
       bindings: afterStatus
     };
     if (json) {
@@ -1892,6 +2005,46 @@ module.exports = {
       lines.push(control.note || ('绑定动作：' + control.kind + (control.id ? ' ' + control.id : '')));
     }
     migrations.forEach((m) => lines.push('迁移：' + m));
+    /* 确认那一轮：**先逐条点名**（名字 + 来源文件 + 来源节点），再说清删了几个、还剩几个。
+     * 为什么点名必须在这里也有一份（不止界面）：命令行是这条路唯一的**真值面**（界面与它对拍），
+     * 也让人事后能从日志里看出"当时确认的到底是哪几个节点"。 */
+    if (wantConfirm && report.deletions) {
+      const d = report.deletions;
+      const refused = d.rows.filter((r) => r.error);
+      if (refused.length) {
+        /* ⚠️ 这一档**不许**印成"删掉了 0 个" —— 那读起来像"确认执行了、只是没东西可删"，
+         * 而真相是"确认**没有执行**"（读不到提议 ⇒ fail closed）。两句必须不同。 */
+        lines.push('【确认删除·未执行】读不到提议 / 目录读不到 ⇒ **一个节点都没删**（fail closed）：');
+        refused.forEach((r) => lines.push('  · 绑定 ' + r.binding + '：' + r.error));
+      } else if (d.dryRun) {
+        lines.push('【确认删除·预览】点了名要删 ' + d.declared + ' 条（`--dry-run` ⇒ 盘上零改动、提议原样保留）');
+      } else if (!d.declared) {
+        /* 没有可确认的提议 ⇒ 也**不许**印成"删掉了 0 个"（那读起来像"确认执行了"）：
+         * 真相是"这一轮没有任何东西可确认"，而盘上一个节点都没动（幂等空转，不是错误）。 */
+        lines.push('【确认删除·没有待确认的提议】一个节点都没删（提议清单是空的；'
+          + '未确认之前，盘上一个节点都不动）。空转是幂等的：再点一次也是这个结果。');
+      } else {
+        lines.push('【确认删除】按你的确认删掉了 ' + d.dropped + ' 个节点（只删被确认的那些；盘上文件一个都没动）');
+      }
+      if (d.list.length && !refused.length) {
+        lines.push('  逐条点名（' + d.list.length + ' 条提议，名字 / 来源文件 / 来源节点）：');
+        d.list.forEach((x) => {
+          lines.push('  · 「' + (x.topic || '(无标题)') + '」 ← ' + x.rel
+            + '（节点 ' + (x.nodeId || '**读不到**') + '）'
+            + (x.revived ? ' ⚠️ 这个文件**又出现了**：引擎按"新增"处理 ⇒ 树里现在同一个文件有两个节点；'
+              + '确认之后旧的那个被摘掉，又回到一个' : ''));
+        });
+      }
+      const noNodeAll = d.rows.reduce((acc, r) => acc.concat(r.noNode || []), []);
+      if (noNodeAll.length) {
+        lines.push('  ⚠️ 有 ' + noNodeAll.length + ' 条提议**读不到对应的节点**（' + noNodeAll.join('、')
+          + '）⇒ 这几条**没有被确认**（没有节点可摘），它们仍然留着等你判断盘上那一份出了什么事');
+      }
+      if (!refused.length) {
+        lines.push('  提议：' + d.declared + ' 条被确认 ⇒ 还剩 ' + d.remaining + ' 条待确认（K=' + report.pending
+          + '，清空的那些不会再被提出来）');
+      }
+    }
     results.forEach((r) => {
       lines.push('绑定 ' + r.binding + '（' + r.dir + '，形态 ' + r.mode + '）：' + r.status);
       if (r.status === 'no-change') {
@@ -1908,9 +2061,19 @@ module.exports = {
       } else {
         lines.push('  ' + (r.note || ''));
       }
-      if (r.pending) {
-        lines.push('  ⏳ 待确认删除 ' + r.pending + ' 条（盘上的文件没了 ⇒ **树里一个节点都没动**，'
-          + '只记了提议，等你确认；改名按"新增 + 提议删旧"处理）');
+      if (r.status !== 'no-change' || !r.note) {
+        // 提议的读数（**并集**）：K 与"逐条点名"永远出自同一份数据（见上面 report.deletions 的说明）
+        if (r.pending) {
+          lines.push('  ⏳ 待确认删除 ' + r.pending + ' 条（盘上的文件没了 ⇒ **树里一个节点都没动**，'
+            + '只记了提议，等你确认；改名按"新增 + 提议删旧"处理）：'
+            + (r.pendingList || []).map((x) => '「' + (x.topic || '(无标题)') + '」← ' + x.rel).join('、'));
+        } else if (!wantConfirm) {
+          lines.push('  ⏳ 待确认删除 0 条（**未确认之前，盘上一个节点都不动**）');
+        }
+      }
+      if (r.snapshotUnreadable) {
+        lines.push('  ⚠️ **旁路快照读不出来**：' + r.snapshotUnreadable
+          + ' ⇒ 这一轮的"待确认"读数不可信（提议读不到 ≠ 没有提议）；删除确认在这个状态下**会拒绝执行**。');
       }
     });
     const unconvertedAll = report.unconverted;

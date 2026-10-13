@@ -38,6 +38,9 @@
     <span id="bind-bar-icon" aria-hidden="true">📁</span>
     <span id="bind-bar-text"></span>
     <span id="bind-bar-btns">
+      <!-- 【R4 第⑥步】只有**真的有提议**时才出现（`display:none` ⇒ 没有提议时与从前逐字节相同）：
+           它的邻居就是状态文案里的「待确认删 K」，点开是那一层逐条点名 + 确认/稍后再说。 -->
+      <button id="bind-btn-pending" type="button" style="display:none">查看待确认删</button>
       <button id="bind-btn-toggle" type="button" data-bind-act="pause">暂停</button>
       <button id="bind-btn-sync" type="button" data-bind-act="sync">立即同步</button>
       <button id="bind-btn-unbind" type="button" data-bind-act="unbind">解绑</button>
@@ -52,6 +55,27 @@
     <span id="bind-banner-text"></span>
     <button id="bind-banner-open" type="button" class="mm-banner-btn" title="打开只读面板：这次同步加进来/改到的是哪些节点（点一条跳到它）">看这次加了哪些</button>
     <button id="bind-banner-close" type="button" class="mm-banner-close" title="收起这条播报（节点都在导图上，数据没有变）">✕</button>
+  </div>
+
+  <!-- 【R4 第⑥步】待确认的删除：**逐条点名 + 确认**（设计排期第⑥步的落点）。
+       零风险不变式在这一层的形状：这一层里**没有任何一个按钮直接改数据** ——
+         · 「确认删除」打的也是 CLI 那条**既有**出口（`bind-sync --confirm-deletions` ⇒ `plan.confirmedNodeIds`），
+           只删**下面逐条点名的那些**节点，绝不删盘上的文件；
+         · 「稍后再说」**什么都不做**（提议原样留着、盘上一个节点都不动）—— 用户永远有权"什么都不做"。
+       默认 display:none ⇒ 没有提议时这一层连布局都不占（与从前逐字节相同）。 -->
+  <div id="bind-pending" class="overlay" style="display:none">
+    <div class="dialog-box bind-card">
+      <h3>待确认的删除 —— 逐条看过了再决定</h3>
+      <p id="bind-pending-head" class="bind-line"></p>
+      <div id="bind-pending-list" class="bind-pending-list"></div>
+      <p id="bind-pending-hint" class="bind-hint">未确认之前，**盘上一个节点都不会少**（删除只提议、没人确认就没人删）。
+        按「确认删除」之后：只有**下面逐条点名的那些**节点被摘掉，别的节点一个字节都不动；
+        这一层**不删盘上任何文件**（文件是你自己删的，引擎只是把这个事实提出来等你定）。</p>
+      <div class="dialog-actions">
+        <button id="bind-pending-later" type="button">稍后再说（什么都不做）</button>
+        <button id="bind-pending-confirm" type="button" class="primary">确认删除</button>
+      </div>
+    </div>
   </div>
 
   <!-- 【R4】绑定前预览（**这一层里没有一个字是界面估算的**）：数字来自 CLI 既有的 `--dry-run` 读法，

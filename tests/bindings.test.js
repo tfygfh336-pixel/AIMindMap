@@ -72,12 +72,24 @@ function syncOnce(data, binding, snap, opts) {
     projectData: data, binding: binding, snapshot: snap, scan: scan, list: list,
     genId: genId, parent: o.parent || 'root', at: o.at || '2026-10-13T00:00:00.000Z'
   });
+  // 「人确认过的删除」= 计划上的一个**入参**（引擎里那条唯一出口读它；命令层就是这么喂的）
+  if (o.confirmedNodeIds) plan.confirmedNodeIds = o.confirmedNodeIds;
   const applied = di.applyBindingPlan(data, plan);
   const keep = Object.keys(snap.files || {}).filter((rel) => !plan.added.some((x) => x.rel === rel)
     && !plan.modified.some((x) => x.rel === rel)
     && !plan.unconverted.some((x) => x.rel === rel)
     && !plan.pending.some((x) => x.rel === rel));
   return { plan: plan, applied: applied, snap: di.snapshotAfterBindingPlan(snap, plan, plan.at, keep) };
+}
+
+/** 把一棵树 JSON 里「某个 id 的节点**连同它的子树**」摘掉（判"其它节点逐字节不变"的精确基准） */
+function stripNode(treeJson, nodeId) {
+  const cut = (n) => {
+    if (!n || typeof n !== 'object') return n;
+    const kids = Array.isArray(n.children) ? n.children.filter((c) => c && c.id !== nodeId) : n.children;
+    return Object.assign({}, n, { children: (kids || []).map(cut) });
+  };
+  return JSON.stringify(cut(JSON.parse(treeJson)));
 }
 
 /** 树里全部节点（扁平） */
@@ -436,5 +448,114 @@ describe('D 转不了的文件：逐条点名，不静默跳过，也不拖垮�
     const png = list.skipped.filter((s) => s.rel === 'b.png')[0];
     expect(png.reason).toBe('unsupported-ext');
     expect(png.label).toBeTruthy();
+  });
+});
+
+/* ============================================================================
+ * E 删除提议的**确认流**（设计排期第⑥步）
+ *   · 确认前：**盘上一个节点都不许少**（跑多少轮都一样，逐字节）
+ *   · 确认：只走引擎那**一条**既有出口（`plan.confirmedNodeIds`）⇒ 只摘**被确认的那些**
+ *   · 提议的并集（`plan.pendingAll`）是"待确认删 K"与"逐条点名"的**同一份**数据源
+ * ========================================================================== */
+describe('E 删除提议的确认流（未确认一个都不少；确认只摘被确认的）', () => {
+  it('E1 提议的并集 `pendingAll`：本轮新提议 ∪ 快照里的旧提议，**跨轮次不消失**（本批修掉的那条缺陷）', () => {
+    mkSrc({ 'a.md': '# 甲\n', 'b.md': '# 乙\n' });
+    const data = emptyProject([BINDING()]);
+    let snap = syncOnce(data, BINDING(), di.emptyBindingSnapshot('wb-1', SRC)).snap;
+    fs.unlinkSync(path.join(SRC, 'b.md'));
+    const r1 = syncOnce(data, BINDING(), snap);
+    expect(r1.plan.pending.map((p) => p.rel)).toEqual(['b.md']);
+    expect(r1.plan.pendingAll.map((p) => p.rel)).toEqual(['b.md']);
+    snap = r1.snap;
+    // 让树**再真变一次**（加一个文件）⇒ 快照才落盘，提议从此只活在快照里
+    fs.writeFileSync(path.join(SRC, 'c.md'), '# 丙\n', 'utf8');
+    const r2 = syncOnce(data, BINDING(), snap);
+    expect(r2.plan.pending, '这一轮没有**新**提议').toHaveLength(0);
+    expect(r2.snap.pendingDeletions.map((p) => p.rel)).toEqual(['b.md']);
+    snap = r2.snap;
+    // ⭐ 缺陷形状（本批实测并修掉）：只读"本轮新提议"的读数在这里是 **0**
+    //   ⇒ 界面会显示"待确认删 0"、清单为空，而提议其实还在（确认流也就无从谈起）
+    const r3 = syncOnce(data, BINDING(), snap);
+    expect(r3.plan.pending).toHaveLength(0);
+    expect(r3.plan.pendingAll.map((p) => p.rel), '并集必须仍然看得见这条提议').toEqual(['b.md']);
+    expect(r3.plan.pendingAll[0].nodeId).toBeTruthy();               // 点名"是哪个节点"（确认要用它）
+    expect(r3.plan.pendingAll[0].topic).toBe('b');                   // 名字（界面上的那一行）
+    expect(r3.plan.pendingAll[0].revived).toBe(false);               // 文件没回来
+  });
+
+  it('E2 确认前：跑多少轮都不许少一个节点（逐字节），提议一直在', () => {
+    mkSrc({ 'a.md': '# 甲\n', 'b.md': '# 乙\n', 'c.md': '# 丙\n' });
+    const data = emptyProject([BINDING()]);
+    let snap = syncOnce(data, BINDING(), di.emptyBindingSnapshot('wb-1', SRC)).snap;
+    const treeBefore = JSON.stringify(data.data);
+    const nBefore = allNodes(data).length;
+    fs.unlinkSync(path.join(SRC, 'b.md'));
+    let last = null;
+    for (let i = 0; i < 3; i++) {                                    // 连跑三轮"什么都不做"
+      last = syncOnce(data, BINDING(), snap);
+      snap = last.snap;
+      expect(JSON.stringify(data.data), '第 ' + (i + 1) + ' 轮之后树必须逐字节不变').toBe(treeBefore);
+      expect(allNodes(data).length).toBe(nBefore);
+    }
+    expect(last.plan.pendingAll.map((p) => p.rel)).toEqual(['b.md']);
+  });
+
+  it('E3 确认 ⇒ 只摘**被确认的那一个**节点（其它节点逐字节不变）；提议随之清空、不再反弹', () => {
+    mkSrc({ 'a.md': '# 甲\n', 'b.md': '# 乙\n', 'c.md': '# 丙\n' });
+    const data = emptyProject([BINDING()]);
+    let snap = syncOnce(data, BINDING(), di.emptyBindingSnapshot('wb-1', SRC)).snap;
+    const treeBefore = JSON.stringify(data.data);
+    fs.unlinkSync(path.join(SRC, 'b.md'));
+    let r = syncOnce(data, BINDING(), snap);
+    snap = r.snap;
+    r = syncOnce(data, BINDING(), snap);                             // 一轮"没变化"（提议只活在快照里）
+    snap = r.snap;
+    const victim = r.plan.pendingAll[0];
+    expect(victim.nodeId).toBeTruthy();
+    // 这一轮的**唯一**变化就是"人确认了那一条" ⇒ 计划必须算"会改树"（否则命令在摘节点前就 return ✗）
+    expect(di.bindingPlanChangesTree(r.plan), '只确认也要算会改树').toBe(false);
+    const rc = syncOnce(data, BINDING(), snap, { confirmedNodeIds: [victim.nodeId] });
+    expect(rc.plan.confirmedNodeIds).toEqual([victim.nodeId]);
+    expect(di.bindingPlanChangesTree(rc.plan), '带确认的那一轮必须算会改树').toBe(true);
+    expect(rc.applied.dropped, '恰好摘掉被确认的那一个').toEqual([victim.nodeId]);
+    // 精确判据：把「被确认的那个节点连同它的子树」从 before 里摘掉 == 现在这棵树（其它一个字节都没动）
+    expect(JSON.stringify(data.data)).toBe(stripNode(treeBefore, victim.nodeId));
+    expect(rc.snap.pendingDeletions, '提议清空').toHaveLength(0);
+    // 再跑一轮：提议不会重新冒出来（K 回 0 之后不反弹）
+    const after = syncOnce(data, BINDING(), rc.snap);
+    expect(after.plan.pendingAll).toHaveLength(0);
+    expect(di.bindingStatusOf(after.snap, BINDING()).pending).toBe(0);
+  });
+
+  it('E4 手写一个**不在提议里**的 id ⇒ 删不掉任何东西（唯一出口的闸门：id 必须出自提议）', () => {
+    mkSrc({ 'a.md': '# 甲\n', 'b.md': '# 乙\n' });
+    const data = emptyProject([BINDING()]);
+    let snap = syncOnce(data, BINDING(), di.emptyBindingSnapshot('wb-1', SRC)).snap;
+    const treeBefore = JSON.stringify(data.data);
+    const realId = allNodes(data).filter((n) => n.topic === 'a')[0].id;   // 真节点、但**没被提议过**
+    const r = syncOnce(data, BINDING(), snap, { confirmedNodeIds: [realId, 'made-up-id'] });
+    expect(r.applied.dropped).toEqual([]);
+    expect(JSON.stringify(data.data), '一个字节都不许动').toBe(treeBefore);
+    expect(di.bindingPlanChangesTree(r.plan), '没有任何真提议可摘 ⇒ 这一轮不该写盘').toBe(false);
+  });
+
+  it('E5 边界①：提议删过的文件**又出现** ⇒ 引擎按"新增"（两个同名节点）+ `revived` 如实标注；确认后回到一个', () => {
+    mkSrc({ 'a.md': '# 甲\n', 'b.md': '# 乙\n' });
+    const data = emptyProject([BINDING()]);
+    let snap = syncOnce(data, BINDING(), di.emptyBindingSnapshot('wb-1', SRC)).snap;
+    fs.unlinkSync(path.join(SRC, 'b.md'));
+    snap = syncOnce(data, BINDING(), snap).snap;                     // 提议：b.md
+    fs.writeFileSync(path.join(SRC, 'b.md'), '# 乙回来了\n', 'utf8');  // 文件又回来了
+    const r = syncOnce(data, BINDING(), snap);
+    expect(r.plan.added.map((x) => x.rel), '引擎按**新增**处理（既定语义，本批不动它）').toEqual(['b.md']);
+    expect(allNodes(data).filter((n) => n.topic === 'b'), '⇒ 同一个文件两个节点（如实记在判据里）').toHaveLength(2);
+    expect(r.plan.pendingAll.map((p) => p.rel)).toEqual(['b.md']);
+    expect(r.plan.pendingAll[0].revived, '确认流据此把后果说清楚').toBe(true);
+    // 确认那一条旧提议 ⇒ 摘掉**旧的**那个节点 ⇒ 又回到"一个文件一个节点"
+    const rc = syncOnce(data, BINDING(), r.snap, { confirmedNodeIds: [r.plan.pendingAll[0].nodeId] });
+    expect(rc.applied.dropped).toHaveLength(1);
+    expect(allNodes(data).filter((n) => n.topic === 'b')).toHaveLength(1);
+    expect(topicsOf(data)).toContain('乙回来了');
+    expect(rc.snap.pendingDeletions).toHaveLength(0);
   });
 });

@@ -1216,6 +1216,17 @@ function planBindingSync(args) {
      * 它只用于一件事：给"人确认之后摘节点"那道闸提供**提议来源**（见 `applyBindingPlan` 的第 0 段）——
      * 少了它，确认之后永远摘不掉（实测踩到）。 */
     proposedNodeIds: ((snap.pendingDeletions || []).map((p) => p && p.nodeId).filter(Boolean)),
+    /* 「待确认的删除提议」的**唯一一份并集**：本轮新提议 ∪ 快照里已存的旧提议。
+     * 为什么必须是**一个字段**（而不是让每个读者自己拼）：四个地方读它 ——
+     *   · 界面/回显的"待确认删 K"与**逐条点名**（K 与清单必须出自同一份数据，否则数得出来却看不到是哪些）；
+     *   · `bindingProposedNodeIds`（"这道闸认不认这个 id"，`applyBindingPlan` 第 0 段用）；
+     *   · `bindingPlanChangesTree`（**只有确认、没有别的变化**的那一轮也必须被当成"会改树"，
+     *     否则命令会在摘节点之前就 return ⇒ 人点了确认却什么都没发生 ✗）；
+     *   · `snapshotAfterBindingPlan`（被确认的那几条要从提议里划掉 ⇒ K 才回得到 0）。
+     * 各拼一份的后果是本批实测到的一条**真缺陷**：快照里那条已存在的提议在"本轮 `plan.pending` 为空"
+     * 的轮次里会从读数里整个消失 ⇒ 界面显示"待确认删 0"而引擎里提议还在（域 42 的"
+     * 提议读不到"判别力证明就是改坏这一处）。 */
+    pendingAll: [],
     nodes: 0, preambles: 0, unchanged: diff.unchanged,
     /* **这一轮真的读了几个文件**（增量性**唯一可机器判定的读数**）。
      * 为什么要它：只比"树变了没有"是**判不出增量**的 —— 把 `only` 去掉（每次都全量重建）之后
@@ -1234,6 +1245,28 @@ function planBindingSync(args) {
     const known = (snap.files && snap.files[rel]) || {};
     plan.pending.push({ rel: rel, nodeId: known.nodeId || null, topic: known.topic || null, at: at });
   });
+  /* 提议的并集（`pendingAll`）：见 plan 字面量里那段说明 —— 读者只有它一份，谁也不再自己拼。
+   *   · 同一份文件不会同时既是"旧提议"又是"本轮新提议"（旧提议记下时已经把它从 `files` 里移走了），
+   *     真出现了（手写/坏快照）也只留一条：**清单不是流水**，同一条提议报两次是最难看的一种坏法；
+   *   · `revived`：这个文件**又回来了**（此刻在盘上）⇒ 引擎按"新增"处理、会多一个同名节点。
+   *     这里只**如实标出来**给确认流说清后果，不替用户改语义（策略见 bind-sync 的回显）。 */
+  const onDiskNow = new Set((list.files || []).map((f) => toRelSlash(f.rel)));
+  const unionByRel = new Map();
+  (snap.pendingDeletions || []).forEach((p) => {
+    if (!p || !p.rel) return;
+    const rel = toRelSlash(p.rel);
+    unionByRel.set(rel, {
+      rel: rel, nodeId: p.nodeId || null, topic: p.topic || null, at: p.at || null,
+      revived: onDiskNow.has(rel)
+    });
+  });
+  plan.pending.forEach((d) => {
+    const rel = toRelSlash(d.rel);
+    if (unionByRel.has(rel)) return;
+    unionByRel.set(rel, { rel: rel, nodeId: d.nodeId || null, topic: d.topic || null, at: d.at || null, revived: false });
+  });
+  // 按 rel 排序 ⇒ 同一份提议在任何一轮里的**字节形态相同**（回显/断言可逐字节比）
+  plan.pendingAll = Array.from(unionByRel.values()).sort((x, y) => (x.rel < y.rel ? -1 : (x.rel > y.rel ? 1 : 0)));
 
   /* ---- 2) 新增 / 修改：文件 → 提纲 → 子树（**只有这一段读文件**）---- */
   const changedRel = diff.added.concat(diff.modified).sort();
@@ -1306,10 +1339,40 @@ function planBindingSync(args) {
   return plan;
 }
 
-/** 计划里会不会改到项目数据（`false` ⇒ 命令**一次盘都不写**，连原子写都不做） */
+/**
+ * **提议的并集里点了名的那些节点 id** —— "确认过的删除认不认这个 id"的**唯一判据**（一处实现）。
+ *
+ * 为什么单独一个函数：`applyBindingPlan` 用它决定"摘不摘"，`bindingPlanChangesTree` 用它决定
+ * "这轮要不要真动手"，`snapshotAfterBindingPlan` 用它决定"哪几条提议算清了"。三处各写一遍的后果是
+ * **只确认、没别的变化**的那一轮被判成 `no-change` ⇒ 在摘节点之前就 return（人点了确认，什么都没发生 ✗）。
+ * @param {object} plan 计划（`pendingAll` 是本模块算的；两个老字段留给**手工构造**的计划字面量，
+ *   例如单元测试里不带 `pendingAll` 的情况 —— 但它同样只能来自提议，调用方**塞不进**一个没被提议过的 id）
+ */
+function bindingProposedNodeIds(plan) {
+  if (!plan) return new Set();
+  const src = Array.isArray(plan.pendingAll)
+    ? plan.pendingAll
+    : (Array.isArray(plan.pending) ? plan.pending : [])
+      .concat((Array.isArray(plan.proposedNodeIds) ? plan.proposedNodeIds : []).map((id) => ({ nodeId: id })));
+  return new Set(src.map((p) => p && p.nodeId).filter(Boolean));
+}
+
+/** 这一轮**真的会摘掉**的节点 id = `plan.confirmedNodeIds` ∩ 提议的并集（其余一律不认） */
+function bindingConfirmedDrops(plan) {
+  if (!plan) return [];
+  const confirmed = Array.isArray(plan.confirmedNodeIds) ? plan.confirmedNodeIds : [];
+  if (!confirmed.length) return [];
+  const proposed = bindingProposedNodeIds(plan);
+  return confirmed.filter((id) => proposed.has(id));
+}
+
+/** 计划里会不会改到项目数据（`false` ⇒ 命令**一次盘都不写**，连原子写都不做）。
+ *  ⚠️ "被人确认过的删除"也是改树（要摘节点）⇒ 只看 added/modified/containers 会让
+ *  "只确认、没别的变化"的那一轮在写盘之前就 return（确认点了没反应 ✗）。 */
 function bindingPlanChangesTree(plan) {
   if (!plan) return false;
-  return !!(plan.added.length || plan.modified.length || plan.containers.length);
+  return !!(plan.added.length || plan.modified.length || plan.containers.length
+    || bindingConfirmedDrops(plan).length);
 }
 
 /**
@@ -1336,26 +1399,24 @@ function applyBindingPlan(data, plan) {
   /* ---- 0) 「删除的提议里已经点过名的那几个节点」⇒ 从树里摘掉。
    * ⚠️⚠️ **谁都不许在这里加"自动删盘上文件对应的节点"**（工程铁律：不许删除；删除的认定必须由人做）✗。
    *  这里的三个前提缺一不可，缺了任何一条它就从"服从人的决定"变成"守护进程自作主张"：
-   *    ① `plan.confirmedNodeIds` **不是**计划自己算出来的 —— 它由命令层从**快照里已存的提议**读出来
-   *       （`pendingDeletions`：那条提议是**上一轮**就记下、并且**在界面上被人确认过**的那种）；
-   *    ② 每个 id 都必须出现在**提议的并集**里 —— 本轮新提议（`plan.pending`）∪ 快照里存的旧提议
-   *       （`plan.proposedNodeIds`）。两者都不是的 id 一律不认 ⇒ 手写一个 id 进来删不掉东西；
-   *       ⚠️ 只用 `plan.pending` **不够**：同一个文件不会在第二轮里再被提议一次（提案是**清单**不是流水，
+   *    ① `plan.confirmedNodeIds` **不是**计划自己算出来的 —— 它由命令层从**提议的并集**读出来
+   *       （`bind-sync --confirm-deletions`：那些提议是**在界面上被人逐条看过、并且他按了确认**的那种）；
+   *       ⚠️ 本批核实的现状：这个入参在此之前**一个调用方都没有**（引擎里这条出口是通的，但没人喂它
+   *       ⇒ 界面上根本没有确认流）。补上入口的命令层**只喂它**，没有第二条删除路 ✓。
+   *    ② 每个 id 都必须出现在**提议的并集**里（`bindingProposedNodeIds`：本轮新提议 ∪ 快照里的旧提议，
+   *       唯一一处判据）。两者都不是的 id 一律不认 ⇒ 手写一个 id 进来删不掉东西；
+   *       ⚠️ 只用"本轮新提议"**不够**：同一个文件不会在第二轮里再被提议一次（提案是**清单**不是流水，
    *       第一轮就记下了）⇒ 人确认那一刻"本轮提议"很可能已经是空的（实测踩到：闸门写成
    *       "必须在本轮提议里" ⇒ 确认之后**永远摘不掉**，等于这条纪律没有出口 ✗）。
    *    ③ 只删**节点**，绝不碰盘上的任何文件。
    *  这样"删除只提议"这条纪律的可观察后果就是：**盘上少了一个文件 ⇒ 树里节点一个不少**；
    *  而人确认之后，那个文件**真的从盘上消失**（`pendingDeletions` 只在"文件确实不在"时才保留）⇒
    *  它的旧提议与本轮的并集命中，节点才被摘掉 ✓。
-   *  判别力：把 `confirmed` 恒置空（见 `.review` 的注入 A）⇒ U1b 必红。 */
-  const confirmed = Array.isArray(plan.confirmedNodeIds) ? plan.confirmedNodeIds : [];
+   *  判别力：把 `bindingConfirmedDrops` 改成恒返回全部 confirmed（跳过并集那道闸）⇒ 域 42 的
+   *  "确认前一个节点都不许少"与单测的"手写 id 删不掉东西"必红。 */
+  const confirmed = bindingConfirmedDrops(plan);
   if (confirmed.length) {
-    const proposed = new Set(
-      (plan.pending || []).map((p) => p && p.nodeId)
-        .concat(Array.isArray(plan.proposedNodeIds) ? plan.proposedNodeIds : [])
-        .filter(Boolean));
     confirmed.forEach((id) => {
-      if (!proposed.has(id)) return;                 // 不在任何一份提议里 ⇒ 不认（见上面 ②）
       const parent = findParentOfBinding(root, id);
       if (!parent) return;
       const before = parent.children.length;
@@ -1461,7 +1522,7 @@ function findParentOfBinding(root, id) {
 /**
  * 这一轮跑完之后，**新的快照**长什么样（纯函数：只读 `plan` 与旧快照 + 本次扫描的读数）。
  *
- * 四条：
+ * 五条：
  *   ① 成功转换的文件 ⇒ 写进 `files`（`mtimeMs`/`size` 取**扫描那一刻**的读数 —— 与 `bindingFileDiff`
  *      比的是同一对数字 ⇒ 下一次不会被判成"又变了"，不会每轮重建 ✓；`sha256`/`nodeId` 取自**转换产物**，
  *      与树里那份 `origin` 同源同值 ✓）；
@@ -1470,7 +1531,10 @@ function findParentOfBinding(root, id) {
  *   ③ 转不了的 ⇒ 进 `unconverted`（**点名**）且**不进 `files`** ⇒ 下一次还会再试；
  *   ④ 这次提议删的 ⇒ 进 `pendingDeletions`（去重），并从 `files` 里移走 ——
  *      移走是关键：不移走它下一次还会被算成"盘上没有了"⇒ 每轮都重复报同一条提议。
- *      ⚠️ 移走 **不等于**"删了"：树里的节点**一个都没动**（`applyBindingPlan` 里根本没有删的分支）✓。
+ *      ⚠️ 移走 **不等于**"删了"：树里的节点**一个都没动**（`applyBindingPlan` 里没有"自动删"的分支）✓。
+ *   ⑤ **被人确认过的那几条提议 ⇒ 从这里划掉**（`bindingConfirmedDrops`）—— 不划掉的后果是
+ *      "待确认删 K"永远回不到 0（提议会被下一轮重新提出来）。划掉提议 ≠ 删节点：节点在
+ *      `applyBindingPlan` 第 0 段被摘（那里是唯一出口）✓。
  * @param {object} snapshot 旧快照（可为空）
  * @param {object} plan `planBindingSync` 的产物
  * @param {string} at 同步时刻（ISO）
@@ -1508,9 +1572,15 @@ function snapshotAfterBindingPlan(snapshot, plan, at, keep) {
       (it.subtree && it.subtree.topic) || null);
   });
   ((plan && plan.unconverted) || []).forEach((u) => { delete files[u.rel]; });   // ③
-  const pending = (base.pendingDeletions || []).slice();
+  /* ⑤ 本轮**被人确认过**的那几条提议 ⇒ 从提议里**划掉**（`bindingConfirmedDrops`：确认 ∩ 并集）。
+   *   少了这一步的后果实测过：文件确实从盘上没了 ⇒ 这条提议下一轮会被**重新提出**（`files` 里已
+   *   没有它，但提议清单还留着）⇒ 界面上"待确认删 K"**永远回不到 0**，人每次点确认都在确认同一条 ✗。
+   *   ⚠️ 划掉提议**不等于删节点**：节点是 `applyBindingPlan` 第 0 段摘的（那边才是唯一出口）； */
+  const confirmedSet = new Set(bindingConfirmedDrops(plan));
+  const pending = (base.pendingDeletions || []).filter((p) => !(p && confirmedSet.has(p.nodeId)));
   ((plan && plan.pending) || []).forEach((d) => {                               // ④
     delete files[d.rel];
+    if (confirmedSet.has(d.nodeId)) return;                                      // ⑤ 已确认 ⇒ 不再回到提议里
     if (!pending.some((p) => p && p.rel === d.rel)) {
       pending.push({ rel: d.rel, nodeId: d.nodeId || null, topic: d.topic || null, at: (plan && plan.at) || null });
     }

@@ -317,15 +317,19 @@ function init() {
     name: 'bind-sync',
     usage: 'bind-sync <项目> [--bind --dir <目录> --mode flat|mirror --include <模式,…> --ignore <模式,…> '
       + '--ext <扩展名,…> --debounce <毫秒> --id <绑定id>] [--binding <绑定id>] [--pause|--resume|--unbind|--list] '
-      + '[--watch-dirs] [--forget-snapshot] [--json] [--dry-run]',
+      + '[--watch-dirs] [--forget-snapshot] [--confirm-deletions] [--json] [--dry-run]',
     options: ['bind', 'dir', 'mode', 'include', 'ignore', 'ext', 'debounce', 'id',
-      'binding', 'pause', 'resume', 'unbind', 'list', 'watchDirs', 'forgetSnapshot', 'json'],
+      'binding', 'pause', 'resume', 'unbind', 'list', 'watchDirs', 'forgetSnapshot', 'confirmDeletions', 'json'],
     desc: '【R4】**绑定工作区文件夹 → 定时/有变化就同步进思维导图**（零 token：纯本地文件事件 + 字符串处理，'
       + '**不经 LLM**）。形态：不带开关 ⇒ **同步一次**（增量：按 mtime/大小只处理变过的文件）；`--bind --dir <目录>` '
       + '新建一条绑定；`--pause` / `--resume` / `--unbind` 暂停/继续/解绑（**都只影响"要不要同步"，已导入的节点一个都不动**）；'
       + '`--list` 只看状态。**三条纪律**：① **界面有未保存编辑 ⇒ 本轮一个字节都不写**（回显报 `blocked-dirty`，'
       + '下一轮自己再来 —— 否则你保存时会撞冲突）；② **删除/改名只产出"待确认"提议，绝不自动删节点**（改名 = 新增 + 提议删旧）；'
       + '③ **转不了的文件逐条点名**进"未转换"清单（不静默跳过、也不拖垮同一批里别的文件）。'
+      + '**`--confirm-deletions` = 确认流**（排期第⑥步）：把**读得到的提议**逐条列出来（名字 / 来源文件 / 来源节点）'
+      + '并交给引擎那**一条既有**出口（`plan.confirmedNodeIds`）⇒ 只删被确认的那些；'
+      + '未确认之前**盘上一个节点都不少**。是一条 fail-closed 的路：目录读不到 / 旁路快照读不出来 / 提议里'
+      + '读不到对应节点 ⇒ **响亮拒绝**，一个节点都不删（读不到就不猜）；没有提议时是**幂等空转**（不报错，但它说清楚"一个都没删"）。'
       + '导入复用**同一条**既有管线（`import-dir` 的 `docToOutline` + `markdownToTree` + 资源引用解析），本命令不写第二套转换。'
       + '扫描快照落在**旁路文件** `<项目目录>/.bindings.json`（可随时删；丢了会从树里的 `origin` 重建，不会重复建节点）—— '
       + '**不进项目数据**，所以守护进程不会把项目 JSON 搅脏。事件驱动由主进程守护（`fs.watch` 递归 + 防抖 + 低频巡检兜底），'

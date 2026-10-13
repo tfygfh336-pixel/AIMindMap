@@ -48,6 +48,8 @@
   let previewBusy = false;
   let bannerText = '';         // 播报 banner 的那一句（断言也读它）
   let diskTimer = null;        // 盘上变更后的状态刷新防抖
+  let pendingOpen = false;     // 「待确认的删除」那一层开着吗（排期第⑥步）
+  let lastDeletions = null;    // 最近一次确认的读数（CLI 报告的 report.deletions，原样存）
 
   /* ---------------- 小工具（只做显示层的格式化，不改任何判定） ---------------- */
   /** ISO 时间 → 本地 `hh:mm:ss`（给人看的那一份；读不出来就**原样显示**，不假装知道时间） */
@@ -95,20 +97,29 @@
       if (btnToggle) { btnToggle.style.display = 'none'; }
       if (btnSync) { btnSync.style.display = 'none'; }
       if (btnUnbind) { btnUnbind.style.display = 'none'; }
+      const bp = $('bind-btn-pending');
+      if (bp) { bp.style.display = 'none'; bp.setAttribute('data-bind-pending-count', '0'); }
+      if (pendingOpen) closePending();
       return { shown: false, count: 0 };
     }
     const b = rows[0];
     const state = b.active ? '守护中'
       : (b.status === 'paused' ? '已暂停' : (b.status === 'blocked' ? '受阻' : String(b.status || '未知')));
+    /* 【R4 第⑥步】旁路快照读不出来 ⇒ **响亮**（提议就存在那里）：
+     *   "待确认删"这一格不许报 **0** —— 0 读起来像"没有任何提议"，而真相是"读不到" ✗。
+     *   确认流在这个状态下也会**拒绝执行**（CLI 侧 fail closed），界面把原话照转。 */
+    const probeRow = (probe && Array.isArray(probe.sync) && probe.sync[0]) ? probe.sync[0] : null;
+    const unreadable = (probeRow && probeRow.snapshotUnreadable) || '';
     const parts = [
       '「' + baseNameOf(b.dir) + '」',
       state,
       '已收录 ' + b.files + ' 个文件',
       '上次同步 ' + (b.lastSyncAt ? hms(b.lastSyncAt) : '还没同步过'),
       '本次 ' + (lastSync ? ('+' + lastSync.added + ' 改 ' + lastSync.modified) : '—'),
-      '待确认删 ' + b.pending,
+      unreadable ? '待确认删 ?（**提议读不到**）' : ('待确认删 ' + b.pending),
       '未转换 ' + b.unconverted
     ];
+    if (unreadable) parts.push('⚠️ ' + unreadable + ' ⇒ 确认流**拒绝执行**（先修好/恢复这份旁路快照；或按引擎给的两条出路走）');
     if (b.note) parts.push('（' + b.note + '）');
     if (rows.length > 1) parts.push('（另有 ' + (rows.length - 1) + ' 条绑定：这一版界面只操作第一条）');
     if (text) text.textContent = parts.join(' · ');
@@ -118,7 +129,8 @@
     bar.setAttribute('data-bind-state', b.status || (b.active ? 'watching' : 'unknown'));
     bar.setAttribute('data-bind-active', b.active ? '1' : '0');
     bar.setAttribute('data-bind-files', String(b.files));
-    bar.setAttribute('data-bind-pending', String(b.pending));
+    bar.setAttribute('data-bind-pending', unreadable ? '?' : String(b.pending));
+    bar.setAttribute('data-bind-pending-unreadable', unreadable ? '1' : '0');
     bar.setAttribute('data-bind-unconverted', String(b.unconverted));
     bar.setAttribute('data-bind-last-sync', b.lastSyncAt || '');
     bar.setAttribute('data-bind-binding', b.binding || '');
@@ -145,6 +157,24 @@
       btnUnbind.title = '解绑这个文件夹（**已导入的节点全部保留**；只是不再盯着它）';
       btnUnbind.disabled = !!busy || rows.length > 1;
     }
+    /* 【R4 第⑥步】入口只在**真的有提议**时出现（K>0）⇒ 没有提议时这里一个像素都不多。
+     * 一次点开是"逐条点名 + 确认"，不是"一键删"：先看见是哪些节点，再决定（见 showPending）。 */
+    const btnPending = $('bind-btn-pending');
+    if (btnPending) {
+      const k = Number(b.pending) || 0;
+      const dupes = rows.length > 1;
+      btnPending.style.display = k > 0 ? '' : 'none';
+      btnPending.textContent = '查看待确认删 ' + k + ' 个节点';
+      btnPending.setAttribute('data-bind-pending-count', String(k));
+      btnPending.disabled = !!busy || dupes;
+      btnPending.title = dupes
+        ? '这个项目有多条绑定：这一版界面只操作第一条（确认删除要指名一条 —— 命令行 `--binding <id>`）'
+        : (k > 0
+          ? '逐条看看将要删的是哪些节点（名字 + 来源文件），再决定确认还是什么都不做'
+          : '现在没有待确认的删除提议');
+    }
+    /* 提议在刷新里消失了（确认过 / 文件回来了 / 解绑）⇒ 那一层不能继续开着讲故事 */
+    if (pendingOpen && !(Number(b.pending) > 0)) closePending();
     bar.style.display = 'flex';
     return { shown: true, count: rows.length, row: b, state: state };
   }
@@ -170,6 +200,169 @@
     }
     const out = renderBar();
     return { ok: !!(r && r.ok), state: out, error: lastError };
+  }
+
+  /* ================= ④ 待确认的删除（逐条查看 ⇒ 确认 / 稍后再说） =================
+   * 设计排期第⑥步的落点。**这一节里没有一行"删"的逻辑**：
+   *   · 清单来自 CLI 报告里引擎算的那份**提议并集**（`pendingList`：名字 `topic` + 来源文件 `rel` + 节点 id）——
+   *     界面不自己拼清单（拼两份的下场就是"数得出 K 却看不到是哪些"）；
+   *   · 「确认删除」只调 CLI 的 `--confirm-deletions`（打的还是引擎那**一条**出口）；
+   *   · 「稍后再说」**什么都不做** —— 用户永远有权不回答，而"不回答"必须真的什么都不发生。 */
+  /** 待确认清单（**唯一来源**：探针报告里的 `pendingList`；sync[0] 优先，回落到 bindings[0]） */
+  function pendingRows() {
+    const name = currentProject();
+    if (!probe || probe.project !== name) return [];
+    const s = (Array.isArray(probe.sync) && probe.sync[0] && Array.isArray(probe.sync[0].pendingList))
+      ? probe.sync[0].pendingList : null;
+    if (s) return s;
+    const rows = Array.isArray(probe.bindings) ? probe.bindings : [];
+    return (rows[0] && Array.isArray(rows[0].pendingList)) ? rows[0].pendingList : [];
+  }
+  function pendingShown() {
+    const box = $('bind-pending');
+    return !!box && box.style.display !== 'none';
+  }
+  /** 面板渲染（**唯一入口**）：逐条点名 + 确认按钮上写清条数 */
+  function renderPending() {
+    const list = $('bind-pending-list');
+    const head = $('bind-pending-head');
+    const okBtn = $('bind-pending-confirm');
+    const rows = pendingRows();
+    const name = currentProject();
+    if (head) {
+      head.textContent = rows.length
+        ? ('绑定的文件夹里少了 ' + rows.length + ' 个文件 ⇒ 引擎**只记了提议**，等你决定。'
+          + '下面每一条 = 将要被摘掉的那个节点（名字 / 来源文件 / 来源节点 id）：')
+        : '现在没有待确认的删除提议（要么没有人删过文件，要么提议读不到 —— 见状态区的原话）。';
+    }
+    if (okBtn) {
+      okBtn.disabled = !!busy || rows.length === 0;
+      okBtn.textContent = rows.length ? ('确认删除这 ' + rows.length + ' 个节点') : '确认删除';
+      okBtn.title = rows.length
+        ? '只删上面逐条点名的那些节点（不动别的节点、不删盘上任何文件）；这一按就是你的决定'
+        : '没有待确认的删除提议';
+    }
+    if (!list) return { ok: false, count: rows.length };
+    list.textContent = '';
+    if (!rows.length) {
+      const e = document.createElement('div');
+      e.className = 'bind-pending-empty';
+      e.textContent = '（没有待确认的删除）';
+      list.appendChild(e);
+      list.setAttribute('data-bind-pending-rows', '0');
+      return { ok: true, count: 0 };
+    }
+    rows.forEach((x) => {
+      const it = document.createElement('div');
+      it.className = 'bind-pending-item';
+      it.setAttribute('data-bind-pending-rel', String(x.rel || ''));
+      it.setAttribute('data-bind-pending-node', String(x.nodeId || ''));
+      const nm = document.createElement('span');
+      nm.className = 'bind-pending-name';
+      nm.textContent = '「' + (x.topic || '(无标题)') + '」';
+      const src = document.createElement('span');
+      src.className = 'bind-pending-src';
+      src.textContent = ' ← 来源文件 ' + (x.rel || '(读不到)');
+      const id = document.createElement('span');
+      id.className = 'bind-pending-id';
+      id.textContent = '（节点 ' + (x.nodeId || '**读不到**') + '）';
+      it.appendChild(nm); it.appendChild(src); it.appendChild(id);
+      if (x.revived) {
+        /* 边界①（引擎既定语义，本批**如实说清后果**、不动引擎）：提议删过的文件又出现 ⇒ 引擎按
+         * "新增"处理 ⇒ 树里同一个文件两个节点。确认之后旧的那个被摘掉 ⇒ 又回到一个。 */
+        const rv = document.createElement('div');
+        rv.className = 'bind-pending-revived';
+        rv.textContent = '⚠️ 这个文件**又回来了**：引擎按"新增"处理 ⇒ 树里现在同一个文件有两个节点；'
+          + '确认之后上面那条旧节点被摘掉，就又回到一个（不确认的话会一直是两个）。';
+        it.appendChild(rv);
+      }
+      list.appendChild(it);
+    });
+    list.setAttribute('data-bind-pending-rows', String(rows.length));
+    return { ok: true, count: rows.length };
+  }
+  function openPending() {
+    const box = $('bind-pending');
+    if (!box) return { ok: false, error: '这个版本没有待确认面板' };
+    pendingOpen = true;
+    renderPending();
+    box.style.display = 'flex';
+    return { ok: true, count: pendingRows().length };
+  }
+  function closePending(why) {
+    const box = $('bind-pending');
+    pendingOpen = false;
+    if (box) box.style.display = 'none';
+    return { ok: true, why: why || '' };
+  }
+  /** 「稍后再说」= **非破坏性出口**：什么都不做（提议还在、节点一个不少）—— 但要说清"什么都没做" */
+  function pendingLater() {
+    closePending('later');
+    if (MM.setStatus) {
+      MM.setStatus('什么都没做：提议原样留着（' + pendingRows().length
+        + ' 条），**未确认之前盘上一个节点都不会少**；下一次同步也不会自动删它。');
+    }
+    return { ok: true, action: 'later', remaining: pendingRows().length };
+  }
+  /** 提议**读不到**吗（旁路快照坏了）：从探针报告现读，不在界面另算一份 */
+  function pendingUnreadable() {
+    const name = currentProject();
+    if (!probe || probe.project !== name) return '';
+    const s = (Array.isArray(probe.sync) && probe.sync[0] && probe.sync[0].snapshotUnreadable) || '';
+    return String(s || '');
+  }
+  /** 确认删除：**唯一**动作 —— 调 CLI 的 `--confirm-deletions`（引擎那一条既有出口）。
+   *  返回的读数逐个点名：`deletions.dropped` = 真摘掉几个、`remaining` = 还剩几条待确认。 */
+  async function confirmDeletions() {
+    const name = currentProject();
+    if (!name) return { ok: false, error: '没有当前项目' };
+    const rows = pendingRows();
+    const unreadable = pendingUnreadable();
+    if (busy) { if (MM.setStatus) MM.setStatus('上一个绑定动作还在跑（' + busy + '），这一步没执行', true); return { ok: false, error: '忙' }; }
+    /* ⚠️ "读不到提议"与"没有提议"是**两件事**：前者不许被界面解释成后者（那会让一条真实存在的
+     *   提议在界面上凭空消失 ✗）。所以这一档**不早退**，照旧把这一跳交给 CLI —— 由引擎那一侧
+     *   用同一份判据 fail closed 并给出原话（界面只转述，不自己下结论）。 */
+    if (!rows.length && !unreadable) {
+      if (MM.setStatus) MM.setStatus('没有待确认的删除提议 ⇒ 一个节点都没删（未确认之前盘上一个节点都不动）');
+      renderPending();
+      return { ok: false, error: '没有待确认的删除提议' };
+    }
+    const api = app();
+    if (!api || !api.bindCmd) {
+      if (MM.setStatus) MM.setStatus('绑定通道没接上（preload 少了 desktop.app.bindCmd）', true);
+      return { ok: false, error: '没有通道' };
+    }
+    busy = 'confirmDeletions'; renderBar();
+    try {
+      let r = null;
+      try { r = await api.bindCmd(name, 'confirmDeletions'); }
+      catch (err) { r = { ok: false, error: (err && err.message) || String(err) }; }
+      if (!r || !r.ok) {
+        /* ⚠️ 先**取一份局部副本**再刷新：`refreshBar()` 成功时会把 `lastError` 清成 `''`
+         * （那是"这次读数没问题"的意思），而这里要返回的是**刚才那次失败的原话** ——
+         * 直接 `return lastError` 会在 await 之后读到被清掉的那个空串（实测踩到：报文里 error 成了 "" ✗）。 */
+        const msg = (r && r.error) || '确认删除失败';
+        lastError = msg;
+        // 引擎侧 fail closed 的原话照转（读不到提议 / 目录读不到 ⇒ 一个节点都没删）
+        if (MM.setStatus) MM.setStatus('确认删除没有执行：' + msg + ' —— 提议还在，节点一个都没删', true);
+        await refreshBar();
+        return { ok: false, error: msg };
+      }
+      const d = (r.report && r.report.deletions) || null;
+      lastDeletions = d;
+      const res = applyReadings(r, 'confirm');
+      closePending('confirmed');
+      await refreshBar();
+      if (MM.requestReread) MM.requestReread();       // 被摘掉的节点要从导图上消失（既有重读路径）
+      const dropped = (d && d.dropped) || 0;
+      const remain = (d && d.remaining) || 0;
+      const text = '按你的确认删掉了 ' + dropped + ' 个节点（只删被确认的那些、盘上文件一个都没动）'
+        + (remain ? ('；还剩 ' + remain + ' 条待确认') : '；待确认删已清零（0）')
+        + ' —— 点「看这次加了哪些」可以在"这次消失的节点"里回看是哪几个';
+      showBindBanner(text);
+      if (MM.setStatus) MM.setStatus(text);
+      return { ok: true, deletions: d, readings: res, dropped: dropped, remaining: remain };
+    } finally { busy = ''; renderBar(); }
   }
 
   /* ================= ③ 变更播报（复用并发可见性那套视觉与渲染器） ================= */
@@ -505,10 +698,12 @@
       try { r = await api.bindCmd(name, action); }
       catch (err) { r = { ok: false, error: (err && err.message) || String(err) }; }
       if (!r || !r.ok) {
-        lastError = (r && r.error) || (ACT_LABEL[action] + '失败');
-        if (MM.setStatus) MM.setStatus('绑定动作「' + ACT_LABEL[action] + '」失败：' + lastError, true);
+        // 同 confirmDeletions：先留一份副本（refreshBar 会把 lastError 清空 ⇒ 别把空串当失败原话返回）
+        const msg = (r && r.error) || (ACT_LABEL[action] + '失败');
+        lastError = msg;
+        if (MM.setStatus) MM.setStatus('绑定动作「' + ACT_LABEL[action] + '」失败：' + msg, true);
         await refreshBar();
-        return { ok: false, error: lastError };
+        return { ok: false, error: msg };
       }
       lastError = '';
       const res = applyReadings(r, 'manual');
@@ -536,6 +731,14 @@
     if (s) s.addEventListener('click', () => { bindAct('sync'); });
     const u = $('bind-btn-unbind');
     if (u) u.addEventListener('click', () => { bindAct('unbind'); });
+
+    /* 【R4 第⑥步】待确认的删除：查看 → 逐条点名 → 确认 / 稍后再说 */
+    const bp = $('bind-btn-pending');
+    if (bp) bp.addEventListener('click', () => { openPending(); });
+    const pc = $('bind-pending-confirm');
+    if (pc) pc.addEventListener('click', () => { confirmDeletions(); });
+    const pl = $('bind-pending-later');
+    if (pl) pl.addEventListener('click', () => { pendingLater(); });
 
     const open = $('bind-banner-open');
     if (open) open.addEventListener('click', () => { showBindPanel(); });
@@ -599,6 +802,14 @@
   MM.bindPreviewConfirm = bindPreviewConfirm;
   MM.bindPreviewShown = previewShown;
   MM.onBindSynced = onBindSynced;
+  /* 【R4 第⑥步】待确认的删除（判据走**内容 + 命中测试**；这几个只是给断言与排查用的入口） */
+  MM.bindPendingOpen = openPending;
+  MM.bindPendingClose = closePending;
+  MM.bindPendingShown = pendingShown;
+  MM.bindPendingRows = pendingRows;
+  MM.bindPendingLater = pendingLater;
+  MM.bindConfirmDeletions = confirmDeletions;
+  MM.bindDeletions = () => lastDeletions;
   MM.showBindPanel = showBindPanel;
   MM.closeBindBanner = closeBindBanner;
   MM.bindBannerShown = bindBannerShown;
@@ -620,6 +831,7 @@
         active: bar.getAttribute('data-bind-active'),
         files: bar.getAttribute('data-bind-files'),
         pending: bar.getAttribute('data-bind-pending'),
+        pendingUnreadable: bar.getAttribute('data-bind-pending-unreadable'),
         unconverted: bar.getAttribute('data-bind-unconverted'),
         lastSyncAt: bar.getAttribute('data-bind-last-sync'),
         binding: bar.getAttribute('data-bind-binding'),
@@ -637,6 +849,12 @@
         busy: previewBusy,
         error: previewError,
         plan: previewPlan
+      },
+      /* 【R4 第⑥步】待确认的删除：清单来自 CLI 报告（`pendingRows` 现读，不是第二份缓存） */
+      pendingPanel: {
+        shown: pendingShown(),
+        rows: pendingRows(),
+        deletions: lastDeletions
       }
     };
   };

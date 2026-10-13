@@ -44,6 +44,8 @@ const STAMP = String(Date.now());
 const A_MD = '# 甲文件 ' + STAMP + '\n甲正文\n';
 const B_MD = '# 乙文件 ' + STAMP + '\n乙正文\n';
 const C_MD = '# 丙文件 ' + STAMP + '\n丙正文\n';
+const E_MD = '# 戊文件 ' + STAMP + '\n戊正文\n';      // 庚用：让树**再变一次** ⇒ 提议从此只活在旁路快照里
+const F_MD = '# 己文件 ' + STAMP + '\n己正文\n';      // 壬用：造一条真提议，再把快照改成读不出来的内容
 const A_APPEND = '\n\n## 甲附注 ' + STAMP + '\n甲附注正文\n';
 const MARK_A_APPEND = '甲附注 ' + STAMP;
 
@@ -280,7 +282,7 @@ const assertions = [
   },
 
   {
-    name: '乙 盘上删掉一个文件 ⇒ 状态区出现"待确认删 1"、而**树里节点一个都不少**且项目 JSON 一个字节都没变（提议不写进用户数据）；等几秒再查仍然一个都不少（判定依据：项目 JSON 里 origin 逐条点名 + 状态区读数与 CLI 报告 pendingList 对拍）',
+    name: '乙 盘上删掉一个文件 ⇒ 状态区出现"待确认删 1"、而**树里节点一个都不少**且项目 JSON 一个字节都没变（提议不写进用户数据）；等几秒再查仍然一个都不少；入口按钮只**打开清单**、自己不删任何东西（判定依据：项目 JSON 里 origin 逐条点名 + 状态区读数与 CLI 报告 pendingList 对拍 + elementFromPoint）',
     run: async (ctx) => {
       const before = readRaw(P);
       const beforeNodes = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
@@ -299,27 +301,38 @@ const assertions = [
       await sleep(4000);                                           // 等过防抖 + 一轮自动同步的时间
       const laterNodes = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
       const laterRaw = readRaw(P);
+      /* 【第⑥步】确认流有了入口，但入口**只打开清单**：这里断言"看见了 ≠ 删了"——
+       * 提议在状态区点名、入口按钮在（K=1）而**盘上节点一个不少、项目 JSON 一个字节没变**。 */
+      const pendEntry = await hitSel(ctx, '#bind-btn-pending');
+      const pendCount = await ctx.exec('(function () { var b = document.getElementById("bind-btn-pending");'
+        + ' return b ? { count: b.getAttribute("data-bind-pending-count"), text: String(b.textContent || ""),'
+        + ' shown: getComputedStyle(b).display !== "none", disabled: b.disabled === true } : null; })()');
       const delBtns = await ctx.exec('(function () { var bar = document.getElementById("bind-bar");'
         + ' if (!bar) return []; return Array.prototype.slice.call(bar.querySelectorAll("button"))'
         + '.map(function (b) { return String(b.textContent || ""); }); })()');
-      const hasDeleteBtn = (delBtns || []).some((t) => /删|确认/.test(String(t)));
 
       return {
         ok: seen.ok === true
           && /待确认删 1/.test(barText) && st.barAttrs.pending === '1' && st.barAttrs.state === 'watching'
           && probePending === 1 && probeList.length === 1 && /b\.md$/.test(String(probeList[0].rel))
+          && probeList[0].nodeId && probeList[0].topic === 'b'
           && afterNodes.join(' ') === beforeNodes.join(' ') && afterNodes.length === 2
           && /b\.md$/.test(String((fileNodes(P).filter((n) => n.topic === 'b')[0] || {}).origin.src || ''))
           && after === before && laterRaw === before                    // 连项目 JSON 都没被搅动
           && laterNodes.join(' ') === beforeNodes.join(' ')             // 4 秒后仍然一个都不少
-          && hasDeleteBtn === false,
+          && !!pendEntry && pendEntry.self === true                     // 入口看得见、点得到
+          && !!pendCount && pendCount.shown === true && pendCount.count === '1' && pendCount.disabled === false
+          && String(pendCount.text).indexOf('1') >= 0
+          && !(delBtns || []).some((t) => /立刻删|删除这个|一键删/.test(String(t))),
         text: '状态区读数=' + JSON.stringify(st.barAttrs) + ' 文案「' + barText + '」'
           + ' · CLI 对拍：pending=' + probePending + ' 点名=' + JSON.stringify(probeList.map((p) => p.rel))
+          + '（节点 ' + probeList.map((p) => p.nodeId + '/' + p.topic).join(' ') + '）'
           + ' · 盘上文件节点（删前/删后/4 秒后）=' + beforeNodes.length + '/' + afterNodes.length + '/' + laterNodes.length
           + '：' + afterNodes.join(' ')
           + ' · 被删文件的节点还在（topic=b）=' + /b\.md$/.test(String((fileNodes(P).filter((n) => n.topic === 'b')[0] || {}).origin.src || ''))
           + ' · 项目 JSON 逐字节不变（删前=删后=' + (after === before) + '，4 秒后仍相同=' + (laterRaw === before) + '）'
-          + ' · 状态区里有没有删除/确认按钮=' + hasDeleteBtn + '（必须 false：确认流是设计排期的第⑥步）'
+          + ' · 确认入口命中它自己=' + (pendEntry && pendEntry.self) + ' 读数=' + JSON.stringify(pendCount)
+          + ' · 状态区按钮=' + JSON.stringify(delBtns) + '（没有"一键删"：入口只**打开清单**）'
       };
     }
   },
@@ -459,6 +472,260 @@ const assertions = [
   },
 
   {
+    name: '庚 提议的**并集**：删一个文件、又真同步过一次之后，提议仍然看得见（K=1、逐条点名含名字与来源文件）；真鼠标点「查看待确认删」⇒ 面板逐条点名；点「稍后再说」⇒ 什么都不做（节点/项目 JSON 逐字节不变、提议仍在）（判定依据：elementFromPoint + 项目 JSON SHA-256 + CLI 对拍）',
+    run: async (ctx) => {
+      /* 前置：让树**再变一次**（加一个文件走真同步）⇒ 这条提议从此只活在**旁路快照**里。
+       * ⚠️ 这正是本批修掉的那条缺陷的形状：只读"本轮新提议"的读法在这里报 **0**
+       *   ⇒ 界面上"待确认删 0"而引擎里提议还在（判别力证明②见交付说明）。 */
+      fs.writeFileSync(path.join(SRC_DIR, 'e.md'), E_MD, 'utf8');
+      const grew = await waitUntil(() => fileNodes(P).some((n) => n.topic === 'e'), 30000);
+      const probe1 = JSON.parse(ctx.runCli(['bind-sync', P, '--dry-run', '--json']));
+      const row1 = (probe1.sync && probe1.sync[0]) || {};
+      const barOk = await waitUntil(async () => {
+        const st = await bindState(ctx);
+        return !!(st && st.barAttrs && st.barAttrs.pending === '1');
+      }, 20000);
+      const st1 = await bindState(ctx);
+      const shaBefore = sha256(readRaw(P));
+      const nodesBefore = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
+
+      const openClick = await clickSel(ctx, '#bind-btn-pending');     // 真鼠标打开清单
+      const opened = await waitUntil(async () => {
+        const st = await bindState(ctx);
+        return !!(st && st.pendingPanel && st.pendingPanel.shown);
+      }, 8000);
+      const panel = await ctx.exec(`(function () {
+        var box = document.getElementById('bind-pending');
+        var rows = Array.prototype.slice.call(document.querySelectorAll('#bind-pending-list .bind-pending-item'));
+        var r = box.getBoundingClientRect();
+        var at = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + 8));
+        return { shown: getComputedStyle(box).display !== 'none', w: r.width, h: r.height,
+          hitSelf: !!(at && (at === box || box.contains(at))),
+          count: rows.length,
+          rows: rows.map(function (x) { return { rel: x.getAttribute('data-bind-pending-rel'),
+            node: x.getAttribute('data-bind-pending-node'), text: String(x.textContent || '') }; }),
+          head: String((document.getElementById('bind-pending-head') || {}).textContent || ''),
+          btn: String((document.getElementById('bind-pending-confirm') || {}).textContent || '') };
+      })()`);
+      /* 非破坏性出口：**真鼠标**点「稍后再说」⇒ 什么都不做 */
+      const laterClick = await clickSel(ctx, '#bind-pending-later');
+      const closed = await waitUntil(async () => {
+        const st = await bindState(ctx);
+        return !!(st && st.pendingPanel && st.pendingPanel.shown === false);
+      }, 8000);
+      await sleep(300);
+      const st2 = await bindState(ctx);
+      const nodesAfter = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
+      const laterRaw = readRaw(P);
+      const probe2 = JSON.parse(ctx.runCli(['bind-sync', P, '--dry-run', '--json']));
+
+      const point = ((panel && panel.rows) || [])[0] || {};
+      return {
+        ok: grew.ok === true
+          /* ⭐ 提议"只活在快照里"时也必须报 1（并集）—— 只读本轮提议的实现在这里报 0 */
+          && row1.pending === 1 && row1.pendingList.length === 1
+          && /b\.md$/.test(String(row1.pendingList[0].rel))
+          && !!row1.pendingList[0].nodeId && row1.pendingList[0].topic === 'b'
+          && probe1.pending === 1
+          && barOk.ok === true && st1.barAttrs.pending === '1'
+          && openClick.ok === true && opened.ok === true
+          && panel.shown === true && panel.count === 1 && panel.hitSelf === true
+          /* 逐条点名：名字 + 来源文件 + 来源节点（三样都要在界面上看得见） */
+          && String(point.rel).indexOf('b.md') >= 0 && String(point.node) === String(row1.pendingList[0].nodeId)
+          && point.text.indexOf('「b」') >= 0 && point.text.indexOf('b.md') >= 0
+          && String(panel.btn).indexOf('1') >= 0
+          && laterClick.ok === true && closed.ok === true
+          && nodesAfter.join(' ') === nodesBefore.join(' ') && nodesAfter.length === 4
+          && sha256(readRaw(P)) === shaBefore                          // 项目 JSON 逐字节不变
+          && probe2.pending === 1 && probe2.sync[0].pendingList.length === 1,
+        text: '加一个文件走真同步后：CLI 读数 pending=' + probe1.pending + '（并集；只读本轮提议会是 0）'
+          + ' 点名=' + JSON.stringify((row1.pendingList || []).map((p) => [p.rel, p.nodeId, p.topic]))
+          + ' · 状态区 pending=' + (st1.barAttrs && st1.barAttrs.pending) + '（等到了=' + barOk.ok + '）'
+          + ' · 「查看待确认删」点击=' + openClick.ok + ' 打开=' + opened.ok
+          + ' · 面板：显示=' + panel.shown + ' 几何=' + panel.w + 'x' + panel.h
+          + ' 命中它自己=' + panel.hitSelf + ' 行数=' + panel.count
+          + ' 行=' + JSON.stringify(panel.rows)
+          + ' 确认按钮文案「' + panel.btn + '」'
+          + ' · 面板抬头「' + String(panel.head).slice(0, 80) + '…」'
+          + ' · 「稍后再说」点击=' + laterClick.ok + ' 关闭=' + closed.ok
+          + ' · 什么都不做之后：节点=' + nodesAfter.length + '（前 ' + nodesBefore.length + '）'
+          + ' 项目 JSON 逐字节不变=' + (sha256(readRaw(P)) === shaBefore)
+          + ' 提议仍在=' + probe2.pending + '/' + (probe2.sync[0].pendingList || []).length
+          + ' · 面板读数=' + JSON.stringify((st2 && st2.pendingPanel) || null)
+      };
+    }
+  },
+
+  {
+    name: '辛 真鼠标点「确认删除这 N 个节点」⇒ **恰好**摘掉被确认的那些（其余节点逐字节不变）、提议清零、K 回 0、播报里写清"按你的确认删掉了 N 个节点"（判定依据：项目 JSON 逐字节 + 快照 pendingDeletions 现读 + CLI 对拍 + elementFromPoint）',
+    run: async (ctx) => {
+      const openClick = await clickSel(ctx, '#bind-btn-pending');
+      const opened = await waitUntil(async () => {
+        const st = await bindState(ctx);
+        return !!(st && st.pendingPanel && st.pendingPanel.shown);
+      }, 8000);
+      const st0 = await bindState(ctx);
+      const rows = ((st0 && st0.pendingPanel && st0.pendingPanel.rows) || []);
+      const victim = rows[0] || {};
+      const treeBefore = JSON.stringify(readProject(P).data);
+      const fileNodesBefore = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
+      const snapBefore = JSON.parse(fs.readFileSync(path.join(projectsDir(), P, '.bindings.json'), 'utf8'));
+      const confirmHit = await hitSel(ctx, '#bind-pending-confirm');
+
+      const confirmClick = await clickSel(ctx, '#bind-pending-confirm');   // 真鼠标：这就是"人的决定"
+      const zeroed = await waitUntil(async () => {
+        const st = await bindState(ctx);
+        return !!(st && st.barAttrs && st.barAttrs.pending === '0');
+      }, 25000);
+      await sleep(400);
+      const st1 = await bindState(ctx);
+      const treeAfter = JSON.stringify(readProject(P).data);
+      const fileNodesAfter = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
+      const snapAfter = JSON.parse(fs.readFileSync(path.join(projectsDir(), P, '.bindings.json'), 'utf8'));
+      const probe = JSON.parse(ctx.runCli(['bind-sync', P, '--dry-run', '--json']));
+      /* 精确判据：把「被确认的那个节点连同它的子树」从确认前的树里摘掉 ⇒ 应与确认后**逐字节相同** */
+      const strip = (json, id) => {
+        const cut = (n) => {
+          if (!n || typeof n !== 'object') return n;
+          const kids = Array.isArray(n.children) ? n.children.filter((c) => c && c.id !== id) : n.children;
+          return Object.assign({}, n, { children: (kids || []).map(cut) });
+        };
+        return JSON.stringify(cut(JSON.parse(json)));
+      };
+      const exactly = strip(treeBefore, victim.nodeId) === treeAfter;
+      const gone = treeAfter.indexOf('"' + String(victim.nodeId) + '"') < 0;
+      const bannerText = (st1 && st1.banner && st1.banner.text) || '';
+      const del = (st1 && st1.pendingPanel && st1.pendingPanel.deletions) || null;
+      const panelGone = await waitUntil(async () => {
+        const st = await bindState(ctx);
+        return !!(st && st.pendingPanel && st.pendingPanel.shown === false);
+      }, 8000);
+      const entryGone = await ctx.exec('(function () { var b = document.getElementById("bind-btn-pending");'
+        + ' return b ? { shown: getComputedStyle(b).display !== "none", count: b.getAttribute("data-bind-pending-count") } : null; })()');
+      const othersIntact = fileNodesAfter.every((x) => fileNodesBefore.indexOf(x) >= 0 || x.indexOf(String(victim.nodeId)) >= 0);
+
+      return {
+        ok: openClick.ok === true && opened.ok === true && rows.length === 1
+          && !!victim.nodeId && /b\.md$/.test(String(victim.rel))
+          && !!confirmHit && confirmHit.self === true && confirmClick.ok === true
+          && zeroed.ok === true && st1.barAttrs.pending === '0'
+          && /待确认删 0/.test(String(st1.barText)) && st1.barAttrs.pendingUnreadable === '0'
+          && gone === true && exactly === true
+          && fileNodesAfter.length === 3
+          && othersIntact === true
+          && snapBefore.pendingDeletions.length === 1 && snapAfter.pendingDeletions.length === 0
+          && probe.pending === 0 && probe.bindings[0].pending === 0
+          && !!del && del.declared === 1 && del.dropped === 1 && del.remaining === 0
+          && /按你的确认删掉了 1 个节点/.test(bannerText)
+          && st1.banner.shown === true
+          && panelGone.ok === true && entryGone.shown === false && entryGone.count === '0',
+        text: '确认前：面板行=' + JSON.stringify(rows.map((x) => [x.topic || '', x.rel, x.nodeId]))
+          + ' · 快照 pendingDeletions=' + JSON.stringify(snapBefore.pendingDeletions.map((p) => p.rel))
+          + ' · 「确认删除」命中它自己=' + (confirmHit && confirmHit.self) + ' 真鼠标点击=' + confirmClick.ok
+          + ' · K 回 0=' + zeroed.ok + '（' + zeroed.ms + 'ms）读数=' + JSON.stringify(st1.barAttrs)
+          + ' 文案「' + String(st1.barText).slice(0, 120) + '」'
+          + ' · 被确认的节点 ' + victim.nodeId + ' 真的没了=' + gone
+          + ' · 「摘掉那一个节点之后与确认后的树逐字节相同」=' + exactly
+          + ' · 盘上文件节点 ' + fileNodesBefore.length + '→' + fileNodesAfter.length + '：' + fileNodesAfter.join(' ')
+          + ' · 其它节点全在=' + othersIntact
+          + ' · 快照提议 1→' + snapAfter.pendingDeletions.length + '（清空=' + (snapAfter.pendingDeletions.length === 0) + '）'
+          + ' · CLI 对拍 pending=' + probe.pending + '/' + probe.bindings[0].pending
+          + ' · CLI 读数【确认删除】declared=' + (del && del.declared) + ' dropped=' + (del && del.dropped)
+          + ' remaining=' + (del && del.remaining)
+          + ' · 播报文案「' + bannerText + '」'
+          + ' · 面板自动收起=' + panelGone.ok + ' · 入口按钮 ' + JSON.stringify(entryGone)
+      };
+    }
+  },
+
+  {
+    name: '壬 提议**读不到**时确认流 fail closed：把旁路快照改成读不出来的内容 ⇒ 走**同一实现**的确认**不会**删任何节点，界面照原话响亮说"读不到提议"，状态区把"待确认删"报成 ?（不许报 0）（判定依据：项目 JSON SHA-256 逐字节不变 + 状态区读数 + 报文原话）',
+    run: async (ctx) => {
+      /* 前置：造一条**真提议**并把它推进快照（写 f.md ⇒ 同步进来 ⇒ 盘上删掉 ⇒ 再改一份文件把树推一次）。
+       * ⚠️ 然后**先把绑定暂停**：确定性地把 `fs.watch` 收掉 —— 否则"快照坏着"的那一小段时间里
+       *   一次自动同步会把全部文件当**新增**（引擎既有语义，见 G7），整个域会跟着连锁红（实测踩到）。
+       *   暂停那一轮 CLI 会**先把当前待同步的变化同步一次**（既有行为）⇒ 提议正好落进快照 ✓ */
+      fs.writeFileSync(path.join(SRC_DIR, 'f.md'), F_MD, 'utf8');
+      const grew = await waitUntil(() => fileNodes(P).some((n) => n.topic === 'f'), 30000);
+      fs.rmSync(path.join(SRC_DIR, 'f.md'));
+      fs.appendFileSync(path.join(SRC_DIR, 'a.md'), '\n\n## 壬推动一次 ' + STAMP + '\n正文\n', 'utf8');
+      const pauseClick = await clickSel(ctx, '#bind-btn-toggle');
+      const paused = await waitUntil(async () => {
+        const st = await bindState(ctx);
+        return !!(st && st.barAttrs && st.barAttrs.active === '0');
+      }, 20000);
+      const snapPath = path.join(projectsDir(), P, '.bindings.json');
+      const snapshotGood = fs.readFileSync(snapPath, 'utf8');
+      const snapObj = JSON.parse(snapshotGood);
+      const probe0 = JSON.parse(ctx.runCli(['bind-sync', P, '--dry-run', '--json']));
+      const treeBefore = JSON.stringify(readProject(P).data);
+      const nodesBefore = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
+      const shaBefore = sha256(readRaw(P));
+      fs.writeFileSync(snapPath, '{ 这不是一份能读的快照', 'utf8');       // 提议**读不到**了
+      await ctx.exec('window.MM.bindRefresh()');
+      await sleep(900);
+      const stU = await bindState(ctx);
+      const entryNow = await ctx.exec('(function () { var b = document.getElementById("bind-btn-pending");'
+        + ' return b ? { shown: getComputedStyle(b).display !== "none", count: b.getAttribute("data-bind-pending-count") } : null; })()');
+      /* 这一档界面**不给**确认入口（没有东西可确认）：所以直接走**同一个实现**（`MM.bindConfirmDeletions()`
+       * ⇒ `app:bind-cmd` ⇒ CLI `--confirm-deletions`）——判定仍然只发生在引擎那一侧，界面只转述 ✓ */
+      const call = await ctx.exec('window.MM.bindConfirmDeletions()'
+        + '.then(function (r) { return JSON.stringify(r); })'
+        + '.catch(function (e) { return JSON.stringify({ ok: false, threw: String((e && e.message) || e) }); })');
+      await sleep(600);
+      const statusText = await ctx.exec('(function () { var e = document.getElementById("status-text"); return e ? String(e.textContent || "") : ""; })()');
+      const treeAfter = JSON.stringify(readProject(P).data);
+      const nodesAfter = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
+      const shaAfter = sha256(readRaw(P));
+      fs.writeFileSync(snapPath, snapshotGood, 'utf8');                   // 收尾①：把快照**还原**（后面的域接着用）
+      await ctx.exec('window.MM.bindRefresh()');
+      await sleep(700);
+      const restored = await bindState(ctx);
+      const resumeClick = await clickSel(ctx, '#bind-btn-toggle');        // 收尾②：继续守护（戊 要解绑）
+      const resumed = await waitUntil(async () => {
+        const st = await bindState(ctx);
+        return !!(st && st.barAttrs && st.barAttrs.active === '1');
+      }, 20000);
+      let callJson = {};
+      try { callJson = JSON.parse(String(call)); } catch (e) { callJson = { parse: 'failed' }; }
+
+      return {
+        ok: grew.ok === true && pauseClick.ok === true && paused.ok === true
+          /* 提议**在快照里**（这正是"读不到"会丢掉的那一份）；可读时读数正常 */
+          && snapObj.pendingDeletions.length === 1 && /f\.md$/.test(String(snapObj.pendingDeletions[0].rel))
+          && probe0.pending === 1
+          /* 读不到 ⇒ 状态区**响亮**：K 报 ?（不许报 0 —— 0 读起来像"没有提议"）+ 带原因 */
+          && String(stU.barText).indexOf('待确认删 ?') >= 0 && stU.barAttrs.pending === '?'
+          && stU.barAttrs.pendingUnreadable === '1' && stU.barAttrs.pending !== '0'
+          && /提议读不到|快照读不出来|没有可读的内容/.test(String(stU.barText))
+          && !!entryNow && entryNow.shown === false
+          /* 确认那一步：**拒绝执行**（引擎原话）、一个节点都不删、盘上一个字节不写 */
+          && callJson.ok === false && !callJson.threw && callJson.error
+          && /未执行|读不到|快照/.test(String(callJson.error))
+          && String(statusText).indexOf('确认删除没有执行') >= 0
+          && treeAfter === treeBefore && shaAfter === shaBefore
+          && nodesAfter.join(' ') === nodesBefore.join(' ')
+          /* 快照还原之后：提议重新读得到（这条提议**没有**因为"读不到"而消失） */
+          && restored.barAttrs.pending === '1' && restored.barAttrs.pendingUnreadable === '0'
+          && resumeClick.ok === true && resumed.ok === true,
+        text: '造提议：f.md 同步进来=' + grew.ok + ' → 盘上删掉 + 推树一次 + 暂停=' + (pauseClick.ok && paused.ok)
+          + ' ⇒ 快照里 pendingDeletions=' + JSON.stringify(snapObj.pendingDeletions.map((p) => p.rel))
+          + '（可读时读数 pending=' + probe0.pending + '）'
+          + ' · 快照改成读不出来的内容后：状态区 pending=' + stU.barAttrs.pending
+          + ' / pendingUnreadable=' + stU.barAttrs.pendingUnreadable
+          + ' 文案「' + String(stU.barText).slice(0, 160) + '」'
+          + ' · 确认入口 ' + JSON.stringify(entryNow) + '（这一档没有东西可确认 ⇒ 入口隐藏）'
+          + ' · 直接走同一实现 MM.bindConfirmDeletions() ⇒ ' + JSON.stringify(callJson).slice(0, 230)
+          + ' · 状态栏原话「' + String(statusText).slice(0, 160) + '」'
+          + ' · 盘上文件节点 ' + nodesBefore.length + '→' + nodesAfter.length
+          + ' · 项目 JSON 逐字节不变=' + (treeAfter === treeBefore) + '（SHA ' + shaBefore.slice(0, 12) + ' → ' + shaAfter.slice(0, 12) + '）'
+          + ' · 快照还原 + 继续之后：pending=' + restored.barAttrs.pending + '/'
+          + restored.barAttrs.pendingUnreadable + ' 守护中=' + resumed.ok
+      };
+    }
+  },
+
+  {
     name: '戊 解绑 ⇒ 绑定从项目里消失（状态条收起，那一带不占布局、命中测试落不到任何绑定元素上）而**已导入的节点全部保留**；解绑后改文件不再同步（判定依据：项目 JSON 里 bindings 为空 + 节点按 origin 逐条点名 + SHA-256 不变 + elementFromPoint）',
     run: async (ctx) => {
       const nodesBefore = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
@@ -474,7 +741,7 @@ const assertions = [
       const probeHit = await ctx.exec(`(function () {
         var m = document.getElementById('main').getBoundingClientRect();
         var at = document.elementFromPoint(Math.round(m.left + 60), Math.round(m.top + 6));
-        var inBind = !!(at && at.closest && at.closest('#bind-bar,#bind-banner,#bind-preview'));
+        var inBind = !!(at && at.closest && at.closest('#bind-bar,#bind-banner,#bind-preview,#bind-pending'));
         var bar = document.getElementById('bind-bar');
         var br = bar.getBoundingClientRect();
         return { w: br.width, h: br.height, at: at ? (at.tagName + '#' + (at.id || '')) : '', inBind: inBind };
@@ -489,7 +756,7 @@ const assertions = [
         ok: unbindClick.ok === true && gone.ok === true
           && st.barAttrs.showing === '0' && st.barShown === false
           && Array.isArray(rows) && rows.length === 0
-          && nodesAfter.join(' ') === nodesBefore.join(' ') && nodesAfter.length === 3
+          && nodesAfter.join(' ') === nodesBefore.join(' ') && nodesAfter.length === 4
           && wd.active === 0 && wd.total === 0
           && probeHit.h === 0 && probeHit.inBind === false
           && noSyncAfterUnbind === true,
@@ -517,14 +784,19 @@ const assertions = [
         var bar = document.getElementById('bind-bar');
         var banner = document.getElementById('bind-banner');
         var prev = document.getElementById('bind-preview');
+        var pend = document.getElementById('bind-pending');
+        var pendBtn = document.getElementById('bind-btn-pending');
         var br = bar.getBoundingClientRect();
+        var pr = pend.getBoundingClientRect();
         var at = document.elementFromPoint(Math.round(tb.left + 40), Math.round(main.top + 6));
-        var hitBind = !!(at && at.closest && at.closest('#bind-bar,#bind-banner,#bind-preview'));
+        var hitBind = !!(at && at.closest && at.closest('#bind-bar,#bind-banner,#bind-preview,#bind-pending'));
         return {
           toolbarBottom: tb.bottom, mainTop: main.top, mainHeight: main.height,
           barDisplay: getComputedStyle(bar).display, barW: br.width, barH: br.height,
           bannerDisplay: getComputedStyle(banner).display,
           previewDisplay: getComputedStyle(prev).display,
+          pendingDisplay: getComputedStyle(pend).display, pendingW: pr.width, pendingH: pr.height,
+          pendingBtnDisplay: getComputedStyle(pendBtn).display,
           hitTag: at ? (at.tagName + '#' + (at.id || '')) : '', hitBind: hitBind
         };
       })()`);
@@ -557,6 +829,8 @@ const assertions = [
         ok: !!cleaned && !!layout && Math.abs(L.mainTop - L.toolbarBottom) <= 1
           && L.barH === 0 && L.barW === 0
           && L.barDisplay === 'none' && L.bannerDisplay === 'none' && L.previewDisplay === 'none'
+          && L.pendingDisplay === 'none' && L.pendingW === 0 && L.pendingH === 0
+          && L.pendingBtnDisplay === 'none'
           && L.hitBind === false
           && hasBindingsKey === false
           && !!st && st.barShown === false && st.barAttrs && st.barAttrs.showing === '0'
@@ -566,6 +840,8 @@ const assertions = [
           + '（差=' + num(Math.abs(L.mainTop - L.toolbarBottom)) + 'px ⇒ 中间**没有**多出一条）'
           + ' · 状态条 display=' + L.barDisplay + ' 几何=' + L.barW + 'x' + L.barH
           + ' · 播报 display=' + L.bannerDisplay + ' · 预览 display=' + L.previewDisplay
+          + ' · 待确认删除那一层 display=' + L.pendingDisplay + ' 几何=' + L.pendingW + 'x' + L.pendingH
+          + '（它的入口按钮 display=' + L.pendingBtnDisplay + '）'
           + ' · 画布顶部那一点命中=' + L.hitTag + '（落进绑定元素里=' + L.hitBind + '）'
           + ' · 项目 JSON 里有 bindings 键=' + hasBindingsKey
           + ' · 界面侧读数 showing=' + (st && st.barAttrs && st.barAttrs.showing)

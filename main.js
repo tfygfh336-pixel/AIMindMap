@@ -1853,11 +1853,13 @@ function registerIpc() {
       removedKeys: s.removedKeys, modifiedKeys: s.modifiedKeys, labels: s.labels };
   });
 
-  /* **控制动作**：暂停 / 继续 / 立即同步 / 解绑 —— 一个动作一个**既有**开关（没有第五条路）。
+  /* **控制动作**：暂停 / 继续 / 立即同步 / 解绑 / **确认删除提议** —— 一个动作一个**既有**开关
+   * （没有第五条路：确认流打的也是同一门 `bind-sync`、同一条既有出口 `plan.confirmedNodeIds`）。
    * ⚠️ 打完**必须重挂守护**：暂停与解绑都要让 `fs.watch` 立刻收掉 —— 否则"文件一变照旧同步"
    *   （CLI 的同步不认 paused），"暂停"就只剩界面上好看 ✗（`bindWatchersFor` 的"收起"分支）。 */
   ipcMain.handle('app:bind-cmd', async (_e, name, action) => {
-    const flags = { pause: ['--pause'], resume: ['--resume'], unbind: ['--unbind'], sync: [] };
+    const flags = { pause: ['--pause'], resume: ['--resume'], unbind: ['--unbind'], sync: [],
+      confirmDeletions: ['--confirm-deletions'] };
     if (!Object.prototype.hasOwnProperty.call(flags, action) || !name) {
       return { ok: false, error: '不认识的绑定动作：' + JSON.stringify(String(action)) };
     }

@@ -11,6 +11,10 @@
  *   · "预算留足余量"那条的 `measured` 不再**写死**，改为现读 `.review/verify-history.jsonl`
  *     的真读数（写死过一次：表里还写着 G5≈51s，而真值早已是 235–421s ⇒ 它一直在守一个
  *     不存在的世界，绿着但什么都没守 ✗ 本工程最重的损害类别）。
+ *   · 【2026-10-14 本批】**余量守卫的口径**从"窗口**最小**值 × 1.8"改成"窗口**最大**值 × 1.25"
+ *     —— 旧口径由**最快的一天**决定、窗口一滚就假红（实测 250s 被挤出 ⇒ 最小值爬到 341.9s ⇒
+ *     比值 1.579 ✗），而预算这条线防的是"太慢/挂死" ⇒ 基准该取**慢端**（理由详见 `recentMeasured`）。
+ *     **只改口径、不动任何预算常量** ✓。
  *
  * 最要紧的一条在最末：**`docs/RULES.md` 里声明的每个门禁，必须真的挂在
  * `scripts/verify.js` 的链上**。否则"在规则表里加了个门禁、却忘了挂进 verify"
@@ -36,18 +40,24 @@ const res = (gate, ms, budgetMs, skipped) => ({
 });
 
 /** 从验证历史（`.review/verify-history.jsonl`）取**真读数**：最近 K 次**成功**的全链，
- *  逐门禁取**最小**耗时。返回 `{ runs, byGate }`（没有可用历史 ⇒ `runs: 0, byGate: {}`）。
+ *  逐门禁取**最大**耗时。返回 `{ runs, byGateMax }`（没有可用历史 ⇒ `runs: 0, byGateMax: {}`）。
  *
  *  为什么**现读**而不是写死一张表：写死的表会静静过期 —— 本文件原先那张记的是 G5≈51s，
  *  而被取代时真值已是 235–421s（差 5–8 倍），于是"余量 > 1.8×"这条守卫**绿着却什么都没守** ✗。
  *
- *  为什么每门禁取**最小值**：
- *   · 负载只会把读数抬高，抬不高最小值 ⇒ 它回答的是"**同一份代码**在最好条件下要多久"，
- *     这正是预算基线该用的口径（本文件头②：预算 = 实测的 2–3 倍，止涨线）。
- *   · 若取中位数/最近一次：2026-10-13 最后一次全链 G5=**421.2s**（当天其余绿链 235–250s 的 1.7 倍）
- *     ⇒ 再遇上两个慢日，G5 的比值就会被压到 1.8 以下而**假红**，那正是本批要治的病 ✗。
- *     最小值不会被某几天的慢机器抬起来 ⇒ 只有**真的变慢**（近期读数整体上移）才会判红 ✓
- *     （"太慢"与"变慢"要分得开，这正是本批的目标）。
+ *  为什么每门禁取**最大值**（**本批改的口径**，原先取最小值 ⇒ 见下）：
+ *   · 预算这条线防的是"**太慢 / 挂死**"（`scripts/verify.js` 的注释：止涨线，不是性能目标）
+ *     ⇒ 基准必须落在**慢端**：`预算 ≥ 1.25 × 窗口内最大耗时` 才是"最慢那一次也还留得住"。
+ *   · 用**最小值**当基准会要求"预算 ≥ 1.8 × **最快**那次"⇒ 这条线**由最快的一天决定**，
+ *     而窗口一滚（新链入窗、老链出窗）最小值就**往上爬** ⇒ 比值**自动下降** ⇒ 假红。
+ *     实测（2026-10-14，就是本批）：G5 预算 540s 时，窗口最小值从 #110 的 250386ms 被挤出、
+ *     最小变成 #117 的 **341884ms** ⇒ 540000/341884 = **1.5795** < 1.8 翻红；而同一窗口的
+ *     **最大**值是 421206ms ⇒ 540000/421206 = 1.282 ≥ 1.25 **成立** ✓ ——
+ *     同一批读数、同一条预算，两种基准给出相反结论 ⇒ 问题在**口径**，不在预算，所以本批改口径、
+ *     **不动任何预算常量** ✓。
+ *   · 慢端基准的代价（如实说）：某一次异常慢的读数（当天机器被别的活占住）会把阈值顶上去，
+ *     可能要求更大的预算 —— 这正是它想说的话（"你最近真的慢过"）；真遇到时按既有纪律
+ *     **改预算要在 `scripts/verify.js` 里说明理由**，而不是把这条守卫调松 ✗。
  *
  *  为什么是最近 **K=10** 次：太远的历史会掩盖"最近真的变慢了"；只取最近 1 次则等于拿一天的
  *  负载当基线。本工程一天内跑 10+ 次全链（2026-10-13 实测），10 次≈一两天，量级合适。
@@ -57,7 +67,7 @@ const res = (gate, ms, budgetMs, skipped) => ({
 function recentMeasured(k) {
   let text;
   try { text = fs.readFileSync(path.join(ROOT, verify.VERIFY_HISTORY), 'utf8'); }
-  catch (e) { return { runs: 0, byGate: {} }; }   // `.review/` 是可随时整包删掉的工作产物区
+  catch (e) { return { runs: 0, byGateMax: {} }; }   // `.review/` 是可随时整包删掉的工作产物区
   const ok = [];
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -66,15 +76,15 @@ function recentMeasured(k) {
     if (r && r.ok === true && r.partial !== true && Array.isArray(r.steps)) ok.push(r);
   }
   const win = ok.slice(-k);
-  const byGate = {};
+  const byGateMax = {};
   for (const r of win) {
     for (const s of r.steps) {
       // skipped 的步骤 ms=0（与上一步共用一次调用）⇒ 不能读成"这一步很快"
       if (!s || s.skipped === true || typeof s.ms !== 'number' || s.ms <= 0) continue;
-      if (byGate[s.gate] === undefined || s.ms < byGate[s.gate]) byGate[s.gate] = s.ms;
+      if (byGateMax[s.gate] === undefined || s.ms > byGateMax[s.gate]) byGateMax[s.gate] = s.ms;
     }
   }
-  return { runs: win.length, byGate };
+  return { runs: win.length, byGateMax };
 }
 
 describe('验证链耗时预算：判定逻辑', () => {
@@ -120,23 +130,28 @@ describe('验证链耗时预算：判定逻辑', () => {
     expect(old.totalMs).toBeGreaterThan(150000);
   });
 
-  it('预算留足余量：实测值不应逼近预算（否则会变成随机红灯）', () => {
+  it('预算留足余量：**最慢那一次**离预算还有 1.25 倍以上（否则会变成随机红灯）', () => {
     // 实测**现读** `.review/verify-history.jsonl` 的真读数，**不写死数字**（原因见 recentMeasured 上方）✓
-    const { runs, byGate } = recentMeasured(10);
+    const { runs, byGateMax } = recentMeasured(10);
     if (!runs) {
       // 没有历史（首次运行 / `.review/` 被清理过）⇒ 本项**未判定**，**不是**"通过" ✗（措辞必须让人看出区别）。
-      // 为什么不判红：`.review/` 是工程既定、可随时整包删除的工作产物区，缺了只当"未知"
-      // —— 与本工程既有约定一致（见 `scripts/verify.js` 的 LAST_VERIFY 注释）。
+      // 窗口为空（历史文件在、但一条"成功且非 partial"的记录都没有）走的是**同一条分支**：
+      // 同样只 warn、不判红 —— 理由同上（`.review/` 可随时整包删；缺了只当"未知"）。
+      // ⚠️ 但**不许静默**：这一档一定会打印这条 warn（"未判定 ≠ 通过"），judged 也仍会是 0 ⇒
+      //    下面那条 `judged > 0` 的断言会一起把"守卫空转"这件事说出来 ✓。
       console.warn('⚠️ 预算余量：**未判定** —— 没有可用的验证历史（' + verify.VERIFY_HISTORY
-        + ' 不存在 / 还没有成功记录）。要判定请先跑一次全链（`npm run verify`）。这一条**不是**通过 ✗');
+        + ' 不存在 / 窗口里还没有成功记录）。要判定请先跑一次全链（`npm run verify`）。这一条**不是**通过 ✗');
       return;
     }
     let judged = 0;
     for (const s of verify.STEPS) {
-      if (!s.budgetMs || !byGate[s.gate]) continue;   // 历史里没有读数的门禁（如新增步骤）无从判定
+      if (!s.budgetMs || !byGateMax[s.gate]) continue;   // 历史里没有读数的门禁（如新增步骤）无从判定
       judged++;
-      expect(s.budgetMs / byGate[s.gate], s.gate + ' 的预算余量（实测 = 最近 ' + runs
-        + ' 次成功全链里的最小值 ' + byGate[s.gate] + 'ms）').toBeGreaterThan(1.8);
+      // 口径：**预算 ≥ 1.25 × 窗口内该步的**最大**耗时**（基准取慢端；理由见 recentMeasured 上方）
+      const need = 1.25 * byGateMax[s.gate];
+      expect(s.budgetMs / byGateMax[s.gate], s.gate + ' 的预算余量（基准 = 最近 ' + runs
+        + ' 次成功全链里的**最大**耗时 ' + byGateMax[s.gate] + 'ms ⇒ 1.25× = ' + Math.round(need)
+        + 'ms，预算 ' + s.budgetMs + 'ms）').toBeGreaterThanOrEqual(1.25);
     }
     expect(judged, '至少要判定一个门禁（否则这条守卫等于空转 ✗）').toBeGreaterThan(0);
   });

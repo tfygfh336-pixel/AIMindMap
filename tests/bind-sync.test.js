@@ -303,6 +303,127 @@ describe('G 绑定与增量（真 CLI）', () => {
     expect(run(['bind-sync', P]).code).toBe(0);
     expect(sha(projFile())).not.toBe(h);
   });
+
+  it('G6 `--confirm-deletions` 确认流：确认前一个节点都不少 ⇒ 确认只摘**被确认的那个** ⇒ 提议清零、K 回 0、再确认是幂等空转', () => {
+    writeTree(SRC, { 'a.md': '# 甲书\n', 'b.md': '# 乙书\n', 'c.md': '# 丙书\n' });
+    expect(run(['bind-sync', P, '--bind', '--dir', SRC]).code).toBe(0);
+    expect(run(['bind-sync', P]).code).toBe(0);
+    fs.writeFileSync(path.join(SRC, 'd.md'), '# 丁书\n', 'utf8');      // 先让树真变一次
+    expect(run(['bind-sync', P]).code).toBe(0);
+
+    const countNodes = () => {
+      let n = 0;
+      (function walk(x) { if (!x) return; n++; (x.children || []).forEach(walk); })(readProject().data);
+      return n;
+    };
+    /* 把某个 id 的节点**连同子树**从一份树 JSON 里摘掉（判"其它节点逐字节不变"的精确基准） */
+    const strip = (treeJson, id) => {
+      const cut = (n) => {
+        if (!n || typeof n !== 'object') return n;
+        const kids = Array.isArray(n.children) ? n.children.filter((c) => c && c.id !== id) : n.children;
+        return Object.assign({}, n, { children: (kids || []).map(cut) });
+      };
+      return JSON.stringify(cut(JSON.parse(treeJson)));
+    };
+
+    const nodesBefore = countNodes();
+    const treeBefore = JSON.stringify(readProject().data);
+    fs.unlinkSync(path.join(SRC, 'c.md'));                              // 盘上真删一个文件
+    expect(run(['bind-sync', P]).code).toBe(0);
+
+    /* ① 提议看得见 + **盘上一个节点都不少**（连跑两轮"什么都不做"也一样） */
+    const p1 = JSON.parse(outOf(run(['bind-sync', P, '--json'])));
+    expect(p1.pending, outOf(run(['bind-sync', P]))).toBe(1);
+    expect(p1.sync[0].pendingList.map((x) => x.rel)).toEqual(['c.md']);
+    expect(p1.sync[0].pendingList[0].nodeId).toBeTruthy();             // 逐条点名的三样：名字/文件/节点
+    expect(p1.sync[0].pendingList[0].topic).toBe('c');
+    expect(run(['bind-sync', P]).code).toBe(0);
+    const p2 = JSON.parse(outOf(run(['bind-sync', P, '--json'])));
+    expect(p2.pending, '第二轮（没有任何新变化）提议仍要看得到').toBe(1);
+    expect(countNodes()).toBe(nodesBefore);
+    expect(JSON.stringify(readProject().data)).toBe(treeBefore);
+
+    /* ② `--dry-run` 的确认只是**预览**：说清要删几个，盘上一个字节不写 */
+    const hBefore = sha(projFile());
+    const prev = JSON.parse(outOf(run(['bind-sync', P, '--confirm-deletions', '--dry-run', '--json'])));
+    expect(prev.deletions.declared).toBe(1);
+    expect(prev.deletions.dryRun).toBe(true);
+    expect(prev.deletions.list.map((x) => x.rel)).toEqual(['c.md']);
+    expect(sha(projFile()), '预览必须零写入').toBe(hBefore);
+    expect(countNodes()).toBe(nodesBefore);
+
+    /* ③ 真确认：只摘被确认的那一个（其余逐字节不变）+ 提议清零 + K 回 0 */
+    const victim = prev.deletions.list[0];
+    const r3 = run(['bind-sync', P, '--confirm-deletions', '--json']);
+    const j3 = JSON.parse(outOf(r3));
+    expect(r3.code, outOf(r3)).toBe(0);
+    expect(j3.status).toBe('confirmed');
+    expect(j3.deletions.declared).toBe(1);
+    expect(j3.deletions.dropped).toBe(1);
+    expect(j3.deletions.remaining).toBe(0);
+    expect(j3.pending).toBe(0);
+    expect(j3.bindings[0].pending).toBe(0);
+    expect(JSON.stringify(readProject().data), '只摘被确认的那一个（其余逐字节不变）').toBe(strip(treeBefore, victim.nodeId));
+    expect(countNodes()).toBe(nodesBefore - 2);                        // 文件节点 + 它的标题子树
+    const snapAfter = JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
+    expect(snapAfter.pendingDeletions, '提议清空').toEqual([]);
+    // 文本档也点名说清"删掉了几个"（人看的播报面）
+    const t3 = outOf(run(['bind-sync', P, '--confirm-deletions']));
+    expect(t3).toContain('没有待确认的提议');                            // 这一轮已经没有提议了 ⇒ 走"没得确认"那一档
+    expect(t3).not.toContain('删掉了 0 个');                             // 不许把"没得确认"印成"确认执行了"
+
+    /* ④ 再确认一次 = **幂等空转**（不是错误、也不写盘） */
+    const h4 = sha(projFile());
+    const r4 = run(['bind-sync', P, '--confirm-deletions', '--json']);
+    const j4 = JSON.parse(outOf(r4));
+    expect(r4.code).toBe(0);
+    expect(j4.status).toBe('no-pending');
+    expect(j4.deletions.dropped).toBe(0);
+    expect(sha(projFile()), '没有提议时一次盘都不写').toBe(h4);
+  });
+
+  it('G7 确认流 fail closed：旁路快照读不出来 ⇒ **响亮拒绝**、一个节点都不删、盘上一个字节不写', () => {
+    writeTree(SRC, { 'a.md': '# 甲书\n', 'b.md': '# 乙书\n' });
+    expect(run(['bind-sync', P, '--bind', '--dir', SRC]).code).toBe(0);
+    expect(run(['bind-sync', P]).code).toBe(0);
+    fs.writeFileSync(path.join(SRC, 'd.md'), '# 丁书\n', 'utf8');
+    expect(run(['bind-sync', P]).code).toBe(0);
+    fs.unlinkSync(path.join(SRC, 'b.md'));
+    expect(run(['bind-sync', P]).code).toBe(0);                        // 这时快照里/本轮里应有 1 条提议
+
+    const treeBefore = JSON.stringify(readProject().data);
+    fs.writeFileSync(stateFile(), '{ 这不是 JSON', 'utf8');             // 快照**在**、但读不出来
+    const h = sha(projFile());
+    const r = run(['bind-sync', P, '--confirm-deletions']);
+    expect(r.code, '读不到提议 ⇒ 必须非 0（fail closed）').not.toBe(0);
+    const txt = outOf(r) + String(r.stderr || '');
+    expect(txt).toContain('未执行');
+    expect(txt, '不许把拒绝印成"删掉了 0 个"').not.toContain('删掉了 0 个');
+    expect(txt).toContain('旁路快照');
+    expect(sha(projFile()), '拒绝时盘上一个字节都不写').toBe(h);
+    expect(JSON.stringify(readProject().data)).toBe(treeBefore);
+    /* 普通同步（非确认）照旧跑，但**响亮**说快照读不出来（HEAD 上是静默的：实测同一场景
+     *   —— 坏快照 + 普通同步 ⇒ 节点 5→9 —— HEAD 报文里连"旁路快照"四个字都没有 ✗，本批补上）。
+     * ⚠️ 一条**既有**语义如实记在这里（本批**不修**，只把它说响）：快照读不出来 ⇒ 那份"哪个文件
+     *   对应哪个节点"的记账就没了 ⇒ 普通同步会把全部文件当**新增**（与 `--forget-snapshot` 同一后果：
+     *   多出一批同名节点）。**零风险不变式仍然成立**：只增不减（节点一个都不会少）。
+     *   要做到"不重复建节点"得把 `bindingSnapshotOf`（现算 origin→节点）接进同步计划 —— 那是引擎的
+     *   语义变更，按纪律**先回报**、不在本批里顺手改。 */
+    const nodesBefore = (() => {
+      let n = 0;
+      (function walk(x) { if (!x) return; n++; (x.children || []).forEach(walk); })(readProject().data);
+      return n;
+    })();
+    const plain = run(['bind-sync', P]);
+    expect(plain.code).toBe(0);
+    expect(outOf(plain), 'HEAD 静默、本批必须点名').toContain('旁路快照读不出来');
+    const nodesAfter = (() => {
+      let n = 0;
+      (function walk(x) { if (!x) return; n++; (x.children || []).forEach(walk); })(readProject().data);
+      return n;
+    })();
+    expect(nodesAfter, '快照读不出来的那一轮：只增不减（不变式）').toBeGreaterThanOrEqual(nodesBefore);
+  });
 });
 
 /* ============================================================================
