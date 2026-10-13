@@ -13,7 +13,7 @@
  * **正在用**的实例，测试写坏它的 patch 文件 = 侧栏起不来 ✗。故每个用例都显式传
  * `--home <临时目录>`，脚本里没有任何一步会回落到默认 home ✓。
  * ============================================================ */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -80,11 +80,11 @@ function run(...args) {
 }
 
 /* ⚠️ 本文件里的用例会 **spawn 一个 node 子进程**（渲染器要读运行包里的 preset 文件），
- * 实测单个用例 1.9–5.1 s —— 而 vitest 默认单测超时是 **5000 ms** ⇒ 机器一有负载就偶发超时 ✗
+ * 实测单个用例 1.9–5.1 s —— 从前这越过 vitest 的 5000 ms 默认就偶发超时 ✗
  * （实测抓到过一次 `5087 ms` 的失败：**结论对、根因是超时**，不是逻辑错 ✓ 之前两次"抓不到名字的偶发"同因）。
- * 这里把本文件的超时统一放宽：性能由链上的 `npm run verify` 预算管（那才是该管速度的地方），
- * 单测只管"对不对" ✓ */
-vi.setConfig({ testTimeout: 30000 });
+ * 本文件**不再自写一份超时**：全工程的超时口径只有一处 —— `vitest.config.mjs`
+ * （它按"套件里最贵的用例"定；本文件最慢用例负载下实测 3342 ms，与同一次全量运行里的读数同源）。
+ * 性能由链上的 `npm run verify` 预算管（那才是该管速度的地方），单测只管"对不对" ✓ */
 
 beforeEach(() => {
   // `<tmp>/dsh-home` 的形状要与真实实例一致：patch 在 profiles/web 下

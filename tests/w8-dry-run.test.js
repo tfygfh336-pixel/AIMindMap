@@ -46,6 +46,16 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 
+/* ⚠️ 本文件的用例是真**耗时**的（这是"墙钟"问题，不是断言问题）：
+ *   A1 会把 `W8-A` 的 29 条命令**各跑两遍**（dry-run 一遍 + 真跑一遍，`invokeSync`，**进程内、
+ *   不起子进程** ✓），每遍前后各来一次**整棵沙箱目录树**快照（`snapAll()`：每个文件读一遍 +
+ *   sha256 + stat）⇒ 单这一个用例 ≈ 58 次命令调用 + 4 次整树遍历 ≈ 数百次文件读。
+ *   实测：机器空闲时单跑 A1 = 3.5–4.2 s；**全量同池负载下** 2026-10-13 实测 **11129 ms**
+ *   （另一次实测到过 **15119 ms** 的真失败报文 `Test timed out in 15000ms` —— 结论是对的、红在墙钟）。
+ *   本文件**不再自写一份超时**：全工程的超时口径只有一处 —— `vitest.config.mjs`
+ *   （取值理由与全库最慢用例的读数都在那里；本文件 A1 的 11129 ms 就是那张表里的第一条）。
+ *   性能该由链上的 `npm run verify` 预算管，单测只管"对不对" ✓ */
+
 /* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ---- */
 const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-w8-dry-'));
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
