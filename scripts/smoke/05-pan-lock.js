@@ -18,6 +18,11 @@ const VTH = frameStats.THRESHOLDS;
 const INJECT = process.env.MM_SMOKE_INJECT || '';
 const MY_KEY = (k) => INJECT.split(',').indexOf('05-' + k) >= 0;
 
+/** 连线**曲线**上的取样参数（域 05 用；两端各取一遍 ⇒ 每条线最多 2×N 个取样点）。
+ *  注意 jsMind 的 curved 是三次贝塞尔、**关于参数不对称**（见 renderer/app-view.js 的 _bezier_to），
+ *  所以两端都要取、且不能沿"两端直线弦"取样（弦与曲线最大偏差可达 0.16·|Δx|）✓ */
+const CURVE_U = [0.01, 0.03, 0.08, 0.18, 0.35];
+
 const assertions = [
   {
     name: 'drag is unclamped (box may be dragged outside the container)',
@@ -571,19 +576,30 @@ const assertions = [
     }
   },
   {
-    /* 【可见性判据迁移（2026-10-09）】原判据 = 父子两级 rect 比大小，**对裁切是盲的**：
-     *  连线被连线层位图裁掉时，两个 rect 一个数都不变 ⇒ 断言恒绿（V1 门禁在册欠账之一）。
-     *  迁到真判据：**每条连线两端各取一个取样点，在真帧里数"线像素"**（`scanRegionMany` +
-     *  `thresholds.paint.minHitsLineEnd`）—— 线被裁 ⇒ 那个窗口里 0 个非背景像素 ⇒ 必红 ✓。
-     *  取样点用连线方向内缩（不贴在节点边上，避开节点自己的边框像素）；
-     *  只对**落在可见面板内**的取样点判（拖到视野外的线是"看不见"，不是"线丢了" ✗ 那不是本条的损害）。 */
-    name: '拖动树模式：任意方向拖动后每条可见连线两端都落在连线层矩形内（无裁切丢失）+ 两端真帧里都数得到线像素',
+    /* 【可见性判据迁移 ②（2026-10-09）】上一版判据 = "每个在屏端点的 9×9 **真帧**窗口里有非背景像素"。
+     *  它能抓"线被裁"，但**不能证明那个像素是这条线画的**，而且**会被自家浮层骗**：
+     *    · 别的墨也算（节点边框/文字/相邻线）⇒ 15 条"通过"不构成"线画出来了"的证据 ✗；
+     *    · 实测（本批 I）面板底部 60px 被自家 `#msg-bar` 盖住（`z-index:30`、底 `#fbfcfe`），
+     *      `md-m2-usb` 的可见端正落在它下面 ⇒ 真帧 9×9 窗口 **81/81 像素都是那个底色**
+     *      （三通道全 ≥246 ⇒ 判成"背景/空白"），而**连线层位图里那一段墨确实有**（16 个不透明像素）
+     *      ⇒ 旧判据把"被自家底栏盖住"误报成"超长连线的可见端画不出来"（假红）✗。
+     *  本版判据 = **三层**（缺一不可）：
+     *    ① 几何：每条线两端都落在连线层屏幕矩形内（拖到哪儿都不被位图边界裁掉）；
+     *    ② 层内墨（**归因**）：每个在屏取样点（端点内缩 6px 处 1 个 + 沿**曲线**两端各 `CURVE_U.length` 个）
+     *       在**连线层位图**里的 9×9 不透明像素 ≥ `paint.minHitsLineEnd` —— 位图里只有连线
+     *       （节点/文字/浮层都进不去）⇒ 这一条才答得了"这段线真画出来了"，且与遮挡无关；
+     *    ③ 真帧墨（**上屏**）：**只判没被别的层盖住的**取样点（真帧 9×9 非背景像素 ≥ 阈值）。
+     *       被盖住的点按"不可判"处理（既不算丢、也不算看到），并在报文里点名 —— 读数不撒谎 ✓。
+     *  另加两条地板（`paint.minJudgedLineEnds` / `minJudgedCurvePoints`）：可判点太少 = 判据空转 ⇒ 红。
+     *  判别力证明（`MM_SMOKE_INJECT`）：`05-fixed-bitmap`（旧裁切缺陷）、`05-end-blank`（可见端没画）、
+     *  `05-weak-criterion`（把端点那一半判据放水成"1 个像素 / 阈值 0"）——三个都必须判红 ✓。 */
+    name: '拖动树模式：任意方向拖动后每条可见连线两端都落在连线层矩形内（无裁切丢失）+ 每个在屏取样点都数得到**连线层自己画出的**墨（端点 + 沿线多点，位图归因；没被浮层盖住时再加真帧）',
     run: async (ctx) => {
       // 用户反馈：拖动后子节点连线丢失。根因：连线层位图固定、余量仅 hmargin/
       // vmargin，向任意方向拖动超过该距离，线端点被位图边界裁切，节点 DOM 溢出
       // 仍可见。修复让连线层位置/尺寸随偏移扩展。这里多方向（含向右/下超出余量
       // 的大距离）黑盒核对：每条线两端（父子节点相邻缘）必须在连线层屏幕矩形内，
-      // **并且真的画出来了**（真帧像素，见上面那段迁移说明）。
+      // **并且这段线真的由连线层画出来了**（位图归因 + 沿线多点 + 真帧，见上面那段迁移说明）。
       if (!ctx.input) return { ok: false, text: '没有真输入底座（ctx.input 缺失）⇒ 取不到真帧 = 红' };
       const r = await ctx.exec(
         `(async function () {
@@ -598,14 +614,30 @@ const assertions = [
            // 主题模式下 root → 顶层主题的线是**设计性不画**的（见 installRootLineOverride）⇒
            // 像素判据必须跳过它们，否则「没画」会被误判成「线被裁掉」✗（实测踩到：comp-net 0/0 像素）
            var hideRoot = app.isThemeMode ? app.isThemeMode() : false;
-           // —— 判别力证明（\`MM_SMOKE_INJECT=05-fixed-bitmap\`）：复刻**旧缺陷** ——
-           //   连线层位图固定不随包围盒扩 ⇒ 线端点被位图边界裁掉 ⇒ 必须判红 ✓
-           var INJ = ${JSON.stringify(MY_KEY('fixed-bitmap'))};
-           var origSetSize = null;
-           if (INJ && jm.view && jm.view.graph && jm.view.graph.set_size) {
+           // —— 判别力证明（\`MM_SMOKE_INJECT=…\`）：两把"渲染改坏"的注入，都必须判红 ——
+           //   ① 05-fixed-bitmap：复刻**旧缺陷**（连线层位图固定 200×150 不随包围盒扩）⇒ 端点被位图边界裁掉
+           //   ② 05-end-blank  ：复刻"可见端**没画出来**"（画完把每条线的子端=可见端擦掉 40×40）⇒
+           //      位图归因与沿线多点都必须抓到它（这是"判据有判别力"的正面证明 ✓）
+           var INJ_BITMAP = ${JSON.stringify(MY_KEY('fixed-bitmap'))};
+           var INJ_BLANK = ${JSON.stringify(MY_KEY('end-blank'))};
+           var origSetSize = null, origShowLines = null;
+           if (INJ_BITMAP && jm.view && jm.view.graph && jm.view.graph.set_size) {
              var g = jm.view.graph;
              origSetSize = g.set_size;
              g.set_size = function () { return origSetSize.call(g, 200, 150); };
+           }
+           if (INJ_BLANK && jm.view && typeof jm.view.show_lines === 'function') {
+             origShowLines = jm.view.show_lines;
+             jm.view.show_lines = function () {
+               var out = origShowLines.apply(this, arguments);
+               var gelI = this.graph.element(), cI = gelI.getContext('2d');
+               var oxI = Number(gelI.dataset.ox) || 0, oyI = Number(gelI.dataset.oy) || 0;
+               var LI = window.__mmLineEndpoints || [];
+               for (var iI = 0; iI < LI.length; iI++) {
+                 cI.clearRect(Math.round(LI[iI].c.x - oxI) - 20, Math.round(LI[iI].c.y - oyI) - 20, 40, 40);
+               }
+               return out;
+             };
            }
            var OUT = [];
            for (var vi = 0; vi < vectors.length; vi++) {
@@ -624,6 +656,76 @@ const assertions = [
              var vis = { left: Math.max(cr.left, pr2.left), top: Math.max(cr.top, pr2.top),
                right: Math.min(cr.right, pr2.right), bottom: Math.min(cr.bottom, pr2.bottom) };
              var INSET = 3;
+             // ── 主证据源：**连线层位图自己画出来的墨** ──
+             // 为什么不能只靠真帧："窗口里有非背景像素"这句话在真帧里是**不成立**的 ——
+             //   ① 别的墨也算（节点边框/文字/别的线）；
+             //   ② 别的层盖在上面时，读到的是**那层的颜色**。实测（2026-10-09）：面板底部被
+             //      \`#msg-bar\` 盖 60px（\`z-index:30\`、底 \`#fbfcfe\`=rgb(251,252,254)），md-m2-usb 的
+             //      可见端正落在它下面 ⇒ 真帧 9x9 窗口 **81/81 个像素全是 251,252,254**（被判成"空白"），
+             //      而**连线层位图里这一段墨是有的**（16 个不透明像素）⇒ 旧判据把"被自家底栏盖住"
+             //      误报成"线丢了"✗。位图里只有连线（没有节点、没有浮层）⇒ 用它归因才准 ✓。
+             var gel = jm.view.graph.element();
+             var ictx = gel.getContext('2d');
+             var kx = gel.width / Math.max(1, cr.width), ky = gel.height / Math.max(1, cr.height);
+             var HALF = 4;   // 取样窗口 9x9（与真帧那一半同口径，见 thresholds.paint.minHitsLineEnd）
+             var LC = null;  // 可见区那一块位图的**一份拷贝**（一次 getImageData；之后全部在内存里数）
+             try {
+               var bx0 = Math.max(0, Math.min(gel.width - 1, Math.round((vis.left - cr.left) * kx)));
+               var by0 = Math.max(0, Math.min(gel.height - 1, Math.round((vis.top - cr.top) * ky)));
+               var bx1 = Math.max(bx0 + 1, Math.min(gel.width, Math.round((vis.right - cr.left) * kx)));
+               var by1 = Math.max(by0 + 1, Math.min(gel.height, Math.round((vis.bottom - cr.top) * ky)));
+               LC = { data: ictx.getImageData(bx0, by0, bx1 - bx0, by1 - by0).data,
+                 w: bx1 - bx0, h: by1 - by0, x0: bx0, y0: by0 };
+             } catch (e1) { LC = null; }
+             /** 屏幕点 → 连线层位图 9x9 窗口里的不透明像素数。
+              *  窗口越界的那部分**按"没有墨"计**（不虚高）⇒ 位图没覆盖到就等于没画 ✓ */
+             function layerInk(sx, sy) {
+               if (!LC) return -1;
+               var x = Math.round((sx - cr.left) * kx) - HALF - LC.x0;
+               var y = Math.round((sy - cr.top) * ky) - HALF - LC.y0;
+               var n = 0;
+               for (var yy = 0; yy < 2 * HALF + 1; yy++) {
+                 var ry = y + yy;
+                 if (ry < 0 || ry >= LC.h) continue;
+                 for (var xx = 0; xx < 2 * HALF + 1; xx++) {
+                   var rx = x + xx;
+                   if (rx < 0 || rx >= LC.w) continue;
+                   if (LC.data[(ry * LC.w + rx) * 4 + 3] > 8) n++;
+                 }
+               }
+               return n;
+             }
+             /** 可见区整块的层内墨（只数连线层自己画的；节点与任何浮层一律不算） */
+             function layerInkVis() {
+               if (!LC) return -1;
+               var n = 0;
+               for (var i = 3; i < LC.data.length; i += 4) if (LC.data[i] > 8) n++;
+               return n;
+             }
+             /** 该点最上层元素是否属于地图容器（\`#jsmind_container\` 内）。
+              *  被自家浮层（底部 \`#msg-bar\`、顶栏…）盖住 ⇒ 这一点的**真帧判据不可判**：
+              *  既不能算"线丢了"（位图证明确实画了），也不能算"看到了"（用户看到的是浮层）✓ */
+             function topIsMap(sx, sy) {
+               try {
+                 var el = document.elementFromPoint(sx, sy);
+                 return !!(el && el.closest && el.closest('#jsmind_container'));
+               } catch (e2) { return false; }
+             }
+             /** 沿线取样：**曲线上**的点（与 renderer/app-view.js 的 draw_line 契约同式）。
+              *  为什么不能沿"两端直线弦"取样：jsMind 的 curved 型是**三次贝塞尔**
+              *  （\`_bezier_to\`：P0=子端、P1=(子端x+2Δx/3, 子端y)、P2=(子端x, 父端y)、P3=父端），
+              *  弦与曲线的最大偏差可达 0.16·|Δx|（实测横向 100px 的线在中段偏 12.5px）⇒
+              *  沿弦取样必然扫到空气、把"线画了"判成"没画"✗。取曲线上的点才是几何一致 ✓ */
+             var CURVE_U = ${JSON.stringify(CURVE_U)};
+             function curvePoints(pPar, pChi) {
+               var P0 = pChi, P1 = { x: pChi.x + 2 * (pPar.x - pChi.x) / 3, y: pChi.y },
+                 P2 = { x: pChi.x, y: pPar.y }, P3 = pPar;
+               return function (u) {
+                 var m = 1 - u, a = m * m * m, b = 3 * m * m * u, c = 3 * m * u * u, d = u * u * u;
+                 return { x: a * P0.x + b * P1.x + c * P2.x + d * P3.x,
+                   y: a * P0.y + b * P1.y + c * P2.y + d * P3.y };
+               };
+             }
              function inVis(p) {
                return p.x >= vis.left + INSET && p.x <= vis.right - INSET
                  && p.y >= vis.top + INSET && p.y <= vis.bottom - INSET;
@@ -667,19 +769,37 @@ const assertions = [
                var v1 = inVis(q1), v2 = inVis(q2);
                if (!v1 && !v2) { offscreen++; continue; }
                if (!v1 || !v2) oneEndIn++;
-               samples.push({ id: t.id, q1: v1 ? q1 : null, q2: v2 ? q2 : null });
+               // ① 端点窗口（父端/子端各自内缩 6px）：层内墨 + 是否被别的层盖住
+               var ends = [];
+               if (v1) ends.push({ x: q1.x, y: q1.y, layer: layerInk(q1.x, q1.y), top: topIsMap(q1.x, q1.y) });
+               if (v2) ends.push({ x: q2.x, y: q2.y, layer: layerInk(q2.x, q2.y), top: topIsMap(q2.x, q2.y) });
+               // ② 沿线多点（**曲线上**的点，两端各取）：光一个端点窗口说不清"是这条线还是别的墨"，
+               //    沿线多点都数得到层内墨，才是"这条线真的画出来了"的几何一致证据 ✓
+               var along = curvePoints(p1, p2);
+               var curve = [];
+               for (var ui = 0; ui < CURVE_U.length; ui++) {
+                 for (var half2 = 0; half2 < 2; half2++) {
+                   var pp = along(half2 === 0 ? CURVE_U[ui] : 1 - CURVE_U[ui]);
+                   if (!inVis(pp)) continue;
+                   curve.push({ x: pp.x, y: pp.y, layer: layerInk(pp.x, pp.y), top: topIsMap(pp.x, pp.y) });
+                 }
+               }
+               samples.push({ id: t.id, ends: ends, curve: curve, len: Math.round(len) });
              }
              OUT.push({ v: [VX, VY], bad: bad, checked: checked, ex: ex,
                short: short, offscreen: offscreen, rootSkipped: rootSkipped, oneEndIn: oneEndIn,
                vis: { left: Math.round(vis.left), top: Math.round(vis.top), right: Math.round(vis.right), bottom: Math.round(vis.bottom) },
                canvas: { left: Math.round(cr.left), top: Math.round(cr.top), right: Math.round(cr.right), bottom: Math.round(cr.bottom) },
+               layerVis: layerInkVis(), layerOk: !!LC, bmpW: gel.width, bmpH: gel.height,
                samples: samples });
            }
            app.setDragMode(false);
            window.MM.clearTreeOffsets();
            app.resetView();
+           if (origShowLines) jm.view.show_lines = origShowLines;   // 注入收尾一律复位 ✓
            if (origSetSize) jm.view.graph.set_size = origSetSize;   // 注入收尾一律复位 ✓
-           return JSON.stringify({ ok: true, dpr: dpr, s: (window.MM.getPanState ? window.MM.getPanState().s : null),
+           return JSON.stringify({ ok: true, dpr: dpr,
+             s: (window.MM.getPanState ? window.MM.getPanState().s : null),
              panel: { left: Math.round(panel.getBoundingClientRect().left), top: Math.round(panel.getBoundingClientRect().top),
                width: Math.round(panel.getBoundingClientRect().width), height: Math.round(panel.getBoundingClientRect().height) },
              frames: OUT });
@@ -688,64 +808,116 @@ const assertions = [
       let data;
       try { data = JSON.parse(r); } catch (e) { return { ok: false, text: '几何取样返回的不是 JSON：' + String(r).slice(0, 200) }; }
       if (!data.ok) return { ok: false, text: '几何取样失败' + JSON.stringify(data).slice(0, 200) };
-      // ── 逐帧：真帧里数每个取样点窗口的非背景像素（一帧只取一次位图，见 scanRegionMany 的注释）──
+      // ── 逐帧判两半（下半段在"取样点"处逐点判）──
+      //   ① **层内墨**（读连线层位图）：这一段到底**画了没有** —— 位图里只有连线（节点/文字/浮层
+      //      都进不去）⇒ 这才是"线画出来了"的**归因**证据，且与"有没有被盖住"无关 ✓
+      //   ② **真帧墨**（真帧窗口非背景像素）：这一段到底**上屏了没有** —— 只在"该点没被别的层盖住"
+      //      时才判（被 `#msg-bar` 这类自家浮层盖住时，窗口里读到的是浮层的颜色 ⇒ 不可判：
+      //      既不能算"线丢了"（位图为证），也不能算"看到了"）✓
       const dpr = data.dpr || 1;
       const ROI = 9;                                     // 取样窗口边长（CSS px）
       const pred = frameStats.nonBackgroundPredicate();
+      // 判别力证明②（MM_SMOKE_INJECT=05-weak-criterion）：把"端点窗口"这一半**放水**
+      //（退化成"只扫 1 个像素点 + 阈值 0 + 不查归因"，即老判据"窗口里有东西就算"的更弱版）。
+      // 期待读数：与 05-end-blank 同开时**仍然必红** —— 因为**沿线多点/层内墨**那一半兜住了 ✓
+      const WEAK = MY_KEY('weak-criterion');
+      const frameROI = WEAK ? 1 : ROI;
+      const frameThr = WEAK ? 0 : VTH.paint.minHitsLineEnd;
+      const baseThr = VTH.paint.minHitsLineEnd;          // 层内墨的阈值（与真帧同口径）
       const parts = [];
-      let clipped = 0, probed = 0, checkedAll = 0, shortAll = 0, offAll = 0, badAll = 0, rootAll = 0, oneAll = 0;
-      let layerMin = Infinity;
+      let checkedAll = 0, shortAll = 0, offAll = 0, badAll = 0, rootAll = 0, oneAll = 0;
+      let endJudged = 0, curveJudged = 0, occluded = 0, frameJudged = 0;
+      let lostEnd = 0, lostCurve = 0, lostFrame = 0;
+      let layerMin = Infinity, layerScanned = true;
+      const lostEx = [];
       for (const f of data.frames) {
         checkedAll += f.checked; shortAll += f.short; offAll += f.offscreen; badAll += f.bad;
         rootAll += f.rootSkipped; oneAll += f.oneEndIn;
+        if (f.layerOk && isFinite(f.layerVis)) layerMin = Math.min(layerMin, f.layerVis);
+        else layerScanned = false;
+        // 真帧要扫的窗口：**只登记"没被别的层盖住"的点**（被盖住 ⇒ 真帧那一半不可判）
         const rects = [];
+        const plan = [];
         for (const s of f.samples) {
-          if (s.q1) rects.push({ x: (s.q1.x - ROI / 2) * dpr, y: (s.q1.y - ROI / 2) * dpr, width: ROI * dpr, height: ROI * dpr });
-          if (s.q2) rects.push({ x: (s.q2.x - ROI / 2) * dpr, y: (s.q2.y - ROI / 2) * dpr, width: ROI * dpr, height: ROI * dpr });
-        }
-        // 连线层"可见区整块"的像素计数（另一条**更宽**的真判据：层真的画了东西）
-        const layerRoi = { x: f.vis.left * dpr, y: f.vis.top * dpr,
-          width: (f.vis.right - f.vis.left) * dpr, height: (f.vis.bottom - f.vis.top) * dpr };
-        if (!rects.length) {
-          // 这一帧一个在屏端点都没有 ⇒ 判不了像素；**但几何那一半照样要报**（端点全落在连线层矩形外
-          // 正是"位图没扩"的旧缺陷形态 ⇒ 报文必须点名它，不然看不出是谁红的 ✗）
-          parts.push('[' + f.v + ']几何bad=' + f.bad + '/' + f.checked
-            + (f.bad ? '（端点落在连线层矩形外 ⇒ 该帧红了）' : '') + ' 无可见端点可判');
-          continue;
-        }
-        const img = await ctx.input.capture();
-        const layer = frameStats.scanRegion(img, layerRoi, { predicate: pred });
-        if (layer.ok) layerMin = Math.min(layerMin, layer.hits);
-        const res = frameStats.scanRegionMany(img, rects, { predicate: pred });
-        let lost = 0; const lostEx = []; let k = 0;
-        for (const s of f.samples) {
-          const ends = [];
-          if (s.q1) ends.push(res[k++]);
-          if (s.q2) ends.push(res[k++]);
-          probed += ends.length;
-          const okPix = ends.every((h) => h.ok && h.hits >= VTH.paint.minHitsLineEnd);
-          if (!okPix) {
-            clipped++;
-            lost++;
-            if (lostEx.length < 3) lostEx.push(s.id + '(' + ends.map((h) => h.hits).join('/') + ')');
+          for (const e of s.ends) {
+            if (!e.top) continue;
+            rects.push({ x: (e.x - frameROI / 2) * dpr, y: (e.y - frameROI / 2) * dpr,
+              width: frameROI * dpr, height: frameROI * dpr });
+            plan.push({ kind: '端点', id: s.id, p: e });
+          }
+          if (WEAK) continue;                            // 放水档：沿线那一半按"端点窗口"口径退化成不可判
+          for (const c of s.curve) {
+            if (!c.top) continue;
+            rects.push({ x: (c.x - ROI / 2) * dpr, y: (c.y - ROI / 2) * dpr, width: ROI * dpr, height: ROI * dpr });
+            plan.push({ kind: '沿线段', id: s.id, p: c });
           }
         }
-        parts.push('[' + f.v + ']几何bad=' + f.bad + '/' + f.checked + ' 线像素丢失=' + lost
-          + '/' + f.samples.length + (lostEx.length ? '(' + lostEx.join(',') + ')' : '')
+        let frameHits = [];
+        if (rects.length) {
+          const img = await ctx.input.capture();
+          frameHits = frameStats.scanRegionMany(img, rects, { predicate: pred }).map((h) => (h.ok ? h.hits : -1));
+        }
+        let lostE = 0, lostC = 0, occ = 0;
+        // ① 层内墨：每个在屏取样点都要数得到"连线层自己画的墨"（遮挡与否一视同仁）
+        for (const s of f.samples) {
+          for (const e of s.ends) {
+            endJudged++;
+            if (!e.top) { occluded++; occ++; }
+            if (!(e.layer >= baseThr)) {
+              lostEnd++; lostE++;
+              if (lostEx.length < 4) lostEx.push(s.id + '·端点（层内墨=' + e.layer + '/' + baseThr + '）');
+            }
+          }
+          for (const c of s.curve) {
+            curveJudged++;
+            if (!c.top) { occluded++; occ++; }
+            if (!(c.layer >= baseThr)) {
+              lostCurve++; lostC++;
+              if (lostEx.length < 4) lostEx.push(s.id + '·沿线段（层内墨=' + c.layer + '/' + baseThr + '）');
+            }
+          }
+        }
+        // ② 真帧墨：只判"没被盖住"的取样点（plan 与 frameHits 同序同长）
+        plan.forEach((it, i) => {
+          frameJudged++;
+          if (!(frameHits[i] >= frameThr)) {
+            lostFrame++;
+            if (lostEx.length < 4) lostEx.push(it.id + '·' + it.kind + '（真帧=' + frameHits[i] + '/' + frameThr + '）');
+          }
+        });
+        parts.push('[' + f.v + ']几何bad=' + f.bad + '/' + f.checked
+          + ' 端点丢失=' + lostE + '/' + f.samples.reduce((n, s) => n + s.ends.length, 0)
+          + ' 沿线丢失=' + lostC + '/' + f.samples.reduce((n, s) => n + s.curve.length, 0)
+          + ' 被浮层盖住（真帧不判）=' + occ
           + ' 太短跳过=' + f.short + ' 只有一端在屏=' + f.oneEndIn + ' 两端都出屏=' + f.offscreen
-          + ' root线跳过=' + f.rootSkipped + ' 可见区像素（节点+连线合计）=' + (layer.ok ? layer.hits : '扫描失败'));
+          + ' root线跳过=' + f.rootSkipped
+          + ' 连线层可见区墨=' + (f.layerOk ? f.layerVis : '扫描失败') + '（位图 ' + f.bmpW + 'x' + f.bmpH + '）');
       }
-      if (!probed || !isFinite(layerMin)) {
-        return { ok: false, text: '取不到"线画出来没有"的真值（没有落在可见区内的取样点 / 连线层扫不了）⇒ 红 ｜ 几何='
+      // 采不到真值 = 红（两条下限：端点取样数、沿线取样数），别让"一个点都没判"悄悄变绿 ✓
+      if (!endJudged || !layerScanned) {
+        return { ok: false, text: '取不到"线画出来没有"的真值（一个在屏端点都没有 / 连线层位图读不出来）⇒ 红 ｜ 几何='
           + badAll + '/' + checkedAll + ' 视口=' + JSON.stringify(data.frames[0].vis) + ' 面板=' + JSON.stringify(data.panel) + ' s=' + data.s };
       }
+      if (endJudged < VTH.paint.minJudgedLineEnds || curveJudged < VTH.paint.minJudgedCurvePoints) {
+        return { ok: false, text: '可判取样点太少（端点 ' + endJudged + ' < ' + VTH.paint.minJudgedLineEnds
+          + ' 或沿线 ' + curveJudged + ' < ' + VTH.paint.minJudgedCurvePoints + '）⇒ 判据空转，按红处理 ✓ ｜ '
+          + parts.join(' ｜ ') };
+      }
       const layerOk = layerMin >= VTH.paint.minHitsMapVisible;
-      const ok = badAll === 0 && clipped === 0 && layerOk;
+      const ok = badAll === 0 && lostEnd + lostCurve + lostFrame === 0 && layerOk;
       return { ok: ok, text: parts.join(' ｜ ')
-        + ' ｜ 判据：连线层矩形（几何）+ **每个在屏端点** 9x9px 窗口真帧非背景像素 ≥' + VTH.paint.minHitsLineEnd
-        + ' + 可见区整块非背景像素 ≥' + VTH.paint.minHitsMapVisible + '（本次最少 ' + layerMin + '，只挡整块白屏）'
-        + '（已判 ' + probed + ' 个在屏端点，太短跳过 ' + shortAll + '、两端都出屏跳过 ' + offAll
+        + ' ｜ 判据（**两层证据，缺一不可**）：'
+        + '① 几何 — 每条线的两端都落在连线层矩形内（拖到哪儿都不被位图边界裁掉）；'
+        + '② 层内墨 — 每个在屏取样点（端点各 1 + 沿**曲线**两端各 ' + CURVE_U.length + ' 点）在**连线层位图**里的'
+        + ' 9x9 不透明像素 ≥' + baseThr + '（位图里只有连线 ⇒ 这是"这段线真画出来了"的归因证据，'
+        + '与有没有浮层盖住无关）；'
+        + '③ 真帧墨 — 没被别的层盖住的取样点，真帧 9x9 非背景像素 ≥' + frameThr
+        + '（被自家浮层盖住的点**不判**：实测面板底部 60px 被 #msg-bar 盖住，读到的只是它的底色）'
+        + '；连线层可见区整块墨 ≥' + VTH.paint.minHitsMapVisible + '（本次最少 ' + layerMin + '，只挡整块白屏）'
+        + '（已判端点 ' + endJudged + ' 个、沿线段 ' + curveJudged + ' 个，真帧判 ' + frameJudged
+        + ' 个、被浮层盖住 ' + occluded + ' 个；太短跳过 ' + shortAll + '、两端都出屏跳过 ' + offAll
         + '、root线（设计性不画）跳过 ' + rootAll + '、只有一端在屏 ' + oneAll + '）'
+        + (lostEx.length ? ' ｜ 丢失明细=' + lostEx.join(' ') : '')
         + ' ｜ s=' + data.s + ' 面板=' + JSON.stringify(data.panel) + ' 视口=' + JSON.stringify(data.frames[0].vis) };
     }
   },
