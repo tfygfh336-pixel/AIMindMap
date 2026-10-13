@@ -10,6 +10,10 @@
  *     —— 契约 §3.4 明写"本文不抄数值"，所以命令层、文档、测试里都不许再写一份数字。
  *   · 条目视图（§3.1）、`get` 的条目摘要数组（§3.3）、`qa` 的派生化（§7）。
  *
+ * ⚠️ **它不实现"什么算命中、谁排前面"**（【W6】，2026-10-13）：那是 `src/palette-rank.js` 的
+ * `fuzzyMatch` + `rankRows`，命令面板与这里**共用同一份**（判据"同一查询在 UI 与 CLI 一致顺序"）。
+ * 本模块只负责"把哪些面喂给它"（标题 / 正文 / 条目正文 / 图片说明 / 链接说明）与"命中的形状"。
+ *
  * 三条纪律：
  *   ① **不落盘**：只读查询**不生成索引文件**（工程既有纪律 —— 给最频繁的动作新增一道强制
  *      重生成步骤是净成本）。索引只在内存里：`buildIndexes(root)` 建一次，批量/多次查询的
@@ -19,11 +23,13 @@
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./tree-utils.js'), require('./convert.js'));
+    module.exports = factory(require('./tree-utils.js'), require('./convert.js'), require('./palette-rank.js'));
   } else {
-    root.MMItemIndex = factory(root.MMTree, root.MMConvert);
+    // ⚠️ 浏览器侧要 `root.MMPaletteRank` 先在场（`src/palette-rank.js` 先 `<script>` 载入）——
+    // 单个谓词/打分实现只有那一份（W6：命令面板与 AI 侧检索同一份，见那边文件头）。
+    root.MMItemIndex = factory(root.MMTree, root.MMConvert, root.MMPaletteRank);
   }
-})(typeof self !== 'undefined' ? self : this, function (tree, convert) {
+})(typeof self !== 'undefined' ? self : this, function (tree, convert, paletteRank) {
   'use strict';
 
   /* ---------------- 常量（唯一实现处：别在别处再写一份数字） ---------------- */
@@ -158,28 +164,50 @@
     return Array.isArray(list) && list.indexOf(tag) >= 0;
   }
 
+  /**
+   * 【W6】关键词命中（**这一维的判定与打分的唯一入口**）：走 `src/palette-rank.js` 的
+   * `fuzzyMatch` —— 命令面板筛的命令/节点用的就是它。
+   *
+   * 口径（判据见待做清单 W6 一节）：
+   *   · 命中 = **非连续子序列**（于是"子串命中"是它的特例，不是第二条判据 —— 旧实现那些
+   *     `indexOf(kw) >= 0` 全被它取代）；
+   *   · 大小写不敏感（与面板一致）；
+   *   · 分数越小越优（可为负），`start` = 命中首字符位置（取 snippet 窗口用）。
+   * ⚠️ 本模块**不 trim** 关键词（`cli` 层给什么就用什么）：判定与定序必须用**同一个** needle。
+   */
+  function faceMatch(kw, text) {
+    return paletteRank.fuzzyMatch(kw, text);
+  }
+
+  /** 第一个命中关键词的图片说明（`--full` 的额外面之一）；形状与 `faceMatch` 同源：{text, start} | null */
   function firstCaption(node, kw) {
     const imgs = node.images || [];
     for (let i = 0; i < imgs.length; i++) {
       const c = imgs[i] && imgs[i].caption;
-      if (c && c.indexOf(kw) >= 0) return c;
+      const m = c ? faceMatch(kw, c) : null;
+      if (m) return { text: c, start: m.start };
     }
     return null;
   }
 
+  /** 第一个命中关键词的节点级标签（`--full` 的额外面之一） */
   function firstTag(tags, kw) {
     const list = tags || [];
     for (let i = 0; i < list.length; i++) {
-      if (typeof list[i] === 'string' && list[i].indexOf(kw) >= 0) return list[i];
+      const t = typeof list[i] === 'string' ? list[i] : null;
+      const m = t ? faceMatch(kw, t) : null;
+      if (m) return { text: t, start: m.start };
     }
     return null;
   }
 
+  /** 第一个命中关键词的跨项目链接说明（`--full` 的额外面之一） */
   function firstLinkCaption(node, kw) {
     const links = node.links || [];
     for (let i = 0; i < links.length; i++) {
       const c = links[i] && links[i].caption;
-      if (c && c.indexOf(kw) >= 0) return c;
+      const m = c ? faceMatch(kw, c) : null;
+      if (m) return { text: c, start: m.start };
     }
     return null;
   }
@@ -470,7 +498,11 @@
   }
 
   /**
-   * **热度向量的排序**（热度条第二件）—— 命中顺序**只在这里**被重排（全工程唯一一处）。
+   * **热度向量的排序**（热度条第二件）—— 命中顺序**最后一道**重排（全工程唯一一处）。
+   *
+   * ⚠️ 它是**最后一道**、不是唯一一道：入参 `hits` 已经是**字面匹配**排好的顺序
+   * （【W6】`src/palette-rank.js` 的 `rankRows`：模糊分升序、同分保持 DFS+条目序）。
+   * 分工写清楚，免得两处打架：字面匹配决定**基线顺序**，热度只在这个基线上做**封顶**的微调。
    *
    * 为什么它在这里、数值却在 `src/heat.js`：
    *   · **数值与口径**（人 / AI / 合并三条上限、名次→档位）只有一处 = `src/heat.js` 的
@@ -584,13 +616,18 @@
    * 检索条目（契约 §3.4）。**默认口径 = 搜条目**（节点 topic ∪ 条目正文）；
    * `topicOnly:true` 退回 v2（只搜标题）。
    *
+   * 【W6】**命中与顺序**：命中 = 关键词是命中面的**非连续子序列**（大小写不敏感），
+   * 顺序 = 那份模糊打分升序、同分保持 DFS+条目序 —— 判定与定序都在
+   * `src/palette-rank.js`（命令面板同一份实现，判据"同一查询在 UI 与 CLI 一致顺序"）。
+   * 纯 `--tag`（无关键词）**不排序**（没有可打分的东西）。热度在**那之后**才重排（封顶）。
+   *
    * @param root 树根（`data.data`）
    * @param opts {
    *   keyword, tag, full, topicOnly,
    *   src, verified, type, since,        // 条目级过滤（见 passItemFilters）
    *   limit, maxBytes,                   // 缺省值有界（常量在上方）；**合法性由调用方挡**（core.intOption）
    *   heat,                              // 热度向量：{scale, byNode} —— 由 src/heat.js 的 searchBoost 造
-   *                                      // （本模块不认识"热度"的任何数值；不给 ⇒ 顺序与从前逐字相同）
+   *                                      // （本模块不认识"热度"的任何数值；不给 ⇒ 顺序 = 模糊分序）
    *   indexes                            // buildIndexes(root) 的结果（多次查询务必传）
    * }
    * @returns {ok, message?, mode, hits, hitCount, truncated, budget}
@@ -636,6 +673,13 @@
 
     const idx = o.indexes || buildIndexes(root);
     const raw = [];
+    /* 【W6】与命中**逐条平行**的"命中面原文"：定序时拿它重算分数（`rankRows` 自己算，
+     * 本模块不写第二遍打分）。为什么不把这段文本挂到命中对象上：命中形状是**冻结契约**
+     * （契约 §3.4，`tests/item-index.test.js` 与集成断言都逐键数过 —— 恰好 12 个键），
+     * 挂上去就是加键；挂成不可枚举属性又是"看不见的字段"，比平行数组更难查。
+     * ⚠️ 两个数组**必须同时 push** ⇒ 统一走下面的 `addHit`（手写 `raw.push` 会漏掉同步）。 */
+    const faceTexts = [];
+    const addHit = (hit, faceText) => { raw.push(hit); faceTexts.push(faceText); };
 
     idx.entries.forEach((entry) => {
       const n = entry.node;
@@ -651,15 +695,15 @@
             const itemTag = hasTag(rec.item.tags, tag);
             if (!itemTag && !nodeTag) return;
             if (!passItemFilters(rec.item, f)) return;
-            raw.push(hitOf(entry, rec.item, itemTag ? 'item-tag' : 'node-tag',
-              { snippet: clip(rec.text, -1), score: 1 }));
+            addHit(hitOf(entry, rec.item, itemTag ? 'item-tag' : 'node-tag',
+              { snippet: clip(rec.text, -1), score: 1 }), rec.text);
           });
           return;
         }
         // 未条目化节点：节点级标签命中，报 v2 的 `tag`（`tests/query.test.js` 钉着这个字面量）
         if (!nodeTag) return;
         if (onlyItems) return;
-        raw.push(hitOf(entry, null, 'tag', {}));
+        addHit(hitOf(entry, null, 'tag', {}), '');
         return;
       }
 
@@ -667,8 +711,14 @@
       // `--tag` 与关键词是 **AND**（v2 口径：两者都要满足）
       if (tag && !nodeTag && !anyItemTag) return;
 
-      const inTopic = !!(n.topic && n.topic.indexOf(kw) >= 0);
+      /* 【W6】命中判定 = 非连续子序列（`faceMatch` ⇒ `src/palette-rank.js` 的 `fuzzyMatch`）。
+       * 改前这里是 `n.topic.indexOf(kw) >= 0` 一类**字面子串**判定 —— 于是"tcp"在 CLI 能命中
+       * "T 类 C 协议 P"，而"tp"（跳过 c）在面板能命中、在 CLI 不能。现在两边同一个谓词。
+       * `m.start` 是命中首字符位置：snippet 窗口照它取（**不**再另算一次 indexOf ——
+       * 那样"命中在哪"与"窗口开在哪"就会有两套口径）。 */
+      const mTopic = faceMatch(kw, n.topic);
       const detailText = full ? convert.stripHtml(n.detail) : '';
+      const mDetail = (full && (mode === 'topic-only' || !entry.itemized)) ? faceMatch(kw, detailText) : null;
       const captionHit = full ? firstCaption(n, kw) : null;
       const tagHitText = full ? firstTag(n.tags, kw) : null;
       const linkHit = full ? firstLinkCaption(n, kw) : null;
@@ -676,45 +726,53 @@
       // 节点级面，按优先级取**最强的那一个**（v2 是逗号连成一串；现在是封闭取值表的单值）：
       // topic > item/detail > caption > tag|node-tag > link
       const faces = [];
-      if (inTopic) faces.push({ m: 'topic', text: n.topic });
+      if (mTopic) faces.push({ m: 'topic', text: n.topic, start: mTopic.start });
       // 正文面（v2 的 `--full` 面，**不能丢**：`tests/query.test.js` 钉着它）：
       //   · topic-only ⇒ v2 逐字口径，所有节点的 detail 都搜（条目化节点的 detail 是派生缓存，
       //     在 v2 里它就是那个 detail）；
       //   · 默认口径（items）⇒ **只对未条目化节点**搜 detail。条目化节点的正文由"条目面"承载，
       //     再搜一遍派生 detail 会让同一段文字既出条目命中又出节点命中（重复命中）。
       // 命中仍报 v2 的 `detail`（matchIn 取值表里的兼容值，契约 §3.4 的封闭表含它）。
-      if (full && (mode === 'topic-only' || !entry.itemized) && detailText.indexOf(kw) >= 0) {
-        faces.push({ m: 'detail', text: detailText });
-      }
-      if (captionHit !== null) faces.push({ m: 'caption', text: captionHit });
+      if (mDetail) faces.push({ m: 'detail', text: detailText, start: mDetail.start });
+      if (captionHit !== null) faces.push({ m: 'caption', text: captionHit.text, start: captionHit.start });
       if (tagHitText !== null) {
-        faces.push({ m: (mode === 'items' && entry.itemized) ? 'node-tag' : 'tag', text: tagHitText });
+        faces.push({ m: (mode === 'items' && entry.itemized) ? 'node-tag' : 'tag',
+          text: tagHitText.text, start: tagHitText.start });
       }
-      if (linkHit !== null) faces.push({ m: 'link', text: linkHit });
+      if (linkHit !== null) faces.push({ m: 'link', text: linkHit.text, start: linkHit.start });
 
       // 节点级命中：条目级过滤给了就不返回（那几维只描述条目）
       if (!onlyItems && faces.length) {
         const face = faces[0];
-        raw.push(hitOf(entry, null, face.m, {
-          snippet: clip(face.text, face.text.indexOf(kw)),
+        addHit(hitOf(entry, null, face.m, {
+          snippet: clip(face.text, face.start),
+          // `score` 的口径**没变**（契约 §3.4 的示例就是"出现次数"，`>= 1`）：模糊命中取不到子串
+          // 出现次数，`countOccurrences` 会回落成 1 —— 它不是排序键（排序键是上面那份打分）
           score: countOccurrences(face.text, kw)
-        }));
+        }), face.text);
       }
 
       // 条目面（**只有默认口径才有**：--topic-only 是"回到 v2 的只搜标题"）
       if (mode === 'items') {
         entry.items.forEach((rec) => {
-          const pos = rec.text.indexOf(kw);
-          if (pos < 0) return;
+          const m = faceMatch(kw, rec.text);
+          if (!m) return;
           if (tag && !hasTag(rec.item.tags, tag) && !nodeTag) return;
           if (!passItemFilters(rec.item, f)) return;
-          raw.push(hitOf(entry, rec.item, 'item',
-            { snippet: clip(rec.text, pos), score: countOccurrences(rec.text, kw) }));
+          addHit(hitOf(entry, rec.item, 'item',
+            { snippet: clip(rec.text, m.start), score: countOccurrences(rec.text, kw) }), rec.text);
         });
       }
     });
 
-    const ordered = orderByHeat(raw, o.heat);   // 热度：**只重排**，不增删命中（不改变"命中/不命中"）
+    /* ---- 【W6】定序：**唯一实现** = `src/palette-rank.js` 的 `rankRows`（命令面板吃的就是它）----
+     * 排的是"字面匹配"这一路：分数升序、同分保持上面那段扫出来的顺序（DFS + 条目序）。
+     * 判据"同一查询在 UI 与 CLI 得到一致顺序"就靠这一行与 `rankPalette` 里那一行是同一个函数。
+     * · 空关键词（纯 `--tag` 检索）⇒ **不排**：没有可打分的东西，就不假装排过（顺序照旧）。
+     * · 排名在**热度之前**：热度（H1）是**最后一道**重排、且封顶，它把这里的顺序当作基线 ——
+     *   于是 `--no-heat` / 本机没有热度日志时，CLI 顺序与命令面板**逐条相同**。 */
+    const ranked = kw ? paletteRank.rankRows(raw, kw, (h, i) => faceTexts[i]) : raw;
+    const ordered = orderByHeat(ranked, o.heat);   // 热度：**只重排**，不增删命中（不改变"命中/不命中"）
     // 预算与预算报告只有一处实现（`budgeted`）：`search-all` 的合并批走的是同一个函数
     const b = budgeted(ordered, limit, maxBytes);
     return {
@@ -812,6 +870,9 @@
     RESUME_ADVICE: RESUME_ADVICE,
     // 口径
     utf8Bytes: utf8Bytes, estTokens: estTokens, itemText: itemText, srcList: srcList,
+    // 【W6】关键词命中判定（= 非连续子序列）的**唯一入口**：本体是 `src/palette-rank.js` 的
+    // `fuzzyMatch`（命令面板同一份）。导出它，好让"这一维的谓词只有一处"能被直接钉住。
+    faceMatch: faceMatch,
     // `--src` 这条边界的**两层分工**（见 `srcMatches` 的契约注释：空 needle 不是过滤条件，
     // "有没有给过滤"归过滤层）：`srcMatches` = 唯一匹配实现，`passItemFilters` = 过滤层。
     // 两者都导出，是因为这条边界要能被**直接钉住**（`src/item-src.js` 的 `matchesSrc` 只是薄转发）。

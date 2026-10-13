@@ -5527,6 +5527,238 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   }
 }
 
+/* ============================================================
+ * W6-集成断言原文.js —— 【W6】"把命令面板那套模糊排序给 AI 侧"的**集成断言原文**
+ * （放行窗口由整合流贴进 `scripts/cli-integration.js`；本文件**不是**可执行脚本，只是那段源码的存放处）
+ * ------------------------------------------------------------
+ * 判据出处：`.review/20261010-卖点与功能-常驻讨论/待做清单.md` 的 `## W6｜把命令面板那套模糊排序给 AI 侧`
+ * 一节，原文两条：
+ *   判据1：查询词是**非连续子序列**时 CLI 也能命中；
+ *   判据2：同一查询在 UI 与 CLI 得到**一致顺序**。
+ * 单测侧（可重复执行、进程内、`AI_MINDMAP_PROJECTS_DIR` 临时沙箱）：`tests/search-fuzzy.test.js`
+ * （15 用例，含两条**可重复执行**的注入证明与"一处实现"的静态把守）。本段**不重复**那 15 条，
+ * 只把"必须在**真实工程 + 真实 `projects/` 根**上跑一遍才作数"的几条接到集成链上。
+ *
+ * 服务哪条卖点：`卖点.md` **卖点 1**（"给 AI 的可写可校知识库：AI 不再每次都去网上检索"）——
+ * 检索的**召回**（非连续子序列也算命中）与**可预期顺序**是它的一部分；实现形态上同时兑现**卖点 6**
+ * 的"一份事实一处实现"（打分/定序只有 `src/palette-rank.js` 一处，命令面板与 AI 侧同吃）。
+ *
+ * 怎么贴（四句话）
+ *   1) 位置：**W1（`search-all`）那一段之后、`/* ---- 清理 ---- *\/` 之前**，整段原样粘
+ *      （已写成独立块 `{ … }`：自带 `finally` 收尾、自删全部探针、**不需要动末尾的清理段**）。
+ *   2) 探针只有一个项目、前缀 `it-probe-w6-` ⇒ 文件顶部 `sweepStaleProbes()` 的前缀表（`it-probe-`）
+ *      **已覆盖**，被中断留下的残留下次跑链会被自动清掉。
+ *   3) 贴完**必须**跑一次 `npm run facts:write`：`scripts/doc-facts.js` 按 `/^\s*check\(/gm` 静态数集成断言数，
+ *      本段新增的 check 都会被算进去 ⇒ 不重生成 `docs/VERIFY.md` 就会在 G6 报"断言数对不上"（那正是 G6 该做的事）。
+ *   4) 本段**只增断言**，不改任何既有断言的语义；不动 `scripts/cli-integration.js` 的其它任何地方。
+ *
+ * 这一节守什么（每条对着 W6 的一条判据）
+ *   · 判据1-a：一个**不是子串**的关键词（非连续子序列）在 CLI 也命中 —— 前置断言先证明"数据里没有这个子串"，
+ *     否则这条判据可能被"恰好也是子串"混过去（那叫空转）；
+ *   · 判据1-b：不匹配的仍然不命中（零结果是**说出来的**，不是空输出）；
+ *   · 判据2：同一查询下 **CLI 的顺序 == 命令面板那一侧的顺序**（面板侧用**真** `list --json` 的节点序喂**真**
+ *     `src/palette-rank.js` 的 `rankPalette`），且那个顺序**不是** DFS 序（判别力前提）；
+ *   · 判据1+2 经 MCP `search_nodes` 一层透传：真 stdio 一拍，与 CLI **逐条同序**，且**没有新增工具**
+ *     （工具数 = 真值出口 `docs/VERIFY.md` 现取的那个数，不是写在断言里的字面量）；
+ *   · "一处实现"：`function fuzzyMatch(` 的定义处全仓只有一个（`src/palette-rank.js`）；
+ *   · 既有不变量：跑完这些只读检索，探针**项目目录逐字节 + mtime 不变**。
+ *
+ * 为什么一律带 `--no-heat`（写清原因，免得下一个人以为漏了热度）
+ *   本段跑在**真实** `projects/` 根上，而库里可能有别的段落留下的、**故意写坏的热度日志**
+ *   （例如热度那两段的 `it-probe-heat*` 探针）。热度日志坏了 ⇒ `search` 照纪律**响亮失败**（产品行为，不是缺陷）
+ *   ⇒ 本段若默认读热度就会被**别人的探针**牵连成假红。热度与顺序的关系（热度只重排、封顶、`--no-heat`
+ *   与"零热度档"逐字节相同）由 `tests/search-fuzzy.test.js` 的 B3 与 `tests/search-heat.test.js` 守着。
+ *
+ * 判别力（放行窗口若想手验：可重复执行的那一版在 `tests/search-fuzzy.test.js` 的 D 节）
+ *   · 把 `src/palette-rank.js` 的 `rankRows` 比较器反过来（降序）⇒ 判据1-a 的顺序期望**必红**；
+ *   · 把 `fuzzyMatch` 退化回"只认子串"⇒ 判据1-a / 判据2 的前置与命中**必红**；
+ *   · 把 `src/item-index.js` 里那一行 `ranked = … paletteRank.rankRows(…)` 剪成 `ranked = raw`
+ *     ⇒ 判据2（CLI 顺序 == 面板顺序）**必红**（实测报文见本批交付说明）。
+ *
+ * 段内**不写**"行内斜杠紧跟圈号"的样子（G9 会把那当判定标记计数，见 `cli-integration.js` 文件头）。
+ * ============================================================ */
+{
+  const W6TAG = Date.now().toString(36);
+  /** 探针前缀表（**唯一一处**：建、清、断言残留都只认这张表） */
+  const W6_PROBES = ['it-probe-w6-' + W6TAG];
+  const W6P = W6_PROBES[0];
+  const W6_KW = '甲与闸门词';                 // 非连续针：'甲' 与 '闸门词' 中间隔着别的字
+  const W6_NONE = 'W6这个词谁都不命中' + W6TAG;   // 零结果针（带 tag ⇒ 真库里不可能命中）
+  const w6core = require(path.join(ROOT, 'cli', 'core.js'));            // PROJECTS_DIR：项目根的唯一推导处
+  const w6rank = require(path.join(ROOT, 'src', 'palette-rank.js'));     // 打分/定序：唯一实现处
+  const w6dir = (name) => path.join(w6core.PROJECTS_DIR, name);
+  const w6log = (name) => require(path.join(ROOT, 'src', 'data-store.js'))
+    .createStore(w6core.PROJECTS_DIR, () => {}).visitLogFile(name);
+  const w6J = (r) => { try { return JSON.parse(String(r.out).trim()); } catch (e) { return null; } };
+  const w6search = (name, kw, extra) => w6J(run(['search', name, kw, '--no-heat', '--json'].concat(extra || [])));
+  const w6ids = (j) => ((j || {}).hits || []).map((h) => h.nodeId);
+  /** 目录树快照（逐文件 字节 + mtime）：钉"只读检索在项目目录里零字节" */
+  const w6snap = (dir) => {
+    const out = [];
+    const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))
+      .forEach((e) => {
+        const abs = path.join(d, e.name);
+        if (e.isDirectory()) { walk(abs); return; }
+        out.push(path.relative(dir, abs).split(path.sep).join('/') + '|' + fs.readFileSync(abs).length
+          + '|' + fs.statSync(abs).mtimeMs);
+      });
+    walk(dir);
+    return out.join('\n');
+  };
+  /** 收尾的**唯一入口**（建/清都只认前缀表；日志在项目目录之外 ⇒ 一并删） */
+  const w6clean = () => W6_PROBES.forEach((name) => {
+    try { fs.rmSync(w6dir(name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+    try { fs.rmSync(w6log(name), { force: true }); } catch (e) { /* 同上 */ }
+  });
+
+  try {
+    /* 夹具：直接写盘造一个项目（同 S2 / W1 段的手法）。
+     * nd-1 的标题里，关键词**不是子串**（'甲' 与 '闸门词' 之间隔着 ' 与 '）；
+     * nd-2 的标题就是那个词（连续命中）⇒ 顺带证明"子串是子序列的特例"这半边也还在。 */
+    const w6topics = [
+      { id: 'nd-1', topic: 'W6 垫一句 甲 与 闸门词' },     // 非连续命中（DFS 序在前、但分数更差）
+      { id: 'nd-2', topic: '甲与闸门词' },                // 连续命中（前缀 ⇒ 分数最好）
+      { id: 'nd-3', topic: 'W6 无关节点' }
+    ];
+    fs.mkdirSync(w6dir(W6P), { recursive: true });
+    fs.writeFileSync(path.join(w6dir(W6P), W6P + '.json'), JSON.stringify({
+      meta: { name: W6P, author: '', version: '0.18.0', formatVersion: 2 },
+      format: 'node_tree',
+      data: { id: 'root', topic: 'root', expanded: true, children: w6topics }
+    }, null, 2), 'utf8');
+
+    /* ---- 判据1-a：非连续子序列在 CLI 也命中（前置：数据里没有这个子串） ---- */
+    {
+      const asSubstring = w6topics.filter((t) => t.topic.indexOf(W6_KW) >= 0).map((t) => t.id);
+      const j = w6search(W6P, W6_KW);
+      const inTree = w6topics.filter((t) => t.topic.indexOf('甲') >= 0 && t.topic.indexOf('闸门词') >= 0)
+        .map((t) => t.id);
+      check('W6·判据1-a 关键词 `' + W6_KW + '` 在探针里**不是** nd-1 标题的子串（前置断言：'
+        + '否则"非连续也能命中"这句话是空的），而 CLI **照样命中** nd-1 与 nd-2 —— 命中数 ' + inTree.length
+        + ' 条，每条 matchIn=topic',
+        asSubstring.length === 1 && asSubstring[0] === 'nd-2'          // 只有 nd-2 是子串命中
+          && inTree.length === 2
+          && w6ids(j).length === 2 && w6ids(j).indexOf('nd-1') >= 0 && w6ids(j).indexOf('nd-2') >= 0
+          && j.hits.every((h) => h.matchIn === 'topic')
+          && j.hits.every((h) => typeof h.snippet === 'string' && h.snippet.length > 0),
+        '子串命中只有=' + JSON.stringify(asSubstring) + ' ｜ 真命中=' + JSON.stringify(inTree)
+          + ' ｜ CLI 命中=' + JSON.stringify(w6ids(j))
+          + ' ｜ 顺序=' + JSON.stringify((j || { hits: [] }).hits.map((h) => h.nodeId + '(' + h.score + ')')));
+    }
+
+    /* ---- 判据1-b：不匹配的仍然不命中（零结果**是明确说出来的**，不是空输出） ---- */
+    {
+      const r = run(['search', W6P, W6_NONE, '--no-heat']);
+      const j = w6J(run(['search', W6P, W6_NONE, '--no-heat', '--json']));
+      check('W6·判据1-b 没命中的词 ⇒ exit 0 + 一行**明确的"命中 0 条"**（不是空输出），'
+        + '`--json` 的 hits=[] / hitCount=0 —— 放宽命中口径不等于"什么都命中"',
+        r.code === 0 && r.out.trim().length > 0 && r.out.indexOf('命中 0 条') >= 0
+          && !!j && j.hits.length === 0 && j.hitCount === 0,
+        'exit=' + r.code + ' ｜ 文本含"命中 0 条"=' + (r.out.indexOf('命中 0 条') >= 0)
+          + ' ｜ JSON hitCount=' + (j ? j.hitCount : 'null'));
+    }
+
+    /* ---- 判据2：同一查询，**CLI 的顺序 == 命令面板那一侧的顺序** ----
+     * 面板侧不造假：节点清单取自 `list --json`（面板的 `app:nodes` 走的就是它，**DFS 序**），
+     * 排序调**真**的 `rankPalette`（面板唯一的排序入口）。 */
+    {
+      const listJ = w6J(run(['list', W6P, '--json']));
+      const uiEntries = ((listJ || {}).nodes || []).map((n) => ({ kind: 'node', id: n.id, label: n.topic }));
+      const uiOrder = w6rank.rankPalette(uiEntries, W6_KW, 0).filter((e) => e.kind === 'node').map((e) => e.id);
+      const cliOrder = w6ids(w6search(W6P, W6_KW));
+      const dfsOrder = w6topics.map((t) => t.id);
+      check('W6·判据2 同一查询 `' + W6_KW + '`：CLI 的顺序与**命令面板那一侧**（`list --json` 的节点序喂 '
+        + '`rankPalette`）**逐条相同**；且该顺序**不是** DFS 序（否则"排序生效"这件事看不出来）',
+        !!listJ && uiOrder.length === 2 && JSON.stringify(cliOrder) === JSON.stringify(uiOrder)
+          && JSON.stringify(cliOrder) !== JSON.stringify(dfsOrder.filter((id) => cliOrder.indexOf(id) >= 0)),
+        '面板顺序=' + JSON.stringify(uiOrder) + ' ｜ CLI 顺序=' + JSON.stringify(cliOrder)
+          + ' ｜ DFS 序=' + JSON.stringify(dfsOrder));
+    }
+
+    /* ---- 判据1+2 经 MCP 一层透传（真 stdio）：同源同序；**没有新增工具**（工具数现取真值出口） ---- */
+    {
+      const W6_MCP_SRV = path.join(ROOT, 'scripts', 'mcp-server.js');
+      const w6reqs = [
+        { jsonrpc: '2.0', id: 1, method: 'initialize' },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'search_nodes',
+          arguments: { project: W6P, keyword: W6_KW, no_heat: true } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/list' }
+      ];
+      const w6sp = spawnSync(process.execPath, [W6_MCP_SRV], {
+        cwd: ROOT, encoding: 'utf8', timeout: 30000,
+        input: w6reqs.map((x) => JSON.stringify(x)).join('\n') + '\n'
+      });
+      const w6replies = String(w6sp.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+        try { return JSON.parse(l); } catch (e) { return null; }
+      });
+      const call = w6replies.filter((x) => x && x.id === 2)[0] || null;
+      const listReply = w6replies.filter((x) => x && x.id === 3)[0] || null;
+      const viaMcp = call && call.result && call.result.content && call.result.content[0]
+        ? w6J({ out: call.result.content[0].text }) : null;
+      const tools = ((listReply || {}).result || {}).tools || [];
+      const cliSame = w6search(W6P, W6_KW);
+      /* 工具数**现取真值出口**（`docs/VERIFY.md` 是生成物，那一行由 `scripts/doc-facts.js` 写）——
+       * 本段里**不写任何字面计数**：写死的数字会漂，而"现取 + 逐字比对"才是"没新增工具"的真判据。 */
+      const verifySrc = fs.readFileSync(path.join(ROOT, 'docs', 'VERIFY.md'), 'utf8');
+      const mTools = /^\|\s*MCP 工具数\s*\|\s*(\d+)\s*\|/m.exec(verifySrc);
+      const declared = mTools ? Number(mTools[1]) : null;
+      check('W6·判据1+2 经 MCP 一层透传（真 stdio 一拍）：`search_nodes` 给出的命中与 CLI **逐条同序**'
+        + '（MCP 侧一行打分逻辑都没有）；且**没有新增工具** —— 工具数 ' + tools.length
+        + ' == 真值出口声明的 ' + declared + '，`search_nodes` 只有一个',
+        declared !== null && !!viaMcp && JSON.stringify((viaMcp.hits || []).map((h) => h.nodeId))
+          === JSON.stringify(w6ids(cliSame))
+          && (viaMcp.hits || []).length === 2
+          && tools.length === declared
+          && tools.filter((t) => t.name === 'search_nodes').length === 1,
+        'MCP 命中=' + JSON.stringify(((viaMcp || {}).hits || []).map((h) => h.nodeId))
+          + ' ｜ CLI 命中=' + JSON.stringify(w6ids(cliSame))
+          + ' ｜ 工具数=' + tools.length + ' / 真值出口=' + declared);
+    }
+
+    /* ---- "一处实现"（机械）：打分的定义处全仓只有一个 ---- */
+    {
+      const scanRoots = ['src', 'cli', 'renderer'];
+      const hitFiles = [];
+      const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).forEach((e) => {
+        const abs = path.join(d, e.name);
+        if (e.isDirectory()) { if (e.name !== 'vendor' && e.name !== 'node_modules') walk(abs); return; }
+        if (!/\.(js|mjs)$/.test(e.name)) return;
+        if (fs.readFileSync(abs, 'utf8').indexOf('function fuzzyMatch(') >= 0) {
+          hitFiles.push(path.relative(ROOT, abs).split(path.sep).join('/'));
+        }
+      });
+      scanRoots.forEach((r) => walk(path.join(ROOT, r)));
+      const itemSrc = fs.readFileSync(path.join(ROOT, 'src', 'item-index.js'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '');            // 去块注释：判据的输入必须是**代码**，不是散文
+      check('W6·一处实现 打分与定序只有一处：全仓定义 `function fuzzyMatch(` 的文件**恰好一个**'
+        + '（' + hitFiles.join(' / ') + '），而 `src/item-index.js` 的代码里只**调**它'
+        + '（`paletteRank.fuzzyMatch(` / `paletteRank.rankRows(`），不再有第二份字面匹配',
+        hitFiles.length === 1 && hitFiles[0] === 'src/palette-rank.js'
+          && itemSrc.indexOf('paletteRank.fuzzyMatch(') >= 0
+          && itemSrc.indexOf('paletteRank.rankRows(') >= 0,
+        '定义处=' + JSON.stringify(hitFiles)
+          + ' ｜ 调用点齐=' + (itemSrc.indexOf('paletteRank.fuzzyMatch(') >= 0
+            && itemSrc.indexOf('paletteRank.rankRows(') >= 0));
+    }
+
+    /* ---- 既有不变量：只读检索在**项目目录里零字节** ---- */
+    {
+      const before = w6snap(w6dir(W6P));
+      w6search(W6P, W6_KW);
+      run(['search-all', W6_NONE, '--scope', W6P, '--no-heat', '--json']);
+      check('W6·不变量 这一节跑完：探针**项目目录逐字节 + mtime 不变**（只读检索零字节；'
+        + '埋点写的是项目目录**之外**的 `.visits/`）',
+        w6snap(w6dir(W6P)) === before,
+        '目录不变=' + (w6snap(w6dir(W6P)) === before));
+    }
+  } finally {
+    w6clean();
+    check('W6·自收尾 探针（项目目录 + 它的访问日志）已按前缀表清干净，**不留残留**',
+      W6_PROBES.every((name) => !fs.existsSync(w6dir(name)) && !fs.existsSync(w6log(name))),
+      '残留=' + JSON.stringify(W6_PROBES.filter((name) => fs.existsSync(w6dir(name)) || fs.existsSync(w6log(name)))));
+  }
+}
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;

@@ -315,7 +315,9 @@ function printDirRefReport(out, reps, dry) {
  * 与 `src/query.js` 的 computeStats 先例同一个分工）。
  * 判定与数值**一处都不在这里**：匹配/命中形状/预算/上限/热度权重全在上游那一份实现里 ✓
  *   · 匹配与命中形状：`src/item-index.js` 的 `searchItems`（**唯一实现**，本文件不再写第二套匹配）
- *   · 排序：`orderByHeat`（**唯一实现**）—— 本命令**不做跨项目重排**（理由见 `searchAll` 的注释）
+ *   · 排序：先由 `src/palette-rank.js` 的 `rankRows` 定**基线**（【W6】模糊分升序，命令面板同一份），
+ *     再由 `orderByHeat` 做**封顶的温度微调** —— 两个都在 `searchItems` 内部完成，
+ *     本命令**不做跨项目重排**（理由见 `searchAll` 的注释）
  *   · 两条硬上限与扫描闸门：`itemIndex.scanGate`（数字与报文都在那里）
  */
 
@@ -372,10 +374,11 @@ function scopeList(raw, all) {
  * **全库扫描**（`searchAll` 的骨架；单列出来是为了让命令体只剩"参数 → 输出"这一段）。
  *
  * 契约（判据靠它们，见 `.review/20261010-卖点与功能-常驻讨论/待做清单.md` W1 一节）：
- *   · 逐个项目调**同一个** `searchItems`（匹配/过滤/预算口径全在那一处）⇒ 每个项目的分片与
- *     `search <项目> <关键词>` **逐条同序**（含它自己的热度榜）；
- *   · **不做跨项目重排**：合并顺序 = 项目名升序 × 项目内既有顺序。理由两条：① 排序的唯一实现是
- *     `src/item-index.js` 的 `orderByHeat`，跨项目比分数会是**第二份排序实现** ✗；② nodeId 只在
+ *   · 逐个项目调**同一个** `searchItems`（匹配、过滤、**【W6】模糊定序**、预算口径全在那一处）⇒ 每个项目的
+ *     分片与 `search <项目> <关键词>` **逐条同序**（含它自己的热度榜）；
+ *   · **不做跨项目重排**：合并顺序 = 项目名升序 × 项目内既有顺序。理由两条：① 项目内顺序由
+ *     `src/palette-rank.js` 的 `rankRows`（字面匹配的基线）+ `src/item-index.js` 的 `orderByHeat`
+ *     （热度的封顶微调）定出来，跨项目比分数会是**第二份排序实现** ✗；② nodeId 只在
  *     项目内唯一，跨项目按 nodeId 取热度会串项目（p1 的 `nd-1` 与 p2 的 `nd-1` 会互相冒充）。
  *   · 命中对象**加一个 `project` 字段**（其余字段逐字来自 `searchItems`，不改名不改义）；
  *   · 两条硬上限每扫完一个项目判一次 ⇒ 越限**响亮报错**（`ctx.error` ⇒ 退出码 1 + stdout 以
@@ -706,9 +709,11 @@ module.exports = {
    * `backlinks` 这类专门命令）。它是"经验库"被人/AI 当作**一个**知识库检索的入口。
    *
    * 形状（**复用 `search` 那一套，不另起**）：
-   *   · 关键词/标签/过滤/匹配/命中形状/预算口径 = 逐个 项目 调同一个 `itemIndex.searchItems`；
+   *   · 关键词、标签、过滤、**【W6】模糊命中与定序**、命中形状、预算口径 = 逐个 项目 调同一个
+   *     `itemIndex.searchItems`（命中判定与顺序的唯一实现在 `src/palette-rank.js`）；
    *   · 热度 = 逐项目读**它自己**那份日志（`heat.readHeatFile` + `heat.searchBoost`），
-   *     排序仍由 `orderByHeat` 在 `searchItems` 内部完成 ⇒ 每个项目的分片与 `search <该项目>` 逐条同序；
+   *     在那条基线上由 `orderByHeat` 在 `searchItems` 内部做封顶微调 ⇒
+   *     每个项目的分片与 `search <该项目>` 逐条同序；
    *   · **不做跨项目重排**（理由写在 `scanAll` 的契约段：那是第二份排序实现 ✗，且 nodeId 项目内唯一）；
    *   · `--no-heat` 与 `search` **同一个开关、同一处语义**（完全不碰热度日志：不读、不写、不排序）。
    *

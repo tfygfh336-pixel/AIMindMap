@@ -227,6 +227,8 @@ describe('② 零结果是**说出来的**（不是空输出）', () => {
 describe('③ 两条硬上限：越限 ⇒ 报错 + 一条命中都不返回', () => {
   const CAPKW = 'w1上限词';
   const BIG = 'zz-cap-hits';
+  /** 只此一处的窄词（给"出路"那条断言用；**不含** CAPKW ⇒ 3.1 的真总数期望值不受它影响） */
+  const ESC_TOPIC = 'zz-cap-独一份的词';
 
   it('3.1 命中总数越限：真造 ' + itemIndex.SCAN_MAX_HITS + '+1 条命中 ⇒ exit 1、**报文里的两个数字逐字等于真值**、不给半份', () => {
     // 上限口径的**唯一实现处**是 src/item-index.js（本测试从它现取数字，不写死一份）
@@ -235,7 +237,8 @@ describe('③ 两条硬上限：越限 ⇒ 报错 + 一条命中都不返回', (
      * 全库档扫的是**整库** ⇒ 先量出"库里其它项目对这个关键词的命中数"，再加本探针那 `上限+1` 条。 */
     const otherHits = searchAll(CAPKW).hitCount;                  // ← BIG 还没建，量到的就是"别的项目"那部分
     const expectedTotal = itemIndex.SCAN_MAX_HITS + 1 + otherHits;
-    mkProject(BIG, kwNodes(CAPKW, itemIndex.SCAN_MAX_HITS + 1));
+    mkProject(BIG, kwNodes(CAPKW, itemIndex.SCAN_MAX_HITS + 1)
+      .concat([{ id: 'nd-only', topic: ESC_TOPIC }]));
     try {
       const r = run(['search-all', CAPKW, '--json']);
       expect(r.code, '越限必须非 0：' + r.stdout.slice(0, 200)).toBe(1);
@@ -248,9 +251,13 @@ describe('③ 两条硬上限：越限 ⇒ 报错 + 一条命中都不返回', (
       expect(m, '报文里必须报出"命中 N 条 > 上限 M 条"：' + r.stdout.slice(0, 160)).toBeTruthy();
       expect(Number(m[1]), '报出的命中数必须等于本次真总数（含别的项目的命中）').toBe(expectedTotal);
       expect(Number(m[2]), '报出的上限必须等于唯一实现处给的值').toBe(itemIndex.SCAN_MAX_HITS);
-      // 报错里给的出路**真的管用**（更长关键词 ⇒ 命中面收窄 ⇒ 照常返回）
-      const escaped = searchAll(CAPKW + ' 第 1 个', ['--scope', BIG]);
-      expect(escaped.hits.map((h) => h.nodeId)).toEqual(['nd-1']);
+      /* 报错里给的出路**真的管用**（更长关键词 ⇒ 命中面收窄 ⇒ 照常返回）。
+       * ⚠️ 【W6】这条路换了写法，理由记在这里：改前用 `CAPKW + ' 第 1 个'` 指望"更长 ⇒ 更窄"，
+       * 而 W6 起命中口径 = **非连续子序列** ⇒ `第 1 个` 是 `第 10 个` 的子序列、2001 个节点**全都命中**
+       * （那条写法在新口径下已经**不是**出路了）。改成一个**只此一处**的词（`ESC_TOPIC`，不含 CAPKW
+       * ⇒ 也顺带证明"3.1 的真总数期望值没被这条夹具改动"），期望值仍是写死的那个节点 id。 */
+      const escaped = searchAll(ESC_TOPIC, ['--scope', BIG]);
+      expect(escaped.hits.map((h) => h.nodeId), '出路的判据：换一个更窄的词 ⇒ 照常返回，不再越限').toEqual(['nd-only']);
     } finally {
       fs.rmSync(projDir(BIG), { recursive: true, force: true });   // 不留"必然越限"的项目给后面的用例
     }

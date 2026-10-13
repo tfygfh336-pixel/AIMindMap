@@ -54,16 +54,23 @@ const FIX = () => ({
 const ids = (hits) => hits.map((h) => h.nodeId + (h.itemId ? '#' + h.itemId : ''));
 
 describe('搜索：默认口径 = 搜条目（契约 §3.4）', () => {
+  /* ⚠️ 【W6】本组里两处**顺序**期望改过口径（命中集合一处没动）：
+   * 改动前"顺序 = 深度优先 + 条目序"，现在"顺序 = 模糊打分升序，同分才按深度优先 + 条目序"
+   * （打分与定序的唯一实现在 `src/palette-rank.js`，命令面板同一份）。
+   * 判据出处：`.review/20261010-卖点与功能-常驻讨论/待做清单.md` 的 `## W6｜…` 一节。 */
   it('条目正文命中 ⇒ 一条一命中；旧口径（--topic-only）同一节点只命中 1 条', () => {
     const r = itemIndex.searchItems(FIX(), { keyword: '闸门' });
     expect(r.ok).toBe(true);
     expect(r.mode).toBe('items');
     // ①c 的 4 条条目里 4 条都含「闸门」；再加上 3 条节点级命中（①c 的 topic、1c-1、bl）
-    expect(r.hits.filter((h) => h.itemId).map((h) => h.itemId)).toEqual([I_A1, I_A2, I_A3, I_A4]);
+    // 顺序 = 模糊分升序（打分只看"命中面那段文本"）：'闸门'(i-a3) < '闸门的子节点'(1c-1)
+    //   < '闸门是几道？ 两道。'(i-a4) = '闸门：未条目化的节点'(bl) ← 同分按 DFS+条目序
+    //   < '闸门：第一道…'(i-a1) = '闸门：第二道…'(i-a2)（同长同分，按条目序）
+    expect(r.hits.filter((h) => h.itemId).map((h) => h.itemId)).toEqual([I_A3, I_A4, I_A1, I_A2]);
     expect(r.hitCount).toBe(7);
     const old = itemIndex.searchItems(FIX(), { keyword: '闸门', topicOnly: true });
     expect(old.mode).toBe('topic-only');
-    expect(old.hits.map((h) => h.nodeId)).toEqual(['1c', '1c-1', 'bl']);
+    expect(old.hits.map((h) => h.nodeId)).toEqual(['1c-1', 'bl', '1c']);   // 同上：短串先、中段命中垫底
     // AC9：--topic-only 下同一命中的 itemId 为 null
     expect(old.hits.every((h) => h.itemId === null)).toBe(true);
   });
@@ -101,12 +108,25 @@ describe('搜索：默认口径 = 搜条目（契约 §3.4）', () => {
     expect(full.hits[0]).toMatchObject({ nodeId: 'bl', matchIn: 'detail', itemId: null });
   });
 
-  it('条目顺序 = 深度优先 + 条目序（不给 opts.heat 就不重排：排序权重是调用方的事）', () => {
+  it('条目顺序 = 模糊分升序、同分保持"深度优先 + 条目序"（打分与定序的唯一实现在 src/palette-rank.js）', () => {
     const r = itemIndex.searchItems(FIX(), { keyword: '闸门' });
+    // ⚠️ 【W6】改前这条断言的是"顺序 = 深度优先 + 条目序"（那时没有模糊排序）。
+    // 现在排序键是**共享的那份打分**，DFS+条目序只是**同分时的次序**：
+    //   1c#i-a3 (-1.98) → 1c-1 (-1.94) → 1c#i-a4 (-1.90) = bl (-1.90) → 1c#i-a1 = 1c#i-a2 (-1.89)
+    //   → 1c (8.11：命中面是「①c 关键判据（闸门）」，关键词在**中段**，分数最差)
+    //   （括号里是 `fuzzyScore` 的真值：越靠前的命中面越短 / 命中越靠词首）
     expect(ids(r.hits)).toEqual([
-      '1c', '1c#' + I_A1, '1c#' + I_A2, '1c#' + I_A3, '1c#' + I_A4, '1c-1', 'bl'
+      '1c#' + I_A3, '1c-1', '1c#' + I_A4, 'bl', '1c#' + I_A1, '1c#' + I_A2, '1c'
     ]);
-    // 唯一的例外是调用方**显式**给了热度向量（热度条第二件）：那时顺序按封顶加权排，
+    // 同分那条按原顺序（DFS + 条目序）：i-a4 在 bl 之前、i-a1 在 i-a2 之前 —— 上一条已钉住；
+    // 这里再给一份**同分**的对照：同一个节点里两条一样长的条目，顺序只能是条目序
+    const tie = itemIndex.searchItems(
+      { id: 'root', topic: 'r', children: [{ id: 'n', topic: 'n', items: [
+        { id: 'i-1', type: 'text', html: '<p>甲乙</p>' },
+        { id: 'i-2', type: 'text', html: '<p>甲丙</p>' }
+      ], children: [] }] }, { keyword: '甲' });
+    expect(tie.hits.map((h) => h.itemId)).toEqual(['i-1', 'i-2']);
+    // 唯一的例外是调用方**显式**给了热度向量（热度条第二件）：那时在**这个基线**上再做封顶加权，
     // 实现只有一处（src/item-index.js 的 orderByHeat），取值也只有一处（src/heat.js 的 SEARCH_RANK）
     // —— 那条路的判据在 tests/search-heat.test.js（含"零热度 ⇒ 逐字不变"的回归）。
   });
@@ -308,12 +328,16 @@ describe('取回字节上界：一次 search + get --item（验收②；针在 �
     const node = root.children[0];
     const whole = B(node.items.map((it) => it.html).join(''));      // 改前：只能整块读
     const r = itemIndex.searchItems(root, { keyword: '目标条目7' });
-    expect(r.hits).toHaveLength(1);
+    /* ⚠️ 【W6】命中口径改了：`目标条目7` 现在**也**命中 `目标条目17`（7 是 17 的子序列）——
+     * 这正是 W6 要的行为（与命令面板同一个谓词），不是缺陷。这条用例测的是**字节**，
+     * 所以命中面按新口径**如实钉住**（而不是把断言放松成"至少一条"）。 */
+    expect(r.hits.map((h) => h.itemId)).toEqual(['i-big-7', 'i-big-17']);
     const item = itemIndex.getItemView(root, '1c', 'i-big-7');
     expect(item.ok).toBe(true);
     const after = B(r.hits) + B(item.view);
-    // 上界由模型推导（不是魔数）：snippet 上界 × UTF-8 最坏 3 字节/字 + 单条正文 + 结构开销
-    const bound = itemIndex.SNIPPET_MAX * 3 + B(item.view.html) + 400;
+    // 上界由模型推导（不是魔数）：**每条命中**的 snippet 上界 × UTF-8 最坏 3 字节/字 + 结构开销，
+    // 再加单条正文
+    const bound = (itemIndex.SNIPPET_MAX * 3 + 400) * r.hits.length + B(item.view.html);
     expect(after).toBeLessThan(bound);
     expect(after).toBeLessThan(whole / 10);
   });
