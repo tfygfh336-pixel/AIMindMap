@@ -22,9 +22,13 @@
  *    ⇒ 断言④：详情框正文的 DOM **逐字节等于** CLI `get --json --detail` 的那一份（过浏览器解析器后比）。
  *
  * ⑤ **失败被静默吞掉**（"没记上"与"记上了"分不出来）：埋点失败必须**响亮**。
- *    ⇒ 断言⑤把读数通道与采样通道分别换成失败桩（注入点是渲染层能替换的那一层
- *    `window.desktop.app`），要求**界面上出现可见提示**。注入**自证生效**（没生效就如实说
- *    "注入未生效"，不当成产品缺陷 —— 实测 contextBridge 那层不总是可改）。
+ *    ⇒ 断言⑤**真造两份失败条件**（不用桩：渲染层注入实测无效，见文末那一段）：
+ *    ① 往日志里塞一行截断的 JSON ⇒ 框里必须出现"热度读不出来"；
+ *    ② 把"日志那一格"弄成**写不进去** ⇒ 状态栏必须出现**红色**错误提示（"没能记进访问热度"）。
+ *    ⚠️ ② 造条件是**三档的梯子**，三档都造不出来时走**第三态**（如实的"本项未验证"）：
+ *    第十九批实测 —— `fs.renameSync(<`.visits` 目录>)` 在 %TEMP% 里**间歇** `EPERM`
+ *    ⇒ 故障条件根本没造出来，而旧口径**硬红**（报文只有 `② 日志路径被堵住=false`）✗。
+ *    口径、等价性论证与判别力证明见文末"三档一起声明""三档为什么等价""判别力证明"三节。
  *
  * ## 探针与自收尾
  *   探针项目 `smoke-heat-40` 建在**冒烟沙箱副本**里（`AI_MINDMAP_PROJECTS_DIR`）⇒ 真实 `projects/` 零触碰；
@@ -48,13 +52,54 @@
  *   两条的实测报文见交付说明（`.review/20261012-热度条/S3-交付与读数.md`）；
  *   产品代码还原后 sha256 逐字节回到原值（`b321009516f8f30b` / `99171b3d19a9a703` / `55397a2243eff40a`）。
  *
+ * ## 三档一起声明：这条判据"能判红 / 只报告 / 跳过"三种结局（2026-10-13 加）
+ * 断言⑤的第 ② 档（采样失败必须响亮）在**造故障条件**这一步上曾经把环境问题判成了产品问题，
+ * 所以它的能力边界**三档一起写明**（F19：采不到真值 ≠ 红 ≠ 绿）：
+ *   · **判红**：故障条件**真造出来了**（每一档造完都**当场自证**：自己往那一格追加一行、**抛错才算数**），
+ *     而界面上没有响亮的失败读数 ⇒ 产品回归，红 ✓；
+ *   · **通过**：条件真造出来 + 界面上既有框里的读数提示、又有状态栏的**红色**提示 ✓；
+ *   · **未验证**（第三态）：**三档都造不出"写不进去"**（各试一遍 + 隔 250ms 再走一遍）⇒
+ *     响亮打印"本项未验证 + **每一档为什么没成**"、**不计入"通过/总数"、也不阻断**
+ *     （计数口径只在 `scripts/smoke-assertions.js` 的 `tally()`；形状照域 39 剪贴板那一档、
+ *     以及第八批"撕裂快照指纹采不到"那一档）。
+ * 两条纪律（第三态最容易变成后门的地方，所以写在这里）：
+ *   ① **跳过必须与通过可区分** —— 那一条在输出里是 `[未验证]` 而不是 `[PASS]`，而且汇总行把
+ *      "通过 / 总数 / 未验证"**三个数**都印出来（`main.js` 打印；未验证的那条**从两个数里分出去**）✓；
+ *   ② **fail-safe** —— `unverified` 只在"另一档（坏日志 ⇒ 可见提示）**真的通过**"时才给；
+ *      同一批里另一档没过 ⇒ 照样**判红**（不许拿"环境坏了"当真缺陷的挡箭牌 ✗）。
+ *
+ * ## 三档为什么等价（"原本要防的损害"一个字都没换）
+ *   原判据防的是：**日志写不进去时，产品必须把这次失败说出来**（`app:visit` 失败 ⇒ 状态栏红色提示，
+ *   不许静默吞掉）。三档 —— ① **日志文件只读**（chmod 0444）/ ② **日志那一格被一个目录占住** /
+ *   ③ **原招**：`.visits` 整格让开 + 原地放一个同名文件 —— 都让产品那一次追加**必然抛错**；
+ *   而产品对"追加失败"的处理**与 errno 无关**：`src/heat-sensor.js` 的 `recordVisit` 捕获
+ *   `heat.appendEvent`（唯一一次 `appendFileSync`）抛出的**任何**错误 ⇒ 折成 `errors[]` +
+ *   `ok:false` + `reason:'all-failed'`；`main.js` 的 `app:visit` 原样回传；`renderer/app-heat-bars.js`
+ *   据此把状态栏染红 ⇒ 三档对这条判据是**同一件事**，只是"造条件的侵入性"不同（档① 连目录都不动）。
+ *   档③ 是**原招**、保留为兜底 ⇒ 原条件的"原样"一档没丢 ✓（它在能改名的环境里照样先生效）。
+ *   档①/② 还比原招多覆盖一段：原招的失败落在 `store.visitLogFile()` 的 `mkdirSync`
+ *   （实测报文是 `EEXIST: file already exists, mkdir '…\.visits'`），**没有**走到 `recordVisit`
+ *   里"把追加失败折成 errors[]"那一步；档①/② 的失败正落在**追加**那一步 ✓。
+ *   ⚠️ 唯一要如实说明的边界：档① 时日志**读得通**（路径在、只是写不进）—— 若哪天产品改成
+ *   "追加失败就删掉日志文件重写"，档① 与档②/③ 的行为会分叉；那一刻要回到档②/③ 并重新论证。
+ *
+ * ## 判别力证明（两条，都真跑过；报文见交付说明）
+ *   ① **产品侧真坏了 ⇒ 必红**：把 `renderer/app-heat-bars.js` 的 `recordHumanOpen` 失败分支改成
+ *      **静默吞掉**（不调 `MM.setStatus`，并把 `lastVisit` 写成 `ok:true`）⇒ 断言⑤**必红**，
+ *      报文点名"条件造出来了 ⇒ 界面上没有响亮的失败读数"；还原后 `sha256` 逐字节回到原值 ⇒ 复绿 ✓。
+ *   ② **条件造不出 ⇒ 必进未验证档**：临时在 `buildFailCondition()` 开头 `return false;`（三档全不生效）
+ *      ⇒ 输出里是 `[未验证]` + `[smoke]` 响亮行（点名每一档为什么没成），汇总行三个数**如实**
+ *      （未验证 +1，且它**不在**"通过/总数"里，槽位数仍不变），**退出码 0**（不阻断）；
+ *      再叠 `MM_SMOKE_CLIP_STRICT=1` 时它**按失败计** ⇒ 退出码 1（"宁可红，不许悄悄放过"）✓。
+ *   两次注入都是**临时改**（照本域既有的"改产品代码那一轮"的规矩），改完就还原、并核 `sha256`。
+ *
  * ## ⚠️ 本域**没有**提供环境开关注入（写在这里免得下一个人找）
  *   第一版试过 `MM_SMOKE_INJECT=40-<key>`（在渲染层给 `window.desktop.app.heat` / `.visit` 换桩）。
  *   **实测不成立**：`window.desktop` 是 contextBridge 暴露的对象，给它挂方法**不生效**
  *   （`ctx.exec` 返回 1 也不代表改上了），于是"注入没发生"而断言变红 —— 红的原因指向产品，
  *   其实是测法失灵。所以本域的判别力证明只能靠**改产品代码**那一轮（见上），
- *   而"失败响亮"那两条改成了**真造失败条件**（坏日志 / 把日志路径堵住），不需要桩。
- * ============================================================ */
+ *   而"失败响亮"那两条改成了**真造失败条件**（坏日志 / 把日志那一格弄成写不进去），不需要桩；
+ *   上面"判别力证明②"照同一条规矩办（改的是**造条件的那几行**，不是判据）—— 不新增常驻开关。 */
 'use strict';
 
 const fs = require('fs');
@@ -128,6 +173,12 @@ function cli(ctx, args) {
 }
 function cliJson(ctx, args) {
   try { return JSON.parse(cli(ctx, args).out); } catch (e) { return null; }
+}
+/** 异常 → 一句"代码 + 消息"（造故障条件的梯子、还原读数、自证读数都用它：
+ *  **不许静默** —— 失败要连理由打印，否则"哪一档没成、为什么"就没人看得见 ✗） */
+function errOf(e) {
+  if (!e) return String(e);
+  return String(e.code ? (e.code + ': ') : '') + String(e.message || e);
 }
 async function execJson(ctx, js) {
   const raw = await ctx.exec(js);
@@ -550,28 +601,129 @@ const assertions = [
       // 还原日志（把那一行坏行去掉）：**后面还有断言要用它**
       if (savedLog) fs.writeFileSync(logPath, savedLog); else { try { fs.unlinkSync(logPath); } catch (e) {} }
 
-      /* —— ② 采样失败：把**日志路径那一格堵住**（`<项目根>/.visits` 换成一个同名**文件**）⇒
-       *    追加必然失败（父路径不是目录）⇒ 状态栏必须出现可见提示。
-       *    同样不用桩：这是真失败。收尾把 `.visits` 变回目录。 */
+      /* —— ② 采样失败：**真把"日志写不进去"造出来** ⇒ 状态栏必须出现**红色**提示（不许静默）——
+       *    为什么是一条**三档的梯子**（第十九批实测的形状）：原来只有一招（下称"原招"：把 `.visits`
+       *    整格改名 + 原地放一个同名**文件**）。它在本机**间歇**失败：`fs.renameSync(<目录>)` 抛 `EPERM`
+       *    （%TEMP% 里那一格被外面的句柄占着；同一批紧接着的单跑又绿 ⇒ 环境抖动，不是产品回归）；
+       *    而故障条件**没造出来**时旧代码只记 `blocked=false` ⇒ 断言**硬红**，报文里只有
+       *    `② 日志路径被堵住=false` —— **"采不到真值"被当成了"产品坏了"** ✗（F19 的第三态）。
+       *    口径、三档的等价性论证与判别力证明都在本文件头的"三档一起声明"三节 ✓。
+       *    ⚠️ 判据 `okVisit` **一个字都没改**：变的只是"怎么把路径弄成写不进去"。 */
       const visitsDir = path.join(sandboxRoot(), '.visits');
       // ⚠️ **不要读目录本身**（`readFileSync(目录)` 会 EISDIR 把整条断言炸掉 —— 实测踩到）。
       // 需要留的是**目录里那份日志**，它已经在上面 `savedLog` 里了。
-      let blocked = false;
-      let swapBack = null;
-      try {
-        /* 用**改名**而不是删除来制造"路径不可用"：目录里那个日志文件可能被另一个 CLI 进程占着
-         * （实测 `rmdir` EPERM），改名不受占用影响 —— 而且改名后 `.visits` 变成文件，
-         * `mkdirSync(.visits, {recursive:true})` 会失败 ⇒ 追加必然失败（要点就是这个）。 */
-        const bak = visitsDir + '.smoke40bak';
-        try { fs.rmSync(bak, { recursive: true, force: true }); } catch (e) { /* 旧残留 */ }
-        fs.renameSync(visitsDir, bak);
-        fs.writeFileSync(visitsDir, 'not a directory', 'utf8');
-        blocked = true;
-        swapBack = () => { fs.unlinkSync(visitsDir); fs.renameSync(bak, visitsDir); };
-      } catch (e) { blocked = false; }
+      const rungErrors = [];   // 每一档为什么没成（**连理由打印**：静默换档 = 藏起"这条究竟验了什么" ✗）
+      let blockedBy = '';      // 造出来了的是哪一档（'' = 一档都没造出来 ⇒ 走第三态）
+      let unblock = null;      // 该档的还原函数（**必须还原**：后面还有断言要用这份日志）
+      /** 自证：**自己**往"日志那一格"再加一行 —— 抛错才算故障条件**真造出来了**。
+       *  ⚠️ 必须用**非空**载荷：`appendFileSync(路径, '')` 连写都不写（实测：目录占位那一档会**假通过**）。
+       *  没抛错 = 条件没造出来 ⇒ 把我们刚写进去的字节按写入前的大小**截回去**（绝不污染日志）。 */
+      const appendSureFails = () => {
+        let sizeBefore = -1;
+        try { sizeBefore = fs.statSync(logPath).size; } catch (e) { /* 路径不可用本身也可能是条件成立 */ }
+        try {
+          fs.appendFileSync(logPath, '{"v":1,"smoke":"failcond-probe"}\n', 'utf8');
+        } catch (e) { return { fails: true, how: errOf(e) }; }
+        let cleaned = '没写进任何字节';
+        try {
+          if (sizeBefore >= 0 && fs.statSync(logPath).size > sizeBefore) {
+            fs.truncateSync(logPath, sizeBefore);
+            cleaned = '已把多写的字节截回 ' + sizeBefore + ' B';
+          }
+        } catch (e2) { cleaned = '⚠️ 多写的字节**没能截回**：' + errOf(e2); }
+        return { fails: false, how: '仍写得进去（' + cleaned + '）' };
+      };
+      /** 走一遍梯子；造出来就把 `blockedBy` / `unblock` 填上并返回 true */
+      const buildFailCondition = () => {
+        /* 档①（首选，最不侵入）：把**日志文件**改成只读（chmod 0444）。
+         *   现实里它的形状很常见 —— 日志文件被备份/同步工具、或"从别处恢复"标成了只读。
+         *   只动一个属性：不动目录、不改名字、**读路径照旧通**（"路径在、就是写不进去"）。
+         *   ⚠️ 实测：只读文件上 `appendFileSync` 必 EPERM ✓（`accessSync(W_OK)` 也如实报 EPERM）。 */
+        if (fs.existsSync(logPath)) {
+          const mode = fs.statSync(logPath).mode & 0o777;
+          try {
+            fs.chmodSync(logPath, 0o444);
+            const sc = appendSureFails();
+            if (sc.fails) {
+              blockedBy = '① 日志文件只读（chmod 0444；自证=' + sc.how + '）';
+              unblock = () => fs.chmodSync(logPath, mode);
+              return true;
+            }
+            fs.chmodSync(logPath, mode);
+            rungErrors.push('① 只读文件：' + sc.how);
+          } catch (e) {
+            try { fs.chmodSync(logPath, mode); } catch (e2) { rungErrors.push('① 还原失败：' + errOf(e2)); }
+            rungErrors.push('① 只读文件：' + errOf(e));
+          }
+        } else {
+          rungErrors.push('① 只读文件：日志文件不存在（' + logPath + '）');
+        }
+
+        /* 档②（次选）：把"日志那一格"**占成一个目录** —— 这正是原判据的语义（"那一格不是可写的文件"），
+         *   但改名的是**文件**（不依赖目录改名），因此绕开了本机那条 `renameSync(<目录>)` EPERM。
+         *   ⚠️ 实测：目录占位时 `mkdirSync(recursive)` **不报错**（产品的 ensureDir 会顺利通过），
+         *   真正的失败落在**追加**那一步（EISDIR）—— 判据要的正是那一步 ⇒ 仍然等价 ✓。 */
+        if (!blockedBy) {
+          const bak2 = logPath + '.smoke40bak';
+          let moved = false;
+          try {
+            try { fs.rmSync(bak2, { recursive: true, force: true }); } catch (e) { /* 旧残留 */ }
+            fs.renameSync(logPath, bak2); moved = true;
+            fs.mkdirSync(logPath);
+            const sc = appendSureFails();
+            if (sc.fails) {
+              blockedBy = '② 日志那一格被一个目录占住（自证=' + sc.how + '）';
+              unblock = () => { try { fs.rmdirSync(logPath); } catch (e) { /* 见下面还原读数 */ } fs.renameSync(bak2, logPath); };
+              return true;
+            }
+            fs.rmdirSync(logPath); fs.renameSync(bak2, logPath);
+            rungErrors.push('② 目录占位：' + sc.how);
+          } catch (e) {
+            if (moved) { try { fs.renameSync(bak2, logPath); } catch (e2) { rungErrors.push('② 还原失败：' + errOf(e2)); } }
+            rungErrors.push('② 目录占位：' + errOf(e));
+          }
+        }
+
+        /* 档③（**原招**，留作兜底）：把 `.visits` 整格让开 + 原地放一个同名**文件**
+         *   （父路径不是目录 ⇒ `mkdirSync`/追加必然失败）。本机 %TEMP% 里它**间歇** `EPERM`，
+         *   所以排在最后；在能改名的环境里它照样生效 —— 原判据的那一档**原样没丢** ✓。
+         *   ⚠️ 用**改名**而不是删除：目录里那个日志文件可能被另一个进程占着（实测 `rmdir` EPERM）。 */
+        if (!blockedBy) {
+          const bak3 = visitsDir + '.smoke40bak';
+          let swapped = false;
+          try {
+            try { fs.rmSync(bak3, { recursive: true, force: true }); } catch (e) { /* 旧残留 */ }
+            fs.renameSync(visitsDir, bak3); swapped = true;
+            fs.writeFileSync(visitsDir, 'not a directory', 'utf8');
+            const sc = appendSureFails();
+            if (sc.fails) {
+              blockedBy = '③ 原招：.visits 整格让开 + 原地一个同名文件（自证=' + sc.how + '）';
+              unblock = () => { fs.unlinkSync(visitsDir); fs.renameSync(bak3, visitsDir); };
+              return true;
+            }
+            fs.unlinkSync(visitsDir); fs.renameSync(bak3, visitsDir);
+            rungErrors.push('③ 原招：' + sc.how);
+          } catch (e) {
+            if (swapped) {
+              try { fs.unlinkSync(visitsDir); } catch (e2) { /* 还没放成文件 */ }
+              try { fs.renameSync(bak3, visitsDir); } catch (e2) { rungErrors.push('③ 还原失败：' + errOf(e2)); }
+            }
+            rungErrors.push('③ 原招：' + errOf(e));
+          }
+        }
+        return !!blockedBy;
+      };
+      buildFailCondition();
+      /* 只多试**一遍**的兜底：本机实测那条 `EPERM` 是**间歇**的（同一批紧接着的单跑就绿）⇒
+       * 隔 250ms 再走一遍梯子，能把"抖动"救回来当成"真判过"。仍然造不出 ⇒ 第三态（下面 return）。 */
+      if (!blockedBy) {
+        rungErrors.push('（第 1 遍三档全没造出来 ⇒ 等 250ms 再走一遍）');
+        await ctx.exec('new Promise(function (r) { setTimeout(r, 250); })');
+        buildFailCondition();
+      }
       await execJson(ctx, '(function () { window.MM.setStatus("热度条前置", false); return JSON.stringify({ ok: true }); })()');
       let errVisit = null;
-      if (blocked) {
+      if (blockedBy) {
         const shown2 = await showNode(ctx, NODE_B);
         if (shown2.ok) {
           for (let i = 0; i < 16; i++) {
@@ -591,20 +743,59 @@ const assertions = [
           }
         }
       }
-      // 收尾：把 `.visits` 换回目录（**必须还原**：后面还有断言要用它）
-      try { if (swapBack) swapBack(); } catch (e) { /* 收尾失败不判红 */ }
+      /* 收尾：还原（**必须还原**：后面还有断言要用它）—— 还原结果**响亮入报文**。
+       * ⚠️ 还原失败**不并入 ok**（它会把"测试脚手架没收拾干净"伪装成产品缺陷 ✗），但**绝不能静默**
+       * —— 旧代码那句 swallow 的收尾（catch 后什么都不报）就是这个形状：后面若要连锁红，没人找得到源头。 */
+      let restoreRead = '（本次没有要还原的东西）';
+      if (unblock) {
+        try { unblock(); restoreRead = 'ok'; }
+        catch (e) {
+          restoreRead = '⚠️ **失败**：' + errOf(e) + '（日志那一格可能还堵着 ⇒ 后面的断言会连锁报错，先看这一行）';
+        }
+      }
 
       /* 错误标记的判据落在**颜色**上（`MM.setStatus(text, true)` 的口径是 `style.color = #f53f3f`，
        * 不是加 class —— 第一版按 class 判，读到的 class 恒为空 ⇒ 假红）。 */
       const okBars = errBars.has === true && String(errBars.text).indexOf('热度读不出来') >= 0;
-      const okVisit = !!blocked && !!(errVisit && errVisit.visit && errVisit.visit.ok === false)
+      const okVisit = !!blockedBy && !!(errVisit && errVisit.visit && errVisit.visit.ok === false)
         && String(errVisit.text).indexOf('没能记进访问热度') >= 0
         && /245,\s*63,\s*63|f53f3f/i.test(String(errVisit.color));
+      /* 报文里三件事**都要在**：① 那一档的读数；② **造出来的是哪一档**（附先前各档为什么没成）；
+       * ③ 还原结果。少了②，读的人无从知道"这条判据这次究竟验了什么"；少了③，
+       * 一次没收拾干净的脚手架只会以"后面的域莫名红"的形式出现（找不到源头 ✗）。 */
+      const brief = '① 坏日志 ⇒ 框里可见提示=' + okBars + '（' + String(errBars.text).slice(0, 46) + '）'
+        + ' ｜ ② 造出的故障条件=' + (blockedBy || '**三档都没造出来**')
+        + (rungErrors.length ? '（各档读数：' + rungErrors.join(' ｜ ') + '）' : '')
+        + ' ⇒ 状态栏=' + JSON.stringify(String(errVisit ? errVisit.text : '').slice(0, 50))
+        + ' 颜色=' + (errVisit ? errVisit.color : '') + ' ｜ 采样读数=' + JSON.stringify(errVisit ? errVisit.visit : null)
+        + ' ｜ 还原=' + restoreRead;
+      /* ⭐ 第三态（"判红 / 只报告 / 跳过"三档里的第三档）：**故障条件造不出来** ⇒
+       *   既不判绿、也不判红 —— 响亮地说"本项未验证 + 每一档为什么没成"、**不计入"通过/总数"、
+       *   也不阻断**（计数口径只在 `scripts/smoke-assertions.js` 的 `tally()`；`main.js` 打响亮行）。
+       *   ⚠️ fail-safe（照域 39 剪贴板那一档）：`unverified` **只在"坏日志 ⇒ 可见提示"那一档真的通过**
+       *   时才给 —— 否则"环境坏了"就成了把真缺陷一起洗白的大伞 ✗（`main.js` 另有一道：
+       *   万一 `ok:false` 却带了 `unverified`，它按失败计并把矛盾打出来）。 */
+      if (!blockedBy) {
+        return {
+          ok: okBars,
+          unverified: okBars
+            ? ('热度条"采样失败必须响亮"这一档**本项未验证**：造不出"日志写不进去"这个故障条件'
+              + '（三档各走一遍 + 隔 250ms 再走一遍，都没成；各档读数：' + rungErrors.join(' ｜ ') + '）⇒ '
+              + '**不参与"通过/总数"计数、也不阻断**（采不到真值不许判红冒充产品缺陷，也不许静默当通过 ✗）；'
+              + '同一条里的另一档（坏日志 ⇒ 框里可见提示）已判过并通过 ✓'
+              + '（严格档 `MM_SMOKE_CLIP_STRICT=1` 下这一档按失败计 ⇒ 退出码 ≠ 0）')
+            : null,
+          text: brief + ' ⇒ ' + (okBars
+            ? '**故障条件造不出来** ⇒ 这一档**未验证**：不计入通过/总数、也不阻断'
+            : '⚠️ 故障条件造不出来，**且**"坏日志 ⇒ 可见提示"那一档本身没通过 ⇒ **判红**'
+              + '（不许拿"环境坏了"当真缺陷的挡箭牌 ✗）')
+        };
+      }
       return {
         ok: okBars && okVisit,
-        text: '① 坏日志 ⇒ 框里可见提示=' + okBars + '（' + String(errBars.text).slice(0, 46) + '）'
-          + ' ｜ ② 日志路径被堵住=' + blocked + ' ⇒ 状态栏=' + JSON.stringify(String(errVisit ? errVisit.text : '').slice(0, 50))
-          + ' 颜色=' + (errVisit ? errVisit.color : '') + ' ｜ 采样读数=' + JSON.stringify(errVisit ? errVisit.visit : null)
+        text: brief + ' ⇒ ' + (okBars && okVisit
+          ? '条件真造出来了（自证抛错）、产品也真把失败说了出来 ✓'
+          : '⚠️ 条件造出来了但界面上**没有响亮的失败读数** ⇒ **判红**：这是产品回归，不是环境问题 ✗')
       };
     }
   },

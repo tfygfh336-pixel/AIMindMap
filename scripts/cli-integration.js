@@ -5413,6 +5413,120 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   }
 }
 
+/* ---------------- 【SMOKE40】域 40 第五条的「造故障条件」：三档梯子 + 第三态（判红 / 只报告 / 跳过） ----------------
+ * 这一件补的是什么（第十九批放行窗口实测的形状，不是假想）：
+ *   全链首跑 `218/219`，**唯一红**是域 40 的第五条，报文里只有一句 `② 日志路径被堵住=false`；
+ *   紧接着单跑同一份代码就 `219/219`、exit 0 ⇒ **不是产品回归**：那条断言的 setup 当时靠
+ *   `fs.renameSync(<项目根>/.visits → .visits.smoke40bak)` 造"日志路径不可用"，而 %TEMP% 沙箱里
+ *   这一次报 `EPERM` ⇒ **故障条件根本没造出来** ⇒ 断言**硬红**。
+ *   这正是 F19 的第三态：**采不到真值 ≠ 红 ≠ 绿**（"无法构造故障条件"必须响亮报出来，
+ *   既不许冒充产品缺陷，也不许静默当通过）。
+ * 现在那条断言的口径（源码在 `scripts/smoke/40-heat-bars.js`，判据 `okVisit` **一个字没改**）：
+ *   · 造故障条件 = **三档梯子**：① 日志文件只读（chmod 0444）② 日志那一格被一个目录占住
+ *     ③ 原招（`.visits` 整格让开 + 原地放一个同名文件）；**每一档造完都当场自证**
+ *     （自己往那一格追加一行，抛错才算造出来；用非空载荷 —— 空串 append 连写都不写，会假通过）；
+ *   · 三档都造不出来 ⇒ **第三态**：响亮"本项未验证 + 每一档为什么没成"、
+ *     **不计入"通过/总数"、也不阻断**（计数口径仍只在 `scripts/smoke-assertions.js` 的 `tally()`）。
+ * 为什么这仍判得住**原来那条损害**：三档都让产品那一次追加**必然抛错**，而产品对"追加失败"的处理
+ *   **与 errno 无关** —— `src/heat-sensor.js` 的 `recordVisit` 把 `heat.appendEvent`（唯一一次
+ *   `appendFileSync`）抛出的**任何**错误折成 `errors[]` + `ok:false` + `reason:'all-failed'`；
+ *   `main.js` 的 `app:visit` 原样回传；`renderer/app-heat-bars.js` 据此把状态栏染红
+ *   ⇒ "日志写不进去时产品必须响亮"这件事**照旧被判**（档①/② 的失败正落在**追加**那一步，
+ *   比原招还多覆盖一段：原招那次失败落在 `store.visitLogFile()` 的 `mkdirSync`）。
+ *
+ * ## 本块判什么（**所有读数现场算，不写死任何计数**）
+ *   甲档（纯源码 + 纯函数：毫秒级、零子进程、零 Electron）：
+ *     · 梯子是多档的，且"档数 = 自证调用数"⇒ 不存在"以为造出来了"的档；
+ *     · 第三态在、且是 **fail-safe** 形状（`unverified` 必须挂在"另一档真的通过"上，
+ *       否则"环境坏了"会变成把真缺陷一起洗白的大伞）；
+ *     · **判据没被放宽**：`okVisit` 仍要三条（`visit.ok === false` / 状态栏文本 / 红色），
+ *       且旧的"造不出就静默判红"那条分支（`blocked = false`）**必须不在**；
+ *     · 报文点名"造出的故障条件=哪一档"与"还原="读数 —— 静默换档等于藏起"这条究竟验了什么"。
+ *   乙档（真 Electron 离屏，`MM_IT_SMOKE40=1` 才跑；默认**响亮打印"没跑"**，不许看着像跑绿了）：
+ *     跑 `SMOKE_ONLY=40`，从**真读数**判：第五条**不能是 FAIL**；若它是 PASS，报文必须写明
+ *     "造出的故障条件=…"且**不许**是"三档都没造出来"（那是把"跳过"冒充"通过"）；
+ *     汇总行里"未验证"那个数与第五条的标签**自洽**，且默认档**不阻断**（exit 0）。
+ *
+ * ## 成本（自己量过再决定挂不挂链）
+ *   甲档：毫秒级 ⇒ 建议**无开关常跑**。
+ *   乙档：一次真 Electron（本机实测**百秒量级**的墙钟，且会让 G4 多一个"Electron 能不能起"的前置）
+ *     ⇒ 放在 `MM_IT_SMOKE40=1` 后面，默认跳过；跳过时那一行明说"没验"，不含糊。
+ *
+ * ⚠️ 本文件是**待并入的断言原文（草稿）**：`scripts/cli-integration.js` 由整合流托管，我没有直接改它。
+ *    并入位置：主跑体 `try { … }` 内任意位置（**别碰**末尾收尾段）；`check` / `ROOT` / `fs` / `path` /
+ *    `os` / `spawnSync` / `TMP` 都在那个作用域里现成可用。
+ * ⚠️ 并入后**不要**用"行内斜杠紧跟圈号"的写法当标记（`cli-integration.js` 的 G9 门禁会把它们当
+ *    **判定标记**计数；撞上已有标记就判红）。本块用的是 `[SMOKE40·甲]` / `[SMOKE40·乙]` 前缀。
+ * ============================================================ */
+{
+  const SMOKE40_SRC = path.join(ROOT, 'scripts', 'smoke', '40-heat-bars.js');
+  const s40 = fs.readFileSync(SMOKE40_SRC, 'utf8');
+  /* 现算口径（**不写死任何计数**）：档数 = "某一档造成功"那个赋值出现几次
+   * （⚠️ 用 `[^']` 把声明 `let blockedBy = ''` 排掉 —— 第一版漏了它，档数会多算一档）；
+   * 自证调用数 = `appendSureFails()` 出现几次（它的定义处是 `appendSureFails = …`，不会计进来）。 */
+  const rungNames = (s40.match(/blockedBy = '([^']+)/g) || []).map((x) => x.replace(/^blockedBy = '/, ''));
+  const rungCount = rungNames.length;
+  const selfCheckCalls = (s40.match(/appendSureFails\(\)/g) || []).length;
+  const hasThirdState = /unverified: okBars/.test(s40);
+  const judgingKept = s40.indexOf('errVisit.visit.ok === false') >= 0
+    && s40.indexOf('没能记进访问热度') >= 0 && s40.indexOf('f53f3f') >= 0;
+  const silentFallbackGone = s40.indexOf('blocked = false') < 0;
+  const reportNames = s40.indexOf('造出的故障条件=') >= 0 && s40.indexOf('还原=') >= 0;
+  const tmpOut = path.join(TMP, 'smoke40-集成断言-读数.txt');
+  try {
+    check('[SMOKE40·甲] 造条件是一条**多档**梯子，且**每一档造完都当场自证**'
+      + '（自证调用数必须等于档数 —— 少了自证就回到"以为造出来了"，那条硬红就是这么来的）',
+      rungCount > 1 && selfCheckCalls === rungCount,
+      '档数=' + rungCount + '（' + rungNames.join(' / ') + '）｜ 自证调用数=' + selfCheckCalls
+        + '（自证用非空载荷=' + (s40.indexOf('failcond-probe') >= 0) + '）');
+    check('[SMOKE40·甲] 第三态在、且是 **fail-safe** 形状（`unverified` 只在"另一档真的通过"时给，'
+      + '否则环境坏就成了把真缺陷一起洗白的伞）',
+      hasThirdState, 'unverified 挂在 okBars 上=' + hasThirdState);
+    check('[SMOKE40·甲] **判据没被放宽**：`okVisit` 仍要三条（visit.ok===false / 状态栏文本 / 红色），'
+      + '且旧的"造不出就静默判红"那条分支已不在；报文点名档名与还原读数',
+      judgingKept && silentFallbackGone && reportNames,
+      '三条判据齐=' + judgingKept + ' ｜ 旧静默分支还在=' + (!silentFallbackGone)
+        + ' ｜ 报名称档=' + reportNames);
+    if (process.env.MM_IT_SMOKE40 === '1') {
+      const ELECTRON = require('electron');                 // 纯 node 里拿到 electron.exe 的路径（字符串）
+      const sp = spawnSync(ELECTRON, ['.', '--smoke'], {
+        cwd: ROOT, encoding: 'utf8', timeout: 600000,
+        env: Object.assign({}, process.env, { SMOKE_ONLY: '40' })
+      });
+      const out = String(sp.stdout || '') + String(sp.stderr || '');
+      fs.writeFileSync(tmpOut, out, 'utf8');                // 逐行取证：读数落盘，finally 里删
+      const line = out.split('\n').find((l) => /smoke-heat-40 ⑤/.test(l)) || '';
+      const unvLine = out.split('\n').find((l) => /冒烟三态：通过/.test(l)) || '';
+      const isFail = /^\[FAIL\]/.test(line);
+      const isUnverified = /^\[未验证\]/.test(line);
+      const builtRead = (line.match(/造出的故障条件=([^（⇒]*)/) || [])[1] || '';
+      const unvSeen = Number((unvLine.match(/未验证 (\d+)/) || [])[1]);
+      check('[SMOKE40·乙] 真跑域 40：第五条**不许是 FAIL**；若打 PASS，报文必须写明"造出的故障条件=…"'
+        + '且**不许**是"三档都没造出来"（那是把"跳过"冒充"通过"）',
+        !isFail && !(builtRead.indexOf('三档都没造出来') >= 0 && !isUnverified),
+        'exit=' + sp.status + ' ｜ 恰好造出来的档=' + JSON.stringify(builtRead)
+          + ' ｜ 第五条=' + line.slice(0, 160));
+      check('[SMOKE40·乙] 三态自洽且**不阻断**：汇总行的"未验证"数与第五条的标签一致，默认档 exit 0'
+        + '（未验证那几条既不进"通过/总数"，也不让退出码变红）',
+        /冒烟三态：通过/.test(out) && (isUnverified ? unvSeen >= 1 : unvSeen === 0) && sp.status === 0,
+        'exit=' + sp.status + ' ｜ ' + unvLine
+          + ' ｜ 第五条标签=' + (isUnverified ? '未验证' : (isFail ? 'FAIL' : 'PASS')));
+    } else {
+      console.log('[SKIP·**不是通过**] [SMOKE40·乙] 真 Electron 那一段没跑（要 `MM_IT_SMOKE40=1` 才跑；'
+        + '理由：一次真 Electron 是百秒量级的墙钟，G4 默认不该被它拖慢）—— 甲档（源码级）本轮已跑 ✓；'
+        + '「真跑一轮里这条究竟判成什么」本轮**没有验**（别把这里读成"验过了"）。');
+    }
+  } finally {
+    /* 自收尾：本块只读源码 + 一份临时读数；**不建项目、不写真实 `projects/`**
+     * （乙档真跑那一段的项目与访问日志由冒烟自己的沙箱管，与本块无关）。 */
+    let cleaned = '本次没落盘';
+    try {
+      if (fs.existsSync(tmpOut)) { fs.unlinkSync(tmpOut); cleaned = path.basename(tmpOut) + '（已删）'; }
+    } catch (err) { cleaned = '⚠️ 删不掉：' + String((err && err.code) || err); }
+    console.log('[SMOKE40] 自收尾：只读源码 + 临时读数文件 ' + cleaned);
+  }
+}
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;
