@@ -137,7 +137,7 @@ const TOOLS = [
     project: s('项目名或 JSON 文件路径'), parent: s('父节点 id'), topic: s('标题'),
     id: s('可选，见名知义的 id'), detail: s('可选，详情 HTML（渲染层按 HTML 注入）'),
     detail_md: s('可选，详情 Markdown（推荐 AI 使用；命令内转 HTML 存储，与 detail 互斥）'),
-    expanded: b('可选，默认展开')
+    expanded: b('可选，默认折叠（expanded:true 可显式展开）')
   }, ['project', 'parent', 'topic']),
   T('edit_node', '编辑节点（标题/详情/标签/展开状态）', {
     project: s('项目名或 JSON 文件路径'), id: s('节点 id'), topic: s('新标题'),

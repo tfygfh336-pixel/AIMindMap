@@ -115,16 +115,22 @@
       </template>
       <!-- 搜索结果面板（全文搜索） -->
       <div id="search-results" style="display:none"></div>
-      <!-- 下方消息栏（功能 5a 入口③）：上面的虚体字是给使用者的**提示**，输入即视为向内嵌 AI 发提示词，
-           情境（当前项目、可用 CLI、没选中节点这件事）由 CLI 侧自动补齐（见 src/dsh-ask.js）✓ -->
-      <div id="msg-bar">
-        <div id="msg-hint">或者你可以直接向我描述要导入什么</div>
-        <div id="msg-row">
-          <input id="msg-input" type="text" autocomplete="off"
-                 placeholder="描述要导入什么，或问内置 AI 一句…（Enter 发送）">
-          <button id="msg-send" type="button" title="发送给内置 AI">发送</button>
-        </div>
-      </div>
+    </div>
+  </div>
+
+  <!-- 下方消息栏（功能 5a 入口③）：上面的虚体字是给使用者的**提示**，输入即视为向内嵌 AI 发提示词，
+       情境（当前项目、可用 CLI / 没选中节点这件事）由 CLI 侧自动补齐（见 src/dsh-ask.js）✓
+       ⚠️ 位置在 `#main` **之外**（body 的 flex 列里、`#main` 之后）—— 这是"不永久遮挡地图"的实现本身：
+       它是 body 的直接 flex 项（`flex:0 0 auto`），拿掉自己那条高度后 `#main`（`flex:1`）连同
+       `#mindmap-container` 自己缩到它之上，两者**几何上不重叠**。
+       （旧位置：`#mindmap-container` 的绝对定位子元素 + `z-index:30` ⇒ 永久盖住面板底部 ~60px，
+       落在那一带的连线端点用户真的看不见 ✗） -->
+  <div id="msg-bar">
+    <div id="msg-hint">或者你可以直接向我描述要导入什么</div>
+    <div id="msg-row">
+      <input id="msg-input" type="text" autocomplete="off"
+             placeholder="描述要导入什么，或问内置 AI 一句…（Enter 发送）">
+      <button id="msg-send" type="button" title="发送给内置 AI">发送</button>
     </div>
   </div>
 

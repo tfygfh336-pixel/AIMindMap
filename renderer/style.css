@@ -546,7 +546,9 @@ jmnode.mm-rel-dim { opacity: 0.32; }
  * 形态：面板**顶部一条固定条**（`#mindmap-container` 的绝对定位子元素）——
  *   ① 不进 `fdViewEls()`：它不是图的一部分，不该跟着 translate+scale 走（否则缩放时会飘）；
  *   ② 打开期间容器角标 `#mm-root-label` **让位**：两者占同一位置，与其让谁莫名被盖住，不如显式让位；
- *   ③ z-index 与 `#msg-bar` 同级（都是"面板上的常驻条"），位置一顶一底，互不干扰；
+ *   ③ z-index 与 `#msg-bar` 同级（都是"面板上的常驻条"）—— 但**只有本条还在面板里**：
+ *      `#msg-bar` 已移出 `#mindmap-container`（在 body 的 flex 列里、由版式让位，见下方它的注释），
+ *      所以本条是面板内唯一一条常驻浮层；它压在面板**顶部**，与消息栏不再有任何位置耦合 ✓；
  *   ④ `max-height: 72%` + 内部滚动：展开"添加链接/新建关联笔记"时也不会把导图挤没。 */
 #mm-rel-edit {
   position: absolute; left: 0; right: 0; top: 0; z-index: 31;
@@ -707,10 +709,16 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   text-shadow: 0 1px 0 #fff;
 }
 /* ---------------- 下方消息栏（app-ask.js，功能 5a 入口③） ----------------
- * 位置：主视图底部（导图区下方的固定条）。虚体字是**提示**，不是输入框的 placeholder ——
- * 用户的原话就是"消息栏上方有一些虚体字，写「或者你可以直接向我描述要导入什么」"✓ */
+ * 位置：主视图底部（导图区下方的一条固定条）——**在 `#main` 之外、body 的 flex 列里**，
+ * 由 flex 布局**顶在导图区之上**（`#main` 是 `flex:1`、min-height:0 ⇒ 消息栏占多高，导图区就少多高），
+ * 两者**几何上不重叠** ⇒ 面板底部那条带子里的连线端点不会被永久盖住 ✓
+ * （旧位置：`#mindmap-container` 的绝对定位子元素 + z-index:30 ⇒ 永久盖住面板底部 ~60px ✗）
+ * 代价：显示时导图可用区少 ~60px 高（地图可平移 ⇒ 没有任何内容变得不可达 ✓）；
+ * 为什么不用"空闲自动隐藏"：本条是**功能入口**（虚体字提示 + 输入行 + 发送），
+ * 自动隐藏会引入"什么时候藏/藏了怎么唤回"的状态机与焦点抖动，且"藏起来的那一瞬"仍需证明不覆盖；
+ * 让位是**结构性**保证 —— 不依赖任何运行期状态，默认档下拖拽/框选/平移语义一字不变 ✓ */
 #msg-bar {
-  position: absolute; left: 0; right: 0; bottom: 0; z-index: 30;
+  flex: 0 0 auto;
   padding: 4px 10px 6px; background: #fbfcfe; border-top: 1px solid #e5e8ef;
 }
 #msg-hint { font-size: 11.5px; color: #b0b6c0; padding: 0 2px 3px; }   /* 虚体字 ✓ */
