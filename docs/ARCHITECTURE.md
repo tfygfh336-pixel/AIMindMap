@@ -541,7 +541,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | **从导出恢复**（零 Git 下唯一手段） | `docs/INCIDENTS.md`（两次全损与派生禁令）+ `docs/AI-GUIDE.md` §4.1 + `export-json` / `import-json` 用法 | **不要直接覆盖在用项目**：先 `import-json <备份.aimap.json> --name 恢复验证` 导成**临时项目** | `node cli/mm-cli.js validate 恢复验证` → 用 `read`/`export-md` 抽查内容是否完整 | 确认无误后决定"替换在用项目"还是"合并"；**CHANGELOG 必须记：何时、从哪份备份、恢复成什么** |
 | 打包 | `electron-builder.yml` | —— | `npm run dist` | 打包后**冒烟一次** + `CHANGELOG.md` |
 
-> **③"跑"的口径（唯一，消歧）**：**验收 = `npm run verify` 全链全绿**（步骤数 / 每步命令 / 预算的**唯一定义**在 `scripts/verify.js` 的 `STEPS`，`docs/VERIFY.md` 的链表由它渲染 —— **此处不复述条数**；G7 与 G6 共用一次运行 ⇒ 末尾打印的"实跑 N 步"比步骤数少 1；**总预算 400s**）。
+> **③"跑"的口径（唯一，消歧）**：**验收 = `npm run verify` 全链全绿**（步骤数 / 每步命令 / 预算的**唯一定义**在 `scripts/verify.js` 的 `STEPS`，`docs/VERIFY.md` 的链表由它渲染 —— **此处不复述条数**；G7 与 G6 共用一次运行 ⇒ 末尾打印的"实跑 N 步"比步骤数少 1；**总预算 700s**）。
 > 单个门禁脚本（`npm run check:docs` / `check:rules` / `check:visibility` / `facts` / `check:encoding`）只是**自检**，
 > 用来快速迭代（实测文档类四步合计十几秒），**任何一条都不能当作"做完了"** ——
 > 它们只是全链的子集，全链还含单测 / 集成 / 冒烟 / 数据校验。

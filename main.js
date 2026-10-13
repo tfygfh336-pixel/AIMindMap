@@ -1578,17 +1578,31 @@ async function runSmoke(win) {
     console.log('SMOKE INPUT ERROR — 真输入底座构造失败（真输入域的断言会全红，不许当通过 ✗）：'
       + ((err && err.message) || err));
   }
-  // 兜底：整个冒烟最长 **140 秒**，防止断言挂起导致进程不退出。
-  // ⚠️ 取值要**略小于**验证体系给本步的预算（`docs/VERIFY.md` 里 G5 现在是 150s）：
-  //   · 守卫 > 预算时，**挂起**会被报表成"超出预算"（看着像性能问题 ✗，实测踩过）；
-  //   · 守卫远小于预算时，真实耗时逼近预算的正常运行会被守卫先掐掉 ⇒ 同一份代码有时
-  //     通过、有时判红（历史上 90s 守卫就这么坑过我）。二者留 ~10s 余量最合适。
-  // 实测（2026-09-30）：侧栏三条断言原先会顺手孵化一个真服务（40–60s，且随负载抖到 172.7s ✗），
-  // 改成 `setNoSpawn(true)` 后它们只要 11.5s ✓ —— 冒烟耗时的大头与抖动源都消失了。
+  /* 兜底守卫（只拦「**真挂死**」）：断言挂起 / 事件循环卡住时进程仍要退得出来 ——
+   * 否则整条验证链会永远停在这一步（那时唯一的路只有强杀）。
+   *
+   * ───────── 不变量：**守卫必须 > 本步预算** ─────────
+   * 两者职责不同，不能互相顶替：
+   *   · **预算**判「**太慢**」：它是止涨线（唯一定义在 `scripts/verify.js` 的 `STEPS`；G5 现为 450s），
+   *     判红时打印读数与差额，指向"哪一步涨了" ⇒ 让人去查根因；
+   *   · **守卫**只拦「**真挂死**」：挂死时没有读数、没有报文，只能强杀。
+   * 所以守卫**绝不能先于预算触发**：一旦守卫先掐，一次"**其实跑完了、判据全绿、只是机器慢**"的运行
+   * 会被报成崩溃，报文里只留 `SMOKE GUARD TIMEOUT — force exit` ✗（看着像渲染层坏了）。
+   * 实测（2026-10-13 两次）：G5 用 **304.6s** 跑完、报文里**没有断言失败**（无 FAIL/THREW），
+   * 却在 **300s** 被守卫掐红；真因是**全机同时慢 20–30%**（同两次读数：G3 30.8→38.9s、G4 23.8→26.5s）。
+   * 反过来的代价是：真挂死会**先被预算报成"太慢"**再被杀 —— 报文用词不够准，但**不会把绿色结果判红**。
+   * 两者代价不对等（重跑一整条链 ~6 分钟 vs 报文用词不够准）⇒ 取「守卫 > 预算」。
+   * 取值：**G5 预算 450s × 1.2 = 540s**，留 90s 给"预算判定 → 打印 → 退出"这一段 ⇒ 先由预算发声。
+   * 不隔离档（逃生口 `MM_SMOKE_NO_ISOLATE=1` / `MM_SMOKE_ISOLATE=0`，**只用于诊断** ✗）**同口径、同值**：
+   * 两档共用一个预算（不隔离同样受同一份负载影响），而旧值 140s 连"不隔离跑一次全量"的正常耗时
+   * 都容不下 ⇒ 那不是"更快发现挂死"，只是换个姿势误红 ✗。
+   * 想验"守卫还活着"（判别力证明，别只信注释）：把下面那个数字临时改成 `5000` 跑一次 `npm run smoke`
+   * ⇒ 必须看到 `SMOKE GUARD TIMEOUT — force exit` 且退出码非 0 ✓；改回来再跑必须复绿。 */
+  const SMOKE_GUARD_MS = 540000;
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);
-  }, smokeIsolate ? 300000 : 140000);   // 隔离让每域多花 ~0.5-1s（还原+重载）⇒ 放宽到 300s ✓
+  }, SMOKE_GUARD_MS);
   // P1 崩溃仪器：渲染进程一死就**留下遗言**（死因 + 死前正在跑哪条断言）✓
   // 为什么需要它：本机出现过**间歇**的 `THREW: Object has been destroyed` 连锁（含截图失败），
   // 但重跑不复现 ⇒ 只能靠现场留证 ✗（M 轮实测：三次跑都没复现，没有仪器就只能干等 ✓）
@@ -1689,7 +1703,8 @@ async function runSmoke(win) {
     try {
       if (!n) return;   // 项目数据没动过 ⇒ 不用重载 ✓
       const reloadP = win.webContents.executeJavaScript('(async function () { try { var st = window.MMApp && window.MMApp.getState && window.MMApp.getState(); var name = st && st.project && st.project.name; if (!name) return "noproj"; if (window.MMApp.openProject) { await window.MMApp.openProject(name); return "ok"; } if (window.MMApp.switchProject) { await window.MMApp.switchProject(name); return "ok2"; } return "noapi"; } catch (e) { return "err:" + ((e && e.message) || e); } })()');
-      // 超时兜底：上一版直接 await 这个 Promise ⇒ 整条链卡在某个域 ✗（守卫 140s 强杀 ✓）
+      // 超时兜底：上一版直接 await 这个 Promise ⇒ 整条链卡在某个域 ✗（守卫生效时强杀 ✓）
+      // 守卫的取值**只写在上面冒烟守卫那一处**（`SMOKE_GUARD_MS`），这里不抄数字。
       const raced = await Promise.race([
         reloadP.then(() => 'done').catch(() => 'err'),
         new Promise((res) => setTimeout(() => res('timeout'), 1500))
