@@ -2,7 +2,7 @@
  * scripts/smoke/17-ui-polish.js —— 体验四项（2026-09-29 用户反馈）
  * ------------------------------------------------------------
  *   ① 节点标题里的行内 Markdown（`**加粗**`）应**渲染成粗体**，且**绝不写回数据**；
- *   ② 展开状态以数据为准：深层节点默认收起（不再无条件 expand_to_depth(3)）；
+ *   ② 折叠默认：打开项目**只展开根**（数据说前两层展开也得收起）—— "视图归一、不写数据"；
  *   ③ 展开/收起按钮要大（原来 jsMind 默认 11×11px，按不准）；
  *   ④ 文件预览（PDF/md）铺满大画布，且 PDF 带 `#zoom=page-width`。
  * 每条都附一条**截图落盘**（$TEMP），便于人眼复核视觉类改动 —— 视觉缺陷靠断言只能挡一半。
@@ -19,6 +19,26 @@ const os = require('os');
 const mm = require('../smoke-assertions.js');
 
 const settle = 'new Promise(function (r) { setTimeout(r, 260); })';
+
+/** 沙箱项目 JSON 的**盘上原文**（第 ② 条要判"打开项目不写数据"，只能对着原文比 —— 命令回显是第二份表述）
+ *  `AI_MINDMAP_PROJECTS_DIR` 由 main.js 在 --smoke 下指向临时副本；取不到就抛（采不到真值 ⇒ 红） */
+function readRaw(name) {
+  const dir = process.env.AI_MINDMAP_PROJECTS_DIR;
+  if (!dir) throw new Error('没有 AI_MINDMAP_PROJECTS_DIR（不是 --smoke 路径？）⇒ 取不到盘上真值');
+  return fs.readFileSync(path.join(dir, name, name + '.json'), 'utf8');
+}
+/** 盘上某节点的展开态：**连键一起**（缺键 = 展开 ⇒ 只查值会把缺键读成"折叠" ✗） */
+function expansionOf(name, id) {
+  const proj = JSON.parse(readRaw(name));
+  let hit = null;
+  (function walk(n) {
+    if (!n || hit) return;
+    if (n.id === id) { hit = n; return; }
+    (n.children || []).forEach(walk);
+  })(proj && proj.data);
+  if (!hit) return { found: false };
+  return { found: true, hasKey: Object.prototype.hasOwnProperty.call(hit, 'expanded'), value: hit.expanded };
+}
 
 /** 截图落盘（headless 下 capturePage 仍出有效帧，见 14-headless-window.js） */
 async function shot(ctx, win, name) {
@@ -115,7 +135,7 @@ const assertions = [
   },
 
   {
-    name: '② 展开状态以数据为准：深层节点收起、其子节点隐藏（不再无条件展开）',
+    name: '② 折叠默认：打开项目**只展开根**（数据说前两层展开也得收起；可见性用 elementFromPoint 判，不用 getComputedStyle）',
     run: async (ctx) => {
       // **自带数据**：不依赖前序断言留在沙箱里的展开状态（实测读到过它们的残留，判据会假红）。
       ctx.runCli(['init', 'zz-expand-probe']);
@@ -123,37 +143,64 @@ const assertions = [
       ctx.runCli(['add', 'zz-expand-probe', 'p1', '--topic', 'L2', '--id', 'p2']);
       ctx.runCli(['add', 'zz-expand-probe', 'p2', '--topic', 'L3', '--id', 'p3']);
       ctx.runCli(['add', 'zz-expand-probe', 'p3', '--topic', 'L4', '--id', 'p4']);
-      const norm = ctx.runCli(['expand-depth', 'zz-expand-probe', '--depth', '2']);   // 前两层展开、更深的收起
+      // 盘上基线：**故意**让前两层展开（`expand-depth --depth 2` ⇒ p1/p2 = true，见集成 §45）。
+      // 这正是"以数据为准"那条旧口径会照单全收的形态；新口径（折叠默认）要求打开项目时把它们收起来。
+      const norm = ctx.runCli(['expand-depth', 'zz-expand-probe', '--depth', '2']);
+      const rawBefore = readRaw('zz-expand-probe');
+      const diskP1Before = expansionOf('zz-expand-probe', 'p1');
 
       await ctx.exec('window.MMApp.openProject("zz-expand-probe")');
       await ctx.exec(settle);
       const r = await ctx.exec(`(function () {
         var jm = window.MMApp.getState().jm;
-        var vis = function (id) {
-          var el = document.querySelector('jmnode[nodeid="' + id + '"]');
-          return el ? window.getComputedStyle(el).display !== 'none' : null;
+        /* 可见性判据 = **命中测试**：elementFromPoint(节点中心) 必须命中它自己或它的后代。
+         * 为什么不用 getComputedStyle(el).display !== 'none'：那是本工程点名的**盲判据** ——
+         * 被父框裁切、被浮层盖住的节点它照样说"可见"（scripts/visibility-judge-check.js 的判据）。
+         * 先看 rect：display:none 的节点 rect 是 0×0 ⇒ 直接判不可见（不必进命中测试）；
+         * 再排掉视口外（那种情况下 elementFromPoint 会给 null，但那属"没在观察范围内"）。 */
+        var visible = function (id) {
+          var el = jm.view.e_panel.querySelector('jmnode[nodeid="' + id + '"]');
+          if (!el) return null;
+          var b = el.getBoundingClientRect();
+          if (!(b.width > 0 && b.height > 0)) return false;
+          var x = Math.round(b.left + b.width / 2), y = Math.round(b.top + b.height / 2);
+          if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return false;
+          var at = document.elementFromPoint(x, y);
+          return !!(at && (at === el || el.contains(at) || at.closest('jmnode[nodeid]') === el));
         };
         var visCount = 0, all = 0;
-        document.querySelectorAll('jmnode').forEach(function (x) {
+        Array.prototype.forEach.call(jm.view.e_panel.querySelectorAll('jmnode'), function (x) {
           all++;
-          if (window.getComputedStyle(x).display !== 'none') visCount++;
+          if (visible(x.getAttribute('nodeid'))) visCount++;
         });
-        var p2 = jm.get_node('p2'), p3 = jm.get_node('p3');
-        return {
-          p1: jm.get_node('p1').expanded !== false,
-          p2: p2 ? p2.expanded !== false : null,
-          p3: p3 ? p3.expanded !== false : null,
-          p3Visible: vis('p3'), p4Visible: vis('p4'),
-          visCount: visCount, all: all
-        };
+        var exp = function (id) { var n = jm.get_node(id); return n ? n.expanded !== false : null; };
+        return { p1: exp('p1'), p2: exp('p2'), p3: exp('p3'), root: exp('root'),
+                 p1Visible: visible('p1'), p2Visible: visible('p2'),
+                 p3Visible: visible('p3'), p4Visible: visible('p4'),
+                 visCount: visCount, all: all };
       })()`);
+      const shotFile = await shot(ctx, ctx.win, '2-collapse-default');
+      // "**不写数据**"：打开项目前后，盘上那份必须**逐字节相同**（视图归一不是数据归一）
+      const rawAfter = readRaw('zz-expand-probe');
+      const diskP1After = expansionOf('zz-expand-probe', 'p1');
       await ctx.exec('window.MMApp.openProject("comnet")');   // 复原，别影响后续断言
       await ctx.exec(settle);
       return {
-        ok: /改写/.test(String(norm)) && r.p1 === true && r.p2 === true && r.p3 === false
-          && r.p3Visible === true && r.p4Visible === false && r.visCount < r.all,
-        text: '规范化=' + JSON.stringify(String(norm).slice(0, 40)) + ' · L1/L2/L3 展开=' + r.p1 + '/' + r.p2 + '/' + r.p3
-          + ' · L3 可见=' + r.p3Visible + '、L4 隐藏=' + r.p4Visible + ' · 可见 ' + r.visCount + '/' + r.all
+        ok: /改写/.test(String(norm))
+          && r.root === true && r.p1 === false                       // 打开 ⇒ 只展开根（顶层主题被收起）
+          && r.p1Visible === true                                    // 被收起的是它的子节点，不是它自己
+          && r.p2Visible === false && r.p3Visible === false && r.p4Visible === false
+          && r.visCount < r.all && r.visCount <= 2
+          && rawAfter === rawBefore                                  // 视图归一**不写盘**
+          && diskP1After.value === true && diskP1Before.value === true
+          && diskP1After.hasKey === true,
+        text: '规范化=' + JSON.stringify(String(norm).slice(0, 36))
+          + ' · 打开后 根/顶层主题 p1=' + r.root + '/' + r.p1 + '（须 true/false = 只展开根）'
+          + ' · 可见 L1/L2/L3/L4=' + [r.p1Visible, r.p2Visible, r.p3Visible, r.p4Visible].join('/')
+          + '（须 true/false/false/false）· 命中测试可见 ' + r.visCount + '/' + r.all
+          + ' · 盘上未变=' + (rawAfter === rawBefore)
+          + '（盘上 p1 仍 = ' + diskP1After.value + '，键在=' + diskP1After.hasKey + '）'
+          + ' · 截图（headless 可能旧帧，仅参考）' + shotFile
       };
     }
   },

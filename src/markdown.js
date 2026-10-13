@@ -394,16 +394,23 @@
 
     function openNode(topic, level) {
       flushSeg();
-      // 展开状态的默认值：**只让前两层展开，更深的收起**。
-      // 为什么：导入的笔记/目录树动辄上百节点，若一律写 expanded:true，打开项目就是一片全展开、
-      // 要滚很久才找到东西；而"展开某个节点时，它的子节点应当是收起的"也是明确期望（用户反馈）。
-      // 单源：渲染层不再兜底展开（app-core.js 的 renderMind 去掉了 expand_to_depth(3)），数据说啥就是啥。
-      const node = { id: g(topic), topic, expanded: level <= 2, children: [] };
+      /* 展开状态的默认值：**【折叠默认】新产生的节点一律显式 `expanded:false`**。
+       * 为什么：① 用户反馈"新开的树 / 新编辑的子树应当默认折叠"（打开一片全展开、要滚很久才找到东西）；
+       *        ② `expanded` 是唯一"缺键即 true"的字段（见 `src/schema.js` 与 `docs/DATA-FORMAT.md`）
+       *           ⇒ 想折叠**必须显式写 false**，靠省略永远折不起来 ✓；
+       *        ③ 单源：渲染层不再兜底展开（`app-core.js` 的 `renderMind` 去掉了 `expand_to_depth(3)`，
+       *           并在打开项目时做一次"只展开根"的**视图归一**）。
+       * ⚠️ `level` 是**1 基**的（标题模式取 `#` 的个数、列表模式 `floor(缩进/2)+1`，见下面两处
+       *    `openNode(...)` 调用）⇒ `level === 0` 恒不成立、这里**永远是 false**。写成这个形状是照
+       *    实施规格的措辞（"只根为 true、其余 false"）：**根 = 调用方的 parent**，而 parent 的
+       *    `expanded` 由本函数**一个字节都不写**（判据：import 后父节点逐字节未变）——
+       *    别把它"顺手修"成 `level === 1`：那会把导入子树的第一层又展开，正是本批要治的形态。 */
+      const node = { id: g(topic), topic, expanded: level === 0, children: [] };
       // 调整栈深度：level-1 层为父
       while (stack.length > level) stack.pop();
       while (stack.length < level) {
-        // 中间缺层：用占位节点兜底，避免结构损坏
-        const holder = { id: g('层级' + (stack.length + 1)), topic: '（层级' + (stack.length + 1) + '）', expanded: true, children: [] };
+        // 中间缺层：用占位节点兜底，避免结构损坏。【折叠默认】占位节点同样是**新节点** ⇒ 显式 false
+        const holder = { id: g('层级' + (stack.length + 1)), topic: '（层级' + (stack.length + 1) + '）', expanded: false, children: [] };
         stack[stack.length - 1].children.push(holder);
         stack.push(holder);
         addedCount++;

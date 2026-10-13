@@ -178,7 +178,14 @@ function makeAddOp(ctx, parent, opts) {
     if (hit && !opts.force) { state.dup = hit; return SKIP_WRITE; }   // 拒绝：**一次盘都不写**
     const id = opts.id || markdown.idGen(topic, index);
     if (ctx.tree.find(data.data, id)) ctx.error('id 已存在: ' + id);
-    const node = { id: id, topic: topic, expanded: exp === undefined ? true : exp, children: [] };
+    /* 【折叠默认】不给 `--expanded` ⇒ **显式写 false**（不是省略、更不是 true）：
+     *   ① 判据地基：`expanded` 是**唯一**"缺键即 true"的字段（`docs/DATA-FORMAT.md` + `src/schema.js`）
+     *      ⇒ 想折叠必须**显式写 false**，靠省略永远折不起来 ✓；
+     *   ② 用户反馈：新开/新编辑的子树应当**默认折叠** —— 新增一个节点就顺手把它展开，
+     *      等于每次写盘都把树摊开一层（"导入完打开就是一片全展开"的来源之一 ✓）；
+     *   ③ 想让它展开的调用方照样说得出话：`--expanded true` 不变，
+     *      解析入口仍然只有一处（`expandedFromArgs`）。 */
+    const node = { id: id, topic: topic, expanded: exp === undefined ? false : exp, children: [] };
     if (detail) node.detail = detail;
     if (lp.set && lp.value) node.localPath = lp.value;
     parentNode.children = (parentNode.children || []).concat(node);
@@ -195,6 +202,7 @@ function makeAddRootOp(ctx, opts) {
   const topic = opts.topic;
   const detail = opts.detail;
   const lp = opts.localPath;
+  const exp = opts.expanded;                                          // 【折叠默认】与 `add` 同一个默认值
   const state = { id: null, dup: null, themed: false };               // 同 makeAddOp：结果走闭包，不走返回值
   const fn = (data, index) => {
     const rootNode = ctx.tree.find(data.data, 'root');
@@ -203,7 +211,10 @@ function makeAddRootOp(ctx, opts) {
     if (hit && !opts.force) { state.dup = hit; return SKIP_WRITE; }   // 拒绝：**一次盘都不写**
     const id = opts.id || markdown.idGen(topic, index);
     if (ctx.tree.find(data.data, id)) ctx.error('id 已存在: ' + id);
-    const node = { id: id, topic: topic, expanded: true, children: [] };
+    /* 【折叠默认】原先这里写死 `expanded: true`（改不动、也没有逃生门）—— 现在与 `add` 同一条规则：
+     * 不给 `--expanded` ⇒ **显式 false**（缺键即 true，靠省略折不起来 ✓）。
+     * 逃生门 = `add-root … --expanded true`（选项登记在 `cli/registry.js`，本命令唯一的解析入口）。 */
+    const node = { id: id, topic: topic, expanded: exp === undefined ? false : exp, children: [] };
     if (detail) node.detail = detail;
     if (lp.set && lp.value) node.localPath = lp.value;
     rootNode.children = (rootNode.children || []).concat(node);
@@ -480,11 +491,13 @@ module.exports = {
     if (!topic) ctx.error('缺少 --topic 标题');
     const detail = detailFromArgs(ctx);
     const lp = localPathFromArgs(ctx);           // 顶层主题同样可挂本机文件夹（建树时根节点最需要它）
+    const exp = expandedFromArgs(ctx);           // 【折叠默认】非法值在写盘之前报错（唯一解析处 ✓）
     if (lp.set && lp.value && !fs.existsSync(lp.value)) {
       ctx.out('⚠ 这个路径当前不存在（仍已记录，点击时会报错）：' + lp.value);
     }
     const op = makeAddRootOp(ctx, {
-      topic: topic, detail: detail, localPath: lp, id: ctx.args.id, force: !!ctx.args.force
+      topic: topic, detail: detail, localPath: lp, id: ctx.args.id, force: !!ctx.args.force,
+      expanded: exp
     });
     ctx.mutate(op);
     const st = op.state;

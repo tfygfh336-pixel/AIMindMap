@@ -13,6 +13,88 @@
 > README.md 版本锁同步更新（release 命令自动完成）。
 
 ## [Unreleased]
+### 折叠默认：打开项目只展开根（视图归一、不写数据）+ 新建/导入的节点一律显式 expanded:false（7 个写入点，根除外）；顺手修两处既有缺陷（17 域盲判据、19 域写真实项目）（2026-10-14）
+
+- **判据地基（先说它，否则后面每条都读不懂）**：`expanded` 是**唯一**"缺键即 true"的字段
+  （`docs/DATA-FORMAT.md` + `renderer/vendor/jsmind.js` 的 `void 0===d&&(d=!0)`）⇒
+  **想折叠必须显式写 `false`**，靠省略永远折不起来 ✓。
+- **用户原话**（规格：`.review/20261010-卖点与功能-常驻讨论/折叠默认-实施规格.md`）："展开一棵新开的树或者
+  新编辑的子树，应该是**默认折叠**，之前处理过这个问题没有处理好"。本批按规格的三条裁决落地。
+- **改动逐处（7 个写入点 + 1 处视图归一；三个"根"一律保持 `expanded:true` 未动）**：
+  ① `cli/commands/edit.js` 的 `add`：`exp === undefined ? true : exp` → **`exp === undefined ? false : exp`**；
+  ② `cli/commands/edit.js` 的 `add-root`：**写死 `true`** → `exp === undefined ? false : exp`，并补
+     **`--expanded` 逃生门**（`cli/registry.js` 的 `options` 加 `expanded`，usage/desc 写明"新主题默认折叠"）；
+  ③ `cli/commands/project.js` 的 `init` / `import-project` / `import-dir` 的**根**：保持 `true`（一行未动
+     —— 根展开是可见性的前提）；
+  ④ `src/markdown.js` 的 `markdownToTree`：`level <= 2` → **`level === 0`**（★ 核心；`level` 是**1 基**的
+     （标题模式取 `#` 个数、列表模式 `floor(缩进/2)+1`）⇒ 该表达式恒 false = "只根 true、其余全折叠"；
+     注释里点明**别**改成 `level === 1` —— 那会把导入子树的第一层又展开，正是本批要治的形态）；
+  ⑤ `src/markdown.js` 的缺层**占位节点**：`true` → `false`；
+  ⑥ `src/doc-import.js` 的 `buildDirImportTree`（容器节点与文件节点）：`depth + 1 <= 2` → `false`；
+  ⑦ `src/qa.js` 的 `childNodeOf`（AI 侧栏「应用」落子节点）：`true` → `false`；
+  ⑧ `renderer/app-core.js` 的 `renderMind`：`loadTree` 之后新增 `collapseBelowRoot(jm)` ——
+     **视图归一**（只收**顶层主题**；深层 `expanded` 一个字节不动、**不写盘**）。
+  **保留不动**（规格点名）：`edit`（只在显式给时改）· `cloneNode`（原样搬运 ⇒ `tests/clone-field-copy.test.js`
+  继续绿）· `apply` 的 edit op · `expandDepth`（唯一批量归一写点）。
+- **三条裁决如何落地**：① **打开项目 ⇒ 只展开根** —— 落点在**渲染层**，它**覆盖** `1a06862` 的"以数据为准"
+  **只覆盖"显示"这一层**：数据里的 `expanded`、以及主题以下的展开态，**一个字节都不动**（判据：打开项目前后
+  项目文件**逐字节相同**，盘上被数据说成"展开"的那个节点仍是 `true`）。为什么只收顶层主题：jsMind 的可见性
+  **从祖先往下传播**（`set_visible(children,false)` 递归隐藏整棵子树）⇒ 收一层就等于把整棵树收进去，与库
+  自己的"收起到树根"同一手法；若改成**逐节点**收起（`collapse_all` / `expand_to_depth(0)` 那一类），打开
+  一次就把用户的手动展开在内存里抹平、随后任何一次保存都把它写回盘上 ⇒ 正是"我收起的节点下次打开又被强制
+  展开"这个老毛病。撤销/重做走 `rebuildFromJson`（`{collapseToRoot:false}`）**不归一**：否则每按一次 Ctrl+Z
+  都把视野收一遍，而且 `snapshot()` 会与撤销栈里那份不再相等 ⇒ 判脏口径跟着漂。② **新产生的节点一律显式
+  `false`、父节点不被顺带展开**（`edit` 与 `clone` 一个字节没动；`add-root` 的逃生门保留 ✓）。③ **手动展开
+  仍持久化在数据层**：`.ui-state.json` 没有扩成视图态、渲染层仍然 0 处 localStorage ✓。
+- **边界（如实说）**：**顶层主题**自己的展开态会被"只展开根"重收 —— 这是这条规则的**定义**，而且**必须**如此：
+  圆钮的 +/− 与库的 `toggle_node` 都读 `node.expanded`，只隐藏不改它的话第一次点圆钮会**看着没反应**
+  （库判定"已展开 ⇒ 收起"，而画面上早就收着了）。⇒ 你在**主题层**的展开会在下次打开时收起；**主题以下**
+  的展开/收起不受影响 ✓。
+- **判据（4 条，全部真跑；`scripts/smoke/41-collapse-default.js` 是本批新增的冒烟域）**：
+  ① **新建节点是折叠的**（`41-甲`）：盘上**原文**的 `expanded` **键存在且为 false**（不是缺键）+ `get --json`
+     同一口径 + `--expanded true` 逃生门照旧 true + 根仍 true；
+  ② **import 后新子树一律折叠**（`41-乙`）：三条导入路各自产生的新子树层 0/1/2 全 false、非折叠节点 0 个、
+     三种导入的**根**仍 true；且 `import-md` 后**父节点除 `children` 外逐字节未变**（父节点不许被顺带展开）；
+  ③ **打开项目 ⇒ 根以外折叠**（`17-②`，本批重写）：数据里**故意**让前两层展开（`expand-depth --depth 2`）
+     ⇒ 打开后顶层主题被收、其子节点用 **`elementFromPoint` 命中测试**判为不可见（可见 2/5），并**逐字节比对
+     打开前后的项目文件**证明"视图归一不写数据"；
+  ④ **不破坏手动展开**（`41-丙`）：手动展开的节点刻意放在**第 4 层**（浅于"前两层"的位置**注入抓不住** ——
+     实测踩到后把探针加深 ✓）⇒ 保存 → 在**另一个子树**增量编辑 → 重开项目 ⇒ 盘上与视图两侧都仍展开。
+- **判别力证明（3 条注入，全部实跑；临时改动逐字节还原、SHA-256 相同）**：
+  ① `src/markdown.js` 的 `level===0` 改回 `level<=2` ⇒ **只有 `41-乙` 红**（甲/丙照旧绿 ⇒ 归因干净）：
+     报文 `层0/1/2 折叠=true/true/false · 非折叠节点=3`、`import-project 非折叠=2`、`import-dir 非折叠=2`；
+  ② `renderMind` 里**撤掉** `collapseBelowRoot`（= 还原旧口径）⇒ `17-②` **红**：
+     `p1=true（须 false）· 可见 L1/L2/L3/L4=true/true/true/false · 命中测试可见 4/5`；
+  ③ 把"新建即折叠"实现成**整树 normalize**（`add` 的写点里顺手 `expanded = d < 2`，等价"每次写盘跑一遍
+     `expand-depth --depth 2`"）⇒ `41-丙` **红**：`别处增量编辑后 甲=false · 重开项目后 盘上 甲=false ·
+     视图 甲=false`，并把 `41-甲` 一起带红（`n1:true`）。
+  还原哈希：`src/markdown.js` = `2e524acb…`、`cli/commands/edit.js` = `b9c4da2f…`（与注入前逐字节相同）。
+- **读数**：`electron . --smoke --smoke-only=17,19,41` ⇒ **16/18**；把折叠**关掉**再跑同一批 ⇒ **同样红、
+  读数逐字相同**（`预览框 698×752 / 视口 1424×835`、`展开位移=[0,-562]`）⇒ `17-④` 与 `19-①` 是**单域跑**的
+  顺序/状态依赖（全链里两条都绿），与本批无关 ✓。全链 `npm run verify` ⇒ **exit 0**（13 步 / **401.2s**，
+  G5 冒烟 **341.9s / 450s**、冒烟 **228/228 + 1 未验证**（域 39 剪贴板：环境不可用、独立探针也失败 ⇒ 按三态
+  第三档不计数）、视觉 2/2）；单测 **1782/1782**、集成 **523**；`rules-consistency` / `dep-direction-check` /
+  `encoding-check` / `docs-registry-check` 四门禁全绿。
+- **顺手修的两处既有缺陷（同一批）**：① `scripts/smoke/17-ui-polish.js` 里用
+  `getComputedStyle(el).display !== 'none'` 判"可见" —— 那是本工程 V1 门禁点名的**盲判据**（被裁切/被盖住
+  照样说可见）⇒ 换成**命中测试** `elementFromPoint(节点中心)` 命中自身或其后代（先看 rect：`display:none` 的
+  rect 是 0×0），断言名也随之改成"折叠默认…"（V1 现算：19 条声称可见性的断言里 13 条有真判据、**新违规 0**）；
+  ② `scripts/smoke/19-view-offset-pin.js` 原先在**用户真实 `comnet`** 上跑 `expand-depth --depth 2`（**写操作**！
+  判据还绑死真实节点 id `md-m1-week2`）⇒ 改用自带探针 `zz-pan-probe`（`--depth 2` 同参、目标落在第 3 层 ⇒
+  "展开它"是一次**真**形状变化，比原来"展开一个已展开的节点"更有判别力），并给第 ③ 条补上真正的见证节点
+  （原写法在 comnet 上比的是 `null`）—— **19 域自此不碰任何真实项目** ✓。
+- **未做 / 未核实（点名）**：① `scripts/mcp-server.js` 的 `add_node` / `add_topic` 参数说明仍写"可选，默认展开"
+  （现在是默认折叠）—— 该文件**不在本片允许改的文件清单**里 ⇒ 留着点名，下一批顺手改（一行 desc）；
+  ② 本批另动了三处**清单外**的连带文件（门禁/真值强制，逐处点名）：`docs/CLI.md`（registry 的生成物，
+  改了 usage/desc 必须重生成 ⇒ G7）、`scripts/smoke-assertions.js`（新增冒烟域要登记进"断言注册面" ——
+  **S2 判红点名的正是这一处**）、`docs/VERIFY.md`（`npm run facts:write` 重生成：冒烟断言 226 → **229**）；
+  ③ **生效条件**：`cli/**` + `src/**` 的改动下一条命令即生效、`renderer/**`（本批的"视图归一"那一半）
+  **刷新导图页**即生效 —— 本批**没有**动 `main.js` / `preload.js`，所以**没有"必须重启应用"的那半截**；
+  但**现在正跑着的那个实例是 10-10 启动的旧代码** ⇒ "界面上此刻的行为"**不是判据**（要看新行为：刷新 / 重开）。
+- 服务**卖点 3**（人机同屏：打开只展根、新节点默认折叠 ⇒ **视野不被塞满**，而折叠状态仍以数据为准）
+  + 兑现**卖点 6**（一份事实一处实现：折叠规则只有"写入点显式 false"与"打开时一次视图归一"两处，
+  不另造第二套口径；三条注入证明验的都是"改坏了会红"）。
+
 ### 修 apply 的 assoc-* op：未导出符号 ReferenceError + assoc 顶层集合写回被整份丢掉（静默成功）（B，2026-10-14）
 
 - **两条缺陷（`apply` 的 op 表里唯一两条**零断言覆盖**的路）**：

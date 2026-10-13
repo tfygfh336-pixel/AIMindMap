@@ -183,7 +183,56 @@
     return n;
   }
 
-  function renderMind(data) {
+  /** 【折叠默认】打开项目后的**视图归一**：只展开根，其余一律收起（**不写数据**）。
+   *
+   *  为什么需要：用户反馈"新开的树 / 新编辑的子树应当是默认折叠"。数据里 `expanded:true` 可以有很多个
+   *  （导入来的、历史留下的），而渲染层在 `1a06862` 之后是"**以数据为准**"⇒ 打开项目就是一片全展开、
+   *  要滚很久才找到东西。本函数把**视图**收成"只展开根" —— 这是对 `1a06862` 那条"以数据为准"的
+   *  **有意覆盖**（覆盖的是**显示**，不是数据 ✓）。
+   *
+   *  为什么只收起**根的直接子节点**（顶层主题），而不是逐节点收起：
+   *  jsMind 的可见性是**从祖先往下传播**的（`set_visible(children,false)` 递归隐藏整棵子树，见
+   *  `renderer/vendor/JSMIND-INTERNALS.md`）⇒ 收起顶层主题就等于把整棵树收进主题里，与库里
+   *  "收起到树根"同一个手法（`renderer/app-view.js` 的 `collapseAll()` 已被用户实测过这一条 ✓）。
+   *
+   *  ⚠️ 三条边界（动这个函数之前先读；三条都是"改了就出事故"的形态）：
+   *    ① **深层的 `expanded` 一个字节都不动** —— 那是用户自己的折叠/展开（裁决③：手动展开仍持久化在
+   *       数据层）。"只展开根"落在**可见性**上：主题一收起，它的后代**全部不可见**，无论它们自己的
+   *       `expanded` 说什么 ✓。若改成"逐节点收起"（`collapse_all` / `expand_to_depth(0)` 那一类），
+   *       打开一次项目就把用户所有手动展开**在内存里抹平**，随后任何一次保存都会把它写回盘上
+   *       ⇒ 那正是"我收起的节点下次打开又被强制展开、折叠白做了"这个老毛病。
+   *    ② 顶层主题自身的 `expanded` **会**被置 false：这就是"只展开根"的定义。而且必须如此 ——
+   *       圆钮的 +/− 与库的 `toggle_node` 都读 `node.expanded`（`renderer/vendor/jsmind.js`），
+   *       只隐藏不改它的话，第一次点圆钮会**看起来没反应**（库判定"已展开 ⇒ 收起"，而画面上早收着了）。
+   *    ③ 顺序：**必须**在 `wrapLayoutAnchor` 之前调用。那条"重排锚点保持"会为了让"被操作的那个节点
+   *       原地不动"而补偿一次 transform，而打开项目时紧接着就要 `centerOnRoot()` 重新定位 ⇒ 两者叠算是白算。
+   *       另外本函数**不写盘**：渲染层从不因为"打开项目"而保存；`openProject` 的"未保存基线"
+   *       （`lastSavedSnapshot`）取自 `renderMind` 之后的 `snapshot()` ⇒ 归一不会被记成"有未保存改动" ✓。
+   *
+   *  @returns {number} 本次真正改写的顶层主题数（0 = 本来就只展开根 ⇒ 幂等）
+   */
+  function collapseBelowRoot(jm) {
+    const root = MM.adapter.getRoot(jm);
+    if (!root) return 0;
+    let n = 0;
+    (root.children || []).forEach((tp) => {
+      const node = MM.adapter.getNode(jm, tp.id);
+      if (!node || !node.children || !node.children.length) return;   // 没有子节点：没有可收的东西
+      if (node.expanded === false) return;                            // 已经收起：不动它（少一次重排）
+      MM.adapter.collapseNode(jm, tp.id);
+      n++;
+    });
+    return n;
+  }
+
+  function renderMind(data, opts) {
+    // 【折叠默认】"只展开根"只属于**打开/重载项目的首屏**，不属于撤销/重做：
+    //   · 打开项目（`app-actions.js` 的 openProject）与"外部改盘自动重读"都是"从盘上取一份新数据来渲染"
+    //     ⇒ 归一 ✓（默认）；
+    //   · `rebuildFromJson`（撤销/重做）是"把用户刚才看过的那一版原地装回去"，再折叠一次等于
+    //     每按一次 Ctrl+Z 就把视野收一遍，而且会让 `snapshot()` 与撤销栈里那份**不再相等**
+    //     ⇒ 判脏口径跟着漂 ✓ ⇒ 显式传 `{collapseToRoot:false}` 关掉它。
+    const collapseToRoot = !opts || opts.collapseToRoot !== false;
     // 「关联笔记」随项目数据一起进来，在这里统一接管（renderMind 是打开项目与
     // undo/redo 两条路径的唯一入口，故这一处即可覆盖两者）。
     // 它是项目级集合、不在节点树里，只有靠 state 持有 + serializeTree 写回才能存活。
@@ -244,13 +293,19 @@
     // 未列出的主题保持默认右侧。方向唯一真源是 meta.layout（序列化不带 direction）。
     applyThemeLayout(data);
     MM.adapter.loadTree(jm, data);
+    // 【折叠默认】打开项目 ⇒ **只展开根**（视图归一，不写数据）。改这里之前先读 collapseBelowRoot 的注释：
+    // 它只收顶层主题、不碰深层的展开态 —— 那一条是"手动展开不许被打开动作抹掉"的判据所在。
+    // 撤销/重做走 `rebuildFromJson`（`collapseToRoot:false`）⇒ 不会在这里被收一遍（见 renderMind 的 opts 说明）。
+    if (collapseToRoot) collapseBelowRoot(jm);
     // 重排锚点保持：包住 view.relayout()，让"刚被展开/收起的那个节点"在屏幕上原地不动
     //（jsMind 会把每个父节点的子节点栈重新居中 ⇒ 不动手就是"页面跳来跳去"；见 app-view.js）。
     if (MM.wrapLayoutAnchor) MM.wrapLayoutAnchor(jm);
-    // 展开状态**以数据为准**（节点的 `expanded` 字段）。原先这里是无条件 `expand_to_depth(3)`：
-    // 后果一是"在界面收起的节点，下次打开又被强制展开"（用户的折叠白做了），
-    // 后果二是导入的大树一打开就是一片全展开、要滚很久才找到东西（用户反馈）。
-    // 现在不再在渲染层兜底展开；数据本身的默认值由导入器（前两层展开）与一棵树的规范化负责。
+    // 展开状态**以数据为准**（节点的 `expanded` 字段）—— 即：数据说收起就收起、说展开就展开，
+    // 渲染层**不做任何兜底展开**。原先这里是无条件 `expand_to_depth(3)`：后果一是"在界面收起的节点，
+    // 下次打开又被强制展开"（用户的折叠白做了）；后果二是导入的大树一打开就是一片全展开、要滚很久
+    // 才找到东西。这一条至今不变；**变的是"打开那一刻的初始视野"**：上面那次
+    // `collapseBelowRoot(jm)` 把视图归一成"只展开根"（用户反馈：新开的树/新编辑的子树应当默认折叠），
+    // 但它只改顶层的显示 + 顶层主题的 `expanded`，**深层的展开态与盘上数据都不动** ✓。
     applyTopicMarkup(jm);
     state.jm = jm;
     applyRootMode(jm, data);
@@ -279,7 +334,9 @@
   }
 
   function rebuildFromJson(json) {
-    renderMind(json);
+    // 撤销/重做：装回的是**用户刚才看过的那一版**（内存快照）⇒ 不做"只展开根"的视图归一
+    //（理由与判脏口径的影响见 renderMind 的 opts 说明）。
+    renderMind(json, { collapseToRoot: false });
   }
 
   /** 在**工程 JSON**（`serializeTree` 产的那个形状 / 盘上读回来的那一份）里按 id 找节点。

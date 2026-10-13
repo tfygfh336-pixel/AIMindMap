@@ -110,12 +110,15 @@
     return e;
   }
 
-  /** 子节点对象（id 由调用方给：主进程生成，避免渲染层自己造 id ✗） */
+  /** 子节点对象（id 由调用方给：主进程生成，避免渲染层自己造 id ✗）
+   *  【折叠默认】`expanded:false` —— 这是"AI 侧栏答完点『应用』落一个子节点"的落点，
+   *  它同时是"AI 编辑后你看得见新东西"的关键一处：新节点折起来 ⇒ 展开父节点就看得见它，
+   *  但**别指望它自己下面还摊着一片**（缺键等于 true ⇒ 必须显式写 false ✓）。 */
   function childNodeOf(answer, id) {
     return {
       id: id,
       topic: deriveTitle(answer),
-      expanded: true,
+      expanded: false,
       detail: convert.markdownToHtml(String(answer == null ? '' : answer)),
       children: []
     };

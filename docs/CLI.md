@@ -35,7 +35,7 @@
 | `ask` | ask <项目> [<节点id>] [--nodes a,b,c] [--question "..."] [--kind explain|ask] [--effort low|medium|high|xhigh] [--json] [--timeout 秒] [--dry-run] |
 | `theme-layout` | theme-layout <项目> [--left a,b] [--right c,d] [--clear] [--dry-run] |
 | `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] [--dry-run] |
-| `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--force] [--dry-run] |
+| `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] [--dry-run] |
 | `edit` | edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false] [--dry-run] |
 | `move` | move <项目> <id> <新父id> [--index n] [--dry-run] |
 | `expand-depth` | expand-depth <项目> [--depth N] [--id 子树根id] [--dry-run] |
@@ -191,7 +191,7 @@ node cli/mm-cli.js theme-layout <项目> [--left a,b] [--right c,d] [--clear] [-
 
 ### add
 
-在父节点下新增子节点（--detail 为 HTML；--detail-md 为 Markdown，命令内转 HTML；--local-path 记录本机文件夹，界面点击即打开）
+在父节点下新增子节点（--detail 为 HTML；--detail-md 为 Markdown，命令内转 HTML；--local-path 记录本机文件夹，界面点击即打开）。**新节点默认折叠**（不给 --expanded 就显式写 expanded:false —— 缺键等于展开，靠省略折不起来）
 
 ```
 node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] [--dry-run]
@@ -199,10 +199,10 @@ node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html 
 
 ### add-root
 
-新增顶层主题（不选父节点，直接挂在根节点下）—— 一个项目里可放多个不同方面的笔记
+新增顶层主题（不选父节点，直接挂在根节点下）—— 一个项目里可放多个不同方面的笔记。**新主题默认折叠**（同 add；要它展开就写 --expanded true，那是本命令唯一的逃生门）
 
 ```
-node cli/mm-cli.js add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--force] [--dry-run]
+node cli/mm-cli.js add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] [--dry-run]
 ```
 
 ### edit

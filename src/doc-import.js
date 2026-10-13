@@ -822,7 +822,10 @@ function buildDirImportTree(scan, opts) {
     const children = [];
     // 目录在前、文件在后（与资源管理器同序），两层各自按名字排 ⇒ 结构稳定可复现 ✓
     node.dirs.forEach((sub) => {
-      const container = { id: genId(sub.name), topic: sub.name, expanded: depth + 1 <= 2, children: [] };
+      // 【折叠默认】容器节点是新节点 ⇒ 显式 `expanded:false`（原来 `depth+1<=2` = 前两层展开）。
+      // 规则的落点说明见 `src/markdown.js` 的 openNode：只有"根"保持展开，而根是**调用方那棵树**
+      // 的根（`cli/commands/project.js` 建项目时写的），本函数造出来的一律折叠 ✓
+      const container = { id: genId(sub.name), topic: sub.name, expanded: false, children: [] };
       container.children = walk(sub, depth + 1);
       // 子目录里所有文件都在转换阶段失败了 ⇒ **不画空容器**（那些失败已逐条计入 read-failed ✓）
       if (!container.children.length) return;
@@ -840,7 +843,8 @@ function buildDirImportTree(scan, opts) {
       const md = normalizeOutline(conv.md);   // docToOutline 已经规范化过；这里再过一次是**同一份**函数（幂等）
       const topic = f.name.replace(/\.[^.]+$/, '');
       const fileNode = {
-        id: genId(topic), topic: topic, expanded: depth + 1 <= 2, children: [],
+        // 【折叠默认】文件节点同理：新节点显式 `expanded:false`（原来 `depth+1<=2`）
+        id: genId(topic), topic: topic, expanded: false, children: [],
         // 每个文件节点都带来源指纹：这样"这份文件导过没有"在**文件**一级也答得出来
         //（别的命令把同一个文件导到别处时，闸门也认得出）
         origin: makeOrigin({ file: f.abs, md: md, at: at, tool: tool })
