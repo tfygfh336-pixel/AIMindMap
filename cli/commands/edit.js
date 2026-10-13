@@ -11,6 +11,13 @@ const path = require('path');
 const markdown = require('../../src/markdown.js');
 const convert = require('../../src/convert.js');
 const assoc = require('../../src/assoc.js');
+/* ⚠️ `cli/commands/assoc.js` 的**读盘判定**（成员存在性 / 「同一篇」指纹）在这里被 `apply` 的
+ * 两条 assoc-* op 复用。从前那两条 op 调的是**本文件里并不存在**的名字
+ * （`nodeExistsIn` / `assocKeyOf` 都只在 assoc.js 里定义且**没有导出**）⇒ 预检一走就
+ * `ReferenceError`、整份 ops 被拒（实测报文：`nodeExistsIn is not defined`）。
+ * 修法只有一条：**共享那一份实现**（正规 require），绝不把函数体复制过来当第二份 ——
+ * 第二份迟早与第一份漂（`tests/apply-assoc-ops.test.js` 里有条结构断言机械地钉着这件事）。 */
+const assocCommands = require('./assoc.js');
 const links = require('../../src/links.js');
 const relations = require('../../src/relations.js');   // 条目级边：`itemKey` / `targetHasItem` 的唯一实现
 const tree = require('../../src/tree-utils.js');
@@ -1146,10 +1153,8 @@ const OPS = {
       if (raw.members === undefined) ctx.error('缺少 members（如 "a,b" 或 ["a","b"]；跨项目写 项目/节点id）');
       const parsed = assoc.parseMembers(raw.members, ctx.projectName);
       if (!parsed.ok) ctx.error(parsed.error);
-      parsed.members.forEach((m) => {
-        const r = nodeExistsIn(ctx, m.project, m.id);
-        if (!r.ok) ctx.error(r.reason);
-      });
+      // 成员存在性：与命令面 `assoc-add` **同一份策略**（`assertMembersExist`），不在这里另写循环
+      assocCommands.assertMembersExist(ctx, parsed.members);
       const id = raw.id === undefined ? null : String(raw.id);
       if (id) { const bad = checkAssocId(id); if (bad) ctx.error(bad); }
       return {
@@ -1162,8 +1167,8 @@ const OPS = {
       const candidate = { members: a.members };
       if (a.title !== undefined) candidate.title = a.title;
       if (a.note !== undefined) candidate.note = a.note;
-      const key = assocKeyOf(candidate);
-      const hit = data.assoc.find((x) => x && assocKeyOf(x) === key);
+      const key = assocCommands.assocKeyOf(candidate);
+      const hit = data.assoc.find((x) => x && assocCommands.assocKeyOf(x) === key);
       if (hit && !a.force) throw new Error('已存在成员/标题/正文完全相同的关联笔记 ' + hit.id
         + ' —— 要么改那一条（assoc-edit），要么给这条 op 加 "force": true');
       const id = a.id || assoc.genId(data.assoc);
@@ -1192,7 +1197,7 @@ const OPS = {
         // （列表里没有它，但树里可能有）
         parsed.members.forEach((m) => {
           if (m.project !== ctx.projectName) {
-            const r = nodeExistsIn(ctx, m.project, m.id);
+            const r = assocCommands.nodeExistsIn(ctx, m.project, m.id);
             if (!r.ok) ctx.error(r.reason);
           } else if (!tree.find(sim, m.id)) {
             ctx.error('节点不存在: ' + m.project + '/' + m.id);
@@ -1280,8 +1285,14 @@ function apply(ctx) {
       p.def.run(ctx, work, p.args, p.index);          // 抛错 ⇒ 整体不动（work 被丢弃，原 data 未被碰）
       return { index: p.index, op: p.op, status: 'applied', detail: p.def.summary(p.args) };
     });
-    // 把改好的**数据面**搬回原对象（只动 data.data，meta 保持原样 —— 与各命令的粒度一致）
+    /* 把改好的**数据面**搬回原对象（meta / format 保持原样 —— 与各命令的粒度一致）。
+     * ⚠️ **不只是 `data.data`**：`assoc` 是与 `data` **平级**的顶层集合（见 docs/DATA-FORMAT.md），
+     * 而 `assoc-add` / `assoc-edit` 两种 op 改的正是它 ⇒ 从前这里只搬 `data.data`，
+     * 那两种 op 的改动被**整份丢掉**，回执却照旧打印"已应用 …"（实测：真跑 exit 0、
+     * 盘上 `assoc` 一个字节都没多；用户看到的是成功、拿到的是没生效 —— 这类"静默成功"比报错贵得多）。
+     * 一并搬回顶部集合；两种 op 之外没人碰它（`OPS` 是数据面封闭表，见上面那三条硬边界）。 */
     data.data = work.data;
+    if (work.assoc === undefined) delete data.assoc; else data.assoc = work.assoc;
     return data;
   });
 

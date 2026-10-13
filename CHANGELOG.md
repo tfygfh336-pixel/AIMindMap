@@ -13,6 +13,35 @@
 > README.md 版本锁同步更新（release 命令自动完成）。
 
 ## [Unreleased]
+### 修 apply 的 assoc-* op：未导出符号 ReferenceError + assoc 顶层集合写回被整份丢掉（静默成功）（B，2026-10-14）
+
+- **两条缺陷（`apply` 的 op 表里唯一两条**零断言覆盖**的路）**：
+  ① **甲：`ReferenceError`** —— `assoc-add` / `assoc-edit` 的**预检**要调 `nodeExistsIn`（`assoc-add` 执行期还要 `assocKeyOf`），
+  而这两个名字只在 `cli/commands/assoc.js` 里**定义、没有导出**，`cli/commands/edit.js` 里既没有定义也没有 require
+  ⇒ 一跑到第 1 条 assoc-* op 就 `ReferenceError`、**整份 ops 被拒**。报文形态实测（本次判别力证明①退回接线那一档）：
+  `error: ops 文件里第 1 条操作（assoc-edit）：nodeExistsIn is not defined（…）——**整体未执行**，盘上零改动。`（exit 1）。
+  ② **乙（更毒）：回执说"已应用"、盘上一个字节没多** —— `assoc` 是项目 JSON 的**顶层**集合（与 `data` 平级，见 `docs/DATA-FORMAT.md`），
+  而 `apply` 从前只把 `work.data` 搬回原对象 ⇒ 那两种 op 的改动被**整份丢掉**，stdout 照旧打印「已应用 assoc-add：新增关联 …」、**exit 0**。
+  调用方看到的是成功、拿到的是一件没生效的事 —— 它比报错贵得多：**报错会被重试，静默成功不会**。
+- **改动逐处（两份文件，处处都是"共享那一份"而不是再抄一份）**：① `cli/commands/assoc.js` —— **纯增三行导出**
+  （`nodeExistsIn` / `assocKeyOf` / `assertMembersExist`；函数体一个字节没动，唯一实现仍在本文件里）；
+  ② `cli/commands/edit.js` —— 五处：正规 `require('./assoc.js')` + **3 个调用点**改走模块前缀（`assocCommands.*`）+ **补 `data.assoc` 的写回**
+  （`work.assoc` 为空就删键，与 `assoc-remove` 的"不留空数组噪音"同口径）。
+  为什么**不**另开 `src/` 模块：这三个判定要 `ctx.PROJECTS_DIR` + 读项目 JSON（是 CLI 侧的 IO 归属），而 `src/assoc.js` 是**无 IO 的纯逻辑**层；
+  同目录命令之间 require 在本工程已有先例，且 `cli/` 在 `scripts/dep-direction-check.js` 的 LAYERS 里是**同一层**（S1 全绿）。
+- **判别力证明（4 条，实跑；临时改动全部逐字节还原、SHA-256 相同 —— 还原哈希：`cli/commands/assoc.js` = `01708d74ba62796bb0267f9f01693d7b627924124f7a14a5751d1c241f1f77ae`、`cli/commands/edit.js` = `2560b824c76b05e963284dd7c5014ea1c345b41c1e900d908a2c296f802aedca`）**：
+  ① **退回 HEAD 的接线**（edit.js 四处裸调用 + 撤掉那条 require）⇒ `tests/apply-assoc-ops.test.js` **8 红 / 7 通过**（A1 · A3 · A4 · B1 · B2 · B3 · **D3 结构** · E2）；
+  ② **只把 `assocKeyOf` 退回裸调用**（`nodeExistsIn` 保持接线）⇒ **4 红 / 11 通过** ⇒ 证明"**最小改动**"不够：只修那个看得见的 `ReferenceError`、把另一个名字留着照样红（其中一条正是**结构断言**在守"实现只许一份"）；
+  ③ **反路恒真**（`nodeExistsIn` 一律 `ok:true`）⇒ **B1 / B2 红**（"成员不存在必须被拒 + 点名那个 id"不是恒真判据）；
+  ④ **撤顶层 `assoc` 写回**（只留 `data.data` 那半）⇒ **5 红 / 10 通过**（A1 · A2 · A3 · A4 · E2，E2 的红报文正是「回执说"已应用 assoc-add"，但项目文件**逐字节没变**（静默成功）」）。
+- **同族扫描（剥注释 + 剥字符串后找"裸调用但本文件既无定义、也无 require"）**：修前**恰好 2 个名字 / 4 处**（都在 `cli/commands/edit.js`：`nodeExistsIn` ×2、`assocKeyOf` ×2）⇒ 修后**0 处**（HEAD 与工作树逐名字逐文件对照：只少这 4 处、无新增）；
+  其余候选是同批假阳性（方法简写定义被当成调用、`for … of`、`super(`、属性同名等）—— 逐个看过，其中 `cli/commands/ui.js` 的 `probe` / `wait` / `send` 是 `runAfterLivenessProbe(probe, wait, send, …)` 的**形参**，不是缺定义。
+- **读数**：`npx vitest run tests/apply-assoc-ops.test.js` ⇒ **15 / 15** ✓；全链 `npm run verify` ⇒ **exit 0**（13 步 / **432.2s**，预算内；G5 冒烟 **372.8s / 450s**、冒烟 **225/225**、视觉 2/2）。
+  `assoc-list --json` 读侧复核：同一份真实 `projects/comnet` **exit 0 + 一份可解析 JSON**（`count` = `items.length` = 9）⇒ 读者报的"输出到 `"node": null` 就中断"**不是同因、不可复现**，按**观察侧截断**记：**没有为迎合它改任何东西**，只补了"必须 exit 0 且可解析"的断言（正例 + 没有 `assoc` 键的负例）。
+- **为什么活到 HEAD（本批最值钱的一课）**：`apply` 的 `add` / `edit` / `move` / `clone` 都有断言（W8 那批），**两条 assoc-* op 零覆盖** ⇒ 未定义符号与"写回丢失"一起溜过 —— **没有断言的路 = 不存在**。
+  新测试把一条通则推广到**每一个** op：**回执说已应用 ⇒ 项目文件必须真的变了**（`exit 0` + stdout 说已应用，而盘上逐字节没变 ⇒ 判红）；
+  且 **op 清单从"不认识的 op"那句拒绝报文里现算** ⇒ 将来新增一个 op 而没加断言 payload，覆盖度自检会**自己红**（不会悄悄漏）。
+- 服务**卖点 2**（关联性与"关联笔记"是一等公民：AI 经 `apply` 写关联与命令面走**同一份**裁定与同一份判据）+ 兑现**卖点 6**（一份事实一处实现 + 门禁不许空转：三条判别力证明验的都是"改坏了会红"）。
 
 ### 双击防误触：双击展开/折叠时抑制单击的两个副作用（不再多记访问、不再弹详情遮挡视野）；单击语义不变；并把 `#conc-panel` 补进浮层 id 清单（R1，2026-10-13）
 

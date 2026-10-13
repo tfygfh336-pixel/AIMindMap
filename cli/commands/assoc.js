@@ -131,6 +131,29 @@ function viewOf(a, topicOf) {
 }
 
 module.exports = {
+  /* ------------------------------------------------------------
+   * 共享给**本目录别的命令文件**的判定（唯一实现仍在本文件里，不复制第二份函数体）：
+   *   · `nodeExistsIn`       —— 成员节点是否真实存在（跨项目要读盘）。
+   *   · `assocKeyOf`         —— 「同一篇关联」的语义指纹（成员集合 + 标题 + 正文）。
+   *   · `assertMembersExist` —— "逐个成员都必须在"这条**策略**（上面那个循环）。
+   *
+   * 为什么导出（实测缺陷，不是"顺手开个口子"）：`apply` 的 `assoc-add` / `assoc-edit` 两种 op
+   * 在**预检**阶段要的就是这三样判定（`cli/commands/edit.js` 里正规 require 本文件取用）。
+   * 从前那两个 op 调的是"edit.js 里并不存在的名字" ⇒ 一跑到预检就 `ReferenceError`，
+   * 整份 ops 被拒（实测报文：`nodeExistsIn is not defined`）。**命令面**（assoc-add / assoc-edit）
+   * 走的是本文件内的直接引用，所以完全没暴露 —— 这也正是它能活到 HEAD 的原因：
+   * `apply` 的 assoc-* 两条 op **零断言覆盖**（现由 `tests/apply-assoc-ops.test.js` 补上，
+   * 其中一条结构断言机械地钉住"函数体只许有一份"）。
+   *
+   * 为什么**不**另开 `src/` 模块：这三个判定要 `ctx.PROJECTS_DIR` + 读项目 JSON（是 CLI 侧的 IO 归属），
+   * 而 `src/assoc.js` 是**无 IO 的纯逻辑**层（放进去会破掉那条分层）；同目录命令之间 require
+   * 在本工程已有先例（`health.js` → `recheck.js`、`project.js` → `item.js`），且 `cli/` 在
+   * `scripts/dep-direction-check.js` 的 LAYERS 里是**同一层**（同层不成环即合法）。
+   * ------------------------------------------------------------ */
+  nodeExistsIn,
+  assocKeyOf,
+  assertMembersExist,
+
   assocList(ctx) {
     const { data } = ctx.read();
     const all = Array.isArray(data.assoc) ? data.assoc : [];
