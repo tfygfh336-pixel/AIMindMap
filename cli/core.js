@@ -293,6 +293,139 @@ const WRITE_COMMANDS = Object.freeze([
   'recheck'
 ]);
 
+/* ============================================================================
+ * 【W8】写入类命令统一 `--dry-run` —— **判定 / 打印 / 短路只有这一处**
+ * ----------------------------------------------------------------------------
+ * ## 要修的问题（本工程实测的形状）
+ *   会改盘的命令里只有导入类（`import-project` / `import-dir`）与少数清理型命令会预览；
+ *   最常用的 `add` / `edit` / `move` / `link` … **写完才知道**改成了什么样。
+ *   调用方是 AI ⇒ 它只能"先写、再回读盘上变成了什么"，而写错的代价已经落在数据里了。
+ *   W8 要的是把"可校"从**写完才知道**升级成**写前就能审**。
+ *
+ * ## 契约（调用方只需记三条）
+ *   1. 任何**数据面写命令**都可带 `--dry-run`：报告"这次写盘会改动哪些对象"（**个数 + 对象键清单**），
+ *      而**一个字节都不写盘**（既不写项目 JSON，也不追加 `.changes.jsonl`）。
+ *   2. 报告里那份对象键清单**就是**真跑之后 `.changes.jsonl` 里那条 `changed` ——
+ *      两处走的是**同一个** `concurrency.changedKeys`，输入也是同一对（盘上现有数据 → 计划数据）
+ *      ⇒ "dry-run 说的 = 真跑后实际变的"是**构造保证**，不是两边各写一份口径再祈祷它们一致。
+ *   3. `--dry-run` 与 `--idem`：dry-run 不写盘 ⇒ 不算"生效" ⇒ **不查也不记**键（见 `replayCheck` 第 ② 条）。
+ *
+ * ## 为什么必须是一处（而不是每条命令各写一段 `if (args.dryRun)`）
+ *   41 条写命令各写一遍必然漂移，而漂移的方向是**最坏的那一种**：某条命令的 dry-run 分支
+ *   忘了短路 ⇒ 它**照样写盘**，回显却还说着"未写盘"（"报告骗人"）。
+ *   本工程已有两个同型的先例：`src/item-index.js` 的 `budgeted()`（预算）与主进程的 `parseStrictEnv`
+ *   —— 口径抽一处、调用方只给参数。这里照办：
+ *     · **判定**：`ctx.dryRun`（唯一读取点；命令层不许再读 `ctx.args.dryRun`，`tests/w8-dry-run.test.js` 静态把守）
+ *     · **短路**：`ctx.write` / `ctx.mutate` 两条写路径各一处 `if (this.dryRun)`（写命令只有这两条出口）
+ *     · **打印**：`planWrite()`（唯一一处报"将改哪些对象、几个"）
+ *     · **登记**：`DRY_RUN_COMMANDS`（唯一一处说"哪些命令认这个开关"）
+ *   ⚠️ 命令体里**物理副作用**（复制文件、写备份、外部进程）不在写管道里，中央拦不住 ⇒ 那几条
+ *      由命令层读同一个 `ctx.dryRun` 自己关掉（`add-image` / `add-file` / `import-md` 的资源复制）。
+ *
+ * ## 边界（如实说明，别把它当"事务预览"）
+ *   · 计划是**读一次盘、算一次**的：算完到真跑之间别人改了盘 ⇒ 真跑的结果与报告可能不同
+ *     （与真跑的并发语义一致：真跑会拒绝或自动重放，**绝不会静默覆盖**）。
+ *   · `--dry-run` 只保证"**这条命令**不写盘"：只读命令（`search` 等）照样会记访问埋点
+ *     （那是**项目目录之外**的旁路日志，见 `src/data-store.js` 的 `visitLogFile`）。
+ *   · 新建项目的命令（`init`）：真跑的日志里 `created:true` 而 `changed:[]`
+ *     ⇒ 报告也只说"会新建项目、没有既有对象被改"（**不编一份假的对象清单**）。
+ * ========================================================================== */
+
+/**
+ * dry-run 报告里每一行的行首标记（**唯一一处**）。
+ *
+ * 为什么要给命令自己的输出也加它：`add --dry-run` 的收尾回执是命令体打印的
+ * （"已添加: n-x"），中央短路管不到那句话 —— 不加标记就会出现"报告说没写盘、回显说已添加"
+ * 的自相矛盾（本工程最忌的"报告骗人"）。所以 dry-run 短路之后，命令的每一行输出都带上它。
+ */
+const DRY_RUN_TAG = '[dry-run 未写盘] ';
+
+/**
+ * 认 `--dry-run` 的命令（**唯一登记处**：registry 的选项白名单、docs 的支持集、main.js 的归属守门
+ * 都从这里**现取**，不许各写一份）。
+ *
+ * 分四类，各自写清来由（读这一段就知道"新命令该怎么登记"）：
+ *   ① **走中央短路**（本批新覆盖，命令体里**没有**任何 dry-run 分支）：单对象写 `add` / `edit` / `move` /
+ *      `remove` / `clone` / `add-root` / `expand-depth`、链接 `link` / `unlink`、关联 `assoc-*`、
+ *      条目层 `item-*` / `render-detail`、资源引用 `remove-image` / `remove-file`、项目级 `init` /
+ *      `theme-layout`。
+ *   ② **走中央短路 + 命令层关掉物理副作用**（复制资源不在写管道里）：`add-image` / `add-file` /
+ *      `import-md`。
+ *   ③ **清理型**：`links-prune` / `assoc-prune` —— 判定与短路同样走中央；它们**自己的报告文案**
+ *      （"将要删除链接: …"）是领域事实，不是机制，故留在命令里（同一份 `ctx.dryRun` 读出来）。
+ *   ④ **已有自备预览**（导入类与 AI 通道；本批**不改它们的语义**）：`apply` / `recheck` / `migrate` /
+ *      `import-project` / `import-dir` / `ask`。登记在这里只是为了让"哪些命令认 `--dry-run`"
+ *      **只有一个出处**，将来新增写命令时不会出现两处清单各自漂移。
+ *
+ * ⚠️ 手写清单（与 `WRITE_COMMANDS` 同一条纪律）：新增会改盘的命令时**同批**加进来，
+ * `tests/w8-dry-run.test.js` 会核对"清单里的命令都真的认 `--dry-run`"与"清单外的写命令都响亮拒绝"。
+ */
+const DRY_RUN_COMMANDS = Object.freeze([
+  // ① 走中央短路
+  'add', 'add-root', 'edit', 'move', 'remove', 'clone', 'expand-depth',
+  'link', 'unlink',
+  'assoc-add', 'assoc-edit', 'assoc-remove',
+  'item-add', 'item-edit', 'item-remove', 'item-move', 'item-order', 'render-detail',
+  'remove-image', 'remove-file',
+  'init', 'theme-layout',
+  // ② 中央短路 + 命令层关物理副作用
+  'add-image', 'add-file', 'import-md',
+  // ③ 清理型
+  'links-prune', 'assoc-prune',
+  // ④ 已有自备预览（原样保留）
+  'apply', 'recheck', 'migrate', 'import-project', 'import-dir', 'ask', 'ask-apply'
+]);
+
+/**
+ * 会改盘、但**明确不支持** `--dry-run` 的命令（**唯一登记处**，与 `DRY_RUN_COMMANDS` 同一纪律）。
+ *
+ * 为什么留着这唯一一条：`import-json` 建的是**新项目**，而且它的资源解包（往 assets/ 写文件）
+ * **不走 `ctx.write` 那条写管道**（ARCHITECTURE §4b 的"接线边界"：这条路按设计走裸 `store.write`）
+ * ⇒ 中央的 dry-run 短路拦它不住，给了 `--dry-run` 就会出现"说没写、其实写了"的**假报告**。
+ * 与其给一个骗人的开关，不如**响亮拒绝并说清原因与出路**（这正是 W8 要消灭的那种静默）。
+ */
+const DRY_RUN_UNSUPPORTED = Object.freeze({
+  'import-json': '它建的是**新项目**，且资源解包不走 `ctx.write` 那条写管道'
+    + '（这条命令按设计直接走 `store.write`，见 docs/ARCHITECTURE.md §4b 的"接线边界"）'
+    + '⇒ 中央的 `--dry-run` 短路拦不住它，给了这个开关就会得到一份"说没写、其实写了"的假报告。'
+    + '要看它会建成什么样：把 `AI_MINDMAP_PROJECTS_DIR` 指到一个临时目录里先真导一次'
+    + '（那条路径是给沙箱用的，见本文件顶部的说明）。'
+});
+
+/**
+ * `--dry-run` 的**归属守门**（纯函数、无 IO ⇒ 可单测）：这条命令带 `--dry-run` 到底行不行。
+ *
+ * 三种结局，各有各的话（**不静默忽略**是这条函数的全部意义 —— 调用方是 AI，
+ * 它会把"命令跑通了"当成"我审过了"）：
+ *   · 认这个开关（在 `DRY_RUN_COMMANDS` 里）⇒ `null`（放行）
+ *   · 会改盘但明确不支持（`DRY_RUN_UNSUPPORTED`）⇒ 说清**为什么**与**出路**
+ *   · 其余（只读命令 / 不碰项目数据面）⇒ 说清"它不写盘，用不上"，并指回清单
+ *   · **带了值**（`--dry-run=false` 这类两态写法）⇒ **响亮拒绝**：它是**纯开关**，
+ *     "不干跑"就是把开关去掉。照 `--repoint-items` 的先例（带 `=` 的形态走通用分支、
+ *     登记表管不到 ⇒ 那种写法一律拒绝，别让它悄悄流进"只认布尔"的地方）。
+ *     ⚠️ 为什么这条重要：若把 `--dry-run=false` 当成"开"，一次**想要真写**的调用会变成预览
+ *     （**没写盘而调用方以为写了** —— 另一种静默）；当成"关"又会把 `--dry-run=true` 也带偏。
+ *     两种猜法都危险 ⇒ 唯一的正解是**不猜**。
+ *
+ * @param {string} name 命令的**正式名**（别名已由 registry 归一）
+ * @param {*} raw `--dry-run` 的**原始值**（没给 = `undefined`；裸写 = `true`）
+ * @returns {string|null} 拒绝报文（放行时 `null`）
+ */
+function dryRunRefusal(name, raw) {
+  if (raw === undefined || raw === null || raw === false) return null;   // 没给这个开关 ⇒ 不管
+  if (raw !== true) {
+    return '--dry-run 是**纯开关**（不带值）：写法 `… --dry-run`。'
+      + '要"不干跑"就把这个开关去掉（`--dry-run=false` 这类两态写法本工程一律**响亮拒绝**，'
+      + '理由与 `--repoint-items` 同一条：带 `=` 的形态不受纯布尔登记表保护，猜错方向两种都危险）。'
+      + '（收到 ' + JSON.stringify(raw) + '）';
+  }
+  if (DRY_RUN_COMMANDS.indexOf(name) >= 0) return null;
+  const why = DRY_RUN_UNSUPPORTED[name];
+  if (why) return '--dry-run 对 ' + name + ' **不可用**：' + why;
+  return '--dry-run 只对**会改盘的命令**有意义：' + name + ' 不写盘（它写的是项目数据之外的东西，'
+    + '或者只是读）⇒ 没有"将改哪些对象"可报。写命令清单见 cli/core.js 的 DRY_RUN_COMMANDS。';
+}
+
 /**
  * 幂等命中：命令体**根本没跑**，由 `cli/main.js` 的 dispatch 接住并回放首次结果。
  * 用异常而不是返回值传递，是因为"不重复执行"必须能**从任意深度短路**（`replayCheck`
@@ -402,6 +535,17 @@ function createContext(argv, meta) {
   let replayChecked = false;
   /** 幂等命中时回放的载荷（`cli/main.js` 读它 —— 判定与输出处只有那一处） */
   let replayPayload = null;
+  /* ---------------- 【W8】--dry-run 的本次状态（判定见 `ctx.dryRun`，算法见 `planWrite`） ----------------
+   * `dryRunReported` 一旦置位，说明"这条命令的计划已经报过、并且真的没写盘" ⇒ 之后命令自己的
+   * 收尾回显要带上 `DRY_RUN_TAG`（否则"已添加: n-x"会把一次没写盘的调用说成写成了）。 */
+  let dryRunReported = false;
+  /** 最近一次报告的计划（`--json` 时并进 JSON 的 `plan` 字段 —— 机器可判，不必解析中文） */
+  let dryRunPlan = null;
+  // 归属守门：认不认 `--dry-run` 只有 `dryRunRefusal` 一处判（报文与 main.js 的守门逐字相同）
+  {
+    const refusal = dryRunRefusal(cmdName, args.dryRun);
+    if (refusal) throw new Error(refusal);
+  }
   /** `read()` 读到的版本指纹。写回时交给 data-store 的**并发版本闸门**：
    *  若读与写之间别处写入过，写入会中止并报错，而不是静默抹掉那次改动。 */
   let readVersion;
@@ -458,6 +602,58 @@ function createContext(argv, meta) {
         + ((err && err.message) || err));
     }
   }
+  /**
+   * 读"盘上现在这一版"给 dry-run 的计划用（**只读**；`store.read` 失败 = 盘上没有这个项目 ⇒ `null`）。
+   *
+   * 为什么允许失败不抛：`init` 这类命令的 dry-run 目标就是"盘上还没有的项目"
+   * （真跑的日志里那条是 `created:true` + `changed:[]` —— 报告照这个说，不编假清单）。
+   */
+  function readBeforeForPlan() {
+    try { const r = store.read(projectName); readVersion = r.version; return r.data; }
+    catch (e) { return null; }
+  }
+
+  /**
+   * 【W8】dry-run 计划：**唯一一处**计算并打印"这次写盘将改动哪些对象"。
+   *
+   * ③ 号判据（报告与真跑一致）靠的是**同一个函数、同一对输入**，不是靠盘后核对：
+   *   真跑的 `changed` 由 `src/data-store.js` 的 `recordChange` 用
+   *   `concurrency.changedKeys(oldData, data)` 现算；这里用**同一个** `changedKeys` 算
+   *   `(盘上现有数据, 计划数据)`，并按同一口径 `.sort()`（`buildEntry` 也 sort）⇒ 两份清单可**逐字比对**。
+   *
+   * @param {object|null} before 盘上现有数据（`null` = 盘上没有这个项目 ⇒ 真跑记 `created:true`/`changed:[]`）
+   * @param {object} after 计划写下去的那份数据
+   * @returns {{created:boolean, changed:string[], changedCount:number}} 计划（`--json` 时并进输出）
+   */
+  function planWrite(before, after) {
+    const created = (before === null || before === undefined);
+    const changed = created ? [] : Array.from(concurrency.changedKeys(before, after)).sort();
+    /**
+     * 按对象**类型**归一的计数（`node:` / `children:` / `items:` / `item:` / `assoc:` / `meta` / `format`）。
+     *
+     * 为什么要多这一维：`add` / `clone` / `item-add` 会**现摇新 id**（`idGen` 含时间与随机，
+     * 见 `src/markdown.js`）⇒ 计划里的 `node:<新id>` 与真跑后的 `node:<另一个新id>` **逐字不同**
+     * （那是 id 生成器的随机性，不是两条口径）。类型计数把"改了什么"里**与随机无关**的那一半
+     * 变成可逐字比对的读数：真跑日志的 `changed` 按同一套前缀归一后，两份类型计数必须相等 ✓。
+     */
+    const byKind = {};
+    changed.forEach((k) => { const kind = k.indexOf(':') < 0 ? k : k.slice(0, k.indexOf(':')); byKind[kind] = (byKind[kind] || 0) + 1; });
+    const kindText = Object.keys(byKind).sort().map((k) => k + ' ' + byKind[k]).join(' · ');
+    const plan = { created: created, changed: changed, changedCount: changed.length, byKind: byKind };
+    if (!args.json) {
+      process.stdout.write(DRY_RUN_TAG + (created
+        ? '这次跑真命令会**新建**项目（没有既有对象会被改动；真跑的变更日志里 `created:true`、`changed:[]`）'
+        : '这次写盘将改动 ' + changed.length + ' 个对象'
+          + (kindText ? '（' + kindText + '）' : '（数据面上不会有任何改动）')
+          + (changed.length ? '：' + changed.join('、') : '')) + '\n');
+      process.stdout.write(DRY_RUN_TAG + '上面这份清单就是真跑后 .changes.jsonl 里那条 `changed`；'
+        + '本次**一个字节都没写**（项目文件与变更日志都逐字节未动 ✓）\n');
+    }
+    dryRunReported = true;
+    dryRunPlan = plan;
+    return plan;
+  }
+
   const ctx = {
     store,
     args,
@@ -526,12 +722,21 @@ function createContext(argv, meta) {
     },
 
     out(text) {
-      process.stdout.write(text + '\n');
+      // 【W8】dry-run 短路之后，命令自己的回显也带上标记（见 DRY_RUN_TAG 的注释）：
+      // 只给**每条消息的首行**加 —— 多行的续行属于同一条消息（`refBlockedError` 那种）。
+      // `--json` 时不加：那个消费者的 stdout 必须仍是**一份**可解析的 JSON（标志改从 JSON 字段里读）。
+      const body = (dryRunReported && !args.json) ? DRY_RUN_TAG + String(text) : String(text);
+      process.stdout.write(body + '\n');
       captured.text.push(String(text));
       captureDirty = true;
     },
     // `--compact` 时输出单行 JSON：**机器消费者零损失**，省掉的纯是缩进与换行。
     outJson(obj) {
+      // 【W8】dry-run 短路之后：JSON 消费者同样要能分辨"这是计划、没写盘" —— **只增字段**
+      if (dryRunReported && obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        obj.dryRun = true;
+        obj.plan = dryRunPlan;
+      }
       process.stdout.write(JSON.stringify(obj, null, args.compact ? 0 : 2) + '\n');
       captured.json = obj;
       captureDirty = true;
@@ -540,6 +745,17 @@ function createContext(argv, meta) {
 
     /** 幂等键（`--idem <键>`；没给 = `null`）。校验在第一次写时做，见 `replayCheck`。 */
     idemKey: null,
+
+    /**
+     * 【W8】`--dry-run` 的**唯一读取点**。
+     *
+     * 命令层要判"这是预览还是真跑"（清理型命令的报告文案、资源复制类的物理副作用）**只读它**，
+     * 不许各自去读 `ctx.args.dryRun`：判定入口一多，就必然出现"某条命令读错键名 ⇒ dry-run 静默失效、
+     * 照样写盘"（本工程实测过同型的一次：`dsh-ask` 第一版把 `--dry-run` 写成 `ctx.args['dry-run']`，
+     * 于是它**静默忽略**了标志、真的烧了一次模型调用 —— 见 cli/commands/dsh-ask.js 的注释）。
+     * `tests/w8-dry-run.test.js` 静态把守这条契约（`cli/commands/*.js` 里出现 `args.dryRun` 即红）。
+     */
+    get dryRun() { return args.dryRun === true; },
 
     /**
      * **幂等守卫**（写命令的"重试安全"就靠这一个入口）。
@@ -626,6 +842,9 @@ function createContext(argv, meta) {
       // 命中 ⇒ 抛 IdemReplay（**命令体到此为止**，一次盘都不写），由 cli/main.js 回放首次结果。
       this.replayCheck();
       if (data === SKIP_WRITE) return data;      // 命令明确说"这次别写"（见 SKIP_WRITE 的注释）
+      // ---- 【W8】--dry-run：**在任何写盘动作之前短路**（两条写路径里的一条；另一条见 mutate）----
+      // 位置：在 SKIP_WRITE **之后** —— 命令自己说"这次别写"时不必报一份计划（它随后会抛拒绝原因）。
+      if (this.dryRun) { planWrite(readBeforeForPlan(), data); return data; }
       beginWrite();
       markRecord();                              // 回显在命令体跑完时才补全（见 markRecord）
       // expectVersion 来自本 ctx 最近一次 read()。命令若没读过就直接写（如 import-json
@@ -662,6 +881,19 @@ function createContext(argv, meta) {
       // ---- 幂等守卫（S7）：与 ctx.write 走的是**同一处**判定（幂等不是第二条写路径，是同一道闸）----
       // ⚠️ 位置：必须在 withReplay 之前 —— 命中时连读改写都不该发生（零盘面动作才是"不重复执行"）。
       this.replayCheck();
+      // ---- 【W8】--dry-run：在**内存里的一份拷贝**上跑**同一个改动函数**，只报告"将改哪些对象" ----
+      // 为什么要跑 fn（而不是"命令自己列个清单"）：报告与真跑一致（判据③）的唯一可靠做法就是
+      // **同一份逻辑**算两遍 —— 拷贝用的也是 withReplay 用的那个 `concurrency.clone`。
+      // 边界（如实说）：fn 里的 `ctx.error`（节点不存在 / 重复拒绝 / 条目悬挂…）会照真跑那样抛出来
+      // ⇒ dry-run 与真跑**同一套判据**（"预览说能导、真跑被拒"是 W8 最想消灭的那种落差 ✗）。
+      if (this.dryRun) {
+        const pre = store.read(projectName);          // 只读；项目不存在 ⇒ 这里就响亮报（与真跑一致）
+        readVersion = pre.version;
+        const planned = fn(concurrency.clone(pre.data));
+        if (planned !== SKIP_WRITE) planWrite(pre.data, planned);
+        // 返回值形状与 withReplay 逐字一致（命令体读 `data` / `attempts` / `merged` 三样）
+        return { data: planned, attempts: 1, merged: false };
+      }
       // 回显快照的取法同 ctx.write（首次写成功那一刻定下来；见那里的注释）。
       // 注意 withReplay **可能**因并发冲突写两次（自动重放到最新版），但只有**第一次成功**的
       // 那次会把快照取走 ⇒ 快照永远是"第一次真的写下去时的回显" ✓
@@ -695,5 +927,7 @@ module.exports = {
   createContext, parseArgs, optionKey, unknownOptions, parseIntOption, optionFlag, PROJECTS_DIR,
   unknownShortOptions, SHORT_OPTIONS,
   // ---- 写管道流（S7）：幂等键 ----
-  IdemReplay, SKIP_WRITE, GLOBAL_OPTIONS, IDEM_MAX, WRITE_COMMANDS, normalizeIdemKey, readChangeEntries
+  IdemReplay, SKIP_WRITE, GLOBAL_OPTIONS, IDEM_MAX, WRITE_COMMANDS, normalizeIdemKey, readChangeEntries,
+  // ---- 【W8】写入类命令统一 --dry-run（判定 / 打印 / 短路 / 登记各只一处）----
+  DRY_RUN_COMMANDS, DRY_RUN_UNSUPPORTED, DRY_RUN_TAG, dryRunRefusal
 };

@@ -317,6 +317,44 @@ const TOOLS = [
   })
 ];
 
+/* ---------------- 【W8】`--dry-run` 的 MCP 面：**只加参数、不新增工具**（工具数仍 51） ----------------
+ * 「CLI 能做的，MCP 都能做」是 §1.3 的承诺 ⇒ W8 的开关必须在 MCP 侧也够得着，否则 CLI 报文里那句
+ * "去掉 --dry-run 才会真的应用"对走 MCP 的 AI 就是一条**指不到东西的出路**（与 `--no-heat` 那次同一条理由）。
+ */
+/**
+ * tool → CLI 命令 的**唯一映射**（只列认 `--dry-run` 的**写类**工具）。
+ *
+ * 一张表喂两处，故**不会漂移**（这正是不逐个 case 手写的原因）：
+ *   ① `tools/list` 的 schema —— 给这些工具注入 `dry_run` 参数（模型看不见就用不上）；
+ *   ② `callTool` 的转发 —— `dry_run: true` ⇒ 本工具这一拍的 argv 末尾加 `--dry-run`。
+ * ⚠️ 命令名必须与 `cli/core.js` 的 `DRY_RUN_COMMANDS` 对得上 —— `tests/w8-dry-run.test.js` 机械核对
+ *    （并核对工具数没变、`--dry-run` 的判定与短路仍只在 CLI 侧那一处）。
+ * ⚠️ `import_json` **不在本表**（盘上没有这个项目、资源解包又不走写管道 ⇒ 给了它只会得到假报告；
+ *    理由与出路在 `cli/core.js` 的 `DRY_RUN_UNSUPPORTED`，MCP 侧照旧把 CLI 的拒绝报文原样带回来）。
+ */
+const DRY_RUN_TOOL_CMD = {
+  add_node: 'add', add_root: 'add-root', edit_node: 'edit', move_node: 'move', remove_node: 'remove',
+  clone_node: 'clone', expand_depth: 'expand-depth', theme_layout: 'theme-layout',
+  link_nodes: 'link', unlink_nodes: 'unlink',
+  assoc_add: 'assoc-add', assoc_edit: 'assoc-edit', assoc_remove: 'assoc-remove', assoc_prune: 'assoc-prune',
+  links_prune: 'links-prune',
+  add_image: 'add-image', remove_image: 'remove-image', add_file: 'add-file', remove_file: 'remove-file',
+  import_markdown: 'import-md', import_project: 'import-project', import_dir: 'import-dir',
+  item_add: 'item-add', item_edit: 'item-edit', item_remove: 'item-remove', item_move: 'item-move',
+  item_order: 'item-order', render_detail: 'render-detail',
+  ask: 'ask'
+};
+/** `dry_run` 参数的一句话说明（**一处** —— schema 注入的每个工具都印同一句，别各写一份） */
+const DRY_RUN_DESC = '**只预览、不写盘**（对应 CLI 的 --dry-run）：报告"这次写盘会改动哪些对象'
+  + '（个数 + 对象键清单 + 按类型的计数）"，而项目文件与变更日志**一个字节都不写**。'
+  + '报告里那份清单就是真跑之后 `.changes.jsonl` 里那条 `changed` ⇒ 可以先审、再执行；'
+  + '真要写就去掉这个参数。`--json` 档的返回里另有 `dryRun:true` 与 `plan`。';
+TOOLS.forEach((t) => {
+  if (!DRY_RUN_TOOL_CMD[t.name]) return;
+  if (!t.inputSchema.properties) t.inputSchema.properties = {};
+  t.inputSchema.properties.dry_run = b(DRY_RUN_DESC);
+});
+
 /* ---------------- JSON-RPC 错误码（**协议级**） ----------------
  * 边界（**只在这里判一次**，别在别处再判一遍）：
  *   · **协议级** —— 方法不存在 / 工具不存在 / 参数不合法 ⇒ JSON-RPC `error`（-32601 / -32602）。
@@ -336,6 +374,11 @@ const RPC = {
 };
 
 /* ---------------- 执行：构造 mm-cli 参数并转发 ---------------- */
+/**
+ * 真正起 CLI 子进程的那一处（**唯一**）。
+ * 导出名仍是 `runCli`（见文件末的 module.exports —— `scripts/doc-facts.js` 与单测都在用它），
+ * 但**工具层**的调用走的 `callTool` 里那个同名的局部转发器（它只管"多带一个开关"，逻辑在这里）。
+ */
 function runCli(args) {
   const res = spawnSync(process.execPath, [CLI].concat(args), {
     cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
@@ -349,6 +392,14 @@ function runCli(args) {
   if (res.status !== 0 || /^error:/.test(text)) return { ok: false, text: text || 'mm-cli exited ' + res.status };
   return { ok: true, text: text || '(empty)' };
 }
+
+/**
+ * `callTool` 里那个**工具层转发器**用的名字。
+ * 为什么要有这个别名：`callTool` 内部声明了一个同名的局部 `runCli`（【W8】dry-run 的唯一转发点，
+ * 它要在 argv 里多带一个开关）—— 局部名会遮蔽模块级的这个函数，于是转发器改从这里回去。
+ * 只起别名、不改实现 ⇒ 导出名与行为逐字不变（`scripts/doc-facts.js` 与单测都按 `runCli` 用它）。
+ */
+const spawnCli = runCli;
 
 /**
  * `search_nodes` 的**共用选项拼装**（`search` 与 `search-all` 两个模式各用一次，但映射只写这一份）。
@@ -408,6 +459,14 @@ function callTool(name, args) {
     };
   }
   const argOf = (k) => (a[k] === undefined || a[k] === null) ? undefined : String(a[k]);
+  /* 【W8】`--dry-run` 的**唯一转发点**：调用方传 `dry_run: true` ⇒ 本工具这一拍的 argv 末尾统一加
+   * `--dry-run`（**判定与短路仍在 CLI 侧那一处**，见 cli/core.js 的 planWrite —— MCP 只搬参数，不复制逻辑）。
+   * 为什么不逐个 case 加：那要写 30 遍，而漏掉的那一条会**静默降级成真写**（正是 W8 要消灭的那种病）。
+   * ⚠️ 只对 `DRY_RUN_TOOL_CMD` 里登记过的工具生效 —— 与上面那次 `inputSchema.dry_run` 的注入**同一张表**
+   *    ⇒ "schema 里写了、转发时漏了"这种漂移不可能发生。
+   * ⚠️ `argv.indexOf('--dry-run') < 0`：case 自己已经加过时不重复（argv 里两个同义开关是噪音）。 */
+  const runCli = (argv) => ((a.dry_run === true && DRY_RUN_TOOL_CMD[name] && argv.indexOf('--dry-run') < 0)
+    ? spawnCli(argv.concat(['--dry-run'])) : spawnCli(argv));
   switch (name) {
     case 'projects': return runCli(['projects', '--json']);
     case 'read_project': {
@@ -788,4 +847,8 @@ if (require.main === module) startStdioServer();
 
 // 导出供 scripts/doc-facts.js 等工具读取（工具数/签名是文档基线的一部分）；
 // `handleMessage` / `RPC` 导出是为了让协议形状能被单测直接钉住（见 tests/mcp-protocol.test.js）
-module.exports = { TOOLS, callTool, runCli, startStdioServer, handleMessage, RPC, VERSION };
+module.exports = { TOOLS, callTool, runCli, startStdioServer, handleMessage, RPC, VERSION,
+  // 【W8】tool → CLI 命令的映射（只列认 `--dry-run` 的写类工具）：
+  // 导出是为了让 `tests/w8-dry-run.test.js` 机械核对"schema 里挂了这个参数的每个工具，
+  // 它对应的 CLI 命令都真的在 `cli/core.js` 的 DRY_RUN_COMMANDS 里"（映射不许漂移）
+  DRY_RUN_TOOL_CMD };

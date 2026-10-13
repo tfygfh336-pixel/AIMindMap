@@ -891,12 +891,12 @@ module.exports = {
     /* 【W19】资源引用：dry-run **只规划**（不复制、不建目录、不改树），真导才落地 ——
      * 两侧是同一个函数、同一个 `ok` ⇒ 不会出现"预览说能导、真导被拒"（见 registry 里 import-dir 的
      * 同类约定：预览与真导必须同一份判据）。 */
-    const refPlan = ctx.args.dryRun
+    const refPlan = ctx.dryRun
       ? markdown.resolveImportRefs(themes, Object.assign({ dryRun: true }, refResolveOpts(ctx, name, file)))
       : null;
     const refBlocked = !!(refPlan && !refPlan.ok);
 
-    if (ctx.args.dryRun) {
+    if (ctx.dryRun) {
       const heads = conv.md.split('\n').filter((l) => /^#{1,6}\s+\S/.test(l)).slice(0, 8);
       const out = {
         ok: true, dryRun: true, project: name, file: file, format: conv.format,
@@ -1083,7 +1083,7 @@ module.exports = {
       + (topLevel.length ? '：' + topLevel.slice(0, 12).map((t) => t.topic + (t.kind === 'dir' ? '/' : '')).join(' ') : '');
 
     const report = {
-      ok: true, dryRun: !!ctx.args.dryRun, project: name, dir: dir, dirRef: dirRef, title: title,
+      ok: true, dryRun: !!ctx.dryRun, project: name, dir: dir, dirRef: dirRef, title: title,
       ext: scan.ext, maxFiles: maxFiles,
       containers: containers, files: filesImported, nodes: nodes,
       formats: byFormat, topLevel: topLevel,
@@ -1106,7 +1106,7 @@ module.exports = {
       forced: forced
     };
 
-    if (ctx.args.dryRun) {
+    if (ctx.dryRun) {
       /* 【批6】资源引用也一并**预览**：`dryRun` ⇒ 只规划（不复制文件、不建目录、不改树），
        * 走的是与真导**同一个函数、同一份判据** ⇒ 不会出现"预览说会落、真导没落"的落差 ✓ */
       const dirRefs = resolveDirImportRefs(ctx, name, built, true);
@@ -1234,8 +1234,12 @@ module.exports = {
      * 两条顺序硬约束（都对着既有教训）：
      *   ① **判据不通过就 `ctx.error`**，此时复制一个字节都还没发生（规划先行）⇒ 不会留半份资源；
      *   ② 复制在 `ctx.mutate` **之外**（同 `cli/commands/assets.js` 的做法）：那个 fn 可能被并发重放，
-     *      放里面会复制出第二份孤儿文件 —— 改好的 `added` 已经捕获进闭包，重放看到的就是同一份 ✓ */
-    const refs = markdown.resolveImportRefs(added, refResolveOpts(ctx, ctx.projectName, file));
+     *      放里面会复制出第二份孤儿文件 —— 改好的 `added` 已经捕获进闭包，重放看到的就是同一份 ✓
+     * 【W8】`--dry-run`：**资源复制也要一起关掉**（`dryRun` 传进同一个解析函数 —— 它内部
+     *   `if (o.dryRun) return` 那条路就是"规划齐全、一个文件都不复制"，与 import-project 预览同一份实现）。
+     *   不关的后果：`import-md … --dry-run` 会往 assets/ 里真复制，而报告说着"一个字节都没写" ✗。 */
+    const refs = markdown.resolveImportRefs(added, Object.assign(
+      { dryRun: ctx.dryRun }, refResolveOpts(ctx, ctx.projectName, file)));
     if (!refs.ok) ctx.error(refBlockedError(refs, file));
     ctx.mutate((cur) => {
       const parentNode = ctx.tree.find(cur.data, parent);
@@ -1258,7 +1262,8 @@ module.exports = {
     }
     ctx.out('来源指纹: ' + docImport.describeOrigin(origin));
     // 【W19】资源回显（如实报告）：复制了什么、哪条已在项目内、哪条远程引用被按正文保留
-    printRefReport(ctx.out, refs);
+    // 【W8】`dry` 档由 `ctx.dryRun` 决定（同一份报告函数：措辞从"已复制"变成"将复制" + 末尾预览说明）
+    printRefReport(ctx.out, refs, ctx.dryRun);
   },
 
   exportMd(ctx) {

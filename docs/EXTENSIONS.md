@@ -80,6 +80,22 @@
 > （排序唯一实现处仍是 `orderByHeat`；跨项目**不做重排**，理由写在 `cli/commands/project.js` 的 `scanAll`）。
 > 两条硬上限（命中总数 / 扫描耗时）与它们的报文在 `src/item-index.js` 的 `scanGate`（唯一一处）；
 > MCP 侧**不新增工具**（仍是 51 个）：`search_nodes` 少给 `project` 即走全库档、`scope` 收窄。
+>
+> **写入类命令的 `--dry-run`（W8，2026-10-13）**：**数据面写命令统一支持**这个开关 ——
+> 先报告"这次写盘会改动哪些对象"（**个数 + 对象键清单 + 按类型的计数**），而**一个字节都不写盘**
+> （项目 JSON 与 `.changes.jsonl` 都逐字节未动）。三条契约：
+>   ① 报告里那份清单**就是**真跑之后 `.changes.jsonl` 里那条 `changed`（两处走同一个
+>      `src/concurrency.js` 的 `changedKeys`、输入是同一对：盘上现有数据 → 计划数据）⇒
+>      "dry-run 说的 = 真跑后实际变的"是**构造保证**，不是两边各写一份口径再祈祷它们一致；
+>   ② 报告与真跑**同一套判据**：dry-run 期照样会拒绝（节点不存在 / 重复拒绝 / 悬空引用…），
+>      且报同一句话 —— "预览说能写、真跑被拒"这种落差不存在；
+>   ③ `--dry-run` 与 `--idem` 互不影响：dry-run 不写盘 ⇒ 不算"生效" ⇒ **不查也不记**幂等键。
+> **登记只有一处**（`cli/core.js` 的 `DRY_RUN_COMMANDS`）：registry 的选项白名单由它**现取**，
+> 命令层判定统一读 `ctx.dryRun`（不许各读 `ctx.args.dryRun`），打印与短路在 `ctx.write` / `ctx.mutate`
+> 两个写出口各一处（`planWrite`）。**唯一不支持的是 `import-json`**（它建新项目、资源解包又不走写管道
+> ⇒ 给了这个开关只会得到假报告），带它会被**响亮拒绝**并说明原因与出路（`DRY_RUN_UNSUPPORTED`）。
+> MCP 侧**不新增工具**（仍是 51 个）：29 个写类工具多一个 `dry_run` 参数（`import_json` 故意没有）。
+> 判据：`tests/w8-dry-run.test.js`（①零字节 ②报告可解析 ③报告⇄日志逐字一致 ④注入证明 + "一处实现"静态把守）。
 
 ### 1.3 MCP 工具（面向支持 MCP 的 agent）
 

@@ -5027,6 +5027,392 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   }
 }
 
+/* ============================================================
+ * W8-集成断言原文.js —— 「写入类命令统一 `--dry-run`」的**集成断言原文**
+ * （放行窗口由整合流贴进 `scripts/cli-integration.js`；本文件**不是**可执行脚本，只是那段源码的存放处）
+ * ------------------------------------------------------------
+ * 判据出处：`.review/20261010-卖点与功能-常驻讨论/待做清单.md` 的
+ * `## W8｜写入类命令统一 --dry-run` 一节（四条判据逐条对应到下面各 check 的名字）。
+ * 单测侧（可重复执行、进程内、临时沙箱，**24 用例**）：`tests/w8-dry-run.test.js`。
+ * 本段**不重复**那 23 条，只把"必须在**真实工程 + 真实 projects/ 根**上跑一遍才作数"的那几条接到集成链上。
+ *
+ * ## 怎么贴（四句话）
+ *   1) 位置：**S2（热度条第二件）那一段之后、`/* ---------------- 清理 ---------------- *\/` 之前**，
+ *      整段原样粘（已写成独立块 `{ … }`：自带 `finally` 收尾、自删全部探针、**不需要动末尾的清理段**）。
+ *   2) 探针一律 `it-probe-w8-` 前缀 ⇒ 文件顶部 `sweepStaleProbes()` 的前缀表（`it-probe-`）**已覆盖**，
+ *      被中断留下的残留下次跑链会被自动清掉 ✓。
+ *   3) 贴完**必须**跑一次 `npm run facts:write`：`scripts/doc-facts.js` 按 `/^\s*check\(/gm` 静态数集成断言数，
+ *      本段新增的 check 都会被算进去 ⇒ 不重生成 `docs/VERIFY.md` 就会在 G6 报"断言数对不上"（那正是 G6 该做的事）。
+ *   4) 本段**一条写死计数都没有**（工具数那一拍也是**现算**：读 `docs/VERIFY.md` 的基线行，
+ *      再与 `require(…).TOOLS.length` 比 —— 见下面 `W8·MCP 面` 那条的注释）。
+ *
+ * ## 这一节守什么（每条对着 W8 的一条判据）
+ *   · 判据①（`--dry-run` 之后盘上**逐字节零变化**）：`W8·判据①`（单条）+ `W8·判据①（覆盖）`（逐条覆盖）
+ *   · 判据②（报告给出**将改的对象与数量**）：`W8·判据②`
+ *   · 判据③（⭐ **报告与真跑结果一致**）：`W8·判据③（逐字）` + `W8·判据③（类型计数）` + `W8·判据③（拒绝一致）`
+ *   · 判据④（**注入证明**）：本文件里那条"零变化"断言就是注入会打红的断言；真实注入报文、还原后的
+ *     SHA-256 与复绿读数在交付说明里（集成链上不做注入 —— 它会改仓库文件）。
+ *   · 另加三条**边界**：`W8·旁路`（连变更日志都不多一条）/ `W8·边界`（不认这个开关的命令响亮拒绝）/
+ *     `W8·一处实现`（命令层不许各读 `ctx.args.dryRun`）/ `W8·MCP 面`（只加参数、不新增工具）。
+ *
+ * ## 判别力（每条断言"哪行代码坏了会让它红"）
+ *   · 把 `cli/core.js` 的 `planWrite` 短路删掉（dry-run 照样写盘）⇒ `W8·判据①` 与两条 `判据③` **必红**
+ *     （实测：8 条单测红、15 条绿，报文见交付说明）。
+ *   · 改坏 `planWrite` 的清单口径（例如不 `.sort()`、或用别的函数算差异）⇒ `W8·判据③（逐字）` **必红**。
+ *   · 把 `DRY_RUN_COMMANDS` 与 registry 的派生关系断开（某条命令不再认这个开关）⇒
+ *     `W8·判据①（覆盖）` 里的"每条 argv 的首个 token 都在支持集里"那半句 **必红**。
+ *   · 把 `dryRunRefusal` 的拒绝报文换成"未知选项"⇒ `W8·边界` **必红**（那里逐字点名了"不可用/新项目"）。
+ *
+ * ⚠️ 本段**只增断言**，不改任何既有断言的语义；MCP 那一拍是**真 require**（不起子进程、不发 stdio）。
+ * ⚠️ 段内**不要**写成"行内斜杠紧跟圈号"的样子（G9 会把那当判定标记计数，见 cli-integration.js 文件头）。
+ * ============================================================ */
+{
+  const w8core = require(path.join(ROOT, 'cli', 'core.js'));          // 支持集 / 标记 / 拒绝判定的唯一实现处
+  const w8mcp = require(path.join(ROOT, 'scripts', 'mcp-server.js'));  // MCP 参数面（工具数基线现算，见下）
+  const w8im = require(path.join(ROOT, 'src', 'item-model.js'));       // renderDetail：条目化节点的 detail 真源
+  const w8changes = require(path.join(ROOT, 'src', 'changes.js'));     // 变更日志解析（判据③的右边那一半）
+
+  const W8TAG = Date.now().toString(36);
+  const W8SRC = 'it-probe-w8-src-' + W8TAG;
+  const W8DST = 'it-probe-w8-dst-' + W8TAG;
+  const W8LNK = 'it-probe-w8-lnk-' + W8TAG;
+  const W8ASC = 'it-probe-w8-asc-' + W8TAG;
+  const W8NEW = 'it-probe-w8-new-' + W8TAG;
+  const W8ALL = [W8SRC, W8DST, W8LNK, W8ASC, W8NEW];
+  const w8dir = (n) => path.join(w8core.PROJECTS_DIR, n);
+  const w8file = (n) => path.join(w8dir(n), n + '.json');
+
+  const W8ITEMS = [
+    { id: 'i-1', type: 'text', html: '<p>一</p>', at: '2026-01-01T00:00:00.000Z', by: 'cli:init' },
+    { id: 'i-2', type: 'text', html: '<p>二</p>', at: '2026-01-01T00:00:00.000Z', by: 'cli:init' }
+  ];
+
+  /** 直接写盘造项目（同 W1 / S2 段的手法：夹具与断言都不依赖命令本身） */
+  const w8write = (n, obj) => {
+    fs.mkdirSync(w8dir(n), { recursive: true });
+    fs.writeFileSync(w8file(n), JSON.stringify(obj, null, 2), 'utf8');
+  };
+  /** 源项目：普通节点（带子节点/详情）+ 条目化节点 + 带图附件节点 + 一条关联笔记 + 一条已存在的出边 */
+  const w8src = () => ({
+    meta: { name: 'W8 集成探针源', author: '', version: '0.18.0', formatVersion: 3 },
+    format: 'node_tree',
+    data: {
+      id: 'root', topic: 'W8 集成探针源', expanded: true,
+      children: [
+        { id: 'n-a', topic: '甲', detail: '<p>甲正文</p>', tags: ['t1'], expanded: true,
+          links: [{ project: W8DST, id: 'd-1', caption: '指向目标节点' }],
+          children: [{ id: 'n-a1', topic: '甲一', children: [] }] },
+        { id: 'n-b', topic: '乙', expanded: true, children: [] },
+        { id: 'n-it', topic: '条目化节点', expanded: true, children: [],
+          items: W8ITEMS, detail: w8im.renderDetail(W8ITEMS) },
+        { id: 'n-img', topic: '带图', expanded: true, children: [],
+          images: [{ file: 'assets/a.png', caption: '图一' }],
+          files: [{ file: 'attachments/a.md', caption: '附件一' }] }
+      ]
+    },
+    assoc: [{ id: 'a-1', title: '关联一', members: [
+      { project: W8SRC, id: 'n-a' }, { project: W8SRC, id: 'n-b' }] }]
+  });
+  /** 夹具重置（每条断言都从**同一个已知状态**出发 ⇒ 与执行顺序无关） */
+  const w8reset = () => {
+    W8ALL.forEach((n) => fs.rmSync(w8dir(n), { recursive: true, force: true }));
+    w8write(W8SRC, w8src());
+    w8write(W8DST, {
+      meta: { name: 'W8 集成探针目标', author: '', version: '0.18.0', formatVersion: 2 },
+      format: 'node_tree',
+      data: { id: 'root', topic: 'W8 集成探针目标', expanded: true,
+        children: [{ id: 'd-1', topic: '目标节点', children: [] }] }
+    });
+    // 两个"脏项目"：各自只有**一类**坏东西（`validate` 会同时判两类 ⇒ 塞一起就测不出"单跑一条即复绿"）
+    w8write(W8LNK, {
+      meta: { name: 'W8 集成探针（悬空链接）', author: '', version: '0.18.0', formatVersion: 2 },
+      format: 'node_tree',
+      data: { id: 'root', topic: 'W8 集成探针', expanded: true,
+        children: [{ id: 'x-1', topic: '有悬空链接', children: [], links: [{ project: 'it-probe-w8-nope', id: 'z-9' }] }] }
+    });
+    w8write(W8ASC, {
+      meta: { name: 'W8 集成探针（悬空成员）', author: '', version: '0.18.0', formatVersion: 2 },
+      format: 'node_tree',
+      data: { id: 'root', topic: 'W8 集成探针', expanded: true,
+        children: [{ id: 'x-1', topic: '有悬空成员的关联', children: [] }] },
+      assoc: [{ id: 'x-a1', title: '悬空成员的关联',
+        members: [{ project: W8ASC, id: 'x-1' }, { project: W8ASC, id: 'x-gone' }] }]
+    });
+  };
+
+  /** 项目目录快照（逐字节 + sha256 前 16 + mtimeMs）—— 判据①的量具（与 W1 那段的 `w1snap` 同一形状） */
+  const w8snap = (dir) => {
+    const out = [];
+    if (!fs.existsSync(dir)) return '';
+    const walk = (d) => {
+      fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1)).forEach((e) => {
+        const abs = path.join(d, e.name);
+        if (e.isDirectory()) { walk(abs); return; }
+        const buf = fs.readFileSync(abs);
+        out.push(path.relative(dir, abs).split(path.sep).join('/')
+          + '|' + buf.length + '|' + require('crypto').createHash('sha256').update(buf).digest('hex').slice(0, 16)
+          + '|' + fs.statSync(abs).mtimeMs);
+      });
+    };
+    walk(dir);
+    return out.join('\n');
+  };
+  /** 真跑日志末条 `changed`（**读盘真值**：判据③的右边那一半） */
+  const w8last = (n) => {
+    const f = path.join(w8dir(n), w8changes.FILE_NAME);
+    if (!fs.existsSync(f)) return null;
+    const e = w8changes.parseLog(fs.readFileSync(f, 'utf8')).entries;
+    return e.length ? e[e.length - 1].changed : null;
+  };
+  /**
+   * 从**给人看的报告**里抠出"将改动的对象清单"（顺带证明它可机械解析）。
+   * 报告形状的唯一生成处：`cli/core.js` 的 `planWrite`。
+   */
+  const w8plan = (out) => {
+    const lines = String(out).split('\n');
+    if (lines.filter((l) => l.indexOf('会**新建**项目') >= 0).length) {
+      return { count: 0, keys: [], created: true, byKind: {} };
+    }
+    const line = lines.filter((l) => l.indexOf('这次写盘将改动') >= 0)[0];
+    if (!line) return null;
+    const m = /这次写盘将改动 (\d+) 个对象(?:（([^）]*)）)?(?:：(.+))?$/.exec(line.replace(w8core.DRY_RUN_TAG, ''));
+    if (!m) return null;
+    const keys = m[3] ? m[3].split('、').map((s) => s.trim()).filter(Boolean) : [];
+    const byKind = {};
+    keys.forEach((k) => { const kind = k.indexOf(':') < 0 ? k : k.slice(0, k.indexOf(':')); byKind[kind] = (byKind[kind] || 0) + 1; });
+    return { count: Number(m[1]), keys: keys, created: false, byKind: byKind };
+  };
+  const w8kinds = (changed) => {
+    const byKind = {};
+    (changed || []).forEach((k) => { const kind = k.indexOf(':') < 0 ? k : k.slice(0, k.indexOf(':')); byKind[kind] = (byKind[kind] || 0) + 1; });
+    return byKind;
+  };
+
+  /** 覆盖清单：每条命令各一条**真调用**（夹具 id 都对得上）；`clone` 会现摇新 id ⇒ 只在"零变化"那条里跑 */
+  const w8cases = [
+    ['add', W8SRC, 'root', '--topic', 'W8 新增'],
+    ['add-root', W8SRC, '--topic', 'W8 新顶层'],
+    ['edit', W8SRC, 'n-a', '--topic', 'W8 改过的标题'],
+    ['move', W8SRC, 'n-a1', 'n-b'],
+    ['remove', W8SRC, 'n-a1'],
+    ['clone', W8SRC, 'n-a', 'n-b'],
+    ['expand-depth', W8SRC, '--depth', '0'],
+    ['theme-layout', W8SRC, '--left', 'n-a'],
+    ['link', W8SRC, 'n-b', '--to', W8DST, '--id', 'd-1'],
+    ['unlink', W8SRC, 'n-a', '--to', W8DST, '--id', 'd-1'],
+    ['assoc-add', W8SRC, '--members', 'n-a,n-b', '--title', 'W8 关联'],
+    ['assoc-edit', W8SRC, 'a-1', '--title', 'W8 改过的关联'],
+    ['assoc-remove', W8SRC, 'a-1'],
+    ['assoc-prune', W8ASC],
+    ['links-prune', W8LNK],
+    ['item-add', W8SRC, 'n-it', '--md', 'W8 新条目'],
+    ['item-edit', W8SRC, 'n-it', 'i-1', '--md', 'W8 改过的条目'],
+    ['item-remove', W8SRC, 'n-it', 'i-2'],
+    ['item-move', W8SRC, 'n-it', 'i-2', '--to', 'n-it2'],
+    ['item-order', W8SRC, 'n-it', '--ids', 'i-2,i-1'],
+    ['render-detail', W8SRC, 'n-it'],
+    ['remove-image', W8SRC, 'n-img', 'assets/a.png'],
+    ['remove-file', W8SRC, 'n-img', 'attachments/a.md'],
+    ['ask-apply', W8SRC, 'n-a', '--answer', 'W8 答案'],
+    ['init', W8NEW, '--title', 'W8 新项目']
+  ];
+
+  try {
+    w8reset();
+
+    /* ---- 判据①：`--dry-run` 之后盘上**逐字节零变化**（单条，量具先自证）---- */
+    {
+      const before = w8snap(w8dir(W8SRC));
+      const logBefore = w8snap(path.join(w8core.PROJECTS_DIR, '.visits'));
+      const r = run(['edit', W8SRC, 'n-a', '--topic', 'W8 干跑一次', '--dry-run']);
+      const again = run(['edit', W8SRC, 'n-a', '--topic', 'W8 干跑一次', '--dry-run']);
+      check('W8·判据① `edit --dry-run`：报告给得出计划、而项目目录**逐字节 + mtime 不变**'
+        + '（连 `.visits/` 也没动；第二次跑读数与第一次同口径）',
+        r.code === 0 && r.out.indexOf(w8core.DRY_RUN_TAG) >= 0
+          && !!w8plan(r.out) && w8plan(r.out).keys.length > 0
+          && w8snap(w8dir(W8SRC)) === before
+          && w8snap(path.join(w8core.PROJECTS_DIR, '.visits')) === logBefore
+          && JSON.stringify(w8plan(again.out).keys) === JSON.stringify(w8plan(r.out).keys),
+        'exit=' + r.code + ' ｜ 清单=' + JSON.stringify(w8plan(r.out) ? w8plan(r.out).keys : null)
+          + ' ｜ 目录不变=' + (w8snap(w8dir(W8SRC)) === before));
+    }
+
+    /* ---- 判据①（覆盖）：上面那张清单里**每一条命令**都零变化，且每条都在支持集里 ---- */
+    {
+      const failures = [];
+      const support = w8core.DRY_RUN_COMMANDS;
+      w8cases.forEach((argv) => {
+        if (support.indexOf(argv[0]) < 0) failures.push(argv[0] + '：不在 DRY_RUN_COMMANDS 里（支持集与实测不一致）');
+        w8reset();
+        const before = w8snap(w8dir(argv[1] || W8SRC));
+        const r = run(argv.concat(['--dry-run']));
+        const after = w8snap(w8dir(argv[1] || W8SRC));
+        if (before !== after) failures.push(argv[0] + '：盘上变了');
+        const p = w8plan(r.out);
+        if (r.code === 0 && p === null) failures.push(argv[0] + '：报告里没有"将改动 N 个对象"');
+        if (r.code === 0 && r.out.indexOf('dry-run') < 0) failures.push(argv[0] + '：输出里看不出这是 dry-run');
+        // 第二次跑：读数同口径（现摇新 id 的命令只比类型计数 ⇒ 那一半与随机无关）
+        const again = run(argv.concat(['--dry-run']));
+        const p2 = w8plan(again.out);
+        const sig = (x) => (x === null ? 'null' : (x.created ? 'created' : x.count + '/' + JSON.stringify(x.byKind)));
+        if (sig(p) !== sig(p2)) failures.push(argv[0] + '：第二次读数与第一次不同（' + sig(p) + ' vs ' + sig(p2) + '）');
+      });
+      check('W8·判据①（覆盖）' + w8cases.length + ' 条写命令逐条 `--dry-run`：**项目目录逐字节 + mtime 零变化**、'
+        + '每条都给得出可解析的计划、且每条命令都在 `DRY_RUN_COMMANDS`（支持集）里',
+        failures.length === 0,
+        failures.length ? failures.join('；') : (w8cases.length + ' 条全绿（清单现算：' + w8cases.map((x) => x[0]).join(',') + '）'));
+    }
+
+    /* ---- 判据②：报告的**个数 == 清单条数**，清单每项都带对象类型前缀 ---- */
+    {
+      const bad = [];
+      [['edit', W8SRC, 'n-a', '--topic', 'W8 判据二'],
+        ['link', W8SRC, 'n-b', '--to', W8DST, '--id', 'd-1'],
+        ['assoc-add', W8SRC, '--members', 'n-a,n-b', '--title', 'W8 判据二'],
+        ['item-order', W8SRC, 'n-it', '--ids', 'i-2,i-1']
+      ].forEach((argv) => {
+        w8reset();
+        const p = w8plan(run(argv.concat(['--dry-run'])).out);
+        if (!p || !p.count) { bad.push(argv[0] + '：没有"将改动 N 个对象"'); return; }
+        if (p.count !== p.keys.length) bad.push(argv[0] + '：个数 ' + p.count + ' != 清单 ' + p.keys.length);
+        if (p.keys.some((k) => k.indexOf(':') < 0 && ['meta', 'format'].indexOf(k) < 0)) bad.push(argv[0] + '：清单项缺类型前缀');
+      });
+      check('W8·判据② 报告的**对象个数 == 清单条数**，且清单每一项都写成 `<类型>:<id>`（可逐字比对变更日志）',
+        bad.length === 0, bad.length ? bad.join('；') : '4 条命令的报告都自洽');
+    }
+
+    /* ---- 判据③（逐字）：同一命令"先 dry-run 后真跑"，报告的清单 == 日志末条的 `changed` ---- */
+    {
+      const bad = [];
+      [['edit', W8SRC, 'n-a', '--topic', 'W8 判据三'],
+        ['link', W8SRC, 'n-b', '--to', W8DST, '--id', 'd-1'],
+        ['assoc-add', W8SRC, '--members', 'n-a,n-b', '--title', 'W8 判据三', '--id', 'w8-a9'],
+        ['item-order', W8SRC, 'n-it', '--ids', 'i-2,i-1'],
+        ['remove-image', W8SRC, 'n-img', 'assets/a.png'],
+        ['links-prune', W8LNK]
+      ].forEach((argv) => {
+        w8reset();
+        const proj = argv[1];
+        const dry = run(argv.concat(['--dry-run']));
+        const p = w8plan(dry.out);
+        const r = run(argv);
+        const changed = w8last(proj);
+        if (dry.code !== 0 || r.code !== 0) { bad.push(argv[0] + '：exit ' + dry.code + '/' + r.code); return; }
+        if (JSON.stringify(p.keys) !== JSON.stringify(changed)) {
+          bad.push(argv[0] + '：报告 ' + JSON.stringify(p.keys) + ' != 日志 ' + JSON.stringify(changed));
+        }
+      });
+      check('W8·判据③（逐字）dry-run 报告的对象清单 == 真跑后 `.changes.jsonl` 末条的 `changed`'
+        + '（**同一个 `changedKeys`、同一对输入** ⇒ 两边逐字相等，不是"都非空"的弱口径）',
+        bad.length === 0, bad.length ? bad.join('；') : '6 条命令逐字一致');
+    }
+
+    /* ---- 判据③（类型计数）：会**现摇新 id** 的命令（`clone`）比"与随机无关的那一半" ---- */
+    {
+      w8reset();
+      const dry = run(['clone', W8SRC, 'n-a', 'n-b', '--dry-run']);
+      const p = w8plan(dry.out);
+      const r = run(['clone', W8SRC, 'n-a', 'n-b']);
+      const changed = w8last(W8SRC);
+      check('W8·判据③（类型计数）`clone`（副本 id 现摇 ⇒ 清单里的 id 逐字不同）的报告**按类型计数 == 日志**，'
+        + '且项数相等（报告里与随机无关的那一半必须完全准）',
+        dry.code === 0 && r.code === 0 && p.count === changed.length
+          && JSON.stringify(p.byKind) === JSON.stringify(w8kinds(changed))
+          && p.keys.length === p.count,
+        'exit=' + dry.code + '/' + r.code + ' ｜ 报告 ' + JSON.stringify(p.byKind) + ' ｜ 日志 ' + JSON.stringify(w8kinds(changed)));
+    }
+
+    /* ---- 判据③（拒绝一致）：dry-run 与真跑**同一套判据、同一句话** ---- */
+    {
+      w8reset();
+      const first = run(['add', W8SRC, 'root', '--id', 'w8-dup', '--topic', 'W8 重复主题']);
+      const snap = w8snap(w8dir(W8SRC));
+      const dry = run(['add', W8SRC, 'root', '--topic', 'W8 重复主题', '--dry-run']);
+      const real = run(['add', W8SRC, 'root', '--topic', 'W8 重复主题']);
+      check('W8·判据③（拒绝一致）语义去重命中时：`--dry-run` 与真跑**同样 exit 1、报文逐字相同**，'
+        + '且两次都没动盘 —— "预览说能写、真跑被拒"这种落差不存在',
+        first.code === 0 && dry.code === 1 && real.code === 1 && dry.out === real.out && w8snap(w8dir(W8SRC)) === snap,
+        'exit=' + dry.code + '/' + real.code + ' ｜ 报文相同=' + (dry.out === real.out)
+          + ' ｜ 盘上未变=' + (w8snap(w8dir(W8SRC)) === snap)
+          + ' ｜ 首行=' + String(dry.out).split('\n')[0].slice(0, 90));
+    }
+
+    /* ---- 旁路：dry-run 连变更日志与访问日志都不多一条 ---- */
+    {
+      w8reset();
+      const logFile = path.join(w8dir(W8SRC), w8changes.FILE_NAME);
+      const before = w8snap(w8dir(W8SRC)) + '\n@@\n'
+        + (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '（没有日志）');
+      run(['edit', W8SRC, 'n-a', '--topic', 'W8 旁路探针', '--dry-run']);
+      run(['add', W8SRC, 'root', '--topic', 'W8 旁路探针', '--dry-run']);
+      const after = w8snap(w8dir(W8SRC)) + '\n@@\n'
+        + (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '（没有日志）');
+      const ch = run(['changes', W8SRC, '--json']);
+      check('W8·旁路 dry-run **连旁路产物都不多一条**：`.changes.jsonl` 的字节与 `changes --json` 的 rev/version '
+        + '前后完全不变（"不写盘"包含"不记账"）',
+        before === after && ch.code === 0
+          && (function () { try { const j = JSON.parse(ch.out); return j.rev === undefined || typeof j.rev === 'number'; } catch (e) { return false; } })(),
+        '目录+日志不变=' + (before === after) + ' ｜ changes exit=' + ch.code);
+    }
+
+    /* ---- 边界：不认这个开关的命令**响亮拒绝**（不静默忽略）---- */
+    {
+      const read = run(['read', W8SRC, '--dry-run']);
+      const imp = run(['import-json', 'it-probe-w8-不存在.aimap.json', '--dry-run']);
+      const alias = run(['tree', W8SRC, '--dry-run']);           // `tree` 是 `list` 的别名
+      check('W8·边界 认不认 `--dry-run` 由**一处**判定：只读命令（`read` / 别名 `tree`）⇒ exit 1 且说明'
+        + '"只对会改盘的命令有意义"并指回 `DRY_RUN_COMMANDS`；`import-json`（会改盘但不支持）⇒ exit 1 且'
+        + '**点名原因与出路**（不是含糊的"未知选项"）',
+        read.code === 1 && read.out.indexOf('只对**会改盘的命令**有意义') >= 0
+          && read.out.indexOf('DRY_RUN_COMMANDS') >= 0
+          && alias.code === 1 && alias.out.indexOf('list 不写盘') >= 0
+          && imp.code === 1 && imp.out.indexOf('不可用') >= 0 && imp.out.indexOf('新项目') >= 0
+          && imp.out.indexOf('未知选项') < 0,
+        'read exit=' + read.code + ' ｜ tree exit=' + alias.code + ' ｜ import-json exit=' + imp.code
+          + ' ｜ import-json 首行=' + String(imp.out).split('\n')[0].slice(0, 80));
+    }
+
+    /* ---- 一处实现（静态）：命令层不许各读 `ctx.args.dryRun` ---- */
+    {
+      const dir = path.join(ROOT, 'cli', 'commands');
+      const bad = fs.readdirSync(dir).filter((f) => /\.js$/.test(f))
+        .filter((f) => /args\.dryRun/.test(fs.readFileSync(path.join(dir, f), 'utf8')));
+      const declared = w8core.DRY_RUN_COMMANDS.length;                 // 现算：支持集条数（不写死）
+      const withFlag = w8mcp.TOOLS.filter((t) => t.inputSchema.properties
+        && t.inputSchema.properties.dry_run);
+      check('W8·一处实现 `cli/commands/*.js` 里**不出现** `args.dryRun`（判定统一读 `ctx.dryRun`，'
+        + '唯一读取点见 cli/core.js）；且 MCP 侧带 `dry_run` 的工具与 tool→命令映射表**同源**'
+        + '（现算：支持集 ' + declared + ' 条命令、MCP ' + withFlag.length + ' 个工具带这个参数）',
+        bad.length === 0
+          && withFlag.length === Object.keys(w8mcp.DRY_RUN_TOOL_CMD).length
+          && withFlag.every((t) => w8core.DRY_RUN_COMMANDS.indexOf(w8mcp.DRY_RUN_TOOL_CMD[t.name]) >= 0),
+        '命令层违规文件=' + JSON.stringify(bad) + ' ｜ MCP 带参工具=' + withFlag.length
+          + ' / 映射表=' + Object.keys(w8mcp.DRY_RUN_TOOL_CMD).length);
+    }
+
+    /* ---- MCP 面：**只加参数、不新增工具**（工具数基线**现算**：读 docs/VERIFY.md 那一行） ---- */
+    {
+      const verifyText = fs.readFileSync(path.join(ROOT, 'docs', 'VERIFY.md'), 'utf8');
+      const m = /MCP 工具数 \| (\d+)/.exec(verifyText);
+      const baseline = m ? Number(m[1]) : null;
+      const importJson = w8mcp.TOOLS.filter((t) => t.name === 'import_json')[0];
+      check('W8·MCP 面 工具数**没变**（现算：`TOOLS.length` == `docs/VERIFY.md` 登记的基线 '
+        + (baseline === null ? '（读不到基线）' : baseline) + '），且 `import_json` **没有** `dry_run` 参数'
+        + '（它建新项目、资源解包不走写管道 ⇒ 给了只会得到假报告，CLI 侧会响亮拒绝）',
+        baseline !== null && w8mcp.TOOLS.length === baseline
+          && new Set(w8mcp.TOOLS.map((t) => t.name)).size === baseline
+          && !!importJson && importJson.inputSchema.properties.dry_run === undefined,
+        'TOOLS=' + w8mcp.TOOLS.length + ' ｜ 基线=' + baseline
+          + ' ｜ import_json.dry_run=' + (importJson ? String(importJson.inputSchema.properties.dry_run) : '（没有这个工具）'));
+    }
+  } finally {
+    /* 自收尾：探针项目 + 它们在 `.visits/` 里的旁路日志（日志在项目目录之外，删目录删不掉它） */
+    W8ALL.forEach((n) => {
+      try { fs.rmSync(w8dir(n), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+    });
+  }
+}
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;

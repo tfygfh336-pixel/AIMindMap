@@ -115,6 +115,20 @@ function dispatch(argv) {
     process.stdout.write(commandHelp(cmd) + '\n');
     return undefined;
   }
+  // ---- 【W8】`--dry-run` 的**归属守门**（与下面那条 `--idem` 同一形状、同一处）----
+  // 为什么要在这里：`--dry-run` 是**写管道流（W8）的横切开关**，但只对「会改盘的命令」有意义。
+  // 不许默默忽略（那正是本工程反复修掉的那类病）：调用方带 `--dry-run` 的**意图**是"先看计划、
+  // 别写盘"，而在不认它的命令上它什么都不做 ⇒ 人家会以为自己审过了（一次静默 = 一个错觉）。
+  // 拒绝报文也在这里**一处**给出（`cli/core.js` 的 `dryRunRefusal` 是唯一判定，命令清单同源）。
+  // ⚠️ 用 `cmd.name`（正式名）而不是 `name`（可能是别名）：`rm --dry-run` 与 `remove --dry-run` 同待遇。
+  {
+    const dryMsg = core.dryRunRefusal(cmd.name, core.parseArgs(rest).dryRun);
+    if (dryMsg) {
+      process.stdout.write('error: ' + dryMsg + '\n');
+      process.exitCode = 1;
+      return undefined;
+    }
+  }
   // ---- 未知选项的唯一守门点（缺陷取证：写命令原先静默忽略不认识的选项，
   //      `add … --tags a,b` 打印"已添加"且 exit 0，盘上却没有标签）----
   // 为什么放在 dispatch 而不在各命令里：40+ 条命令各写一遍必然漏，且漏掉的那条**又是静默的**。

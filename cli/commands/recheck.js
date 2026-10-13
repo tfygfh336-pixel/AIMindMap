@@ -416,7 +416,7 @@ module.exports = {
       skippedWhy.forEach((e) => e.reasons.forEach((r) => {
         whyCounts[r.code] = (whyCounts[r.code] || 0) + 1;
       }));
-      if (ctx.args.dryRun) {
+      if (ctx.dryRun) {
         ctx.out('--dry-run：将给 ' + targets.length + ' 条写 verified{at,by,how:'
           + JSON.stringify(String(how)) + '}，**不写盘**');
         targets.slice(0, limit).forEach((e) => ctx.out('  · ' + labelOf(e.nodeId, e.nodeTopic) + '#'

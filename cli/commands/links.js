@@ -434,26 +434,27 @@ module.exports = {
 
     let r = probe;
     let alreadyClean = false;
-    if (!ctx.args.dryRun) {
-      // **并发安全**：判据 `should` 在 fn **外**固定 —— 它依赖**别的项目**的读盘（目标是否还在），
-      // 而 fn 里禁止 I/O（并发重放会再调用它一次）。重放只按"我核实过的那份名单"剪，不猜新的。
-      // 收益：两个会话同时修、或修的同时别人在改**别的节点**时，不再整体失败。
-      ctx.mutate((cur) => {
-        const out = links.pruneLinks(cur.data, should);
-        r = out;
-        if (!out.changed) { alreadyClean = true; return cur; }
-        return cur;
-      });
-    }
+    /* 【W8】写盘**不再在这里分流**：一律调 `ctx.mutate`，由 `cli/core.js` 的中央短路决定
+     * "只报告还是真写"（判定 / 打印 / 短路只有那一处，见那里的 `planWrite`）。
+     * 从前这里写的是 `if (!ctx.dryRun) { ctx.mutate(...) }` —— 每条命令各写一遍这种分支，
+     * 迟早有一条忘了短路：它**照样写盘**，回显却还说着"未写盘"（本工程最忌的"报告骗人"）。
+     * ⚠️ **并发安全**：判据 `should` 在 fn **外**固定 —— 它依赖**别的项目**的读盘（目标是否还在），
+     * 而 fn 里禁止 I/O（并发重放会再调用它一次）。重放只按"我核实过的那份名单"剪，不猜新的。 */
+    ctx.mutate((cur) => {
+      const out = links.pruneLinks(cur.data, should);
+      r = out;
+      if (!out.changed) { alreadyClean = true; return cur; }
+      return cur;
+    });
     if (alreadyClean) { ctx.out('并发期间这些链接已被其他写入者清掉，本次无需改动'); return; }
-    const tag = ctx.args.dryRun ? '[dry-run] 将要' : '已';
+    const tag = ctx.dryRun ? '[dry-run] 将要' : '已';
     // 条目级的被剪边**逐条标出 `#条目`** —— 那正是"节点还在、条目已被删"这一档。
     // ⚠️ `removed[]` 的元素形状是 `{node, target, caption?, item?}`（`src/links.js` 给的那一份，
     // 与它已有的 `caption` 同一策略：**可选字段**），故这里直接读 `x.item`，**不反查预读数据**
     // （反查要靠标签文本去配对，同源同目标多条边时会配错，看起来却像"标签没写"）。
     r.removed.forEach((x) => ctx.out(tag + '删除链接: ' + x.node + ' → ' + x.target
       + (relations.itemKey(x.item) ? '#' + relations.itemKey(x.item) : '')));
-    if (ctx.args.dryRun) ctx.out('（--dry-run：未写盘）');
+    if (ctx.dryRun) ctx.out('（--dry-run：未写盘）');
     else ctx.out('共清理 ' + r.removed.length + ' 条链接，涉及 ' + r.nodes.length + ' 个节点');
   }
 };

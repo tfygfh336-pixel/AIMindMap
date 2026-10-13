@@ -62,6 +62,21 @@ function copyAttachment(ctx, srcPath) {
   return 'attachments/' + path.basename(dest);
 }
 
+/**
+ * 【W8】`--dry-run` 期"这条资源会落在哪"的**占位路径**（唯一一处）。
+ *
+ * 为什么不摇一个真名字：新名字是**随机**的（`src/markdown.js` 的 `newResourceName`），
+ * 真导时会得到一个**本次预览拿不到**的名字 —— 报一个具体名字就成了"报告说 A、真跑落 B"（骗人 ✗）。
+ * 所以预览只说到"落在哪一类目录"，与 `cli/commands/project.js` 的预览同一条口径
+ * （那里对 `import-project --dry-run` 也写了"真导时生成新文件名"）。
+ *
+ * ⚠️ 它**只进内存里的计划**（dry-run 不写盘 ⇒ 这个值永远不会落进项目文件），
+ * 真跑路径一个字节都不受影响 ✓。
+ */
+function plannedResourcePath(kind) {
+  return (kind === 'image' ? 'assets' : 'attachments') + '/（真跑时才生成的新名字）';
+}
+
 module.exports = {
   addImage(ctx) {
     const id = ctx.args._[1];
@@ -73,7 +88,11 @@ module.exports = {
     const pre = ctx.read();                             // 校验顺序与从前一致（B1）
     if (!ctx.tree.find(pre.data.data, id)) ctx.error('节点不存在: ' + id);
     // ⚠️ 物理落盘必须在改动函数**之外** —— fn 可能被并发重放，放里面会复制出第二份孤儿文件
-    const rel = copyAsset(ctx, file);
+    // 【W8】`--dry-run` 时**连复制都不做**（判定读 `ctx.dryRun` 这一处，见 cli/core.js）：
+    // 复制是**写管道之外**的物理副作用，中央的 dry-run 短路拦不住它 ⇒ 这条命令自己关掉。
+    // 不关的后果实测可验：`add-image … --dry-run` 会在 assets/ 里留下一个文件，
+    // 而报告说着"一个字节都没写" —— W8 判据①（盘上逐字节零变化）立刻是假的。
+    const rel = ctx.dryRun ? plannedResourcePath('image') : copyAsset(ctx, file);
     const img = { file: rel, caption };
     if (ctx.args.source) img.source = ctx.args.source;
     if (ctx.args.tags) img.tags = String(ctx.args.tags).split(/[,，]/).map((s) => s.trim()).filter(Boolean);
@@ -129,7 +148,8 @@ module.exports = {
     const pre = ctx.read();                             // 校验顺序与从前一致（B1）
     if (!ctx.tree.find(pre.data.data, id)) ctx.error('节点不存在: ' + id);
     // ⚠️ 同 addImage：物理落盘在改动函数之外，重放不会复制出第二份孤儿附件
-    const rel = copyAttachment(ctx, file);
+    // 【W8】`--dry-run` 时同样**不复制**（复制是写管道之外的物理副作用，见 addImage 那段注释）
+    const rel = ctx.dryRun ? plannedResourcePath('file') : copyAttachment(ctx, file);
     const f = { file: rel, caption };
     if (ctx.args.source) f.source = ctx.args.source;
     ctx.mutate((data) => {

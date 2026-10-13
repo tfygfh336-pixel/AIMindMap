@@ -413,7 +413,7 @@ module.exports = {
         + (sub && sub !== 'items' ? '\n  ⚠️ 未知子命令 `' + sub + '`：当前只有 `migrate items`（条目层迁移）' : '')
         + (!project ? '\n  ⚠️ 缺项目名：注意项目名是**第二个**位置参数（`migrate items <项目>`）' : ''));
     }
-    const dryRun = !!ctx.args.dryRun;
+    const dryRun = !!ctx.dryRun;
     const at = nowIso();
     const by = ctx.writer;                                  // `<外壳>:<命令>`（这里 = cli:migrate）
     // ⚠️ **幂等守卫先于任何物理副作用**（契约 §5.2 的接口纪律）：本命令在写盘**之前**会导出备份

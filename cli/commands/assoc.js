@@ -299,27 +299,27 @@ module.exports = {
 
     let r = probe;
     let alreadyClean = false;
-    if (!ctx.args.dryRun) {
-      // **并发安全**：判据 `should` 在 fn **外**固定 —— 它依赖**别的项目**的读盘（成员是否还在），
-      // 而 fn 里禁止 I/O（并发重放会再调用它一次）。
-      // 于是重放时只按"**我核实过的那份名单**"剪，**不猜新的**（"不确定就不删"的规矩不变；
-      // 跨项目视角陈旧这一点在改造前也一样存在，不是本次引入的）。
-      // 收益：两个会话同时修同一个项目时，后者重放到已修好的数据上 ⇒ **幂等地无事可做**，
-      // 而不是白跑一次；我与对方的**节点**改动不相交时也不再整体失败。
-      ctx.mutate((cur) => {
-        const out = assoc.pruneMembers(Array.isArray(cur.assoc) ? cur.assoc : [], should);
-        r = out;
-        if (!out.changed) { alreadyClean = true; return cur; }   // 并发下已被别人清掉
-        // 清空就删键，与 assoc-remove 的约定一致（不留空数组噪音）
-        if (out.empty) delete cur.assoc; else cur.assoc = out.list;
-        return cur;
-      });
-    }
+    /* 【W8】写盘**不再在这里分流**：一律调 `ctx.mutate`，由 `cli/core.js` 的中央短路决定
+     * "只报告还是真写"（判定 / 打印 / 短路只有那一处，见那里的 `planWrite`）。
+     * 从前这里写的是 `if (!ctx.dryRun) { ctx.mutate(...) }`（见 links-prune 同款注释）。
+     * ⚠️ **并发安全**：判据 `should` 在 fn **外**固定 —— 它依赖**别的项目**的读盘（成员是否还在），
+     * 而 fn 里禁止 I/O（并发重放会再调用它一次）。
+     * 于是重放时只按"**我核实过的那份名单**"剪，**不猜新的**（"不确定就不删"的规矩不变；
+     * 跨项目视角陈旧这一点在改造前也一样存在，不是本次引入的）。
+     * 收益：两个会话同时修同一个项目时，后者重放到已修好的数据上 ⇒ **幂等地无事可做**。 */
+    ctx.mutate((cur) => {
+      const out = assoc.pruneMembers(Array.isArray(cur.assoc) ? cur.assoc : [], should);
+      r = out;
+      if (!out.changed) { alreadyClean = true; return cur; }   // 并发下已被别人清掉
+      // 清空就删键，与 assoc-remove 的约定一致（不留空数组噪音）
+      if (out.empty) delete cur.assoc; else cur.assoc = out.list;
+      return cur;
+    });
     if (alreadyClean) { ctx.out('并发期间这些成员已被其他写入者清掉，本次无需改动'); return; }
-    const tag = ctx.args.dryRun ? '[dry-run] 将要' : '已';
+    const tag = ctx.dryRun ? '[dry-run] 将要' : '已';
     r.touched.forEach((t) => ctx.out(tag + '清理 ' + t.removed + ' 个成员: ' + t.id));
     r.dropped.forEach((id) => ctx.out(tag + '删除整篇关联（清理后不足 ' + assoc.MIN_MEMBERS + ' 个成员）: ' + id));
-    if (ctx.args.dryRun) ctx.out('（--dry-run：未写盘）');
+    if (ctx.dryRun) ctx.out('（--dry-run：未写盘）');
     else if (r.empty) ctx.out('关联已全部清空，assoc 键已移除');
   }
 };

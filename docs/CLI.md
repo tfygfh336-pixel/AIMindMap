@@ -29,56 +29,56 @@
 | `search` | search <项目> <关键词|--tag 标签> [--json] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] |
 | `search-all` | search-all <关键词|--tag 标签> [--scope 项目名,…] [--json] [--compact] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] |
 | `stats` | stats <项目> [--json] |
-| `init` | init <项目> [--title 标题] |
+| `init` | init <项目> [--title 标题] [--dry-run] |
 | `backlinks` | backlinks <项目> <id> [--json] |
 | `related` | related <项目> <id> [--json] [--depth N] |
 | `ask` | ask <项目> [<节点id>] [--nodes a,b,c] [--question "..."] [--kind explain|ask] [--effort low|medium|high|xhigh] [--json] [--timeout 秒] [--dry-run] |
-| `theme-layout` | theme-layout <项目> [--left a,b] [--right c,d] [--clear] |
-| `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] |
-| `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--force] |
-| `edit` | edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false] |
-| `move` | move <项目> <id> <新父id> [--index n] |
-| `expand-depth` | expand-depth <项目> [--depth N] [--id 子树根id] |
-| `remove` | remove <项目> <id> [--clean-assoc] [--clean-links] |
-| `clone` | clone <项目> <源id> <新父id> [--deep] [--repoint-items] [--json] |
+| `theme-layout` | theme-layout <项目> [--left a,b] [--right c,d] [--clear] [--dry-run] |
+| `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] [--dry-run] |
+| `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--force] [--dry-run] |
+| `edit` | edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false] [--dry-run] |
+| `move` | move <项目> <id> <新父id> [--index n] [--dry-run] |
+| `expand-depth` | expand-depth <项目> [--depth N] [--id 子树根id] [--dry-run] |
+| `remove` | remove <项目> <id> [--clean-assoc] [--clean-links] [--dry-run] |
+| `clone` | clone <项目> <源id> <新父id> [--deep] [--repoint-items] [--json] [--dry-run] |
 | `apply` | apply <项目> --ops-file ops.json [--dry-run] |
-| `item-add` | item-add <项目> <节点id> --md "Markdown" | --html "HTML" [--src 出处] [--tags a,b] [--type text|rich] [--after itemId | --before itemId] [--force] |
-| `item-edit` | item-edit <项目> <节点id> <itemId> [--md "Markdown" | --html "HTML"] [--src 出处 | --clear-src] [--tags a,b | --clear-tags] [--type text|rich] [--verified --how "怎么核的" | --clear-verified] |
-| `item-remove` | item-remove <项目> <节点id> <itemId> [--clean-links] [--clean-assoc] |
-| `item-move` | item-move <项目> <节点id> <itemId> --to 目标节点id [--after itemId | --before itemId] |
-| `item-order` | item-order <项目> <节点id> --ids i-a,i-b,… |
-| `render-detail` | render-detail <项目> <节点id> | --all |
+| `item-add` | item-add <项目> <节点id> --md "Markdown" | --html "HTML" [--src 出处] [--tags a,b] [--type text|rich] [--after itemId | --before itemId] [--force] [--dry-run] |
+| `item-edit` | item-edit <项目> <节点id> <itemId> [--md "Markdown" | --html "HTML"] [--src 出处 | --clear-src] [--tags a,b | --clear-tags] [--type text|rich] [--verified --how "怎么核的" | --clear-verified] [--dry-run] |
+| `item-remove` | item-remove <项目> <节点id> <itemId> [--clean-links] [--clean-assoc] [--dry-run] |
+| `item-move` | item-move <项目> <节点id> <itemId> --to 目标节点id [--after itemId | --before itemId] [--dry-run] |
+| `item-order` | item-order <项目> <节点id> --ids i-a,i-b,… [--dry-run] |
+| `render-detail` | render-detail <项目> <节点id> | --all [--dry-run] |
 | `recheck` | recheck <项目> [--src 子串] [--only i-a,i-b] [--limit n] [--root 目录] [--json] [--write-verified --how "怎么核的"] [--dry-run] |
 | `health` | health [<项目>] [--project 项目名] [--all] [--root 目录] [--json] |
 | `migrate` | migrate items <项目> [--dry-run] [--json] |
-| `ask-apply` | ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json] |
-| `import-md` | import-md <项目> <md文件> [--parent id] [--force] |
+| `ask-apply` | ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json] [--dry-run] |
+| `import-md` | import-md <项目> <md文件> [--parent id] [--force] [--dry-run] |
 | `import-project` | import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] [--force] |
 | `import-dir` | import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--dry-run] [--json] [--force] |
 | `export-md` | export-md <项目> <输出目录> [--format heading|list] [--with-detail] |
 | `export-json` | export-json <项目> <输出.json> |
 | `export-html` | export-html <项目> <输出目录> |
 | `import-json` | import-json <aimap.json> [--name 项目名] |
-| `add-image` | add-image <项目> <id> --file 图片 --caption 备注 [--source 出处] [--tags a,b] |
-| `remove-image` | remove-image <项目> <id> <相对路径 assets/x.png> |
+| `add-image` | add-image <项目> <id> --file 图片 --caption 备注 [--source 出处] [--tags a,b] [--dry-run] |
+| `remove-image` | remove-image <项目> <id> <相对路径 assets/x.png> [--dry-run] |
 | `assets` | assets <项目> [--json] |
-| `add-file` | add-file <项目> <id> --file 附件 --caption 备注 [--source 出处] |
-| `remove-file` | remove-file <项目> <id> <相对路径 attachments/x.md> |
+| `add-file` | add-file <项目> <id> --file 附件 --caption 备注 [--source 出处] [--dry-run] |
+| `remove-file` | remove-file <项目> <id> <相对路径 attachments/x.md> [--dry-run] |
 | `files` | files <项目> [--json] |
 | `sidebar-only` | sidebar-only <on|off> [--json] |
 | `dsh-sidebar` | dsh-sidebar <on|off> [--json] |
 | `dsh-status` | dsh-status [--json] |
 | `dsh-prefill` | dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json] |
-| `link` | link <项目> <id> --to 目标项目 --id 目标id [--item 目标条目id] [--caption 说明] |
-| `unlink` | unlink <项目> <id> --to 目标项目 --id 目标id |
+| `link` | link <项目> <id> --to 目标项目 --id 目标id [--item 目标条目id] [--caption 说明] [--dry-run] |
+| `unlink` | unlink <项目> <id> --to 目标项目 --id 目标id [--dry-run] |
 | `links` | links <项目> [--json] |
 | `links-prune` | links-prune <项目> [--nodes a,b] [--items a#i-1,b#i-2] [--dry-run] |
 | `orphans` | orphans <项目> [--json] [--content-only] [--limit n] |
 | `mentions` | mentions <项目> [--json] [--min-length n] [--include-structural] [--cross] [--limit n] |
 | `assoc-list` | assoc-list <项目> [--node <id>] [--json] [--raw] |
-| `assoc-add` | assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id] [--force] |
-| `assoc-edit` | assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] |
-| `assoc-remove` | assoc-remove <项目> <assocId> |
+| `assoc-add` | assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id] [--force] [--dry-run] |
+| `assoc-edit` | assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] [--dry-run] |
+| `assoc-remove` | assoc-remove <项目> <assocId> [--dry-run] |
 | `assoc-prune` | assoc-prune <项目> [--nodes a,b] [--dry-run] |
 | `validate` | validate <项目|json文件> [--json] |
 | `validate-all` | validate-all |
@@ -154,7 +154,7 @@ node cli/mm-cli.js stats <项目> [--json]
 创建空项目（meta + root 节点）
 
 ```
-node cli/mm-cli.js init <项目> [--title 标题]
+node cli/mm-cli.js init <项目> [--title 标题] [--dry-run]
 ```
 
 ### backlinks
@@ -186,7 +186,7 @@ node cli/mm-cli.js ask <项目> [<节点id>] [--nodes a,b,c] [--question "..."] 
 设置顶层主题左右分侧（meta.layout；未列出的主题默认在右侧）
 
 ```
-node cli/mm-cli.js theme-layout <项目> [--left a,b] [--right c,d] [--clear]
+node cli/mm-cli.js theme-layout <项目> [--left a,b] [--right c,d] [--clear] [--dry-run]
 ```
 
 ### add
@@ -194,7 +194,7 @@ node cli/mm-cli.js theme-layout <项目> [--left a,b] [--right c,d] [--clear]
 在父节点下新增子节点（--detail 为 HTML；--detail-md 为 Markdown，命令内转 HTML；--local-path 记录本机文件夹，界面点击即打开）
 
 ```
-node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force]
+node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] [--dry-run]
 ```
 
 ### add-root
@@ -202,7 +202,7 @@ node cli/mm-cli.js add <项目> <父id> --topic 标题 [--id id] [--detail html 
 新增顶层主题（不选父节点，直接挂在根节点下）—— 一个项目里可放多个不同方面的笔记
 
 ```
-node cli/mm-cli.js add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--force]
+node cli/mm-cli.js add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--force] [--dry-run]
 ```
 
 ### edit
@@ -210,7 +210,7 @@ node cli/mm-cli.js add-root <项目> --topic 标题 [--id id] [--detail html | -
 编辑节点字段（--detail HTML / --detail-md Markdown；--tags 覆盖设置标签，逗号分隔；--local-path 记录本机文件夹供界面点击打开）
 
 ```
-node cli/mm-cli.js edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false]
+node cli/mm-cli.js edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false] [--dry-run]
 ```
 
 ### move
@@ -218,7 +218,7 @@ node cli/mm-cli.js edit <项目> <id> [--topic 标题] [--detail html | --detail
 移动节点到新父节点
 
 ```
-node cli/mm-cli.js move <项目> <id> <新父id> [--index n]
+node cli/mm-cli.js move <项目> <id> <新父id> [--index n] [--dry-run]
 ```
 
 ### expand-depth
@@ -226,7 +226,7 @@ node cli/mm-cli.js move <项目> <id> <新父id> [--index n]
 按深度规范化展开状态（默认前 2 层展开、更深的收起；--depth 0 = 全收起），一次原子写
 
 ```
-node cli/mm-cli.js expand-depth <项目> [--depth N] [--id 子树根id]
+node cli/mm-cli.js expand-depth <项目> [--depth N] [--id 子树根id] [--dry-run]
 ```
 
 ### remove
@@ -234,7 +234,7 @@ node cli/mm-cli.js expand-depth <项目> [--depth N] [--id 子树根id]
 删除节点（含子树）；被关联/链接引用时需 --clean-assoc / --clean-links
 
 ```
-node cli/mm-cli.js remove <项目> <id> [--clean-assoc] [--clean-links]
+node cli/mm-cli.js remove <项目> <id> [--clean-assoc] [--clean-links] [--dry-run]
 ```
 
 ### clone
@@ -242,7 +242,7 @@ node cli/mm-cli.js remove <项目> <id> [--clean-assoc] [--clean-links]
 复制节点到新父节点（--deep 含子树）。副本上的**条目 id 重新签发**（全项目唯一，ITEM-MODEL §5.1），而副本上的条目级边（`links[].item`）**默认逐字仍指原物**（引用语义，克隆不改它）——`--json` 的 `itemEdges.kept` 会把"未被重指向"的条目级边逐条点名（副本节点 / 边下标 / 目标 / 源条目 id，并标 `repointable`），文本档**仅当副本上真有这类边**时多一行（没有 ⇒ 输出与从前逐字相同）。`--repoint-items`：把它们改指**副本自己那份新条目**的**同序号**条目（**语义改变**：引用原物 → 副本内部指涉）；对不上（目标在别的项目 / 目标节点不在被复制范围 / 那个节点里没有这条条目）⇒ **拒绝并点名**，**绝不按序号猜**（猜错就是换了一条边，而回显还说成功）
 
 ```
-node cli/mm-cli.js clone <项目> <源id> <新父id> [--deep] [--repoint-items] [--json]
+node cli/mm-cli.js clone <项目> <源id> <新父id> [--deep] [--repoint-items] [--json] [--dry-run]
 ```
 
 ### apply
@@ -258,7 +258,7 @@ node cli/mm-cli.js apply <项目> --ops-file ops.json [--dry-run]
 新增**一条**条目（改一条不必重写整块 detail）。未条目化的节点会**自动条目化**（先把旧 detail 解析成条目，**且必须能逐字节回放**才动它）。--md 转 Markdown、--html 原样存（表格/代码块要用 --html）；同 type 同正文默认拒绝并点名，--force 放行
 
 ```
-node cli/mm-cli.js item-add <项目> <节点id> --md "Markdown" | --html "HTML" [--src 出处] [--tags a,b] [--type text|rich] [--after itemId | --before itemId] [--force]
+node cli/mm-cli.js item-add <项目> <节点id> --md "Markdown" | --html "HTML" [--src 出处] [--tags a,b] [--type text|rich] [--after itemId | --before itemId] [--force] [--dry-run]
 ```
 
 ### item-edit
@@ -266,7 +266,7 @@ node cli/mm-cli.js item-add <项目> <节点id> --md "Markdown" | --html "HTML" 
 改写**一条**条目（只动指定字段，回显**真的变了的字段名**）。--verified 必须同时给 --how（核验是三字段全必填的记录：at/by/how）
 
 ```
-node cli/mm-cli.js item-edit <项目> <节点id> <itemId> [--md "Markdown" | --html "HTML"] [--src 出处 | --clear-src] [--tags a,b | --clear-tags] [--type text|rich] [--verified --how "怎么核的" | --clear-verified]
+node cli/mm-cli.js item-edit <项目> <节点id> <itemId> [--md "Markdown" | --html "HTML"] [--src 出处 | --clear-src] [--tags a,b | --clear-tags] [--type text|rich] [--verified --how "怎么核的" | --clear-verified] [--dry-run]
 ```
 
 ### item-remove
@@ -274,7 +274,7 @@ node cli/mm-cli.js item-edit <项目> <节点id> <itemId> [--md "Markdown" | --h
 删除**一条**条目。被 links[].item / assoc.members[].item 引用时**默认拒绝并逐个点名**，显式 --clean-links / --clean-assoc 才连带清理（不许静默删出悬挂引用）
 
 ```
-node cli/mm-cli.js item-remove <项目> <节点id> <itemId> [--clean-links] [--clean-assoc]
+node cli/mm-cli.js item-remove <项目> <节点id> <itemId> [--clean-links] [--clean-assoc] [--dry-run]
 ```
 
 ### item-move
@@ -282,7 +282,7 @@ node cli/mm-cli.js item-remove <项目> <节点id> <itemId> [--clean-links] [--c
 把一条条目移到**另一个节点**（一次原子写同时重渲染两侧 detail）。目标节点必须已条目化；只调顺序请用 item-order
 
 ```
-node cli/mm-cli.js item-move <项目> <节点id> <itemId> --to 目标节点id [--after itemId | --before itemId]
+node cli/mm-cli.js item-move <项目> <节点id> <itemId> --to 目标节点id [--after itemId | --before itemId] [--dry-run]
 ```
 
 ### item-order
@@ -290,7 +290,7 @@ node cli/mm-cli.js item-move <项目> <节点id> <itemId> --to 目标节点id [-
 重排条目顺序（--ids 必须是该节点现有条目的**完整排列**；只重排、不增删）
 
 ```
-node cli/mm-cli.js item-order <项目> <节点id> --ids i-a,i-b,…
+node cli/mm-cli.js item-order <项目> <节点id> --ids i-a,i-b,… [--dry-run]
 ```
 
 ### render-detail
@@ -298,7 +298,7 @@ node cli/mm-cli.js item-order <项目> <节点id> --ids i-a,i-b,…
 按 items 重新渲染 detail（**G2 判"detail 与 items 不一致"时的唯一修法**）。幂等：已一致 ⇒ 实际变化 0。只处理条目化节点（没有 items 的节点 detail 是真源，不碰）
 
 ```
-node cli/mm-cli.js render-detail <项目> <节点id> | --all
+node cli/mm-cli.js render-detail <项目> <节点id> | --all [--dry-run]
 ```
 
 ### recheck
@@ -330,7 +330,7 @@ node cli/mm-cli.js migrate items <项目> [--dry-run] [--json]
 把一次 AI 问答落进节点（**一次原子写**完成三件事）：追加 `qa` 记录（`{q,a,at,model?}`，追加不覆盖、完全相同的条目幂等）、把带来源标记与时间的问答追加到 detail 末尾（HTML 存储）、`--as-child` 时再建一个子节点（标题取回答首行截断、详情放全文）。空回答**响亮拒绝**（不许落一条空记录）。`--at` 由调用方给（界面上显示的时间就是落盘时间）
 
 ```
-node cli/mm-cli.js ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json]
+node cli/mm-cli.js ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json] [--dry-run]
 ```
 
 ### import-md
@@ -338,7 +338,7 @@ node cli/mm-cli.js ask-apply <项目> <id> --answer "回答" [--question "提问
 从 Markdown 导入节点（追加到 parent）。**同一份来源默认只导一次**：本命令会给导入的子树的根写上 `origin`（来源路径 + 内容指纹，见 docs/DATA-FORMAT.md §2.8），再次导入同一 `src`+`sha256` 会**被拒并指名**上一次导到哪去了 —— 真的想要第二份就加 `--force`（那是有意的重复，不是手滑）
 
 ```
-node cli/mm-cli.js import-md <项目> <md文件> [--parent id] [--force]
+node cli/mm-cli.js import-md <项目> <md文件> [--parent id] [--force] [--dry-run]
 ```
 
 ### import-project
@@ -394,7 +394,7 @@ node cli/mm-cli.js import-json <aimap.json> [--name 项目名]
 给节点添加图片（复制进 assets/）
 
 ```
-node cli/mm-cli.js add-image <项目> <id> --file 图片 --caption 备注 [--source 出处] [--tags a,b]
+node cli/mm-cli.js add-image <项目> <id> --file 图片 --caption 备注 [--source 出处] [--tags a,b] [--dry-run]
 ```
 
 ### remove-image
@@ -402,7 +402,7 @@ node cli/mm-cli.js add-image <项目> <id> --file 图片 --caption 备注 [--sou
 移除节点上的图片引用
 
 ```
-node cli/mm-cli.js remove-image <项目> <id> <相对路径 assets/x.png>
+node cli/mm-cli.js remove-image <项目> <id> <相对路径 assets/x.png> [--dry-run]
 ```
 
 ### assets
@@ -418,7 +418,7 @@ node cli/mm-cli.js assets <项目> [--json]
 给节点添加附件文件（复制进 attachments/，md/pdf 可内预览）
 
 ```
-node cli/mm-cli.js add-file <项目> <id> --file 附件 --caption 备注 [--source 出处]
+node cli/mm-cli.js add-file <项目> <id> --file 附件 --caption 备注 [--source 出处] [--dry-run]
 ```
 
 ### remove-file
@@ -426,7 +426,7 @@ node cli/mm-cli.js add-file <项目> <id> --file 附件 --caption 备注 [--sour
 移除节点上的附件引用
 
 ```
-node cli/mm-cli.js remove-file <项目> <id> <相对路径 attachments/x.md>
+node cli/mm-cli.js remove-file <项目> <id> <相对路径 attachments/x.md> [--dry-run]
 ```
 
 ### files
@@ -474,7 +474,7 @@ node cli/mm-cli.js dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json]
 添加跨项目链接（`--item` ⇒ 边指向**目标节点里的某一条条目**，即 `{project,id,item}`）。**重复添加同一条边**（同项目/同目标/同条目）分三种结局，回显可分辨：省略 --caption/--item ⇒ **保留**原有值（幂等，回显「无变化」且不写盘）；显式给新值 ⇒ **覆盖**（回显「已更新链接」并写出 旧 → 新）；显式 `--caption ""` / `--item ""` ⇒ **清空**那一层（回显「已更新链接（caption 清空 / item 清空）」）。⚠️ 只写 `--caption` / `--item` 不给值会被**响亮拒绝**；目标节点在、但 `--item` 那条条目不在 ⇒ **拒绝并点名**（绝不造出"节点在、条目不在"的悬挂引用）。⚠️ **人手里敲不出"显式空串"**：PowerShell 会把裸 `""` 从 argv 里**抹掉** ⇒ `--caption ""` / `--item ""` 根本到不了命令（实测：argv 里只剩 `--caption` / `--item`，被解析成 `true`，随后被上面那条**响亮拒绝**）。要清空请用**等号形式** `--caption=` / `--item=`（PowerShell 里**加引号没用** —— 实测 `""` 同样被抹掉）。这是**外壳**（shell）的行为，**不是**本命令的行为：命令本身照旧支持"显式空串 = 清空"
 
 ```
-node cli/mm-cli.js link <项目> <id> --to 目标项目 --id 目标id [--item 目标条目id] [--caption 说明]
+node cli/mm-cli.js link <项目> <id> --to 目标项目 --id 目标id [--item 目标条目id] [--caption 说明] [--dry-run]
 ```
 
 ### unlink
@@ -482,7 +482,7 @@ node cli/mm-cli.js link <项目> <id> --to 目标项目 --id 目标id [--item �
 移除跨项目链接（指向该目标的边一律移除，含条目级的）
 
 ```
-node cli/mm-cli.js unlink <项目> <id> --to 目标项目 --id 目标id
+node cli/mm-cli.js unlink <项目> <id> --to 目标项目 --id 目标id [--dry-run]
 ```
 
 ### links
@@ -530,7 +530,7 @@ node cli/mm-cli.js assoc-list <项目> [--node <id>] [--json] [--raw]
 新增关联笔记（成员 ≥2；跨项目写 项目/节点id）
 
 ```
-node cli/mm-cli.js assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id] [--force]
+node cli/mm-cli.js assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id] [--force] [--dry-run]
 ```
 
 ### assoc-edit
@@ -538,7 +538,7 @@ node cli/mm-cli.js assoc-add <项目> --members a,b,c [--title 标题] [--note h
 修改关联笔记的标题/成员/笔记内容
 
 ```
-node cli/mm-cli.js assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c]
+node cli/mm-cli.js assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] [--dry-run]
 ```
 
 ### assoc-remove
@@ -546,7 +546,7 @@ node cli/mm-cli.js assoc-edit <项目> <assocId> [--title 标题] [--note html |
 删除关联笔记
 
 ```
-node cli/mm-cli.js assoc-remove <项目> <assocId>
+node cli/mm-cli.js assoc-remove <项目> <assocId> [--dry-run]
 ```
 
 ### assoc-prune

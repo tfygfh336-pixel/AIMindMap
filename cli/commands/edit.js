@@ -1249,7 +1249,7 @@ function apply(ctx) {
   const prepared = checked.prepared;
 
   /* ---------- --dry-run：只预览（连 mutate 都不进） ---------- */
-  if (ctx.args.dryRun) {
+  if (ctx.dryRun) {
     ctx.out('（--dry-run：只预览，**没有写盘** ✓）');
     const work = cloneJson(pre.data);
     prepared.forEach((p) => {

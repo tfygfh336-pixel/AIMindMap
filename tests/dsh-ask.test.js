@@ -199,6 +199,9 @@ describe('CLI 命令：--dry-run 必须真的不调模型（实测教训）', ()
     projectName: 'comnet',
     PROJECTS_DIR: 'D:\\proj\\projects',
     args: args,
+    /* 【W8】`--dry-run` 的判定统一走 `ctx.dryRun`（真 ctx 上是个 getter，唯一读取点见 cli/core.js）——
+     * 桩里照同一语义给一份（**别让桩比真实现更宽松**：桩少了它，命令会读成 undefined ⇒ dry-run 静默失效）。 */
+    get dryRun() { return !!args.dryRun; },
     outs: [],
     read: () => ({ file: 'D:\\proj\\projects\\comnet\\comnet.json', data: { data: { id: 'root', topic: 'root', children: [] } } }),
     tree: {

@@ -144,10 +144,11 @@ module.exports = {
       return;
     }
 
-    // ⚠️ 参数名是**驼峰**（cli/core.js 把 `--dry-run` 解析成 `args.dryRun`）。
-    //    第一版写成 `ctx.args['dry-run']` ⇒ 标志被**静默忽略**、白白烧了一次真模型调用 ✗
-    //    （实测：本该 0.4s 的 dry-run 跑了 23.3s 才现形）。tests/dsh-ask.test.js 锁死这条契约。
-    if (ctx.args.dryRun) {
+    // ⚠️ 判定统一走 `ctx.dryRun`（【W8】起它是**全工程唯一读取点**，见 cli/core.js 的注释）。
+    //    第一版这里写的是错键名（`ctx.args['dry-run']`，本工程的解析器归一到**驼峰** key）
+    //    ⇒ 标志被**静默忽略**、白白烧了一次真模型调用 ✗（实测：本该 0.4s 的 dry-run 跑了 23.3s 才现形）。
+    //    tests/dsh-ask.test.js 锁死这条契约；`tests/w8-dry-run.test.js` 再静态把守"命令层不许自己读 args"。
+    if (ctx.dryRun) {
       // 顺便把"将要打的思考强度 patch 长什么样"也打出来（离线可验 ✓ 不用真跑模型）
       let patchText = null;
       try {
