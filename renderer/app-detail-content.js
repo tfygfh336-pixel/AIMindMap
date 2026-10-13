@@ -22,6 +22,113 @@
   let fdContainerBound = false;
   let fdNodesObserver = null;
 
+  /* ================= 单击 / 双击判别（R1 双击防误触） =================
+   * **用户 2026-10-13 亲报**：双击节点展开/折叠**照样发生**，但**单击的两个副作用也照跑** ——
+   *   ① 被记一次「访问」（热度）✗ ② 详情框被打开、遮挡视野 ✗。
+   *
+   * **根因**（读代码定位，不猜）：浏览器里「真双击」就是三条事件
+   *   `click(detail=1) → click(detail=2) → dblclick`；而本文件这条容器 click 处理器**一拍都不等**
+   *   就跑了 `showDetail` —— 它同时是「记访问」的**唯一采样点**（`app-detail.js` 的
+   *   `recordHumanOpen`：人打开详情框 = 人类唯一的访问动作）⇒ 双击必然先把单击副作用跑一遍。
+   *   实测（`scripts/smoke/03` 的真输入探针，修前）：一次真双击 ⇒ `showDetail` 调 **2** 次、
+   *   访问日志 **+4** 行（每次打开详情还带一条 `ai-related-hop`：相关知识点那次 AI 读）、
+   *   详情框被打开 ✓。
+   *
+   * **为什么只能「推迟判别」、不能「事后撤销」**：访问日志是**只追加**的
+   *   （`src/heat-sensor.js` 的 `appendEvent`：只有追加、没有删除口）⇒ 写进去就撤不回来
+   *   ⇒ 判别必须发生在**写入之前** ⇒ 单击的这两个副作用必须等过双击窗口。
+   *   **选中**不在此列：它是无副作用的即时反馈（点下去就该看见），仍然**立刻**做 ✓
+   *   —— 双击时也照样选中，与从前一致 ✓。
+   *
+   * **口径**（四条，缺一不可）：
+   *   · 窗口内**同一节点**又挨了一击（或收到 `dblclick`）⇒ 把这一对的单击副作用**整个撤掉**
+   *     （不记访问、不弹详情 ✓；双击本身的展开/折叠在 `contextmenu.js`，不受影响 ✓）；
+   *   · 窗口内**换了别的节点** ⇒ 上一击确属单击 ⇒ **立刻补跑**（单击语义一条都不丢 ✓）；
+   *   · **点空白** ⇒ 先补跑再隐藏（净效果与从前逐字节相同：记一次访问 + 框关上 ✓）；
+   *   · **合成事件**（`el.click()` / `dispatchEvent(new MouseEvent('click'))`，`detail === 0`）
+   *     **不进判别**：它没有「点击计数」这回事、也不存在「前面还有一击」的语义 ⇒ 立即执行，
+   *     与从前逐字节相同 ✓（冒烟域 01 的 `click node → float detail shows` 走的就是这条路径）。
+   *
+   * **窗口取 300ms**：真双击要等过它才能确认「是单击」，等得越久单击越钝。本机真双击的两击
+   *   间隔实测 ~90ms（域 03 的真输入探针：`dblclick` 与首个 `click` 之间）⇒ 300ms 有 3 倍余量；
+   *   残余（两击间隔 > 300ms 的「慢双击」）如实记在 CHANGELOG 的「未做/未核实」里 ✗
+   *   —— 那一档里第一击的副作用已经发生，但**第二击与 dblclick 仍被抑制**，展开/折叠照旧 ✓
+   *   （比修前「两击都照跑」已经好了，只是没到零）。 */
+  const DBL_WINDOW_MS = 300;
+  let pendingClick = null;      // { nodeId, timer }：窗口里正等着的那一击
+  let lastSuppressed = null;    // 读数：最近一次被撤掉的那一击（冒烟断言读它）
+
+  /** 跑掉那一击的单击副作用。**只经 `MM.showDetail`** —— 它是「打开详情框」的唯一入口，
+   *  记访问就挂在它里面（`app-detail.js` 的 `recordHumanOpen`）⇒ 一处调用、两条副作用一起受控 ✓。 */
+  function runSingleClick(nodeId) {
+    const jm = state.jm;
+    if (!jm || !MM.adapter || typeof MM.showDetail !== 'function') return false;
+    const n = MM.adapter.getNode(jm, nodeId);
+    if (!n) return false;      // 节点已经不在了（切了项目 / 被删）⇒ 不弹，也不假装成功 ✓
+    MM.showDetail(n);
+    return true;
+  }
+
+  function takePending() {
+    const p = pendingClick;
+    pendingClick = null;
+    if (p && p.timer) clearTimeout(p.timer);
+    return p;
+  }
+  /** 上一击确属单击 ⇒ 立刻补跑（换节点 / 点空白时用） */
+  function flushPendingClick() {
+    const p = takePending();
+    if (p) runSingleClick(p.nodeId);
+    return !!p;
+  }
+  /** 这一击属于双击 ⇒ 把这一对的单击副作用整个撤掉 */
+  function cancelPendingClick(why) {
+    const p = takePending();
+    if (p) lastSuppressed = { nodeId: p.nodeId, why: why, at: Date.now() };
+    return p;
+  }
+
+  /** 一次节点点击进判别（`detail` = 浏览器给的点击计数：真点击 1、2…；合成事件 0） */
+  function noteNodeClick(node, detail) {
+    const id = node.id;
+    if (pendingClick && pendingClick.nodeId === id) {
+      // 同一节点在窗口内又挨了一击 ⇒ 这是一次双击：这一对的副作用**整个**撤掉，
+      // 第 2 击也不排新的（双击语义由 contextmenu.js 的 dblclick 处理 ✓）
+      cancelPendingClick(detail >= 2 ? 'second-click' : 'same-node-again');
+      return;
+    }
+    if (pendingClick) flushPendingClick();     // 换了节点 ⇒ 上一击确属单击，立刻补跑（不丢 ✓）
+    if (!(detail >= 1)) { runSingleClick(id); return; }   // 合成事件：立即执行，与从前逐字节相同 ✓
+    pendingClick = {
+      nodeId: id,
+      timer: setTimeout(() => { const p = takePending(); if (p) runSingleClick(p.nodeId); }, DBL_WINDOW_MS)
+    };
+  }
+
+  /** 读数（冒烟断言用）：判别窗口 / 正等着的那一击 / 最近一次被撤掉的那一击 */
+  function clickJudgeState() {
+    return {
+      windowMs: DBL_WINDOW_MS,
+      pending: pendingClick ? pendingClick.nodeId : null,
+      suppressed: lastSuppressed
+    };
+  }
+
+  /** 事件目标属于哪个节点：**复用 `contextmenu.js` 的那一份判定**
+   *  （`MMContextMenu.getBindedNodeId`，规则与它「右键命中的是哪个节点」同源）
+   *  —— 本文件不再抄第二份「沿父链找 jmnode」的比较逻辑（两处表达必然漂移 ✗）。
+   *  拿不到它（contextmenu.js 没加载 / 导出名改了）**不静默**：说出来（判别无法收口 ✓）。 */
+  function nodeIdOfEventTarget(target) {
+    const api = window.MMContextMenu;
+    if (!api || typeof api.getBindedNodeId !== 'function') {
+      if (MM.setStatus) {
+        MM.setStatus('双击判别：拿不到 MMContextMenu.getBindedNodeId（见 contextmenu.js），本次没能抑制单击副作用', true);
+      }
+      return null;
+    }
+    return api.getBindedNodeId(target);
+  }
+
   /** 导图容器点击：选中节点→刷新详情；点空白→隐藏浮动详情。
    *
    *  **为什么在 DOM 层接管，而不是听 jsMind 的 select 事件** —— 2026-10-09 实测
@@ -90,16 +197,26 @@
         if (tag === 'jmnode') {
           const id = el.getAttribute('nodeid');
           if (id) {
-            MM.adapter.selectNode(jm, id);
+            MM.adapter.selectNode(jm, id);      // 选中：**立刻**（无副作用；双击时也照样选中 ✓）
             const n = MM.adapter.getNode(jm, id);
-            if (n) showDetail(n);
+            // 详情 + 记访问：过单击/双击判别（双击的那一击会被撤掉，见 noteNodeClick ✓）
+            if (n) noteNodeClick(n, e.detail);
           }
           return;
         }
         if (tag === 'jmnodes') break;
         el = el.parentElement;
       }
+      flushPendingClick(); // 点空白：先把上一击补跑（净效果与从前相同）再收起
       hideFloatDetail(); // 点击空白 → 隐藏浮动详情
+    });
+
+    /* 双击 = 把这一对的单击副作用**撤掉**（判别窗口内的那一击还没跑 ⇒ 撤得掉 ✓）。
+     * 本监听器与 `contextmenu.js` 的 `onDblClick`（双击 = 展开/收起）在**同一次事件派发**里
+     * 同步执行：谁先谁后都不影响结论 —— 撤销发生在任何 `setTimeout` 回调之前 ✓。 */
+    container.addEventListener('dblclick', (e) => {
+      const id = nodeIdOfEventTarget(e.target);
+      if (id && pendingClick && pendingClick.nodeId === id) cancelPendingClick('dblclick');
     });
 
     window.addEventListener('resize', () => positionFloatDetail());
@@ -766,6 +883,7 @@
 
   /* —— 本文件定义的东西挂到共享命名空间 —— */
   MM.bindContainerControls = bindContainerControls;
+  MM.clickJudgeState = clickJudgeState;      // 单击/双击判别读数（冒烟域 03 的判据读它）
   MM.observeNodeLayer = observeNodeLayer;
   MM.renderFdBox = renderFdBox;
   MM.openLocalPath = openLocalPath;

@@ -73,7 +73,7 @@ const assertions = [
     name: '让位覆盖全部弹窗（.overlay 一族）且侧栏折叠后恢复原样',
     run: async (ctx) => {
       const r = await ctx.exec(`(function () {
-        var ids = ['edit-dialog', 'image-dialog', 'file-dialog', 'assoc-dialog', 'audit-panel', 'palette', 'lightbox', 'file-preview'];
+        var ids = ['edit-dialog', 'image-dialog', 'file-dialog', 'assoc-dialog', 'audit-panel', 'palette', 'lightbox', 'file-preview', 'conc-panel'];
         document.body.style.removeProperty('--dsh-sidebar-width');
         document.body.classList.remove('dsh-sidebar-on');
         var off = ids.map(function (id) {
