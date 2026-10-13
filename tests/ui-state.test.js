@@ -45,9 +45,22 @@ describe('ui-state 文件契约', () => {
 
   it('buildState/serializeState 只产出约定字段（schemaVersion 锁格式）', () => {
     const s = ui.buildState({ project: 'comnet', dirty: true, uiPid: 1234 });
-    expect(Object.keys(s).sort()).toEqual(['dirty', 'project', 'schemaVersion', 'uiPid', 'updatedAt']);
+    expect(Object.keys(s).sort()).toEqual(
+      ['baseVersion', 'dirty', 'project', 'schemaVersion', 'seenVersion', 'uiPid', 'updatedAt']);
     expect(s.schemaVersion).toBe(1);
     expect(JSON.parse(ui.serializeState(s)).dirty).toBe(true);
+  });
+
+  /* 两个版本字段（v0.20）：**盘上版本指纹**，不是"界面自己算的一份哈希"。
+   * 判据按"读方能不能答'界面所见落后盘上多少'"来写 —— 见 interpret 那一组。 */
+  it('seenVersion / baseVersion 是字符串且缺值一律空串（**不编版本**）', () => {
+    const s = ui.buildState({ project: 'comnet', dirty: false, uiPid: 1 });
+    expect(s.seenVersion).toBe('');
+    expect(s.baseVersion).toBe('');
+    const s2 = ui.buildState({ project: 'comnet', dirty: true, uiPid: 1, seenVersion: 'abc123', baseVersion: 7 });
+    expect(s2.seenVersion).toBe('abc123');
+    expect(s2.baseVersion).toBe('7');            // 非字符串一律 String()（契约是字符串，不写对象/数字）
+    expect(ui.parseState(ui.serializeState(s2)).state.seenVersion).toBe('abc123');
   });
 
   it('parseState：坏 JSON / 非对象 / 空 → { ok:false }，不抛', () => {
@@ -73,6 +86,39 @@ describe('interpret（盘上状态 + 进程活性 → 结论）', () => {
     expect(r.dirty).toBe(false);
     expect(r.uiRunning).toBe(true);
     expect(r.note).toContain('可以安全写入');
+  });
+
+  /* 文案与实现必须一致（用户 2026-10-13 报的正是这一条：界面提示/文档说"要重开项目"，
+   * 而实现早就是三方合并）。判据按"那句话在不在"写，**不去锁整段措辞**（措辞会改，改措辞不该红）。 */
+  it('note 不再宣称"重开项目"，并如实说三方合并（文案与实现一致）', () => {
+    const clean = ui.interpret('comnet', ui.buildState({ project: 'comnet', dirty: false, uiPid: process.pid }), alive);
+    expect(clean.note).not.toContain('重开');
+    expect(clean.note).toContain('三方合并');
+    expect(clean.note).toContain('最新代码');   // "界面看不到外部改动"时的第一条自查（主进程改动要重启）
+    const dirty = ui.interpret('comnet', ui.buildState({ project: 'comnet', dirty: true, uiPid: process.pid }), alive);
+    expect(dirty.note).not.toContain('重开');
+  });
+
+  /* 「界面所见落后盘上多少」可判：两个字面值都进 interpret（CLI `ui-state --json` 原样转发
+   * 这个对象的全部字段 —— 判据见 cli/commands/project.js 的 uiState）。 */
+  it('两版版本指纹进结论；seenVersion 与 baseVersion 不同 ⇒ 可读出"界面所见落后于基线"', () => {
+    const behind = ui.interpret('comnet', ui.buildState({
+      project: 'comnet', dirty: true, uiPid: process.pid, seenVersion: 'aaaa1111', baseVersion: 'bbbb2222'
+    }), alive);
+    expect(behind.seenVersion).toBe('aaaa1111');
+    expect(behind.baseVersion).toBe('bbbb2222');
+    expect(behind.note).toContain('aaaa1111'.slice(0, 8));
+    expect(behind.note).toContain('bbbb2222'.slice(0, 8));
+    // 同版 ⇒ 提示里两个前缀相同（"界面所见 == 基线"，没有落后）
+    const same = ui.interpret('comnet', ui.buildState({
+      project: 'comnet', dirty: false, uiPid: process.pid, seenVersion: 'cccc3333', baseVersion: 'cccc3333'
+    }), alive);
+    expect(same.seenVersion).toBe(same.baseVersion);
+    // 老状态文件（没这两个键）⇒ 空串，**不许**回填一个假版本
+    const legacy = ui.interpret('comnet', ui.buildState({ project: 'comnet', dirty: false, uiPid: process.pid }), alive);
+    expect(legacy.seenVersion).toBe('');
+    expect(legacy.baseVersion).toBe('');
+    expect(legacy.note).not.toContain('未上报）；');   // 没有值就不给这半句提示（不无中生有）
   });
 
   it('界面已退出（pid 不在）→ dirty 归零 + stale=true，**不**永久阻塞 AI', () => {

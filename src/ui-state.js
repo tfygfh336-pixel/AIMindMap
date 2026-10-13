@@ -22,6 +22,9 @@
  *   · `uiPid` 是**界面进程**的 pid：读方据此判定"界面是否真的在跑"——
  *     界面已退出（pid 不在）时，盘上的 dirty 只是残影，一律按 false 处理，
  *     否则 AI 会被一个崩溃残留的 true 永久吓得不敢写。
+ *   · `seenVersion` / `baseVersion`（v0.20）：两个**盘上版本指纹**（与写盘闸门同一值空间）
+ *     —— 读方与项目文件当前指纹**直接比字符串**即可判"界面所见落后盘上多少"；
+ *     谁写谁读的口径见 `buildState` 上方那段注释（那里是字段语义的唯一一处）。
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -49,7 +52,21 @@
     return pathMod.join(projectsDir, project, FILE_NAME);
   }
 
-  /** 构造要落盘的状态对象（单一真源：字段名只有这里定义） */
+  /**
+   * 构造要落盘的状态对象（单一真源：字段名只有这里定义）。
+   *
+   * ## 两个"版本"字段（v0.20 增；读方据此判「界面所见落后盘上多少」）
+   * 两个字面值都是**盘上内容的版本指纹**（`src/data-store.js` 的 `versionOfText`：文件内容
+   * SHA-1 前 16 位）—— 与写盘闸门、与 `read --json` 给出的 `version` **同一个值空间**，
+   * 因此读方拿它们和项目文件当前指纹**直接比字符串**即可（不许再算第二份哈希 ✗）。
+   *   · `seenVersion`：**界面所见内容**对应的盘上版本 —— 由**渲染层**上报（它从磁盘读/同步/保存
+   *     成功时记下那一版）。答："用户在屏幕上看到的是哪一版。"
+   *   · `baseVersion`：**界面编辑基线**的版本 —— 由**主进程**填（`versionAtRead`，也就是下次
+   *     保存时闸门要拿来比对的**同一版**）。答："界面若现在保存，闸门比的是哪一版。"
+   * 两者**可以不同**，且差异本身就是信号（实测路径：侧栏 AI 经 CLI 写盘 → 主进程推进基线 →
+   * 但界面**正脏**、按安全声明不重读 ⇒ 界面所见停在旧版 = `seenVersion`，闸门已在 `baseVersion`）
+   * ⇒ `seenVersion !== baseVersion` 就是"界面所见落后于基线"。缺值一律空串（**不许**编一个版本 ✗）。
+   */
   function buildState(opts) {
     const o = opts || {};
     return {
@@ -57,6 +74,8 @@
       project: String(o.project || ''),
       dirty: !!o.dirty,
       uiPid: typeof o.uiPid === 'number' ? o.uiPid : 0,
+      seenVersion: String(o.seenVersion || ''),
+      baseVersion: String(o.baseVersion || ''),
       updatedAt: o.updatedAt || new Date().toISOString()
     };
   }
@@ -74,18 +93,23 @@
     return { ok: true, state: buildState(raw) };
   }
 
+  /** 版本前缀（只用于提示文本：与闸门报错里的 `slice(0,8)` 是同一口径，别在这里另立格式） */
+  function short(v) { return String(v || '').slice(0, 8); }
+
   /**
    * 把「盘上状态 + 界面进程活性」解释成读方要的结论。
    * @param {object|null} state  parseState 的结果（null = 文件不存在）
    * @param {function} isAlive    pid → boolean（注入以便单测）
    * @returns {{project:string, uiRunning:boolean, dirty:boolean, uiPid:number,
-   *            updatedAt:string|null, exists:boolean, stale:boolean, corrupt:boolean, note:string}}
+   *            updatedAt:string|null, exists:boolean, stale:boolean, corrupt:boolean,
+   *            seenVersion:string, baseVersion:string, note:string}}
    */
   function interpret(project, state, isAlive) {
     const alive = isAlive || pidAlive;
     const base = {
       project: project, uiRunning: false, dirty: false, uiPid: 0,
-      updatedAt: null, exists: false, stale: false, corrupt: false, note: ''
+      updatedAt: null, exists: false, stale: false, corrupt: false,
+      seenVersion: '', baseVersion: '', note: ''
     };
     if (!state) {
       base.note = '界面未运行或未上报（无状态文件）—— 可以安全写入';
@@ -94,6 +118,8 @@
     base.exists = true;
     base.uiPid = state.uiPid;
     base.updatedAt = state.updatedAt || null;
+    base.seenVersion = state.seenVersion || '';
+    base.baseVersion = state.baseVersion || '';
     if (!state.uiPid || !alive(state.uiPid)) {
       // 界面进程不在：dirty 是残影。崩溃/强杀后没人会来清它，读方必须自己判死。
       base.stale = true;
@@ -102,10 +128,23 @@
     }
     base.uiRunning = true;
     base.dirty = !!state.dirty;
+    /* 版本提示（v0.20）：两个字面值都是**盘上版本指纹**，读方与项目文件当前指纹直接比即可。
+     * 只在真有值时给提示 —— 老状态文件（或界面还没上报过）没有这两个键，不许编一个版本 ✗ */
+    const vHint = (base.seenVersion || base.baseVersion)
+      ? '（界面所见内容＝' + (short(base.seenVersion) || '未上报') + ' · 编辑基线＝'
+        + (short(base.baseVersion) || '未上报') + '；与项目文件当前指纹不同 ⇒ 界面还没看到那一版）'
+      : '';
+    /* ⚠️ 这段 note 是**行为承诺**，必须与实现逐条对得上（它会被 AI 当能力用）：
+     *   · 历史文案曾写"界面保存会因版本不符被拒并要求**重开项目**" —— 那是**旧行为**（只剩拒绝）；
+     *     阶段 2 起保存走三方合并，**只有撞在同一对象上才拦**，且拦下后是在界面上选（不是重开）。
+     *   · 也**不写**"要求重开项目"这类与实现矛盾的出路：读方（侧栏 AI）够不着那个动作。 */
     base.note = base.dirty
-      ? '界面有未保存编辑 —— 先请用户保存（或确认丢弃），再动笔'
-      : '界面无未保存编辑 —— 可以安全写入（并发版本闸门保证你的写入不会被界面的整树覆盖；'
-        + '但界面若随后有改动要保存，那次保存会因版本不符被拒并要求重开项目 —— 介意就先让用户重开）';
+      ? '界面有未保存编辑 —— 先请用户保存（或确认丢弃），再动笔' + vHint
+      : '界面无未保存编辑 —— 可以安全写入（并发版本闸门保证你的写入不会被界面的整树覆盖）'
+        + '。界面会自动同步外部改动：无未保存编辑时静默重读（AI 的编辑随之出现在导图上）；'
+        + '有未保存编辑时**不覆盖人的编辑**、只亮出「外部改动预览」让人看差异，'
+        + '而那次保存走**三方合并**（两边改的对象不相交就自动合并，只有撞在同一对象上才拦下让用户选）'
+        + '。界面侧看不到你的改动时：先确认它跑的是**最新代码**（主进程改动要重启应用才生效），再看预览里的差异' + vHint;
     return base;
   }
 

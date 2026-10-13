@@ -24,6 +24,33 @@
     <span id="status-text" title="最近操作状态"></span>
   </div>
 
+  <!-- 「外部改动预览」入口（v0.20「让 AI 的编辑看得见」）：界面**有未保存编辑**时，外部
+       （侧栏 AI / CLI / 另一个会话）改了盘上的内容，不再被一句状态提示悄悄吞掉 ——
+       这里常驻一条**可点**的 banner，点开是**只读**的两侧差异面板（不写盘、不重载树：
+       人的编辑一个字都不动）。默认 display:none ⇒ 不占布局，首屏几何与从前一致 ✓ -->
+  <div id="conc-banner" style="display:none">
+    <span id="conc-banner-icon" aria-hidden="true">⇄</span>
+    <span id="conc-banner-text"></span>
+    <button id="conc-banner-open" type="button" title="打开只读差异预览（不写盘、不改内存）">看差异</button>
+    <button id="conc-banner-close" type="button" title="收起这条提示（盘上的改动仍在，看法见状态栏）">✕</button>
+  </div>
+
+  <!-- 并发差异 / 冲突面板（v0.20）：**两种用途共用同一个面板与同一套行构造**（见 app-actions.js）
+       ① 有未保存编辑时点上面的 banner ⇒ 只读预览「我的改动 / 盘上现状」（含撞在同一对象上的那几处）；
+       ② 保存撞同一对象被闸门拦下 ⇒ 逐对象显示两边内容 + 「用盘上 / 保留我的」两个按钮。
+       ⚠️ 面板**只读**：它自己不写盘 —— 「用盘上」仍是走既有的 `save({onConflict:'theirs'})` 那条路。 -->
+  <div id="conc-panel" class="overlay" style="display:none">
+    <div class="conc-card">
+      <div class="conc-head">
+        <span class="conc-title" id="conc-title">并发差异</span>
+        <span class="conc-meta" id="conc-meta"></span>
+        <button id="conc-close" title="关闭（只关这一层：不写盘、不改内存）">✕</button>
+      </div>
+      <div id="conc-body"></div>
+      <div class="conc-actions" id="conc-actions"></div>
+    </div>
+  </div>
+
   <!-- 关系审计面板（app-audit.js 渲染内容） -->
   <div id="audit-panel" class="overlay" style="display:none">
     <div class="audit-card">
@@ -215,6 +242,15 @@
   <script src="../src/palette-rank.js"></script>
   <script src="../src/related-model.js"></script>
   <script src="../src/sidebar-context.js"></script>
+  <!-- 并发核心（v0.20）：差异指纹 / 对象名 / 差异行只有**这一份实现** —— 渲染层的
+       「外部改动预览」与「冲突面板」都从这里取内容，界面里**不许**另写一套"哪里不一样"的判定
+       （那就是同一件事的两处表达，必然漂移）。
+       ⚠️ 加载顺序：item-model 必须在前 —— concurrency 的浏览器分支在**构造那一刻**取
+       `root.MMItemModel`；缺了它，合并条目化节点会**响亮抛错**（不是静默降级，这是有意的）。
+       ⚠️ 本文件只补这两个；`src/qa.js` 仍然不加载（渲染层从不调 `renderDetail`，
+       真要用到 qa 渲染时 item-model 会响亮报错，不会静默写一份坏 detail）。 -->
+  <script src="../src/item-model.js"></script>
+  <script src="../src/concurrency.js"></script>
   <!-- 应用模块（拆分自原 app.js，共享 window.MM；app-core.js 必须最先、app.js 必须最后） -->
   <!-- 适配层：对渲染库（jsMind）**公共 API** 的调用全走这里 —— 换库只改这一个文件 -->
   <script src="mindmap-adapter.js"></script>

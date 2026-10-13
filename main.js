@@ -730,10 +730,34 @@ function registerIpc() {
    * 在自身无未保存改动时自动重读（有脏改动则只提示，绝不覆盖人的编辑）。
    * fs.watch 对一次原子写（tmp+rename）可能触发多次 → 300ms 防抖 + 消重。 */
   const projectWatchers = new Map(); // absDir → fs.FSWatcher
+  /* 焦点探针（v0.20）：「窗口重新获得焦点时**只读**比一次盘上指纹，落后就复用既有通道通知」。
+   *
+   * 为什么需要它（用户原话："AI 编辑的我看不到"✗）：`fs.watch` 只在**写盘那一刻**触发，
+   * 而那一刻界面可能正脏/正忙；等人**回到窗口**再比一次，才覆盖"人真的看没看到"这个时机。
+   * 三条纪律（缺一条就会变成新机制而不是复用）：
+   *   · **只读**：`versionOf` 只读文件 —— 不推进 `versionAtRead`/`baseAtRead`、不写盘、不碰渲染层内存；
+   *   · **复用既有事件**（`project:disk-changed`）⇒ 渲染层侧仍然只有一套判定
+   *     （无脏 ⇒ 静默重读；有脏 ⇒ 只提示并亮出「外部改动预览」）；
+   *   · **只在盘上版本 ≠ 界面读到的那一版时才发**（相等还发 ⇒ 每次切回窗口都白重读一遍）。 */
+  let watchedFile = null;
+  let watchedWin = null;
+  const focusProbed = new WeakSet();
+  function onWatcherFocus() {
+    if (!watchedFile || !watchedWin || watchedWin.isDestroyed()) return;
+    const projName = path.basename(path.dirname(watchedFile));
+    const onDisk = versionOf(watchedFile);
+    const known = versionAtRead.get(projName);
+    if (onDisk === null || known === undefined || onDisk === known) return;
+    watchedWin.webContents.send('project:disk-changed', path.basename(watchedFile));
+  }
   function watchProjectDir(win, absDir) {
     const prev = projectWatchers.get('current');
     if (prev) { try { prev.close(); } catch (err) { /* ignore */ } projectWatchers.delete('current'); }
     if (!absDir || !fs.existsSync(absDir)) return;
+    watchedFile = absDir;
+    watchedWin = win;
+    // 只听一次（同一个窗口会被反复 watch：切项目/重开导图页都会走到这里）
+    if (win && !focusProbed.has(win)) { focusProbed.add(win); win.on('focus', onWatcherFocus); }
     let timer = null;
     try {
       const w = fs.watch(absDir, { persistent: false }, (_event, filename) => {
@@ -761,6 +785,12 @@ function registerIpc() {
     // 走 store.read()：BOM 容错 + 路径校验 + 项目不存在时给出明确错误
     const r = store.read(name);
     // 记下渲染层这一份是从哪个版本读来的 —— project:save 的并发闸门要用它
+    // ⚠️ 因此这条通道**有副作用**：用它的前提是"渲染层读完就采纳这一版"。渲染层里那条
+    // **可能读了却不采纳**的路（自动重读：读盘期间切了项目 / 期间又变脏 ⇒ 拒绝采纳，见
+    // renderer/app-actions.js 的 onProjectDiskChange）**必须**走没有副作用的 `project:peek` ——
+    // 拿 read 去走那条路，基线就被记成"界面见过盘上这一版"，而 project:save 的闸门正是拿它比
+    // 版本号的 ⇒ 下一次保存按"没有外部改动"把内存里那份旧树直接写下去，把盘上（AI/CLI 刚写的）
+    // 那份**静默抹掉**（本工程最重的损害类别 ✗）。
     versionAtRead.set(name, r.version);
     // 同时记下**内容基线**：并发时要做三方合并（阶段 2），只有指纹是不够的
     baseAtRead.set(name, r.data);
@@ -768,6 +798,25 @@ function registerIpc() {
     // （页面 boot 时只会默认开 projects[0] ⇒ 重开后项目会跑掉）⇒ 在这里记，重开时还回去 ✓
     try { dshSidebar.setCurrentProject(name); } catch (err) { /* 记不住不阻断读项目 */ }
     return r;
+  });
+
+  /* 只读探视（v0.20「让 AI 的编辑看得见」）——
+   * 渲染层在**有未保存编辑**时也要能"看看盘上现在是什么样"，好在界面上亮出差异；
+   * 而这件事**不能**用 `project:read` 去做：它有副作用 —— 会把 `versionAtRead` / `baseAtRead`
+   * 推进到盘上这一版（那正是保存闸门"我读到哪一版"的依据）。若拿它探视，界面随后保存会被
+   * 判成"没有外部改动" ⇒ **静默覆盖 AI 刚写的内容**（本工程最重的损害类别 ✗）。
+   * ⇒ 这条通道**只读**：不推进任何记录、不写盘、不碰渲染层内存。
+   * 返回里那两份版本也**取自主进程自己那份记录**（`baseAtRead` 与闸门用的 `versionAtRead`），
+   * 于是"差异预览"与"保存闸门/三方合并"**用同一份基线** —— 不会出现"预览说没事、保存却冲突"。 */
+  ipcMain.handle('project:peek', (e, name) => {
+    let r;
+    try { r = store.read(name); } catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
+    const projName = path.basename(path.dirname(r.file));
+    return {
+      ok: true, file: r.file, data: r.data, version: r.version,
+      base: baseAtRead.get(projName) || null,          // 界面读到的那一份（合并基线的唯一来源）
+      baseVersion: versionAtRead.get(projName) || null // **闸门下次要比的那一版**（= .ui-state 的 baseVersion）
+    };
   });
 
   ipcMain.handle('project:save', (e, file, data, opts) => {
@@ -831,8 +880,12 @@ function registerIpc() {
         { onConflict: (opts && opts.onConflict) || 'refuse' });
       if (!mr.ok) {
         // **拒绝，但给结构化信息**：渲染层据此报出对象名并让用户二选一 —— 不再"一律丢整个界面的改动"
+        // v0.20：除对象名外还给**三份只读快照**（base / mine / theirs），渲染层据此在冲突面板里
+        //   显示"两边内容差异"（用户原话："就算打架也要可以预览冲突内容"）。
+        //   ⚠️ `conflictSnapshots` 只取 `mr.conflicts` 点名的那些对象 —— **不塞整棵树**。
         return {
           ok: false, code: 'MERGE_CONFLICT', conflicts: mr.conflicts, detail: mr.detail,
+          snapshots: concurrency.conflictSnapshots(baseForMerge, payload, cur, mr.conflicts),
           // headless（冒烟/自动化）下渲染层**不能弹模态确认框**：没人回答会把整轮卡死（实测踩过）
           headless: isSmoke,
           message: '这些对象在磁盘上已被其他写入者改过：' + mr.detail.join('、')
@@ -879,7 +932,7 @@ function registerIpc() {
         console.error('warning: 变更日志写入失败（本次数据已写入，日志缺一条）：'
           + ((err && err.message) || err));
       }
-      return { ok: true, merged: merged };
+      return { ok: true, merged: merged, version: writtenVersion, file: file };
     } finally {
       try { if (fs.existsSync(probe)) fs.unlinkSync(probe); } catch (err) { /* ignore */ }
     }
@@ -1422,17 +1475,37 @@ function registerIpc() {
    * 侧栏 AI 用 `node cli/mm-cli.js ui-state --json` 读它 —— 这是它能真正够到的
    * 通道（旧 IPC dsh-sidebar:ui-dirty 无任何调用方，已删除，见 src/ui-state.js 顶部）。
    * 写失败不致命：读方把"没有文件"当作"界面未运行"，不影响编辑。 */
-  function writeUiStateFile(project, dirty) {
+  function writeUiStateFile(project, dirty, seenVersion) {
     if (!project) return;
     try {
+      /* v0.20 增的两个版本字段（读方据此判「界面所见落后盘上多少」，语义只有一处：
+       * `src/ui-state.js` 的 buildState 注释）：
+       *   · `seenVersion` = 界面**所见内容**的盘上版本 —— 渲染层上报。
+       *     `undefined` 表示"本次调用没带"（退出时那种调用就属于这一档）⇒ **沿用盘上已有值**，
+       *     绝不把它抹成空串（那会把"界面看到过哪一版"这条事实丢掉 ✗）。
+       *   · `baseVersion` = **闸门基线**（`versionAtRead`）—— 只由主进程填，渲染层报什么都不采信。
+       */
+      let seen = seenVersion;
+      if (seen === undefined) {
+        try {
+          const prev = uiState.parseState(
+            fs.readFileSync(uiState.statePath(path, PROJECTS_DIR, project), 'utf8'));
+          seen = prev.ok ? prev.state.seenVersion : '';
+        } catch (err) { seen = ''; }   // 文件不在/读不动 ⇒ 空串（读方按"未上报"处理，不阻塞）
+      }
       writeFileAtomic(
         uiState.statePath(path, PROJECTS_DIR, project),
-        uiState.serializeState({ project, dirty, uiPid: process.pid }));
+        uiState.serializeState({
+          project, dirty, uiPid: process.pid,
+          seenVersion: seen,
+          baseVersion: versionAtRead.get(project) || ''
+        }));
     } catch (err) { /* 非致命：读方把"没有文件"当作"界面未运行" */ }
   }
   ipcMain.on('app:ui-state', (e, payload) => {
     const p = payload || {};
-    writeUiStateFile(String(p.project || ''), !!p.dirty);
+    writeUiStateFile(String(p.project || ''), !!p.dirty,
+      typeof p.seenVersion === 'string' ? p.seenVersion : undefined);
   });
   // 应用退出：界面不再持有任何未保存编辑（否则崩溃/退出前的 dirty=true 会永久吓住 AI）
   app.on('will-quit', () => {

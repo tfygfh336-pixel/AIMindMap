@@ -417,7 +417,8 @@ jmnode.mm-container-root { visibility: hidden !important; }
  * 页面里 z-index 再大也盖不住它。所以"弹窗被侧栏吃掉右边一块"不是层级问题，而是**坐标系**问题：
  * 原先 `.overlay { inset: 0 }` 让遮罩与其中的弹窗按**整窗**居中，右缘必然伸到侧栏底下。
  * `--dsh-sidebar-width` 早已存在（JS 在 dsh-sidebar:layout 里写权威值；折叠时 CSS 兜底为 0px），
- * 这里把它用到弹窗层 —— 于是 8 个弹窗（编辑/图片/附件/关联/审计/命令面板/灯箱/预览）一起让位。 */
+ * 这里把它用到弹窗层 —— 于是 **9 个弹窗**（编辑/图片/附件/关联/审计/命令面板/灯箱/预览/
+ * v0.20 的并发差异面板 `#conc-panel`）一起让位。 */
 .overlay {
   position: fixed; top: 0; left: 0; bottom: 0; right: var(--dsh-sidebar-width, 0px);
   background: rgba(15, 23, 42, 0.45);
@@ -789,3 +790,60 @@ jmnode.mm-sel-raw { outline: 2px dashed #1664ff; outline-offset: 2px; }
   box-shadow: 0 1px 3px rgba(22, 100, 255, .35);
 }
 .mm-tb-side:hover { background: #0d4fd8; }
+
+/* ---------------- 并发可见性（v0.20）：外部改动 banner + 只读差异/冲突面板 ----------------
+ * 为什么要有这一层：界面**有未保存编辑**时，外部（侧栏 AI/CLI）改盘以前只落一句状态提示
+ * （用户原话："AI 编辑的我看不到"✗）。现在改成"看得见"：banner 常驻可点，点开是**只读**两侧差异。
+ * ⚠️ 真因之一是**坐标系**：面板会跟其它弹窗一样让位给原生侧栏（`.overlay` 右边扣掉
+ *   `--dsh-sidebar-width`）—— 所以下面的卡片不许自己写死宽度基准（照 `.audit-card` 的写法 ✓）。 */
+#conc-banner {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 12px; font-size: 13px;
+  background: #fff7e6; border-bottom: 1px solid #ffd591; color: #874d00;
+}
+#conc-banner .conc-banner-icon { font-weight: 700; }
+#conc-banner-text { flex: 1 1 auto; }
+#conc-banner-open, #conc-banner-close {
+  padding: 3px 10px; border-radius: 4px; border: 1px solid #d46b08;
+  background: #fff; color: #d46b08; cursor: pointer; font-size: 12px;
+}
+#conc-banner-open:hover { background: #d46b08; color: #fff; }
+#conc-banner-close { border-color: #e8d3b0; color: #86909c; }
+
+.conc-card {
+  width: 860px; max-width: min(94vw, calc(100vw - var(--dsh-sidebar-width, 0px) - 32px));
+  max-height: 86vh; display: flex; flex-direction: column;
+  background: #fff; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.18); overflow: hidden;
+}
+.conc-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; border-bottom: 1px solid #eef0f3;
+}
+.conc-title { font-weight: 600; font-size: 15px; }
+.conc-meta { flex: 1 1 auto; color: #86909c; font-size: 12px; }
+#conc-close { background: none; border: none; cursor: pointer; font-size: 15px; color: #86909c; }
+#conc-body { padding: 12px 16px 18px; overflow-y: auto; }
+.conc-hint { color: #86909c; font-size: 12px; margin: 0 0 10px; }
+.conc-group { margin: 0 0 14px; }
+.conc-group h3 { font-size: 13px; color: #1f2329; margin: 12px 0 6px; }
+.conc-group h3:first-child { margin-top: 0; }
+.conc-row { border: 1px solid #eef0f3; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+.conc-row-head { font-size: 13px; color: #1f2329; font-weight: 600; margin-bottom: 6px; }
+.conc-sides { display: flex; gap: 10px; flex-wrap: wrap; }
+.conc-side { flex: 1 1 320px; min-width: 240px; }
+.conc-side-label { font-size: 12px; color: #4e5969; margin-bottom: 3px; }
+.conc-side pre {
+  margin: 0; max-height: 220px; overflow: auto;
+  background: #f7f8fa; border: 1px solid #eef0f3; border-radius: 4px;
+  padding: 6px 8px; font-size: 12px; white-space: pre-wrap; word-break: break-word;
+}
+.conc-side.mine .conc-side-label { color: #1664ff; }
+.conc-side.theirs .conc-side-label { color: #d46b08; }
+.conc-clash { color: #cf1322; font-weight: 600; }
+.conc-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid #eef0f3; }
+.conc-actions:empty { display: none; }
+.conc-actions button {
+  padding: 6px 16px; border-radius: 4px; border: 1px solid #d5d9e0; background: #fff; cursor: pointer; font-size: 13px;
+}
+.conc-actions button.primary { background: #1664ff; color: #fff; border-color: #1664ff; }
+.conc-actions button.primary:hover { background: #0e50d4; }

@@ -108,6 +108,7 @@
     if (!state.jm || lastSavedSnapshot === null) return false;
     return snapshot() !== lastSavedSnapshot;
   }
+
   /** 「界面已与盘上内容对齐」——把"未保存改动"的基线推进到**当前内存**。
    *
    *  "盘上变了"这件事本来有三种来源，语义必须分开：**外部改动**（别人写的）、**人的编辑**
@@ -160,31 +161,36 @@
         if (res.code === 'MERGE_CONFLICT') {
           pendingConflict = res;
           const who = conflictWho(res);
-          if (res.headless) {         // 没人能回答 ⇒ 只报状态（用 resolveConflict 程序化选择）
-            setStatus('并发冲突：已拦下未写盘（冲突对象：' + who + '）', true);
-            return false;
-          }
-          const useDisk = window.confirm(
-            '保存被拦下：这些对象在磁盘上已被其他写入者（很可能就是侧栏 AI 或另一个会话）改过 ——\n\n'
-            + '  · ' + who + '\n\n'
-            + '点「确定」= 用**磁盘上的版本**（只丢弃你在这些对象上的改动，你的其他改动照常写入）\n'
-            + '点「取消」= 保留你的改动，本次不保存（盘上未变；可先把内容复制出去再重开项目）');
-          if (!useDisk) { setStatus('已保留你的改动，未保存（冲突：' + who + '）', true); return false; }
-          return await save(Object.assign({}, opts, { onConflict: 'theirs' }));
+          /* v0.20：不再用"二选一 confirm"（它只给**对象名**，看不到内容 —— 用户原话
+           * "就算打架也要可以预览冲突内容"）⇒ 换成**冲突面板**：逐对象显示两边内容 + 同一组两个选择。
+           * ⚠️ headless（冒烟/自动化）下**绝不弹模态框**：没人回答会把整轮卡死（实测踩过
+           * `SMOKE GUARD TIMEOUT — force exit`）。面板照常亮出内容（那正是"看得见"的证据），
+           * 只是不拦着程序化的 `MMApp.resolveConflict()` —— 选择语义一个字没变。 */
+          showConflictPanel(res);
+          setStatus('并发冲突：已拦下未写盘（冲突对象：' + who + '）'
+            + (res.headless
+              ? ' —— 自动化环境不弹确认框，用 resolveConflict() 选择'
+              : ' —— 见冲突面板：用盘上 / 保留我的'), true);
+          return false;
         }
         setStatus('保存失败：' + ((res && res.message) || '未知原因'), true);
         return false;
       }
       pendingConflict = null;
+      closeConcPanel();                    // 保存成功 ⇒ 冲突面板没有存在的理由了
       if (res && res.merged) {
         // 内存必须跟上**实际落盘的那份**（合并后，冲突对象上取的是盘上版本）
         if (res.data && epoch0 === projectEpoch) rebuildFromJson(res.data);
+        if (res.version && epoch0 === projectEpoch && state.project) state.project.version = res.version;
         lastSavedSnapshot = snapshot();
         setStatus('已保存 ' + new Date().toLocaleTimeString() + '（已与外部改动自动合并）');
       } else {
+        if (res && res.version && state.project) state.project.version = res.version;
         lastSavedSnapshot = JSON.stringify(data);
         setStatus('已保存 ' + new Date().toLocaleTimeString());
       }
+      closeConcBanner();                   // 保存把两边都落盘了 ⇒ 外部改动提示也该消失
+      diskDiff = null;
       reportUiState(); // 保存 = dirty 归零，必须让侧栏 AI 知道（否则它会一直以为界面脏着）
       return true;
     } catch (err) {
@@ -197,8 +203,10 @@
    * 解决未决的并发冲突 —— 界面按钮与冒烟断言都走它（同一份语义）。
    *   `'theirs'` ⇒ 用磁盘上的版本重试保存（冲突对象取盘上那份，**其它改动照样落盘**）；
    *   其它值     ⇒ 保留我的改动，本次不保存（清掉未决状态）。
+   *   v0.20：冲突面板的两个按钮点下去就走这里（面板自己不写盘 —— 写盘仍然只有 save 那一条路）。
    */
   async function resolveConflict(choice) {
+    closeConcPanel();                    // 选择即意味着这次未决状态到此为止（面板不该再挂着）
     if (!pendingConflict) return false;
     if (choice !== 'theirs') {
       setStatus('已保留你的改动，未保存', true);
@@ -274,19 +282,25 @@
    * 这个信号必须落到它能读的地方：主进程把它写成 projects/<项目>/.ui-state.json，
    * 侧栏 AI 用 `node cli/mm-cli.js ui-state --json` 读（src/ui-state.js 有完整来龙去脉）。
    *
-   * 上报口径：只在**结论变化**时推（项目名或 dirty 变化）。dirty 本身要 snapshot()
+   * 上报口径：只在**结论变化**时推（项目名 / dirty / **所见版本**变化）。dirty 本身要 snapshot()
    * 全量序列化一次，逐次编辑都上报会把序列化翻倍；而调用点 updateHistoryButtons()
    * 已经覆盖了所有会改变结论的路径（编辑→recordHistory、保存、撤销重做、开项目、
-   * 外部磁盘变更重读）。 */
+   * 外部磁盘变更重读）。
+   *
+   * v0.20：多上报一个 `seenVersion`（界面**所见内容**对应的盘上版本）——
+   * 主进程把它与闸门基线一起写进 `.ui-state.json`，读方（侧栏 AI/CLI `ui-state --json`）
+   * 于是能答"界面所见落后盘上多少"。**为什么键里也要带它**：静默同步（外部改盘、界面不脏）
+   * 之后 dirty 没变、项目没变，但所见内容换了一版 —— 不带它这次上报会被"去重"吞掉 ✗。 */
   let lastReportedUiState = null;
   function reportUiState() {
     if (!state.project) return;
     const dirty = isDirty();
-    const key = state.project.name + '|' + dirty;
+    const seenVersion = state.project.version || '';
+    const key = state.project.name + '|' + dirty + '|' + seenVersion;
     if (key === lastReportedUiState) return;
     lastReportedUiState = key;
     if (window.desktop && window.desktop.app && window.desktop.app.uiState) {
-      window.desktop.app.uiState({ project: state.project.name, dirty });
+      window.desktop.app.uiState({ project: state.project.name, dirty, seenVersion });
     }
   }
 
@@ -514,7 +528,7 @@
     try {
       projectEpoch++;   // 切换开始 ⇒ 在途的旧读盘结果一律作废（见 projectEpoch 说明）
       const r = await window.desktop.project.read(name);
-      state.project = { name, file: r.file };
+      state.project = { name, file: r.file, version: r.version };
       state.history = new UndoStack(50);
       renderMind(r.data);
       state.history.push(snapshot()); // 初始状态入栈（撤销栈基座）
@@ -538,17 +552,260 @@
   }
 
   /* ================= 外部编辑实时感知（v0.16.1「边聊边编辑」） =================
-   * 侧栏 AI 经 CLI 改盘上 JSON → 主进程 fs.watch 防抖通知 → 这里重读。
+   * 侧栏 AI 经 CLI 改盘上 JSON → 主进程 fs.watch 防抖通知（或**窗口获得焦点时**由主进程
+   * 只读比对后补发同一条事件，见 main.js 的 onWatcherFocus）→ 这里重读。
    * 冲突规则（数据安全第一）：
    *   · 界面**无**未保存改动 → 静默重读重建（AI 的编辑实时出现在导图上）；
-   *   · 界面**有**未保存改动 → 绝不覆盖人的编辑，只提示「外部已修改」，
-   *     由人决定（保存=覆盖外部 / 还原视图手动重开=采纳外部）。 */
+   *   · 界面**有**未保存改动 → **绝不覆盖人的编辑**（不重读、不写盘），但 v0.20 起
+   *     **不再只打一行状态**：只读探视盘上（`project:peek`，无副作用）→ 亮出常驻可点的
+   *     banner「外部已改盘上内容（N 处）—— 点这里看差异」→ 打开**只读**两侧差异面板。
+   *     用户原话："AI 编辑的我看不到 ✗ … 就算打架也要可以预览冲突内容 ✓"。
+   *     ⚠️ 保存**不再**是"覆盖外部"：保存走三方合并（`project:save` 的 mergeTrees），
+   *     只有撞在同一对象上才会拦下。旧注释写的"保存=覆盖外部 / 还原视图手动重开=采纳外部"
+   *     与实现矛盾（用户 2026-10-13 报的就是这类过时文案），已按实现改正。 */
   let reloadingFromDisk = false;
+
+  /**
+   * 脏分支的可见性（v0.20）：**只读**落一份差异快照 + 亮 banner。
+   * 三条不许越的线：
+   *   ① **不重读树、不写盘、不动内存**（有未保存编辑时"绝不覆盖人的编辑"这条安全声明不变）；
+   *   ② 只用 `project:peek`（无副作用）取盘上内容 —— **不许用 `project:read`**：那条会把主进程
+   *      "界面读到哪一版"推进到盘上这一版，界面随后保存就会被判成"没有外部改动"⇒
+   *      **静默覆盖** AI 刚写的内容（本工程最重的损害类别 ✗）；
+   *   ③ 盘上内容与基线**一致**时不亮 banner（fs.watch 会把点文件/重写/噪声都报上来）——
+   *      没有真差异就必须说"一致"，否则是制造假警报 ✗。
+   * @returns {Promise<object|null>} 差异快照；`null` = 读不到（调用方要**如实**说不确定）
+   */
+  async function refreshDiskDiff() {
+    const name = state.project && state.project.name;
+    const api = window.desktop && window.desktop.project;
+    if (!name || !api || !api.peek) return null;
+    let r = null;
+    try { r = await api.peek(name); } catch (err) { r = null; }
+    if (!r || !r.ok || !r.base) return null;
+    const cc = window.MMConcurrency;
+    if (!cc || typeof cc.diffRows !== 'function') {
+      // 响亮：渲染层没加载并发核心时**不许**退回"自己算一套差异"（那等于第二份实现）
+      setStatus('差异预览不可用：渲染层没有加载 src/concurrency.js（index.html 的脚本清单）', true);
+      return null;
+    }
+    const base = r.base;                                    // 界面读到的那一份（与保存闸门同一份基线）
+    const mine = cc.inheritAssoc(serializeTree(), base);     // assoc 缺省规则与 mergeTrees 同一实现
+    const theirsChanged = cc.changedKeys(base, r.data);      // 外部在盘上改了什么
+    const mineChanged = cc.changedKeys(base, mine);          // 我在界面上改了什么
+    diskDiff = {
+      project: name, version: r.version, baseVersion: r.baseVersion,
+      seenVersion: (state.project && state.project.version) || '',
+      mine: mine, theirs: r.data,
+      mineKeys: Array.from(mineChanged).sort(),
+      theirsKeys: Array.from(theirsChanged).sort(),
+      clashes: cc.intersection(mineChanged, theirsChanged)
+    };
+    return diskDiff;
+  }
+
+  /** banner 的**唯一渲染**（只在真有外部改动时亮；文案里带条数，别让人去猜） */
+  function showConcBanner(text) {
+    const b = document.getElementById('conc-banner');
+    if (!b) return false;
+    document.getElementById('conc-banner-text').textContent = text;
+    b.style.display = 'flex';
+    return true;
+  }
+  function closeConcBanner() {
+    const b = document.getElementById('conc-banner');
+    if (b) b.style.display = 'none';
+  }
+
+  /* ---------------- 只读面板（差异预览与冲突面板**共用**：只差"行从哪来 + 底部按钮"） ----------------
+   * 两处都要的东西一模一样（标题/来源与版本前缀/逐对象两边内容/底部按钮），所以只有这一个渲染入口；
+   * 行内容一律由 `src/concurrency.js` 的 `diffRows` 产出 —— 界面里**不许**再写一套"哪里不一样"。
+   * 面板**只读**：它自己不写盘、不调 save（按钮走的是既有的 resolveConflict/save 语义）。 */
+  let diskDiff = null;        // 最近一次外部改动差异（脏分支用；null = 没有/已过期）
+  let conflictView = null;    // 最近一次的冲突（保存被拦下时；null = 没有未决冲突）
+
+  function concEl(id) { return document.getElementById(id); }
+  function concPanelOpen() { const p = concEl('conc-panel'); return !!p && p.style.display !== 'none'; }
+  function closeConcPanel() { const p = concEl('conc-panel'); if (p) p.style.display = 'none'; }
+
+  /** 面板**唯一渲染入口**。`view` = {title, meta, hint, groups:[{title, rows, empty}], buttons:[{label, act, primary, onClick}]} */
+  function renderConcPanel(view) {
+    const panel = concEl('conc-panel');
+    if (!panel) return false;
+    concEl('conc-title').textContent = view.title;
+    concEl('conc-meta').textContent = view.meta || '';
+    const body = concEl('conc-body');
+    const actions = concEl('conc-actions');
+    body.textContent = '';
+    actions.textContent = '';
+    if (view.hint) {
+      const p = document.createElement('p'); p.className = 'conc-hint'; p.textContent = view.hint;
+      body.appendChild(p);
+    }
+    (view.groups || []).forEach((g) => {
+      const box = document.createElement('div'); box.className = 'conc-group';
+      const h = document.createElement('h3'); h.textContent = g.title; box.appendChild(h);
+      if (!g.rows || !g.rows.length) {
+        const e = document.createElement('p'); e.className = 'conc-hint'; e.textContent = g.empty || '（无）';
+        box.appendChild(e);
+      }
+      (g.rows || []).forEach((row) => {
+        const r = document.createElement('div'); r.className = 'conc-row';
+        r.setAttribute('data-key', row.key);          // 判据点名用（断言读**内容**，不读样式 ✓）
+        const rh = document.createElement('div'); rh.className = 'conc-row-head'; rh.textContent = row.label;
+        r.appendChild(rh);
+        const sides = document.createElement('div'); sides.className = 'conc-sides';
+        row.sides.forEach((s, i) => {
+          const sd = document.createElement('div');
+          sd.className = 'conc-side ' + (i === 0 ? 'mine' : 'theirs');
+          const lb = document.createElement('div'); lb.className = 'conc-side-label'; lb.textContent = s.label;
+          const pre = document.createElement('pre'); pre.textContent = s.text;
+          sd.appendChild(lb); sd.appendChild(pre); sides.appendChild(sd);
+        });
+        r.appendChild(sides); box.appendChild(r);
+      });
+      body.appendChild(box);
+    });
+    (view.buttons || []).forEach((b) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = b.label;
+      btn.setAttribute('data-conc-act', b.act);       // 程序化/断言走它点名（不靠文案 ✓）
+      if (b.primary) btn.className = 'primary';
+      btn.addEventListener('click', () => {
+        try { b.onClick(); } catch (e) { setStatus('操作失败：' + ((e && e.message) || e), true); }
+      });
+      actions.appendChild(btn);
+    });
+    panel.style.display = 'flex';
+    return true;
+  }
+
+  /** 差异行两侧的**同一套标签**（两处面板不许各起一套名字） */
+  const sideLabels = () => ({ mine: '我的改动（界面内存）', theirs: '盘上现状（外部写的）', base: '基线（我读到的那一版）' });
+  const vshort = (v) => String(v || '').slice(0, 8) || '未上报';
+
+  /** ② 「外部改动预览」：脏分支点的那个 banner 打开的就是它（**纯只读**） */
+  function showDiskDiffPanel() {
+    const d = diskDiff;
+    if (!d) { setStatus('没有可预览的外部改动（可能已被同步或已切换项目）'); return false; }
+    const cc = window.MMConcurrency;
+    if (!cc) { setStatus('差异预览不可用：渲染层没有加载 src/concurrency.js', true); return false; }
+    const L = sideLabels();
+    // 两侧顺序 = 面板左右：左"我的改动"、右"盘上现状"（**同一条 diffRows**，内容不重复写）
+    const sides = [{ label: L.mine, data: d.mine }, { label: L.theirs, data: d.theirs }];
+    return renderConcPanel({
+      title: '外部改动预览（只读）',
+      meta: '界面所见 ' + vshort(d.seenVersion) + ' · 盘上 ' + vshort(d.version)
+        + ' · 保存闸门基线 ' + vshort(d.baseVersion),
+      hint: '这一段**只看不写**：不写盘、不重读树、不动你的未保存编辑。'
+        + '分组与保存闸门用同一条基线与同一个判定（src/concurrency.js），'
+        + '所以"撞在同一对象上"那几处，就是保存时会被拦下的那些。',
+      groups: [
+        { title: '外部改了（' + d.theirsKeys.length + ' 处）',
+          rows: cc.diffRows(sides, d.theirsKeys), empty: '（外部这一版没有改动）' },
+        { title: '我在界面上改了（' + d.mineKeys.length + ' 处）',
+          rows: cc.diffRows(sides, d.mineKeys), empty: '（界面上还没有改动）' },
+        { title: '撞在同一对象上（' + d.clashes.length + ' 处）',
+          rows: cc.diffRows(sides, d.clashes),
+          empty: '（没有相撞：保存时会自动三方合并，两边都保留）' }
+      ]
+    });
+  }
+
+  /** ③ 冲突面板：保存撞在同一对象上被拦下时（逐对象两边内容 + 同一组两个选择，语义照现行） */
+  function showConflictPanel(res) {
+    const conflicts = (res && res.conflicts) || [];
+    const detail = (res && res.detail) || conflicts;
+    const snaps = (res && res.snapshots) || { base: {}, mine: {}, theirs: {} };
+    const L = sideLabels();
+    const labels = {};
+    conflicts.forEach((k, i) => { labels[k] = detail[i] || k; });
+    // 三侧都摆出来：**基线**是"我们俩各自从哪一版改的"—— 只看两边会看不出"到底谁改了什么"
+    const sides = [
+      { label: L.mine, values: snaps.mine || {} },
+      { label: L.theirs, values: snaps.theirs || {} },
+      { label: L.base, values: snaps.base || {} }
+    ];
+    const cc = window.MMConcurrency;
+    const rows = (cc && typeof cc.diffRows === 'function')
+      ? cc.diffRows(sides, conflicts, { labels: labels })
+      : conflicts.map((k) => ({ key: k, label: labels[k] || k, sides: [] }));
+    conflictView = { conflicts: conflicts, detail: detail };
+    return renderConcPanel({
+      title: '保存被拦下：这些对象你和别人都改了',
+      meta: '冲突对象 ' + conflicts.length + ' 处 · 盘上内容**一个字节都没动**',
+      hint: '只有下面这些对象上的改动需要你选一边；**其它改动不受影响**（选"用盘上"时它们照常写入）。'
+        + '本次不做"逐对象各挑一边"（留作后续），两个按钮的语义与从前一致。',
+      groups: [{ title: '逐对象：两边 + 基线内容', rows: rows, empty: '（冲突细节未能取到）' }],
+      buttons: [
+        { label: '用盘上（只丢弃这些对象上的改动）', act: 'theirs', primary: true,
+          onClick: () => { closeConcPanel(); resolveConflict('theirs'); } },
+        { label: '保留我的（本次不保存，盘上未变）', act: 'mine',
+          onClick: () => { closeConcPanel(); resolveConflict('mine'); } }
+      ]
+    });
+  }
+
+  /* 接线（脚本在 </body> 前，元素一定已在 DOM 里 ✓）：banner 的两个按钮 + 面板的 ✕。
+   * 为什么不用"委托到 document"：这两处是**固定元素**，直接挂载更不容易漏（也没有动态后代）。 */
+  (function wireConcUi() {
+    const openBtn = concEl('conc-banner-open');
+    if (openBtn) openBtn.addEventListener('click', () => { showDiskDiffPanel(); });
+    const closeBtn = concEl('conc-banner-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => {
+        closeConcBanner();
+        setStatus('已收起提示（盘上的改动仍在；再点保存会走三方合并）');
+      });
+    }
+    const panelClose = concEl('conc-close');
+    if (panelClose) panelClose.addEventListener('click', () => { closeConcPanel(); });
+  })();
+
+  /** 脏分支的统一处置：探视 → banner（+ 状态栏）。`pre` = 已经探过的那一份（不想再探一次时传入） */
+  async function noteExternalChange(pre) {
+    const d = pre || await refreshDiskDiff();
+    if (!d) {
+      setStatus('⚠ 收到外部变更通知，但这次**读不到盘上内容** —— 差异预览不可用；'
+        + '保存仍走三方合并（撞同一对象才会拦）', true);
+      return null;
+    }
+    if (!d.theirsKeys.length && !d.clashes.length) {
+      // 盘上这一版与界面读到的基线**内容一致**（点文件/同内容重写/防抖噪声）⇒ 不制造假警报
+      setStatus('已收到外部变更通知，但盘上内容与界面读到的那一版一致 —— 无需处理');
+      return d;
+    }
+    showConcBanner('外部（AI/CLI）已改盘上内容（' + d.theirsKeys.length + ' 处'
+      + (d.clashes.length ? '，其中 ' + d.clashes.length + ' 处与你的改动相撞' : '')
+      + '）—— 点这里看差异');
+    setStatus('⚠ 外部已改盘上内容（' + d.theirsKeys.length + ' 处'
+      + (d.clashes.length ? '，' + d.clashes.length + ' 处与你的改动撞在同一对象上' : '')
+      + '）：**没有**覆盖你的编辑；保存时走三方合并（撞同一对象才会拦）', true);
+    return d;
+  }
+
+  /** 只读取盘上这一版（**不推进任何基线** —— 这正是它必须用 `project:peek` 的原因，
+   *  见 `onProjectDiskChange` 里那段说明）。返回 `{ok:true, data, version}` 或
+   *  `{ok:false, error}`：拿不到就**如实说不确定**，绝不退回去用会推进基线的 `project:read` ✗
+   *  （那等于把"界面读过这一版"记到账上，随后保存就会静默覆盖盘上那份）。 */
+  function peekProject(name) {
+    const api = window.desktop && window.desktop.project;
+    if (!api || typeof api.peek !== 'function') {
+      return Promise.resolve({ ok: false, error: '这个版本没有只读探视通道（preload 少了 project.peek）' });
+    }
+    return Promise.resolve()
+      .then(() => api.peek(name))
+      .then((r) => ((r && r.ok && r.data) ? { ok: true, data: r.data, version: r.version } : { ok: false, error: (r && r.error) || '探视没有返回内容' }))
+      .catch((err) => ({ ok: false, error: (err && err.message) || String(err) }));
+  }
+
   async function onProjectDiskChange(filename) {
     if (!state.project || !state.jm) return;
     if (filename && !String(filename).includes(state.project.name)) return; // 只关心当前项目
     if (isDirty()) {
-      setStatus('⚠ 笔记已被外部（侧栏 AI）修改，但你有未保存的编辑 —— 保存将覆盖外部改动', true);
+      // 有未保存编辑 ⇒ 树不重读、内存不改（安全声明），但**差异要看得见** ✓
+      await noteExternalChange();
       return;
     }
     if (reloadingFromDisk) return;
@@ -556,16 +813,38 @@
     const name0 = state.project.name;
     reloadingFromDisk = true;
     try {
-      const r = await window.desktop.project.read(name0);
+      /* 取盘上这一版**只能走只读探视**（`project:peek`）✗ 不许用 `project:read`：
+       * 那条会把主进程的保存/合并基线（`versionAtRead`/`baseAtRead`）推进到盘上这一版，
+       * 而这条路**可能读了却不采纳**（下面两道拒绝：期间切了项目 / 期间又变脏）——
+       * 基线一旦记成"界面见过盘上这一版"，`project:save` 的闸门就判"没有外部改动"⇒ 下一次保存
+       * 把内存里那份旧树直接写下去，把盘上（AI/CLI 刚写的）那份**静默抹掉**
+       * （本工程最重的损害类别 ✗）。peek 没有任何副作用 ⇒ **"读了却不采纳"永远不会让基线前进** ✓；
+       * 基线只在真采纳处前进（openProject 的读 / editor 的读 / 保存成功）。
+       * 顺带一个好处：取数与判脏之间不再夹着一次会推进基线的写记录读取 —— 拒绝那条路干净了。 */
+      const pr = await peekProject(name0);
       // 读盘期间项目被切走 ⇒ 这份数据已过期，丢弃（否则会把旧项目的树盖到新项目上 ✗）
       if (epoch0 !== projectEpoch) { setStatus('已忽略一次过期的自动重读（期间已切换项目）'); return; }
       // 读盘期间用户又有了未保存改动 ⇒ **同样不许覆盖** ✓（读盘前判一次、回来再判一次：
       // 只判前面那一次会漏掉这个窗口，实测会把盘上那份的旧树偏移带回内存 ✗）。
-      if (isDirty()) { setStatus('⚠ 同步外部修改期间你又有了未保存改动 —— 本次不覆盖（保存/重开项目后再同步）', true); return; }
-      renderMind(r.data);
+      // 这条拒绝**不需要回滚什么**：上面那次探视一个基线都没碰 ✓
+      if (isDirty()) {
+        await noteExternalChange();   // 差异照算：界面基线没被推进过，算出来的与保存闸门同一份口径 ✓
+        return;
+      }
+      if (!pr.ok) {
+        // 拿不到盘上那一版 ⇒ **不采纳**、内存一个字都不改，但必须**说出来**（不静默 ✗）：
+        // 内存是旧的、界面基线也是旧的 ⇒ 之后的保存仍会走三方合并（两边的改动都保住）✓
+        setStatus('同步外部修改失败：读不到盘上这一版（' + (pr.error || '未知原因') + '）'
+          + ' —— 界面内存与基线都没动；保存时会走三方合并', true);
+        return;
+      }
+      renderMind(pr.data);
       state.history = new UndoStack(50);
       state.history.push(snapshot());
       lastSavedSnapshot = snapshot();
+      state.project.version = pr.version;   // 界面所见内容 = 盘上这一版（→ 上报 seenVersion）
+      closeConcBanner();                   // 已经采纳盘上这一版 ⇒ 那条提示该消失了
+      diskDiff = null;
       updateHistoryButtons();
       if (MM.invalidatePaletteCache) MM.invalidatePaletteCache();
       setStatus('已同步外部修改（侧栏 AI 编辑已出现在导图上）');
@@ -629,8 +908,8 @@
   MM.deleteNode = deleteNode;
   MM.loadProjects = loadProjects;
   MM.openProject = openProject;
-  MM.markAlignedBaseline = markAlignedBaseline;   // "界面已与盘上内容对齐"（见函数说明；AI 落盘用）
   MM.isDirty = isDirty;
+  MM.markAlignedBaseline = markAlignedBaseline;   // "界面已与盘上内容对齐"（见函数说明；AI 落盘用）
   MM.confirmDiscardIfDirty = confirmDiscardIfDirty;
   MM.closeMapPage = closeMapPage;      // **真关**导图页：先拦未保存编辑（保存成功才卸页）
 
@@ -649,7 +928,8 @@
    *   ② 走**产品自己的关闭路径**（`closeEditDialog` / `closePalette` / …），不新发明一套；
    *   ③ **返回列表而不是静默关掉** ⇒ 调用方（冒烟框架）能把"谁留的"报出来；
    *      静默收干净的后果是"下一个域莫名奇妙地红/绿"，与本工程最忌讳的那类缺陷同型。
-   * 边界（别以为它比实际更强）：只覆盖**模态/浮层**（`.overlay` 一族 + 命令面板 + 审计面板）。
+   * 边界（别以为它比实际更强）：只覆盖**模态/浮层**（`.overlay` 一族 + 命令面板 + 审计面板）
+   *   **加上 v0.20 的并发 banner**（它不是模态，但会占布局 ⇒ 一样会跨域泄漏）；
    *   浮动详情框、选区块、大小锁是**另一类**状态（不遮挡输入），不在本函数的责任内。 */
   function closeAllDialogs() {
     const open = [];
@@ -672,9 +952,23 @@
     if (MM.paletteIsOpen && MM.paletteIsOpen()) { open.push({ name: 'palette', html: '' }); MM.closePalette(); }
     const au = elemById('audit-panel');
     if (au && au.style.display !== 'none') { open.push({ name: 'audit-panel', html: '' }); MM.closeAudit(); }
+    // v0.20 并发差异/冲突面板：也是 `.overlay` 一族（同一条关闭口，别再各写一套）
+    if (concPanelOpen()) { open.push({ name: 'conc-panel', html: '' }); closeConcPanel(); }
+    /* banner 不是模态，但它是**会占布局的一层**：域末留着会让后面的域看到非预期的几何
+     * （每域隔离只重载项目、不重载页面 ⇒ 它会**跨域存活**）⇒ 一并收，并如实报出来。 */
+    const cb = elemById('conc-banner');
+    if (cb && cb.style.display !== 'none') { open.push({ name: 'conc-banner', html: '' }); closeConcBanner(); }
     return open;
   }
   MM.closeAllDialogs = closeAllDialogs;
+  /* 并发可见性（v0.20）：面板与 banner 的公开入口 —— 冒烟断言/自动化用它驱动同一条产品路径
+   * （判据仍然读**内容与命中测试**，不靠这些 getter 自证 ✓）。 */
+  MM.showDiskDiffPanel = showDiskDiffPanel;
+  MM.showConflictPanel = showConflictPanel;
+  MM.closeConcPanel = closeConcPanel;
+  MM.concPanelOpen = concPanelOpen;
+  MM.closeConcBanner = closeConcBanner;
+  MM.refreshDiskDiff = refreshDiskDiff;
 
   /** 局部小工具：按 id 取元素（本文件其余地方走 MM.$，这里只为让上面的 `log(...)` 读起来不被选择器噪音淹没） */
   function elemById(id) { return document.getElementById(id); }

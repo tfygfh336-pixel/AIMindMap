@@ -277,6 +277,115 @@
   }
 
   /**
+   * 渲染层载荷的 **assoc 缺省规则**（唯一实现，`mergeTrees` 与差异预览共用）。
+   *
+   * ⚠️ 渲染层的载荷**不含 assoc**（`renderer/app-core.js` 的 `serializeTree()` 只在非空时才带）
+   * ⇒ 缺这个键必须当作"界面没有意见"（从 base 继承），**不是**"界面把 assoc 删光了"。
+   * 少了这一步，"界面保存"会被算成删掉全部关联笔记 —— 那正是本工程最重的损害类别。
+   */
+  function inheritAssoc(mine, base) {
+    return (mine && mine.assoc === undefined && base && base.assoc !== undefined)
+      ? Object.assign({}, mine, { assoc: base.assoc })
+      : mine;
+  }
+
+  /* ---------------- 只读差异视图（v0.20「让 AI 的编辑看得见」） ----------------
+   * 这一组**只读**：产出"某指纹键在某一方的值"与"两/三方的可读差异行"，
+   * 一行都不写、一个对象都不改（唯一写盘出口仍是 `data-store.write` + `mergeTrees` 的结果）。
+   * 用途只有一个：把"外部改了什么 / 我改了什么 / 撞在哪"变成界面上看得见的内容
+   * （`renderer/app-actions.js` 的差异预览与冲突面板都从这里取内容 ⇒ 单一实现）。
+   */
+
+  /**
+   * 某一方数据里，某个指纹键的**值**（不存在 → `undefined`）。
+   * 摊平口径只走 `flattenProject`（与 `changedKeys`/`describeKeys` 同一份），不另写一套解析。
+   */
+  function snapshotOf(data, key) {
+    const F = flattenProject(data);
+    if (key === 'meta') return F.meta;
+    if (key === 'format') return F.format;
+    let m = /^node:(.+)$/.exec(key);
+    if (m) return F.nodes.get(m[1]);
+    m = /^children:(.+)$/.exec(key);
+    if (m) return F.childIds.get(m[1]);
+    m = /^items:(.+)$/.exec(key);
+    if (m) return F.itemIds.get(m[1]);
+    m = /^item:([^#]+)#(.+)$/.exec(key);
+    if (m) { const t = F.items.get(m[1]); return t ? t.get(m[2]) : undefined; }
+    m = /^assoc:(.+)$/.exec(key);
+    if (m) return F.assoc.get(m[1]);
+    return undefined;
+  }
+
+  /**
+   * **三方只读快照**（保存冲突时给渲染层看的内容）。
+   * ⚠️ 只取 `keys` 点名的那些对象 —— **绝不把整棵树塞过去**（那是"预览"变成"第二份数据副本"）。
+   * 返回纯 JSON（能过 IPC / 能落报告）：`{ base:{键:值}, mine:{…}, theirs:{…} }`。
+   */
+  function conflictSnapshots(base, mine, theirs, keys) {
+    const mineN = inheritAssoc(mine, base);
+    const out = { base: {}, mine: {}, theirs: {} };
+    (keys || []).forEach((k) => {
+      const b = snapshotOf(base, k), m = snapshotOf(mineN, k), t = snapshotOf(theirs, k);
+      if (b !== undefined) out.base[k] = b;
+      if (m !== undefined) out.mine[k] = m;
+      if (t !== undefined) out.theirs[k] = t;
+    });
+    return out;
+  }
+
+  /** 值 → 可读文本。字符串原样（正文/标题这类本来就是文本）；其余走缩进 JSON。
+   *  **有界**：超过 `maxChars` 截断，但**如实回报** `truncated:true`（静默截断 = 静默骗人 ✗） */
+  function valueToText(value, maxChars) {
+    const cap = (typeof maxChars === 'number' && maxChars > 0) ? maxChars : 4000;
+    if (value === undefined) return { text: '（这一侧没有这个对象）', truncated: false, missing: true };
+    const raw = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    const s = String(raw === undefined ? '' : raw);
+    if (s.length <= cap) return { text: s, truncated: false, missing: false };
+    return { text: s.slice(0, cap) + '\n…（已截断，原长 ' + s.length + ' 字符）', truncated: true, missing: false };
+  }
+
+  /**
+   * **差异行的唯一构造**（脏分支的「外部改动预览」与保存冲突面板共用）。
+   *
+   * @param {Array<{label:string, data?:object, values?:object}>} sides 两侧/三侧（顺序 = 面板上的左右顺序）。
+   *   一侧二选一：给 `data`（整棵树，逐键现取）或给 `values`（**键→值**的表，来自
+   *   `conflictSnapshots`——保存冲突那条路主进程只把冲突对象递过来，这里**不还原整棵树**）。
+   * @param {string[]} keys  指纹键（来自 `changedKeys` / `intersection`，这里**不自己算差异**）
+   * @param {{maxChars?:number, labels?:object}} [opts] `labels` = 主进程已给过对象名时用它（键→名）
+   * @returns {Array<{key:string, label:string, sides:Array<{label:string, text:string, truncated:boolean, missing:boolean}>}>}
+   *   命名只走 `describeKeys`（报错与面板**同一套对象名**，别在界面里另起一套）；
+   *   某一侧没有这个对象时**如实说"这一侧没有"**，不拿空串冒充内容。
+   */
+  function diffRows(sides, keys, opts) {
+    const o = opts || {};
+    const list = Array.isArray(sides) ? sides.filter((s) => s && (s.data || s.values)) : [];
+    const maxChars = o.maxChars;
+    /** 某一侧、某个键的值（两条取用路径都只经 `snapshotOf` / `values`，不另写解析） */
+    const valueOf = (s, k) => {
+      if (s.values) return Object.prototype.hasOwnProperty.call(s.values, k) ? s.values[k] : undefined;
+      return snapshotOf(s.data, k);
+    };
+    // 对象名：① 调用方给过就用它（保存冲突那条路主进程已算好）；② 否则取"真的有这个对象"的那一侧
+    const labelOf = (k) => {
+      if (o.labels && o.labels[k]) return o.labels[k];
+      const withIt = list.filter((s) => valueOf(s, k) !== undefined);
+      const picked = withIt.length ? withIt[withIt.length - 1] : list[list.length - 1];
+      if (!picked || !picked.data) return k;
+      const named = describeKeys(picked.data, [k]);
+      return (named && named[0]) || k;
+    };
+    return (keys || []).map((k) => ({
+      key: k,
+      label: labelOf(k),
+      sides: list.map((s) => {
+        const v = valueToText(valueOf(s, k), maxChars);
+        return { label: s.label, text: v.text, truncated: v.truncated, missing: v.missing };
+      })
+    }));
+  }
+
+  /**
    * **三方合并**（给 GUI 用：渲染层不能"重放用户操作"，只能把两棵树合起来）。
    *
    * 与 CLI 侧重放同一条前提：`base` = 界面读到的那一版，`mine` = 界面内存，`theirs` = 盘上最新。
@@ -290,12 +399,9 @@
    */
   function mergeTrees(base, mine, theirs, opts) {
     const onConflict = (opts && opts.onConflict) || 'refuse';
-    // ⚠️ 渲染层的载荷**不含 assoc**（`renderer/app-core.js` 的 `serializeTree()` 只产 meta/format/data）⇒
-    //    缺这个键必须当作"界面没有意见"（从 base 继承），**不是**"界面把 assoc 删光了"。
-    //    少了这一步，"界面保存"会被算成删掉全部关联笔记 —— 那正是本工程最重的损害类别。
-    const mineN = (mine && mine.assoc === undefined && base && base.assoc !== undefined)
-      ? Object.assign({}, mine, { assoc: base.assoc })
-      : mine;
+    // ⚠️ 渲染层的载荷**不含 assoc** ⇒ 缺这个键当"界面没有意见"（规则与理由只有一处：
+    //    `inheritAssoc` 的注释）。少了这一步，"界面保存"会被算成删掉全部关联笔记。
+    const mineN = inheritAssoc(mine, base);
     const mineChanged = changedKeys(base, mineN);
     const theirsChanged = changedKeys(base, theirs);
     const conflicts = intersection(mineChanged, theirsChanged);
@@ -420,6 +526,8 @@
     VERSION_CONFLICT, REPLAY_CONFLICT,
     fingerprint, changedKeys, intersection, withReplay,
     mergeTrees, flattenProject, describeKeys, itemLabel,
-    hash, clone, nodeOwnHash, isItemized
+    hash, clone, nodeOwnHash, isItemized,
+    // v0.20 只读差异视图（「让 AI 的编辑看得见」；一行都不写盘）
+    inheritAssoc, snapshotOf, conflictSnapshots, valueToText, diffRows
   };
 });

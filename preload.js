@@ -5,6 +5,8 @@
  *   desktop.projects()                 → 项目列表
  *   desktop.project.read(name)         → { file, data }
  *   desktop.project.save(file, data)   → 写盘（CLI validate 闸门）
+ *   desktop.project.peek(name)         → 只读探视：{ file, data, version, base, baseVersion }
+ *                                        （不推进"界面读到哪一版"的记录 —— 见下方 project.peek 的注释）
  *   desktop.asset.import(...)          → 导入图片到 assets/
  *   desktop.asset.importFile(...)      → 导入附件到 attachments/（v0.16）
  *   desktop.app.readFile(abs)          → 读附件文本（md 预览）
@@ -47,7 +49,13 @@ contextBridge.exposeInMainWorld('desktop', {
   project: {
     read: (name) => ipcRenderer.invoke('project:read', name),
     save: (file, data, opts) => ipcRenderer.invoke('project:save', file, data, opts),
-    watch: (absDir) => ipcRenderer.invoke('project:watch', absDir)
+    watch: (absDir) => ipcRenderer.invoke('project:watch', absDir),
+    /* 只读探视（v0.20）：在**有未保存编辑**时看看盘上现在是什么样（给「外部改动预览」取数据）。
+     * ⚠️ 与 read 的区别就是它**没有副作用**：read 会把主进程的"界面读到哪一版"推进到盘上这一版
+     * （保存闸门比的就是那个记录）—— 拿 read 去探视会让界面随后保存时**静默覆盖**外部改动 ✗。
+     * 返回 `{ok, file, data, version, base, baseVersion}`：base/baseVersion 来自主进程那份记录，
+     * 与保存闸门、与三方合并**同一份基线**。它只读文件，不写盘、不改任何记录。 */
+    peek: (name) => ipcRenderer.invoke('project:peek', name)
   },
   asset: {
     import: (projectName, nodeId, srcPath, caption, source, tags) =>

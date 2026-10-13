@@ -254,6 +254,13 @@
     openPalette,
     closePalette,
     paletteIsOpen,
+    /* 并发可见性（v0.20）：只读差异预览 / 冲突面板的公开入口（冒烟断言与排查用）。
+     * ⚠️ 这几个都**只读**：面板自己不写盘 —— "用盘上"仍然走 resolveConflict（上面那一条）✓ */
+    showDiskDiffPanel: () => MM.showDiskDiffPanel(),
+    closeConcPanel: () => MM.closeConcPanel(),
+    concPanelOpen: () => MM.concPanelOpen(),
+    closeConcBanner: () => MM.closeConcBanner(),
+    refreshDiskDiff: () => MM.refreshDiskDiff(),
     setStatus
   };
 

@@ -25,7 +25,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {
   VERSION_CONFLICT, REPLAY_CONFLICT,
-  changedKeys, intersection, withReplay, clone, mergeTrees, describeKeys
+  changedKeys, intersection, withReplay, clone, mergeTrees, describeKeys,
+  inheritAssoc, snapshotOf, conflictSnapshots, valueToText, diffRows
 } from '../src/concurrency.js';
 import { createStore } from '../src/data-store.js';
 
@@ -385,5 +386,97 @@ describe('concurrency · 与真实 store 对齐（假 io 不能只在自己身�
     const cur = store.read('demo');
     const w = store.write('demo', clone(cur.data), { expectVersion: cur.version });
     expect(w.version).toBe(vtext(fs.readFileSync(file, 'utf8')));
+  });
+});
+
+/* ============================================================
+ * 只读差异视图（v0.20「让 AI 的编辑看得见」）
+ * ------------------------------------------------------------
+ * 这一组只回答"界面上能不能**读到内容**"：
+ *   · `snapshotOf` 取的是**某一方**的某个指纹键（不摊平错、不张冠李戴）；
+ *   · `conflictSnapshots` 只给被点名的对象（**不许把整棵树塞过去**）；
+ *   · `diffRows` 是两处面板（外部改动预览 / 冲突面板）**唯一**的行构造 ——
+ *     一侧没有那个对象时如实说"这一侧没有"，截断要如实回报。
+ * ⚠️ 判据**按内容写**（值/键/标记），不锁措辞：措辞会改，改措辞不该红。
+ * ============================================================ */
+describe('只读差异视图（snapshotOf / conflictSnapshots / diffRows）', () => {
+  const base = proj();
+  const mine = clone(base);
+  mine.data.children[0].topic = 'X-我';                  // 我改了 x
+  const theirs = clone(base);
+  theirs.data.children.push({ id: 'z', topic: 'Z-别人', children: [] });   // 别人加了 z（不相交）
+  const clash = clone(base);
+  clash.data.children[0].topic = 'X-别人';                // 别人也改 x（相交）
+
+  it('snapshotOf：按键取某一方的值；节点不带 children（与指纹口径同一份摊平）', () => {
+    expect(snapshotOf(mine, 'node:x').topic).toBe('X-我');
+    expect(snapshotOf(theirs, 'node:x').topic).toBe('X');
+    expect(snapshotOf(theirs, 'node:x').children).toBeUndefined();
+    expect(snapshotOf(base, 'node:不存在')).toBeUndefined();
+    expect(snapshotOf(base, 'assoc:a1')).toMatchObject({ id: 'a1' });
+    expect(snapshotOf(base, 'meta').name).toBe('t');
+  });
+
+  it('conflictSnapshots：只给被点名的对象（**不是**整棵树），三方各一份', () => {
+    const snaps = conflictSnapshots(base, mine, theirs, ['node:x']);
+    expect(Object.keys(snaps.base)).toEqual(['node:x']);
+    expect(Object.keys(snaps.mine)).toEqual(['node:x']);
+    expect(snaps.mine['node:x'].topic).toBe('X-我');
+    expect(snaps.theirs['node:x'].topic).toBe('X');
+    // 没被点名的对象一个都不出现（防"预览"变成整棵树的第二份副本）
+    expect(snaps.base.data).toBeUndefined();
+    expect(Object.keys(conflictSnapshots(base, mine, theirs, [])).length).toBe(3);
+  });
+
+  it('diffRows：两侧都是**内容**（不是对象名）；一侧没有该对象时如实标记', () => {
+    const rows = diffRows(
+      [{ label: '我的', data: mine }, { label: '盘上', data: theirs }],
+      ['node:x', 'node:z']);
+    const rx = rows.filter((r) => r.key === 'node:x')[0];
+    expect(rx.sides.map((s) => s.label)).toEqual(['我的', '盘上']);
+    expect(rx.sides[0].text).toContain('X-我');
+    expect(rx.sides[1].text).toContain('"X"');
+    const rz = rows.filter((r) => r.key === 'node:z')[0];
+    expect(rz.sides[0].missing).toBe(true);            // 我这边没有 ⇒ 如实说
+    expect(rz.sides[1].missing).toBe(false);
+    expect(rz.sides[1].text).toContain('Z-别人');
+    expect(rx.label.length).toBeGreaterThan(0);         // 对象名走 describeKeys（同一套）
+  });
+
+  it('diffRows：支持 `values` 表（保存冲突那条路主进程只递冲突对象，不还原整棵树）+ labels', () => {
+    const snaps = conflictSnapshots(base, mine, clash, ['node:x']);
+    const rows = diffRows([
+      { label: '我的', values: snaps.mine },
+      { label: '盘上', values: snaps.theirs },
+      { label: '基线', values: snaps.base }
+    ], ['node:x'], { labels: { 'node:x': '节点「X」（主进程给的名字）' } });
+    expect(rows.length).toBe(1);
+    expect(rows[0].label).toBe('节点「X」（主进程给的名字）');
+    expect(rows[0].sides.length).toBe(3);
+    expect(rows[0].sides[0].text).toContain('X-我');
+    expect(rows[0].sides[1].text).toContain('X-别人');
+    expect(rows[0].sides[2].text).toContain('"X"');
+    // 空 values 表也不许崩（那一侧就是"没有"）
+    const only = diffRows([{ label: '我的', values: {} }], ['node:x']);
+    expect(only[0].sides[0].missing).toBe(true);
+  });
+
+  it('valueToText：有界 + 截断**如实回报**（静默截断 = 静默骗人）', () => {
+    const long = 'x'.repeat(50);
+    const t = valueToText(long, 10);
+    expect(t.truncated).toBe(true);                    // 结构化事实（不靠措辞）
+    expect(t.text.startsWith('x'.repeat(10))).toBe(true);   // 上限生效
+    expect(t.text).toContain('50');                    // 原长如实报出（别让人以为内容就这么多）
+    expect(valueToText('short', 10)).toMatchObject({ truncated: false, missing: false });
+    expect(valueToText(undefined).missing).toBe(true);
+  });
+
+  it('inheritAssoc：载荷缺 assoc ⇒ 当"界面没意见"（与 mergeTrees 同一实现）', () => {
+    const b = { meta: {}, format: 'node_tree', data: { id: 'root' }, assoc: [{ id: 'a1' }] };
+    const m = { meta: {}, format: 'node_tree', data: { id: 'root' } };
+    expect(inheritAssoc(m, b).assoc).toEqual([{ id: 'a1' }]);
+    // 明确给了空数组 ⇒ 那是"界面真的没有关联笔记"，**不许**回填（否则删掉的条目会被复活）
+    const z = { meta: {}, format: 'node_tree', data: { id: 'root' }, assoc: [] };
+    expect(inheritAssoc(z, b).assoc).toEqual([]);
   });
 });
