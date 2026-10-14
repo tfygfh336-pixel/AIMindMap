@@ -493,7 +493,15 @@ const STEPS = [
     //     ② 820000/645600 = **1.270** ✓（取整到 10s，并留一点给"同一档负载下的逐轮波动"）。
     //     配套：`main.js` 的守卫 960s→**985s**（= 820 × 1.2 ⇒ 不变量①继续成立 ✓）；
     //     合计预算 **1100s 不动**（各步预算之和 1035s→**1055s** ⇒ 1100/1055 = 1.043 ✓）。
-    budgetMs: 820000   // 2026-10-14（保存视图修复批·第二次现算）800s→820s：全链实测 G5 645600ms ⇒ 1.25× = 807000ms
+    //   · 2026-10-16（**验证成本批 1**）：预算 820s→**830s**。依据**本批全链里的真读数**（现算，不抄）：
+    //     本批全链 G5 = **656100ms** ⇒ ① 旧值已不成立：820000/656100 = **1.2498** < 1.25 ✗
+    //     （余量线，不是"慢"这个判断）；② 830000/656100 = **1.265** ✓（留一点给同档负载的逐轮波动，
+    //     同时"悄悄涨回 700s+"仍会被抓住）。本批**新增冒烟断言 0 条**（改的是验证侧：`--for` 选步、
+    //     临时目录唯一化、真实数据三档）⇒ 这 +15.7s 属同档负载波动，**不是**工作量增长；
+    //     但余量守卫是机械的 ⇒ 按同一条不变量**同批现算重算**（判据一条不砍 ✓）。
+    //     配套：`main.js` 的冒烟守卫 985s→**996s**（= 830 × 1.2 ⇒ 不变量①继续成立 ✓）；
+    //     合计预算 **1100s 不动**（各步预算之和 1055s→**1065s** ⇒ 1100/1065 = 1.033 ⇒ 单步仍先发声 ✓）。
+    budgetMs: 830000   // 2026-10-16（验证成本批 1）：820s→830s，依据本批全链真读数 G5=656100ms（1.25×=820125ms）
   }
 ];
 
@@ -539,6 +547,10 @@ const STEPS = [
  *  639170ms 定 800s，再按全链真读数 645600ms 定 820s）之后，各步预算之和从 **985s** 变成 **1055s**
  *  （从 `STEPS` **现算**：8×10 + G3 60 + G6 20 + G4 60 + G2 15 + G5 820 = 1055s），
  *  仍 ≤ 1100s ⇒ "合计不抢在单步前面报红"继续成立 ✓（1100 / 1055 = **1.043** 倍）。
+ *  2026-10-16（验证成本批 1）：**1100s 不动** ✓ —— G5 预算 820→**830s**（依据本批全链真读数
+ *  G5 = 656100ms ⇒ 820000/656100 = 1.2498 < 1.25 ✗ ⇒ 按余量守卫现算到 830s，比值 1.265 ✓）之后，
+ *  各步预算之和从 **1055s** 变成 **1065s**（从 `STEPS` **现算**：8×10 + G3 60 + G6 20 + G4 60 + G2 15
+ *  + G5 830 = 1065s），仍 ≤ 1100s ⇒ "合计不抢在单步前面报红"继续成立 ✓（1100 / 1065 = **1.033** 倍）。
  *  与 G5 那一条是**同一个决定的两半**：预算涨了却没抬合计 ⇒ 合计会先于单步发声、盖掉真正慢的那一步 ✗。 */
 const TOTAL_BUDGET_MS = 1100000;   // 2026-10-16：900s→1100s（各步预算之和 1035s，见上面那一段）
 
@@ -620,21 +632,71 @@ function main() {
     }
   } catch (e) { /* 检测失败不影响验证 */ }
 
-  // ── `--changed`：按改动面裁掉用不着的步骤（映射规则见 scripts/changed-plan.js）──────
+  // ── 部分验证：`--changed`（按 git 改动清单自动选）/ `--for <改动面>`（人显式点名）──────
+  // 两档共用**同一份**执行 / 跳过 / 留痕逻辑（下面 for (const s of STEPS) 与收尾只有一处）。
   // 设计要点：**它是提速工具，不是验收工具** —— 所有输出都带"部分验证"横幅，
   // 记录写进另一个格子（不覆盖 last-verify.json），历史标 partial（基线也不认它）。
-  const changedMode = process.argv.includes('--changed');
+  const sel = changedPlan.parseForArgs(process.argv);
   let plan = null;
-  if (changedMode) {
+  let planLabel = '';
+  if (sel.error) {
+    console.error('✗ ' + sel.error);
+    process.exitCode = 1;
+    return;
+  }
+  if (sel.mode === 'for') {
+    // **门禁自己核对这张表**（域号在 scripts/smoke/ 里真实存在 / 每个域恰好被一个面登记 /
+    // 条数现算）——刻意放在**跑任何一步之前**：表坏了就该当场红，而不是先付十几分钟的链再发现。
+    const table = changedPlan.surfaceSelfCheck(changedPlan.domainNumbersIn(path.join(ROOT, 'scripts', 'smoke')));
+    const st = table.stats;
+    console.log('改动面表自检：' + (table.ok ? '✓ 通过' : '✗ 不通过')
+      + '（面 ' + st.surfaces + ' 个 · 冒烟域 ' + st.domainsInRepo + ' 个被登记 ' + st.domainClaims + ' 次'
+      + ' · 全链 ' + st.stepsInChain + ' 步 · 层次 ' + st.layers + ' 格）');
+    if (!table.ok) {
+      console.error('✗ 改动面表自检不通过（表与真值分叉 ⇒ 判红；表只有一处实现，改它就对了）：');
+      table.errors.forEach((e) => console.error('   · ' + e));
+      process.exitCode = 1;
+      return;
+    }
+    let p;
+    try {
+      p = changedPlan.planForSurface(sel.surface, { domains: sel.domains });
+    } catch (e) {
+      console.error('✗ ' + ((e && e.message) || e));
+      process.exitCode = 1;
+      return;
+    }
+    planLabel = '--for ' + sel.surface + (sel.domains ? ' --domains ' + sel.domains.join(',') : '');
+    // `--for all` = 默认档 ⇒ **不进**"部分验证"那套（历史/记录位/输出与不带开关的默认档逐字节相同 ✓）
+    plan = p.full ? null : p;
+    if (p.full && process.argv.includes('--plan-only')) {
+      console.log('计划：全量（`--for all`：一步都不省，与不带开关的默认档相同）');
+      console.log('   （--plan-only：只报计划，本次一步都没跑 ✓）');
+      return;
+    }
+    if (plan) {
+      console.log('⚠️ == 部分验证（' + planLabel + '）== **这不是全量真值**，发版/交付前请跑 `npm run verify`');
+      console.log('   ' + plan.reason);
+      for (const l of changedPlan.describePlan(plan)) console.log('   ' + l);
+      for (const l of changedPlan.describeNotRun(plan)) console.log('   ' + l);   // ★ 没跑什么也必须说出来
+      if (process.argv.includes('--plan-only')) {
+        console.log('   （--plan-only：只报计划，本次一步都没跑 ✓）');
+        return;
+      }
+      console.log('');
+    }
+  } else if (sel.mode === 'changed') {
     const files = changedFiles();
     if (files === null) {
       console.log('⚠️ --changed：取不到 git 改动清单（没有 git / 不在仓库里？）⇒ **退回全量**');
       console.log('');
     } else {
       plan = changedPlan.planForFiles(files);
+      planLabel = '--changed';
       console.log('⚠️ == 部分验证（--changed）== **这不是全量真值**，发版/交付前请跑 `npm run verify`');
       console.log('   ' + plan.reason);
       for (const l of changedPlan.describePlan(plan)) console.log('   ' + l);
+      for (const l of changedPlan.describeNotRun(plan)) console.log('   ' + l);   // ★ 没跑什么也必须说出来
       console.log('   改动文件 ' + files.length + ' 个：'
         + (files.length > 8 ? files.slice(0, 8).join('、') + ' 等' : files.join('、')));
       if (process.argv.includes('--plan-only')) {
@@ -650,7 +712,7 @@ function main() {
   }
   console.log('');
   for (const s of STEPS) {
-    // `--changed` 计划外 ⇒ 跳过（G7 是"与 G6 共用一次调用"，G6 在计划里它就跟着跑 ✓）
+    // 计划外 ⇒ 跳过（G7 是"与 G6 共用一次调用"，G6 在计划里它就跟着跑 ✓）
     const inPlan = !plan || plan.full || plan.steps.indexOf(s.gate) >= 0
       || (s.gate === 'G7' && plan.steps.indexOf('G6') >= 0);
     if (!inPlan) {
@@ -699,6 +761,26 @@ function main() {
 
   const chk = checkBudgets(results, TOTAL_BUDGET_MS);
 
+  /* ---- 表与实跑分叉 ⇒ 判红（**运行时核对**）----
+   * 为什么非有不可：`--for` 的全部风险就是"表说跑 A、实跑却跑了 B（或漏了 A）"，
+   * 而那种失效的形状是**看起来验证过了**（本工程最重的损害类别）⇒ 表与实跑必须当场对账。
+   * 边界（如实写明）：链**没跑完**（首败即停）时这一步不做判定 —— 那次的读数本来就不完整，
+   * 真红是上面那条失败；这里只**响亮说没核对**（不许静默跳过 ✗）。 */
+  let divergence = null;
+  if (plan) {
+    if (failed) {
+      console.log('（表与实跑分叉的核对**本轮跳过**：链没跑完 ⇒ 读数不完整，本次以那条失败收口 ✓）');
+      console.log('');
+    } else {
+      divergence = changedPlan.planDivergence(plan,
+        results.map((r) => ({ gate: r.gate, skipped: r.skipped === true, code: r.code })));
+      console.log('表与实跑对账（' + planLabel + '）：' + (divergence.ok ? '✓ 一致（计划内 ' + divergence.ranGates.length
+        + ' 个门禁真的跑了，计划外一个都没跑）' : '✗ **分叉**'));
+      if (!divergence.ok) divergence.errors.forEach((e) => console.error('   · ' + e));
+      console.log('');
+    }
+  }
+
   // ---- 耗时表（每次都打印：时间花在哪 + 比上次差多少，一眼可见）----
   // 基线要在**写本次记录之前**读（下面 writeVerifyHistory 才追加）✓
   // 且只认"最后一次**成功**的验证"：失败/中断的那次步骤没跑完，拿来比是假信号 ✗（实测踩过）
@@ -712,7 +794,8 @@ function main() {
   for (const r of results) {
     const pad = (v, n) => String(v).padEnd(n);
     if (r.skipped) {
-      const why = r.skippedBy === 'changed' ? '（--changed 计划外：跳过）' : '（与上一步同一次调用）';
+      const why = r.skippedBy === 'changed'
+        ? '（' + (planLabel || '--changed') + ' 计划外：跳过）' : '（与上一步同一次调用）';
       console.log('  ' + pad(r.step, 3) + pad(r.gate, 6)
         + pad(why, 10) + ' '.repeat(8) + ' '.repeat(10) + pad('—', 10) + pad('—', 10) + r.label);
       continue;
@@ -739,7 +822,7 @@ function main() {
 
   const partial = !!(plan && !plan.full);
   if (failed) {
-    console.error((partial ? '部分验证失败（--changed）' : '验证失败')
+    console.error((partial ? '部分验证失败（' + (planLabel || '--changed') + '）' : '验证失败')
       + '：步骤 ' + failed.step.step + '（' + failed.step.gate + '）退出码 ' + failed.code);
     /* 批 J 的账（批 G 实测）：这里原先紧接着就走记录与 return ⇒ **失败步骤抢先返回，预算判定
      * 整段不执行** ✗ —— 而"失败"与"变慢"常常同源（跑到被守卫掐 / 超时 / 真挂死），
@@ -762,6 +845,14 @@ function main() {
     if (partial) writeLastVerifyChanged(run); else writeLastVerify(run);
     writeVerifyHistory(run, results);   // 历史：追加一条（可疑的偶发 / 变慢，事后靠它判）
     backupHint();
+    process.exitCode = 1;
+    return;
+  }
+
+  // ---- 分叉判定（**先于预算**：结论本身不成立时，"太慢"不是要报的那件事）----
+  if (divergence && !divergence.ok) {
+    console.error('✗ 改动面表与实跑分叉 ⇒ 判红（' + planLabel + '）：每一步都绿，但"计划 = 实跑"不成立 ⇒');
+    console.error('   这个"绿"不能当"这一面验过了"读 ✗（表只有一处实现：scripts/changed-plan.js 的 SURFACES）');
     process.exitCode = 1;
     return;
   }

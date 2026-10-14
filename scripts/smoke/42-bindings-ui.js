@@ -36,11 +36,15 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const crypto = require('crypto');
+const tempRunRoot = require('./temp-run-root.js');
 
-/** 沙箱源目录（**不属于 projects/ 真实数据**；本域收尾时删干净） */
-const SRC_DIR = path.join(os.tmpdir(), 'zz-bind-ui-src');
+/** 沙箱源目录（**不属于 projects/ 真实数据**；本域收尾时删干净）。
+ *  ⚠️ 唯一段写在**父目录**上（`RUN.root`），基名保持 `zz-bind-ui-src` 不变 —— 见 temp-run-root.js 头注：
+ *  固定名在**并发跑同一域**时会被另一个会话删掉（实测互删 ⇒ 本域读到 ENOENT，看起来像产品缺陷 ✗）；
+ *  而基名一改，凡"从目录名推项目名"的地方就会跟着变（域 43/44 就是那种形态）。 */
+const RUN = tempRunRoot.planRunRoot('zz-bind-ui');
+const SRC_DIR = RUN.under('zz-bind-ui-src');
 const P = 'zz-bind-ui';
 const P_NONE = 'zz-bind-ui-none';
 const STAMP = String(Date.now());
@@ -86,13 +90,15 @@ function bindingRows(name) {
   return Array.isArray(j.bindings) ? j.bindings : null;
 }
 function seedSource(files) {
-  fs.rmSync(SRC_DIR, { recursive: true, force: true });
-  fs.mkdirSync(SRC_DIR, { recursive: true });
+  /* 兜底：上一次**崩在半路**留下的陈旧根（> 30 分钟）清掉；正在跑的那一轮（含本次）一个都不动 ✓
+   * （年龄线为什么必须存在：并发跑同一域时，另一个会话的活目录和"残留"长得一模一样 ✗） */
+  tempRunRoot.sweepStale(RUN.prefix);
+  RUN.reset('zz-bind-ui-src');
   Object.keys(files).forEach((f) => fs.writeFileSync(path.join(SRC_DIR, f), files[f], 'utf8'));
 }
 function cleanupSandboxArtifacts() {
-  try { fs.rmSync(SRC_DIR, { recursive: true, force: true }); } catch (e) { /* 收尾失败不掩盖主判据 */ }
-  try { fs.rmSync(pickStubFile(), { force: true }); } catch (e) { /* 同上 */ }
+  RUN.cleanup();                                   // 唯一根 ⇒ 收尾只删自己那一个（列表只有一处）
+  try { fs.rmSync(pickStubFile(), { force: true }); } catch (e) { /* 收尾失败不掩盖主判据 */ }
 }
 
 /* ---------------- 真帧/命中测试三件套（**判据纪律**：可见性只由 elementFromPoint 回答） ----------------
@@ -987,5 +993,16 @@ function closedNames(cleaned) {
   return (cleaned && cleaned.n && cleaned.names && cleaned.names.length)
     ? '（' + cleaned.names.join('、') + '）' : '';
 }
+
+/* 域级收尾保证（**整段 try/finally** 的效果，但不重排几千行缩进 —— 见 skill E2 的务实允准）：
+ * 任何一条断言**抛错**都当场清掉本域的唯一临时根（崩在半路 ⇒ 残留 0 ✓），异常原样上抛（不吞 ✗）。
+ * 正常路径仍由最后一条断言（己）末尾的收尾负责 —— 中间几档要**共用**同一个源目录，不能每条都清。 */
+assertions.forEach((a) => {
+  const orig = a.run;
+  a.run = async (ctx) => {
+    try { return await orig(ctx); }
+    catch (e) { cleanupSandboxArtifacts(); throw e; }
+  };
+});
 
 module.exports = assertions;

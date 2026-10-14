@@ -35,12 +35,17 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const crypto = require('crypto');
+const tempRunRoot = require('./temp-run-root.js');
 
-/** 两条源目录（**不属于 projects/ 真实数据**；本域收尾时删干净） */
-const SRC = path.join(os.tmpdir(), 'zz-imp-src');
-const LIB = path.join(os.tmpdir(), 'zz-imp-lib');
+/** 两条源目录（**不属于 projects/ 真实数据**；本域收尾时删干净）。
+ *  ⚠️ 唯一段写在**父目录**上（`RUN.root`），两条基名保持 `zz-imp-src` / `zz-imp-lib` 不变 ——
+ *  见 temp-run-root.js 头注：固定名在并发跑同一域时会被另一个会话删掉（实测互删 ⇒ 假红）；
+ *  而 `zz-imp-lib` 这个基名是**目录那一路新项目名的来源**（`sanitizeProjectName(basename(dir))`）⇒
+ *  唯一段只能写在父目录上，否则 `P_DIR` 与"界面预览报的项目名"会跟着漂。 */
+const RUN = tempRunRoot.planRunRoot('zz-imp');
+const SRC = RUN.under('zz-imp-src');
+const LIB = RUN.under('zz-imp-lib');
 const P = 'zz-imp-entry';            // 文件那一路的目标项目
 const P_DIR = 'zz-imp-lib';          // 目录那一路会**新建**的项目（名字 = 目录名清洗后的结果）
 /** 庚 用：切过去的那一个**沙箱**项目（切项目的守卫要有"另一个项目"才走得到；真项目一个都不碰） */
@@ -110,8 +115,8 @@ function addedIdsBetween(beforeRaw, afterRaw) {
   return out.sort();
 }
 function seedFiles(files) {
-  fs.rmSync(SRC, { recursive: true, force: true });
-  fs.mkdirSync(SRC, { recursive: true });
+  tempRunRoot.sweepStale(RUN.prefix);          // 兜底：只清>30 分钟的陈旧根，正在跑的不动 ✓
+  RUN.reset('zz-imp-src');
   Object.keys(files).forEach((rel) => {
     const abs = path.join(SRC, rel);
     if (files[rel] === null) { fs.mkdirSync(abs, { recursive: true }); return; }   // null = 造一个**目录**
@@ -120,7 +125,7 @@ function seedFiles(files) {
   });
 }
 function seedLib() {
-  fs.rmSync(LIB, { recursive: true, force: true });
+  RUN.reset('zz-imp-lib');
   fs.mkdirSync(path.join(LIB, '甲'), { recursive: true });
   fs.mkdirSync(path.join(LIB, '乙'), { recursive: true });
   fs.mkdirSync(path.join(LIB, '空目录'), { recursive: true });
@@ -136,9 +141,8 @@ function cliCode(ctx, args) {
   catch (e) { return { code: 1, error: (e && e.message) || String(e) }; }
 }
 function cleanupSandbox() {
-  try { fs.rmSync(SRC, { recursive: true, force: true }); } catch (e) { /* 收尾失败不掩盖主判据 */ }
-  try { fs.rmSync(LIB, { recursive: true, force: true }); } catch (e) { /* 同上 */ }
-  try { fs.rmSync(pickFilesStub(), { force: true }); } catch (e) { /* 同上 */ }
+  RUN.cleanup();                                        // 唯一根 ⇒ 收尾只删自己那一个（列表一处）
+  try { fs.rmSync(pickFilesStub(), { force: true }); } catch (e) { /* 收尾失败不掩盖主判据 */ }
   try { fs.rmSync(pickDirStub(), { force: true }); } catch (e) { /* 同上 */ }
 }
 
@@ -835,5 +839,16 @@ const assertions = [
     }
   }
 ];
+
+/* 域级收尾保证（**整段 try/finally** 的效果，不重排几千行缩进 —— 见 skill E2 的务实允准）：
+ * 任何一条断言**抛错**都当场清掉本域的唯一临时根（崩在半路 ⇒ 残留 0 ✓），异常原样上抛（不吞 ✗）。
+ * 正常路径仍由最后一条断言（己）末尾的收尾负责 —— 中间几档要**共用**同一个源目录，不能每条都清。 */
+assertions.forEach((a) => {
+  const orig = a.run;
+  a.run = async (ctx) => {
+    try { return await orig(ctx); }
+    catch (e) { cleanupSandbox(); throw e; }
+  };
+});
 
 module.exports = assertions;

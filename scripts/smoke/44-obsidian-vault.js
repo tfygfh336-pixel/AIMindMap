@@ -29,15 +29,20 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const crypto = require('crypto');
+const tempRunRoot = require('./temp-run-root.js');
 
-/** 源目录（**不在 projects/ 里**；收尾删干净） */
-const SRC = path.join(os.tmpdir(), 'zz-w12-vault');
+/** 源目录（**不在 projects/ 里**；收尾删干净）。
+ *  ⚠️ 唯一段写在**父目录**上（`RUN.root`），三条基名保持原样不变 —— 见 temp-run-root.js 头注：
+ *  固定名在并发跑同一域时会被另一个会话删掉（实测互删 ⇒ 假红）；而 `zz-w12-vault` / `zz-w12-plain`
+ *  这两个基名是**新项目名的来源**（`sanitizeProjectName(basename(dir))`，见 `P` / `P_PLAIN`）⇒
+ *  唯一段只能写在父目录上，否则项目名跟着漂、判据全错。 */
+const RUN = tempRunRoot.planRunRoot('zz-w12');
+const SRC = RUN.under('zz-w12-vault');
 /** 界面预览那一条用它（**另起一个目录名**：项目名由主进程从目录名现推，
  *  而 `zz-w12-vault` 这个名字已经被甲 真导占了 ⇒ 预览会因为"项目已存在"失败，那是另一件事） */
-const SRC_UI = path.join(os.tmpdir(), 'zz-w12-vaultlib');
-const PLAIN = path.join(os.tmpdir(), 'zz-w12-plain');
+const SRC_UI = RUN.under('zz-w12-vaultlib');
+const PLAIN = RUN.under('zz-w12-plain');
 const P = 'zz-w12-vault';            // vault 那一路会新建的项目（名字 = 目录名清洗后的结果）
 const P_PLAIN = 'zz-w12-plain';      // 默认档那一路会新建的项目
 const P_STUB = 'zz-w12-probe';       // 界面预览那一条要有"一个当前项目"（先造一个最小的）
@@ -155,8 +160,9 @@ function allLinks(name) {
 }
 
 function seedVault() {
-  [SRC, SRC_UI].forEach((dir) => {
-    fs.rmSync(dir, { recursive: true, force: true });
+  tempRunRoot.sweepStale(RUN.prefix);          // 兜底：只清>30 分钟的陈旧根，正在跑的不动 ✓
+  ['zz-w12-vault', 'zz-w12-vaultlib'].forEach((name) => {
+    const dir = RUN.reset(name);
     fs.mkdirSync(path.join(dir, '.obsidian'), { recursive: true });   // ⇒ 主进程/CLI 都该认出"这是一个库"
     Object.keys(V).forEach((rel) => {
       const abs = path.join(dir, rel);
@@ -167,15 +173,15 @@ function seedVault() {
     fs.mkdirSync(path.join(dir, 'assets'), { recursive: true });       // 附件目录（P0 边界：不导）
     fs.writeFileSync(path.join(dir, 'assets', '图.png'), 'not-a-real-png', 'utf8');
   });
-  fs.rmSync(PLAIN, { recursive: true, force: true });
-  fs.mkdirSync(PLAIN, { recursive: true });                          // **没有** .obsidian/
+  RUN.reset('zz-w12-plain');                                          // **没有** .obsidian/
   fs.writeFileSync(path.join(PLAIN, 'note.md'), PLAIN_MD, 'utf8');
   fs.mkdirSync(path.join(PLAIN, BAD_REL), { recursive: true });      // 默认档那一侧也放一个坏条目
 }
 function cleanupSandbox() {
-  [SRC, SRC_UI, PLAIN].forEach((dir) => {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* 收尾失败不掩盖主判据 */ }
-  });
+  /* ⚠️ 唯一根 ⇒ 收尾只删自己那一个（清理名单只有这一处；`zz-w12-*` 三个目录连同根一起走）。
+   * 历史账：本函数原先**从来没被调用过** ⇒ 每跑一轮全链就在 `%TEMP%` 永久留下三个目录
+   * （实测：全链跑完后 `zz-w12-vault` / `-vaultlib` / `-plain` 的 mtime 就是那一轮的结束时刻）。 */
+  RUN.cleanup();
 }
 function writeStub(file, lines) { fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8'); }
 /** 跑一条 CLI 并拿**退出码 + 原文**（`ctx.runCli` 失败是抛错 ⇒ 这里翻成显式 code，别把"没跑成"读成"通过"） */
@@ -437,6 +443,7 @@ const assertions = [
       const shaAfter = sha256(readRaw(P_STUB));
       // 预览读数与**盘上现算**对拍（同一次导入的两个独立来源）
       const onDiskLinks = allLinks(P).length;
+      cleanupSandbox();                       // 收尾：唯一临时根（本域最后一个断言；此前这里漏了这一步）
       return {
         ok: dup.code !== 0 && dupNamed === true && noNewProject === true
           && pr.ok === true && pr.vault === true && !!vv
@@ -458,5 +465,16 @@ const assertions = [
     }
   }
 ];
+
+/* 域级收尾保证（**整段 try/finally** 的效果，不重排几百行缩进 —— 见 skill E2 的务实允准）：
+ * 任何一条断言**抛错**都当场清掉本域的唯一临时根（崩在半路 ⇒ 残留 0 ✓），异常原样上抛（不吞 ✗）。
+ * 正常路径由最后一条断言（己）末尾的收尾负责 —— 中间几档要**共用**同一个库目录，不能每条都清。 */
+assertions.forEach((a) => {
+  const orig = a.run;
+  a.run = async (ctx) => {
+    try { return await orig(ctx); }
+    catch (e) { cleanupSandbox(); throw e; }
+  };
+});
 
 module.exports = assertions;

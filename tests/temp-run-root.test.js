@@ -1,0 +1,209 @@
+/* ============================================================
+ * tests/temp-run-root.test.js —— 冒烟临时目录「唯一化 + 只清自己那一个」的契约
+ * 运行：npx vitest run
+ * ------------------------------------------------------------
+ * 为什么要单测：这两条都是**只有并发/中断时才显形**的性质（固定名被另一个会话删掉 ⇒ 假红；
+ * 收尾漏一处 ⇒ 每次全链在 `%TEMP%` 留一堆目录），平时怎么跑都是绿的 ⇒ 不写机械判据就没人守。
+ * 三块：
+ *   ① `planRunRoot` 的四条性质（惰性建目录 / 基名不变 / 每次唯一 / 收尾只删自己）；
+ *   ② `sweepStale` 的年龄线（正在跑的那一轮绝不能被扫掉）；
+ *   ③ **同模式的全仓扫描**（结构断言）：`os.tmpdir() + 字面量` 当**目录**用的写法，一处都不许再出现。
+ *      —— 这条让"下一个人再写一个固定名"当场变红，而不是等并发时再当产品缺陷查一遍。
+ * ============================================================ */
+import { describe, it, expect } from 'vitest';
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const trr = require('../scripts/smoke/temp-run-root.js');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/* 本测试自己也要"唯一化"：并发跑单测 / 上一次失败留下的目录都不该影响读数（同一条纪律） */
+let uniqN = 0;
+const uniq = (base) => base + '-t' + process.pid + '-' + Date.now().toString(36) + '-' + (++uniqN);
+
+describe('planRunRoot：惰性 / 基名不变 / 每次唯一 / 只清自己', () => {
+  it('**只算路径，不动盘**：域文件在冒烟启动时会被全部 require（含被 SMOKE_ONLY 过滤掉的）', () => {
+    const run = trr.planRunRoot('zz-unit-trr-lazy');
+    try {
+      expect(run.exists(), '只造句柄不许建目录（否则"没跑的域"也会在 %TEMP% 留残留）').toBe(false);
+      expect(run.under('aaa'), 'under 也不许建目录').toContain('aaa');
+      expect(fs.existsSync(run.root)).toBe(false);
+    } finally { run.cleanup(); }
+  });
+
+  it('`under(name)` 的**基名原样保留**（域 43/44 的项目名是从目录名推的，不能跟着变）', () => {
+    const run = trr.planRunRoot('zz-unit-trr-base');
+    try {
+      expect(path.basename(run.under('zz-imp-lib'))).toBe('zz-imp-lib');
+      expect(path.basename(run.under('zz-w12-plain'))).toBe('zz-w12-plain');
+      expect(path.basename(run.under('zz-bind-ui-src'))).toBe('zz-bind-ui-src');
+      // 唯一段只在**父目录**上
+      expect(path.dirname(run.under('zz-imp-lib'))).toBe(run.root);
+    } finally { run.cleanup(); }
+  });
+
+  it('两次调用（同一进程、同一毫秒内）⇒ 两个不同的根（否则并发还是会互删）', () => {
+    const a = trr.planRunRoot(uniq('zz-unit-trr-uniq'));
+    const b = trr.planRunRoot(uniq('zz-unit-trr-uniq2'));
+    try {
+      expect(a.root).not.toBe(b.root);
+      a.reset('x'); b.reset('x');
+      fs.writeFileSync(path.join(a.under('x'), 'f.txt'), 'A', 'utf8');
+      expect(fs.existsSync(path.join(b.under('x'), 'f.txt')), 'B 不该看见 A 的文件').toBe(false);
+      expect(fs.readdirSync(b.under('x')).length).toBe(0);
+    } finally { a.cleanup(); b.cleanup(); }
+  });
+
+  it('`cleanup()` **只删自己那一个根**（同前缀的别人的目录一个都不碰），且可重复调用', () => {
+    const mine = trr.planRunRoot('zz-unit-trr-clean');
+    const other = trr.planRunRoot('zz-unit-trr-clean');   // 冒充"另一个会话"
+    try {
+      mine.reset('d');
+      other.reset('d');
+      fs.writeFileSync(path.join(other.under('d'), 'keep.txt'), '别人的', 'utf8');
+      expect(mine.cleanup()).toBe(true);
+      expect(mine.exists()).toBe(false);
+      expect(fs.existsSync(other.under('d')), '别人的根必须还在').toBe(true);
+      expect(fs.readFileSync(path.join(other.under('d'), 'keep.txt'), 'utf8')).toBe('别人的');
+      expect(mine.cleanup(), '重复收尾不许抛').toBe(true);
+    } finally { other.cleanup(); }
+  });
+
+  it('`reset` 是"建/清空"：第二次调用把上一次的文件清掉（与改动前的 rm+mkdir 同语义）', () => {
+    const run = trr.planRunRoot('zz-unit-trr-reset');
+    try {
+      run.reset('d');
+      fs.writeFileSync(path.join(run.under('d'), 'a.md'), '1', 'utf8');
+      expect(fs.readdirSync(run.under('d')).length).toBe(1);
+      run.reset('d');
+      expect(fs.readdirSync(run.under('d')).length).toBe(0);
+    } finally { run.cleanup(); }
+  });
+});
+
+describe('sweepStale：兜底清扫**带年龄线**（正在跑的那一轮绝不能被扫掉）', () => {
+  it('新鲜的不动、陈旧的清掉、别的前缀一个都不碰', () => {
+    const prefix = uniq('zz-unit-trr-sweep');
+    const fresh = trr.planRunRoot(prefix, { tag: 'fresh' });
+    const stale = trr.planRunRoot(prefix, { tag: 'stale' });
+    const alien = trr.planRunRoot(uniq('zz-unit-trr-alien'), { tag: 'stale' });
+    try {
+      fresh.reset('d'); stale.reset('d'); alien.reset('d');
+      const old = Date.now() - 60 * 60 * 1000;                 // 1 小时前（年龄线 30 分钟）
+      fs.utimesSync(stale.root, old / 1000, old / 1000);
+      fs.utimesSync(alien.root, old / 1000, old / 1000);
+      const out = trr.sweepStale(prefix);
+      expect(out.swept, '陈旧的应该被清掉').toBe(1);
+      expect(out.kept, '新鲜的要留着（它可能正在跑）').toBe(1);
+      expect(fresh.exists()).toBe(true);
+      expect(stale.exists()).toBe(false);
+      expect(alien.exists(), '别的前缀不归它管').toBe(true);
+    } finally { fresh.cleanup(); stale.cleanup(); alien.cleanup(); }
+  });
+
+  it('年龄线可以注入（判定逻辑可单测，不依赖真实时钟）', () => {
+    const prefix = uniq('zz-unit-trr-sweep2');
+    const run = trr.planRunRoot(prefix, { tag: 'x' });
+    try {
+      run.reset('d');
+      const out = trr.sweepStale(prefix, { maxAgeMs: -1 });     // 负年龄线 ⇒ 连刚建的也算"陈旧"
+      expect(out.swept).toBe(1);
+      expect(run.exists()).toBe(false);
+    } finally { run.cleanup(); }
+  });
+});
+
+/* ============================================================================
+ * 同模式的全仓扫描（结构断言）：把"固定名临时目录"这种写法**堵死在源头**。
+ * 照 skill B4b 的同族纪律：① 扫描面写成共享常量；② **先剥注释**再扫；③ needle 是**字符串形态**
+ * （这里要抓的就是那个字面量本身）；④ 在册豁免必须登记在**门禁侧**（本表），被检查方自己写一行不算。
+ * ========================================================================== */
+const SCAN_DIR = path.join(ROOT, 'scripts', 'smoke');     // ① 扫描面（一处）
+/** 当**文件**用的固定名是允许的（截图落盘就是有意用固定名：人眼复核要看同一个名字） */
+const FILE_EXT_RE = /\.(png|jpe?g|txt|json|jsonl|log|md|pdf|bin|csv)$/i;
+/** 同一表达式里带唯一化标记 ⇒ 合格 */
+const UNIQUE_RE = /process\.pid|Date\.now|STAMP|mkdtemp|Math\.random|runTag|runTag\(\)|tempRunRoot\.|planRunRoot/;
+const FIXED_TMP_RE = /path\.join\(\s*os\.tmpdir\(\s*\)\s*,\s*(['"`])([^'"`]+)\1\s*\)/g;
+/** 门禁侧的豁免表（只减不增；每条必须写**为什么**、并在变更日志里留一笔） */
+const EXEMPT = [];
+
+/** 剥注释（②）：逐字符走，跳过字符串 / 模板串 / 正则字面量的粗判 —— 避免把注释里的示例当实现 */
+function stripComments(src) {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i], d = src[i + 1];
+    if (c === '/' && d === '*') { const e = src.indexOf('*/', i + 2); i = e < 0 ? n : e + 2; out += ' '; continue; }
+    if (c === '/' && d === '/') { const e = src.indexOf('\n', i); i = e < 0 ? n : e; continue; }
+    if (c === '"' || c === '\'' || c === '`') {
+      const q = c; out += c; i++;
+      while (i < n) { out += src[i]; if (src[i] === '\\') { out += src[i + 1] || ''; i += 2; continue; } if (src[i] === q) { i++; break; } i++; }
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
+/** 扫描一个文件（纯函数：输入 {file, src}，输出违规清单 —— 判别力证明直接喂坏源码） */
+function scanSource(file, src) {
+  const lines = stripComments(src).split(/\r?\n/);
+  const bad = [];
+  lines.forEach((line, idx) => {
+    FIXED_TMP_RE.lastIndex = 0;
+    let m;
+    while ((m = FIXED_TMP_RE.exec(line))) {
+      const name = m[2];
+      if (FILE_EXT_RE.test(name)) continue;                   // 文件类：允许（截图落盘等）
+      if (UNIQUE_RE.test(line)) continue;                      // 同一行带唯一化标记：允许
+      const ex = EXEMPT.find((e) => e.file === file && e.name === name);
+      if (ex) continue;                                        // 在册豁免（门禁侧登记）
+      bad.push({ file, line: idx + 1, name, text: line.trim().slice(0, 120) });
+    }
+  });
+  return bad;
+}
+
+describe('同模式扫描：scripts/smoke/ 里不许再有固定名的临时**目录**', () => {
+  const files = fs.readdirSync(SCAN_DIR).filter((f) => f.endsWith('.js')).sort();
+
+  it('真仓扫出来 0 条违规（扫描面现算，不写死文件数）', () => {
+    expect(files.length, '扫描面不该是空的（否则这条判据在空转）').toBeGreaterThan(40);
+    const all = [];
+    files.forEach((f) => all.push(...scanSource(f, fs.readFileSync(path.join(SCAN_DIR, f), 'utf8'))));
+    expect(all.map((b) => b.file + ':' + b.line + ' ' + b.name)).toEqual([]);
+  });
+
+  it('**判别力**：注入一条固定名目录 ⇒ 必红（这就是本批要堵死的那种写法）', () => {
+    const bad = scanSource('scripts/smoke/99-injected.js',
+      "const fs = require('fs');\nconst os = require('os');\nconst path = require('path');\n"
+      + "const SRC_DIR = path.join(os.tmpdir(), 'zz-bind-ui-src');\n"
+      + "fs.rmSync(SRC_DIR, { recursive: true, force: true });\n");
+    expect(bad.length).toBe(1);
+    expect(bad[0].name).toBe('zz-bind-ui-src');
+    expect(bad[0].line).toBe(4);
+  });
+
+  it('判别力之二：加一个唯一段（父目录带 pid/时刻）⇒ 同一写法就合格了', () => {
+    const good = scanSource('scripts/smoke/99-injected.js',
+      "const SRC_DIR = path.join(os.tmpdir(), 'zz-bind-ui-src-' + process.pid + '-' + Date.now());\n");
+    expect(good).toEqual([]);
+  });
+
+  it('判别力之三：**文件**类固定名（截图落盘）不算违规 —— 但要认出它是文件', () => {
+    expect(scanSource('x.js', "const f = path.join(os.tmpdir(), 'mm-ui-5-sidebar.png');\n")).toEqual([]);
+    expect(scanSource('x.js', "const f = path.join(os.tmpdir(), 'mm-ui-5-sidebar');\n").length).toBe(1);
+  });
+
+  it('剥注释生效：注释里那句示例调用**不是实现**（B4b 的实测教训）', () => {
+    const src = "// 反例：const d = path.join(os.tmpdir(), 'zz-fixed-dir');\n"
+      + "/* 也别写成 path.join(os.tmpdir(), 'zz-fixed-dir2') */\n"
+      + "const ok = 1;\n";
+    expect(scanSource('x.js', src)).toEqual([]);
+  });
+});

@@ -25,6 +25,8 @@ const PROJ = 'comnet';
 // ⇒ 正确做法：**运行时从界面自己的树里挑两个真实存在的节点**，再用 CLI 给它们建一篇关联笔记
 //   （关联数据在界面里是"详情渲染时从磁盘重拉"的 ✓ 与节点不同）。
 let PICK = [];   // [nodeA, nodeB]，由第 1 条断言运行时挑好
+/** 入口前置的读数（本域要"界面里开着的就是 comnet"才成立 ⇒ 见第 1 条断言里的自建前置） */
+let ENTRY = '';
 const TITLE = '冒烟探针·功能2：握手与可靠传输';
 
 /** 造一篇关联笔记（沙箱副本内）。失败时**如实报错**（早期版本返回布尔把原因吞了，
@@ -59,6 +61,34 @@ module.exports = [
   {
     name: '关联节点：详情按钮「展示关联节点」⇒ 高亮关联节点 + 虚化其余 + 缩放到刚好框住（屏幕几何判定）',
     run: async (ctx) => {
+      /* 入口前置（**自建前置**，不是放宽判据）：本域假定"界面里开着的那棵树就是 comnet" ——
+       * 关联笔记是用 CLI 建在 comnet 上的，而节点是从**界面当前的树**里挑的（见文件头 ⚠️）。
+       * 全量运行里到这一步开着的确实是 comnet（`01-*` 预热打开的），但**过滤运行**
+       * （`SMOKE_ONLY` / `verify --changed` / `verify --for <改动面>`）里上一条断言可能留下别的项目
+       * ⇒ 实测：`verify --for renderer` 在域 20 之后进本域时树里只有 2 个节点、⑦c 读到"线=0 高亮=0"，
+       * 而**单跑本域**是 889 个节点全绿 ⇒ 定性是**顺序/状态依赖**，处置就是这一条前置 ✓。
+       * 已经在 comnet 上 ⇒ 直接返回 `already`，**全量链的行为一个字节都不动** ✓。
+       * 切项目会撞"界面脏"那道确认框，而 headless 里没人应答会**挂死**（域 43 记过同款坑 ✗）
+       * ⇒ 按产品自己的打桩口 `MM.setConfirmStub` 回答"放弃改动"，用完复位。 */
+      ENTRY = await ctx.exec(`(async function () {
+        try {
+          var st = window.MMApp.getState();
+          if (st && st.project && st.project.name === ${JSON.stringify(PROJ)}) return 'already';
+          var MM = window.MM;
+          if (MM && MM.setConfirmStub) MM.setConfirmStub(function () { return true; });
+          var r = await Promise.race([
+            Promise.resolve(window.MMApp.openProject(${JSON.stringify(PROJ)})).then(function () { return 'opened'; },
+              function (e) { return 'rejected:' + ((e && e.message) || e); }),
+            new Promise(function (res) { setTimeout(function () { res('timeout'); }, 12000); })
+          ]);
+          if (MM && MM.setConfirmStub) MM.setConfirmStub(null);
+          return r;
+        } catch (e) { return 'err:' + ((e && e.message) || e); }
+      })()`);
+      await new Promise((r) => setTimeout(r, 350));
+      if (ENTRY !== 'already' && ENTRY !== 'opened') {
+        return { ok: false, text: '入口前置失败（取不到 comnet 这棵树 ⇒ 本域后面的判据都不成立）：' + ENTRY };
+      }
       // ① 运行时挑两个**真实存在**的节点（理由见文件头：写死会顺序依赖、自造进不了界面内存）
       const pick = await execJson(ctx, `(function () {
         var jm = window.MMApp.getState().jm, out = [];
@@ -162,7 +192,7 @@ module.exports = [
         var hasB = got.indexOf(${JSON.stringify(PICK[1])}) >= 0;
         return JSON.stringify({ ok: want === got && hasB, text: '高亮集=' + got + '（应为 ' + want + '）含第二个节点=' + hasB });
       })()`);
-      return { ok: !!o.ok && !!setChk.ok, text: o.text + ' ｜ ' + setChk.text };
+      return { ok: !!o.ok && !!setChk.ok, text: '入口前置=' + ENTRY + ' ｜ ' + o.text + ' ｜ ' + setChk.text };
     }
   },
   {

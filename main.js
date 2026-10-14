@@ -2397,9 +2397,19 @@ async function runSmoke(win) {
    * ⚠️ 上一版把"副本与真实不一致"直接当泄漏 ✗ —— 那多半是**应用在跑动中更新了自己那份副本**
    *（`comnet/.ui-state.json` 每次交互都会变 ✓）：实测三次跑，**真实侧** hash 完全相同、副本侧每次都不同
    * ⇒ 变的只是副本 ✓。现在改成"开跑记真实侧指纹 → 跑完复核"，只有**真实侧**变了才算 ✗。
-   * 前提：跑重门禁时同机不该有人正在用这个应用 ✗（否则是假红，属运行纪律 ✓）。 */
+   * ⚠️⚠️ 上一版**还有一档**是错的（本批改）：真实侧变了就一律判红 —— 而**同机有人正开着这个应用**
+   * 是最普通的情形，那个实例会一直写自己的 `.ui-state.json` ⇒ **必然假红**（假红的下场是连真红也不看）。
+   * 现在按 skill §G 第 4 条分**三档**（判据与三条正证据写在 `scripts/smoke/real-write-guard.js` 一处）：
+   *   ① 本次自己写的（或没有任何"别人写的"证据）⇒ 🚨 判红；② 有"不是本次写的"正证据 ⇒ 响亮**本次没验**
+   *   （不计数、不阻断、不计产品缺陷）；③ 真值采不到 ⇒ 判红。
+   * 环境准入（**独立探针**，不问产品要结论）：扫真实 `projects/<项目>/.ui-state.json` 的 `uiPid`，看有没有
+   * **另一个活着的界面实例** —— 它在写真实目录，那就是本条假红的来源。 */
+  const realWriteGuard = require('./scripts/smoke/real-write-guard.js');
   const REAL_SNAP = new Map();
+  const REAL_SNAP_AT = Date.now();          // 复核时间窗的左端（右端在复核那一刻现取）
   let realWriteLeak = null;
+  let realWriteUnverified = null;
+  let REAL_PROBE = { writers: [], foreignAlive: [], errors: [] };
   const sha12 = (p) => { try { return require('crypto').createHash('sha1').update(fs.readFileSync(p)).digest('hex').slice(0, 12); } catch (e) { return '?'; } };
   const listRealFiles = (dir, base, out) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -2408,13 +2418,41 @@ async function runSmoke(win) {
     }
     return out;
   };
+  /** 真实目录里某个文件的界面状态（读得到就解析，读不到 ⇒ null；**解析只有一处** = src/ui-state.js） */
+  const realUiState = (rel) => {
+    const r = uiState.parseState((() => {
+      try { return fs.readFileSync(path.join(REAL_PROJECTS_DIR, rel), 'utf8'); } catch (e) { return null; }
+    })());
+    return r.ok ? r.state : null;
+  };
   try {
     if (fs.existsSync(REAL_PROJECTS_DIR)) {
       for (const rel of listRealFiles(REAL_PROJECTS_DIR, '', [])) REAL_SNAP.set(rel, sha12(path.join(REAL_PROJECTS_DIR, rel)));
       console.log('[smoke] 真实数据基线：' + REAL_SNAP.size + ' 个文件已记指纹（跑完复核；变了就是泄漏 ✗）');
+      /* 环境准入探针（**独立于产品链路**）：谁在这份真实目录里写界面状态、他还活着吗 */
+      const probeEntries = [];
+      REAL_SNAP.forEach((v, rel) => {
+        if (rel.slice(-uiState.FILE_NAME.length) !== uiState.FILE_NAME) return;
+        let text = null;
+        try { text = fs.readFileSync(path.join(REAL_PROJECTS_DIR, rel), 'utf8'); } catch (e) { text = null; }
+        probeEntries.push({ project: rel.split('/')[0], stateText: text });
+      });
+      REAL_PROBE = realWriteGuard.probeForeignWriters(probeEntries,
+        { ourPid: process.pid, isAlive: uiState.pidAlive });
+      console.log('[smoke] 环境探针：真实目录里的界面状态 ' + REAL_PROBE.writers.length + ' 份'
+        + (REAL_PROBE.writers.length
+          ? '（' + REAL_PROBE.writers.map((w) => w.project + '→pid ' + w.uiPid + (w.alive ? ' 活着' : ' 已退出')
+            + (w.foreign ? ' 非本进程' : ' 本进程')).join(' · ') + '）'
+          : '（看不出有人在用）')
+        + (REAL_PROBE.foreignAlive.length
+          ? ' ⇒ ⚠️ **有 ' + REAL_PROBE.foreignAlive.length + ' 个别的实例正活着**（pid='
+            + REAL_PROBE.foreignAlive.join(',') + '）：它在写真实目录 ⇒ 本条只能给"本次没验"'
+          : ''));
+      REAL_PROBE.errors.forEach((x) => console.log('[smoke] 环境探针：' + x));
       if (process.env.MM_SMOKE_LEAK_INJECT === '1') {
         // 判别力证明用（只在显式开关下生效 ✓）：故意往**真实**目录写一个文件 ⇒
-        // 跑完复核必须打印 ✗ 并让退出码非 0 ✓。
+        // 跑完复核必须打印 ✗ 并让退出码非 0 ✓。它是**本进程**写的（无写入者 pid、时间戳在窗口内）
+        // ⇒ 按"本次算"那一档判红，正是这条判据想抓的形状。
         fs.writeFileSync(path.join(REAL_PROJECTS_DIR, '_leak-inject-probe.json'), 'inject');
         console.log('[smoke] （注入）已往真实目录写 _leak-inject-probe.json，用于验证复核确实能红 ✓');
       }
@@ -2489,8 +2527,13 @@ async function runSmoke(win) {
    *   ⚠️ 同批第二次现算（依据换成**全链里的真读数**）：该批第一次全链的 G5 = **645600ms**
    *   ⇒ `scripts/verify.js` 的 G5 预算 800s→**820s**（800000/645600 = **1.239 ✗**；
    *   820000/645600 = **1.270** ✓）⇒ 本守卫 **960s→985s**（= 820 × 1.2 ✓）；
-   *   合计预算 1100s 不动（各步预算之和 1055s ⇒ 1100/1055 = 1.043 ✓）。 */
-  const SMOKE_GUARD_MS = 985000;
+   *   合计预算 1100s 不动（各步预算之和 1055s ⇒ 1100/1055 = 1.043 ✓）。
+   *   ⚠️ 2026-10-16（**验证成本批 1**）：G5 预算 820s→**830s**（依据本批全链真读数 G5 = **656100ms**
+   *   ⇒ 旧值 820000/656100 = **1.2498 < 1.25 ✗** ⇒ 按余量守卫现算到 830s，比值 **1.265** ✓）
+   *   ⇒ 本守卫 985s→**996s**（= 830 × 1.2 ⇒ 不变量①「守卫 > 预算」继续成立 ✓）。
+   *   ⚠️ 本批**没有加任何冒烟断言**（改的是验证侧：`--for` 选步 / 临时目录唯一化 / 真实数据三档）
+   *   ⇒ 那 +15.7s 是**同档负载波动**，不是工作量增长；但余量守卫是机械的 ⇒ 同批现算重算 ✓（判据一条不砍）。 */
+  const SMOKE_GUARD_MS = 996000;
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);
@@ -2749,24 +2792,51 @@ async function runSmoke(win) {
     results.push({ name: 'screenshot', ok: false, text: 'capture failed: ' + err.message });
   }
   clearTimeout(guard);
-  /* 真实数据零写入：跑完复核真实侧（内容变了 / 新增 / 删除 任一 ⇒ 判红 ✓；采不到也判红 ✗） */
+  /* 真实数据零写入：跑完复核真实侧，**按三档归因**（判据在 scripts/smoke/real-write-guard.js 一处）。
+   * 逐文件的正证据：写入者 pid（`.ui-state.json` 的 `uiPid`）/ 时间戳落在本次运行窗口之外。
+   * 采不到真值（复核自己失败）⇒ 判红 ✓（不许把"没验"报成"通过"）。 */
   try {
     if (fs.existsSync(REAL_PROJECTS_DIR)) {
       const now = listRealFiles(REAL_PROJECTS_DIR, '', []);
-      const changed = [], added = [], removed = [];
+      const changes = [];
+      const seen = new Set();
       for (const rel of now) {
+        seen.add(rel);
         const h = sha12(path.join(REAL_PROJECTS_DIR, rel));
-        if (!REAL_SNAP.has(rel)) added.push(rel);
-        else if (REAL_SNAP.get(rel) !== h) changed.push(rel);
+        if (!REAL_SNAP.has(rel)) changes.push({ rel, kind: 'added' });
+        else if (REAL_SNAP.get(rel) !== h) changes.push({ rel, kind: 'changed' });
       }
-      for (const rel of REAL_SNAP.keys()) if (now.indexOf(rel) < 0) removed.push(rel);
-      if (changed.length || added.length || removed.length) {
-        realWriteLeak = { changed: changed, added: added, removed: removed };
-        console.log('[smoke] ✗ 真实数据被动过（冒烟必须零写入！）：改=' + (changed.join(',') || '无')
-          + ' 新增=' + (added.join(',') || '无') + ' 删除=' + (removed.join(',') || '无')
-          + ' ｜ 若同机有人正在用这个应用，那属**假红**（先关掉再跑 ✓）');
-      } else {
-        console.log('[smoke] ✓ 真实数据零写入：' + REAL_SNAP.size + ' 个文件跑完逐字节一致');
+      for (const rel of REAL_SNAP.keys()) if (!seen.has(rel)) changes.push({ rel, kind: 'removed' });
+      // 逐文件补正证据（只在真的变了的时候才去读，省掉 45 份文件的无谓读取）
+      for (const c of changes) {
+        let st = null;
+        try { st = fs.statSync(path.join(REAL_PROJECTS_DIR, c.rel)); } catch (e) { st = null; }
+        c.mtimeMs = st ? st.mtimeMs : null;
+        if (c.rel.slice(-uiState.FILE_NAME.length) === uiState.FILE_NAME) {
+          const s = realUiState(c.rel);
+          if (s) {
+            c.writerPid = s.uiPid;
+            c.stampMs = Date.parse(s.updatedAt) || null;   // 写者自己记的时刻（比 mtime 更准）
+          }
+        }
+      }
+      const verdict = realWriteGuard.classifyRealWrites(changes, {
+        ourPid: process.pid,
+        windowStartMs: REAL_SNAP_AT,
+        windowEndMs: Date.now(),
+        othersAlive: REAL_PROBE.foreignAlive,
+        probeError: null
+      });
+      for (const line of realWriteGuard.summaryLines(verdict, { probe: REAL_PROBE })) {
+        console.log('[smoke] ' + line);
+      }
+      if (verdict.verdict === 'leak') {
+        realWriteLeak = { changes: verdict.items.filter((i) => i.verdict === 'leak').map((i) => i.rel) };
+        console.log('[smoke] ✗ 真实数据被动过（冒烟必须零写入！）：'
+          + realWriteLeak.changes.join(',') + ' ⇒ 退出码非 0 ✓');
+      } else if (verdict.verdict === 'unverified') {
+        // **第三档**：环境有他人写入 ⇒ 不判红、不计数、不阻断；但必须响亮（"没验"不许读成"通过"）
+        realWriteUnverified = verdict;
       }
     }
   } catch (e) {
@@ -2841,6 +2911,13 @@ async function runSmoke(win) {
       + '）｜ 每次尝试的读数=' + JSON.stringify(tempSweep.trace || [])
       + ' ｜ ' + SMOKE_PROJECTS_DIR
       + ' ⇒ 这就是"每跑一次在 %TEMP% 留一个空壳"的现象；读数已如实打印（既不当 PASS 也不当 FAIL）'));
+  /* 「真实数据零写入」那一档的**汇总行**（三态要同时可见：通过 / 未验证 / 真缺陷 ——
+   * 只打印"跑了什么"时，"没验"会被读成"过了" ✗）。第二档**不进退出码**：红的是环境不是产品，
+   * 长期挂红会让读者连真红也不看（skill §G 第 4 条）；但它必须响亮 ✓。 */
+  if (realWriteUnverified) {
+    console.log('[smoke] ⚠️ 真实数据零写入：**本次没验（环境有他人写入）** —— 不参与计数、不阻断退出码、'
+      + '也不计成产品缺陷；要它变绿：先关掉同机正在使用本应用的实例，再跑一次 ✓');
+  }
   /* 退出码 = 三样：真失败的断言 · 真实数据被动过 · **严格档下被计成失败的"未验证"**。
    * ⚠️ 开关关着时这一项恒为 0（短路）⇒ 退出码与加它之前完全一致 ✓；数量由 `tally()` 的严格档读数给，
    * 这里不自己数（`B1`）。 */
