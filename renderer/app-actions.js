@@ -183,10 +183,19 @@
         if (res.data && epoch0 === projectEpoch) rebuildFromJson(res.data);
         if (res.version && epoch0 === projectEpoch && state.project) state.project.version = res.version;
         lastSavedSnapshot = snapshot();
+        /* 合并结果是**主进程合成的**，而回执不带 `data` ⇒ 内存**不一定**等于盘上（外部那几个对象
+         * 还没进内存）⇒ 清掉"自己写的"收据：随后那条 `project:disk-changed` 必须照旧走采纳路径，
+         * 否则外部的新节点不会出现在导图上，而下一次保存会把盘上那份**静默抹掉** ✗✗
+         * （见 `selfWrittenVersion` 头顶那一段）。 */
+        selfWrittenVersion = '';
         setStatus('已保存 ' + new Date().toLocaleTimeString() + '（已与外部改动自动合并）');
       } else {
         if (res && res.version && state.project) state.project.version = res.version;
         lastSavedSnapshot = JSON.stringify(data);
+        /* 【保存后不再折回】落盘的就是**这份内存**（`data` 就是上面 `serializeTree()` 出来的那份）
+         * ⇒ 记下收据：随后那条 `project:disk-changed` 若报的就是这个指纹，说明"盘上 = 内存"，
+         * 没有任何东西要采纳 ⇒ 不重渲染（视图归一）⇒ 展开态/偏移/位置留在原处 ✓ */
+        selfWrittenVersion = (res && res.version) || '';
         setStatus('已保存 ' + new Date().toLocaleTimeString());
       }
       closeConcBanner();                   // 保存把两边都落盘了 ⇒ 外部改动提示也该消失
@@ -575,6 +584,50 @@
    *     与实现矛盾（用户 2026-10-13 报的就是这类过时文案），已按实现改正。 */
   let reloadingFromDisk = false;
 
+  /* ================= 「盘上这一版就是界面内存的那一份」（保存后不再折回） =================
+   *
+   * `selfWrittenVersion` = 本界面**整树写回**成功时记下的那个盘上版本指纹。它与 `project:peek`
+   * 回来的 `version`、保存闸门比的那一版**同一个值空间**（`src/data-store.js` 的 `versionOfText`）。
+   *
+   * 它要回答的问题只有一个：随后那条 `project:disk-changed` **有没有东西要采纳**？
+   * 判据 = `peek` 回来的盘上指纹 === 它（见 `onProjectDiskChange`）—— 相等即"盘上这些字节就是本界面
+   * 自己从内存里写下去的那一份" ⇒ 内存与盘上**同一份内容**（同一个内容指纹）⇒ 采纳 = 把同一份东西
+   * 再渲染一遍；而 `renderMind` 会**重建** jsMind（视图归一 = 只展开根 · `fdView` 复位 ·
+   * 偏移两桶清空 · 撤销栈重置）⇒ 用户刚摆好的展开态与位置当场折回 ✗（实测：写域 46 时探针量到
+   * "目标节点本身不在屏上"）。
+   *
+   * 为什么不拿 `state.project.version`（上报给侧栏的 seenVersion）当判据：**自动合并**那一档
+   * （`res.merged`）的落盘内容是**主进程合成的**，渲染层没有把它装回内存（`project:save` 的回执
+   * 不带 `data` ⇒ 下面 `if (res.data …)` 那一跳不成立）⇒ 那一刻 seen == 盘上，而**内存 ≠ 盘上**
+   * ⇒ 拿 seen 当判据就会把"外部新节点还没进内存"这件事一起跳过去 ✗✗（紧接着的一次保存会把盘上
+   * 那份静默抹掉 —— 本工程最重的损害类别）。所以只认"内存**真的就是**落盘那一份"的写回：
+   * 非合并保存**写**它、自动合并保存**清空**它（清空 ⇒ 随后的按盘重读照旧走既有采纳路径 ✓）。
+   *
+   * 别的来源一律**不写**它 —— 尤其 AI 落盘那条路（`app-ask.js` 对齐内存后 `MM.requestReread()`：
+   * 它的盘上版本会与闸门基线相等，但**不等于**这里记的收据）必须照旧采纳，否则新子节点不会出现 ✗。
+   * 它也不需要"过期清理"：任何外部写入都会让 peek 回来的指纹 ≠ 它 ⇒ 判据自然失效 ✓。 */
+  let selfWrittenVersion = '';
+
+  /** 最近一次 `project:disk-changed` 的**判定留痕**（`{seq, filename, kind, seen, onDisk}`；仅排查/断言用）。
+   *
+   *  为什么留痕：判据"视图没折回"有一条**空转形态** —— 那条事件要是根本没来（或没走到那一档），
+   *  "视图没变"照样为真，看着全绿、其实什么都没验 ✗。留痕让断言能区分
+   *  `own-write`（自己写的 ⇒ 不重渲染）与 `adopted`（真外部改动 ⇒ 照旧采纳），
+   *  并且能证明"这一次判定真的发生过"（`seq` 前进）。`kind` 的取值：
+   *    `own-write` 自己写的那一份（不重渲染）· `adopted` 采纳了盘上这一版（重渲染）·
+   *    `dirty` 有未保存编辑（只提示、不覆盖）· `switch` 期间切了项目（丢弃）·
+   *    `unreadable` 探视不到盘上内容 · `busy` 上一次重读还没跑完。 */
+  let lastDiskChange = null;
+  let diskChangeSeq = 0;
+  function noteDiskChange(filename, kind, onDisk) {
+    lastDiskChange = {
+      seq: ++diskChangeSeq, filename: String(filename || ''), kind: kind,
+      seen: (state.project && state.project.version) || '', onDisk: onDisk || null
+    };
+    return lastDiskChange;
+  }
+  function getLastDiskChange() { return lastDiskChange ? Object.assign({}, lastDiskChange) : null; }
+
   /**
    * 脏分支的可见性（v0.20）：**只读**落一份差异快照 + 亮 banner。
    * 三条不许越的线：
@@ -825,10 +878,11 @@
     if (filename && !String(filename).includes(state.project.name)) return; // 只关心当前项目
     if (isDirty()) {
       // 有未保存编辑 ⇒ 树不重读、内存不改（安全声明），但**差异要看得见** ✓
+      noteDiskChange(filename, 'dirty', null);
       await noteExternalChange();
       return;
     }
-    if (reloadingFromDisk) return;
+    if (reloadingFromDisk) { noteDiskChange(filename, 'busy', null); return; }
     const epoch0 = projectEpoch;
     const name0 = state.project.name;
     reloadingFromDisk = true;
@@ -843,19 +897,40 @@
        * 顺带一个好处：取数与判脏之间不再夹着一次会推进基线的写记录读取 —— 拒绝那条路干净了。 */
       const pr = await peekProject(name0);
       // 读盘期间项目被切走 ⇒ 这份数据已过期，丢弃（否则会把旧项目的树盖到新项目上 ✗）
-      if (epoch0 !== projectEpoch) { setStatus('已忽略一次过期的自动重读（期间已切换项目）'); return; }
+      if (epoch0 !== projectEpoch) {
+        noteDiskChange(filename, 'switch', pr.version);
+        setStatus('已忽略一次过期的自动重读（期间已切换项目）');
+        return;
+      }
       // 读盘期间用户又有了未保存改动 ⇒ **同样不许覆盖** ✓（读盘前判一次、回来再判一次：
       // 只判前面那一次会漏掉这个窗口，实测会把盘上那份的旧树偏移带回内存 ✗）。
       // 这条拒绝**不需要回滚什么**：上面那次探视一个基线都没碰 ✓
       if (isDirty()) {
+        noteDiskChange(filename, 'dirty', pr.version);
         await noteExternalChange();   // 差异照算：界面基线没被推进过，算出来的与保存闸门同一份口径 ✓
         return;
       }
       if (!pr.ok) {
         // 拿不到盘上那一版 ⇒ **不采纳**、内存一个字都不改，但必须**说出来**（不静默 ✗）：
         // 内存是旧的、界面基线也是旧的 ⇒ 之后的保存仍会走三方合并（两边的改动都保住）✓
+        noteDiskChange(filename, 'unreadable', null);
         setStatus('同步外部修改失败：读不到盘上这一版（' + (pr.error || '未知原因') + '）'
           + ' —— 界面内存与基线都没动；保存时会走三方合并', true);
+        return;
+      }
+      /* ===== 【保存后不再折回】这一份是**本界面自己刚写下的**那一份吗？ =====
+       *
+       * 判据（**复用既有那套**，不新造第二份）：`project:peek` 回来的盘上内容指纹
+       * === `selfWrittenVersion`（本界面整树写回成功时从 `project:save` 回执记下的那一个 ——
+       * 见它头顶的说明；同一个值空间 = 保存闸门比的那一版）。
+       * 相等 ⇒ 盘上这些字节就是本界面从内存里写下去的那一份 ⇒ **没有任何东西要采纳**
+       * （`peek` 已经把盘上这一份**读过、比过**了 ⇒ "重读"这一步照旧发生、数据一致性照旧校验 ✓），
+       * 而 `renderMind` 只会把同一份东西**重建**一遍并把视图**归一**（只展开根 + 偏移清空 + 撤销栈重置）
+       * ⇒ 用户刚摆好的展开态/偏移/位置当场折回 ✗。所以这里**只是不重建视图**，别的什么都不做：
+       * 不写盘、不推基线、不动内存、不动撤销栈、不碰状态栏（保存成功那句留在原处）。
+       * 不相等 ⇒ 真外部改动（或自动合并那次合成结果）⇒ 照旧走下面的采纳路径，一个字节都不改 ✓。 */
+      if (pr.version && selfWrittenVersion && pr.version === selfWrittenVersion) {
+        noteDiskChange(filename, 'own-write', pr.version);
         return;
       }
       renderMind(pr.data);
@@ -867,6 +942,7 @@
       diskDiff = null;
       updateHistoryButtons();
       if (MM.invalidatePaletteCache) MM.invalidatePaletteCache();
+      noteDiskChange(filename, 'adopted', pr.version);
       setStatus('已同步外部修改（侧栏 AI 编辑已出现在导图上）');
     } catch (err) {
       setStatus('同步外部修改失败：' + ((err && err.message) || err), true);
@@ -1021,6 +1097,10 @@
   function elemById(id) { return document.getElementById(id); }
   MM.setConfirmStub = setConfirmStub;  // 自动化用：换掉确认框（默认 window.confirm）
   MM.onProjectDiskChange = onProjectDiskChange;
+  /** 最近一次"盘上变了"的判定留痕（**只给断言与排查用**：判据本身读可见集合/偏移/几何/盘上字节）。
+   *  见 `noteDiskChange` 头顶：没有它，"视图没折回"这条判据分不清"真的没折回"与"那次事件根本
+   *  没来"（后者是空转，看着全绿却什么都没验 ✗）。 */
+  MM.getLastDiskChange = getLastDiskChange;
   /** 请求一次"按磁盘重读"（**不经过 fs.watch 的 300ms 防抖**）。
    *  谁需要它：主进程写完盘、并且**已经知道**渲染层内存落后了的时候
    *  （A 的问答落盘：`app:ask-apply` 写完立刻发 `app:project-reread`）——

@@ -237,6 +237,27 @@ const buckets = (ctx) => ctx.exec('(function () { return { themes: window.MMApp.
   + ' nodes: window.MMApp.getNodeOffsets() }; })()');
 const save = (ctx) => ctx.exec('(async function () { return await window.MMApp.save(); })()');
 
+/** 等**画布稳定**再量基线（连续三次同一个 `getPanState()` 才认）。
+ *
+ *  为什么必须有（**已知模式**，域 46 甲同一个坑、同一套等法）：右键会先**选中**那个节点 ⇒ jsMind 重排
+ *  一次 ⇒ 本工程的「重排锚点保持」（`renderer/app-view.js` 的 `wrapLayoutAnchor`）为了让"被操作的
+ *  节点原地不动"补偿一次画布平移 —— 实测那次补偿是 **`[0,33]`**。它**不是**右键那一刻同步发生的：
+ *  落在随后几拍里（全链负载下更晚）⇒ 基线若取在它前面，"其余节点矩形逐项相同"在**基线那一侧**
+ *  就已经不成立（本域实测读数：5 个非目标节点**同一个 `dy=33`**、而目标子树按真实位移走）。
+ *  ⚠️ 判据只能是"连续两次读到同一个画布变换"——**不许**把"整幅画布平移"容忍成通过 ✗
+ *  （那正是"整棵树一起动"这条真缺陷的形状）。
+ *  📌 这是**同一段等待逻辑的第二份拷贝**（第一份在 `scripts/smoke/46-节点级拖动.js` 的 `waitStableView`）：
+ *  第三次再撞上就该把它提到共用处（`scripts/smoke-assertions.js`），本批**不开新抽象** ✗。 */
+async function waitStableView(ctx) {
+  let last = null, same = 0;
+  for (let i = 0; i < 12; i++) {
+    const st = await ctx.exec('JSON.stringify(window.MMApp.getPanState())');
+    if (st === last) { same++; if (same >= 2) return st; } else { same = 0; last = st; }
+    await ctx.input.settle({ delayMs: 70 });
+  }
+  return last;
+}
+
 /** 把整棵树展开到屏上（夹具的新节点默认折叠）——`expand_all()` 一次搞定，比逐节点 expand 少几次重排。
  *  返回 `{ radar }`；目标**还不在**屏上 ⇒ `diag` 里有诊断（调用方判红并打出来，不静默跳过）。 */
 async function ensureTargetVisible(ctx) {
@@ -359,9 +380,32 @@ const assertions = [
       const clicked = await clickMenuItem(ctx, '拖动此子树');
       const entered = await ctx.exec('(function () { return { on: window.MMApp.dragModeActive(),'
         + ' root: window.MMApp.getDragTreeRoot() }; })()');
-      // ② 真鼠标拖动（从目标节点中心拖到 +delta）
-      await ctx.input.drag(plan.from, { x: plan.from.x + plan.dx, y: plan.from.y + plan.dy },
-        undefined, { steps: 2, stepDelayMs: 20 });
+      /* ⚠️ 几何基线**必须取在"按下"之后**（本行以下用的都是 `base2`）—— 这是改前那条假红的真因：
+       * 真鼠标**按下**到节点上会**选中**它 ⇒ jsMind 重排一次 ⇒ 本工程的「重排锚点保持」
+       * （`renderer/app-view.js` 的 `wrapLayoutAnchor`）为了让"被操作的节点原地不动"补偿一次画布平移
+       * —— 实测那次补偿是 `[0,33]`：全链里 5 个非目标节点拿到**同一个 `dy=33`**，而目标子树按真实位移走
+       * ⇒"其余节点矩形逐项相同"与"目标子树按位移移动"两条一起红（单独跑（01+45）时负载轻、
+       * 补偿没发生 ⇒ 绿 ⇒ 典型的"**链内红、单独跑绿**"）。
+       * 关键读数（别把基线又挪回右键之后）：**右键那一拍画布是稳的**（transform 前后一字不差），
+       * 补偿发生在**按下**那一拍 ⇒ 只等右键是抓不住的。改法与域 46 甲逐字同源（那里是
+       * 右键即选中，所以基线落在右键之后就够了）：基线挪到**所有会改视图的交互之后**，
+       * 落点按新基线重算，位移一律按**指针位移**算（子树跟随指针 1:1，与补偿无关）——
+       * **不是**放宽判据 ✗（"拖动中其余节点一个都不许动"照旧判，只是从按下之后开始比）。 */
+      const pressR = await ctx.exec(RADAR);
+      const from0 = (pressR.rects && pressR.rects[TARGET])
+        ? { x: pressR.rects[TARGET].cx, y: pressR.rects[TARGET].cy } : plan.from;
+      await ctx.input.mouseDown(from0);
+      await ctx.input.settle(PAINT);
+      await waitStableView(ctx);      // 等"按下即选中"引起的那次画布补偿落定（见 waitStableView 的说明）
+      const base2 = await ctx.exec(RADAR);
+      const baseRects = (base2 && base2.rects && Object.keys(base2.rects).length) ? base2.rects : before.rects;
+      const plan2 = (base2.rects && base2.rects[TARGET]) ? pickDelta(base2, TARGET_SUB) : null;
+      const planUse = (plan2 && plan2.from) ? plan2 : plan;
+      // ② 真鼠标拖动：按住不放 → 移到"按下点 + 位移"→ 松手（位移 = 指针位移 ✓）
+      const land = { x: from0.x + planUse.dx, y: from0.y + planUse.dy };
+      await ctx.input.moveTo(land);
+      await ctx.input.settle(PAINT);
+      await ctx.input.mouseUp(land);
       await ctx.input.settle(PAINT);
       const after = await ctx.exec(RADAR);
       const dirtyAfterDrag = await isDirty(ctx);
@@ -390,8 +434,8 @@ const assertions = [
       const diskOff = (disk.meta && disk.meta.nodeOffsets) || {};
       const diskThemes = (disk.meta && disk.meta.themeOffsets) || {};
       const key = diskOff[TARGET] || null;
-      const d = cmpRects(before.rects, after.rects);
-      const others = Object.keys(before.rects).filter((id) => TARGET_SUB.indexOf(id) < 0);
+      const d = cmpRects(baseRects, after.rects);
+      const others = Object.keys(baseRects).filter((id) => TARGET_SUB.indexOf(id) < 0);
       const stray = d.moved.filter((m) => TARGET_SUB.indexOf(m.id) < 0);
       const sub = d.moved.filter((m) => TARGET_SUB.indexOf(m.id) >= 0);
       await openProject(ctx, P);                            // 「重开项目」⇒ 从盘上重建
@@ -400,9 +444,21 @@ const assertions = [
       const backBuckets = await buckets(ctx);
       const tf = await ctx.exec('(function () { var el = document.querySelector(\'jmnode[nodeid="' + TARGET + '"]\');'
         + ' return el ? String(el.style.transform || "") : "(没有元素)"; })()');
-      const d2 = cmpRects(before.rects, back.rects);
+      const d2 = cmpRects(baseRects, back.rects);
       const backSub = d2.moved.filter((m) => TARGET_SUB.indexOf(m.id) >= 0);
       const backStray = d2.moved.filter((m) => TARGET_SUB.indexOf(m.id) < 0);
+      /* ⚠️ 重开这一档**必须按相对位移判**：`openProject` 会把视图复位并按盘重建，而"重开后重新展开"
+       * （`ensureTargetVisible`）会**再触发一次**「重排锚点保持」的画布补偿 —— 实测 `[0,33]`：
+       * 于是**每一个非目标节点都整体平移同一个量**，绝对位移与"拖动前那份基线"不可比 ✗
+       * （改前实测读数：目标子树 `dy=197` 而盘上偏移是 `230`，差的正是那 33 ⇒ 两条判据一起红）。
+       * 判法：非目标节点的位移必须是**同一个值**（不统一 ⇒ 谁单独乱走了 ⇒ 判红），
+       * 目标子树的位移**减去这个整体平移**后必须 == 拖动位移 ±1px。**这不是放宽**：
+       * "其余节点只能整体一起走"与"目标相对其余节点走满位移"两条都照旧判 ✓
+       * （真回归的形状 —— 偏移没复现 ⇒ 相对位移变成 0、或某个节点单独乱走 —— 两条都仍然必红）。 */
+      const backStrayUniform = backStray.length
+        ? backStray.every((m) => m.dx === backStray[0].dx && m.dy === backStray[0].dy) : true;
+      const panShift = backStray.length ? { dx: backStray[0].dx, dy: backStray[0].dy } : { dx: 0, dy: 0 };
+      const backRel = backSub.map((m) => ({ id: m.id, dx: m.dx - panShift.dx, dy: m.dy - panShift.dy }));
       const checks = [
         ['openProject 成功', opened === true],
         ['打开后 isDirty=false', dirtyAfterOpen === false],
@@ -410,11 +466,11 @@ const assertions = [
         ['点菜单真进了拖动模式且目标==目标节点', clicked.ok === true && entered.on === true && entered.root === TARGET],
         ['nodeOffsets 只有目标一项且 == 位移',
           Math.abs(Object.keys(bk.nodes).length - 1) === 0 && !!bk.nodes[TARGET]
-          && Math.abs(bk.nodes[TARGET].x - plan.dx) <= 1 && Math.abs(bk.nodes[TARGET].y - plan.dy) <= 1],
+          && Math.abs(bk.nodes[TARGET].x - planUse.dx) <= 1 && Math.abs(bk.nodes[TARGET].y - planUse.dy) <= 1],
         ['themeOffsets 一个键都没写', Object.keys(bk.themes).length === 0],
         ['目标子树 3 个节点都按位移移动',
-          sub.length === TARGET_SUB.length && sub.every((m) => Math.abs(m.dx - plan.dx) <= 1
-            && Math.abs(m.dy - plan.dy) <= 1 && m.dw === 0 && m.dh === 0)],
+          sub.length === TARGET_SUB.length && sub.every((m) => Math.abs(m.dx - planUse.dx) <= 1
+            && Math.abs(m.dy - planUse.dy) <= 1 && m.dw === 0 && m.dh === 0)],
         ['其余节点矩形逐项相同', others.length > 0 && d.unchanged.length === others.length && stray.length === 0],
         ['没有节点消失', d.gone.length === 0],
         ['拖动不改父子关系（data 子树逐字节相同）', dataAfter === dataBefore],
@@ -424,22 +480,25 @@ const assertions = [
         ['save 成功', saved === true],
         ['保存后 isDirty=false', dirtyAfterSave === false],
         ['盘上 nodeOffsets == 屏幕位移',
-          !!key && Math.abs(key.x - plan.dx) <= 1 && Math.abs(key.y - plan.dy) <= 1
+          !!key && Math.abs(key.x - planUse.dx) <= 1 && Math.abs(key.y - planUse.dy) <= 1
           && Object.keys(diskOff).length === 1 && Object.keys(diskThemes).length === 0],
         ['重开后桶里有目标且 == 盘上',
           !!backBuckets.nodes[TARGET] && !!key
           && Math.abs(backBuckets.nodes[TARGET].x - key.x) <= 1
           && Math.abs(backBuckets.nodes[TARGET].y - key.y) <= 1
           && Object.keys(backBuckets.themes).length === 0],
-        ['重开后位移 == 拖动位移', backSub.length === TARGET_SUB.length
-          && backSub.every((m) => Math.abs(m.dx - plan.dx) <= 1 && Math.abs(m.dy - plan.dy) <= 1)],
-        ['重开后其余节点矩形逐项相同且无丢失', backStray.length === 0 && d2.gone.length === 0],
+        ['重开后目标相对"其余节点的整体平移"仍走满拖动位移（画布补偿已扣除）',
+          backSub.length === TARGET_SUB.length
+          && backRel.every((m) => Math.abs(m.dx - planUse.dx) <= 1 && Math.abs(m.dy - planUse.dy) <= 1)],
+        ['重开后其余节点只发生了**同一个**整体平移（没有谁单独乱走）且无丢失',
+          backStrayUniform === true && d2.gone.length === 0],
         ['重开后 DOM transform 是 translate', tf.indexOf('translate') === 0]
       ];
       const fails = checks.filter((c) => !c[1]).map((c) => c[0]);
       return {
         ok: fails.length === 0,
-        text: '位移=' + plan.dx + ',' + plan.dy
+        text: '位移=' + planUse.dx + ',' + planUse.dy
+          + '（画布 transform 基线前后=' + JSON.stringify(before.view) + ' → ' + JSON.stringify(base2 && base2.view) + '）'
           + ' · 菜单项=' + JSON.stringify(deepMenu.items.slice(-3))
           + ' · 目标子树 ' + sub.length + '/' + TARGET_SUB.length + ' 个按位移移动'
           + ' · 其余 ' + others.length + ' 个矩形逐项相同=' + (d.unchanged.length === others.length)
@@ -450,7 +509,8 @@ const assertions = [
             + dirtyAfterOpen + '/' + dirtyAfterDrag + '/' + dirtyAfterSave
           + ' · 命中=' + JSON.stringify(hit)
           + ' · 盘上偏移=' + JSON.stringify(diskOff) + ' · 重开后 桶=' + JSON.stringify(backBuckets.nodes)
-            + ' 位移=' + JSON.stringify(backSub) + ' transform=' + tf
+            + ' 位移(绝对)=' + JSON.stringify(backSub) + ' 其余节点整体平移=' + JSON.stringify(panShift)
+            + ' 位移(相对)=' + JSON.stringify(backRel) + ' transform=' + tf
           + (fails.length ? ' ✗ 不成立：' + fails.join(' / ') : ' · 20 条判据全成立')
       };
     }

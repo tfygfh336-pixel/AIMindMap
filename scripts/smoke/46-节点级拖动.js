@@ -335,14 +335,17 @@ async function serializeVsBaseline(ctx, baselineText, key) {
   })()`);
 }
 
-/** 夹具：与 CLI `init` + `add` 同形状的项目 JSON（直接写盘 ⇒ 确定性、也不拖慢链） */
-function writeFixture(ctx) {
+/** 夹具：与 CLI `init` + `add` 同形状的项目 JSON（直接写盘 ⇒ 确定性、也不拖慢链）。
+ *  `extraMeta` 用来把**手工位置两桶预先放进数据**（见己：它要判"保存之后两桶还在不在"，
+ *  所以两桶都得先真的存在 —— 一桶来自数据、一桶来自真鼠标拖动）。 */
+function writeFixture(ctx, extraMeta) {
   const dir = path.join(projectsDir(), P);
   fs.mkdirSync(dir, { recursive: true });
   const node = (id, topic, expanded, children) => Object.assign(
     { id: id, topic: topic, expanded: expanded }, children ? { children: children } : {});
   const data = {
-    meta: { name: P, author: '', version: '0.0.0', formatVersion: 2, rootMode: 'themes' },
+    meta: Object.assign({ name: P, author: '', version: '0.0.0', formatVersion: 2, rootMode: 'themes' },
+      extraMeta || {}),
     format: 'node_tree',
     data: node('root', 'R2 期 2 夹具', true, [
       node('t1', '主题甲', true, [
@@ -366,7 +369,7 @@ function writeFixture(ctx) {
  *  `text` = 这一档的**拖动前基线**（判"拖动只多一个键"与"拖回原地逐字节还原"都对着它比）。 */
 async function openFixture(ctx, opts) {
   const o = opts || {};
-  writeFixture(ctx);
+  writeFixture(ctx, o.meta);
   const opened = await openProject(ctx, P);
   if (opened !== true) return { opened: false };
   const dirtyAfterOpen = await isDirty(ctx);
@@ -389,6 +392,168 @@ async function openFixture(ctx, opts) {
   const text = await ctx.exec('JSON.stringify(window.MMApp.serializeTree(), null, 2)');
   const dirty = await isDirty(ctx);
   return { opened: opened, dirtyAfterOpen: dirtyAfterOpen, text: text, dirty: dirty, h0: h0 };
+}
+
+/* ================= 【保存后不再折回】用到的读数与工具 =================
+ * 这一档要钉的与甲…丁不同：不是"拖动改了什么"，而是**保存之后那一条 `project:disk-changed`
+ * 有没有把视图折回去**。所以读数要能把"保存那一拍之前"与"之后"两份**视图 + 数据**逐项比：
+ *   · 可见性一律 `document.elementFromPoint`（rect 只用来判几何 —— 本工程判据纪律）；
+ *   · 偏移两桶 / 画布 transform / 序列化文本 / 挂载数**一次取全**（一处取全 ⇒ 两份之间夹不进别的动作）。
+ * ⚠️ 判据"视图没折回"有一条**空转形态**：那条事件要是根本没来，"视图没变"照样为真 ⇒ 所以同时读
+ *    `MMApp.getLastDiskChange()`（判定留痕）：它必须**前进过**且落在"自己写的那一份"那一档 ✓。
+ * ⚠️ 本文件里的注释不要写成行内标记形态（G9 会把那种形态当判定条数去数）。 */
+const THEME_OFF = { x: -140, y: 0 };        // 夹具里**数据自带**的顶层主题手工位置
+const PRESET_NODE_OFF = { x: 40, y: 90 };   // 夹具里**数据自带**的另一个节点手工位置（不是拖动目标）
+
+const KEEP = `(function () {
+  var app = window.MMApp;
+  var vis = {}, hits = {}, rects = {};
+  var mounted = 0;
+  document.querySelectorAll('jmnode[nodeid]').forEach(function (el) {
+    var id = el.getAttribute('nodeid');
+    mounted++;
+    var r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) { vis[id] = false; hits[id] = 'zero-rect'; return; }
+    rects[id] = [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+    var cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+    var top = document.elementFromPoint(cx, cy);
+    vis[id] = !!top && (top === el || el.contains(top));
+    hits[id] = top ? (top.tagName + (top.getAttribute && top.getAttribute('nodeid') ? '#' + top.getAttribute('nodeid') : '')) : '(null)';
+  });
+  var p = window.MM.fdPanel().getBoundingClientRect();
+  var st = app.getState();
+  return {
+    vis: vis, hits: hits, rects: rects, mounted: mounted,
+    pan: app.getPanState(), themeBucket: app.getTreeOffsets(), nodeBucket: app.getNodeOffsets(),
+    text: JSON.stringify(app.serializeTree(), null, 2),
+    data: JSON.stringify(app.serializeTree().data),
+    panel: [Math.round(p.left), Math.round(p.top), Math.round(p.right), Math.round(p.bottom)],
+    seen: (st && st.project && st.project.version) || '',
+    last: (window.MM.getLastDiskChange ? window.MM.getLastDiskChange() : null),
+    dirty: app.isDirty()
+  };
+})()`;
+
+/** 两份读数逐项比：可见集合（elementFromPoint 判出来的那一份）/ 矩形 / 偏移两桶 / 画布 / 文本 */
+function cmpKeep(a, b) {
+  const visIds = (o) => Object.keys(o.vis || {}).filter((k) => o.vis[k] === true).sort();
+  const va = visIds(a), vb = visIds(b);
+  return {
+    visA: va, visB: vb,
+    visSame: JSON.stringify(va) === JSON.stringify(vb),
+    gone: va.filter((id) => vb.indexOf(id) < 0),
+    appeared: vb.filter((id) => va.indexOf(id) < 0),
+    rectChanged: Object.keys(a.rects || {}).filter((id) => !b.rects[id] || String(a.rects[id]) !== String(b.rects[id])),
+    mountedSame: a.mounted === b.mounted,
+    panSame: JSON.stringify(a.pan) === JSON.stringify(b.pan),
+    bucketSame: JSON.stringify(a.themeBucket) === JSON.stringify(b.themeBucket)
+      && JSON.stringify(a.nodeBucket) === JSON.stringify(b.nodeBucket),
+    textSame: a.text === b.text,
+    dataSame: a.data === b.data
+  };
+}
+
+/** 跑一段渲染层脚本，出错时**带上是哪一步**：Electron 的报文只有一句
+ *  `Script failed to execute…`（不带位置），只报那一句等于没报 ✗ —— 断言得自己点名 ✗。 */
+async function step(ctx, label, js) {
+  try { return await ctx.exec(js); }
+  catch (err) { throw new Error('第「' + label + '」步失败：' + ((err && err.message) || err)); }
+}
+
+/** 等"写夹具"那一拍过去。
+ *
+ *  `writeFixture` 是**直接写盘**（夹具是断言自己造的）⇒ 项目目录监听 300ms 防抖后**必发**一条
+ *  `project:disk-changed`；那条事件到达时若界面**不脏**，按既有语义就是"按盘重渲染"（视图归一 +
+ *  画布重新居中 + 延迟一次的 `centerOnRoot`）⇒ 它若落在断言"量基线"与"按下去"之间，整套矩形
+ *  就被整体挪走（症状：`elementFromPoint` 命不中自己、真鼠标按在空地上 ⇒ 断言时红时绿，而**代码
+ *  一个字没改**）。这里**等到那一条判定落定**再往下走 —— 不是睡固定时长：机器快慢不同，
+ *  睡多久都可能不够或白等；等到"判定真的发生"才与负载无关 ✓。 */
+async function settleStaleWrite(ctx) {
+  const before = await seqNow(ctx);
+  for (let i = 0; i < 12; i++) {
+    await ctx.input.settle({ delayMs: 120 });
+    const d = await lastDisk(ctx);
+    if (d && d.seq > before) {
+      await ctx.input.settle({ delayMs: 200 });   // 再等一拍：让那次重渲染与它延迟的居中做完
+      return d;
+    }
+  }
+  return null;   // 没等到（可能那条事件早已过去）⇒ 不阻断，调用方照常往下走
+}
+
+const seqNow = (ctx) => ctx.exec('(function () { var d = window.MM.getLastDiskChange ? window.MM.getLastDiskChange() : null;'
+  + ' return d ? d.seq : 0; })()');
+const lastDisk = (ctx) => ctx.exec('var __l = window.MM.getLastDiskChange ? window.MM.getLastDiskChange() : null;'
+  + ' JSON.stringify(__l || null)').then((s) => { try { return JSON.parse(s); } catch (e) { return null; } });
+
+/** 等"这一次盘上变更"的判定落定：轮询到 `seq` 前进之后，**等到出现 `want` 那一档**为止
+ *  （返回那一条；超时返回最后一次读到的，由调用方按"没走到这一档"判红 ✓）。
+ *  为什么不只等"序号前进"：这条判据要区分的是"走到了哪一档"（自己写的 / 采纳 / 只提示），
+ *  而"某一档没出现"与"那条事件根本没来"必须能分辨 —— 后者是**空转**（视图没变看着也全绿）✗。 */
+async function waitDiskChangeKind(ctx, seqBefore, want) {
+  let last = null;
+  for (let i = 0; i < 30; i++) {
+    await ctx.input.settle({ delayMs: 120 });
+    const d = await lastDisk(ctx);
+    if (!d || !(d.seq > seqBefore)) continue;
+    last = d;
+    if (!want || d.kind === want) return d;
+  }
+  return last;
+}
+
+/** 某个节点"看得见"的读数（唯一判据：elementFromPoint 命中它自己或它的后代；rect 只报几何）。
+ *  写成 `const` 片段常量而不是函数：本工程 V1 门禁会把断言体里引用的同文件片段常量**展开**后再查
+ *  "有没有真判据"（域 34 那条漏网的判据就是这么被抓住的）⇒ 名字里声称可见的断言才真正带上判据 ✓。 */
+const VIS_ONE = (id) => `(function () {
+  var el = document.querySelector('jmnode[nodeid=${JSON.stringify(id)}]');
+  if (!el) return { there: false };
+  var r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) return { there: true, zeroRect: true,
+    rect: [Math.round(r.left), Math.round(r.top), 0, 0] };
+  var cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+  var top = document.elementFromPoint(cx, cy);
+  return { there: true, zeroRect: false, self: !!top && (top === el || el.contains(top)),
+    at: top ? (top.tagName + (top.id ? '#' + top.id : '')) : '(null)',
+    rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] };
+})()`;
+
+/** 「外部改动预览」banner 的读数：显示与否 + 那个可点条目**能不能点到自己**（elementFromPoint）。 */
+const BANNER_JS = `(function () {
+  var b = document.getElementById('conc-banner');
+  var btn = document.getElementById('conc-banner-open');
+  var tx = document.getElementById('conc-banner-text');
+  var out = { shown: !!b && b.style.display !== 'none', hit: false, at: '(none)',
+    text: tx ? String(tx.textContent || '') : '' };
+  if (!out.shown || !btn) return out;
+  var r = btn.getBoundingClientRect();
+  var cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+  var el = document.elementFromPoint(cx, cy);
+  out.hit = !!el && (el === btn || btn.contains(el));
+  out.at = el ? (el.tagName + (el.id ? '#' + el.id : '')) : '(null)';
+  return out;
+})()`;
+
+/** 树里有没有这个 id（读的是**盘上真值**那份 JSON，不是命令回显） */
+function findNode(proj, id) {
+  let hit = null;
+  (function walk(n) {
+    if (!n || hit) return;
+    if (n.id === id) { hit = n; return; }
+    (n.children || []).forEach(walk);
+  })(proj && proj.data);
+  return hit;
+}
+
+/** 直接改沙箱里的项目文件（**绕过 main.js 的 runCli**）—— 这就是"另一个写入者"的形状。
+ *  为什么不用 `ctx.runCli`：那条会被主进程的 `refreshVersionIfOwnWrite` 认作"**代渲染层**写盘"
+ *  （闸门基线一起推进）⇒ 它不是"外部写入"，另有断言专治那条（辛）。 */
+function externalWrite(fn) {
+  const proj = JSON.parse(readRaw(P));
+  fn(proj);
+  const text = JSON.stringify(proj, null, 2);
+  fs.writeFileSync(projectFile(P), text, 'utf8');
+  return text;
 }
 
 const assertions = [
@@ -809,6 +974,210 @@ const assertions = [
           + ' · 中途键级对比=' + JSON.stringify(stOut ? stOut.serOut : null)
           + ' · 落地键级对比=' + JSON.stringify(serLand) + ' 原地键级对比=' + JSON.stringify(serHome)
           + ' · 盘上 themeOffsets=' + JSON.stringify(diskThemes) + ' nodeOffsets=' + JSON.stringify(diskNodes)
+          + (fails.length ? ' ✗ 不成立：' + fails.join(' / ') : ' · 判据全成立')
+      };
+    }
+  },
+
+  {
+    name: '己 【保存后不再折回】展开多层 + 真鼠标拖出偏移 ⇒ 保存 ⇒ 等过 project:disk-changed 那一拍：可见集合逐项相同（elementFromPoint 判，不用 DOM 自证）、没有节点消失、偏移两桶与画布位置逐项相同、序列化文本与盘上文本逐字节不变，且这次判定确实落在「自己写的那一份」那一档（防这条判据空转）',
+    run: async (ctx) => {
+      await stubConfirm(ctx, true);
+      const cfg = { target: TARGET, sub: TARGET_SUB };
+      // 夹具把**两桶手工位置都预先进数据**：一桶给顶层主题、一桶给另一个节点（都不是下面的拖动目标）
+      // ⇒ 保存之后才谈得上"两桶逐项比"（只有一桶非空就少验一半）。
+      const base = await openFixture(ctx, {
+        expand: true, target: TARGET,
+        meta: {
+          themeOffsets: { t1: { x: THEME_OFF.x, y: THEME_OFF.y } },
+          nodeOffsets: { n1b: { x: PRESET_NODE_OFF.x, y: PRESET_NODE_OFF.y } }
+        }
+      });
+      if (base.opened !== true) return { ok: false, text: '打不开夹具项目 ⇒ **未验证**：' + JSON.stringify(base) };
+      const entered = await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(TARGET) + ')');
+      await centerNode(ctx, TARGET, 0.42, 0.45);
+      await waitStableView(ctx);
+      const radar = await ctx.exec(RADAR);
+      const plan = pickDelta(radar, cfg);
+      if (!plan || !plan.from) {
+        return { ok: false, text: '没找到落点 ⇒ **未验证**拖动（不是通过）：' + JSON.stringify(plan)
+          + ' ｜ 可见矩形=' + JSON.stringify(radar.rects) };
+      }
+      const land = { x: plan.from.x + plan.dx, y: plan.from.y + plan.dy };
+      await ctx.input.mouseDown(plan.from);
+      await ctx.input.settle(STEP);
+      await ctx.input.moveTo(land);
+      await ctx.input.settle(STEP);
+      await ctx.input.mouseUp(land);
+      await ctx.input.settle(PAINT);
+      await ctx.exec('window.MMApp.setDragMode(false); 1');
+      await waitStableView(ctx);          // 落定之后再取"保存前"那一份读数（见甲关于延后居中的说明）
+      const dirtyBeforeSave = await isDirty(ctx);
+      const seqBefore = await seqNow(ctx);
+      const saved = await save(ctx);
+      const t1 = await ctx.exec(KEEP);    // 保存回执一到就量：那一拍 ~300ms 之后才来
+      const h1 = sha256(readRaw(P));
+      const last = await waitDiskChangeKind(ctx, seqBefore, 'own-write');
+      const t2 = await ctx.exec(KEEP);
+      const h2 = sha256(readRaw(P));
+      const cmp = cmpKeep(t1, t2);
+      const checks = [
+        ['夹具打开成功、两桶手工位置都按数据装进来了（判据的地基）',
+          base.opened === true && !!t1.themeBucket.t1 && !!t1.nodeBucket.n1b],
+        ['进过拖动模式、目标是那个深层子树', entered === true],
+        ['展开之后可见集合非平凡（> 3 —— "只展开根"恰好是 3 个）', cmp.visA.length > 3],
+        ['拖动真的改了东西（保存前 isDirty=true）且保存成功、脏归零',
+          dirtyBeforeSave === true && saved === true && t1.dirty === false],
+        ['那条 project:disk-changed 真的来过、且落在「自己写的那一份」那一档（防这条判据空转）',
+          !!last && last.seq > seqBefore && last.kind === 'own-write'],
+        ['盘上指纹 == 界面手里那一版指纹（同一个内容指纹值空间 ⇒ 逐字节同一份）',
+          !!last && !!last.onDisk && last.onDisk === t1.seen],
+        ['可见集合**逐项相同**（elementFromPoint 判出来的那一份）', cmp.visSame === true],
+        ['没有任何节点消失（可见集合一个都不少；挂载数也一样）',
+          cmp.gone.length === 0 && cmp.mountedSame === true],
+        ['每个可见节点的矩形逐项相同（视图没被平移/重排）', cmp.rectChanged.length === 0],
+        ['偏移两桶与拖完后逐项相同（含拖动目标那一项）',
+          cmp.bucketSame === true && !!t2.nodeBucket[TARGET] && !!t2.themeBucket.t1],
+        ['画布位置（平移/缩放）逐项相同', cmp.panSame === true],
+        ['序列化文本与数据逐字节不变', cmp.textSame === true && cmp.dataSame === true],
+        ['盘上文本逐字节不变（保存之后那一拍没有再写盘）', h1 === h2]
+      ];
+      const fails = checks.filter((c) => !c[1]).map((c) => c[0]);
+      return {
+        ok: fails.length === 0,
+        text: '位移=' + plan.dx + ',' + plan.dy
+          + ' · 两桶=主题 ' + JSON.stringify(t1.themeBucket) + ' / 节点 ' + JSON.stringify(t1.nodeBucket)
+          + ' · 可见集合 ' + cmp.visA.length + '→' + cmp.visB.length + '（只展开根=3）'
+          + ' [' + cmp.visB.join(',') + ']'
+          + ' · 消失=' + JSON.stringify(cmp.gone) + ' 多出=' + JSON.stringify(cmp.appeared)
+          + ' · 矩形变化=' + JSON.stringify(cmp.rectChanged)
+          + ' · 判定=' + JSON.stringify(last)
+          + ' · 盘上 sha256 保存后=' + h2.slice(0, 12) + '（与保存那一刻 ' + (h1 === h2) + ' 相同）'
+          + ' · 文本逐字节相同=' + cmp.textSame + ' 画布相同=' + cmp.panSame + ' 挂载相同=' + cmp.mountedSame
+          + (fails.length ? ' ✗ 不成立：' + fails.join(' / ') : ' · 判据全成立')
+      };
+    }
+  },
+
+  {
+    name: '庚 对照：真外部改动（**另一个写入者直接改文件**，绕过主进程的 CLI 通道）仍旧走既有路径 —— 无未保存改动 ⇒ 采纳（新节点真的出现在屏上、盘上不被界面回写）；有未保存改动 ⇒ 亮「外部改动预览」banner 且盘上逐字节不变（不静默覆盖、内存也不采纳）',
+    run: async (ctx) => {
+      await stubConfirm(ctx, true);
+      const base = await openFixture(ctx, { expand: false, target: TARGET });
+      if (base.opened !== true) return { ok: false, text: '打不开夹具项目 ⇒ **未验证**：' + JSON.stringify(base) };
+      await settleStaleWrite(ctx);      // "写夹具"那一拍先过去（见 settleStaleWrite 的说明）
+      // —— 无脏 + 外部改：新节点挂在**根**下（顶层主题那一档 ⇒ 采纳之后它一定看得见）——
+      const seq1 = await seqNow(ctx);
+      const writtenA = externalWrite((p) => {
+        p.data.children = (p.data.children || []).concat([{ id: 'ext-a', topic: '外部加的（无脏档）', expanded: true }]);
+      });
+      const lastA = await waitDiskChangeKind(ctx, seq1, 'adopted');
+      await ctx.input.settle(PAINT);
+      const diskA = readRaw(P);
+      const visA = await step(ctx, '无脏档·量外部新节点', VIS_ONE('ext-a'));
+      const dirtyA = await isDirty(ctx);
+      // —— 有脏 + 外部改：先造一个未保存改动（展开顶层主题：打开项目时它被归一成折叠），再外部改盘 ——
+      await step(ctx, '脏档·造一个未保存改动', '(function () { window.MMApp.getState().jm.expand_node('
+        + JSON.stringify(TOP_THEME) + '); return true; })()');
+      await ctx.input.settle(STEP);
+      const dirtyBefore = await isDirty(ctx);
+      const seq2 = await seqNow(ctx);
+      const writtenB = externalWrite((p) => {
+        p.data.children = (p.data.children || []).concat([{ id: 'ext-b', topic: '外部加的（脏档）', expanded: true }]);
+      });
+      const lastB = await waitDiskChangeKind(ctx, seq2, 'dirty');
+      await ctx.input.settle(PAINT);
+      const diskB = readRaw(P);
+      const banner = await step(ctx, '脏档·量 banner', BANNER_JS);
+      const mem = await step(ctx, '脏档·量内存里的节点', '(function () { var jm = window.MMApp.getState().jm;'
+        + ' return { a: !!jm.get_node("ext-a"), b: !!jm.get_node("ext-b") }; })()');
+      // 收尾：banner 是会占布局的一层（跨断言存活会污染后面的几何判据）⇒ 走产品自己的关闭口收掉
+      await step(ctx, '收尾·关 banner/面板', '(function () { if (window.MM.closeConcPanel) window.MM.closeConcPanel();'
+        + ' if (window.MM.closeConcBanner) window.MM.closeConcBanner(); return true; })()');
+      const checks = [
+        ['夹具打开成功', base.opened === true],
+        ['无脏档：那条通知真的来过、且走的是**采纳**那一档',
+          !!lastA && lastA.seq > seq1 && lastA.kind === 'adopted'],
+        ['无脏档：外部新节点真的出现在屏上（elementFromPoint 命中自身）',
+          visA.there === true && visA.zeroRect === false && visA.self === true],
+        ['无脏档：盘上 == 外部写的那一份（界面没有回写覆盖）', diskA === writtenA],
+        ['无脏档：采纳之后脏归零（基线与盘上一起前进了）', dirtyA === false],
+        ['脏档：未保存改动真的造出来了（采不到就红，不静默）', dirtyBefore === true],
+        ['脏档：那次通知走的是"只提示、不覆盖"那一档', !!lastB && lastB.seq > seq2 && lastB.kind === 'dirty'],
+        ['脏档：banner 亮着、那个可点条目命中自身、文案点到了"外部"',
+          banner.shown === true && banner.hit === true && banner.text.indexOf('外部') >= 0],
+        ['脏档：盘上逐字节 == 外部写的那一份（**不静默覆盖**）', diskB === writtenB],
+        ['脏档：盘上那份也没进内存（ext-a 在（上一轮采纳来的）、ext-b 不在）',
+          mem.a === true && mem.b === false]
+      ];
+      const fails = checks.filter((c) => !c[1]).map((c) => c[0]);
+      return {
+        ok: fails.length === 0,
+        text: '无脏档：判定 ' + JSON.stringify(lastA) + ' · ext-a=' + JSON.stringify(visA)
+          + ' · 盘上==外部写的那份=' + (diskA === writtenA) + ' · isDirty=' + dirtyA
+          + ' ｜ 脏档：isDirty=' + dirtyBefore + ' · 判定 ' + JSON.stringify(lastB)
+          + ' · banner=' + JSON.stringify(banner)
+          + ' · 盘上==外部写的那份=' + (diskB === writtenB) + '（外部那份 ' + writtenB.length + ' 字节）'
+          + ' · 内存 有 ext-a/无 ext-b=' + mem.a + '/' + (mem.b === false)
+          + (fails.length ? ' ✗ 不成立：' + fails.join(' / ') : ' · 判据全成立')
+      };
+    }
+  },
+
+  {
+    name: '辛 对照：**内存不一定等于盘上**的两条路必须照旧采纳 —— 自动合并保存（回执里不含合并后的数据）与经主进程 CLI 的写入（AI 落盘那条路）：外部那一份都要出现在屏上（这两条正是"拿 seenVersion 或闸门基线当判据就会误跳过"的形态）',
+    run: async (ctx) => {
+      await stubConfirm(ctx, true);
+      const base = await openFixture(ctx, { expand: false, target: TARGET });
+      if (base.opened !== true) return { ok: false, text: '打不开夹具项目 ⇒ **未验证**：' + JSON.stringify(base) };
+      await ctx.input.settle(PAINT);
+      // —— 自动合并：界面改**别处**（顶层主题的展开态），外部改**根的孩子**（两者不相交）——
+      await ctx.exec('(function () { window.MMApp.getState().jm.expand_node(' + JSON.stringify(TOP_THEME) + '); return true; })()');
+      await ctx.input.settle(STEP);
+      const dirtyBefore = await isDirty(ctx);
+      externalWrite((p) => {
+        p.data.children = (p.data.children || []).concat([{ id: 'mg-a', topic: '外部加的（合并档）', expanded: true }]);
+      });
+      const saved = await save(ctx);
+      const seq3 = await seqNow(ctx);
+      const disk3 = JSON.parse(readRaw(P));
+      const mgOnDisk = !!findNode(disk3, 'mg-a');
+      const themeExpandedOnDisk = (findNode(disk3, TOP_THEME) || {}).expanded === true;
+      const lastMerge = await waitDiskChangeKind(ctx, seq3, 'adopted');
+      await ctx.input.settle(PAINT);
+      const visMerge = await ctx.exec(VIS_ONE('mg-a'));
+      // —— 经主进程 CLI 的写入（AI 落盘那条路）：它会推闸门基线 ⇒ 这一档专治"拿基线当判据"的实现 ——
+      const seq4 = await seqNow(ctx);
+      ctx.runCli(['add', P, 'root', '--topic', '外来的（经主进程 CLI）', '--id', 'ext-c']);
+      await ctx.exec('(async function () { if (window.MM.requestReread) await window.MM.requestReread(); return true; })()');
+      const lastCli = await waitDiskChangeKind(ctx, seq4, 'adopted');
+      await ctx.input.settle(PAINT);
+      const visCli = await ctx.exec(VIS_ONE('ext-c'));
+      const dirtyEnd = await isDirty(ctx);
+      const checks = [
+        ['夹具打开成功', base.opened === true],
+        ['自动合并档：未保存改动真的造出来了（采不到就红）', dirtyBefore === true],
+        ['自动合并档：保存成功', saved === true],
+        ['自动合并档：盘上**同时**有外部那份与界面那份（真的是合并，不是拒绝、也不是一方覆盖）',
+          mgOnDisk === true && themeExpandedOnDisk === true],
+        ['自动合并档：合并结果必须被**采纳**（回执里没有 `data` ⇒ 内存与盘上不一致）',
+          !!lastMerge && lastMerge.seq > seq3 && lastMerge.kind === 'adopted'],
+        ['自动合并档：外部那个新节点出现在屏上（elementFromPoint 命中自身）—— 这一档漏了就是静默丢数据的前奏',
+          visMerge.there === true && visMerge.zeroRect === false && visMerge.self === true],
+        ['经 CLI 写入档：判定走的是**采纳**那一档（它推了闸门基线，拿基线当判据就会误跳过）',
+          !!lastCli && lastCli.seq > seq4 && lastCli.kind === 'adopted'],
+        ['经 CLI 写入档：新节点出现在屏上（elementFromPoint 命中自身）',
+          visCli.there === true && visCli.zeroRect === false && visCli.self === true],
+        ['两条路走完都不脏（采纳把基线一起推了）', dirtyEnd === false]
+      ];
+      const fails = checks.filter((c) => !c[1]).map((c) => c[0]);
+      return {
+        ok: fails.length === 0,
+        text: '自动合并：isDirty(前)=' + dirtyBefore + ' 保存=' + saved
+          + ' · 盘上 mg-a/界面那份=' + mgOnDisk + '/' + themeExpandedOnDisk
+          + ' · 判定 ' + JSON.stringify(lastMerge) + ' · mg-a=' + JSON.stringify(visMerge)
+          + ' ｜ 经 CLI 写入：判定 ' + JSON.stringify(lastCli) + ' · ext-c=' + JSON.stringify(visCli)
+          + ' · 收尾 isDirty=' + dirtyEnd
           + (fails.length ? ' ✗ 不成立：' + fails.join(' / ') : ' · 判据全成立')
       };
     }
