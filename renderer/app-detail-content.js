@@ -243,6 +243,17 @@
     const detail = node.detail || (node.data && node.data.detail) || '';
     fdQ(box, '.fd-title').textContent = '节点详情：' + node.topic;
     const dc = fdQ(box, '.fd-detail-content');
+    /* ⚠️⚠️ **`detail` 的契约是「HTML 优先」——这一行就是它的唯一落点**（`R7-0` 起钉死）：
+     *   · 契约：`detail` 是**HTML 片段**（不是 Markdown）——`docs/DATA-FORMAT.md` §2.4；
+     *     先例读数：真实项目 `comnet` 的 **133 个含 detail 节点 100% 是 HTML**（同节）。
+     *   · 所以正文走**裸 `innerHTML` 注入**：浏览器自己的解析器负责结构，**不做任何转换** ✓。
+     *   · ✗✗ **不许**把这行改成"一律走会**转义裸 HTML** 的 `markdownToHtml`"
+     *     （`src/convert.js` 文件头：它先整体转义再套行内语法）——那会把既有 HTML 节点
+     *     全部显示成一堆**字面标签**（= 静默砸掉用户既有内容，本工程最重的损害类）。
+     *     Markdown 是 R7 主体的**另一条**路径（按 `detailMode`/渲染期探测**显式选**），
+     *     两条路径**互斥**、不在这里混（`docs/DATA-FORMAT.md` §2.4 的警告）。
+     *   · 机械守卫有两处（都在本批）：结构断言 `tests/`（本模块**零** `markdownToHtml`/`mdBlock`/
+     *     `mdInline` 调用）+ 冒烟真帧判据 `scripts/smoke/47-*.js`（HTML 夹具的标签**不当文字画出来**）。 */
     dc.innerHTML = detail || '<span class="placeholder">（该节点无详情）</span>';
     // 条目层（v3）：条目化节点额外给出「逐条」呈现（清单 + 正文归属）。
     // ⚠️ 正文的渲染路径**就在这里结束**：上面那一行 `dc.innerHTML = detail` 仍是**唯一**的正文来源

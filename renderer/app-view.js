@@ -1156,19 +1156,38 @@
     }, true);
   }
 
-  /** 用平移把根节点摆到面板正中（先应用当前缩放/平移，再据真实矩形测量） */
-  function centerOnRoot() {    if (!state.jm) return;
+  /** 用平移把**某个节点**摆到面板正中（先应用当前缩放/平移，再据真实矩形测量）。
+   *
+   * 这是本工程**唯一**一处"把某个节点摆进视口"的实现（`R7-0` 起把原先只认 `'root'` 的那一版
+   * 节点级化）：点站内链接跳到目标节点、以及打开项目时把根摆正，都走它 —— 别在调用点各算一套
+   * 平移（同一件事两处表达 ⇒ 必然漂，本工程反复治过的病）。
+   *
+   * @param {string} id 节点 id（`'root'` 就是原来的行为）
+   * @param {{always?:boolean}} [opts] `always:true` ⇒ **无条件**摆到正中（打开项目/还原视图用，
+   *   与改动前逐字节相同）；默认 `false` ⇒ 目标**已完整落在面板内**时**不动视野**
+   *   （点链接跳到眼前这个节点时，不该把整张图挪一下 —— 那是用户没要求的副作用 ✗）。
+   * @returns {boolean} 真的发生了平移 ⇒ true；没动（已可见 / 找不到节点或面板）⇒ false
+   */
+  function centerOnNode(id, opts) {
+    if (!state.jm || !id) return false;
     neutralizeScroll();
     fdApplyView(); // 先让当前 fdView（含最新 s）落到 DOM，否则测量的是旧缩放下的矩形
     const p = fdPanel();
-    const nodeEl = document.querySelector('#jsmind_container jmnode[nodeid="root"]');
-    if (!p || !nodeEl) return;
+    const nodeEl = document.querySelector('#jsmind_container jmnode[nodeid="' + id + '"]');
+    if (!p || !nodeEl) return false;
     const nr = nodeEl.getBoundingClientRect();
     const pr = p.getBoundingClientRect();
+    if (nr.width <= 0 || nr.height <= 0) return false;   // 折叠/未渲染的节点：几何是 0×0，挪了也没用
+    const inside = nr.left >= pr.left && nr.top >= pr.top && nr.right <= pr.right && nr.bottom <= pr.bottom;
+    if (inside && !(opts && opts.always)) return false;   // 已经完整看得见 ⇒ 不动视野（见 @param）
     fdView.x += (pr.left + pr.width / 2) - (nr.left + nr.width / 2);
     fdView.y += (pr.top + pr.height / 2) - (nr.top + nr.height / 2);
     fdApplyView();
+    return true;
   }
+
+  /** 打开项目 / 还原视图时把根节点摆到面板正中（= `centerOnNode('root')` 的**无条件**那一档） */
+  function centerOnRoot() { return centerOnNode('root', { always: true }); }
 
   /* —— 主题模式：让顶层主题互相独立 ——
    * 数据仍是单根树，但把根当「容器」：隐藏其方框、标题转角标，并在绘制连线时
@@ -1439,6 +1458,7 @@
   MM.zoomViewAt = zoomViewAt;
   MM.setViewScale = setViewScale;
   MM.setViewTransform = setViewTransform;   // 精确设 (s,x,y)：fit「刚好框住这些节点」用（app-related.js）
+  MM.centerOnNode = centerOnNode;           // 把某个节点摆进视口（**唯一**实现；站内链接跳转用它）
   MM.getPanState = getPanState;
   MM.setDragMode = setDragMode;
   MM.dragModeActive = dragModeActive;

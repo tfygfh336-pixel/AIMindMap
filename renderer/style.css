@@ -138,6 +138,19 @@ body:not(.dsh-sidebar-on) { --dsh-sidebar-width: 0px; }
 body.dsh-sidebar-on #toolbar { padding-right: calc(var(--dsh-sidebar-width) + 8px); }
 body.dsh-sidebar-on #main { margin-right: var(--dsh-sidebar-width); }
 
+/* ---------------- 笔记链接的**约定色**（本工程第 1 个颜色变量 —— 登记在这一行） ----------------
+ * 约定（契约见 `docs/DATA-FORMAT.md` §2.4 的「正文与链接的两条约定」）：
+ *   · **可打开一篇笔记的链接**（类 `.fd-notelink`）= 琥珀色、**无下划线**（悬停才给下划线）；
+ *   · **普通链接** = 浏览器默认（UA 蓝 + **常驻**下划线）—— 本工程**不给裸 `a` 定任何样式**，
+ *     所以"普通链接长什么样"仍由浏览器决定 ✓（判据：本文件里没有 `a` / `a:` 选择器）。
+ * 为什么做成变量：本工程颜色是硬编码的（79 色 / 402 次；此前唯一的变量是 `--dsh-sidebar-width`）
+ *   ⇒ 将来真上深色主题时**只改这一个值**（本工程今天**没有**深色主题 ⇒ 只做一态，
+ *   **不发明**深色值 ✗）。
+ * ⚠️ **色值只写在这一行**（机械判据：那个十六进制串在本文件里恰好出现 **1** 次）：
+ *   改颜色只改这里；别在别处再写一遍同样的色值 —— 两处一定会漂（本工程反复治过的病）。
+ *   第 2 个颜色变量请登记在这一段下面，别散落。 */
+:root { --note-link-ink: #8a6a00; }
+
 /* 折叠后的重展开圆钮（主界面右缘中部，v0.16.3） */
 #dsh-restore-fab {
   position: fixed; right: 10px; top: 50%; transform: translateY(-50%);
@@ -352,6 +365,15 @@ jmnode.mm-container-root { visibility: hidden !important; }
 .fd-detail-content p { margin: 4px 0; }
 .fd-detail-content code { background: #f2f3f5; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
 .fd-detail-content img { max-width: 100%; border-radius: 4px; }
+
+/* 笔记链接（**约定**，见上面的 `--note-link-ink` 与 `docs/DATA-FORMAT.md` §2.4）：
+ * 正文里"点开一篇笔记"的那种链接用这个类；它**不是**普通链接的样式 —— 普通链接保持浏览器默认。
+ * ⚠️ `text-decoration` **必须显式写 `none`**：UA 默认就是下划线，只改 color 等于只解决了一半，
+ *   而"蓝 + 下划线"里下划线正是用户点名要去掉的那一半（判据：真帧里这一行的"最长同色横段"
+ *   不得接近文字宽度 —— 见 `scripts/smoke/47-*.js`）。
+ * hover 才给下划线：与普通链接的**常驻**下划线正好相反 ⇒ 两者在同一帧里一眼可分 ✓ */
+.fd-notelink { color: var(--note-link-ink); text-decoration: none; }
+.fd-notelink:hover, .fd-notelink:focus-visible { text-decoration: underline; }
 
 /* ---------------- 条目层（v3）：详情框里的「逐条」呈现 ----------------
    只在**条目化**节点上出现（未条目化节点不会生成 `.fd-items`，正文也不会带 `data-item-id`）✓

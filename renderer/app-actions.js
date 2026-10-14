@@ -97,6 +97,37 @@
     }
   }
 
+  /* ================= 「点开一条站内链接」——**全工程唯一一处**实现（`R7-0`） =================
+   * 为什么必须有这一处（★真实事故，写在 `docs/RULES.md` 的 R5 行里）：详情框/关系区曾经渲染一行
+   * 「🔗 跳转到 <项目>/<id>」，同项目链接**一律**走 `switchProject()`，而它开头就是
+   * `name === state.project.name → return` ⇒ **点了毫无反应**：实测 `comnet` **47 条链接全是死链**。
+   * 当时的处置是把那一行**删掉**（改成只由「相关知识点」承担），而"同项目要能跳"这件事**从来没有实现过**
+   * —— 于是各调用点各写一份同项目分支（`app-media.js` 的「相关知识点」、`app-assoc.js` 的成员列表，
+   * 两处是同一段手抄），谁也不滚到目标：目标在视野外时点一下**看起来仍然什么都没发生** ✗。
+   *
+   * ⇒ 落法（一处，复用既有两处实现，不新造第三套）：
+   *   · **同项目**：`jumpToNode(id)`（= 既有的"选中 + 展开祖先链"唯一实现）
+   *     ＋ `MM.centerOnNode(id)`（= 既有的"把节点摆进视口"唯一实现；**已完整可见时不动视野**）
+   *     —— **绝不切项目**（切了对同项目是个 no-op，正是死链的根因）。
+   *   · **跨项目**：`MM.switchProject(project, id)`（**既有那一处**，行为一个字节都不改）。
+   * 调用点（`renderer/app-media.js` / `renderer/app-assoc.js` 的链接行点击）只调这一个函数，
+   * 别再在调用点写第二份分支（结构断言见 `tests/detail-html-contract.test.js`）。
+   * @param {string} project 目标节点所在项目名（空串 = 本项目）
+   * @param {string} id 目标节点 id
+   * @returns {boolean} 认下这次跳转 = true；参数不全 = false
+   */
+  function followNodeRef(project, id) {
+    if (!id) return false;
+    const sameProject = !project || project === (state.project && state.project.name);
+    if (!sameProject) {
+      MM.switchProject(project, id);      // 跨项目：既有实现（切项目 + 选中 + 展开祖先链）
+      return true;
+    }
+    jumpToNode(id);                       // 同项目：选中 + 展开祖先链（既有实现）
+    if (MM.centerOnNode) MM.centerOnNode(id);   // 且把它带进视野（已在视口内 ⇒ 不动，见 app-view.js）
+    return true;
+  }
+
   /* ================= 保存 =================
    * 「未保存改动」用**快照比对**判定，而不是到处埋 dirty 标记：
    * 只要当前序列化结果与上次落盘/载入时不同，就是有未保存改动。
@@ -988,6 +1019,7 @@
   MM.toggleNodeExpanded = toggleNodeExpanded;
   MM.jumpToNode = jumpToNode;
   MM.switchProject = switchProject;
+  MM.followNodeRef = followNodeRef;       // 点开站内链接的唯一入口（同项目选中/滚到目标，不切项目）
   MM.expandAncestors = expandAncestors;   // 单源：跳转到某节点的三个入口（搜索/关联/媒体）共用
   MM.save = save;
   MM.resolveConflict = resolveConflict;

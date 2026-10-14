@@ -132,17 +132,14 @@
       item.addEventListener('click', () => {
         const p = item.dataset.project;
         const nid = item.dataset.node;
-        if (!p || p === selfProject) {
-          const jm = getState() && getState().jm;
-          if (!jm) return;
-          // 只展开该节点的祖先链（同 app-media.js：跳转不该摊开整棵树）
-          if (MM.expandAncestors) MM.expandAncestors(jm, nid);
-          const nn = MM.adapter.getNode(jm, nid);
-          if (nn) { MM.adapter.selectNode(jm, nid); MM.showDetail(nn); }
-          else setStatus('节点不在当前视图：' + nid);
-        } else {
-          MM.switchProject(p, nid);
-        }
+        /* ⚠️ 这一跳**只有一个实现**：`MM.followNodeRef`（`renderer/app-actions.js`）——
+         *   同项目 ⇒ 选中 + 展开祖先链 + **把目标带进视野**（视野外时点一下才有反应），**不切项目**；
+         *   跨项目 ⇒ 既有 `switchProject`。
+         *   这里原先手抄了一份"同项目就 selectNode"、**没有**滚到目标 ⇒ 目标在视野外时点了就像没反应；
+         *   同一段还在 `app-media.js` 抄了一份（三份各漂一格）⇒ `R7-0` 收成一处 ✓ */
+        if (MM.followNodeRef) { MM.followNodeRef(p, nid); return; }
+        // 兜底：只有渲染层没加载 app-actions.js 时才可能走到这里（正常绝不发生）
+        setStatus('界面没有 followNodeRef，跳不过去：' + nid, true);
       });
     });
 

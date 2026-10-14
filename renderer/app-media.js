@@ -218,27 +218,25 @@
       item.addEventListener('click', () => {
         const p = item.dataset.project;
         const nid = item.dataset.node;
-        if (!p || p === state.project.name) {
-          // 同项目：选中并开一个详情框（未锁定的框会被复用，锁定框保留）
-          const jm = state.jm;
-          // 只展开该节点的祖先链：原先 expand_to_depth(20) 会把整棵树摊开，用户的折叠状态就此丢失
-          //（单源见 app-actions.js 的 expandAncestors）。
-          if (MM.expandAncestors) MM.expandAncestors(jm, nid);
-          const nn = MM.adapter.getNode(jm, nid);
-          if (nn) { MM.adapter.selectNode(jm, nid); showDetail(nn); }
-          else setStatus('节点不在当前视图：' + nid);
-        } else {
-          switchProject(p, nid);
-        }
+        /* ⚠️ 这一跳**只有一个实现**：`MM.followNodeRef`（`renderer/app-actions.js`）——
+         *   同项目 ⇒ 选中 + 展开祖先链 + **把目标带进视野**（视野外时点一下才有反应），**不切项目**；
+         *   跨项目 ⇒ 既有 `switchProject`。
+         *   为什么不在调用点写分支（★真实事故）：这里曾手抄一份"同项目就 selectNode"，而**没有**
+         *   滚到目标 ⇒ 目标在视野外时点了"什么都没发生"（与 `comnet` 47 死链同一种观感）；
+         *   而详情框/关联页/审计面板各抄一份 ⇒ 三份必然各漂一格 ✗。 */
+        if (MM.followNodeRef) { MM.followNodeRef(p, nid); return; }
+        // 兜底：只有渲染层没加载 app-actions.js 时才可能走到这里（正常绝不发生）
+        setStatus('界面没有 followNodeRef，跳不过去：' + nid, true);
       });
     });
   }
 
-  /* —— 只转发「定义在其他文件」的函数（其他模块后加载，故用包装函数而非解构）—— */
+  /* —— 只转发「定义在其他文件」的函数（其他模块后加载，故用包装函数而非解构）——
+   * ⚠️ 这里**没有** `switchProject` 的转发了（`R7-0` 起）：「相关知识点」的跳转一律走
+   *   `MM.followNodeRef`（唯一实现，见上面那段注释）⇒ 本文件里不再有第二处项目切换入口 ✓ */
   const escHtml = (s) => MM.escHtml(s);
   const setStatus = (text, isErr) => MM.setStatus(text, isErr);
   const showDetail = (node) => MM.showDetail(node);
-  const switchProject = (name, selectId) => MM.switchProject(name, selectId);
 
   /* —— 本文件定义的东西挂到共享命名空间 —— */
   MM.openLightbox = openLightbox;
