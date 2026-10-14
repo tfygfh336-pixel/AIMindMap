@@ -49,22 +49,60 @@ body { display: flex; flex-direction: column; background: #f5f6f8; color: #1f232
 #search-results .sr-item .sr-snippet { color: #4e5969; font-size: 12px; margin-top: 2px; }
 #search-results .sr-empty { padding: 12px; color: #86909c; }
 
-/* ---------------- 热度条（第三件·A）：人 / AI 两条，各十格 + 数值 + 窗口内样本量 ----------------
- * 纪律：这**只是展示**。格子数、数值、样本量全部由 `renderer/app-heat-bars.js` 把
+/* ---------------- 热度条（第三件·A · 2026-10-16 改版）：**两颗很细的长横条**（血条形态） ----------------
+ * 用户原话：「热度条只用两个很细的长横着的颜色条，类似游戏里面血条的效果，放在节点详情的"标题框"
+ * 里面，也就是大小锁左边和节点名字右边。」
+ *
+ * 位置：`.fd-head` 的**第 2 个 flex 项**（名字右边 / 大小锁左边）—— 结构在 `renderer/index.html`。
+ * 宽度：吃满"名字与锁之间"的**剩余空档**（`flex-grow` 涨的那一份 = 从前就空着的那一块）
+ *   ⇒ **名字的矩形与三颗按钮的矩形一个字节都不动**（判据⑪用"把条藏起来再量一次"当场证明）。
+ * 高度：每条 **3px**（口径里给了 2–4px：2px 在本机 1x 缩放下贴着噪点、4px 已经读成"块"而不是血条，
+ *   3px 在 100%/125%/150% 缩放下都是一条线）· 两条之间 **2px** ⇒ 整块 8px，
+ *   **远小于标题框那一行的高度（本机实测 20px 内容高 / 33px 框高）** ⇒ 标题框高度不变 ✓。
+ * 颜色：填充沿用**原来那两颗语义色**（人 #1664ff / AI #ff7d00 —— 与改版前的 `.fd-heat-cell.on`
+ *   逐字节相同）；底槽沿用原来空格子的灰（#eef0f4）。
+ * **条带上零文字**（2026-10-16 用户追加要求）：标题框里不再印任何数值/标签/单位/小字，
+ *   信息全部走**悬停**——由应用**自绘**的 `.fd-heat-tip` 浮层承载（**不是**原生 `title`：
+ *   原生弹窗是操作系统级的，无头截图/真帧里抓不到 ⇒ 证不出来 ✗）。浮层的**视觉**用既有那一套
+ *   （白底 + `#d5d9e0` 边框 + 圆角 + `0 8px 30px rgba(0,0,0,0.18)` 阴影 —— 与 `.float-detail` 同一组值，
+ *   不新造视觉语言 ✓）；无障碍名字走行的 `aria-label`（不是"打印文字" ✓）。
+ *
+ * 纪律（一字未改）：这**只是展示**。比例、数值、样本量全部由 `renderer/app-heat-bars.js` 把
  * `desktop.app.heat`（→ CLI `heat --json --node <id>`）给的那一份读数**逐字**填进来 ——
  * CSS 只负责样子，渲染层不算任何分位/名次（改热度条不触发保存、不写项目数据 ✓）。
- * `data-bands` 是机器可读的那一份（冒烟断言与读数同源）。 */
-.fd-heat { margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px dashed #e4e7ec; }
-.fd-heat-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
-.fd-heat-who { flex: 0 0 auto; font-size: 11px; color: #86909c; width: 22px; }
-.fd-heat-bands { flex: 0 0 auto; display: flex; gap: 2px; }
-.fd-heat-cell { width: 9px; height: 11px; border-radius: 2px; background: #eef0f4; }
-.fd-heat-band-human .fd-heat-cell.on { background: #1664ff; }
-.fd-heat-band-ai .fd-heat-cell.on { background: #ff7d00; }
-.fd-heat-val { flex: 0 0 auto; font-size: 11px; color: #4e5969; font-weight: 600; }
-.fd-heat-note { font-size: 11px; color: #a9aeb8; }
-.fd-heat > .fd-heat-note { margin-top: 3px; }
-.fd-heat-err { font-size: 11px; color: #f53f3f; }
+ * `data-bands` / `data-band-max` 是机器可读的那一份（冒烟断言与读数同源）；填充宽度是
+ * `style="width: calc(100% * bands / bandMax)"` —— **比例由 CSS 算**，渲染层一个数都不算 ✓ */
+.fd-heat {
+  flex: 1 1 auto;                 /* 吃满剩余空档（名字与锁之间） */
+  min-width: 88px;                /* 下限：≈ 默认面板（380px）标题框内容宽的 25%（判据⑧的阈值） */
+  margin: 0 0 0 8px;
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  /* 注意：**不能** overflow: hidden —— 悬停浮层要能长到标题框外面去（它靠 .fd-head 定位） */
+}
+.fd-heat-row { display: block; }                                  /* 一行 = 一根横条（条带上零文字） */
+.fd-heat-track { display: block; height: 3px; border-radius: 1.5px; background: #eef0f4; overflow: hidden; }
+.fd-heat-fill { display: block; height: 100%; border-radius: 1.5px; background: #c9cdd4; }
+.fd-heat-band-human .fd-heat-fill { background: #1664ff; }        /* 人：原来的蓝 */
+.fd-heat-band-ai .fd-heat-fill { background: #ff7d00; }           /* AI：原来的橙 */
+/* 悬停浮层：条**自己不带文字**，鼠标停在某一根条上时才画出来（`hidden` 控制；移开立刻藏起）。
+ * 定位基准 = `.fd-head`（`.float-detail .fd-head` 加了 position: relative）⇒ 浮层落到**标题框正下方**，
+ * 与条左对齐、宽度不超过标题框 ⇒ 永远在面板内（不会被 `.float-detail` 的 overflow: hidden 裁掉 ✓）。 */
+.float-detail .fd-head { position: relative; }
+.fd-heat-tip {
+  position: absolute; left: 0; top: 100%; margin-top: 4px; z-index: 6;
+  max-width: 100%; width: max-content;
+  padding: 6px 9px; border-radius: 8px; background: #ffffff;
+  border: 1px solid #d5d9e0; box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+  font-size: 11.5px; line-height: 1.6; font-weight: 400; color: #4e5969;
+  white-space: normal; word-break: break-word;
+}
+.fd-heat-tip[hidden] { display: none; }   /* 必须排在 `.fd-heat-tip` 之后（同特异度，后写的赢 ✓） */
+/* 失败提示：**可见**（11px 红字，一行；完整报文在 `title` 里 —— 失败不许静默 ✗）。
+ * ⚠️ 这一档不是"信息展示"而是**故障播报**：单元测试 A6 与冒烟⑤都要求 `.fd-heat-err` 的文本在位 ✓ */
+.fd-heat-err {
+  font-size: 11px; color: #f53f3f; line-height: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* ---------------- 标签 chips ---------------- */
 .fd-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }

@@ -2467,8 +2467,12 @@ async function runSmoke(win) {
    * 两档共用一个预算（不隔离同样受同一份负载影响），而旧值 140s 连"不隔离跑一次全量"的正常耗时
    * 都容不下 ⇒ 那不是"更快发现挂死"，只是换个姿势误红 ✗。
    * 想验"守卫还活着"（判别力证明，别只信注释）：把下面那个数字临时改成 `5000` 跑一次 `npm run smoke`
-   * ⇒ 必须看到 `SMOKE GUARD TIMEOUT — force exit` 且退出码非 0 ✓；改回来再跑必须复绿。 */
-  const SMOKE_GUARD_MS = 720000;
+   * ⇒ 必须看到 `SMOKE GUARD TIMEOUT — force exit` 且退出码非 0 ✓；改回来再跑必须复绿。
+   * 【热度条改版批 · 2026-10-16】**720s→840s**（= 新 G5 预算 700s × 1.2 ⇒ 不变量①继续成立 ✓）：
+   *   该批给 G5 净增约 **106s**（439583ms → **545609ms**；含域 40 新增 7 条真鼠标/真帧判据与
+   *   同期在飞的域 45），`scripts/verify.js` 的 G5 预算同批 600s→700s（那里的注释有完整实测依据，
+   *   并给出余量守卫的读数 600000/545609 = 1.0997 ✗ ⇒ 必须同批抬）。两个数**必须同批**动 ✓。 */
+  const SMOKE_GUARD_MS = 840000;
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);

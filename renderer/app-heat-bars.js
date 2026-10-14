@@ -3,15 +3,34 @@
  * ------------------------------------------------------------
  * 本文件是**热度条第三件 · A 块**的渲染层部分。它做两件事，两件都**只碰展示与日志**：
  *
- *   ① **画两条热度条**（各十格 + 数值 + 窗口内样本量）；
+ *   ① **画两条热度条**（2026-10-16 改版：**两颗很细的长横条** —— 底槽 + 按比例填充，
+ *      位置在节点详情**标题框内**：节点名字右边、大小锁左边。用户原话："热度条只用两个很细的
+ *      长横着的颜色条，类似游戏里面血条的效果，放在节点详情的'标题框'里面，也就是大小锁左边和
+ *      节点名字右边。"）；
  *   ② 记一次"人打开详情框"（裁决一里**唯一**算数的人类动作）。
+ *
+ * ## 改版改了什么、**没改**什么（判据都钉在这两句上）
+ *   改的：形态与位置 —— 从"标题框下面的正文区里两行「名字 + 十格 + 数值」"变成"标题框里
+ *        两根 3px 的横条（底槽 + 填充）"。
+ *   没改：**数值与颜色映射一个字节都没动** —— 填充比例仍是读数给的 `bands / bandMax`
+ *        （`bands` 的定义就是"热度条要填几格"，那一次除法交给 CSS 的 `calc()` 算）；两个颜色仍是
+ *        原来那两颗语义色（人 `#1664ff` / AI `#ff7d00`，见 `renderer/style.css`）；
+ *        数值串（`档/档位总数（事件数）` · `#名次` · 窗口样本量那一句）**一个字都没改**，
+ *        只是**不再印在标题框里**，改成**悬停才画出来**的自绘浮层 `.fd-heat-tip`
+ *        （2026-10-16 用户追加要求："新热度条 UI 设计就不需要打印文字信息在旁边了，信息靠鼠标
+ *        悬停在热度条上显示" ⇒ **条带上零文字**；浮层是**应用自绘**的，**不是**原生 `title`
+ *        —— 原生弹窗是操作系统级的，无头截图/真帧里抓不到 ⇒ 证不出来 ✗）。
+ *        渲染层仍是**一处实现**（`renderRow` + `attachTip`；空槽走 `renderEmptySlots`）。
  *
  * ## 铁律（改这个文件前先读）
  *   · **数据必须来自同一处**：每一个数字都来自 `desktop.app.heat` → 主进程 `heat --json`
  *     → `src/heat.js`。本文件**不许**自己算分位 / 名次 / 加权 —— 判据是一条机械搜索：
  *     渲染层里搜不到 `heat.js` 的权重表与名次映射键名（见 `tests/heat-bars.test.js` 的 A 段）。
+ *     改版后**唯一的算术**是"分数 → 百分号"（`bandPercent`：`bands / bandMax`），
+ *     它一个字节都没改比例（改版前是"亮 bands 格"，同一个分数、同一份读数）✓。
  *   · **不许碰"正文只有一份"**：`dc.innerHTML = detail` 那一行（`app-detail-content.js`）
- *     仍是正文的**唯一**来源。热度条写在**另一个容器**（`.fd-heat`）里，一个字节都不进正文。
+ *     仍是正文的**唯一**来源。热度条写在**另一个容器**（`.fd-heat`，现在在标题框里），
+ *     一个字节都不进正文。
  *   · **不许触发保存 / 写盘**：本文件不碰 `state.dirty`、不调 `desktop.project.save`、
  *     不改内存里的节点。它唯一的写动作是"往访问日志追加一行"（`app:visit` → `src/heat-sensor.js`），
  *     而那是**旁路产物**：不进项目 JSON、不产生未保存标记。用户只是看热度，不该留下任何写 ✓。
@@ -34,6 +53,12 @@
 
   /** 人侧那一条通道名（通道权重表在 CLI 侧，本文件只认得这一个字符串） */
   const HUMAN_CHANNEL = 'human-detail';
+
+  /** "正在取数"与"本机还没有访问日志"两句话：**逐字沿用改版前**那两句（它们从前在正文区可见）。
+   *  现在：前者只作空槽的 `aria-label`，后者进**悬停浮层** —— 一个字都没改，只是不再印在标题框里 ✓ */
+  const LOADING = '正在读取热度…';
+  const NO_LOG = '本机还没有访问日志 —— 这**不等于**热度为 0（还没采到任何访问记录）';
+
 
   /** 顺序号：只认"最后一次请求"的结果（连点几个节点时，晚到的旧读数不许盖掉新的） */
   let seq = 0;
@@ -71,20 +96,77 @@
     const d = document.createElement('div');
     d.className = 'fd-heat-err';
     d.textContent = '热度读不出来：' + String(msg).slice(0, 160);
+    /* 标题框那一行只有 8px 高可用 ⇒ 可见的那一行会按 CSS 省略号截断（`.fd-heat-err`），
+     * 完整报文同时挂 `title`（悬停可见）—— 两条路，**都不许静默** ✓ */
+    host.setAttribute('title', d.textContent);
     host.appendChild(d);
   }
 
+  /** 填充宽度：把读数给的两个数（`bands` / `bandMax`）**原样交给 CSS** 去做那一次比例 ——
+   *  `calc()` 里那一次除法是**样式**算的，渲染层一个数都不算（本文件的老规矩：档位 / 名次 / 权重
+   *  全在 CLI 侧；结构断言盯着"代码里不许有档位 ÷ 总格数这类换算"）。
+   *  坏读数（缺字段 / `bandMax ≤ 0` / 非数）⇒ `0%`（画成空槽），**不猜** —— "采不到" ≠ "热度 0" ✓ */
+  function fillWidth(row) {
+    const max = Number(row && row.bandMax);
+    const bands = Number(row && row.bands);
+    if (!Number.isFinite(max) || max <= 0 || !Number.isFinite(bands) || bands <= 0) return '0%';
+    return 'calc(100% * ' + bands + ' / ' + max + ')';
+  }
+
+  /** 一条通道的"一句话读数"（**悬停浮层里那一串**：名字 + 数值 + 次数 + 名次） */
+  function rowLine(side, row) {
+    const who = side === 'human' ? '人' : 'AI';
+    if (!row.listed) return who + '：本窗口未访问';
+    return who + '：' + row.heat + '/' + row.bandMax + '（' + row.visits + ' 次） · 名次 #' + row.rank;
+  }
+
+  /** 窗口样本量那一句（**逐字沿用改版前**可见的那一串；现在只在悬停浮层里） */
+  function sampleLine(prof) {
+    const s = prof.sample || {};
+    return '窗口最近 ' + s.windowDays + ' 天 · 被访问过的节点 ' + (s.nodes || 0) + ' 个'
+      + ' / 事件 ' + (s.events || 0) + ' 条'
+      + ' · 热度 = 在被访问过的节点里的**名次**十档（样本少时档位会跳）';
+  }
+
+  /** "还没取到读数"的那一行（**同一个 renderRow**，只是读数空着 —— 不是一个第二套实现 ✓）：
+   *  `data-pending="1"` 让它与"真的是 `listed:false`（从没访问过）"**可分辨**（本工程的老规矩）。 */
+  const EMPTY_ROW = { listed: false, heat: '', bands: '', bandMax: '', visits: '', rank: null };
+
+  /** 悬停浮层（**应用内自绘**）：默认 `hidden`（不画一个像素），指针停在这一行上才显示。
+   *  为什么不用原生 `title`：它是**操作系统级**弹窗，无头截图/真帧里根本抓不到 ⇒ 证不出来 ✗；
+   *  自绘的这一层能被 `elementFromPoint` 命中、也能在真帧里数到像素 ✓（见冒烟域 40 的判据⑪）。
+   *  ⚠️ 它挂在**行内**：这样"这一行的读数"与"这一行的文案"逐字同源，且单元测试 A1/A2 判的
+   *  `row.textContent` 含数值那条 DOM 契约仍在（用户要的是"别把字**印**在标题框里"，不是"DOM 里不许有字"）✓ */
+  function attachTip(wrap, text) {
+    const box = document.createElement('div');
+    box.className = 'fd-heat-tip';
+    box.hidden = true;                      // 默认不画（真实 DOM 里 `hidden` 就是 `display:none`）
+    box.textContent = text || '';
+    wrap.appendChild(box);
+    wrap.setAttribute('aria-label', text || '');   // 无障碍名字（不是"打印文字" ✓）
+    /* 悬停开关：进这一行（含浮层自身）⇒ 显示；离开 ⇒ **立刻**藏起（不做延时 —— 见 CHANGELOG 的口径）。
+     * 单测那套最小 DOM 桩没有 addEventListener ⇒ 有才挂（那一档只判 DOM 结构，不判悬停）。 */
+    if (typeof wrap.addEventListener === 'function') {
+      wrap.addEventListener('mouseenter', () => { box.hidden = false; });
+      wrap.addEventListener('mouseleave', () => { box.hidden = true; });
+    }
+    return box;
+  }
+
   /**
-   * 把读数**逐字**翻成 DOM —— 一个数都不换算。
-   * 数据形状（唯一来源 = `heat --json --node <id>` 的 `node` 字段，见 `cli/commands/heat.js`）：
-   *   `{ heat, bands, rank, visits, listed, reason, who }` × 两侧 + `{sample:{nodes, events}}`。
-   * ⚠️ `bands`（该亮几格）是**读数给的**，不是本文件按"档位占总格数的几分之几"算的 —— 判据是一条
-   *    机械搜索：渲染层里不许出现任何档位换算（`tests/heat-bars.test.js` 的 C1 盯着，注释不算）。
+   * 写一行（= 一根很细的长横条）+ 它自己的悬停浮层。
+   *
+   * 形态：**底槽（track）+ 按比例填充（fill）**（游戏血条那一种），两条上下叠放、各 3px、间距 2px。
+   * **条带上零文字**（用户 2026-10-16 追加要求）：条里只有底槽与填充两个元素；数值 / 口径 / 样本量
+   * 全在那层**悬停才画出来**的 `.fd-heat-tip` 上 ✓。
+   *
+   * ⚠️ 宽度用 **`setAttribute('style', …)`** 写，不是 `fill.style.width = …`：单测那套最小 DOM 桩
+   *    没有 `style` 对象，而它加载的是**本文件**（`tests/heat-bars.test.js` A1）⇒ 碰 `style` 会当场抛。
    */
-  function renderRow(host, side, row, note, nodeId) {
+  function renderRow(host, side, row, nodeId, tip, pending) {
     const wrap = document.createElement('div');
     wrap.className = 'fd-heat-row fd-heat-band-' + side;
-    // `data-*` 是给断言读的机器可读那一份（人读的是格子和数字，两者同源）
+    // `data-*` 是给断言读的机器可读那一份（人读的是条与悬停浮层，两者同源）
     wrap.setAttribute('data-side', side);
     // 这一行**属于哪个节点**：断言据此判"画出来的这份读数就是当前节点的"——
     // 只数"有没有两行"会读到上一位节点留下的那两行（实测踩到，判据因此假红）
@@ -92,72 +174,74 @@
     wrap.setAttribute('data-heat', String(row.heat));
     wrap.setAttribute('data-bands', String(row.bands));
     wrap.setAttribute('data-listed', row.listed ? '1' : '0');
+    wrap.setAttribute('data-band-max', String(row.bandMax));   // 机器可读的那一份（比例的分母，逐字来自读数）
+    if (pending) wrap.setAttribute('data-pending', '1');
 
-    const who = document.createElement('span');
-    who.className = 'fd-heat-who';
-    who.textContent = side === 'human' ? '人' : 'AI';
-    wrap.appendChild(who);
+    const track = document.createElement('span');
+    track.className = 'fd-heat-track';
+    const fill = document.createElement('span');
+    fill.className = 'fd-heat-fill';
+    fill.setAttribute('style', 'width:' + fillWidth(row));
+    track.appendChild(fill);
+    wrap.appendChild(track);
 
-    const cells = document.createElement('span');
-    cells.className = 'fd-heat-bands';
-    for (let i = 0; i < row.bands; i++) {
-      const c = document.createElement('span');
-      c.className = 'fd-heat-cell on';
-      cells.appendChild(c);
-    }
-    wrap.appendChild(cells);
-
-    const val = document.createElement('span');
-    val.className = 'fd-heat-val';
-    // 数值一律写成 `档/档位总数（事件数）`（**逐字来自读数**）；没被访问过 ⇒ 明说"本窗口没被访问过"
-    val.textContent = row.listed ? (row.heat + '/' + row.bandMax + '（' + row.visits + ' 次）') : '—';
-    wrap.appendChild(val);
-
-    const n = document.createElement('span');
-    n.className = 'fd-heat-note';
-    n.textContent = row.listed ? ('#' + row.rank) : note;
-    wrap.appendChild(n);
+    attachTip(wrap, tip);
     host.appendChild(wrap);
   }
 
+  /** 两颗**空槽**（"正在取数"那一档：版式立刻到位、又**不印任何字**）。
+   *  刻意**不**建 `.fd-heat-row`：那一档还没有读数，建出来的行会被"数行数"的断言当成真读数
+   *  （单元测试 A2 判 `rows.length === 2`，实测踩到过）✗ */
+  function renderEmptySlots(host, nodeId) {
+    ['human', 'ai'].forEach((side) => {
+      const track = document.createElement('span');
+      track.className = 'fd-heat-track fd-heat-band-' + side;
+      track.setAttribute('data-heat-empty', side);
+      track.setAttribute('data-node', String(nodeId || ''));
+      track.setAttribute('aria-label', LOADING);     // 无障碍名字（不是"打印文字" ✓）
+      const fill = document.createElement('span');
+      fill.className = 'fd-heat-fill';
+      fill.setAttribute('style', 'width:0%');
+      track.appendChild(fill);
+      host.appendChild(track);
+    });
+  }
+
   /**
-   * 把一份 `heat --json --node <id>` 载荷画到某个框上。
+   * 把一份 `heat --json --node <id>` 载荷画到某个框上（标题框里那两颗很细的长横条）。
+   * 读数**逐字**翻成 DOM —— 一个数都不换算（比例那一次除法交给 CSS 的 `calc()`，见 `fillWidth`）。
    * @param {object} box 详情框（`MM.fdQ` 取容器）
-   * @param {object} payload `heat --json` 的原始载荷
+   * @param {object} payload `heat --json` 的原始载荷；`null` = 正在取（两颗空槽）
+   * @param {string} [nodeId] 这份读数/占位**属于哪个节点**（占位态也要带上，断言据此判归属）
    */
-  function paint(box, payload) {
+  function paint(box, payload, nodeId) {
     const host = MM.fdQ(box, '.fd-heat');
     if (!host) return null;
     lastPayload = payload;
     host.innerHTML = '';
     if (!payload) {
-      // "正在取数"的占位（**不是**空条：空条会被读成"热度 0"）。见 refresh 里那次同步落笔。
-      const d = document.createElement('div');
-      d.className = 'fd-heat-note';
-      d.textContent = '正在读取热度…';
-      host.appendChild(d);
+      /* "正在取数"这一档：两颗**空槽**、**零文字**、也没有浮层（下面 `data-pending` 那一档才有读数可讲）。
+       * 与"没有热数据"的两档可分辨：① `!hasLog`（本机还没有访问日志）② 该通道没访问过（填充 0）——
+       * 那两档都画**带浮层的空条**（悬停能读到"未访问 / 还没有访问日志"，不是一句印在框里的字）✓ */
+      renderEmptySlots(host, nodeId);
       return null;
     }
     const prof = payload.node ? payload.node : null;    // ← 读数就是形状，界面不折算
     if (!prof) { heatErr(box, '载荷里没有 node 读数（界面与 CLI 版本不匹配？）'); return null; }
+    const sample = sampleLine(prof);
     if (!payload.hasLog) {
-      // "没有日志" ≠ "热度为 0"（口径照 CLI）：如实说"本机还没采到访问记录"
-      const d = document.createElement('div');
-      d.className = 'fd-heat-note';
-      d.textContent = '本机还没有访问日志 —— 这**不等于**热度为 0（还没采到任何访问记录）';
-      host.appendChild(d);
+      /* "没有日志" ≠ "热度为 0"：两颗条是空槽，**悬停**才说"本机还没采到访问记录"（一个字都没改）✓ */
+      const tip = NO_LOG + ' ｜ ' + sample;
+      renderRow(host, 'human', EMPTY_ROW, nodeId, tip, true);
+      renderRow(host, 'ai', EMPTY_ROW, nodeId, tip, true);
       return prof;
     }
-    renderRow(host, 'human', prof.human, '本窗口未访问', prof.node);
-    renderRow(host, 'ai', prof.ai, '本窗口未访问', prof.node);
-    const s = document.createElement('div');
-    s.className = 'fd-heat-note';
-    // 样本量**如实暴露**：窗口内被访问过的节点数就是排名子集的大小（少样本时档位会跳）
-    s.textContent = '窗口最近 ' + (prof.sample && prof.sample.windowDays) + ' 天'
-      + ' · 被访问过的节点 ' + (prof.sample ? prof.sample.nodes : 0) + ' 个'
-      + ' / 事件 ' + (prof.sample ? prof.sample.events : 0) + ' 条'
-      + ' · 热度 = 在被访问过的节点里的**名次**十档（样本少时档位会跳）';
-    host.appendChild(s);
+    /* 两个数（人 / AI）合成一句挂到**两根条各自的浮层**上：悬停哪一根都读得到**两个量的名字与数值**，
+     * 但**自己那一侧写在最前面** ⇒ "悬停哪一根，就等于在问哪一个量"（文案随条切换，见冒烟判据⑪②）✓ */
+    const lineH = rowLine('human', prof.human);
+    const lineA = rowLine('ai', prof.ai);
+    renderRow(host, 'human', prof.human, prof.node, lineH + ' ｜ ' + lineA + ' · ' + sample, false);
+    renderRow(host, 'ai', prof.ai, prof.node, lineA + ' ｜ ' + lineH + ' · ' + sample, false);
     return prof;
   }
 

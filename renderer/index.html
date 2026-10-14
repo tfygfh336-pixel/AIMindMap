@@ -194,6 +194,15 @@
         <div class="float-detail" style="display:none">
           <div class="fd-head">
             <span class="fd-title">节点详情</span>
+            <!-- 热度条（第三件·A · 2026-10-16 改版）：人 / AI **两颗很细的长横条**（底槽 + 按比例填充），
+                 位置=**标题框内**、**节点名字右边 / 大小锁左边**（用户原话："类似游戏里面血条的效果"）。
+                 数据**全部**来自主进程 `app:heat`（它转发 CLI `heat --json`）—— 本容器里没有一个数
+                 是渲染层算出来的。它只是**展示**：改它不触发保存、不写项目数据 ✓
+                 ⚠️ **条带上零文字**（用户追加要求："不需要打印文字信息在旁边了，信息靠鼠标悬停在热度条上"）：
+                 数值 / 口径 / 样本量只在那层**悬停才画出来**的自绘浮层 `.fd-heat-tip` 里
+                 （**不是**原生 `title` —— 原生弹窗无头截不到 ⇒ 证不出来 ✗），无障碍名字走 `aria-label` ✓。
+                 宽度吃满"名字与锁之间"的**剩余空档** ⇒ 名字的矩形与三颗按钮的矩形一个字节都不动 ✓ -->
+            <div class="fd-heat" data-heat="bars"></div>
             <span class="fd-head-btns">
               <button class="fd-lock-map" title="小锁：锁定到导图位置，拖动导图时本框跟着移动（再点一次解除）">📌</button>
               <button class="fd-lock-screen" title="大锁：锁定到屏幕位置，本框的大小和位置都不再变化（再点一次解除）">🖥</button>
@@ -201,10 +210,8 @@
             </span>
           </div>
           <div class="fd-scroll">
-            <!-- 热度条（第三件·A）：人 / AI 两条，各十格 + 数值 + 窗口内样本量。
-                 数据**全部**来自主进程 `app:heat`（它转发 CLI `heat --json`）—— 本容器里没有一个数
-                 是渲染层算出来的。它只是**展示**：改它不触发保存、不写项目数据 ✓ -->
-            <div class="fd-heat" data-heat="bars"></div>
+            <!-- ⚠️ 热度条**不在**这里了：它在上面 `.fd-head`（标题框）里，名字与大小锁之间（改版当天搬的）。
+                 正文区因此只剩标签 / 正文 / 图片 / 关联…… 顺序与从前一致（少的就是被搬走的那块）。 -->
             <div class="fd-tags"></div>
             <!-- 本机文件夹链接（有 localPath 才显示）：点击用系统文件管理器打开该目录 -->
             <div class="fd-localpath"></div>
