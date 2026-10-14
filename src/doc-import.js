@@ -963,6 +963,9 @@ function groupSkips(skipped) {
  *      它随每次巡检变化 ⇒ **绝不进项目数据**，否则守护进程每扫一次就把用户数据搅脏一次 ✗。
  *      但它也**不是**唯一真源：`bindingSnapshotOf(项目数据, 目录)` 能从树里现算那份"哪个文件对应哪个节点"
  *      （按 `origin.src`）—— 旁路文件丢了/被删了，同步照样不重复建节点 ✓（这是它敢放旁路的前提）。
+ *      ⚠️ 这句话的**落点**在 `planBindingSync` 里那段 `knownNodeOf`（"先问一句树里已经有它的节点了吗"）：
+ *      快照没了 ⇒ 每个文件都会被算成"新增"，**认回来**这一步把它们改成"就地更新" ✓。
+ *      少了那一段，这句话就只是文档里的愿望（实测过：删掉快照那一轮节点 5→9 ✗）。
  *
  * ## 事件驱动（零 token）
  * 本段**不认识** `fs.watch` / 定时器 / 网络 / 子进程：它是一组纯函数（同样的输入必得同样的输出）⇒
@@ -1060,7 +1063,9 @@ function listBindingFiles(dir, opts) {
   };
 }
 
-/** 空快照（还没同步过：`files` 空 ⇒ 第一次同步会把**全部**当新增，这正是"绑定后同步一次"该做的事） */
+/** 空快照（还没同步过：`files` 空 ⇒ 第一次同步会把**全部**当新增，这正是"绑定后同步一次"该做的事）。
+ *  ⚠️ "当新增"之后还会过一道"**树里已经有它的节点了吗**"（`planBindingSync` 的 `knownNodeOf`）：
+ *  真正的新文件照旧建节点，而树里已经认得出的那些（`origin.src` 对得上）会**就地更新**那个节点。 */
 function emptyBindingSnapshot(bindingId, dir) {
   return {
     schemaVersion: BINDING_STATE_VERSION,
@@ -1077,7 +1082,9 @@ function emptyBindingSnapshot(bindingId, dir) {
  *  调用方拿 `rebuilt:false` 就知道"这次的判定可能是全量"，回显里会说清。 */
 function normalizeBindingSnapshot(raw, bindingId, dir) {
   const bad = (why) => ({ snap: emptyBindingSnapshot(bindingId, dir), rebuilt: false, why: why });
-  if (raw === undefined || raw === null) return bad('还没有快照（第一次同步 ⇒ 全部按新增处理）');
+  if (raw === undefined || raw === null) {
+    return bad('还没有快照（第一次同步 ⇒ 每个文件都按新增重新判定；树里已经有它的节点时会接回原节点）');
+  }
   if (typeof raw !== 'object' || Array.isArray(raw)) return bad('快照不是对象');
   if (raw.schemaVersion !== BINDING_STATE_VERSION) {
     return bad('快照的 schemaVersion 是 ' + JSON.stringify(raw.schemaVersion)
@@ -1103,6 +1110,10 @@ function normalizeBindingSnapshot(raw, bindingId, dir) {
  *
  * ⚠️ 为什么这条函数必须存在：旁路快照**可以被人删掉**（它是工作产物）。没有它 ⇒ 删掉快照之后
  *    下一次同步会**再建一整棵树**（同一份文件两个节点），而那正是本工程最忌讳的"静默重复"。
+ *
+ * **两个读者**（两处都是"树里现成的那一份记账"，不是第二份实现）：
+ *   ① `planBindingSync` 的 mirror 容器查找（目录 → 容器节点）；
+ *   ② `planBindingSync` 的 `knownNodeOf`（文件 → 节点 ⇒ 决定"新增"还是"就地更新"）。
  * @returns {Map<string, {nodeId:string, sha256:string, topic:string}>} 相对路径 → 该文件的节点
  */
 function bindingSnapshotOf(projectData, dir) {
@@ -1183,12 +1194,24 @@ function bindingFileDiff(snapshot, list) {
  *     （`idGen(dir:子/路径)`）⇒ 同一目录在任何一次同步里都得到同一个 id ⇒ **不会每同步一次就多一层**；
  *   · **.md 等根下文件**：两种模式下都直接挂在 `parent` 下（没有中间层可建）。
  *
+ * ## 「这个文件在树里已经有节点了吗」—— 判"新增"之前先问这一句（**一处实现**，三条后果）
+ *   证据有两处（`knownNodeOf`，见那里的说明）：① 快照的 `pendingDeletions` 点过名的 `nodeId`
+ *   （删过又回来的那种）；② `bindingSnapshotOf` 从树里 `origin` **现算**的"文件 → 节点"
+ *   （旁路快照丢了/读不出来时唯一剩下的那份记账）。认得出 ⇒ 走**就地更新**（与 `modified`
+ *   同一条路），认不出才当 `added`。三条后果，每条都对着一次实测：
+ *     · **旁路快照丢了不会重复建节点**（`docs/DATA-FORMAT.md` §1.5 那句话的落点；HEAD 上是
+ *       "快照读不出来 ⇒ 全部文件当新增 ⇒ 节点 5→9 ✗"）；
+ *     · **提议删过的文件又回来 ⇒ 接回原节点**、那条提议随之作废（不再"同一个文件两个节点"）；
+ *     · 一个文件在树里**最多一个节点**（这条不变量由本段与 `applyBindingPlan` 的"修改"段共同保证）。
+ *
  * @param {object} args `{ projectData, binding, snapshot, scan, list, genId, parent, at }`
  *   `scan` = **全量**的 `scanImportDir` 结果（报告与闸门看它）；`list` = `listBindingFiles` 的结果
  * @returns {{binding,mode,dir,parent,at,scanned,kept,added,modified,deleted,
- *            unconverted,containers,pending,entries,refTargets,nodes,preambles,unchanged,skipped}}
+ *            unconverted,containers,pending,reconnected,entries,refTargets,nodes,preambles,unchanged,skipped}}
  *   `added` 每项 = `{rel, subtree, parent}`；`modified` 每项 = `{rel, subtree, nodeId}`
- *   （`nodeId` 是那个文件**当前**在树里对应的节点 —— 就地替换要用它）
+ *   （`nodeId` 是那个文件**当前**在树里对应的节点 —— 就地替换要用它）；
+ *   `reconnected` 每项 = `{rel, nodeId, from:'pending'|'origin', proposalWithdrawn}`
+ *   —— "认回来的那些"逐条点名（回显/界面据此说清"没有新建同名节点"）
  */
 function planBindingSync(args) {
   const a = args || {};
@@ -1204,6 +1227,26 @@ function planBindingSync(args) {
   const diff = bindingFileDiff(snap, list);
   // 目录 → 它现有容器节点的 id（mirror 的就地追加要用；**不新建**，认不出就交给"新增"那条路去建）
   const bounds = a.projectData ? bindingSnapshotOf(a.projectData, dir) : new Map();
+  /* 「认回来」的唯一入口（三条后果见函数头那段）：先问"树里已经有它的节点了吗"，**再**决定
+   * 归到 `added` 还是 `modified` —— 判定只写在这里一处，别在下面两个循环里各判一遍。
+   * 两处证据各管一段：① 提议点过名（文件删过又回来）；② 树里 `origin` 现算（旁路快照丢了）。
+   * 两条都要求"那个节点此刻真的还在树里"：认一个**已经不存在的 id** 会让 `applyBindingPlan`
+   * 的"修改"段抛"快照与数据对不上"而整轮中止 —— 那不是我们要的（那种文件本来就该当新增）。 */
+  const root = (a.projectData && a.projectData.data && typeof a.projectData.data === 'object')
+    ? a.projectData.data : null;
+  const pendingByRel = new Map();
+  (snap.pendingDeletions || []).forEach((p) => {
+    if (p && p.rel) pendingByRel.set(toRelSlash(p.rel), p);
+  });
+  const knownNodeOf = (rel) => {
+    if (!root) return null;
+    const key = toRelSlash(rel);
+    const p = pendingByRel.get(key);
+    if (p && p.nodeId && findNodeForBinding(root, p.nodeId)) return { nodeId: p.nodeId, from: 'pending' };
+    const b = bounds.get(key);
+    if (b && b.nodeId && findNodeForBinding(root, b.nodeId)) return { nodeId: b.nodeId, from: 'origin' };
+    return null;
+  };
 
   const plan = {
     binding: bindingId, mode: mode, dir: dir, parent: parent, at: at,
@@ -1212,12 +1255,16 @@ function planBindingSync(args) {
     kept: (list.kept || []).length,
     added: [], modified: [], deleted: [], unconverted: [],
     containers: [], pending: [], entries: [], refTargets: [],
+    /* 「认回来」的那些文件（判据见 `knownNodeOf`）：逐条点名 + 是不是带作废了一条旧提议。
+     * 它与 `added` 是**互斥**的（认出来的走 `modified`，不会同时算一次新增）。 */
+    reconnected: [],
     /* 快照里**已经记过**的那些提议点了名的节点（上一轮记下的，本轮不会再被提议一次）。
      * 它只用于一件事：给"人确认之后摘节点"那道闸提供**提议来源**（见 `applyBindingPlan` 的第 0 段）——
      * 少了它，确认之后永远摘不掉（实测踩到）。 */
     proposedNodeIds: ((snap.pendingDeletions || []).map((p) => p && p.nodeId).filter(Boolean)),
-    /* 「待确认的删除提议」的**唯一一份并集**：本轮新提议 ∪ 快照里已存的旧提议。
-     * 为什么必须是**一个字段**（而不是让每个读者自己拼）：四个地方读它 ——
+    /* 「待确认的删除提议」的**唯一一份并集**：本轮新提议 ∪ 快照里已存的旧提议（**减去**作废的，
+     * 见下面 `pendingAll` 的组装）。为什么必须是**一个字段**（而不是让每个读者自己拼）：
+     * 四个地方读它 ——
      *   · 界面/回显的"待确认删 K"与**逐条点名**（K 与清单必须出自同一份数据，否则数得出来却看不到是哪些）；
      *   · `bindingProposedNodeIds`（"这道闸认不认这个 id"，`applyBindingPlan` 第 0 段用）；
      *   · `bindingPlanChangesTree`（**只有确认、没有别的变化**的那一轮也必须被当成"会改树"，
@@ -1245,28 +1292,6 @@ function planBindingSync(args) {
     const known = (snap.files && snap.files[rel]) || {};
     plan.pending.push({ rel: rel, nodeId: known.nodeId || null, topic: known.topic || null, at: at });
   });
-  /* 提议的并集（`pendingAll`）：见 plan 字面量里那段说明 —— 读者只有它一份，谁也不再自己拼。
-   *   · 同一份文件不会同时既是"旧提议"又是"本轮新提议"（旧提议记下时已经把它从 `files` 里移走了），
-   *     真出现了（手写/坏快照）也只留一条：**清单不是流水**，同一条提议报两次是最难看的一种坏法；
-   *   · `revived`：这个文件**又回来了**（此刻在盘上）⇒ 引擎按"新增"处理、会多一个同名节点。
-   *     这里只**如实标出来**给确认流说清后果，不替用户改语义（策略见 bind-sync 的回显）。 */
-  const onDiskNow = new Set((list.files || []).map((f) => toRelSlash(f.rel)));
-  const unionByRel = new Map();
-  (snap.pendingDeletions || []).forEach((p) => {
-    if (!p || !p.rel) return;
-    const rel = toRelSlash(p.rel);
-    unionByRel.set(rel, {
-      rel: rel, nodeId: p.nodeId || null, topic: p.topic || null, at: p.at || null,
-      revived: onDiskNow.has(rel)
-    });
-  });
-  plan.pending.forEach((d) => {
-    const rel = toRelSlash(d.rel);
-    if (unionByRel.has(rel)) return;
-    unionByRel.set(rel, { rel: rel, nodeId: d.nodeId || null, topic: d.topic || null, at: d.at || null, revived: false });
-  });
-  // 按 rel 排序 ⇒ 同一份提议在任何一轮里的**字节形态相同**（回显/断言可逐字节比）
-  plan.pendingAll = Array.from(unionByRel.values()).sort((x, y) => (x.rel < y.rel ? -1 : (x.rel > y.rel ? 1 : 0)));
 
   /* ---- 2) 新增 / 修改：文件 → 提纲 → 子树（**只有这一段读文件**）---- */
   const changedRel = diff.added.concat(diff.modified).sort();
@@ -1327,6 +1352,18 @@ function planBindingSync(args) {
     diff.added.forEach((rel) => {
       const subtree = subtreeOf(rel);
       if (!subtree) return;                         // 转换失败的文件已在 `unconverted` 里点名
+      /* ⭐ 认回来（判据只有 `knownNodeOf` 一处）⇒ **就地更新**，与 `modified` 完全同一条路：
+       * 不追加新节点、不改位置、不产生第二个同名节点。快照丢了/文件删过又回来这两种情形都走这里。 */
+      const known = knownNodeOf(rel);
+      if (known) {
+        plan.modified.push({ rel: rel, subtree: subtree, nodeId: known.nodeId, reconnected: known.from });
+        plan.reconnected.push({
+          rel: toRelSlash(rel), nodeId: known.nodeId, from: known.from,
+          // 文件回来了 ⇒ 快照里那条"盘上没了"的提议不再成立 ⇒ 随后作废它（见 `snapshotAfterBindingPlan`）
+          proposalWithdrawn: pendingByRel.has(toRelSlash(rel))
+        });
+        return;
+      }
       plan.added.push({ rel: rel, subtree: subtree, parent: hostFor(rel) });
     });
     diff.modified.forEach((rel) => {
@@ -1336,6 +1373,35 @@ function planBindingSync(args) {
       plan.modified.push({ rel: rel, subtree: subtree, nodeId: known.nodeId || null });
     });
   }
+
+  /* ---- 3) 提议的并集（`pendingAll`）：见 plan 字面量里那段说明 —— 读者只有它一份，谁也不再自己拼。
+   *   · 同一份文件不会同时既是"旧提议"又是"本轮新提议"（旧提议记下时已经把它从 `files` 里移走了），
+   *     真出现了（手写/坏快照）也只留一条：**清单不是流水**，同一条提议报两次是最难看的一种坏法；
+   *   · **作废的（`reconnected` 里带 `proposalWithdrawn`）不进并集**：那个文件已经回来了、
+   *     并且已经接回它原来那个节点 ⇒ "要不要删它"这个问题本身没有了（旧行为是留着这条提议、
+   *     再给同一个文件建第二个节点，等确认之后才回到一个 ✗）；
+   *   · `revived`：这个文件**又回来了**、但这次**接不回**原来的节点（转不了 / 那个节点已经不在了）
+   *     ⇒ 提议照旧留着等人判断，如实标出来（`revived` 的语义就此收窄成"接不回来的那种"）。 */
+  const withdrawnRels = new Set((plan.reconnected || [])
+    .filter((r) => r.proposalWithdrawn).map((r) => r.rel));
+  const onDiskNow = new Set((list.files || []).map((f) => toRelSlash(f.rel)));
+  const unionByRel = new Map();
+  (snap.pendingDeletions || []).forEach((p) => {
+    if (!p || !p.rel) return;
+    const rel = toRelSlash(p.rel);
+    if (withdrawnRels.has(rel)) return;             // 作废：文件回来了且接回了原节点
+    unionByRel.set(rel, {
+      rel: rel, nodeId: p.nodeId || null, topic: p.topic || null, at: p.at || null,
+      revived: onDiskNow.has(rel)
+    });
+  });
+  plan.pending.forEach((d) => {
+    const rel = toRelSlash(d.rel);
+    if (unionByRel.has(rel)) return;
+    unionByRel.set(rel, { rel: rel, nodeId: d.nodeId || null, topic: d.topic || null, at: d.at || null, revived: false });
+  });
+  // 按 rel 排序 ⇒ 同一份提议在任何一轮里的**字节形态相同**（回显/断言可逐字节比）
+  plan.pendingAll = Array.from(unionByRel.values()).sort((x, y) => (x.rel < y.rel ? -1 : (x.rel > y.rel ? 1 : 0)));
   return plan;
 }
 
@@ -1472,7 +1538,8 @@ function applyBindingPlan(data, plan) {
       + '**盘上零改动**（这条判定在写盘之前停住）。两条出路：'
       + '① 在界面上确认那些节点是不是被人删了/改名了 —— 如果是有意的，就用「解绑再重新绑定」把它当新文件导一次；'
       + '② 如果只是快照与数据对不上，用 `bind-sync <项目> --forget-snapshot` 把快照丢掉重来'
-      + '（⚠️ 那会把**全部文件**当新增 ⇒ 可能多出一批节点，所以不自动做 ✗）。';
+      + '（⚠️ 那会重读一遍全部文件、按树里的 `origin` 把各文件的节点接回来 —— 接不回的才当新增；'
+      + '**代价是**丢掉了快照里那些"待确认的删除提议"（K 会归 0），所以不自动做 ✗）。';
     throw new Error(missingMsg);
   }
 
@@ -1535,6 +1602,10 @@ function findParentOfBinding(root, id) {
  *   ⑤ **被人确认过的那几条提议 ⇒ 从这里划掉**（`bindingConfirmedDrops`）—— 不划掉的后果是
  *      "待确认删 K"永远回不到 0（提议会被下一轮重新提出来）。划掉提议 ≠ 删节点：节点在
  *      `applyBindingPlan` 第 0 段被摘（那里是唯一出口）✓。
+ *   ⑤′ **那个文件又回来了、并且已经接回原节点的那几条提议 ⇒ 同样划掉**（`plan.reconnected` 里
+ *      `proposalWithdrawn` 的那些）：提议的前提是"盘上没了"，文件回来了这条前提就不成立 ——
+ *      不划掉的后果是清单上一直挂着一条"要不要删掉 X"的提议，而 X 正是刚接回来的那个节点。
+ *      划掉提议 ≠ 删节点（同 ⑤），而且这里连"删"这件事都没发生过：节点原地被更新了内容 ✓。
  * @param {object} snapshot 旧快照（可为空）
  * @param {object} plan `planBindingSync` 的产物
  * @param {string} at 同步时刻（ISO）
@@ -1577,7 +1648,12 @@ function snapshotAfterBindingPlan(snapshot, plan, at, keep) {
    *   没有它，但提议清单还留着）⇒ 界面上"待确认删 K"**永远回不到 0**，人每次点确认都在确认同一条 ✗。
    *   ⚠️ 划掉提议**不等于删节点**：节点是 `applyBindingPlan` 第 0 段摘的（那边才是唯一出口）； */
   const confirmedSet = new Set(bindingConfirmedDrops(plan));
-  const pending = (base.pendingDeletions || []).filter((p) => !(p && confirmedSet.has(p.nodeId)));
+  /* ⑤′ 文件回来了、节点已经接回它 ⇒ 那条提议作废（判据来自 `plan.reconnected`，**不是**在这里
+   * 重新判一次"盘上有没有这个文件" —— 认回来这件事只有 `planBindingSync` 那一处说了算）。 */
+  const withdrawnRels = new Set(((plan && plan.reconnected) || [])
+    .filter((r) => r && r.proposalWithdrawn).map((r) => toRelSlash(r.rel)));
+  const pending = (base.pendingDeletions || []).filter((p) => !(p && confirmedSet.has(p.nodeId))
+    && !(p && withdrawnRels.has(toRelSlash(p.rel))));
   ((plan && plan.pending) || []).forEach((d) => {                               // ④
     delete files[d.rel];
     if (confirmedSet.has(d.nodeId)) return;                                      // ⑤ 已确认 ⇒ 不再回到提议里

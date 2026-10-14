@@ -404,6 +404,47 @@ describe('C 旁路快照（不进项目数据；可丢、可重建）', () => {
     void r;
   });
 
+  /* ---------------------------------------------------------------------------
+   * C5 —— 【账②】这句话的**落点**：快照丢了的那一轮，**同步计划自己**也要用它
+   *   症状（HEAD 实测）：`bindingSnapshotOf` 只用于 mirror 容器的查找，同步计划不用它 ⇒
+   *   快照读不出来/被删掉的下一轮，普通同步把全部文件当**新增** ⇒ 节点 5→9（同一份文件两个节点 ✗）。
+   *   判据（逐节点现算，不写死数）：空快照跑一轮 ⇒
+   *     · `plan.added` 为空、`plan.reconnected` 覆盖全部文件、`plan.modified` 也覆盖全部文件；
+   *     · 节点总数**不变**、每个文件主题只出现一次、内容按文件现读；
+   *     · 每个文件节点**原地**被换掉（id 变了但父节点与位置没变：这正是 `modified` 那条路）。
+   * ------------------------------------------------------------------------- */
+  it('C5 【账②】空快照（=快照丢了）跑一轮：**不新建节点**，全部文件接回原节点就地更新', () => {
+    mkSrc({ 'a.md': '# 甲\n正文甲\n', 'b.md': '# 乙\n正文乙\n' });
+    const data = emptyProject([BINDING()]);
+    let snap = syncOnce(data, BINDING(), di.emptyBindingSnapshot('wb-1', SRC)).snap;
+    const nodesBefore = allNodes(data).length;
+    const parentOfA = allNodes(data).filter((n) => n.topic === 'a')[0].id;
+
+    // 快照丢了：拿一份**空快照**跑（与"文件被删掉"同一后果；`--forget-snapshot` 走的就是这条）
+    const lost = syncOnce(data, BINDING(), di.emptyBindingSnapshot('wb-1', SRC));
+    expect(lost.plan.added.map((x) => x.rel), '一个都不许当新增').toEqual([]);
+    expect(lost.plan.modified.map((x) => x.rel).sort()).toEqual(['a.md', 'b.md']);
+    expect(lost.plan.reconnected.map((x) => x.rel).sort()).toEqual(['a.md', 'b.md']);
+    expect(lost.plan.reconnected.every((x) => x.from === 'origin')).toBe(true);
+    expect(lost.plan.reconnected.every((x) => x.proposalWithdrawn === false)).toBe(true);
+    expect(allNodes(data).length, '节点数**不变**（不翻倍）').toBe(nodesBefore);
+    expect(topicsOf(data).filter((t) => t === 'a')).toHaveLength(1);
+    expect(topicsOf(data).filter((t) => t === 'b')).toHaveLength(1);
+    // "就地更新" = 那个文件节点的**整棵子树被换掉**（新 id）但仍挂在原来的父节点下（不是新追加的一个）
+    const aNow = allNodes(data).filter((n) => n.topic === 'a')[0];
+    expect(aNow.id).not.toBe(parentOfA);
+    expect(allNodes(data).filter((n) => n.id === aNow.id)).toHaveLength(1);
+    expect(allNodes(data).filter((n) => n.id === 'root'), '根节点一个字节没动').toHaveLength(1);
+    expect(lost.applied.modified, 'apply 那一步走的是"修改"（不是 added）').toBe(2);
+    expect(lost.applied.added).toBe(0);
+    // 快照重建之后：下一轮是"没变化"（不重复读文件），这是"接回来之后状态确实对上了"的判据
+    const again = syncOnce(data, BINDING(), lost.snap);
+    expect(again.plan.added).toHaveLength(0);
+    expect(again.plan.modified).toHaveLength(0);
+    expect(again.plan.readFiles).toBe(0);
+    expect(allNodes(data).length).toBe(nodesBefore);
+  });
+
   it('C4 项目数据**不含快照**：同步前后 `data` 上没有任何 mtime/快照字段（旁路的意义）', () => {
     mkSrc({ 'a.md': '# 甲书\n' });
     const data = emptyProject([BINDING()]);
@@ -539,23 +580,61 @@ describe('E 删除提议的确认流（未确认一个都不少；确认只摘�
     expect(di.bindingPlanChangesTree(r.plan), '没有任何真提议可摘 ⇒ 这一轮不该写盘').toBe(false);
   });
 
-  it('E5 边界①：提议删过的文件**又出现** ⇒ 引擎按"新增"（两个同名节点）+ `revived` 如实标注；确认后回到一个', () => {
+  /* ---------------------------------------------------------------------------
+   * E5 / E6 —— 【账③】"提议删过的文件**又出现**"这条边界（**本批改了语义**）
+   *   旧语义（HEAD）：引擎按**新增**处理 ⇒ 树里同一个文件**两个同名节点**，确认之后才回到一个；
+   *     提议留在清单上、`revived: true` 只是"如实把后果说清"。
+   *   新语义（本批）：文件回来时**认得出它**（快照里那条提议点过名的 `nodeId`）⇒ 接回原节点
+   *     **就地更新**（走与 `modified` 同一条路），那条提议随之**撤回**（前提"盘上没了"已不成立）
+   *     ⇒ 节点数回到原样、绝不先多一个同名节点。
+   *   判据分两档：E5 = 文件带内容回来（接得回）；E6 = 文件回来了但**转不了**（接不回 ⇒ 提议必须留着，
+   *     不许静默丢掉那条提议）。
+   * ------------------------------------------------------------------------- */
+  it('E5 【账③】提议删过的文件**又回来** ⇒ 接回原节点（**不新建同名节点**）+ 那条提议自动撤回', () => {
     mkSrc({ 'a.md': '# 甲\n', 'b.md': '# 乙\n' });
     const data = emptyProject([BINDING()]);
     let snap = syncOnce(data, BINDING(), di.emptyBindingSnapshot('wb-1', SRC)).snap;
+    const nodesBefore = allNodes(data).length;
+    const bNodeId = allNodes(data).filter((n) => n.topic === 'b')[0].id;
     fs.unlinkSync(path.join(SRC, 'b.md'));
-    snap = syncOnce(data, BINDING(), snap).snap;                     // 提议：b.md
-    fs.writeFileSync(path.join(SRC, 'b.md'), '# 乙回来了\n', 'utf8');  // 文件又回来了
+    const rd = syncOnce(data, BINDING(), snap);
+    snap = rd.snap;
+    expect(rd.plan.pendingAll.map((p) => p.rel)).toEqual(['b.md']);
+    expect(rd.plan.pendingAll[0].nodeId, '提议点名的就是那个节点').toBe(bNodeId);
+    expect(allNodes(data).length, '提议不删节点').toBe(nodesBefore);
+
+    fs.writeFileSync(path.join(SRC, 'b.md'), '# 乙回来了\n', 'utf8');   // 文件又回来了
     const r = syncOnce(data, BINDING(), snap);
-    expect(r.plan.added.map((x) => x.rel), '引擎按**新增**处理（既定语义，本批不动它）').toEqual(['b.md']);
-    expect(allNodes(data).filter((n) => n.topic === 'b'), '⇒ 同一个文件两个节点（如实记在判据里）').toHaveLength(2);
-    expect(r.plan.pendingAll.map((p) => p.rel)).toEqual(['b.md']);
-    expect(r.plan.pendingAll[0].revived, '确认流据此把后果说清楚').toBe(true);
-    // 确认那一条旧提议 ⇒ 摘掉**旧的**那个节点 ⇒ 又回到"一个文件一个节点"
-    const rc = syncOnce(data, BINDING(), r.snap, { confirmedNodeIds: [r.plan.pendingAll[0].nodeId] });
-    expect(rc.applied.dropped).toHaveLength(1);
-    expect(allNodes(data).filter((n) => n.topic === 'b')).toHaveLength(1);
-    expect(topicsOf(data)).toContain('乙回来了');
-    expect(rc.snap.pendingDeletions).toHaveLength(0);
+    expect(r.plan.added, '**不再是**新增（旧语义会在这里多一个同名节点）').toEqual([]);
+    expect(r.plan.reconnected.map((x) => [x.rel, x.from, x.proposalWithdrawn]))
+      .toEqual([['b.md', 'pending', true]]);
+    expect(r.plan.modified.map((x) => x.rel)).toEqual(['b.md']);
+    expect(allNodes(data).filter((n) => n.topic === 'b'), '一个文件一个节点').toHaveLength(1);
+    expect(topicsOf(data).filter((t) => t === 'b回来了' || t === '乙回来了')).toHaveLength(1);
+    expect(allNodes(data).length, '节点数回到原样').toBe(nodesBefore);
+    expect(r.plan.pendingAll, '未确认的提议不再指向它').toHaveLength(0);
+    expect(r.snap.pendingDeletions, '提议从快照里划掉（不是"删了节点"，是这条提议作废）').toHaveLength(0);
+    // 再跑一轮：文件在盘上、节点在树里 ⇒ 什么都不发生（提议不会反弹、节点不会多）
+    const again = syncOnce(data, BINDING(), r.snap);
+    expect(again.plan.added).toHaveLength(0);
+    expect(again.plan.pendingAll).toHaveLength(0);
+    expect(allNodes(data).length).toBe(nodesBefore);
+  });
+
+  it('E6 文件回来了但**转不了**（空文件）⇒ 接不回 ⇒ 那条提议**必须留着**（`revived` 如实标注）', () => {
+    mkSrc({ 'a.md': '# 甲\n', 'b.md': '# 乙\n' });
+    const data = emptyProject([BINDING()]);
+    let snap = syncOnce(data, BINDING(), di.emptyBindingSnapshot('wb-1', SRC)).snap;
+    const nodesBefore = allNodes(data).length;
+    fs.unlinkSync(path.join(SRC, 'b.md'));
+    snap = syncOnce(data, BINDING(), snap).snap;                       // 提议：b.md
+    fs.writeFileSync(path.join(SRC, 'b.md'), '', 'utf8');              // 回来了，但是个空文件
+    const r = syncOnce(data, BINDING(), snap);
+    expect(r.plan.unconverted.map((u) => u.rel)).toEqual(['b.md']);
+    expect(r.plan.reconnected, '接不回来（没有新子树可替换）').toHaveLength(0);
+    expect(r.plan.pendingAll.map((p) => p.rel), '提议不许静默消失').toEqual(['b.md']);
+    expect(r.plan.pendingAll[0].revived, '如实标注：文件回来了（但接不回）').toBe(true);
+    expect(r.snap.pendingDeletions.map((p) => p.rel)).toEqual(['b.md']);
+    expect(allNodes(data).length).toBe(nodesBefore);
   });
 });

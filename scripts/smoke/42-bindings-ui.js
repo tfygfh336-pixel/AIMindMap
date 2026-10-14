@@ -16,6 +16,10 @@
  *   戊 解绑：状态条收起（那一带不占布局、不进命中测试）而**已导入的节点全部保留**；解绑后改文件不再同步。
  *   己 未绑定时的默认档：状态条/播报/预览面板全不出现、**不占布局**（#main 顶边=工具栏底边），
  *      项目 JSON 里连 `bindings` 键都没有。
+ *   癸 【账③】提议删过的文件**又回来** ⇒ **接回原节点**（就地更新）+ 那条提议自动撤回（K 回 0）；
+ *      绝不产生第二个同名节点（旧语义是"按新增 ⇒ 同一份文件两个节点"）。
+ *   子 【账②】旁路快照**真删掉** ⇒ 一轮同步**不重复建节点**（那份"文件 → 节点"的记账改由树里的
+ *      `origin` 现算）—— 这是 `docs/DATA-FORMAT.md` §1.5 那句话的落点，HEAD 上没有代码支撑。
  *
  * 判据纪律（本文件自己遵守的两条）：
  *   · **可见性一律 `document.elementFromPoint`**（几何读数只用来定位，从不用来判"看不看得见"）；
@@ -371,9 +375,9 @@ const assertions = [
       const sr = (stResumed && stResumed.barAttrs) || {};
       const wdResumed = JSON.parse(ctx.runCli(['bind-sync', P, '--watch-dirs', '--json']));
       /* 自动同步恢复：再改一次文件，这次**不点任何按钮**，靠守护自己同步进来。
-       * ⚠️ 改的是 a.md（**不碰被删的 b.md**）：引擎对"提议删过的文件又出现"按【新增】处理
-       * （快照里那条已被摘掉）⇒ 会多出一个同名节点 —— 那是引擎既定语义，不该混进"界面暂停/继续"的判据里。
-       * 这条边界本域如实记在这里（见报文与未做/未核实那段），不假装它不存在。 */
+       * ⚠️ 改的是 a.md（**不碰被删的 b.md**）：b 那条提议要在 庚/辛 里被逐条点名并确认，
+       * 先动 b.md 会把它的状态提前改掉（本批之前"动它会多一个同名节点"、现在会"接回原节点并撤回提议"，
+       * 两条路都会让后面两条断言的前提不成立）——见 癸 那条：文件回来的语义在**本批改成接回原节点** ✓ */
       const mark2 = '甲自动同步 ' + STAMP;
       fs.appendFileSync(path.join(SRC_DIR, 'a.md'), '\n\n## ' + mark2 + '\n正文\n', 'utf8');
       const autoBack = await waitUntil(() => readRaw(P).indexOf(mark2) >= 0, 25000);
@@ -643,7 +647,9 @@ const assertions = [
     run: async (ctx) => {
       /* 前置：造一条**真提议**并把它推进快照（写 f.md ⇒ 同步进来 ⇒ 盘上删掉 ⇒ 再改一份文件把树推一次）。
        * ⚠️ 然后**先把绑定暂停**：确定性地把 `fs.watch` 收掉 —— 否则"快照坏着"的那一小段时间里
-       *   一次自动同步会把全部文件当**新增**（引擎既有语义，见 G7），整个域会跟着连锁红（实测踩到）。
+       *   一次自动同步也会来算一遍（本批之后它**不会再建重复节点**了：那条路会按树里的 `origin`
+       *   把文件接回原节点，见 子 那条；但这里仍要暂停 —— 本条量的是"读不到提议 ⇒ 拒绝执行"，
+       *   不该让一个后台同步在旁边改盘）。
        *   暂停那一轮 CLI 会**先把当前待同步的变化同步一次**（既有行为）⇒ 提议正好落进快照 ✓ */
       fs.writeFileSync(path.join(SRC_DIR, 'f.md'), F_MD, 'utf8');
       const grew = await waitUntil(() => fileNodes(P).some((n) => n.topic === 'f'), 30000);
@@ -721,6 +727,128 @@ const assertions = [
           + ' · 项目 JSON 逐字节不变=' + (treeAfter === treeBefore) + '（SHA ' + shaBefore.slice(0, 12) + ' → ' + shaAfter.slice(0, 12) + '）'
           + ' · 快照还原 + 继续之后：pending=' + restored.barAttrs.pending + '/'
           + restored.barAttrs.pendingUnreadable + ' 守护中=' + resumed.ok
+      };
+    }
+  },
+
+  /* 【账③】"提议删过的文件又回来" —— 本批改了引擎语义（旧：按新增 ⇒ 同一个文件两个同名节点；
+   * 新：认得出它 ⇒ 接回原节点就地更新 + 那条提议随之撤回）。前置正好是壬留下的 f.md 提议，
+   * 不为这条账另造一遍脚手架。 */
+  {
+    name: '癸 【账③】提议删过的文件**又回来** ⇒ 接回原节点（就地更新、**不产生第二个同名节点**）+ 那条未确认的提议自动撤回（K 回 0）；盘上文件一个都没少（判定依据：项目 JSON 逐节点现算 + 快照 pendingDeletions 现读 + 界面读数与 CLI 对拍）',
+    run: async (ctx) => {
+      const snapPath = path.join(projectsDir(), P, '.bindings.json');
+      const snapBefore = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
+      const nodesBefore = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
+      const allBefore = allNodes(P).length;
+      const srcBefore = fs.readdirSync(SRC_DIR).sort();
+      const shaBefore = sha256(readRaw(P));
+      const stBefore = await bindState(ctx);
+
+      fs.writeFileSync(path.join(SRC_DIR, 'f.md'), F_MD, 'utf8');   // 文件**放回**（内容与原来一样）
+      const settled = await waitUntil(async () => {
+        const st = await bindState(ctx);
+        return !!(st && st.barAttrs && st.barAttrs.pending === '0');
+      }, 30000);
+      await sleep(300);
+      const st = await bindState(ctx);
+      const last = (st && st.lastSync) || {};
+      const nodesAfter = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
+      const allAfter = allNodes(P).length;
+      const snapAfter = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
+      const probe = JSON.parse(ctx.runCli(['bind-sync', P, '--dry-run', '--json']));
+      const dup = {};
+      nodesAfter.forEach((x) => { const t = x.split(':').slice(1).join(':'); dup[t] = (dup[t] || 0) + 1; });
+      const rc = (last.reconnectedList || []).filter((x) => x && /f\.md$/.test(String(x.rel)))[0] || null;
+
+      return {
+        ok: !!snapBefore.pendingDeletions.length && /f\.md$/.test(String(snapBefore.pendingDeletions[0].rel))
+          && stBefore.barAttrs.pending === '1'
+          && settled.ok === true && st.barAttrs.pending === '0'
+          /* 认得出它：那一条读数点名的就是"提议点过名的那个节点"，且没当新增 */
+          && last.reconnected === 1 && last.added === 0
+          && !!rc && rc.from === 'pending' && rc.proposalWithdrawn === true
+          && !!rc.nodeId && rc.nodeId === snapBefore.pendingDeletions[0].nodeId
+          /* 节点数回到原样、一个文件只对应一个节点（不是两个同名节点） */
+          && nodesAfter.length === nodesBefore.length && nodesAfter.length === 4
+          && allAfter === allBefore
+          && Object.keys(dup).every((t) => dup[t] === 1)
+          /* 提议撤回（快照里也没了）——不是"删了节点"，是这条提议作废 */
+          && snapAfter.pendingDeletions.length === 0 && probe.pending === 0
+          /* 盘上零删除：放回之前那些文件一个都没少（放回的这个是**我加的那个**，不是被删出来的） */
+          && srcBefore.every((f) => fs.readdirSync(SRC_DIR).indexOf(f) >= 0),
+        text: '前置：快照里的提议=' + JSON.stringify(snapBefore.pendingDeletions.map((p) => [p.rel, p.nodeId]))
+          + ' 状态区 K=' + stBefore.barAttrs.pending
+          + ' · 把 f.md 放回 ⇒ 等 K 回 0=' + settled.ok + '（' + settled.ms + 'ms）读数 K=' + st.barAttrs.pending
+          + ' · 本轮读数：' + JSON.stringify({ added: last.added, modified: last.modified, reconnected: last.reconnected })
+          + ' 逐条=' + JSON.stringify(last.reconnectedList || [])
+          + ' · 盘上文件节点（前/后）=' + nodesBefore.length + '/' + nodesAfter.length + '：' + nodesAfter.join(' ')
+          + ' · 同名节点计数=' + JSON.stringify(dup) + '（每个都必须是 1）'
+          + ' · 树里节点总数（前/后）=' + allBefore + '/' + allAfter
+          + ' · 快照提议 1→' + snapAfter.pendingDeletions.length + ' · CLI 对拍 pending=' + probe.pending
+          + ' · 源目录文件（放回后）=' + JSON.stringify(fs.readdirSync(SRC_DIR).sort())
+          + '（放回前 ' + JSON.stringify(srcBefore) + ' ⇒ **盘上零删除**）'
+          + ' · 项目 JSON 变了吗=' + (shaBefore !== sha256(readRaw(P)))
+      };
+    }
+  },
+
+  /* 【账②】旁路快照**故意删掉** ⇒ 下一轮同步**不重复建节点**：那份"哪个文件对应哪个节点"的记账
+   * 改由**树里各文件节点的 `origin` 现算**（引擎 `planBindingSync` 的 `knownNodeOf`）。
+   * 这句话（`docs/DATA-FORMAT.md` §1.5 / `bind-sync` 的描述）在 HEAD 上**没有代码支撑**：实测
+   * 同一场景"快照读不出来 ⇒ 节点 5→9"（同一份文件两个同名节点）。 */
+  {
+    name: '子 【账②】把旁路快照**删掉**（`.bindings.json` 真没了）⇒ 一轮同步后**节点数不翻倍**、每个文件仍只有一个节点、源目录一个文件都没少（盘上零删除）、并且后面的轮次回到"没变化"（判定依据：项目 JSON 逐节点现算 + 界面 lastSync 读数 + 快照重建后再跑一轮的 CLI 读数）',
+    run: async (ctx) => {
+      const snapPath = path.join(projectsDir(), P, '.bindings.json');
+      const nodesBefore = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
+      const allBefore = allNodes(P).length;
+      const srcBefore = fs.readdirSync(SRC_DIR).sort();
+      const topicsBefore = nodesBefore.map((x) => x.split(':').slice(1).join(':')).sort();
+
+      fs.rmSync(snapPath);                                          // 快照真没了（人为删掉那个工作产物）
+      const snapGone = !fs.existsSync(snapPath);
+      const syncClick = await clickSel(ctx, '#bind-btn-sync');      // 真鼠标：人点的「立即同步」
+      const settled = await waitUntil(async () => {
+        const st = await bindState(ctx);
+        return !!(st && st.lastSync && Number(st.lastSync.reconnected) > 0) && fs.existsSync(snapPath);
+      }, 30000);
+      await sleep(300);
+      const st = await bindState(ctx);
+      const last = (st && st.lastSync) || {};
+      const nodesAfter = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
+      const allAfter = allNodes(P).length;
+      const snapAfter = fs.existsSync(snapPath) ? JSON.parse(fs.readFileSync(snapPath, 'utf8')) : null;
+      const again = JSON.parse(ctx.runCli(['bind-sync', P, '--dry-run', '--json']));
+      const againRow = (again.sync && again.sync[0]) || {};
+      const dup = {};
+      nodesAfter.forEach((x) => { const t = x.split(':').slice(1).join(':'); dup[t] = (dup[t] || 0) + 1; });
+
+      return {
+        ok: snapGone === true && syncClick.ok === true && settled.ok === true
+          /* 认回来：全部文件都接回原节点（就地更新），一个都不许当新增 */
+          && last.added === 0 && last.reconnected === nodesBefore.length
+          && (last.reconnectedList || []).every((x) => x.from === 'origin')
+          /* 节点数不翻倍 + 每个文件只有一个节点 + 树里节点总数不变 */
+          && nodesAfter.length === nodesBefore.length && allAfter === allBefore
+          && nodesAfter.map((x) => x.split(':').slice(1).join(':')).sort().join(' ') === topicsBefore.join(' ')
+          && Object.keys(dup).every((t) => dup[t] === 1)
+          /* 盘上零删除 */
+          && fs.readdirSync(SRC_DIR).sort().join(' ') === srcBefore.join(' ')
+          /* 快照重建 + 后面的轮次回到"没变化"（= 重建的那份记账与树真的对上了） */
+          && !!snapAfter && Object.keys(snapAfter.files).length === nodesBefore.length
+          && againRow.status === 'no-change' && againRow.unchanged === nodesBefore.length,
+        text: '快照删掉=' + snapGone + '（' + snapPath + '）'
+          + ' · 真鼠标点「立即同步」=' + syncClick.ok + ' 等到读数=' + settled.ok + '（' + settled.ms + 'ms）'
+          + ' · 本轮读数：' + JSON.stringify({ added: last.added, modified: last.modified, reconnected: last.reconnected })
+          + ' 逐条=' + JSON.stringify(last.reconnectedList || [])
+          + ' · 盘上文件节点（前/后）=' + nodesBefore.length + '/' + nodesAfter.length
+          + ' · 同一个文件的节点计数=' + JSON.stringify(dup) + '（每个都必须是 1：不翻倍、不重名）'
+          + ' · 树里节点总数（前/后）=' + allBefore + '/' + allAfter
+          + ' · 源目录文件=' + JSON.stringify(fs.readdirSync(SRC_DIR).sort()) + '（**盘上零删除**）'
+          + ' · 快照重建=' + (!!snapAfter) + ' 收录 ' + (snapAfter ? Object.keys(snapAfter.files).length : -1) + ' 个文件'
+          + ' · 再跑一轮（--dry-run）：status=' + againRow.status + ' 没变=' + againRow.unchanged
+          + ' 新增=' + againRow.added + ' 更新=' + againRow.modified
       };
     }
   },

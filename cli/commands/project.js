@@ -1785,6 +1785,13 @@ module.exports = {
         // 而只取"本轮新提议"会漏掉**已经记进快照**的那几条（实测踩到，本批修：
         //  删一个文件之后再自动同步一次，界面上的"待确认删 K"会变成 0，而提议还在 ✗✗）。
         pending: union.length, pendingBefore: union.length, unconverted: unconverted.length,
+        /* 「认回来」的那些文件（引擎的 `plan.reconnected`，逐条点名）：快照丢了的下一轮、
+         * 或者"提议删过的文件又回来"的那一轮，它们**没有**新建同名节点，而是就地更新了原节点。
+         * 这条读数是"没有重复建节点"的可机器判定面 —— 只看 added/modified 是看不出来的。 */
+        reconnected: plan ? plan.reconnected.length : 0,
+        reconnectedList: plan ? plan.reconnected.map((x) => ({
+          rel: x.rel, nodeId: x.nodeId, from: x.from, proposalWithdrawn: !!x.proposalWithdrawn
+        })) : [],
         // 逐条点名的那份清单（铁律②：未转换的**不许**只有一个数字）—— `--json` 里也有它
         unconvertedList: unconverted.map((u) => ({
           rel: u.rel, reason: u.reason, label: u.label || null, message: u.message || null
@@ -1821,7 +1828,8 @@ module.exports = {
           row.note = '**不能确认删除**：' + st.unreadable + ' ⇒ 提议读不到就不许当成"没有提议"'
             + ' ⇒ 这一轮**一个节点都没删**。两条出路：① 修好/恢复那份旁路快照（`'
             + docImport.BINDING_STATE_FILE + '`）再确认；② 确实不要这些提议了 ⇒ 用 '
-            + '`--forget-snapshot` 把快照丢掉重来（⚠️ 那会把全部文件当新增，可能多出一批节点，不自动做 ✗）。';
+            + '`--forget-snapshot` 把快照丢掉重来（⚠️ 那会重读一遍全部文件、按树里的 `origin` 接回各文件的节点'
+            + '（接不回的才当新增），**代价是**丢掉这些"待确认"的提议（K 归 0），不自动做 ✗）。';
           errors.push({ binding: binding.id, error: row.note });
           results.push(row);
           return;
@@ -2062,6 +2070,14 @@ module.exports = {
         lines.push('  ' + (r.note || ''));
       }
       if (r.status !== 'no-change' || !r.note) {
+        /* 「认回来」的逐条点名（与 `added/modified` 分开说：它们是**就地更新**，不是新节点）*/
+        if (r.reconnected) {
+          const withdrawn = (r.reconnectedList || []).filter((x) => x.proposalWithdrawn).length;
+          lines.push('  ♻ ' + r.reconnected + ' 个文件**接回了原节点**（就地更新，没有新建同名节点）：'
+            + r.reconnectedList.map((x) => x.rel + (x.from === 'pending' ? '（提议点名过）' : '（树里的 origin）')).join('、')
+            + (withdrawn ? '；其中 ' + withdrawn + ' 条"待确认删除"提议随之**撤回**'
+              + '（文件回来了 ⇒ 那条提议不再成立；未确认之前盘上一个节点都没少）' : ''));
+        }
         // 提议的读数（**并集**）：K 与"逐条点名"永远出自同一份数据（见上面 report.deletions 的说明）
         if (r.pending) {
           lines.push('  ⏳ 待确认删除 ' + r.pending + ' 条（盘上的文件没了 ⇒ **树里一个节点都没动**，'
@@ -2074,6 +2090,10 @@ module.exports = {
       if (r.snapshotUnreadable) {
         lines.push('  ⚠️ **旁路快照读不出来**：' + r.snapshotUnreadable
           + ' ⇒ 这一轮的"待确认"读数不可信（提议读不到 ≠ 没有提议）；删除确认在这个状态下**会拒绝执行**。');
+        /* 快照没了 ⇒ "哪个文件对应哪个节点"改由**树里各文件节点的 `origin` 现算**（同一份记账，
+         * 只不过那份是数据本身）。这条读数就是"丢了快照也不会重复建节点"的证据面。 */
+        lines.push('     · 本轮"文件 → 节点"的对应关系由树里的 `origin` 现算：' + r.reconnected
+          + ' 个文件接回了原节点（就地更新），' + r.added + ' 个当新增 —— **没有**因为丢了快照就重复建节点 ✓');
       }
     });
     const unconvertedAll = report.unconverted;

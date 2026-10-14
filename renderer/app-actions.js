@@ -226,7 +226,13 @@
    *   ③ 然后才让主进程卸载这一页（`desktop.dsh.closeMapPage()` ⇒ 主窗口导航到占位页）。
    * 主进程做不了这个判断：脏标记只活在渲染层内存里（页面一卸载连它一起没了）⇒ 必须在这之前问。
    * ⚠️ headless（冒烟/自动化）下**不能真弹 `window.confirm`**：没人回答会把整轮卡死（实测踩过）
-   *    ⇒ `setConfirmStub()` 给自动化换掉确认框（默认就是 window.confirm ✓）。 */
+   *    ⇒ `setConfirmStub()` 给自动化换掉确认框（默认就是 window.confirm ✓）。
+   *
+   * ⚠️⚠️ **本模块里每一处"同步确认框"都必须走 `confirmFn`，不许直接写 `window.confirm`**（一处实现）：
+   *   2026-10-14 实测踩到过一次 —— 切项目的守卫（`confirmDiscardIfDirty`）当时直接调 `window.confirm` 本体，
+   *   而 `setConfirmStub` 只换掉了这个文件里另一个调用点 ⇒ 配了桩也没用，无头跑里"界面脏 + 切项目"
+   *   把**渲染层的 JS 线程整个卡住**（`executeJavaScript` 永不返回、整轮冒烟连守卫到期前的输出都没有，
+   *   只能强杀 ✗✗）。桩是给自动化用的**唯一**入口，漏掉一处 = 那个入口在无头下不可用。 */
   let confirmFn = (msg) => window.confirm(msg);
   function setConfirmStub(fn) { confirmFn = (typeof fn === 'function') ? fn : ((msg) => window.confirm(msg)); }
 
@@ -248,11 +254,14 @@
     return true;
   }
 
-  /** 有未保存改动时询问用户；返回 false 表示用户选择取消 */
+  /** 有未保存改动时询问用户；返回 false 表示用户选择取消。
+   *  ⚠️ 走 `confirmFn`（**不是** `window.confirm` 本体）：这是"切项目/重开项目会丢掉未保存改动"那道
+   *  守卫，无头跑里同样没人回答模态 —— 直接调本体就会把渲染层 JS 线程卡死（见上面那一大段说明）。
+   *  真机行为一个字没变：`confirmFn` 的缺省实现就是 `(msg) => window.confirm(msg)`。 */
   function confirmDiscardIfDirty(actionLabel) {
     if (!isDirty()) return true;
     // Electron 渲染层可用同步 confirm（本项目无对话框封装，且这是打断性确认，同步更简单可靠）
-    return window.confirm('当前有未保存的改动，' + (actionLabel || '继续') + '将丢失这些改动。\n\n要放弃改动吗？\n（点「取消」返回并先保存）');
+    return confirmFn('当前有未保存的改动，' + (actionLabel || '继续') + '将丢失这些改动。\n\n要放弃改动吗？\n（点「取消」返回并先保存）');
   }
 
   /* ================= 撤销/重做（快照式） =================
@@ -422,7 +431,8 @@
       lines.push('删除节点会留下悬空引用（保存会被校验闸门拒绝），故需一并清理'
         + (affected.length ? '（清到只剩一个成员的关联会整篇删除）' : '') + '。');
       lines.push('要一起清理吗？点「取消」则先不删。');
-      if (!window.confirm(lines.join('\n'))) {
+      // 同一处实现（见 `confirmFn` 那一段）：这里**也不许**直接调 `window.confirm` 本体
+      if (!confirmFn(lines.join('\n'))) {
         setStatus('已取消删除：「' + node.topic + '」被 ' + (affected.length + inLinks.length) + ' 处引用');
         return;
       }

@@ -71,6 +71,18 @@
       : why === 'manual' ? '你点的「立即同步」' : '自动同步');
   const ACT_LABEL = { pause: '暂停', resume: '继续', sync: '立即同步', unbind: '解绑' };
 
+  /** 「认回来」那句话（**唯一一处**：状态条 / 状态栏 / 播报都读它，不许各写一份）。
+   *  `row` = CLI 报告里那一行（`reconnected` / `reconnectedList`，引擎算的，界面一个数都不自己算）。
+   *  两个事实都要说：① 没有新建同名节点（就地更新了原节点）；② "文件回来了"那种连带撤回了一条提议。 */
+  function reconnectNoteOf(row) {
+    const n = Number(row && row.reconnected) || 0;
+    if (!n) return '';
+    const withdrawn = ((row && row.reconnectedList) || [])
+      .filter((x) => x && x.proposalWithdrawn).length;
+    return ' · ♻ ' + n + ' 个文件接回了原节点（没有新建同名节点）'
+      + (withdrawn ? '；其中 ' + withdrawn + ' 条待确认提议已撤回（那个文件回来了）' : '');
+  }
+
   /* ================= ② 状态区（唯一渲染入口） ================= */
   /**
    * 把状态条画出来。**每一个数都从 CLI 报告里直接取**：
@@ -119,6 +131,11 @@
       unreadable ? '待确认删 ?（**提议读不到**）' : ('待确认删 ' + b.pending),
       '未转换 ' + b.unconverted
     ];
+    /* 「认回来」的读数（引擎逐条点名的那几个文件）：快照丢了 / 提议删过的文件又回来时会 >0。
+     * 它必须**看得见** —— 否则用户只看到"节点没变多"，说不出为什么没多。 */
+    if (lastSync && lastSync.reconnected) {
+      parts.push('本次 ♻ 接回原节点 ' + lastSync.reconnected + ' 个');
+    }
     if (unreadable) parts.push('⚠️ ' + unreadable + ' ⇒ 确认流**拒绝执行**（先修好/恢复这份旁路快照；或按引擎给的两条出路走）');
     if (b.note) parts.push('（' + b.note + '）');
     if (rows.length > 1) parts.push('（另有 ' + (rows.length - 1) + ' 条绑定：这一版界面只操作第一条）');
@@ -137,6 +154,8 @@
     bar.setAttribute('data-bind-dir', b.dir || '');
     bar.setAttribute('data-bind-added', String(lastSync ? lastSync.added : ''));
     bar.setAttribute('data-bind-modified', String(lastSync ? lastSync.modified : ''));
+    // 「认回来」的读数（同上：与界面文字**同一批读数**，给断言/排查用）
+    bar.setAttribute('data-bind-reconnected', String(lastSync ? (lastSync.reconnected || 0) : ''));
     if (btnToggle) {
       btnToggle.style.display = '';
       btnToggle.textContent = b.active ? '暂停' : '继续';
@@ -268,12 +287,15 @@
       id.textContent = '（节点 ' + (x.nodeId || '**读不到**') + '）';
       it.appendChild(nm); it.appendChild(src); it.appendChild(id);
       if (x.revived) {
-        /* 边界①（引擎既定语义，本批**如实说清后果**、不动引擎）：提议删过的文件又出现 ⇒ 引擎按
-         * "新增"处理 ⇒ 树里同一个文件两个节点。确认之后旧的那个被摘掉 ⇒ 又回到一个。 */
+        /* 文件**又回来了**、但这一轮**接不回**它原来的节点（转不了 / 那个节点已经不在了）⇒ 提议照旧留着
+         * 等人判断。⚠️ 反过来那一档（回来了且接得回）**根本不会出现在这张清单上**：引擎会就地更新原节点
+         * 并把这条提议**撤回**（`plan.reconnected` 里带 `proposalWithdrawn`）—— 不再"按新增处理、
+         * 多一个同名节点、等确认之后才回到一个"（那是本批修掉的旧语义）。 */
         const rv = document.createElement('div');
         rv.className = 'bind-pending-revived';
-        rv.textContent = '⚠️ 这个文件**又回来了**：引擎按"新增"处理 ⇒ 树里现在同一个文件有两个节点；'
-          + '确认之后上面那条旧节点被摘掉，就又回到一个（不确认的话会一直是两个）。';
+        rv.textContent = '⚠️ 这个文件**又回来了**，但这一轮**接不回**原来的节点（这次转不了它，'
+          + '或者上面那个节点已经不在树里了）⇒ 这条提议仍然算数，等你决定。'
+          + '（能接回的那种情况根本不会列在这里：文件一回来，引擎就把它接回原节点并撤回这条提议。）';
         it.appendChild(rv);
       }
       list.appendChild(it);
@@ -445,6 +467,7 @@
         + (synced ? (' · CLI 报告：新增 ' + synced.added + ' 个文件 / 更新 ' + synced.modified + ' 个'
           + (synced.pending ? (' / 待确认删 ' + synced.pending + ' 个') : '')
           + (synced.unconverted ? (' / 未转换 ' + synced.unconverted + ' 个') : '')) : '')
+        + (synced ? reconnectNoteOf(synced) : '')
         + ' · 下面每一行是**节点**（一个文件会带进它文档里的层级节点）',
       hint: '这一层**只看不写**：点一行只是跳到那个节点（不改数据、不写盘）。'
         + '"哪些节点变了"由主进程在起 CLI 前后各读一次项目、用 src/concurrency.js 现算（与差异预览同一个函数）；'
@@ -493,10 +516,13 @@
       + '：新增 ' + synced.added + ' 个文件 / 更新 ' + synced.modified + ' 个'
       + (synced.pending ? ' · 待确认删 ' + synced.pending + ' 个（**节点一个都没删**）' : '')
       + ' · 未转换 ' + synced.unconverted + ' 个';
-    showBindBanner(text + ' —— 点开看这次加进来的是哪些节点');
-    if (MM.setStatus) MM.setStatus(text);
+    /* 「认回来」单独说一句（快照丢了 / 文件删过又回来）：**没有新建同名节点**，是就地更新了原节点；
+     * 若是"文件回来了"那种，那条待确认的提议也随之撤回 —— 两件事都要让人看得见。 */
+    const reconnectedNote = reconnectNoteOf(synced);
+    showBindBanner(text + reconnectedNote + ' —— 点开看这次加进来的是哪些节点');
+    if (MM.setStatus) MM.setStatus(text + reconnectedNote);
     renderBar();
-    return { synced: synced, text: text };
+    return { synced: synced, text: text + reconnectedNote };
   }
 
   /** 主进程发来的"自动同步真的写过盘"事件（事件驱动 / 兜底巡检两条自动路都会来） */

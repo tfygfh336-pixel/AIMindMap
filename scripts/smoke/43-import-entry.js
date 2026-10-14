@@ -17,6 +17,10 @@
  *      预览期间盘上零写入（那个项目还没出现）；预览数 = 现算数（判据③的目录那一半 + 判据②）。
  *   己 默认档：浮层全 `display:none`、命中测试落不到、**工具栏里一个 import 元素都没有**、
  *      `#main` 顶边 = 工具栏底边（没在导入时这一批不许让界面多出一个像素）。
+ *   庚 【账①】切项目守卫（`confirmDiscardIfDirty`）走**同一个打桩口**（`MM.setConfirmStub`）：
+ *      桩说"取消" ⇒ 守卫按取消处理（留在原项目、改动还在）；桩说"确定" ⇒ 按确定处理（真的切过去）；
+ *      桩复位 ⇒ 守卫仍落到 `window.confirm` 本体（真机路径未变）。三步都必须**取得到读数**——
+ *      之前这条守卫直接用 `window.confirm` 本体，无头跑里"界面脏 + 切项目"会把渲染层 JS 线程整个卡住 ✗。
  *
  * 判据纪律（与 36/37/42 同）：可见性一律 `document.elementFromPoint`（`rect` 只用来定位）；
  * 动作一律**真鼠标**（`ctx.input.click` 走 Chromium 命中测试），不是 dispatchEvent 合成事件；
@@ -39,6 +43,8 @@ const SRC = path.join(os.tmpdir(), 'zz-imp-src');
 const LIB = path.join(os.tmpdir(), 'zz-imp-lib');
 const P = 'zz-imp-entry';            // 文件那一路的目标项目
 const P_DIR = 'zz-imp-lib';          // 目录那一路会**新建**的项目（名字 = 目录名清洗后的结果）
+/** 庚 用：切过去的那一个**沙箱**项目（切项目的守卫要有"另一个项目"才走得到；真项目一个都不碰） */
+const P_OTHER = 'zz-imp-switch';
 const STAMP = String(Date.now());
 const PARENT_ID = 'p-imp-parent';
 const PARENT_TOPIC = '导入落点 ' + STAMP;
@@ -203,17 +209,21 @@ async function dirtyOf(ctx) {
   return await ctx.exec('(function () { try { return !!(window.MMApp.isDirty && window.MMApp.isDirty()); }'
     + ' catch (e) { return "err:" + ((e && e.message) || e); } })()');
 }
-/** 自动化用：把「放弃未保存改动吗」这类**同步确认框**打桩。
- *  ⚠️ 为什么不能只靠 `MMApp.setConfirmStub`（域 23 的那条路）：那条只换掉 `closeMapPage` 用的 `confirmFn`，
- *  而**切项目**那道守卫（`confirmDiscardIfDirty`）走的是 **`window.confirm` 本体** ⇒ 无头跑里没人回答，
- *  **渲染层的 JS 线程整个卡住**（实测：`executeJavaScript` 永不返回、整轮冒烟连守卫到期前的输出都没有 ✗✗）。 */
+/** 自动化用：把「放弃未保存改动吗」这类**同步确认框**打桩 —— 走产品自己的那**一个**打桩口
+ *  （`MM.setConfirmStub`；它的缺省实现就是 `window.confirm`）。
+ *  ⚠️ 2026-10-14 之前这里覆盖 `window.confirm` **本体**，因为当时那是唯一管用的路：切项目的守卫
+ *  （`confirmDiscardIfDirty`）**直接调 `window.confirm`**、`setConfirmStub` 管不到它 ⇒ 无头跑里
+ *  "界面脏 + 切项目"把**渲染层的 JS 线程整个卡住**（实测：`executeJavaScript` 永不返回、
+ *  整轮冒烟连守卫到期前的输出都没有 ✗✗）。**账① 把那一处接上了同一个打桩口** ⇒ 这里改回
+ *  产品那条路（覆盖 `window.confirm` 不再必要），并由 庚 那一条把这三种口径钉住。 */
 function stubConfirmJs(counterName) {
   return '(function () { window.' + counterName + ' = 0;'
-    + ' if (!window.__mm43OrigConfirm) window.__mm43OrigConfirm = window.confirm;'
-    + ' window.confirm = function () { window.' + counterName + ' += 1; return true; }; return 1; })()';
+    + ' if (!window.MMApp || !window.MMApp.setConfirmStub) return "no-stub-api";'
+    + ' window.MMApp.setConfirmStub(function (m) { window.' + counterName + ' += 1; return true; });'
+    + ' return 1; })()';
 }
 function restoreConfirmJs() {
-  return '(function () { if (window.__mm43OrigConfirm) { window.confirm = window.__mm43OrigConfirm; } return 1; })()';
+  return '(function () { if (window.MMApp && window.MMApp.setConfirmStub) window.MMApp.setConfirmStub(null); return 1; })()';
 }
 function confirmCallsJs(counterName) {
   return '(function () { return window.' + counterName + ' || 0; })()';
@@ -631,6 +641,105 @@ const assertions = [
           + ' · 非根全部折叠=' + allCollapsed + ' · 根 expanded=' + rootRow.expanded
           + ' · 对拍：预览 ' + (pv && pv.added) + ' = 现算 ' + nonRoot.length
           + ' · validate 退出码=' + v.code + ' · 导入后界面脏=' + dirtyAfter
+      };
+    }
+  },
+
+  /* 【账①】切项目守卫接上**同一个打桩口** —— 这条断言的三步就是那条账的三个判据。
+   * 为什么必须在这里也有一条：无头跑里"界面脏 + 切项目"曾经把**渲染层的 JS 线程整个卡住**
+   * （那条守卫直接调 `window.confirm` 本体，而 `setConfirmStub` 只换掉了另一个调用点）⇒
+   * 实测只能强杀，整轮冒烟连守卫到期前的输出都拿不到。现在三步都必须**取得到读数**。 */
+  {
+    name: '庚 切项目守卫走**同一个打桩口**（`MM.setConfirmStub`）：桩说"取消" ⇒ 守卫按取消处理（留在原项目、改动还在）；桩说"确定" ⇒ 按确定处理（真的切过去）；桩复位 ⇒ 守卫仍落到 `window.confirm` 本体（真机路径未变）。三步都要取得到读数（无头下渲染层不再卡死）（判定依据：真 openProject 往返 + 三条读数 + 事后仍有响应；带 12 秒上限，超时按红计）',
+    run: async (ctx) => {
+      const mm = require('../smoke-assertions.js');
+      const cleaned = await mm.closeDialogs(ctx);
+      ctx.runCli(['init', P_OTHER]);
+      /* 先把界面放回本域的沙箱项目 P（前一条断言可能停在"整库导入新建的那个项目"上）：
+       * 用产品路径切回去，此刻的桩是域 43 平时的那个（返回 true ⇒ 不会弹模态）。 */
+      await ctx.exec('(function () { return window.MMApp.openProject(' + JSON.stringify(P) + '); })()');
+      await sleep(300);
+
+      /* ⚠️ **带上限**：这三步在"打桩口没接上"时会卡住渲染层（超时唯一能说话的人）⇒
+       *   超时**按红计**（`timeout: true` 进 ok 判定），而不是把整条链挂死等冒烟守卫来杀。 */
+      const t0 = Date.now();
+      const raced = await Promise.race([
+        ctx.exec(`(async function () {
+          var app = window.MMApp;
+          var other = ${JSON.stringify(P_OTHER)};
+          var cur = function () { var st = app.getState(); return (st && st.project && st.project.name) || ''; };
+          var has = function (id) { var st = app.getState(); return !!(st && st.jm && st.jm.mind && st.jm.mind.nodes[id]); };
+          var out = { start: cur() };
+          // 造脏（与域 09 同源：内存里加一个节点 —— 不开模态、可原样撤回）
+          var jm = app.getState().jm;
+          if (!has('geng-probe-1')) jm.add_node('root', 'geng-probe-1', '脏项目探针', { detail: '' });
+          out.dirtyBefore = !!app.isDirty();
+
+          // ① 桩说「取消」⇒ 守卫按取消处理（留在原项目、改动还在）+ 渲染层仍有响应
+          var calls = 0, msg = '';
+          app.setConfirmStub(function (m) { calls += 1; msg = String(m); return false; });
+          var okCancel = await app.openProject(other);
+          out.cancel = { ok: okCancel, calls: calls, msg: msg, cur: cur(),
+            dirty: !!app.isDirty(), probeAlive: has('geng-probe-1'), alive: (1 + 1) === 2, ms: 0 };
+
+          // ② 桩说「确定」⇒ 按确定处理（真的切过去；改动按"人确认放弃"的语义丢掉）
+          calls = 0;
+          app.setConfirmStub(function (m) { calls += 1; msg = String(m); return true; });
+          var okGo = await app.openProject(other);
+          out.go = { ok: okGo, calls: calls, cur: cur(), dirty: !!app.isDirty(), alive: (1 + 1) === 2 };
+
+          // ③ 桩**复位** ⇒ 守卫仍然落到 window.confirm 本体（真机路径未变；这里用**替身**接住，
+          //    免得无头下真弹模态 —— 替身被调到，就是"确实走了原生那一条"的证据）
+          app.setConfirmStub(null);
+          var jm2 = app.getState().jm;
+          if (!has('geng-probe-2')) jm2.add_node('root', 'geng-probe-2', '脏项目探针2', { detail: '' });
+          out.dirtyForReal = !!app.isDirty();
+          var realCalls = 0, realMsg = '';
+          var origConfirm = window.confirm;
+          window.confirm = function (m) { realCalls += 1; realMsg = String(m); return false; };
+          var okBack = null;
+          try { okBack = await app.openProject(${JSON.stringify(P)}); }
+          finally { window.confirm = origConfirm; }
+          out.real = { ok: okBack, calls: realCalls, msg: realMsg, cur: cur(),
+            dirty: !!app.isDirty(), alive: (1 + 1) === 2 };
+
+          // 收尾：把当前这个沙箱项目恢复干净（撤掉探针 + 保存）⇒ 己 那一条交还项目时不会再碰守卫
+          var jm3 = app.getState().jm;
+          if (has('geng-probe-2')) jm3.remove_node('geng-probe-2');
+          out.savedClean = await app.save();
+          out.dirtyEnd = !!app.isDirty();
+          out.curEnd = cur();
+          return out;
+        })()`),
+        new Promise((res) => setTimeout(() => res({ timeout: true }), 12000))
+      ]);
+      const ms = Date.now() - t0;
+      await ctx.exec(stubConfirmJs('__mm43Confirm'));      // 交还给己：域 43 平时的那个桩（返回 true）
+      const R = raced && raced.timeout ? {} : (raced || {});
+      const C = R.cancel || {}, G = R.go || {}, RE = R.real || {};
+      return {
+        ok: !raced.timeout
+          && R.dirtyBefore === true
+          && C.ok === false && C.calls === 1 && C.cur === P && C.dirty === true
+          && C.probeAlive === true && C.alive === true
+          && /切换项目/.test(String(C.msg)) && /未保存/.test(String(C.msg))
+          && G.ok === true && G.calls === 1 && G.cur === P_OTHER && G.alive === true
+          && R.dirtyForReal === true
+          && RE.ok === false && RE.calls === 1 && RE.cur === P_OTHER && RE.alive === true
+          && /切换项目/.test(String(RE.msg)) && /未保存/.test(String(RE.msg))
+          && R.savedClean === true && R.dirtyEnd === false
+          && ms < 12000,
+        text: '起点=' + R.start + ' 造脏=' + R.dirtyBefore
+          + ' ｜ ① 桩=取消：openProject 返回=' + C.ok + ' 桩被调=' + C.calls + ' 次'
+          + ' 现在开着=「' + C.cur + '」（应留在 ' + P + '）仍脏=' + C.dirty + ' 探针节点还在=' + C.probeAlive
+          + ' 事后读数可取=' + C.alive
+          + ' ｜ 桩收到的原话「' + String(C.msg).slice(0, 60) + '…」'
+          + ' ｜ ② 桩=确定：openProject 返回=' + G.ok + ' 桩被调=' + G.calls + ' 次 现在开着=「' + G.cur + '」'
+          + ' ｜ ③ 桩复位：window.confirm 替身被调=' + RE.calls + ' 次、openProject 返回=' + RE.ok
+          + ' 仍留在=「' + RE.cur + '」 事后读数可取=' + RE.alive
+          + ' ｜ 收尾：撤探针并保存=' + R.savedClean + ' 脏=' + R.dirtyEnd + ' 现在开着=「' + R.curEnd + '」'
+          + ' ｜ 三步总耗时=' + ms + 'ms' + (raced.timeout ? '（**超时 ⇒ 按红计**：渲染层没有回来）' : '')
+          + ' ｜ 收干净的产品模态=' + cleaned.n + ' 个'
       };
     }
   },

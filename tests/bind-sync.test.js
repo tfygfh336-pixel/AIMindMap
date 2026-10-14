@@ -403,26 +403,105 @@ describe('G 绑定与增量（真 CLI）', () => {
     expect(sha(projFile()), '拒绝时盘上一个字节都不写').toBe(h);
     expect(JSON.stringify(readProject().data)).toBe(treeBefore);
     /* 普通同步（非确认）照旧跑，但**响亮**说快照读不出来（HEAD 上是静默的：实测同一场景
-     *   —— 坏快照 + 普通同步 ⇒ 节点 5→9 —— HEAD 报文里连"旁路快照"四个字都没有 ✗，本批补上）。
-     * ⚠️ 一条**既有**语义如实记在这里（本批**不修**，只把它说响）：快照读不出来 ⇒ 那份"哪个文件
-     *   对应哪个节点"的记账就没了 ⇒ 普通同步会把全部文件当**新增**（与 `--forget-snapshot` 同一后果：
-     *   多出一批同名节点）。**零风险不变式仍然成立**：只增不减（节点一个都不会少）。
-     *   要做到"不重复建节点"得把 `bindingSnapshotOf`（现算 origin→节点）接进同步计划 —— 那是引擎的
-     *   语义变更，按纪律**先回报**、不在本批里顺手改。 */
+     *   —— 坏快照 + 普通同步 ⇒ 节点 5→9 —— HEAD 报文里连"旁路快照"四个字都没有 ✗，上一批补上）。
+     * ⚠️ 【账②】上一批**只把它说响**、没有改语义（"快照读不出来 ⇒ 那份'哪个文件对应哪个节点'的
+     *   记账就没了 ⇒ 全部文件当**新增** ⇒ 多出一批同名节点"）。本批把**语义**也改到位：
+     *   计划改用树里各文件节点的 `origin` 现算那份对应关系（`planBindingSnapshotOf` → `knownNodeOf`）
+     *   ⇒ 快照丢了/坏了的那一轮，文件**就地更新**它原来的节点，**节点数一个都不多** ✓
+     *   （这句话的落点就是下面这条 `toBe(nodesBefore)`；旧断言只要求"不减少"，那对"重复建节点"是盲的）。 */
     const nodesBefore = (() => {
       let n = 0;
       (function walk(x) { if (!x) return; n++; (x.children || []).forEach(walk); })(readProject().data);
       return n;
     })();
-    const plain = run(['bind-sync', P]);
+    const plain = run(['bind-sync', P]);                                // 文本档：两句话都要看得见
     expect(plain.code).toBe(0);
-    expect(outOf(plain), 'HEAD 静默、本批必须点名').toContain('旁路快照读不出来');
+    expect(outOf(plain), 'HEAD 静默、上一批起必须点名').toContain('旁路快照读不出来');
+    expect(outOf(plain), '本轮"认回来"的读数要看得见').toMatch(/接回了原节点/);
     const nodesAfter = (() => {
       let n = 0;
       (function walk(x) { if (!x) return; n++; (x.children || []).forEach(walk); })(readProject().data);
       return n;
     })();
-    expect(nodesAfter, '快照读不出来的那一轮：只增不减（不变式）').toBeGreaterThanOrEqual(nodesBefore);
+    expect(nodesAfter, '快照读不出来的那一轮：**节点数不变**（既不减、也不重复建）').toBe(nodesBefore);
+    // 同一个文件的节点在树里只许有一个（重名 = 重复建节点的可见后果）
+    const topics = [];
+    (function walk(x) { if (!x) return; topics.push(x.topic); (x.children || []).forEach(walk); })(readProject().data);
+    ['a', 'b'].forEach((t) => expect(topics.filter((y) => y === t), '同名节点只能有一个：' + t).toHaveLength(1));
+  });
+
+  it('G8 【账②】`--forget-snapshot`（人为丢掉旁路快照）⇒ 一轮同步后**节点数不变**、盘上零删除', () => {
+    writeTree(SRC, { 'a.md': '# 甲书\n', 'b.md': '# 乙书\n', 'c.md': '# 丙书\n' });
+    expect(run(['bind-sync', P, '--bind', '--dir', SRC]).code).toBe(0);
+    expect(run(['bind-sync', P]).code).toBe(0);
+    const countNodes = () => {
+      let n = 0;
+      (function walk(x) { if (!x) return; n++; (x.children || []).forEach(walk); })(readProject().data);
+      return n;
+    };
+    const n0 = countNodes();
+    const filesBefore = fs.readdirSync(SRC).sort();
+    expect(run(['bind-sync', P, '--forget-snapshot']).code).toBe(0);
+    expect(exists(stateFile()), '快照真的没了').toBe(false);
+    const r = run(['bind-sync', P, '--json']);
+    expect(r.code, outOf(r)).toBe(0);
+    const j = JSON.parse(outOf(r));
+    expect(j.sync[0].added, '一个都不许当新增').toBe(0);
+    expect(j.sync[0].reconnected, '三个文件全部接回原节点').toBe(3);
+    expect(j.sync[0].reconnectedList.every((x) => x.from === 'origin')).toBe(true);
+    expect(countNodes(), '节点数不变（HEAD 上这里会翻倍）').toBe(n0);
+    expect(fs.readdirSync(SRC).sort(), '源目录一个文件都没少（**盘上零删除**）').toEqual(filesBefore);
+    // 快照重建之后：下一轮没有变化
+    const again = JSON.parse(outOf(run(['bind-sync', P, '--json'])));
+    expect(again.sync[0].status).toBe('no-change');
+    expect(countNodes()).toBe(n0);
+  });
+
+  it('G9 【账③】删→提议→把文件放回 ⇒ 节点数回到原样、提议撤回、**没有第二个同名节点**', () => {
+    writeTree(SRC, { 'a.md': '# 甲书\n', 'b.md': '# 乙书\n' });
+    expect(run(['bind-sync', P, '--bind', '--dir', SRC]).code).toBe(0);
+    expect(run(['bind-sync', P]).code).toBe(0);
+    const countNodes = () => {
+      let n = 0;
+      (function walk(x) { if (!x) return; n++; (x.children || []).forEach(walk); })(readProject().data);
+      return n;
+    };
+    const topicsOf = () => {
+      const out = [];
+      (function walk(x) { if (!x) return; out.push(x.topic); (x.children || []).forEach(walk); })(readProject().data);
+      return out;
+    };
+    const n0 = countNodes();
+    fs.unlinkSync(path.join(SRC, 'b.md'));                              // 盘上真删一个
+    const p1 = JSON.parse(outOf(run(['bind-sync', P, '--json'])));
+    expect(p1.pending, '① 提议看得见；**节点一个都不少**').toBe(1);
+    expect(countNodes()).toBe(n0);
+    /* ⚠️ 关键半步（照 G6/域 42 壬 的做法）：**只提议的那一轮不改树 ⇒ 旁路快照根本不落盘**
+     *   （命令在 `bindingPlanChangesTree` 为假时早退）⇒ 那条提议此刻只活在**本轮报告**里。
+     *   本用例要烤的是"提议**存进快照**之后文件再回来"那一条路，所以先让树真变一次
+     *   （改 a.md 的内容⇒ 快照落盘，b.md 从 `files` 里移走、提议进 `pendingDeletions`）。 */
+    fs.writeFileSync(path.join(SRC, 'a.md'), '# 甲书（改过）\n', 'utf8');
+    expect(run(['bind-sync', P]).code).toBe(0);
+    const persisted = JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
+    expect(persisted.pendingDeletions.map((p) => p.rel), '提议已进快照').toEqual(['b.md']);
+    expect(Object.keys(persisted.files)).toEqual(['a.md']);
+    expect(countNodes()).toBe(n0);
+
+    fs.writeFileSync(path.join(SRC, 'b.md'), '# 乙书\n', 'utf8');        // 同一个文件放回（内容一样）
+    const r = run(['bind-sync', P, '--json']);
+    expect(r.code, outOf(r)).toBe(0);
+    const j = JSON.parse(outOf(r));
+    expect(j.sync[0].reconnected, '② 认得出它 ⇒ 接回原节点').toBe(1);
+    expect(j.sync[0].reconnectedList, '点名"是提议那条把它接回来的"')
+      .toEqual([{ rel: 'b.md', nodeId: persisted.pendingDeletions[0].nodeId, from: 'pending', proposalWithdrawn: true }]);
+    expect(j.sync[0].added, '不许当新增').toBe(0);
+    expect(j.pending, '④ K 回到 0（未确认的提议不再指向它）').toBe(0);
+    expect(countNodes(), '⑤ 节点数回到原样').toBe(n0);
+    expect(topicsOf().filter((t) => t === 'b'), '⑥ 不与既有节点重名').toHaveLength(1);
+    const snap = JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
+    expect(snap.pendingDeletions).toEqual([]);
+    // 文本档也把这件事说出来（人看的播报面：**不许静默**地少一条提议）
+    expect(outOf(run(['bind-sync', P]))).toMatch(/接回原节点|待确认删除 0 条/);
   });
 });
 
