@@ -474,6 +474,41 @@ function repointRefusal(unmatched, srcId) {
     + '② 让目标节点一起被复制（--deep 覆盖到它）—— 那时才存在"副本自己那份条目"。';
 }
 
+/* ================= `--index` 的合法上界（**唯一实现处**：`move` 与 `apply` 的 move op 共用） =================
+ * 为什么不是"目标父当前的子节点数"：
+ *   `src/tree-utils.js` 的 `moveNode` 顺序是 **先 `removeNode(root, id)`、再 `parent.children.splice(k,0,node)`**
+ *   —— 判定与插入都发生在"**已摘掉该节点**"的那棵树上。⇒
+ *       L' = 目标父**在移除该节点之后**的子节点数
+ *          = 目标父当前子数 − （该节点本来就是它的孩子 ? 1 : 0）
+ *      合法范围 = 0 … L'（k = L' 恰好是"插到末尾"）
+ *   **两种情形必须用同一个公式**：同父内重排（把第 3 个孩子拖到第 8 位）时 L' 比"当前子数"**小 1**，
+ *   跨父移动时两者相等。按"当前子数"算 ⇒ 同父重排时会把"拖到最后一个位置"判成越界（假红 ✗）。
+ *
+ * 为什么必须显式判（这是一个**真缺陷**，2026-10-14 只读取证 + 本批修）：
+ *   `tree.moveNode` 对越界 index **静默 clamp 到末尾**（`idx <= parent.children.length ? idx : children.length`），
+ *   而本命令原先只校验"非负整数"、**没有上界** ⇒ `move x y --index 999` 打印"已移动"、退出码 0，
+ *   实际插到了末尾 —— 调用方以为插到了第 999 位。MCP 的 `move_node` 把 `index` **直接透传**过来，
+ *   所以 AI 侧同样会踩（本批修在 CLI 一处 ⇒ MCP 透传即受益）。
+ *
+ * 为什么不放 `apply` 的预检 `v(ctx, raw, sim)`：预检的模拟树 `sim` 对 move 的建模是**近似的**
+ *   （`precheckOps` 只把节点**追加**到新父、**不从旧父移除**）⇒ 子数偏大、上界偏松 ⇒ 那里下结论会不可靠。
+ *   ⇒ 判定放在**执行期**（独立命令的 `ctx.mutate` 回调 / op 的 `run`）：抛错即整体不动、盘上零改动。
+ *   代价如实说：`--dry-run` **不会**提前报这一条（与既有的"移到自身子树"同一形状 —— 那条也只有执行期看得见）。
+ * 取不到目标父（= null）时不在这里报：让它落到 `moveNode` 的既有失败分支，保持那句报文原样。
+ */
+function moveIndexUpperBound(root, id, parentId) {
+  const p = tree.find(root, parentId);
+  if (!p) return null;
+  return (p.children || []).filter((c) => c && c.id !== id).length;
+}
+
+/** 越界拒绝文本（**说清合法范围** —— 光"失败"不够，接手者要照着改）。 */
+function moveIndexOutOfRange(id, parentId, idx, upper) {
+  return '--index 越界：' + idx + '；父节点 ' + parentId + ' **移除 ' + id + ' 之后**有 ' + upper
+    + ' 个子节点 ⇒ 合法范围 0–' + upper + '（' + upper + ' = 插到末尾）。'
+    + '**未写盘** ✓ —— 不许静默退化成"插到末尾"（那会让调用方以为插到了第 ' + idx + ' 位）';
+}
+
 module.exports = {
   add(ctx) {
     const parent = ctx.args._[1];
@@ -601,6 +636,11 @@ module.exports = {
       }
     }
     ctx.mutate((data) => {
+      // 上界必须在这里判（**不是**"目标父当前的子数" —— 公式与理由见 moveIndexUpperBound 的头注释）
+      const upper = moveIndexUpperBound(data.data, id, parent);
+      if (upper !== null && idx !== undefined && idx > upper) {
+        ctx.error(moveIndexOutOfRange(id, parent, idx, upper));
+      }
       const ok = ctx.tree.moveNode(data.data, id, parent, idx);
       if (!ok) ctx.error('移动失败（节点不存在 / 目标非法 / 移动到自身子树 / 索引越界）');
       return data;
@@ -1090,6 +1130,11 @@ const OPS = {
       };
     },
     run(ctx, data, a) {
+      // 上界（同一处实现；执行期判 ⇒ 抛错即**整份 ops 拒绝、盘上零改动**，见 apply 的函数头注释）
+      const upper = moveIndexUpperBound(data.data, a.id, a.parent);
+      if (upper !== null && a.index !== undefined && a.index > upper) {
+        throw new Error(moveIndexOutOfRange(a.id, a.parent, a.index, upper));
+      }
       const ok = tree.moveNode(data.data, a.id, a.parent, a.index);
       if (!ok) throw new Error('移动失败（目标非法 / 移到自身子树 / 索引越界）: ' + a.id + ' → ' + a.parent);
       return data;

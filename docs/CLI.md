@@ -216,7 +216,7 @@ node cli/mm-cli.js edit <项目> <id> [--topic 标题] [--detail html | --detail
 
 ### move
 
-移动节点到新父节点
+移动节点到新父节点。`--index n` = **移动完成后**在新父 children 里的下标（0 基）；上界 = 新父**移除该节点之后**的子节点数（n = 上界即插到末尾）⇒ 越界**响亮拒绝并报出合法范围**（不许静默退化成"插到末尾"）
 
 ```
 node cli/mm-cli.js move <项目> <id> <新父id> [--index n] [--dry-run]
