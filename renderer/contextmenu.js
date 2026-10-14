@@ -89,8 +89,10 @@
   /* ================= 菜单内容 ================= */
   /** 拖动树菜单项：进入/退出拖动模式（文案随当前模式切换）。
    *  进入时锁定 nodeId 所在**顶层主题树**（root 直接子节点）为拖动目标：
-   *  此后左键按住拖动 = 只移动该棵树，其他树不动（视图操作，不产生脏数据）。
-   *  仅节点菜单使用（右键树内任意节点都拖其所属整棵树）；root 无所属树，不显示。 */
+   *  此后左键按住拖动 = 只移动该棵树，其他树不动（视图操作，偏移随保存持久化）。
+   *  仅节点菜单使用（右键树内任意节点都拖其所属整棵树）；root 无所属树，不显示。
+   *  ⚠️ 这一条是**既有语义**（v0.15 起，一字未改）—— 「移动单位 = 整棵顶层主题树」。
+   *  R2 期 1 新增的**更细**那一档在同文件的 `subtreeDragItem`（两者并列，不是替换）。 */
   function dragModeItem(nodeId) {
     const app = () => window.MMApp;
     const active = !!(app().dragModeActive && app().dragModeActive());
@@ -105,6 +107,72 @@
       label: '拖动树：移动「' + topic + '」',
       action: () => app().setDragMode(true, treeRoot)
     };
+  }
+
+  /** 【R2 期 1 · b（位置可调）】拖动**这个子树**（nodeId 及其后代，不是整棵顶层主题树）。
+   *  只有**更深的节点**才显示：顶层主题那一档已由 `dragModeItem` 覆盖（同一个目标不必两条入口 ✗），
+   *  root 无所属子树（它是容器）。
+   *  拖动本身仍走既有那一套（`setDragMode(true, 任意节点id)` ⇒ treeOffsets 键域已扩到任意子树根），
+   *  本项只是**入口**。偏移随保存进 `meta.nodeOffsets`（契约见 docs/DATA-FORMAT.md §1）。 */
+  function subtreeDragItem(nodeId) {
+    const app = () => window.MMApp;
+    if (app().dragModeActive && app().dragModeActive()) return null;  // 已在拖动模式：只留"退出"那一条
+    const jm = app().getState().jm;
+    const n = jm && MM.adapter.getNode(jm, nodeId);
+    if (!n || n.isroot || !n.parent) return null;
+    if (n.parent.isroot) return null;                                  // 顶层主题：走 dragModeItem
+    return {
+      label: '拖动此子树：只移动「' + n.topic + '」及其子节点',
+      action: () => app().setDragMode(true, nodeId)
+    };
+  }
+
+  /** 【R2 期 1】「把这个子树移回自动布局」：只清**这个节点自己**那一项偏移
+   *  （拖动结果会保存 ⇒ 必须给一条清回去的路，否则用户拖远了只能靠改数据文件；
+   *   既有先例：框选菜单里那条"把这棵树移回自动布局"）。
+   *  只有它**自己**有偏移时才显示 —— 祖先（如顶层主题）的偏移归祖先那条入口管 ✓ */
+  function clearOffsetItem(nodeId) {
+    const app = () => window.MMApp;
+    if (!app().hasOwnOffset || !app().hasOwnOffset(nodeId)) return null;
+    const jm = app().getState().jm;
+    const n = jm && MM.adapter.getNode(jm, nodeId);
+    return {
+      label: '移回自动布局：清掉「' + (n ? n.topic : nodeId) + '」的手工位置',
+      action: () => {
+        app().clearTreeOffsets(nodeId);
+        app().setStatus('已把「' + (n ? n.topic : nodeId) + '」移回自动布局（记得保存）');
+      }
+    };
+  }
+
+  /** 【R2 期 1 · a（方向）】顶层主题的左右分侧入口 —— **只把已有语义变成可点**：
+   *  改的是 `meta.layout`（唯一真源），落地走"打开项目那一套"重渲染（见 app-view 的 setThemeSide）。
+   *  只有**顶层主题**显示：jsMind 只认 root 直接子节点的 `direction`，给更深的节点用是骗人
+   *  （实测探针见设计稿 §2.2.1）⇒ 深层节点不显示这一项，而不是显示了却不起作用 ✗ */
+  function themeSideItems(nodeId) {
+    const app = () => window.MMApp;
+    const jm = app().getState().jm;
+    const n = jm && MM.adapter.getNode(jm, nodeId);
+    if (!n || n.isroot || !n.parent || !n.parent.isroot) return [];
+    const cur = app().themeSideOf ? app().themeSideOf(nodeId) : null;
+    const act = (side) => () => {
+      let p = null;
+      try { p = app().setThemeSide(nodeId, side); }
+      catch (e) {                                  // 动作里抛异常必须**响亮**，不许静默消失 ✗
+        app().setStatus('分侧没生效：' + ((e && e.message) || e), true);
+        return;
+      }
+      if (p && typeof p.then === 'function') {
+        p.then((r) => { if (r && !r.ok) app().setStatus('分侧没生效：' + r.reason, true); })
+          .catch((e) => app().setStatus('分侧没生效：' + ((e && e.message) || e), true)); // 不静默 ✗
+      } else if (!p) {
+        app().setStatus('分侧没生效：没有 setThemeSide 入口', true);
+      }
+    };
+    return [
+      { label: '摆到左侧（整支）' + (cur === 'left' ? '（当前）' : ''), action: act('left') },
+      { label: '摆到右侧（整支）' + (cur === 'right' ? '（当前）' : ''), action: act('right') }
+    ];
   }
 
   function nodeMenu(nodeId) {
@@ -141,6 +209,16 @@
     if (dragItem) {
       items.push('---');
       items.push(dragItem);
+    }
+    // R2 期 1：更细的一档（拖动此子树）+ 手工位置的"清回去" + 顶层主题的左右分侧
+    const subDrag = subtreeDragItem(nodeId);
+    const clearOff = clearOffsetItem(nodeId);
+    const sideItems = themeSideItems(nodeId);
+    if (subDrag || clearOff || sideItems.length) {
+      items.push('---');
+      if (subDrag) items.push(subDrag);
+      if (clearOff) items.push(clearOff);
+      sideItems.forEach((it) => items.push(it));
     }
     openMenu(lastX, lastY, items);
   }

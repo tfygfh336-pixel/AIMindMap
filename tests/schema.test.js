@@ -6,7 +6,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { validateProject } from '../src/schema.js';
+import { validateProject, migrateNodeOffsets, OFFSET_KEYS, OFFSET_LIMIT, validateOffsetMap } from '../src/schema.js';
 import { renderDetail } from '../src/item-model.js';
 
 const wrap = (data, meta) => ({ meta: meta || { name: 'x' }, format: 'node_tree', data });
@@ -121,6 +121,86 @@ describe('schema.validateProject', () => {
     const bad5 = validateProject({ meta: { name: 'x', themeOffsets: { a: { x: 20001, y: 0 } } }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
     expect(bad5.ok).toBe(false);
     expect(bad5.errors.join(';')).toMatch(/超出允许范围/);
+  });
+
+  /* ---------------------------------------------------------------
+   * R2 期 1（2026-10-14）：`meta.nodeOffsets` —— 节点/子树级手工位置。
+   * 判据口径与上一条（themeOffsets）**逐项对齐**，因为契约说两者"形状与上下界相同、只差键域"：
+   * 所以这里就按**同一组输入**跑一遍，并逐条断言报文里的键路径换成了 nodeOffsets。
+   * ⚠️ 上下界**不写死**（从 `OFFSET_LIMIT` 取）—— 写死的那个数会与实现漂移，
+   * 而它正是"越界的界"（本工程修过"表里守的是抄本"那一族）。
+   * --------------------------------------------------------------- */
+  it('meta.nodeOffsets 节点/子树偏移校验：与 themeOffsets 同一套形状与上下界（只有一个键域不同）', () => {
+    // 合法：更深的节点 b 偏移 (120,-40)；形状由 schema 判，**"b 是不是更深的节点"由渲染层的写回单源判**
+    const ok = validateProject({ meta: { name: 'x', nodeOffsets: { b: { x: 120, y: -40 } } }, format: 'node_tree',
+      data: { id: 'root', topic: 'R', children: [{ id: 'a', topic: 'A', children: [{ id: 'b', topic: 'B' }] }] } }, null);
+    expect(ok.ok).toBe(true);
+    // 缺省（老文件）必须照样通过 —— 可选字段、formatVersion 不升、零迁移
+    const none = validateProject({ meta: { name: 'x' }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(none.ok).toBe(true);
+
+    const bad1 = validateProject({ meta: { name: 'x', nodeOffsets: [1] }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(bad1.ok).toBe(false);
+    expect(bad1.errors.join(';')).toMatch(/meta\.nodeOffsets 必须是对象/);
+
+    const bad2 = validateProject({ meta: { name: 'x', nodeOffsets: { 'Bad ID': { x: 1, y: 1 } } }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(bad2.ok).toBe(false);
+    expect(bad2.errors.join(';')).toMatch(/meta\.nodeOffsets 含非法 id/);
+
+    const bad3 = validateProject({ meta: { name: 'x', nodeOffsets: { b: 5 } }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(bad3.ok).toBe(false);
+    expect(bad3.errors.join(';')).toMatch(/meta\.nodeOffsets\.b 必须是 \{x,y\} 对象/);
+
+    const bad4 = validateProject({ meta: { name: 'x', nodeOffsets: { b: { x: '1', y: 0 } } }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(bad4.ok).toBe(false);
+    expect(bad4.errors.join(';')).toMatch(/meta\.nodeOffsets\.b\.x 必须是有限数字/);
+
+    // 越界护栏（**边界从 OFFSET_LIMIT 现算**：界内过、界外拒 —— 两条一起才说明判据有分辨力）
+    const inBound = validateProject({ meta: { name: 'x', nodeOffsets: { b: { x: OFFSET_LIMIT, y: -OFFSET_LIMIT } } }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(inBound.ok).toBe(true);
+    const bad5 = validateProject({ meta: { name: 'x', nodeOffsets: { b: { x: OFFSET_LIMIT + 1, y: 0 } } }, format: 'node_tree', data: { id: 'root', topic: 'R' } }, null);
+    expect(bad5.ok).toBe(false);
+    expect(bad5.errors.join(';')).toMatch(/超出允许范围/);
+
+    // 两个键的**形状判据是同一处实现**（取值表声明了两个键名 ⇒ 一个循环把两键都跑一遍）。
+    // 判别力：把任一键的形状校验删掉 ⇒ 上面这组里对应的那几条必红。
+    expect(OFFSET_KEYS).toEqual(['themeOffsets', 'nodeOffsets']);
+    OFFSET_KEYS.forEach((k) => {
+      const errs = [];
+      validateOffsetMap({ n: { x: 1, y: 2 } }, 'meta.' + k, (m) => errs.push(m));
+      expect(errs, k + '：合法输入不该报错').toEqual([]);
+      const errs2 = [];
+      validateOffsetMap({ n: { x: 1, y: 2, z: 3 } }, 'meta.' + k, (m) => errs2.push(m));
+      expect(errs2, k + '：多余分量不是形状错误（只认 x/y）').toEqual([]);
+      const errs3 = [];
+      validateOffsetMap(null, 'meta.' + k, (m) => errs3.push(m));
+      expect(errs3.join(';')).toBe('meta.' + k + ' 必须是对象');
+    });
+  });
+
+  it('migrateNodeOffsets：只补缺键（空对象）、纯函数、幂等；**它不是默认路径**（默认档一个键都不写）', () => {
+    // 缺键 ⇒ 补空对象；**入参一个字节都不动**（纯函数）
+    const p = { meta: { name: 'x' }, format: 'node_tree', data: { id: 'root', topic: 'R' } };
+    const before = JSON.stringify(p);
+    const m = migrateNodeOffsets(p);
+    expect(m.changed).toBe(true);
+    expect(m.data.meta.nodeOffsets).toEqual({});
+    expect(JSON.stringify(p)).toBe(before);
+    // 幂等：再迁一次一个字节都不动（连对象都不重建）
+    const again = migrateNodeOffsets(m.data);
+    expect(again.changed).toBe(false);
+    expect(again.data).toBe(m.data);
+    // 已有键（哪怕形状坏）⇒ **不替它收拾**（交给 validate 判红）
+    const p2 = { meta: { name: 'x', nodeOffsets: null } };
+    const m2 = migrateNodeOffsets(p2);
+    expect(m2.changed).toBe(false);
+    expect(m2.data).toBe(p2);
+    expect(validateProject(p2, null).ok).toBe(false);
+    // 缺 meta ⇒ 不编一个出来
+    const m3 = migrateNodeOffsets({ format: 'node_tree' });
+    expect(m3.changed).toBe(false);
+    // 迁移出来的那份**照样过校验**（补空对象不会把数据改坏）
+    expect(validateProject(m.data, null).ok).toBe(true);
   });
 
   it('回归：返回的 errors 不再被后续调用改写（曾共用模块级数组）', () => {

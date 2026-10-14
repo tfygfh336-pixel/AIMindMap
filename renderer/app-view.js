@@ -210,19 +210,24 @@
   let fdViewportBound = false;
   let fdPanning = null;
 
-  /* —— 拖动树（右键菜单「拖动树」入口，v0.15 开发中）——
-   * 语义：**只移动目标顶层主题树**（如「802.11 无线网络」），其他树不动。
+  /* —— 拖动树 / 拖动子树（右键菜单入口，v0.15 起；R2 期 1 扩到节点级）——
+   * 语义：**只移动目标子树**（顶层主题树，或某个更深的节点及其后代），其他节点不动。
    * 实现：
-   *   · 树偏移 treeOffsets[顶层主题id] = {x, y}（逻辑画布坐标，与 fdView 同一坐标空间；
-   *     经 fdView 父层 scale 放大成屏幕位移 → 缩放时树相对位置保持）。
-   *   · 节点：目标树全部 jmnode 设 style.transform = translate(x,y)（jsMind 只写
-   *     left/top、不设 transform，故无冲突；重布局/缩放后保留）。
-   *   · 连线：canvas 整张重画，show_lines override 里给「属于目标树」的线两端坐标
-   *     加偏移（其他树的线坐标不变 → 视觉上只有目标树移动）。
-   * 纯视图操作：不产生脏数据、不进撤销栈、不落盘；renderMind 重建时清空。 */
-  const treeOffsets = {};        // { [顶层主题id]: {x, y} }
+   *   · 子树偏移 treeOffsets[**任意节点id**] = {x, y}（逻辑画布坐标，与 fdView 同一坐标空间；
+   *     经 fdView 父层 scale 放大成屏幕位移 → 缩放时相对位置保持）。
+   *     ⚠️ 键域是"**偏移根**"：顶层主题（如「802.11 无线网络」）与更深的节点都能当根；
+   *     一个节点最多有一个偏移根（它自己 or 某个祖先），累计值见 treeOffsetFor。
+   *   · 节点：目标子树全部 jmnode 设 style.transform = translate(累计偏移)
+   *     （jsMind 只写 left/top、不设 transform，故无冲突；重布局/缩放后保留）。
+   *     jsMind 的节点是**平铺的兄弟元素**（不相嵌套）⇒ 每个元素各带自己的 transform，
+   *     祖先的偏移不会自动传给后代 —— 所以"累计"这件事必须由我们自己算（treeOffsetFor）。
+   *   · 连线：canvas 整张重画，show_lines override 里按**同一个**累计偏移改线两端
+   *     （其他节点的线坐标不变 → 视觉上只有目标子树移动）。
+   * 纯视图操作：不产生脏数据、不进撤销栈；偏移本身**会随项目保存**（meta.themeOffsets /
+   * meta.nodeOffsets，见 serializeTree），renderMind 重建时清空再按数据恢复。 */
+  const treeOffsets = {};        // { [偏移根 id]: {x, y} }（键域 = 任意节点，root 除外）
   let fdDragMode = false;
-  let fdDragTreeRoot = null;     // 拖动模式锁定的目标树根（root 直接子节点 id）
+  let fdDragTreeRoot = null;     // 拖动模式锁定的目标子树根（顶层主题 id，或任意节点 id）
   let fdTreeDragStart = null;
   let fdSelDrag = null;          // P4：从"已选中的节点"上按下开始的拖拽（起点坐标 ✓）    // {x, y, ox, oy} 拖动起点（屏幕）与起始偏移（逻辑）
   let fdDragModePan = null;      // 兜底：无目标树时的画布平移（中键同款）
@@ -590,37 +595,52 @@
     return (n && n.parent && n.parent.isroot && !n.isroot) ? n.id : null;
   }
 
-  /** id 所属顶层主题树的偏移；不在偏移树或偏移为 0 时返回 null */
+  /** 节点到根这条路上**所有偏移根的和**；一个都没有（或全是零）时返回 null。
+   *
+   *  为什么是"和"而不是"最上面那个"：jsMind 的节点是**平铺的兄弟元素**（jmnodes 的直接子元素，
+   *  相互不嵌套）⇒ 给某个节点设 transform **不会**传给它的后代 —— 后代的屏幕位置要由我们**自己**
+   *  把祖先链上的偏移加起来（含它自己）。这也正是"只移动目标子树、别的一动不动"能成立的原因：
+   *  每个元素的 transform 互相独立。
+   *  既有语义（只有顶层主题有偏移时）逐项不变：那时链上只有一个非零项，和 == 那一项 ✓。
+   *  root 自身不参与（它是容器：jsMind 不把 root 的 transform 传给谁，给它偏移没有意义）。 */
   function treeOffsetFor(id) {
     const jm = state.jm;
     if (!jm) return null;
     let n = MM.adapter.getNode(jm, id);
     if (!n) return null;
-    while (n && n.parent && !n.parent.isroot) n = n.parent;
-    if (!n || n.isroot || !n.parent || !n.parent.isroot) return null;
-    const o = treeOffsets[n.id];
+    let x = 0, y = 0, hit = false;
+    while (n && !n.isroot) {
+      const o = treeOffsets[n.id];
+      if (o && (o.x !== 0 || o.y !== 0)) { x += o.x; y += o.y; hit = true; }
+      n = n.parent;
+    }
+    return hit ? { x: x, y: y } : null;
+  }
+
+  /** 这个节点**自己**那一项偏移（不含祖先的）；没有或为零时返回 null。
+   *  用途：右键菜单「把这个子树移回自动布局」的显示条件 —— 该清的是**它自己那一项**，
+   *  祖先（如顶层主题）的偏移不是它的事（那条路由祖先自己的那一条菜单项负责）✓ */
+  function ownOffsetFor(id) {
+    const o = id ? treeOffsets[id] : null;
     return (o && (o.x !== 0 || o.y !== 0)) ? o : null;
   }
 
-  /** 把全部树偏移落到 DOM（节点 transform）；无偏移的顶层主题清空 transform 防残留 */
+  /** 把全部偏移落到 DOM（节点 transform）；没有偏移的节点清空 transform 防残留。
+   *  遍历整棵树（不是只遍历顶层主题）—— 键域扩到任意子树根之后，跳过深层节点就会漏掉它们。 */
   function applyTreeOffsets() {
     const jm = state.jm;
     if (!jm) return;
     const rootNode = MM.adapter.getNode(jm, 'root');
-    const topics = (rootNode && rootNode.children) || [];
-    topics.forEach((tp) => {
-      const o = treeOffsets[tp.id];
-      const t = (o && (o.x !== 0 || o.y !== 0)) ? 'translate(' + o.x + 'px,' + o.y + 'px)' : '';
-      const ids = [];
-      const walk = (n) => { ids.push(n.id); (n.children || []).forEach(walk); };
-      walk(tp);
-      ids.forEach((id) => {
-        // jmexpander（折叠时的 +/− 号，nodeid 同为该节点）必须一起偏移，
-        // 否则加减号留在原地、节点走了（用户反馈①）。jsMind 不写 expander 的
-        // transform，relayout 后保留，无冲突。
-        document.querySelectorAll('jmnode[nodeid="' + id + '"], jmexpander[nodeid="' + id + '"]')
-          .forEach((el) => { el.style.transform = t; });
-      });
+    if (!rootNode) return;
+    (rootNode.children || []).forEach(function walk(tp) {
+      const o = treeOffsetFor(tp.id);
+      const t = o ? 'translate(' + o.x + 'px,' + o.y + 'px)' : '';
+      // jmexpander（折叠时的 +/− 号，nodeid 同为该节点）必须一起偏移，
+      // 否则加减号留在原地、节点走了（用户反馈①）。jsMind 不写 expander 的
+      // transform，relayout 后保留，无冲突。
+      document.querySelectorAll('jmnode[nodeid="' + tp.id + '"], jmexpander[nodeid="' + tp.id + '"]')
+        .forEach((el) => { el.style.transform = t; });
+      (tp.children || []).forEach(walk);
     });
     // 树被拖动/重排后**关系线的端点也变了** ⇒ 通知关联层重画（rAF 合并，拖动时每帧只画一次 ✓；
     // 关联层没在展示时是空操作，零成本）
@@ -635,46 +655,83 @@
     applyTreeOffsets();
   }
 
-  /* —— 树偏移的对外读写口（功能：框选后拖动可**保存永久化**，2026-10-08）——
-   * 单一真源：偏移只活在**这一层**（treeOffsets），序列化时向这里取（`MM.getTreeOffsets`），
-   * 绝不在数据层再存一份 —— 两份就会漂移（本工程修过多次同类问题）。
-   * 数据形状：`meta.themeOffsets = { "<顶层主题id>": { x, y } }`（逻辑画布坐标，相对该主题的
-   * 自动布局位置；缺省 = 自动布局）。契约见 docs/DATA-FORMAT.md，校验见 src/schema.js。 */
+  /* —— 树偏移的对外读写口（功能：框选后拖动可**保存永久化**，2026-10-08；R2 期 1 扩到节点级）——
+   * 单一真源：偏移只活在**这一层**（treeOffsets），序列化时向这里取
+   * （`MM.getTreeOffsets` / `MM.getNodeOffsets`），绝不在数据层再存一份 —— 两份就会漂移
+   * （本工程修过多次同类问题）。
+   * 数据形状（两个键**共用一套形状与上下界**，只差键域）：
+   *   · `meta.themeOffsets = { "<顶层主题id>": { x, y } }`（2026-10-08 起）
+   *   · `meta.nodeOffsets  = { "<更深的子树根id>": { x, y } }`（2026-10-14 / R2 期 1 起）
+   * 都是逻辑画布坐标、相对该根的自动布局位置；缺省 = 自动布局。
+   * 契约见 docs/DATA-FORMAT.md，校验见 src/schema.js（`validateOffsetMap`，一处实现）。 */
 
-  /** 读出全部非零偏移（只回**当前树里真实存在的顶层主题**，避免脏 id 被写回数据） */
-  function getTreeOffsets() {
+  /** 偏移的**唯一收集实现**：按遍历现树分成两个桶（顶层主题 / 更深的子树根）。
+   *  为什么分桶放在这里而不是序列化那一处：只有这一层知道"当前树长什么样"，
+   *  而两个数据键的键域差别**就是树结构**（root 的直接子节点 vs 更深的节点）。
+   *  只回**当前树里真实存在的节点**（脏 id 一律丢弃，绝不写回数据）；
+   *  只回非零项、坐标取整（与既有 `themeOffsets` 写回口径逐项相同）。 */
+  function collectOffsets() {
+    const themes = {}, nodes = {};
     const jm = state.jm;
-    const out = {};
-    if (!jm) return out;
+    if (!jm) return { themes: themes, nodes: nodes };
     const rootNode = MM.adapter.getNode(jm, 'root');
-    const topics = (rootNode && rootNode.children) || [];
-    topics.forEach((tp) => {
-      const o = treeOffsets[tp.id];
-      if (o && (o.x !== 0 || o.y !== 0)) out[tp.id] = { x: Math.round(o.x), y: Math.round(o.y) };
-    });
-    return out;
+    if (!rootNode) return { themes: themes, nodes: nodes };
+    const put = (id, isTop) => {
+      const o = treeOffsets[id];
+      if (!o || (o.x === 0 && o.y === 0)) return;                 // 零偏移 = 无偏移，不写
+      const rec = { x: Math.round(o.x), y: Math.round(o.y) };
+      if (isTop) themes[id] = rec; else nodes[id] = rec;
+    };
+    const walk = (n, isTop) => {
+      put(n.id, isTop);
+      (n.children || []).forEach((c) => walk(c, false));
+    };
+    (rootNode.children || []).forEach((tp) => walk(tp, true));
+    return { themes: themes, nodes: nodes };
   }
 
+  /** 读出全部非零偏移里**顶层主题**那一桶（序列化写 `meta.themeOffsets` 的唯一入口） */
+  function getTreeOffsets() { return collectOffsets().themes; }
+
+  /** 读出全部非零偏移里**更深的子树根**那一桶（序列化写 `meta.nodeOffsets` 的唯一入口）。
+   *  ⚠️ 与 getTreeOffsets 共用上面那一个收集实现 —— 别在这里再遍历一遍树（第二份必然与第一份漂）。 */
+  function getNodeOffsets() { return collectOffsets().nodes; }
+
   /** 从数据恢复偏移（打开项目 / undo 之后调用 —— **节点 DOM 必须已建好**）。
+   *  `themeMap` = `meta.themeOffsets`、`nodeMap` = `meta.nodeOffsets`（都可缺省 ⇒ 与从前逐项相同）。
+   *  一次清空 + 一次落盘 + **一次** applyTreeOffsets（两桶一起落，避免"先落主题再落节点"两次重排）。
    *  返回真正落下的条数，供断言与诊断用（0 = 没有偏移或全被丢弃）。 */
-  function setTreeOffsets(map) {
+  function setTreeOffsets(themeMap, nodeMap) {
     clearTreeOffsets();
     const jm = state.jm;
-    if (!jm || !map || typeof map !== 'object') return 0;
+    if (!jm) return 0;
+    const has = (m) => !!(m && typeof m === 'object');
+    if (!has(themeMap) && !has(nodeMap)) return 0;
     const rootNode = MM.adapter.getNode(jm, 'root');
     const topics = (rootNode && rootNode.children) || [];
-    const valid = new Set(topics.map((tp) => tp.id));
-    let n = 0;
-    Object.keys(map).forEach((id) => {
-      const o = map[id];
-      if (!valid.has(id)) return;                       // 数据里有、当前树里没有的主题：丢弃（不写回）
-      if (!o || typeof o !== 'object') return;
-      const x = Number(o.x), y = Number(o.y);
-      if (!isFinite(x) || !isFinite(y)) return;          // 坏数据一律忽略（schema 已拦，这里兜底）
-      if (x === 0 && y === 0) return;                   // 零偏移 = 无偏移，不落
-      treeOffsets[id] = { x: x, y: y };
-      n++;
-    });
+    /* 两条**键域判据**（校验只管形状，见 src/schema.js 的取值表；这里判"这个 id 在当前树里算哪一桶"）：
+     *   · 顶层主题桶：id 必须是 root 的**直接**子节点（既有口径，一字未改）；
+     *   · 节点桶：id 必须存在、且**不是 root 的直接子节点**（属于顶层主题的 id 归上面那一桶 ——
+     *     同一个 id 只允许住在**一个**键里，否则"哪个键说了算"要靠调用顺序决定 ✗）。
+     * 两条都是"命中才落"，不命中一律丢弃（数据里有、当前树里没有 ⇒ 不写回）。 */
+    const topIds = new Set(topics.map((tp) => tp.id));
+    const accept = (map, ok) => {
+      let m = 0;
+      if (!has(map)) return m;
+      Object.keys(map).forEach((id) => {
+        if (!ok(id)) return;
+        const o = map[id];
+        if (!o || typeof o !== 'object') return;
+        const x = Number(o.x), y = Number(o.y);
+        if (!isFinite(x) || !isFinite(y)) return;          // 坏数据一律忽略（schema 已拦，这里兜底）
+        if (x === 0 && y === 0) return;                   // 零偏移 = 无偏移，不落
+        treeOffsets[id] = { x: x, y: y };
+        m++;
+      });
+      return m;
+    };
+    const n = accept(themeMap, (id) => topIds.has(id))
+      + accept(nodeMap, (id) => !topIds.has(id) && !!MM.adapter.getNode(jm, id) && id !== 'root');
     applyTreeOffsets();
     return n;
   }
@@ -749,13 +806,15 @@
     syncTreeOutline();
   }
 
-  /** 拖动中：框 transform 跟随树偏移（包围盒不变，只更新 transform） */
+  /** 拖动中：框 transform 跟随子树**累计**偏移（包围盒不变，只更新 transform）。
+   *  用累计值而不是"子树根自己那一项"：拖动一个**深层**子树时，祖先（如顶层主题）也带偏移 ——
+   *  框要落在它**看上去**所在的位置，否则框与子树当场脱开。既有语义（只有顶层主题有偏移）
+   *  下两者恒等 ✓。 */
   function syncTreeOutline() {
     const box = document.getElementById(TREE_OUTLINE_ID);
     if (!box || !fdDragTreeRoot) return;
-    const o = treeOffsets[fdDragTreeRoot];
-    box.style.transform = (o && (o.x !== 0 || o.y !== 0))
-      ? 'translate(' + o.x + 'px,' + o.y + 'px)' : '';
+    const o = treeOffsetFor(fdDragTreeRoot);
+    box.style.transform = o ? 'translate(' + o.x + 'px,' + o.y + 'px)' : '';
   }
 
   function hideTreeOutline() {
@@ -763,7 +822,8 @@
     if (box) box.style.display = 'none';
   }
 
-  /** 进入/退出拖动模式（toggle 由菜单项调用）。treeRootId 为锁定的目标树根（顶层主题）。 */
+  /** 进入/退出拖动模式（toggle 由菜单项调用）。treeRootId 为锁定的**目标子树根**：
+   *  顶层主题（既有语义，「拖动树」入口）或更深的任意节点（R2 期 1，「拖动此子树」入口）。 */
   function setDragMode(on, treeRootId) {
     fdDragMode = !!on;
     fdDragTreeRoot = fdDragMode ? (treeRootId || null) : null;
@@ -771,14 +831,18 @@
     if (panel) panel.style.cursor = fdDragMode ? 'grab' : '';
     document.body.classList.toggle('mm-dragmode', fdDragMode);
     let topic = '';
+    let isTopTree = false;
     if (fdDragTreeRoot) {
       const jm = state.jm;
       const n = jm && MM.adapter.getNode(jm, fdDragTreeRoot);
       topic = n ? n.topic : '';
+      isTopTree = !!(n && n.parent && n.parent.isroot && !n.isroot);
     }
     setStatus(fdDragMode
       ? (fdDragTreeRoot
-          ? '拖动模式：按住左键拖动移动「' + topic + '」树，其他树不动（右键 / Esc 退出）'
+          ? (isTopTree
+              ? '拖动模式：按住左键拖动移动「' + topic + '」树，其他树不动（右键 / Esc 退出）'
+              : '拖动模式：按住左键拖动移动「' + topic + '」子树（只动它和它的后代），其他节点不动（右键 / Esc 退出）')
           : '拖动模式：按住左键拖动平移画布（Esc 退出）')
       : '已退出拖动模式');
     // 虚线框：进入（且锁定了目标树）→ 显示并框住整棵树；退出 → 隐藏
@@ -1251,6 +1315,60 @@
     });
   }
 
+  /* —— （a）「方向」的界面入口（R2 期 1）——
+   * **只把已有的顶层分侧语义变成可点**，不新增任何方向能力：
+   *   · 底层语义 = `meta.layout` + `applyThemeLayout`（jsMind **只认 root 直接子节点的 direction**，
+   *     更深的节点声明会被库忽略并改写成 right —— 已由实测探针钉住，
+   *     见 `.review/20261014-导图交互重构/probe-direction-nonroot.js` 与设计稿 §2.2.1）；
+   *   · 所以这一条**只对顶层主题开放**，给深层节点用是骗人（库根本不理）⇒ 非顶层主题一律拒绝；
+   *   · 落地方式**不是**改库、也不是给节点写 direction，而是改 `meta.layout` 后
+   *     **走"打开项目"那一套重渲染**（`MM.rebuildFromJson` ⇒ renderMind 里 `applyThemeLayout`
+   *     在 `jm.show` **之前**打 direction）—— 与"改数据文件里那一行"完全同一条路，
+   *     零新契约、零新语义。
+   * 返回值给断言与菜单用（`ok:false` 必带 `reason`，不静默）。 */
+
+  /** 顶层主题分侧现状（`'left'` / `'right'` / `null` = 数据里没列 ⇒ 库默认右侧） */
+  function themeSideOf(nodeId) {
+    const layout = state.metaLayout || {};
+    if ((layout.left || []).indexOf(nodeId) >= 0) return 'left';
+    if ((layout.right || []).indexOf(nodeId) >= 0) return 'right';
+    return null;
+  }
+
+  /** 把一个**顶层主题**摆到左侧/右侧：改 meta.layout（唯一真源）→ 重渲染 → 落盘。
+   *  ⚠️ 重渲染 = `rebuildFromJson`（与撤销/重做同一个入口，`collapseToRoot:false`）：
+   *  它**会**丢掉视图态（平移/缩放复位、详情框关闭、选区清空）—— 这是"改了分侧就得重新布局"
+   *  的必然代价，故在状态栏如实说出来，别让用户以为界面抖了一下是故障。
+   *  偏移不丢：`renderMind` 从数据恢复两个偏移键（meta.themeOffsets / meta.nodeOffsets）✓。 */
+  async function setThemeSide(nodeId, side) {
+    const jm = state.jm;
+    if (!jm) return { ok: false, reason: '导图尚未就绪' };
+    const n = MM.adapter.getNode(jm, nodeId);
+    if (!n || n.isroot) return { ok: false, reason: '根节点没有分侧（它是容器）' };
+    if (!n.parent || !n.parent.isroot) {
+      return { ok: false, reason: '只有顶层主题能分侧（jsMind 只认 root 直接子节点的 direction）' };
+    }
+    const want = side === 'left' ? 'left' : 'right';
+    const old = state.metaLayout || {};
+    const other = want === 'left' ? 'right' : 'left';
+    const pick = (k) => (Array.isArray(old[k]) ? old[k] : []).filter((id) => id !== nodeId);
+    const layout = {};
+    layout.left = want === 'left' ? pick('left').concat([nodeId]) : pick('left');
+    layout.right = want === 'right' ? pick('right').concat([nodeId]) : pick('right');
+    // 两侧都空 ⇒ 不写空数组（数据形状与从前一致：没分过侧的项目就是没有 layout 键）
+    if (!layout.left.length) delete layout.left;
+    if (!layout.right.length) delete layout.right;
+    const data = MM.serializeTree();
+    if (!data) return { ok: false, reason: '序列化失败（没有当前树？）' };
+    data.meta.layout = layout;
+    MM.rebuildFromJson(data);            // ← 唯一入口：方向在"载入时"生效（见本段抬头）
+    const saved = await save();          // 落盘（判据要的是"盘上 meta.layout 里有它"）
+    setStatus('已把「' + n.topic + '」摆到' + (want === 'left' ? '左' : '右') + '侧'
+      + (saved ? '（已保存）' : '（**保存失败**，盘上还没变 ✗）')
+      + ' —— 分侧是顶层主题级语义，视图已按新布局重建');
+    return { ok: true, side: want, layout: layout, saved: !!saved };
+  }
+
   /** 依项目 meta 应用主题模式（渲染时调用） */
   function applyRootMode(jm, data) {
     const themed = fdIsThemeMode(data);
@@ -1259,8 +1377,7 @@
   }
 
   /** 切换主题模式（立即生效：方框显隐 + 连线重画） */
-  function setRootMode(mode) {
-    const jm = state.jm;
+  function setRootMode(mode) {    const jm = state.jm;
     if (!jm) { setStatus('导图尚未就绪'); return; }
     const want = mode === 'themes' ? 'themes' : 'tree';
     if (state.rootMode === want) { setStatus('已是该模式'); return; }
@@ -1330,7 +1447,11 @@
   MM.applyTreeOffsets = applyTreeOffsets;
   MM.clearTreeOffsets = clearTreeOffsets;
   MM.getTreeOffsets = getTreeOffsets;   // 序列化取偏移的唯一入口（app-core.js 的 serializeTree）
-  MM.setTreeOffsets = setTreeOffsets;   // 打开项目/undo 后从 meta.themeOffsets 恢复
+  MM.getNodeOffsets = getNodeOffsets;   // 同上，另一桶（更深子树根 ⇒ meta.nodeOffsets）
+  MM.hasOwnOffset = (id) => !!ownOffsetFor(id);   // 右键菜单「移回自动布局」的显示条件
+  MM.setTreeOffsets = setTreeOffsets;   // 打开项目/undo 后从 meta.themeOffsets + meta.nodeOffsets 恢复
+  MM.themeSideOf = themeSideOf;         // 顶层主题分侧现状（右键菜单文案 + 断言）
+  MM.setThemeSide = setThemeSide;       // （a）方向入口：只对顶层主题开放（见函数头）
   MM.computeTreeBounds = computeTreeBounds;
   MM.showTreeOutline = showTreeOutline;
   MM.syncTreeOutline = syncTreeOutline;
@@ -1411,8 +1532,7 @@
   MM.nodeBorderRect = nodeBorderRect;
   MM.installRootLineOverride = installRootLineOverride;
   MM.applyRootModeVisual = applyRootModeVisual;
-  MM.applyThemeLayout = applyThemeLayout;
-  MM.applyRootMode = applyRootMode;
+  MM.applyThemeLayout = applyThemeLayout;  MM.applyRootMode = applyRootMode;
   MM.setRootMode = setRootMode;
   MM.resetView = resetView;
   MM.expandAll = expandAll;

@@ -106,6 +106,79 @@
     };
   }
 
+  /* ==========================================================================
+   * 树偏移的**取值表 + 形状校验**（唯一一处；`themeOffsets` 与 `nodeOffsets` 共用）
+   * --------------------------------------------------------------------------
+   * 为什么两个键只写一套：它们**形状与上下界完全相同**，差别只在**键域**（谁是偏移根）——
+   *   · `meta.themeOffsets`：键 = **顶层主题 id**（root 的直接子节点）；
+   *   · `meta.nodeOffsets` ：键 = **更深的节点 / 子树根 id**（契约见 docs/DATA-FORMAT.md §1）。
+   * 两处各写一份形状校验 ⇒ 改上下界时必然只改到一处（本工程反复治过的"同一件事两处表达"）。
+   * 键域那一半**不在 schema 判**：它要读整棵树才判得了，而契约把这件事交给渲染层的
+   * **写回单源**（`renderer/app-view.js` 的 `collectOffsets()`：按遍历现树分桶），
+   * 校验只管"这份对象**是不是一份合法偏移表**"。
+   *
+   * 语义（两个键一致）：界面把某个子树根拖到别处后的**相对偏移**（逻辑画布像素，相对该根的
+   * 自动布局位置）；**缺省 = 全部按自动布局**（⇒ 它是可选键、`formatVersion` **不升**、
+   * 老项目**零迁移** —— 见 `migrateNodeOffsets` 的说明：那不是默认路径要走的动作）。
+   * 上下界（±`OFFSET_LIMIT`）不是随手写的：它是"明显异常数据"的护栏（自动布局量级是千像素级），
+   * 防止坏数据把内容推到视口之外、用户再也找不回来。
+   * ======================================================================== */
+  /** 偏移键名（**唯一一处**：校验、迁移、单测都从这里取，别在别处抄字面量） */
+  const OFFSET_KEYS = Object.freeze(['themeOffsets', 'nodeOffsets']);
+  /** 偏移分量的绝对值上界（唯一一处；两个键共用） */
+  const OFFSET_LIMIT = 20000;
+
+  /**
+   * 一张偏移表的形状校验（**一处实现，两个键各一行调用**）。
+   * 报错文案带完整键路径（`meta.<键>.<id>.<分量>`）—— 判红的**修法**要能照着报文改。
+   * @param {object} map 候选偏移表
+   * @param {string} key 完整键路径（如 `meta.themeOffsets`）
+   * @param {Function} err 收错函数
+   */
+  function validateOffsetMap(map, key, err) {
+    const LIMIT = OFFSET_LIMIT;
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) { err(key + ' 必须是对象'); return; }
+    Object.keys(map).forEach((tid) => {
+      if (!ID_RE.test(tid)) err(key + ' 含非法 id（小写字母/数字/连字符）: ' + tid);
+      const p = map[tid];
+      if (typeof p !== 'object' || p === null || Array.isArray(p)) { err(key + '.' + tid + ' 必须是 {x,y} 对象'); return; }
+      ['x', 'y'].forEach((k) => {
+        const v = p[k];
+        if (typeof v !== 'number' || !Number.isFinite(v)) err(key + '.' + tid + '.' + k + ' 必须是有限数字');
+        else if (Math.abs(v) > LIMIT) err(key + '.' + tid + '.' + k + ' 超出允许范围（±' + LIMIT + '）: ' + v);
+      });
+    });
+  }
+
+  /**
+   * 给项目补上 `meta.nodeOffsets` 键（**迁移**：只补空对象，一个字节的既有数据都不动）。
+   *
+   * ⚠️ **它不是默认路径要走的动作**（与 `migrateBindings` 同一个定位，但更强）：
+   *   `meta.nodeOffsets` **缺省 = 未偏移** —— 老项目不补也能读、能写、能过校验，语义与从前
+   *   **完全一致**（`renderer/app-core.js` 的 `serializeTree` 只在**非空**时写这个键 ⇒
+   *   没拖过任何节点的项目保存后**逐字节不变**）。所以**界面与 CLI 的任何默认路径都不许调它**：
+   *   调了就会在"用户什么都没做"的数据里凭空多出一个键（那正是不变式③要防的事）。
+   *   它存在的唯一理由与 `migrateBindings` 相同 —— 让"这个项目带节点级偏移"在数据里**看得见**，
+   *   由**显式**动作（将来某条工具/命令）决定要不要补。
+   * 三条口径与 `migrateBindings` 逐条对齐：只补**缺键**、坏形状不替它收拾（交给校验判红）、纯函数。
+   * @param {object} data 项目数据（**只读**）
+   * @returns {{data:object, changed:boolean, note:string}} 补过键的那份（或原样）
+   */
+  function migrateNodeOffsets(data) {
+    const d = (data && typeof data === 'object') ? data : null;
+    if (!d) return { data: data, changed: false, note: '不是对象，未改动' };
+    const meta = (d.meta && typeof d.meta === 'object' && !Array.isArray(d.meta)) ? d.meta : null;
+    if (!meta) return { data: d, changed: false, note: '缺 meta（坏数据）—— 不替它收拾，交给 validate 判红' };
+    if (meta.nodeOffsets !== undefined) {
+      return { data: d, changed: false, note: '已有 nodeOffsets 键（形状对不对交给 validate）—— 未改动' };
+    }
+    return {
+      data: Object.assign({}, d, { meta: Object.assign({}, meta, { nodeOffsets: {} }) }),
+      changed: true,
+      note: '缺 nodeOffsets 键 ⇒ 补空对象（**缺省 = 未偏移**，既有数据逐字节未动）'
+    };
+  }
+
   /** 条目级悬挂的**唯一判据**（契约 §12：与节点级同一处逻辑）。
    *  ⚠️ **绝不**在本文件再写一份"条目在不在"：第二处表达必然与 S6 那处漂移。 */
   const targetHasItemOf = (relations && typeof relations.targetHasItem === 'function')
@@ -166,24 +239,17 @@
         });
       }
       // 树偏移（可选，2026-10-08 新增）：meta.themeOffsets = { "<顶层主题id>": { x, y } }
-      // 语义：界面把顶层主题拖到别处后的**相对偏移**（逻辑画布像素，相对该主题的自动布局位置）；
-      // 缺省 = 全部按自动布局。只影响呈现，不改变树结构 —— 所以它是可选字段、formatVersion 不升。
-      // 上下界（±20000）不是随手写的：它是"明显异常数据"的护栏（自动布局量级是千像素级），
-      // 防止坏数据把内容推到视口之外、用户再也找不回来。
+      // 语义与形状说明**只在取值表那一处**（本文件上方的 `validateOffsetMap`），这里不重复：
+      // 拷贝一份说明就等于多一份会漂的事实。这一行只做"在就校验"。
       if (data.meta.themeOffsets !== undefined) {
-        const TO = data.meta.themeOffsets;
-        const LIMIT = 20000;
-        if (typeof TO !== 'object' || TO === null || Array.isArray(TO)) err('meta.themeOffsets 必须是对象');
-        else Object.keys(TO).forEach((tid) => {
-          if (!ID_RE.test(tid)) err('meta.themeOffsets 含非法 id（小写字母/数字/连字符）: ' + tid);
-          const p = TO[tid];
-          if (typeof p !== 'object' || p === null || Array.isArray(p)) { err('meta.themeOffsets.' + tid + ' 必须是 {x,y} 对象'); return; }
-          ['x', 'y'].forEach((k) => {
-            const v = p[k];
-            if (typeof v !== 'number' || !Number.isFinite(v)) err('meta.themeOffsets.' + tid + '.' + k + ' 必须是有限数字');
-            else if (Math.abs(v) > LIMIT) err('meta.themeOffsets.' + tid + '.' + k + ' 超出允许范围（±' + LIMIT + '）: ' + v);
-          });
-        });
+        validateOffsetMap(data.meta.themeOffsets, 'meta.themeOffsets', err);
+      }
+      // 节点/子树偏移（可选，2026-10-14 新增，R2 期 1）：meta.nodeOffsets = { "<子树根id>": { x, y } }
+      // 与 themeOffsets **同一套形状与上下界**（同一个校验实现），差别只在键域：
+      // themeOffsets 记顶层主题、nodeOffsets 记更深的节点/子树根。
+      // 缺省 = 未偏移 ⇒ 老项目零迁移、formatVersion 不升（见 `migrateNodeOffsets`）。
+      if (data.meta.nodeOffsets !== undefined) {
+        validateOffsetMap(data.meta.nodeOffsets, 'meta.nodeOffsets', err);
       }
     }
     /* ---- 工作区文件夹绑定（R4，2026-10-13；契约 docs/DATA-FORMAT.md §1.5）-------------------
@@ -731,6 +797,8 @@
     BINDING_MODES, BINDING_MODE_DEFAULT, BINDING_DELETIONS,
     BINDING_DEBOUNCE_DEFAULT, BINDING_DEBOUNCE_MIN, BINDING_DEBOUNCE_MAX,
     BINDING_STATUSES, BINDING_STATUS_DEFAULT, BINDING_IGNORE_DEFAULT,
-    isBindingActive, migrateBindings
+    isBindingActive, migrateBindings,
+    // 树偏移（themeOffsets / nodeOffsets）的取值表 + 形状校验 + 迁移（**唯一一处**）
+    OFFSET_KEYS, OFFSET_LIMIT, validateOffsetMap, migrateNodeOffsets
   };
 });

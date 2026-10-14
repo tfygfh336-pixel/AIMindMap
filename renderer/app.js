@@ -210,7 +210,13 @@
     clearTreeOffsets: (treeId) => MM.clearTreeOffsets(treeId),
     // 树偏移读口（框选拖动持久化的真源在 app-view.js 的 treeOffsets）：序列化与冒烟断言用
     getTreeOffsets: () => (MM.getTreeOffsets ? MM.getTreeOffsets() : {}),
-    setTreeOffsets: (map) => (MM.setTreeOffsets ? MM.setTreeOffsets(map) : 0),
+    // R2 期 1：更深的子树根那一桶（序列化写 meta.nodeOffsets 的同一份读数）
+    getNodeOffsets: () => (MM.getNodeOffsets ? MM.getNodeOffsets() : {}),
+    hasOwnOffset: (id) => !!(MM.hasOwnOffset && MM.hasOwnOffset(id)),
+    themeSideOf: (id) => (MM.themeSideOf ? MM.themeSideOf(id) : null),
+    setThemeSide: (id, side) => (MM.setThemeSide
+      ? MM.setThemeSide(id, side) : Promise.resolve({ ok: false, reason: '没有 setThemeSide' })),
+    setTreeOffsets: (map, nodeMap) => (MM.setTreeOffsets ? MM.setTreeOffsets(map, nodeMap) : 0),
     // 框选（v0.16.3）：contextmenu.js 路由右键菜单用
     hasSelection: () => MM.hasSelection ? MM.hasSelection() : false,
     selectionHitTest: (x, y) => MM.selectionHitTest ? MM.selectionHitTest(x, y) : false,
