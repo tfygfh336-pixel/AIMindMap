@@ -29,20 +29,20 @@
 
 | 符号 | 类 | 用途（为什么非用不可） | 行数 | 位置（`file:line`） |
 |------|----|----------------------|-----:|--------------------|
-| `jmnode` | DOM | 节点自定义元素标签名：选择器、几何测量、命中判定到处在用 | 29 | `app-ask.js:41` · `app-core.js:144` · `app-detail-content.js:83` · `app-detail.js:127,147,192,266` · `app-related.js:93,107` · `app-view.js:111,301,332,337,344,439,463,473,614,701,820,878,913,1072,1089,1148,1149,1207` · `contextmenu.js:39,47` |
-| `jmnodes` | DOM | 节点层标签名："点空白"判定与面板内查询 | 15 | `app-detail-content.js:92,106` · `app-view.js:36,54,279,280,293,294,723,724,727,897,1072` · `contextmenu.js:40,48` |
-| `e_panel` | view | 面板元素（滚动容器）：统一 transform、几何测量、容器根的基准 | 6 | `app-core.js:141,197` · `app-detail-content.js:106` · `app-related.js:92,93` · `app-view.js:30` |
-| `show_lines` | view | 重画连线层。我们自己改了节点位置后**必须手动重画**，否则线与节点脱开；且它被我们**整体替换**过（见下） | 5 | `app-view.js:973,974,1135,1222,1223` |
+| `jmnode` | DOM | 节点自定义元素标签名：选择器、几何测量、命中判定到处在用 | 29 | `app-ask.js:41` · `app-core.js:177` · `app-detail-content.js:197` · `app-detail.js:132,152,310,392` · `app-related.js:93,107` · `app-view.js:111,301,332,337,344,439,463,473,621,708,828,887,924,1083,1100,1159,1160,1218` · `contextmenu.js:39,47` |
+| `jmnodes` | DOM | 节点层标签名："点空白"判定与面板内查询 | 15 | `app-detail-content.js:207,230` · `app-view.js:36,54,279,280,293,294,730,731,734,908,1083` · `contextmenu.js:40,48` |
+| `e_panel` | view | 面板元素（滚动容器）：统一 transform、几何测量、容器根的基准 | 6 | `app-core.js:174,283` · `app-detail-content.js:230` · `app-related.js:92,93` · `app-view.js:30` |
+| `show_lines` | view | 重画连线层。我们自己改了节点位置后**必须手动重画**，否则线与节点脱开；且它被我们**整体替换**过（见下） | 5 | `app-view.js:984,985,1146,1233,1234` |
 | `view.relayout` | view | 库的重排出口（展开/收起/拖动后重算并重画）；我们包住它做"重排锚点保持" | 4 | `app-view.js:123,124,125,153` |
-| `jmexpander` | DOM | 展开/收起圆钮元素，我们要改它的尺寸并让它随树一起偏移 | 3 | `app-view.js:614,701` · `contextmenu.js:39` |
-| `zoom_current` | view | 库自己的缩放读数。**我们把它钉在 1**（缩放自管，不叠第二套坐标系） | 3 | `app-view.js:177,201,1269` |
-| `set_zoom` | view | **被我们整体替换**（转到统一 transform），不是调用 | 3 | `app-core.js:196,203,204` |
-| `zoom_in` / `zoom_out` | view | 同上：被替换 | 2 | `app-core.js:203,204` |
-| `mind.nodes` | mind | 节点字典（id → node）：整树遍历 / 统计的入口 | 1 | `app-view.js:1136` |
+| `jmexpander` | DOM | 展开/收起圆钮元素，我们要改它的尺寸并让它随树一起偏移 | 3 | `app-view.js:621,708` · `contextmenu.js:39` |
+| `zoom_current` | view | 库自己的缩放读数。**我们把它钉在 1**（缩放自管，不叠第二套坐标系） | 3 | `app-view.js:177,201,1280` |
+| `set_zoom` | view | **被我们整体替换**（转到统一 transform），不是调用 | 3 | `app-core.js:282,289,290` |
+| `zoom_in` / `zoom_out` | view | 同上：被替换 | 2 | `app-core.js:289,290` |
+| `mind.nodes` | mind | 节点字典（id → node）：整树遍历 / 统计的入口 | 1 | `app-view.js:1147` |
 | `mind.root` | mind | 根节点对象 | 1 | `app-view.js:115` |
-| `layout.is_visible` | layout | 节点当前是否可见（收起的分支里为 false）。库有公开的 `is_node_visible` 包着它，我们直接调了里面这层 | 1 | `app-view.js:1146` |
-| `view.opts` | view | 视图的横/纵向间距选项（`hmargin` / `vmargin`）：复刻连线算法时要按同样的间距算端点 | 1 | `app-view.js:1137` |
-| `view.jm` | view | 视图反向持有 jsMind 实例：`view.show_lines` 被换成我们自己的实现后靠它取节点集合 | 1 | `app-view.js:1136` |
+| `layout.is_visible` | layout | 节点当前是否可见（收起的分支里为 false）。库有公开的 `is_node_visible` 包着它，我们直接调了里面这层 | 1 | `app-view.js:1157` |
+| `view.opts` | view | 视图的横/纵向间距选项（`hmargin` / `vmargin`）：复刻连线算法时要按同样的间距算端点 | 1 | `app-view.js:1148` |
+| `view.jm` | view | 视图反向持有 jsMind 实例：`view.show_lines` 被换成我们自己的实现后靠它取节点集合 | 1 | `app-view.js:1147` |
 
 **合计 75 个代码行命中**（同一行出现多个符号会计多次）。
 
@@ -52,16 +52,16 @@
 
 | 库方法 | 我们的实现 | 为什么必须接管 |
 |--------|-----------|----------------|
-| `view.set_zoom` | `app-core.js:196` | 库用 `style.zoom` + 面板滚动实现缩放；我们再叠一层 transform 会形成**两套坐标系**（放大后内容超出面板、滚动够不到）。⇒ 缩放全部由 `fdView` 的一个 transform 承担 |
-| `view.zoom_in` / `view.zoom_out` | `app-core.js:203-204` | 同上，改走后者的统一入口 |
-| `view.show_lines` | `app-view.js:1135`（`installRootLineOverride`） | 主题模式下必须**跳过"根 → 顶层主题"的连线**；并按"所属顶层主题树"的偏移移动线两端 —— 库里没有这个概念 |
+| `view.set_zoom` | `app-core.js:282` | 库用 `style.zoom` + 面板滚动实现缩放；我们再叠一层 transform 会形成**两套坐标系**（放大后内容超出面板、滚动够不到）。⇒ 缩放全部由 `fdView` 的一个 transform 承担 |
+| `view.zoom_in` / `view.zoom_out` | `app-core.js:289-290` | 同上，改走后者的统一入口 |
+| `view.show_lines` | `app-view.js:1143`（`installRootLineOverride`）/ `:1146`（`view.show_lines =`） | 主题模式下必须**跳过"根 → 顶层主题"的连线**；并按"所属顶层主题树"的偏移移动线两端 —— 库里没有这个概念 |
 
 ## 2. 我们**刻意不用**的内部物（升级时不要"顺手接回去"）
 
 | 符号 | 结论 | 依据 |
 |------|------|------|
-| `view.reset()` | **不用**。它会把节点 DOM 全部重造 ⇒ 我们注册的类/样式全丢 | 历史事故：曾导致节点整体消失（`app-view.js:1129` 的注释）；`app-core.js` 的 `installRootLineOverride` 就是为"只重画线、不动节点 DOM"而写的 |
-| `get_node_point_in` / `get_node_point_out` | **不用**。它们返回**带缓存复用的对象**（`_offset_` / `_pout_`），改坐标会污染布局缓存、导致后续布局错乱 | `app-view.js:1113` / `1130` / `1140` 的注释。线端改读节点**实际 DOM 边框**（`nodeBorderRect`，唯一真源）⇒ 节点被任意移动后 `show_lines` 重算即精确跟随 |
+| `view.reset()` | **不用**。它会把节点 DOM 全部重造 ⇒ 我们注册的类/样式全丢 | 历史事故：曾导致节点整体消失（`app-view.js:1140` 的注释）；`app-core.js` 的 `installRootLineOverride` 就是为"只重画线、不动节点 DOM"而写的 |
+| `get_node_point_in` / `get_node_point_out` | **不用**。它们返回**带缓存复用的对象**（`_offset_` / `_pout_`），改坐标会污染布局缓存、导致后续布局错乱 | `app-view.js:1124` / `1141` / `1151` 的注释。线端改读节点**实际 DOM 边框**（`nodeBorderRect`，唯一真源）⇒ 节点被任意移动后 `show_lines` 重算即精确跟随 |
 | `clear_selected_node_custom_style` / `restore_selected_node_custom_style` / `_reset_node_custom_style` | **渲染层当前未直接调用**（只在注释里被提及） | 它们存在于 `view.select_node` / `view.select_clear` 内部；我们**不替换**这两个方法，所以不受影响。但它们与"节点样式"相关 ⇒ 升级后若改变行为，影响的是选中态外观 |
 
 ## 3. 关于 0.9.1 的三条实测事实（容易读错，先看这里）
@@ -85,17 +85,25 @@
 
 改过 `renderer/*.js` 后，用下面任一方式重算第 1 节的位置（**只算代码行**）：
 
-```powershell
-# PowerShell：列出全部内部符号命中（file:line）
-$re = 'jmnode(?![a-z])|jmnodes|jmexpander|view\.relayout|show_lines|e_panel|zoom_current|set_zoom|mind\.(nodes|root)|mind\.selected|layout\.is_visible|opts\.(hmargin|vmargin)|this\.jm'
-Get-ChildItem renderer\*.js | Where-Object { $_.Name -ne 'mindmap-adapter.js' } | ForEach-Object {
-  $f = $_.Name; $n = 0
-  Get-Content $_.FullName | ForEach-Object {
-    $n++
-    if ($_ -notmatch '^\s*(\*|//|/\*)' -and $_ -match $re) { '{0}:{1}' -f $f, $n }
-  }
+```js
+// node：列出全部内部符号命中（file:line）——**只算代码行**（整行是注释 ⇒ 跳过）
+// ⚠️ **别用 PowerShell 的 `Get-Content`**：本机 PS 5.1 按 ANSI 读 UTF-8 ⇒ 中文会显示成乱码
+//    （判定不受影响，但输出不能直接贴进本文档）。node 读的就是 UTF-8，还能原样复制到任何环境。
+const fs = require('fs');
+const files = fs.readdirSync('renderer').filter((f) => f.endsWith('.js') && f !== 'mindmap-adapter.js').sort();
+const RE = /jmnode(?![a-z])|jmnodes|jmexpander|view\.relayout|show_lines|e_panel|zoom_current|set_zoom|mind\.(nodes|root)|mind\.selected|layout\.is_visible|opts\.(hmargin|vmargin)|this\.jm/;
+for (const f of files) {
+  fs.readFileSync('renderer/' + f, 'utf8').split('\n').forEach((line, i) => {
+    if (/^\s*(\*|\/\/|\/\*)/.test(line)) return;        // 整行注释 ⇒ 不计
+    if (RE.test(line)) console.log(f + ':' + (i + 1));
+  });
 }
 ```
+
+> **它打印的行数 ≠ 第 1 节的"合计"，而且本来就该不相等** —— 两个口径不同，别去把它们凑平 ✗：
+> ① 它**每行只打印一次**（一行里同时命中两个符号也只出现一行），而第 1 节的合计是"同一行出现多个
+>    符号**会计多次**"；② 它的符号集与表**不是同一组** —— 正则里没有 `zoom_in` / `zoom_out`，
+>    而表里有那么一行。两处都是口径差，不是谁算错了。
 
 ## 5. 与适配层的关系（两半的分工）
 
