@@ -75,15 +75,46 @@
       });
       menu.appendChild(el);
     });
-    // 定位：不超出视口
+    /* 定位：**先让它显示出来、量到真实尺寸，再定位置**（不超出视口）。
+     *
+     * 改前的形状是 `offsetWidth || 160` / `offsetHeight || 40` —— 而此刻菜单还是
+     * `display:none`（上一次 closeMenu 留下的）⇒ 两个 offset 都是 0 ⇒ **宽高恒按 160×40 估**
+     * （实测节点菜单 12 条 ≈ 428px 高）⇒ 菜单开在靠下位置时，最后 8 条落到窗口可视区之外：
+     * `document.elementFromPoint` 直接返回 **null**（点不到；菜单不受 scroll 影响，滚也没用 ✗）。
+     *
+     * 现在的四段（顺序即语义，别调换）：
+     *   ① 先摆到游标处并 `display:block`（`visibility:hidden` 挡住这一帧 —— 全是同一批 JS，
+     *      量完就复位，浏览器不会画出中间态）；
+     *   ② 量**真实**尺寸；
+     *   ③ 夹进视口：右边放不下 ⇒ 左移；下边放不下 ⇒ **上翻**（右键菜单的常规行为，
+     *      上翻也放不下才贴住视口下缘）；
+     *   ④ 极矮窗口（菜单比视口还高）时才给一个滚动上限 —— 保证**每一条都点得到**。
+     * 判据（`scripts/smoke/46-节点级拖动.js` 丙）：面板下部的节点右键后，
+     * **每一条菜单项**（含最后一条）的中心都被 `elementFromPoint` 命中，且真鼠标点最后一条真的生效。 */
     const pad = 4;
-    const mw = menu.offsetWidth || 160;
-    const mh = menu.offsetHeight || 40;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    menu.style.left = Math.min(x, vw - mw - pad) + 'px';
-    menu.style.top = Math.min(y, vh - mh - pad) + 'px';
+    menu.style.maxHeight = '';          // 复位上一次可能为了塞进矮窗口设过的上限（否则量到的是被压过的高度）
+    menu.style.overflowY = '';
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    menu.style.visibility = 'hidden';
     menu.style.display = 'block';
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    let left = x;
+    let top = y;
+    if (left + mw + pad > vw) left = vw - mw - pad;
+    if (left < pad) left = pad;
+    if (top + mh + pad > vh) top = (y - mh >= pad) ? (y - mh) : (vh - mh - pad);
+    if (top < pad) top = pad;
+    if (mh > vh - pad * 2) {            // 视口比菜单还矮：给滚动上限，否则尾部仍然点不到
+      menu.style.maxHeight = (vh - pad * 2) + 'px';
+      menu.style.overflowY = 'auto';
+    }
+    menu.style.left = Math.round(left) + 'px';
+    menu.style.top = Math.round(top) + 'px';
+    menu.style.visibility = '';
   }
 
   /* ================= 菜单内容 ================= */
