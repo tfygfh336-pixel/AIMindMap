@@ -248,9 +248,13 @@ function replayIdem(ctx, name, info) {
  *  有 await → `Promise { <pending> }`。同步判据只能靠 inspect 的呈现。 */
 function isPending(p) { return util.inspect(p).includes('<pending>'); }
 
-/** 按 CLI 失败契约输出错误并置非 0 退出码（**输出到 stdout**，与历史行为一致）。 */
+/** 按 CLI 失败契约输出错误并置非 0 退出码（**输出到 stdout**，与历史行为一致）。
+ *  `MM_DEBUG=1` 时**额外**打一行栈到 stderr（同一进程流的另一个口，失败契约与退出码都不动）——
+ *  为什么要有它：`fail()` 只说 `err.message`，而命令内部的 `TypeError` 消息（如
+ *  `Cannot read properties of undefined`）**不带位置**，定位只能靠猜。默认**一个字都不多打**。 */
 function fail(err) {
   process.stdout.write('error: ' + ((err && err.message) || String(err)) + '\n');
+  if (process.env.MM_DEBUG && err && err.stack) process.stderr.write(String(err.stack) + '\n');
   process.exitCode = 1;
 }
 

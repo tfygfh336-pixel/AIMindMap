@@ -2017,6 +2017,16 @@ function registerIpc() {
     return { paths: text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean), file: f };
   };
 
+  /* 【W12】Obsidian 库的**界面侧识别**（只有一处）：选目录之后看一眼 `.obsidian/` 在不在。
+   *  ⚠️ 判据本身（"什么算一个库"）与 CLI 那一侧是**同一条**：`src/doc-import.js` 的 `isVaultDir`
+   *  用的就是这个目录名；主进程**不 require `src/`**（那会破依赖方向），所以这里按同一条规则
+   *  用 `fs` 现看一眼 —— 两处都只回答"根上有 `.obsidian/` 吗"这一件事，规则没有第二种解释。
+   *  识别到就**显式**给 CLI 加 `--vault`：真导与预览加的是同一个参数（预览 == 真跑的判据）✓ */
+  const importDirIsVault = (dir) => {
+    try { return fs.statSync(path.join(String(dir), '.obsidian')).isDirectory(); }
+    catch (err) { return false; }
+  };
+
   /** 选文件 / 选目录（**原生对话框**）。`opts.where` = 落点那一句人话（写进对话框标题 ⇒
    *  "导到哪"在选择器里就说得清，不用等预览）。 */
   ipcMain.handle('app:import-pick', async (e, kind, opts) => {
@@ -2082,12 +2092,17 @@ function registerIpc() {
       }
       if (!p.dir) return { ok: false, error: '预览需要一个目录' };
       const newName = p.name || sanitizeProjectName(path.basename(p.dir));
+      /* 【W12】库识别与真导**用同一个判据、同一个参数**：显式 `--vault`（不看自动识别那条路，
+       * 免得"预览按自动识别跑、真导按参数跑"出现两条判据）⇒ 预览说的就是真跑会做的 ✓ */
+      const isVault = importDirIsVault(p.dir);
       const copy = makeRehearsalRoot(tmpRoot, name);
-      const r = await runCliAsync(['import-dir', newName, p.dir, '--title', p.title || newName, '--dry-run', '--json'], tmpRoot);
+      const dirArgs = ['import-dir', newName, p.dir, '--title', p.title || newName, '--dry-run', '--json'];
+      if (isVault) dirArgs.push('--vault');
+      const r = await runCliAsync(dirArgs, tmpRoot);
       const report = parseCliJson(r.out);
       if (r.code !== 0 || !report) return { ok: false, error: cliErrorLine(r) };
       return { ok: true, dryRun: report.dryRun === true, kind: kind, project: newName, dir: p.dir,
-        report: report, preview: importReading.dirPreviewOf(report), copy: copy };
+        vault: isVault, report: report, preview: importReading.dirPreviewOf(report), copy: copy };
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };
     } finally {
@@ -2106,7 +2121,11 @@ function registerIpc() {
     if (p.kind === 'dir') {
       if (!p.dir) return { ok: false, error: '真导入需要一个目录' };
       const newName = p.name || sanitizeProjectName(path.basename(p.dir));
-      const r = await runCliAsync(['import-dir', newName, p.dir, '--title', p.title || newName]);
+      /* 【W12】`--vault` 与预览用**同一个判据**（`importDirIsVault`）⇒ 预览说的方向就是真跑做的方向 ✓ */
+      const isVault = importDirIsVault(p.dir);
+      const applyArgs = ['import-dir', newName, p.dir, '--title', p.title || newName];
+      if (isVault) applyArgs.push('--vault');
+      const r = await runCliAsync(applyArgs);
       if (r.code !== 0) return { ok: false, error: cliErrorLine(r) };
       const tree = readProjectTree(newName);
       const d = tree ? allNodeKeysOf(tree) : emptyDiff();
@@ -2120,7 +2139,7 @@ function registerIpc() {
         }
       } catch (err) { /* 打不开新项目不影响"导入成功"这个事实：回执里带着项目名，界面照实说 */ }
       return { ok: true, kind: 'dir', createdProject: newName, project: newName,
-        addedKeys: d.added, modifiedKeys: d.modified, labels: d.labels, out: String(r.out || '').trim() };
+        vault: isVault, addedKeys: d.added, modifiedKeys: d.modified, labels: d.labels, out: String(r.out || '').trim() };
     }
     if (!name) return { ok: false, error: '真导入需要一个当前项目' };
     const files = Array.isArray(p.files) ? p.files : [];

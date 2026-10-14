@@ -606,14 +606,19 @@ const SKIP_LABEL = {
   'no-importable': '目录里（含所有子目录）没有一个可导入的文件',
   'empty-file': '空文件（0 字节或没有任何可导入的内容）',
   'read-failed': '读/转换失败（原因见条目）',
-  'not-regular-file': '不是普通文件（设备/命名管道/特殊节点）'
+  'not-regular-file': '不是普通文件（设备/命名管道/特殊节点）',
+  // ---- 【W12】`--vault` 专用的三类（**都算"没进树/没接上"** ⇒ 必须逐条点名，绝不静默 ✗）----
+  'vault-dangling': 'wiki 链接没接上（目标笔记不存在 / 名字认不出 —— 正文原样保留，没有写悬空链接）',
+  'vault-ambiguous': 'wiki 链接同名多篇（不猜是哪一篇 ⇒ 没有写这条边，请自己确认）',
+  'vault-resource': '嵌入的附件/图片没落成项目内文件（按正文保留，内容没丢）'
 };
 
 /** 跳过原因 → 报告里的短名（表格用） */
 const SKIP_SHORT = {
   hidden: '隐藏', 'skip-dir': '依赖目录', symlink: '符号链接', unreadable: '无读权限',
   'unsupported-ext': '扩展名不支持', 'empty-dir': '空目录', 'no-importable': '无可导入文件',
-  'empty-file': '空文件', 'read-failed': '读/转换失败', 'not-regular-file': '非普通文件'
+  'empty-file': '空文件', 'read-failed': '读/转换失败', 'not-regular-file': '非普通文件',
+  'vault-dangling': 'wiki 断链', 'vault-ambiguous': 'wiki 同名多篇', 'vault-resource': '附件没落成'
 };
 
 /** **一个目录项要不要跳过**（纯函数：只看名字与形态，不碰磁盘）—— 返回 `null` = 收下它继续走。
@@ -725,6 +730,9 @@ function scanImportDir(dir, opts) {
       if (why === 'hidden' || why === 'symlink' || why === 'not-regular-file') { push(rel, why); continue; }
       if (why === 'skip-dir') { push(rel, why); continue; }
       if (e.isDirectory()) {
+        // `--vault`：`assets/` / `attachments/` 这类**附件库**目录不建容器（只装资源；附件属 P1）。
+        // 判据只有这一处（`VAULT_SKIP_DIRS`），报告那一笔在函数末尾（`skippedDirs`）。
+        if (o.vault && VAULT_SKIP_DIRS.indexOf(e.name.toLowerCase()) >= 0) { continue; }
         const child = { name: e.name, rel: rel, dirs: [], files: [] };
         const r = walk(abs, rel, child);
         if (r.code === 'kept') { node.dirs.push(child); continue; }
@@ -773,6 +781,13 @@ function scanImportDir(dir, opts) {
     node.dirs.forEach(flatten);
   };
   flatten(out.tree);
+  /* `--vault` 时按名字跳过附件库目录（P0 边界：附件本身属 P1）—— **另记一笔**（`skippedDirs`），
+   * 不计进 `counts`（否则报告里会出现一份"因为设了 --vault 才存在"的跳过数，与没设时对不上）。 */
+  if (o.vault) {
+    out.skippedDirs = VAULT_SKIP_DIRS.filter((name) => {
+      try { return fs.statSync(path.join(rootAbs, name)).isDirectory(); } catch (e) { return false; }
+    });
+  }
   return out;
 }
 
@@ -809,7 +824,15 @@ function uniqueIdGen() {
  * 整棵树在**内存里**建好再交给调用方一次性落盘 ⇒ 中途失败不会留下半个项目 ✓
  *
  * @param {object} scan `scanImportDir` 的结果
- * @param {{genId?:Function, at?:string, tool?:string}} [opts]
+ * @param {{genId?:Function, at?:string, tool?:string,
+ *          only?:Set<string>, transform?:Function, collect?:Function}} [opts]
+ *   · `only`      = 增量（R4 绑定同步用）：只处理 `rel` 命中的文件（缺省全量，行为与从前逐字节相同）
+ *   · `transform` = **建树之前**对正文的一道转换（**只有 ⓪⁶ 的 Obsidian 直进在用**：
+ *     `transform(fileInfo, 原文) → 新的正文`）。为什么要有这个口子：wiki 语法必须在
+ *     `markdownToTree` **之前**消化掉（`[[页]]` 要变成能承载落点的 Markdown 链接），而"文件 → 提纲"
+ *     这一段就发生在本函数里；把它挪出去会让调用方自己再走一遍 **同一个 `docToOutline`**（读两遍盘）。
+ *     缺省不给 ⇒ `docToOutline` 的输出**原样**交给建树（默认档一个字节都不变 ✓）。
+ *   · `collect`   = **逐条**收集建树过程中被造出来的节点（报告要"逐条点名"时用；缺省不收集）
  * @returns {{children:Array, nodes:number, containers:number, files:number, entries:Array, skipped:Array,
  *            refTargets:Array}}
  *   `entries` 每项 = `{rel, name, id, topic, sha256, origin, format}`（清单指纹与报告都用它）；
@@ -829,6 +852,9 @@ function buildDirImportTree(scan, opts) {
    * 只有"读文件、建子树"这一段才是贵的 ✓。不给它 ⇒ 行为与从前**逐字节相同**（默认全量）✗。 */
   const only = (o.only && typeof o.only.has === 'function') ? o.only : null;
   const wanted = (f) => (!only || only.has(f.rel));
+  /* 正文的一道转换（**只有 Obsidian 直进在用**，见 `applyVault`）：不给 ⇒ 下面一行就是
+   * `const md = normalizeOutline(conv.md)`，与从前**逐字节相同**。 */
+  const transform = (typeof o.transform === 'function') ? o.transform : null;
   const built = {
     children: [], nodes: 0, containers: 0, files: 0, entries: [], skipped: [], preambles: 0,
     refTargets: [],
@@ -862,7 +888,7 @@ function buildDirImportTree(scan, opts) {
           message: String((e && e.message) || e) });
         return;
       }
-      const md = normalizeOutline(conv.md);   // docToOutline 已经规范化过；这里再过一次是**同一份**函数（幂等）
+      const md = normalizeOutline(transform ? transform(f, conv.md) : conv.md);   // docToOutline 已经规范化过；这里再过一次是**同一份**函数（幂等）
       const topic = f.name.replace(/\.[^.]+$/, '');
       const fileNode = {
         // 【折叠默认】文件节点同理：新节点显式 `expanded:false`（原来 `depth+1<=2`）
@@ -895,8 +921,13 @@ function buildDirImportTree(scan, opts) {
       built.files++;
       built.entries.push({
         rel: f.rel, name: f.name, id: fileNode.id, topic: topic,
-        sha256: fileNode.origin.sha256, origin: fileNode.origin, format: conv.format
+        sha256: fileNode.origin.sha256, origin: fileNode.origin, format: conv.format,
+        /* ⚠️ 下面两个是**给程序看的**（`applyVault` 的解析与报告要用节点本身 + 这个文件的绝对路径），
+         * **不进任何落盘数据、也不进 `--json` 报告**（CLI 自己映射报告字段时只取白名单里的那几个键）。
+         * 放在这里而不是让调用方再走一遍树：那就是"同一件事两处算"的源头 ✗ */
+        abs: f.abs, node: fileNode
       });
+      if (typeof o.collect === 'function') o.collect({ rel: f.rel, node: fileNode, format: conv.format });
       /* 【批6】把这个文件节点的**引用落点**交出去（节点 + 基准目录 = 它所在的那个目录）：
        * 图片/附件引用是**相对该 md 文件**解析的 ⇒ 每个文件各有一个基准，不能全库共用一个。
        * 落地（解析 → 复制 → 改写引用 / 坏引用降级成正文）由命令层逐条调
@@ -939,6 +970,683 @@ function groupSkips(skipped) {
   const byReason = {};
   (skipped || []).forEach((s) => { byReason[s.reason] = (byReason[s.reason] || 0) + 1; });
   return byReason;
+}
+
+/* ================= ⓪⁶ Obsidian 库直进（W12 P0）：目录 → 树 + `[[wikilink]]` → **既有** links/assoc =================
+ * 目标（待做清单 W12 一节，P0）：把「一个 Obsidian 库（vault）」直接变成导图内容 ——
+ *   ① **目录结构**：走**既有** `scanImportDir` + `buildDirImportTree`（本段不另写目录遍历/建树 ✗）；
+ *   ② **wiki 语法**：`[[页]]` / `[[页|别名]]` / `[[页#标题]]` 解析成**节点与关联**，`![[嵌入]]` 同样识别；
+ *   ③ **frontmatter**：`tags` / `aliases` / 其它键（按**既有**标签机制落 `node.tags`）；
+ *   ④ **同一次导入内的链接接成"关联"**：**复用既有 `links[]`**（`link` 命令写的同一种字段），
+ *      不新造关系类型、不动 schema ✗；
+ *   ⑤ **转不了/断链的逐条点名**（铁律②）：一条坏链接不拖垮整批，但**绝不静默丢** ✗。
+ *
+ * ## 落点契约（W12 一节没写死"落到哪个字段" ⇒ 契约句写在这里，并登记进 `docs/DATA-FORMAT.md`）
+ *   · 链接**发源** = 那个 `.md` 文件的**文件节点**（`buildDirImportTree` 造的那个 —— 一个文件在这棵
+ *     树里的代表节点）。理由：wiki 链接是**整篇笔记**的属性，而文件节点正是"这篇笔记"。
+ *   · 链接**目标** = 同一个 vault 里另一篇笔记的**文件节点**；带 `#标题` 片段时 = 那篇笔记里**对应标题的
+ *     子节点**（段落形态的片段按层级路径逐层降级匹配）。
+ *   · 落 **`links[]`**：`{ project: <本次导入的项目名>, id: <目标节点 id>, caption: '<源节点标题>：[[原样写法]]' }`
+ *     —— `project` 指向**本项目**（`src/schema.js` 的 `validateProject(data, root, selfProject)`
+ *     明确支持同项目 `(project, id)`：同项目成员以"即将落盘的那份 data"为真值判存在 ⇒ 刚建的节点当轮就认）。
+ *   · **绝不留悬空**：目标不在本次导入范围内 ⇒ **一条链接都不写**，只进报告的 `dangling[]`（逐条点名）。
+ *     这份选择是硬的：写一条指向不存在节点的 `links` 会让**整个项目所有写命令**被校验闸门挡住
+ *     （`docs/DATA-FORMAT.md` §2.5/§2.6 的悬挂检查），那才是真的"导入即坏库" ✗。
+ *   · 别名（`[[页|别名]]`、frontmatter `aliases`）**不能**替目标节点的标题（改标题是另一件事）：
+ *     它进**报告**（`links[].alias`）与链接的 `caption`，并在**解析时**当目标候选名之一。
+ *   · 附件/图片 `![[…]]` ⇒ 走**既有资源管线**（`markdown.resolveImportRefs`，与 `add-image` 同一处命名/格式
+ *     闸门）：能落成项目内文件就落 `files[]`（附件），落不了就**按正文保留 + 逐条点名**（口径同整库导入）。
+ *   · 笔记嵌入 `![[另一篇笔记]]` ⇒ 本段**不做 transclusion**（W12 明确不做"嵌入"那一档）：
+ *     按"链接"处理（同上面的落点）+ 报告里标成 `embed-note`，**原文一字不动**。
+ *
+ * ## 三件不做（P0 边界，与 W12 一节逐条对齐）
+ *   ① **不做** transclusion（笔记嵌入的正文合并）；② **不做**反向同步（本工程 → Obsidian）；
+ *   ③ **不做** daily notes / 插件语法（Dataview / Templater 之类）。
+ *   `#^块引用` / `[[页#^anchor]]` 这类**认得出但转不了**的 ⇒ 走"逐条点名"那一档（不是静默丢）。
+ *
+ * ## 入口：为什么挂在**既有** `import-dir` 上（不许另起一条导入链 ✗）
+ *   vault 就是"一个目录"，而"目录 → 树"那条链（扫描/闸门/容器/文件节点/来源指纹/资源引用/一次原子写）
+ *   已经全部存在。另写一条 `import-vault` 会让上面每一条都出现**第二份表达** —— 本工程反复治的就是这个。
+ *   ⇒ 加一个 `--vault` 开关（缺省关 ⇒ 与从前**逐字节相同**），它只多两件事：这一段的解析 + 报告。
+ */
+
+/** frontmatter 里认得的**标签键**（Obsidian 两种都常见）。其余键一律**不落盘**，只在报告里列出来。 */
+const VAULT_TAG_KEYS = ['tags', 'tag'];
+/** Obsidian 每个库根上的配置目录 —— **`--vault` 的识别判据**（缺省档一个字节都不看它）。 */
+const VAULT_CONFIG_DIR = '.obsidian';
+/** 这个目录是不是一个 Obsidian 库（识别只有这一处实现：CLI 的 `--vault`、界面选目录、单测都问它）。 */
+function isVaultDir(dir) {
+  try { return fs.statSync(path.join(String(dir), VAULT_CONFIG_DIR)).isDirectory(); }
+  catch (e) { return false; }
+}/** 认得的**别名键**（`[[别名]]` 能解析到这篇笔记）。 */
+const VAULT_ALIAS_KEYS = ['aliases', 'alias'];
+/** `--vault` 时**不建容器**的目录名（附件库、Obsidian 自己建的导出目录）：它们只装资源（P1 才进树）。
+ *  只认这几个**众所周知**的名字 —— 不在这里开一个可配置的忽略表（那是 `--ignore` 的活，本批不做）。 */
+const VAULT_SKIP_DIRS = ['assets', 'attachments'];
+/** 段落形态的标题片段（`#一 段 落`）最多按几层匹配：再多就不猜了（进"认不出"那一档，逐条点名） */
+const VAULT_MAX_HEADING_DEPTH = 6;
+
+/* ---- ① frontmatter：解析（**不改写正文**：原样返回正文，调用方决定要不要截断） ---- */
+/**
+ * 解析 md 开头的 YAML frontmatter（**最小子集**：`key: value` / 块级 `- item` 列表）。
+ * @returns {{has:boolean, fields:object, warns:string[], body:string}}
+ *   `body` = **去掉 frontmatter 之后**的正文（没有 frontmatter ⇒ 与入参**逐字节相同**）。
+ *   `warns` = 认得出但没照字面读的项（**逐条点名**，不许静默 ✗）。
+ * 边界（写在这里，别让后来人猜）：只认 `---` 起、`---` 止的**首行块**；嵌套映射/多行块标量/锚点
+ * 一律按"认不出的行"处理（跳过 + 进 `warns`），**绝不猜**（猜错的代价是把别人的值写进标签 ✗）。
+ */
+function parseFrontmatter(text) {
+  const src = String(text == null ? '' : text);
+  const lines = src.replace(/\r\n?/g, '\n').split('\n');
+  const blank = { has: false, fields: {}, warns: [], body: src };
+  if (!lines.length || lines[0].trim() !== '---') return blank;
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === '---') { end = i; break; }
+  }
+  if (end < 0) { blank.warns.push('开头是 `---` 但没找到收尾的 `---`（按"没有 frontmatter"处理）'); return blank; }
+  const fields = {};
+  const warns = [];
+  /** 当前 key 的块级列表（`key:` 换行后跟 `- item`） */
+  let listKey = null;
+  /** 上一行 key 的**缩进宽度**：用来判"这一行是不是嵌套映射"（更深的缩进一律不当新键） */
+  let keyIndent = 0;
+  const pushItem = (k, v) => {
+    if (!Array.isArray(fields[k])) fields[k] = fields[k] === undefined ? [] : [fields[k]];
+    fields[k].push(v);
+  };
+  const unquote = (s) => {
+    if (s.length >= 2 && s.charAt(0) === s.charAt(s.length - 1) && (s.charAt(0) === '"' || s.charAt(0) === "'")) {
+      return s.slice(1, -1);
+    }
+    return s;
+  };
+  for (let i = 1; i < end; i++) {
+    const raw = lines[i];
+    const t = raw.trim();
+    if (!t || t.charAt(0) === '#') continue;
+    const indent = raw.length - raw.replace(/^\s+/, '').length;
+    if (t.charAt(0) === '-') {                       // 块级列表项
+      if (!listKey) { warns.push('第 ' + (i + 1) + ' 行是列表项，但它上面没有 key（已跳过）'); continue; }
+      pushItem(listKey, unquote(t.replace(/^-\s*/, '').trim()));
+      continue;
+    }
+    const m = /^([A-Za-z_][A-Za-z0-9_.-]*)\s*:\s*(.*)$/.exec(t);
+    /* ⚠️ 缩进更深的一行**不当新键**：`nested:\n  a: 1\n` 里的 `a: 1` 是**嵌套映射的内容**，
+     * 照字面收下会把 `a` 变成 frontmatter 的一个键（实测：那份值会被人当成"这篇的元数据"读走 ✗）。
+     * 最小子集**不认嵌套** ⇒ 跳过 + 逐条点名（**不猜**：猜错的代价是把别人的值写进标签）。 */
+    if (m && indent > keyIndent && i > 1) {
+      warns.push('第 ' + (i + 1) + ' 行缩进更深（' + m[1] + '）—— 嵌套映射本子集不认，已跳过');
+      continue;
+    }
+    if (!m) { warns.push('第 ' + (i + 1) + ' 行认不出（既不是 key: value 也不是列表项）：' + t.slice(0, 40)); continue; }
+    const key = m[1], val = m[2].trim();
+    listKey = null;
+    keyIndent = indent;
+    if (val === '') { listKey = key; fields[key] = []; continue; }   // 空值 ⇒ 可能是块级列表的开头
+    if (val.charAt(0) === '[' && val.charAt(val.length - 1) === ']') {   // 行内列表 `[a, b]`
+      const items = val.slice(1, -1).split(',').map((s) => unquote(s.trim())).filter(Boolean);
+      if (fields[key] !== undefined) { warns.push('键 ' + key + ' 重复出现 ⇒ 用行内列表覆盖了前一个值'); }
+      fields[key] = items;
+      continue;
+    }
+    if (fields[key] !== undefined) { warns.push('键 ' + key + ' 重复出现 ⇒ 用后一个值覆盖了前一个'); }
+    fields[key] = unquote(val);
+  }
+  const body = lines.slice(end + 1).join('\n');
+  return { has: true, fields: fields, warns: warns, body: body };
+}
+
+/** 取某个键的字符串列表（**两种写法都认**：数组 / 逗号或顿号分隔的串）。
+ *  ⚠️ 这里用的是**全工程既有**那一套写法（与 `cli/commands/edit.js` 的 `--tags "a,b"` 同一份口径：
+ *     先按 `,` / `，` 切、再 trim、再剔空）——不另立第二套"标签分隔符"规矩。 */
+function fieldList(fields, keys) {
+  for (const k of keys) {
+    const v = (fields || {})[k];
+    if (v === undefined || v === null) continue;
+    if (Array.isArray(v)) {
+      const out = [];
+      v.forEach((x) => { String(x).split(/[,，]/).forEach((s) => { const t = s.trim(); if (t) out.push(t); }); });
+      return dedupe(out);
+    }
+    const out = [];
+    String(v).split(/[,，]/).forEach((s) => { const t = s.trim(); if (t) out.push(t); });
+    return dedupe(out);
+  }
+  return [];
+}
+
+/** 去重但**保序**（报告与落盘都要能复现：同输入必得同一份顺序） */
+function dedupe(arr) {
+  const seen = new Set();
+  const out = [];
+  (arr || []).forEach((x) => { const s = String(x); if (s && !seen.has(s)) { seen.add(s); out.push(s); } });
+  return out;
+}
+
+/** 标签名规范化：Obsidian 的 `#工具` 与 `tags: [工具]` 是**同一件事** ⇒ 统一去掉前导 `#`。 */
+function normalizeVaultTags(list) {
+  const out = [];
+  (list || []).forEach((raw) => {
+    const s = String(raw).trim().replace(/^#+/, '').trim();
+    if (s) out.push(s);
+  });
+  return dedupe(out);
+}
+
+/** 给节点加标签（**既有字段** `node.tags`）：该节点原有标签**保留**（并集、保序），
+ *  与入参无交集时**一个字节都不写**（默认档与"没有标签的笔记"都不受影响 ✓）。 */
+function addNodeTags(node, tags) {
+  if (!node || !tags || !tags.length) return false;
+  const have = Array.isArray(node.tags) ? node.tags.slice() : [];
+  const add = tags.filter((t) => have.indexOf(t) < 0);
+  if (!add.length) return false;
+  node.tags = have.concat(add);
+  return true;
+}
+
+/* ---- ② wiki 语法识别（一处实现：识别、解析、找落点都在本段） ---- */
+const WIKI_SCHEME = 'mm-obsidian:';    // 链接 href 的标记（**不是文件路径** ⇒ 解析期一眼分得出）
+const WIKI_FENCE_RE = /^\s*(```|~~~)/; // 围栏代码块的行首标记
+
+/**
+ * 把正文里的 wiki 语法**解析成两样东西**（纯函数，不读盘、不建树）：
+ *   · `md`     = 转换后的正文（`[[…]]` → 标准 Markdown 链接，`![[…]]` → 既有资源行或链接）
+ *   · `tokens` = **逐条**的原始写法与解析结果（报告、落点解析、逐条点名都用它）
+ * 围栏代码块里的内容**一律不动**（sibling 显式声明：代码块里出现 `[[…]]` 是**代码**，不是链接）。
+ * @returns {{md:string, tokens:Array}}
+ */
+function convertWikiSyntax(text) {
+  const lines = String(text == null ? '' : text).replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  const tokens = [];
+  let inFence = false;
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+$/, '');
+    if (WIKI_FENCE_RE.test(line)) { inFence = !inFence; out.push(line); continue; }
+    if (inFence || line.indexOf('[[') < 0) { out.push(line); continue; }   // 快速跳过：绝大多数行没有 wiki 语法
+    let res = '';
+    let i = 0;
+    while (i < line.length) {
+      const open = line.indexOf('[[', i);
+      if (open < 0) { res += line.slice(i); break; }
+      const close = line.indexOf(']]', open + 2);
+      if (close < 0) { res += line.slice(i); break; }
+      const isEmbed = open > 0 && line.charAt(open - 1) === '!';
+      const inner = line.slice(open + 2, close).trim();
+      const shown = parseWikiInner(inner);
+      // `[[   ]]` 完全空 ⇒ 原样；只给片段（`[[#标题]]`）**要认**（目标是空的、片段就是落点线索）
+      if (!shown.target && !shown.heading) { res += line.slice(i, close + 2); i = close + 2; continue; }
+      res += line.slice(i, isEmbed ? open - 1 : open);   // 嵌入时把那个 `!` 也吃掉（它就是语法的一部分）
+      const tok = {
+        raw: (isEmbed ? '![[' : '[[') + inner + ']]',
+        embed: isEmbed,
+        target: shown.target,
+        heading: shown.heading,
+        display: shown.display
+      };
+      if (isEmbed && looksLikeResourceRef(shown.target)) {
+        /* 附件/图片：**走既有资源行语法** ⇒ 由 `markdown.resolveImportRefs`（唯一实现）落地
+         * （解析路径、格式闸门、复制命名、坏引用降级成正文，全部与 add-image / 整库导入同一处）。
+         * ⚠️ 这一行的**写法**也必须是那一处：`markdown.resourceLine` 是"资源行语法"的唯一权威
+         * （导入/导出成对）⇒ 这里**不手抄**那份语法（抄一份必然与它漂移 ✗）。 */
+        tok.kind = 'resource';
+        res += markdown.resourceLine('file', toPosixPath(shown.target),
+          oneLine(shown.display || shown.target, shown.target));
+      } else {
+        tok.kind = isEmbed ? 'embed-note' : 'link';       // 笔记嵌入不展开（P0 边界）⇒ 按链接处理
+        res += wikiMdLink(shown);
+      }
+      tokens.push(tok);
+      i = close + 2;
+    }
+    out.push(res);
+  }
+  return { md: out.join('\n'), tokens: tokens };
+}
+
+/** `[[…]]` 内部的解析：`页` / `页|别名` / `页#标题` / `页#标题|别名`（四种都认）。
+ *  ⚠️ 只有**第一个** `|` 之前是目标（别名里再出现 `|` 属于别名内容，不再切）；
+ *     目标里的 `#` 是**第一个** —— `[[页#标题#更多]]` 的片段就是 `标题#更多`（原文照收，不猜层级）。 */
+function parseWikiInner(inner) {
+  let s = String(inner == null ? '' : inner).trim();
+  if (!s) return { target: '', heading: '', display: '' };
+  let display = '';
+  const pipe = s.indexOf('|');
+  if (pipe >= 0) { display = s.slice(pipe + 1).trim(); s = s.slice(0, pipe).trim(); }
+  let heading = '';
+  const hash = s.indexOf('#');
+  if (hash >= 0) { heading = s.slice(hash + 1).trim(); s = s.slice(0, hash).trim(); }
+  return { target: s, heading: heading, display: display };
+}
+
+/** `[[…]]` → 标准 Markdown 链接：**可见文字保留**（别名优先，其次原目标名）。
+ *  href 用 `mm-obsidian:` 标记（不是文件路径）⇒ 解析期一眼分得出；对**非 wiki** 的渲染路径
+ *  它与普通链接一样（`convert.markdownToHtml` 只做 `[文字](href)` → `<a href>`）。 */
+function wikiMdLink(shown) {
+  const label = oneLine(shown.display || shown.target || shown.heading, shown.target || shown.heading);
+  const dest = shown.heading ? (shown.target || '本节') + '#' + shown.heading : shown.target;
+  return '[' + label + '](' + WIKI_SCHEME + encodeURIComponent(dest) + ')';
+}
+
+/** 一眼看上去是不是"资源"（图片/附件）：有扩展名、且不是 `.md` / `.markdown`（`.md` 明显是笔记）。
+ *  没有扩展名的 `![[页]]` 按**笔记嵌入**处理（Obsidian 里 `![[页]]` 就是嵌入那篇笔记）。 */
+function looksLikeResourceRef(target) {
+  const ext = path.extname(String(target || '')).toLowerCase();
+  if (!ext) return false;
+  return ext !== '.md' && ext !== '.markdown';
+}
+
+/** 一行化（报告与 Markdown 语法都不许被换行/竖线/方括号打破）：`|` 会截断表格、`[`/`]` 会截断链接。 */
+function oneLine(s, fallback) {
+  const t = String(s == null ? '' : s).replace(/[\r\n]+/g, ' ').replace(/\|/g, '｜')
+    .replace(/[\[\]]/g, '').trim();
+  return t || String(fallback == null ? '' : fallback).trim();
+}
+
+function toPosixPath(p) { return String(p).split('\\').join('/'); }
+
+/* ---- ③ vault 索引与目标解析 ---- */
+/**
+ * 目标 → `{kind:'file'|'heading', entry, chain}`；认不出/歧义 ⇒ `null`（调用方按"逐条点名"处理）。
+ *
+ * 解析顺序（每一档都写得出理由，**不猜**）：
+ *   ① `[[子目录/页]]`：先当**相对本文所在目录**的路径，再当**相对 vault 根**的路径；
+ *   ② `[[页]]`：按**文件名**（不带扩展名）匹配全库（Obsidian 的短链接就是这个名字）；
+ *   ③ frontmatter `aliases` / `[[页|别名]]` 里的**别名**（两处同一个 `aliases` 表）；
+ *   ④ 带 `#片段`：在**目标笔记自己的标题树**里按层级路径逐层降级匹配；
+ *      省略目标（`[[#本节标题]]`）⇒ 就在**本文**里找。
+ *   ⚠️ 同名多篇 ⇒ `ambiguous`：**不挑一个**（挑错比不接更坏），逐条点名让人自己看。
+ */
+function resolveWikiTarget(idx, ref) {
+  const t = String((ref && ref.target) || '').trim();
+  const heading = String((ref && ref.heading) || '').trim();
+  const baseDir = toPosixPath(path.posix.dirname(String(ref && ref.fromRel ? ref.fromRel : '')));
+  const rel = (baseDir === '.' || baseDir === '') ? t : baseDir + '/' + t;
+  const exts = path.extname(t) ? [''] : ['', '.md', '.markdown'];   // 先原样（别名/无扩展名的页），再补 .md
+  const findExact = (name) => {
+    for (const e of exts) { const k = normalizeVaultKey(name + e); if (idx.exact.has(k)) return idx.exact.get(k); }
+    return null;
+  };
+  const findByName = (name) => {
+    for (const e of exts) {
+      const hit = idx.byName.get((name + e).toLowerCase());
+      if (!hit) continue;
+      if (hit.length === 1) return hit[0];
+      return { ambiguous: hit.slice() };               // 同名多篇：交给调用方点名
+    }
+    return null;
+  };
+  let hit = null;
+  if (t) hit = findExact(rel) || findExact(t) || findByName(path.posix.basename(t)) || null;
+  if (!hit) {
+    for (const e of exts) {
+      const a = idx.alias.get((t + e).toLowerCase());
+      if (a) { hit = a.length === 1 ? a[0] : { ambiguous: a.slice() }; break; }
+    }
+  }
+  if (!t) hit = null;                                  // 只给了片段：在本文里找（下面按 fromRel 处理）
+  if (hit && hit.ambiguous) return { kind: 'ambiguous', hits: hit.ambiguous };
+  if (!t) {
+    if (!heading) return null;
+    const self = idx.exact.get(normalizeVaultKey(String(ref && ref.fromRel ? ref.fromRel : '')));
+    if (!self) return null;
+    const h = findHeadingIn(self.node, heading, idx.forcedTopics);
+    return h ? { kind: 'heading', entry: self, chain: h } : null;
+  }
+  if (!hit) {
+    // 目标不在本次导入范围内（`--only` 之类）⇒ 如实分档（调用方据此说"vault 里有、这批没导"）
+    const scanned = idx.scannedLookup(t, rel);
+    return scanned ? { kind: 'not-in-batch', entry: scanned } : null;
+  }
+  if (!heading) return { kind: 'file', entry: hit };
+  const h = findHeadingIn(hit.node, heading, idx.forcedTopics);
+  if (!h) return { kind: 'file-no-heading', entry: hit };   // 笔记在、那个标题不在 ⇒ 落文件节点（点名）
+  return { kind: 'heading', entry: hit, chain: h };
+}
+
+/** 索引键的规范化：`/` 结尾、`./` 前缀、大小写（Windows 上 Obsidian 用户写 `Page` 与 `page` 都当同一篇）。 */
+function normalizeVaultKey(p) {
+  return toPosixPath(p).replace(/^\.\//, '').replace(/^\/+/, '').toLowerCase();
+}
+
+/** 在目标笔记的标题树里找片段：先按层级路径（逐层降级），再按**最后一段**匹配任意一层标题。
+ *  ⚠️ 回来的是**从根到该标题的节点链**（报告与 caption 要写出"落到哪一层"）。 */
+function findHeadingIn(node, heading, forcedTopics) {
+  if (!node || !heading) return null;
+  if (Array.isArray(forcedTopics)) return forcedTopics.length ? forcedTopics : null;   // 打桩口（判别力证明用）
+  const parts = String(heading).replace(/^#+/, '').split(/\s*\/\s*/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length > VAULT_MAX_HEADING_DEPTH) return null;
+  /** 深度优先收集"从根到当前节点"的链，找 topic 等于 want 的 */
+  const search = (n, chain, want) => {
+    for (const c of (n.children || [])) {
+      const next = chain.concat([c]);
+      if (String(c.topic) === want) return next;
+      const deep = search(c, next, want);
+      if (deep) return deep;
+    }
+    return null;
+  };
+  /* 逐层降级：`A/B/C` 先整条试，再 `B/C`，最后只用 `C` —— 每一步都**只认完全相等的标题**
+   * （不做模糊/前缀匹配：猜错落的节点比不落更坏）。 */
+  for (let k = 1; k <= parts.length; k++) {
+    const hit = search(node, [], parts.slice(k - 1).join(' / '));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** caption（边的说明）：**人话 + 原样写法** —— `源节点标题：[[原样]]（#标题）`。
+ *  为什么要它：`docs/DATA-FORMAT.md` 说"链接必须有 caption，AI 凭它判断内容"；
+ *  而 wiki 的**原样写法**正是这条边在源笔记里的依据（别名与片段都在里面）。 */
+function wikiCaption(fromTopic, tok, chainNote) {
+  return oneLine(String(fromTopic || ''), '笔记') + '：' + oneLine(tok.raw, '[[链接]]')
+    + (chainNote ? '（落到「' + oneLine(chainNote, '') + '」）' : '');
+}
+
+function vaultReportOf(sum, links, frontmatter, resources, extras) {
+  const x = extras || {};
+  const unresolved = (x.unresolved || []);
+  const out = {
+    enabled: true,
+    files: sum.files,
+    linkTotal: sum.linkTotal,
+    linked: sum.linked,
+    headingLinks: sum.headingLinks,
+    aliasLinks: sum.aliasLinks,
+    embedLinks: sum.embedLinks,
+    /* "没接上"那一档的总数 = `unresolved` 的**条数**（`unresolved` 自己就是那个清单 ⇒ 两处必然一致）。
+     * ⚠️ 曾经写成 `sum.dangling.length` 而那个数组从没被填过 ⇒ 报告永远说"断链 0 条"，
+     *    而盘面上明明有没接上的链接（同一个数在两处各算一份的典型后果 ✗）。 */
+    danglingTotal: unresolved.length,
+    dangling: unresolved.slice(0, 200),
+    resourceTotal: sum.resourceTotal,
+    resources: resources || [],
+    frontmatterFiles: (frontmatter || []).filter((f) => f.has).length,
+    taggedFiles: (frontmatter || []).filter((f) => f.tags && f.tags.length).length,
+    tags: dedupe([].concat(...(frontmatter || []).map((f) => f.tags || []))),
+    aliases: dedupe([].concat(...(frontmatter || []).map((f) => f.aliases || []))),
+    frontmatter: (frontmatter || []).slice(0, 200),
+    ambiguous: (x.ambiguous || []).slice(0, 200),
+    embedNotes: (x.embedNotes || []).slice(0, 200),
+    resourceUnresolved: (x.resourceUnresolved || []).slice(0, 200),
+    links: (links || []).slice(0, 200),
+    skippedDirs: x.skippedDirs || [],
+    notes: extraNotes(x)
+  };
+  return out;
+}
+
+/** 报告里必须**当面说清**的几件事（都不静默） */
+function extraNotes(x) {
+  const notes = [];
+  if (x.embedNotes && x.embedNotes.length) {
+    notes.push('笔记嵌入（`![[笔记]]`）本批**不展开**（P0 边界，W12 一节）：已按链接接上并逐条列出。');
+  }
+  if (x.resourceUnresolved && x.resourceUnresolved.length) {
+    notes.push('有 ' + x.resourceUnresolved.length + ' 条附件/图片引用在盘上找不到 ⇒ 按**正文原样保留**'
+      + '（内容没丢、也不落一条指向不存在文件的坏引用），逐条列在上面。');
+  }
+  if (x.unresolved && x.unresolved.length) {
+    notes.push('有 ' + x.unresolved.length + ' 条 wiki 链接**没能接成关联**（目标不存在 / 认不出）'
+      + ' ⇒ 正文按原样保留、**一条悬空链接都没写**，逐条列在上面。');
+  }
+  if (x.skippedDirs && x.skippedDirs.length) {
+    notes.push('附件目录（' + x.skippedDirs.join(' / ') + '）按 P0 边界**没有导入**（附件本身属 P1）。');
+  }
+  return notes;
+}
+
+/* ---- ④ 入口：`import-dir --vault` 走的**唯一**一处（转换 + 建树 + 解析 + 落点） ---- */
+/** 建 vault 索引（文件名 / 别名 / 标题树）+ 扫描清单查表（判"vault 里有、这批没导"）。
+ *  ⚠️ **别名表要分两步填**：别名来自 frontmatter，而 frontmatter 是在逐个笔记的循环里才解析的
+ *  ⇒ 循环里解析出 `e.aliases` 之后必须调 `idx.rebuildAliases()`（见 `applyVault` 的最后一步）
+ *  —— 少这一步的后果实测过：`[[别名]]` 一条都解析不到（而报告里还写着"认得的别名有几个"✗）。 */
+function vaultIndexOf(scan, built) {
+  const idx = {
+    exact: new Map(), byName: new Map(), alias: new Map(),
+    scannedLookup: (t, rel) => {
+      /* 这个文件在库里、但**没进本次的树**（`--only` / `--ext` 把它排除了）⇒ 给它的 `rel`，
+       * 让报文能点名"库里**有**它"（与"根本不存在"分开报：修法不同）。
+       * ⚠️ 键要带上扩展名一起比（`[[甲]]` 的字面是 `甲`，而盘上的文件是 `甲.md`）——
+       * 不补这一步就会把"库里明明有"报成"不存在"（实测踩到）。 */
+      const want = [t, rel, normalizeVaultKey(t), normalizeVaultKey(rel)]
+        .concat(t ? [normalizeVaultKey(t + '.md'), t.toLowerCase() + '.md'] : []);
+      const hit = (scan.files || []).find((f) => {
+        const keys = [normalizeVaultKey(f.rel), normalizeVaultKey(path.posix.basename(f.rel)), f.rel.toLowerCase()];
+        return keys.some((k) => want.indexOf(k) >= 0);
+      });
+      return hit ? { rel: hit.rel } : null;
+    },
+    forcedTopics: null,
+    rebuildAliases: () => {
+      idx.alias.clear();          // ⚠️ 必须 **clear()** 而不是重新赋值：`resolveWikiTarget` 闭包里抓的是
+                                  // `idx.alias` 这个引用 —— 换成新 Map 它仍旧查旧的（实测症状：别名一条都解析不到）
+      (built.entries || []).forEach((e) => {
+        if (!e || !e.node) return;              // 只收**真进了树**的那些（候选名指向不存在的节点是坏链接）
+        (e.aliases || []).forEach((a) => {
+          const k = String(a).toLowerCase();
+          if (!idx.alias.has(k)) idx.alias.set(k, []);
+          idx.alias.get(k).push(e);
+        });
+      });
+    }
+  };
+  (built.entries || []).forEach((e) => {
+    if (!e || !e.node) return;
+    const keys = [normalizeVaultKey(e.rel)];
+    if (!path.extname(e.rel)) keys.push(normalizeVaultKey(e.rel + '.md'));
+    keys.forEach((k) => { if (!idx.exact.has(k)) idx.exact.set(k, e); });
+    const bn = path.posix.basename(e.rel).toLowerCase();
+    if (!idx.byName.has(bn)) idx.byName.set(bn, []);
+    idx.byName.get(bn).push(e);
+    const stem = bn.replace(/\.md$/, '');
+    if (stem !== bn) {
+      if (!idx.byName.has(stem)) idx.byName.set(stem, []);
+      idx.byName.get(stem).push(e);
+    }
+  });
+  return idx;
+}
+
+/**
+ * **Obsidian 库直进**：`import-dir --vault` 的转换 + 建树 + wiki 解析 + 落点，**一处实现**。
+ * 建树仍然只有一条链（`docToOutline` → `markdownToTree`，由 `buildDirImportTree` 调），
+ * 本函数只做三件事：① 把 `[[…]]` / `![[…]]` / frontmatter 在**建树之前**消化成 Markdown；
+ * ② 建完树之后按索引把链接落到**既有** `links[]`；③ 把"接不上的"逐条点名。
+ *
+ * @param {{project:string, root?:string, tool?:string, at?:string, genId?:Function,
+ *          only?:Set<string>, readDoc?:Function, resolveRefs?:Function, baseDirOf?:Function}} opts
+ *   · `project`（必填）= 目标项目目录名 ⇒ `links[].project` 用它（同项目引用，schema 支持）
+ *   · `resolveRefs(baseDir, node, vaultSources)` = **既有**资源落地那一处（CLI 传
+ *     `resolveDirImportRefs` 的同款调用）；缺省 = 不落地（只有真跑命令时那一层才存在）——
+ *     缺省时附件引用**原样留在节点上**，由调用方后面统一处理（**不静默丢**：报告里照旧逐条列出来）
+ *   · `baseDirOf(entry)` = 这个文件所在目录（相对引用的基准；缺省取 scan.root）
+ * @returns {{built:object, vault:object, sources:Map, refs:Map}}
+ */
+function applyVault(scan, opts) {
+  const o = opts || {};
+  const project = String(o.project || '');
+  const at = o.at || new Date().toISOString();
+  const tool = o.tool || 'import-dir';
+  const genId = o.genId || uniqueIdGen();
+  if (!project) throw new Error('applyVault 需要 project（links[].project 用它；缺了就会写出无处可指的链接）');
+
+  const vaultSources = new Map();     // rel → 转换后的正文（**建树读它** ⇒ 每个文件只读一次）
+  const tokensOf = new Map();         // rel → 该文件的 wiki 语法条目（报告与解析用）
+  const fmOf = new Map();             // rel → frontmatter 解析结果
+  // 先建索引需要**文件级事实**（rel / id）；建树时才知道 ⇒ 索引在树建好后再建（见下）
+  const built = buildDirImportTree(scan, {
+    genId: genId, at: at, tool: tool, only: o.only,
+    transform: (f, md) => {
+      /* 交给 `buildDirImportTree` 的**只是正文本身**（frontmatter 剥掉、wiki 语法消化成 Markdown）；
+       * 规范化（CRLF→LF + 剥 BOM）仍由它那**一处**统一做（与从前同一步、同一份函数）⇒ 指纹与建树
+       * 用的都是同一份规范化后的正文 ✓（本函数**不碰** origin：`makeOrigin` 是唯一一处）。 */
+      const fm = parseFrontmatter(md);
+      const conv = convertWikiSyntax(fm.body);
+      vaultSources.set(f.rel, normalizeOutline(conv.md));
+      tokensOf.set(f.rel, conv.tokens);
+      fmOf.set(f.rel, fm);
+      return conv.md;
+    }
+  });
+  (built.entries || []).forEach((e) => { if (vaultSources.has(e.rel)) e.md = vaultSources.get(e.rel); });
+
+  const idx = vaultIndexOf(scan, built);
+  const unresolved = [];       // 认不出 / 目标不存在（逐条点名）
+  const ambiguous = [];        // 同名多篇（不挑一个，逐条点名）
+  const embedNotes = [];       // `![[笔记]]`：本批不展开，如实列出
+  const resourceUnresolved = [];// 附件引用找不到（按正文保留）
+  const links = [];            // 真的写下去的边（报告用）
+  const frontmatter = [];
+  const resources = [];
+  const resOfRel = new Map();  // rel → 资源落地读数（第②遍要用）
+
+  const sum = { files: 0, linkTotal: 0, linked: 0, headingLinks: 0, aliasLinks: 0, embedLinks: 0,
+    dangling: [], resourceTotal: 0 };
+
+  /* ---------- 第①遍：frontmatter（标签 / 别名）+ 附件引用的落点 ----------
+   * ⚠️ **必须先跑完这一遍再解析链接**：`[[别名]]` 的目标候选名来自 frontmatter，而别名可能写在
+   * **任何一篇**笔记里（后面的那篇也算）；第①遍就把全库的候选名收齐 ⇒ 第②遍的索引才是完整的。
+   * （这是实测踩出来的：一边解析一边收集 ⇒ 第 3 篇写的别名对第 1 篇的链接永远无效。） */
+  (built.entries || []).forEach((e) => {
+    if (!e || !e.node) return;
+    const node = e.node;
+    sum.files += 1;
+    const fm = fmOf.get(e.rel) || { has: false, fields: {}, warns: [] };
+    const tags = normalizeVaultTags(fieldList(fm.fields, VAULT_TAG_KEYS));
+    const aliases = dedupe(fieldList(fm.fields, VAULT_ALIAS_KEYS))
+      .map((s) => String(s).replace(/^#+/, '').trim()).filter(Boolean);
+    e.aliases = aliases;
+    const tagged = addNodeTags(node, tags);
+    if (fm.has) {
+      frontmatter.push({
+        rel: e.rel, nodeId: node.id, tags: tags, tagsApplied: tagged, aliases: aliases,
+        keys: Object.keys(fm.fields).sort(),
+        other: Object.keys(fm.fields).filter((k) => VAULT_TAG_KEYS.indexOf(k) < 0 && VAULT_ALIAS_KEYS.indexOf(k) < 0)
+          .sort(),
+        warns: fm.warns.slice()
+      });
+    }
+    /* 附件/图片：先按**既有资源行**挂到节点上（`![[图]]` 在转换期已写成资源行）⇒ 交给既有
+     * `markdown.resolveImportRefs`（唯一实现）落地；坏引用 ⇒ 摘下来 + 按正文保留 + 逐条点名。 */
+    if (typeof o.resolveRefs === 'function') {
+      const rep = o.resolveRefs(o.baseDirOf ? o.baseDirOf(e) : '', node, vaultSources);
+      if (rep) {
+        resOfRel.set(e.rel, rep);
+        /* 逐条点名：坏引用由既有那一处（`resolveImportRefs` 的 `dropped`/`blocked`/`remote`）
+         * 如实给出 —— 本段只把它转成报告条目，**不自己再判一次**（第二处判据必然漂移 ✗）。
+         * ⚠️ `dropped` 与 `blocked` 在"本地文件不存在"这一档上装的是**同一个对象**
+         *    （`blocked` 是 `refs` 的过滤视图、`dropped` 是落地时那一档的桶）⇒ 直接 concat 会把
+         *    同一件事列两遍（实测：1 条坏引用报成 2 条）。这里按**对象身份**去重。 */
+        const issues = [];
+        const seenRes = new Set();
+        [].concat(rep.dropped || [], rep.blocked || [], rep.remote || []).forEach((r) => {
+          if (!r || seenRes.has(r)) return;
+          seenRes.add(r);
+          issues.push(r);
+        });
+        issues.forEach((r) => {
+          resourceUnresolved.push({
+            file: e.rel, node: node.id, raw: r.raw, status: r.status, reason: r.reason || '',
+            candidates: (r.candidates || []).length
+          });
+        });
+      }
+    }
+  });
+
+  /* ---------- 第②遍：wiki 链接 → 既有 `links[]`（此刻索引/别名表已经完整） ---------- */
+  idx.rebuildAliases();   // 别名表按引用原地刷新（见它的注释：换成新 Map 的话解析侧仍查旧的）
+  (built.entries || []).forEach((e) => {
+    if (!e || !e.node) return;
+    const node = e.node;
+    const tokens = tokensOf.get(e.rel) || [];
+    sum.linkTotal += tokens.filter((t) => t.kind === 'link' || t.kind === 'embed-note').length;
+    sum.resourceTotal += tokens.filter((t) => t.kind === 'resource').length;
+    const ctx = {
+      file: e.rel, node: node, sum: sum,
+      unresolved: unresolved, ambiguous: ambiguous, embedNotes: embedNotes,
+      links: links, project: project
+    };
+    tokens.forEach((tok) => {
+      if (tok.kind === 'resource') {                                 // 附件：报告里逐条给落点
+        resources.push({ file: e.rel, raw: tok.raw, target: tok.target, baseDir: o.baseDirOf ? o.baseDirOf(e) : '' });
+        return;
+      }
+      linkWikiToken(idx, e, node, tok, ctx);
+    });
+  });
+
+  sum.unresolvedTotal = unresolved.length;
+  sum.ambiguousTotal = ambiguous.length;
+  const vault = vaultReportOf(sum, links, frontmatter, resources, {
+    unresolved: unresolved, ambiguous: ambiguous, embedNotes: embedNotes,
+    resourceUnresolved: resourceUnresolved,
+    skippedDirs: (scan.skippedDirs || [])
+  });
+  return { built: built, vault: vault, sources: vaultSources, refs: resOfRel };
+}
+
+/** 一条 wiki 语法 → 落点（**唯一一处**：判定顺序、报告分档、写下去的那条边都在这里）。
+ *  ctx 里是这一次导入的累加器（逐条点名的三个清单 + 真写下去的 links + 汇总计数 `sum`）。 */
+function linkWikiToken(idx, e, node, tok, ctx) {
+  const sum = ctx.sum;
+  if (tok.kind === 'embed-note') {
+    ctx.embedNotes.push({ file: e.rel, raw: tok.raw, target: tok.target, note: '笔记嵌入不展开（P0 边界）' });
+    sum.embedLinks += 1;
+  }
+  const hit = resolveWikiTarget(idx, { target: tok.target, heading: tok.heading, fromRel: e.rel });
+  if (!hit) {
+    ctx.unresolved.push({
+      file: e.rel, node: node.id, raw: tok.raw, target: tok.target, heading: tok.heading,
+      embed: !!tok.embed, why: tok.target ? '目标没有对应的笔记（或认不出这个名字）' : '只给了片段、本文里也没有那个标题'
+    });
+    return;
+  }
+  if (hit.kind === 'ambiguous') {
+    ctx.ambiguous.push({
+      file: e.rel, raw: tok.raw, target: tok.target,
+      hits: hit.hits.map((h) => h.rel)
+    });
+    return;
+  }
+  if (hit.kind === 'not-in-batch') {
+    ctx.unresolved.push({
+      file: e.rel, node: node.id, raw: tok.raw, target: tok.target, heading: tok.heading, embed: !!tok.embed,
+      why: 'vault 里**有**这篇笔记（' + hit.entry.rel + '），但本次导入的范围内没有它'
+        + '（`--only` / `--ext` 把它排除了）⇒ 没有写这条边'
+    });
+    return;
+  }
+  const dest = hit.kind === 'heading' && hit.chain && hit.chain.length
+    ? hit.chain[hit.chain.length - 1] : hit.entry.node;
+  if (!dest || !dest.id) {
+    ctx.unresolved.push({ file: e.rel, node: node.id, raw: tok.raw, target: tok.target, embed: !!tok.embed,
+      why: '目标节点还没有 id（转换没成功？）' });
+    return;
+  }
+  if (dest.id === node.id) {         // 指向自己：不是关联（自环），如实说出来
+    ctx.unresolved.push({ file: e.rel, node: node.id, raw: tok.raw, target: tok.target, embed: !!tok.embed,
+      why: '这一条指向笔记自己（自环）⇒ 按"不写自环"处理' });
+    return;
+  }
+  sum.linked += 1;
+  if (hit.kind === 'heading') sum.headingLinks += 1;
+  if (tok.display) sum.aliasLinks += 1;
+  const chainNote = (hit.kind === 'heading' && hit.chain)
+    ? hit.chain.map((n) => n.topic).join(' / ') : '';
+  const caption = wikiCaption(node.topic, tok, chainNote);
+  const link = { project: ctx.project, id: dest.id };
+  if (caption) link.caption = caption;
+  const dup = (node.links || []).some((l) => l && l.project === link.project && l.id === link.id
+    && l.caption === link.caption);
+  if (!dup) {
+    (node.links = node.links || []).push(link);
+    ctx.links.push({ file: e.rel, node: node.id, to: ctx.project + '/' + dest.id, toTopic: dest.topic,
+      raw: tok.raw, target: tok.target, heading: tok.heading, alias: tok.display || '', kind: hit.kind,
+      chain: chainNote, caption: caption });
+  }
 }
 
 /* ================= ⓪⁵ 绑定工作区文件夹（R4）：**增量**同步的纯逻辑 =================
@@ -1744,6 +2452,9 @@ module.exports = {
   SKIP_LABEL, SKIP_SHORT, entrySkipReason, normalizeExtList, scanImportDir, buildDirImportTree, uniqueIdGen,
   dirManifestSha256, makeDirOrigin, describeTooManyFiles, describeDirOversize, describeNoImportableFiles,
   skippedTotal, groupSkips, originKey,
+  // ⓪⁶ Obsidian 直进（W12 P0）：**识别 + 解析 + 落点 + 逐条点名**一处实现（目录/建树/资源/写盘仍全走既有那些）
+  VAULT_TAG_KEYS, VAULT_ALIAS_KEYS, VAULT_SKIP_DIRS, normalizeVaultTags,
+  parseFrontmatter, fieldList, dedupe, convertWikiSyntax, parseWikiInner, isVaultDir, applyVault,
   // 体量闸门（⓪′）：上限常量只有这一份，两条导入路共用同一个判据
   MAX_SOURCE_MB, MAX_SOURCE_BYTES, describeOversizeSource, describeOversizeBuffer, describeOversizeSize,
   normalizeOutline, outlineSha256, sourceRef, makeOrigin, originMatches, describeOrigin,

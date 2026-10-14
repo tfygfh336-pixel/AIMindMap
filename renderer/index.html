@@ -124,6 +124,9 @@
       <h3>导入到导图 —— 先看将要做什么</h3>
       <p id="import-what" class="bind-line"></p>
       <div id="import-preview-plan" class="bind-plan"></div>
+      <!-- 【W12】认出一个 Obsidian 库时的那一句（读数全部来自 CLI 的 --vault 报告；界面不自己算）。
+           默认 display:none ⇒ 不占布局、不进命中测试（没在导库时一个像素都不多）。 -->
+      <div id="import-vault-note" class="bind-hint" style="display:none"></div>
       <p class="bind-hint">这份预览用的是**既有 `--dry-run` 读法**，而且跑在一份**演练副本**上：
         你的项目此刻**一个字节都没动**；取消也不会留下任何东西。
         「确认导入」才真的调既有命令（`import-md` 逐文件 / `import-dir` 整库）—— 判定与写盘全在 CLI 那一侧。</p>

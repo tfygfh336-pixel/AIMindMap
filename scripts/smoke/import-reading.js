@@ -112,6 +112,39 @@ function dirPreviewOf(report) {
   });
   const skippedTotal = Number(r.skippedCount) || 0;
   const badRefTotal = Number(rr.badTotal === undefined ? badRefs.length : rr.badTotal) || 0;
+  /* 【W12】Obsidian 库那一路：报告里带着 `vault`（CLI 那一侧算的）⇒ 原样搬运一份**给人看的**读数。
+   *  界面**不重算**任何一条（断链数 / 接上的边数都取自 CLI 自己的累加器）✓。没开 vault ⇒ `null`。 */
+  const v = r.vault && r.vault.enabled ? r.vault : null;
+  const vault = v ? {
+    auto: v.auto === true,
+    files: Number(v.files) || 0,
+    linkTotal: Number(v.linkTotal) || 0,
+    linked: Number(v.linked) || 0,
+    headingLinks: Number(v.headingLinks) || 0,
+    aliasLinks: Number(v.aliasLinks) || 0,
+    embedLinks: Number(v.embedLinks) || 0,
+    danglingTotal: Number(v.danglingTotal) || 0,
+    taggedFiles: Number(v.taggedFiles) || 0,
+    frontmatterFiles: Number(v.frontmatterFiles) || 0,
+    tags: Array.isArray(v.tags) ? v.tags.slice(0, 50) : [],
+    aliases: Array.isArray(v.aliases) ? v.aliases.slice(0, 50) : [],
+    resourceTotal: Number(v.resourceTotal) || 0,
+    skippedDirs: Array.isArray(v.skippedDirs) ? v.skippedDirs.slice() : [],
+    // 逐条点名的那几类：界面照 CLI 的原话列出来（**一条都不自己编**）
+    dangling: (Array.isArray(v.dangling) ? v.dangling : []).map((d) => ({
+      file: d.file, raw: d.raw, target: d.target, why: d.why
+    })),
+    ambiguous: (Array.isArray(v.ambiguous) ? v.ambiguous : []).map((d) => ({
+      file: d.file, raw: d.raw, hits: d.hits
+    })),
+    embedNotes: (Array.isArray(v.embedNotes) ? v.embedNotes : []).map((d) => ({
+      file: d.file, raw: d.raw, target: d.target
+    })),
+    resourceUnresolved: (Array.isArray(v.resourceUnresolved) ? v.resourceUnresolved : []).map((d) => ({
+      file: d.file, raw: d.raw, status: d.status, reason: d.reason
+    })),
+    notes: Array.isArray(v.notes) ? v.notes.slice() : []
+  } : null;
   return {
     kind: 'dir',
     added: Number(r.nodes) || 0,
@@ -125,6 +158,7 @@ function dirPreviewOf(report) {
     containers: Number(r.containers) || 0,
     skippedCount: skippedTotal,
     badRefCount: badRefTotal,
+    vault: vault,
     updatedNote: '整库导入会**新建一个项目**：不改任何已有项目（所以「更新」恒为 0）'
   };
 }

@@ -187,6 +187,16 @@
     const okBtn = impEl('import-preview-ok');
     const what = impEl('import-what');
     const info = impPreview;
+    /* 【W12】认出一个库时多说一句（读数来自 CLI 的 `--vault` 报告；**没在导库 ⇒ 这一格 display:none**）。 */
+    const vn = impEl('import-vault-note');
+    if (vn) {
+      const v = (info && info.preview && info.preview.vault) || null;
+      vn.style.display = v ? '' : 'none';
+      vn.textContent = v
+        ? ('这是一个 Obsidian 库：导入会顺带解析 `[[wikilink]]`（接成关联）、frontmatter 标签与别名 —— '
+          + '**零 LLM 调用、零 token**（纯本地字符串处理）。断链与同名多篇会逐条点名，且不会写悬空链接。')
+        : '';
+    }
     if (what) {
       if (!info) what.textContent = '';
       else {
@@ -235,6 +245,49 @@
       w.textContent = '⚠ CLI 说这一步会被拒（原话：' + (pr.refuseReason || '未给原因') + '）—— 预览与真跑是**同一份判据**，'
         + '真跑也会被拒；先按上面的原因处理再导。';
       box.appendChild(w);
+    }
+    /* 【W12】Obsidian 库那一路：读数**全部来自 CLI 的报告**（界面一条都不自己算），
+     * 断链/同名/附件没落成**逐条点名**。没开 vault 时这一段一个元素都不建 ⇒ 默认档逐字节不变 ✓ */
+    if (pr.vault) {
+      const h = document.createElement('div');
+      h.className = 'bind-plan-line';
+      h.textContent = '📓 认出一个 Obsidian 库' + (pr.vault.auto ? '（目录里有 .obsidian/）' : '')
+        + '：' + pr.vault.files + ' 篇笔记 ｜ 链接 ' + pr.vault.linkTotal + ' 条 → 接成关联 ' + pr.vault.linked
+        + '（落标题 ' + pr.vault.headingLinks + ' / 带别名 ' + pr.vault.aliasLinks + '）'
+        + ' ｜ 断链与认不出 ' + pr.vault.danglingTotal + ' 条'
+        + (pr.vault.taggedFiles ? ' ｜ frontmatter 标签 ' + pr.vault.taggedFiles + ' 篇' : '');
+      box.appendChild(h);
+      if (pr.vault.tags.length) {
+        const t = document.createElement('div');
+        t.className = 'bind-plan-note';
+        t.textContent = '标签会落到那些笔记的节点上（与 --tags 同一套标签机制）：' + pr.vault.tags.join(' / ')
+          + (pr.vault.aliases.length ? '；别名（能当链接目标）' + pr.vault.aliases.join(' / ') : '');
+        box.appendChild(t);
+      }
+      const named = []
+        .concat(pr.vault.dangling.map((d) => d.file + ' · ' + d.raw + ' —— ' + (d.why || '没接上')))
+        .concat(pr.vault.ambiguous.map((d) => d.file + ' · ' + d.raw + ' —— 同名多篇：' + (d.hits || []).join('、')));
+      if (named.length) {
+        const u = document.createElement('div');
+        u.className = 'bind-plan-unconv';
+        u.textContent = '没接成关联的 ' + named.length + ' 条（**逐条点名**；一条悬空链接都没写）：';
+        box.appendChild(u);
+        named.forEach((s) => {
+          const it = document.createElement('div');
+          it.className = 'bind-plan-unconv';
+          it.textContent = '  · ' + s;
+          box.appendChild(it);
+        });
+      }
+      if (pr.vault.resourceUnresolved.length || pr.vault.embedNotes.length) {
+        const e = document.createElement('div');
+        e.className = 'bind-plan-note';
+        e.textContent = (pr.vault.embedNotes.length
+          ? '笔记嵌入 ' + pr.vault.embedNotes.length + ' 条按"链接"处理（本批不做正文合并）' : '')
+          + (pr.vault.resourceUnresolved.length
+            ? '；附件/图片 ' + pr.vault.resourceUnresolved.length + ' 条没落成项目内文件（内容按正文保留，没丢）' : '');
+        box.appendChild(e);
+      }
     }
     if (pr.unconvertedList && pr.unconvertedList.length) {
       const h = document.createElement('div');

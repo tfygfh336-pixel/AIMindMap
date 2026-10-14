@@ -1231,13 +1231,24 @@ module.exports = {
     if (!name) ctx.error('缺少项目名');
     const dir = ctx.args._[1];
     if (!dir) ctx.error('用法: import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] '
-      + '[--max-files N] [--dry-run] [--force]');
+      + '[--max-files N] [--vault|--no-vault] [--dry-run] [--force]');
     // ① 入参闸门：整库导入要的是**目录**（给成文件 / 不存在 / 没权限 ⇒ 各自原因准确 + 给出路）
     const bad = docImport.describeImportDirProblem(dir);
     if (bad) ctx.error(bad.message);
     if (fs.existsSync(path.join(ctx.PROJECTS_DIR, name, name + '.json'))) {
       ctx.error('项目已存在: ' + name + '（换个名字，或先删掉它）');
     }
+    /* 【W12】Obsidian 库直进：`--vault`（或目录里真有 `.obsidian/`）⇒ 多走一段 wiki 解析。
+     * ⚠️ **`--no-vault` 是那条"逐字节不变"的出口**：库目录里也有只想拿结构的时候（第三方插件导出的
+     *    库、别人给的库），而没有它的话"自动识别"会把这类需求逼进死角。给了它就**只走**既有的
+     *    `buildDirImportTree` 那条链（与从前**逐字节相同**，`vaultReport` 为 null）。
+     * 为什么做成"自动识别 + 两条显式开关"都认：想导一个库的人**不会**先去查有没有这个开关
+     *    （W13 那条教训：最自然的第一反应是**拖目录**），而显式 `--vault` 让"这个目录不是标准库结构、
+     *    但里面写着 `[[…]]`"这种情形也走得通 ✓ */
+    const noVault = !!ctx.args.noVault;
+    const explicitVault = !!ctx.args.vault && !noVault;
+    const autoVault = !explicitVault && !noVault && docImport.isVaultDir(dir);
+    const vault = explicitVault || autoVault;
     // ② 范围与上限：**读任何文件之前**就定下来（`--ext` 非法值是当场报错，不静默退成默认 ✗）
     const extRes = ctx.args.ext === undefined
       ? { ok: true, ext: docImport.IMPORT_EXT_DEFAULT.slice() }
@@ -1245,7 +1256,7 @@ module.exports = {
     if (!extRes.ok) ctx.error('--ext ' + extRes.reason);
     const maxFiles = ctx.intOption('maxFiles', { min: 1, max: 100000, def: docImport.MAX_IMPORT_FILES_DEFAULT });
     // ③ 扫描（**只读**：走查目录、逐类计数跳过、算总量；不读文件内容、不写盘、不建树）
-    const scan = docImport.scanImportDir(dir, { ext: extRes.ext });
+    const scan = docImport.scanImportDir(dir, { ext: extRes.ext, vault: vault });
     if (!scan.totals.files) ctx.error(docImport.describeNoImportableFiles(scan.root, scan));
     const overFiles = scan.totals.files > maxFiles;
     const overSize = !overFiles && scan.totals.bytes > docImport.MAX_SOURCE_BYTES;
@@ -1255,8 +1266,33 @@ module.exports = {
 
     // ④ 转换 + 建树（**整棵树在内存里建好**）。超限时**不转换** —— 反正马上要拒，
     //    没必要把几十 MB 读进内存（那正是体量闸门要防的事 ✗）
-    const built = limitMsg ? null : docImport.buildDirImportTree(scan, { tool: 'import-dir' });
-    const skipped = (scan.skipped || []).concat(built ? built.skipped : []);
+    /* 【W12】vault 那一路走 `applyVault`（**同一个 `buildDirImportTree`**，只是带了正文转换与 wiki 解析）：
+     * 资源引用的落点也一并交给它 —— 它内部调的是**同一个** `resolveDirImportRefs`（唯一实现），
+     * 只是位置挪到"wiki 解析之后"（`![[图]]` 是 wiki 语法，得先变成资源行才轮到既有那一步）✓ */
+    const vaultRes = (limitMsg || !vault) ? null : docImport.applyVault(scan, {
+      project: name,
+      tool: 'import-dir',
+      baseDirOf: (e) => (e && e.abs ? path.dirname(e.abs) : scan.root),
+      /* ⚠️ `resolveDirImportRefs` 收的是 `{refTargets:[…]}`、回的是**按文件分组的数组**；这里只要
+       * "这一个文件的那一份"（`rows[0].rep`）—— 交回数组会让下游把 `rep.refs` 读成 undefined（实测踩到）。 */
+      resolveRefs: (baseDir, node) => {
+        const rows = resolveDirImportRefs(ctx, name,
+          { refTargets: [{ rel: '', baseDir: baseDir, node: node }] }, !!ctx.dryRun);
+        return rows.length ? rows[0].rep : null;
+      }
+    });
+    const built = vaultRes ? vaultRes.built : (limitMsg ? null : docImport.buildDirImportTree(scan, { tool: 'import-dir' }));
+    const vaultReport = vaultRes ? vaultRes.vault : null;
+    /* vault 报告里两类"没接上"的条目要并入**同一份**跳过清单（"逐条点名"只走这一条渲染路，
+     * 免得同一个地方出现两套 ✗）。⚠️ 资源那一类**不在这里列**：它已经由既有 `printDirRefReport`
+     * 逐条点名（`resourceRefs.bad` 与它同源）⇒ 再列一遍就是同一件事说两遍（实测踩到重复行）。 */
+    const vaultIssues = vaultReport ? [
+      ...vaultReport.dangling.map((u) => ({ rel: u.file, reason: 'vault-dangling',
+        message: '「' + (u.raw || '') + '」' + (u.why ? ' —— ' + u.why : '') })),
+      ...vaultReport.ambiguous.map((u) => ({ rel: u.file, reason: 'vault-ambiguous',
+        message: '「' + (u.raw || '') + '」同名多篇：' + (u.hits || []).join('、') + ' ⇒ 不猜，没有写这条边' }))
+    ] : [];
+    const skipped = (scan.skipped || []).concat(built ? built.skipped : []).concat(vaultIssues);
     const counts = docImport.groupSkips(skipped);
     // 扫得到文件、但**一个都没转换成功**（全是坏文件/全空）⇒ 与"目录里没有可导入的文件"同一处理：
     // 响亮拒绝，绝不建一个空项目 ✗
@@ -1321,6 +1357,37 @@ module.exports = {
     const topBrief = '顶层 ' + scan.tree.dirs.length + ' 个目录 / ' + scan.tree.files.length + ' 个文件'
       + (topLevel.length ? '：' + topLevel.slice(0, 12).map((t) => t.topic + (t.kind === 'dir' ? '/' : '')).join(' ') : '');
 
+    /* 【W12】vault 报告的回显（**逐条点名**：断链 / 同名多篇 / 附件没落成都在 `printSkips` 里列过了，
+     * 这里给读数与"哪些选项在起作用"）。读数一律**现算**（来自 `applyVault` 的同一份累加器，
+     * 不在这里重数一遍 —— 第二处计数必然与落盘的边漂移 ✗）。 */
+    const printVault = (out) => {
+      if (!vaultReport) return;
+      out('Obsidian 直进（--vault' + (autoVault ? '，自动识别到 .obsidian/' : '') + '）：'
+        + vaultReport.files + ' 篇笔记 ｜ wiki 链接 ' + vaultReport.linkTotal + ' 条：'
+        + '接成关联 ' + vaultReport.linked + ' 条（其中落标题 ' + vaultReport.headingLinks
+        + ' / 带别名 ' + vaultReport.aliasLinks + ' / 笔记嵌入按链接处理 ' + vaultReport.embedLinks + '）'
+        + ' ｜ 断链与认不出的 ' + vaultReport.danglingTotal + ' 条'
+        + '（详见下面的跳过清单，**一条悬空链接都没写**）');
+      out('frontmatter：' + vaultReport.frontmatterFiles + ' 篇有 ｜ 带标签 ' + vaultReport.taggedFiles
+        + ' 篇 ｜ 标签 ' + (vaultReport.tags.length ? vaultReport.tags.join(' / ') : '（无）')
+        + ' ｜ 别名 ' + (vaultReport.aliases.length ? vaultReport.aliases.join(' / ') : '（无）')
+        + '（标签落到**那种笔记的文件节点**的 tags 上，键与其它命令同一处 ✓）');
+      out('附件/图片嵌入：' + vaultReport.resourceTotal + ' 条'
+        + (vaultReport.skippedDirs.length
+          ? ' ｜ 附件目录 ' + vaultReport.skippedDirs.join(' / ') + ' 按 P0 边界没有导入（附件本身属 P1）' : ''));
+      vaultReport.notes.forEach((n) => out('  ⚠ ' + n));
+      /* 落点**逐条可读**（`--json` 里有全部；文本档给前若干条 —— 与 `printSkips` 的上限口径一致） */
+      vaultReport.links.slice(0, 20).forEach((l) => out('  · ' + l.file + ' → ' + l.toTopic
+        + '（' + l.to + '）' + (l.kind === 'heading' ? ' 落「' + l.chain + '」' : '')));
+      if (vaultReport.links.length > 20) out('  · …另有 ' + (vaultReport.links.length - 20) + ' 条（`--json` 里有全部）');
+    };
+
+    /** 【W12】vault 那一路的引用读数 → `printDirRefReport` 认的那份形状（`[{rel, rep}]`）。
+     *  `applyVault` 交回来的是 `Map<rel, rep>`；这里只做**搬运**（不重新解析、也不重新复制 ——
+     *  落地那一步已经在 `applyVault` 里真的做过了，调的是同一个 `resolveImportRefs`）。 */
+    const vaultDirRefs = () => Array.from(vaultRes.refs.entries())
+      .map(([rel, rep]) => ({ rel: rel || name, rep: rep }));
+
     const report = {
       ok: true, dryRun: !!ctx.dryRun, project: name, dir: dir, dirRef: dirRef, title: title,
       ext: scan.ext, maxFiles: maxFiles,
@@ -1342,13 +1409,37 @@ module.exports = {
       wouldRefuse: refused || !!limitMsg,
       refuseReason: limitMsg ? (overFiles ? 'over-max-files' : 'over-size')
         : (dup ? 'duplicate-dir' : (collisions.length ? 'duplicate-file' : null)),
-      forced: forced
+      forced: forced,
+      // 【W12】vault 那一路的读数（没开 ⇒ `null`：**默认档报告与从前逐字节相同** ✓）
+      vault: vaultReport
+        ? {
+          enabled: true, auto: autoVault,
+          files: vaultReport.files, linkTotal: vaultReport.linkTotal, linked: vaultReport.linked,
+          headingLinks: vaultReport.headingLinks, aliasLinks: vaultReport.aliasLinks,
+          embedLinks: vaultReport.embedLinks, danglingTotal: vaultReport.danglingTotal,
+          resourceTotal: vaultReport.resourceTotal,
+          frontmatterFiles: vaultReport.frontmatterFiles, taggedFiles: vaultReport.taggedFiles,
+          tags: vaultReport.tags, aliases: vaultReport.aliases,
+          skippedDirs: vaultReport.skippedDirs,
+          links: vaultReport.links.slice(0, 200),
+          // "没接上"那一档：**只读那一个数组**（`dangling`）—— 它同时是 `danglingTotal` 的来源，
+          // 两处同源 ⇒ 报告里"说几条"与"列出几条"永远一致（曾经写成两个字段 ⇒ 一个报数、一个列条目）
+          dangling: vaultReport.dangling.slice(0, 200),
+          ambiguous: vaultReport.ambiguous.slice(0, 200),
+          embedNotes: vaultReport.embedNotes.slice(0, 200),
+          resourceUnresolved: vaultReport.resourceUnresolved.slice(0, 200),
+          notes: vaultReport.notes
+        }
+        : null
     };
 
     if (ctx.dryRun) {
       /* 【批6】资源引用也一并**预览**：`dryRun` ⇒ 只规划（不复制文件、不建目录、不改树），
-       * 走的是与真导**同一个函数、同一份判据** ⇒ 不会出现"预览说会落、真导没落"的落差 ✓ */
-      const dirRefs = resolveDirImportRefs(ctx, name, built, true);
+       * 走的是与真导**同一个函数、同一份判据** ⇒ 不会出现"预览说会落、真导没落"的落差 ✓
+       * ⚠️【W12】vault 那一路的引用**已经在 `applyVault` 里规划过了**（它必须早于"把新节点当目标"的解析，
+       *   见那里第①遍的说明）⇒ 这里直接取那份读数，**不再算第二遍**（算两遍必然漂移 ✗）。 */
+      const dirRefs = vaultRes ? vaultDirRefs()
+        : resolveDirImportRefs(ctx, name, built, true);
       report.resourceRefs = dirRefReportJson(dirRefs);
       if (ctx.args.json) { ctx.outJson(report); return; }
       ctx.out('（--dry-run：只预览，**没有写盘** ✓ —— 预览会**真的读一遍**这些文件来算来源指纹，'
@@ -1364,6 +1455,7 @@ module.exports = {
       ctx.out('格式分布：' + Object.keys(byFormat).filter((k) => byFormat[k]).map((k) => k + ' ' + byFormat[k]).join(' / ')
         + (Object.keys(byFormat).some((k) => byFormat[k]) ? '' : '（还没转换）'));
       printLimit(ctx.out);
+      printVault(ctx.out);
       printSkips(ctx.out);
       if (built) printDirRefReport(ctx.out, dirRefs, true);
       else ctx.out('资源引用：（超限 ⇒ 没有转换，本次不解析引用）');
@@ -1402,8 +1494,11 @@ module.exports = {
     /* 【批6】资源引用落地：**逐文件**调同一个 `resolveImportRefs`（唯一实现；口径与理由见
      * `src/doc-import.js` 的 ⓪⁗ 契约段）。位置在**闸门之后** —— 被拒（超限/重复导入）时
      * **一个资源文件都不复制**，与单文件命令"拒绝是干净的"同一条底线 ✓。
-     * 坏引用（`onMissing:'detail'`）不阻断：摘出 `images/files` + 按正文并入详情 + 逐条点名（见 `printDirRefReport`）。 */
-    const dirRefs = resolveDirImportRefs(ctx, name, built, false);
+     * 坏引用（`onMissing:'detail'`）不阻断：摘出 `images/files` + 按正文并入详情 + 逐条点名（见 `printDirRefReport`）。
+     * ⚠️【W12】vault 那一路的引用**已经在 `applyVault` 里真的落过地**（复制 + 改写成项目内相对路径，
+     *   同一个 `resolveImportRefs`）⇒ 这里取那份读数，**不重复复制一遍**（复制两遍会多出一份乱名文件 ✗）。 */
+    const dirRefs = vaultRes ? vaultDirRefs()
+      : resolveDirImportRefs(ctx, name, built, false);
     report.resourceRefs = dirRefReportJson(dirRefs);
 
     const data = {
@@ -1418,6 +1513,7 @@ module.exports = {
     ctx.out('已整库导入 ' + dirRef + ' → 项目「' + name + '」：' + containers + ' 个容器节点 / 导入了 '
       + filesImported + ' 个文件 / 合计 ' + nodes + ' 个节点'
       + (forced && (dup || collisions.length) ? '（--force：这是同一个来源的第 2 份）' : ''));
+    printVault(ctx.out);
     printSkips(ctx.out);
     // 【批6】资源回显（如实报告）：复制了什么、哪条已在项目内、哪条远程/坏引用被按正文保留
     printDirRefReport(ctx.out, dirRefs, false);

@@ -54,7 +54,7 @@
 | `ask-apply` | ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json] [--dry-run] |
 | `import-md` | import-md <项目> <md文件> [--parent id] [--force] [--dry-run] |
 | `import-project` | import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] [--force] |
-| `import-dir` | import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--dry-run] [--json] [--force] |
+| `import-dir` | import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--vault|--no-vault] [--dry-run] [--json] [--force] |
 | `export-md` | export-md <项目> <输出目录> [--format heading|list] [--with-detail] |
 | `bind-sync` | bind-sync <项目> [--bind --dir <目录> --mode flat|mirror --include <模式,…> --ignore <模式,…> --ext <扩展名,…> --debounce <毫秒> --id <绑定id>] [--binding <绑定id>] [--pause|--resume|--unbind|--list] [--watch-dirs] [--forget-snapshot] [--confirm-deletions] [--json] [--dry-run] |
 | `export-json` | export-json <项目> <输出.json> |
@@ -352,10 +352,10 @@ node cli/mm-cli.js import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--
 
 ### import-dir
 
-批 5：**整库导入 —— 把一个文件夹的结构镜像成一棵树**（每一级子目录 = 一个容器节点，每个文件 = 该容器下的一个文件节点，标题取**文件名去扩展名**，文档自己的标题在它下面）。默认导 `.md/.txt/.docx/.pdf`（`--ext` 覆盖，只许写真的能导的扩展名）；隐藏文件/`.git`/`node_modules`/符号链接/空目录/无读权限/不支持的扩展名**一律跳过并逐类计数**（报告给"导入了 N 个文件 / 跳过 M 个（按原因分组）"，**不许静默**）；上限：合计 `MAX_SOURCE_MB`（与单文件闸门共用一份常量）+ 文件数 `--max-files`（默认 200），**超限在写盘之前响亮拒绝并给出路**；**一次原子写**，失败不留半个项目；`--dry-run` 只出报告、绝不写盘（并如实报超限与"这个目录已经导过了"）；**幂等**：项目根记**目录清单指纹**（同一个目录重复导 ⇒ **整体拒绝**并指名）、每个文件节点记自己的来源指纹（同一个文件被别的命令导过也拒绝）—— 确实要第二份就加 `--force`
+批 5：**整库导入 —— 把一个文件夹的结构镜像成一棵树**（每一级子目录 = 一个容器节点，每个文件 = 该容器下的一个文件节点，标题取**文件名去扩展名**，文档自己的标题在它下面）。默认导 `.md/.txt/.docx/.pdf`（`--ext` 覆盖，只许写真的能导的扩展名）；隐藏文件/`.git`/`node_modules`/符号链接/空目录/无读权限/不支持的扩展名**一律跳过并逐类计数**（报告给"导入了 N 个文件 / 跳过 M 个（按原因分组）"，**不许静默**）；上限：合计 `MAX_SOURCE_MB`（与单文件闸门共用一份常量）+ 文件数 `--max-files`（默认 200），**超限在写盘之前响亮拒绝并给出路**；**一次原子写**，失败不留半个项目；`--dry-run` 只出报告、绝不写盘（并如实报超限与"这个目录已经导过了"）；**幂等**：项目根记**目录清单指纹**（同一个目录重复导 ⇒ **整体拒绝**并指名）、每个文件节点记自己的来源指纹（同一个文件被别的命令导过也拒绝）—— 确实要第二份就加 `--force`。【W12】**Obsidian 库直进**：目录里有 `.obsidian/`（或显式给 `--vault`）时多走一段**本地解析（零 LLM、零 token）** —— ① `[[页]]` / `[[页|别名]]` / `[[页#标题]]` 三类 wiki 链接接成**关联**：落点就是既有的 `links[]`（`{ project: <本次项目>, id: <目标节点> }`，带 `#标题` 时指到那篇笔记里**对应的标题节点**，`caption` 记原样写法与别名）；`![[图.png]]` 这类附件/图片嵌入走**既有资源管线**（与 `add-image` 同一处）。② frontmatter 的 `tags` / `tag`（含 `#a` 写法）落到**该笔记文件节点的 `tags`**（与 `--tags` 同一套标签机制），`aliases` / `alias` 参与**链接解析**（`[[别名]]` 能指到那篇笔记）。③ **断链 / 同名多篇 / 附件没落成**一律**逐条点名**（并入跳过清单），**绝不写悬空链接**。④ 附件目录 `assets/`、`attachments/` 按 P0 边界不导（附件本身属 P1）。`--no-vault` = **显式关掉**（库目录里也只想拿结构时用）⇒ 与从前**逐字节相同**。**不做**：笔记嵌入的正文合并（transclusion）、反向同步（本工程 → Obsidian）、daily notes 与插件语法；`[[页#^块引用]]` 这类认得出但转不了的按"逐条点名"处理。
 
 ```
-node cli/mm-cli.js import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--dry-run] [--json] [--force]
+node cli/mm-cli.js import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--vault|--no-vault] [--dry-run] [--json] [--force]
 ```
 
 ### export-md
