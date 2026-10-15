@@ -210,6 +210,9 @@
     reorderState: () => (MM.reorderState ? MM.reorderState() : null),
     dragModeKind: () => (MM.dragModeKind ? MM.dragModeKind() : null),
     reorderCancel: () => (MM.reorderCancel ? MM.reorderCancel() : false),
+    // 【R2 期 4 · f】重挂拖动：现状读数（断言用）/ 取消（Esc、右键、收尾共用一处）
+    reparentState: () => (MM.reparentState ? MM.reparentState() : null),
+    reparentCancel: () => (MM.reparentCancel ? MM.reparentCancel() : false),
     // 【R2 期 3 · e】同级重排的**唯一写口**（→ IPC → CLI `move --index` → 回读重建）。
     // 顺带暴露 `reorderNodeChildRaw`：语义逐字相同但**绕过界面 clamp** —— 它是"越界必被 CLI 拒"那条
     // 判据的**唯一注入点**（界面 clamp 之后永远发不出越界值，光靠拖动判不到那条 ✗）。
@@ -217,6 +220,12 @@
       ? MM.reorderNodeChild(id, parentId, index) : Promise.resolve({ ok: false, text: '没有 reorderNodeChild 入口' })),
     reorderNodeChildRaw: (id, parentId, index) => (MM.reorderNodeChildRaw
       ? MM.reorderNodeChildRaw(id, parentId, index) : Promise.resolve({ ok: false, text: '没有 reorderNodeChildRaw 入口' })),
+    // 【R2 期 4 · f】重挂父：确认版（预览 + 确认 + 写 + 回读重建）与 raw 版（绕过预览/确认、
+    // 直通写通道 —— 里面仍有 --dry-run 预检；只给域 49 的判据取证用，UI 没有调用点）。
+    reparentNode: (id, newParentId) => (MM.reparentNode
+      ? MM.reparentNode(id, newParentId) : Promise.resolve({ ok: false, text: '没有 reparentNode 入口' })),
+    reparentNodeRaw: (id, newParentId) => (MM.reparentNodeRaw
+      ? MM.reparentNodeRaw(id, newParentId) : Promise.resolve({ ok: false, text: '没有 reparentNodeRaw 入口' })),
     treeRootOf: (nodeId) => MM.treeRootOf(nodeId),
     clearTreeOffsets: (treeId) => MM.clearTreeOffsets(treeId),
     // 树偏移读口（框选拖动持久化的真源在 app-view.js 的 treeOffsets）：序列化与冒烟断言用

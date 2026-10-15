@@ -166,6 +166,138 @@
     }
     return { ok: true, text: String(res.text || '').trim(), order: (res.children || []).slice(),
       index: index, topic: topic };
+  };
+
+  /* ================= 【R2 期 4 · f】重挂父的**唯一写入路径**（渲染层） =================
+   * 用户原话（R2 需求 f）：**重挂父 —— 把 a 的子节点树变成 b 的**。
+   *
+   * 形状与期 3 的 `reorderNodeChild` 同族（不发明新形状），写口只有一条：
+   *   渲染层（松手落到目标节点上）→ `window.desktop.app.moveNodeParent(…)`（preload 一行 invoke）
+   *     → `ipcMain.handle('app:move-node-parent')`（main.js）
+   *     → **先** `apply --dry-run` 预检（不过 ⇒ 一条都不写）→ `apply --ops-file`（move op →
+   *        `src/tree-utils.js` 的 `moveNode` **唯一实现**，防环内建）→ 写盘闸门（CLI 侧）
+   *     → **回读整份项目数据** → 渲染层 `rebuildFromJson(回读的那一份)`。
+   *
+   * 三道闸（设计稿 §7-P2 的定版）：
+   *   ① **落位预览**（`reparentPreview`，演练副本法）：预览跑在临时副本上 ⇒ 用户项目零写入；
+   *      拒绝（成环 / 父不存在）带 **CLI 的具体理由**回来，确认框给的是那段原话。
+   *   ② **写前 `--dry-run` 预检**：在 main.js 的 handler 里（真实项目、本身零写入）——
+   *      就算调用方绕过预览（`reparentNodeRaw`，只给域 49 取证用）也拦得住。
+   *   ③ **回读重建**：`res.data` 是盘上那份真值，整树按它重建 ⇒ 界面 ≡ 盘上（构造性）。
+   * ⚠️ 渲染层**一个字节的项目 JSON 都不写、也不自己动内存树的父子关系**（那就是第二份 move 实现）。
+   * ⚠️ 回读失败（`res.data` 缺失）⇒ **明说"盘上已写、界面未同步"**（照 finishReorder 的先例）。 */
+
+  /** 重挂父：把 `id`（连同它的子树）挂到 `newParentId` 下（末尾；同父内换位请走同级重排）。
+   *  @returns {Promise<{ok:boolean, text:string, canceled?:boolean, unsynced?:boolean}>} */
+  async function reparentNode(id, newParentId) {
+    const jm = state.jm;
+    if (!jm || !state.project) return { ok: false, text: '还没打开项目' };
+    const n = MM.adapter.getNode(jm, id);
+    if (!n) return { ok: false, text: '节点不在当前视图：' + id };
+    if (!newParentId) return { ok: false, text: '没有目标父节点（落点必须是另一个节点）' };
+    if (newParentId === id) return { ok: false, text: '落点就是它自己 —— 没有动任何数据' };
+    const p = n.parent ? MM.adapter.getNode(jm, n.parent.id) : null;
+    if (p && p.id === newParentId) {
+      return { ok: false, text: '「' + String(n.topic == null ? '' : n.topic) + '」已经在「' + p.topic + '」下了 —— 要换同级位置请用「拖动到同级第几位」' };
+    }
+    if (!(window.desktop && window.desktop.app && window.desktop.app.reparentPreview)) {
+      return { ok: false, text: '这个版本没有预览口（preload 少了 app.reparentPreview）—— 未改动任何数据' };
+    }
+    const topic = String(n.topic == null ? '' : n.topic);
+    // ── 第一道闸：落位预览（演练副本上跑既有 --dry-run ⇒ 用户项目零写入）──
+    let preview;
+    try {
+      preview = await window.desktop.app.reparentPreview(state.project.name, id, newParentId);
+    } catch (err) {
+      return { ok: false, text: '落位预览失败（IPC）：' + ((err && err.message) || err) };
+    }
+    if (!preview || preview.ok !== true) {
+      const why = (preview && (preview.error || preview.text)) || '预览读不出"会不会成功"（三态：不假装成功）';
+      return { ok: false, text: '重挂被拒绝（落位预览，未写盘）：' + why };
+    }
+    // ── 确认（**唯一出口 confirmFn** —— 与切项目守卫同一个打桩口）：给用户看的是 CLI 原话 ──
+    const target = MM.adapter.getNode(jm, newParentId);
+    const targetTopic = target ? String(target.topic == null ? '' : target.topic) : newParentId;
+    const summary = '把「' + topic + '」（含 ' + subtreeCount(jm, id) + ' 个节点）挂到「'
+      + targetTopic + '」下（放在末尾）。\n\n预检回执（跑在演练副本上，你的项目没有动）：\n'
+      + String(preview.text || '').trim() + '\n\n确定挂过去吗？';
+    if (!confirmFn(summary)) {
+      return { ok: false, canceled: true, text: '已在落位预览处取消 —— 没有写入任何数据' };
+    }
+    // ── 第二 / 三道闸在写通道里（--dry-run 预检 + 回读重建，见 main.js 的 handler）──
+    if (!(window.desktop && window.desktop.app && window.desktop.app.moveNodeParent)) {
+      return { ok: false, text: '这个版本没有写口（preload 少了 app.moveNodeParent）—— 未改动任何数据' };
+    }
+    const before = snapshot();
+    let res;
+    try {
+      res = await window.desktop.app.moveNodeParent(state.project.name, id, newParentId);
+    } catch (err) {
+      return { ok: false, text: '重挂失败（IPC）：' + ((err && err.message) || err) };
+    }
+    /* 留痕（与 `MM.__reorderCalls` 同一条理由）：预览/确认放行的那一对 (id, 目标父) 与真发出去的
+     * 必须是同一个读数；域 49 用它对拍"确认的就是发出去的"。只增数组、只读，不影响行为。 */
+    MM.__reparentCalls = MM.__reparentCalls || [];
+    MM.__reparentCalls.push({ id: id, parent: newParentId, ok: !!(res && res.ok) });
+    return finishReparent(res, id, newParentId, topic, before);
+  }
+
+  /** 【只给冒烟域 49 的取证用】**绕过预览与确认**，把这一对 (id, 目标父) 直接交给写通道。
+   *  为什么需要这一个口子：三道闸里有两道在渲染层（预览 + 确认），一道在主进程（--dry-run 预检）。
+   *  "成环必须被拒 + 盘上零改动"与"预检失败一条都不写"这两条判据要打的是**主进程那一道**，
+   *  而预览在成环那一档本来就会拦下 ⇒ 光走 UI 永远看不到写通道自己的拒绝 ✗。
+   *  ⇒ 这个函数是那条判据的**唯一注入点**：跳过预览/确认，直通 `moveNodeParent`（里面仍有
+   *  `--dry-run` 预检）。它不是产品入口（UI 里没有任何调用点），性质与 `reorderNodeChildRaw` 相同。 */
+  async function reparentNodeRaw(id, newParentId) {
+    const jm = state.jm;
+    if (!jm || !state.project) return { ok: false, text: '还没打开项目' };
+    if (!(window.desktop && window.desktop.app && window.desktop.app.moveNodeParent)) {
+      return { ok: false, text: '这个版本没有写口（preload 少了 app.moveNodeParent）' };
+    }
+    const n = MM.adapter.getNode(jm, id);
+    const topic = n ? String(n.topic == null ? '' : n.topic) : String(id);
+    const before = snapshot();
+    let res;
+    try {
+      res = await window.desktop.app.moveNodeParent(state.project.name, id, newParentId);
+    } catch (err) {
+      return { ok: false, text: '重挂失败（IPC）：' + ((err && err.message) || err) };
+    }
+    return finishReparent(res, id, newParentId, topic, before);
+  }
+
+  /** 子树规模（确认框里那句"含 N 个节点"）—— 纯**视图数据**的计数（jsMind 节点树自带的 parent/children），
+   *  不是第二份 move 实现（不碰任何字段、不写任何东西）；数不出来 ⇒ '?'（不假装知道）。 */
+  function subtreeCount(jm, id) {
+    const root = MM.adapter.getNode(jm, id);
+    if (!root) return '?';
+    let c = 0;
+    (function w(n) { if (!n) return; c++; (n.children || []).forEach(w); })(root);
+    return String(c);
+  }
+
+  /** 写通道回来之后的**共用的**那一半（与 finishReorder 同构）：判定 ok / 回读缺失 / 重建 ＋ 撤销。
+   *  ⚠️ 只有这一处 —— 确认版与 raw 版都在这里收尾，判据与行为不可能分叉。 */
+  function finishReparent(res, id, newParentId, topic, before) {
+    if (!res || res.ok !== true) {
+      return { ok: false, text: (res && res.text) || '重挂失败（CLI 拒绝了这次移动）' };
+    }
+    if (!res.data) {
+      // 盘上已经写成功了，只是回读没取到 ⇒ 如实说，并**给出重开的出路**（不静默重载 ✗）
+      return { ok: true, unsynced: true, topic: topic, parent: newParentId,
+        text: '盘上已写入，但**回读没取到整份数据** ⇒ 界面未同步（重开项目即可看到新挂点）' };
+    }
+    // 回读的那一份就是真值：整树按它重建（父子关系、以及其余任何字段，都取自盘上那一份）
+    rebuildFromJson(res.data);
+    state.history.push(before);      // 撤销回到重挂之前那一版
+    updateHistoryButtons();
+    // 挪过去的节点可能跑到视野外 ⇒ 选中并带回来（已在视口内时 centerOnNode 不动视野）
+    if (MM.adapter.getNode(state.jm, id)) {
+      MM.adapter.selectNode(state.jm, id);
+      if (MM.centerOnNode) MM.centerOnNode(id);
+    }
+    return { ok: true, text: String(res.text || '').trim(), parent: newParentId,
+      order: (res.children || []).slice(), topic: topic };
   }
 
   /** 只展开目标节点的**祖先链**，而不是整棵树。
@@ -1142,6 +1274,8 @@
   MM.deleteNode = deleteNode;
   MM.reorderNodeChild = reorderNodeChild;   // 【R2 期 3 · e】同级重排的**唯一写口**（→ IPC → CLI move）
   MM.reorderNodeChildRaw = reorderNodeChildRaw;   // 同上但**绕过 clamp**，只给域 48 的"越界必红"取证
+  MM.reparentNode = reparentNode;           // 【R2 期 4 · f】重挂父的**唯一写口**（预览→确认→IPC→CLI→回读重建）
+  MM.reparentNodeRaw = reparentNodeRaw;     // 同上但**绕过预览/确认**，只给域 49 的"预检必红"取证
   MM.loadProjects = loadProjects;
   MM.openProject = openProject;
   MM.isDirty = isDirty;

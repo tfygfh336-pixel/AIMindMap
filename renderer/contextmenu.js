@@ -178,6 +178,26 @@
     };
   }
 
+  /** 【R2 期 4 · f】「挂到别的父节点下」——**重挂父**的入口。
+   *  与前两档拖动并列的第三档：`subtreeDragItem` 改位置（写 `meta.nodeOffsets`）、
+   *  `reorderDragItem` 改同级上下序（写 `children` 顺序）、这一档改**父子关系**
+   *  （把 nodeId 连同子树挂到松手时压着的那个节点下）。
+   *  只要有父节点的都显示（root 是容器、没有父；顶层主题也可以重挂 —— 那是合法的重组）。
+   *  ⚠️ 写回**不在渲染层**：松手只调 `MMApp.reparentNode` ⇒ 三道闸（落位预览【演练副本】/
+   *  写前 `--dry-run` 预检 / 回读重建）⇒ CLI 的 move 语义（唯一实现 `tree.moveNode`，防环内建）。
+   *  成环**不在这里拦**：那条判据要的是 CLI 的具体理由 + 盘上零改动（预览会带原话回来）。 */
+  function reparentItem(nodeId) {
+    const app = () => window.MMApp;
+    if (app().dragModeActive && app().dragModeActive()) return null;  // 已在拖动模式：只留"退出"那一条
+    const jm = app().getState().jm;
+    const n = jm && MM.adapter.getNode(jm, nodeId);
+    if (!n || n.isroot || !n.parent) return null;
+    return {
+      label: '挂到别的父节点下：「' + n.topic + '」及其子节点',
+      action: () => app().setDragMode(true, nodeId, { mode: 'reparent' })
+    };
+  }
+
   /** 【R2 期 1】「把这个子树移回自动布局」：只清**这个节点自己**那一项偏移
    *  （拖动结果会保存 ⇒ 必须给一条清回去的路，否则用户拖远了只能靠改数据文件；
    *   既有先例：框选菜单里那条"把这棵树移回自动布局"）。
@@ -263,14 +283,17 @@
     }
     // R2 期 1：更细的一档（拖动此子树）+ 手工位置的"清回去" + 顶层主题的左右分侧
     // R2 期 3：再加一档"同级重排"（改上下序，写 children 顺序 —— 与"动位置"是两件事）
+    // R2 期 4：再加一档"重挂父"（改父子关系，走既有 move 语义 + 三道闸 —— 与前两档也是两件事）
     const subDrag = subtreeDragItem(nodeId);
     const reorderDrag = reorderDragItem(nodeId);
+    const repDrag = reparentItem(nodeId);
     const clearOff = clearOffsetItem(nodeId);
     const sideItems = themeSideItems(nodeId);
-    if (subDrag || reorderDrag || clearOff || sideItems.length) {
+    if (subDrag || reorderDrag || repDrag || clearOff || sideItems.length) {
       items.push('---');
       if (subDrag) items.push(subDrag);
       if (reorderDrag) items.push(reorderDrag);
+      if (repDrag) items.push(repDrag);
       if (clearOff) items.push(clearOff);
       sideItems.forEach((it) => items.push(it));
     }

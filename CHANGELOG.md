@@ -14,6 +14,122 @@
 
 ## [Unreleased]
 
+### R2 期 4（f 重挂父）：把 a 的子树挂到 b 下走**既有 move 语义**（`apply` 的 move op → `tree.moveNode` 唯一实现、防环内建）+ 三道闸（落位预览【演练副本法】/ 写前 `--dry-run` 预检 / 回读整树重建）；新冒烟域 49（2026-10-16）
+
+- **一句话**：设计稿 `.review/20261014-导图交互重构/设计.md` §3 期 4（f）的交付 —— 右键多一档
+  「挂到别的父节点下」，真鼠标把子树拖到目标父上松手：**先落位预览（跑在演练副本上，用户项目零写入）**、
+  确认后**写前 `--dry-run` 预检**（不过 ⇒ 一条都不写）、真写走 `apply` 的 **move op**（与裸 `move` 共用
+  `src/tree-utils.js` 的 `moveNode` —— 仍是**一处实现**、防环内建）、写后**回读整份项目数据整树重建**。
+  渲染层**不写项目 JSON、不造第二份 move**（结构断言钉住）；成环拒绝带 CLI 的**具体理由**；
+  被移子树的 `items`/`qa`/`links`/`localPath`/`origin` **逐字节零损失**；**assoc（三级中现存的这一级）
+  不参与** —— 树边才参与。
+
+#### 〇、第一件事：量耗时（设计稿 §7-P2 的前置，全部现算、comnet 889 节点只读）
+
+| 段 | 读数 | 量法 |
+|---|---|---|
+| **整树写盘** | **6ms**（5–7ms） | `src/data-store.js` 的 `writeFileAtomic`（真实现：临时文件 + fsync + rename）写 1.24MB 整树 × 5 |
+| **回读** | **12ms**（11–12ms） | `store.read`（readFileSync + JSON.parse + sha1 版本指纹）× 5 |
+| **重建** | **冷 143.8ms / 热 27–38ms** | Electron 隐藏窗口 + 工程自带 vendor jsmind.js，按 `renderMind` 的**同一份选项**对真实 comnet 树 `show()`，889 个 `jmnode` 全部建出 |
+| **CLI 子进程墙钟** | **move 567–593ms**（其中启动+读基线 504–522ms） | 真 `node cli/mm-cli.js move` 对沙箱副本 × 3 |
+| **⇒ 单次重挂全链** | **≈0.6–0.75s ≤ 1.5s** ✓ | CLI 写（0.6s）+ 回读（12ms）+ 重建（27–144ms）—— 探针：`.review/20261014-导图交互重构/probe-r2f-timing.js` 与 `probe-r2f-rebuild.js`（comnet 只读，写入全在唯一临时根） |
+
+#### 一、修法与一处实现的证据
+
+- **链路（唯一形状，照期 3 的 `app:move-node-sibling` 同族）**：`renderer/contextmenu.js` 的
+  `reparentItem` → `renderer/app-view.js` 的 'reparent' 拖动档（与 'move'/'reorder' **共用同一套**
+  按住左键拖的手势与副本元素 `#tree-reorder-ghost` —— 副本生成抽成 `spawnDragGhost` 一处；**没有**
+  插入横线，落点 = 松手压着的节点）→ `renderer/app-actions.js` 的 `reparentNode`（**唯一写口**：
+  预览 → 确认【唯一出口 `confirmFn`】→ IPC）→ `main.js` 的 `app:reparent-preview`（演练副本 +
+  既有 `apply --dry-run`）与 `app:move-node-parent`（`--dry-run` 预检 + `apply --ops-file` + 回读）→
+  `renderer/app-core.js` 的 `rebuildFromJson`。
+- **一处实现的机械读数**（域 49 丁，剥注释扫描 19 个第一方 renderer js）：`app.moveNodeParent(` **恰好 2 处**
+  且都在 `app-actions.js`（确认版 + 取证版 `reparentNodeRaw`）；`app.reparentPreview(` **恰好 1 处**；
+  jsMind 的 `.move_node(` 一族 vendor 外 **0 命中**（判别力 = vendor 里确实有 3/3 个 needle）。
+- **三道闸的分工**：① 落位预览在渲染层（体验闸，演练副本 ⇒ 零写入）；② `--dry-run` 预检在主进程
+  （**契约闸** —— raw 注入点绕过预览/确认也拦得住）；③ 回读重建在收尾（界面 ≡ 盘上是**构造性**的）。
+  如实记边界：对**单条 move op**，`apply` 真跑自身的预检+事务与 ② 拒绝的是同一批输入（② 是**纵深防御**；
+  注入③ 的实测读数见下文三）。dry-run 失败理由**取带 `✗` 的那一行**（最后一行是汇总句，照抄
+  `cliErrorLine` 会把理由吞掉 —— 实测抓到后修掉）。
+
+#### 二、判据读数（域 49 四段 = 4 个断言块 / 51 条判据，全绿；冒烟真值 285→289）
+
+- **甲 真鼠标全链（24 条判据）**：入口在菜单里且进的是 reparent 档；拖动期间盘上 sha256
+  **逐字节不变** + 序列化文本逐字节不变（这一档一个偏移桶都不写）；确认框文案带 CLI 预检回执
+  （`将要 移动 a → b` + `--dry-run` 字样 ⇒ 预览真的跑过）；取消后盘上 sha256 不变；确认后盘上
+  `t1=[b,n1]`、`b=[b1,a]`、`a.parent=b`；**被移子树内部逐字节不变**（子树 JSON 文本前后相同）；
+  **payload 零损失**（a1 的 `qa`/`links`/`localPath`/`origin`/`tags`、a2 的 `items`+`detail` 逐字段不变，
+  条目化走既有 `item-add` 让 CLI 保持派生一致）；**assoc 逐字节不变**（成员一半在被移子树里）；
+  CLI `validate` 退出码 0；界面 `a.parent==b` 且数据序 == 渲染序（`b1` 在前 `a` 在后）。
+- **乙 拒绝档（12 条判据；raw 注入点直通写通道）**：成环（a → 它自己的子孙 a1）⇒ `ok:false` + 报文
+  `写前预检没有通过（apply --dry-run，未写盘）：… 移动失败（目标非法 / **移到自身子树** / 索引越界）: a → a1`
+  + **盘上 sha256 不变**；父不存在 ⇒ `ok:false` + 报文点名那个 id + 盘上不变。
+  **判别力 1**：同一条写通道、同一道预检，**合法对（a → c1）成功**并真的改了盘上父子关系
+  （`c1=[a]`、`t2` 不变、sha256 变）—— 拒绝不是"永远拒绝"。
+- **丙 预览与确认（渲染层两道）**：确认文案说清**落点**（两个 id）与**规模**（"含 4 个节点"，现算）；
+  取消**不记**调用留痕（`__reparentCalls` = "真的发出去"那一拍）；盘上零写入。
+- **丁 结构断言 + 收尾**：写路径唯一（读数见一）+ 收尾五件套全绿。
+- **还原哈希**（全量跑 289/289 那一轮的现算读数）：甲的盘上 sha256 前/拖动中/取消后
+  `804c10d6213f`（三态相同）→ 确认后 `c0fae8d552ca`；乙的 前/成环/坏父 `b93b34835c38` → 合法后 `75d74ee892e7`。
+
+#### 三、判别力证明（三次"临时改产品代码"，每次记 SHA-256 并逐字节还原）
+
+| 注入 | 改了什么 | 实测读数 | 还原核对 |
+|---|---|---|---|
+| **① 删防环** | `src/tree-utils.js` 删掉 `pathTo` 判环两行 | **两层全红**：单元层 `tests/tree-utils.test.js`「拒绝对自身子孙（防环，历史严重 bug）」超时红（G3 failedGate）；域层域 49 乙 红 —— dry-run 在克隆上"成功"放行 ⇒ 真写被**写盘闸门**拦住（`error: 校验失败: [assoc[0].members[0]] 悬挂关联成员: a1 不存在`）⇒ "拒绝+盘上不变"仍在但**具体理由变了** ⇒ 判据「移到自身子树」必红 ✓ | sha256 `9ec99d4d…509cbb` 两次还原一致 |
+| **② 加一处 `.move_node(`** | `renderer/app-view.js` 尾部加一行假实现形状 | 域 49 丁红：`move_node 命中=1`（其余全绿：写通道仍是 2 处、预览口 1 处）⇒ 结构断言真的在扫 | sha256 `f0d27394…fde2b` 还原一致 |
+| **③ 删 `--dry-run` 预检** | `main.js` 的 `app:move-node-parent` 整段预检删掉 | 域 49 乙红：拒绝报文退回**裸 CLI 错误**（`error: 移动失败…`，"写前预检没有通过…未写盘"的**闸形状消失**）；如实记边界 ——「盘上零改动」两条在注入③下**仍绿**（`apply` 真跑自身的预检+事务拒绝同一批输入 ⇒ ② 是纵深防御，不是唯一防线；判据名里写明了这一层） | sha256 `7436b00f…02cf5` 还原一致 |
+
+#### 四、连带（新入口点名的既有判据）与本批文件清单
+
+| 文件 | 处数/行数 | 内容（摘要） |
+|---|---|---|
+| `main.js` | +95 | 两个 handler（`app:reparent-preview` 演练副本预览 / `app:move-node-parent` 预检+真写+回读；失败理由取带 `✗` 的那一行）+ 冒烟守卫 996→1080s |
+| `preload.js` | +14 | `reparentPreview` / `moveNodeParent` 两行 invoke + 契约注释 |
+| `renderer/app-actions.js` | +134 | `reparentNode`（唯一写口）· `reparentNodeRaw`（取证注入点）· `finishReparent` 共用收尾 · `subtreeCount` · `__reparentCalls` 留痕 |
+| `renderer/app-view.js` | +175/-6 | 'reparent' 拖动档（`spawnDragGhost` 抽出共用 · begin/update/end/cancel/state · mousedown/mousemove/mouseup 接线 · `setDragMode` 三档） |
+| `renderer/app.js` · `renderer/contextmenu.js` | +9 · +25 | 暴露 4 个口 · `reparentItem` 菜单入口 |
+| `scripts/smoke/49-重挂父.js` | 新 706 | 甲 24 / 乙 12 / 丙 6 / 丁 9 条判据 |
+| `scripts/smoke/46-节点级拖动.js` | 2 | 菜单项计数 13→**14**（新入口点名的既有判据；期 3 的 12→13 同一先例） |
+| `scripts/smoke-assertions.js` | +28 | 域 49 登记（索引段） |
+| `scripts/changed-plan.js` · `docs/VERIFY.md` | 2 · 2 | renderer 面域清单加 `'49'` · 冒烟断言 285→289（`facts:write` 重生成，diff 只该动的格 ✓） |
+| `scripts/verify.js` · `main.js`（预算） | +9 · +4 | G5 预算 960→1020s（1.25×816.0 现算）· 合计 1230→1290s · 守卫 996→1080s（三条调整史都带实测依据） |
+
+**全链抓到的一条连带红（本批修）**：第 2 次全量冒烟 288/289 —— 域 46 丙「菜单每一项都在」的计数判据
+**13** 过期（本批菜单多一项；读数里"命中 14/14、最后一项点得到"本来就全对）⇒ 按期 3 的 12→13 先例
+改成 **14**（带两句沿革），第 3 次全量 289/289 ✓。判据一条没砍、没有放宽任何几何/命中断言。
+
+#### 五、读数（域 49 / 单测 / 全链 / 四门禁 / 预算）
+
+- **冒烟**：全量 **289** 条 = HEAD 285 + 域 49 的 4 块，**289/289 全绿**；过滤跑
+  `--for renderer --domains 49` 11 步 132.9s 预算内；真实数据零写入复核通过
+  （`真实目录逐字节一致`，域 49 的写全在沙箱副本）。
+- **单测**：1949 用例 / 92 文件全绿（`tests/tree-utils.test.js` 的防环用例继续守着；
+  `tests/verify-budget.test.js` 29 用例在预算重算后全绿）。
+- **全链**：`npm run verify` **ok=true**（13 步 884.6s，每步都在预算内；G5 实测 816.0s）。
+- **四门禁**：`rules-consistency` · `dep-direction-check` · `encoding-check` · `docs-registry-check` 全部 exit 0。
+- **预算重算（纪律：≥1.25×max 现算，不砍判据）**：G5 实测 816.0s ⇒ 960/816 = 1.176 **< 1.25** ✗
+  ⇒ 同批现算：**G5 960s→1020s**（1020/816 = 1.25 ✓；816s 里含同机负载成分 —— 就高不就低）、
+  **守卫 996s→1080s**（> 1020 ⇒ "守卫 > 预算"不变量继续成立）、**合计 1230s→1290s**
+  （各步预算之和 1195s→1255s，1290/1255 = 1.028 ⇒ 单步仍先发声）。
+  `tests/verify-budget.test.js` 29 用例当场复核 ✓；判据一条没砍。
+
+#### 六、未做 / 未核实（诚实清单）
+
+1. **改了 renderer ⇒ 导图页需刷新**（必要时重启应用）才能看到「挂到别的父节点下」这一档。
+2. **真机手感只有人能判**：副本跟随、落点判定、确认框文案的观感未经真人验证。
+3. **`assoc.anchors[]`（R7 设计的三级锚定契约）尚未实现**（`src/assoc.js` 没有该字段）⇒ 域 49 的
+   "三级不参与"只钉了**现存的 assoc 这一级**；anchors 落地后需补它的"不参与"判据。
+4. **`--index` 档没给 UI**：重挂固定挂到新父**末尾**（挂到第 k 位可复用同级重排那一档的语义，本批不做）。
+5. **顶层主题重挂后 `meta.layout` 的残留键**：把一个已分侧的顶层主题挂到深层后，`meta.layout` 里它的
+   id 不再指向 root 的直接子节点 —— 布局照算不受影响（`applyThemeLayout` 找不到就跳过）、序列化原样带回，
+   属数据卫生问题（与设计稿 §1.9 的"假折叠"同族），本批不清理。
+6. **成功文案是瞬时的**：重挂成功的状态栏文案会被 own-write 的"外部变更通知"在数百毫秒内顶掉
+   （域 49 因此用 setStatus 记录器取证"报过成功"，而不是判最后一屏）。
+7. **耗时三数的边界**：重建那一段量的是 jsMind `show()`（布局照算的主导成本）；renderMind 在它前后的
+   附加步（方向标记 / 偏移恢复 / 关系层）是同量级或更小的树遍历，未单列。
+
+
 ### R2 期 3（接管收口）：连线端点按子序分散（顺序=上下序、交叉数不增、端点真源唯一）+ 同级重排（拖到第 k 位 ⇒ 既有 `move --index` 与 P3 上界校验、渲染层只 clamp、盘上其余字节零变化）；新冒烟域 48（2026-10-16）
 
 - **一句话**：设计稿 `.review/20261014-导图交互重构/设计.md` §3 期 3（d/e）的两个交付 ——

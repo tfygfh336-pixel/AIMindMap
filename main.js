@@ -1886,6 +1886,95 @@ function registerIpc() {
       node: String(nodeId), parent: String(parentId), index: k, children: children, data: data };
   });
 
+  /* 【R2 期 4 · f】**重挂父**：把 a 的子树挂到 b 下 —— 三道闸里的**第一道（落位预览）**。
+   *
+   * 预览跑在**演练副本**上（照 W13 导入预览的同一套做法，复用同一个 `makeRehearsalRoot`）：
+   *   `fs.mkdtempSync` ⇒ 副本（全部项目的 JSON + 目标项目的 assets/attachments）⇒ 在副本上跑
+   *   既有 `apply --dry-run`（`AI_MINDMAP_PROJECTS_DIR` 指到副本 ⇒ CLI 的写路径整体被重定向）
+   *   ⇒ **无论成败都删掉副本**（finally）。⇒ 用户项目此刻一个字节都没动（盘上判据由冒烟域 49
+   *   用 SHA-256 钉着），"成环 / 父不存在 / 越界"这些拒绝在预览里就带着 CLI 的**具体理由**回来。
+   *
+   * 为什么预检用的命令与真写是同一条（`apply` 的 move op）：预览说的 = 真跑做的（同一份判据），
+   *   不许两边各算一套 ✗。move op 的语义唯一实现仍是 `src/tree-utils.js` 的 `moveNode`（防环内建）。
+   *
+   * 失败判定（dry-run 的既有行为：逐条预演、失败行打 `✗` 且**退出码仍是 0**）：
+   *   `code !== 0`（命令本身没跑成）/ `^error:`（mm-cli 的报错前缀）/ 输出里有 `✗`（某条 op 会失败）
+   *   三者任一 ⇒ `ok:false`。理由行**取带 `✗` 的那一行**（具体理由在那里；dry-run 的**最后一行**
+   *   是汇总句 —— 照抄 `cliErrorLine` 的"取最后一行"会把理由吞掉，实测域 49 的判据抓的就是它）。
+   *   **读不出"将会成功"就不说成功**（三态纪律）。 */
+  ipcMain.handle('app:reparent-preview', async (_e, projectName, nodeId, newParentId) => {
+    if (!projectName || !nodeId || !newParentId) {
+      return { ok: false, error: '缺少项目名 / 节点 id / 目标父 id（重挂预览三个都要）' };
+    }
+    let tmpRoot = '';
+    try { tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-reparent-preview-')); }
+    catch (err) { return { ok: false, error: '建不了演练副本目录：' + ((err && err.message) || err) }; }
+    try {
+      const ops = JSON.stringify({ version: 1, ops: [{ op: 'move', id: String(nodeId), parent: String(newParentId) }] });
+      const copy = makeRehearsalRoot(tmpRoot, String(projectName));
+      const r = await runCliAsync(['apply', String(projectName), '--ops-file', ops, '--dry-run'], tmpRoot);
+      const out = String(r.out || '');
+      const refused = r.code !== 0 || /^error:/m.test(out) || out.indexOf('✗') >= 0;
+      const failLine = out.split('\n').filter((l) => l.indexOf('✗') >= 0).pop();
+      return { ok: !refused, dryRun: true, project: String(projectName), node: String(nodeId),
+        parent: String(newParentId), copy: copy, text: out.trim(),
+        error: refused ? ((failLine || cliErrorLine(r)).trim()) : '' };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    } finally {
+      // 演练副本必须收干净（E2，与 app:import-preview 同一条 finally）：清不掉只影响临时目录
+      try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (err) { /* 收尾失败不掩盖主结果 */ }
+    }
+  });
+
+  /* 【R2 期 4 · f】**重挂父的写通道** —— 三道闸里的**第二道（写前 `--dry-run` 预检）与第三道（回读重建）**。
+   *
+   * 与 `app:move-node-sibling`（期 3 · e）同族、同形状，差异只有两点：
+   *   ① 写入走 `apply` 的 **move op**（与裸 `move` 共用 `tree.moveNode` ⇒ 仍是一处实现；
+   *      设计稿 §2.3 的定版形状）——于是**预检与真写是同一条 ops**；
+   *   ② 真写之前先在**真实项目**上跑一次 `apply --dry-run`（W8 的中央短路 ⇒ 它本身零写入）：
+   *      预检不过 ⇒ **一条都不写**（这里返回 `ok:false`，`phase:'dry-run'` + CLI 原话）。
+   *      渲染层的"落位预览+确认"是体验闸；这道预检是**契约闸** —— 就算调用方绕过预览
+   *      （冒烟域 49 的 raw 注入点）直接进本通道，成环 / 父不存在也在这里被拦下。
+   *
+   * **写完回读**（照 app:move-node-sibling 的手法）：回读**整份项目数据** + 新父的 `children` 顺序；
+   *   回读失败 ⇒ `data:null`，渲染层如实说"盘上已写、界面未同步"，不静默重载也不假装成功。 */
+  ipcMain.handle('app:move-node-parent', async (_e, projectName, nodeId, newParentId) => {
+    if (!projectName || !nodeId || !newParentId) {
+      return { ok: false, text: '缺少项目名 / 节点 id / 目标父 id（本入口不做默认值 —— 与 CLI 同签名）' };
+    }
+    const ops = JSON.stringify({ version: 1, ops: [{ op: 'move', id: String(nodeId), parent: String(newParentId) }] });
+    // ---- 第二道闸：写前 `--dry-run` 预检（真实项目；--dry-run 本身零写入 ✓）----
+    const dry = await runCliAsync(['apply', String(projectName), '--ops-file', ops, '--dry-run']);
+    const dryOut = String(dry.out || '');
+    if (dry.code !== 0 || /^error:/m.test(dryOut) || dryOut.indexOf('✗') >= 0) {
+      // 理由取带 `✗` 的那一行（具体理由在那里；最后一行是汇总句 —— 与 app:reparent-preview 同一条规矩）
+      const failLine = dryOut.split('\n').filter((l) => l.indexOf('✗') >= 0).pop();
+      return { ok: false, phase: 'dry-run',
+        text: '写前预检没有通过（apply --dry-run，**未写盘**）：' + ((failLine || cliErrorLine(dry)).trim()) };
+    }
+    // ---- 真写（唯一实现：apply 的 move op → src/tree-utils.js 的 moveNode）----
+    let text;
+    try { text = runCli(['apply', String(projectName), '--ops-file', ops]); }
+    catch (err) { return { ok: false, text: (err && err.message) || String(err) }; }
+    // ---- 第三道闸：回读整份项目数据（渲染层按它重建 ⇒ 界面 ≡ 盘上是构造性的）----
+    let children = null;
+    let data = null;
+    try {
+      const back = store.read(String(projectName));
+      data = back.data;
+      let found = null;
+      (function walk(n) {
+        if (!n || found) return;
+        if (n.id === String(newParentId)) { found = n; return; }
+        (n.children || []).forEach(walk);
+      })(data && data.data);
+      children = found ? (found.children || []).map((c) => c.id) : null;
+    } catch (err) { /* 回读失败不影响"已写入"这个事实；data=null 会让渲染层如实报告 ✗ */ }
+    return { ok: true, text: String(text).trim(), project: String(projectName),
+      node: String(nodeId), parent: String(newParentId), children: children, data: data };
+  });
+
   /* 系统剪贴板（**复制只有走这条路才不依赖窗口焦点**）。
    * 为什么必须由主进程代写：渲染层的两条浏览器通道在**无焦点的隐藏窗口**里都不可靠 ——
    * 实测（冒烟窗口按纪律隐藏且不抢焦点）`navigator.clipboard.writeText` 直接抛
@@ -2579,8 +2668,12 @@ async function runSmoke(win) {
    *   ⇒ 旧值 820000/656100 = **1.2498 < 1.25 ✗** ⇒ 按余量守卫现算到 830s，比值 **1.265** ✓）
    *   ⇒ 本守卫 985s→**996s**（= 830 × 1.2 ⇒ 不变量①「守卫 > 预算」继续成立 ✓）。
    *   ⚠️ 本批**没有加任何冒烟断言**（改的是验证侧：`--for` 选步 / 临时目录唯一化 / 真实数据三档）
-   *   ⇒ 那 +15.7s 是**同档负载波动**，不是工作量增长；但余量守卫是机械的 ⇒ 同批现算重算 ✓（判据一条不砍）。 */
-  const SMOKE_GUARD_MS = 996000;
+   *   ⇒ 那 +15.7s 是**同档负载波动**，不是工作量增长；但余量守卫是机械的 ⇒ 同批现算重算 ✓（判据一条不砍）。
+   *   ⚠️ 2026-10-16（**R2 期 4 批**）：G5 预算 960s→**1020s**（依据本批全链真读数 G5 = **816.0s**
+   *   ⇒ 旧值 960000/816000 = **1.176 < 1.25 ✗** ⇒ 按余量守卫现算到 1020s，比值 **1.25** ✓；
+   *   本批新增冒烟域 49 的 4 条 + 域 46 菜单多一项，816s 里含同机负载成分 ⇒ 就高不就低）
+   *   ⇒ 本守卫 996s→**1080s**（= 1020 × 1.059 ⇒ 不变量①「守卫 > 预算」继续成立 ✓）。 */
+  const SMOKE_GUARD_MS = 1080000;
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);

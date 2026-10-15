@@ -232,10 +232,18 @@
   /* 【R2 期 3 · e】同级重排拖动：`fdReorderRoot` 非空 ⇒ 这一次拖动改的是**同级上下序**，
    *  **不动偏移桶一点**（所以"拖动期间序列化文本逐字节不变 + 盘上零写入"是构造性的，
    *  不是靠"记得别写"）—— 拖动期间只有**副本元素**（`#tree-reorder-ghost`）跟着指针走。 */
-  let fdDragKind = 'move';       // 'move'（动位置，写 meta.*Offsets）/ 'reorder'（改同级上下序，写 children 顺序）
+  let fdDragKind = 'move';       // 'move'（动位置，写 meta.*Offsets）/ 'reorder'（改同级上下序）/ 'reparent'（期 4 · f，改父子关系）
   let fdReorderRoot = null;      // 重排拖动锁定的节点 id（空 = 不是重排档）
   let fdReorderStart = null;     // { x, y, parentId } 按下时的屏幕坐标与父节点
   let fdReorderDrop = null;      // 松手要写回的那一位：{ index, parent }（**等于**落位预览算出来的那一个）
+  /* 【R2 期 4 · f】重挂父拖动：`fdReparentRoot` 非空 ⇒ 这一次拖动改的是**父子关系**
+   *  （把锁定的节点连同子树挂到松手时压着的那个节点下）。与 reorder 共用同一个副本元素
+   *  `#tree-reorder-ghost`（不新造视觉 ✓）；**没有**插入横线 —— 落点是"压着的节点"，
+   *  不是兄弟之间的缝隙。松手只把 (id, 目标父) 交出去，写盘由 app-actions 的
+   *  reparentNode 经三道闸（落位预览 / --dry-run 预检 / 回读重建）走。 */
+  let fdReparentRoot = null;     // 重挂拖动锁定的节点 id（空 = 不是重挂档）
+  let fdReparentStart = null;    // { x, y } 按下时的屏幕坐标
+  let fdReparentDrop = null;     // 松手要交给写通道的那一对：{ parent }（当前压着的节点 id）
   let fdSelDrag = null;          // P4：从"已选中的节点"上按下开始的拖拽（起点坐标 ✓）    // {x, y, ox, oy} 拖动起点（屏幕）与起始偏移（逻辑）
   let fdDragModePan = null;      // 兜底：无目标树时的画布平移（中键同款）
 
@@ -832,19 +840,23 @@
   /** 进入/退出拖动模式（toggle 由菜单项调用）。treeRootId 为锁定的**目标子树根**：
    *  顶层主题（既有语义，「拖动树」入口）或更深的任意节点（R2 期 1，「拖动此子树」入口）。
    *  `opts.mode`：`'move'`（默认，动位置 ⇒ 写 `meta.*Offsets`）/ `'reorder'`（R2 期 3 · e，
-   *  改**同级上下序** ⇒ 走既有 CLI `move --index` 写 `children` 顺序）。
-   *  两档共用同一套"按住左键拖"的手势与虚线框，只在按下之后分岔（见 mousedown/mousemove）——
-   *  所以没有第二份拖动外壳；而"写回"这条路两档各自只有一处实现（见文件头的不变式②）。 */
+   *  改**同级上下序** ⇒ 走既有 CLI `move --index` 写 `children` 顺序）/ `'reparent'`（R2 期 4 · f，
+   *  改**父子关系** ⇒ 走既有 CLI move 语义 + 三道闸）。
+   *  三档共用同一套"按住左键拖"的手势与虚线框，只在按下之后分岔（见 mousedown/mousemove）——
+   *  所以没有第二份拖动外壳；而"写回"这条路三档各自只有一处实现（见文件头的不变式②）。 */
   function setDragMode(on, treeRootId, opts) {
-    const mode = (opts && opts.mode === 'reorder') ? 'reorder' : 'move';
+    const mode = (opts && opts.mode === 'reorder') ? 'reorder'
+      : ((opts && opts.mode === 'reparent') ? 'reparent' : 'move');
     if (!on) {
       clearReorderArtifacts();
       fdReorderStart = null; fdReorderDrop = null; fdReorderRoot = null; fdDragKind = 'move';
+      fdReparentStart = null; fdReparentDrop = null; fdReparentRoot = null;
     }
     fdDragMode = !!on;
     fdDragTreeRoot = fdDragMode ? (treeRootId || null) : null;
     fdDragKind = fdDragMode ? mode : 'move';
     fdReorderRoot = (fdDragMode && mode === 'reorder') ? fdDragTreeRoot : null;
+    fdReparentRoot = (fdDragMode && mode === 'reparent') ? fdDragTreeRoot : null;
     const panel = fdPanel();
     if (panel) panel.style.cursor = fdDragMode ? 'grab' : '';
     document.body.classList.toggle('mm-dragmode', fdDragMode);
@@ -860,9 +872,11 @@
       ? (fdDragTreeRoot
           ? (mode === 'reorder'
               ? '同级重排：按住左键拖动「' + topic + '」到目标位置（松手才写盘；Esc / 右键退出）'
-              : (isTopTree
-                  ? '拖动模式：按住左键拖动移动「' + topic + '」树，其他树不动（右键 / Esc 退出）'
-                  : '拖动模式：按住左键拖动移动「' + topic + '」子树（只动它和它的后代），其他节点不动（右键 / Esc 退出）'))
+              : (mode === 'reparent'
+                  ? '重挂父：按住左键把「' + topic + '」拖到**目标父节点上**松手（先落位预览、确认后才写盘；Esc / 右键退出）'
+                  : (isTopTree
+                      ? '拖动模式：按住左键拖动移动「' + topic + '」树，其他树不动（右键 / Esc 退出）'
+                      : '拖动模式：按住左键拖动移动「' + topic + '」子树（只动它和它的后代），其他节点不动（右键 / Esc 退出）')))
           : '拖动模式：按住左键拖动平移画布（Esc 退出）')
       : '已退出拖动模式');
     // 虚线框：进入（且锁定了目标树）→ 显示并框住整棵树；退出 → 隐藏
@@ -932,29 +946,24 @@
   const REORDER_GHOST_ID = 'tree-reorder-ghost';
   const REORDER_MARK_ID = 'tree-reorder-mark';
 
-  /** 清掉重排拖动留下的 DOM、并把被拖节点的透明度还原（域之间不留状态） */
+  /** 清掉重排/重挂拖动留下的 DOM、并把被拖节点的透明度还原（域之间不留状态） */
   function clearReorderArtifacts() {
     [REORDER_GHOST_ID, REORDER_MARK_ID].forEach((id) => {
       const el = document.getElementById(id);
       if (el && el.parentNode) el.parentNode.removeChild(el);
     });
-    if (fdReorderRoot) {
-      document.querySelectorAll('jmnode[nodeid="' + fdReorderRoot + '"]')
-        .forEach((el) => { if (el.dataset.mmDimmed === '1') el.style.opacity = ''; delete el.dataset.mmDimmed; });
-    }
+    [fdReorderRoot, fdReparentRoot].forEach((dimRoot) => {
+      if (dimRoot) {
+        document.querySelectorAll('jmnode[nodeid="' + dimRoot + '"]')
+          .forEach((el) => { if (el.dataset.mmDimmed === '1') el.style.opacity = ''; delete el.dataset.mmDimmed; });
+      }
+    });
   }
 
   /** 进入重排拖动：把被拖节点**复制**成一个跟指针走的副本（源节点留在原地当锚点）。
    *  为什么是副本而不是"把真元素拽走"：源节点留在原位，落位预览与"插到第几位"的判定
    *  才有稳定的参照物；真元素一旦走了，"拖动期间序列化/盘上零变化"也就无从谈起（那是 DOM 状态）。 */
-  function reorderBegin(x, y) {
-    clearReorderArtifacts();
-    const jm = state.jm;
-    const n = fdReorderRoot && MM.adapter.getNode(jm, fdReorderRoot);
-    if (!n) return false;
-    const src = document.querySelector('jmnode[nodeid="' + fdReorderRoot + '"]');
-    if (!src) return false;
-    fdReorderStart = { x: x, y: y, parentId: n.parent.id };
+  function spawnDragGhost(n, src) {
     const ghost = document.createElement('div');
     ghost.id = REORDER_GHOST_ID;
     ghost.textContent = String(n.topic == null ? '' : n.topic);
@@ -968,6 +977,18 @@
     document.body.appendChild(ghost);
     src.dataset.mmDimmed = '1';
     src.style.opacity = '.45';
+    return ghost;
+  }
+
+  function reorderBegin(x, y) {
+    clearReorderArtifacts();
+    const jm = state.jm;
+    const n = fdReorderRoot && MM.adapter.getNode(jm, fdReorderRoot);
+    if (!n) return false;
+    const src = document.querySelector('jmnode[nodeid="' + fdReorderRoot + '"]');
+    if (!src) return false;
+    fdReorderStart = { x: x, y: y, parentId: n.parent.id };
+    spawnDragGhost(n, src);
     const mark = document.createElement('div');
     mark.id = REORDER_MARK_ID;
     mark.style.cssText = 'position:fixed;left:0;top:0;pointer-events:none;z-index:1000;display:none;'
@@ -1048,6 +1069,76 @@
       parent: fdReorderStart ? fdReorderStart.parentId : null,
       drop: fdReorderDrop ? { index: fdReorderDrop.index, parent: fdReorderDrop.parent,
         upper: fdReorderDrop.upper, siblings: fdReorderDrop.siblings } : null };
+  }
+
+  /* ================= 【R2 期 4 · f】重挂父：拖动 + 落点（压着的节点） =================
+   * 语义：松手时**压着哪个节点**，就把锁定的节点（连同子树）挂到它下面（末尾）。
+   *  · 与 reorder 共用同一个副本元素（`#tree-reorder-ghost`，spawnDragGhost 一处实现）⇒ 不新造视觉 ✓；
+   *  · **没有**插入横线：落点是节点，不是兄弟之间的缝隙；压着空白 = 取消（零写入）；
+   *  · 成环（落到自己的子孙上）**不在这里拦**：那一条判据要的是 CLI 的**具体理由**
+   *    + 盘上 sha256 不变，拦截只能发生在唯一实现里（预览/预检会带原话回来）；
+   *  · 松手只把 (id, 目标父) 交出去 —— 写盘走 app-actions 的 `reparentNode`（三道闸），
+   *    这里**不写盘、不改内存树**（不变式②）。 */
+  function reparentBegin(x, y) {
+    clearReorderArtifacts();
+    const jm = state.jm;
+    const n = fdReparentRoot && MM.adapter.getNode(jm, fdReparentRoot);
+    if (!n) return false;
+    const src = document.querySelector('jmnode[nodeid="' + fdReparentRoot + '"]');
+    if (!src) return false;
+    fdReparentStart = { x: x, y: y };
+    spawnDragGhost(n, src);
+    return true;
+  }
+
+  /** 拖动中：副本跟指针走 + 落点预览（当前压着的节点 id）。ghost 是 pointer-events:none
+   *  ⇒ elementFromPoint 看得穿它；压着非节点（空白/画布）⇒ null（松手即取消）。 */
+  function reparentUpdate(x, y) {
+    if (!fdReparentStart || !fdReparentRoot) return null;
+    const ghost = document.getElementById(REORDER_GHOST_ID);
+    if (ghost) {
+      const sr = ghost.getBoundingClientRect();
+      ghost.style.transform = 'translate(' + Math.round(x - sr.width / 2) + 'px,'
+        + Math.round(y - sr.height / 2) + 'px)';
+    }
+    let hitId = null;
+    const el = document.elementFromPoint(x, y);
+    const nodeEl = el && el.closest ? el.closest('jmnode[nodeid]') : null;
+    if (nodeEl) hitId = nodeEl.getAttribute('nodeid');
+    fdReparentDrop = hitId ? { parent: hitId } : null;
+    return fdReparentDrop;
+  }
+
+  /** 松手：把 (id, 目标父) 交出去（自己**不写盘** —— 写盘由 app-actions 的 reparentNode
+   *  经三道闸走）。压着空白/没有拖动 ⇒ {ok:false, reason}（不静默）；清理 DOM 还状态。 */
+  function reparentEnd() {
+    if (!fdReparentStart || !fdReparentRoot) return { ok: false, reason: '没有正在进行中的重挂拖动' };
+    const id = fdReparentRoot;
+    const drop = fdReparentDrop;
+    clearReorderArtifacts();
+    fdReparentStart = null;
+    fdReparentDrop = null;
+    fdReparentRoot = null;
+    fdDragKind = 'move';
+    if (!drop || !drop.parent) return { ok: false, reason: '松手时没有落在任何节点上（落到空白 = 取消，零写入）', id: id };
+    return { ok: true, id: id, parent: drop.parent };
+  }
+
+  /** 取消：清 DOM + 复位状态（Esc / 右键 / 收尾都用它，不拆成两份） */
+  function reparentCancel() {
+    const id = fdReparentRoot;
+    clearReorderArtifacts();
+    fdReparentStart = null;
+    fdReparentDrop = null;
+    fdReparentRoot = null;
+    fdDragKind = 'move';
+    return !!id;
+  }
+
+  /** 现状读数（断言用）：当前是不是重挂档、目标是谁、当前压着谁。 */
+  function reparentState() {
+    return { active: !!fdReparentRoot, kind: fdDragKind, id: fdReparentRoot,
+      drop: fdReparentDrop ? { parent: fdReparentDrop.parent } : null };
   }
 
   /** 视口交互：滚轮缩放（指针锚点）+ 中键平移（无界）+ 拖动模式左键平移 +
@@ -1197,6 +1288,12 @@
             const hitEl = e.target && e.target.closest && e.target.closest('jmnode[nodeid]');
             const hitId = hitEl ? hitEl.getAttribute('nodeid') : null;
             if (hitId === fdDragTreeRoot) reorderBegin(e.clientX, e.clientY);
+          } else if (fdDragKind === 'reparent') {
+            // 【R2 期 4 · f】重挂父：同一条纪律（按在锁定的节点上才开始）；副本跟指针走，
+            // 松手把 (id, 压着的节点) 交给写通道 —— 拖动期间不写盘、不动内存树。
+            const hitEl = e.target && e.target.closest && e.target.closest('jmnode[nodeid]');
+            const hitId = hitEl ? hitEl.getAttribute('nodeid') : null;
+            if (hitId === fdDragTreeRoot) reparentBegin(e.clientX, e.clientY);
           } else {
             const o = treeOffsets[fdDragTreeRoot] || (treeOffsets[fdDragTreeRoot] = { x: 0, y: 0 });
             fdTreeDragStart = { x: e.clientX, y: e.clientY, ox: o.x, oy: o.y };
@@ -1257,6 +1354,11 @@
         reorderUpdate(e.clientX, e.clientY);
         return;
       }
+      if (fdReparentStart) {             // 【R2 期 4 · f】重挂父：副本跟指针 + 落点（压着的节点）
+        e.preventDefault();
+        reparentUpdate(e.clientX, e.clientY);
+        return;
+      }
       if (fdDragModePan) {
         e.preventDefault();
         fdView.x = fdDragModePan.px + (e.clientX - fdDragModePan.x);
@@ -1298,6 +1400,33 @@
         document.body.classList.remove('mm-dragging');
         const pnl = fdPanel();
         if (pnl) pnl.style.cursor = fdDragMode ? 'grab' : '';
+        return;
+      }
+      // 【R2 期 4 · f】重挂父：**松手才进入三道闸**（拖动期间盘上零写入由构造保证 —— 这一档
+      // 一个偏移桶都不写、序列化文本也一个字不变）。写盘只经 MMApp.reparentNode →
+      // 落位预览（演练副本）→ 确认 → IPC → CLI apply（--dry-run 预检 + move op 唯一实现）→ 回读重建。
+      if (fdReparentStart) {
+        e.preventDefault();
+        const rr = reparentEnd();
+        if (!rr.ok) {
+          setStatus('没有重挂：' + rr.reason, true);          // 不静默 ✗
+        } else {
+          const p = (window.MMApp && window.MMApp.reparentNode)
+            ? window.MMApp.reparentNode(rr.id, rr.parent) : null;
+          if (!p) { setStatus('没有重挂：缺少 reparentNode 入口（没接上 CLI 的 move 语义）', true); }
+          else {
+            Promise.resolve(p).then((res) => {
+              if (res && res.ok) {
+                setStatus('已把「' + (res.topic || rr.id) + '」挂到新的父节点下（盘上父子关系已更新）');
+              } else {
+                setStatus('重挂没生效：' + ((res && res.text) || '未知原因'), true);
+              }
+            }).catch((err) => setStatus('重挂失败：' + ((err && err.message) || err), true));
+          }
+        }
+        document.body.classList.remove('mm-dragging');
+        const pnlR = fdPanel();
+        if (pnlR) pnlR.style.cursor = fdDragMode ? 'grab' : '';
         return;
       }
       // 框选收尾：中心点/过半面积命中的可见节点入选（与预览同口径）
@@ -1787,9 +1916,11 @@
   MM.setDragMode = setDragMode;
   MM.dragModeActive = dragModeActive;
   MM.getDragTreeRoot = getDragTreeRoot;
-  MM.dragModeKind = dragModeKind;            // 'move' / 'reorder'（断言用它分辨两档）
+  MM.dragModeKind = dragModeKind;            // 'move' / 'reorder' / 'reparent'（断言用它分辨三档）
   MM.reorderState = reorderState;            // 重排拖动的现状读数（目标 / 落位 / 上界）
   MM.reorderCancel = reorderCancel;          // 收尾/取消（清 DOM + 复位，不拆成两份）
+  MM.reparentState = reparentState;          // 【R2 期 4 · f】重挂拖动的现状读数（目标 / 压着的节点）
+  MM.reparentCancel = reparentCancel;        // 收尾/取消（与 reorderCancel 同一份清理，不拆成两份）
   MM.treeRootOf = treeRootOf;
   MM.applyTreeOffsets = applyTreeOffsets;
   MM.clearTreeOffsets = clearTreeOffsets;

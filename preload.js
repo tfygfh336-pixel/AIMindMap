@@ -92,6 +92,17 @@ contextBridge.exposeInMainWorld('desktop', {
      * `children` = **写后回读**的父节点新顺序（null = 回读失败，界面不许假装同步成功 ✗）。 */
     moveNodeSibling: (projectName, nodeId, parentId, index) =>
       ipcRenderer.invoke('app:move-node-sibling', projectName, nodeId, parentId, index),
+    /* 【R2 期 4 · f】重挂父的三道闸：
+     *   reparentPreview(项目, 节点, 目标父) → 落位预览：跑在**演练副本**上（复用 W13 的
+     *     makeRehearsalRoot + 既有 `apply --dry-run`）⇒ 用户项目零写入；拒绝带 CLI 具体理由。
+     *   moveNodeParent(项目, 节点, 目标父)  → 写通道：先在**真实项目**上 `apply --dry-run` 预检
+     *     （不过 ⇒ 一条都不写），过了才真写（move op → `tree.moveNode` 唯一实现），写后回读
+     *     **整份项目数据**（`data`，null = 回读失败，界面不许假装同步 ✓）+ 新父 children 顺序。
+     * 两条都**不做业务判定**（成环/存在性/越界全在 CLI 一处）；返回失败一律带原因，不静默 ✗。 */
+    reparentPreview: (projectName, nodeId, newParentId) =>
+      ipcRenderer.invoke('app:reparent-preview', projectName, nodeId, newParentId),
+    moveNodeParent: (projectName, nodeId, newParentId) =>
+      ipcRenderer.invoke('app:move-node-parent', projectName, nodeId, newParentId),
     nodes: (projectName) => ipcRenderer.invoke('app:nodes', projectName),
     ask: (projectName, nodeId, opts) => ipcRenderer.invoke('app:ask', projectName, nodeId, opts),
     /* 功能 1 的下半截（A）：把 AI 的回答**落进节点与详情**（写操作走 CLI `ask-apply` 闸门）。
