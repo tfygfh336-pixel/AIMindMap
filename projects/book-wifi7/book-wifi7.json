@@ -1,0 +1,843 @@
+{
+  "meta": {
+    "name": "《Wi-Fi 7入门到应用》知识点大纲",
+    "author": "",
+    "version": "0.18.0",
+    "formatVersion": 2
+  },
+  "format": "node_tree",
+  "data": {
+    "id": "root",
+    "topic": "《Wi-Fi 7入门到应用》知识点大纲",
+    "expanded": true,
+    "children": [
+      {
+        "id": "n-mv9d1pc90xpi",
+        "topic": "全书概览与使用说明",
+        "expanded": false,
+        "children": [],
+        "detail": "<ul><li><strong>书名</strong>：《Wi-Fi 7入门到应用》，唐宏、刘晓军、武娟、宋雪娜、钱刘熠辉、徐晓青、张宁 著，人民邮电出版社，ISBN 9787115659729（书目信息来源：公开售书页搜索快照，如文轩、文轩九月、苏宁等；本会话网络权限未能打开页面逐字核对完整目录）。</li><li><strong>本项目的形态</strong>：知识要点大纲（主题章节树 + 每节要点 + 关键机制 + 观测/配置命令对应），<strong>不是原文复刻</strong>；全部内容为提炼后的结构化知识，零盗版来源、零原文复制。</li><li><strong>章节组织说明</strong>：完整章名未能逐字核对（公开目录页访问受限），故按「Wi-Fi 基础 → 802.11be 新特性 → 部署与应用」主题线组织顶层章节，<strong>未硬编章号</strong>；公开售书页快照中出现的关键词「OFDMA增强」「链路传输增强」与本书 802.11be 特性章主题一致，作者团队（唐宏等）具有运营商网络背景，部署/应用视角按书名「入门到应用」展开。</li><li><strong>来源标注图例</strong>（每个节点 detail 尾部标注）：</li><li>【来源：公开目录】= 公开售书/出版社页面核对到的书目信息与目录关键词线索；</li><li>【来源：公开标准资料】= IEEE 802.11be 公开摘要、Wi-Fi Alliance（Wi-Fi CERTIFIED 7）公开页、运营商/厂商公开白皮书；</li><li>【来源：领域知识】= 802.11 通用标准知识（IEEE 802.11 系列技术共识），不依赖实体书；</li><li>【来源：本地文件】= 本机已有学习笔记（如 <code>E:\\markdown\\M2(08.24～09.18)\\2026-08-28\\HH505N-185-5G信道带宽国家码与UCI链路.md</code>、<code>E:\\markdown\\M2(08.24～09.18)\\2026-08-28\\WR5360_MT7990_SKU_操作指南.md</code>、<code>E:\\markdown\\M3(09.21～10.16)\\2026-10-10\\FG8192-686-687：经验沉淀_FG8192_桥模式WiFi两层开关不同步.md</code>，只做要点对齐，不做原文复制）。</li><li><strong>置信度约定</strong>：【置信度：高】= 标准公开技术事实，多源一致；【置信度：中】= 领域共识，细节随芯片/驱动/监管实现而异；【置信度：待与实体书核对】= 章节划分与组织顺序——实体书到手后按真实目录重排即可，知识点本身不受影响。</li><li><strong>与 comnet 的关联</strong>：802.11 基础、帧结构、QoS、安全、漫游、组网与运维各章，与 comnet 项目的 802.11 无线网络分支、课程 QoS 笔记、FG8192 实操经验节点互相挂了跨项目链接（见各节说明）。</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/junnan1.tang/AppData/Local/Temp/bookbatch-wifi7-20261015/part0-overview.md",
+          "sha256": "fa2a00d46eda5633cef9864fc070adedde336380b44088090427deacca82f921",
+          "at": "2026-10-15T09:52:52.614Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "wi-fi-mv9d1pqf485b",
+        "topic": "无线局域网基础与 Wi-Fi 演进",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1pqfo22g",
+            "topic": "标准组织与协议族演进",
+            "expanded": false,
+            "children": [
+              {
+                "id": "ieee-802-11-wi-fi-alliance-mv9d1pqf80i4",
+                "topic": "IEEE 802.11 与 Wi-Fi Alliance：谁定标准、谁管认证",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：IEEE 802.11 工作组制定技术标准（PHY/MAC 规范文本）；Wi-Fi Alliance（WFA）做互操作认证与「Wi-Fi 4/5/6/6E/7」商业命名；两者是「技术标准」与「产品认证」的分工。</li><li><strong>为什么</strong>：标准通过后产品才能量产，但厂商实现差异大，需要 WFA 用认证保证不同品牌设备互通；Wi-Fi 7 对应 IEEE 802.11be，认证名为 Wi-Fi CERTIFIED 7（2024 年 1 月启动）。</li><li><strong>典型参数</strong>：802.11be 由 TGbe 任务组承担（2020 年前后立项，2024 年起进入定稿/发布节奏）；WFA 认证测试基于标准草案阶段冻结的特性集。</li><li><strong>观测或配置命令</strong>：终端规格页/驱动属性看是否标注 Wi-Fi 7 Certified；Linux 下 <code>iw list</code> 看网卡固件支持的 band 与能力位。</li><li>【来源：公开标准资料 + 领域知识】【置信度：高】</li></ul>"
+              },
+              {
+                "id": "802-11-11b-11be-mv9d1pqfv1lh",
+                "topic": "802.11 代际演进：从 11b 到 11be",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：每一代都是「频谱 / 调制 / MAC」三项中至少一项的升级：11b（CCK，2.4G）→ 11a/g（OFDM，54Mbps）→ 11n（MIMO/40MHz/双频）→ 11ac（5G 160MHz/256-QAM/下行 MU-MIMO）→ 11ax（OFDMA/1024-QAM/上行 MU/TWT/2.4G 回归）→ 11be（320MHz/4096-QAM/MLO/Multi-RU）。</li><li><strong>为什么</strong>：带宽不够加频谱、速率不够提调制、效率不够改 MAC；11be 的主线不是单点峰值速率，而是「多链路 + 低时延」——把确定性体验写进设计目标。</li><li><strong>典型参数</strong>：峰值物理速率 11ax 约 9.6Gbps，11be 理论上限约 46.1Gbps（320MHz × 4096-QAM × 多流 × MLO 多链路叠加）；11be 引入 EHT（Extreme High Throughput）前缀命名。</li><li><strong>观测或配置命令</strong>：Windows <code>netsh wlan show drivers</code> 看网卡支持的无线代际；手机「设置-关于-状态」看 Wi-Fi 代际标识。</li><li>【来源：领域知识 + 公开标准资料】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-family",
+                    "caption": "802.11 代际演进对应 comnet 的协议族演进节点"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-org",
+                    "caption": "标准组织与命名对应 comnet 的 802.11 标准组织节点"
+                  }
+                ]
+              }
+            ],
+            "detail": "<p>一句话：谁定技术标准、谁管产品认证、代际怎么命名——入门 Wi-Fi 的第一组坐标。</p>"
+          },
+          {
+            "id": "n-mv9d1pqg6ioo",
+            "topic": "无线介质与链路特征",
+            "expanded": false,
+            "children": [
+              {
+                "id": "snr-ap-mv9d1pqggcvg",
+                "topic": "SNR、路径损耗与多径：为什么离 AP 越近速率越高",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：无线链路三要素——路径损耗（随距离衰减）、多径衰落（反射信号叠加相长/相消）、信噪比 SNR（信号与噪声功率比）；SNR 决定速率自适应（RA）可选的最高 MCS。</li><li><strong>为什么</strong>：调制阶数越高星座点越密，对 SNR 门槛越高（每上一档约需 3dB 量级增益）；距离远/隔墙多时 SNR 掉下来，RA 自动降档——「离 AP 近速率高」是调制学不是玄学。</li><li><strong>典型参数</strong>：1024-QAM 需要 SNR 约 40dB 量级，4096-QAM 再加约 3dB；2.4G 绕射穿透强但干扰拥挤，5G/6G 频谱干净带宽大但穿损更高（6GHz 穿一堵墙掉一档很常见）。</li><li><strong>观测或配置命令</strong>：Windows <code>netsh wlan show interfaces</code> 看信号强度与收发速率；macOS 按住 Option 点 Wi-Fi 图标看 RSSI/噪声；Linux <code>iw dev wlan0 link</code> 看 signal 与 bitrate。</li><li>【来源：领域知识】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wl-char",
+                    "caption": "链路特征与 SNR 对应 comnet 的无线链路特征节点"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "mac-csma-ca-mv9d1pqg5gey",
+            "topic": "MAC 基础：CSMA/CA",
+            "expanded": false,
+            "children": [
+              {
+                "id": "csma-ca-mv9d1pqg18tj",
+                "topic": "CSMA/CA：载波侦听、帧间间隔与随机退避",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：发送前先听信道（物理载波侦听 + 虚拟载波侦听 NAV），空闲还要等帧间间隔（IFS），再退避一段随机时间；发生冲突后按二进制指数退避加大竞争窗口。</li><li><strong>为什么</strong>：无线环境无法像有线以太网那样「边发边检冲突」，只能「尽量避免冲突 + 冲突后退避」；这是 Wi-Fi 空口效率天花板偏低的根源，也是 OFDMA/Multi-RU/MLO 一直在「省空口时间」的原因。</li><li><strong>典型参数</strong>：SIFS/DIFS 帧间间隔（2.4G DIFS 约 50μs 量级）；竞争窗口 CWmin/CWmax（15 到 1023 的指数档）；EDCA 按队列差异化这些参数（见 QoS 章）。</li><li><strong>观测或配置命令</strong>：Wireshark 配监听模式网卡抓空口，看 airtime 占用、退避与重传率。</li><li>【来源：领域知识】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wifi",
+                    "caption": "CSMA/CA 对应 comnet 的 WiFi 与 CSMA/CA 节点"
+                  }
+                ]
+              },
+              {
+                "id": "rts-cts-mv9d1pqg8p1f",
+                "topic": "隐藏节点与 RTS/CTS",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：两个终端互相听不到、但都能听到 AP（隐藏节点），同时发送在 AP 处冲突；RTS/CTS 用短控制帧先预约信道，让周围设备通过 NAV 沉默。</li><li><strong>为什么</strong>：覆盖大的家庭/企业网必然存在隐藏节点，典型症状是「信号满格却卡」，本质是重传率高、airtime 被浪费。</li><li><strong>典型参数</strong>：rts threshold（超过该长度的帧先做 RTS/CTS，可配置）；CTS-to-self（同 AP 下终端间的一种低成本占用通告）。</li><li><strong>观测或配置命令</strong>：Linux <code>iw dev wlan0 get rts</code>；OpenWrt <code>uci show wireless | grep rts</code>。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1pqghnj5",
+            "topic": "频段、信道与监管",
+            "expanded": false,
+            "children": [
+              {
+                "id": "2-4-5-6-ghz-20mhz-mv9d1pqg5aww",
+                "topic": "2.4/5/6 GHz 频段与信道划分：信道号是 20MHz 块的编号",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：2.4G 只有 3 个非重叠 20MHz 信道（1/6/11，中国可用 1-13）；5G 是 36-165 一批 20MHz 块；6GHz 是 11ax(E)/11be 的连续大频谱（5925-7125MHz，中国政策倾向把上段划给 IMT，部署按监管域裁剪）。</li><li><strong>为什么</strong>：信道号是 20MHz 基本块的编号、不是占用带宽；5G 中心频率约等于 5000 + 信道号×5 MHz；大带宽（80/160/320MHz）等于把连续若干 20MHz 块拼起来——主信道合法不等于「主信道 + 当前带宽」合法。</li><li><strong>典型参数</strong>：5G 非重叠信道间隔 4（36/40/44/48…）；中国 5G 低段 160MHz 只有 36-64 这一整块；320MHz 只有 6GHz 能完整放下。</li><li><strong>观测或配置命令</strong>：<code>iw reg get</code> 看监管域；OpenWrt <code>uci show wireless</code> 看 channel/htmode；Windows <code>netsh wlan show networks mode=bssid</code> 看周边信道占用。</li><li>【来源：领域知识 + 本地文件（HH505N 信道带宽笔记要点对齐）】【置信度：高】</li></ul>"
+              },
+              {
+                "id": "dfs-mv9d1pqgmg64",
+                "topic": "DFS 与雷达检测",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：5G 上 52-64、100-140 等信道与雷达共用，AP 启用前要做雷达检测（DFS CAC），检测到雷达必须静默并切换信道。</li><li><strong>为什么</strong>：雷达优先级高于 Wi-Fi，这是监管强制要求；不合规既干扰雷达也面临处罚。</li><li><strong>典型参数</strong>：CAC 检测时长典型 60s 量级（ETSI 规范）；信道切换用 CSA 通告倒计时。</li><li><strong>观测或配置命令</strong>：<code>iw dev wlan0 info</code> 看当前信道；hostapd 日志 grep DFS 事件；<code>iw phy</code> 看各信道的 radar/no-ir 标志。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              },
+              {
+                "id": "country-aregion-mv9d1pqgr6rv",
+                "topic": "国家码与监管域（country/aregion）",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：可用信道、最大发射功率、DFS 行为都由国家码（regdomain）决定；厂商固件内部还有自己的 aregion 区域映射表。</li><li><strong>为什么</strong>：同一台设备换国家码，信道表和功率上限全变；国家码与实际部署地不符是合规红线，也是「信道改不动」「功率上不去」类问题的常见根因。</li><li><strong>典型参数</strong>：country=CN/US/EU；2.4G 中国 EIRP 上限 20dBm（100mW）量级；MTK 方案的 aregion 值需与镜像配置一致，WebUI 改国家码后要确认 aregion 同步。</li><li><strong>观测或配置命令</strong>：<code>iw reg get</code> / <code>iw reg set CN</code>；OpenWrt <code>uci show wireless | grep country</code>；对照 WebUI 国家码与 UCI 值。</li><li>【来源：本地文件（HH505N 国家码/aregion 笔记要点对齐）+ 领域知识】【置信度：中】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1pqg9yk8",
+            "topic": "帧格式与信息元素",
+            "expanded": false,
+            "children": [
+              {
+                "id": "802-11-mv9d1pqgci9i",
+                "topic": "802.11 帧三大类型与通用头部",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：管理帧（beacon/probe/关联/认证）、控制帧（RTS/CTS/ACK）、数据帧三大类；通用 MAC 头含 Frame Control、Duration、地址 1-3 等字段。</li><li><strong>为什么</strong>：地址 1 是接收方、地址 2 是发送方、地址 3 的语义随 To DS/From DS 变化；Duration 字段承载 NAV 虚拟载波侦听——读懂帧结构是抓包定位问题的前提。</li><li><strong>典型参数</strong>：BSSID 通常等于 AP 无线接口 MAC；BSS/IBSS/桥接场景下地址字段含义表不同。</li><li><strong>观测或配置命令</strong>：Wireshark 过滤 <code>wlan.fc.type</code>（0 管理帧/1 控制帧/2 数据帧）。</li><li>【来源：领域知识】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wl-80211-frame",
+                    "caption": "帧结构对应 comnet 的 802.11 帧结构节点（自顶向下分支）"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-04",
+                    "caption": "帧结构对应 comnet 的 802.11 帧格式节点"
+                  }
+                ]
+              },
+              {
+                "id": "beacon-mv9d1pqgtrs8",
+                "topic": "Beacon 与信息元素：网络的心跳",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：AP 周期性广播 Beacon，携带 SSID 与能力信息元素（IE）：支持速率、RSN 安全能力、HT/VHT/HE/EHT 能力、TIM 缓存指示等；终端被动扫描收 Beacon 或主动发 Probe Request 探测。</li><li><strong>为什么</strong>：终端「能看到什么网络、能开什么特性」全靠 Beacon/Probe Response 里的 IE 协商；能力 IE 对不上，Wi-Fi 7 特性（MLO、320MHz）就不生效。</li><li><strong>典型参数</strong>：beacon interval 默认 100 TU（约 102.4ms）；TIM 告知哪些终端有缓存单播帧；DTIM 周期决定省电终端的唤醒节拍。</li><li><strong>观测或配置命令</strong>：抓包看 Beacon 的 EHT Capabilities/ML IE；Linux <code>iw dev wlan0 scan</code> 触发扫描看邻居能力。</li><li>【来源：领域知识】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-tim",
+                    "caption": "Beacon/TIM 与 comnet 的 Beacon 与 TIM/DTIM 节点对应（TWT 的省电前身）"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wl-80211-arch",
+                    "caption": "Beacon 与体系结构对应 comnet 的 802.11 体系结构与 AP 节点"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：Wi-Fi 的一切新特性都叠在同一副骨架上：IEEE 定标准（PHY + MAC）、Wi-Fi Alliance 管认证与商业命名、所有终端与 AP 用 CSMA/CA 竞争同一块空气介质。本章按「标准与演进 → 介质与链路特征 → MAC 基础 → 频段信道与监管 → 帧格式」五节展开。（章节划分按主题组织，章号待与实体书核对。）</p>\n<ul><li>【来源：公开目录（书目）+ 领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/junnan1.tang/AppData/Local/Temp/bookbatch-wifi7-20261015/part1-basics.md",
+          "sha256": "bbbb34dcb448415a3049b4201278c19205afb4d3b9ec9e82a9d2e56e7e88f250",
+          "at": "2026-10-15T09:52:53.124Z",
+          "tool": "import-md"
+        },
+        "links": [
+          {
+            "project": "comnet",
+            "id": "ch7-wireless",
+            "caption": "基础章与《计算机网络：自顶向下方法》第 7 章无线网络和移动网络对应"
+          }
+        ]
+      },
+      {
+        "id": "wi-fi-7-320mhz-4096-qam-multi-ru-mv9d1q7jz2fw",
+        "topic": "Wi-Fi 7 物理层增强：320MHz、4096-QAM 与 Multi-RU",
+        "expanded": false,
+        "children": [
+          {
+            "id": "320mhz-mv9d1q7jcns6",
+            "topic": "320MHz 信道与频谱利用",
+            "expanded": false,
+            "children": [
+              {
+                "id": "320mhz-mv9d1q7jia6v",
+                "topic": "320MHz：带宽翻倍的收益与前提",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：11be 把单射频最大信道带宽从 160MHz 翻倍到 320MHz（仅在 6GHz 频段可用），含 320MHz 连续块与 160+160MHz 两种形态。</li><li><strong>为什么</strong>：吞吐与带宽近似线性，带宽翻倍直接翻倍；前提是监管允许 6GHz 大频谱连续可用——中国 6GHz 政策倾向 IMT（5G/6G），家庭 Wi-Fi 能否用 320MHz 取决于部署地区监管域，国际市场（美国/欧洲）是 Wi-Fi 7 大带宽的主战场。</li><li><strong>典型参数</strong>：320MHz 等于 16 个连续 20MHz 块；峰值速率 46.1Gbps 的构成 ≈ 320MHz × 4096-QAM × 2 流 × 2 链路（MLO）叠加。</li><li><strong>观测或配置命令</strong>：<code>iw list</code> 看 6GHz band 能力；AP 侧 hostapd 的 eht 运营带宽配置；终端连接详情看协商带宽。</li><li>【来源：公开标准资料 + 领域知识】【置信度：高】</li></ul>"
+              },
+              {
+                "id": "puncturing-mv9d1q7kl6tp",
+                "topic": "前导码打孔（Puncturing）：非连续频谱也开大带宽",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：320/160MHz 块内某段 20/40MHz 被占用（雷达、主信道约束）时，用前导码打孔绕开占用子块，其余子块照常传输。</li><li><strong>为什么</strong>：没有打孔时一段 20MHz 被占，整个 320MHz 都开不了；打孔让「大带宽」在碎片化频谱下仍可用，是 11be 最务实的 PHY 改进之一。</li><li><strong>典型参数</strong>：打孔粒度 20/40/80MHz；EHT Operation Information 里用位图通告打孔模式。</li><li><strong>观测或配置命令</strong>：抓包解析 EHT Operation IE 的 puncture bitmap；<code>iw dev wlan0 link</code> 输出的带宽与被禁用子信道。</li><li>【来源：公开标准资料 + 领域知识】【置信度：高】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "4096-qam-mv9d1q7ljm20",
+            "topic": "4096-QAM",
+            "expanded": false,
+            "children": [
+              {
+                "id": "4096-qam-1024-qam-20-mv9d1q7ljkp2",
+                "topic": "4096-QAM：1024-QAM 之上的 20% 峰值增益",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：每符号承载 12bit（4096 个星座点），比 1024-QAM 的 10bit 多 20% 速率；EHT MCS 表在 11ax 基础上新增 MCS 12/13 档。</li><li><strong>为什么</strong>：星座点更密意味着同样发射功率下抗噪能力下降，要求 SNR 再高约 3dB 且信道干净；实际生效场景集中在「近距离、视距、无强干扰」——手机贴近 AP、机顶盒无线回传、AR/VR 头显。</li><li><strong>典型参数</strong>：4096-QAM 仅在较大 RU/全带宽帧生效（标准限定 242-tone 以上）；AP 与终端双方都要支持才协商成功。</li><li><strong>观测或配置命令</strong>：Windows <code>netsh wlan show interfaces</code> 看协商速率是否上到 2882Mbps 档（160MHz×2流×4096-QAM 量级）；Linux <code>iw dev wlan0 station dump</code> 看 tx bitrate。</li><li>【来源：公开标准资料 + 领域知识】【置信度：高】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "multi-ru-ofdma-mv9d1q7l66on",
+            "topic": "Multi-RU 与 OFDMA 增强",
+            "expanded": false,
+            "children": [
+              {
+                "id": "ofdma-ru-mv9d1q7lq3e7",
+                "topic": "OFDMA 回顾：RU 是什么、为什么省空口时间",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：Wi-Fi 6 引入的机制：把 20/40/80/160MHz 按 RU（Resource Unit，26/52/106/242/484/996-tone）切块，一个帧同时服务多个终端——Wi-Fi 版的频谱切片。</li><li><strong>为什么</strong>：小包业务（游戏、语音、IoT 心跳）下每帧的竞争与退避开销占比大；OFDMA 把多用户打包进一帧，空口效率高、时延抖动小。</li><li><strong>典型参数</strong>：RU 谱系从 26-tone 到 996-tone；上行 OFDMA 由 AP 发触发帧（Trigger Frame）统一调度。</li><li><strong>观测或配置命令</strong>：抓包看 Trigger 帧；AP 日志看 OFDMA 调度命中统计。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              },
+              {
+                "id": "multi-ru-ru-mv9d1q7lc3nc",
+                "topic": "Multi-RU：一次给一个用户分多段 RU",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：11ax 一帧内一个用户只能分到一个 RU；11be 允许把多个 RU（可不同尺寸、可含打孔）分配给同一用户。</li><li><strong>为什么</strong>：频谱碎片化时整块 RU 凑不齐导致浪费；Multi-RU 把零碎频谱拼给一个用户，提升频谱利用率和调度灵活性——这正是公开目录关键词「OFDMA增强」所指的核心内容。</li><li><strong>典型参数</strong>：RU 分配组合在触发帧的 RU Allocation 子字段里编码（26+52、106+26 等组合）；320MHz 下 RU 谱系扩展到 2×996-tone 量级。</li><li><strong>观测或配置命令</strong>：抓包解析 RU Allocation 字段；AP 侧查每用户 RU 分配统计。</li><li>【来源：公开标准资料 + 领域知识】【置信度：高】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1q7llmxx",
+            "topic": "速率构成与观测",
+            "expanded": false,
+            "children": [
+              {
+                "id": "wi-fi-mcs-mv9d1q7l0aem",
+                "topic": "Wi-Fi 速率公式：MCS × 空间流 × 编码率 × 带宽",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：协商速率 = 符号率 × 编码率 × 每符号比特数（调制阶数）× 空间流数 × 带宽缩放；Wi-Fi 7 还要再乘 MLO 链路数。</li><li><strong>为什么</strong>：回答「Wi-Fi 7 为什么只有几百兆」按公式拆变量：带宽是几段、MCS 落在几档、几条空间流、4096-QAM 是否生效——四个变量各管一段，逐项对号才不会误判「Wi-Fi 7 没用」。</li><li><strong>典型参数</strong>：手机 2×2 MIMO 是主流（4×4 多见于 AP 与回程链路）；家庭场景最常见的 Wi-Fi 7 形态是 2.4G+5G 双频 MLO 并发。</li><li><strong>观测或配置命令</strong>：Windows <code>netsh wlan show interfaces</code>；Linux <code>iw dev wlan0 station dump</code>；macOS 无线诊断看协商速率与 NSS。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：11be 的 PHY 三件套——320MHz 大带宽、4096-QAM 高调制、Multi-RU 灵活分配，共同把峰值速率推到 46Gbps 量级；但每一项都有严格前提（频谱可用性、SNR、终端形态），「峰值速率」与「实际体验」是两回事。本章按「带宽 → 调制 → RU 分配 → 速率构成与观测」展开。（章节划分按主题组织，章号待与实体书核对。）</p>\n<ul><li>【来源：公开标准资料 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/junnan1.tang/AppData/Local/Temp/bookbatch-wifi7-20261015/part2-phy.md",
+          "sha256": "163141c640c8b88f05475bd3ef50b79c12ee96569d4e5d25bdbc1618b556b58d",
+          "at": "2026-10-15T09:52:53.740Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "mlo-mac-mv9d1qn0dprl",
+        "topic": "MLO 多链路与 MAC 增强",
+        "expanded": false,
+        "children": [
+          {
+            "id": "mlo-mv9d1qn126dj",
+            "topic": "MLO 多链路操作",
+            "expanded": false,
+            "children": [
+              {
+                "id": "mlo-mld-mv9d1qn1e9ba",
+                "topic": "MLO 是什么：MLD 与多射频并发",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：MLO 让一台设备（AP 侧为 AP MLD，终端侧为 non-AP MLD）用多个射频同时与对端维持多条链路，对上层呈现一个逻辑设备（单一 MLD MAC 地址）；关联与认证在其中一条链路完成，数据可在多条链路上传输。</li><li><strong>为什么</strong>：单链路受制于单一频段的干扰与拥塞；多链路可以聚合带宽、择优发送、故障秒切——4G/5G 载波聚合的思路搬进 Wi-Fi。</li><li><strong>典型参数</strong>：MLD MAC 与每条链路各自的 link MAC；Beacon 里用 Multiple BSSID 与 EHT Multi-Link IE 通告多链路信息。</li><li><strong>观测或配置命令</strong>：Windows 11 连接属性/任务管理器看 Wi-Fi 7 与 MLO 状态；抓包看 ML IE；hostapd 配置里多个接口绑定同一 MLD。</li><li>【来源：公开标准资料 + 领域知识】【置信度：高】</li></ul>"
+              },
+              {
+                "id": "str-mv9d1qn1oqnl",
+                "topic": "STR 同步收发与链路切换/复制",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：STR（Simultaneous Transmit and Receive）指一条链路发送的同时另一条链路接收；做不到 STR 的设备退化为协调收发；数据帧可在链路间动态切换，也可复制发送（同一帧双链路各发一份，先到先用）。</li><li><strong>为什么</strong>：双频同时收发的自干扰是 MLO 最难的工程问题；复制模式牺牲部分效率换时延与可靠性——丢了一条链路另一条还在，对实时业务价值最大。</li><li><strong>典型参数</strong>：STR 能力在 EHT MAC Capability 字段通告；复制模式对低时延业务（语音/XR）收益显著。</li><li><strong>观测或配置命令</strong>：抓包对比同一序列号在两条链路上的重复帧；驱动统计里看 per-link 收发计数。</li><li>【来源：公开标准资料 + 领域知识】【置信度：高】</li></ul>"
+              },
+              {
+                "id": "mlo-mv9d1qn2gfzi",
+                "topic": "MLO 的部署条件与收益边界",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：MLO 要求 AP 与终端两侧都是 Wi-Fi 7 且具备多射频；常见频段组合：2.4G+5G（家庭覆盖场景）、5G+5G 或 5G+6G（高带宽场景）；老终端自动按单链路接入。</li><li><strong>为什么</strong>：任一侧不支持就回退旧协议；2.4G 链路速率低，它加入 MLO 的价值主要在覆盖边缘的可用性兜底，而不是峰值速率贡献。</li><li><strong>典型参数</strong>：家庭路由 Wi-Fi 7 主打 2.4+5G MLO；企业 AP 多射频（5+6GHz）MLO 面向高密高吞吐。</li><li><strong>观测或配置命令</strong>：终端规格页看 MLO/多链路支持；路由器后台看接入设备的协议代际与活跃链路数。</li><li>【来源：公开标准资料 + 领域知识】【置信度：中】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1qn2mcyv",
+            "topic": "时延优化",
+            "expanded": false,
+            "children": [
+              {
+                "id": "r-twt-mv9d1qn200xs",
+                "topic": "r-TWT：限制目标唤醒时间（低时延调度）",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：TWT（Target Wake Time）让终端与 AP 约定「什么时候醒来、服务多长时间」；11be 的 r-TWT（restricted TWT）由 AP 强制保护该服务时段，非成员终端必须让路。</li><li><strong>为什么</strong>：普通 EDCA 是「大家抢」，r-TWT 是「包场」——对 XR、云游戏、工业无线等时延敏感业务给出确定性窗口；这是 Wi-Fi 第一次具备「硬时延保障」语义。</li><li><strong>典型参数</strong>：r-TWT schedule（周期、时长、成员约束）；TWT 协商形态（单独协商/广播调度/优化式聚合）。</li><li><strong>观测或配置命令</strong>：抓包看 TWT/r-TWT 信息元素；AP 侧确认驱动支持 r-TWT 的开关状态。</li><li>【来源：公开标准资料 + 领域知识】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-tim",
+                    "caption": "r-TWT 的省电前身（TIM/DTIM 唤醒节拍）对应 comnet 电源管理节点"
+                  }
+                ]
+              },
+              {
+                "id": "n-mv9d1qn2pi3i",
+                "topic": "空口时延从哪来：排队、退避、重传与聚合权衡",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：Wi-Fi 时延四个来源：队列排队（负载高）、CSMA 退避（竞争重）、重传（链路质量差）、终端省电休眠（睡着收不到）；帧聚合提升吞吐但拉长单帧时延。</li><li><strong>为什么</strong>：低时延优化要对症下药——降负载（OFDMA 切分）、减竞争（r-TWT 包场）、稳链路（MLO 复制/切换）、调聚合尺寸；不问病因只「调大带宽」往往无效。</li><li><strong>典型参数</strong>：聚合会话的 AMPDU density 与 BA 窗口；重传率超过 10% 量级时延显著劣化。</li><li><strong>观测或配置命令</strong>：对空口持续 ping 看 RTT 与抖动；AP 日志看重传率；抓包看 retry 重传位。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "11be-mac-mv9d1qn2lzrb",
+            "topic": "其他 11be MAC 特性",
+            "expanded": false,
+            "children": [
+              {
+                "id": "ap-co-sr-co-bf-mv9d1qn2yvoy",
+                "topic": "多 AP 协作（Co-SR/Co-BF）",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：相邻 AP 协同工作：协作空间复用（Co-SR，感知邻居 AP 的传输并自适应降功率或让出时隙）与协作波束赋形（Co-BF，多 AP 联合成型抑制互干扰）。</li><li><strong>为什么</strong>：高密度部署（公寓、办公室）下同频 AP 互相踩踏是效率杀手；单 AP 自治优化到顶之后，出路只有协作。</li><li><strong>典型参数</strong>：空间复用组 SRG 参数；11be 的多 AP 协作多为可选特性，商用进度明显落后于 MLO。</li><li><strong>观测或配置命令</strong>：AP 侧查看 SRG 配置项；部署规划工具的干扰矩阵评估。</li><li>【来源：公开标准资料 + 领域知识】【置信度：中】</li></ul>"
+              },
+              {
+                "id": "a-mpdu-a-msdu-ba-mv9d1qn3mjwr",
+                "topic": "帧聚合与块确认（A-MPDU/A-MSDU + BA）",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：A-MPDU 把多个 MPDU 打包一次发送，Block Ack 一次确认一批；11ax/11be 继续沿用并扩大窗口与聚合长度。</li><li><strong>为什么</strong>：每帧的物理层前导与竞争开销固定，聚合把它们摊薄；但聚合越大单帧时延越高——吞吐与时延是跷跷板。</li><li><strong>典型参数</strong>：BA 窗口（256 到 1024 量级）；A-MSDU 子帧数上限；EHT 引入更长 PPDU 与多链路聚合。</li><li><strong>观测或配置命令</strong>：<code>iw dev wlan0 station dump</code> 看聚合会话状态；抓包看 QoS Data 帧的 A-MSDU 指示位。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：MLO（Multi-Link Operation）是 11be 的灵魂：终端与 AP 之间同时维持多条链路并行收发，把「双频并发」从厂商私有方案升级为标准机制；配合 r-TWT 等调度增强，Wi-Fi 第一次把毫秒级确定性低时延写进目标。本章按「MLO → 时延优化 → 其他 11be MAC 特性」展开。（章节划分按主题组织，章号待与实体书核对。）</p>\n<ul><li>【来源：公开标准资料 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/junnan1.tang/AppData/Local/Temp/bookbatch-wifi7-20261015/part3-mlo.md",
+          "sha256": "41379542b47d1e9769c29d559b05f29a4c0746364f3c8cda9890ff7c26f12ba4",
+          "at": "2026-10-15T09:52:54.297Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "qos-mv9d1r166kr9",
+        "topic": "QoS 与服务质量",
+        "expanded": false,
+        "children": [
+          {
+            "id": "edca-wmm-mv9d1r17qa7l",
+            "topic": "EDCA 与 WMM",
+            "expanded": false,
+            "children": [
+              {
+                "id": "wmm-mv9d1r174u3t",
+                "topic": "WMM 四队列：优先级怎么映射到竞争参数",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：WMM（Wi-Fi Multimedia，源自 802.11e EDCA）把流量分 4 个接入类别：AC_VO（语音）、AC_VI（视频）、AC_BE（尽力而为）、AC_BK（后台），每类一组独立竞争参数（AIFSN、CWmin、CWmax、TXOP）。</li><li><strong>为什么</strong>：高优先级队列等得更短（小 AIFSN）、退避窗口更小、允许占用信道更久（大 TXOP）——用「排队规则」实现软优先级而非硬预留；这就是同一房间里语音比下载抗拥塞的原因。</li><li><strong>典型参数</strong>：AC_VO 的 AIFSN=2、CWmin=3（2.4G 典型值）；语音 TXOP 约 1504μs 量级；每个 AC 有独立退避计数器。</li><li><strong>观测或配置命令</strong>：Linux <code>iw dev wlan0 get wmm</code>；hostapd 的 wme_ac_ 系列配置；抓包对照 QoS Control 字段。</li><li>【来源：领域知识】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-qos",
+                    "caption": "WMM/EDCA 对应 comnet 的 802.11e 与 EDCA 节点"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "7-1-wi-fi-wmm-mv6idh1e1rqz",
+                    "caption": "WMM 对应 comnet 课程笔记 QoS 原理的 7.1 Wi-Fi：WMM"
+                  }
+                ]
+              },
+              {
+                "id": "qos-dscp-up-mv9d1r17ilca",
+                "topic": "端到端 QoS 链路：DSCP 到 UP 到空口队列",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：有线侧 IP 包带 DSCP 标记 → AP 把 DSCP 映射到 802.11 的 UP（User Priority 0-7）→ UP 对应到 WMM 的 AC 队列；终端应用也可以直接打 WMM 标记。</li><li><strong>为什么</strong>：AP 若不做映射（或乱重写 DSCP），有线侧精心规划的 QoS 到空口就断档；映射配置错误会出现「语音包走 BK 队列」这类怪问题。</li><li><strong>典型参数</strong>：DSCP EF(46) 映射 UP6/7 进 AC_VO；CS3/AF41 常映射进 AC_VI；默认映射表可按厂商策略覆盖。</li><li><strong>观测或配置命令</strong>：OpenWrt <code>uci show wireless</code> 的 wmm 相关项；抓包对照 IP 头 DSCP 与 802.11 QoS Control 字段是否一致。</li><li>【来源：领域知识】【置信度：中】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1r17jmpo",
+            "topic": "时延敏感业务与设备侧保障",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9d1r170j0p",
+                "topic": "语音/视频/低时延应用的参数组合",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：语音走 AC_VO + 短 TXOP + 省电豁免（U-APSD 立即响应）；视频走 AC_VI + 更大聚合窗口；11be 网络再叠加 r-TWT 确定性时段。</li><li><strong>为什么</strong>：每类业务的帧长、速率、时延容忍不同：语音帧小而密、怕时延不怕限速；视频吞吐大、怕丢包怕抖动——参数要按业务画像组合，不是全局一个模板。</li><li><strong>典型参数</strong>：U-APSD 与 WMM 省电联动；语音并发路数受 airtime 预算硬约束（每路语音占空口时长的总和不能超过信道容量）。</li><li><strong>观测或配置命令</strong>：AP 侧看每 AC 的 airtime 占比；语音终端的 QoS 白名单配置。</li><li>【来源：领域知识】【置信度：中】</li></ul>"
+              },
+              {
+                "id": "n-mv9d1r1758ts",
+                "topic": "设备侧限速与调度：运营商网关视角",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：网关/CPE 对终端做限速（速率、并发数）与 QoS 规则下发：规则从 WebUI/配置层下发到 UCI 再到驱动生效；有线侧用 mark + tc 队列，空口侧用 WMM 类别，各管一段。</li><li><strong>为什么</strong>：家庭宽带上行稀贵，按终端/业务限速保公平；配置分两层（WebUI 配置层与底层生效层）不同步，就会出现「面板显示已限速、实际没生效」的典型问题。</li><li><strong>典型参数</strong>：限速规则按 IP/MAC/端口维度；iptables mangle 表 mark 值与 tc qdisc 绑定；配置下发链路 UCI → reload → 驱动模块。</li><li><strong>观测或配置命令</strong>：<code>tc -s qdisc show</code> 看队列统计；<code>iptables -t mangle -L</code> 看 mark 规则；对照 WebUI 值与 <code>uci show</code> 实际值。</li><li>【来源：本地文件（FG8192 限速/QoS 规则下发实操要点对齐）+ 领域知识】【置信度：中】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "fg8192-mv6idkypb55t",
+                    "caption": "网关限速规则下发对应 comnet 的 FG8192 限速实操节点"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：Wi-Fi 的 QoS 主线是 EDCA/WMM（源自 802.11e 的四队列差异化竞争）——11be 的 r-TWT 是在其上叠加的「确定性时段」；部署侧还有 DSCP 到 UP 的端到端映射与运营商网关限速的配合。本章按「EDCA/WMM → 端到端映射 → 时延敏感业务与设备侧保障」展开。（章节划分按主题组织，章号待与实体书核对。）</p>\n<ul><li>【来源：领域知识 + 公开标准资料】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/junnan1.tang/AppData/Local/Temp/bookbatch-wifi7-20261015/part4-qos.md",
+          "sha256": "d94d83517685cbda4625333b98dd702d43e3c3dd18d15f1de4aac120ec4fda40",
+          "at": "2026-10-15T09:52:54.808Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "wep-wpa3-mv9d1rfzsxvv",
+        "topic": "无线安全：从 WEP 到 WPA3",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1rg0yt0b",
+            "topic": "加密与认证演进",
+            "expanded": false,
+            "children": [
+              {
+                "id": "wep-wpa2-mv9d1rg0wvuk",
+                "topic": "WEP 到 WPA2：为什么一路换加密算法",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：WEP 用 RC4 生成密钥流（IV 短且重用，几分钟可破解）；WPA 过渡期用 TKIP（每包密钥混合）；WPA2 起标配 CCMP（AES 计数器模式 + 完整性校验）。</li><li><strong>为什么</strong>：WEP 的缺陷是协议设计层的（IV 太短、线性完整性校验），不是「密钥不够长」能补的；WPA2 服役近二十年后，因 PSK 离线破解与 KMID 相关攻击被 WPA3 接棒。</li><li><strong>典型参数</strong>：WPA2-PSK（个人）/WPA2-Enterprise（802.1X）双形态；加密套件 TKIP/CCMP/GCMP 逐代切换。</li><li><strong>观测或配置命令</strong>：<code>iw dev wlan0 link</code> 看当前加密套件；AP 合规检查确认关闭 WEP/TKIP。</li><li>【来源：领域知识】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-08",
+                    "caption": "安全演进对应 comnet 的无线网络安全章"
+                  }
+                ]
+              },
+              {
+                "id": "wpa3-sae-mv9d1rg0uen0",
+                "topic": "WPA3-SAE：抗离线字典攻击",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：WPA3 个人版用 SAE（Dragonfly 握手）替代 PSK 模式的身份证明，每次会话派生不同密钥；配套 GCMP 加密；6GHz 频段按 WFA 政策强制 WPA3（不允许纯 WPA2）。</li><li><strong>为什么</strong>：PSK 模式抓一个握手包就能离线跑字典；SAE 的密钥确认让离线破解失去意义（在线尝试可被限速锁定）；Wi-Fi 7 的 MLO 也依赖 WPA3 的密钥体系。</li><li><strong>典型参数</strong>：SAE 椭圆曲线组（19/21）；WPA2/WPA3 过渡模式兼容老终端；PMF（802.11w 管理帧保护）成为强制项。</li><li><strong>观测或配置命令</strong>：OpenWrt <code>uci show wireless | grep sae</code>；Windows 11 网络属性看安全类型 WPA3-Personal。</li><li>【来源：领域知识 + 公开标准资料】【置信度：高】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1rg0i1qz",
+            "topic": "密钥协商",
+            "expanded": false,
+            "children": [
+              {
+                "id": "ptk-gtk-mv9d1rg05nfq",
+                "topic": "四次握手与 PTK/GTK",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：关联完成后，终端与 AP 用 PMK 做 4-Way Handshake：派生 PTK（单播加密密钥）并下发 GTK（组播加密密钥）；密钥定期刷新。</li><li><strong>为什么</strong>：PMK 从不直接出现在空口（由 SAE/802.1X 产生或 PSK 派生）；握手带计数器与 nonce 防重放——重放握手报文无法登录，这是 WPA 系安全性的核心。</li><li><strong>典型参数</strong>：PTK 含 KCK/KEK/TK 三部分；GTK 周期刷新（组密钥更新间隔可配）。</li><li><strong>观测或配置命令</strong>：<code>wpa_cli status</code> 看握手状态；Wireshark 用已知 PSK 验证解密流程。</li><li>【来源：领域知识】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-sec-rsn",
+                    "caption": "四次握手对应 comnet 的 802.11i/RSN 节点"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1rg03y0o",
+            "topic": "企业与运营商场景",
+            "expanded": false,
+            "children": [
+              {
+                "id": "802-1x-eap-aaa-mv9d1rg0k8xn",
+                "topic": "802.1X/EAP 与 AAA",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：企业 Wi-Fi 用 802.1X 端口认证：终端（supplicant）↔ AP（authenticator）↔ RADIUS 服务器（AAA），认证方法用 EAP 承载（EAP-TLS/PEAP/TTLS）。</li><li><strong>为什么</strong>：一人一证书/一账号，凭证可吊销、可审计；PSK 全员共享一个密码，人员离职就得改全网密码——企业场景的标准答案是 802.1X。</li><li><strong>典型参数</strong>：EAP-TLS 双向证书链；RADIUS 计费与审计字段；漫游场景配合 PMK 缓存或 802.11r 快速重关联。</li><li><strong>观测或配置命令</strong>：wpa_supplicant 日志看 EAP 阶段；RADIUS 服务器看 Access-Request 记录。</li><li>【来源：领域知识】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "sec-wlan",
+                    "caption": "企业/运营商安全对应 comnet 的保护无线局域网与 4G/5G 节点"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：Wi-Fi 安全每十年换一代加密：WEP（RC4，已破解淘汰）→ WPA/WPA2（TKIP/CCMP + 四次握手）→ WPA3（SAE + GCMP，抗离线字典攻击）。11be 生态下 WPA3 是标配要求（6GHz 频段按 WFA 政策只允许 WPA3）。本章按「加密与认证演进 → 密钥协商 → 企业与运营商场景」展开。（章节划分按主题组织，章号待与实体书核对。）</p>\n<ul><li>【来源：领域知识 + 公开标准资料】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/junnan1.tang/AppData/Local/Temp/bookbatch-wifi7-20261015/part5-sec.md",
+          "sha256": "2676721a3a7c28739fcbe544cff36cafabf5391de95f81add6802597534710d6",
+          "at": "2026-10-15T09:52:55.341Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9d1rulv6f5",
+        "topic": "组网与部署",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1rumbt7f",
+            "topic": "网络形态",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9d1rumckkr",
+                "topic": "路由模式与桥模式：谁是网关",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：路由模式 = 设备做 NAT 网关（WAN 口独立网段，LAN 侧 DHCP 由它管）；桥模式 = 设备退化为二层交换（WAN/LAN 桥接，DHCP/NAT 交给上级网关）。</li><li><strong>为什么</strong>：桥模式下无线配置（SSID/开关/信道）与网络模式配置分属两层，切网桥与关 WiFi 走不同调用链——不同步就会出现「面板把 WiFi 关了、空口还开着」的两层不一致问题。</li><li><strong>典型参数</strong>：桥模式用 network_bridge 覆盖网络配置文件；路由模式 LAN 网段典型 192.168.0.1/24；桥模式的 WiFi 开关要走独立的无线服务调用链。</li><li><strong>观测或配置命令</strong>：<code>brctl show</code> / <code>ip link</code> 看网桥成员；<code>uci show network</code> 与 <code>uci show wireless</code> 对照两层配置；<code>wifi status</code> 看空口实际状态。</li><li>【来源：本地文件（FG8192 桥模式经验沉淀要点对齐）+ 领域知识】【置信度：中】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "fg8192-wifi-mv6ie3z99dol",
+                    "caption": "路由/桥模式对应 comnet 的 FG8192 桥模式 WiFi 实操经验节点"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wifi-mv6ie3zbp6zi",
+                    "caption": "桥模式两层调用链对应 comnet 的进桥模式谁把 WiFi 关掉节点"
+                  }
+                ]
+              },
+              {
+                "id": "mesh-mv9d1rum3vqx",
+                "topic": "Mesh 组网与无线回程",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：多 AP 用同一 SSID 组网，节点间回程走无线（专用频段或共享频段）或有线（以太网回程最优），终端可在节点间漫游。</li><li><strong>为什么</strong>：布线困难的家庭/企业用无线回程免布线，代价是回程占用 airtime（同频回程吞吐减半量级）；有线回程的 Mesh 稳定性显著更好。</li><li><strong>典型参数</strong>：三频 Mesh 用独立频段做回程；回程链路质量决定远端节点速率上限；拓扑自愈（节点掉线后重选路径）。</li><li><strong>观测或配置命令</strong>：Mesh 管理页看拓扑与回程信号质量；<code>iw dev</code> 看回程虚拟接口状态。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1rum8fr9",
+            "topic": "频谱与功率规划",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9d1rumsttq",
+                "topic": "信道规划与共存",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：2.4G 固定 1/6/11 三信道错开；5G 按覆盖重叠度复用 36-64、149-165 并避开雷达敏感的 DFS 信道；6GHz 面向低功率室内大带宽。</li><li><strong>为什么</strong>：同频互踩（Co-Channel）比邻频更伤——CSMA 让两个 AP 互相等待；规划目标是重叠覆盖区用不同信道，把互踩降到最低。</li><li><strong>典型参数</strong>：5G AP 发射功率 23-27dBm 常见（在合规 EIRP 内）；6GHz 低功率室内 LPI 上限约 30dBm EIRP 量级（按监管政策）。</li><li><strong>观测或配置命令</strong>：<code>netsh wlan show networks mode=bssid</code> 做周边信道热力图；<code>iw reg get</code> 核对功率约束。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              },
+              {
+                "id": "single-sku-bf-backoff-mv9d1rum87a4",
+                "topic": "功率合规：Single SKU 功率表与 BF Backoff",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：Single SKU = 一张按信道 × 带宽 × 速率维度的功率限值表（dat 文件编译进固件），替代按地区分 SKU 的做法；BF Backoff = 波束赋形增益下的功率回退，防止 EIRP 超标。</li><li><strong>为什么</strong>：EIRP = 传导功率 + 天线增益 + BF 增益，任何一项变化都可能越线；统一 SKU 表简化生产与认证，功率表导入要过「Excel 转表 → dat 命名 → 编译 → 空口实测」完整流程。</li><li><strong>典型参数</strong>：SKU 表索引（如 Sku_08.dat 对应 Table Index 8）；backoff 值随 BF 增益档位递增。</li><li><strong>观测或配置命令</strong>：综合测试仪读实际发射功率；对比 <code>iw reg get</code> 限值与 SKU 表配置。</li><li>【来源：本地文件（WR5360 MT7990 SKU 操作指南要点对齐）】【置信度：中】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1rumxlq6",
+            "topic": "典型场景",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9d1rumh5rw",
+                "topic": "家庭组网：双频合一与无缝漫游前提",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：2.4G（覆盖）+ 5G/6G（速率）同 SSID 广播，终端按信号自主选网；AP 侧用 band steering（频段引导）、min RSSI 弱信号剔除辅助。</li><li><strong>为什么</strong>：双频合一体验好的前提是 AP 敢「踢」弱信号终端 + 终端积极配合（k/v）；否则终端粘在 2.4G 出不来，Wi-Fi 7 的 5G/6G 链路闲置。</li><li><strong>典型参数</strong>：band steering 触发阈值；min RSSI 踢线值（-70dBm 量级起步调整）；k/v/r 三件套见漫游章。</li><li><strong>观测或配置命令</strong>：AP 日志看踢线与引导事件；终端侧对比双频 RSSI 再调阈值。</li><li>【来源：领域知识】【置信度：中】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：「入门到应用」的落点在组网：家庭、企业、运营商三种形态；路由与桥两种网关模式；Mesh 与 MLO 两条并发/回程路径；再加上频谱与功率的合规规划。本章按「网络形态 → 频谱与功率规划 → 典型场景」展开。（章节划分按主题组织，章号待与实体书核对。）</p>\n<ul><li>【来源：领域知识 + 本地文件】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/junnan1.tang/AppData/Local/Temp/bookbatch-wifi7-20261015/part6-deploy.md",
+          "sha256": "941791b2a62f4aaeda19545476c75c9ac5b84f478c3faa5e1c2c9367bbf9f55b",
+          "at": "2026-10-15T09:52:55.866Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9d1s9aedoq",
+        "topic": "漫游与移动性管理",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1s9aqe29",
+            "topic": "漫游基础",
+            "expanded": false,
+            "children": [
+              {
+                "id": "bssid-ip-mv9d1s9avlvd",
+                "topic": "漫游的本质：换 BSSID 不换 IP",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：ESS 内所有 AP 同 SSID、同 VLAN，终端从 AP-A 切到 AP-B：重新关联 + 重认证，IP 地址不变；切换过程中存在空口与转发中断窗口。</li><li><strong>为什么</strong>：IP 不变靠二层网络连续性；中断来自重新关联、重认证以及（可选的）ARP/DHCP 恢复——传统漫游中断从几百毫秒到数秒，对视频通话和云游戏是致命的。</li><li><strong>典型参数</strong>：漫游决策方（终端自主 vs AP 引导）；信号迟滞与 RSSI 阈值；PMK 缓存复用可减少认证轮次。</li><li><strong>观测或配置命令</strong>：漫游过程中持续 ping 看丢包/抖动窗口；AP 事件日志看关联/解关联时序。</li><li>【来源：领域知识】【置信度：高】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wlan-ess",
+                    "caption": "ESS 漫游对应 comnet 的 ESS 扩展服务集与漫游节点"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-roam",
+                    "caption": "漫游过程对应 comnet 的漫游过程节点"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wl-higher",
+                    "caption": "漫游对上层协议影响对应 comnet 的无线与移动对上层协议影响节点"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1s9bq3c1",
+            "topic": "漫游优化协议族",
+            "expanded": false,
+            "children": [
+              {
+                "id": "802-11k-v-r-mv9d1s9b0jov",
+                "topic": "802.11k/v/r：测量、引导与快速切换",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：k = 无线测量（邻居 AP 报告、信道负载），v = BSS 过渡管理（AP 建议去哪个 AP、何时去），r = 快速转换 FT（重关联用预计算密钥一步完成）。</li><li><strong>为什么</strong>：终端自主漫游决策短视（只看自己收到的信号）；k 给数据、v 给指令、r 把切换时间压到几十毫秒——三件套一起开才有效，单开一个往往白开。</li><li><strong>典型参数</strong>：FT 模式（Over-the-Air / Over-the-DS）；Neighbor Report 邻居列表；BSS Transition 请求携带候选 AP 列表。</li><li><strong>观测或配置命令</strong>：OpenWrt hostapd 配 ieee80211k/v/r 三项；抓包看 FT Authentication 与 Reassociation 流程。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1s9b454g",
+            "topic": "漫游质量观测",
+            "expanded": false,
+            "children": [
+              {
+                "id": "ping-mv9d1s9bwmhy",
+                "topic": "漫游观测：ping 抖动、信号阈值与日志",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：用持续 ping/iperf 窗口量化「断流时长」，配合 AP 事件日志区分是决策慢（引导没生效）还是切换慢（FT 没开）。</li><li><strong>为什么</strong>：漫游问题是时序问题，单看信号强度定位不了；典型症状是语音卡顿集中在走廊、门口、电梯间这些覆盖交叠区。</li><li><strong>典型参数</strong>：断流时长分级——FT 开启后小于 50ms 为优、150ms 内良好、秒级说明纯终端自主 + PSK 重认证；弱信号踢线阈值要与迟滞窗口配合防「乒乓」。</li><li><strong>观测或配置命令</strong>：带时间戳的 <code>ping -t</code>；iperf3 滑动窗口速率；AP 管理页事件流。</li><li>【来源：领域知识】【置信度：中】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：漫游 = 终端在 ESS 内更换 AP（换 BSSID、保持 IP），体验好坏由「谁决策、切换多快、断流多久」三个问题决定；802.11k/v/r 三件套把「盲切」变成「引导 + 快速换」。本章按「漫游基础 → 优化协议族 → 质量观测」展开。（章节划分按主题组织，章号待与实体书核对。）</p>\n<ul><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/junnan1.tang/AppData/Local/Temp/bookbatch-wifi7-20261015/part7-roam.md",
+          "sha256": "c4cf53d8030027abb3eb418be6182b79a0241731e42c199a57ecda196d1c9724",
+          "at": "2026-10-15T09:52:56.395Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "wi-fi-5g-mv9d1spys926",
+        "topic": "Wi-Fi 与 5G 的融合",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1spzr71c",
+            "topic": "融合形态",
+            "expanded": false,
+            "children": [
+              {
+                "id": "cpe-wi-fi-mv9d1spzsx9i",
+                "topic": "CPE 与随身 Wi-Fi：蜂窝回程的热点",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：CPE/随身 Wi-Fi = 上行 4G/5G、下行 Wi-Fi 的转换设备；下行用 Wi-Fi 7 提供高吞吐低时延，上行依赖蜂窝覆盖。</li><li><strong>为什么</strong>：布线不便、临时场所、移动场景用蜂窝做回程；体验瓶颈在蜂窝侧信号与套餐限速，而不在 Wi-Fi 侧——Wi-Fi 7 的 MLO/低时延主要改善「最后一跳」。</li><li><strong>典型参数</strong>：5G CPE 下行 Wi-Fi 常配 2×2/4×4 双频；NAT 转发性能需与蜂窝峰值速率匹配（千兆级）；蜂窝侧看 RSRP/SINR。</li><li><strong>观测或配置命令</strong>：设备管理页看蜂窝信号（RSRP/SINR）与 Wi-Fi 负载分布；终端 <code>netsh wlan show interfaces</code> 看下行协商速率。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              },
+              {
+                "id": "fttr-wi-fi-mv9d1spzyavb",
+                "topic": "FTTR 与全屋 Wi-Fi",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：FTTR（Fiber To The Room）= 光纤进房间：主网关 + 多个从网关（内置 Wi-Fi 7）组成全屋分布式 AP，是运营商家庭宽带的高配形态。</li><li><strong>为什么</strong>：网线与无线回程难以穿户时用光纤；主从之间时延低、带宽稳，漫游与管理集中化——把「每个房间信号满格」从宣传语变成可交付指标。</li><li><strong>典型参数</strong>：主从间用 PON/以太光纤；全屋统一管控（漫游引导、信道集中规划）；Wi-Fi 7 双频/三频分布式部署。</li><li><strong>观测或配置命令</strong>：运营商 FTTR 管理平台看主从状态与回程质量；漫游测试方法同漫游章（持续 ping 断流窗口）。</li><li>【来源：领域知识 + 公开目录（运营商家庭宽带背景）】【置信度：中】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1spzdb12",
+            "topic": "融合关键技术",
+            "expanded": false,
+            "children": [
+              {
+                "id": "passpoint-hotspot-2-0-mv9d1spz59q5",
+                "topic": "Passpoint/Hotspot 2.0 与凭证融合",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：Passpoint（WFA 认证，基于 802.11u）让终端用 SIM/EAP 凭证自动接入运营商 Wi-Fi 热点：终端用 ANQP 查询网络信息并自动选网，无需手动选 SSID 输密码。</li><li><strong>为什么</strong>：运营商大规模部署 Wi-Fi 卸载蜂窝流量，体验必须「像蜂窝一样自动连」；凭证融合（EAP-SIM/EAP-AKA）把 SIM 卡变成 Wi-Fi 的身份凭证。</li><li><strong>典型参数</strong>：ANQP/GAS 协议承载网络信息查询；5G 非信任非 3GPP 接入（N3IWF 场景）用 EAP-AKA' 认证；漫游伙伴列表下发给终端。</li><li><strong>观测或配置命令</strong>：终端设置里看 Passpoint/Hotspot 2.0 开关；RADIUS 侧看认证方法与漫游伙伴请求。</li><li>【来源：领域知识 + 公开标准资料（WFA 公开页）】【置信度：中】</li></ul>"
+              },
+              {
+                "id": "wi-fi-mv9d1spzb648",
+                "topic": "多连接选网：蜂窝与 Wi-Fi 的分流策略",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：终端或网关按业务类型与信号质量决定流量走蜂窝还是 Wi-Fi（Wi-Fi 优先、按需切换），部分场景用多路径并发（MP-TCP 类）双路同时用。</li><li><strong>为什么</strong>：Wi-Fi 通常免费且快，蜂窝保覆盖；策略错了（弱 Wi-Fi 硬占着）会拖垮整体体验——弱信号阈值判定是策略的核心参数。</li><li><strong>典型参数</strong>：Wi-Fi 信号阈值（如 RSSI 高于 -65dBm 才走 Wi-Fi）；业务分流规则（视频预加载走蜂窝、大文件下载走 Wi-Fi）；回切迟滞防止乒乓。</li><li><strong>观测或配置命令</strong>：终端看当前数据通道；CPE 管理页看分流统计与切换日志。</li><li>【来源：领域知识】【置信度：中】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：Wi-Fi 与蜂窝正从「替代关系」走向「融合关系」：CPE/随身 Wi-Fi 把蜂窝回程转成 Wi-Fi 热点，家庭宽带向 FTTR 全屋演进，运营商店面用 Passpoint/SIM 凭证打通认证。作者团队来自运营商网络体系，本章是「应用」侧的重点主题。（章节划分按主题组织，章号待与实体书核对。）</p>\n<ul><li>【来源：公开目录（作者背景）+ 领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/junnan1.tang/AppData/Local/Temp/bookbatch-wifi7-20261015/part8-5g.md",
+          "sha256": "91657588d8fec236eaf5a64d7135a62ecae921846ed8c37f8dac0c9af8ad213c",
+          "at": "2026-10-15T09:52:56.995Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9d1t4jo9vl",
+        "topic": "运维观测与故障排查",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1t4kb8tc",
+            "topic": "观测命令",
+            "expanded": false,
+            "children": [
+              {
+                "id": "openwrt-linux-uci-iw-logread-mv9d1t4kbytg",
+                "topic": "OpenWrt/Linux 侧：uci、iw、logread",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>uci show wireless</code> 看配置真实值（WebUI 显示值不等于生效值）；<code>iw dev &lt;if&gt; info/link/station dump</code> 看信道、链路质量、每终端协商速率；<code>logread</code> 与 hostapd 日志看事件流。</li><li><strong>为什么</strong>：「改了没生效」第一课 = 配置分两层（WebUI 层/UCI 生效层），改完要 reload 且确认写入；空口问题第二课 = 用 iw 读协商速率、信号与重传，而不是只看信号格。</li><li><strong>典型参数</strong>：UCI 段名与驱动接口的映射（如 MTK 方案 MT7993_1_2 段对应 rai0 接口）；<code>wifi restart</code> 只重新应用现有 UCI、不恢复出厂配置。</li><li><strong>观测或配置命令</strong>：<code>uci show wireless</code>、<code>iw dev rai0 link</code>、<code>logread -f | grep hostapd</code>、<code>wifi status</code> 四件套按序排查。</li><li>【来源：本地文件（HH505N UCI 配置链路/FG8192 实操要点对齐）】【置信度：中】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "fg8192-wifi-mv6ie3z99dol",
+                    "caption": "UCI/iw 观测与 comnet 的 FG8192 实操经验节点对应"
+                  }
+                ]
+              },
+              {
+                "id": "windows-macos-mv9d1t4kpccp",
+                "topic": "终端侧观测：Windows/macOS",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：Windows 用 <code>netsh wlan show interfaces</code>（协商速率/BSSID/信道）与 <code>netsh wlan show wlanreport</code>（历史报告）；macOS 按住 Option 点 Wi-Fi 图标、或用无线诊断向导看 RSSI/噪声/MCS。</li><li><strong>为什么</strong>：只有终端视角才能回答「协商到几流几速率、连的是哪个 BSSID、是不是掉回了 2.4G」——AP 侧统计代替不了终端真实感受。</li><li><strong>典型参数</strong>：信号强度参考：-65dBm 良好、-75dBm 边缘；协商速率 = 理论速率 × 当前 MCS 折扣，速率上不去先看 MCS 档位。</li><li><strong>观测或配置命令</strong>：<code>netsh wlan show wlanreport report.html</code> 生成报告；macOS 无线诊断导出日志。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1t4k94e6",
+            "topic": "典型故障模式",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9d1t4k0srg",
+                "topic": "主信道钉死与带宽合法性",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：改信道「接口返回成功但空口没变」：高带宽下主信道必须与频谱块对齐（如 160MHz 时主信道只能是 36），把带宽改窄后信道才能切换。</li><li><strong>为什么</strong>：信道号是 20MHz 块编号，带宽拼接后合法组合受限；WebUI 的输入校验不等于驱动层的合法性校验——两层各有一套规则。</li><li><strong>典型参数</strong>：160MHz 主信道 36（中国低段）；带宽与主信道的合法组合随 regdomain 变化。</li><li><strong>观测或配置命令</strong>：<code>iw dev &lt;if&gt; info</code> 看实际 center freq 与带宽；先改带宽再改信道验证次序问题。</li><li>【来源：本地文件（HH505N 信道/带宽实操要点对齐）】【置信度：中】</li></ul>"
+              },
+              {
+                "id": "dfs-mv9d1t4kcml7",
+                "topic": "DFS 信道卡死与切换",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：AP 选了 DFS 信道后要先做 CAC 雷达检测等待，检测到雷达必须静默并切换；终端侧表现为「突然掉线重连」或「AP 迟迟不上线」。</li><li><strong>为什么</strong>：DFS 是监管强制行为不是设备故障；但 CAC 等待期的用户感知就是「这台 AP 有问题」——运维要能一眼认出这是 DFS 而不是死机。</li><li><strong>典型参数</strong>：CAC 时长 60s 量级（ETSI）；CSA 信道切换带 beacon 倒计时通告。</li><li><strong>观测或配置命令</strong>：hostapd 日志 grep DFS 事件；<code>iw phy</code> 看信道的 radar 标志位。</li><li>【来源：领域知识】【置信度：高】</li></ul>"
+              },
+              {
+                "id": "n-mv9d1t4k707y",
+                "topic": "改配置不生效：两层配置与重启语义",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：WebUI 写配置层、UCI/驱动生效层是两层：只改 WebUI 不下发、或只改 UCI 不 reload，都会「看起来改了其实没改」；<code>wifi restart</code> 不等于恢复出厂。</li><li><strong>为什么</strong>：排查第一步永远是确认「配置到了哪一层」：WebUI 值 → UCI 值 → 驱动实际值，三层对齐才能断言配置生效；桥模式等大动作涉及两条调用链，最容易两层不同步。</li><li><strong>典型参数</strong>：<code>wifi config</code>（重新生成配置）/<code>wifi reload</code>（应用配置）/<code>wifi restart</code>（重启无线）语义各不同。</li><li><strong>观测或配置命令</strong>：三层对照排查序列：WebUI 截图 + <code>uci show wireless</code> + <code>iw dev info</code>。</li><li>【来源：本地文件（FG8192 桥模式/HH505N UCI 实操要点对齐）】【置信度：中】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "wifi-mv6ie3zbp6zi",
+                    "caption": "两层配置不同步对应 comnet 的进桥模式节点"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "fg8192-wifi-mv6ie3z99dol",
+                    "caption": "两层配置与重启语义对应 comnet 的 FG8192 经验沉淀节点"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：Wi-Fi 问题三分靠玄学七分靠观测：配置是否真的下发、空口到底忙不忙、终端到底协商到几流几 MCS——每一问都有对应命令。本章按「观测命令 → 典型故障模式」展开，命令均来自 OpenWrt/Linux 实操与终端自带工具。（章节划分按主题组织，章号待与实体书核对。）</p>\n<ul><li>【来源：本地文件 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/junnan1.tang/AppData/Local/Temp/bookbatch-wifi7-20261015/part9-ops.md",
+          "sha256": "5520351535cffd770ce45c36e699e83c8326a13a9dd6cf85033a79894fb9501d",
+          "at": "2026-10-15T09:52:57.521Z",
+          "tool": "import-md"
+        }
+      }
+    ]
+  }
+}
