@@ -1,0 +1,997 @@
+{
+  "meta": {
+    "name": "《深入理解Linux进程与内存》知识点大纲",
+    "author": "",
+    "version": "0.18.0",
+    "formatVersion": 2
+  },
+  "format": "node_tree",
+  "data": {
+    "id": "root",
+    "topic": "《深入理解Linux进程与内存》知识点大纲",
+    "expanded": true,
+    "children": [
+      {
+        "id": "n-mv9by4q3h2dp",
+        "topic": "全书概览与使用说明",
+        "expanded": false,
+        "children": [],
+        "detail": "<ul><li><strong>书名</strong>：《深入理解Linux进程与内存：修炼底层内功，掌握高性能原理》，张彦飞 著，电子工业出版社，ISBN 9787121485596（书名/作者/ISBN 来源：公开目录页，如<a href=\"https://detail.youzan.com/show/goods?from_source=gbox_seo&amp;alias=3nsvyoi83v623r0\">新华一城书集</a>、<a href=\"https://www.tenlong.com.tw/products/9787121485596?list_name=m-C003\">天瓏书店</a>）。</li><li><strong>本项目的形态</strong>：知识要点大纲（章节结构 + 每节要点 + 关键机制 + 源码/命令对应），<strong>不是原文复刻</strong>；全书正文要点均为提炼后的结构化知识。</li><li><strong>来源标注图例</strong>（每个章节点 detail 尾部标注）：</li><li>【来源：公开目录】= 从公开售书/出版社页面的目录片段核对到的章节名与小节名；</li><li>【来源：作者公开文章】= 依据作者（公众号&quot;开发内功修炼&quot;）公开系列文章主题与本书主线的对应关系；</li><li>【来源：领域知识】= 标准 Linux 内核通用知识（进程/内存管理），不依赖实体书；</li><li>【来源：本地文件】= 本机已有学习笔记（如 <code>E:\\markdown\\M3\\W1\\02-Linux 内存管理详解.md</code> 等，只做要点对齐，不做原文复制）。</li><li><strong>置信度约定</strong>：除公开目录已逐字确认的章节名外，其余章节划分、小节编号均标注 <strong>【置信度：待与实体书核对】</strong>——实体书到手后按真实目录重排即可，知识点本身不受影响。</li><li><strong>与 comnet 的关联</strong>：进程间通信、调度、内存回收等章与 comnet 项目的 Linux IPC / mmap / 信号学习节点互相挂了跨项目链接（见各章说明）。</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part1-overview-cpu-process.md",
+          "sha256": "614f69e211b88c845dbd264e44376df59b164072b7fffeb93e7c13456b96437e",
+          "at": "2026-10-15T09:22:06.312Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "1-cpu-mv9by4q4h01a",
+        "topic": "第1章 CPU硬件原理",
+        "expanded": false,
+        "children": [
+          {
+            "id": "1-1-cpu-mv9by4q41j0v",
+            "topic": "1.1 CPU 的生产过程",
+            "expanded": false,
+            "children": [
+              {
+                "id": "cpu-mv9by4q4e3t8",
+                "topic": "为什么进程内存学习要从 CPU 制造讲起",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：从沙子提纯单晶硅 → 切片成晶圆 → 光刻/蚀刻成电路 → 封装成芯片的完整链路。</li><li><strong>为什么</strong>：制程（如 5nm/7nm）决定同面积晶体管数量，直接决定频率上限与功耗墙——这是后续讲&quot;调度延迟&quot;&quot;缓存容量&quot;的物理前提。</li><li><strong>源码对应</strong>：无（纯硬件背景章），但 <code>lscpu</code> 输出中的 Model name、Cache、NUMA node 字段都由本章概念解释。</li><li><strong>相关命令</strong>：<code>lscpu</code>、<code>cat /proc/cpuinfo</code>。</li><li>【来源：公开目录（1.1 节名确认）】【置信度：知识点内容待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "1-2-cpu-mv9by4q4mir9",
+            "topic": "1.2 个人电脑 CPU 硬件简介",
+            "expanded": false,
+            "children": [
+              {
+                "id": "cpu-mv9by4q4x8xf",
+                "topic": "CPU 内部架构：核心、缓存层次与流水线",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：一颗 CPU 内部包含多个核心（core），每个核心有私有的 L1/L2 缓存，多核共享 L3；取指、译码、执行、访存、写回构成流水线。</li><li><strong>为什么</strong>：进程调度的&quot;上下文切换开销&quot;主要就是 L1/L2 缓存与 TLB 的换出换入；理解缓存层次才能理解为什么切换有代价、为什么绑核能提速。</li><li><strong>源码对应</strong>：调度器用 <code>sched_domain</code> 层级描述核心/LLC（共享L3域）拓扑，见 <code>kernel/sched/topology.c</code>。</li><li><strong>相关命令</strong>：<code>lscpu</code>（看 L1d/L1i/L2/L3 与核心拓扑）、<code>taskset -pc &lt;pid&gt;</code>。</li><li>【来源：公开目录（1.2/1.2.1/1.2.2 节名确认）+ 领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "1-3-cpu-mv9by4q4xl7x",
+            "topic": "1.3 服务器 CPU 硬件简介",
+            "expanded": false,
+            "children": [
+              {
+                "id": "cpu-numa-mv9by4q4p7dt",
+                "topic": "服务器 CPU 与 NUMA 的起源",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：服务器 CPU 支持多路（多颗 CPU 插槽）、更多核心与内存通道；每颗 CPU 直挂自己的内存形成 NUMA 节点。</li><li><strong>为什么</strong>：跨 NUMA 节点访存要走 CPU 互联（如 QPI/UPI），延迟显著高于本地内存——这是内存管理讲 zone/node 划分的硬件原因。</li><li><strong>源码对应</strong>：内核以 <code>struct pglist_data</code>（pg_data_t，<code>include/linux/mmzone.h</code>）描述每个 NUMA 节点。</li><li><strong>相关命令</strong>：<code>numactl --hardware</code>、<code>numastat</code>、<code>lscpu | grep NUMA</code>。</li><li>【来源：公开目录（1.3 节名确认）+ 领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "1-4-mv9by4q4gp9s",
+            "topic": "1.4 寄存器与存储层次（领域知识补全）",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by4q4ltv4",
+                "topic": "存储层次与延迟量级",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：寄存器（&lt;1ns）→ L1（约1ns）→ L2（约3-4ns）→ L3（约10-20ns）→ 内存（约60-100ns）→ SSD/磁盘（微秒/毫秒级），越往下越慢越大。</li><li><strong>为什么</strong>：所有&quot;高性能&quot;优化的本质都是让数据尽量停在高层；内存缺页一次的代价 ≈ 几万条指令的执行时间。</li><li><strong>源码对应</strong>：无直接源码；<code>perf stat</code> 的 cache-misses 指标量化这一层次差距。</li><li><strong>相关命令</strong>：<code>perf stat -e cache-misses,LLC-load-misses &lt;cmd&gt;</code>。</li><li>【来源：领域知识】【置信度：数值为通用量级，待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "cr3-cpu-mv9by4q4y4js",
+                "topic": "控制寄存器 cr3：CPU 与页表的接口",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：x86-64 的 cr3 寄存器保存当前进程页目录（PGD）的物理地址，是地址翻译的起点。</li><li><strong>为什么</strong>：进程切换时内核把新进程的 pgd 写入 cr3，从此该进程所有虚拟地址都按它自己的页表翻译——这是&quot;进程地址空间隔离&quot;的硬件机制。</li><li><strong>源码对应</strong>：<code>arch/x86/include/asm/processor.h</code> 中的 <code>switch_mm</code>/<code>load_cr3</code>；调度切换入口 <code>__switch_to</code>。</li><li><strong>相关命令</strong>：<code>cat /proc/&lt;pid&gt;/stat</code>（无直接接口，理解层面）；内核态可用 crash/perf 验证。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "1-5-mv9by4q4cv6k",
+            "topic": "1.5 缓存一致性与多核（领域知识补全）",
+            "expanded": false,
+            "children": [
+              {
+                "id": "mesi-mv9by4q4tlwd",
+                "topic": "MESI 协议与伪共享",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：MESI（Modified/Exclusive/Shared/Invalid）是缓存行四态一致性协议；伪共享指两个核频繁写同一缓存行上的不同变量，导致缓存行在核间来回失效。</li><li><strong>为什么</strong>：伪共享能把多线程程序拖慢数倍；内核数据结构用 <code>____cacheline_aligned</code> 按缓存行（通常 64B）对齐隔离热点字段。</li><li><strong>源码对应</strong>：<code>include/linux/cache.h</code> 的对齐宏；如 <code>struct zone</code> 的 <code>zone-&gt;lock</code> 所在缓存行隔离。</li><li><strong>相关命令</strong>：<code>perf c2c</code>（专门抓伪共享）、<code>getconf LEVEL1_DCACHE_LINESIZE</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "1-6-mv9by4q47743",
+            "topic": "1.6 中断与系统调用入口（领域知识补全）",
+            "expanded": false,
+            "children": [
+              {
+                "id": "syscall-mv9by4q4kjgo",
+                "topic": "从 syscall 指令到内核入口",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：用户态通过 <code>syscall</code> 指令（x86-64）陷入内核，CPU 切换到内核栈并跳到 <code>entry_SYSCALL_64</code>；中断（硬中断/软中断）是外设与内核异步交互的入口。</li><li><strong>为什么</strong>：进程状态切换（用户态/内核态）、系统调用表分发、上下文切换成本都从这里讲起；后续 fork/mmap/缺页异常全是系统调用或异常入口的下游。</li><li><strong>源码对应</strong>：<code>arch/x86/entry/entry_64.S</code>、系统调用表 <code>arch/x86/entry/syscalls/syscall_64.tbl</code>。</li><li><strong>相关命令</strong>：<code>strace -c &lt;cmd&gt;</code>（统计系统调用）、<code>cat /proc/interrupts</code>、<code>perf top</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：全书从 CPU 硬件讲起，因为进程调度与内存访问的最终落点都是 CPU 对缓存的读写与指令执行。已由公开目录确认的骨架：1.1 CPU的生产过程、1.2 个人电脑CPU硬件简介（1.2.1 个人电脑CPU代际简介、1.2.2 个人电脑CPU内部架构）、1.3 服务器CPU硬件简介（1.3.1 服务器CPU…）。</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part1-overview-cpu-process.md",
+          "sha256": "614f69e211b88c845dbd264e44376df59b164072b7fffeb93e7c13456b96437e",
+          "at": "2026-10-15T09:22:06.312Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9by4q4r39z",
+        "topic": "进程基础：从程序到进程",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9by4q4ubtm",
+            "topic": "进程是什么：程序与进程的区别",
+            "expanded": false,
+            "children": [
+              {
+                "id": "task-struct-mv9by4q4q28j",
+                "topic": "task_struct：进程的\"户口本\"",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>struct task_struct</code> 是内核描述进程的全部信息的结构体，包含标识、状态、调度、内存（mm）、文件（files）、信号等十几组字段。</li><li><strong>为什么</strong>：调度器切进程、缺页处理找 mm、发信号找 pending 队列，一切内核行为都在读写这张表；理解它的分组是读懂进程子系统的地图。</li><li><strong>源码对应</strong>：<code>include/linux/sched.h</code>（核心字段：state/pid/tgid/mm/files/signal/sched_entity/parent/children）。</li><li><strong>相关命令</strong>：<code>ps -eo pid,comm,state</code>、<code>ls /proc/&lt;pid&gt;/</code>（task_struct 的用户态投影）。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "task-mv9by4q4eoma",
+                "topic": "进程与线程：内核眼里都是 task",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：Linux 不为线程设独立结构；线程 = 共享 mm/files/signal 等资源的 task_struct，同一进程的线程共享同一 <code>pid</code>（tgid），各有自己的 <code>pid</code>（内核视角）。</li><li><strong>为什么</strong>：<code>clone()</code> 的标志位（CLONE_VM/CLONE_FILES/CLONE_THREAD…）决定共享哪些资源——fork 与 pthread_create 在内核走同一条 <code>kernel_clone()</code> 路径，只是标志不同。</li><li><strong>源码对应</strong>：<code>kernel/fork.c</code>（kernel_clone/copy_process）、<code>include/uapi/linux/sched.h</code>（CLONE_* 常量）。</li><li><strong>相关命令</strong>：<code>ps -eLf</code>（LWP 查看线程）、<code>top -H -p &lt;pid&gt;</code>、<code>ls /proc/&lt;pid&gt;/task/</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by4q40ghm",
+            "topic": "进程状态机",
+            "expanded": false,
+            "children": [
+              {
+                "id": "d-mv9by4q447wr",
+                "topic": "五态模型与 D 状态排查",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：核心状态 TASK_RUNNING（就绪/运行）、TASK_INTERRUPTIBLE（可中断睡眠）、TASK_UNINTERRUPTIBLE（不可中断睡眠）、TASK_STOPPED、EXIT_ZOMBIE；ps 的 STAT 列 R/S/D/Z/T 即此映射。</li><li><strong>为什么</strong>：D 状态（不可中断睡眠，多在等 IO 或等锁）不响应信号、不参与负载——loadavg 升高而 CPU 空闲多半是 D 状态堆积；Z 状态说明父进程没 wait。</li><li><strong>源码对应</strong>：<code>include/linux/sched.h</code> 的 TASK_* 常量；状态迁移在 <code>kernel/sched/core.c</code> 与驱动等待队列代码中。</li><li><strong>相关命令</strong>：<code>ps aux | awk '$8~/D/'</code>（抓 D 状态）、<code>cat /proc/&lt;pid&gt;/status | grep State</code>、<code>vmstat 1</code>（b 列=阻塞进程数）。</li><li>【来源：领域知识 + 本地文件（04-Linux 常用调试命令实践手册.md 的进程章节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by4q4xume",
+            "topic": "进程家族树",
+            "expanded": false,
+            "children": [
+              {
+                "id": "0-1-mv9by4q4xwvb",
+                "topic": "0 号、1 号进程与托孤机制",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：0 号（idle/swapper）是静态定义的手工进程，最后演化为每 CPU 的 idle 线程；1 号（init/systemd）是所有用户进程祖先；内核线程由 2 号 kthreadd 衍生。父进程先退出时子进程被&quot;托孤&quot;给 1 号。</li><li><strong>为什么</strong>：孤儿进程由 1 号兜底 wait，避免僵尸累积；理解家族树才能理解&quot;谁负责收割僵尸&quot;与容器里 PID 1 的特殊职责。</li><li><strong>源码对应</strong>：<code>init/main.c</code>（rest_init 启动 kernel_init 与 kthreadd）、<code>kernel/exit.c</code> 的 forget_original_parent 托孤逻辑。</li><li><strong>相关命令</strong>：<code>pstree -p</code>、<code>ps -eo pid,ppid,comm</code>、<code>ls /proc/1/</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：进程 = 程序运行起来的动态实体，内核用 task_struct 一张大表管理它。本章按&quot;进程是什么 → 状态机 → 家族树&quot;三节展开。（实体书对应章号待核对；主题线依据作者&quot;开发内功修炼&quot;系列文章：进程与线程、进程状态。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part1-overview-cpu-process.md",
+          "sha256": "614f69e211b88c845dbd264e44376df59b164072b7fffeb93e7c13456b96437e",
+          "at": "2026-10-15T09:22:06.312Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9by4q4a8bh",
+        "topic": "进程创建、执行与退出",
+        "expanded": false,
+        "children": [
+          {
+            "id": "fork-mv9by4q4o7j5",
+            "topic": "fork 与写时复制",
+            "expanded": false,
+            "children": [
+              {
+                "id": "fork-vfork-clone-cow-mv9by4q4k4lu",
+                "topic": "fork/vfork/clone 与写时复制（COW）",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>fork()</code> 复制进程但不复制物理页——父子页表指向同一批只读页，任一方写入时才触发缺页异常真正复制（Copy-On-Write）；vfork 共享地址空间挂起父进程；clone 带标志位可定制共享程度。</li><li><strong>为什么</strong>：COW 让 fork 近乎&quot;免费&quot;（只复制页表），配合 execve 实现 shell 启动新程序的经典模式；理解 COW 必须先懂缺页异常。</li><li><strong>源码对应</strong>：<code>kernel/fork.c</code>（kernel_clone → copy_process → copy_mm 复制页表标记只读）、缺页侧 <code>mm/memory.c</code> 的 do_wp_page。</li><li><strong>相关命令</strong>：<code>strace -e trace=clone,fork,vfork &lt;cmd&gt;</code>、<code>time bash -c 'fork炸弹测试'</code>（谨慎）。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "fork-mv9by4q4gf84",
+                "topic": "fork 的开销来源与观测",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：fork 实际开销 = 复制页表的时间 + TLB 刷新 + 内核对象分配（task_struct、mm_struct、vma 链），大内存进程页表大，fork 明显变慢。</li><li><strong>为什么</strong>：解释&quot;为什么 Redis/数据库提倡预 fork（bgsave 前）评估内存量&quot;；大进程 fork 的毫秒级停顿在线上服务很致命。</li><li><strong>源码对应</strong>：copy_page_range 遍历所有 vma 复制页表（<code>mm/memory.c</code>）。</li><li><strong>相关命令</strong>：<code>pmap &lt;pid&gt;</code> 看地址空间规模、<code>strace -T -e fork &lt;cmd&gt;</code> 计时。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "execve-elf-mv9by4q43074",
+            "topic": "execve 与 ELF 程序装载",
+            "expanded": false,
+            "children": [
+              {
+                "id": "execve-elf-mv9by4q4oq97",
+                "topic": "execve 流程：从 ELF 文件到新程序运行",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：execve 读 ELF 头 → 校验架构 → 清空旧地址空间 → 按程序头把各段 mmap 进新地址空间 → 跳到入口（动态程序先进 ld.so）→ 传 argv/envp 栈布局。</li><li><strong>为什么</strong>：解释&quot;为什么 execve 成功后原代码段被整体替换&quot;、&quot;静态链接与动态链接启动差异&quot;、&quot;环境变量从哪来&quot;。</li><li><strong>源码对应</strong>：<code>fs/exec.c</code>（do_execve → exec_mmap）、ELF 处理 <code>fs/binfmt_elf.c</code>（load_elf_binary）、动态链接器为 <code>/lib64/ld-linux-x86-64.so.2</code>。</li><li><strong>相关命令</strong>：<code>readelf -h -l &lt;binary&gt;</code>、<code>ldd &lt;binary&gt;</code>、<code>strace -e execve &lt;cmd&gt;</code>。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by4q4pbat",
+            "topic": "进程退出与僵尸回收",
+            "expanded": false,
+            "children": [
+              {
+                "id": "exit-wait-mv9by4q4ohob",
+                "topic": "exit、wait 与僵尸进程的成因",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：进程调用 exit_group（或收到致命信号）后进入 EXIT_ZOMBIE，仅剩 task_struct 空壳保留退出码；父进程 wait/waitpid 领取退出码后内核释放僵尸。父进程不 wait 就产生僵尸。</li><li><strong>为什么</strong>：僵尸堆积占 PID 资源；排查口诀：找僵尸的父进程（PPID），让它 wait 或杀掉它；容器/长期运行设备更需注意。</li><li><strong>源码对应</strong>：<code>kernel/exit.c</code>（do_exit、do_wait）、SIGCHLD 通知父进程逻辑。</li><li><strong>相关命令</strong>：<code>ps aux | awk '$8~/Z/'</code>、<code>ps -o ppid= -p &lt;zombie_pid&gt;</code>、<code>ps -ef --sort=-ppid</code>。</li><li>【来源：领域知识 + 本地文件（04-手册的僵尸进程与回收节）】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "setsid-fork-mv9by4q49ucg",
+                "topic": "守护进程：setsid 与双 fork",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：守护进程 = 脱离终端会话的后台进程；标准做法：fork 后父退出 → 子 setsid 建新会话 → 再 fork 防止重新获得终端 → chdir /、重定向标准 IO。</li><li><strong>为什么</strong>：脱离控制终端才不随登录退出、不被终端信号干扰；systemd 化后多由 Type=forking/notify 表达同样语义。</li><li><strong>源码对应</strong>：<code>kernel/fork.c</code> 的 kernel_thread、<code>fs/namespace.c</code> 相关（chdir 属 VFS）；glibc <code>daemon()</code> 封装。</li><li><strong>相关命令</strong>：<code>ps -eo pid,ppid,sid,tty,comm</code>（tty 为 ? 即守护）、<code>systemctl show -p Type &lt;svc&gt;</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：fork（写时复制）+ execve（换程序）+ wait（收尸）构成 Unix 进程生命周期三件套；本章按创建 → 执行 → 退出三节展开。（主题线依据作者公开文章&quot;fork/写时复制/execve ELF 加载&quot;系列。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part1-overview-cpu-process.md",
+          "sha256": "614f69e211b88c845dbd264e44376df59b164072b7fffeb93e7c13456b96437e",
+          "at": "2026-10-15T09:22:06.312Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9by4q4lcwa",
+        "topic": "进程调度",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9by4q4x019",
+            "topic": "调度器框架：调度类与抢占点",
+            "expanded": false,
+            "children": [
+              {
+                "id": "sched-class-mv9by4q4v1pa",
+                "topic": "sched_class 优先级链与调度时机",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：调度器按调度类优先级从高到低选任务：stop → deadline → rt（实时）→ fair（CFS）→ idle；调度发生在：tick 中断、系统调用返回、中断返回、任务主动让出与阻塞唤醒等抢占点。</li><li><strong>为什么</strong>：解释&quot;为什么实时任务永远压过普通任务&quot;、&quot;为什么忙循环不主动让出时靠 tick 抢占&quot;（tick 频率 CONFIG_HZ，常见 100/250/1000）。</li><li><strong>源码对应</strong>：<code>kernel/sched/core.c</code>（schedule、pick_next_task）、<code>kernel/sched/*.c</code> 中各自 sched_class 定义。</li><li><strong>相关命令</strong>：<code>chrt -r 1 &lt;cmd&gt;</code>、<code>cat /proc/sys/kernel/sched_rt_runtime_us</code>、<code>perf sched record/sleep</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "cfs-vruntime-mv9by4q4xetb",
+            "topic": "CFS：vruntime 与红黑树",
+            "expanded": false,
+            "children": [
+              {
+                "id": "cfs-vruntime-mv9by4q4i633",
+                "topic": "CFS 的核心数据结构与 vruntime",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：CFS 给每个任务维护 vruntime（虚拟运行时间 = 实际运行时间 × nice 权重换算），就绪任务挂红黑树，每次挑最左（vruntime 最小）者运行；min_vruntime 兜底防止新任务饿死老任务。</li><li><strong>为什么</strong>：vruntime 把&quot;权重&quot;变成&quot;该跑多久&quot;的单调标尺；nice 值每差一档约差 1.25 倍权重（1024/820…），可累乘。</li><li><strong>源码对应</strong>：<code>kernel/sched/fair.c</code>（enqueue_entity/dequeue_entity/pick_eevdf——新内核已引入 EEVDF 代替纯 CFS 挑选，阅读时以实体书版本为准）、<code>kernel/sched/sched.h</code> 的 load_weight。</li><li><strong>相关命令</strong>：<code>nice -n 10 &lt;cmd&gt;</code>、<code>renice</code>、<code>cat /proc/&lt;pid&gt;/sched</code>（看 vruntime 实况）。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by4q4w390",
+            "topic": "实时调度与带宽限制",
+            "expanded": false,
+            "children": [
+              {
+                "id": "sched-fifo-rr-rt-throttling-mv9by4q4w1jn",
+                "topic": "SCHED_FIFO/RR 与 rt_throttling",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：FIFO 一直跑到阻塞/更高优先级抢占；RR 在同优先级内时间片轮转；内核默认 <code>sched_rt_runtime_us=950000/1000000</code>，实时任务每秒最多吃 0.95 秒，防饿死系统。</li><li><strong>为什么</strong>：实时线程死循环会把核打满导致普通任务全饿死，throttling 是保命闸；<code>sched_rt_period_us/runtime_us</code> 可调。</li><li><strong>源码对应</strong>：<code>kernel/sched/rt.c</code>（sched_rt_runtime、throttle 逻辑）。</li><li><strong>相关命令</strong>：<code>chrt -f 50 &lt;cmd&gt;</code>、<code>chrt -p &lt;pid&gt;</code>、<code>cat /proc/sys/kernel/sched_rt_period_us</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "cgroup-cpu-mv9by4q4nc9w",
+            "topic": "cgroup 与 CPU 带宽控制",
+            "expanded": false,
+            "children": [
+              {
+                "id": "cpu-cfs-quota-us-cpu-mv9by4q4gc7b",
+                "topic": "cpu.cfs_quota_us：容器限 CPU 的机制（公开目录关联）",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：cgroup 的 cpu 子系统用 period/runtime 限制组内 CPU 总额度：<code>cpu.cfs_quota_us/cpu.cfs_period_us</code>（cgroup v2 为 cpu.max）；超限触发 throttling，任务被暂停到下个 period。</li><li><strong>为什么</strong>：容器 CPU limit 超卖的&quot;周期性卡顿&quot;就是 throttling；对应公开目录确认的书内小节 11.3.3&quot;进程CPU带宽控制过程&quot;。</li><li><strong>源码对应</strong>：<code>kernel/sched/core.c</code> 的 cpu_cgroup 与 sched_cfs_bandwidth（<code>kernel/sched/fair.c</code> 中 bandwidth 计时器）。</li><li><strong>相关命令</strong>：<code>cat /sys/fs/cgroup/cpu.max</code>（v2）、<code>cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us</code>（v1）、<code>cat /sys/fs/cgroup/cpu.stat</code>（nr_throttled 计数）。</li><li>【来源：公开目录（11.3.3 节名确认）+ 领域知识】【置信度：章节归属待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by4q4t9wt",
+            "topic": "负载均衡与调度观测",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by4q437ki",
+                "topic": "周期负载均衡、亲和性与观测命令",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：CFS 按 sched_domain 层级周期性搬任务（load balance）平衡各核；<code>sched_setaffinity</code> 可把任务钉在核上；观测靠 <code>/proc/&lt;pid&gt;/schedstat</code>（运行/等待时间）、perf sched。</li><li><strong>为什么</strong>：均衡提升吞吐但破坏缓存局部性；绑核与均衡是一对矛盾，网络/低延迟服务常绑核。</li><li><strong>源码对应</strong>：<code>kernel/sched/fair.c</code>（run_rebalance_domains、can_migrate_task）。</li><li><strong>相关命令</strong>：<code>taskset -pc &lt;pid&gt;</code>、<code>numactl --cpunodebind</code>、<code>perf sched record -- sleep 5; perf sched latency</code>、<code>watch cat /proc/loadavg</code>。</li><li>【来源：领域知识 + 本地文件（04-手册的调度策略与 CPU 亲和性节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：调度器决定&quot;下一个 CPU 给谁&quot;。Linux 主线是 CFS（完全公平调度），配合实时调度类与 cgroup 带宽控制。公开目录已确认书中 11.3.3 节为&quot;进程CPU带宽控制过程&quot;（第 11 章主题对应调度/cgroup，待核对）。（主题线依据作者公开文章 CFS 系列与本地 04-手册的调度节。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part1-overview-cpu-process.md",
+          "sha256": "614f69e211b88c845dbd264e44376df59b164072b7fffeb93e7c13456b96437e",
+          "at": "2026-10-15T09:22:06.312Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9by56gdd10",
+        "topic": "虚拟内存与进程地址空间",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9by56gt102",
+            "topic": "虚拟内存解决了什么",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by56gdqzu",
+                "topic": "隔离、按需分配与重定位",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：每个进程看到从 0 开始的连续地址空间；CPU 发出的虚拟地址经 MMU 查页表翻译为物理地址；未映射或无权限则触发缺页异常交内核处理。</li><li><strong>为什么</strong>：① 进程间隔离（A 崩了砸不到 B）；② 物理内存不必连续、可交换/回收（按需调页）；③ 程序链接时不必关心实际物理布局（重定位交给页表）。</li><li><strong>源码对应</strong>：<code>arch/x86/mm/fault.c</code>（do_page_fault）、<code>arch/x86/mm/pgtable.c</code>。</li><li><strong>相关命令</strong>：<code>cat /proc/cpuinfo | grep pae</code>（32 位时代）、<code>pmap &lt;pid&gt;</code>。</li><li>【来源：领域知识 + 本地文件（02-详解第二章）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by56hpqh9",
+            "topic": "进程地址空间布局",
+            "expanded": false,
+            "children": [
+              {
+                "id": "aslr-mv9by56hczim",
+                "topic": "用户空间布局与 ASLR",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：x86-64 用户空间（默认 47 位可用）从低到高：代码段 → 数据段/BSS → 堆（brk）→ mmap 区（库/文件映射/匿名映射，向高址或低址生长）→ 栈 → 内核空间（用户态不可访问的顶端区）；ASLR 随机化栈/mmap/库基址。</li><li><strong>为什么</strong>：读懂 <code>/proc/&lt;pid&gt;/maps</code> 是内存排查基本功；ASLR 解释&quot;同一程序每次运行地址都不同&quot;，也让利用漏洞更难。</li><li><strong>源码对应</strong>：<code>arch/x86/mm/mmap.c</code>（mmap_base/栈随机化）、<code>fs/proc/task_mmu.c</code>（maps 的 seq_file 输出）。</li><li><strong>相关命令</strong>：<code>cat /proc/&lt;pid&gt;/maps</code>、<code>cat /proc/self/maps</code>、<code>sysctl kernel.randomize_va_space</code>（2=全开）。</li><li>【来源：领域知识 + 本地文件（02-详解 2.2 节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by56h8k1z",
+            "topic": "页表与地址翻译",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by56h2rvm",
+                "topic": "多级页表：从虚拟地址到物理地址",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：x86-64 用四级页表（PGD→PUD→PMD→PTE，开 5 级 la57 则多一级）把 48 位虚拟地址切成 9+9+9+9+12 位；末 12 位是页内偏移，每页 4KB；PTE 含物理页帧号与权限位（RW/UXN/Present/Accesed/Dirty）。</li><li><strong>为什么</strong>：单级页表要 2^20 项（4MB/进程）且大多空着；多级让未使用区域整块缺级（PGD 项为空则三级全跳过）——用一次查表开销换 4MB→几KB。</li><li><strong>源码对应</strong>：<code>arch/x86/include/asm/pgtable_64_types.h</code>（级数与位段）、<code>include/asm-generic/pgtable-nop4d.h</code> 等；翻译入口 <code>arch/x86/mm/fault.c</code>。</li><li><strong>相关命令</strong>：<code>cat /proc/cpuinfo | grep la57</code>（5 级页表）、<code>/sys/kernel/debug/x86/pagetable/</code>（CONFIG_X86_PTDUMP）。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "tlb-mv9by56h1qd6",
+                "topic": "TLB 与大页：翻译的缓存经济学",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：TLB 缓存最近用过的虚拟→物理映射，命中则零次访存查表；4KB 页下覆盖 2MB 只需 512 项，2MB 大页一项覆盖 2MB，1GB 巨页更省。</li><li><strong>为什么</strong>：TLB miss 要串行查多级页表（几次访存），大内存低局部性服务（数据库/大缓存）用大页显著降低 miss；代价是碎片与提前分配（THP）。</li><li><strong>源码对应</strong>：THP 在 <code>mm/huge_memory.c</code>、khugepaged <code>mm/khugepaged.c</code>；hugetlbfs <code>fs/hugetlbfs/inode.c</code>。</li><li><strong>相关命令</strong>：<code>cat /sys/kernel/mm/transparent_hugepage/enabled</code>、<code>grep AnonHugePages /proc/meminfo</code>、<code>perf stat -e dTLB-load-misses &lt;cmd&gt;</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "mm-struct-vma-mv9by56hbys0",
+            "topic": "mm_struct 与 vma",
+            "expanded": false,
+            "children": [
+              {
+                "id": "mm-struct-vm-area-struct-mv9by56hn30s",
+                "topic": "mm_struct 与 vm_area_struct：地址空间的软件模型",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>mm_struct</code> 是进程地址空间的总管（pgd 指针、vma 链/树、mmap_base、总页数统计等）；每个连续属性区段是一个 <code>vm_area_struct</code>（起始/结束地址、权限、映射文件/匿名、vm_ops 回调）。</li><li><strong>为什么</strong>：缺页异常第一步就是按地址 <code>find_vma</code>；mmap/brk/munmap 全是在增删改 vma；vma 是&quot;虚拟内存的账本&quot;，页表是&quot;翻译的落笔&quot;。</li><li><strong>源码对应</strong>：<code>include/linux/mm_types.h</code>（两个结构体）、<code>mm/mmap.c</code>（find_vma、do_mmap、vma 合并逻辑）。</li><li><strong>相关命令</strong>：<code>cat /proc/&lt;pid&gt;/maps</code>（每行一个 vma）、<code>cat /proc/&lt;pid&gt;/smaps</code>（每个 vma 的详细统计）。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：虚拟内存给每个进程一套独立的&quot;假地址&quot;，由 MMU+页表翻译成物理地址。本章按&quot;为什么 → 布局 → 页表翻译 → 数据结构&quot;四节展开。（主题线依据作者公开文章虚拟内存系列 + 本地 02-Linux 内存管理详解.md 第二章，实体书章号待核对。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part2-memory-line.md",
+          "sha256": "f495af9eb0091d09618b986b6ed15f3fb18947556dc20aca344e71d6f660cd4e",
+          "at": "2026-10-15T09:22:06.901Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "numa-zone-mv9by56hngg2",
+        "topic": "物理内存管理：NUMA、zone 与伙伴系统",
+        "expanded": false,
+        "children": [
+          {
+            "id": "numa-mv9by56h0ohr",
+            "topic": "NUMA 节点与内存区域",
+            "expanded": false,
+            "children": [
+              {
+                "id": "node-zone-mv9by56ho3ls",
+                "topic": "node / zone 与水位线",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：物理内存按 NUMA 节点（pg_data_t）划分，节点内按用途分 zone：ZONE_DMA（&lt;16MB 老设备）、ZONE_DMA32、ZONE_NORMAL、（32 位还有 HIGHMEM）；每个 zone 有 min/low/high 三条水位线（watermark）。</li><li><strong>为什么</strong>：分配时先在本 node 的 normal zone 找，跨 node 分配增加延迟；水位线是回收系统的触发器——free 低于 low 唤醒 kswapd，低于 min 触发分配者自己回收（direct reclaim）。</li><li><strong>源码对应</strong>：<code>include/linux/mmzone.h</code>（pg_data_t/zone/watermark）、<code>mm/page_alloc.c</code>（zone_watermark_ok）。</li><li><strong>相关命令</strong>：<code>numactl --hardware</code>、<code>cat /proc/zoneinfo</code>（每个 zone 的水位与当前值）、<code>cat /proc/buddyinfo</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 4/7.5 节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by56hx9fm",
+            "topic": "伙伴系统",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by56hx1pp",
+                "topic": "伙伴系统：物理页的分配与合并",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：把每个 zone 的空闲页按阶（order 0-10，对应 4KB~4MB 连续块）组织成 11 条 free_list；分配时没有合适块就<strong>对半分裂</strong>高阶块；释放时若&quot;伙伴&quot;（地址相邻且同大小对齐）也空闲则<strong>合并</strong>回高阶。</li><li><strong>为什么</strong>：分裂保证任意阶请求都能满足，合并抑制外碎片；这是内核所有页级分配（含 slab 底层）的地基。</li><li><strong>源码对应</strong>：<code>mm/page_alloc.c</code>（__alloc_pages_nodemask 主入口、__rmqueue_smallest 分配、__free_pages/free_one_page 合并）。</li><li><strong>相关命令</strong>：<code>cat /proc/buddyinfo</code>（每列=order0-10 空闲块数，右列少=大块碎片化）、<code>echo m &gt; /proc/sysrq-trigger</code>（dump 内存信息）。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by56hyf45",
+            "topic": "内存碎片与迁移类型",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by56h4884",
+                "topic": "迁移类型：可移动页换大块连续内存",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：空闲页按 MIGRATE_UNMOVABLE / MOVABLE / RECLAIMABLE 分组；大块请求优先从 MOVABLE 区拿，必要时把已分配的可移动页搬到别的位置腾出连续大块（页面迁移）。</li><li><strong>为什么</strong>：内核对象（不可移动）散插在页中间会永久碎片化；分类后&quot;内核对象扎堆、页缓存扎堆&quot;，长时间运行也能拿到 order≥9 的大块（THP 需要）。</li><li><strong>源码对应</strong>：<code>mm/page_alloc.c</code>（ migratetype、__rmqueue_fallback）、<code>mm/compaction.c</code>（内存规整 compaction）。</li><li><strong>相关命令</strong>：<code>cat /proc/pagetypeinfo</code>、<code>/proc/sys/vm/compaction_proactiveness</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "cma-dma-mv9by56h09gq",
+            "topic": "CMA 与 DMA",
+            "expanded": false,
+            "children": [
+              {
+                "id": "cma-mv9by56haw0h",
+                "topic": "CMA：预留大块可借用连续内存",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：CMA（Contiguous Memory Allocator）在启动时预留一大段&quot;平时给 MOVABLE 用、需要时腾给 DMA/相机等大块连续请求&quot;的内存。</li><li><strong>为什么</strong>：嵌入式/多媒体设备常要几十 MB 连续物理内存做 DMA；CMA 让这块内存平时不浪费。</li><li><strong>源码对应</strong>：<code>mm/cma.c</code>、<code>kernel/dma/contiguous.c</code>。</li><li><strong>相关命令</strong>：<code>cat /proc/meminfo | grep Cma</code>、内核参数 <code>cma=64M</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 4.4 节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：物理页（4KB）是内核内存管理的基本单位，伙伴系统负责&quot;整页批发&quot;。本章按&quot;NUMA/zone → 伙伴系统 → 碎片与迁移类型 → CMA&quot;展开。（主题线依据作者公开文章伙伴系统系列 + 本地 02-详解第四章。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part2-memory-line.md",
+          "sha256": "f495af9eb0091d09618b986b6ed15f3fb18947556dc20aca344e71d6f660cd4e",
+          "at": "2026-10-15T09:22:06.901Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "slab-mv9by56hvyaq",
+        "topic": "slab 与内核小对象分配",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9by56h3cuh",
+            "topic": "为什么需要对象缓存",
+            "expanded": false,
+            "children": [
+              {
+                "id": "slab-slub-mv9by56h56zp",
+                "topic": "slab/slub：对象级别的\"零售柜台\"",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：每种常用对象建一个 kmem_cache（对象缓存池），从伙伴系统整页批发、切成等大对象零售；SLUB（现行默认实现）用每 CPU 的空闲对象链（freelist）实现无锁快路径。</li><li><strong>为什么</strong>：内核高频分配/释放固定大小对象，预先切好+复用避免反复初始化；对象也可以带构造函数缓存热数据。</li><li><strong>源码对应</strong>：<code>mm/slub.c</code>（kmem_cache_alloc、___slab_alloc 快路径）、<code>include/linux/slab.h</code>；创建示例 <code>kmem_cache_create</code>。</li><li><strong>相关命令</strong>：<code>cat /proc/slabinfo</code>（每个缓存的对象数/页数）、<code>slabtop</code>、<code>/sys/kernel/slab/</code>（SLUB sysfs）。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "kmalloc-vmalloc-gfp-mv9by56hau7y",
+            "topic": "kmalloc、vmalloc 与 GFP 标志",
+            "expanded": false,
+            "children": [
+              {
+                "id": "kmalloc-vs-vmalloc-mv9by56hjlrd",
+                "topic": "kmalloc vs vmalloc：物理连续与虚拟连续",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：kmalloc 走 slab（伙伴系统）拿<strong>物理连续</strong>内存，配 GFP_KERNEL（可睡眠）/GFP_ATOMIC（原子上下文不可睡眠）等标志；vmalloc 只保证<strong>虚拟地址连续</strong>（逐页分配+改页表拼起来），适合大块但较慢。</li><li><strong>为什么</strong>：GFP_ATOMIC 在中断/自旋锁上下文没有退路，内存紧张就直接失败——&quot;原子上下文分配容易失败&quot;的根因；vmalloc 的页表开销使其不宜热路径。</li><li><strong>源码对应</strong>：<code>mm/slab_common.c</code>+<code>mm/slub.c</code>（kmalloc）、<code>mm/vmalloc.c</code>（__vmalloc_node_range）。</li><li><strong>相关命令</strong>：<code>cat /proc/vmallocinfo</code>、<code>grep VmallocUsed /proc/meminfo</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 4.3 节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：伙伴系统最小 4KB，而内核天天分配几十字节的对象（task_struct、inode…）——slab 缓存层专门管&quot;零售&quot;。（主题线依据作者公开文章 + 本地 02-详解 4.2 节。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part2-memory-line.md",
+          "sha256": "f495af9eb0091d09618b986b6ed15f3fb18947556dc20aca344e71d6f660cd4e",
+          "at": "2026-10-15T09:22:06.901Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "brk-mmap-malloc-mv9by56hcoi8",
+        "topic": "内存分配：brk、mmap 与 malloc",
+        "expanded": false,
+        "children": [
+          {
+            "id": "brk-mv9by56hk930",
+            "topic": "brk：堆的伸缩",
+            "expanded": false,
+            "children": [
+              {
+                "id": "brk-sbrk-mv9by56hirhh",
+                "topic": "brk/sbrk 与堆顶指针",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：每个进程的堆区由 mm_struct 的 brk（堆顶）描述；<code>brk()/sbrk()</code> 把堆顶上推/下拉获得/归还内存；实际访问仍要等缺页分配物理页。</li><li><strong>为什么</strong>：glibc 小额分配优先从堆里切（避免反复 syscall）；理解 brk 才能解释 <code>cat /proc/&lt;pid&gt;/maps</code> 里 <code>[heap]</code> 段怎么长出来的。</li><li><strong>源码对应</strong>：<code>mm/mmap.c</code>（do_brk_flags → vma 合并）、系统调用表 <code>__x64_sys_brk</code>。</li><li><strong>相关命令</strong>：<code>strace -e trace=brk &lt;cmd&gt;</code>、<code>pmap -x &lt;pid&gt;</code>（看 heap 行 RSS）。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "mmap-mv9by56h04f2",
+            "topic": "mmap：万能的映射",
+            "expanded": false,
+            "children": [
+              {
+                "id": "mmap-mv9by56hm0hk",
+                "topic": "mmap 四象限：匿名/文件 × 私有/共享",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：mmap 把一段文件或匿名内存映射进地址空间：MAP_PRIVATE 写时复制（常见于文件映射与库加载），MAP_SHARED 共写（共享内存/文件回写）；MAP_ANONYMOUS 无后备文件（malloc 大块、线程栈）。</li><li><strong>为什么</strong>：动态库加载、malloc 大块、共享内存、零拷贝前置全都走 mmap；一次 mmap 只建 vma，物理页等缺页再给——&quot;分配成功≠已占物理内存&quot;。</li><li><strong>源码对应</strong>：<code>mm/mmap.c</code>（do_mmap/mmap_region）、<code>arch/x86/kernel/sys_x86_64.c</code>（arch_get_unmapped_area）。</li><li><strong>相关命令</strong>：<code>strace -e mmap,munmap &lt;cmd&gt;</code>、<code>cat /proc/&lt;pid&gt;/maps</code>、<code>pmap -x &lt;pid&gt;</code>。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "mmap-mumupmkvls0p",
+                    "caption": "mmap 四象限对应 comnet 的内存映射 mmap 节点"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "malloc-mv9by56h83s0",
+            "topic": "malloc 的三层结构",
+            "expanded": false,
+            "children": [
+              {
+                "id": "ptmalloc-arena-bin-chunk-tcache-mv9by56h7jp9",
+                "topic": "ptmalloc：arena / bin / chunk 与 tcache",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：glibc ptmalloc 用多个 arena（主 arena 用堆、其余用 mmap）、bin 链（fast/small/large/unsorted）管理空闲 chunk，tcache（线程缓存）为每线程常用尺寸提供无锁快路径；大于阈值（默认 128KB 起，动态调整）直接 mmap。</li><li><strong>为什么</strong>：多线程抢一把堆锁是瓶颈 → 多 arena 分片；tcache 命中时 malloc/free 无锁 O(1)。理解它才能解释内存碎片、RSS 涨了不降、MALLOC_ARENA_MAX 调优。</li><li><strong>源码对应</strong>：glibc <code>malloc/malloc.c</code>（_int_malloc、tcache_get）；musl 的 mallocng 在 <code>src/malloc/mallocng/</code>。</li><li><strong>相关命令</strong>：<code>MALLOC_ARENA_MAX=2 &lt;cmd&gt;</code>、<code>mallopt(M_MMAP_THRESHOLD,…)</code>、<code>malloc_info(0, stderr)</code>、<code>valgrind --leak-check=full &lt;cmd&gt;</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 5.1/5.2 节）】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "free-rss-mv9by56hk3p9",
+                "topic": "free 之后 RSS 为什么不降",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：free 只把 chunk 还回 ptmalloc 的 bin；只有堆顶空闲超阈值（M_TRIM_THRESHOLD）才 brk 回收，或释放大块（mmap 分配的）才立刻 munmap。</li><li><strong>为什么</strong>：解释&quot;服务高峰后 RSS 居高不下&quot;多半是分配器缓存而非泄漏；用 malloc_trim / MADV_DONTNEED / 重启缓解，判别靠 smaps 对比。</li><li><strong>源码对应</strong>：glibc malloc.c 的 systrim/madvise 路径；内核侧 <code>mm/madvise.c</code>（MADV_DONTNEED 清页表并释放页）。</li><li><strong>相关命令</strong>：<code>malloc_trim(0)</code>、<code>grep -A5 heap /proc/&lt;pid&gt;/smaps</code>、<code>watch -n1 'ps -o rss= -p &lt;pid&gt;'</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 5.3 节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：用户 malloc 的每一次调用，最终都落到 brk 扩堆或 mmap 建映射两条路之一；glibc 的 ptmalloc 在中间做&quot;批发转零售&quot;。（主题线依据作者公开文章 malloc 系列 + 本地 02-详解第三/五章。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part2-memory-line.md",
+          "sha256": "f495af9eb0091d09618b986b6ed15f3fb18947556dc20aca344e71d6f660cd4e",
+          "at": "2026-10-15T09:22:06.901Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9by56h7qmh",
+        "topic": "缺页异常与按需调页",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9by56hpjkx",
+            "topic": "缺页异常全流程",
+            "expanded": false,
+            "children": [
+              {
+                "id": "do-page-fault-mv9by56htz1b",
+                "topic": "do_page_fault 的判定树",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：CPU 访问无效 PTE 时触发 Page Fault（x86 的 #PF，error code 标明读/写/用户态/保护错）；内核流程：拿出错地址 cr2 → 查当前 mm 的 vma → 无 vma 或权限不符则杀进程（SIGSEGV）→ 有 vma 但页未就位则按类型分派（匿名/COW/文件/swap）。</li><li><strong>为什么</strong>：这是&quot;地址非法&quot;与&quot;页未就位&quot;的分岔口；段错误、内存越界、栈自动生长全部在这判定。</li><li><strong>源码对应</strong>：<code>arch/x86/mm/fault.c</code>（do_user_addr_fault）、<code>mm/memory.c</code>（handle_mm_fault 分派）。</li><li><strong>相关命令</strong>：<code>perf stat -e page-faults &lt;cmd&gt;</code>、<code>ps -o min_flt,maj_flt &lt;pid&gt;</code>、<code>dmesg | grep segfault</code>。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "cow-mv9by56hctcf",
+            "topic": "按需调页与 COW 缺页",
+            "expanded": false,
+            "children": [
+              {
+                "id": "zero-page-mv9by56hyogp",
+                "topic": "第一次写：从 zero page 到真页",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：匿名页第一次读映射到共享 zero page（不占真内存），第一次写才分配物理页清零（按需调页）；fork 后父子同页只读，谁先写谁触发 COW 缺页复制新页并改页表。</li><li><strong>为什么</strong>：malloc 了几 GB 但 RSS 很小、fork 完立刻 exec 开销小、大 fork 短暂停顿——全是这套机制的表象。</li><li><strong>源码对应</strong>：<code>mm/memory.c</code>（do_anonymous_page、do_wp_page）、<code>arch/x86/mm/init.c</code>（zero page）。</li><li><strong>相关命令</strong>：<code>ps -o min_flt,maj_flt -C &lt;proc&gt;</code>、<code>watch grep AnonPages /proc/meminfo</code>。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "page-cache-mv9by56hhi4d",
+            "topic": "文件缺页与 page cache",
+            "expanded": false,
+            "children": [
+              {
+                "id": "filemap-fault-mv9by56h4fat",
+                "topic": "filemap_fault：文件页怎么进入页表",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：mmap 读文件页缺页时走 vma-&gt;vm_ops-&gt;fault（ext4 等为 filemap_fault）：先查 page cache，命中直接装页表；未命中发 IO 从盘读页入 cache 再装表（主缺页）。</li><li><strong>为什么</strong>：mmap 读文件与 read() 共享同一份 page cache；顺序大块读用 read 通常更快（预读+无页表开销），随机映射读写用 mmap 省拷贝。</li><li><strong>源码对应</strong>：<code>mm/filemap.c</code>（filemap_fault、page_cache_sync_readahead）。</li><li><strong>相关命令</strong>：<code>ps -o maj_flt &lt;pid&gt;</code>（主缺页多=在等盘）、<code>sar -B</code>、<code>cachestat</code>（新工具）。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "swap-mv9by56hlhke",
+            "topic": "swap 缺页与主/次缺页",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by56h589m",
+                "topic": "主缺页与次缺页的性能含义",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：次缺页（minor）：页已在内存（首次映射/zero page/page cache 命中），只补页表；主缺页（major）：要从盘读（文件或 swap 换入），代价毫秒级。</li><li><strong>为什么</strong>：maj_flt 飙升 = 系统在&quot;从盘凑内存&quot;，是卡顿的直接证据；swap 换入路径 = swap entry 查 swap cache → 读页 → 恢复 PTE。</li><li><strong>源码对应</strong>：<code>mm/memory.c</code>（do_swap_page）、<code>mm/swap_state.c</code>（swap cache）。</li><li><strong>相关命令</strong>：<code>vmstat 1</code>（si/so 列）、<code>ps -eo pid,comm,min_flt,maj_flt --sort=-maj_flt | head</code>、<code>sar -B 1</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 3.2/6.4 节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：缺页异常是虚拟内存的&quot;发动机&quot;：所有物理页的第一次到场都由它触发。本章按&quot;全流程 → 按需调页/COW → 文件缺页 → swap 缺页&quot;展开。（主题线依据作者公开文章缺页中断系列 + 本地 02-详解 3.2 节。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part2-memory-line.md",
+          "sha256": "f495af9eb0091d09618b986b6ed15f3fb18947556dc20aca344e71d6f660cd4e",
+          "at": "2026-10-15T09:22:06.901Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9by5nb8pg8",
+        "topic": "进程间通信与同步",
+        "expanded": false,
+        "children": [
+          {
+            "id": "fifo-mv9by5nc8cb0",
+            "topic": "管道与 FIFO",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by5ncyw19",
+                "topic": "匿名管道的内核实现",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>pipe()</code> 返回一对 fd，内核用 <code>pipe_inode_info</code>（一个环形页数组，默认 16 页 = 64KB 缓冲）承载字节流；写满阻塞、读空阻塞；FIFO（mkfifo）是有名字的管道，让无亲缘进程也能用。</li><li><strong>为什么</strong>：shell 的 <code>|</code> 就是它；64KB 缓冲解释&quot;上游写快下游读慢时写端卡住&quot;；管道是单向的，双向要两根。</li><li><strong>源码对应</strong>：<code>fs/pipe.c</code>（pipe_read/pipe_write）、<code>include/linux/pipe_fs_i.h</code>。</li><li><strong>相关命令</strong>：<code>mkfifo /tmp/f1</code>、<code>strace -e pipe2 &lt;cmd&gt;</code>、<code>ulimit -p</code>（管道缓冲页数）。</li><li>【来源：领域知识 + 本地文件（进程间通信.md）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ],
+            "links": [
+              {
+                "project": "comnet",
+                "id": "1-fifo-anonymous-pipe-named-pipe-mumupmnzhgqs",
+                "caption": "管道与 FIFO 节对应 comnet 的匿名/命名管道 IPC 节点"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by5ncfu4v",
+            "topic": "信号",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by5nc2l8v",
+                "topic": "信号的生成、挂起与递送",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：信号是异步通知：产生（kill/raise/内核异常）→ 挂起在 pending 位图 → 进程从内核态返回用户态前检查并递送 → 执行 handler 或默认动作；sigaction 可注册处理并配合 sigprocmask 屏蔽；SIGKILL/SIGSTOP 不可捕获不可屏蔽。</li><li><strong>为什么</strong>：递送时机&quot;返回用户态前&quot;解释了 sleep 中信号唤醒、为什么 handler 里只能用异步安全函数；标准 IO 在 handler 里是雷区。</li><li><strong>源码对应</strong>：<code>kernel/signal.c</code>（send_signal、do_signal）、<code>arch/x86/kernel/signal.c</code>（返回用户态前的检查）。</li><li><strong>相关命令</strong>：<code>kill -l</code>、<code>kill -SIGUSR1 &lt;pid&gt;</code>、<code>strace -e signal &lt;cmd&gt;</code>、<code>cat /proc/&lt;pid&gt;/status | grep Sig</code>（Pending/Blocked 位图）。</li><li>【来源：领域知识 + 本地文件（进程间通信.md 信号章）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "md-m1-week2-day3-08",
+                    "caption": "信号机制对应 comnet 内的 08-信号学习笔记"
+                  }
+                ]
+              }
+            ],
+            "links": [
+              {
+                "project": "comnet",
+                "id": "10-signal-mumupmo12key",
+                "caption": "信号节对应 comnet 的信号 IPC 节点"
+              }
+            ]
+          },
+          {
+            "id": "system-v-ipc-mv9by5nconjw",
+            "topic": "System V IPC",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by5ncwpbu",
+                "topic": "共享内存 + 信号量 + 消息队列",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：System V 三件套：shmget/shmat 建挂共享内存段（最快的 IPC，零拷贝语义）、semget 信号量（P/V 原语同步）、msgget 消息队列（内核收发带类型报文）；对象随内核存活（需显式 shmctl IPC_RMID 或 ipcrm 清理）。</li><li><strong>为什么</strong>：共享内存是大数据量进程协作的首选（一次拷贝都没有）；配信号量做互斥是经典组合；忘记删除导致 <code>ipcs</code> 里残留段泄漏内存。</li><li><strong>源码对应</strong>：<code>ipc/shm.c</code>、<code>ipc/sem.c</code>、<code>ipc/msg.c</code>、<code>ipc/util.c</code>。</li><li><strong>相关命令</strong>：<code>ipcs</code>、<code>ipcrm -m &lt;shmid&gt;</code>、<code>strace -e shmget,shmat &lt;cmd&gt;</code>。</li><li>【来源：领域知识 + 本地文件（进程间通信.md SysV 章）+ comnet 关联节点】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "semaphore-mumupmkwddp0",
+                    "caption": "共享内存+信号量节对应 comnet 的信号量 IPC 例子"
+                  }
+                ]
+              },
+              {
+                "id": "posix-ipc-memfd-mv9by5ncktl2",
+                "topic": "POSIX IPC 与 memfd",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：POSIX 版共享内存 <code>shm_open</code>（落在 /dev/shm 的文件）+ <code>mmap</code>；<code>memfd_create</code> 创建匿名内存文件，可传 fd 给其他进程实现&quot;无痕共享内存&quot;。</li><li><strong>为什么</strong>：POSIX 接口更现代（文件语义、权限清晰）；memfd 是 GStreamer/显存共享等新方案的地基。</li><li><strong>源码对应</strong>：<code>mm/shmem.c</code>（tmpfs 后端 + memfd）、<code>ipc/shm.c</code>（shm_open 系统调用族）。</li><li><strong>相关命令</strong>：<code>ls /dev/shm</code>、<code>df -h /dev/shm</code>（嵌入式注意：占了真内存）。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "5-posix-posix-shared-memory-mumupmo0gb6f",
+                    "caption": "POSIX IPC 节对应 comnet 的 POSIX 共享内存节点"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "6-memfd-memfd-create-mumupmo03djn",
+                    "caption": "POSIX IPC 节对应 comnet 的 memfd_create 节点"
+                  }
+                ]
+              }
+            ],
+            "links": [
+              {
+                "project": "comnet",
+                "id": "system-v-ipc-mumupmkwojxf",
+                "caption": "System V IPC 节对应 comnet 的 SysV 共享内存节点"
+              }
+            ]
+          },
+          {
+            "id": "socket-io-mv9by5nct1xj",
+            "topic": "socket 与 IO 多路复用",
+            "expanded": false,
+            "children": [
+              {
+                "id": "select-poll-epoll-mv9by5ncpfrw",
+                "topic": "select / poll / epoll 与事件驱动",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：select/poll 每次调用都要把 fd 集合从用户态拷进内核并线性扫描；epoll 用内核红黑树管理 fd + 就绪链表收集事件，<code>epoll_wait</code> 只返回就绪者；LT（水平触发，默认）没读完会反复通知，ET（边缘触发）只在状态变化时通知一次必须一次读干净。</li><li><strong>为什么</strong>：万级连接下 epoll 的 O(就绪数) 完胜 O(总 fd 数)；ET 要配非阻塞 fd 是高频面试题也是高频翻车点。</li><li><strong>源码对应</strong>：<code>fs/eventpoll.c</code>（ep_insert、ep_poll_callback 回调挂就绪链表）。</li><li><strong>相关命令</strong>：<code>ss -s</code>、<code>strace -e epoll_create,epoll_ctl,epoll_wait &lt;server&gt;</code>、<code>ab/wrk</code> 压测对照。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "futex-mv9by5nczm1a",
+            "topic": "同步原语：futex 与锁的分层",
+            "expanded": false,
+            "children": [
+              {
+                "id": "futex-mv9by5nct560",
+                "topic": "futex：只在竞争时进内核",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：futex（fast userspace mutex）在无竞争时纯用户态原子操作（CAS）完成加解锁，有竞争才 <code>futex(WAIT/WAKE)</code> 陷入内核排队；pthread_mutex/condition variable 底层都是它。</li><li><strong>为什么</strong>：解释&quot;无竞争锁为什么快&quot;、&quot;为什么 mutex 未锁定时 sizeof 很小&quot;；锁风暴排查看 <code>perf</code> 里 futex 调用栈。</li><li><strong>源码对应</strong>：<code>kernel/futex/</code>（wait.c、wake.c）、glibc <code>nptl/pthread_mutex_*</code>。</li><li><strong>相关命令</strong>：<code>strace -e futex &lt;cmd&gt;</code>、<code>perf lock record/analysis</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：IPC 家族按&quot;数据量/语义/性能&quot;各占一格：管道（字节流）、信号（异步事件）、共享内存（大数据高速路）+信号量（配套同步）、消息队列（报文）、socket（跨机通用）。本章与 comnet 项目的 Linux IPC 学习节点互相链接。（主题线依据作者公开文章 IPC 系列 + 本地 02-手册/进程间通信笔记。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part3-ipc-reclaim-practice.md",
+          "sha256": "d7a6ce27b0d6c03e6713b834580b3f97f7c51bfdf79b1cb8ac262b996e2acadd",
+          "at": "2026-10-15T09:22:07.509Z",
+          "tool": "import-md"
+        },
+        "links": [
+          {
+            "project": "comnet",
+            "id": "linux-ipc-mumupmnzqefy",
+            "caption": "IPC 原理章与 comnet 的 Linux IPC 学习验证日志互为补充（原理 vs 实操）"
+          },
+          {
+            "project": "comnet",
+            "id": "md-m1-week2-day4",
+            "caption": "进程间通信章对应 comnet 内的 day4 IPC 学习笔记"
+          }
+        ]
+      },
+      {
+        "id": "oom-mv9by5ncmi0q",
+        "topic": "内存回收、交换与 OOM",
+        "expanded": false,
+        "children": [
+          {
+            "id": "page-cache-mv9by5ncl4uo",
+            "topic": "page cache 与文件页/匿名页",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9by5nc64ba",
+                "topic": "内存即缓存：文件页、匿名页、脏页写回",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：page cache 把读过的文件页留在内存（下次免盘读）；写操作先改 cache 里的页（变脏页），由内核按 <code>dirty_ratio/dirty_background_ratio</code> 等参数异步写回（writeback）；匿名页（堆/栈）无文件后备，只能 swap 或不能回收。</li><li><strong>为什么</strong>：<code>free</code> 里 buff/cache 大不是坏事；写入突发后&quot;磁盘疯写&quot;是 writeback 在还账；嵌入式无 swap 设备匿名页回收不动，内存吃紧更危险。</li><li><strong>源码对应</strong>：<code>mm/filemap.c</code>、<code>mm/page-writeback.c</code>（dirty 系列参数）、<code>fs/fs-writeback.c</code>。</li><li><strong>相关命令</strong>：<code>free -h</code>、<code>vmstat 1</code>（wa/b 列）、<code>grep -E 'Dirty|Writeback' /proc/meminfo</code>、<code>cat /proc/meminfo</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 6.0/6.1/6.2 节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "lru-kswapd-mv9by5ncqhms",
+            "topic": "LRU 与 kswapd",
+            "expanded": false,
+            "children": [
+              {
+                "id": "lru-mv9by5nci6do",
+                "topic": "双链 LRU 与水位驱动的回收",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：每 zone（现 per-node）维护 active/inactive 两条 LRU 链（文件页/匿名页各一套 + anon/file swappable 标记）；free 跌破 low 水位唤醒 kswapd 后台回收，跌破 min 则分配者自己 direct reclaim（同步、卡顿）；swappiness（0-100）调节文件页 vs 匿名页回收偏好。</li><li><strong>为什么</strong>：direct reclaim 是&quot;内存不足引发抖动&quot;的第一根因（持锁回收、等 IO）；swappiness=0 不是禁 swap 只是极不情愿（嵌 Andrew Morton 原话大意，属领域常识）。</li><li><strong>源码对应</strong>：<code>mm/vmscan.c</code>（shrink_node、shrink_lruvec、kswapd 主循环）、<code>mm/page_alloc.c</code>（__alloc_pages_slowpath）。</li><li><strong>相关命令</strong>：<code>vmstat 1</code>（pgscan/pgsteal 列）、<code>sar -B</code>、<code>cat /proc/vmstat | grep -E 'pgscan|pgsteal'</code>、<code>psaux | grep kswapd</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 6.3 节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "swap-zram-zswap-mv9by5ndttar",
+            "topic": "swap、zram 与 zswap",
+            "expanded": false,
+            "children": [
+              {
+                "id": "swap-mv9by5ndp298",
+                "topic": "没有 swap 设备的嵌入式怎么办",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：swap 分区/文件换出匿名页；zram 用内存压缩块设备当 swap（换出页压缩存 RAM，典型的 3:1 压缩比）；zswap 是 cache 型（先压缩缓存、满了才真写盘 swap）。</li><li><strong>为什么</strong>：嵌入式（OpenWrt/Android）普遍无盘 swap，zram 是标准答案；<code>swappiness</code> 对 zram 场景应调高（换出便宜）。</li><li><strong>源码对应</strong>：<code>mm/swapfile.c</code>、<code>drivers/block/zram/</code>、<code>mm/zswap.c</code>。</li><li><strong>相关命令</strong>：<code>swapon -s</code>、<code>cat /proc/swaps</code>、<code>zramctl</code>、<code>cat /sys/block/zram0/mm_stat</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 6.4/7.7 节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "oom-killer-overcommit-mv9by5nd17pl",
+            "topic": "OOM killer 与 overcommit",
+            "expanded": false,
+            "children": [
+              {
+                "id": "oom-overcommit-mv9by5ndm914",
+                "topic": "OOM 日志怎么读、overcommit 三档",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：内存彻底耗尽时 OOM killer 按 oom_score（badness：RSS + swap + 页表开销，oom_score_adj 可 -1000~1000 调权）挑&quot;最该死&quot;进程发 SIGKILL；<code>/proc/sys/vm/overcommit_memory</code>：0 启发式（默认）、1 永远允许、2 严控（不超过 CommitLimit）。</li><li><strong>为什么</strong>：malloc 成功 ≠ 有内存（overcommit + 按需调页的代价）；OOM 日志里 &quot;Dump stack… oom-killer&quot; 段落列出了各进程 RSS/oom_score，是案发现场报告。</li><li><strong>源码对应</strong>：<code>mm/oom_kill.c</code>（out_of_memory、select_bad_process、oom_badness）、<code>mm/util.c</code>（__vm_enough_memory）。</li><li><strong>相关命令</strong>：<code>dmesg | grep -i -A20 'out of memory'</code>、<code>cat /proc/&lt;pid&gt;/oom_score{,_adj}</code>、<code>grep -E 'Commit' /proc/meminfo</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 6.5/8.3 节）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "memcg-mv9by5ndwb44",
+            "topic": "memcg：容器内存隔离",
+            "expanded": false,
+            "children": [
+              {
+                "id": "cgroup-memory-oom-mv9by5nd3557",
+                "topic": "cgroup memory 子系统与容器 OOM",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：memcg 把一组进程的内存记账隔离（cgroup v1 <code>memory.limit_in_bytes</code>，v2 <code>memory.max</code>），超限先在<strong>组内</strong>回收，组内救不回就组内 OOM kill；<code>memory.stat</code> 分列 anon/file/sock 等。</li><li><strong>为什么</strong>：容器 OOM 退出（exit 137）= 组内 OOM；宿主内存充足也照样杀——排查容器内存问题必懂 memcg。</li><li><strong>源码对应</strong>：<code>mm/memcontrol.c</code>（memcg charge/uncharge、try_charge 组内回收）。</li><li><strong>相关命令</strong>：<code>cat /sys/fs/cgroup/memory.max</code>（v2）、<code>cat /sys/fs/cgroup/memory/memory.stat</code>（v1）、<code>docker stats</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：Linux 用&quot;空闲内存 = 浪费&quot;哲学把物理页分两类账本：文件页（可丢可回读）与匿名页（只能换出）。本章按&quot;page cache → LRU 回收 → swap → OOM → memcg&quot;展开。（主题线依据作者公开文章 + 本地 02-详解第六章。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part3-ipc-reclaim-practice.md",
+          "sha256": "d7a6ce27b0d6c03e6713b834580b3f97f7c51bfdf79b1cb8ac262b996e2acadd",
+          "at": "2026-10-15T09:22:07.509Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9by5ndepeg",
+        "topic": "高性能内存实践与观测工具",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9by5nd1t2r",
+            "topic": "零拷贝",
+            "expanded": false,
+            "children": [
+              {
+                "id": "read-write-mmap-write-sendfile-mv9by5ndt204",
+                "topic": "read+write、mmap+write 与 sendfile",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：传统发文件 = read（盘→页缓存→用户缓冲，1次DMA+1次CPU拷贝）+ write（用户→socket 缓冲→网卡，1次CPU+1次DMA拷贝）共 4 次拷贝 2 次系统调用；sendfile 数据全程在内核（页缓存→socket，省掉 2 次 CPU 拷贝）；mmap+write 省掉 read 的 CPU 拷贝但仍有 write 的。</li><li><strong>为什么</strong>：Kafka/Nginx 高吞吐的核心一招；DMA gather（带校验和 offload）进一步只做 2 次 DMA。</li><li><strong>源码对应</strong>：<code>fs/read_write.c</code>（vfs_sendfile）、<code>net/socket.c</code>；<code>splice</code> 在 <code>fs/splice.c</code>（借管道实现任意 fd 对拷）。</li><li><strong>相关命令</strong>：<code>strace -e sendfile &lt;server&gt;</code>、<code>iperf3</code> 对照吞吐、<code>perf stat -e context-switches</code>。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "numa-mv9by5nd06rf",
+            "topic": "大页与 NUMA 亲和",
+            "expanded": false,
+            "children": [
+              {
+                "id": "thp-numactl-mv9by5ndb4y4",
+                "topic": "THP 的利弊与 numactl 实践",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：THP（透明大页）自动把连续 2MB 匿名区合并成大页（省 TLB、降缺页次数），但分配/合并（khugepaged）可能引入延迟毛刺，嵌入式与低延迟服务常关；NUMA 亲和用 numactl 把进程/内存绑到同节点，避免跨节点访存。</li><li><strong>为什么</strong>：数据库/大缓存服务（Redis 官方建议）关 THP 防毛刺；<code>numastat</code> 里 numa_miss/othernode 高说明跨节点访问在亏性能。</li><li><strong>源码对应</strong>：<code>mm/huge_memory.c</code>、<code>mm/khugepaged.c</code>；<code>mm/mempolicy.c</code>（NUMA 策略）。</li><li><strong>相关命令</strong>：<code>echo never &gt; /sys/kernel/mm/transparent_hugepage/enabled</code>、<code>numactl --membind=0 --cpunodebind=0 &lt;cmd&gt;</code>、<code>numastat</code>、<code>cat /proc/vmstat | grep thp</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 8 章）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by5ndo0ou",
+            "topic": "内存泄漏与越界定位",
+            "expanded": false,
+            "children": [
+              {
+                "id": "valgrind-smaps-mv9by5ndgp7l",
+                "topic": "从 valgrind 到 smaps 的排查阶梯",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：四步阶梯：① valgrind/ASan（开发期精确抓泄漏越界，慢 10-40 倍）；② <code>/proc/&lt;pid&gt;/smaps</code> 按映射对比 RSS/Pss/Anonymous 找&quot;哪块在涨&quot;；③ malloc_info/malloc_stats 看分配器内部（是泄漏还是碎片）；④ 长期运行设备画 RSS 基线趋势。</li><li><strong>为什么</strong>：线上不能挂 valgrind，smaps 是无侵入第一现场；区分&quot;泄漏（Anonymous 涨）&quot;与&quot;碎片（堆 vma RSS 涨但 malloc_info 显示空闲多）&quot;决定修法。</li><li><strong>源码对应</strong>：<code>fs/proc/task_mmu.c</code>（smaps 输出）；valgrind/ASan 为用户态工具。</li><li><strong>相关命令</strong>：<code>pmap -x &lt;pid&gt;</code>、<code>grep -B3 -A8 anon /proc/&lt;pid&gt;/smaps | less</code>、<code>valgrind --tool=memcheck &lt;cmd&gt;</code>、<code>gcc -fsanitize=address</code>。</li><li>【来源：领域知识 + 本地文件（02-详解 5.4 节、内存泄漏.md、内存相关错误学习文档.md）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9by5ndawlp",
+            "topic": "观测工具速查",
+            "expanded": false,
+            "children": [
+              {
+                "id": "free-vmstat-pmap-psi-mv9by5nd1m7s",
+                "topic": "free / vmstat / pmap / PSI 一张网",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>free -h</code>（available 才是真正可用估计）、<code>vmstat 1</code>（r/b/si/so/cs 一屏全览）、<code>pmap -x</code>（进程按映射的 RSS）、<code>pidstat -r</code>（按进程缺页/内存趋势）、PSI <code>/proc/pressure/memory</code>（内存压力量化 avg10/60/300）、<code>/proc/meminfo</code> 字段全表。</li><li><strong>为什么</strong>：卡顿排查的顺序 = PSI/ vmstat 定性 → pmap/smaps 定位进程 → /proc/meminfo 定位系统账目；available≠free（含可回收缓存）是最常见误读。</li><li><strong>源码对应</strong>：<code>fs/proc/meminfo.c</code>、<code>kernel/sched/psi.c</code>。</li><li><strong>相关命令</strong>：<code>free -h; vmstat 1 5; pidstat -r 1 5</code>、<code>cat /proc/pressure/memory</code>、<code>grep -E 'MemAvailable|AnonPages|Cached' /proc/meminfo</code>。</li><li>【来源：领域知识 + 本地文件（02-详解第七章、04-手册第三章）】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>本章导读</strong>：把前文机制串成排查与优化动作：零拷贝、大页、NUMA 亲和、泄漏定位与工具速查。本章大量命令细节与本地《04-Linux 常用调试命令实践手册》对齐。（主题线依据作者公开文章&quot;高性能&quot;系列。）</p>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/bookbatch-20261015-170203/part3-ipc-reclaim-practice.md",
+          "sha256": "d7a6ce27b0d6c03e6713b834580b3f97f7c51bfdf79b1cb8ac262b996e2acadd",
+          "at": "2026-10-15T09:22:07.509Z",
+          "tool": "import-md"
+        }
+      }
+    ]
+  }
+}
