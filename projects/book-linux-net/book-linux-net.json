@@ -1,0 +1,789 @@
+{
+  "meta": {
+    "name": "《深入理解Linux网络》知识点大纲",
+    "author": "",
+    "version": "0.18.0",
+    "formatVersion": 2
+  },
+  "format": "node_tree",
+  "data": {
+    "id": "root",
+    "topic": "《深入理解Linux网络》知识点大纲",
+    "expanded": true,
+    "children": [
+      {
+        "id": "n-mv9d1vbzgjni",
+        "topic": "全书概览与使用说明",
+        "expanded": false,
+        "children": [],
+        "detail": "<ul><li><strong>书名</strong>：《深入理解Linux网络：修炼底层内功，掌握高性能原理》，张彦飞（@开发内功修炼）著，电子工业出版社（博文视点），2022 年，ISBN 9787121434105。书目信息来源（公开目录页检索摘要，逐字核对）：<a href=\"https://baike.baidu.com/item/%E6%B7%B1%E5%85%A5%E7%90%86%E8%A7%A3Linux%E7%BD%91%E7%BB%9C%EF%BC%9A%20%E4%BF%AE%E7%82%BC%E5%BA%95%E5%B1%82%E5%86%85%E5%8A%9F%EF%BC%8C%E6%8E%8C%E6%8F%A1%E9%AB%98%E6%80%A7%E8%83%BD%E5%8E%9F%E7%90%86/61340579\">百度百科条目</a>、<a href=\"https://www.tenlong.com.tw/products/9787121434105\">天瓏书店商品页（ISBN）</a>、<a href=\"https://hxedu.com.cn/hxedu/hg/book/bookInfo.html?code=TP434100\">电子工业出版社书讯页</a>、<a href=\"https://book.douban.com/subject/35922722/\">豆瓣条目</a>。</li><li><strong>本项目的形态</strong>：知识要点大纲（章节结构 + 每节要点 + 关键机制 + 源码/命令对应），<strong>不是原文复刻</strong>；全部内容为提炼后的结构化知识。</li><li><strong>章节结构的诚实说明</strong>：本会话（AI 批处理）无法逐字核对实体书目录（网页抓取被会话策略拒绝，公开检索摘要未露出完整章节列表）⇒ 中间各章<strong>按主题组织、章号不硬编</strong>，实体书到手后按真实目录重排即可，知识点本身不受影响。</li><li><strong>来源标注图例</strong>（每个节点 detail 尾部标注）：</li><li>【来源：公开目录】= 从公开售书/出版社页面的检索摘要逐字核对到的书目信息（书名/作者/出版社/ISBN）；</li><li>【来源：作者公开文章】= 依据作者公众号&quot;开发内功修炼&quot;公开网络系列（图解网络包收发、三次握手、epoll、零拷贝等）与本书主线的对应关系；</li><li>【来源：领域知识】= 标准 Linux 内核网络通用知识（不依赖实体书）；</li><li>【来源：本地文件】= 本机已有学习笔记（如 <code>E:\\markdown\\M2(08.24～09.18)\\Week3-4\\Wireshark抓包\\markdown文档\\06-TCP 原理学习文档.md</code> 等，只做要点对齐与来源锚定，不复制原文）。</li><li><strong>置信度约定</strong>：除书目信息外，其余章节划分与小节标题统一标注 <strong>【置信度：待与实体书核对】</strong>。</li><li><strong>与 comnet 的关联</strong>：包收发旅程、TCP、拥塞控制、Netfilter/conntrack、tc/QoS、网卡驱动实践等节点与 comnet 项目的网络实操节点（<code>linux-netfilter-tc-<em></code>、<code>qos-</em></code>、<code>fg8192-wifi-*</code>、Wireshark 抓包、tcp-socket 实操等）挂了跨项目链接（见各叶节点）。</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9d1vbzz287",
+        "topic": "总览：一条网络包的一生",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1vbz9m47",
+            "topic": "分层模型与协议栈落点",
+            "expanded": false,
+            "children": [
+              {
+                "id": "osi-tcp-ip-linux-mv9d1vc03b7b",
+                "topic": "OSI/TCP-IP 分层在 Linux 内核中的对应",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：应用层在用户态（socket 之上）；socket 层是系统调用入口（<code>net/socket.c</code>）；传输层 TCP/UDP 在 <code>net/ipv4/</code>（<code>tcp_input.c</code>、<code>udp.c</code>）；网络层 IP 在 <code>net/ipv4/ip_input.c</code>；链路层收发在 <code>net/core/dev.c</code> 与驱动（<code>drivers/net/</code>）。</li><li><strong>为什么</strong>：排障先按层定位——应用慢（用户态）、连不上（传输/网络）、驱动丢包（链路），各层的检查命令不同。</li><li><strong>源码对应</strong>：<code>net/socket.c</code>、<code>net/ipv4/</code>、<code>net/core/dev.c</code>、<code>drivers/net/</code>。</li><li><strong>相关命令</strong>：<code>ss</code>（socket 层）、<code>netstat -s</code>（协议统计）、<code>ip -s link</code>（链路层）。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "socket-mv9d1vc0rkuk",
+                "topic": "报文接收旅程总览：网卡到协议栈到 socket",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：网卡收帧 → DMA 写 RX ring → 硬中断报信 → 软中断（NET_RX）→ NAPI poll 批量收 → <code>netif_receive_skb</code> 逐层分发 → <code>ip_rcv</code>（Netfilter 钩子）→ 路由决策 → <code>tcp_v4_rcv</code> 命中 socket → 放入接收队列 → <code>sk_data_ready</code> 唤醒 <code>epoll_wait</code>。</li><li><strong>为什么</strong>：这条链是全书的地图主线，后面每章都在放大其中一站；tcpdump 只能看到前半段，内核后半段要靠计数器与 <code>ss</code> 对账。</li><li><strong>源码对应</strong>：<code>net/core/dev.c</code>、<code>net/ipv4/ip_input.c</code>、<code>net/ipv4/tcp_ipv4.c</code>。</li><li><strong>相关命令</strong>：<code>cat /proc/softirqs</code>（NET_RX 增速）、<code>ethtool -S</code>（网卡丢包）、<code>tcpdump</code>。</li><li>【来源：作者公开文章 + 领域知识 + 本地文件（<code>E:\\markdown\\M2(08.24～09.18)\\2026-09-18\\经验沉淀：QOS\\DOCS\\2_Linux_Traffic_Control.md</code> 同款旅程图）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "1-linux-mv6idkjbggb8",
+                    "caption": "收包总览与 comnet 的「报文在 Linux 中的旅程」实操笔记互为对照"
+                  }
+                ]
+              },
+              {
+                "id": "socket-mv9d1vc0e131",
+                "topic": "报文发送旅程总览：socket 到协议栈到网卡",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>send()</code> → <code>tcp_sendmsg</code> 拷贝进 skb 并按 MSS 分段 → <code>tcp_write_xmit</code>（对照拥塞/通告窗口）→ <code>ip_queue_xmit</code>（查路由）→ 邻居解析 → <code>dev_queue_xmit</code> 进 qdisc → 驱动写 TX ring → 网卡发出 → TX 中断回收 skb。</li><li><strong>为什么</strong>：发送侧的排队站更多（发送缓冲、qdisc、TX ring），&quot;发得慢&quot;要逐站问排在哪。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp_output.c</code>、<code>net/ipv4/ip_output.c</code>、<code>net/core/dev.c</code>。</li><li><strong>相关命令</strong>：<code>tc -s qdisc show</code>、<code>ip -s link</code>（tx 错误）、<code>/proc/softirqs</code>（NET_TX）。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "linux-netfilter-tc-mv6idkjaa2tm",
+                    "caption": "发送总览对应 comnet 的 Linux 流量控制笔记（含收发旅程与 tc 视角）"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "detail": "<ul><li><strong>主线</strong>：本书把网络知识组织成&quot;包怎么进来、怎么出去&quot;两条主线——接收 = 网卡 → 软中断 → 协议栈 → socket；发送 = socket → 协议栈 → qdisc → 网卡。</li><li><strong>学习法</strong>：先记&quot;大站名&quot;（硬中断/软中断、<code>ip_rcv</code>、<code>tcp_v4_rcv</code>、qdisc），再逐站下钻；性能问题大多出在这些站点的排队与拷贝上。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9d1vc0c5ph",
+        "topic": "网络包接收：从网卡到协议栈",
+        "expanded": false,
+        "children": [
+          {
+            "id": "dma-mv9d1vc0tp23",
+            "topic": "网卡与 DMA 环形缓冲区",
+            "expanded": false,
+            "children": [
+              {
+                "id": "rx-ring-dma-mv9d1vc0r57h",
+                "topic": "RX ring 与 DMA：收包的第一站",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：网卡把收到的帧经 DMA 直接写进内存中的环形描述符队列（RX ring），CPU 不参与搬运；ring 是预先投递的空缓冲池，取包后补新缓冲。</li><li><strong>为什么</strong>：免 CPU 拷贝是吞吐前提；ring 满了新帧只能丢（overrun）——这是&quot;网卡侧丢包&quot;的来源。</li><li><strong>源码对应</strong>：<code>drivers/net/ethernet/</code>（各驱动）、<code>include/linux/skbuff.h</code>（与 skb 衔接）。</li><li><strong>相关命令</strong>：<code>ethtool -g eth0</code>（ring 大小）、<code>ethtool -S eth0</code>（<code>rx_dropped</code>/<code>rx_no_buffer</code>/<code>rx_missed</code>）。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "fg8192-wifi-mv6ie3z99dol",
+                    "caption": "网卡/驱动层实践案例：FG8192 桥模式 WiFi 两层开关不同步（HAL 与内核驱动）"
+                  }
+                ]
+              },
+              {
+                "id": "rss-mv9d1vc03llu",
+                "topic": "网卡多队列与 RSS",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：网卡按流哈希（RSS）把流量分到多个硬件队列，每队列独立中断，可分散到多核；RPS/XPS 是软件侧的收包再分发与发送亲和。</li><li><strong>为什么</strong>：单队列 = 单核软中断 = 收包天花板；多队列是横向扩 CPU 的前提。</li><li><strong>源码对应</strong>：驱动多队列分配、<code>net/core/dev.c</code>（<code>get_rps_cpu</code>）、<code>include/linux/netdevice.h</code>。</li><li><strong>相关命令</strong>：<code>cat /proc/interrupts</code>（网卡中断分布）、<code>ethtool -L</code>（队列数）、<code>irqbalance</code>/<code>smp_affinity</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "router",
+                    "caption": "网卡多队列与排队模型对应 comnet（自顶向下）的「路由器结构」"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "wlan-qos",
+                    "caption": "WiFi 侧的分类队列（802.11e EDCA）与 Linux 网卡/qdisc 分类对照"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "napi-mv9d1vc0awsr",
+            "topic": "硬中断、软中断与 NAPI",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9d1vc0cerz",
+                "topic": "硬中断：只报信不干活",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：硬中断处理程序（驱动 ISR）只做最小工作——确认中断、把 napi 对象排进本轮 poll 列表即返回，收包交给软中断。</li><li><strong>为什么</strong>：中断上下文不能睡眠、不能被阻塞，干重活拖垮系统响应；&quot;中断只报信&quot;是高吞吐收包设计的通用模式。</li><li><strong>源码对应</strong>：驱动 <code>request_irq</code> 注册的 ISR、<code>napi_schedule</code>；<code>include/linux/interrupt.h</code>。</li><li><strong>相关命令</strong>：<code>watch cat /proc/interrupts</code>（每核每秒中断数）。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "ksoftirqd-mv9d1vc04e3d",
+                "topic": "软中断与 ksoftirqd",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>NET_RX_SOFTIRQ</code>/<code>NET_TX_SOFTIRQ</code> 在软中断上下文执行真正的收发；单次软中断有预算，超了就唤醒 per-CPU 内核线程 <code>ksoftirqd/&lt;n&gt;</code> 继续收。</li><li><strong>为什么</strong>：软中断可被打断但不能睡，<code>ksoftirqd</code> 兜底防活锁；一个核 <code>%si</code> 打满是经典收包瓶颈。</li><li><strong>源码对应</strong>：<code>net/core/dev.c</code>（<code>net_rx_action</code>）、<code>kernel/softirq.c</code>。</li><li><strong>相关命令</strong>：<code>top</code>（<code>si</code> 列）、<code>ps aux | grep ksoftirqd</code>、<code>cat /proc/softirqs</code>。</li><li>【来源：作者公开文章 + 领域知识 + 本地文件（<code>E:\\markdown\\M1(07.27~08.21)\\Week2\\day3内核和应用层通信\\Linux内核和应用层常见的通信方式.md</code> 的中断上下文背景）】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "napi-mv9d1vc0bzp3",
+                "topic": "NAPI：中断与轮询的混合",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：第一个包触发中断后，驱动切到 poll 模式批量收（每轮受 weight 预算限制），收完预算且队列空就退出轮询重开中断；持续有包就一直轮询。</li><li><strong>为什么</strong>：高包速下&quot;每包一中断&quot;会中断风暴/活锁；NAPI 用&quot;中断一次 + 批量轮询&quot;摊薄每包开销。</li><li><strong>源码对应</strong>：<code>net/core/dev.c</code>（<code>net_rx_action</code> 调驱动 <code>poll</code>）、驱动侧 <code>napi_schedule</code>/<code>napi_complete</code>。</li><li><strong>相关命令</strong>：无直接开关；<code>ethtool -S</code> 看统计、压测观察 <code>%si</code> 行为。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "sk-buff-mv9d1vc0urr3",
+            "topic": "sk_buff：内核网络栈的通用容器",
+            "expanded": false,
+            "children": [
+              {
+                "id": "sk-buff-mv9d1vc0nrk8",
+                "topic": "sk_buff 结构与关键操作",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>struct sk_buff</code> 是内核里&quot;一个包&quot;的载体：<code>head/data/tail/end</code> 四指针管理缓冲区，协议栈逐层只移动指针去头（以太网头 → IP 头 → TCP 头），层间不复制数据；支持 paged frags（scatter-gather）。</li><li><strong>关键操作</strong>：<code>alloc_skb</code> 分配；<code>skb_clone</code> 只克隆引用不克隆数据（多个消费者读同一包，如抓包 taps）；<code>skb_copy</code> 才真拷贝；<code>skb_put/push/pull</code> 移指针。</li><li><strong>为什么</strong>：理解 skb 就理解了内核网络栈为什么快——整条路径真正的数据拷贝次数屈指可数。</li><li><strong>源码对应</strong>：<code>include/linux/skbuff.h</code>、<code>net/core/skbuff.c</code>。</li><li><strong>相关命令</strong>：<code>perf probe -a skb_clone</code> 后 <code>perf record</code> 观测；comnet 的 netlink 示例代码里有 skb 装载的实际用法。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "code-03-netlink-example-c",
+                    "caption": "comnet 的 netlink 示例代码里有 sk_buff 装载报文的实际用法"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1vc0ue17",
+            "topic": "收包路径源码地图",
+            "expanded": false,
+            "children": [
+              {
+                "id": "poll-tcp-v4-rcv-mv9d1vc03740",
+                "topic": "从驱动 poll 到 tcp_v4_rcv",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：驱动 <code>poll</code> → <code>napi_gro_receive</code>（GRO 合并）→ <code>netif_receive_skb</code> →（抓包 taps：AF_PACKET 在这里）→ <code>ip_rcv</code> → Netfilter PREROUTING → 路由决策 → 本机则 <code>ip_local_deliver</code> → <code>tcp_v4_rcv</code> → <code>__inet_lookup</code> 命中 socket → 入接收队列/backlog → <code>sk_data_ready</code>。</li><li><strong>为什么</strong>：知道每站挂在哪才能定位&quot;包丢在哪一层&quot;：网卡计数 → tcpdump 有无 → 协议统计 → socket 队列，逐站对账。</li><li><strong>源码对应</strong>：<code>net/core/dev.c</code>、<code>net/ipv4/ip_input.c</code>、<code>net/ipv4/tcp_ipv4.c</code>、<code>net/packet/af_packet.c</code>（抓包挂点）。</li><li><strong>相关命令</strong>：<code>tcpdump -i eth0</code>、<code>dropwatch</code>、<code>netstat -s | grep -i drop</code>。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<ul><li><strong>本章要点</strong>：RX ring/DMA → 硬中断只报信 → 软中断与 <code>ksoftirqd</code> → NAPI 轮询批量收 → <code>sk_buff</code> 装载 → 逐层分发进协议栈。</li><li><strong>高频坑</strong>：单队列网卡中断绑死一个核（<code>%si</code> 打满）、ring 满丢包（overrun）、NAPI 预算耗尽反复进出。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "socket-mv9d1vc05jlq",
+        "topic": "网络包发送：从 socket 到网卡",
+        "expanded": false,
+        "children": [
+          {
+            "id": "qdisc-mv9d1vc0qpmy",
+            "topic": "发送路径与 qdisc",
+            "expanded": false,
+            "children": [
+              {
+                "id": "tcp-sendmsg-mv9d1vc0o1c8",
+                "topic": "发送路径源码地图：tcp_sendmsg 到驱动",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>send</code> → <code>sock_sendmsg</code> → <code>tcp_sendmsg</code>（拷入 skb、按 MSS 分段、入 sk 写队列）→ <code>tcp_write_xmit</code>（对照 cwnd/rwnd 决定发多少）→ <code>ip_queue_xmit</code>（查 FIB）→ <code>ip_finish_output</code>（分片/GSO）→ <code>dev_queue_xmit</code> → qdisc → 驱动 <code>ndo_start_xmit</code> → TX ring；发出后 TX 中断释放 skb。</li><li><strong>为什么</strong>：TCP 吞吐由三道闸门决定——发送缓冲、拥塞/通告窗口、qdisc 速率；&quot;发得慢&quot;逐站查闸门。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp.c</code>（<code>tcp_sendmsg</code>）、<code>net/ipv4/tcp_output.c</code>（<code>tcp_write_xmit</code>）、<code>net/ipv4/ip_output.c</code>、<code>net/core/dev.c</code>。</li><li><strong>相关命令</strong>：<code>ss -tm</code>（发送队列 skmem）、<code>tc -s qdisc show</code>（dropped/backlog）、<code>ip -s link</code>。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "qdisc-mv9d1vc0o79x",
+                "topic": "qdisc：发送队列与排队规则",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：qdisc（排队规则）是网卡发送方向的策略层：默认 <code>pfifo_fast</code>/<code>mq</code>（多队列每队列一个），<code>fq</code> 为 pacing 服务，<code>tbf</code>/<code>htb</code>/<code>cake</code> 做限速整形；<code>txqueuelen</code> 是队列长度。</li><li><strong>为什么</strong>：发包速率与线速的差只能靠队列吸收；qdisc 是 tc 流控整形的挂载点，也是 pacing/BBR 的载体。</li><li><strong>源码对应</strong>：<code>net/sched/sch_generic.c</code>（pfifo_fast/mq）、<code>net/sched/sch_fq.c</code>、<code>net/sched/sch_tbf.c</code>。</li><li><strong>相关命令</strong>：<code>tc qdisc show dev eth0</code>、<code>tc -s qdisc show</code>（看 dropped/backlog）。</li><li>【来源：领域知识 + 本地文件（<code>E:\\markdown\\M2(08.24～09.18)\\2026-09-18\\经验沉淀：QOS\\DOCS\\2_Linux_Traffic_Control.md</code>）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "5-tc-linux-mv6idkjcnldj",
+                    "caption": "qdisc 排队规则对应 comnet 的「tc：Linux 的流量控制」实操节点"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "3-2-shaping-mv6idh1drlxs",
+                    "caption": "qdisc 整形对应 comnet QoS 原理的 Shaping 一节"
+                  }
+                ]
+              },
+              {
+                "id": "sendfile-splice-msg-zerocopy-mv9d1vc0osr3",
+                "topic": "零拷贝发送：sendfile、splice 与 MSG_ZEROCOPY",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>read+write</code> 要 2 次数据拷贝 + 4 次上下文切换；<code>mmap+write</code> 少一次拷贝；<code>sendfile</code> 在内核内把文件页直送 socket（网卡支持 scatter-gather 时连 CPU 拷贝都免）；<code>splice</code> 借管道搬移；<code>MSG_ZEROCOPY</code> 把用户页直接注册给 skb（页 pin 住、发完归还）。</li><li><strong>为什么</strong>：静态文件服务/大文件传输的 CPU 大头就是拷贝与切换，砍掉它们是高并发服务的基本功。</li><li><strong>源码对应</strong>：<code>fs/read_write.c</code>（<code>do_sendfile</code>）、<code>fs/splice.c</code>、<code>net/ipv4/tcp.c</code>（zerocopy 分支）。</li><li><strong>相关命令</strong>：<code>strace -e sendfile &lt;cmd&gt;</code>、nginx <code>sendfile on</code>。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "book-linux-proc-mem",
+                    "id": "read-write-mmap-write-sendfile-mv9by5ndt204",
+                    "caption": "零拷贝发送与书1《深入理解Linux进程与内存》的零拷贝节点互为补充"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "detail": "<ul><li><strong>本章要点</strong>：<code>tcp_sendmsg</code> 拷贝分段 → 拥塞与窗口判定 → IP 层查路由 → 邻居解析 → qdisc 排队 → 驱动 TX ring；零拷贝（sendfile/MSG_ZEROCOPY）砍的是用户态拷贝段。</li><li><strong>高频坑</strong>：qdisc 满丢包（<code>tx_dropped</code>）、小包交互被 Nagle + 延迟确认拖慢。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "ip-mv9d1vc0nx9g",
+        "topic": "IP 层、路由与邻居子系统",
+        "expanded": false,
+        "children": [
+          {
+            "id": "ip-mv9d1vc0dzgm",
+            "topic": "IP 层收发",
+            "expanded": false,
+            "children": [
+              {
+                "id": "ip-rcv-ip-mv9d1vc0oee1",
+                "topic": "ip_rcv 与 IP 分片重组",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>ip_rcv</code> 校验头部、过 PREROUTING 钩子，<code>ip_rcv_finish</code> 做路由决策：本机 → <code>ip_local_deliver</code>（重组后交 TCP/UDP）；转发 → FORWARD → POSTROUTING。超过 MTU 且允许分片在 <code>ip_fragment</code> 分片，接收侧 <code>ip_defrag</code> 重组。</li><li><strong>为什么</strong>：PMTU 失败是&quot;小包能通大包丢&quot;的根源；VPN/隧道外层封装吃掉 MTU 时最容易踩。</li><li><strong>源码对应</strong>：<code>net/ipv4/ip_input.c</code>、<code>net/ipv4/ip_fragment.c</code>、<code>net/ipv4/ip_output.c</code>。</li><li><strong>相关命令</strong>：<code>ip link</code>（MTU）、<code>tracepath &lt;host&gt;</code>（路径 MTU）、<code>netstat -s | grep -i frag</code>。</li><li>【来源：领域知识 + 本地文件（<code>E:\\markdown\\M2(08.24～09.18)\\Week3-4\\Wireshark抓包\\markdown文档\\03-ICMP 原理学习文档.md</code> PMTU 部分）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "ip",
+                    "caption": "ip_rcv/分片重组对应 comnet（自顶向下）的「IPv4 与 IP 数据报」"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1vc0vbw6",
+            "topic": "路由子系统",
+            "expanded": false,
+            "children": [
+              {
+                "id": "fib-mv9d1vc09an9",
+                "topic": "路由表 FIB 与策略路由",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：FIB（转发信息库）是内核路由真源，用 LC-trie 高效查找；可有多张表（local/main/default 等），<code>ip rule</code> 按源地址等条件选表再查——即策略路由；路由决策回答&quot;交给谁、从哪个口出、下一跳是谁&quot;。</li><li><strong>为什么</strong>：<code>ip route get &lt;ip&gt;</code> 单步验证&quot;这包会怎么走&quot;，是排障利器；多网卡/容器场景的路由问题全在这层。</li><li><strong>源码对应</strong>：<code>net/ipv4/fib_frontend.c</code>、<code>net/ipv4/fib_trie.c</code>、<code>net/ipv4/route.c</code>、<code>net/ipv4/fib_rules.c</code>。</li><li><strong>相关命令</strong>：<code>ip route show table all</code>、<code>ip rule show</code>、<code>ip route get &lt;ip&gt;</code>、<code>ip monitor route</code>。</li><li>【来源：领域知识 + 本地文件（<code>E:\\markdown\\M3(09.21～10.16)\\W2\\02-路由基础与路由表（默认路由、netifd 路由规则）.md</code>、<code>E:\\markdown\\M3(09.21～10.16)\\W2\\03-静态路由与路由规则（配置方法与工具用法）.md</code>）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "ipaddr",
+                    "caption": "FIB/策略路由对应 comnet 的「IP 地址与子网划分（CIDR）」"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1vc0ccwr",
+            "topic": "邻居子系统",
+            "expanded": false,
+            "children": [
+              {
+                "id": "arp-neighbour-mv9d1vc0z0eq",
+                "topic": "ARP 与邻居表（neighbour）",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：邻居子系统维护&quot;下一跳 IP ↔ MAC&quot;映射与可达性状态机（NUD：INCOMPLETE → REACHABLE → STALE 等）；ARP 请求/应答填充它，出包前查它；表有 <code>gc_thresh</code> 上限，满则丢包。</li><li><strong>为什么</strong>：ping 不通同网段主机先看 <code>ip neigh</code>；大子网/容器密集场景 <code>neighbour: table overflow</code> 是经典事故。</li><li><strong>源码对应</strong>：<code>net/ipv4/arp.c</code>、<code>net/core/neighbour.c</code>。</li><li><strong>相关命令</strong>：<code>ip neigh</code>、<code>arping &lt;ip&gt;</code>、<code>sysctl net.ipv4.neigh.default.gc_thresh3</code>。</li><li>【来源：领域知识 + 本地文件（<code>E:\\markdown\\M2(08.24～09.18)\\Week3-4\\Wireshark抓包\\markdown文档\\02-ARP 原理学习文档.md</code>）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "mac",
+                    "caption": "邻居表机制对应 comnet 的「MAC 地址与 ARP」"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "detail": "<ul><li><strong>本章要点</strong>：IP 层收到包先过 Netfilter 钩子再做路由决策——本机就上交、转发走 FORWARD；路由真源是 FIB（trie 查找），策略路由 = 多表 + <code>ip rule</code>；二层出网靠邻居表（ARP）。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "tcp-mv9d1vc0yuq1",
+        "topic": "TCP 连接：三次握手与状态机",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1vc0rse0",
+            "topic": "连接建立",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9d1vc08tw4",
+                "topic": "三次握手的内核路径与两个队列",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：客户端 <code>connect</code> 发 SYN；服务端 <code>tcp_conn_request</code> 把半连接（request_sock）放进 SYN 队列并回 SYN+ACK；收到 ACK 完成握手，连接进入全连接（accept）队列；<code>accept</code> 从队列取走交给应用。两个队列各有上限（<code>tcp_max_syn_backlog</code>、<code>listen(backlog)</code> 与 <code>somaxconn</code> 的较小值）。</li><li><strong>为什么</strong>：队列溢出的表现是 <code>netstat -s</code> 的 listen drops、<code>ss -lnt</code> 的 Recv-Q 顶到上限——&quot;能 ping 通但偶发连不上&quot;常是这里。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp_input.c</code>（<code>tcp_conn_request</code>）、<code>net/ipv4/tcp_minisocks.c</code>、<code>net/ipv4/inet_connection_sock.c</code>（<code>inet_csk_accept</code>）。</li><li><strong>相关命令</strong>：<code>ss -lnt</code>（listen 态 Recv-Q/Send-Q = 当前/上限）、<code>netstat -s | grep -iE 'listen|syncook'</code>、<code>sysctl net.core.somaxconn net.ipv4.tcp_max_syn_backlog</code>。</li><li>【来源：作者公开文章 + 领域知识 + 本地文件（06-TCP 原理学习文档.md 抓包部分）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "tcp-handshake",
+                    "caption": "内核三次握手路径与 comnet「TCP 连接管理」理论节点互补"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "md-m2-week3-4-wireshark",
+                    "caption": "用 Wireshark 实抓三次握手：comnet 的抓包实操"
+                  }
+                ]
+              },
+              {
+                "id": "syn-flood-syncookies-mv9d1vc0efud",
+                "topic": "SYN Flood 与 syncookies",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：SYN 洪水打满半连接队列；<code>tcp_syncookies=1</code> 时不再排队，把连接信息编码进 SYN+ACK 的序号，收到合法 ACK 直接重建连接，绕过队列占用。</li><li><strong>为什么</strong>：半连接队列是天然攻击面；理解 syncookies 才能读懂高负载下 &quot;SYN cookies sent&quot; 计数的含义与代价（握手选项被丢弃：窗口缩放等）。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp_input.c</code>、<code>net/ipv4/syncookies.c</code>。</li><li><strong>相关命令</strong>：<code>sysctl net.ipv4.tcp_syncookies</code>、<code>netstat -s | grep -i syncookie</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1vc0vf4e",
+            "topic": "状态机与关闭",
+            "expanded": false,
+            "children": [
+              {
+                "id": "tcp-time-wait-mv9d1vc0i5cy",
+                "topic": "TCP 状态机与 TIME_WAIT",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：11 个状态（LISTEN/SYN_SENT/SYN_RECV/ESTABLISHED/FIN_WAIT_1/FIN_WAIT_2/CLOSE_WAIT/LAST_ACK/TIME_WAIT/CLOSING/CLOSE）；主动关闭方收完对端 FIN 并回 ACK 后进 TIME_WAIT，停 2MSL。</li><li><strong>为什么</strong>：TIME_WAIT 两个理由——最后的 ACK 丢了可以重发、让旧连接的迟到报文自然消亡；服务端大量 TIME_WAIT 用 <code>tcp_tw_reuse</code>（依赖时间戳、仅出方向）+ 扩 <code>ip_local_port_range</code> 缓解，而不是硬调大总量。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp_input.c</code>（<code>tcp_rcv_state_process</code>、<code>tcp_time_wait</code>）、<code>net/ipv4/tcp_minisocks.c</code>（<code>tcp_timewait_state_process</code>）。</li><li><strong>相关命令</strong>：<code>ss -tan state time-wait | wc -l</code>、<code>netstat -s | grep -iE 'tw|timewait'</code>、<code>sysctl net.ipv4.tcp_tw_reuse net.ipv4.ip_local_port_range</code>。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "n-mv9d1vc0a6u5",
+                "topic": "四次挥手与关闭路径",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>close</code>/<code>shutdown</code> 发 FIN → 对端 ACK（对端进 CLOSE_WAIT 半关闭，还能继续发数据）→ 对端 close 发 FIN → 本端 ACK 进 TIME_WAIT；RST 是异常路径（未监听、强关等）；<code>SO_LINGER</code> 控制 close 是否等发送缓冲清空。</li><li><strong>为什么</strong>：&quot;谁先 close 谁背 TIME_WAIT&quot;决定服务端要不要重构关闭顺序；CLOSE_WAIT 堆积 = 应用忘了 close（代码泄漏，不是内核参数问题）。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp.c</code>（<code>tcp_close</code>、<code>tcp_shutdown</code>）、<code>net/ipv4/tcp_input.c</code>（FIN 处理）。</li><li><strong>相关命令</strong>：<code>ss -tan state close-wait</code>、<code>tcpdump 'tcp[tcpflags] &amp; (tcp-fin|tcp-rst) != 0'</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<ul><li><strong>本章要点</strong>：握手 = 半连接队列（收到 SYN）→ 全连接队列（完成三次握手）→ <code>accept</code> 取走；状态机 11 态；主动关方 TIME_WAIT 停 2MSL；洪水防护靠 syncookies。</li><li>【来源：领域知识 + 本地文件（<code>E:\\markdown\\M2(08.24～09.18)\\Week3-4\\Wireshark抓包\\markdown文档\\06-TCP 原理学习文档.md</code>）】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "tcp-mv9d1vc0893b",
+        "topic": "TCP 数据传输与可靠性",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1vc09bx2",
+            "topic": "缓冲与背压",
+            "expanded": false,
+            "children": [
+              {
+                "id": "socket-mv9d1vc0zl07",
+                "topic": "socket 收发缓冲区与背压",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：每个 socket 有 <code>sk_rcvbuf</code>/<code>sk_sndbuf</code> 记账上限；收端缓冲满 → 通告窗口缩到 0 → 发端停发（背压传回对端）；发端缓冲满 → <code>send</code> 阻塞或返回 <code>EAGAIN</code>；<code>tcp_moderate_rcvbuf</code> 开自动调优，<code>SO_RCVBUF</code>/<code>SO_SNDBUF</code> 手动封顶；全局水位 <code>tcp_mem</code> 超限触发整体压力回收。</li><li><strong>为什么</strong>：很多&quot;服务变慢&quot;不是 CPU 而是背压链：应用读得慢 → rwnd 收缩 → 对端卡 → 上游超时；<code>ss -tm</code> 直接看每连接 skmem。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp.c</code>、<code>net/ipv4/tcp_input.c</code>（<code>tcp_grow_window</code>/<code>tcp_clamp_window</code>）、<code>net/core/sock.c</code>（缓冲区 setsockopt）。</li><li><strong>相关命令</strong>：<code>ss -tm</code>、<code>sysctl net.ipv4.tcp_rmem net.ipv4.tcp_wmem net.ipv4.tcp_mem</code>。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "tcp-flow",
+                    "caption": "内核 socket 缓冲/背压对应 comnet「TCP 流量控制」（rwnd 机制）"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "n-mv9d1vc0w1c4",
+            "topic": "可靠传输",
+            "expanded": false,
+            "children": [
+              {
+                "id": "sack-mv9d1vc0psob",
+                "topic": "确认应答、重传与 SACK",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：TCP 累积确认（ACK 号 = 期望的下一字节）；RTO 由 srtt/rttvar 演算（Karn 算法排除重传样本），超时重传指数退避；收到 3 个重复 ACK 触发快速重传（不等 RTO）；SACK 选项告知哪些不连续段已到，让发端只补洞。</li><li><strong>为什么</strong>：区分超时重传与快速重传是判断丢包严重度的基本功：RTO 重传连 ACK 都没有（可能网络已断），dup-ACK 只是局部丢包/乱序。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp_input.c</code>（<code>tcp_ack</code>、<code>tcp_fastretrans_alert</code>）、<code>net/ipv4/tcp_timer.c</code>（重传定时器）。</li><li><strong>相关命令</strong>：<code>nstat -az TcpRetransSegs TcpExtTCPSackRecovery</code>、<code>ss -ti</code>（retrans 字段）、<code>tcpdump</code> 分析重传流。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "n-mv9d1vc06jbb",
+                "topic": "滑动窗口与流量控制",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：发送窗口 = min(cwnd, rwnd)；接收方在 ACK 里通告 rwnd，发端不得发出窗口之外的未确认数据；rwnd=0 进入零窗口探测（persist timer 周期探测防死锁）。</li><li><strong>为什么</strong>：流量控制保护&quot;接收方应用&quot;，拥塞控制保护&quot;网络&quot;；两个窗口取 min 是理解一切 TCP 吞吐问题的钥匙。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp_output.c</code>（<code>tcp_select_window</code>）、<code>net/ipv4/tcp_input.c</code>（窗口更新）。</li><li><strong>相关命令</strong>：<code>ss -ti</code>（<code>snd_wnd</code>、<code>rcv_space</code> 字段）。</li><li>【来源：领域知识 + 本地文件（06-TCP 原理学习文档.md）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "s-3-5",
+                    "caption": "滑动窗口对应 comnet（自顶向下）传输层 TCP 章"
+                  }
+                ]
+              },
+              {
+                "id": "nagle-mv9d1vc0iped",
+                "topic": "延迟确认、Nagle 与小包问题",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：延迟确认（delayed ack）最多攒 40ms 再 ACK；Nagle 算法在还有未确认小段时不发新的小段（攒够 MSS 或收到 ACK 才发）；两者叠加是经典 40ms 卡顿；<code>TCP_NODELAY</code> 关 Nagle，<code>TCP_QUICKACK</code> 临时关延迟确认。</li><li><strong>为什么</strong>：RPC/游戏/传感器上报等小包场景不关 Nagle 就是&quot;莫名其妙的延迟&quot;；延迟确认在交互协议上又是省包手段——按场景取舍。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp_output.c</code>（<code>tcp_nagle_check</code>）、<code>net/ipv4/tcp_input.c</code>（延迟确认逻辑）。</li><li><strong>相关命令</strong>：<code>strace -e setsockopt</code>（TCP_NODELAY）、<code>tcpdump</code> 看交互节奏。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<ul><li><strong>本章要点</strong>：可靠性 = 序号 + 确认 + 重传（RTO/快速重传/SACK）+ 滑动窗口；背压 = socket 缓冲满 → 接收窗口 0 → 发端停；<code>ss -ti</code> 一条命令看全。</li><li>【来源：领域知识 + 本地文件（06-TCP 原理学习文档.md）】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "tcp-mv9d1vc0tox6",
+        "topic": "TCP 拥塞控制",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1vc0f9th",
+            "topic": "算法与实现",
+            "expanded": false,
+            "children": [
+              {
+                "id": "n-mv9d1vc0v2a5",
+                "topic": "拥塞控制框架：慢启动、拥塞避免与快速恢复",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：慢启动 cwnd 指数增长到 ssthresh；之后每 RTT 线性 +1 MSS（拥塞避免）；快重传后进快恢复（reno 减半），超时则 cwnd 归 1 重来；算法以 <code>tcp_congestion_ops</code> 结构注册，<code>tcp_slow_start</code>/<code>cong_avoid</code> 是公共骨架。</li><li><strong>为什么</strong>：内核把算法做成可插拔（<code>tcp_congestion_control</code> 可切换），理解框架才能看懂任一算法的差异点。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp_cong.c</code>、<code>net/ipv4/tcp_input.c</code>（<code>tcp_fastretrans_alert</code>）。</li><li><strong>相关命令</strong>：<code>sysctl net.ipv4.tcp_congestion_control</code>、<code>cat /proc/sys/net/ipv4/tcp_available_congestion_control</code>、<code>ss -ti</code>（cwnd/ssthresh）。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "cubic-linux-mv9d1vc07chl",
+                "topic": "CUBIC：Linux 默认拥塞算法",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：窗口按三次函数随时间增长——丢包点 Wmax 附近爬得慢（稳态），远离后增长快（快速抢带宽）；乘性降窗 β=0.7（比 reno 的 0.5 温和）；K 为到达 Wmax 的时刻；RTT 无关的增长使长短 RTT 流更公平。</li><li><strong>为什么</strong>：高 BDP（长肥管道）下 reno 恢复太慢，CUBIC 用时间函数而不是 RTT 计数恢复窗口，是它成为默认的原因。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp_cubic.c</code>（<code>bictcp_update</code>）。</li><li><strong>相关命令</strong>：<code>sysctl -w net.ipv4.tcp_congestion_control=cubic</code>、<code>ss -ti</code>。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "tcp-congestion",
+                    "caption": "CUBIC 实现对应 comnet「TCP 拥塞控制」理论节点"
+                  }
+                ]
+              },
+              {
+                "id": "bbr-pacing-mv9d1vc0xfrn",
+                "topic": "BBR 与 pacing",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：BBR 把瓶颈建模为 BDP（带宽 × 最小 RTT），维护 BtlBw 与 RTprop 两个估计量并周期探测；不依赖丢包/填满缓冲判断拥塞；发包节奏由 pacing（常配 <code>fq</code> qdisc）平滑到估算速率，避免突发打满队列。</li><li><strong>为什么</strong>：深缓冲/随机丢包链路（无线、跨洋）上 cubic 被丢包信号误导而吞吐低，BBR 靠模型绕开——这也是 CDN/云厂商上线它的原因。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp_bbr.c</code>（内核版本不同或为 <code>tcp_bbr2.c</code>）、<code>net/sched/sch_fq.c</code>（pacing 载体）。</li><li><strong>相关命令</strong>：<code>sysctl -w net.ipv4.tcp_congestion_control=bbr</code>、<code>tc qdisc replace dev eth0 root fq</code>、<code>ss -ti</code>（bbr 字段）。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "s-3-7",
+                    "caption": "BBR 与 comnet 3.7 TCP 拥塞控制章对照"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "6-3-tcp-mv6idh1e6paw",
+                    "caption": "入口丢包影响 TCP 反馈的限速原理（comnet QoS）与 BBR 的丢包不敏感性互补"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "detail": "<ul><li><strong>本章要点</strong>：框架 = 慢启动/拥塞避免/快重传快恢复，围绕 cwnd 与 ssthresh；CUBIC 以三次函数逼近上次丢包点；BBR 改用 BDP 模型 + pacing，不把丢包当拥塞信号。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "socket-api-io-mv9d1vc00tyw",
+        "topic": "socket API 与 IO 多路复用",
+        "expanded": false,
+        "children": [
+          {
+            "id": "socket-mv9d1vc0g0ya",
+            "topic": "socket 生命周期",
+            "expanded": false,
+            "children": [
+              {
+                "id": "socket-listen-accept-mv9d1vc00jjo",
+                "topic": "socket 创建与 listen/accept 内核路径",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>socket()</code> → <code>sock_create</code> → <code>inet_create</code>（按协议族/类型找 proto）；<code>bind</code> 绑地址端口；<code>listen</code> 建全连接队列（backlog 与 <code>somaxconn</code> 取小）；<code>accept</code> 从全连接队列取走完成握手的连接，新 socket 与监听 socket 分离；连接由四元组唯一标识，监听 socket 只做&quot;接待&quot;。</li><li><strong>为什么</strong>：accept 慢、监听队列溢出、TIME_WAIT 期绑定失败（<code>SO_REUSEADDR</code>）都在这条路径上。</li><li><strong>源码对应</strong>：<code>net/socket.c</code>、<code>net/ipv4/af_inet.c</code>、<code>net/ipv4/inet_connection_sock.c</code>（<code>inet_csk_accept</code>）。</li><li><strong>相关命令</strong>：<code>ss -tlnp</code>、<code>strace -e socket,bind,listen,accept4 ./server</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "socket",
+                    "caption": "listen/accept 内核路径对应 comnet「Socket 编程接口」"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "tcp-server-c-mumuo0dqgag8",
+                    "caption": "服务端 socket/bind/listen/accept 代码实操（comnet tcp_server.c）"
+                  }
+                ]
+              },
+              {
+                "id": "send-recv-mv9d1vc0dm2i",
+                "topic": "send/recv 系统调用的内核路径",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>send</code> → <code>sock_sendmsg</code> → <code>tcp_sendmsg</code>：用户数据拷进 skb、按 MSS 分段、入 sk 写队列，能发就推（受 cwnd/rwnd 限制），不能发就攒在缓冲；<code>recv</code> → <code>tcp_recvmsg</code>：从接收队列拷到用户缓冲，无数据则阻塞或 <code>EAGAIN</code>；粘包/半包是字节流语义的自然结果，边界由应用层自定。</li><li><strong>为什么</strong>：理解&quot;send 成功 ≠ 对端收到&quot;（只是进了发送缓冲）是排查链路问题的心智分水岭。</li><li><strong>源码对应</strong>：<code>net/ipv4/tcp.c</code>（<code>tcp_sendmsg</code>/<code>tcp_recvmsg</code>）。</li><li><strong>相关命令</strong>：<code>strace -e sendto,recvfrom,write,read -p &lt;pid&gt;</code>、<code>ss -tm</code>。</li><li>【来源：领域知识 + 本地文件（进程间通信.md tcp socket 实操）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "md-m1-week2-day4-03-tcp-socket",
+                    "caption": "send/recv 系统调用路径对应 comnet 的 tcp-socket 实操笔记"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "tcp-client-c-mumuo0dpsob8",
+                    "caption": "客户端 connect/send/recv 代码实操（comnet tcp_client.c）"
+                  }
+                ]
+              },
+              {
+                "id": "netlink-mv9d1vc0gmk2",
+                "topic": "Netlink 套接字：内核与用户态的配置通道",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：netlink 是内核与用户态的双向消息通道（<code>AF_NETLINK</code>）；<code>NETLINK_ROUTE</code>（rtnetlink）承载路由/地址/链路变更通知，<code>ip</code>/<code>ss</code> 命令全走它（<code>ss</code> 用 netlink diag 取内核 socket 状态）；generic netlink 供扩展子系统注册 family。</li><li><strong>为什么</strong>：要写&quot;监听网卡上下线/路由变化&quot;的服务必须用 netlink 订阅组播组，而不是轮询 <code>ip route</code>。</li><li><strong>源码对应</strong>：<code>net/netlink/af_netlink.c</code>、<code>net/core/rtnetlink.c</code>。</li><li><strong>相关命令</strong>：<code>ip monitor link</code>、<code>ip monitor route</code>（rtnetlink 订阅的现成客户端）、<code>ss -i</code>。</li><li>【来源：领域知识 + 本地文件（<code>E:\\markdown\\M1(07.27~08.21)\\Week2\\day3内核和应用层通信\\Linux内核和应用层常见的通信方式.md</code> netlink 节）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "md-m1-week2-day3-03-netlink",
+                    "caption": "netlink 原理对应 comnet 的 netlink 套接字实操（内核模块示例）"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "io-reactor-mv9d1vc0au3i",
+            "topic": "IO 多路复用与 Reactor",
+            "expanded": false,
+            "children": [
+              {
+                "id": "select-poll-epoll-mv9d1vc0jmqy",
+                "topic": "select/poll 的局限与 epoll 原理",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：select 每次传满 fd 位图（1024 上限）且线性扫描；poll 无上限但每次全量传 + 全量扫；epoll 在内核维护红黑树（<code>epoll_ctl</code> 注册一次）+ 就绪链表（设备就绪回调 <code>ep_poll_callback</code> 挂链），<code>epoll_wait</code> 只返回就绪 fd，复杂度 O(就绪数)。</li><li><strong>为什么</strong>：万级连接下 select 的 O(n) 扫描与重复拷贝是数量级差距；epoll 高性能的根源是&quot;注册一次 + 回调挂链&quot;。</li><li><strong>源码对应</strong>：<code>fs/eventpoll.c</code>（<code>ep_insert</code>、<code>ep_poll_callback</code>）。</li><li><strong>相关命令</strong>：<code>strace -e epoll_create1,epoll_ctl,epoll_wait ./nginx</code>。</li><li>【来源：作者公开文章 + 领域知识】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "book-linux-proc-mem",
+                    "id": "select-poll-epoll-mv9by5ncpfrw",
+                    "caption": "epoll 内核原理与书1（进程与内存）的 select/poll/epoll 节点互为补充"
+                  }
+                ]
+              },
+              {
+                "id": "reactor-et-lt-mv9d1vc0dei3",
+                "topic": "Reactor 模式与 ET/LT",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：Reactor = IO 多路复用 + 事件分发 + 回调 handler（nginx/redis 同构）；LT（水平触发，默认）未读完反复通知；ET（边缘触发）只在状态翻转时通知一次，必须配非阻塞 fd 循环读到 <code>EAGAIN</code>。</li><li><strong>为什么</strong>：ET 少系统调用但易漏读；多 worker 共享监听 fd 的惊群用 <code>EPOLLEXCLUSIVE</code>/<code>SO_REUSEPORT</code> 缓解——高并发服务端设计的核心选型。</li><li><strong>源码对应</strong>：<code>fs/eventpoll.c</code>（LT/ET 行为差异）、用户态框架各自实现。</li><li><strong>相关命令</strong>：无直接命令；<code>wrk -c1000</code> 压测对比 LT/ET 行为。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<ul><li><strong>本章要点</strong>：socket 三件套（创建/listen/accept）与 send/recv 各有内核路径；select → poll → epoll 的演进 = &quot;别再每次重复传 fd 集合 + 线性扫&quot;；Reactor 是 epoll 的用户态组织模式。</li><li>【来源：领域知识 + 本地文件（<code>E:\\markdown\\M1(07.27~08.21)\\Week2\\day4进程间通信\\进程间通信.md</code> socket 部分）】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "netfilter-mv9d1vc0p769",
+        "topic": "Netfilter 与连接跟踪",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1vc08j9b",
+            "topic": "框架与表链",
+            "expanded": false,
+            "children": [
+              {
+                "id": "netfilter-hook-mv9d1vc1osta",
+                "topic": "Netfilter 五链四表与 hook 注册",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：5 个挂点：PREROUTING/INPUT/FORWARD/OUTPUT/POSTROUTING；4+1 张表：filter（过滤）、nat（地址转换）、mangle（改字段）、raw（免 conntrack）、security；每个 hook 点上按优先级串着注册的回调链（<code>nf_hook_ops</code>），规则按表/链组织。</li><li><strong>为什么</strong>：报文在 Linux 里&quot;到哪一步能被拦/改&quot;完全由这张钩子图决定；防火墙、NAT、Docker 端口映射都站在它肩上。</li><li><strong>源码对应</strong>：<code>net/netfilter/core.c</code>（<code>nf_hook</code> 执行）、<code>net/ipv4/netfilter/ip_tables.c</code>（iptables 引擎）。</li><li><strong>相关命令</strong>：<code>iptables -L -n -v --line-numbers</code>、<code>nft list ruleset</code>。</li><li>【来源：领域知识 + 本地文件（05-netfilter-openwrt.md）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "2-netfilter-mv6idkjb2lgq",
+                    "caption": "五链四表与 comnet「Netfilter 框架」一一对应"
+                  }
+                ]
+              },
+              {
+                "id": "iptables-nftables-mv9d1vc1k4sc",
+                "topic": "iptables/nftables 命令面与规则组织",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：iptables 按&quot;表 → 链 → 规则（匹配 + 动作 TARGET）&quot;组织，规则线性匹配；nftables 是下一代引擎：内核态虚拟机、统一 IPv4/6、原子替换规则集；OpenWrt 的 fw3/fw4 是它们的封装。</li><li><strong>为什么</strong>：读懂生产机的 <code>iptables-save</code>/<code>nft list ruleset</code> 是网络排障基础功；<code>-m conntrack --ctstate ESTABLISHED,RELATED</code> 放行已有流是标准写法。</li><li><strong>源码对应</strong>：<code>net/ipv4/netfilter/ip_tables.c</code>、<code>net/netfilter/nf_tables_api.c</code>。</li><li><strong>相关命令</strong>：<code>iptables-save</code>、<code>iptables -t nat -A PREROUTING -p tcp --dport 80 -j DNAT --to &lt;ip&gt;:&lt;port&gt;</code>、<code>nft list ruleset</code>。</li><li>【来源：领域知识 + 本地文件（M3 W3 openwrt 防火墙文档）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "2-3-iptables-mv6idkjbiji4",
+                    "caption": "iptables 表链规则对应 comnet「iptables：表、链、规则」"
+                  },
+                  {
+                    "project": "comnet",
+                    "id": "2-4-nftables-mv6idkjbn144",
+                    "caption": "nftables 下一代引擎对应 comnet「nftables」节点"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "nat-mv9d1vc1f64b",
+            "topic": "连接跟踪与 NAT",
+            "expanded": false,
+            "children": [
+              {
+                "id": "conntrack-mv9d1vc19ak2",
+                "topic": "conntrack：连接跟踪表",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：conntrack 在 PREROUTING/OUTPUT 为每个&quot;流&quot;（五元组）建表项（状态 ESTABLISHED/RELATED/NEW/INVALID + 各协议超时），后续包靠它识别&quot;同一条流&quot;；表容量 <code>nf_conntrack_max</code>，哈希桶 <code>nf_conntrack_buckets</code>。</li><li><strong>为什么</strong>：表满的后果是新连接被静默丢弃（dmesg：<code>nf_conntrack: table full, dropping packet</code>）；大量短连接业务（爬虫/网关）最容易撑爆。</li><li><strong>源码对应</strong>：<code>net/netfilter/nf_conntrack_core.c</code>、<code>net/netfilter/nf_conntrack_netlink.c</code>（用户态查询）。</li><li><strong>相关命令</strong>：<code>sysctl net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max</code>、<code>conntrack -L</code>、<code>dmesg | grep conntrack</code>。</li><li>【来源：领域知识 + 本地文件（M3 W3 NAT/防火墙文档）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "2-2-conntrack-mv6idkjblcny",
+                    "caption": "conntrack 连接跟踪表对应 comnet「连接跟踪（conntrack）」节点"
+                  }
+                ]
+              },
+              {
+                "id": "nat-mv9d1vc1soug",
+                "topic": "NAT 的内核实现",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：SNAT 在 POSTROUTING 改源地址（家庭路由的 masquerade），DNAT 在 PREROUTING 改目的地址（端口映射）；nat 表只对流的第一条包查规则，后续包按 conntrack 记录的映射自动改写；ALG 助手处理载荷里的地址。</li><li><strong>为什么</strong>：NAT 与 conntrack 强绑定——理解&quot;规则只查一次、映射跟随流&quot;才能解释&quot;加了规则老连接为什么不生效&quot;。</li><li><strong>源码对应</strong>：<code>net/netfilter/nf_nat_core.c</code>、<code>net/ipv4/netfilter/</code>（按内核版本路径略有差异）。</li><li><strong>相关命令</strong>：<code>iptables -t nat -L -n -v</code>、<code>conntrack -L -p tcp --dport 80</code>（看 NAT 记录）。</li><li>【来源：领域知识 + 本地文件（03-NAT、Firewall 与 LAN→WAN 转发流程.md）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "nat",
+                    "caption": "NAT 内核实现（与 conntrack 绑定）对应 comnet「NAT 网络地址转换」"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "detail": "<ul><li><strong>本章要点</strong>：Netfilter 在协议栈 5 个 hook 点挂回调链，iptables/nftables 是规则引擎；conntrack 在 PREROUTING/OUTPUT 建&quot;流&quot;表，NAT 基于它改写五元组；表满 = 新连接被静默丢弃。</li><li>【来源：领域知识 + 本地文件（<code>E:\\markdown\\M3(09.21～10.16)\\W3\\03-NAT、Firewall 与 LAN→WAN 转发流程.md</code>、<code>E:\\markdown\\M3(09.21～10.16)\\W3\\openwrt官方文档\\05-netfilter-openwrt.md</code>）】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      },
+      {
+        "id": "n-mv9d1vc1xvvz",
+        "topic": "性能观测与调优",
+        "expanded": false,
+        "children": [
+          {
+            "id": "n-mv9d1vc1y5eb",
+            "topic": "开销与观测",
+            "expanded": false,
+            "children": [
+              {
+                "id": "cpu-mv9d1vc1pj0x",
+                "topic": "收发包路径的 CPU 开销与中断分布",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：每包成本 = 中断 + 软中断 + 数据拷贝 + 锁竞争 + 上下文切换；单队列网卡把全部软中断压在一个核上（<code>%si</code> 100% 而其它核闲）；GRO/GSO/TSO 把多个小包合并成大段处理，显著省 CPU。</li><li><strong>为什么</strong>：&quot;加机器不如先看中断分布&quot;；中断亲和（<code>smp_affinity</code>）、多队列 RSS、RPS 软分发是扩收包能力的第一梯队。</li><li><strong>源码对应</strong>：<code>net/core/dev.c</code>（GRO：<code>dev_gro_receive</code>）、驱动 TSO 支持。</li><li><strong>相关命令</strong>：<code>mpstat -P ALL 1</code>（%soft）、<code>cat /proc/interrupts</code>、<code>ethtool -k eth0</code>（offload 开关）。</li><li>【来源：领域知识 + 作者公开文章】【置信度：待与实体书核对】</li></ul>"
+              },
+              {
+                "id": "ss-tcpdump-ethtool-proc-mv9d1vc1qfqf",
+                "topic": "观测工具箱：ss、tcpdump、ethtool 与 /proc",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：<code>ss -tinp</code>（每连接：RTT/cwnd/重传/skmem 全量）、<code>netstat -s</code>（协议栈计数器：丢包/溢出/重传都在）、<code>ethtool -S</code>（网卡硬件计数）、<code>tcpdump</code>（AF_PACKET 挂点抓原始帧，BPF 过滤）、<code>/proc/net/snmp</code>、<code>/proc/net/netstat</code>（原始计数源）。</li><li><strong>为什么</strong>：包在内核后半段&quot;消失&quot;时 tcpdump 看不到，必须靠计数器逐站对账——先定位丢在哪一层再下结论。</li><li><strong>相关命令</strong>：<code>ss -ti dst &lt;ip&gt;</code>、<code>netstat -s | grep -iE 'drop|overflow|retrans'</code>、<code>tcpdump -i eth0 -nn 'tcp port 80' -w a.pcap</code>。</li><li>【来源：领域知识 + 本地文件（<code>E:\\markdown\\M2(08.24～09.18)\\Week3-4\\Wireshark抓包\\markdown文档\\</code> 抓包系列）】【置信度：待与实体书核对】</li></ul>",
+                "links": [
+                  {
+                    "project": "comnet",
+                    "id": "md-m2-week3-4-wireshark",
+                    "caption": "观测/抓包实操对应 comnet 的 Wireshark 抓包笔记"
+                  }
+                ]
+              },
+              {
+                "id": "sysctl-mv9d1vc1izn5",
+                "topic": "sysctl 关键参数与背压排查阶梯",
+                "expanded": false,
+                "children": [],
+                "detail": "<ul><li><strong>是什么</strong>：高频参数——<code>somaxconn</code>/<code>tcp_max_syn_backlog</code>（握手队列）、<code>tcp_rmem</code>/<code>tcp_wmem</code>/<code>tcp_mem</code>（缓冲）、<code>nf_conntrack_max</code>（跟踪表）、<code>tcp_tw_reuse</code>/<code>ip_local_port_range</code>（TIME_WAIT/端口）；排查阶梯从外向内：网卡计数 → tcpdump → <code>netstat -s</code> → 软中断分布 → conntrack 数量 → listen 队列 Recv-Q → <code>ss -tm</code> 缓冲 → 应用日志。</li><li><strong>为什么</strong>：改参数前先拿到&quot;哪一站堵&quot;的证据，否则只是随机调参；每一档都有对应的观测命令。</li><li><strong>相关命令</strong>：<code>sysctl -a | grep -E 'net\\.(ipv4\\.tcp|netfilter|core\\.)'</code>、<code>ss -s</code>（总览）、<code>dmesg | grep -iE 'conntrack|drop'</code>。</li><li>【来源：领域知识】【置信度：待与实体书核对】</li></ul>"
+              }
+            ]
+          }
+        ],
+        "detail": "<ul><li><strong>本章要点</strong>：排查阶梯 = 网卡计数 → tcpdump 有无 → 协议统计 → 软中断/中断分布 → conntrack/listen 队列 → socket 缓冲 → 应用；<code>ss -ti/-tm</code> + <code>netstat -s</code> + <code>ethtool -S</code> 三件套覆盖大半。</li><li>【来源：领域知识 + 本地文件（M2 Week3-4 Wireshark 抓包系列）】【置信度：待与实体书核对】</li></ul>",
+        "origin": {
+          "kind": "import",
+          "src": "C:/Users/JUNNAN~1.TAN/AppData/Local/Temp/book-linux-net-outline.md",
+          "sha256": "25b9296b8f7e8618d669ba44f846a17d7f316a18450468a5ccd481ca3cf83f25",
+          "at": "2026-10-15T09:53:00.380Z",
+          "tool": "import-md"
+        }
+      }
+    ]
+  }
+}
