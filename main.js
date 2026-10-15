@@ -2535,11 +2535,16 @@ async function runSmoke(win) {
    * ⇒ 变的只是副本 ✓。现在改成"开跑记真实侧指纹 → 跑完复核"，只有**真实侧**变了才算 ✗。
    * ⚠️⚠️ 上一版**还有一档**是错的（本批改）：真实侧变了就一律判红 —— 而**同机有人正开着这个应用**
    * 是最普通的情形，那个实例会一直写自己的 `.ui-state.json` ⇒ **必然假红**（假红的下场是连真红也不看）。
-   * 现在按 skill §G 第 4 条分**三档**（判据与三条正证据写在 `scripts/smoke/real-write-guard.js` 一处）：
+   * 现在按 skill §G 第 4 条分**三档**（判据与四条正证据写在 `scripts/smoke/real-write-guard.js` 一处）：
    *   ① 本次自己写的（或没有任何"别人写的"证据）⇒ 🚨 判红；② 有"不是本次写的"正证据 ⇒ 响亮**本次没验**
    *   （不计数、不阻断、不计产品缺陷）；③ 真值采不到 ⇒ 判红。
    * 环境准入（**独立探针**，不问产品要结论）：扫真实 `projects/<项目>/.ui-state.json` 的 `uiPid`，看有没有
-   * **另一个活着的界面实例** —— 它在写真实目录，那就是本条假红的来源。 */
+   * **另一个活着的界面实例** —— 它在写真实目录，那就是本条假红的来源。
+   * 【效率批 3 增补 · ⓓ 在册批】CLI/代理**批写者没有界面实例可归因** ⇒ "并行书批每写一次全链就红一次" ✗。
+   *   修法 = **登记式归因**（不放宽 ✗）：写者按「先登记后写」把自报登记（pid + 批名 + 时间窗）落进
+   *   `projects/.writers/<批id>.json`（登记口 `scripts/register-batch-writer.js`）；复核读登记表，
+   *   **窗口内 + 非本进程** ⇒ 归给该批（响亮"本次没验（在册批：<id>）"）；窗口外自动失效 ⇒ 无永久豁免；
+   *   pid = 本进程的登记不给免责（自己写 ⇒ 仍红 ✗）；未登记的陌生人写 ⇒ 照旧判红 ✓。 */
   const realWriteGuard = require('./scripts/smoke/real-write-guard.js');
   const REAL_SNAP = new Map();
   const REAL_SNAP_AT = Date.now();          // 复核时间窗的左端（右端在复核那一刻现取）
@@ -2547,9 +2552,25 @@ async function runSmoke(win) {
   let realWriteUnverified = null;
   let REAL_PROBE = { writers: [], foreignAlive: [], errors: [] };
   const sha12 = (p) => { try { return require('crypto').createHash('sha1').update(fs.readFileSync(p)).digest('hex').slice(0, 12); } catch (e) { return '?'; } };
+  /* 批登记目录（效率批 3）：CLI/代理批写者的「先登记后写」台账，是**门禁侧**的豁免账本 ⇒
+   * 不算项目数据：不进真实数据指纹（下面 listRealFiles 显式跳过）、gitignore ✗；
+   * 登记条目过期自动失效（窗口），判据与四条正证据在 real-write-guard.js 一处 ✓ */
+  const WRITERS_DIR = path.join(REAL_PROJECTS_DIR, realWriteGuard.WRITERS_DIR);
+  /** 读登记表（IO 在这一处；目录不存在 = 没有在册批，是常态 ✓）。坏文件 text=null ⇒ 守卫记读数不给豁免 */
+  const listWriterFiles = () => {
+    let names = [];
+    try { names = fs.readdirSync(WRITERS_DIR, { withFileTypes: true })
+      .filter((e) => e.isFile() && /\.json$/.test(e.name)).map((e) => e.name); }
+    catch (e) { return []; }
+    return names.map((n) => ({ id: n.slice(0, -5), text: (() => {
+      try { return fs.readFileSync(path.join(WRITERS_DIR, n), 'utf8'); } catch (e2) { return null; }
+    })() }));
+  };
   const listRealFiles = (dir, base, out) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name); const rel = base ? base + "/" + e.name : e.name;
+      // 批登记目录是门禁自己的豁免台账（上面 WRITERS_DIR 的注释）⇒ 不进被检面（只跳根下这一处）
+      if (!base && e.isDirectory() && e.name === realWriteGuard.WRITERS_DIR) continue;
       if (e.isDirectory()) listRealFiles(p, rel, out); else out.push(rel);
     }
     return out;
@@ -2585,6 +2606,16 @@ async function runSmoke(win) {
             + REAL_PROBE.foreignAlive.join(',') + '）：它在写真实目录 ⇒ 本条只能给"本次没验"'
           : ''));
       REAL_PROBE.errors.forEach((x) => console.log('[smoke] 环境探针：' + x));
+      /* 在册批（基线侧读数）：有谁按「先登记后写」登记了批写入窗 ⇒ 复核时窗口内的写入归给它。
+       * 复核侧会**再读一次**（批可能在本次运行中途才登记 —— 那是"先登记后写"的正常次序 ✓）。 */
+      const REG_AT_START = realWriteGuard.parseWriterRegistry(listWriterFiles(),
+        { ourPid: process.pid, isAlive: uiState.pidAlive });
+      console.log('[smoke] 批登记（projects/' + realWriteGuard.WRITERS_DIR + '/）：'
+        + REG_AT_START.batches.length + ' 个在册批'
+        + (REG_AT_START.batches.length
+          ? '（' + REG_AT_START.batches.map((b) => b.id + ' pid=' + b.pid + (b.expired ? ' 已过期' : '')).join(' · ') + '）'
+          : '')
+        + (REG_AT_START.errors.length ? '；坏条目 ' + REG_AT_START.errors.length + ' 个（按无效处理 ⇒ 不给豁免）' : ''));
       if (process.env.MM_SMOKE_LEAK_INJECT === '1') {
         // 判别力证明用（只在显式开关下生效 ✓）：故意往**真实**目录写一个文件 ⇒
         // 跑完复核必须打印 ✗ 并让退出码非 0 ✓。它是**本进程**写的（无写入者 pid、时间戳在窗口内）
@@ -2933,7 +2964,8 @@ async function runSmoke(win) {
   }
   clearTimeout(guard);
   /* 真实数据零写入：跑完复核真实侧，**按三档归因**（判据在 scripts/smoke/real-write-guard.js 一处）。
-   * 逐文件的正证据：写入者 pid（`.ui-state.json` 的 `uiPid`）/ 时间戳落在本次运行窗口之外。
+   * 逐文件的正证据：写入者 pid（`.ui-state.json` 的 `uiPid`）/ 时间戳落在本次运行窗口之外 /
+   * 在册批的时间窗（projects/.writers/，效率批 3 增补 ⓓ）。
    * 采不到真值（复核自己失败）⇒ 判红 ✓（不许把"没验"报成"通过"）。 */
   try {
     if (fs.existsSync(REAL_PROJECTS_DIR)) {
@@ -2960,14 +2992,18 @@ async function runSmoke(win) {
           }
         }
       }
+      // 在册批（复核侧**再读一次**：批可能在本次运行中途才登记 —— 先登记后写的正常次序 ✓）
+      const registry = realWriteGuard.parseWriterRegistry(listWriterFiles(),
+        { ourPid: process.pid, isAlive: uiState.pidAlive });
       const verdict = realWriteGuard.classifyRealWrites(changes, {
         ourPid: process.pid,
         windowStartMs: REAL_SNAP_AT,
         windowEndMs: Date.now(),
         othersAlive: REAL_PROBE.foreignAlive,
+        registeredBatches: registry.batches,
         probeError: null
       });
-      for (const line of realWriteGuard.summaryLines(verdict, { probe: REAL_PROBE })) {
+      for (const line of realWriteGuard.summaryLines(verdict, { probe: REAL_PROBE, registry: registry })) {
         console.log('[smoke] ' + line);
       }
       if (verdict.verdict === 'leak') {
@@ -3055,8 +3091,13 @@ async function runSmoke(win) {
    * 只打印"跑了什么"时，"没验"会被读成"过了" ✗）。第二档**不进退出码**：红的是环境不是产品，
    * 长期挂红会让读者连真红也不看（skill §G 第 4 条）；但它必须响亮 ✓。 */
   if (realWriteUnverified) {
-    console.log('[smoke] ⚠️ 真实数据零写入：**本次没验（环境有他人写入）** —— 不参与计数、不阻断退出码、'
-      + '也不计成产品缺陷；要它变绿：先关掉同机正在使用本应用的实例，再跑一次 ✓');
+    const regIds = realWriteUnverified.registryIds || [];
+    console.log('[smoke] ⚠️ 真实数据零写入：**本次没验'
+      + (regIds.length ? '（在册批：' + regIds.join('、') + '）' : '（环境有他人写入）')
+      + '** —— 不参与计数、不阻断退出码、也不计成产品缺陷；要它变绿：'
+      + (regIds.length
+        ? '等在册批过期/结束、且同机没有界面实例在写，再跑一次 ✓'
+        : '先关掉同机正在使用本应用的实例，再跑一次 ✓'));
   }
   /* 退出码 = 三样：真失败的断言 · 真实数据被动过 · **严格档下被计成失败的"未验证"**。
    * ⚠️ 开关关着时这一项恒为 0（短路）⇒ 退出码与加它之前完全一致 ✓；数量由 `tally()` 的严格档读数给，

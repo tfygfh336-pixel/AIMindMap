@@ -21,7 +21,23 @@ body { display: flex; flex-direction: column; background: #f5f6f8; color: #1f232
 }
 #toolbar button:hover { background: #f0f4ff; border-color: #1664ff; color: #1664ff; }
 #toolbar .spacer { flex: 1; }
-#status-text { font-size: 12px; color: #86909c; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 【工具栏几何确定性（域 37"晚到位移"批 · 2026-10-16）】下面两条把 #toolbar 的**行数**从
+ * "运行期文本的宽度"里解耦出来 —— 此前两样东西都会在运行中改变工具栏的高度（每多一行
+ * 整幅画布下移 33px，"跨状态比绝对坐标"的判据随之漂移，域 37 的圆钮几何当场变红 ✗）：
+ *   ① #project-select 的宽度 = 最宽 option（项目名会越来越长：书项目把它撑到实测 466px）
+ *      ⇒ 无上限 ⇒ 顶栏剩余空间被吃光，一条长状态文案就把 1 行挤成 2 行；
+ *   ② #status-text 的宽度 = 当前消息的长度（0–280px 实时变），而 setFdBoxLock / 拖动上小锁
+ *      都会写一条 280px 的长消息 —— 它恰好落在断言"量基线"与"读数"之间 ⇒ 三签稳定也盖不住
+ *      （交互自己引起的持久状态变化，不是时序；A/B 实测：同一顶栏短状态 79px ↔ 长状态 112px）。
+ * 修法 = 让**每个子项的宽度都不随运行期内容变**：select 封顶 280px（下拉列表仍显示全名），
+ * 状态条固定占 280px（右缘贴住 ✕，短消息只是右侧留白；省略号/上限照旧）。
+ * ⇒ 工具栏行数 = f(窗口宽, 侧栏宽)，只在这两者变化时才变（那本来就该重排）✓。
+ * 实测依据（修前，2026-10-16 全链）：链内侧栏关 ⇒ 顶栏 46px，锁点击后 79px（+33，③ 圆钮
+ * 452→485、⑤ 框位移 79≠46）；单跑侧栏开 ⇒ 顶栏恒 112px ⇒ 两断言绿 —— 同一份代码，
+ * 唯一差别就是"顶栏有没有提前被挤到它的稳态行数"。R4 在 index.html 顶部留过的
+ * "+33px ⇒ 域 37 圆钮几何当场变红"是同一缺陷的按钮版，这里是文案/项目名版。 */
+#project-select { max-width: 280px; }
+#status-text { font-size: 12px; color: #86909c; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 0 280px; }
 
 /* ---------------- 工具栏搜索框 ---------------- */
 #search-box {

@@ -69,6 +69,10 @@ projects/**/.bindings.json
 # 所以忽略规则针对的是项目根下那个点目录，而不是 `projects/**/` 里的某个文件。
 projects/.visits/
 
+# 「真实数据零写入」守卫的**批登记台账**（效率批 3）：CLI/代理批写者的自报登记（pid+批名+时间窗），
+# 先登记后写、窗口外自动失效 ⇒ 本机运行时协调信号，不是笔记数据（守卫侧口径见 scripts/smoke/real-write-guard.js）
+projects/.writers/
+
 # 工作产物区（AI 的分析稿/评审稿/读图记录/探针脚本；可随时整目录删除，不入库）
 # 落盘规矩的唯一杂物区 —— 见 SKILL.md 顶部「落盘规矩」与 docs/ARCHITECTURE.md §5
 .review/

@@ -196,12 +196,198 @@ describe('三态在汇总行里同时可见（"没验"不许被读成"过了"）
 });
 
 /* ============================================================================
- * 判别力证明（**这是本批真正改掉的行为**）：把**旧实现**放回同一组夹具上。
- * 旧实现 = "真实侧有差异 ⇒ 一律判红"（不看写入者 pid、不看时间戳、不问环境）。
- * 判据：它在"他人写入"那两族夹具上**必红**（这就是现场读到的那条假红的形状），
- * 而新实现在同一组夹具上给出 `unverified`（不判红、也不当通过）✓；
- * 同时新实现在"本次自己写"那组夹具上**仍然判红** ⇒ 降档没有变成"一律放过" ✗。
+ * 效率批 3 增补：ⓓ **批登记式归因**（四态 + 判别力）
+ * 背景：CLI/代理批写 `projects/**` 没有界面实例可归因（无 `.ui-state.json`）⇒ 一律保守判红
+ * ⇒ "并行书批每写一次，全链就红一次" ✗。修法 = 登记式：写者按「先登记后写」把自报登记
+ * （pid + 批名 + 时间窗）落进 `projects/.writers/<批id>.json`，守卫读登记表归因。
+ * 四态（档数 ≥ 状态数，B4b）：**自己写 ⇒ 红** · **在册他人 ⇒ 本次没验** ·
+ * **未登记的陌生人 ⇒ 红** · **采不到（探针失败/坏条目）⇒ 红**。
+ * 判别力：把登记表**删掉 / 过期** ⇒ 同一夹具**恢复判红** ✓（没有"登记在场"这个证据就没有豁免）。
  * ========================================================================== */
+describe('ⓓ 批登记式归因：四态', () => {
+  const reg = (id, pid, over) => Object.assign({ id, pid, name: '书批：' + id,
+    windowStartMs: T0 - 60000, windowEndMs: T1 + 60000, foreign: pid !== OUR, alive: true }, over || {});
+
+  it('① 自己写 ⇒ **仍红**：pid = 本进程的在册批不许给本进程免责（登记不是自洗工具 ✗）', () => {
+    const r = guard.classifyRealWrites([
+      { rel: 'book-x/chapter.md', kind: 'changed', mtimeMs: MID }
+    ], env({ registeredBatches: [reg('self-reg', OUR)] }));
+    expect(r.verdict).toBe('leak');
+    expect(r.items[0].why).toContain('不许给本进程免责');
+    expect(r.counts.inRegistry).toBe(0);
+  });
+
+  it('② 在册他人 ⇒ **本次没验（在册批：<id>）**：窗口盖住写入时刻、pid 不是本进程 ⇒ 归给该批', () => {
+    const r = guard.classifyRealWrites([
+      { rel: 'book-x/chapter.md', kind: 'changed', mtimeMs: MID }
+    ], env({ registeredBatches: [reg('book-batch-a', 777)] }));
+    expect(r.verdict).toBe('unverified');
+    expect(r.items[0].why).toContain('在册批');
+    expect(r.items[0].why).toContain('book-batch-a');
+    expect(r.counts.inRegistry).toBe(1);
+    expect(r.registryIds).toEqual(['book-batch-a']);
+    // 响亮度：汇总行必须带"本次没验（在册批：…）"字样（不许把没验读成过了）
+    const text = guard.summaryLines(r, { registry: { batches: [reg('book-batch-a', 777)], errors: [] } }).join('\n');
+    expect(text).toContain('本次没验（在册批：book-batch-a）');
+    expect(text).toContain('不计成产品缺陷');
+  });
+
+  it('③ 未登记的陌生人 ⇒ **红**（登记表为空 / 窗口没盖住写入时刻 / 条目已过期，三个形状都判红）', () => {
+    // a) 登记表删掉了（空）
+    const a = guard.classifyRealWrites([{ rel: 'book-x/chapter.md', kind: 'changed', mtimeMs: MID }], env());
+    expect(a.verdict).toBe('leak');
+    // b) 登记在场但**窗口没盖住**这一笔（先写后登记 = 违反"先登记后写"，写者自己的责任）
+    const b = guard.classifyRealWrites([{ rel: 'book-x/chapter.md', kind: 'changed', mtimeMs: MID }],
+      env({ registeredBatches: [reg('late-reg', 777, { windowStartMs: T1 + 3600000, windowEndMs: T1 + 7200000 })] }));
+    expect(b.verdict).toBe('leak');
+    // c) 登记在场但已过期（窗口外自动失效 ⇒ 不留永久豁免）
+    const c = guard.classifyRealWrites([{ rel: 'book-x/chapter.md', kind: 'changed', mtimeMs: MID }],
+      env({ registeredBatches: [reg('stale-reg', 777, { expired: true, windowStartMs: T0 - 7200000, windowEndMs: T0 - 3600000 })] }));
+    expect(c.verdict).toBe('leak');
+    expect(c.items[0].why).toContain('按本次算');
+  });
+
+  it('④ 采不到 ⇒ **红**：探针失败照旧 error；**坏条目**（坏 JSON / 字段不全 / 窗口超上界）不给豁免', () => {
+    const err = guard.classifyRealWrites([{ rel: 'x', kind: 'changed', mtimeMs: MID }],
+      env({ registeredBatches: [reg('good', 777)], probeError: 'readdir 失败' }));
+    expect(err.verdict).toBe('error');   // 采不到真值 = 红（豁免救不了采不到 ✗）
+    const bad = guard.classifyRealWrites([{ rel: 'book-x/chapter.md', kind: 'changed', mtimeMs: MID }],
+      env({ registeredBatches: [
+        { id: 'broken', pid: 777, name: 'x', windowStartMs: '不是数字', windowEndMs: T1 }
+      ] }));
+    expect(bad.verdict).toBe('leak');    // 字段不全 ⇒ 按无效处理 ⇒ 恢复判红
+  });
+
+  it('**混合**：一处归给在册批 + 一处陌生人 ⇒ 仍然判红（在册批不许把陌生人那处洗掉）', () => {
+    // 批窗口只盖住前一笔（[T0−1min, MID+30s]）；后一笔在批窗口**外**、仍在运行窗口**内** ⇒ 陌生人。
+    // （若批窗口盖住整段运行窗，陌生人同刻的写入本来也会被归给批 —— 那是 ⓓ"免责非证明"的边界，
+    //  与 ⓒ 同档：它只降档为"没验"、绝不把"陌生人"判成"本次写" ✗。）
+    const r = guard.classifyRealWrites([
+      { rel: 'book-x/a.md', kind: 'changed', mtimeMs: MID },
+      { rel: '_stranger-probe.json', kind: 'added', mtimeMs: MID + 60000 }
+    ], env({ registeredBatches: [reg('book-batch-a', 777, { windowEndMs: MID + 30000 })] }));
+    expect(r.verdict).toBe('leak');
+    expect(r.counts.inRegistry).toBe(1);
+    expect(r.counts.ours).toBe(1);
+    expect(r.items[0].verdict).toBe('unverified');
+    expect(r.items[1].verdict).toBe('leak');
+  });
+
+  it('登记的**优先级**：本进程 pid 的登记压过他人的（保守方向是红）', () => {
+    const r = guard.classifyRealWrites([{ rel: 'x', kind: 'changed', mtimeMs: MID }],
+      env({ registeredBatches: [reg('ours-first', OUR), reg('theirs', 777)] }));
+    expect(r.verdict).toBe('leak');
+    expect(r.items[0].why).toContain('不许给本进程免责');
+  });
+});
+
+describe('ⓓ parseWriterRegistry：登记表校验（唯一口径；坏条目记读数、不给豁免）', () => {
+  const ok = (pid, over) => JSON.stringify(Object.assign({
+    schemaVersion: 1, batchId: 'b', pid, batchName: '书批：b',
+    windowStartMs: T0 - 60000, windowEndMs: T1 + 60000, registeredAt: new Date(MID).toISOString()
+  }, over || {}));
+
+  it('合法条目：foreign = pid !== 本进程；活性不进免责条件（只进打印）；expired 按窗口现判', () => {
+    const r = guard.parseWriterRegistry([
+      { id: 'a', text: ok(777) },
+      { id: 'ours', text: ok(OUR) },
+      { id: 'dead', text: ok(778, { windowStartMs: T0 - 7200000, windowEndMs: T0 - 3600000 }) }
+    ], { ourPid: OUR, isAlive: (p) => p === 777, nowMs: T1 });
+    expect(r.errors).toEqual([]);
+    expect(r.batches).toHaveLength(3);
+    const byId = {};
+    r.batches.forEach((b) => { byId[b.id] = b; });
+    expect(byId.a.foreign).toBe(true);
+    expect(byId.a.alive).toBe(true);
+    expect(byId.ours.foreign).toBe(false);
+    expect(byId.dead.expired).toBe(true);      // 窗口外 ⇒ 自动失效
+    expect(byId.dead.alive).toBe(false);       // 活性只进读数，不进免责条件
+  });
+
+  it('坏 JSON / 缺 batchName / windowStart > windowEnd / 窗口超 30 天 ⇒ 全部按无效处理（errors 记读数）', () => {
+    const r = guard.parseWriterRegistry([
+      { id: 'e1', text: '{不是 JSON' },
+      { id: 'e2', text: JSON.stringify({ pid: 777, windowStartMs: T0, windowEndMs: T1 }) },
+      { id: 'e3', text: ok(777, { windowStartMs: T1, windowEndMs: T0 }) },
+      { id: 'e4', text: ok(777, { windowStartMs: T0, windowEndMs: T0 + 31 * 24 * 3600000 }) },
+      { id: 'e5', text: null }
+    ], { ourPid: OUR, isAlive: () => true });
+    expect(r.batches).toEqual([]);
+    expect(r.errors).toHaveLength(5);
+    r.errors.forEach((x) => expect(x).toContain('不给豁免'));
+  });
+});
+
+describe('ⓓ 汇总行：在册批台账必须可见（B8：豁免计入输出、坏条目响亮）', () => {
+  it('打印每个在册批（id/pid/批名/窗口/过期），坏条目逐条记读数', () => {
+    const text = guard.summaryLines(
+      guard.classifyRealWrites([], env()),
+      { registry: { batches: [
+        { id: 'book-batch-a', pid: 777, name: '书批：甲', windowStartMs: T0, windowEndMs: T1, foreign: true, alive: true, expired: false },
+        { id: 'stale', pid: 778, name: '书批：乙', windowStartMs: T0 - 7200000, windowEndMs: T0 - 3600000, foreign: true, alive: false, expired: true }
+      ], errors: ['在册批 bad：不是合法 JSON ⇒ 按无效处理（不给豁免）'] } }
+    ).join('\n');
+    expect(text).toContain('在册批 2 个');
+    expect(text).toContain('先登记后写');
+    expect(text).toContain('窗口外自动失效');
+    expect(text).toContain('book-batch-a');
+    expect(text).toContain('书批：甲');
+    expect(text).toContain('（已过期 ⇒ 不给豁免）');
+    expect(text).toContain('不是合法 JSON');
+  });
+});
+
+describe('ⓓ 判别力证明：旧实现（不认登记表）vs 新实现（登记式归因）', () => {
+  const oldImpl = (changes) => (changes.length ? 'leak' : 'ok');   // 还原旧行为（差异即红，不看登记表）
+  const reg = (id, pid) => ({ id, pid, name: '书批：' + id,
+    windowStartMs: T0 - 60000, windowEndMs: T1 + 60000, foreign: pid !== OUR, alive: true });
+
+  it('在册他人那一笔：旧实现红（正是并行书批天天撞的那条假红 ✗）/ 新实现本次没验 ✓', () => {
+    const changes = [{ rel: 'book-x/chapter.md', kind: 'changed', mtimeMs: MID }];
+    const batches = [reg('book-batch-a', 777)];
+    expect(oldImpl(changes)).toBe('leak');
+    expect(guard.classifyRealWrites(changes, env({ registeredBatches: batches })).verdict).toBe('unverified');
+  });
+
+  it('**把登记表删掉 / 过期 ⇒ 同一夹具恢复判红**（豁免跟着证据走，不是永久的 ✓）', () => {
+    const changes = [{ rel: 'book-x/chapter.md', kind: 'changed', mtimeMs: MID }];
+    expect(guard.classifyRealWrites(changes, env({ registeredBatches: [] })).verdict).toBe('leak');
+    const expired = [{ id: 'book-batch-a', pid: 777, name: '书批：甲',
+      windowStartMs: T0 - 7200000, windowEndMs: T0 - 3600000, foreign: true, alive: false, expired: true }];
+    expect(guard.classifyRealWrites(changes, env({ registeredBatches: expired })).verdict).toBe('leak');
+  });
+
+  it('陌生人那一笔：旧实现红 ✓ / **新实现也红** ✓（登记式没有变成"一律放过"）', () => {
+    const changes = [{ rel: '_stranger-probe.json', kind: 'added', mtimeMs: MID }];
+    expect(oldImpl(changes)).toBe('leak');
+    expect(guard.classifyRealWrites(changes, env()).verdict).toBe('leak');
+  });
+});
+
+describe('ⓓ 写者侧登记口（scripts/register-batch-writer.js 的纯函数面；main 只在 require.main 下跑）', () => {
+  const cli = require('../scripts/register-batch-writer.js');
+
+  it('buildRegistration：窗口 = now → now+minutes；名字必填（豁免要带原因）；minutes 夹到 [1, 上界]', () => {
+    const r = cli.buildRegistration({ name: '书批：测试', minutes: 60, pid: 777, nowMs: MID, randHex: 'abcd' });
+    expect(r.pid).toBe(777);
+    expect(r.batchName).toBe('书批：测试');
+    expect(r.windowStartMs).toBe(MID);
+    expect(r.windowEndMs).toBe(MID + 60 * 60000);
+    expect(r.batchId).toContain('p777');
+    expect(r.batchId).toContain('abcd');            // 随机段进了 id ⇒ 并发唯一
+    expect(() => cli.buildRegistration({ name: '  ', pid: 777 })).toThrow();
+    const big = cli.buildRegistration({ name: 'x', minutes: 999999, pid: 777, nowMs: MID, randHex: 'ff' });
+    expect(big.windowEndMs - big.windowStartMs).toBe(cli.MAX_MINUTES * 60000);   // 夹到上界 ⇒ 窗口有界
+    expect(big.windowEndMs - big.windowStartMs).toBeLessThanOrEqual(guard.MAX_WINDOW_MS);
+  });
+
+  it('expiredIds：只挑"已过期超宽限 且 解析得动"的；活人登记 / 坏文件一律不动', () => {
+    const live = { id: 'live', text: JSON.stringify({ windowEndMs: MID + 3600000 }) };
+    const expired = { id: 'old', text: JSON.stringify({ windowEndMs: MID - 2 * 3600000 }) };
+    const broken = { id: 'bad', text: '{oops' };
+    expect(cli.expiredIds([live, expired, broken], MID + 3600000)).toEqual(['old']);
+  });
+});
 describe('判别力证明：旧实现（一律判红）vs 新实现（三档）', () => {
   const oldImpl = (changes) => (changes.length ? 'leak' : 'ok');   // 还原旧行为（差异即红）
 

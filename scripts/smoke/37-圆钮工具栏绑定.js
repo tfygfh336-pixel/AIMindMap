@@ -28,6 +28,17 @@
  *   · `37-close-keep-bar`    关框后不收起工具条 ⇒ ⑥必红
  * 注入一律**在测试侧**（改渲染层的函数或元素状态，不动产品代码），每条断言收尾复位 ✓。
  *
+ * ## 链内时序假红修复（效率批 3 · 2026-10-16：③⑤ 单跑绿、链内必红的真因与修法）
+ * ③⑤ 是**时序敏感像素断言**：单跑（SMOKE_ONLY=37,39）绿、链内必红，且单跑与链内是**同一份产品代码**
+ * ⇒ 定性 = **重树后的时序**，不是断言太松。机制：prep/铺场之后**延后的**画布动作
+ * （`renderMind` 末尾 `setTimeout(centerOnRoot, 80)` 覆盖 jsMind 异步布局；follow 档的框挂在节点下
+ * ⇒ 画布一动框就跟着挪）若落在"量基线"与"读数"之间，绝对坐标对比就假红（实测读数：圆钮 y+33px、
+ * 工具栏相对坐标漂移）。修法照期 3 收口批（域 45/46）的同款，**只动时序/基线、断言语义一个字不改**：
+ *   ① 基线取在**所有会改视图的交互之后**（铺场/缩框完成后才量 before）；
+ *   ② 取读数前 `waitStableView`（连续三次同一签名才读；本域签名 = pan + 框矩形 + 圆钮/工具条顶点，
+ *      比单看 pan 更强 —— follow 框要经下一次 `syncFdSatellites` 才跟上画布）；
+ *   ③ **不许**把"整幅平移"容忍成通过 ✗ —— 相对位移 / 逐项对比口径照旧，注入证明见下方判别力清单。
+ *
  * ## 边界（别以为它比实际更强 ✓）
  *   · 真输入走的是 Chromium 真实输入管线，但**不是真实硬件**：高 DPI 缩放、系统鼠标加速、
  *     多显示器、以及"人手摸起来的手感"仍只有真机复核（见交付说明的"只能真机复核"清单）。
@@ -38,6 +49,7 @@
 const fs = require('fs');
 const path = require('path');
 const frameStats = require('../vision/frame-stats.js');
+const { waitStableView } = require('./view-stability.js');
 
 /** 截图证据目录（本域自己的，**不写进别的域**的目录；`.review/` 整目录 gitignore ⇒ 图片不进版本库 ✓） */
 const SHOT_DIR = path.join(__dirname, '..', '..', '.review', '20261009-圆钮工具栏绑定', 'shots');
@@ -258,6 +270,39 @@ function barBandOk(sat) {
   return false;
 }
 
+/* ---------------- 等视图落定（链内时序假红修复：读数前必等，见文件头） ---------------- */
+
+/** 视图稳定性的**本域签名**：画布 pan + 框矩形 + 圆钮顶点 + 工具条顶点/可见。
+ *  比单看 pan 更强：follow 档的框要经下一次 `syncFdSatellites` 才跟上画布 ⇒ 把框/卫星一起等。
+ *  签名只用于"等稳定"，**不是**判据 —— 判据仍是 SAT_JS 的现量 + 相对位移口径 ✗ 不容忍平移。 */
+const STAB_JS = `(function () {
+  var MM = window.MM;
+  var box = null;
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('.float-detail'));
+  for (var i = 0; i < boxes.length; i++) {
+    var q = boxes[i].getBoundingClientRect();
+    if (boxes[i].style.display !== 'none' && q.width > 40 && q.height > 40
+      && boxes[i].getAttribute('data-kind') !== 'ask') { box = boxes[i]; break; }
+  }
+  var pan = window.MMApp.getPanState();
+  if (!box) return JSON.stringify({ pan: pan, box: null });
+  var b = box.getBoundingClientRect();
+  var btn = MM.fdRelShowBtnOf ? MM.fdRelShowBtnOf(box) : null;
+  var br = btn ? btn.getBoundingClientRect() : null;
+  var bar = document.getElementById('mm-node-toolbar');
+  var barVis = !!(bar && bar.parentElement && bar.style.display !== 'none');
+  var barr = barVis ? bar.getBoundingClientRect() : null;
+  return JSON.stringify({ pan: pan,
+    box: [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)],
+    btn: br ? [Math.round(br.left), Math.round(br.top)] : null,
+    bar: barr ? [Math.round(barr.left), Math.round(barr.top)] : (barVis ? 'no-rect' : 'hidden') });
+})()`;
+
+/** 等"pan + 框 + 卫星"连续三次同一再取读数（条件等待，不是固定睡眠 ✗；共用实现见 view-stability.js） */
+async function waitStableSat(ctx) {
+  return waitStableView(ctx, STAB_JS);
+}
+
 /* ---------------- 注入工具（测试侧；收尾一律复位） ---------------- */
 
 async function inject(ctx, key, js) {
@@ -394,6 +439,7 @@ module.exports = [
         window.MMApp.showDetail(window.MMApp.getState().jm.get_node(${JSON.stringify(pick.node.id)})); return 1;
       })()`);
       await ctx.input.settle({ delayMs: 320 });
+      await waitStableSat(ctx);   // 基线取在所有会改视图的交互之后（链内时序假红修复，见文件头）
       const before = await execJson(ctx, SAT_JS);
       if (!before.boxFound || !before.btn.found) return { ok: false, text: '前置失败：没有框或没有圆钮' };
       if (!before.bar.visible) return { ok: false, text: '前置失败：工具栏没出现（②应当先红）' };
@@ -424,6 +470,7 @@ module.exports = [
       })()`);
       await ctx.input.click({ x: lockPt.x, y: lockPt.y });
       await ctx.input.settle({ delayMs: 320 });
+      await waitStableSat(ctx);   // 读数前等"pan+框+卫星"落定（判据不改：锁后几何逐项对比照旧 ✗ 不容忍平移）
       const after = await execJson(ctx, SAT_JS);
       const same = (a, b) => a && b && Math.abs(a - b) <= 1;
       const btnSame = !!after.btn.found && after.btn.display !== 'none'
@@ -528,6 +575,7 @@ module.exports = [
         return 1;
       })()`);
       await ctx.input.settle({ delayMs: 300 });
+      await waitStableSat(ctx);   // 基线取在铺场（缩框）之后、拖动之前（链内时序假红修复，见文件头）
       const before = await execJson(ctx, SAT_JS);
       if (!before.btn.found || !before.bar.visible) return { ok: false, text: '前置失败：圆钮或工具栏没出现' };
       // 本断言验的是"框**完整放得下**时两颗卫星相对框的坐标恒定" ⇒ 确认走的是默认档（below）。
@@ -574,6 +622,7 @@ module.exports = [
       const DX = head.dx, DY = head.dy;
       await ctx.input.drag({ x: head.x, y: head.y }, { x: head.x + DX, y: head.y + DY }, null, { steps: 4, stepDelayMs: 60 });
       await ctx.input.settle({ delayMs: 320 });
+      await waitStableSat(ctx);   // 读数前等视图落定（相对位移口径照旧 ✗ 不把整幅平移容忍成通过）
       const after = await execJson(ctx, SAT_JS);
       const r0 = relToBox(before), r1 = relToBox(after);
       const boxMoved = { dx: after.box.left - before.box.left, dy: after.box.top - before.box.top };
