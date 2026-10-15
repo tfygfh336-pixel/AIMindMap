@@ -25,6 +25,9 @@
  *     菜单**显示后再量**真实高度并上翻/夹进视口 ⇒ 每一项都能被 `document.elementFromPoint`
  *     命中（**含最后一项**），并且**真鼠标点最后一项真的生效**（「移回自动布局」把手工位置清掉、
  *     节点正好回到自动布局位置）。改前这一档实测是"最后 8 条 `elementFromPoint` 返回 null"。
+ *     ⚠️ 每一项的**条数**在 R2 期 3 由 12 变成 **13**（多了一条「拖动到同级第几位」——
+ *       同级重排的入口，见 `renderer/contextmenu.js` 的 reorderDragItem；判据一条没删，
+ *       只是跟着菜单长了一条 ✓）。
  *  丁 **干净基线下的"拖动不产生脏数据"（设计稿期 2 的判据 4）**：刚打开、还没展开过任何节点的项目
  *     （`isDirty() === false`）里拖一个**顶层主题子树**：拖出去再拖回**原地** ⇒ `isDirty()` 仍是
  *     **false**、序列化文本逐字节不变（零偏移 = 不进数据）；一旦有非零位移 ⇒ 唯一多出来的键是
@@ -842,7 +845,8 @@ const assertions = [
         ['目标被装上一项手工位置（菜单最后一项才有出现条件）', put === 1 && lowInfo.hasOwn === true],
         ['目标落在面板下部（菜单向下展开会越界的位置）',
           lowInfo.cy > lowInfo.vh / 2 && lowInfo.panelBottom - lowInfo.cy < 120],
-        ['菜单每一项都在（12 条）', (menu.items || []).length === 12],
+        ['菜单每一项都在（13 条：R2 期 3 加了「拖动到同级第几位」这一档 ⇒ 12→13）',
+          (menu.items || []).length === 13],
         ['最后一项是「移回自动布局」（本条的点击目标）', !!last && last.label.indexOf('移回自动布局') >= 0],
         ['每一项都被 elementFromPoint 命中（含最后一项）',
           hitCount === (menu.items || []).length && !!last && last.hit === true],

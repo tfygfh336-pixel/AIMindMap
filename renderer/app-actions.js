@@ -62,6 +62,112 @@
     if (closeBtn) closeBtn.addEventListener('click', () => { el.style.display = 'none'; });
   }
 
+  /* ================= 【R2 期 3 · e】同级重排的**唯一写入路径**（渲染层） =================
+   * 用户原话（R2 需求 e）：**拖到第 k 位 ⇒ 改上下顺序**。
+   *
+   * 这条路是**唯一**的写口，形状与 `main.js:1692-1726` 既有的两个写入口逐条同源（不发明新形状）：
+   *   渲染层（松手）→ `window.desktop.app.moveNodeSibling(…)`（preload 一行 invoke）
+   *     → `ipcMain.handle('app:move-node-sibling')`（main.js，紧挨同族的写口）
+   *     → `runCli(['move', <项目>, <id>, <父id>, '--index', k])`（**唯一实现**：
+   *        `cli/commands/edit.js` 的 move → `src/tree-utils.js` 的 `moveNode`）
+   *     → 写盘闸门（校验 + 原子写 + 并发重放，全在 CLI 侧）
+   *     → **回读**（新顺序 + 整份项目数据）→ 渲染层 `rebuildFromJson(回读的那一份)`。
+   *
+   * ⚠️ 渲染层**一个字节的项目 JSON 都不写、也不自己动内存树的顺序**：
+   *   · 不写盘 —— 写口只有上面那一条（不变式②）；
+   *   · **也不就地 splice 内存树**：那就是**第二份 move 实现**，而且"界面上看到的新顺序"会与
+   *     "盘上真的写成的顺序"分成两份可以各自漂的事实。这里一律拿**回读的那一份**重建
+   *     （与 `openProject` / 撤销重做同一条路：`renderMind` 是唯一入口）⇒ 界面顺序 ≡ 盘上顺序
+   *     是**构造性**的，不是"两边各算一遍碰巧一样"。
+   * ⚠️ `index` 由调用方（拖动路径）**clamp 到合法区间**后再发；非法档仍由 CLI **响亮拒绝**
+   *   （`--index` 上界是 P3 落地的契约校验，渲染层不复制那条判定 —— 见 main.js 该 handler 的注释）。
+   * ⚠️ 回读失败（`res.data` 缺失）⇒ **明说"盘上已写、界面未同步"**，不静默重载也不假装成功
+   *   （照 `app:unlink-nodes` 的 `links=null` 先例）。 */
+
+  /** 同级重排：把 `id` 移到父 `parentId` 下的第 `index` 位（0 基、**移动完成后**的下标）。
+   *  @returns {Promise<{ok:boolean, text:string, order?:string[], index?:number, topic?:string, unsynced?:boolean}>}
+   *    失败一律 `ok:false` + `text` 里**带原因**（不静默 ✗）。 */
+  async function reorderNodeChild(id, parentId, index) {
+    const jm = state.jm;
+    if (!jm || !state.project) return { ok: false, text: '还没打开项目' };
+    const n = MM.adapter.getNode(jm, id);
+    if (!n) return { ok: false, text: '节点不在当前视图：' + id };
+    const pid = parentId || (n.parent ? n.parent.id : null);
+    if (!pid) return { ok: false, text: '该节点没有父节点，无法同级重排：' + id };
+    if (!(window.desktop && window.desktop.app && window.desktop.app.moveNodeSibling)) {
+      return { ok: false, text: '这个版本没有写口（preload 少了 app.moveNodeSibling）—— 未改动任何数据' };
+    }
+    const topic = String(n.topic == null ? '' : n.topic);
+    // 写前的内存快照（撤销回到这一版）；**只在写入真的成功之后**才进撤销栈 ——
+    // 写失败时盘上零改动，撤销栈里多一条就等于凭空多一次"可撤销的动作"。
+    const before = snapshot();
+    let res;
+    try {
+      res = await window.desktop.app.moveNodeSibling(state.project.name, id, pid, index);
+    } catch (err) {
+      return { ok: false, text: '重排失败（IPC）：' + ((err && err.message) || err) };
+    }
+    /* 留痕：**每一次真正发出去的 (id, 父, k)**。为什么需要它（不是调试残留）：
+     *   "落位预览算出来的 k" 与 "真发出去的 k" 必须**是同一个读数** —— 少了这份留痕，
+     *   一条"预览说 4、发出去 0"的分叉只能靠推测，而它正是"同一逻辑两处表达"的典型形状。
+     *   域 48 的乙 用它断言两次拖动发出的下标就是预览算出来的那一个（4 与 0）。
+     *   ⚠️ 只增一个数组、只读，不影响任何行为；三个入口（clamp 版 / 原样版）共用这一处。 */
+    MM.__reorderCalls = MM.__reorderCalls || [];
+    MM.__reorderCalls.push({ id: id, parent: pid, index: index, ok: !!(res && res.ok) });
+    return finishReorder(res, id, index, topic, before);
+  }
+
+  /** 【只给冒烟域 48 的取证用】**绕过界面 clamp**，把一个原样的 k 直接交给写通道。
+   *  为什么需要这一个口子：本批有两件必须分开判的事 ——
+   *    · **渲染层 clamp**（体验：拖出列表 ⇒ 贴到首/末）—— 由拖动路径判（域 48 丙的拖动那一段）；
+   *    · **CLI 的上界校验仍是契约**（非法档必须**响亮失败**、盘上零改动）—— 它只在"真发一个越界值"
+   *      的时候才看得见，而 clamp 之后的界面**永远发不出越界值** ⇒ 光靠拖动**判不到**它。
+   *  ⇒ 这个函数是那条判据的**唯一注入点**，语义与 `reorderNodeChild` 逐字相同（同一处收尾逻辑
+   *  `finishReorder`、同一处写通道），只是**不做 clamp**。它不是产品入口（UI 里没有任何调用点）。
+   *  ⚠️ 与 `app-view.js` 的 `setLineEndpointScheme` 同一个性质：**判别力证明用**，不是第二条实现。 */
+  async function reorderNodeChildRaw(id, parentId, index) {
+    const jm = state.jm;
+    if (!jm || !state.project) return { ok: false, text: '还没打开项目' };
+    const n = MM.adapter.getNode(jm, id);
+    if (!n) return { ok: false, text: '节点不在当前视图：' + id };
+    if (!(window.desktop && window.desktop.app && window.desktop.app.moveNodeSibling)) {
+      return { ok: false, text: '这个版本没有写口（preload 少了 app.moveNodeSibling）' };
+    }
+    const topic = String(n.topic == null ? '' : n.topic);
+    const before = snapshot();
+    let res;
+    try {
+      res = await window.desktop.app.moveNodeSibling(state.project.name, id, parentId, index);
+    } catch (err) {
+      return { ok: false, text: '重排失败（IPC）：' + ((err && err.message) || err) };
+    }
+    return finishReorder(res, id, index, topic, before);
+  }
+
+  /** 写通道回来之后的**共用的**那一半：判定 ok / 回读缺失 / 按回读的那一份重建 ＋ 撤销。
+   *  ⚠️ 只有这一处 —— 两个入口（clamp 版 / 原样版）都在这里收尾，判据与行为不可能分叉。 */
+  function finishReorder(res, id, index, topic, before) {
+    if (!res || res.ok !== true) {
+      return { ok: false, text: (res && res.text) || '重排失败（CLI 拒绝了这次移动）' };
+    }
+    if (!res.data) {
+      // 盘上已经写成功了，只是回读没取到 ⇒ 如实说，并**给出重开的出路**（不静默重载 ✗）
+      return { ok: true, unsynced: true, topic: topic, order: res.children || null,
+        text: '盘上已写入，但**回读没取到整份数据** ⇒ 界面未同步（重开项目即可看到新顺序）' };
+    }
+    // 回读的那一份就是真值：整树按它重建（顺序、以及其余任何字段，都取自盘上那一份）
+    rebuildFromJson(res.data);
+    state.history.push(before);      // 撤销回到重排之前那一版
+    updateHistoryButtons();
+    // 挪过位置节点可能跑到视野外 ⇒ 选中并带回来（已在视口内时 centerOnNode 不动视野）
+    if (MM.adapter.getNode(state.jm, id)) {
+      MM.adapter.selectNode(state.jm, id);
+      if (MM.centerOnNode) MM.centerOnNode(id);
+    }
+    return { ok: true, text: String(res.text || '').trim(), order: (res.children || []).slice(),
+      index: index, topic: topic };
+  }
+
   /** 只展开目标节点的**祖先链**，而不是整棵树。
    *  原先这里用 `expand_to_depth(20)` 把所有节点一次性展开：跳到一个搜索结果后，
    *  整张图的折叠状态就没了（用户 2026-09-29 反馈"子节点应该是折叠状态"）。
@@ -1034,6 +1140,8 @@
   MM.addTopic = addTopic;
   MM.editNode = editNode;
   MM.deleteNode = deleteNode;
+  MM.reorderNodeChild = reorderNodeChild;   // 【R2 期 3 · e】同级重排的**唯一写口**（→ IPC → CLI move）
+  MM.reorderNodeChildRaw = reorderNodeChildRaw;   // 同上但**绕过 clamp**，只给域 48 的"越界必红"取证
   MM.loadProjects = loadProjects;
   MM.openProject = openProject;
   MM.isDirty = isDirty;

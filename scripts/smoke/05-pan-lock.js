@@ -980,11 +980,19 @@ const assertions = [
     }
   },
   {
-    name: '连线端点严格 = 父子节点相邻侧边框中点（线端真源来自节点实际 DOM 边框）',
+    name: '连线端点严格 = 父子节点相连侧边框上的点（子端 = 子节点侧边中点；父端 = 父侧边**等分点**族里的一个；线端真源来自节点实际 DOM 边框）',
     run: async (ctx) => {
       // 契约：show_lines 不再用 get_node_point_in/out 布局缓存，线端直接由节点实际边框
-      // （nodeBorderRect：style.left/top + 尺寸 + 树偏移）推导。这里独立从 DOM 重算期望
-      // 边框中点，与 show_lines 暴露的 window.__mmLineEndpoints 逐条核对。
+      // （nodeBorderRect：style.left/top + 尺寸 + 树偏移）推导。这里**独立**从 DOM 重算期望：
+      //   · 子端：孩子**相连侧边的中点**（这条与改动前逐字节相同）；
+      //   · 父端：父**相连侧边**上的一个点，且落在"这条边框按该父在该侧的可见孩子数 n 等分"的
+      //     那一族点上（`top + h*(i+1)/(n+1)`，i=1..n）。
+      // ⚠️ **本判据的收紧史（别把它改回"必须等于中点"）**：R2 期 3（d）之前父端恒等于**侧边中点**
+      //    ——那正是"同一个父的 12 个孩子 12 条线全落在一个点上"（真 comnet 实测：135 个扇出 ≥ 3
+      //   的父**每个都只有 1 个不同的父端点**）。现在父端按**子序**分散到等分点上。所以本条判据
+      //   从"必须是中点"改成"必须在这条边框上、且在等分点族里"，**仍然钉住"真源是 nodeBorderRect"**
+      //   （改坏了这一跳，端点就会脱开边框 ⇒ 必红 ✓），只是不再要求"重合"。
+      //   ⚠️ 等分点族按**这个父的 n 个孩子**算 ⇒ 这里也要按父分组数一遍（n 取该父在屏上的孩子数）。
       const r = await ctx.exec(
         `(async function () {
            var app = window.MMApp;
@@ -996,19 +1004,43 @@ const assertions = [
              return window.MM.nodeBorderRect(el, id);
            }
            var eps = window.__mmLineEndpoints || [];
-           var bad = 0; var ex = [];
+           // 每个父在这一侧有几个孩子（= 等分点族的 n）——从端点读数现算，不另取一份树
+           var fanN = {};
            eps.forEach(function (L) {
              var pb = border(L.parent), cb = border(L.child);
-             var ep, ec;
-             if (cb.cx < pb.cx) { ep = { x: pb.left, y: pb.cy }; ec = { x: cb.right, y: cb.cy }; }
-             else { ep = { x: pb.right, y: pb.cy }; ec = { x: cb.left, y: cb.cy }; }
-             if (Math.abs(L.p.x - ep.x) > 1 || Math.abs(L.p.y - ep.y) > 1
-               || Math.abs(L.c.x - ec.x) > 1 || Math.abs(L.c.y - ec.y) > 1) {
-               bad++; if (ex.length < 5) ex.push(L.child);
+             var side = (cb.cx < pb.cx) ? 'left' : 'right';
+             fanN[L.parent + '#' + side] = (fanN[L.parent + '#' + side] || 0) + 1;
+           });
+           var bad = 0; var ex = []; var why = null;
+           eps.forEach(function (L) {
+             var pb = border(L.parent), cb = border(L.child);
+             var left = cb.cx < pb.cx;
+             var wPx = left ? pb.left : pb.right, wCx = left ? cb.right : cb.left;
+             var onC = (Math.abs(L.c.x - wCx) <= 1) && (L.c.y >= cb.top - 1) && (L.c.y <= cb.bottom + 1)
+               && (Math.abs(L.c.y - cb.cy) <= 1);
+             var onP = (Math.abs(L.p.x - wPx) <= 1) && (L.p.y >= pb.top - 1) && (L.p.y <= pb.bottom + 1);
+             var n = fanN[L.parent + '#' + (left ? 'left' : 'right')] || 1;
+             var hitLattice = false;
+             if (n <= 1) { hitLattice = Math.abs(L.p.y - pb.cy) <= 1; }   // 独子 ⇒ 仍是中点（默认档那一档）
+             else {
+               for (var i = 1; i <= n; i++) {
+                 var want = pb.top + (pb.bottom - pb.top) * i / (n + 1);
+                 if (Math.abs(L.p.y - want) <= 1) { hitLattice = true; break; }
+               }
+             }
+             if (!onC || !onP || !hitLattice) {
+               bad++;
+               if (!why) {
+                 why = L.child + ' 子端(' + onC + ') 父端在边框上(' + onP + ') 父端在等分点族(n='
+                   + n + ')(' + hitLattice + ') p=' + JSON.stringify(L.p) + ' 父边框=[' + pb.top + ','
+                   + pb.bottom + '] 相连侧x=' + wPx;
+               }
+               if (ex.length < 5) ex.push(L.child);
              }
            });
            return { ok: bad === 0 && eps.length > 100,
-             text: '线数=' + eps.length + ' 不匹配=' + bad + (ex.length ? '(' + ex.join(',') + ')' : '') };
+             text: '线数=' + eps.length + ' 不匹配=' + bad + (ex.length ? '(' + ex.join(',') + ')' : '')
+               + (why ? ' 首个原因：' + why : '') };
          })()`
       );
       return r;

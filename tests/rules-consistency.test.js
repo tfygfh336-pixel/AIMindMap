@@ -190,6 +190,14 @@ describe('G9 判定六：门禁声明的判定条数必须与实现脚本的标�
     const marks = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬'.slice(0, n);
     return ['function checkRegistry() {', ...marks.split('').map((m) => '  // ' + m + ' 某条判定'), '}'].join('\n');
   };
+  /* 【2026-10-16 修一条既有并发假红】探针**落点**重新定过（唯一实现）：
+   *  原先写进 `scripts/`，而 `tests/w8-dry-run.test.js` 的 D4、`tests/heat-{bars,sensor}.test.js`、
+   *  `tests/changed-plan.test.js` 都会**遍历树并逐个 readFileSync**；vitest 又并行跑测试文件
+   *  ⇒ 它们会"列到刚写好的探针、读时已被这里的 finally 删掉" ⇒ `ENOENT … scripts/.probe-*.js`
+   *  （**实测**：全链第 9 步 G3 连红两次，两次撞的文件不同，而两边代码都没错）。
+   *  新落点 = `.review/` 下的**散落文件**：那些 walker 都不扫它；G8 对 `.review/` 的散落文件
+   *  **豁免**（只有子目录才要求 README）⇒ 万一崩了留残也不会造新红；名字带进程号 ⇒ 并发不互踩 ✓。 */
+  const probePath = (name) => '.review/.probe-' + process.pid + '-' + name;
   const fakeScript = (rel, body) => {
     const abs = path.join(ROOT, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -203,40 +211,40 @@ describe('G9 判定六：门禁声明的判定条数必须与实现脚本的标�
   );
 
   it('声明 12 条、实现只有 11 个标记 → 报「判定条数不符」', () => {
-    fakeScript('scripts/.probe-marks-11.js', withMarks(11));
+    fakeScript(probePath("marks-11.js"), withMarks(11));
     try {
-      const p = rc.analyze(gateRow(12, 'scripts/.probe-marks-11.js'), {}).filter((x) => x.kind === 'gate-count');
+      const p = rc.analyze(gateRow(12, probePath("marks-11.js")), {}).filter((x) => x.kind === 'gate-count');
       expect(p.length).toBe(1);
       expect(p[0].msg).toContain('声明「12 条判定」');
       expect(p[0].msg).toContain('实际有 11 条');
-    } finally { cleanup('scripts/.probe-marks-11.js'); }
+    } finally { cleanup(probePath("marks-11.js")); }
   });
 
   it('声明与实现一致 → 不报', () => {
-    fakeScript('scripts/.probe-marks-3.js', withMarks(3));
+    fakeScript(probePath("marks-3.js"), withMarks(3));
     try {
-      expect(rc.analyze(gateRow(3, 'scripts/.probe-marks-3.js'), {}).filter((x) => x.kind === 'gate-count')).toEqual([]);
-    } finally { cleanup('scripts/.probe-marks-3.js'); }
+      expect(rc.analyze(gateRow(3, probePath("marks-3.js")), {}).filter((x) => x.kind === 'gate-count')).toEqual([]);
+    } finally { cleanup(probePath("marks-3.js")); }
   });
 
   it('标记重复（① 用了两次）→ 报「判定标记重复」（否则"数一遍"会得到偏大的数）', () => {
-    fakeScript('scripts/.probe-marks-dup.js', '// ① 甲\n// ② 乙\n// ① 丙\n');
+    fakeScript(probePath("marks-dup.js"), '// ① 甲\n// ② 乙\n// ① 丙\n');
     try {
-      const p = rc.analyze(gateRow(2, 'scripts/.probe-marks-dup.js'), {}).filter((x) => x.kind === 'gate-count');
+      const p = rc.analyze(gateRow(2, probePath("marks-dup.js")), {}).filter((x) => x.kind === 'gate-count');
       expect(p.some((x) => /判定标记重复/.test(x.msg))).toBe(true);
-    } finally { cleanup('scripts/.probe-marks-dup.js'); }
+    } finally { cleanup(probePath("marks-dup.js")); }
   });
 
   it('测试文件不算"实现"（`tests/*.test.js` 里没有标记，纳入会误报）', () => {
-    fakeScript('scripts/.probe-marks-2.js', withMarks(2));
+    fakeScript(probePath("marks-2.js"), withMarks(2));
     try {
       const row = md(
         '## 2. 门禁', '',
         '| ID | 门禁 | 防的损害 | 实现 | 挂载点 |', '|----|------|---------|------|--------|',
-        '| **G8** | 文档体系完整性（2 条判定） | 防漂移 | `scripts/.probe-marks-2.js`（+ `tests/docs-registry.test.js` 锁判别力） | verify |'
+        `| **G8** | 文档体系完整性（2 条判定） | 防漂移 | \`${probePath('marks-2.js')}\`（+ \`tests/docs-registry.test.js\` 锁判别力） | verify |`
       );
       expect(rc.analyze(row, {}).filter((x) => x.kind === 'gate-count')).toEqual([]);
-    } finally { cleanup('scripts/.probe-marks-2.js'); }
+    } finally { cleanup(probePath("marks-2.js")); }
   });
 
   it('没写「（N 条判定）」的门禁行不判（本判定只对齐声明的条数）', () => {
@@ -255,41 +263,41 @@ describe('G9 判定六：门禁声明的判定条数必须与实现脚本的标�
   });
 
   it('**声明写成加粗也必须被识别**（旧正则静默失配过一次，整个计数比对被悄悄停用）', () => {
-    fakeScript('scripts/.probe-marks-bold.js', withMarks(2));
+    fakeScript(probePath("marks-bold.js"), withMarks(2));
     try {
       const boldRow = md(
         '## 2. 门禁', '',
         '| ID | 门禁 | 防的损害 | 实现 | 挂载点 |', '|----|------|---------|------|--------|',
-        '| **G8** | 文档体系完整性（**3 条判定**，分五类） | 防漂移 | `scripts/.probe-marks-bold.js` | verify |'
+        `| **G8** | 文档体系完整性（**3 条判定**，分五类） | 防漂移 | \`${probePath('marks-bold.js')}\` | verify |`
       );
       const p = rc.analyze(boldRow, {}).filter((x) => x.kind === 'gate-count');
       expect(p.length).toBe(1);                       // 声明 3、实际 2 ⇒ 必须报（若正则失配则 0 条，静默通过）
       expect(p[0].msg).toContain('声明「3 条判定」');
-    } finally { cleanup('scripts/.probe-marks-bold.js'); }
+    } finally { cleanup(probePath("marks-bold.js")); }
   });
 
   it('实现脚本的注释里写死条数 → 报（第二轮的形状：门禁自己的头注释就写死过）', () => {
-    fakeScript('scripts/.probe-comment-count.js', '// 本脚本共 5 条判定（写在注释里）\n// ① 甲\n// ② 乙\n');
+    fakeScript(probePath("comment-count.js"), '// 本脚本共 5 条判定（写在注释里）\n// ① 甲\n// ② 乙\n');
     try {
-      const p = rc.analyze(gateRow(2, 'scripts/.probe-comment-count.js'), {}).filter((x) => x.kind === 'gate-count');
+      const p = rc.analyze(gateRow(2, probePath("comment-count.js")), {}).filter((x) => x.kind === 'gate-count');
       expect(p.some((x) => /写死了判定条数/.test(x.msg))).toBe(true);
-    } finally { cleanup('scripts/.probe-comment-count.js'); }
+    } finally { cleanup(probePath("comment-count.js")); }
   });
 
   it('"加一条判定"这类汉语动宾搭配不算条数声明（不误报）', () => {
-    fakeScript('scripts/.probe-addone.js', '// ① 甲\n// ② 乙（将来可能加一条判定）\n');
+    fakeScript(probePath("addone.js"), '// ① 甲\n// ② 乙（将来可能加一条判定）\n');
     try {
-      const p = rc.analyze(gateRow(2, 'scripts/.probe-addone.js'), {}).filter((x) => x.kind === 'gate-count');
+      const p = rc.analyze(gateRow(2, probePath("addone.js")), {}).filter((x) => x.kind === 'gate-count');
       expect(p).toEqual([]);
-    } finally { cleanup('scripts/.probe-addone.js'); }
+    } finally { cleanup(probePath("addone.js")); }
   });
 
   it('续写标记用「（承 ⑥）」不会被算成重复标记（`⑥b` 会被算成第二个 ⑥）', () => {
-    fakeScript('scripts/.probe-cont.js', '// ① 甲\n// ② 乙\n// （承 ②）乙的第二个分支\n');
+    fakeScript(probePath("cont.js"), '// ① 甲\n// ② 乙\n// （承 ②）乙的第二个分支\n');
     try {
-      const p = rc.analyze(gateRow(2, 'scripts/.probe-cont.js'), {}).filter((x) => x.kind === 'gate-count');
+      const p = rc.analyze(gateRow(2, probePath("cont.js")), {}).filter((x) => x.kind === 'gate-count');
       expect(p).toEqual([]);
-    } finally { cleanup('scripts/.probe-cont.js'); }
+    } finally { cleanup(probePath("cont.js")); }
   });
 });
 

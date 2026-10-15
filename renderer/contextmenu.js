@@ -158,6 +158,26 @@
     };
   }
 
+  /** 【R2 期 3 · e】「拖动到同级第几位」——**同级重排**的入口。
+   *  与 `subtreeDragItem` 并列的**另一档拖动**：那一档改位置（写 `meta.nodeOffsets`），
+   *  这一档改**同级上下序**（写 `children` 顺序，走既有 CLI `move --index`）。
+   *  只有"有兄弟"的节点才显示（独子没有可换的位置，显示了也是骗人 ✗）；root 不显示。
+   *  ⚠️ 写回**不在渲染层**：松手时只调 `MMApp.reorderNodeChild` ⇒ IPC ⇒ CLI `move`
+   *  （校验闸门 + 原子写 + 回读重建）—— 这是不变式②要求的唯一形状。 */
+  function reorderDragItem(nodeId) {
+    const app = () => window.MMApp;
+    if (app().dragModeActive && app().dragModeActive()) return null;  // 已在拖动模式：只留"退出"那一条
+    const jm = app().getState().jm;
+    const n = jm && MM.adapter.getNode(jm, nodeId);
+    if (!n || n.isroot || !n.parent) return null;
+    const sib = (n.parent.children || []).filter((c) => c && c.id !== nodeId);
+    if (!sib.length) return null;                                     // 独子：没有同级可换
+    return {
+      label: '拖动到同级第几位：「' + n.topic + '」（' + (sib.length + 1) + ' 个同级）',
+      action: () => app().setDragMode(true, nodeId, { mode: 'reorder' })
+    };
+  }
+
   /** 【R2 期 1】「把这个子树移回自动布局」：只清**这个节点自己**那一项偏移
    *  （拖动结果会保存 ⇒ 必须给一条清回去的路，否则用户拖远了只能靠改数据文件；
    *   既有先例：框选菜单里那条"把这棵树移回自动布局"）。
@@ -242,12 +262,15 @@
       items.push(dragItem);
     }
     // R2 期 1：更细的一档（拖动此子树）+ 手工位置的"清回去" + 顶层主题的左右分侧
+    // R2 期 3：再加一档"同级重排"（改上下序，写 children 顺序 —— 与"动位置"是两件事）
     const subDrag = subtreeDragItem(nodeId);
+    const reorderDrag = reorderDragItem(nodeId);
     const clearOff = clearOffsetItem(nodeId);
     const sideItems = themeSideItems(nodeId);
-    if (subDrag || clearOff || sideItems.length) {
+    if (subDrag || reorderDrag || clearOff || sideItems.length) {
       items.push('---');
       if (subDrag) items.push(subDrag);
+      if (reorderDrag) items.push(reorderDrag);
       if (clearOff) items.push(clearOff);
       sideItems.forEach((it) => items.push(it));
     }

@@ -229,6 +229,13 @@
   let fdDragMode = false;
   let fdDragTreeRoot = null;     // 拖动模式锁定的目标子树根（顶层主题 id，或任意节点 id）
   let fdTreeDragStart = null;
+  /* 【R2 期 3 · e】同级重排拖动：`fdReorderRoot` 非空 ⇒ 这一次拖动改的是**同级上下序**，
+   *  **不动偏移桶一点**（所以"拖动期间序列化文本逐字节不变 + 盘上零写入"是构造性的，
+   *  不是靠"记得别写"）—— 拖动期间只有**副本元素**（`#tree-reorder-ghost`）跟着指针走。 */
+  let fdDragKind = 'move';       // 'move'（动位置，写 meta.*Offsets）/ 'reorder'（改同级上下序，写 children 顺序）
+  let fdReorderRoot = null;      // 重排拖动锁定的节点 id（空 = 不是重排档）
+  let fdReorderStart = null;     // { x, y, parentId } 按下时的屏幕坐标与父节点
+  let fdReorderDrop = null;      // 松手要写回的那一位：{ index, parent }（**等于**落位预览算出来的那一个）
   let fdSelDrag = null;          // P4：从"已选中的节点"上按下开始的拖拽（起点坐标 ✓）    // {x, y, ox, oy} 拖动起点（屏幕）与起始偏移（逻辑）
   let fdDragModePan = null;      // 兜底：无目标树时的画布平移（中键同款）
 
@@ -823,10 +830,21 @@
   }
 
   /** 进入/退出拖动模式（toggle 由菜单项调用）。treeRootId 为锁定的**目标子树根**：
-   *  顶层主题（既有语义，「拖动树」入口）或更深的任意节点（R2 期 1，「拖动此子树」入口）。 */
-  function setDragMode(on, treeRootId) {
+   *  顶层主题（既有语义，「拖动树」入口）或更深的任意节点（R2 期 1，「拖动此子树」入口）。
+   *  `opts.mode`：`'move'`（默认，动位置 ⇒ 写 `meta.*Offsets`）/ `'reorder'`（R2 期 3 · e，
+   *  改**同级上下序** ⇒ 走既有 CLI `move --index` 写 `children` 顺序）。
+   *  两档共用同一套"按住左键拖"的手势与虚线框，只在按下之后分岔（见 mousedown/mousemove）——
+   *  所以没有第二份拖动外壳；而"写回"这条路两档各自只有一处实现（见文件头的不变式②）。 */
+  function setDragMode(on, treeRootId, opts) {
+    const mode = (opts && opts.mode === 'reorder') ? 'reorder' : 'move';
+    if (!on) {
+      clearReorderArtifacts();
+      fdReorderStart = null; fdReorderDrop = null; fdReorderRoot = null; fdDragKind = 'move';
+    }
     fdDragMode = !!on;
     fdDragTreeRoot = fdDragMode ? (treeRootId || null) : null;
+    fdDragKind = fdDragMode ? mode : 'move';
+    fdReorderRoot = (fdDragMode && mode === 'reorder') ? fdDragTreeRoot : null;
     const panel = fdPanel();
     if (panel) panel.style.cursor = fdDragMode ? 'grab' : '';
     document.body.classList.toggle('mm-dragmode', fdDragMode);
@@ -840,9 +858,11 @@
     }
     setStatus(fdDragMode
       ? (fdDragTreeRoot
-          ? (isTopTree
-              ? '拖动模式：按住左键拖动移动「' + topic + '」树，其他树不动（右键 / Esc 退出）'
-              : '拖动模式：按住左键拖动移动「' + topic + '」子树（只动它和它的后代），其他节点不动（右键 / Esc 退出）')
+          ? (mode === 'reorder'
+              ? '同级重排：按住左键拖动「' + topic + '」到目标位置（松手才写盘；Esc / 右键退出）'
+              : (isTopTree
+                  ? '拖动模式：按住左键拖动移动「' + topic + '」树，其他树不动（右键 / Esc 退出）'
+                  : '拖动模式：按住左键拖动移动「' + topic + '」子树（只动它和它的后代），其他节点不动（右键 / Esc 退出）'))
           : '拖动模式：按住左键拖动平移画布（Esc 退出）')
       : '已退出拖动模式');
     // 虚线框：进入（且锁定了目标树）→ 显示并框住整棵树；退出 → 隐藏
@@ -856,6 +876,179 @@
 
   /** 拖动模式锁定的目标树根 id（无目标时为 null，供冒烟断言读取） */
   function getDragTreeRoot() { return fdDragTreeRoot; }
+
+  /** 本次拖动是哪一档：`'move'`（动位置）/ `'reorder'`（改同级上下序）。 */
+  function dragModeKind() { return fdDragKind; }
+
+  /* ================= 【R2 期 3 · e】同级重排：拖动 + 落位预览 + clamp =================
+   * 语义（`--index` 契约的渲染层一侧，**与 CLI 的判定分工不同**）：
+   *   · CLI `move <项目> <id> <新父id> --index k` 的 `k` = **移动完成后**在新父 `children`
+   *     里的下标（0 基）；合法范围 `0…L'`，`L'` = **目标父移除该节点之后**的子节点数
+   *     （唯一实现 `cli/commands/edit.js` 的 `moveIndexUpperBound`，P3 那批落地 ✓）。
+   *   · 渲染层这里只做**体验**：把"指针拖到哪儿"翻译成一个**永远合法**的 k（拖出列表 ⇒ 贴到
+   *     首/末）。非法档**响亮失败**仍然由 CLI 负责（它才是契约校验）—— 渲染层永远发 clamp 后的值，
+   *     既不是替 CLI 判、也不是绕过它。
+   *   · ⚠️ **不许在这里写第二份 move 实现** ✗：算出来的 k 只经
+   *     `MMApp.reorderNodeChild` → IPC → **CLI `move`** → 回读重建（不变式②）。
+   * 判据（冒烟域 48 的乙/丁）：拖动期间**盘上零写入、序列化文本逐字节不变**（构造性：
+   *   这一档一个偏移桶都不写）；松手才落盘，且盘上顺序 == 期望、其余字节白名单为空。 */
+
+  /** 同一父下的全部**兄弟**（不含自己）按数据顺序；取不到父 ⇒ null */
+  function reorderSiblings() {
+    const jm = state.jm;
+    if (!jm || !fdReorderRoot) return null;
+    const n = MM.adapter.getNode(jm, fdReorderRoot);
+    if (!n || !n.parent) return null;
+    return { parentId: n.parent.id, list: (n.parent.children || []).filter((c) => c && c.id !== n.id) };
+  }
+
+  /** 指针停在某个屏幕坐标时，**应该在的**下标 k。
+   *  口径（与 `moveNode` 的"先摘后插"逐项对齐）：k = 在**摘掉自己之后**的兄弟序列里插到第几位。
+   *  取法 = 数"**原始位置**里在自己上面（cy 更小）的兄弟个数"：
+   *    · 往上拖过头 / 原本就是第 1 个 ⇒ 0（贴到最前）
+   *    · 往下拖出头 / 原本就是最后一个 ⇒ k（贴到最后，k = 兄弟数 = 合法上界）
+   *  ⚠️ 判据里"其余兄弟用的是**新位置**（拖动中）"这条正是这一处的依据：拖动中节点会挪开
+   *    （jsMind 重排），所以拿"原始 cy"当可分辨的阈值是稳的；拿新位置会把阈值自己也挪走 ✗。 */
+  function reorderIndexAt(y) {
+    const sib = reorderSiblings();
+    if (!sib) return null;
+    let above = 0;
+    const sibRect = [];
+    sib.list.forEach((c) => {
+      const el = document.querySelector('jmnode[nodeid="' + c.id + '"]');
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const cy = r.top + r.height / 2;
+      const cs = { id: c.id, cy: cy };
+      sibRect.push(cs);
+      if (y > cy) above++;
+    });
+    const upper = sib.list.length;                 // = L'（合法上界，见 moveIndexUpperBound）
+    const k = Math.max(0, Math.min(upper, above)); // **渲染层 clamp**：拖出列表就贴到首/末
+    return { index: k, parent: sib.parentId, upper: upper, siblings: sib.list.length,
+      siblingRects: sibRect, raw: above, clamped: above !== k };
+  }
+
+  const REORDER_GHOST_ID = 'tree-reorder-ghost';
+  const REORDER_MARK_ID = 'tree-reorder-mark';
+
+  /** 清掉重排拖动留下的 DOM、并把被拖节点的透明度还原（域之间不留状态） */
+  function clearReorderArtifacts() {
+    [REORDER_GHOST_ID, REORDER_MARK_ID].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    });
+    if (fdReorderRoot) {
+      document.querySelectorAll('jmnode[nodeid="' + fdReorderRoot + '"]')
+        .forEach((el) => { if (el.dataset.mmDimmed === '1') el.style.opacity = ''; delete el.dataset.mmDimmed; });
+    }
+  }
+
+  /** 进入重排拖动：把被拖节点**复制**成一个跟指针走的副本（源节点留在原地当锚点）。
+   *  为什么是副本而不是"把真元素拽走"：源节点留在原位，落位预览与"插到第几位"的判定
+   *  才有稳定的参照物；真元素一旦走了，"拖动期间序列化/盘上零变化"也就无从谈起（那是 DOM 状态）。 */
+  function reorderBegin(x, y) {
+    clearReorderArtifacts();
+    const jm = state.jm;
+    const n = fdReorderRoot && MM.adapter.getNode(jm, fdReorderRoot);
+    if (!n) return false;
+    const src = document.querySelector('jmnode[nodeid="' + fdReorderRoot + '"]');
+    if (!src) return false;
+    fdReorderStart = { x: x, y: y, parentId: n.parent.id };
+    const ghost = document.createElement('div');
+    ghost.id = REORDER_GHOST_ID;
+    ghost.textContent = String(n.topic == null ? '' : n.topic);
+    const sr = src.getBoundingClientRect();
+    ghost.style.cssText = 'position:fixed;left:0;top:0;pointer-events:none;z-index:1000;'
+      + 'width:' + Math.round(sr.width) + 'px;height:' + Math.round(sr.height) + 'px;'
+      + 'line-height:' + Math.round(sr.height) + 'px;text-align:center;'
+      + 'background:rgba(22,100,255,.10);border:1px dashed #1664ff;border-radius:6px;'
+      + 'font:inherit;color:inherit;opacity:.85;';
+    ghost.style.transform = 'translate(' + Math.round(sr.left) + 'px,' + Math.round(sr.top) + 'px)';
+    document.body.appendChild(ghost);
+    src.dataset.mmDimmed = '1';
+    src.style.opacity = '.45';
+    const mark = document.createElement('div');
+    mark.id = REORDER_MARK_ID;
+    mark.style.cssText = 'position:fixed;left:0;top:0;pointer-events:none;z-index:1000;display:none;'
+      + 'height:0;border-top:2px dashed #1664ff;';
+    document.body.appendChild(mark);
+    return true;
+  }
+
+  /** 拖动中：副本跟指针走 + 落位预览（那条横线画在**将要插进的那个缝隙**上）。
+   *  返回**就是**松手会写下去的那一位（`{index,parent,upper,...}`）—— 预览与写回**同一个读数**，
+   *  不许两处各算一套（本工程明令"同一逻辑两处表达 ⇒ 必然漂"）。 */
+  function reorderUpdate(x, y) {
+    if (!fdReorderStart || !fdReorderRoot) return null;
+    const ghost = document.getElementById(REORDER_GHOST_ID);
+    if (ghost) {
+      const sr = ghost.getBoundingClientRect();
+      ghost.style.transform = 'translate(' + Math.round(x - sr.width / 2) + 'px,'
+        + Math.round(y - sr.height / 2) + 'px)';
+    }
+    const at = reorderIndexAt(y);
+    fdReorderDrop = at ? { index: at.index, parent: at.parent, upper: at.upper, siblings: at.siblings } : null;
+    const mark = document.getElementById(REORDER_MARK_ID);
+    if (mark) {
+      if (!at || !at.siblingRects.length) {
+        mark.style.display = 'none';
+      } else {
+        const order = at.siblingRects.slice().sort((a, b) => a.cy - b.cy);
+        let lineY;
+        if (at.index <= 0) lineY = order[0].cy - 14;
+        else if (at.index >= order.length) lineY = order[order.length - 1].cy + 14;
+        else lineY = (order[at.index - 1].cy + order[at.index].cy) / 2;
+        const rects = order.map((o) => {
+          const el = document.querySelector('jmnode[nodeid="' + o.id + '"]');
+          return el ? el.getBoundingClientRect() : null;
+        }).filter(Boolean);
+        if (rects.length) {
+          const left = Math.min.apply(null, rects.map((r) => r.left));
+          const right = Math.max.apply(null, rects.map((r) => r.right));
+          mark.style.left = Math.round(left - 6) + 'px';
+          mark.style.top = Math.round(lineY) + 'px';
+          mark.style.width = Math.round(right - left + 12) + 'px';
+          mark.style.display = 'block';
+        }
+      }
+    }
+    return fdReorderDrop;
+  }
+
+  /** 松手：把落位读数交出去（自己**不写盘** —— 写盘由 app-actions 的 reorderNodeChild 经 CLI 走）。
+   *  返回 `{ok, drop}` / `{ok:false, reason}`（不静默）；清理 DOM 把状态交还给界面。 */
+  function reorderEnd() {
+    if (!fdReorderStart || !fdReorderRoot) return { ok: false, reason: '没有正在进行中的同级重排拖动' };
+    const id = fdReorderRoot;
+    const drop = fdReorderDrop;
+    clearReorderArtifacts();
+    fdReorderStart = null;
+    fdReorderDrop = null;
+    fdReorderRoot = null;
+    fdDragKind = 'move';
+    if (!drop) return { ok: false, reason: '拖动的这一段没有算出落位（没移动过指针？）', id: id };
+    return { ok: true, id: id, parent: drop.parent, index: drop.index, upper: drop.upper, siblings: drop.siblings };
+  }
+
+  /** 取消：清 DOM + 复位状态（Esc / 右键 / 收尾都用它，不拆成两份） */
+  function reorderCancel() {
+    const id = fdReorderRoot;
+    clearReorderArtifacts();
+    fdReorderStart = null;
+    fdReorderDrop = null;
+    fdReorderRoot = null;
+    fdDragKind = 'move';
+    return !!id;
+  }
+
+  /** 现状读数（断言用）：当前是不是重排档、目标是谁、当前落位是第几位。 */
+  function reorderState() {
+    return { active: !!fdReorderRoot, kind: fdDragKind, id: fdReorderRoot,
+      parent: fdReorderStart ? fdReorderStart.parentId : null,
+      drop: fdReorderDrop ? { index: fdReorderDrop.index, parent: fdReorderDrop.parent,
+        upper: fdReorderDrop.upper, siblings: fdReorderDrop.siblings } : null };
+  }
 
   /** 视口交互：滚轮缩放（指针锚点）+ 中键平移（无界）+ 拖动模式左键平移 +
    *  吸收残留滚动。全局只绑一次，每次操作都通过 state.jm / fdPanel() 取当前实例，
@@ -998,8 +1191,16 @@
         e.stopPropagation();
         const panel = fdPanel();
         if (fdDragTreeRoot) {
-          const o = treeOffsets[fdDragTreeRoot] || (treeOffsets[fdDragTreeRoot] = { x: 0, y: 0 });
-          fdTreeDragStart = { x: e.clientX, y: e.clientY, ox: o.x, oy: o.y };
+          if (fdDragKind === 'reorder') {
+            // 【R2 期 3 · e】同级重排：按在锁定的那个节点上才开始（按别处什么都不做 —— 与"拖动此子树"
+            // 只认目标子树同一条纪律）；拖动期间**一个偏移桶都不写**，只有副本跟指针走。
+            const hitEl = e.target && e.target.closest && e.target.closest('jmnode[nodeid]');
+            const hitId = hitEl ? hitEl.getAttribute('nodeid') : null;
+            if (hitId === fdDragTreeRoot) reorderBegin(e.clientX, e.clientY);
+          } else {
+            const o = treeOffsets[fdDragTreeRoot] || (treeOffsets[fdDragTreeRoot] = { x: 0, y: 0 });
+            fdTreeDragStart = { x: e.clientX, y: e.clientY, ox: o.x, oy: o.y };
+          }
         } else {
           fdDragModePan = { x: e.clientX, y: e.clientY, px: fdView.x, py: fdView.y };
         }
@@ -1051,6 +1252,11 @@
         syncFdBoxes();
         return;
       }
+      if (fdReorderStart) {              // 【R2 期 3 · e】同级重排：副本跟指针 + 落位预览
+        e.preventDefault();
+        reorderUpdate(e.clientX, e.clientY);
+        return;
+      }
       if (fdDragModePan) {
         e.preventDefault();
         fdView.x = fdDragModePan.px + (e.clientX - fdDragModePan.x);
@@ -1068,6 +1274,32 @@
     });
 
     document.addEventListener('mouseup', (e) => {
+      // 【R2 期 3 · e】同级重排：**松手才写盘**（拖动期间盘上零写入由构造保证 —— 这一档
+      // 一个偏移桶都不写、序列化文本也一个字不变）。写盘只经 MMApp.reorderNodeChild → CLI move。
+      if (fdReorderStart) {
+        e.preventDefault();
+        const r = reorderEnd();
+        if (!r.ok) {
+          setStatus('没有重排：' + r.reason, true);          // 不静默 ✗
+        } else {
+          const p = (window.MMApp && window.MMApp.reorderNodeChild)
+            ? window.MMApp.reorderNodeChild(r.id, r.parent, r.index) : null;
+          if (!p) { setStatus('没有重排：缺少 reorderNodeChild 入口（没接上 CLI 的 move）', true); }
+          else {
+            Promise.resolve(p).then((res) => {
+              if (res && res.ok) {
+                setStatus('已把「' + (res.topic || r.id) + '」移到第 ' + (r.index + 1) + ' 位（盘上顺序已更新）');
+              } else {
+                setStatus('重排没生效：' + ((res && res.text) || '未知原因'), true);
+              }
+            }).catch((err) => setStatus('重排失败：' + ((err && err.message) || err), true));
+          }
+        }
+        document.body.classList.remove('mm-dragging');
+        const pnl = fdPanel();
+        if (pnl) pnl.style.cursor = fdDragMode ? 'grab' : '';
+        return;
+      }
       // 框选收尾：中心点/过半面积命中的可见节点入选（与预览同口径）
       if (fdRubber) {
         const band = rubberBand();
@@ -1132,6 +1364,7 @@
       if (e.key === 'Escape' && fdDragMode) {
         e.preventDefault();
         e.stopImmediatePropagation();
+        clearReorderArtifacts();     // 重排档：连副本/落位线一起收掉（退出拖动模式即取消这次拖动）
         setDragMode(false);
       }
     }, true);
@@ -1218,6 +1451,77 @@
     return { left: x, right: x + w, top: y, bottom: y + h, cx: x + w / 2, cy: y + h / 2 };
   }
 
+  /* ================= 【R2 期 3 · d】线端**按子序分散**（连线不打架） =================
+   * 问题（**已实测**，不是"读源码推断"）：一个父节点有 N 个子节点时，N 条线**共用父的同一个
+   * 侧边中点**。真读数（`comnet`，2026-10-16：
+   * `.review/20261014-导图交互重构/probe-line-endpoints.js` 现量）：
+   *   · 135 个"扇出 ≥ 3"的父，**每一个都只有 1 个不同的父端点**；
+   *   · 766 条线的父端落在同一个点上；最大扇出 13 个孩子的父端**全部重合**于
+   *     `(2194, 5927)` = 父矩形 `[1923,5908,2194,5946]` 的右边框中点。
+   * ⇒ 视觉上是"一团线从一个点炸开"，看不出哪条线接哪个孩子。
+   *
+   * 打法（**只改几何、不改节点位置、不改数据**）：把同一个父的**同一侧**的 N 个孩子按
+   * **上下序**排个名次，父端落到该侧边框上的等分点；子端仍是孩子自己的侧边中点。
+   *
+   * 为什么是"上下序"而不是别的顺序（这条决定了"交叉数不增"能不能成立）：
+   *   `children` 数组的顺序**就是**上下序（要求 e 的语义），而 jsMind 把父子纵向居中
+   *   ⇒ 孩子 i 的屏幕 cy 随 i 单调。于是"名次 i ⇒ 边框上第 i 个等分点"的两条序列
+   *   （父端 y 名次递增、子端 y 名次递增）**同时单调** ⇒ 同一组里任意两条线段
+   *   **不可能相交**（`min(p_i,p_j) > max(c_i,c_j)` 一类的不相交判据恒成立 —— 与
+   *   手工偏移无关：偏移只改 cy 的值、不改"按 cy 排名"这件事）。
+   *   实测：真 comnet 的 13 个孩子一组上，现状 0 交叉、本口径 0 交叉；把口径换成
+   *   "按 id 字典序分散"同一组立刻 **34 交叉**（同一次现算，见 `probe-crossings.js`）
+   *   ⇒ 这条判据不是恒真的（判别力证明见冒烟域 48 的断言②）。
+   *
+   * ⚠️ 端点真源**仍然只有 `nodeBorderRect` 一处**：本函数只决定"父端在这条边框上的**哪个点**"，
+   *   坐标本身一律来自 `nodeBorderRect(parentEl, …)`；子端直接用它的侧边中点。
+   *   绝不再算第二份边框（本工程修过的缺陷："端点真源被 get_node_point_in/out 的布局缓存污染"）。 */
+  const LINE_ENDPOINT_SCHEMES = ['order', 'reverse'];
+  let fdLineEndpointScheme = 'order';   // 'order' = 上下序（默认，正确口径）；'reverse' = 只给判别力证明用
+
+  /** 线端分散口径开关。**只有冒烟域 48 的判别力证明会切它**：切到 `'reverse'`（把名次整个**反过来**）
+   *  是为了让"交叉数不增"那条判据**当场变红**，证明它不是恒真；默认值就是产品口径。
+   *  ⚠️ 为什么不是"按 id 字典序"（第一版那样写，实测**没能变红** ✗）：字典序在具体夹具上可能与
+   *  上下序**恰好一致**（`f1..f8` 排在 `n1..n4` 之后、而它们的 y 也更大 ⇒ 一交叉都没有）⇒
+   *  注入形同虚设。把名次**倒过来**则**必然**与上下序相反 ⇒ 任何扇出 ≥ 2 的父都会立刻相交 ✓。 */
+  function setLineEndpointScheme(name) {
+    if (LINE_ENDPOINT_SCHEMES.indexOf(name) < 0) return null;
+    fdLineEndpointScheme = name;
+    return fdLineEndpointScheme;
+  }
+
+  /** 父→子 的**组**（同一侧、同一个父的孩子）与它们的父端落点。
+   *  分组按"孩子在父的左/右"判（与既有的相邻侧判定逐字同源：`childRect.cx < parentRect.cx`）。
+   *  返回 `{ [childId]: {x, y} }`；`x` 恒等于父的那条侧边（端点**仍在边框上** ✓）。
+   *  `unknown` = 取不到节点边框的孩子数（采不到真值 ⇒ 调用方如实报出来，不装作零）。 */
+  function lineParentPoints(parentEl, parentId, children) {
+    const pb = nodeBorderRect(parentEl, parentId);
+    const groups = { left: [], right: [] };
+    const unknown = [];
+    (children || []).forEach((t) => {
+      const el = document.querySelector('jmnode[nodeid="' + t.id + '"]');
+      if (!el) { unknown.push(t.id); return; }
+      const cb = nodeBorderRect(el, t.id);
+      (cb.cx < pb.cx ? groups.left : groups.right).push({ id: t.id, cy: cb.cy, index: t.index });
+    });
+    const out = {};
+    ['left', 'right'].forEach((side) => {
+      const list = groups[side];
+      list.sort((a, b) => (a.cy - b.cy)
+        || ((fdLineEndpointScheme === 'reverse' && String(a.id) < String(b.id)) ? -1 : 0)
+        || ((fdLineEndpointScheme === 'reverse' && String(a.id) > String(b.id)) ? 1 : 0)
+        || ((typeof a.index === 'number' && typeof b.index === 'number') ? (a.index - b.index) : 0));
+      if (fdLineEndpointScheme === 'reverse') list.reverse();   // 判别力注入：把名次整个反过来
+      const n = list.length;
+      list.forEach((it, rank) => {
+        out[it.id] = n > 1
+          ? { x: side === 'left' ? pb.left : pb.right, y: pb.top + (pb.bottom - pb.top) * (rank + 1) / (n + 1) }
+          : { x: side === 'left' ? pb.left : pb.right, y: pb.cy };   // 独子 ⇒ 与改动前逐字节相同
+      });
+    });
+    return { points: out, unknown: unknown, groups: { left: groups.left.length, right: groups.right.length } };
+  }
+
   /** 重写 jsMind 的连线绘制：复刻其原实现，仅额外跳过 parent 为根的线，
    *  并按「所属顶层主题树」的树偏移移动线两端（拖动树：只移目标树，其他树不动）。
    *  只重画 canvas 上的线、绝不触碰节点 DOM（区别于曾导致节点全消失的 view.reset()）。
@@ -1230,32 +1534,52 @@
       const nodes = this.jm.mind.nodes;
       const HM = this.opts.hmargin, VM = this.opts.vmargin;
       window.__mmSkippedLines = 0;
-      // 第一遍：线端 = 父子节点**相邻侧边框中点**。直接读节点实际 DOM 边框（nodeBorderRect，
+      // 第一遍：线端 = 父子节点**相邻侧边框上的点**。直接读节点实际 DOM 边框（nodeBorderRect，
       // 已含 view offset 与树偏移），**不再用** get_node_point_in/out 布局缓存、也不再加 off。
+      // 【R2 期 3 · d】父端**按子序分散**（见 lineParentPoints 的头注释）：同一父同一侧的孩子
+      // 各自落在这条边框的一个等分点上，不再共用同一个中点。子端仍是孩子的侧边中点。
       const lines = [];
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      window.__mmEndpointUnknown = [];
+      const parents = [];
       for (const id in nodes) {
         const t = nodes[id];
         if (t.isroot) continue;
         if (!this.layout.is_visible(t)) continue;
         if (fdHideRootLinks && t.parent && t.parent.isroot) { window.__mmSkippedLines += 1; continue; }
+        if (!t.parent) continue;
         const parentEl = document.querySelector('jmnode[nodeid="' + t.parent.id + '"]');
         const childEl = document.querySelector('jmnode[nodeid="' + t.id + '"]');
         if (!parentEl || !childEl) continue;
-        const pb = nodeBorderRect(parentEl, t.parent.id);
-        const cb = nodeBorderRect(childEl, t.id);
-        let px, py, cx, cy;
-        if (cb.cx < pb.cx) {            // 子在父左：父端=左边框中点，子端=右边框中点
-          px = pb.left; py = pb.cy; cx = cb.right; cy = cb.cy;
-        } else {                         // 子在父右：父端=右边框中点，子端=左边框中点
-          px = pb.right; py = pb.cy; cx = cb.left; cy = cb.cy;
-        }
-        lines.push({ parent: t.parent.id, child: t.id, px, py, cx, cy,
-          color: t.data && t.data['leading-line-color'] });
-        if (px < minX) minX = px; if (cx < minX) minX = cx;
-        if (py < minY) minY = py; if (cy < minY) minY = cy;
-        if (px > maxX) maxX = px; if (cx > maxX) maxX = cx;
-        if (py > maxY) maxY = py; if (cy > maxY) maxY = cy;
+        parents.push({ t: t, parentEl: parentEl, childEl: childEl });
+      }
+      // 同一父只算一次分组（分组要"这个父的**全部**可见孩子"，不是逐条各算各的）
+      const byParent = {};
+      parents.forEach((p) => { (byParent[p.t.parent.id] = byParent[p.t.parent.id] || []).push(p); });
+      for (const pid in byParent) {
+        const group = byParent[pid];
+        const pts = lineParentPoints(group[0].parentEl, pid, group.map((p, i) => ({
+          id: p.t.id, index: (typeof p.t.index === 'number' ? p.t.index : i)
+        })));
+        window.__mmEndpointUnknown = window.__mmEndpointUnknown.concat(pts.unknown);
+        group.forEach((p) => {
+          const pb = nodeBorderRect(p.parentEl, pid);
+          const cb = nodeBorderRect(p.childEl, p.t.id);
+          const pt = pts.points[p.t.id];
+          // 采不到落点（理论上不会：同一次查询里 parentEl 在、childEl 也在）⇒ 退回**改动前的口径**
+          //（父端 = 侧边中点）。这不是"兜底假装成功"：它让"偶发取不到"与"取到了"可分辨，
+          // 且退回的那一支与改动前逐字节相同（域 48 的断言①能看出条数变少）。
+          const px = pt ? pt.x : (cb.cx < pb.cx ? pb.left : pb.right);
+          const py = pt ? pt.y : pb.cy;
+          const cx = cb.cx < pb.cx ? cb.right : cb.left;
+          const cy = cb.cy;
+          lines.push({ parent: pid, child: p.t.id, px: px, py: py, cx: cx, cy: cy,
+            color: p.t.data && p.t.data['leading-line-color'] });
+          if (px < minX) minX = px; if (cx < minX) minX = cx;
+          if (py < minY) minY = py; if (cy < minY) minY = cy;
+          if (px > maxX) maxX = px; if (cx > maxX) maxX = cx;
+          if (py > maxY) maxY = py; if (cy > maxY) maxY = cy;
+        });
       }
       // 暴露线端真源（e_panel 逻辑坐标）：供 AI/断言核对「线端 == 节点边框中点」、移动后跟随
       window.__mmLineEndpoints = lines.map((L) => ({ parent: L.parent, child: L.child,
@@ -1463,6 +1787,9 @@
   MM.setDragMode = setDragMode;
   MM.dragModeActive = dragModeActive;
   MM.getDragTreeRoot = getDragTreeRoot;
+  MM.dragModeKind = dragModeKind;            // 'move' / 'reorder'（断言用它分辨两档）
+  MM.reorderState = reorderState;            // 重排拖动的现状读数（目标 / 落位 / 上界）
+  MM.reorderCancel = reorderCancel;          // 收尾/取消（清 DOM + 复位，不拆成两份）
   MM.treeRootOf = treeRootOf;
   MM.applyTreeOffsets = applyTreeOffsets;
   MM.clearTreeOffsets = clearTreeOffsets;
@@ -1550,6 +1877,9 @@
   MM.fdIsThemeMode = fdIsThemeMode;
   MM.isThemeMode = isThemeMode;
   MM.nodeBorderRect = nodeBorderRect;
+  MM.lineParentPoints = lineParentPoints;   // 线端分散的**唯一实现**（断言用它算一份独立读数对照产品）
+  MM.setLineEndpointScheme = setLineEndpointScheme;   // 只给判别力证明切口径（默认就是产品口径）
+  MM.getLineEndpointScheme = () => fdLineEndpointScheme;
   MM.installRootLineOverride = installRootLineOverride;
   MM.applyRootModeVisual = applyRootModeVisual;
   MM.applyThemeLayout = applyThemeLayout;  MM.applyRootMode = applyRootMode;

@@ -203,9 +203,20 @@
     resetView,
     getPanState,
     setViewScale,
-    setDragMode: (on, treeRootId) => MM.setDragMode(on, treeRootId),
+    setDragMode: (on, treeRootId, opts) => MM.setDragMode(on, treeRootId, opts),
     dragModeActive: () => MM.dragModeActive(),
     getDragTreeRoot: () => MM.getDragTreeRoot(),
+    // 【R2 期 3 · e】同级重排：现状读数（断言用）/ 取消（Esc、右键、收尾共用一处）
+    reorderState: () => (MM.reorderState ? MM.reorderState() : null),
+    dragModeKind: () => (MM.dragModeKind ? MM.dragModeKind() : null),
+    reorderCancel: () => (MM.reorderCancel ? MM.reorderCancel() : false),
+    // 【R2 期 3 · e】同级重排的**唯一写口**（→ IPC → CLI `move --index` → 回读重建）。
+    // 顺带暴露 `reorderNodeChildRaw`：语义逐字相同但**绕过界面 clamp** —— 它是"越界必被 CLI 拒"那条
+    // 判据的**唯一注入点**（界面 clamp 之后永远发不出越界值，光靠拖动判不到那条 ✗）。
+    reorderNodeChild: (id, parentId, index) => (MM.reorderNodeChild
+      ? MM.reorderNodeChild(id, parentId, index) : Promise.resolve({ ok: false, text: '没有 reorderNodeChild 入口' })),
+    reorderNodeChildRaw: (id, parentId, index) => (MM.reorderNodeChildRaw
+      ? MM.reorderNodeChildRaw(id, parentId, index) : Promise.resolve({ ok: false, text: '没有 reorderNodeChildRaw 入口' })),
     treeRootOf: (nodeId) => MM.treeRootOf(nodeId),
     clearTreeOffsets: (treeId) => MM.clearTreeOffsets(treeId),
     // 树偏移读口（框选拖动持久化的真源在 app-view.js 的 treeOffsets）：序列化与冒烟断言用

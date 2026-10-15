@@ -20,6 +20,8 @@
  *   desktop.app.audit(name)            → 关系审计（orphans + mentions 两清单）
  *   desktop.app.linkNodes(...)         → 补一条链接（写操作，走 CLI 闸门）
  *   desktop.app.unlinkNodes(...)       → 摘掉一条链接（写操作，走 CLI 闸门；入边可指定**来源所在项目**）
+ *   desktop.app.moveNodeSibling(...)   → 【R2 期 3】同级重排：走既有 CLI `move --index`（唯一实现），
+ *                                        写后回读父节点新的 `children` 顺序（null = 回读失败，不许假装同步 ✓）
  *   desktop.app.nodes(name)            → 扁平节点清单（命令面板与关联视图的"输入即搜"共用）
  *   desktop.app.assoc(name, nodeId?)   → 关联笔记（N 元关联实体）；给 nodeId 则只列该节点所属的
  *   desktop.app.assocAdd(...)          → 新建一篇关联笔记（写操作，走 CLI 闸门；回读原始实体 + 新条目）
@@ -84,6 +86,12 @@ contextBridge.exposeInMainWorld('desktop', {
       ipcRenderer.invoke('app:link-nodes', projectName, fromId, toProject, toId, caption),
     unlinkNodes: (projectName, fromId, toProject, toId) =>
       ipcRenderer.invoke('app:unlink-nodes', projectName, fromId, toProject, toId),
+    /* 【R2 期 3 · e】同级重排：把"拖到第 k 位"接到**既有** CLI `move --index`（唯一实现）。
+     * 语义：`index` = **移动完成后**在新父 `children` 里的下标（0 基）；渲染层负责 clamp、
+     * CLI 负责契约校验（越界 ⇒ 响亮拒绝、盘上零改动）。返回 `{ok,text,children,…}`，
+     * `children` = **写后回读**的父节点新顺序（null = 回读失败，界面不许假装同步成功 ✗）。 */
+    moveNodeSibling: (projectName, nodeId, parentId, index) =>
+      ipcRenderer.invoke('app:move-node-sibling', projectName, nodeId, parentId, index),
     nodes: (projectName) => ipcRenderer.invoke('app:nodes', projectName),
     ask: (projectName, nodeId, opts) => ipcRenderer.invoke('app:ask', projectName, nodeId, opts),
     /* 功能 1 的下半截（A）：把 AI 的回答**落进节点与详情**（写操作走 CLI `ask-apply` 闸门）。

@@ -215,7 +215,14 @@ describe('真输入域的像素判据：scanRegion / isAccentBlue', () => {
   });
 
   it('单源阈值：判定用的 dashStroke 就在 thresholds.js（本文件不写数字）', () => {
-    expect(TH.dashStroke).toMatchObject({ minHits: 20, maxRun: 24, maxBoxHits: 24 });
+    // 大框判据三键（2026-10-16 换口径，理由见 `scripts/smoke/36-real-input.js` 的 `boxPixelDiff`）：
+    //  · `boxDiffTol` = "这一像素变了"的强差分门槛（挡掉大框那片 6% 底色，只认 2px 虚线描边）
+    //  · `maxBoxDrift` = 产品判据（当前状态 vs 已知无框参照，必须 ≈ 0）
+    //  · `minBoxSig` = 判据自检（强制画框时这条判据必须看得见；**必须 > maxBoxDrift**，否则它分不出两态）
+    // `maxRingHits` = 「描边那一圈掉干净了」的判据（域 36 ③⑤；原名叫 maxBoxHits，名字与用途不符已改名）
+    expect(TH.dashStroke).toMatchObject({ minHits: 20, maxRun: 24, maxRingHits: 24,
+      boxDiffTol: 40, maxBoxDrift: 12, minBoxSig: 60 });
+    expect(TH.dashStroke.minBoxSig).toBeGreaterThan(TH.dashStroke.maxBoxDrift);   // 两档是一把尺子，不是两个孤立数字
     // 传别的阈值即改判定 ⇒ 证明它真的读了单源 ✓
     expect(fs.isAccentBlue(22, 100, 255, { minMax: 300, maxMin: 0, minMid: 0, maxMid: 300 })).toBe(false);
   });

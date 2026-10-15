@@ -420,11 +420,26 @@ describe('接线与"一处实现"：verify.js 只照表做事，别再抄一份�
     expect(files.length, '扫描面不该是空的').toBeGreaterThan(20);
     expect(findCopies(files)).toEqual(['scripts/changed-plan.js']);
     // 判别力：把同一个 needle 放进第二个文件 ⇒ 必红（否则这条判据是空转的）
-    const fake = path.join(ROOT, 'scripts', '__copy-probe.js');
+    /* ⚠️ 2026-10-16 修一条**并发假红**（实测：全链第 9 步 G3 报
+     *    `ENOENT: no such file or directory, open 'D:\…\scripts\__copy-probe.js'`）。
+     *    成因：这条探针原先把文件写进 **`scripts/`**，而 `tests/w8-dry-run.test.js` 的 D4
+     *    会**遍历整棵树逐个 `readFileSync`**（`.js`/`.mjs`）；vitest 是**并行**跑测试文件的
+     *    （`--pool=threads`）⇒ walker 可能"列目录时它还在、读时已被 `finally` 删掉"
+     *    ⇒ 它红，而**两个文件各自的代码都没错**（链内红 / 单跑绿，正是"顺序·状态依赖"那一类）。
+     *    修法（照 `testing-for-ai` E5"临时物必须唯一化、且别放进被扫描的树"）：
+     *    探针落到 `.review/` 下的**散落文件**（名字带进程号）—— 它是本工程的**工作产物区**
+     *    （`w8-dry-run` 的 walker 显式跳过 `.review`，本文件的 SCAN 面也不含它）⇒
+     *    walker 再也看不到它；同时 `findCopies` 仍按"相对 ROOT 的路径"读得到它 ⇒ 判别力不减 ✓。
+     *    ⚠️ 用**文件**、不建子目录：G8 要求 `.review/` 的每个**直接子目录**都有 `README.md`
+     *    （`docs-registry-check` 的 `checkWorkDirStatus`），而**散落文件是豁免**的
+     *    ⇒ 万一这次跑崩了留残，也不会制造一条新的假红 ✓。
+     *    收尾仍在 `finally` 里**只清自己那一个文件**（不按通配清别人的 ✗）。 */
+    const fakeAbs = path.join(ROOT, '.review', '.changed-plan-probe-' + process.pid + '.js');
+    const fakeRel = path.relative(ROOT, fakeAbs).split(path.sep).join('/');
     try {
-      fs.writeFileSync(fake, "const copy = { id: 'renderer', what: '第二份面表' };\n", 'utf8');
-      expect(findCopies(['scripts/changed-plan.js', 'scripts/__copy-probe.js']))
-        .toEqual(['scripts/changed-plan.js', 'scripts/__copy-probe.js']);
-    } finally { fs.rmSync(fake, { force: true }); }
+      fs.writeFileSync(fakeAbs, "const copy = { id: 'renderer', what: '第二份面表' };\n", 'utf8');
+      expect(findCopies(['scripts/changed-plan.js', fakeRel]))
+        .toEqual(['scripts/changed-plan.js', fakeRel]);
+    } finally { fs.rmSync(fakeAbs, { force: true }); }
   });
 });

@@ -502,18 +502,144 @@ function ringScan(img, node, dpr, overlays) {
   return frameStats.scanRegion(img, outer, { exclude: ex });
 }
 
-/** "大虚线框**上边沿**应该在的那条带"里的强调蓝像素（大框只在框选时出现 ⇒ Ctrl 加选必须为 0）。
- *  ⚠️ 只取**最上面那个节点**上方的窄带（实测教训：拿三点并集包围盒算整条带时，三点一分散
- *    这条带就有 600+px 宽，会把画面里别的蓝色像素（连线/别的描边）也扫进来 ⇒ 假红 ✗）。
- *  带的位置不写死像素：`pad = 14 * 缩放`（缩放 0.45~4 ⇒ 6~56px）⇒ 向上留 8~62px 必然覆盖到
- *  "框真的画出来时"它的上边沿 ✓；浮层全部挖掉（工具条就在上方 ✗）。 */
-function boxStripScan(img, nodes, dpr, overlays) {
-  const rs = (nodes || []).filter((n) => n && n.rect).map((n) => n.rect);
-  if (!rs.length) return { ok: false, reason: '没有可用于算大框位置的节点矩形', hits: 0, longestRun: 0 };
-  const top = rs.reduce((a, b) => (b.y < a.y ? b : a));
-  const strip = { x: top.x - 24, y: top.y - 62, width: top.width + 48, height: 54 };
-  const r = frameStats.scanRegion(img, toDev(strip, dpr), { exclude: (overlays || []).map((o) => toDev(o, dpr)) });
-  return Object.assign(r, { stripCss: strip, topNodeRect: top });
+/** 矩形（CSS px）按 dpr 换算到设备像素，并**裁到导图面板内**。
+ *  为什么必须裁（这是 2026-10-16 那条红的成因之一）：大框挂在 `jmnodes` 里 ⇒ 面板的
+ *  `overflow` 会把它超出面板的部分裁掉；DOM 给的 rect 是**未裁**的（可能 x<0 或伸进 DSH 侧栏）。
+ *  ROI 不裁就会把工具栏 / 侧栏的像素算进来 ⇒ 判的是别处的东西（假红/假绿都可能有）。
+ *  裁没了 ⇒ `null`：调用方按"这块不可判"如实报，**不许**按 0 命中算（采不到真值 = 红，见 A5）。 */
+function clipToPanelDev(rectCss, panelCss, dpr) {
+  const x0 = Math.max(rectCss.x, panelCss.x), y0 = Math.max(rectCss.y, panelCss.y);
+  const x1 = Math.min(rectCss.x + rectCss.width, panelCss.x + panelCss.width);
+  const y1 = Math.min(rectCss.y + rectCss.height, panelCss.y + panelCss.height);
+  if (x1 - x0 < 1 || y1 - y0 < 1) return null;
+  return toDev({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, dpr);
+}
+
+/** 大框的**四条边框带**（CSS px）。大框的墨只画在边框上（`ensureSelOutline`：`border:2px dashed
+ *  #1664ff`）；框内的底色 `rgba(22,100,255,.06)` **不是**"框画出来了"的证据（画面看上去仍是白底，
+ *  实测整块只把像素抬 ~9–14）。`t` = 外扩量（CSS px）：2px 边框 + 抗锯齿 + 亚像素落点都吃得下。 */
+function boxBands(r, t) {
+  return [
+    { x: r.x - t, y: r.y - t, width: r.width + 2 * t, height: 2 * t },              // 上边沿
+    { x: r.x - t, y: r.y + r.height - t, width: r.width + 2 * t, height: 2 * t },  // 下边沿
+    { x: r.x - t, y: r.y + t, width: 2 * t, height: r.height - 2 * t },            // 左边沿
+    { x: r.x + r.width - t, y: r.y + t, width: 2 * t, height: r.height - 2 * t }   // 右边沿
+  ];
+}
+
+/** 两帧在一个 ROI（若干矩形的**并集**）里的**强差分**像素数：任一分通道差 ≥ `tol` 才算"这一像素变了"。
+ *
+ *  为什么是**差分**：ROI 里必然有地图自己的东西（节点、连线、文字、expander），它们在两帧里
+ *  逐字节相同 ⇒ 差分把它们**消掉**，剩下的才是"这一档动作自己画出来的" ✓（`testing-for-ai` H3
+ *  的"判据自身也要做对照实验"：被测对象有两种状态（框画了 / 没画），判据必须能分辨它们）。
+ *  为什么是**强**差分（阈值而不是"不相等"）：大框的底色整块只抬 ~9–14（见 `boxBands`）⇒ 拿
+ *  "不相等"会把**底色**当成"框画出来了" ✗；2px 虚线描边差 100+ ⇒ 只有它算数 ✓
+ *  为什么在并集上数：四条带在角上会重叠 ⇒ 用 `inBands` 判一次，避免角上像素被数两遍。 */
+function diffPx(imgA, imgB, rectsDev, excludeDev, tol) {
+  const ia = frameStats.bitmapInfo(imgA), ib = frameStats.bitmapInfo(imgB);
+  if (!ia.ok || !ib.ok || ia.width !== ib.width || ia.height !== ib.height) {
+    return { ok: false, hits: 0, px: 0, reason: '两帧位图与尺寸对不上 ⇒ 采不到真值（不许按 0 算）' };
+  }
+  const rs = (rectsDev || []).filter(Boolean);
+  if (!rs.length) return { ok: false, hits: 0, px: 0, reason: 'ROI 被裁空了（大框不在面板里？）' };
+  const ex = (excludeDev || []).filter(Boolean);
+  const hit = (list, x, y) => list.some((r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+  let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+  rs.forEach((r) => { x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y);
+    x1 = Math.max(x1, r.x + r.width); y1 = Math.max(y1, r.y + r.height); });
+  let hits = 0, px = 0;
+  for (let y = Math.max(0, y0); y < Math.min(ia.height, y1); y++) {
+    for (let x = Math.max(0, x0); x < Math.min(ia.width, x1); x++) {
+      if (!hit(rs, x, y) || hit(ex, x, y)) continue;
+      px++;
+      const o = (y * ia.width + x) * 4;
+      const d = Math.max(Math.abs(ia.bmp[o] - ib.bmp[o]),
+        Math.abs(ia.bmp[o + 1] - ib.bmp[o + 1]), Math.abs(ia.bmp[o + 2] - ib.bmp[o + 2]));
+      if (d >= tol) hits++;
+    }
+  }
+  return { ok: true, hits: hits, px: px };
+}
+
+/** 【大框判据的**唯一**入口】三帧差分，ROI = **大框自己的四条边框带**。
+ *  位置由 DOM 给（rect 只回答"去哪儿看"），**判"画没画"一律由像素回答** —— 设计稿 §3 明令可见性
+ *  **不许 DOM 自证** ✗。
+ *
+ *  三帧（同一次跑、同一个几何，变量只有"框画不画"这一个）：
+ *   · `cur` = 产品**当前**状态（Ctrl 加选 ⇒ 期望没有大框）
+ *   · `off` = 与产品**同一跳**造出来的"已知无框"参照（`applySelection(ids, ids, {hideBox:true})`）
+ *   · `on`  = "已知有框"的对照（`applySelection(ids, ids)`）
+ *  两侧判据（缺一条这条判据就不成立，见 `thresholds.dashStroke` 里两个键的标定）：
+ *   ① **产品**：`diff(off, cur) ≤ maxBoxDrift` —— 当前状态与"无框参照"在框的那条带上没有差别；
+ *   ② **判据自检**：`diff(off, on) ≥ minBoxSig` —— 把框真的画出来时这条判据**必须看得见**
+ *      （否则它空转：读数与"框画没画"无关 ⇒ **判红**，不许当通过 ✓）。
+ *
+ *  ⚠️ 这条判据的前身是"最上面节点上方 62px 的那条窄带"。2026-10-16 实测**证伪**（证据：
+ *  `.review/20261014-导图交互重构/probe-box-frames-diff.out.json` 与 `-recheck.out.json`）：
+ *  那条带按"最上面节点的 rect.top − 62"取，实测落在**应用工具栏那一层**（y 19–73）；而大框的
+ *  可见区在 **y 81–643**（它被面板上沿裁掉，只剩一条下边沿 + 一片底色）⇒ 那条带与框**不相交**。
+ *  注入 `big-box`（DOM 大框可见=true、与无框帧的强差分 1020 px / 松差分 361,363 px）之后，
+ *  那条带的读数**一个像素都没变**（37 → 37）⇒ 它量的是工具栏、不是框（空转假绿）；而全链那次
+ *  又因为框的一条边恰巧落进带里，被"`delta ≤ 40`"判红（69 > 40）⇒ **两个方向都是判据缺陷**，
+ *  不是产品回归（产品侧另有 `boxVisible === false` 与读图证据）。
+ *
+ *  ⚠️ 收尾把选区**清空**（与调用方随后的 `cleanup(ctx)` 同口径），不给后面的断言留状态。 */
+async function boxPixelDiff(ctx, dpr, overlays, ids, shotName) {
+  const sel = (hide) => ctx.exec('(function () { window.MM.applySelection(' + JSON.stringify(ids || []) + ', '
+    + JSON.stringify(ids || []) + ', { hideBox: ' + (hide ? 'true' : 'false') + ' }); return 1; })()');
+  const cur = await ctx.input.capture();
+  await sel(true);
+  await ctx.input.settle({ delayMs: 150 });
+  const off = await ctx.input.capture();
+  await sel(false);
+  await ctx.input.settle({ delayMs: 150 });
+  const on = await ctx.input.capture();
+  /* 框的 rect 只在**画着**的时候有意义（display:none 时 getBoundingClientRect 全是 0）⇒
+   * 位置与"对照档到底画出来没有"一起在这一刻读；顺带把**这一刻**的浮层矩形也取回来并进挖除名单
+   * （② 的 overlays 取自 snapshot 那一刻，⑤ 那一刻工具条是关着的 ⇒ 单用它会让工具条漏进 ROI）。 */
+  const geo = await execJson(ctx, `(function () {
+    var el = document.getElementById('dsh-selection-outline');
+    var p = window.MM && window.MM.fdPanel ? window.MM.fdPanel() : null;
+    if (!el || !p) return JSON.stringify({ ok: false, reason: '大框元素或导图面板取不到' });
+    var r = el.getBoundingClientRect(), pr = p.getBoundingClientRect();
+    var ov = [];
+    var bar = document.getElementById('mm-node-toolbar');
+    if (bar && bar.parentElement && bar.style.display !== 'none') {
+      var br = bar.getBoundingClientRect();
+      if (br.width > 0) ov.push({ x: br.left, y: br.top, width: br.width, height: br.height });
+    }
+    Array.prototype.slice.call(document.querySelectorAll('.float-detail')).forEach(function (b) {
+      var q = b.getBoundingClientRect();
+      if (q.width > 0 && q.height > 0) ov.push({ x: q.left, y: q.top, width: q.width, height: q.height });
+    });
+    return JSON.stringify({ ok: true, display: el.style.display, overlays: ov,
+      rect: { x: r.left, y: r.top, width: r.width, height: r.height },
+      panel: { x: pr.left, y: pr.top, width: pr.width, height: pr.height } });
+  })()`);
+  const rec = shotName ? await ctx.input.shot(shotName, on) : null;
+  await ctx.exec('(function () { window.MM.applySelection([], [], { hideBox: true });'
+    + ' if (window.MM.paintRawSelection) window.MM.paintRawSelection(); return 1; })()');
+  await ctx.input.settle({ delayMs: 150 });
+  // 对照档必须**真的**把框画出来了：画不出来 ⇒ 这条判据没有可判的对象 ⇒ 按红计（不许当通过）
+  if (!geo || !geo.ok || geo.display !== 'block' || !(geo.rect.width >= 1 && geo.rect.height >= 1)) {
+    return { ok: false, sig: null, drift: null,
+      text: '对照档没画出大框（display=' + JSON.stringify(geo && geo.display) + ' rect='
+        + JSON.stringify(geo && geo.rect) + (geo && geo.reason ? ' ' + geo.reason : '')
+        + '）⇒ 采不到真值，按红计（不许当通过）' };
+  }
+  const ex = (overlays || []).concat((geo.overlays || [])).map((o) => toDev(o, dpr));
+  const bandsDev = boxBands(geo.rect, 3).map((b) => clipToPanelDev(b, geo.panel, dpr));
+  const sig = diffPx(off, on, bandsDev, ex, TH.dashStroke.boxDiffTol);
+  const drift = diffPx(off, cur, bandsDev, ex, TH.dashStroke.boxDiffTol);
+  const ok = sig.ok === true && drift.ok === true
+    && sig.hits >= TH.dashStroke.minBoxSig && drift.hits <= TH.dashStroke.maxBoxDrift;
+  return { ok: ok, sig: sig, drift: drift, rect: geo.rect,
+    text: '大框带（ROI=框四条边 ±3px、裁到面板内）｜ 对照(画框−无框)=' + (sig.ok ? sig.hits : ('采不到：' + sig.reason))
+      + '（地板 ≥' + TH.dashStroke.minBoxSig + '）｜ 当前(当前−无框)=' + (drift.ok ? drift.hits : ('采不到：' + drift.reason))
+      + '（上限 ≤' + TH.dashStroke.maxBoxDrift + '）｜ 框 rect=[' + Math.round(geo.rect.x) + ','
+      + Math.round(geo.rect.y) + ' ' + Math.round(geo.rect.width) + 'x' + Math.round(geo.rect.height) + ']'
+      + ' ｜ 强差分 tol=' + TH.dashStroke.boxDiffTol
+      + (rec ? ' ｜ 对照帧证据 ' + rec.name + ' ' + rec.bytes + 'B' : '') };
 }
 
 /**
@@ -711,11 +837,18 @@ module.exports = [
       const s1 = await snapshot(ctx, ids);
       const cap1 = await captureUntil(ctx, (img) => ({
         ok: true,
-        rings: s1.nodes.map((n) => (n.rect ? ringScan(img, n, dpr, s1.overlays) : null)),
-        strip: boxStripScan(img, s1.nodes, dpr, s1.overlays)
+        rings: s1.nodes.map((n) => (n.rect ? ringScan(img, n, dpr, s1.overlays) : null))
       }), (sc) => sc.rings.every((r) => r && r.hits >= TH.dashStroke.minHits),
         INJECT === 'invisible-outline' ? 2 : 3);
       const rec = await ctx.input.shot('36-2-ctrl-three-nodes.png', cap1.img);
+      // 【大框判据】三帧差分，ROI = **框自己的四条边框带**（读 `boxPixelDiff` 与
+      //   `thresholds.dashStroke` 里 `minBoxSig`/`maxBoxDrift` 的头注释 + 那条红的两份读图证据）。
+      //   一句话：这条带按"框在哪儿"取，不按"最上面那个节点在哪儿"猜 —— 猜的那版实测落在**应用工具栏**
+      //   那一层（y 19–73），而框在 y 81–643 ⇒ 注入把框画出来后读数一个像素没变（空转假绿）；
+      //   全链那次又因框的一条边恰巧进带而被 `delta ≤ 40` 判红 ⇒ 判据本身是坏的，不是产品回归。
+      //   ⚠️ 必须在**撤销注入之前**量：`big-box` 注入下"当前档"本来就画着框 ⇒ `当前−无框` 必然很大
+      //   ⇒ 这条判据当场变红（判别力证明 ✓，与 `s1.boxVisible` 一起红）。
+      const boxDiff = await boxPixelDiff(ctx, dpr, s1.overlays, s1.raw, '36-2b-box-control-on.png');
       // 撤销注入（别把违规态留给后面的断言 ✓）
       if (INJECT === 'invisible-outline') {
         await ctx.exec("(function () { document.querySelectorAll('jmnode').forEach(function (el) { el.style.outlineColor = ''; }); return 1; })()");
@@ -729,8 +862,7 @@ module.exports = [
         && r.longestRun <= TH.dashStroke.maxRun);
       const rawOk = s1.raw.length === ids.length && ids.every((id) => s1.raw.indexOf(id) >= 0);
       const paintedOk = s1.painted.length === ids.length && ids.every((id) => s1.painted.indexOf(id) >= 0);
-      const strip = cap1.scan.strip;
-      const boxOk = !s1.boxVisible && !!strip && strip.ok && strip.hits <= TH.dashStroke.maxBoxHits;
+      const boxOk = !s1.boxVisible && boxDiff.ok === true;
       const nOk = s1.barVisible && String(s1.barCount) === String(ids.length)
         && countInLabel(s1.askText) === ids.length;
       await cleanup(ctx);
@@ -744,8 +876,7 @@ module.exports = [
             + '→' + (rings[i] ? rings[i].hits : -1)).join(' ')
           + ' 最长连续=' + (rings || []).map((r) => (r ? r.longestRun : -1)).join(',')
           + '（阈值 命中≥' + TH.dashStroke.minHits + '、连续≤' + TH.dashStroke.maxRun + '）'
-          + ' ｜ 大虚线框 DOM可见=' + s1.boxVisible + ' 像素带命中=' + (strip ? strip.hits : -1)
-          + '（阈值 ≤' + TH.dashStroke.maxBoxHits + '）'
+          + ' ｜ 大虚线框 DOM可见=' + s1.boxVisible + ' ｜ ' + boxDiff.text
           + ' ｜ 工具条 data-count=' + s1.barCount + ' 文案=' + JSON.stringify(s1.askText)
           + '（解释按钮=' + JSON.stringify(s1.explainText) + '）'
           + ' ｜ 重拍 ' + cap1.attempts + ' 次 ｜ 证据 ' + rec.name + ' ' + rec.width + 'x' + rec.height + ' ' + rec.bytes + 'B'
@@ -785,13 +916,13 @@ module.exports = [
       const s2 = await snapshot(ctx, ids);
       const cap2 = await captureUntil(ctx, (img) => ({
         ok: true, rings: s2.nodes.map((n) => (n.rect ? ringScan(img, n, dpr, s2.overlays) : null))
-      }), (sc) => sc.rings[1] && sc.rings[1].ok && sc.rings[1].hits <= TH.dashStroke.maxBoxHits, 3);
+      }), (sc) => sc.rings[1] && sc.rings[1].ok && sc.rings[1].hits <= TH.dashStroke.maxRingHits, 3);
       const rec = await ctx.input.shot('36-3-ctrl-deselect.png', cap2.img);
       const wentOut = s2.raw.indexOf(pick.C.id) < 0 && s2.painted.indexOf(pick.C.id) < 0;
       const keepT = s2.raw.indexOf(pick.P.id) >= 0 && s2.painted.indexOf(pick.P.id) >= 0;
       const beforeC = cap1.scan.rings[1] ? cap1.scan.rings[1].hits : -1;
       const afterC = cap2.scan.rings[1] ? cap2.scan.rings[1].hits : -1;
-      const ringGone = beforeC >= TH.dashStroke.minHits && afterC <= TH.dashStroke.maxBoxHits;
+      const ringGone = beforeC >= TH.dashStroke.minHits && afterC <= TH.dashStroke.maxRingHits;
       const nFell = String(s2.barCount) === '1' && countInLabel(s2.askText) === null
         && /问问AI/.test(String(s2.askText));
       await cleanup(ctx);
@@ -801,7 +932,7 @@ module.exports = [
           + ' 描边=' + idLine(s1.painted) + ' N=' + s1.barCount + ' ｜ 再 Ctrl 点一次**子节点** ⇒ raw=' + idLine(s2.raw)
           + '（期望只剩 ' + pick.P.id + '）｜ 带描边类的节点=' + idLine(s2.painted)
           + ' ｜ 子节点外圈带像素 ' + beforeC + ' → ' + afterC + '（阈值 命中≥' + TH.dashStroke.minHits
-          + '、之后应 ≤' + TH.dashStroke.maxBoxHits + '）'
+          + '、之后应 ≤' + TH.dashStroke.maxRingHits + '）'
           + ' ｜ 工具条 data-count=' + s2.barCount + ' 文案=' + JSON.stringify(s2.askText) + '（应回落「💬 问问AI」）'
           + ' ｜ 重拍 ' + cap2.attempts + ' 次 ｜ 证据 ' + rec.name + ' ' + rec.bytes + 'B'
       };
@@ -936,25 +1067,34 @@ module.exports = [
         await ctx.input.settle({ delayMs: 150 });
       }
       const s2 = await snapshot(ctx, ids);
+      // ⚠️ 这一档只判"**描边**有没有消失" ⇒ 判据必须是**差分**（`after ≤ before − minHits`）：
+      //   `ringScan` 数的是"节点外圈带里的强调蓝"，而那条带里**必然**有地图自己的东西（连线边/
+      //   expander）。R2 期 3 的"端点按子序分散"就改到了这层几何 —— 某条连线落在子边框更靠边的 y，
+      //   该读数从 0 升到 100 上下（实测 wlan-01: 0 → 118）⇒ 拿**绝对**阈值（≤24）判就成了假红：
+      //   判的是"带里有多少蓝"，而这一档要问的是"**描边画的那些蓝**掉了没有"。
+      //   差分口径与 ② 的 `ringOk` 是同一条（那里判"描边出现了"= after ≥ before + minHits ✓）。
       const cap2 = await captureUntil(ctx, (img) => ({
         ok: true,
-        rings: s2.nodes.map((n) => (n.rect ? ringScan(img, n, dpr, s2.overlays) : null)),
-        strip: boxStripScan(img, s2.nodes, dpr, s2.overlays)
-      }), (sc) => sc.rings.every((r) => r && r.ok && r.hits <= TH.dashStroke.maxBoxHits), 3);
+        rings: s2.nodes.map((n) => (n.rect ? ringScan(img, n, dpr, s2.overlays) : null))
+      }), (sc) => sc.rings.every((r, i) => r && r.ok
+        && r.hits <= (cap1.scan.rings[i] ? cap1.scan.rings[i].hits : 0) - TH.dashStroke.minHits), 3);
       const rec = await ctx.input.shot('36-5-after-clear.png', cap2.img);
       const rawCleared = s2.raw.length === 0 && s2.painted.length === 0;
-      const pixelsGone = cap2.scan.rings.every((r) => r && r.ok && r.hits <= TH.dashStroke.maxBoxHits)
+      const pixelsGone = cap2.scan.rings.every((r, i) => r && r.ok
+          && r.hits <= (cap1.scan.rings[i] ? cap1.scan.rings[i].hits : 0) - TH.dashStroke.minHits)
         && cap1.scan.rings.every((r) => r && r.hits >= TH.dashStroke.minHits);
-      const boxOk = !s2.boxVisible && (!cap2.scan.strip || !cap2.scan.strip.ok
-        || cap2.scan.strip.hits <= TH.dashStroke.maxBoxHits);
+      // 大框：同一条判据（见 `boxPixelDiff`）。⚠️ 这一档**当前状态是空选区** ⇒ 对照档得用
+      //   **点空白之前**那批 id 来造（`oldRaw`）—— 空选区画不出框，拿它当对照等于"没有可判对象"。
+      const boxDiff = await boxPixelDiff(ctx, dpr, s2.overlays, oldRaw, '36-5b-box-control-on.png');
+      const boxOk = !s2.boxVisible && boxDiff.ok === true;
       await cleanup(ctx);
       return {
         ok: rawCleared && pixelsGone && boxOk,
         text: '真点空白=(' + blank.pt.x + ',' + blank.pt.y + ') ｜ 点前 raw=' + idLine(oldRaw) + ' 描边='
           + idLine(s1.painted) + ' ｜ 点后 raw=' + idLine(s2.raw) + ' 带描边类的节点=' + idLine(s2.painted)
           + '（两者都应空）｜ 像素 外圈带 ' + hitsLine(cap1.scan.rings) + ' → ' + hitsLine(cap2.scan.rings)
-          + '（应掉到 ≤' + TH.dashStroke.maxBoxHits + '）｜ 大虚线框 DOM可见=' + s2.boxVisible
-          + ' 像素带命中=' + (cap2.scan.strip ? cap2.scan.strip.hits : -1)
+          + '（**差分**判据：每一条都要至少掉 ' + TH.dashStroke.minHits + ' —— 绝对阈值判不了这一档，'
+          + '见该断言里的注释）｜ 大虚线框 DOM可见=' + s2.boxVisible + ' ｜ ' + boxDiff.text
           + ' ｜ 重拍 ' + cap2.attempts + ' 次 ｜ 证据 ' + rec.name + ' ' + rec.bytes + 'B'
       };
     }

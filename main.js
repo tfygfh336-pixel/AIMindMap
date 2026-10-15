@@ -1839,6 +1839,53 @@ function registerIpc() {
     return { ok: true, text: texts.join('\n'), raw: raw };
   });
 
+  /* 【R2 期 3 · e】**同级重排**：把"拖到第 k 位"这条界面手势接到**既有** CLI `move --index` 上。
+   *
+   * 为什么必须是这个形状（不变式②：重排/重挂只经既有 move 语义）：
+   *   · 渲染层**不许直接写项目 JSON** ✗ —— 这里的写口只有 `runCli(['move', …])`；
+   *   · **不许造第二份 move 实现** ✗ —— `move --index` 的语义唯一实现在 `src/tree-utils.js` 的
+   *     `moveNode`，而它的**上界校验**（P3）唯一实现在 `cli/commands/edit.js` 的
+   *     `moveIndexUpperBound`（`move` 与 `apply` 的 move op 共用那一处）。本 handler
+   *     **不复制**那条判定：渲染层发来的 k 越界时，CLI 自己会响亮拒绝（盘上零改动），
+   *     回执里带着合法范围 —— 这里只把它的报文原样交回界面。
+   *   · 为什么不是"渲染层改内存树 + project:save 整树写回"：那条路绕过写盘闸门（校验 + 原子写 +
+   *     并发重放），而且会把"其余字段逐字节不变"这条判据变成"靠记得别漏字段"（本工程有四次先例）。
+   *
+   * **写完回读**（照 `app:unlink-nodes` / `app:assoc-edit` 的手法）：回读的**只有父节点新的
+   *   `children` 顺序**（`f.id`，等于契约形状），渲染层拿它重建并把新顺序显示出来。
+   *   回读失败 ⇒ `children: null`，界面**不许假装同步成功**（"采不到真值"与"采到了"必须可分辨）。
+   *
+   * 参数校验（形状层，不是业务判定）：`index` 必须是非负整数 —— 这不是第二份上界校验，
+   *   而是**接口形状**：CLI 的 `--index` 本身就只收非负整数（收 `"abc"` 会报错）。
+   *   `parent` 省略 ⇒ 与 CLI 同义（`move` 要求显式给新父；这里**不给默认值**，避免两处口径）。 */
+  ipcMain.handle('app:move-node-sibling', (_e, projectName, nodeId, parentId, index) => {
+    if (!projectName || !nodeId || !parentId) {
+      return { ok: false, text: '缺少项目名 / 节点 id / 父节点 id（本入口不做默认值 —— 与 CLI 同签名）' };
+    }
+    const k = Number(index);
+    if (!Number.isInteger(k) || k < 0) {
+      return { ok: false, text: '第几位必须是非负整数（收到 ' + JSON.stringify(index) + '）' };
+    }
+    let text;
+    try { text = runCli(['move', String(projectName), String(nodeId), String(parentId), '--index', String(k)]); }
+    catch (err) { return { ok: false, text: (err && err.message) || String(err) }; }
+    let children = null;
+    let data = null;
+    try {
+      const back = store.read(String(projectName));
+      data = back.data;                       // 回读的**整份项目数据**（渲染层按它重建，见 app-actions）
+      let found = null;
+      (function walk(n) {
+        if (!n || found) return;
+        if (n.id === String(parentId)) { found = n; return; }
+        (n.children || []).forEach(walk);
+      })(data && data.data);
+      children = found ? (found.children || []).map((c) => c.id) : null;
+    } catch (err) { /* 回读失败不影响"已写入"这个事实；data=null 会让渲染层如实报告 ✗ */ }
+    return { ok: true, text: String(text).trim(), project: String(projectName),
+      node: String(nodeId), parent: String(parentId), index: k, children: children, data: data };
+  });
+
   /* 系统剪贴板（**复制只有走这条路才不依赖窗口焦点**）。
    * 为什么必须由主进程代写：渲染层的两条浏览器通道在**无焦点的隐藏窗口**里都不可靠 ——
    * 实测（冒烟窗口按纪律隐藏且不抢焦点）`navigator.clipboard.writeText` 直接抛
