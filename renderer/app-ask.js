@@ -262,6 +262,10 @@
     box.ask = { kind: kind, log: (box.ask && box.ask.log) || [] };
     box.el.style.display = 'flex';
     MM.bringFdBoxToFront(box);
+    // R6⑤「下次会话展示」：这次**打开**只读一次本机反馈库（摘要条长在框顶）。
+    //   为什么每次打开都读：重开会话 = 新框 = 再读 ⇒ 摘要对得上的永远是库里的最新 ✓；
+    //   为什么打开后不再读：摘要是"会话开场"的信息，读到什么就展示什么（域 50 有"改读内存必红"的判别力）。
+    if (!box.__fbLoaded) { box.__fbLoaded = true; loadFeedbackSummary(box); }
     renderAskPage(box);
     MM.positionFdBox(box);
     // ⑧「绑定在第一次显示的位置」：首次显示时定好位置，然后上**大锁**（相对屏幕锁死 ⇒ 之后不跟导图跑 ✓）。
@@ -305,7 +309,10 @@
     // 落盘结果（A）：**必须留在框里**，因为状态栏那句会被下一条动作覆盖 ——
     // 用户与断言都要能回答"这条回答到底有没有写进去"（只在 setStatus 里说 = 说过就没了 ✗）。
     const writeNote = st.lastWrite || null;
-    let html = '<div class="ask-hint">每问一次都是一次独立会话（答完即止，不延续上下文）。'
+    // R6⑤：摘要条的内容 = 打开这个会话时从反馈库读到的那一份（box.__fbSummary，见 loadFeedbackSummary）。
+    //   没有反馈记录 ⇒ 返回空串 ⇒ 这一段对最终 HTML 零贡献（默认档逐字节同从前 ✓）。
+    let html = feedbackSummaryHtml(box.__fbSummary)
+      + '<div class="ask-hint">每问一次都是一次独立会话（答完即止，不延续上下文）。'
       + '想接着聊，就在下面再问一句。</div>'
       + (writeNote
         ? '<div class="ask-write-note' + (writeNote.ok ? '' : ' ask-write-err') + '">'
@@ -337,6 +344,9 @@
           + '<button type="button" class="ask-act ask-act-child" data-act="child"'
           + ' title="用这条回答在本节点下新建一个子节点（标题取首行，详情放全文）">'
           + '🌱 新建子节点</button>'
+          // R6①：五星评价（星 = 抽象的满意/不满意评价 ✗ 不是"多少详细"的旋钮）。
+          //   只在有真回答的条目出现 ✓；点星即刻落库，随后弹反馈框（可关 = 这次不反馈 ✗ 不强制）。
+          + askStarsHtml(e, i)
           + '</div>';
       }
     });
@@ -359,6 +369,14 @@
     //   逐个绑监听会漏掉重建后的那些 ⇒ 只有委托是稳的 ✓）
     dc.querySelectorAll('.ask-acts').forEach((row) => {
       row.addEventListener('click', (e) => {
+        // R6① 星标先分流（星长在同一动作行里，但它不是落盘动作 ⇒ 别落到下面 .ask-act 的分支 ✗）
+        const starBtn = e.target && e.target.closest ? e.target.closest('.ask-star') : null;
+        if (starBtn && row.contains(starBtn)) {
+          e.preventDefault();
+          e.stopPropagation();
+          handleStarClick(box, Number(row.getAttribute('data-act-index')), Number(starBtn.getAttribute('data-star')));
+          return;
+        }
         const btn = e.target && e.target.closest ? e.target.closest('.ask-act') : null;
         if (!btn) return;
         e.preventDefault();
@@ -366,6 +384,17 @@
         writeBack(box, Number(row.getAttribute('data-act-index')), btn.getAttribute('data-act'));
       });
     });
+    // R6⑤ 摘要条的「✕ 收起」（可关 ✗ 不强制看；只收这一条显示，不删库里的任何记录 ✓）
+    const sumClose = dc.querySelector('.ask-fb-sum-close');
+    if (sumClose) {
+      sumClose.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        box.__fbSummary = null;                    // 收起 ⇒ 本次打开内不再回来（重开会话会照库里再展示 ✓）
+        const strip = dc.querySelector('.ask-fb-summary');
+        if (strip && strip.parentElement) strip.parentElement.removeChild(strip);
+      });
+    }
     if (sideBtn) {
       sideBtn.addEventListener('click', (e) => {
         e.preventDefault();
@@ -502,6 +531,9 @@
         renderAskPage(box);
         return null;
       }
+      // R6 信号：这条回答已被用户落进导图（反馈候选要能指回 mapWrite 这个信号 ✓；
+      //   log 数组在 box.ask 换对象时原样保留 ⇒ 记在条目上是稳的，见 live() 处的说明）
+      entry.written = true;
       // ③ 内存对齐 + 基线推进（**两条必须一起做**，只做一条都会留下一个实测缺陷）：
       //    只写内存不推基线 ⇒ 紧接着的按盘重读以"界面脏着"为由拒绝采纳 ⇒ 新子节点不出现
       //      （判别力证据：只把下面 ① 那两行改成写 node.data ⇒ 冒烟 38 的 ② 红、⑤ 绿）；
@@ -651,6 +683,268 @@
       .catch(() => apply(null));
   }
 
+  /* ================= R6 五星评价 + 反馈闭环（会话级最小档） =================
+   * 需求（用户 2026-10-14 逐字口径）：星星是**抽象的用户评价**（"满意/不满意"这一维），
+   *   不是"多少详细"的旋钮；点星**自动弹框**："这次会话哪点让您不满意/满意？"，
+   *   下面几个选项 + 「其他」（其他可展开输入）；**选项由本地算法从这次回答的信号得出**
+   *   （AI 辅助的候选裁剪/补全 = 下一期 ✗ 本批如实只做本地，不假装有 AI ✗）。
+   *   分析结果在**下次会话展示**（本批最小形态 = 打开会话时把已存反馈摘要展示出来；AI 深度分析 = 下一期 ✗）。
+   *
+   * 三条硬边界（每条都有判据，冒烟域 50）：
+   *   ① **打分只落库，不改任何数据** ✗✗ —— 这里只调 desktop.app.feedbackAppend（主进程把记录
+   *      只追加进应用级 JSONL），不触发任何编辑/重排/删除命令，绝不写 projects/**（路径渲染层根本拿不到）；
+   *   ② **零网络** ✗ —— 全程没有模型调用（省 token 纪律：日常点星零调用；AI 批量分析 = 下一期 ✗）；
+   *   ③ **默认档零噪声** ✗ —— 没有回答就没有星标；本机没有反馈记录 ⇒ 打开会话与从前逐字节相同 ✓。
+   *
+   * 落库契约（`%APPDATA%/AI MindMap/mm-feedback.jsonl`，**一行一条、只追加 ✗ 不覆盖**；可随时删，
+   *   删了界面如实回到"没有反馈"✗ 不说"满意度 0"）：一行 = 一个 JSON 对象，键白名单：
+   *   {"schema":1,"id":"f-<时间base36><随机>","at":ISO,"stars":1–5|null,"text":"…","target":{…},"src":"ask-box"}
+   *   —— 只点星（text=''）与只写字不点星（stars=null）都必须合法 ✓；
+   *   —— target 三种形状：{kind:'node',project,nodeId,itemId:null} | {kind:'nodes',project,nodeIds[]} | {kind:'project',project}；
+   *   —— **路径由主进程独占推导**（渲染层不传、不采信任何路径 ✗✓，主进程侧还有字段白名单把多余键就地拒绝）；
+   *   —— 渲染层 0 处 localStorage（工程纪律 ✓ 保持）。
+   *
+   * 本地信号 → 候选（**每条候选都能指回信号名** ✗ 否则退化成随机推荐；候选数有常量上限）：
+   *   len（回答长度：短<200 / 长>1200 字符）· kind（类型：解释|问答）·
+   *   mapWrite（这条回答是否已被用户落进导图）· code（是否含代码块或命令行样子的话）。
+   *   stars≥4 ⇒ 出"满意"档候选（同一批信号换正面措辞）；≤3 ⇒ 出"不满意"档候选 ✓。 */
+
+  /** 候选数上限（常量；省 token 纪律的本地半边：候选先按信号出，超了就地截断） */
+  const ASK_FB_MAX_CANDIDATES = 4;
+
+  /** 信号采集（**纯函数**，冒烟经 MM.askCollectAnswerSignals 直接调）。只用界面上本来有的信息 ✓ */
+  function collectAnswerSignals(entry, st) {
+    const a = String((entry && entry.a) || '');
+    let hasCode = /```/.test(a);
+    if (!hasCode) {
+      hasCode = /(^|\n)[ \t]{0,8}(npm|npx|node|git|curl|wget|pip|python|cd|mkdir|cp|mv|rm|copy|del|dir|ls|cat|echo|set|export)\s+\S/.test(a);
+    }
+    return {
+      len: a.length,
+      lenBucket: a.length > 1200 ? 'long' : (a.length < 200 ? 'short' : 'mid'),
+      kind: ((st && st.kind) === 'explain') ? 'explain' : 'ask',
+      mapWritten: !!(entry && entry.written),
+      hasCode: hasCode
+    };
+  }
+
+  /** 星标行 HTML（**纯函数**）：5 颗星 + aria-label + 填充态（e.stars = 这条已点过的星）。
+   *  ⚠️ 它长在 .ask-acts 动作行**末尾**（同一行 ⇒ "给这条回答打分"的归属一眼可辨 ✓）。 */
+  function askStarsHtml(e, i) {
+    const cur = (e && e.stars) || 0;
+    let s = '<span class="ask-stars" role="group" aria-label="给这条回答打分" data-star-index="' + i + '">';
+    for (let n = 1; n <= 5; n++) {
+      s += '<button type="button" class="ask-star' + (cur >= n ? ' on' : '')
+        + '" data-star="' + n + '" aria-label="' + n + ' 星"'
+        + ' title="' + n + ' 星（' + (n <= 3 ? '不满意/一般' : '满意')
+        + '；点星即刻记下，随后可补一句具体反馈）">★</button>';
+    }
+    return s + '</span>';
+  }
+
+  /** 信号 → 候选（**纯函数**）。每条 {text, signal}，signal 就是产生它的信号名 ✓ */
+  function deriveFeedbackCandidates(sig, stars) {
+    const bad = !(stars >= 4);
+    const out = [];
+    if (sig.lenBucket === 'long') out.push(bad
+      ? { text: '太长太啰嗦，重点不突出', signal: 'len' }
+      : { text: '够详细、覆盖面全', signal: 'len' });
+    if (sig.lenBucket === 'short') out.push(bad
+      ? { text: '太简略，信息量不够', signal: 'len' }
+      : { text: '简短直接，不绕弯', signal: 'len' });
+    if (sig.kind === 'explain') out.push(bad
+      ? { text: '解释不够生动具体', signal: 'kind' }
+      : { text: '解释清楚易懂', signal: 'kind' });
+    else out.push(bad
+      ? { text: '答非所问，没答到点上', signal: 'kind' }
+      : { text: '正面回答了我的问题', signal: 'kind' });
+    if (sig.hasCode) out.push(bad
+      ? { text: '代码/命令有错或有坑', signal: 'code' }
+      : { text: '代码/命令可直接照做', signal: 'code' });
+    if (sig.mapWritten) out.push(bad
+      ? { text: '写进导图后发现内容不合适', signal: 'mapWrite' }
+      : { text: '落进导图的内容正合适', signal: 'mapWrite' });
+    return out.slice(0, ASK_FB_MAX_CANDIDATES);   // 常量上限：截断发生在"候选"这一层 ✓
+  }
+
+  /** 反馈记录拼装（**形状纯函数**）。id 照 `f-` + 时间戳 base36 + 随机后缀的先例（与节点 id 区分 ✓） */
+  function makeFeedbackRecord(box, index, stars, text) {
+    const project = (state().project && state().project.name) || null;
+    const ids = (box && box.nodes) || [];
+    let target;
+    if (ids.length > 1) target = { kind: 'nodes', project: project, nodeIds: ids.slice() };
+    else if (box && box.node && box.node.id) target = { kind: 'node', project: project, nodeId: box.node.id, itemId: null };
+    else target = { kind: 'project', project: project };
+    return {
+      schema: 1,
+      id: 'f-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      at: new Date().toISOString(),
+      stars: (stars >= 1 && stars <= 5) ? stars : null,   // 只写字不点星 = null（两种都合法 ✓）
+      text: String(text || ''),
+      target: target,
+      src: 'ask-box'
+    };
+  }
+
+  /** 反馈存取（渲染层**唯一**落点）。通道不在（旧版 preload）⇒ **响亮失败** ✗ 不静默假装存上了；
+   *  路径永远不经过渲染层 ✗✓（主进程独占推导 + 字段白名单）。绝不碰 localStorage ✓。 */
+  const askFeedbackStore = {
+    append: function (record) {
+      const api = window.desktop && window.desktop.app && window.desktop.app.feedbackAppend;
+      if (!api) return Promise.resolve({ ok: false, error: '没有 desktop.app.feedbackAppend（preload 没接上）—— 这条反馈没有落盘' });
+      return Promise.resolve(api(record));
+    },
+    read: function () {
+      const api = window.desktop && window.desktop.app && window.desktop.app.feedbackRead;
+      if (!api) return Promise.resolve({ ok: false, error: '没有 desktop.app.feedbackRead（preload 没接上）' });
+      return Promise.resolve(api());
+    }
+  };
+
+  /** 点一颗星：① **星即刻落库**（只点星也是一条合法记录 ✓ ⇒ 关掉弹框也不丢）；② 原地更新填充态
+   *  （不整框重渲染 ⇒ 不打断可能开着的反馈框）；③ 在这条回答的动作行下面弹出反馈框。 */
+  function handleStarClick(box, index, n) {
+    if (!(n >= 1 && n <= 5)) return null;
+    const st = box.ask || (box.ask = { kind: 'ask', log: [] });
+    const entry = (st.log || [])[index];
+    if (!entry || !entry.a || entry.pending || entry.err) return null;   // 只有真回答可评 ✓
+    entry.stars = n;
+    const dc = MM.fdQ(box, '.fd-detail-content');
+    const row = dc && dc.querySelector('.ask-acts[data-act-index="' + index + '"]');
+    if (row) {
+      row.querySelectorAll('.ask-star').forEach((b) => {
+        b.classList.toggle('on', Number(b.getAttribute('data-star')) <= n);
+      });
+    }
+    // 多次点星 = 多条记录（只追加 ✗ 不覆盖；判据：重复点 4 星 ⇒ 库里两行、id 各自不同 ✓）
+    askFeedbackStore.append(makeFeedbackRecord(box, index, n, '')).then((r) => {
+      if (!r || !r.ok) MM.setStatus('这条评分没有落盘：' + ((r && r.error) || '未知原因'), true);
+    });
+    if (row) return openFeedbackPanel(box, row, index);
+    return null;
+  }
+
+  /** 反馈框：长在被点那条回答的动作行下面（同一个浮层之内 ⇒ 不新开窗口 ✗ 复用既有视觉 ✓）。
+   *  一次只开一个（再点别条 ⇒ 挪过去）；可关 = 这次不反馈 ✗ 不强制（星已落库 ✓）。 */
+  function openFeedbackPanel(box, rowEl, index) {
+    const dc = MM.fdQ(box, '.fd-detail-content');
+    if (!dc) return null;
+    const prev = dc.querySelector('.ask-fb-panel');
+    if (prev && prev.parentElement) prev.parentElement.removeChild(prev);
+    const st = box.ask || (box.ask = { kind: 'ask', log: [] });
+    const entry = (st.log || [])[index];
+    if (!entry || !entry.a || entry.pending || entry.err) return null;
+    const stars = entry.stars || 0;
+    const cands = deriveFeedbackCandidates(collectAnswerSignals(entry, st), stars);
+    const el = document.createElement('div');
+    el.className = 'ask-fb-panel';
+    el.setAttribute('data-fb-index', String(index));
+    el.setAttribute('data-fb-star', String(stars));
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', '这次会话哪点让您不满意/满意？');
+    el.innerHTML = '<div class="ask-fb-head"><span class="ask-fb-title">这次会话哪点让您不满意/满意？</span>'
+      + '<button type="button" class="ask-fb-close" aria-label="关闭（这次不反馈）"'
+      + ' title="关掉＝这次不反馈；星已经记下了">✕</button></div>'
+      + '<div class="ask-fb-opts">'
+      + cands.map((c) => '<button type="button" class="ask-act ask-fb-opt" data-signal="' + c.signal
+        + '" data-text="' + esc(c.text) + '">' + esc(c.text) + '</button>').join('')
+      + '<button type="button" class="ask-act ask-fb-other" data-signal="other">其他…</button>'
+      + '</div>'
+      + '<div class="ask-fb-otherrow" hidden><input class="ask-input ask-fb-other-input" type="text"'
+      + ' placeholder="具体说一句（可空）" /></div>'
+      + '<div class="ask-fb-actions"><button type="button" class="ask-send ask-fb-submit">提交反馈</button>'
+      + '<span class="ask-fb-note"></span></div>';
+    rowEl.insertAdjacentElement('afterend', el);
+    // 选项 = 多选（点了亮、再点灭）；每颗按钮的 data-signal 指回产生它的信号 ✓
+    el.addEventListener('click', (e) => {
+      const opt = e.target && e.target.closest ? e.target.closest('.ask-fb-opt') : null;
+      if (opt && el.contains(opt)) opt.classList.toggle('on');
+    });
+    const note = el.querySelector('.ask-fb-note');
+    const otherInput = el.querySelector('.ask-fb-other-input');
+    otherInput.addEventListener('keydown', (e) => {
+      e.stopPropagation();                          // 别让导图快捷键吃掉输入（与 ask-input 同一条纪律 ✓）
+      if (e.key === 'Enter') { e.preventDefault(); el.querySelector('.ask-fb-submit').click(); }
+    });
+    el.querySelector('.ask-fb-close').addEventListener('click', () => {
+      if (el.parentElement) el.parentElement.removeChild(el);   // 关 = 不反馈（星已落库 ✓）
+    });
+    el.querySelector('.ask-fb-other').addEventListener('click', () => {
+      el.querySelector('.ask-fb-otherrow').hidden = false;      // 「其他」展开输入 ✓
+      try { otherInput.focus(); } catch (e2) { /* 聚焦失败不影响展开 ✓ */ }
+    });
+    el.querySelector('.ask-fb-submit').addEventListener('click', () => {
+      const picked = [];
+      el.querySelectorAll('.ask-fb-opt.on').forEach((b) => { picked.push(b.getAttribute('data-text')); });
+      const other = String(otherInput.value || '').trim();
+      if (other) picked.push('其他：' + other);
+      if (!picked.length) {
+        note.textContent = '选一项或写一句；也可以直接关掉（星已经记下了）';
+        return;
+      }
+      askFeedbackStore.append(makeFeedbackRecord(box, index, stars || null, picked.join('；'))).then((r) => {
+        if (r && r.ok) {
+          note.textContent = '已记下，谢谢 ✓';
+          setTimeout(() => { if (el.parentElement) el.parentElement.removeChild(el); }, 700);
+        } else {
+          note.textContent = '没存上：' + ((r && r.error) || '未知原因');   // 响亮 ✗ 不静默
+        }
+      });
+    });
+    return el;
+  }
+
+  /** 摘要一行的显示文本：星数 + 选项/其他文本（任务书口径 ✓）；只点星的如实说，不编内容 ✗ */
+  function feedbackLineText(line) {
+    const n = Number(line.stars);
+    const starStr = (line.stars === null || line.stars === undefined || !(n >= 1 && n <= 5))
+      ? '☆' : '★★★★★'.slice(0, n);
+    const raw = String(line.text || '');
+    const textStr = raw.length > 80 ? raw.slice(0, 80) + '…' : raw;
+    return starStr + ' ' + (textStr || '（只点星，没写文字）');
+  }
+
+  /** 摘要条 HTML（空库 ⇒ 空串 ⇒ 默认档这段对 HTML 零贡献 ✓）。最多展示最近 5 条，共几条如实说 ✓ */
+  function feedbackSummaryHtml(fbSum) {
+    if (!fbSum || !fbSum.lines || !fbSum.lines.length) return '';
+    const show = fbSum.lines.slice(-5);
+    const skipped = fbSum.skipped ? ('，另有 ' + fbSum.skipped + ' 条读不出已跳过') : '';
+    return '<div class="ask-fb-summary" role="note" aria-label="上次会话的反馈">'
+      + '<div class="ask-fb-sum-head"><span>上次会话的反馈（本机共 ' + fbSum.total + ' 条' + skipped
+      + '，最近 ' + show.length + ' 条）</span>'
+      + '<button type="button" class="ask-fb-sum-close" aria-label="收起这条摘要"'
+      + ' title="收起（不影响已存的反馈）">✕</button></div>'
+      + show.map((ln) => '<div class="ask-fb-sum-line">' + esc(feedbackLineText(ln)) + '</div>').join('')
+      + '</div>';
+  }
+
+  /** 打开会话时读一次反馈库（**每次打开都从库读** ✗ 不吃跨打开的内存缓存 ——
+   *  判别力：把这里改成读内存 ⇒ 域 50 的"重开后看到库里新一行"必红 ✓）。
+   *  文件不存在（missing）⇒ 如实当"没有"，不出任何 UI ✓；读不动 ⇒ 响亮说 ✗ 不静默；
+   *  坏行跳过并计数 ✗ 不静默吞。 */
+  function loadFeedbackSummary(box) {
+    box.__fbSummary = null;
+    askFeedbackStore.read().then((r) => {
+      if (!r) return;
+      if (r.ok === false) { MM.setStatus('反馈记录读不出来：' + (r.error || '未知原因'), true); return; }
+      const lines = [];
+      let skipped = 0;
+      String(r.text || '').split('\n').forEach((ln) => {
+        const t = ln.trim();
+        if (!t) return;
+        try {
+          const o = JSON.parse(t);
+          if (o && typeof o === 'object' && !Array.isArray(o)) {
+            lines.push({ stars: (o.stars === undefined ? null : o.stars), text: String(o.text || '') });
+          } else skipped++;
+        } catch (e2) { skipped++; }
+      });
+      if (!lines.length) return;                    // 本机还没有反馈 ⇒ 不出现任何 UI（默认档零噪声 ✓）
+      box.__fbSummary = { lines: lines, total: lines.length, skipped: skipped };
+      if (box.el && box.el.parentElement) renderAskPage(box);   // 已开着 ⇒ 补渲染（摘要条长出来）
+    });
+  }
+
   /* ================= 下方消息栏（功能 5a 入口③） =================
    * 用户原话：「在下方消息栏上方有一些虚体字，写『或者你可以直接向我描述要导入什么』，
    * 如果用户向里输入，就认为用户在向内嵌 DSH 发送提示词，自动补充情境信息」✓
@@ -722,6 +1016,16 @@
   MM.askBoxes = () => askBoxes.filter((b) => b.el && b.el.parentElement);
   // A：把一条回答落到节点上（**按钮与实际写盘共用这一个入口** ⇒ 断言点得到、人点得到）
   MM.askWriteBack = writeBack;
+  // R6 五星评价：冒烟与单测的接缝（纯函数与入口；真正的判定在冒烟域 50 —— 断言只吃公开面 ✓）
+  MM.askCollectAnswerSignals = collectAnswerSignals;   // 信号采集（纯函数）
+  MM.askDeriveFeedbackCandidates = deriveFeedbackCandidates; // 信号→候选（纯函数，每条指回信号名）
+  MM.askMakeFeedbackRecord = makeFeedbackRecord;       // 记录形状（纯函数，6+1 键契约）
+  MM.askFeedbackStore = askFeedbackStore;              // append/read（通道不在 ⇒ 响亮失败 ✗ 不静默）
+  MM.askOpenFeedbackPanel = openFeedbackPanel;         // 反馈框（真鼠标点星也会走到这里）
+  MM.askHandleStarClick = handleStarClick;             // 点星（落库 + 填充态 + 弹框的唯一入口）
+  MM.askLoadFeedbackSummary = loadFeedbackSummary;     // 会话开场读库（每次打开都读 ✗ 不吃内存缓存）
+  MM.askFeedbackSummaryHtml = feedbackSummaryHtml;     // 摘要条 HTML（空库 = 空串 ⇒ 默认档零噪声）
+  MM.ASK_FB_MAX_CANDIDATES = ASK_FB_MAX_CANDIDATES;    // 候选数常量上限
 
   /* ================= 接在"选中节点"这件事上 =================
    * 钩子点选择与理由：本工程里"选中一个节点"的**唯一标志**是它有了详情框（`MM.showDetail`），

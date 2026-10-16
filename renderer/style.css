@@ -775,6 +775,40 @@ jmnode.mm-rel-dim { opacity: 0.32; }
   flex: 0 0 auto; font-size: 12px; padding: 4px 2px; border-radius: 6px;
   border: 1px solid #dfe3ea; background: #fff; color: #4e5969; cursor: pointer;
 }
+/* ---------------- R6 五星评价 + 反馈闭环（app-ask.js，会话级最小档） ----------------
+   复用既有动作行/输入行的视觉一族（不新造 ✗）；星的金色是评分的通用语义色（与 ask-stub 的琥珀一族同源）。 */
+/* 星标行：长在既有 .ask-acts 动作行的末尾（只在有真回答的条目出现 ✓） */
+.ask-stars { display: inline-flex; gap: 2px; align-items: center; margin-left: 4px; }
+.ask-stars .ask-star {
+  border: none; background: transparent; cursor: pointer; font-size: 15px; line-height: 1;
+  color: #c9cdd4; padding: 2px 1px;
+}
+.ask-stars .ask-star:hover { color: #d48806; }
+.ask-stars .ask-star.on { color: #d48806; }
+/* 点星后弹出的反馈框：就长在被点那条回答的动作行下面（同一浮层之内 ⇒ 不新开窗口 ✗） */
+.ask-fb-panel {
+  border: 1px solid #d6e4ff; background: #f7faff; border-radius: 8px;
+  padding: 8px 10px; margin: 2px 0 8px 28px;
+}
+.ask-fb-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.ask-fb-title { font-size: 12.5px; font-weight: 600; color: #1f2329; }
+.ask-fb-close { border: none; background: transparent; cursor: pointer; color: #86909c; font-size: 13px; padding: 0 2px; }
+.ask-fb-close:hover { color: #1f2329; }
+.ask-fb-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.ask-fb-opts .ask-fb-opt.on { background: #dbe9ff; border-color: #2b5dd6; }
+.ask-fb-otherrow { margin: 0 0 6px 0; }
+.ask-fb-actions { display: flex; align-items: center; gap: 8px; }
+.ask-fb-note { font-size: 12px; color: #237804; }
+/* 下次会话展示：已存反馈的摘要条（打开会话时从本机反馈库读；可收起 ✗ 不强制看） */
+.ask-fb-summary {
+  font-size: 12px; color: #4e5969; background: #fffbe6; border: 1px solid #ffe58f;
+  border-radius: 6px; padding: 6px 8px; margin: 0 0 8px 0;
+}
+.ask-fb-sum-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-weight: 600; color: #7a5c00; margin-bottom: 4px;
+}
+.ask-fb-sum-line { margin: 2px 0; }
 /* ---------------- 拖拽导入提示（app-import.js，功能 5a） ---------------- */
 .mm-drop-hint {
   display: none; position: fixed; inset: 0; z-index: 80;

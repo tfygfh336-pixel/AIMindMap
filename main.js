@@ -53,6 +53,11 @@ if (isSmoke) {
 const SMOKE_PROJECTS_DIR = isSmoke
   ? fs.mkdtempSync(path.join(os.tmpdir(), 'ai-mind-map-smoke-'))
   : null;
+/* 【R6 五星评价 · 反馈库文件的冒烟落点】**唯一路径推导处**在 `feedbackFile()`（正式档），
+ * 这里只定冒烟档 = 沙箱根下的 `mm-feedback.jsonl`：真实 %APPDATA% 侧零触碰 ✓、随沙箱整体清理 ✓、
+ * 不在每域隔离的初始快照里（快照采在它诞生之前）⇒ 不被子域还原误伤、也不把测试反馈带进任何域 ✓。
+ * **两个分支里都没有 `projects/**`**（红线 ✗✗；域 50 用路径断言 + 剥注释结构断言双层守它）。 */
+const SMOKE_FEEDBACK_FILE = SMOKE_PROJECTS_DIR ? path.join(SMOKE_PROJECTS_DIR, 'mm-feedback.jsonl') : null;
 /* 「撕裂快照」诊断的**读数**：在**拷贝刚完成那一刻**采好（采样点就是下面 cpSync 的下一行），
  * 打印留在 runSmoke 里（输出位置与改前一致）。为什么采样点不能挪进 runSmoke ✗ ——
  *   副本在**模块加载期**就拷好了（那时应用还没起来），而 runSmoke 要等 did-finish-load + 500ms；
@@ -74,6 +79,9 @@ if (SMOKE_PROJECTS_DIR) {
   // 暴露给断言：有些断言需要在沙箱里放**文件类**夹具（如给"PDF 预览按钮"造一份 PDF），
   // 而 runCli 只能写数据。断言跑在主进程，读这个环境变量即可；真实数据照样零触碰。
   process.env.AI_MINDMAP_PROJECTS_DIR = SMOKE_PROJECTS_DIR;
+  // 【R6 五星评价】反馈库的冒烟落点也报给断言（域 50 用它做"库内容现算对拍"与"真实侧零触碰"判据；
+  //   产品路径的唯一推导处在 feedbackFile() —— 这里只是转述同一段事实，不产生第二个真源 ✗）
+  process.env.AI_MINDMAP_FEEDBACK_FILE = SMOKE_FEEDBACK_FILE;
 }
 const PROJECTS_DIR = SMOKE_PROJECTS_DIR || REAL_PROJECTS_DIR;
 
@@ -1165,6 +1173,65 @@ async function prefillAfterEnsureOpen(text) {
   return dshSidebar.prefillComposer(text);
 }
 
+/* ----------------【R6 五星评价 · 反馈库】两个唯一的实现（路径 + 白名单） ----------------
+ * 为什么放在主进程且只放在这里：渲染层跑在 contextIsolation 里拿不到 fs、也**不知道 userData 路径**
+ * ⇒ "落库"天生只能是主进程的事；把路径与校验收在这里这一处，渲染层想传路径都没有入口 ✗✓。
+ * 契约（与 renderer/app-ask.js 文件头的说明同源，**一处实现、一处引用** ✗ 不各写一份）：
+ *   一行一条 JSON、只追加 ✗ 不覆盖；键白名单 schema/id/at/stars/text/target/src；
+ *   stars ∈ 1–5 | null；src ∈ 'ask-box' | 'dsh-sidebar'；target 三形状（node/nodes/project）。 */
+
+/** 反馈库文件路径（**唯一推导处**）。两个分支里都没有 `projects/**`（红线 ✗✗）：
+ *  正式 = `<userData>/mm-feedback.jsonl`（应用级数据目录先例：dsh-sidebar-prefs.json / control 通道）；
+ *  冒烟 = 沙箱根 `SMOKE_FEEDBACK_FILE`（真实 %APPDATA% 侧零触碰 ✓ 随沙箱清理 ✓）。 */
+function feedbackFile() {
+  if (SMOKE_FEEDBACK_FILE) return SMOKE_FEEDBACK_FILE;
+  return path.join(app.getPath('userData'), 'mm-feedback.jsonl');
+}
+
+/** append 记录的字段白名单校验（唯一一处）。通过 ⇒ {record}；不通过 ⇒ {error}（一律当场拒绝 ✗ 不静默放宽）。
+ *  为什么这么严：渲染层是唯一调用方，但它**不传、也不被采信任何路径** ✗✓ —— 多余的键
+ *  （比如想塞个 `path` / `file` 进来）就地报废并点名；宁可红也不悄悄落盘。 */
+function feedbackRecordForAppend(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return { error: '反馈记录必须是对象' };
+  const ALLOWED = ['schema', 'id', 'at', 'stars', 'text', 'target', 'src'];
+  const keys = Object.keys(record);
+  const extra = keys.filter((k) => ALLOWED.indexOf(k) < 0);
+  if (extra.length) {
+    return { error: '反馈记录带了白名单以外的键：' + extra.join(', ')
+      + '（路径由主进程独占推导，渲染层不传也不被采信 ✗）' };
+  }
+  const missing = ALLOWED.filter((k) => !(k in record));
+  if (missing.length) return { error: '反馈记录缺键：' + missing.join(', ') };
+  if (record.schema !== 1) return { error: 'schema 只认 1，收到 ' + JSON.stringify(record.schema) };
+  if (typeof record.id !== 'string' || !/^f-[0-9a-z]+$/.test(record.id)) {
+    return { error: 'id 必须是 f-<小写base36> 形状，收到 ' + JSON.stringify(record.id) };
+  }
+  if (typeof record.at !== 'string' || isNaN(Date.parse(record.at))) return { error: 'at 必须是可解析的时间串' };
+  if (!(record.stars === null || (Number.isInteger(record.stars) && record.stars >= 1 && record.stars <= 5))) {
+    return { error: 'stars 只许 null 或 1–5 的整数，收到 ' + JSON.stringify(record.stars) };
+  }
+  if (typeof record.text !== 'string') return { error: 'text 必须是字符串' };
+  if (record.src !== 'ask-box' && record.src !== 'dsh-sidebar') {
+    return { error: 'src 只认 ask-box | dsh-sidebar，收到 ' + JSON.stringify(record.src) };
+  }
+  const t = record.target;
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return { error: 'target 必须是对象' };
+  const isStr = (v) => typeof v === 'string' && v.length > 0;
+  const onlyKeys = (want) => Object.keys(t).every((k) => want.indexOf(k) >= 0);
+  let ok = false;
+  if (t.kind === 'node') {
+    ok = onlyKeys(['kind', 'project', 'nodeId', 'itemId']) && isStr(t.project) && isStr(t.nodeId)
+      && (t.itemId === undefined || t.itemId === null);
+  } else if (t.kind === 'nodes') {
+    ok = onlyKeys(['kind', 'project', 'nodeIds']) && isStr(t.project)
+      && Array.isArray(t.nodeIds) && t.nodeIds.every(isStr);
+  } else if (t.kind === 'project') {
+    ok = onlyKeys(['kind', 'project']) && isStr(t.project);
+  }
+  if (!ok) return { error: 'target 不符合契约（kind ∈ node|nodes|project，各形状键白名单见 app-ask.js 的 makeFeedbackRecord）' };
+  return { record: record };
+}
+
 function registerIpc() {
   ipcMain.handle('project:list', () => listProjects());
 
@@ -1449,6 +1516,26 @@ function registerIpc() {
       const text = fs.readFileSync(absPath, 'utf8');
       return { ok: true, text };
     } catch (err) { return { ok: false, err: err.message }; }
+  });
+
+  /* 【R6 五星评价 · 反馈库】两个通道，**路径都由主进程独占推导**（渲染层不传、也不被采信 ✗✓）：
+   * · append：把**一条**反馈记录只追加成 JSONL 的一行（fs.appendFileSync，绝不改写既有行 ✗）；
+   *   记录先过 feedbackRecordForAppend 的字段白名单（多一个键都拒 ⇒ "渲染层塞路径"就地报废 ✗）；
+   * · read：{ ok, text, missing }；文件不存在 ⇒ missing:true **如实说**（绝不说"0 条" ✗✓ ——
+   *   "采不到真值 ≠ 一致"），读不动 ⇒ ok:false + error（渲染层会响亮提示 ✗ 不静默）。 */
+  ipcMain.handle('app:feedback-append', (e, record) => {
+    try {
+      const r = feedbackRecordForAppend(record);
+      if (r.error) return { ok: false, error: r.error };
+      fs.appendFileSync(feedbackFile(), JSON.stringify(r.record) + '\n', 'utf8');
+      return { ok: true };
+    } catch (err) { return { ok: false, error: String((err && err.message) || err) }; }
+  });
+  ipcMain.handle('app:feedback-read', () => {
+    const p = feedbackFile();
+    if (!fs.existsSync(p)) return { ok: true, text: '', missing: true };
+    try { return { ok: true, text: fs.readFileSync(p, 'utf8'), missing: false }; }
+    catch (err) { return { ok: false, error: String((err && err.message) || err) }; }
   });
 
   // 系统默认应用打开附件（非 md/pdf 类型，XMind 附件交互模式）；

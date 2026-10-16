@@ -157,6 +157,13 @@ contextBridge.exposeInMainWorld('desktop', {
     importPreview: (projectName, plan) => ipcRenderer.invoke('app:import-preview', projectName, plan),
     importApply: (projectName, plan) => ipcRenderer.invoke('app:import-apply', projectName, plan),
     version: () => ipcRenderer.invoke('app:version'),
+    /* 【R6 五星评价 · 反馈库】两个**纯透传**（业务与路径判定全在主进程 ✗ 这里不做任何语义 ✗✓）：
+     *  · feedbackAppend(record) → app:feedback-append：一条反馈记录只追加成 JSONL 的一行
+     *    （记录走主进程的字段白名单；**不传、也不被采信任何路径** —— 路径由主进程独占推导 ✓）；
+     *  · feedbackRead() → app:feedback-read：{ ok, text, missing }；
+     *    missing=true = 本机还没有反馈文件（如实说 ✗ 不说"0 条"）。 */
+    feedbackAppend: (record) => ipcRenderer.invoke('app:feedback-append', record),
+    feedbackRead: () => ipcRenderer.invoke('app:feedback-read'),
     /* 界面状态上报（脏标记变化时推）：主进程写 projects/<项目>/.ui-state.json，
      * 侧栏 AI 用 `node cli/mm-cli.js ui-state --json` 读 —— 写前协调的可执行通道。 */
     uiState: (payload) => ipcRenderer.send('app:ui-state', payload)
