@@ -366,6 +366,11 @@
   <script src="../src/convert.js"></script>
   <script src="../src/config.js"></script>
   <script src="../src/palette-rank.js"></script>
+  <!-- 路径判据（⭐「路径 → 打开 / 预览」的**唯一实现**）：`renderer/app-media.js`（附件 / 图片地址 /
+       唯一出口）与 `renderer/app-detail-content.js`（localPath / 图片区）都**只调它**，不许再拼一次路径、
+       也不许再判一次"能不能开"。UMD 纯函数：零 Electron、零 I/O（**不做存在性探测**）、可 headless 单测。
+       ⚠️ 必须在 app-media.js 之前加载：那个文件在**加载期**做唯一一处"模块存在性"守卫（缺了它响亮抛错）。 -->
+  <script src="../src/path-chain.js"></script>
   <script src="../src/related-model.js"></script>
   <script src="../src/sidebar-context.js"></script>
   <!-- 并发核心（v0.20）：差异指纹 / 对象名 / 差异行只有**这一份实现** —— 渲染层的

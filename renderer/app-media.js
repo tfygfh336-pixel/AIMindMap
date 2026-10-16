@@ -5,7 +5,10 @@
  * 职责：
  *   1) 图片灯箱：双击放大 + 滚轮缩放（openLightbox / closeLightbox / lightboxZoom）
  *   2) 附件预览：md 内渲染、pdf 内嵌 iframe、其他交系统打开
- *      （attachmentAbsPath / openFilePreview / closeFilePreview）
+ *      （attachmentPath / attachmentAbsPath / imageLinkOf / openByChain / openFilePreview / closeFilePreview）
+ *      ⚠️ 「路径 → 打开 / 预览」的**判据不在这里**：唯一实现在 `src/path-chain.js`（UMD 纯函数，
+ *         零 Electron、零 I/O，可 headless 单测）；本文件只**调**它，出口也只有一个 = 既有 IPC
+ *         `app:open-file`（签名不改、不加平行通道）。三段式契约与该模块的五条判据见它的文件头。
  *   3) 相关知识点渲染 renderRelated（我引用谁 + 谁引用我，点击开新详情框）
  * 边界（本文件不负责）：
  *   · 详情框本身的创建/定位 → app-detail*.js（本文件只经 MM 转发 showDetail）
@@ -41,11 +44,59 @@
   }
 
   /* ================= 文件预览（md/pdf 内预览，其他系统打开） ================= */
+  /* ⭐ 判据的**唯一实现**在 `src/path-chain.js`（UMD 纯函数：零 Electron、零 I/O、可 headless 单测）。
+   *   本文件**不许**再拼路径、也不许再判一次"能不能开" —— 那就是第二份判据，必然与它各漂一格
+   *   （本工程同类事故的墓志铭就在下面 renderRelated 那段注释里）。
+   *   模块缺失 ⇒ **加载期响亮抛错**（不静默退化）；本守卫是渲染层唯一的一处，
+   *   其余调用点直接调 `window.MMPathChain.decide`。 */
+  if (!window.MMPathChain || typeof window.MMPathChain.decide !== 'function') {
+    throw new Error('路径判据模块没加载：src/path-chain.js（renderer/index.html 的 <script> 漏了？）');
+  }
+
+  /** 附件（节点 `files[].file`）的判据结果：`{ok, abs, reason, action, code}` */
+  function attachmentPath(rel) {
+    return window.MMPathChain.decide({ kind: 'attachment', raw: rel, project: state.project });
+  }
+
+  /** 旧名字保留，但**只作薄转发**（`MM.attachmentAbsPath` 是既有导出面）：判不了给 null，
+   *  与改动前的返回形状一致（改动前只有"没有项目路径"能给 null，现在**任何**不合法都算）。 */
   function attachmentAbsPath(rel) {
-    // state.project.file = 项目 JSON 绝对路径；附件在项目目录下
-    if (!state.project || !state.project.file) return null;
-    const base = state.project.file.replace(/[\\/][^\\/]+$/, '');
-    return base + '/' + rel.split('/').join('/');
+    const d = attachmentPath(rel);
+    return d.ok ? d.abs : null;
+  }
+
+  /** 图片（节点 `images[].file`）的判据结果 + **页面相对地址**（`<img src>` 用的就是这一形态）。
+   *  通过 ⇒ `url` 与改动前**逐字节相同**（串由 `src/path-chain.js` 的 `rendererUrlOf` 给，
+   *  本文件与 `app-detail-content.js` 都不许自己拼）；不通过 ⇒ `url:null` + 非空 `reason`
+   *  —— 调用方据此画"坏引用"提示（改前那是一颗**静默的裂图**）。 */
+  function imageLinkOf(project, file) {
+    const d = window.MMPathChain.decide({ kind: 'image', raw: file, project: project });
+    if (!d.ok) return { ok: false, url: null, reason: d.reason, code: d.code };
+    return { ok: true, url: window.MMPathChain.rendererUrlOf(project, file), reason: '', code: '' };
+  }
+
+  /** 链的**唯一出口**：既有 IPC `app:open-file`（签名一个字不改、不新增平行通道）。
+   *  ⚠️ 打不开**必须让人看见**（判据 3）：判据不通过显示 `reason`，主进程失败显示 `err` ——
+   *  绝不"点了没反应"（本工程反复治过的静默失效类）。*/
+  function openByChain(input) {
+    const d = window.MMPathChain.decide({
+      kind: input.kind, raw: input.raw, project: state.project, force: input.force
+    });
+    if (!d.ok) { setStatus('打不开：' + d.reason + '｜' + String(input.raw), true); return Promise.resolve(false); }
+    if (!window.desktop || !window.desktop.app || !window.desktop.app.openFile) {
+      setStatus('当前环境不支持打开文件（无主进程通道）：' + d.abs, true);
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(window.desktop.app.openFile(d.abs)).then((r) => {
+      if (!r || r.ok === false) {
+        setStatus('打不开：' + ((r && r.err) || '未知原因') + '｜' + d.abs, true);
+        return false;
+      }
+      return true;
+    }).catch((err) => {
+      setStatus('打不开：' + ((err && err.message) || err) + '｜' + d.abs, true);
+      return false;
+    });
   }
 
   /* PDF 缩放：Chromium viewer 的 `#zoom=` **只在设置 src 那一刻生效** ——
@@ -123,8 +174,10 @@
     $('#fp-title').textContent = name;
     $('#fp-caption').textContent = caption;
     const abs = attachmentAbsPath(rel);
+    const decision = attachmentPath(rel);
     $('#fp-open').onclick = null;
-    $('#fp-open').onclick = () => { window.desktop.app.openFile(abs || rel); };
+    // 「系统打开」= 调用方**明确**要交系统（force）⇒ 判据照走，只把 preview 改判成 system（压不过 reject）
+    $('#fp-open').onclick = () => { openByChain({ kind: 'attachment', raw: rel, force: 'system' }); };
     // 节点带本机文件夹（localPath）时给一个直达按钮 —— 把"附件预览"与"文件夹链接"两件事接起来
     const lp = node.localPath || (node.data && node.data.localPath) || '';
     const fbtn = $('#fp-folder');
@@ -133,6 +186,20 @@
       fbtn.onclick = lp ? () => { if (MM.openLocalPath) MM.openLocalPath(lp); } : null;
     }
     bindPdfControls();
+    /* 判据不通过 ⇒ **当场显式报错**（判据 3）。改前这里三条分支各按"abs 有没有值"走：
+     * md 会显示"读取失败：无项目路径"、pdf 会留下一个**空 iframe**、其余什么都不显示 ⇒
+     * 现在三档共用这一处，报的是链给的**具体原因**（逃逸 / UNC / 绝对路径当附件 / 缺项目路径…）。*/
+    if (!decision.ok) {
+      $('#fp-md').style.display = 'block';
+      $('#fp-md').innerHTML = '<span class="placeholder">打不开这个附件：'
+        + escHtml(decision.reason) + '</span>';
+      $('#fp-pdf').style.display = 'none';
+      $('#fp-pdf').src = 'about:blank';
+      pdfView.abs = '';
+      $('#fp-zoom').style.display = 'none';
+      $('#file-preview').style.display = 'flex';
+      return;
+    }
     if (ext === 'md' || ext === 'markdown') {
       $('#fp-zoom').style.display = 'none';
       $('#fp-pdf').style.display = 'none';
@@ -175,9 +242,8 @@
       syncZoomButtons();
       setPdfSrc();
     } else {
-      // 其他类型：系统默认应用打开（XMind 附件交互模式）
-      if (abs) window.desktop.app.openFile(abs);
-      else setStatus('无法打开附件（缺少项目路径）');
+      // 其他类型：系统默认应用打开（XMind 附件交互模式）—— 判据与出口都走链（失败会显示原因）
+      openByChain({ kind: 'attachment', raw: rel });
     }
   }
 
@@ -243,6 +309,9 @@
   MM.closeLightbox = closeLightbox;
   MM.lightboxZoom = lightboxZoom;
   MM.attachmentAbsPath = attachmentAbsPath;
+  MM.attachmentPath = attachmentPath;      // 判据结果（含 reason）—— 本文件唯一一处向链取判据的入口
+  MM.imageLinkOf = imageLinkOf;            // 图片区（app-detail-content.js）用它：判据 + 页面相对地址
+  MM.openByChain = openByChain;            // 链的唯一出口（既有 app:open-file，失败必显示原因）
   MM.openFilePreview = openFilePreview;
   MM.closeFilePreview = closeFilePreview;
   MM.renderRelated = renderRelated;

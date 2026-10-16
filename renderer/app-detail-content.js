@@ -308,14 +308,24 @@
     } else {
       let html = '';
       imgs.forEach((img, i) => {
-        // 相对路径基于 renderer/ 目录解析（index.html 所在目录）
-        const full = state.project ? ('../projects/' + state.project.name + '/' + img.file) : img.file;
-        html += '<div class="img-block">'
-          + '<img data-full="' + escHtml(full) + '" data-file="' + escHtml(img.file) + '" src="' + escHtml(full) + '" alt="' + escHtml(img.caption || '') + '">'
-          + (img.caption ? '<div class="img-caption">' + escHtml(img.caption) + '</div>' : '')
-          + (img.source ? '<div class="img-src">来源：' + escHtml(img.source) + '</div>' : '')
-          + '<button class="img-remove" data-i="' + i + '">移除该图</button>'
-          + '</div>';
+        // 相对路径基于 renderer/ 目录解析（index.html 所在目录）—— 但**串不在这里拼**：
+        // 判据与页面相对地址都由 `MM.imageLinkOf` 给（唯一实现在 `src/path-chain.js`）。
+        const link = MM.imageLinkOf(state.project, img.file);
+        if (!link.ok) {
+          // 判据 3「打不开必须显式报错」：改前这里是一颗**静默的裂图**（`<img src>` 指向项目外/不存在）。
+          // ⚠️ 「移除该图」按钮**照旧留着** —— 坏引用恰恰是最需要能被移除的那种。
+          html += '<div class="img-block"><span class="placeholder">图片引用不可用：'
+            + escHtml(link.reason) + '｜' + escHtml(img.file) + '</span>'
+            + '<button class="img-remove" data-i="' + i + '">移除该图</button></div>';
+        } else {
+          const full = link.url;
+          html += '<div class="img-block">'
+            + '<img data-full="' + escHtml(full) + '" data-file="' + escHtml(img.file) + '" src="' + escHtml(full) + '" alt="' + escHtml(img.caption || '') + '">'
+            + (img.caption ? '<div class="img-caption">' + escHtml(img.caption) + '</div>' : '')
+            + (img.source ? '<div class="img-src">来源：' + escHtml(img.source) + '</div>' : '')
+            + '<button class="img-remove" data-i="' + i + '">移除该图</button>'
+            + '</div>';
+        }
       });
       html += '<div class="fd-hint">双击图片可放大预览（预览中滚轮缩放）</div>';
       ic.innerHTML = html;
@@ -870,25 +880,41 @@
   /**
    * 用系统文件管理器打开一个**本机目录**（节点字段 `localPath`）。
    *
+   * ⭐ 判据只有一处：`src/path-chain.js`（`kind:'localPath'` 是**单独一档** —— 它本来就是
+   * 工作区外的绝对路径，`docs/DATA-FORMAT.md` §2.1 规定**只校验形状**（非空 / 无换行 / ≤500 字符）、
+   * **不校验存在性** ⇒ **不许**拿"必须在项目内"去卡它，否则今天能打开的 `localPath` 会全部打不开）。
+   * 本函数是**三处的共同入口**：详情框的 📁 链接（`renderFdBox`）、预览头的「📁 文件夹」
+   * （`renderer/app-media.js`）、右键菜单（`renderer/contextmenu.js`）⇒ 判据接在这里，三处一次覆盖。
+   * 模块存在性的守卫在 `app-media.js` 的加载期（渲染层唯一一处）；这里只调它，不再写第二份判据。
+   *
    * 走主进程既有的 `app:open-file`（内部就是 `shell.openPath`）—— 目录同样适用，
    * 且**失败必须让人看见**：路径不存在 / 盘没挂 / 权限不足时 `shell.openPath` 会返回错误串，
    * 这里把它显示在状态栏（绝不"点了没反应"—— 那是本工程反复治过的"静默失效"）。
    */
   async function openLocalPath(p) {
     if (!p) return;
+    if (!window.MMPathChain || typeof window.MMPathChain.decide !== 'function') {
+      setStatus('路径判据模块没加载：src/path-chain.js', true);
+      return;
+    }
+    const d = window.MMPathChain.decide({ kind: 'localPath', raw: p, project: state.project });
+    if (!d.ok) {
+      setStatus('打不开这个文件夹：' + d.reason + '｜' + p, true);
+      return;
+    }
     if (!window.desktop || !window.desktop.app || !window.desktop.app.openFile) {
       setStatus('当前环境不支持打开文件夹（无主进程通道）', true);
       return;
     }
     try {
-      const r = await window.desktop.app.openFile(p);
+      const r = await window.desktop.app.openFile(d.abs);
       if (!r || r.ok === false) {
-        setStatus('打不开这个文件夹：' + ((r && r.err) || '未知原因') + '｜' + p, true);
+        setStatus('打不开这个文件夹：' + ((r && r.err) || '未知原因') + '｜' + d.abs, true);
       } else {
-        setStatus('已打开文件夹：' + p);
+        setStatus('已打开文件夹：' + d.abs);
       }
     } catch (e) {
-      setStatus('打不开这个文件夹：' + ((e && e.message) || e) + '｜' + p, true);
+      setStatus('打不开这个文件夹：' + ((e && e.message) || e) + '｜' + d.abs, true);
     }
   }
 

@@ -10,7 +10,12 @@
  *   desktop.asset.import(...)          → 导入图片到 assets/
  *   desktop.asset.importFile(...)      → 导入附件到 attachments/（v0.16）
  *   desktop.app.readFile(abs)          → 读附件文本（md 预览）
- *   desktop.app.openFile(abs)          → 系统默认应用打开附件
+ *   desktop.app.openFile(abs)          → 系统默认应用打开附件 / 本机文件夹（**唯一的打开出口**）：
+ *                                        签名不变、也不新增平行通道。判据（`..` 逃逸、UNC / 设备路径、
+ *                                        绝对 / 相对形态）**只有一处实现** = `src/path-chain.js`；
+ *                                        主进程这一侧用的是它的 `kind:'system'`（只校验形状的出口档，
+ *                                        因为 `localPath` 天然在工作区外）。失败返回 `{ok:false, err}`，
+ *                                        错误串带上判据给的原因（调用方必须显示它，不许静默）
  *   desktop.app.exportMd(...)          → 导出 Markdown（v0.16 起为文件夹导出）
  *   desktop.app.related(...)           → 某节点的相关知识点（出边+入边）
  *   desktop.app.heat(name, nodeId)     → 热度读数（来自 `heat --json`：两条榜 + 窗口内样本量）——

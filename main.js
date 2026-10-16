@@ -17,6 +17,7 @@ const path = require('path');
 const { spawnSync, spawn } = require('child_process');
 const dshSidebar = require('./main-dsh-sidebar.js');
 const dropTarget = require('./src/drop-target.js');   // P7 落点判定（纯函数 ✓ 有单测 ✓ 屏幕坐标）
+const pathChain = require('./src/path-chain.js');     // 「路径 → 打开/预览」的**唯一判据处**（UMD 纯函数，零 I/O）
 
 const ROOT = __dirname;
 const REAL_PROJECTS_DIR = path.join(ROOT, 'projects');
@@ -1540,20 +1541,35 @@ function registerIpc() {
 
   // 系统默认应用打开附件（非 md/pdf 类型，XMind 附件交互模式）；
   // 也用于打开节点对应的**本机文件夹**（节点字段 localPath —— 对目录 shell.openPath 会开文件管理器）。
+  //
+  // ⭐ 这里是「路径 → 打开」这条链的**唯一出口**（渲染层的四处调用点都汇到这里，见
+  //   `renderer/app-media.js` / `renderer/app-detail-content.js`）：
+  //   · **不改签名、不加平行 IPC 通道**（先例：`renderer/app-detail-content.js` 原文
+  //     「不新造一条 IPC —— 同一件事一种写法」）；
+  //   · 判据**只有一处实现**：`src/path-chain.js`。渲染层拿不到项目时（比如从没打开过项目）
+  //     或有人直接调这条 IPC 时，出口这一道仍然守得住；
+  //   · 这里用的是 `kind:'system'`（**只校验形状**）：出口收到的是**已经解析好**的绝对路径，
+  //     它既可能是项目内的附件，也可能是工作区外的 `localPath` ⇒ **不许**在这一层判"在不在项目内"
+  //     （那会把今天能打开的 `localPath` 全部打不开）；
+  //   · 判据**不做任何存在性探测**（本机 `X:` 是不可达映射网络盘，一句 existsSync 要 9–21 秒）——
+  //     可访问性照旧由下面的 statSync（headless）与 `shell.openPath` 的返回值报。
   ipcMain.handle('app:open-file', async (e, absPath) => {
+    const decision = pathChain.decide({ kind: 'system', raw: absPath });
+    if (!decision.ok) return { ok: false, err: '路径不允许打开：' + decision.reason };
+    const target = decision.abs;
     // ⚠️ headless（--smoke / 导出图）下**绝不真的打开**：那会在跑验证的机器上弹出文件管理器/默认应用，
     // 每跑一次 verify 弹一次窗。但**判据照走**（路径可访问性），并把 headless 明确回报 ——
     // 这不是"静默降级"：调用方拿到 headless:true 就知道"校验过了、只是没开"。
     if (isSmoke) {
       try {
-        const st = fs.statSync(absPath);
+        const st = fs.statSync(target);
         return { ok: true, headless: true, kind: st.isDirectory() ? 'dir' : 'file' };
       } catch (err) {
         return { ok: false, headless: true, err: '路径不可访问：' + err.message };
       }
     }
     try {
-      const r = await shell.openPath(absPath);
+      const r = await shell.openPath(target);
       return { ok: !r, err: r || null };
     } catch (err) { return { ok: false, err: err.message }; }
   });
