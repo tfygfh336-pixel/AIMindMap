@@ -2,7 +2,11 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data:; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:; script-src 'self' file:">
+<!-- ⚠️ CSP 的唯一一处。2026-10-16（用户裁决）：`img-src` 加 `https:` —— 允许正文里的**远程图片**显示
+     （本应用本来就是联网的；设计稿当初"收敛到 file:/data:"那条依据的"离线优先/内容不出本机"不是本工程规矩）。
+     **只放宽了这一档**：`script-src` / `style-src` / `default-src` 与（未声明而回落到 default-src 的）`frame-src`
+     一律不动 —— 那几档正是消毒模块要自己顶住的真空面（见 `renderer/sanitize.js` 的文件头）。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data:; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: https:; script-src 'self' file:">
 <title>AI MindMap — 智能笔记工具</title>
 <link rel="stylesheet" href="vendor/jsmind.css">
 <link rel="stylesheet" href="style.css">
@@ -363,6 +367,10 @@
   <script src="../src/history.js"></script>
   <script src="../src/tree-utils.js"></script>
   <script src="../src/schema.js"></script>
+  <!-- 正文 HTML 子集的**唯一一份白名单表**（A 档：允许 details/table/img/a，禁 style/on*/script/iframe/svg）：
+       三个消费者共用 —— ①`renderer/sanitize.js`（消毒）②`scripts/detail-census.js`（语料读数）
+       ③`src/convert.js` 的行内链接/图片（URL scheme 那一档）。⚠️ 必须在 convert.js 之前加载。 -->
+  <script src="../src/html-whitelist.js"></script>
   <script src="../src/convert.js"></script>
   <script src="../src/config.js"></script>
   <script src="../src/palette-rank.js"></script>
@@ -389,6 +397,12 @@
   <script src="app-view.js"></script>
   <script src="app-detail.js"></script>
   <script src="app-detail-drag.js"></script>
+  <!-- 正文消毒（R7）：白名单表在 `../src/html-whitelist.js`，本文件只做"解析成 DOM 再遍历删"。
+       正文的**唯一渲染点**仍是 `app-detail-content.js` 的那一行 —— 消毒是它的前置步骤，不是第二个渲染器。 -->
+  <script src="sanitize.js"></script>
+  <!-- 正文增强（R7）：mermaid 懒加载 + 三类链接的点击分支 + 笔记锚点（关键词链接）。
+       ⚠️ 必须在 app-detail-content.js 之前加载（那里在渲染时调 `MM.Sanitize` / `MM.mdEnhance`）。 -->
+  <script src="app-md.js"></script>
   <script src="app-detail-content.js"></script>
   <script src="app-media.js"></script>
   <script src="app-actions.js"></script>

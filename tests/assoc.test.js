@@ -110,9 +110,14 @@ describe('assoc 查询', () => {
     expect(id).not.toBe('a-1');
     expect(id).not.toBe('a-2');
     expect(assoc.ID_RE.test(id)).toBe(true);
-    // 连续生成也不重复
-    const many = []; for (let i = 0; i < 50; i++) many.push(genId(many));
-    expect(new Set(many).size).toBe(50);
+    /* 连续生成也不重复。
+     * ⚠️ 这里**必须往 `many` 里放"带 id 的对象"**，不能放裸字符串：`genId(existing)` 的
+     * `have` 是从 `existing.map(a => a && a.id)` 建的 —— 传字符串数组等于**每一次都传空**，
+     * 于是"不与现有重复"这条保证根本没被用上，唯一性完全押在"毫秒 + 4 位随机"的运气上
+     * ⇒ 机器一忙就偶发假红（实测：全链负载下一次 `expected 49 to be 50`；单独跑永远绿）。
+     * 改成对象数组之后，这个用例**真的**在测 `genId` 的查重分支（判据变严，不是放宽）。 */
+    const many = []; for (let i = 0; i < 50; i++) many.push({ id: genId(many) });
+    expect(new Set(many.map((x) => x.id)).size).toBe(50);
   });
 });
 

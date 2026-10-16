@@ -409,14 +409,14 @@ function init() {
   register({ name: 'mentions', usage: 'mentions <项目> [--json] [--min-length n] [--include-structural] [--cross] [--limit n]', options: ['json', 'minLength', 'includeStructural', 'cross', 'limit'], desc: '未链接提及：正文提到了某节点却没建 links（orphans 的另一半，告诉你"该往哪连"）；--cross 扫描跨项目两个方向', fn: loadFile('relations').mentions });
 
   // 关联笔记（N 元实体；界面里是「相关知识点」区可打开的二级页面）
-  register({ name: 'assoc-list', usage: 'assoc-list <项目> [--node <id>] [--json] [--raw]', options: ['node', 'json', 'raw'], desc: '列出关联笔记（--node 只看该节点所属的；--raw 附带原始实体）', fn: loadFile('assoc').assocList });
-  register({ name: 'assoc-add', usage: 'assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id] [--force] [--dry-run]', options: ['members', 'title', 'note', 'noteMd', 'id', 'force'], desc: '新增关联笔记（成员 ≥2；跨项目写 项目/节点id）', fn: loadFile('assoc').assocAdd });
-  register({ name: 'assoc-edit', usage: 'assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] [--dry-run]', options: ['title', 'note', 'noteMd', 'clearNote', 'members'], desc: '修改关联笔记的标题/成员/笔记内容', fn: loadFile('assoc').assocEdit });
+  register({ name: 'assoc-list', usage: 'assoc-list <项目> [--node <id>] [--json] [--raw]', options: ['node', 'json', 'raw'], desc: '列出关联笔记（--node 看该节点**所属**的与**锚在**它的；--raw 附带原始实体）', fn: loadFile('assoc').assocList });
+  register({ name: 'assoc-add', usage: 'assoc-add <项目> --members a,b,c | --anchor "项目/节点id#text:关键词" [--anchor …] [--title 标题] [--note html | --note-md markdown] [--id id] [--force] [--dry-run]', options: ['members', 'title', 'note', 'noteMd', 'id', 'force', 'anchor'], desc: '新增关联笔记（成员 ≥2 **或** 锚点 ≥1；跨项目写 项目/节点id；锚点语法 `#tag:工具` / `项目/节点id#text:关键词` / `项目/节点id#item:条目id`）', fn: loadFile('assoc').assocAdd });
+  register({ name: 'assoc-edit', usage: 'assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] [--anchor …] [--clear-anchors] [--dry-run]', options: ['title', 'note', 'noteMd', 'clearNote', 'members', 'anchor', 'clearAnchors'], desc: '修改关联笔记的标题/成员/锚点/笔记内容', fn: loadFile('assoc').assocEdit });
   register({ name: 'assoc-remove', usage: 'assoc-remove <项目> <assocId> [--dry-run]', options: [], desc: '删除关联笔记', fn: loadFile('assoc').assocRemove });
-  register({ name: 'assoc-prune', usage: 'assoc-prune <项目> [--nodes a,b] [--dry-run]', options: ['nodes'], desc: '清理关联里已不存在的成员（修好悬挂成员导致的校验红）', fn: loadFile('assoc').assocPrune });
+  register({ name: 'assoc-prune', usage: 'assoc-prune <项目> [--nodes a,b] [--dry-run]', options: ['nodes'], desc: '清理关联里已不存在的成员（修好悬挂成员导致的校验红）；**锚点只报不剪**', fn: loadFile('assoc').assocPrune });
 
   // 校验与工程
-  register({ name: 'validate', usage: 'validate <项目|json文件> [--json]', options: ['json'], desc: '校验项目数据格式（含悬挂链接与悬挂关联成员）', fn: loadFile('project').validate });
+  register({ name: 'validate', usage: 'validate <项目|json文件> [--json] [--anchors]', options: ['json', 'anchors'], desc: '校验项目数据格式（含悬挂链接与悬挂关联成员）；--anchors 额外判"笔记锚点失效"（默认不判：它是写盘闸门，弱判据判红会让项目变只读）', fn: loadFile('project').validate });
   register({ name: 'validate-all', usage: 'validate-all', options: [], desc: '校验 projects/ 下全部项目', fn: loadFile('project').validateAll });
   register({ name: 'ui-state', usage: 'ui-state [<项目>] [--json]', options: ['json'], desc: '查界面是否有未保存编辑（写前协调：dirty 时先请用户保存再动笔）', fn: loadFile('project').uiState });
   register({

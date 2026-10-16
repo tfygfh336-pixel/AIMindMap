@@ -2419,7 +2419,14 @@ module.exports = {
     const absRoot = path.resolve(ctx.PROJECTS_DIR);
     const selfProject = absFile.indexOf(absRoot + path.sep) === 0
       ? path.basename(path.dirname(absFile)) : null;
-    const v = ctx.schema.validateProject(data, ctx.PROJECTS_DIR, selfProject);
+    /* `--anchors`：**显式**把"笔记锚点失效"这一档也算进校验（R7）。
+     * 默认**不判**——因为 `validate` 同时是**写盘闸门**，而锚点失效（`bad-anchor`/`no-tag`）
+     * 是**弱判据**：改写正文里那句话、去掉一个标签都是正常事，若默认判红，整个项目会瞬间
+     * 变成**只读**（实测形态：`edit <项目> <节点> --detail …` 直接 `校验失败: … 失效锚点(bad-anchor)`）。
+     * ⇒ 口径：默认档只判"硬悬挂"；`validate --anchors` 显式判锚点（点名 + 给修法）；
+     *   `assoc-prune [--dry-run]` **总是报告**；界面侧画坏引用态。三段都不静默。 */
+    const v = ctx.schema.validateProject(data, ctx.PROJECTS_DIR, selfProject,
+      { checkAnchors: ctx.args.anchors === true });
     if (ctx.args.json) ctx.outJson({ ok: v.ok, errors: v.errors });
     else if (v.ok) ctx.out('校验通过: ' + target);
     else ctx.out('error: 校验失败: ' + v.errors.join('; '));

@@ -390,6 +390,35 @@ jmnode.mm-container-root { visibility: hidden !important; }
  * hover 才给下划线：与普通链接的**常驻**下划线正好相反 ⇒ 两者在同一帧里一眼可分 ✓ */
 .fd-notelink { color: var(--note-link-ink); text-decoration: none; }
 .fd-notelink:hover, .fd-notelink:focus-visible { text-decoration: underline; }
+/* 坏引用态：**不用红**（红在本工程是"危险/删除"的既有语义，会让人以为要删东西）——
+   同色降饱和 + 虚线，原因走 `title`（`refState`/`anchorState` 的 hint，判据在冒烟域 52）。 */
+.fd-notelink.is-dangling, .fd-notelink.is-unreadable {
+  color: #86909c; border-bottom: 1px dashed #a9aeb8; text-decoration: none; cursor: help;
+}
+.fd-notelink.is-unreadable { border-bottom-style: dotted; }
+
+/* ---------------- 正文里的三类链接与两类被拦下（R7） ----------------
+   ① `.fd-link-blocked`：白名单拦下的地址（`javascript:`/`data:`/外域协议相对…）——`href` 已被摘掉，
+      元素留在这里是为了**可见**（不许静默留白），`title` 给原因；
+   ② `.fd-img-blocked`：**被拦下的图片地址**的可见占位（明文 `http:` 图 / `javascript:` 之类非法档）；
+      ⚠️ `https:` 远程图**不属这一档**：用户 2026-10-16 裁决允许它照常显示（CSP `img-src` 已同步放宽），
+      本表只做安全收敛，不做联网收敛 —— 见 `src/html-whitelist.js` 文件头；
+   ③ `.fd-mermaid`/`.fd-mermaid-fail`：mermaid 图区与**降级条**（渲染失败必须响亮，不许静默空白）。
+      图区给固定高度 + `overflow:auto`（内容滚、不动框）—— 绝不因"图渲染出来多大"回写框的尺寸
+      （那会让同一个节点每次打开尺寸不同 ⇒ 与"确定性产物"的精神冲突）。 */
+.fd-link-blocked { color: #86909c; text-decoration: line-through; cursor: help; }
+.fd-img-blocked {
+  display: inline-block; padding: 2px 6px; border: 1px dashed #d5d9e0; border-radius: 4px;
+  background: #f7f8fa; color: #86909c; font-size: 12px; cursor: help;
+}
+.fd-mermaid { max-height: 420px; overflow: auto; margin: 6px 0; padding: 4px;
+  border: 1px solid #e4e7ec; border-radius: 4px; background: #fff; }
+.fd-mermaid[data-mm-mermaid="pending"] { min-height: 40px; }
+.fd-mermaid svg { max-width: 100%; height: auto; }
+.fd-mermaid-fail {
+  margin: 4px 0; padding: 4px 6px; border: 1px solid #ffd591; border-radius: 4px;
+  background: #fff7e6; color: #874d00; font-size: 12px;
+}
 
 /* ---------------- 条目层（v3）：详情框里的「逐条」呈现 ----------------
    只在**条目化**节点上出现（未条目化节点不会生成 `.fd-items`，正文也不会带 `data-item-id`）✓

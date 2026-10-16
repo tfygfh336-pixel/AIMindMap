@@ -83,6 +83,7 @@ function parseArgs(argv) {
     if (a === '--include-structural') { out.includeStructural = true; continue; }
     if (a === '--cross') { out.cross = true; continue; }
     if (a === '--clear-note') { out.clearNote = true; continue; }
+    if (a === '--clear-anchors') { out.clearAnchors = true; continue; }
     if (a === '--dry-run') { out.dryRun = true; continue; }
     if (a === '--clean-assoc') { out.cleanAssoc = true; continue; }
     if (a === '--clean-links') { out.cleanLinks = true; continue; }
@@ -92,6 +93,19 @@ function parseArgs(argv) {
     // 覆盖式导入的显式开关（import-project / import-md）：纯布尔 ⇒ 必须在这里登记，
     // 否则会被通用分支按"--key value"处理、把后面的位置参数吞成它的值（见上面那条注释）
     if (a === '--force') { out.force = true; continue; }
+    /* `--anchor`（`assoc-add` / `assoc-edit`）是**可重复**选项：一篇笔记可以有多条锚点。
+     * 为什么必须单独登记（不能走下面的覆盖式通用分支）：重复给同一个选项时，通用分支是
+     * "后者覆盖前者"⇒ 用户给三条锚点只会剩最后一条，而且**静默**（exit 0、回显"已更新"）。
+     * 这正是本工程反复治的那种"看起来成功、其实按别的参数跑了"✗ ⇒ 这里累积成数组；
+     * 命令侧一律 `[].concat(ctx.args.anchor || [])` 归一（单条也走同一形状）。 */
+    if (a === '--anchor') {
+      const v = argv[i + 1];
+      if (v !== undefined && !String(v).startsWith('--')) {
+        out.anchor = (out.anchor === undefined) ? [v] : [].concat(out.anchor, v);
+        i++;
+      } else { out.anchor = true; }        // 裸写 `--anchor`：解析成 true，由命令侧**响亮拒绝**
+      continue;
+    }
     if (a === '--unmounted') { out.unmounted = true; continue; }
     if (a === '--major') { out.major = true; continue; }
     if (a === '--minor') { out.minor = true; continue; }

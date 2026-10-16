@@ -33,10 +33,14 @@
  * 逐层展开时每层只对**该层新增节点**求一次邻域，避免逐次全量扫描的 O(N·M)。
  * ============================================================ */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.MMRelations = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./assoc.js'));
+  else root.MMRelations = factory(root.MMAssoc || null);
+})(typeof self !== 'undefined' ? self : this, function (assocMod) {
   'use strict';
+
+  /** 锚点形状判据的唯一实现处是 `src/assoc.js`（`anchorKind`）；浏览器侧若没加载它，
+   *  只影响"标签/片段锚点是不是恰好一种"这一维 —— 那就**响亮说判不了**，不猜。 */
+  const anchorKindOf = (assocMod && typeof assocMod.anchorKind === 'function') ? assocMod.anchorKind : null;
 
   /**
    * 邻域展开的**结果上限**（条数）：到了就停并置 `truncated:true`。
@@ -246,7 +250,92 @@
     };
   }
 
+  /**
+   * 一条**笔记锚点**（`assoc.anchors[]`）的真实状态 —— R7 新增的**唯一判据处**。
+   *
+   * 结构（**先复用既有两档，再补两个新词**）：
+   *   · 先调 `refState()` —— "节点在不在 / 条目在不在 / 项目读不读得出来"**一个字不改**地复用；
+   *   · `tag` 档补 `no-tag`（该标签还有没有节点带 —— **集合成员查询**，不是文本匹配，强判据）；
+   *   · `text` 档补 `bad-anchor`（正文纯文本里还能不能匹配到关键词 —— **弱判据**：正文改写就失效）。
+   *
+   * ⚠️ 三档**都不静默**（§⑪-3.3）：
+   *   · `no-tag` / `bad-anchor` 由 `validate`（G2）报、由 `assoc-prune --dry-run` **只报不剪**；
+   *   · 界面侧靠"锚点声明是真源"——匹配不上**不是把笔记藏起来**，而是那篇笔记仍出现在
+   *     「本页笔记」区、并把失效锚点画成坏引用态（判据见冒烟域 52）。
+   *
+   * @param {object} anchor `{tag}` | `{project,id,text}` | `{project,id,item}`（形状由 `src/assoc.js` 校验）
+   * @param {{root:object|null, project:string}} target 目标项目的数据根与项目名（`root === null` ⇒ unreadable）
+   * @param {{hasTag:(tag:string, project:string)=>boolean}|function} [tags] 标签索引
+   * @returns {{state:string, label:string, nodeTopic:string|null, itemLabel:string|null, hint:string}}
+   */
+  function anchorState(anchor, target, tags) {
+    const t = target || {};
+    const proj = t.project || (anchor && anchor.project) || '';
+    const miss = (state, label, hint) =>
+      ({ state: state, label: label, nodeTopic: null, itemLabel: null, hint: hint });
+
+    if (!anchor || typeof anchor !== 'object') {
+      return miss('bad-ref', '(空锚点)', '锚点不是对象（结构问题，见 validate 的形状校验）');
+    }
+    if (!anchorKindOf) {
+      return miss('unreadable', '', '浏览器侧没有加载 src/assoc.js（锚点形状判据缺一份实现）—— 不猜，先修好加载顺序');
+    }
+    const kind = anchorKindOf(anchor);
+    if (!kind) {
+      return miss('bad-ref', String(anchor.tag || anchor.text || anchor.item || ''),
+        '锚点必须**恰好一种**（tag / text / item 三选一且非空）—— 结构问题，见 `assoc.validateAssoc`');
+    }
+
+    if (kind === 'tag') {
+      const tag = String(anchor.tag);
+      const where = anchor.project ? String(anchor.project) : proj;
+      const has = (tags && typeof tags.hasTag === 'function') ? tags.hasTag
+        : (typeof tags === 'function') ? tags : null;
+      if (!has) {
+        return miss('unreadable', '#' + tag, '没有拿到标签索引 ⇒ 判不了"这个标签还有没有节点带"（**采不到真值不许猜**）');
+      }
+      const got = has(tag, where);
+      if (got === null || got === undefined) {
+        return miss('unreadable', '#' + tag, '标签索引说读不出项目 ' + where + ' ⇒ 不当作悬空处理，先修好项目再判');
+      }
+      if (got) return { state: 'ok', label: '#' + tag, nodeTopic: null, itemLabel: null, hint: '' };
+      return miss('no-tag', '#' + tag,
+        '标签锚点失效：' + where + ' 里已经没有节点带 #' + tag
+        + ' —— 修法：给节点加回该标签，或去掉这条锚点（`assoc-edit --anchor`）');
+    }
+
+    // 片段 / 条目两档：**先走 refState**（节点级与条目级的唯一判据），再补文本那一步
+    const st = refState({ project: anchor.project, id: anchor.id, item: (kind === 'item' ? anchor.item : '') },
+      t.root, proj);
+    if (st.state !== 'ok') return st;
+    if (kind !== 'text') {
+      return { state: 'ok', label: st.label, nodeTopic: st.nodeTopic, itemLabel: st.itemLabel, hint: '' };
+    }
+    const want = String(anchor.text);
+    // 取目标节点的正文纯文本：与 refState 走**同一段树遍历**（不另读一次盘）
+    let node = null;
+    (function find(n) {
+      if (!n || node) return;
+      if (n.id === anchor.id) { node = n; return; }
+      (n.children || []).forEach(find);
+    })(t.root);
+    const text = plainText(node && node.detail);
+    if (text.indexOf(want) >= 0) {
+      return { state: 'ok', label: st.label + '#text:' + want, nodeTopic: st.nodeTopic, itemLabel: null, hint: '' };
+    }
+    return {
+      state: 'bad-anchor',
+      label: st.label + '#text:' + want,
+      nodeTopic: st.nodeTopic,
+      itemLabel: null,
+      hint: '片段锚点失效：' + st.label + ' 的正文里已经匹配不到「' + want + '」'
+        + '（正文被改写？）—— 修法：改锚点文本，或去掉这条锚点。**不许自动剪**'
+        + '（剪掉可能让这篇笔记再无锚点；且"目标没了"与"词没了"是不同档）'
+    };
+  }
+
   /** 遍历某个项目根上**全部**引用（links 边 + assoc 成员），供批量判据/报告用（判据仍是 refState） */
+
   function allRefs(root, assocList) {
     const out = [];
     flatten(root).forEach((n) => {
@@ -609,6 +698,9 @@
     flatten, topicIndex, nodeIndex, itemIndex, backlinkIndex, backlinksFrom, backlinksAll,
     relatedAll, buildIndexes, normDepth, MAX_ITEMS, MAX_DEPTH, neighborhood1,
     // 条目层（v3）升层的判据与工具：`refState` / `targetHasItem` 是"链接目标还在不在"的**唯一实现**
-    refState, allRefs, targetHasItem, itemKey, sameRef, withItem, itemLabel, plainText, EXCERPT_MAX
+    refState, allRefs, targetHasItem, itemKey, sameRef, withItem, itemLabel, plainText, EXCERPT_MAX,
+    // 锚点（R7）：`anchorState` 是"这条笔记锚点还有没有效"的**唯一实现**（内部先调 refState，
+    // 只对新维度补两个词：`no-tag` / `bad-anchor`；`refState` 的六词表一个字没动）
+    anchorState
   };
 });

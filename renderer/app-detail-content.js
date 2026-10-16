@@ -254,13 +254,16 @@
      *     两条路径**互斥**、不在这里混（`docs/DATA-FORMAT.md` §2.4 的警告）。
      *   · 机械守卫有两处（都在本批）：结构断言 `tests/`（本模块**零** `markdownToHtml`/`mdBlock`/
      *     `mdInline` 调用）+ 冒烟真帧判据 `scripts/smoke/47-*.js`（HTML 夹具的标签**不当文字画出来**）。 */
-    dc.innerHTML = detail || '<span class="placeholder">（该节点无详情）</span>';
+    if (detail && MM.Sanitize) MM.Sanitize.inject(dc, detail, { project: state.project });
+    else dc.innerHTML = detail || '<span class="placeholder">（该节点无详情）</span>';
     // 条目层（v3）：条目化节点额外给出「逐条」呈现（清单 + 正文归属）。
     // ⚠️ 正文的渲染路径**就在这里结束**：上面那一行 `dc.innerHTML = detail` 仍是**唯一**的正文来源
     //   （detail 是 renderDetail(items) 的落盘派生缓存，契约 §2）—— 本调用只加"条目级"的
     //   清单与属性标注，**不拼第二份 HTML**（见下方 renderFdItems 段落）。
     //   未条目化节点 ⇒ 这里只做"清掉上一位节点留下的清单"，**一个字节都不加**（回归判据）。
     renderFdItems(box, node);
+    /* 正文增强（R7）：三类链接的点击分支（事件委托，绑一次）+ mermaid 懒加载（异步，首屏不等它）。 */
+    if (MM.mdEnhance) MM.mdEnhance(box);
     // 热度条（第三件·A）：**展示**两条热度（人 / AI），数据来自主进程 `app:heat`（= CLI `heat --json`）。
     // ⚠️ 它写在**另一个容器**（`.fd-heat`）里，与上面那行 `dc.innerHTML = detail` **无关** ——
     //   "正文只有一份"这条铁律不受影响（正文的字节一个都没变）；它**异步**刷新，不拖慢打开。
@@ -370,6 +373,8 @@
         // 而界面保存会把内存里的 assoc 写回去 —— 不同步就会用旧内存覆盖掉新笔记。
         syncAssocToState(r);
         renderAssocEntries(al, r, node);
+        /* 笔记锚点（R7）：关键词在正文里变成可打开它的链接（`.fd-notelink`）。 */
+        if (MM.mdApplyAnchors) MM.mdApplyAnchors(fdQ(box, '.fd-detail-content'), node, r);
         setTimeout(() => positionFdBox(box), 20);
       }).catch(() => {
         if (box.node === node) al.innerHTML = '';

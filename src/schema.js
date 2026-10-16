@@ -208,7 +208,7 @@
    *   （闸门看磁盘，那时节点还在），此后该项目**所有**写命令都被这条悬挂成员挡住，
    *   直到 assoc-prune 才解开。跨项目成员只能读盘（磁盘是唯一真值），保持不变。
    */
-  function validateProject(data, projectsRoot, selfProject) {
+  function validateProject(data, projectsRoot, selfProject, opts) {
     const errors = [];
     const err = (msg, nodeId) => {
       errors.push(nodeId ? '[' + nodeId + '] ' + msg : msg);
@@ -433,6 +433,45 @@
         at);
       };
 
+      /** `anchorState` 的唯一实现来自 `src/relations.js`（浏览器侧未注入 ⇒ 这一档跳过，门禁在 CI 侧） */
+      const anchorStateOf = (relations && typeof relations.anchorState === 'function')
+        ? relations.anchorState : null;
+
+      /**
+       * 标签索引（`tag` 锚点用）：`project|tag` 的集合成员查询 —— **强判据**（不是文本匹配）。
+       * 范围口径（本工程**显式定死**，免得"标签是全局还是项目内"长期悬着）：
+       *   · 锚点**没写** `project` ⇒ 在**当前项目**里判；
+       *   · 锚点**写了** `project`  ⇒ 在那个项目里判；
+       *   · 项目读不出来 ⇒ 返回 `null`（"采不到真值"）⇒ 判成 `unreadable`，**不当作失效**。
+       */
+      const tagIndex = (() => {
+        const cache = {};
+        function tagsIn(proj) {
+          if (cache[proj] !== undefined) return cache[proj];
+          const set = new Set();
+          if (selfProject && proj === selfProject) {
+            flatten(data && data.data).forEach((n) => ((n && n.tags) || []).forEach((t) => set.add(String(t))));
+            cache[proj] = set;
+            return set;
+          }
+          const p = path.join(projectsRoot, proj, proj + '.json');
+          try {
+            if (!fs.existsSync(p)) { cache[proj] = null; return null; }
+            const pd = JSON.parse(fs.readFileSync(p, 'utf8'));
+            (function w(n) { if (!n) return; ((n.tags) || []).forEach((t) => set.add(String(t))); (n.children || []).forEach(w); })(pd.data);
+            cache[proj] = set;
+            return set;
+          } catch (e) { cache[proj] = null; return null; }
+        }
+        return {
+          hasTag(tag, proj) {
+            const s = tagsIn(proj);
+            if (s === null) return null;                    // 读不出来 ⇒ 不猜
+            return s.has(String(tag));
+          }
+        };
+      })();
+
       flatten(data.data).forEach((n) => {
         (n.links || []).forEach((l, i) => {
           if (!l || typeof l !== 'object') { err('links[' + i + '] 不是对象', n.id); return; }
@@ -457,6 +496,40 @@
           else if (r === 'no') err('悬挂关联成员: ' + m.project + '/' + m.id + ' 不存在', at);
           else if (r !== 'yes') err('悬挂关联成员: 无法读取 ' + m.project + '（' + r.slice(11) + '）', at);
           itemDangling(m, at);            // ← 加这一行（assoc 成员的条目级同款）
+        });
+        /* ---- 笔记锚点（R7）：`assoc.anchors[]` 的失效检测 ----------------------------
+         * 判据**只有一处实现**：`relations.anchorState`（内部先调 `refState`，只补 no-tag / bad-anchor）。
+         * 这里只负责"把判据接进闸门 + 点名 + 给修法"，不自己 walk 树、不自己判文本。
+         * ⚠️ **锚点不在 `allRefs` 里**（锚点不是边，见 `docs/DATA-FORMAT.md` §2.6）⇒ 它**不参与**
+         *   图距离（`src/item-index.js`）与关系栏（`src/related-model.js`），那两处**不改代码**。
+         * ⚠️⚠️ **默认档不判锚点**（`opts.checkAnchors === true` 才判）—— 这一条**是实测逼出来的**：
+         *   `validate` 同时是**写盘闸门**（每次写之前跑一遍）⇒ 若 `bad-anchor`/`no-tag` 默认算错，
+         *   则"改写正文里那句话"或"去掉一个标签"这两件**正常事**会把整个项目变成**只读**
+         *   （实测：`edit r7p n-root --detail …` 直接 `error: 校验失败: … 失效锚点（bad-anchor）`）。
+         *   而这两档本来就是**弱判据**（会随时间自然失效），修它要改的是**笔记**而不是正文。
+         *   ⇒ 口径：**默认 `validate` 不做锚点判定**（默认档逐字节不变）；`validate --anchors`
+         *     显式**判红**（点名 + 给修法）；`assoc-prune [--dry-run]` **总是报告**（只报不剪）；
+         *     界面侧失效锚点画成坏引用态（`.is-dangling` + `title`）。**三段都不静默** ✓ */
+        if (!anchorStateOf || !selfProject) return;
+        if (!(opts && opts.checkAnchors === true)) return;
+        const ans = Array.isArray(a.anchors) ? a.anchors : [];
+        ans.forEach((an, ni) => {
+          if (!an || typeof an !== 'object') return;                       // 结构问题已由 validateAll 报过
+          const at = 'assoc[' + ai + '].anchors[' + ni + ']';
+          const where = an.project || selfProject;
+          let root = null;
+          if (where === selfProject) root = data.data;
+          else {
+            const p = path.join(projectsRoot, where, where + '.json');
+            try { root = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')).data : null; }
+            catch (e) { root = null; }
+          }
+          const st = anchorStateOf(an, { root: root, project: where }, tagIndex);
+          if (st.state === 'ok') return;
+          /* 三档分开报（**修法不同**，报同一种会把路指错）：读不出来 ⇒ 先修项目；
+           * 标签没了 ⇒ 加回标签或删锚点；正文改了 ⇒ 改锚点文本。 */
+          err('失效锚点（' + st.state + '）: ' + (st.label || '(无点名)') + ' —— ' + st.hint
+            + '（锚点不是边：它只决定"从哪儿点得进来"，不参与关系栏与图距离）', at);
         });
       });
     }
@@ -754,6 +827,10 @@
     const end = text.split(CLONE_FN_END).length - 1;
     const res = {
       ok: false, missing: [], unknown: [], drift: [], seen: [], parsed: 0, fields: 0,
+      /* ⚠️ 这里的 `anchors` = **源码位置锚点**（`{decl, ret}`：函数声明与返回各自的命中次数），
+       *   与 `assoc[].anchors[]`（**笔记锚点**，R7 新增的"从哪儿点得进来"）**同名不同物**。
+       *   两者都叫 anchors 是既定口径（用户/设计稿全篇用它），靠**这行交叉注释**避免
+       *   "同一件事两处表达"的病根；另一处交叉注释在 `docs/DATA-FORMAT.md` §2.6 的字段表处。 */
       anchors: { decl: decl, ret: end }, label: CLONE_FN_DECL
     };
     if (decl !== 1 || end !== 1) {

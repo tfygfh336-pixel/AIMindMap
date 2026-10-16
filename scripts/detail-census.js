@@ -56,18 +56,13 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const PROJECTS_DIR = path.join(ROOT, 'projects');
 
-/* ---------------- 白名单标签（与设计稿 §② 判定表的"允许"档同源） ----------------
- * ⚠️ **这是设计稿 §② 的判定表在"读数"这一侧的投影**，不是第二份白名单实现：
- *   真正的白名单校验属于 R7 主体的消毒模块（尚未落地）；本脚本只拿它当"这段 detail
- *   有没有 HTML 结构"的量具。R7 消毒模块落地后，**这份正则要改成从模块里取**
- *   （`require('../src/…')` 的那一族），否则就是同一件事的两处表达 ✗。 */
-const WHITELIST_TAGS = [
-  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'hr', 'ul', 'ol', 'li',
-  'table', 'thead', 'tbody', 'tr', 'th', 'td',
-  'strong', 'b', 'em', 'i', 'u', 's', 'del', 'sub', 'sup', 'kbd', 'mark',
-  'code', 'pre', 'blockquote', 'details', 'summary', 'a', 'img', 'div', 'span'
-];
-const TAG_RE = new RegExp('</?(?:' + WHITELIST_TAGS.join('|') + ')\\b', 'i');
+/* ---------------- 白名单标签（**从模块取，不在这里自写一份**） ----------------
+ * `src/html-whitelist.js` 是这张表的**唯一一份**（三个消费者：消毒模块 / 本脚本 / `src/convert.js` 的 URL 档）。
+ * 本脚本只用它当"这段 detail 有没有 HTML 结构"的量具；标签名与正则都**直接引用**它 ——
+ * 自己再写一份正则就是"同一件事两处表达"，必然漂移（这正是本脚本文件头原本那句交办）。 */
+const whitelist = require('../src/html-whitelist.js');
+const WHITELIST_TAGS = whitelist.ALLOW_TAGS;
+const TAG_RE = whitelist.TAG_RE;
 
 /* ---------------- 读一个项目文件 ---------------- */
 

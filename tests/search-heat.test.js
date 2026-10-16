@@ -189,9 +189,14 @@ function walkJs(rel, out) {
  * `main.js` / `preload.js`，以及 `scripts/` 顶层（MCP 包装、集成脚本）。
  * ⚠️ `scripts/smoke/**` 是**界面冒烟探针**（不参与检索）：那里 `0.06` 是个坐标步长，
  * 把它算成"第二份权重"是假红 —— 所以递归只对前四个目录做。
- */
+ * ⚠️ **第三方 vendored 包不算"我们写的第二份"**（`renderer/vendor/**`，如 5 MB 的
+ * `mermaid.min.js`）：那里面出现 `0.06` 这类数字是**别人的压缩产物**，与"同一事实两处表达"
+ * 毫无关系 —— 不排除它会让这条结构断言对着一段压缩代码报红（实测：本条正是被它打红的）。
+ * 判据要守的是"**我们的**实现里不许再写一份"，所以把 vendored 目录排除在**扫描面**之外，
+ * 而不是放宽比较（`src/` / `cli/` / `renderer/` 自己的文件一个都不放过）。 */
 const PROD_FILES = ['src', 'cli', 'renderer']
   .reduce((acc, r) => walkJs(r, acc), [])
+  .filter((rel) => !rel.startsWith('renderer/vendor/'))
   .concat(fs.readdirSync(path.join(ROOT, 'scripts'), { withFileTypes: true })
     .filter((e) => e.isFile() && e.name.endsWith('.js')).map((e) => 'scripts/' + e.name))
   .concat(['main.js', 'preload.js'].filter((r) => fs.existsSync(path.join(ROOT, r))));

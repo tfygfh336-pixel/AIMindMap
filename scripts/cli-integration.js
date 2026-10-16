@@ -1506,6 +1506,66 @@ r = run(['assoc-remove', PROJ, 'no-such-assoc']);
 check('assoc-remove 不存在的关联被拒', !ok(r.out) && /关联不存在/.test(r.out), r.out.trim());
 // 数据契约：validate 通过（assoc 合法时），并在**悬挂成员**上报错
 check('带 assoc 的项目 validate 通过', ok(run(['validate', PROJ]).out));
+
+/* ---- R7：`assoc.anchors[]`（锚点写笔记侧）在 CLI 这一面的四条 -------------------------------
+ * 这一节的判据全部**针对"静默"这一档**：锚点最危险的失效形态不是报错，而是"词没了 ⇒ 界面上什么都没有
+ * ⇒ 那篇笔记像从来没存在过"。所以每条都要求：要么写进去、要么**响亮拒绝**，且失效能被**点名**。 */
+r = run(['edit', PROJ, 'a', '--detail', '<p>这段正文里有 关键词甲 这个词</p>']);
+check('锚点夹具：给节点 a 写一段含关键词的正文（前置，失败则下面几条都测不到）', ok(r.out), r.out.trim());
+r = run(['assoc-add', PROJ, '--anchor', 'a#text:关键词甲', '--title', '锚点笔记', '--id', 'as-an1']);
+check('assoc-add：**0 成员 + 1 锚点**可写（用户要的"只和一个关键词关联"）+ 锚点当下成立才放行',
+  ok(r.out) && /已新增关联/.test(r.out) && /1 条锚点/.test(r.out), r.out.trim());
+r = run(['assoc-list', PROJ, '--node', 'a', '--json']);
+check('assoc-list --node：按**锚点**命中的笔记也在结果里（byAnchors ≥ 1，且成员数 0）',
+  ok(r.out) && (() => {
+    const j = JSON.parse(r.out);
+    const it = (j.items || []).find((x) => x.id === 'as-an1');
+    return j.byAnchors >= 1 && !!it && it.members.length === 0 && it.anchorState === 'ok'
+      && it.anchors[0].kind === 'text' && it.anchors[0].text === '关键词甲';
+  })(), r.out.trim());
+r = run(['assoc-add', PROJ, '--anchor', 'a#text:这句话不在正文里', '--title', '坏锚点', '--id', 'as-an-bad']);
+check('assoc-add：**当下不成立的锚点被响亮拒绝**（含原因与修法，不是静默接受）',
+  !ok(r.out) && /锚点当下不成立/.test(r.out) && /bad-anchor/.test(r.out), r.out.trim());
+r = run(['assoc-add', PROJ, '--anchor', '#tag:不存在的标签', '--title', '坏标签锚点', '--id', 'as-an-tag']);
+check('assoc-add：标签锚点用**集合成员查询**判（标签没人带 ⇒ 拒绝）',
+  !ok(r.out) && /no-tag/.test(r.out), r.out.trim());
+r = run(['assoc-list', PROJ, '--json', '--raw']);
+check('assoc-list --raw 带出 `anchors`（渲染层据此把关键词变成可点链接，不新造第二套引用）',
+  ok(r.out) && (() => {
+    const j = JSON.parse(r.out);
+    const raw = (j.raw || []).find((x) => x.id === 'as-an1');
+    return !!raw && Array.isArray(raw.anchors) && raw.anchors[0].text === '关键词甲';
+  })(), r.out.trim());
+/* 默认 `validate` **不判锚点**（它是写盘闸门；弱判据判红会让"改写正文"变成项目只读），
+ * `validate --anchors` 才判 —— 两条一起判，缺哪一条都会把口径说反。 */
+check('默认 validate 不把"锚点弱判据"算错（写盘闸门不被牵连）', ok(run(['validate', PROJ]).out));
+check('validate --anchors：锚点有效时也不必红（判据不是"见到锚点就报"）', ok(run(['validate', PROJ, '--anchors']).out));
+
+/* 失效锚点的**三段都不静默**：改写正文 ⇒ ①默认 validate 照旧过（写盘闸门不被弱判据牵连）
+ * ②`validate --anchors` 判红并**点名** `项目/节点id#text:关键词` ③`assoc-prune --dry-run` 报它
+ * 但**一个字节都不剪**（锚点失效通常是正文被改写 ⇒ 剪它可能让笔记再无锚点）。 */
+run(['edit', PROJ, 'a', '--detail', '<p>这段正文被改写了，那个词不在了</p>']);
+check('锚点失效① 默认 validate 照旧通过（写盘闸门不被弱判据牵连：改写正文仍然写得进去）',
+  ok(run(['validate', PROJ]).out));
+r = run(['validate', PROJ, '--anchors']);
+check('锚点失效② `validate --anchors` 判红 + **点名** `项目/节点id#text:关键词` + 给修法',
+  !ok(r.out) && /失效锚点（bad-anchor）/.test(r.out) && new RegExp(PROJ + '/a#text:关键词甲').test(r.out)
+    && /不许自动剪/.test(r.out), r.out.trim());
+const asAncBefore = fs.readFileSync(path.join(ROOT, 'projects', PROJ, PROJ + '.json'), 'utf8');
+r = run(['assoc-prune', PROJ, '--dry-run']);
+const asAncAfter = fs.readFileSync(path.join(ROOT, 'projects', PROJ, PROJ + '.json'), 'utf8');
+check('锚点失效③ `assoc-prune --dry-run` 报告它、且**只报不剪**（项目 JSON 逐字节不变）',
+  ok(r.out) && /失效锚点/.test(r.out) && /bad-anchor/.test(r.out) && asAncBefore === asAncAfter,
+  r.out.trim().slice(0, 200));
+check('锚点失效④ 修法可用：`assoc-edit --members a,b --clear-anchors` 之后 `validate --anchors` 复绿',
+  (() => {
+    const e = run(['assoc-edit', PROJ, 'as-an1', '--members', 'a,b', '--clear-anchors']);
+    return ok(e.out) && ok(run(['validate', PROJ, '--anchors']).out);
+  })());
+/* 收尾：本节自己造的两篇笔记要清掉 —— 后面的既有判据（"删空后不留 assoc 键"、export-json 的
+ * `assoc.length === 1`）是**按当时的库内条数**写的；留着会连累它们（本批实测踩到过一次）。 */
+run(['assoc-remove', PROJ, 'as-an1']);
+
 r = run(['assoc-remove', PROJ, 'as-it-1']);
 check('assoc-remove 移除成功', ok(r.out) && /已移除关联/.test(r.out), r.out.trim());
 check('删空后项目里不再留 assoc 键（与旧格式完全一致，无空数组噪音）',

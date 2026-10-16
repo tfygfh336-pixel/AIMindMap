@@ -24,6 +24,9 @@ const REAL_PROJECTS_DIR = path.join(ROOT, 'projects');
 const CLI = path.join(ROOT, 'cli', 'mm-cli.js');
 
 const isSmoke = process.argv.includes('--smoke');
+/** 冒烟模式下的**出口调用账**（`ctx.openFileLog()` 交给断言）：见 `app:open-file` handler 里的说明。
+ *  非冒烟模式下这个数组**永远是空的**（每次 push 都在 `if (isSmoke)` 里）⇒ 不产生任何行为差异 ✓。 */
+const SMOKE_OPEN_FILE_LOG = [];
 
 /* ---------------- 冒烟保帧开关（**只在冒烟/离屏路径**） ----------------
  * 问题：Chromium 会后台化"不可见 / 被遮挡"的窗口并节流定时器 ⇒ 隐藏窗口可能不出帧、
@@ -1543,8 +1546,7 @@ function registerIpc() {
   // 也用于打开节点对应的**本机文件夹**（节点字段 localPath —— 对目录 shell.openPath 会开文件管理器）。
   //
   // ⭐ 这里是「路径 → 打开」这条链的**唯一出口**（渲染层的四处调用点都汇到这里，见
-  //   `renderer/app-media.js` / `renderer/app-detail-content.js`）：
-  //   · **不改签名、不加平行 IPC 通道**（先例：`renderer/app-detail-content.js` 原文
+  //   `renderer/app-media.js` / `renderer/app-detail-content.js`）：  //   · **不改签名、不加平行 IPC 通道**（先例：`renderer/app-detail-content.js` 原文
   //     「不新造一条 IPC —— 同一件事一种写法」）；
   //   · 判据**只有一处实现**：`src/path-chain.js`。渲染层拿不到项目时（比如从没打开过项目）
   //     或有人直接调这条 IPC 时，出口这一道仍然守得住；
@@ -1555,6 +1557,12 @@ function registerIpc() {
   //     可访问性照旧由下面的 statSync（headless）与 `shell.openPath` 的返回值报。
   ipcMain.handle('app:open-file', async (e, absPath) => {
     const decision = pathChain.decide({ kind: 'system', raw: absPath });
+    /* 冒烟模式下的**出口调用账**（ctx.openFileLog）—— 让"点了到底有没有走唯一出口"这件事**可观测**。
+     * 为什么需要它（不是"顺手加的测试钩子"）：渲染层拿 `window.desktop.app` 是 **contextBridge 冻结对象**，
+     * 断言**装不上记录器**（实测：`desktop.app.openFile = …` 不生效）⇒ 出口那一跳在主进程侧本来就**不可见**；
+     * 而"点链接必须走 app:open-file、不许另开通道"正是这条链最要紧的判据。账在**非冒烟模式下一行都不记** ✓。 */
+    if (isSmoke) SMOKE_OPEN_FILE_LOG.push({ raw: String(absPath), ok: decision.ok === true,
+      abs: decision.abs, code: decision.code || '' });
     if (!decision.ok) return { ok: false, err: '路径不允许打开：' + decision.reason };
     const target = decision.abs;
     // ⚠️ headless（--smoke / 导出图）下**绝不真的打开**：那会在跑验证的机器上弹出文件管理器/默认应用，
@@ -2734,6 +2742,10 @@ async function runSmoke(win) {
   // 只能由 AI/CLI 写入）。`runCli` 在冒烟模式下已把项目根指向临时副本
   // （AI_MINDMAP_PROJECTS_DIR），所以断言用它是安全的 —— 绝不碰真实数据。
   const ctx = { exec, win, runCli: (args) => runCli(args) };
+  /* 出口调用账（只读切片 + 清零；见 `SMOKE_OPEN_FILE_LOG` 的声明处）：
+   * 断言用"点之前/点之后各读一次"来判"这一跳有没有走唯一出口、走的是哪条绝对路径"。 */
+  ctx.openFileLog = () => SMOKE_OPEN_FILE_LOG.map((x) => Object.assign({}, x));
+  ctx.openFileLogClear = () => { const n = SMOKE_OPEN_FILE_LOG.length; SMOKE_OPEN_FILE_LOG.length = 0; return n; };
   /* 真输入 + 截图证据（`scripts/smoke-input.js` 是唯一实现）：
    * `sendInputEvent` / `capturePage` 都是**主进程** API，而冒烟断言就跑在主进程里
    * （`ctx.exec` 只是主→渲染的桥）⇒ 直接挂在 ctx 上即可，**不需要 IPC 通道**
@@ -2810,8 +2822,14 @@ async function runSmoke(win) {
    *   ⚠️ 2026-10-16（**R2 期 5 批 = 结构轴**）：G5 预算 1020s→**1140s**（依据本批全链真读数
    *   G5 = **905.482s** ⇒ 旧值 1020000/905482 = **1.1265 < 1.25 ✗** ⇒ 按余量守卫现算到 1140s，
    *   比值 **1.259** ✓；本批新增冒烟域 51 的 6 条 + 同批反转的两条既有断言，理由见 verify.js）
-   *   ⇒ 本守卫 1080s→**1370s**（= 1140 × 1.2 ⇒ 不变量①「守卫 > 预算」继续成立 ✓）。 */
-  const SMOKE_GUARD_MS = 1370000;
+   *   ⇒ 本守卫 1080s→**1370s**（= 1140 × 1.2 ⇒ 不变量①「守卫 > 预算」继续成立 ✓）。
+   *   ⚠️ 2026-10-16（**R7 主体批 = 详情正文消毒 / Mermaid 懒加载 / 三类链接 / 笔记锚点**）：
+   *   G5 预算 1140s→**1300s**（依据窗口最大 G5 = **971.595s** ⇒ 旧值比值 1.173 < 1.25 ✗；
+   *   新值 1300/971.595 = **1.338** ✓；本批新增冒烟域 52 的 10 条判据，理由见 verify.js）
+   *   ⇒ 本守卫 1370s→**1560s**（= 1300 × 1.2 ⇒ 不变量①「守卫 > 预算」继续成立 ✓）。
+   *   ⚠️ 这一条**必须与预算同批抬**：守卫先触发会把"跑完了、判据全绿、只是机器慢"报成崩溃
+   *   （历史上报文只剩 `SMOKE GUARD TIMEOUT — force exit`，读数全丢）。 */
+  const SMOKE_GUARD_MS = 1560000;
   const guard = setTimeout(() => {
     console.log('SMOKE GUARD TIMEOUT — force exit');
     app.exit(1);

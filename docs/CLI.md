@@ -77,11 +77,11 @@
 | `orphans` | orphans <项目> [--json] [--content-only] [--limit n] |
 | `mentions` | mentions <项目> [--json] [--min-length n] [--include-structural] [--cross] [--limit n] |
 | `assoc-list` | assoc-list <项目> [--node <id>] [--json] [--raw] |
-| `assoc-add` | assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id] [--force] [--dry-run] |
-| `assoc-edit` | assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] [--dry-run] |
+| `assoc-add` | assoc-add <项目> --members a,b,c | --anchor "项目/节点id#text:关键词" [--anchor …] [--title 标题] [--note html | --note-md markdown] [--id id] [--force] [--dry-run] |
+| `assoc-edit` | assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] [--anchor …] [--clear-anchors] [--dry-run] |
 | `assoc-remove` | assoc-remove <项目> <assocId> [--dry-run] |
 | `assoc-prune` | assoc-prune <项目> [--nodes a,b] [--dry-run] |
-| `validate` | validate <项目|json文件> [--json] |
+| `validate` | validate <项目|json文件> [--json] [--anchors] |
 | `validate-all` | validate-all |
 | `ui-state` | ui-state [<项目>] [--json] |
 | `changes` | changes [<项目>] [--since <rev|版本号>] [--json] [--limit n] |
@@ -528,7 +528,7 @@ node cli/mm-cli.js mentions <项目> [--json] [--min-length n] [--include-struct
 
 ### assoc-list
 
-列出关联笔记（--node 只看该节点所属的；--raw 附带原始实体）
+列出关联笔记（--node 看该节点**所属**的与**锚在**它的；--raw 附带原始实体）
 
 ```
 node cli/mm-cli.js assoc-list <项目> [--node <id>] [--json] [--raw]
@@ -536,18 +536,18 @@ node cli/mm-cli.js assoc-list <项目> [--node <id>] [--json] [--raw]
 
 ### assoc-add
 
-新增关联笔记（成员 ≥2；跨项目写 项目/节点id）
+新增关联笔记（成员 ≥2 **或** 锚点 ≥1；跨项目写 项目/节点id；锚点语法 `#tag:工具` / `项目/节点id#text:关键词` / `项目/节点id#item:条目id`）
 
 ```
-node cli/mm-cli.js assoc-add <项目> --members a,b,c [--title 标题] [--note html | --note-md markdown] [--id id] [--force] [--dry-run]
+node cli/mm-cli.js assoc-add <项目> --members a,b,c | --anchor "项目/节点id#text:关键词" [--anchor …] [--title 标题] [--note html | --note-md markdown] [--id id] [--force] [--dry-run]
 ```
 
 ### assoc-edit
 
-修改关联笔记的标题/成员/笔记内容
+修改关联笔记的标题/成员/锚点/笔记内容
 
 ```
-node cli/mm-cli.js assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] [--dry-run]
+node cli/mm-cli.js assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] [--anchor …] [--clear-anchors] [--dry-run]
 ```
 
 ### assoc-remove
@@ -560,7 +560,7 @@ node cli/mm-cli.js assoc-remove <项目> <assocId> [--dry-run]
 
 ### assoc-prune
 
-清理关联里已不存在的成员（修好悬挂成员导致的校验红）
+清理关联里已不存在的成员（修好悬挂成员导致的校验红）；**锚点只报不剪**
 
 ```
 node cli/mm-cli.js assoc-prune <项目> [--nodes a,b] [--dry-run]
@@ -568,10 +568,10 @@ node cli/mm-cli.js assoc-prune <项目> [--nodes a,b] [--dry-run]
 
 ### validate
 
-校验项目数据格式（含悬挂链接与悬挂关联成员）
+校验项目数据格式（含悬挂链接与悬挂关联成员）；--anchors 额外判"笔记锚点失效"（默认不判：它是写盘闸门，弱判据判红会让项目变只读）
 
 ```
-node cli/mm-cli.js validate <项目|json文件> [--json]
+node cli/mm-cli.js validate <项目|json文件> [--json] [--anchors]
 ```
 
 ### validate-all

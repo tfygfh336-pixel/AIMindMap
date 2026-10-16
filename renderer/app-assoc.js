@@ -101,11 +101,24 @@
     // 笔记正文（与节点 detail 同约定：HTML）
     const dc = fdQ(box, '.fd-detail-content');
     const note = assoc.note || '';
-    dc.innerHTML = note.trim()
-      ? '<div class="assoc-note">' + note + '</div>'
-      : '<span class="placeholder">这篇关联笔记还没有内容。点下方「编辑笔记」写入，'
+    /* ⚠️ 与节点 `detail` **同一条消毒**（同一个注入面：`note` 也是 HTML 契约，见
+     *   `docs/DATA-FORMAT.md` §2.6）：`MM.Sanitize.inject` 只在**真的动了字节**时才换串
+     *   ⇒ 干净笔记的注入字节与加消毒之前逐字节相同 ✓。 */
+    const noteBox = document.createElement('div');
+    noteBox.className = 'assoc-note';
+    if (note.trim() && MM.Sanitize) {
+      MM.Sanitize.inject(noteBox, note, { project: (st && st.project) || null });
+    } else {
+      noteBox.innerHTML = note;
+    }
+    if (note.trim()) {
+      dc.innerHTML = '';
+      dc.appendChild(noteBox);
+    } else {
+      dc.innerHTML = '<span class="placeholder">这篇关联笔记还没有内容。点下方「编辑笔记」写入，'
         + '或用 CLI：<code>assoc-edit ' + escHtml(selfProject) + ' ' + escHtml(assoc.id)
         + ' --note-md "…"</code></span>';
+    }
 
     // 关联没有图片
     fdQ(box, '.fd-images-content').innerHTML = '';
@@ -116,8 +129,7 @@
     // 成员列表（这一页涉及哪些节点）
     const rl = fdQ(box, '.fd-related');
     let html = '<div class="bl-title">关联的节点（' + members.length + '）</div>';
-    members.forEach((m) => {
-      const isAnchor = anchorNode && m.project === selfProject && m.id === anchorNode.id;
+    members.forEach((m) => {      const isAnchor = anchorNode && m.project === selfProject && m.id === anchorNode.id;
       const ext = m.project && m.project !== selfProject;
       html += '<div class="bl-item" data-node="' + escHtml(m.id) + '" data-project="' + escHtml(m.project) + '"'
         + ' title="' + (ext ? '在项目 ' + escHtml(m.project) + ' 中打开该节点' : '打开该节点详情') + '">'
@@ -128,6 +140,25 @@
         + '</div>';
     });
     rl.innerHTML = html;
+    /* 锚点区（R7）：这篇笔记**从哪儿点得进来**（`anchors[]`）——
+     *   · `members` = 讲哪几件事（≥2）；`anchors` = 入口（≥1）；两者不互相派生；
+     *   · **失效锚点也照列**（坏引用态 + `title` 给 `anchorState` 的 hint）：绝不静默隐藏，
+     *     否则"正文被改写"会表现成"这篇笔记的锚点凭空消失"。
+     *   · 状态**只显示**：判据是 CLI 侧 `relations.anchorState` 算好放进视图的，渲染层不重算。 */
+    const ans = Array.isArray(assoc.anchors) ? assoc.anchors : [];
+    if (ans.length) {
+      let ah = '<div class="bl-title">锚点（从哪儿点得进来 · ' + ans.length + '）</div>';
+      ans.forEach((an) => {
+        const bad = an.state && an.state !== 'ok';
+        ah += '<div class="bl-item' + (bad ? ' is-dangling' : '') + '"'
+          + ' title="' + escHtml(bad ? (an.hint || '锚点已失效') : '这条锚点有效') + '">'
+          + '<span class="bl-dir">⚓</span>' + escHtml(an.label || '')
+          + (bad ? ' <span class="bl-caption">⚠ ' + escHtml(String(an.state)) + '</span>' : '')
+          + '</div>';
+      });
+      html += ah;
+      rl.innerHTML = html;
+    }
     rl.querySelectorAll('.bl-item[data-node]').forEach((item) => {
       item.addEventListener('click', () => {
         const p = item.dataset.project;

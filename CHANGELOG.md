@@ -26,6 +26,103 @@
 
 ## [Unreleased]
 
+### R7 主体批：节点详情正文渲染 —— **HTML 白名单消毒 + Mermaid 懒加载 + 三类链接 + 笔记锚点 `assoc.anchors[]`**（2026-10-16）
+
+- **一句话**：`detail` 的 HTML 优先契约**一个字没改**（`dc.innerHTML = detail` 仍是正文唯一渲染点），
+  在它前面加了**一层消毒**（表单源在 `src/html-whitelist.js`）、在它后面加了**一层交互**（`renderer/app-md.js`：
+  三类链接的点击分支 + Mermaid 懒加载 + 笔记锚点），并把「关联笔记」从"讲哪几件事"扩到"**从哪儿点得进来**"
+  （`assoc.anchors[]`，用户 2026-10-16 拍板：锚点声明在**笔记侧**、正文逐字节不动）。
+- **⭐ 用户裁决推翻了设计稿一处**（`img` 的 URL 档）：设计稿 §⑫-5.2(b) 当初把 `img` **收敛到 `file:`/`data:`**
+  （理由是"离线优先 / 内容不出本机"），用户**当场质疑**"允许 HTTPS，什么时候不允许联网了？"—— 只读审计证明用户是对的
+  （那条"离线优先"**只在 `.review/` 的设计稿里**、`docs/` 零命中；`src/**` 里零 http 请求，真正的联网面在 `main.js`
+  与 DSH 问答那条链上；而 `renderer/index.html:5` 的 CSP `img-src` **本来就不放行 `https:`**，那是技术限制不是策略选择）
+  ⇒ 本批**按用户裁决**：`img` 的 URL 档放行 **`https:`**（`file:`/`data:`/工程内相对路径照旧），
+  `renderer/index.html` 的 CSP **只放宽 `img-src` 这一档**（加 `https:`；`script-src` / `style-src` / `default-src`
+  与回落到 default-src 的 `frame-src` **一律不动**）。**明文 `http:` 图仍拦下**并给**可见占位**（现代引擎多把它当混合内容
+  拦掉，默认就是坏图，不如说清楚）。口径落点：`src/html-whitelist.js` 文件头 + `docs/DATA-FORMAT.md` §2.4.3。
+- **HTML 白名单消毒（`renderer/sanitize.js` + 表 `src/html-whitelist.js`）**：用户拍板的 A 档（允许
+  `details/summary`、`table`、`img`、`a`；禁 `style`/`on*`/`script`/`iframe`/`svg`）。手法 = **先解析成 DOM 再遍历删**
+  （**用 `DOMParser` 而不是 `div.innerHTML`**：DOMParser 文档没有浏览上下文 ⇒ 里面的 `<img src=https://…>` **不会发请求**、
+  `iframe` **不会加载**；detached div 会在消毒**之前**就把请求发出去 ✗）。**两个 CSP 真空档点名拒**：
+  ① `style-src 'unsafe-inline'` 放行 `<style>` 与 `style=` ② 未声明 `frame-src` ⇒ 回落链吃 `default-src … data:`
+  （`iframe src="data:text/html,…"`）—— 外加 CSP **管不到**的 `<meta http-equiv=refresh>` 与 `<base href>`，
+  四类都在表里**有名有姓**，不是"反正不在白名单里"的副作用。**默认档逐字节不变**：消毒只在**真的动了字节**时才换注入串
+  （`changed === false` ⇒ 注入原始 `detail`）。
+- **Mermaid 懒加载（`renderer/app-md.js` + `renderer/vendor/mermaid/`）**：`mermaid@12.2.0` 的 `dist/mermaid.min.js`
+  **5,494,801 B**（sha256 `a8a6a6f8…`，MIT，`LICENSE` 随包拷入）**入版本库**（与 `jsmind.js` 的"不入库"是**有意的差异**：
+  它的价值就是"离线可用"，不入库等于新克隆的工程功能消失；判决记录在 `renderer/vendor/MERMAID-INTERNALS.md`）。
+  加载链是**新机制**：探测 fenced code 的 mermaid 语言标注 ⇒ **动态注入经典 `<script>`**（不是 `import()` ——
+  本页是 `file://`，模块脚本走 CORS 被拦，实测读数见证据目录）⇒ 等 `onload` + 检查全局 `mermaid` ⇒
+  `initialize({securityLevel:'strict'})` ⇒ `render(id, src, host)`。**首屏不付代价**（没有图源的节点不发那条请求）；
+  **失败必须响亮**：三档失败都带原因进**可见降级条**且**图源代码块一个字不丢**。上界：单次 ≤5 张、单张 >20 KB 拒渲。
+  ⚠️ **一条已知边界**（写进文件头与 INTERNALS）：mermaid **一定会插 `<style>`** 而 `style-src 'unsafe-inline'` 放行它，
+  时序上消毒在前 ⇒ **白名单管不到 mermaid 自己产出的 DOM**；兜底是 strict 档 + 产物只落在它自己的容器里。
+- **三类链接（都在既有底座上，不新造关系类型）**：① 常规路径 ⇒ 判据仍是**唯一那一份** `src/path-chain.js`
+  （正文路径走 **`kind:'inline'`** —— 这一档就是为本条准备的，本批**真正消费掉**它：调用点在 `renderer/app-md.js`
+  的 `onLinkClick` → `MM.openByChain({kind:'inline'})`），出口仍是既有 `app:open-file`（签名未动、无平行通道）；
+  `..` 逃逸 / UNC 在点击前就被判据拒掉并在状态栏点名。② 站内链接 `aimm://<项目>/<节点id>[#<条目id>]` ⇒
+  复用 R7-0 的唯一实现 `MM.followNodeRef`（同项目选中+滚到目标），带 `#条目` 再 `MM.fdSelectItem` 高亮那一条。
+  ③ 独立笔记 = `assoc` ⇒ `MM.showAssocPage`（**复用 `createFdBox()`**，不是新窗口）。
+  ⚠️ **`http(s)`/`mailto` 不导航**：本工程**没有**"交系统浏览器"的出口（唯一出口只收本机绝对路径，且不许加平行通道）
+  ⇒ 拦下 + 状态栏点名 URL 与原因（**设计稿 §4-1 说"交系统浏览器打开"，实测做不到**，如实改口径并留待回填）。
+- **`assoc.anchors[]`（笔记锚点；§⑫-4 终版连带清单逐条照做）**：
+  · **要改 6**：`src/assoc.js`（形状校验 + 合法性改"`members ≥ 2` **或** `anchors ≥ 1`" + `pruneAnchors`）·
+    `src/relations.js`（新增 `anchorState`，内部**先调 `refState`**，只补 `no-tag`/`bad-anchor` 两个词）·
+    `src/schema.js`（G2 增锚点检测）· `renderer/*` + `docs/DATA-FORMAT.md` §2.6 + `cli/commands/assoc.js`。
+  · **不用改 2**（理由显式写出）：`src/bundle.js`（整份拷贝 ⇒ `anchors` 自动带上）· `src/concurrency.js`
+    （`hash(a)` 哈希整个 assoc 对象 ⇒ 改动会被检测到）。
+  · **本稿漏了 2**（设计决定）：`src/item-index.js` 的图距离与 `src/related-model.js` 的关系栏**都不吃 `anchors`**
+    ⇒ 两处**不改代码**，但契约里写死一句「**锚点不是边**」（锚点是单向入口指针，不是两两相关的关系）。
+  · **命名冲突 1**：`src/schema.js` 已有一个 `anchors`（源码扫描的 `{decl,ret}` 位置锚点）⇒ 同名不同物，
+    两处定义点各加一行交叉注释，**不改名**（用户口径全篇用 `anchors`）。
+  · **⚠️ 本稿没列的连带（§⑫-4.5 只提了要改）**：`pruneMembers` 在 `kept.length < MIN_MEMBERS` 时会把整篇 assoc **丢掉**
+    —— 新判据下"members 剩 1 但有 anchors"仍合法 ⇒ 丢弃条件**必须跟着放宽**，否则剪一次成员会**静默删掉一篇还有锚点的笔记** ✗。
+  · **实测逼出来的一处口径订正**：`validate` 同时是**写盘闸门**，若锚点弱判据默认算错，"改写正文里那句话"或
+    "去掉一个标签"这两件正常事会把项目变成**只读**（实测：`edit <项目> <节点> --detail …` 直接被闸门拒）
+    ⇒ 口径改成：**默认 `validate` 不判锚点**（默认档逐字节不变）、`validate --anchors` 显式判红并点名、
+    `assoc-prune [--dry-run]` **总是报告但只报不剪**（关键词失效多半是正文被改写，剪它可能让笔记再无锚点）。
+- **CLI 面**：`assoc-add` / `assoc-edit` 增 **可重复的 `--anchor`**（`#tag:工具` / `项目/节点id#text:关键词` /
+  `项目/节点id#item:条目id`）与 `--clear-anchors`；`--members` 从"必填"变成"与 `--anchor` **二选一**"；
+  `assoc-list --node <id>` 的查询面**扩到锚点**（`forNodeWithAnchors`：成员 **或** 锚点任一命中，
+  并给出 `byMembers`/`byAnchors` 读数）；`assoc-list --json` 带出 `anchors` 及其状态；
+  `validate` 增 `--anchors`；锚点在**写入时就要成立**（目标在、关键词能匹配、标签有人带），
+  否则**响亮拒绝**（允许写进去只会得到"命令说成功、随后 validate 判红"的假成功）。
+- **分层测试（铁律 R3）**：新增 `tests/html-whitelist.test.js`（7 条：A 档逐条比对 / 禁档 / 四个真空档 /
+  `on*` 前缀 / `data-*` 键 / URL 档含用户裁决的 `https:` / `parseAimUrl` 形状 / `TAG_RE` 同源）与
+  `tests/assoc-anchors.test.js`（16 条：形状与合法性 / `anchoredTo` / **`pruneMembers` 不许丢掉有锚点的笔记** /
+  `anchorState` 三档 + `unreadable` 不猜 / G2 默认不判 vs `--anchors` 判红）；`scripts/cli-integration.js`
+  新增 **11 条** CLI 断言（含"锚点失效三段都不静默"的四条）；新增冒烟域 **52-详情渲染.js（10 条真帧/真鼠标/真像素判据）**。
+- **冒烟域 52 的十条判据（每条都照 §⑫-3 改过的形态，不做原稿那几条"打不红"的）**：
+  ① 六类注入一个都不成元素 + `on*`/`style` 清零 + 无 `position:fixed` + `location` 未被导航（**反向前置**：消毒
+  运行计数与 dropped 计数 > 0）；② `<details>` 真展开（真鼠标 + `elementFromPoint` 命中展开出的块 + 真帧有墨）；
+  ③ Mermaid 三档（打开无图源节点时**页面上没有 mermaid 的 script 与全局对象** ⇒ 懒；合法图源 ⇒ 真渲染出 svg
+  且真帧 ≥2 色；非法图源 ⇒ 可见降级条 + 图源代码块仍在）；④ 常规路径链接（**出口调用账**：相对路径收到的绝对路径与
+  `decide({kind:'inline'})` 逐字相同、`..` 逃逸**出口一次都没被调**且状态栏点名、绝对路径走 `localPath` 档）；
+  ⑤ 站内链接（真鼠标 ⇒ 目标被选中 + 带进视野 + 真帧命中它自己）；⑥ 笔记锚点（关键词成 `.fd-notelink` ⇒ 真鼠标点开
+  新浮窗且 boxId 递增、标题含笔记标题，**正文 sha256 前后相同**）；⑦ 失效锚点三段不静默（界面仍在 + `validate --anchors`
+  点名 + 默认 validate 照旧绿）；⑧ **全仓 detail 语料不被砸**（分母**现算**自 `scripts/detail-census.js`：
+  **不写死任何语料数字**；消毒没动过字节的那些要求 `textContent` 与 `stripHtml` 逐字相同，改过的那些要求**原有文字一个不少**）；
+  ⑨ 渲染不进数据（项目 JSON sha256 前后相同 + 默认档 `innerHTML` 逐字节 == CLI `detail`）；⑩ 自收尾。
+- **⭐ 新判据当场抓到两个真 bug（都是本批自己写出来的）**：① 消毒模块的读数桶与计数器**同名互相覆盖**
+  （`note()` 往 `st.attrsRemoved` 这种**数字**上写明细 ⇒ 数字被换成对象、再 `+=` 变成
+  `'[object Object]2000…'`，最后在**真实语料第 1327 条**上抛 `TypeError: Cannot create property 'border' on string …`）
+  —— 是"全量语料"那条判据抓的（逐条 try/catch 点名主犯），**不是"跑一遍没报错"**；② 笔记锚点的关键词
+  **切出文本节点后忘了插回 DOM**（`marked` 计数照涨、DOM 里根本没有链接元素）—— 是域 52 的锚点判据抓的。
+  两处都改在**产品**侧，判据一条没放宽。
+- **判别力证明（注入 ⇒ 必红 ⇒ 逐字节还原 ⇒ sha256/字节数/CR 数相同 ⇒ 复绿）**：见 `.review/20261016-R7实现/README.md`
+  的逐条表（7 处注入：去消毒 / 白名单删 `details` / 降级条改静默 / 路径链接旁路唯一判据 / 锚点不插回 DOM /
+  失效锚点静默 / 消毒删字）。**每条都有 FAIL 原文一行 + 还原前后读数。**
+- **连带面核对（铁律 R5）**：GUI 交互 = 正文多了三类可点链接与被拦下的可见占位/降级条；`localPath` 与图片区
+  **行为一个字没变**；`md` 预览、PDF 预览**未动**；`README.md` 功能表加三行（正文渲染 / 三类链接 / 锚点）；
+  编辑器（`editor.js`）**未动**（本批不含编辑面预览，仍属后续批）；`docs/DATA-FORMAT.md` 新增 §2.4.3 与 §2.6 的
+  `anchors` 契约；`docs/RULES.md` §4 加两条约定（注入面表单源 + 笔记链接配色/锚点不是边）。
+- **未做 / 未核实（如实）**：① **编辑器内的 Markdown 预览**（设计稿 §① 结论 1-2）**不在本批**；② `http(s)` 链接
+  "交系统浏览器"**做不到**（无出口、不许加通道）⇒ 拦下 + 点名，挂在"三面统一"调研的待回填清单上；
+  ③ `tag` 锚点的**作用范围**显式定死为"当前项目（锚点写了 `project` 就在那个项目）"，跨项目标签的全局口径**未定**；
+  ④ **真机视觉确认**：mermaid 图与正文的排版只跑了无头真帧判据，没有人在屏幕前看过；⑤ 域 52 的语料判据把 detail
+  送进页面逐个消毒（**不渲染**），"渲染"那一半仍由夹具覆盖（**不是全量渲染**，如实标注）。
+
+
 ### R7 设计稿**订正批**：只读核查带回的 7 处硬问题 + 用户四条拍板写成节（§⑫）—— **改文档读数与判据草案，不改产品行为**（2026-10-16）
 
 - **一句话**：`R7`（节点详情 Markdown / HTML 子集 / Mermaid / 三类链接）的设计稿被**只读核查**抓出 7 处硬问题（48 条记录，逐条给 `file:line` 与可复算读数），其中**两处的数字会让实现漏测几百个节点**（"`comnet` 133 个含 detail 节点" 真值 **450（基线/HEAD）/ 753（工作区）**；"47 条死链" 真值 **119 条且全部同项目**）、**一处让"安全边界"的威胁模型整段错**（决定性的一层 **CSP** 全文没提）、**五条判据要么恒绿要么实现前恒绿**。本批把订正写成设计稿 **§⑫**（纯追加；§⓪–§⑪ 逐字节未变，sha256 机验），并把**用户四条拍板**（Mermaid 要、上限 ≤6 MB / 白名单 A 档 / 配色 `#8a6a00` 已落地 / 锚点写笔记侧）落成实现批能照着做的口径。

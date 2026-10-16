@@ -349,6 +349,35 @@
  *                         `git checkout --` 还原）。
  *                         ⚠️ 夹具是本域自己写进沙箱的两个 `zz-` 项目（主 + 跨项目各一个），
  *                         收尾删掉并开回原项目（不碰 comnet）。
+ *   52-详情渲染.js  【R7 主体】详情正文的四件（**判据一律照设计稿 §⑫-3 改过的形态**，十条）：
+ *                         ① **消毒真的在跑**：六类注入（`<style>` / `<iframe src="data:text/html,…">` /
+ *                         `<meta http-equiv=refresh>` / `<base href>` / `<svg onload>` / `<form action>`）
+ *                         一个都不成为元素、`on*`/`style` 属性清零、框内无 `position:fixed`、
+ *                         `location` 前后相同；**反向前置** = 消毒运行计数与 dropped 计数都 > 0。
+ *                         ⚠️ 图片两档按**用户 2026-10-16 裁决**判：`https:` 图照常是 `<img>` 且地址不改
+ *                         （只做安全收敛、不做联网收敛），**明文 `http:` 图才**变可见占位。
+ *                         ② `<details>` 真展开（真鼠标点 summary 的屏幕坐标 + `elementFromPoint` 命中
+ *                         展开出的块 + 真帧有墨）。⚠️ **不许拿 summary/内部块的 `clientHeight` 当判据**：
+ *                         实测折叠时那个块的 clientHeight 照样是 22px（Chromium 用 content-visibility 一族
+ *                         实现折叠 ⇒ 布局还在、像素不在）⇒ 只有命中测试能分开这两态。
+ *                         ③ **Mermaid 懒加载链**三档：打开无图源节点时页面上**没有** mermaid 的 script
+ *                         与全局对象（懒）⇒ 合法图源真渲染出 svg（矩形 > 0 且真帧 ≥2 色）⇒
+ *                         非法图源**可见降级条**含"未渲染"与原因、图源代码块一个字不丢。
+ *                         ④ **三类链接**：常规路径走**唯一判据**（`src/path-chain.js` 的 `kind:'inline'`）
+ *                         + **唯一出口**（`app:open-file`，出口调用账在主进程侧记 —— 渲染层的
+ *                         `window.desktop.app` 是 contextBridge **冻结对象**，断言装不上记录器）；
+ *                         `..` 逃逸**出口一次都没被调**且状态栏点名。站内链接 `aimm://` 真鼠标点 ⇒
+ *                         目标被选中 + 被带进视野 + 真帧命中它自己。独立笔记 = 复用 `createFdBox()`。
+ *                         ⑤ **笔记锚点**（`assoc.anchors[{text}]`）：关键词成 `.fd-notelink` ⇒ 真鼠标点开
+ *                         那篇笔记的新浮窗（`dataset.boxId` 递增 + 标题含笔记标题），**正文 sha256 不变**；
+ *                         **失效锚点三段不静默**（界面仍在「本页笔记」区 + `validate --anchors` 点名）。
+ *                         ⑥ **全仓 detail 语料不被砸**：分母**现算**自 `scripts/detail-census.js`
+ *                         （**不写死任何语料数字**），逐条消毒后比"浏览器 textContent" vs "`stripHtml`"；
+ *                         消毒改过的那些另判"**原有文字一个不少**"（子序列）。⑦ 渲染不进数据（项目 JSON
+ *                         sha256 前后相同）+ 默认档 `innerHTML` 逐字节 == CLI `detail` + 自收尾。
+ *                         ⚠️ 判别力证明是"临时改产品代码那一轮"（7 处注入：去消毒 / 白名单删 `details` /
+ *                         降级条改静默 / 路径链接旁路判据 / 锚点不插回 DOM / 失效锚点静默 / 消毒删字），
+ *                         每处都记 SHA-256 与字节数、用**原始 Buffer** 逐字节还原（不许 `git checkout --`）。
  *
  * ⚠️ **本索引是"断言注册面"**：新增一个 `scripts/smoke/NN-*.js` 就要在这里补一行 ——
  *   少了它，域**照样会跑**（自动发现），但接手者不知道它存在。由门禁 **S2** 判红

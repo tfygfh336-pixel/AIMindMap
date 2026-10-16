@@ -105,14 +105,39 @@
     return s.trim();
   }
 
-  /** 行内语法（链接/图片/代码/加粗）——输入须已转义 */
+  /** 行内语法（链接/图片/代码/加粗）——输入须已转义
+   *
+   *  ⚠️ **URL 位置必须过 scheme 白名单**（R7 起；判据表在 `src/html-whitelist.js`，**只有那一份**）：
+   *  原先这里把 URL **原样**写进 `href`/`src`、零过滤 —— 于是 `markdownToHtml('[x](javascript:alert(1))')`
+   *  会产出**活的** `<a href="javascript:alert(1)">`。`escapeHtml` 只作用于**文本节点**，管不到 URL 位置。
+   *  （CSP 的 `script-src` 理论上会拦 `javascript:` URL，但**不该把安全押在 CSP 上** —— 设计稿 §⑫-6.4。）
+   *  处置：不安全的地址**降级成纯文本**（丢掉链接/图片本身，文字一个不丢），**不静默保留**。 */
+  function whitelistMod() {
+    if (typeof module === 'object' && module.exports) return require('./html-whitelist.js');
+    return (typeof self !== 'undefined' ? self : {}).MMHtmlWhitelist || null;
+  }
+
+  function safeUrl(raw, where) {
+    const w = whitelistMod();
+    if (!w || typeof w.classifyUrl !== 'function') return { ok: true, raw: String(raw) };  // 表没加载：按原样（渲染层的消毒仍会拦）
+    // `'convert'` 档 = **转换期**：只拦危险 scheme，`http(s)` 照旧落盘（理由见 `src/html-whitelist.js`）
+    const c = w.classifyUrl(raw, where, 'convert');
+    return c.ok ? { ok: true, raw: String(raw) } : { ok: false, reason: c.reason };
+  }
+
   function inline(s) {
     let x = String(s);
     x = x.replace(/`([^`]+)`/g, '<code>$1</code>');
     x = x.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     x = x.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    x = x.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">');
-    x = x.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+    x = x.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, url) => {
+      const u = safeUrl(url, 'img');
+      return u.ok ? '<img src="' + u.raw + '" alt="' + alt + '">' : alt;
+    });
+    x = x.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, text, url) => {
+      const u = safeUrl(url, 'a');
+      return u.ok ? '<a href="' + u.raw + '">' + text + '</a>' : text;
+    });
     return x;
   }
 
