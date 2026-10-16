@@ -1,0 +1,651 @@
+{
+  "meta": {
+    "name": "《802.11无线网络权威指南（第2版）》知识点大纲",
+    "author": "",
+    "version": "0.18.0",
+    "formatVersion": 2
+  },
+  "format": "node_tree",
+  "data": {
+    "id": "root",
+    "topic": "《802.11无线网络权威指南（第2版）》知识点大纲",
+    "expanded": true,
+    "children": [
+      {
+        "id": "wg-overview",
+        "topic": "全书概览与使用说明",
+        "expanded": false,
+        "children": [],
+        "detail": "<ul><li><strong>书名</strong>：《802.11 Wireless Networks: The Definitive Guide, 2nd Edition》（Matthew S. Gast 著，O'Reilly 出版社），中文版《802.11无线网络权威指南（第二版）》—— 英文书名、版次与第一章～第二十六章的章名已从本地 PDF 书签逐字核对；中文版译者/出版社<strong>待与实体书核对</strong>。</li><li><strong>本书的形态</strong>：802.11 的系统级专著 —— 从 MAC 机制到物理层调制，再到安全、规划、分析与排障的全流程。</li><li><strong>本项目的形态</strong>：知识要点大纲，<strong>不是原文复刻</strong> —— 全部要点为提炼后的结构化知识，不含任何大段原文。</li><li><strong>节点四要素图例</strong>：<strong>是什么/问题</strong> → <strong>协议怎么解</strong> → <strong>关键帧/字段/参数</strong> → <strong>一句话总结</strong>。</li><li><strong>来源标注图例</strong>（每个节点 detail 尾部标注）：</li><li>【来源：本地PDF目录】= 章节框架，来自本地 PDF 书签（pdf-outline-helper 实测解析，source=outline）；</li><li>【来源：领域知识】= 802.11 标准事实（IEEE 802.11/802.1X/802.11i 等），不依赖实体书正文。</li><li><strong>置信度约定</strong>：章节框架视为已核对；知识点为标准事实；正文细节、参数表与案例待读原文补。</li><li><strong>与其他项目的关联</strong>：<code>comnet</code> 的 wlan-book 树（wlan-01…09）与本大纲按机制互挂 links；802.11n 之后的代际（ac/ax/be）见 <code>book-wifi7</code>。</li></ul>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "wlan-book",
+            "caption": "本大纲 ↔ comnet 的 802.11 无线网络区（互为索引）"
+          }
+        ]
+      },
+      {
+        "id": "wg-ch01",
+        "topic": "第一章 无线网络导论",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-ch01-spectrum",
+            "topic": "无线电频谱：关键共享资源",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：无线电频谱是有限公共资源，谁来分配、谁能免授权使用。</p>\n<p><strong>协议怎么解</strong>：各国监管机构（美 FCC 等）划分频段；802.11 主要落在免授权的 ISM/UNII 频段 —— 任何人可用，但必须守功率与规则。</p>\n<p><strong>关键帧/字段/参数</strong>：2.4 GHz ISM（802.11b/g/n）与 5 GHz UNII（802.11a/n/ac）；2.4G 频段信道间隔 5 MHz，802.11b 占 22 MHz ⇒ 仅 1/6/11 等少数互不重叠信道。</p>\n<p><strong>一句话总结</strong>：免授权频段 = &quot;先到先得 + 守规矩&quot;，802.11 的信道拥挤由此注定。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          },
+          {
+            "id": "wg-ch01-features",
+            "topic": "无线网络的三大特色：无界限、动态介质与安全",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：与有线相比，无线网络的三处本质差异。</p>\n<p><strong>协议怎么解</strong>：① 没有实体界限 —— 覆盖外也可能被窃听/接入，安全边界消失；② 动态物理媒介 —— 速率随距离/干扰波动 ⇒ 需要自适应速率；③ 安全 —— 空口开放 ⇒ 必须自带加密与鉴别。</p>\n<p><strong>关键帧/字段/参数</strong>：自适应速率选择（多速率支持）；安全机制演进 WEP→802.1X→RSN（对应第五～七章）。</p>\n<p><strong>一句话总结</strong>：这三条特色解释了全书后半本（安全/规划/分析）为什么必须存在。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：全书动机章 —— 无线为什么特殊、频谱为什么是关键资源、为什么需要标准。</p>\n<p><strong>怎么运作</strong>：以&quot;频谱—物理层特色—安全&quot;三线铺开，引出后续章节的问题域。</p>\n<p><strong>关键点与位置</strong>：1.1–1.3 节。</p>\n<p><strong>一句话总结</strong>：无线的特殊 = 共享的频谱 + 无边界的介质。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-ch02",
+        "topic": "第二章 802.11 网络概论",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-ch02-family",
+            "topic": "IEEE 802 网络技术族谱",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：802.11 和以太网、令牌环是什么关系。</p>\n<p><strong>协议怎么解</strong>：802 家族把&quot;链路层&quot;拆成 LLC（802.2，公共上层接口）+ MAC/PHY（各技术自辖）；802.11 与 802.3 同在 LLC 之下，因此可桥接互通。</p>\n<p><strong>关键帧/字段/参数</strong>：LLC/SNAP 封装（第三章详）；802.1 系列负责管理（桥接/安全/ QoS 的上层规范）。</p>\n<p><strong>一句话总结</strong>：同族不同 PHY/MAC，靠 LLC 统一接住上层 —— 这是 802.11 能与以太网无缝桥接的根。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-family",
+                "caption": "IEEE 802 族谱 ↔ comnet 的 802.11 协议族演进节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch02-types",
+            "topic": "网络类型：BSS、IBSS、ESS 与分布式系统",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：802.11 的三种组网形态与连接它们的骨架。</p>\n<p><strong>协议怎么解</strong>：BSS = 一个 AP + 若干 STA（基础结构模式）；IBSS = 无 AP 的点对点（Ad Hoc）；多个 BSS 经分布式系统（DS，通常是有线骨干）互联成 ESS，STA 在 ESS 内漫游对上层透明。</p>\n<p><strong>关键帧/字段/参数</strong>：BSSID = AP 无线接口 MAC；SSID 逻辑网络名；AP 之间经 DS 转发（ToDS/FromDS 位，第四章）。</p>\n<p><strong>一句话总结</strong>：BSS 是细胞，DS 是血管，ESS 是器官 —— 漫游就是细胞间搬家。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-bss",
+                "caption": "BSS/IBSS/ESS ↔ comnet 的 BSS 基本服务集节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch02-services",
+            "topic": "网络服务与移动性支持",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：802.11 标准定义的九种服务如何支撑&quot;发送数据 + 支持移动&quot;。</p>\n<p><strong>协议怎么解</strong>：站点服务（SS）：认证/解认证、隐私（加密）、MSDU 交付；分发系统服务（DSS）：关联/重关联/解关联、分发、集成。关联 = 告诉 DS&quot;我在这个 AP 后面&quot;；重关联 = BSS 间搬家；集成 = 出 802.11 域转非 802.11（有线）。</p>\n<p><strong>关键帧/字段/参数</strong>：九服务记忆法 —— 3 交付类（MSDU 交付/分发/集成）+ 3 关联类（关联/重关联/解关联）+ 3 安全类（认证/解认证/隐私）。</p>\n<p><strong>一句话总结</strong>：移动性 = 关联体系在做&quot;地址簿更新&quot;，不是网络层的事。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-ap",
+                "caption": "网络服务与移动性 ↔ comnet 的 AP 接入点与 DS 节点"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：802.11 在 IEEE 802 家族中的位置、基本网络类型与运作方式。</p>\n<p><strong>怎么运作</strong>：LLC 之下挂 802.3/802.11 等 MAC；BSS/IBSS/ESS 三种组网；九种服务支撑数据交付与移动性。</p>\n<p><strong>关键点与位置</strong>：2.1–2.4 节。</p>\n<p><strong>一句话总结</strong>：802.11 = 家族里管无线的那个 MAC + 一套组网词汇表。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-ch03",
+        "topic": "第三章 802.11 MAC 基础",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-ch03-hidden",
+            "topic": "MAC 所面临的挑战：射频链路品质与隐藏节点",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：无线 MAC 的两难 —— 介质时变、发送方听不到接收方位置的碰撞。</p>\n<p><strong>协议怎么解</strong>：链路品质差 ⇒ 重传 + 自适应速率；隐藏节点 ⇒ 可用 RTS/CTS 先&quot;预约&quot;介质（双方周围的站点都听到 CTS/RTS 的 Duration 而让路）。</p>\n<p><strong>关键帧/字段/参数</strong>：RTS 阈值（超过才启用 RTS/CTS，短帧不划算）；重传计数（短/长重试限制）。</p>\n<p><strong>一句话总结</strong>：MAC 的设计前提是&quot;碰撞检测不可行&quot;，一切机制都在绕开这个先天缺陷。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-rtscts",
+                "caption": "隐藏节点 ↔ comnet 的 RTS/CTS 与隐藏/暴露终端节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch03-carrier",
+            "topic": "载波监听功能与网络分配矢量 NAV",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：怎么判断&quot;介质忙&quot;。</p>\n<p><strong>协议怎么解</strong>：物理载波监听（能量/信号检测）+ <strong>虚拟载波监听 NAV</strong> —— 收到帧就读其 Duration/ID 字段，把&quot;介质还要忙多久&quot;倒计时；倒计时非零视为忙。两层监听缺一不可。</p>\n<p><strong>关键帧/字段/参数</strong>：Duration/ID 字段；NAV = 本站点的倒计时器；RTS/CTS/数据帧都会设置他人 NAV。</p>\n<p><strong>一句话总结</strong>：NAV 是 802.11 的聪明处 —— 没人说话也可能&quot;忙&quot;，因为有人预约了。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-nav",
+                "caption": "载波监听与 NAV ↔ comnet 的虚拟载波侦听节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch03-ifs",
+            "topic": "帧间间隔：SIFS/PIFS/DIFS/EIFS",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：谁有资格先说话 —— 用不同长度的帧间间隔造优先级。</p>\n<p><strong>协议怎么解</strong>：检测到空闲后还要再等相应 IFS：SIFS（最短，ACK/CTS/后续分段等高优响应）&lt; PIFS（PCF 轮询用）&lt; DIFS（DCF 新传输用）&lt; EIFS（收到错帧后强制等待，先让怀疑的碰撞收场）。</p>\n<p><strong>关键帧/字段/参数</strong>：SIFS 与 slot time 是 PHY 参数（如 802.11b：SIFS=10μs，slot=20μs）；aSlotTime/EIFS 计算。</p>\n<p><strong>一句话总结</strong>：IFS 是 802.11 的优先级阶梯 —— 等得越短，资格越老。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-ifs",
+                "caption": "帧间间隔 ↔ comnet 的 IFS：SIFS/PIFS/DIFS/EIFS 节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch03-dcf",
+            "topic": "利用 DCF 进行基于竞争的访问：退避与错误恢复",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：多个站点同时想发怎么办 —— DCF（分布式协调功能）的核心算法。</p>\n<p><strong>协议怎么解</strong>：介质空闲 DIFS 后，若仍空闲才可发；否则在 [0, CW] 随机抽退避计数器（空闲 slot 才递减，减到 0 发送）。冲突（无 ACK）⇒ CW 指数翻倍（CWmin→CWmax）重抽；成功 ⇒ CW 归位 CWmin。接收方 ACK 确认，SIFS 后立即回。</p>\n<p><strong>关键帧/字段/参数</strong>：CWmin/CWmax（11b：31/1023）；ACK 超时判定；重传计数超限丢帧上抛。</p>\n<p><strong>一句话总结</strong>：DCF = CSMA + CA + 二进制指数退避 —— &quot;等得久的人先说，说崩了加倍再等&quot;。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-dcf",
+                "caption": "DCF 竞争访问 ↔ comnet 的 DCF 与 CSMA/CA 节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch03-frag",
+            "topic": "帧的分段与重组",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：误码率高的无线链路上，长帧一错全错怎么办。</p>\n<p><strong>协议怎么解</strong>：超过 FragmentThreshold 的帧切成多个片段，各自带序号独立确认重传，接收端重组；片段以 SIFS 连续发送（中间不发 DIFS 竞争），用 Duration 一直&quot;占住&quot;波。</p>\n<p><strong>关键帧/字段/参数</strong>：FragmentThreshold（默认通常 2346 字节）；Frame Control 的 More Fragments 位；Sequence Control = 序号 + 片段号。</p>\n<p><strong>一句话总结</strong>：分段 = &quot;把长信拆成明信片寄&quot; —— 每张丢了只重寄那张。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-frag",
+                "caption": "分段与重组 ↔ comnet 的同名节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch03-frame",
+            "topic": "帧格式：Frame Control / Duration / Address / FCS",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：802.11 帧的通用骨架。</p>\n<p><strong>协议怎么解</strong>：FC（协议版本/类型/子类型 + ToDS/FromDS/MoreFrag/Retry/PwrMgt/MoreData/WEP/Order 标志位）、Duration/ID、四个地址字段、Sequence Control、帧体、FCS（CRC-32）。</p>\n<p><strong>关键帧/字段/参数</strong>：类型三类（数据/控制/管理）× 子类型；四地址语义随 ToDS/FromDS 组合变化（见第四章）；FCS 覆盖头与体。</p>\n<p><strong>一句话总结</strong>：以太网帧的&quot;无线加强版&quot; —— 多出的字段全是用来管&quot;无线特有问题&quot;（预约/省电/分段/加密）。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-frame",
+                "caption": "通用帧格式 ↔ comnet 的帧格式与 Frame Control 节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch03-encap",
+            "topic": "802.11 对上层协议的封装",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：IP 包怎么塞进 802.11 帧。</p>\n<p><strong>协议怎么解</strong>：与以太网一致的 LLC/SNAP 头（AA:AA:03 + EtherType），载荷最大长度相应缩短；以太网⇄802.11 桥接时转换封装。</p>\n<p><strong>关键帧/字段/参数</strong>：SNAP EtherType（0x0800 IPv4 / 0x0806 ARP）；帧体上限相应下调 8 字节。</p>\n<p><strong>一句话总结</strong>：封装这层几乎零成本兼容 —— 上层协议完全无感。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          },
+          {
+            "id": "wg-ch03-powersave",
+            "topic": "基于竞争的数据服务：省电程序与多速率支持",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：广播/组播怎么发、电池怎么省、速率怎么选。</p>\n<p><strong>协议怎么解</strong>：广播/组播无 ACK（可靠性打折）；省电：STA 宣告休眠（PwrMgt 位），AP 代收缓存，beacon 的 TIM 提醒，STA 用 PS-Poll 取回；多速率：按信号质量自适应选择调制（降速换可靠），不同速率还影响 RTS/ACK 的时长计算。</p>\n<p><strong>关键帧/字段/参数</strong>：PwrMgt 位、TIM/DTIM（第八章展开）；速率集合（basic rate set 决定管理帧速率）。</p>\n<p><strong>一句话总结</strong>：省电的本质 = &quot;AP 当信箱，beacon 当叫号屏&quot;。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-tim",
+                "caption": "省电程序 ↔ comnet 的 Beacon 与 TIM/DTIM 节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch03-bridge",
+            "topic": "帧的处理与桥接",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：AP 的本职 = 802.11⇄Ethernet 的翻译桥。</p>\n<p><strong>协议怎么解</strong>：无线收到的帧查目的 MAC：在有线侧则转出（集成），在无线侧另一 STA 则经 DS 转发；反之有线进来的帧由 AP 以 FromDS 姿态发出。服务质量扩展（802.11e/QoS）在此预告。</p>\n<p><strong>关键帧/字段/参数</strong>：ToDS/FromDS 组合（下一章详）；桥接表 = MAC 学习（与以太网交换机同源）。</p>\n<p><strong>一句话总结</strong>：AP = 一个&quot;会发无线帧的交换机端口&quot;。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：全书核心章 —— MAC 面对的挑战（隐藏节点）、载波监听/NAV、帧间间隔、DCF 竞争与退避、分段、帧格式、封装、省电、桥接。</p>\n<p><strong>怎么运作</strong>：CSMA/CA 全景在此章立起。</p>\n<p><strong>关键点与位置</strong>：3.1–3.7 节。</p>\n<p><strong>一句话总结</strong>：802.11 MAC = &quot;先听后说 + 听不清就别抢 + 说了有人应&quot;。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-ch04",
+        "topic": "第四章 802.11 成帧细节",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-ch04-data",
+            "topic": "数据帧：寻址与 DS 位",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：四地址字段到底谁是接收者、谁是发送者。</p>\n<p><strong>协议怎么解</strong>：ToDS/FromDS 四组合 —— IBSS（00）：Addr1=目的、Addr2=源、Addr3=BSSID；STA→AP（10，ToDS）：Addr1=BSSID(AP 收)、Addr2=STA 源、Addr3=最终目的；AP→STA（01，FromDS）：Addr1=目的 STA、Addr2=AP、Addr3=原始源；WDS/桥接（11）：四地址全用（跨 AP 的有线侧转发）。</p>\n<p><strong>关键帧/字段/参数</strong>：数据帧子类型（Data/Data+CF-ACK/Null —— Null 帧专用于宣告省电状态变化）；Retry 位防重放重复帧。</p>\n<p><strong>一句话总结</strong>：DS 位就是帧的&quot;路径说明书&quot;，四个地址按位取义。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-f-data",
+                "caption": "数据帧 ↔ comnet 的数据帧节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch04-ctrl",
+            "topic": "控制帧：RTS / CTS / ACK / PS-Poll",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：介质协调的最小语汇。</p>\n<p><strong>协议怎么解</strong>：RTS（TA+RA+Duration 到 CTS+Data+ACK 完）请求发言；CTS（RA+Duration 到 Data+ACK 完）批准并帮 RTS 发送方&quot;大声广播&quot;占波；ACK 单独确认（单播必答）；PS-Poll 带关联号（AID）向 AP 领取缓存帧。</p>\n<p><strong>关键帧/字段/参数</strong>：RTS 30 字节、CTS/ACK 各 14 字节；Duration 链式计算让 NAV 精确衔接；ACK 的 RA 即被确认帧的 Addr2。</p>\n<p><strong>一句话总结</strong>：控制帧 = 三个&quot;占波/应答&quot;动词 + 一个&quot;取件&quot;动词。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-f-ctrl",
+                "caption": "控制帧 ↔ comnet 的 RTS/CTS/ACK 节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch04-mgmt",
+            "topic": "管理帧：结构、信息元素与类型",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：入网、广播能力、计时、断开 —— 全靠管理帧。</p>\n<p><strong>协议怎么解</strong>：管理帧 = 固定字段 + 变长信息元素（IE，TLV）。Beacon 携带能力信息/SSID/支持速率/DS 参数（信道号）/TIM；Probe Request/Response 用于发现；Association/Reassociation Request/Response（含 AID 与状态码）；Disassociation/Deauthentication 断开两层关系；Authentication 帧承担 WEP 时代的共享密钥挑战。</p>\n<p><strong>关键帧/字段/参数</strong>：IE 编号（0=SSID、1=支持速率、3=DS 参数、5=TIM）；Beacon 间隔；Capability Information（ESS/IBSS、隐私位=WEP、短前导等）。</p>\n<p><strong>一句话总结</strong>：管理帧是 802.11 的&quot;广播站+登记处&quot;，IE 是它的万能扩展槽。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-f-mgmt",
+                "caption": "管理帧 ↔ comnet 的管理帧类型节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch04-state",
+            "topic": "帧传送、关联与身份验证状态机",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：什么样的帧在什么关系阶段才允许出现。</p>\n<p><strong>协议怎么解</strong>：三态 —— 状态1（未认证未关联）：只容 Probe/Authentication 类；状态2（已认证未关联）：加 Association/Deauth/Disassoc；状态3（已认证已关联）：才放行数据帧与省电交互。</p>\n<p><strong>关键帧/字段/参数</strong>：帧等级（frame classes）表；状态码（成功/超时/拒绝）。</p>\n<p><strong>一句话总结</strong>：先验明正身、再登记住户、最后才发包裹 —— 顺序不可颠倒。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：三类帧（数据/控制/管理）逐字段拆解与状态机。</p>\n<p><strong>怎么运作</strong>：按 ToDS/FromDS 四组合定地址语义；控制帧管介质预约；管理帧管入网三步（认证→关联）。</p>\n<p><strong>关键点与位置</strong>：4.1–4.4 节。</p>\n<p><strong>一句话总结</strong>：读帧 = 读 ToDS/FromDS —— 地址字段瞬间从&quot;四个&quot;变成&quot;一个确定的&quot;。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-ch05",
+        "topic": "第五章 有线等效加密（WEP）",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-ch05-wep",
+            "topic": "WEP 的加密操作与帧格式",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：WEP 怎么加密一帧。</p>\n<p><strong>协议怎么解</strong>：24 位 IV 明文随帧发送，与共享密钥拼成 RC4 种子生成密钥流，XOR 明文（数据+ICV）；ICV = 明文的 CRC-32，随密文一起加密以&quot;防篡改&quot;。解密同路径逆推。</p>\n<p><strong>关键帧/字段/参数</strong>：WEP 位（FC）；IV 明文 4 字节头（含 Key ID 2 位支持 4 个静态密钥）；密钥俗称 64/128 位（实为 40/104 位 + 24 IV）。</p>\n<p><strong>一句话总结</strong>：WEP = RC4 + CRC 的组合拳，两个拳头的破绽都留给了攻击者。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-sec-wep",
+                "caption": "WEP ↔ comnet 的 WEP：RC4 与弱点节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch05-flaws",
+            "topic": "WEP 的种种问题与密钥恢复攻击",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：为什么 WEP 几小时就被攻破。</p>\n<p><strong>协议怎么解</strong>（以 RSN 的视角回望）：IV 只有 24 位且常在重启后归零重用 ⇒ 密钥流重用；RC4 弱 IV 触发 FMS 密钥恢复攻击（收集若干特定 IV 的密文即可解出密钥）；ICV 是线性 CRC，改密文可同步改 ICV 而不被发现（无认证完整性）；无密钥管理、无防重放。</p>\n<p><strong>关键帧/字段/参数</strong>：FMS 攻击；弱 IV 模式；动态 WEP = 802.1X 定期换密钥的过渡补丁（治标）。</p>\n<p><strong>一句话总结</strong>：WEP 输在&quot;把流密码用错 + 没有完整性认证&quot; —— RSN 的每条规则几乎都对应它的一条罪状。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：初代加密机制 —— 后来被证明一败涂地，但必须学懂它才能懂 RSN 的每一步补丁。</p>\n<p><strong>怎么运作</strong>：RC4 流密码 + 24 位 IV；缺陷从密码学到协议设计全方位。</p>\n<p><strong>关键点与位置</strong>：5.1–5.4 节。</p>\n<p><strong>一句话总结</strong>：WEP 的失败是安全工程的教科书案例 —— &quot;等价于有线&quot;从来只是口号。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-ch06",
+        "topic": "第六章 802.1X 用户身份验证（EAP）",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-ch06-eap",
+            "topic": "可扩展身份验证协议 EAP",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：认证方法千千万，如何统一承载。</p>\n<p><strong>协议怎么解</strong>：EAP 四类报文 —— Request（认证方问）、Response（申请者答）、Success/Failure（结果）；Type 字段扩展方法（MD5-Challenge、TLS、TTLS、PEAP…）。</p>\n<p><strong>关键帧/字段/参数</strong>：Code/Identifier/Length/Type；Identifier 配对防错序；EAP 方法分非加密型（MD5，弱）与隧道型（TLS/TTLS/PEAP，服务器先出示证书再加密对话）。</p>\n<p><strong>一句话总结</strong>：EAP = 认证的&quot;通用对话协议&quot;，方法即插件。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          },
+          {
+            "id": "wg-ch06-8021x",
+            "topic": "802.1X 端口认证与 EAPOL",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：认证对话在链路层怎么跑、三个角色怎么分工。</p>\n<p><strong>协议怎么解</strong>：角色三件套 —— Supplicant（申请者 STA）/ Authenticator（认证方 AP，双端口：受控口认证成功前只放 EAPOL）/ Authentication Server（RADIUS 后端）；EAPOL 封装 EAP-Packet/EAPOL-Start/EAPOL-Logoff/EAPOL-Key。认证流程在<strong>关联之前</strong>以开放系统认证名义先行（先&quot;名义认证&quot;再真认证，最后才放数据）。</p>\n<p><strong>关键帧/字段/参数</strong>：EAPOL 类型字段；RADIUS（UDP 1812）承载 EAP 属性；四向握手预告（802.11i）。</p>\n<p><strong>一句话总结</strong>：802.1X = &quot;门卫（AP）只递话、身份证局（RADIUS）说了算&quot;。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-sec-8021x",
+                "caption": "802.1X/EAPOL ↔ comnet 的 802.1X 认证框架节点"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：把&quot;设备级共享密钥&quot;升级为&quot;用户级可扩展认证&quot;的框架。</p>\n<p><strong>怎么运作</strong>：EAP 承载认证对话；802.1X 用端口模型在链路上跑 EAPOL。</p>\n<p><strong>关键点与位置</strong>：6.1–6.3 节。</p>\n<p><strong>一句话总结</strong>：本章只管&quot;证明你是谁&quot;，发钥匙的活儿留给第七章 RSN。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-ch07",
+        "topic": "第七章 RSN、TKIP 与 CCMP",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-ch07-tkip",
+            "topic": "临时密钥完整性协议 TKIP",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：老 RC4 网卡不换，怎么把 WEP 缝到能用。</p>\n<p><strong>协议怎么解</strong>：每包密钥混合（临时密钥 + 发送方 MAC + 包序号 TSC 混合出 RC4 种子）；48 位 TSC 序号防重放；Michael MIC（64 位摘要）提供弱完整性，配套反制机制（检测到伪造即断链换密钥一分钟）。</p>\n<p><strong>关键帧/字段/参数</strong>：TKIP 扩展 IV（4+4 字节）；Michael 密钥分上下半；反制计时器。</p>\n<p><strong>一句话总结</strong>：TKIP = 打满补丁的 WEP —— 桥梁工程，不是终点。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-sec-wpa",
+                "caption": "TKIP ↔ comnet 的 WPA：TKIP 过渡方案节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch07-ccmp",
+            "topic": "计数器模式及密码块链消息认证码协议 CCMP",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：真正的新加密 —— AES 时代怎么加密+认证一帧。</p>\n<p><strong>协议怎么解</strong>：AES-CCM：计数器模式加密 + CBC-MAC 认证一体；48 位包号 PN 明文携带防重放；MIC 覆盖 MAC 头的非可变字段。</p>\n<p><strong>关键帧/字段/参数</strong>：CCMP 头 8 字节（PN 6 + KeyID 等）；PN 递增绝不重复；AES 一次处理。</p>\n<p><strong>一句话总结</strong>：CCMP = 一个原语同时做到机密+完整+防重放，RSN 的正选。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-sec-rsn",
+                "caption": "CCMP/RSN ↔ comnet 的 802.11i/RSN 与四次握手节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch07-rsn",
+            "topic": "RSN 的运作方式：密钥层次与四次握手",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：802.1X 认证完，成对密钥怎么安全落到 STA 与 AP 两端。</p>\n<p><strong>协议怎么解</strong>：密钥层次 PMK（认证产物）→ 四向握手（双方各出随机数 ANonce/SNonce，导出 PTK；第三包确认安装加密能力，同时下发组密钥 GTK）→ 组密钥握手更新广播密钥；预认证 + PMKID 缓存让漫游免去重新做完整 802.1X。</p>\n<p><strong>关键帧/字段/参数</strong>：EAPOL-Key 帧（四次握手的载体）；RSN IE（广播能力集）；混合模式（同时支持 TKIP/CCMP 站点）下的组密钥选择。</p>\n<p><strong>一句话总结</strong>：四次握手 = &quot;两把随机数对出会话钥匙&quot;，漫游加速靠提前缓存。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：802.11i 强健安全网络 —— TKIP 救旧硬件、CCMP 上 AES、密钥体系撑全场。</p>\n<p><strong>怎么运作</strong>：认证（上章）产出主密钥 → 四向握手派生会话密钥 → 每帧加密 + 完整性 + 防重放。</p>\n<p><strong>关键点与位置</strong>：7.1–7.4 节。</p>\n<p><strong>一句话总结</strong>：RSN = 认证、密钥分发、加密三件事各归各的模块。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-ch08",
+        "topic": "第八章 管理操作",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-ch08-scan",
+            "topic": "扫描：被动与主动",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：怎么发现周围有哪些网络。</p>\n<p><strong>协议怎么解</strong>：被动扫描 = 逐信道静听 Beacon（省电但慢）；主动扫描 = 广播 Probe Request（可指定 SSID），AP 以 Probe Response 应答；结果汇总成扫描报告（BSSID/SSID/信道/信号/能力集），据此选择目标 BSS。</p>\n<p><strong>关键帧/字段/参数</strong>：Probe Request（广播/单播）；Beacon 间隔（通常 100 TU）；信道 dwell time。</p>\n<p><strong>一句话总结</strong>：扫描 = &quot;翻电台&quot;（被动）或&quot;喊一嗓子等回应&quot;（主动）。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-scan",
+                "caption": "扫描 ↔ comnet 的扫描：被动与主动节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch08-auth-assoc",
+            "topic": "身份验证、预验证与关联/重关联",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：入网两步走：先认证、再关联；漫游时怎么快。</p>\n<p><strong>协议怎么解</strong>：802.11 &quot;身份验证&quot;帧只有开放系统（零挑战）与共享密钥（WEP 挑战，弱）两式；RSN 下真正认证走 802.1X（在名义认证之后）。关联 = 告知能力集、获得 AID；重关联 = 漫游到新 AP 时携带旧 AP 地址（新 AP 可从旧 AP 转取缓存帧）。RSN 预认证 = 尚未切过去就经 DS 与邻居 AP 提前完成 802.1X。</p>\n<p><strong>关键帧/字段/参数</strong>：Authentication alg#（0 开放/1 共享）；Association Response 状态码 + AID；Reassociation Request 的当前 AP 地址；PMKID 缓存。</p>\n<p><strong>一句话总结</strong>：认证管&quot;你是谁&quot;，关联管&quot;你归我管&quot; —— 漫游就是一次重关联。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-assoc",
+                "caption": "认证与关联 ↔ comnet 的关联与重关联节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch08-powersave",
+            "topic": "节省电力：Infrastructure 与 IBSS 的电源管理",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：电池设备怎么边睡边不丢帧。</p>\n<p><strong>协议怎么解</strong>：Infrastructure：STA 休眠（PwrMgt=1）→ AP 缓存单播帧 → Beacon 携带 TIM 点名 → STA 醒来发 PS-Poll 逐帧取；组播帧等 DTIM（信标中 DTIM 计数到 0 时）统一广播。IBSS 无 AP：发件方在 ATIM 窗口宣告，收件方保持清醒等待。</p>\n<p><strong>关键帧/字段/参数</strong>：TIM 元素（位图 + DTIM 计数/周期）；PS-Poll 的 AID；ATIM 窗口。</p>\n<p><strong>一句话总结</strong>：省电 = &quot;AP 代收 + 广播点名 + 按需取件&quot;，组播必须迁就最懒的成员。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-psm",
+                "caption": "省电 ↔ comnet 的电源管理模式节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch08-tsf",
+            "topic": "定时器的同步（TSF）",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：跳频、DTIM、省电唤醒全都要全网对表。</p>\n<p><strong>协议怎么解</strong>：Beacon 携带 64 位时间戳：Infrastructure 下 STA 直接采纳 AP 时钟；IBSS 下各 STA 按算法趋同（慢者收快者的钟）。TSF 同时用于调度 Beacon 发送时机（目标信标传输时间 TBTT 错开）。</p>\n<p><strong>关键帧/字段/参数</strong>：TSF 计时器精度（1/1024 秒级微秒）；TBTT。</p>\n<p><strong>一句话总结</strong>：TSF = 全网的公共时钟，靠&quot;听广播&quot;而不是&quot;开会&quot;对齐。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-tsf",
+                "caption": "TSF 定时同步 ↔ comnet 的时钟同步节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch08-spectrum",
+            "topic": "频谱的管理：TPC 与 DFS",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：5 GHz 频段的法规合规（对雷达让路、限制功率）。</p>\n<p><strong>协议怎么解</strong>：TPC 传输功率控制 = 按需降功率减少干扰；DFS 动态选频 = 检测到雷达信号必须在规定时间内腾出信道并静默。两者以管理帧（Action 帧）交互能力与测量。</p>\n<p><strong>关键帧/字段/参数</strong>：802.11h（TPC/DFS 的标准来源）；Action 帧；信道可用性检查（CAC）。</p>\n<p><strong>一句话总结</strong>：5 GHz 的好用是有代价的 —— 会给雷达让路、会自我克制功率。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：STA 日常行为的全景 —— 扫描、认证、关联、省电、对时、频谱合规。</p>\n<p><strong>怎么运作</strong>：发现网络（扫描）→ 入网（认证+关联）→ 省电（TIM/PS-Poll）→ 保持同步（TSF）→ 守法规（TPC/DFS）。</p>\n<p><strong>关键点与位置</strong>：8.1–8.7 节。</p>\n<p><strong>一句话总结</strong>：本章把第三章的帧词汇串成&quot;入网的一天&quot;。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-ch09",
+        "topic": "第九章 PCF 无竞争服务",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>是什么/问题</strong>：竞争式 DCF 之外，标准还预留了中心协调的 PCF（实践中几乎无人部署）。</p>\n<p><strong>协议怎么解</strong>：点协调器（AP）以 PIFS 抢占发轮询（比 DIFS 短），在信标宣告的 CFP（无竞争期）内逐站轮询；CFP 以 CF-End 收尾交还竞争期。CF-Pollable/CF-Poll-Request 能力位声明参与意愿。</p>\n<p><strong>关键帧/字段/参数</strong>：CFPMaxDuration/CFPDurRemaining（NAV 用）；Data+CF-ACK 等组合子类型；CF-End 帧。</p>\n<p><strong>一句话总结</strong>：PCF = &quot;开会点名制&quot;，理论上限低时延，现实被 EDCA（802.11e）取代。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "wlan-pcf",
+            "caption": "PCF ↔ comnet 的 PCF 点协调功能节点"
+          }
+        ]
+      },
+      {
+        "id": "wg-phy",
+        "topic": "第10–14章 物理层",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-phy-rf",
+            "topic": "第10章 RF 传播与 802.11：路径损耗、多径与 ISI",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：电磁波跑起来会遇到什么。</p>\n<p><strong>协议怎么解</strong>：路径损耗随距离骤降 ⇒ 速率随位置跌落；多径 = 反射波叠加引起码间干扰 ISI（延迟扩展 &gt; 符号周期即崩）⇒ OFDM 用循环前缀正面消化；接收灵敏度（dBm）决定覆盖半径。</p>\n<p><strong>关键帧/字段/参数</strong>：灵敏度表（如 802.11b 11Mbps 需约 -76 dBm）；延迟扩展；链路预算 = 发射功率 + 天线增益 − 损耗。</p>\n<p><strong>一句话总结</strong>：PHY 设计的所有花样，都是在跟&quot;多径与衰减&quot;讨价还价。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-phy-basic",
+                "caption": "RF 传播基础 ↔ comnet 的射频与扩频基础节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-phy-fhss",
+            "topic": "第11章 调频物理层 FHSS",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：第一代 PHY —— 把信号在 79 个 1 MHz 信道间跳来跳去。</p>\n<p><strong>协议怎么解</strong>：跳频序列（同一 BSS 同序列）+ dwell time（约 0.4 s）；GFSK 调制 1/2 Mbps；PLCP 白化成帧；对窄带干扰天然免疫但速率上限太低。</p>\n<p><strong>关键帧/字段/参数</strong>：GFSK 二/四电平；FH 参数 IE（管理帧里宣告跳频集）；ISM 功率上限。</p>\n<p><strong>一句话总结</strong>：FHSS = &quot;打一枪换一个地方&quot; —— 老兵，已被历史淘汰。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-phy-fhss",
+                "caption": "FHSS ↔ comnet 的跳频扩频节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-phy-dsss",
+            "topic": "第12章 直接序列 DSSS 与 HR/DSSS（802.11b）",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：把 1 个比特摊到 11 个 chips 上传输（Barker 码），换抗干扰能力。</p>\n<p><strong>协议怎么解</strong>：原始 DSSS：DBPSK 1 Mbps / DQPSK 2 Mbps，22 MHz 信道；HR/DSSS（802.11b）：CCK 补码键控上 5.5/11 Mbps，可选短前导提速；PLCP 前导+SFD+头，DS PHY 的 CCA 判忙。</p>\n<p><strong>关键帧/字段/参数</strong>：chip 速率 11 Mc/s；Barker 序列；CCK 8-chip 码字；short preamble 选项（互操作注意）。</p>\n<p><strong>一句话总结</strong>：802.11b 把扩频变成了&quot;经济适用房&quot; —— 11 Mbps 靠 CCK 挤出来。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-phy-dsss",
+                "caption": "DSSS/802.11b ↔ comnet 的直接序列扩频节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-phy-ofdm",
+            "topic": "第13章 OFDM 与 802.11a（5 GHz）",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：对 ISI 的釜底抽薪 —— 把高速流拆成几十路慢速并行子载波。</p>\n<p><strong>协议怎么解</strong>：20 MHz 内 52 个子载波（48 数据 + 4 导频）；符号 4 μs + 循环前缀 0.8 μs 吸收多径；子载波可 BPSK→64QAM、编码率 1/2→3/4 ⇒ 6–54 Mbps 八档；PLCP 信号字段预告速率长度，PMD 管调制与 CCA。</p>\n<p><strong>关键帧/字段/参数</strong>：循环前缀/加窗；速率×编码率表；5 GHz 信道与 DFS（第8章）联动。</p>\n<p><strong>一句话总结</strong>：OFDM = &quot;化整为零&quot; —— 后来一切高速无线（11a/g/n/ac/ax）的共同底座。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-phy-ofdm",
+                "caption": "OFDM/802.11a ↔ comnet 的 OFDM 节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-phy-erp",
+            "topic": "第14章 802.11g：ERP 与保护机制",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：把 OFDM 搬回拥挤的 2.4 GHz，还要照顾 11b 老设备。</p>\n<p><strong>协议怎么解</strong>：ERP-OFDM 与 11a 同调（54 Mbps）；保护机制：检测到 11b 站存在时，ERP 帧前先发 RTS/CTS 或 CTS-to-self（11b 速率）让老站 NAV 沉默，再以 OFDM 发数据；短槽时间在纯 ERP 环境提升吞吐。</p>\n<p><strong>关键帧/字段/参数</strong>：ERP IE 中的 Use-Protection 位；CTS-to-self 开销对比；11g 与 11b 的共存规则。</p>\n<p><strong>一句话总结</strong>：11g 的真实吞吐取决于&quot;邻居有多老&quot; —— 保护机制就是共存税。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-phy-erp",
+                "caption": "ERP/802.11g ↔ comnet 的 ERP 节点"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：五层 PHY 全景 —— 共同的 RF 基础（第10章）+ 四代实现（FHSS/DSSS/OFDM/ERP）。</p>\n<p><strong>怎么运作</strong>：每个 PHY 都拆成 PLCP（成帧/前导，向 MAC 统一接口）与 PMD（真正收发）两个子层。</p>\n<p><strong>关键点与位置</strong>：第10–14章。</p>\n<p><strong>一句话总结</strong>：PHY 的进化史 = 信道越来越宽、调制越来越密、抗多径越来越聪明。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-n-hw",
+        "topic": "第15–16章 802.11n 前瞻与硬件",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-n-mimo-mac",
+            "topic": "802.11n 前瞻：MIMO、带宽与 MAC 提升",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：速率怎么从 54 翻到 100+ Mbps。</p>\n<p><strong>协议怎么解</strong>：共性三招 —— MIMO 空间流（多天线同频并行）；40 MHz 信道绑定；MAC 效率（A-MSDU/A-MPDU 帧聚合 + 块确认，把&quot;一问一答&quot;摊薄）。两阵营（WWiSE/TGnSync）在细节分歧，最终合流为 802.11n。</p>\n<p><strong>关键帧/字段/参数</strong>：空间流数；A-MPDU 聚合 + Block ACK；Wi-Fi Alliance 认证预告。</p>\n<p><strong>一句话总结</strong>：PHY 翻倍靠天线，MAC 翻倍靠&quot;少说废话&quot;（聚合）。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-phy-ht",
+                "caption": "802.11n 前瞻 ↔ comnet 的 HT（MIMO/40MHz/聚合）节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch16-hw",
+            "topic": "第16章 802.11 硬件与规格表解读",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：网卡与 AP 的硬件构成、实现差异、怎么读厂商参数。</p>\n<p><strong>协议怎么解</strong>：NIC = MAC 控制器 + PHY + 射频前端 + 天线；实现差异集中在漫游决策、速率选择算法（固件/驱动各自为政）；规格表看灵敏度（数值越小越灵敏）、延迟扩展容忍、SDR 提及。</p>\n<p><strong>关键帧/字段/参数</strong>：灵敏度 dBm 对比；重新载入固件/重启接口的行为差异；速率选择（如 auto-rate fallback）。</p>\n<p><strong>一句话总结</strong>：同标准不同厂商，体验差异常来自&quot;看不见的固件决策&quot;。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：本版成书时 802.11n 尚在草案 —— 两阵营提案（WWiSE/TGnSync）的共性预告 + 选购硬件的工程视角。</p>\n<p><strong>怎么运作</strong>：MIMO 与信道绑定提速率、聚合提 MAC 效率；硬件章讲网卡结构与规格表解读。</p>\n<p><strong>关键点与位置</strong>：第15–16章。</p>\n<p><strong>一句话总结</strong>：这是&quot;未来时&quot;章节 —— 最终 802.11n 落地版另见 book-wifi7 与 comnet wlan-phy-ht。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-platform",
+        "topic": "第17–20章 平台与部署实操",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-ch19-linux",
+            "topic": "第19章 802.11 与 Linux（工具与驱动）",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：Linux 上怎么配置、监控与排障无线接口（本版工具已旧，思路通用）。</p>\n<p><strong>协议怎么解</strong>：无线扩展（wireless extensions）接口 + iwconfig/iwlist 配置扫描；驱动加载（PCMCIA Card Services、orinoco/Atheros 驱动构建）；802.1X 用 xsupplicant（现代为 wpa_supplicant）做 EAP 认证与 WPA。</p>\n<p><strong>关键帧/字段/参数</strong>：实操命令（领域知识，现代等价标注）：iwlist wlan0 scan → 现代 <code>iw dev wlan0 scan</code>；iwconfig → <code>iw dev wlan0 link</code>；wpa_supplicant + <code>wpa_cli status</code>。</p>\n<p><strong>一句话总结</strong>：Linux 无线的骨架（驱动 + 配置守护进程 + 诊断命令）至今未变，只是工具换代。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          },
+          {
+            "id": "wg-ch20-ap",
+            "topic": "第20章 使用 802.11 接入点",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：AP 的种类、选购与一台企业 AP（Cisco 1200）的配置实操。</p>\n<p><strong>协议怎么解</strong>：AP 分桥接型/路由型；以太网供电 PoE（802.3af）解决天花板供电；配置走串口/HTTP/SNMP；监控看关联表、信号与错误计数；排障从物理层往上走。</p>\n<p><strong>关键帧/字段/参数</strong>：PoE 48 V 供电对（现代 802.3at/bt 更高功率）；AP 配置面（SSID/信道/加密模式/客户端列表）。</p>\n<p><strong>一句话总结</strong>：AP 部署三件事：放对位置、供上电、管住配置面。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：把 802.11 用起来的四个现场视角 —— Windows / Macintosh / Linux / 独立 AP（Cisco 1200）。</p>\n<p><strong>怎么运作</strong>：配置、认证方式选择、驱动与工具、PoE 供电。</p>\n<p><strong>关键点与位置</strong>：第17–20章（时代印记明显：Windows XP/AirPort/PCMCIA/orinoco）。</p>\n<p><strong>一句话总结</strong>：协议相同，平台各异的落地细节；现代读法是&quot;方法论照旧、工具认新&quot;。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-arch",
+        "topic": "第21–25章 架构、安全与运维",
+        "expanded": false,
+        "children": [
+          {
+            "id": "wg-ch21-arch",
+            "topic": "第21章 无线网络逻辑架构",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：部署前怎么给网络&quot;定型&quot;。</p>\n<p><strong>协议怎么解</strong>：六个评估维度（移动性/安全性/性能/骨干工程/网络服务/客户端集成）；四种典型拓扑 —— 单一子网、中心回传（E.T. Phone Home）、动态 VLAN（按用户身份进 VLAN）、虚拟接入点（一台 AP 广播多 SSID）。</p>\n<p><strong>关键帧/字段/参数</strong>：各拓扑的安全/漫游/扩展性权衡表；VLAN 与 RADIUS 属性联动（现代 Airespace/WLC 形态的雏形）。</p>\n<p><strong>一句话总结</strong>：架构选型 = &quot;用户的身份和位置谁说了算&quot; 的三种答案。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          },
+          {
+            "id": "wg-ch22-sec",
+            "topic": "第22章 安全性架构",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：把第五～七章的零件组合成机构的整体安全方案。</p>\n<p><strong>协议怎么解</strong>：分层选择 —— 身份验证（开放/WEP/802.1X 动态 WEP/TKIP/CCMP）× 加密 × 上层协议（IPsec/SSL/SSH 叠加）；RADIUS 统一账号；私设 AP（rogue）治理 = 侦测（扫描比对）→ 物理定位（信号测向）→ 关闭（端口关停/无线压制）。</p>\n<p><strong>关键帧/字段/参数</strong>：认证方式×加密方式决策矩阵；私设 AP 侦测工具；&quot;网络边界已不存在&quot;的核心论断。</p>\n<p><strong>一句话总结</strong>：安全架构 = 协议选型 + 身份源 + 对内鬼的猎杀流程。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          },
+          {
+            "id": "wg-ch23-plan",
+            "topic": "第23章 网络规划与 AP 摆放",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：覆盖与容量怎么折算成 AP 数量和位置。</p>\n<p><strong>协议怎么解</strong>：需求盘点（覆盖/性能/移动性/集成）→ 物理层选择与信道规划：2.4 GHz 用 1/6/11 三不重叠信道蜂窝复用（b/g），5 GHz 信道更多但守 DFS；AP 初摆（建筑图 + 链路预算）→ 现场勘测修正 → 覆盖补盲用天线（全向/扇区/定向）调形。</p>\n<p><strong>关键帧/字段/参数</strong>：信道规划图；勘测工具读数（RSSI/丢包）；天线类型与增益。</p>\n<p><strong>一句话总结</strong>：2.4 GHz 的信道规划只有三张牌（1/6/11）—— 打牌顺序就是设计本身。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wlan-channels",
+                "caption": "信道规划 ↔ comnet 的信道规划与部署实践节点"
+              }
+            ]
+          },
+          {
+            "id": "wg-ch24-analyze",
+            "topic": "第24章 802.11 网络分析",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：空气里的帧看不见，怎么排障。</p>\n<p><strong>协议怎么解</strong>：分析器（嗅探器）进入监控模式逐信道抓帧 + 显示过滤（按 BSSID/类型/重传）；排障清单（信号强度/重传率/冲突/认证失败）；辅助工具（频谱仪、测向、映射）。WEP 密钥恢复也被列为&quot;分析&quot;用途之一（双刃剑）。</p>\n<p><strong>关键帧/字段/参数</strong>：监控模式抓包（现代 <code>airodump-ng</code>/Wireshark 802.11 模式）；显示过滤语法；重传/NAK 计数解读。</p>\n<p><strong>一句话总结</strong>：无线排障 = 先抓帧、再过滤、最后对照协议状态机讲故事。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          },
+          {
+            "id": "wg-ch25-perf",
+            "topic": "第25章 802.11 性能与调整",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么/问题</strong>：理论速率与真实吞吐差在哪、哪些旋钮值得拧。</p>\n<p><strong>协议怎么解</strong>：开销核算（DIFS/退避/SIFS/ACK/前导都吃时间）⇒ 实际吞吐约为标称一半甚至更低；改善 = 提速率/减干扰/减帧数（聚合）。可调参数：Beacon 间隔、RTS 阈值、分段阈值、重试次数、省电模式、速率选择策略。</p>\n<p><strong>关键帧/字段/参数</strong>：性能估算例（书内计算示范）；可调参数一览表；RTS 阈值权衡（开销 vs 隐藏节点保护）。</p>\n<p><strong>一句话总结</strong>：调优 = 先算清开销账，再拧与&quot;你的应用&quot;相关的三五个旋钮。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为 802.11 标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：从&quot;能用&quot;到&quot;好用&quot;的系统工程 —— 逻辑架构选型、安全架构、规划、分析、性能调优。</p>\n<p><strong>怎么运作</strong>：按需求维度（移动性/安全/性能/骨干/服务/客户端集成）选拓扑与协议栈组合。</p>\n<p><strong>关键点与位置</strong>：第21–25章。</p>\n<p><strong>一句话总结</strong>：前半本书造零件，这五章盖房子。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>"
+      },
+      {
+        "id": "wg-todo",
+        "topic": "待读与待核（本次入库边界）",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>未入库</strong>：各章参数表、案例截图、Vendor 实操步骤细节（Windows/Mac/Cisco 1200 界面）仅收要点。</p>\n<p><strong>本地 PDF 正文解析待做</strong>：章节框架来自本地 PDF 书签（已核对）；正文知识点为领域知识提炼 —— 深读原文后补【来源：本地文件】并升级置信度。</p>\n<p><strong>本版不含</strong>：802.11n 定稿及其后代际（11ac/11ax/11be）—— 见 <code>book-wifi7</code> 项目与 comnet wlan-family/wlan-phy-ht。</p>\n<p><strong>待核对</strong>：中文版译者/出版社/ISBN；个别章节内部小节顺序按书签层级采信。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：边界声明，无待核内容时为终稿口径】</p>"
+      }
+    ]
+  }
+}

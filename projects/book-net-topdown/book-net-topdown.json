@@ -1,0 +1,633 @@
+{
+  "meta": {
+    "name": "《计算机网络：自顶向下方法（第7版）》知识点大纲",
+    "author": "",
+    "version": "0.18.0",
+    "formatVersion": 2
+  },
+  "format": "node_tree",
+  "data": {
+    "id": "root",
+    "topic": "《计算机网络：自顶向下方法（第7版）》知识点大纲",
+    "expanded": true,
+    "children": [
+      {
+        "id": "td-overview",
+        "topic": "全书概览与使用说明",
+        "expanded": false,
+        "children": [],
+        "detail": "<ul><li><strong>书名</strong>：《计算机网络：自顶向下方法（第7版）》，James F. Kurose、Keith W. Ross 著（英文书名与版次 Computer Networking: A Top-Down Approach, Seventh Edition 已从本地 PDF 书签逐字核对；中文版由机械工业出版社发行，出版社与译者信息<strong>待与实体书核对</strong>）。</li><li><strong>本书的形态</strong>：以“应用层 → 传输层 → 网络层 → 链路层 → 物理”自顶向下的次序讲解因特网协议栈，每章配 Wireshark 实验与套接字编程作业。</li><li><strong>本项目的形态</strong>：知识要点大纲，<strong>不是原文复刻</strong> —— 全部要点为提炼后的结构化知识，不含任何大段原文；例题与 Wireshark 实验未入库。</li><li><strong>节点四要素图例</strong>：<strong>是什么</strong>（概念/问题）→ <strong>怎么运作</strong>（机制原理）→ <strong>关键点与位置</strong>（协议字段/端口号/公式/命令）→ <strong>一句话总结</strong>。</li><li><strong>来源标注图例</strong>（每个节点 detail 尾部标注）：</li><li>【来源：本地PDF目录】= 章节框架，来自本地 PDF 书签（pdf-outline-helper 实测解析，source=outline）；</li><li>【来源：领域知识】= 因特网协议的标准事实（RFC/通行实现），不依赖实体书正文。</li><li><strong>置信度约定</strong>：章节框架视为已核对；各节知识点为标准事实；正文细节、例题、实验待读原文补 —— 深读后补【来源：本地文件】并升级置信度。</li><li><strong>与其他项目的关联</strong>：<code>comnet</code> 项目的 comp-net 树与本大纲<strong>同书同构</strong>（章级互挂 links）；无线部分另见 <code>book-80211-guide</code>。</li></ul>"
+      },
+      {
+        "id": "td-ch1",
+        "topic": "第1章 计算机网络和因特网",
+        "expanded": false,
+        "children": [
+          {
+            "id": "td-ch1-what",
+            "topic": "1.1 什么是因特网：组成描述与服务描述",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：两种回答 —— 组成描述（主机、分组交换机、通信链路、ISP 层级、协议）与服务描述（为分布式应用提供数据传递的基础设施）。</p>\n<p><strong>怎么运作</strong>：端系统经接入网连到 ISP；ISP 相互互联成网络之网络；协议（如 TCP/IP）规定报文格式与收发时序。</p>\n<p><strong>关键点与位置</strong>：协议三要素（语法/语义/时序）；端系统不参与核心转发；ISP 层级（接入/区域/骨干）。</p>\n<p><strong>一句话总结</strong>：因特网 = 硬件（端+路由器+链路）+ 软件（协议）+ 服务（跑在其上的分布式应用）。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch1-edge",
+            "topic": "1.2 网络边缘：端系统、接入网与物理媒体",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：把“用户手里的机器怎么上网”讲清楚 —— 接入网（家庭/企业/广域无线）与物理介质。</p>\n<p><strong>怎么运作</strong>：各类接入技术按带宽/距离/共享方式取舍：DSL（电话线）、HFC 同轴（共享总线）、FTTH（分光）、以太网（企业/校园）、WiFi 与 4G/5G（无线）。</p>\n<p><strong>关键点与位置</strong>：物理媒体分导引型（双绞线/同轴/光纤）与非导引型（无线电信道）；接入带宽以 Mbps/Gbps 计。</p>\n<p><strong>一句话总结</strong>：边缘决定“最后一公里”，不同接入技术在带宽、共享性与覆盖上互补。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch1-core",
+            "topic": "1.3 网络核心：分组交换与电路交换",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：数据在网络核心如何搬动 —— 存储转发的分组交换 vs 预留资源的电路交换（电话网传统）。</p>\n<p><strong>怎么运作</strong>：分组交换把报文切成分组，路由器逐跳存储转发；统计多路复用让链路按需共享。电路交换用 FDM/TDM 预留专享资源，适合恒定速率实时业务。</p>\n<p><strong>关键点与位置</strong>：存储转发时延 = L/R/跳数；统计复用 vs 预分配；网络的网络 = ISP 层级互联（对等/客户-提供商）。</p>\n<p><strong>一句话总结</strong>：因特网押注“不预留、按需排队”的分组交换，代价是排队与丢包。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch1-delay",
+            "topic": "1.4 分组交换网中的时延、丢包和吞吐量",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：一个分组从源到目的要花多少时间、为什么丢、端到端吞吐量由谁决定。</p>\n<p><strong>怎么运作</strong>：总时延 = 处理 + 排队 + 传输 + 传播；排队时延随流量强度 La/R→1 指数恶化，缓存满即丢包。吞吐量 ≈ 路径瓶颈链路速率（min 准则）。</p>\n<p><strong>关键点与位置</strong>：传输时延 L/R（分组长度/链路速率）；传播时延 d/s（距离/传播速度）；流量强度 La/R；traceroute 逐跳实测时延。</p>\n<p><strong>一句话总结</strong>：四种时延各管一段 —— CPU 检查、排队等链路、发上线用 L/R、物理传播用 d/s。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "delay",
+                "caption": "四类时延模型 ↔ comnet 的四种时延模型节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch1-layer",
+            "topic": "1.5 协议层次及其服务模型",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：为什么把网络拆成层 —— 复杂系统的模块化；分层体系结构与封装。</p>\n<p><strong>怎么运作</strong>：每层利用下层服务向上提供服务；应用报文逐层加头（封装），对端逐层剥头（解封装）。</p>\n<p><strong>关键点与位置</strong>：五层栈（应用/传输/网络/链路/物理）与 OSI 七层的对应；封装链 = 报文→报文段→数据报→帧。</p>\n<p><strong>一句话总结</strong>：分层 = 分工 + 复用；封装是各层“贴自己的标签”的过程。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "osi-layers",
+                "caption": "分层与封装 ↔ comnet 的协议分层与封装节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch1-attack",
+            "topic": "1.6 面对攻击的网络",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：坏家伙能干什么 —— 恶意软件、DoS/DDoS、嗅探、IP 伪装。</p>\n<p><strong>怎么运作</strong>：木马/蠕虫借漏洞植入；DDoS 用僵尸网络耗尽带宽或连接资源；分组嗅探器（Wireshark）偷听共享介质；伪造源地址即 IP 欺骗。</p>\n<p><strong>关键点与位置</strong>：对策预告后章 —— 鉴别（第8章）、防火墙/IDS；抓包工具 tcpdump/Wireshark。</p>\n<p><strong>一句话总结</strong>：网络默认不设防，安全靠逐层加的机制（这也是第8章存在的理由）。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：全书的地图章 —— 因特网的组成（端系统/分组交换机/链路）、网络核心（分组交换 vs 电路交换）、性能度量（时延/丢包/吞吐量）、分层模型与安全。</p>\n<p><strong>怎么运作</strong>：从“什么是因特网”的两种描述（具体构成 / 服务视角）切入，给出时延模型与五层协议栈，为后续各章立骨架。</p>\n<p><strong>关键点与位置</strong>：1.1–1.7 节；五层模型（应用/传输/网络/链路/物理）；四类时延。</p>\n<p><strong>一句话总结</strong>：本章是“因特网是什么、快不快、为什么分五层”的导览图。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "overview",
+            "caption": "第1章 计算机网络和因特网 ↔ comnet 的同书第1章"
+          }
+        ]
+      },
+      {
+        "id": "td-ch2",
+        "topic": "第2章 应用层",
+        "expanded": false,
+        "children": [
+          {
+            "id": "td-ch2-principle",
+            "topic": "2.1 应用层协议原理：体系结构、进程通信与运输服务",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：应用如何组织（C-S vs P2P）、进程如何跨网通信（套接字 + 寻址）、如何选运输服务。</p>\n<p><strong>怎么运作</strong>：进程 = 运行中的应用实例；用 IP + 端口号定位；套接字是应用与运输层之间的门。可靠/带宽/时延需求决定选 TCP 还是 UDP。</p>\n<p><strong>关键点与位置</strong>：端口标识进程（如 HTTP 80）；TCP：面向连接、可靠、字节流；UDP：无连接、尽力而为。</p>\n<p><strong>一句话总结</strong>：应用层设计三连 —— 选体系结构、定义协议报文、挑运输服务。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch2-http",
+            "topic": "2.2 Web 和 HTTP",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：Web 的应用层协议 HTTP —— 浏览器与 Web 服务器之间的请求/响应协议。</p>\n<p><strong>怎么运作</strong>：HTTP/1.0 每对象一条 TCP 连接（非持续，两倍 RTT 起步）；HTTP/1.1 默认持续连接、流水线。状态无关 ⇒ 用 cookie 记状态；代理缓存 + 条件 GET 减带宽。</p>\n<p><strong>关键点与位置</strong>：报文 = 起始行 + 首部 + 实体；GET/POST/PUT/HEAD；响应码 200/301/304/404；首部 If-Modified-Since 与 304 Not Modified；Set-Cookie；端口 80。</p>\n<p><strong>一句话总结</strong>：HTTP 简单到“一行 GET + 一堆首部”，Web 的速度学问全在连接次数与缓存上。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "http",
+                "caption": "HTTP ↔ comnet 的 HTTP/HTTPS 节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch2-mail",
+            "topic": "2.3 因特网中的电子邮件",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：邮件系统的三件套 —— 发送协议 SMTP、访问协议（POP3/IMAP）、报文格式（RFC 5322/MIME）。</p>\n<p><strong>怎么运作</strong>：发件人 MUA → 发方 SMTP 服务器 → SMTP 直连收方服务器 → 收件人用 POP3/IMAP 拉取。SMTP 是推协议（服务器到服务器），访问协议是拉协议。</p>\n<p><strong>关键点与位置</strong>：SMTP 用 TCP 25 端口、7-bit ASCII、命令对话（HELO/MAIL FROM/RCPT TO/DATA）；POP3 下载删/不删；IMAP 支持文件夹与多端同步；MIME 扩展多媒体。</p>\n<p><strong>一句话总结</strong>：SMTP 只管“推到对方服务器”，用户取信是 POP3/IMAP 的事。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch2-dns",
+            "topic": "2.4 DNS：因特网的目录服务",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：把主机名翻译成 IP 地址的分布式层次数据库 + 应用层便利服务（别名/负载均衡）。</p>\n<p><strong>怎么运作</strong>：本地 DNS 服务器先答缓存，未命中则代为迭代查询：根 → TLD → 权威；主机到本地服务器通常递归。记录分层缓存，TTL 控制时效。</p>\n<p><strong>关键点与位置</strong>：资源记录五元组（Name,Value,Type=A/NS/CNAME/MX）；UDP/TCP 53 端口；报文 = 首部 + 问题/回答/授权/附加；nslookup/dig 排查。</p>\n<p><strong>一句话总结</strong>：DNS 用“分而治之 + 缓存”把全世界的名字解析摊到百万台服务器上。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "dns",
+                "caption": "DNS ↔ comnet 的 DNS 域名系统节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch2-cdn",
+            "topic": "2.6 视频流和内容分发网",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：大流量视频怎么办 —— DASH 自适应流与 CDN 把内容搬到离用户近的地方。</p>\n<p><strong>怎么运作</strong>：DASH 把视频切成块、多码率编码，客户端按带宽逐块选码率。CDN 在边缘部署集群，DNS/重定向把用户指到最近或最闲的节点（地理/RTT/负载选路）。</p>\n<p><strong>关键点与位置</strong>：HTTP 流 + Range 请求；CDN 集群选择策略；Netflix/YouTube 为典型案例。</p>\n<p><strong>一句话总结</strong>：视频体验 = 客户端自适应 + CDN 就近服务的合谋。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch2-socket",
+            "topic": "2.7 套接字编程：生成网络应用",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：用 UDP/TCP 套接字 API 亲手写客户/服务器的最小套路。</p>\n<p><strong>怎么运作</strong>：UDP：无连接，<code>sendto</code>/<code>recvfrom</code> 带目的地址即可；TCP：服务器先 <code>bind</code>+<code>listen</code>+<code>accept</code>，客户 <code>connect</code> 后得到专用连接套接字再收发。</p>\n<p><strong>关键点与位置</strong>：Python <code>socket</code> 模块 / C 的 socket API；TCP 三次握手发生在 connect/accept 之间。</p>\n<p><strong>一句话总结</strong>：套接字编程 = “先开门（端口），再说话（收发）”，TCP 多一步握手。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "socket",
+                "caption": "套接字编程 ↔ comnet 的 Socket 编程接口节点"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：应用层协议原理 + 四大经典应用（HTTP/SMTP/DNS/CDN）+ 套接字编程。</p>\n<p><strong>怎么运作</strong>：应用跑在端系统，只用传输层提供的进程间通信（套接字），不碰网络核心。</p>\n<p><strong>关键点与位置</strong>：2.1–2.7 节；客户-服务器与 P2P 两种体系结构。</p>\n<p><strong>一句话总结</strong>：应用层 = “用运输层的字节管道写出自己的协议”。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "app",
+            "caption": "第2章 应用层 ↔ comnet 的同书第2章"
+          }
+        ]
+      },
+      {
+        "id": "td-ch3",
+        "topic": "第3章 传输层",
+        "expanded": false,
+        "children": [
+          {
+            "id": "td-ch3-overview",
+            "topic": "3.1 概述和运输层服务",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：运输层与网络层的关系 —— 网络层管主机到主机，运输层管进程到进程。</p>\n<p><strong>怎么运作</strong>：运输层报文段由端口号 + 其他字段构成；因特网只提供两种选择：UDP（无连接尽力而为）与 TCP（面向连接可靠）。</p>\n<p><strong>关键点与位置</strong>：逻辑通信 = 端到端通道；可靠信道抽象由 TCP 在端系统实现。</p>\n<p><strong>一句话总结</strong>：网络层递包裹到楼，运输层按门牌（端口）送到人。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch3-mux",
+            "topic": "3.2 多路复用与多路分解",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：一台主机上几十个进程共用一条 IP 链路，如何各回各家。</p>\n<p><strong>怎么运作</strong>：发送端把数据封装进带源/目的端口的报文段；接收端按四元组（源IP,源端口,目的IP,目的端口）分解。TCP 套接字按四元组标识（一个 accept 的连接独占四元组），UDP 套接字只按目的端口标识（服务端口共享）。</p>\n<p><strong>关键点与位置</strong>：0–1023 周知端口（HTTP 80/DNS 53）；web 服务器 80 端口监听套接字为每个连接派生新套接字。</p>\n<p><strong>一句话总结</strong>：端口是运输层的“门牌号”，四元组是 TCP 连接的身份证。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch3-udp",
+            "topic": "3.3 无连接运输：UDP",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：IP 之上薄薄一层 —— 加端口复用/分解与小量差错检测，别的都不管。</p>\n<p><strong>怎么运作</strong>：应用把报文交给 UDP 即发，无握手、无重传、无拥塞控制；首部 8 字节；校验和覆盖伪首部+首部+数据，端到端检错（路由器不改它）。</p>\n<p><strong>关键点与位置</strong>：首部 = 源端口/目的端口/长度/校验和；DNS 与流媒体常用；UDP 的优势：无连接建立时延、无连接状态、小首部、可自定可靠性。</p>\n<p><strong>一句话总结</strong>：UDP = “会贴门牌号的 IP”，快与简是它的全部卖点。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "udp",
+                "caption": "UDP ↔ comnet 的 UDP 用户数据报节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch3-rdt",
+            "topic": "3.4 可靠数据传输原理",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：在不可靠信道上造可靠信道的协议设计学 —— 教材的精华理论章。</p>\n<p><strong>怎么运作</strong>：渐进演化：rdt2.0 处理比特差错（ACK/NAK+校验和）→ rdt2.1 加序号去重 → rdt2.2 用冗余 ACK 替代 NAK → rdt3.0 加超时重传处理丢包（停等效率低）→ 流水线化：GBN（滑动窗+累积确认+超时回退N）与 SR（逐个确认+选择重传）。</p>\n<p><strong>关键点与位置</strong>：序号位数、发送窗口 base/nextseqnum、接收窗口；回退N步（Go-Back-N）与选择重传（SR）窗口对比。</p>\n<p><strong>一句话总结</strong>：可靠 = 校验和 + 序号 + 确认 + 超时重传，流水线是为了快，窗口大小是快与稳的旋钮。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch3-tcp",
+            "topic": "3.5 面向连接的运输：TCP",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：因特网的主力运输协议 —— 可靠、面向连接的字节流服务。</p>\n<p><strong>怎么运作</strong>：三次握手建立（SYN/SYN+ACK/ACK）；以字节序号标数据、累积确认；超时重传（RTT 估计）+ 快速重传（3 个冗余 ACK）；接收缓存 + 流量控制（rwnd 通告）；四次挥手关闭，TIME_WAIT 清尾。</p>\n<p><strong>关键点与位置</strong>：首部 = 源/目的端口、序号、确认号、rwnd、标志位（SYN/FIN/ACK/RST/PSH/URG）；EstimatedRTT=(1-α)Est+αSampleRTT，Timeout=EstimatedRTT+4·DevRTT；MSS 上限报文段载荷。</p>\n<p><strong>一句话总结</strong>：TCP 把“可能丢、乱序、重复”的 IP 变成一条可靠管道，代价是状态、时延与复杂性。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "tcp-basics",
+                "caption": "TCP 机制 ↔ comnet 的 TCP 概述与段结构节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch3-cc",
+            "topic": "3.6–3.7 拥塞控制原理与 TCP 拥塞控制",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：大家挤爆网络怎么办 —— 端到端（TCP 自觉）与网络辅助（显式通告）两条路线。</p>\n<p><strong>怎么运作</strong>：TCP 拥塞窗口 cwnd：慢启动指数增 → ssthresh 后拥塞避免线性增 → 丢包即减（Tahoe 减到 1 慢启动，Reno 减半进快速恢复）；AIMD 锯齿；后续 CUBIC 以时间函数增长，BBR 估带宽时延积。</p>\n<p><strong>关键点与位置</strong>：cwnd/rwnd 取 min 限速；ssthresh；3 个冗余 ACK 与超时两种丢包信号；显式拥塞通告 ECN 为网络辅助路线。</p>\n<p><strong>一句话总结</strong>：加性增、乘性减 —— TCP 用“摸着石头过河”的自控保住整个网络的公平与效率。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "tcp-congestion",
+                "caption": "TCP 拥塞控制 ↔ comnet 的 TCP 拥塞控制节点"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：为应用进程提供端到端逻辑通道 —— UDP 与 TCP，以及可靠传输/拥塞控制两大原理。</p>\n<p><strong>怎么运作</strong>：靠端口号复用/分解；TCP 在不可靠 IP 上用确认、重传、序号造出可靠字节流，再以拥塞控制保护网络。</p>\n<p><strong>关键点与位置</strong>：3.1–3.8 节。</p>\n<p><strong>一句话总结</strong>：传输层是“进程到进程”的一层：UDP 求快，TCP 求稳。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "transport",
+            "caption": "第3章 传输层 ↔ comnet 的同书第3章"
+          }
+        ]
+      },
+      {
+        "id": "td-ch4",
+        "topic": "第4章 网络层：数据平面",
+        "expanded": false,
+        "children": [
+          {
+            "id": "td-ch4-overview",
+            "topic": "4.1 网络层概述：转发与路由选择",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：网络层两大职能 —— 转发（单路由器内）与路由选择（全网范围）；数据平面与控制平面。</p>\n<p><strong>怎么运作</strong>：传统实现 = 每台路由器自带路由算法；SDN 实现 = 控制平面集中在远端控制器，路由器只执行流表。网络服务模型尽力而为。</p>\n<p><strong>关键点与位置</strong>：转发表/流表；数据平面（纳秒级硬件）vs 控制平面（秒级软件）。</p>\n<p><strong>一句话总结</strong>：转发是“看表办事”，路由是“把表造出来” —— 两件事经常被混为一谈。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch4-router",
+            "topic": "4.2 路由器工作原理",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：路由器内部四大件 —— 输入端口、交换结构、输出端口、路由选择处理器。</p>\n<p><strong>怎么运作</strong>：输入端口查表定位输出口 → 交换结构（内存/总线/纵横式）搬运 → 输出端口排队；缓存满丢包；队列管理（丢弃策略）与分组调度（FIFO/优先级/RR/WFQ）。</p>\n<p><strong>关键点与位置</strong>：最长前缀匹配（TCAM）；HOL 队头阻塞；缓冲大小经验值 ≈ 平均 RTT×C。</p>\n<p><strong>一句话总结</strong>：路由器 = 高速查表 + 快速搬运 + 排队取舍；吞吐瓶颈常在交换结构与内存。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch4-ipv4",
+            "topic": "4.3.1–4.3.3 IPv4 数据报格式、分片与编址",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：IPv4 报文长什么样、MTU 不一致怎么分片、32 位地址如何划分。</p>\n<p><strong>怎么运作</strong>：数据报首部 20 字节（无选项）；链路 MTU 小于报文长度时路由器分片，目的主机重组（标识/标志/片偏移协同）。编址从分类地址进化到 CIDR：a.b.c.d/x，x 为网络前缀；子网划分、DHCP 自动获取地址。</p>\n<p><strong>关键点与位置</strong>：TTL 每跳减 1（防环路）；协议字段（6=TCP,17=UDP）；特殊地址 127/8 回环、广播；DHCP 四步 discover/offer/request/ack（UDP 67/68）。</p>\n<p><strong>一句话总结</strong>：IPv4 = 20 字节头 + 32 位地址；分片是兼容术，CIDR 是省地址术。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "ip",
+                "caption": "IPv4 数据报与编址 ↔ comnet 的 IPv4 与 IP 数据报节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch4-nat",
+            "topic": "4.3.4 网络地址转换 NAT",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：让一群私网主机共享一个公网 IP 上网的转换器。</p>\n<p><strong>怎么运作</strong>：NAT 盒子改写（出向：私 IP:port → 公 IP:新port），并记录映射表；入向按表反向翻译。外部主动连接内网需端口映射/UPnP 打洞。</p>\n<p><strong>关键点与位置</strong>：私网地址段 10/8、172.16/12、192.168/16；NAT 违背端到端原则（对 P2P 不友好）。</p>\n<p><strong>一句话总结</strong>：NAT 用“端口盗用”续命 IPv4，代价是破坏了端到端可达性。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "nat",
+                "caption": "NAT ↔ comnet 的 NAT 网络地址转换节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch4-ipv6",
+            "topic": "4.3.5 IPv6",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：为替换耗尽的 IPv4 而生的新一代网络层协议。</p>\n<p><strong>怎么运作</strong>：128 位地址；固定 40 字节首部 + 扩展首部链；路由器不再分片（源端负责，超 MTU 发 Packet Too Big）；无首部校验和（加快转发）；流标签支持特殊处理。过渡靠隧道（IPv6 报文塞进 IPv4 载荷）。</p>\n<p><strong>关键点与位置</strong>：Next Header 链式扩展；地址 2000::/3 全球单播、fe80::/10 链路本地、::1 回环；双栈+隧道是主流过渡法。</p>\n<p><strong>一句话总结</strong>：IPv6 = 更大的地址空间 + 更简的首部；难产在过渡，而非协议本身。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "ipv6",
+                "caption": "IPv6 ↔ comnet 的 IPv6 节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch4-sdn",
+            "topic": "4.4 通用转发和 SDN",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：跳出“按目的 IP 查表”的思路 —— 匹配 + 动作的通用转发。</p>\n<p><strong>怎么运作</strong>：流表条目 = 匹配字段（多协议层首部）+ 动作（转发/丢弃/改写）+ 计数器；控制器经南向协议下发流表。OpenFlow 是事实标准。</p>\n<p><strong>关键点与位置</strong>：OpenFlow 匹配（入端口/MAC/IP/端口/优先级）；动作集（forward/drop/rewrite）；SDN 架构分层（控制器应用/控制器/交换机）。</p>\n<p><strong>一句话总结</strong>：通用转发把“路由器该干什么”变成可编程的 match+action，SDN 由此可能。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：每台路由器内发生的事 —— 转发（数据平面）与编址。</p>\n<p><strong>怎么运作</strong>：查表转发（最长前缀匹配）、交换结构、排队与调度；IPv4 数据报格式、编址 CIDR、NAT、IPv6。</p>\n<p><strong>关键点与位置</strong>：4.1–4.5 节。</p>\n<p><strong>一句话总结</strong>：数据平面 = “每个包进来，毫秒级决定从哪个口出去”。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "network",
+            "caption": "第4章 网络层：数据平面 ↔ comnet 的同书第4章"
+          }
+        ]
+      },
+      {
+        "id": "td-ch5",
+        "topic": "第5章 网络层：控制平面",
+        "expanded": false,
+        "children": [
+          {
+            "id": "td-ch5-ls-dv",
+            "topic": "5.2 路由选择算法：链路状态与距离向量",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：全局信息（LS）与分散信息（DV）两大类算法。</p>\n<p><strong>怎么运作</strong>：LS = 每节点洪泛链路状态后本地跑 Dijkstra，得到最短路树；DV = 邻居互报“我到各目的地的距离”，按 Bellman-Ford 迭代，好消息传得快、坏消息传得慢（计数到无穷）。</p>\n<p><strong>关键点与位置</strong>：LS 的振荡与同步问题；DV 的无穷计数与毒性逆转；OSPF 用 LS、RIP 用 DV、BGP 用路径向量。</p>\n<p><strong>一句话总结</strong>：LS 是“画全图再导航”，DV 是“打听邻居边走边改” —— 各有失效模式。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch5-ospf",
+            "topic": "5.3 因特网中 AS 内部路由选择：OSPF",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：AS（自治系统）内部用的链路状态协议。</p>\n<p><strong>怎么运作</strong>：路由器洪泛 LSA，各自以 Dijkstra 算最短路；支持分区（area）降开销，骨干区 0 连接各区；直接跑在 IP 之上（协议号 89）。</p>\n<p><strong>关键点与位置</strong>：区域边界路由器 ABR；OSPF 消息组播 224.0.0.5；支持等价多路径与鉴权。</p>\n<p><strong>一句话总结</strong>：OSPF = 企业级 LS 路由 + 分区扩展；IS-IS 是同门兄弟。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "ospf",
+                "caption": "OSPF ↔ comnet 的 OSPF 链路状态节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch5-bgp",
+            "topic": "5.4 ISP 之间的路由选择：BGP",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：把几万个 AS 缝成一张网的域间协议，还要执行商业策略。</p>\n<p><strong>怎么运作</strong>：eBGP 在 AS 间传播可达性，iBGP 在 AS 内同步；路径向量携带 AS-PATH 防环；选路先策略后短路径（热土豆 = 尽早甩给别的 AS）。</p>\n<p><strong>关键点与位置</strong>：TCP 179 端口；NLRI + AS-PATH + NEXT-HOP 属性；路由策略（只转卖客户路由等）导致非最短路径。</p>\n<p><strong>一句话总结</strong>：BGP 的路由表不是算出来的，是“谈判”出来的 —— 策略优先于最优。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "bgp",
+                "caption": "BGP ↔ comnet 的 BGP 边界网关协议节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch5-sdn",
+            "topic": "5.5 SDN 控制平面",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：把控制平面从每台设备抽出、集中到逻辑上单一的控制器。</p>\n<p><strong>怎么运作</strong>：设备上报拓扑/状态，控制器计算流表下发；控制器与交换机间用南向协议（OpenFlow），应用经北向 API 叠加（负载均衡、防火墙逻辑）。</p>\n<p><strong>关键点与位置</strong>：控制器组件（链路状态数据库/路由计算/流表下发）；OpenFlow 控制通道；故障一致性与可扩展性是工程难点。</p>\n<p><strong>一句话总结</strong>：SDN = “网络变成一台可编程的分布式计算机”。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch5-icmp",
+            "topic": "5.6 ICMP：因特网控制报文协议",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：主机与路由器之间传网络层控制/差错信息的协议。</p>\n<p><strong>怎么运作</strong>：ICMP 报文封在 IP 里（协议号 1）；类型+代码区分用途；ping 用 echo(8)/echo reply(0)，traceroute 靠 TTL 超时(11)与端口不可达(3) 定位每一跳。</p>\n<p><strong>关键点与位置</strong>：类型 0/8 回显、3 目的不可达、5 重定向、11 超时；RFC 常用类型表。</p>\n<p><strong>一句话总结</strong>：ICMP 是 IP 的“报错与回声”通道，排障工具 ping/traceroute 都踩在它身上。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "icmp",
+                "caption": "ICMP ↔ comnet 的 ICMP 节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch5-snmp",
+            "topic": "5.7 网络管理与 SNMP",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：远程监控/配置网络设备的管理框架。</p>\n<p><strong>怎么运作</strong>：管理站与代理通信，读/写 MIB（被管对象数据库）；SNMPv2/v3 的 PDU（GET/SET/RESPONSE/TRAP 主动告警）跑在 UDP 161/162。</p>\n<p><strong>关键点与位置</strong>：MIB 对象 OID 树；TRAP = 代理主动上报；SNMPv3 加安全（鉴别/加密）。</p>\n<p><strong>一句话总结</strong>：SNMP = 网络设备的“体检协议”，MIB 是体检表，TRAP 是急诊铃。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：路由表如何算出来 —— 域内（OSPF）与域间（BGP）路由算法、SDN 控制平面、ICMP 与网管。</p>\n<p><strong>怎么运作</strong>：链路状态与距离向量两类算法；AS 分层解决规模与策略；SDN 把控制集中。</p>\n<p><strong>关键点与位置</strong>：5.1–5.8 节。</p>\n<p><strong>一句话总结</strong>：控制平面 = “全网一起把表算对”，规模靠 AS 分治。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "ch5-control-plane",
+            "caption": "第5章 网络层：控制平面 ↔ comnet 的同书第5章"
+          }
+        ]
+      },
+      {
+        "id": "td-ch6",
+        "topic": "第6章 链路层和局域网",
+        "expanded": false,
+        "children": [
+          {
+            "id": "td-ch6-overview",
+            "topic": "6.1 链路层概述：服务与实现位置",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：链路层提供哪些服务、跑在哪里。</p>\n<p><strong>怎么运作</strong>：服务含成帧、链路接入、可靠交付（可选）、差错检测/纠正、流量控制；实现于适配器（NIC）+ 驱动软件，不是操作系统的核心协议栈里。</p>\n<p><strong>关键点与位置</strong>：适配器/网络接口卡；帧 = 链路层封装单元。</p>\n<p><strong>一句话总结</strong>：链路层住在网卡里，为的是线速处理。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch6-err",
+            "topic": "6.2 差错检测和纠正技术",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：比特翻转不可避免，怎么发现、怎么纠正。</p>\n<p><strong>怎么运作</strong>：奇偶校验（一维检 1 位错/二维可纠 1 位）；因特网校验和（16 位字反码求和，软件便宜）；CRC 强检错（模 2 除法，硬件实现，可检突发错）。</p>\n<p><strong>关键点与位置</strong>：生成多项式 G（如 CRC-32）；D·2^r XOR G；检验和 vs CRC 的取舍（IP/校验和，以太网/CRC）。</p>\n<p><strong>一句话总结</strong>：CRC 是链路层标配 —— 硬件便宜且错误几乎漏不掉。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch6-mac",
+            "topic": "6.3 多路访问链路和协议",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：共享广播信道上“谁先用线”的规则 —— 三大类协议。</p>\n<p><strong>怎么运作</strong>：信道划分（TDM/FDM/CDMA）静态分频分时；随机接入（ALOHA→时隙 ALOHA→CSMA 载波侦听→CSMA/CD 边发边听+二进制指数退避）；轮流（轮询/令牌）。以太网用 CSMA/CD，WiFi 用 CSMA/CA（无线难检碰撞，改用 ACK 判定）。</p>\n<p><strong>关键点与位置</strong>：时隙 ALOHA 效率 37%；CSMA/CD 512 比特时间争用期；802.3 帧最小 64 字节保证碰撞可检出。</p>\n<p><strong>一句话总结</strong>：信道划分求稳、随机接入求简、轮流求公平 —— 以太网胜在“听 + 退避”够简单。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "csma",
+                "caption": "多路访问协议 ↔ comnet 的多路访问协议节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch6-macaddr",
+            "topic": "6.4.1 链路层寻址和 ARP",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：MAC 地址与 ARP —— IP 包要出门，先要知道下一跳的物理地址。</p>\n<p><strong>怎么运作</strong>：MAC 48 位（前 24 位厂商标识 OUI）扁平全球唯一；适配器只收匹配帧与广播帧；ARP 在同子网内广播询问“这个 IP 谁有”，答主回 MAC，结果进 ARP 表（带 TTL）。跨子网交给网关 —— 目的 MAC 写网关，IP 头不动。</p>\n<p><strong>关键点与位置</strong>：广播 FF:FF:FF:FF:FF:FF；arp 命令/ip neigh 查看；ARP 欺骗是局域网攻击面。</p>\n<p><strong>一句话总结</strong>：IP 是邮政编码，MAC 是门牌 —— ARP 就是现场问路的那一声喊。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "mac",
+                "caption": "MAC 地址与 ARP ↔ comnet 的同名节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch6-eth",
+            "topic": "6.4.2–6.4.3 以太网与链路层交换机",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：以太网帧格式 + 交换机的自学习转发。</p>\n<p><strong>怎么运作</strong>：帧 = 前导 8B + 目的/源 MAC + 类型 + 载荷（46–1500B）+ CRC；交换机收到帧记录源 MAC→端口，查表转发，查不到就泛洪；表项老化；全双工交换式以太网已无碰撞域（CSMA/CD 名存实亡）。</p>\n<p><strong>关键点与位置</strong>：类型字段 0x0800=IPv4、0x0806=ARP；交换 vs 路由：交换机按 MAC 自学习（即插即用），路由器按 IP 查路由表；广播域边界。</p>\n<p><strong>一句话总结</strong>：以太网 + 交换机 = “即插即用的局域网”，自学习是无配置的关键。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "ethernet",
+                "caption": "以太网与交换机 ↔ comnet 的以太网与 CSMA/CD 节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch6-vlan",
+            "topic": "6.4.4 虚拟局域网 VLAN",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：在一台/多台交换机上把端口划成多个隔离的广播域。</p>\n<p><strong>怎么运作</strong>：基于端口划分 VLAN，跨交换机经 trunk 口（802.1Q 帧加 4 字节标签）承载多 VLAN 流量；VLAN 间互通需要路由器/三层交换机。</p>\n<p><strong>关键点与位置</strong>：802.1Q 标签（TPID 0x8100 + VLAN ID 12 位）；trunk vs access 口。</p>\n<p><strong>一句话总结</strong>：VLAN = 用交换机“切”出多个逻辑局域网，广播与安全域随之分家。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch6-dc",
+            "topic": "6.6 数据中心网络（概览）",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：几万至几十万台服务器组网的特殊需求 —— 东西向流量、可扩展性与负载均衡。</p>\n<p><strong>怎么运作</strong>：层次拓扑（ToR→汇聚→边界路由器）易成瓶颈，胖树/递归拓扑提供等宽通路；负载均衡器把外部请求摊到机群；虚拟化与容器进一步要求大二层与多租户隔离。</p>\n<p><strong>关键点与位置</strong>：胖树 k 叉；ECMP 等价多路径；SDN 在数据中心落地最快。</p>\n<p><strong>一句话总结</strong>：数据中心把“局域网”放大成“一台计算机的内部总线”，拓扑创新是关键。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch6-journey",
+            "topic": "6.7 回顾：Web 页面请求的历程",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：把前六章串成一条时间线 —— 一台新主机打开一个网页到底发生了什么。</p>\n<p><strong>怎么运作</strong>：DHCP 拿 IP/网关/DNS 服务器 → ARP 问网关 MAC → DNS 递归解析域名 → 与 Web 服务器三次握手 → HTTP GET → 页面返回。每一跳都涉及交换机自学习、域内 OSPF、域间 BGP。</p>\n<p><strong>关键点与位置</strong>：教科书经典综合案例；Wireshark 可全程复现。</p>\n<p><strong>一句话总结</strong>：一次“网页打开”是十几个协议的接力 —— 这是全书的縮略图。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：相邻节点间的传输服务 —— 成帧、差错检测、多路访问、寻址与交换。</p>\n<p><strong>怎么运作</strong>：链路层实现于网卡+驱动；以太网/WiFi 是主流实例；交换机自学习构建局域网。</p>\n<p><strong>关键点与位置</strong>：6.1–6.8 节。</p>\n<p><strong>一句话总结</strong>：链路层把“物理比特”变成“可靠邻跳”，并解决谁先用线的问题。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "link",
+            "caption": "第6章 链路层和局域网 ↔ comnet 的同书第6章"
+          }
+        ]
+      },
+      {
+        "id": "td-ch7",
+        "topic": "第7章 无线网络和移动网络",
+        "expanded": false,
+        "children": [
+          {
+            "id": "td-ch7-wireless",
+            "topic": "7.2 无线链路和网络特征",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：无线链路与有线的三大不同，及对协议的影响。</p>\n<p><strong>怎么运作</strong>：信号强度随距离衰减（路径损耗）；噪声/干扰使 SNR 时变 ⇒ 误码率波动 ⇒ 自适应调制；共享介质与多径；隐藏终端。CDMA 码分多址作为信道划分实例。</p>\n<p><strong>关键点与位置</strong>：SNR 与 BER 权衡；隐藏终端问题（RTS/CTS 是 802.11 的答案）。</p>\n<p><strong>一句话总结</strong>：无线的“看不清、听不全、抢不赢”决定了它不能照抄有线 MAC。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch7-80211",
+            "topic": "7.3 WiFi：802.11 无线 LAN",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：802.11 家族（a/b/g/n）的体系结构、MAC 与帧。</p>\n<p><strong>怎么运作</strong>：BSS = AP + 站点，ESS 经分布式系统互联支持漫游；MAC = CSMA/CA + IFS + 随机退避 + NAV 虚拟载波（RTS/CTS 可选）；帧分数据/控制/管理三类，寻址 4 字段随 ToDS/FromDS 变化；关联/认证阶段由管理帧完成。移动性：同子网内 IP 不变，跨子网靠移动 IP。</p>\n<p><strong>关键点与位置</strong>：beacon 帧广播能力集；探测（主动/被动）；802.11 帧三类地址；信道 1/6/11 不重叠。深入版面见 <code>book-80211-guide</code> 项目与 comnet 的 802.11 树。</p>\n<p><strong>一句话总结</strong>：802.11 把“听不清就别说话”的哲学做成协议 —— CSMA/CA 是有线 CD 的无线化改写。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "wifi",
+                "caption": "802.11 概览 ↔ comnet 的 WiFi 与 CSMA/CA 节点（专书展开见 book-80211-guide）"
+              }
+            ]
+          },
+          {
+            "id": "td-ch7-cell",
+            "topic": "7.4 蜂窝因特网接入",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：3G/4G 如何把手机接进因特网。</p>\n<p><strong>怎么运作</strong>：蜂窝体系（小区/基站/核心网）；4G LTE 全 IP：eNodeB 直连 EPC（S-GW/P-GW/MME/HSS），无线侧 RRC 状态机管理连接。</p>\n<p><strong>关键点与位置</strong>：LTE 硬切换；P-GW 是通往因特网的网关；HSS 存用户签约。</p>\n<p><strong>一句话总结</strong>：蜂窝网 = 无线接入 + 一个自建核心网，再在边界接进因特网。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch7-mobility",
+            "topic": "7.5–7.7 移动管理：原理、移动 IP 与蜂窝实践",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：设备换了接入点/网络，如何仍被找到并保持会话。</p>\n<p><strong>怎么运作</strong>：间接路由（归属代理截获→隧道→外地代理转交）与直接路由（通信者先问归属网络拿转交地址）；移动 IP 实现前者（HA/FA/CoA）；蜂窝网里由 HSS/MME 承担归属数据库与寻呼。</p>\n<p><strong>关键点与位置</strong>：转交地址、隧道封装、三角路由问题；切换（硬切换）决策。</p>\n<p><strong>一句话总结</strong>：移动管理 = 一套“地址变了还能找到你”的转发体系，代价是绕路与开销。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：无线链路的物理特性如何改变各层设计；802.11 WiFi、蜂窝网与移动管理。</p>\n<p><strong>怎么运作</strong>：无线 = 共享、时变、易错介质 ⇒ MAC 要 CA、速率要自适应；移动 = 换网络仍可达 ⇒ 归属/外地代理与隧道。</p>\n<p><strong>关键点与位置</strong>：7.1–7.8 节。</p>\n<p><strong>一句话总结</strong>：本章讲“空气当介质、人在路上”带来的全套新问题。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "ch7-wireless",
+            "caption": "第7章 无线网络和移动网络 ↔ comnet 的同书第7章"
+          }
+        ]
+      },
+      {
+        "id": "td-ch8",
+        "topic": "第8章 计算机网络中的安全",
+        "expanded": false,
+        "children": [
+          {
+            "id": "td-ch8-crypto",
+            "topic": "8.2 密码学的原则：对称与公开密钥",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：两类加密体系与各自的角色。</p>\n<p><strong>怎么运作</strong>：对称密钥（AES/3DES）：收发共享密钥，快，但密钥分发难；公开密钥（RSA）：公钥加密私钥解，解决分发，但慢千倍 ⇒ 实践中公钥用于分发对称会话密钥（混合体系）。RSA 依赖模幂与大数分解难题。</p>\n<p><strong>关键点与位置</strong>：块密码工作模式（CBC）；密钥分发中心 KDC；认证机构 CA + 证书。</p>\n<p><strong>一句话总结</strong>：对称加密干重活，公钥加密递钥匙 —— 混合使用是所有现代协议的底座。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch8-integrity",
+            "topic": "8.3 报文完整性和数字签名",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：证明“消息没被改、确实出自声称的人”。</p>\n<p><strong>怎么运作</strong>：密码散列（MD5/SHA-1/SHA-2）出摘要；HMAC = 散列+共享密钥给完整性+来源；数字签名 = 私钥加密摘要、公钥验证，同时提供完整性与不可否认。</p>\n<p><strong>关键点与位置</strong>：HMAC 比加密整条消息便宜；签名常签散列不签原文。</p>\n<p><strong>一句话总结</strong>：散列管“没改”，密钥管“是谁” —— 合起来就是完整性 + 鉴别。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch8-auth",
+            "topic": "8.4 端点鉴别",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：证明“你确实是你”，且对话不能被重放或劫持。</p>\n<p><strong>怎么运作</strong>：从明文密码（ap1.0）到加密密码（ap2.0，仍被重放）到不重数 nonce（ap3.0，对称密钥加密 nonce 才算到位 = ap3.1）；公钥体系下用私钥签 nonce。中间人攻击靠预先可靠地拿到对方公钥（CA 证书）解决。</p>\n<p><strong>关键点与位置</strong>：nonce = 一次性不重数；认证协议逐步加固的演进是本章精华。</p>\n<p><strong>一句话总结</strong>：鉴别 = “你加密我给的 nonce” —— 每次新随机数让重放失效。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>"
+          },
+          {
+            "id": "td-ch8-tls",
+            "topic": "8.6 使 TCP 连接安全：TLS",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：应用最广的传输层安全（HTTPS = HTTP over TLS）。</p>\n<p><strong>怎么运作</strong>：握手阶段协商密码套件、验证服务器证书、交换出会话密钥；记录阶段用会话密钥做对称加密 + MAC，防窃听/篡改/假冒。连接关闭需发关闭通知防截断攻击。</p>\n<p><strong>关键点与位置</strong>：TCP 443 端口；证书链与 CA；TLS 1.2/1.3 的握手差异（1.3 更快更安全）。</p>\n<p><strong>一句话总结</strong>：TLS = “先对暗号、再验身份证、最后加密通话”的三段式。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "sec-tls",
+                "caption": "TLS ↔ comnet 的 TLS/SSL 节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch8-ipsec",
+            "topic": "8.7 网络层安全：IPsec 和虚拟专用网",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：在网络层给所有流量上锁 —— VPN 的技术底座。</p>\n<p><strong>怎么运作</strong>：AH 提供认证与完整性，ESP 认证+加密（主流）；传输模式保端到端，隧道模式封整个原始 IP 报文（VPN 网关间）；安全关联 SA（单工，由 SPI 标识）+ IKE 自动协商密钥。</p>\n<p><strong>关键点与位置</strong>：ESP 头/尾结构；SA 三元组（SPI/目的 IP/协议）；IKE 基于 Diffie-Hellman。</p>\n<p><strong>一句话总结</strong>：IPsec 把“专线”变成了密码学隧道 —— ESP+隧道模式就是 VPN。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "sec-ipsec",
+                "caption": "IPsec 与 VPN ↔ comnet 的同名节点"
+              }
+            ]
+          },
+          {
+            "id": "td-ch8-fw",
+            "topic": "8.9 运行安全性：防火墙和入侵检测系统",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>是什么</strong>：机构网络的边界防御 —— 三类防火墙与 IDS。</p>\n<p><strong>怎么运作</strong>：传统包过滤按 (源/目的 IP, 端口, 协议, 标志位) 逐包判决；状态过滤跟踪连接表（只见 ACK 也认得它是谁）；应用网关在应用层代理。IDS 匹配攻击特征（Snort 规则）或建异常模型报警。</p>\n<p><strong>关键点与位置</strong>：ACL 规则自上而下首个命中生效；DMZ 分区；IDS 误报/漏报权衡。</p>\n<p><strong>一句话总结</strong>：防火墙挡“不该进来的”，IDS 盯“已经进来的” —— 边界防御的组合拳。</p>\n<p>【来源：本地PDF目录+领域知识】【置信度：框架已核对本地书签；内容为教材标准事实】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "sec-fw",
+                "caption": "防火墙与 IDS ↔ comnet 的防火墙节点"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>是什么</strong>：机密性、报文完整性、端点鉴别与运行安全（防火墙/IDS）。</p>\n<p><strong>怎么运作</strong>：密码学工具（对称/公钥/散列/签名）组合成协议（TLS/IPsec/PGP），再配边界防御。</p>\n<p><strong>关键点与位置</strong>：8.1–8.10 节。</p>\n<p><strong>一句话总结</strong>：安全 = 数学工具 + 协议组合 + 运行纪律。</p>\n<p>【来源：本地PDF目录】【置信度：章节框架已按本地PDF书签核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "ch8-security",
+            "caption": "第8章 计算机网络中的安全 ↔ comnet 的同书第8章"
+          }
+        ]
+      },
+      {
+        "id": "td-todo",
+        "topic": "未做与待核（本次入库边界）",
+        "expanded": false,
+        "children": [],
+        "detail": "<ul><li><strong>未入库</strong>：第9章 多媒体网络（第7版可选章）整章未建；各章例题、复习题、Wireshark 实验、套接字/编程作业均未入库。</li><li><strong>本地 PDF 正文解析待做</strong>：章节框架来自本地 PDF 书签（已核对）；正文知识点为领域知识提炼 —— 逐节深读原文后补【来源：本地文件】并升级置信度。</li><li><strong>待核对</strong>：中文版出版社/译者/ISBN（本次仅英文书名+版次经书签逐字核对）。</li><li><strong>关联项目</strong>：<code>comnet</code>（comp-net 树同书同构、已互挂章级 links）；<code>book-80211-guide</code>（第7章 802.11 部分的专书展开）。</li><li>【来源：本地PDF目录+领域知识】【置信度：边界声明，无待核内容时为终稿口径】</li></ul>"
+      }
+    ]
+  }
+}

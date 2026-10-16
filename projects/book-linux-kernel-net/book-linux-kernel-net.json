@@ -1,0 +1,222 @@
+{
+  "meta": {
+    "name": "《精通Linux内核网络》知识点大纲",
+    "author": "",
+    "version": "0.18.0",
+    "formatVersion": 2
+  },
+  "format": "node_tree",
+  "data": {
+    "id": "root",
+    "topic": "《精通Linux内核网络》知识点大纲",
+    "expanded": true,
+    "children": [
+      {
+        "id": "kn-overview",
+        "topic": "全书概览与使用说明",
+        "expanded": false,
+        "children": [],
+        "detail": "<ul><li><strong>书名</strong>：《精通Linux内核网络》，Rami（Rami Rosen）著，英文原书 Mastering Linux Network Internals（Packt），中文版由人民邮电出版社发行 —— 书名/作者信息待与公开目录逐字核对（本次网络检索受限，web_fetch 被拒）。</li><li><strong>本书的形态</strong>：讲解 Linux 内核网络子系统的实现 —— 从设备层收发路径到 IPv4/IPv6、邻居、路由、Netfilter，覆盖内核源码级细节。</li><li><strong>本地 PDF 实测</strong>：书签只有页码（#1…#547，无标题）⇒ <strong>目录页/正文解析待做</strong>；本项目因此<strong>按主题建树、不硬编章号</strong>（照 book-linux-src-fun 先例），主题主干按领域知识铺开。</li><li><strong>本项目的形态</strong>：知识要点大纲，<strong>不是原文复刻</strong> —— 全部要点为提炼后的结构化知识，不含任何大段原文；代码只以标识符名（函数名/字段名）出现。</li><li><strong>节点四要素图例</strong>：<strong>问题</strong>（为什么需要它）→ <strong>内核怎么解</strong>（机制 + 源码位置）→ <strong>关键函数/数据结构/命令</strong> → <strong>一句话总结</strong>。</li><li><strong>来源标注图例</strong>（每个节点 detail 尾部标注）：</li><li>【来源：公开知识·待核对】= 书目信息与主题归属（未逐字核对）；</li><li>【来源：领域知识】= Linux 内核网络的标准事实（<code>net/</code> 源码可自证），不依赖实体书。</li><li><strong>置信度约定</strong>：内核机制视为标准事实；主题与书的对应关系待核对 —— 实体书/公开目录到手后按真实目录重排即可。</li><li><strong>与其他项目的关联</strong>：<code>book-linux-net</code>（书2《深入理解Linux网络》讲观测与机制细节）、<code>book-linux-proc-mem</code>（进程与内存）、<code>comnet</code> 的 M1/M2 内核实操笔记（netlink/Netfilter/skb 已实操过）。</li></ul>"
+      },
+      {
+        "id": "kn-arch",
+        "topic": "内核网络整体架构与收发路径",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：一个包从网卡到应用（收）与应用到网卡（发）要路过哪些层？</p>\n<p><strong>内核怎么解</strong>：分层实现 —— 系统调用/socket 层（<code>net/socket.c</code>）→ 协议族（AF_INET：<code>net/ipv4/af_inet.c</code>）→ 传输层（<code>net/ipv4/udp.c</code>/<code>tcp*.c</code>）→ IP 层（<code>net/ipv4/ip_input.c</code> 等）→ 邻居子系统（<code>net/core/neighbour.c</code>）→ 设备层（<code>net/core/dev.c</code>）→ 驱动。收：硬中断 → 驱动收包 → 软中断 <code>NET_RX</code> → 协议分发；发：<code>dev_queue_xmit()</code> → qdisc → 驱动 <code>ndo_start_xmit</code>。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>__netif_receive_skb_core()</code>（ptype 分发）、<code>ip_rcv()</code>、<code>dev_queue_xmit()</code>、<code>struct net_device</code>/<code>struct sk_buff</code>；观察命令 <code>ss</code>、<code>ip -s link</code>、<code>cat /proc/net/softnet_stat</code>、<code>ethtool -S</code>。</p>\n<p><strong>一句话总结</strong>：内核网络 = 一条&quot;中断进、软中断分拣、协议逐层剥&quot;的流水线，<code>net/</code> 目录地图就是它的目录页。</p>\n<p>【来源：公开知识·待核对+领域知识】【置信度：主题归属待核对；内核机制为标准事实】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "md-m1-week2-day3",
+            "caption": "内核网络架构总览 ↔ comnet M1 day3 的内核/应用层通信实操"
+          }
+        ]
+      },
+      {
+        "id": "kn-ns",
+        "topic": "网络命名空间：协议栈的\"多世界\"",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：容器为什么能有独立的网卡、路由表与端口空间？</p>\n<p><strong>内核怎么解</strong>：网络栈的全局量按 <code>struct net</code> 组织（设备/路由表/proc 条目均 per-netns）；创建/销毁走 pernet 回调注册机制；veth 对 + 网桥把命名空间连成拓扑。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>struct net</code>、<code>register_pernet_device()</code>/<code>pernet_operations</code>、<code>net/namespace</code> 计数；命令 <code>ip netns add/exec/list</code>、<code>ip link add veth0 type veth peer name veth1 netns ns1</code>。</p>\n<p><strong>一句话总结</strong>：命名空间 = 把整套协议栈变量装进一个个独立盒子，容器网络的地基。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>"
+      },
+      {
+        "id": "kn-netlink",
+        "topic": "Netlink 套接字：内核与用户态的双向通道",
+        "expanded": false,
+        "children": [
+          {
+            "id": "kn-netlink-example",
+            "topic": "Netlink 实操：一个最小内核模块 + 用户态对端",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>问题</strong>：不依赖 rtnetlink，自己造一条内核↔用户态消息通路的最小闭环长什么样。</p>\n<p><strong>内核怎么解</strong>：模块内创建 netlink socket 并注册接收回调，用户态 bind 到协议号后 <code>sendto</code>/<code>recvmsg</code>；消息成对（<code>NLMSG_*</code> 宏遍历）。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>netlink_kernel_create(&amp;init_net, unit, &amp;cfg)</code>、<code>nlmsg_msg_size()</code>、<code>netlink_unicast()</code>；对应 comnet M1 笔记的 netlink_example.c/netlink_user.c 实操。</p>\n<p><strong>一句话总结</strong>： Netlink 是&quot;可编程的 ioctl&quot; —— 双向、多播、带类型，比 proc/sysfs 更适合事件流。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "netlink-mumupmktzi4d",
+                "caption": "Netlink 实操 ↔ comnet 的 Netlink套接字节点"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>问题</strong>：<code>ip</code> 命令怎么改路由、内核怎么把事件通知给用户态守护进程？</p>\n<p><strong>内核怎么解</strong>：AF_NETLINK 地址族 —— 用户态 socket 与内核 socket 互发消息；rtnetlink 承载路由/地址/链路配置（<code>ip</code>/<code>ss</code> 的后端），通用 netlink（generic netlink）为驱动/子系统提供按家族注册的扩展通道（如 nl80211）。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>rtnl_register()</code>、<code>netlink_kernel_create()</code>、<code>genl_register_family()</code>、<code>nlmsghdr</code>/<code>rtmsg*</code> 结构；命令 <code>ip monitor</code>（实时收事件）、<code>ss -N</code> 走 netlink。</p>\n<p><strong>一句话总结</strong>：Netlink = 内核配置面与事件面的统一总线 —— 网络工具都是它的客户端。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "md-m1-week2-day3-03-netlink",
+            "caption": "Netlink 套接字 ↔ comnet 的 03-netlink套接字笔记"
+          }
+        ]
+      },
+      {
+        "id": "kn-netdev",
+        "topic": "网络设备与 net_device：一块网卡的内核画像",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：内核怎么表示和管理一块 NIC？</p>\n<p><strong>内核怎么解</strong>：每张网卡一个 <code>net_device</code>：注册（<code>register_netdev</code>）、打开/关闭、<code>net_device_ops</code> 操作集（ndo_open/ndo_stop/ndo_start_xmit/ndo_set_rx_mode）、ethtool_ops 承载诊断；设备挂在 per-netns 的设备链表上。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>alloc_netdev()</code>、<code>register_netdev()</code>、<code>struct net_device_ops</code>、<code>struct ethtool_ops</code>；命令 <code>ip link set dev eth0 up</code>、<code>ethtool eth0</code>。</p>\n<p><strong>一句话总结</strong>：net_device = 网卡的&quot;身份证+操作手册&quot;，驱动实现 ops、内核负责登记与调度。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>"
+      },
+      {
+        "id": "kn-skb",
+        "topic": "套接字缓冲区 SKB：报文的\"快递纸箱\"",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：协议栈逐层剥头/加头，报文数据怎么高效地在层间传递？</p>\n<p><strong>内核怎么解</strong>：<code>sk_buff</code> 以 head/data/tail/end 四指针在预分配缓冲区内滑动，加头用 <code>skb_push</code>/剥头用 <code>skb_pull</code>/预留用 <code>skb_reserve</code>；克隆（<code>skb_clone</code>）共享数据区只复制结构；分片信息在 <code>skb_shinfo()</code>；<code>mark</code>/<code>priority</code> 字段是跨层策略的通用载体。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>alloc_skb()</code>、<code>skb_put/push/pull/reserve</code>、<code>skb_clone()</code>/<code>pskb_copy()</code>、<code>skb-&gt;mark</code>；观察 <code>tc -s qdisc</code> 里 mark 的用途。</p>\n<p><strong>一句话总结</strong>：SKB = 报文在内核里的&quot;快递纸箱&quot;，指针滑动免拷贝是性能的关键。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "4-skb-mark-mv6idkjc4zl4",
+            "caption": "SKB ↔ comnet 的 skb->mark 通用载体节点"
+          }
+        ]
+      },
+      {
+        "id": "kn-rx",
+        "topic": "接收路径：从硬中断到协议分发（NAPI）",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：高速流量下每包一个硬中断会把 CPU 打爆，怎么既快又不饿死？</p>\n<p><strong>内核怎么解</strong>：NAPI 轮询混合模式 —— 首包硬中断关闭中断源并调度 poll，软中断里批量收包（<code>poll()</code> 回调 → <code>napi_gro_receive</code>），忙时轮询、闲时恢复中断；GRO 在驱动层把小包聚合成大包再进栈。随后 <code>__netif_receive_skb_core()</code> 按 ptype（<code>eth_type_trans</code> 判协议）分发：tap（抓包点）→ VLAN → <code>ip_rcv</code>。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>napi_schedule()</code>、<code>netif_napi_add()</code>、<code>napi_gro_receive()</code>、<code>NET_RX_SOFTIRQ</code>、<code>struct napi_struct</code>；观察 <code>/proc/net/softnet_stat</code>、<code>cat /proc/interrupts</code>。</p>\n<p><strong>一句话总结</strong>：NAPI = &quot;先关响铃、按批取件&quot; —— 高流量下以轮询换中断风暴。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>"
+      },
+      {
+        "id": "kn-tx",
+        "topic": "发送路径：dev_queue_xmit 到驱动（qdisc 与 GSO）",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：应用发包后内核怎么排队、限速、喂给网卡？</p>\n<p><strong>内核怎么解</strong>：L4 调 <code>ip_queue_xmit</code> → 邻居解析 → <code>dev_queue_xmit()</code> 入设备 qdisc（排队规则：pfifo/mq/tbf 等），出队后 <code>validate_xmit_skb</code> 处理 GSO/校验和卸载，最终 <code>ndo_start_xmit()</code> 交驱动；发送完成在 <code>NET_TX_SOFTIRQ</code> 收尾。tc 正是挂在 qdisc 上的策略层。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>dev_queue_xmit()</code>、<code>struct Qdisc</code>、<code>sch_direct_xmit()</code>、<code>netdev_tx_t</code>；命令 <code>tc qdisc show</code>、<code>tc -s class show dev eth0</code>。</p>\n<p><strong>一句话总结</strong>：发送 = &quot;进队列 → 整形 → 卸载优化 → 交驱动&quot;，qdisc 是所有流量控制的挂载点。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>"
+      },
+      {
+        "id": "kn-ipv4",
+        "topic": "IPv4 子系统：收、转、发三条路",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：IP 层怎么决定一个包&quot;是给我的、要转发的、还是要发出去的&quot;？</p>\n<p><strong>内核怎么解</strong>：<code>ip_rcv()</code> 先做完整性检查，<code>ip_rcv_finish()</code> 查路由拿 <code>dst_entry</code>：本地交付走 <code>ip_local_deliver()</code>（按协议号分发给 TCP/UDP），转发走 <code>ip_forward()</code>（TTL 递减、重定向、过滤钩子），本机发出走 <code>ip_output()</code>/<code>ip_finish_output()</code>（超 MTU 分片）。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>ip_rcv/ip_forward/ip_output</code>、<code>struct iphdr</code>、<code>ip_local_deliver</code>；观察 <code>cat /proc/net/snmp</code> 的 Ip 行、<code>ss -t</code> 对端链路。</p>\n<p><strong>一句话总结</strong>：路由查询的 dst 是 IP 层的&quot;路标&quot; —— 收/转/发三岔口全由它指路。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>"
+      },
+      {
+        "id": "kn-icmp",
+        "topic": "ICMPv4：控制报文与 ping 的内核路径",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：ping/目的地不可达/重定向在内核里怎么实现与防护？</p>\n<p><strong>内核怎么解</strong>：<code>icmp_rcv()</code> 按类型分发：echo（8）/echo reply（0）直接回显；目的不可达（3）、超时（11）由 IP 层错误路径产生；速率限制（<code>sysctl_icmp_ratelimit</code>/ratemask）防风暴。ping 套接字（<code>ping_rcv</code>）让非 root 用户以每用户 ICMP echo id 收发。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>icmp_rcv()</code>、<code>icmp_send()</code>、<code>struct icmphdr</code>、ping socket（<code>net/ipv4/ping.c</code>）；命令 <code>ping</code>、<code>sysctl net.ipv4.icmp_ratelimit</code>。</p>\n<p><strong>一句话总结</strong>：ICMP 是 IP 的&quot;信号灯系统&quot;，内核替你回包 —— 限速是为了别被自己的善意淹没。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>"
+      },
+      {
+        "id": "kn-neigh",
+        "topic": "邻居子系统：ARP 的状态机与未解析排队",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：知道下一跳 IP，不知道 MAC，包往哪放？</p>\n<p><strong>内核怎么解</strong>：邻居表（<code>neigh_table</code>，IPv4 为 <code>arp_tbl</code>）—— 查表命中直接二层封装；未解析（INCOMPLETE）时发 ARP 请求并<strong>把 skb 挂在邻居条目队列上</strong>等解析，超时/失败按策略丢弃；可达性状态机（REACHABLE/STALE/DELAY/PROBE）驱动确认与重探测。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>neigh_lookup()</code>、<code>neigh_event_send()</code>、<code>arp_tbl</code>、<code>struct neighbour</code>、<code>neigh_probe()</code>；命令 <code>ip neigh show</code>、<code>ip neigh flush all</code>。</p>\n<p><strong>一句话总结</strong>：邻居子系统 = &quot;问路 + 等路 + 记路&quot; 的状态机，ARP 表老化策略藏在状态转换里。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "mac",
+            "caption": "邻居子系统/ARP ↔ comnet 的 MAC 地址与 ARP 节点"
+          }
+        ]
+      },
+      {
+        "id": "kn-routing",
+        "topic": "路由子系统：FIB、dst_entry 与策略路由",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：几万条路由怎么查得快、多条路由怎么按规则选？</p>\n<p><strong>内核怎么解</strong>：FIB（转发信息库，trie 结构）存所有路由；查表结果缓存成 <code>dst_entry</code> 挂在 skb 上（dst_output/dst_input 决定下一步）；策略路由允许多张表 + <code>ip rule</code> 按源地址/标记选表（默认 main/local/default）。RTNL 锁保护配置面，多路径与 nexthop 对象扩展等价多路径。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>fib_lookup()</code>、<code>struct dst_entry</code>、<code>dst_output()</code>、<code>fib_trie</code>、<code>ip_fib</code>；命令 <code>ip route show table all</code>、<code>ip rule show</code>、<code>ip route get &lt;ip&gt;</code>。</p>\n<p><strong>一句话总结</strong>：FIB 是全集、dst 是当前包的&quot;已选路线缓存&quot; —— <code>ip route get</code> 就是在人肉跑一次 fib_lookup。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>"
+      },
+      {
+        "id": "kn-netfilter",
+        "topic": "Netfilter 框架：五个钩子点的过滤与改写",
+        "expanded": false,
+        "children": [
+          {
+            "id": "kn-netfilter-conntrack",
+            "topic": "连接跟踪（conntrack）与 NAT 的内核实现",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>问题</strong>：有状态防火墙和 NAT 怎么记得&quot;这条流是谁&quot;？</p>\n<p><strong>内核怎么解</strong>：conntrack 在 PREROUTING/OUTPUT 创建流表项（五元组+状态机 NEW/ESTABLISHED/RELATED），NAT 基于同一表项在首包时记下改写规则、后续包直接复用（这也是 NAT 依赖 conntrack 的原因）；超时回收，/proc/net/nf_conntrack 可观察。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>nf_conntrack_in()</code>、<code>struct nf_conn</code>、<code>nf_nat_*</code>；命令 <code>conntrack -L</code>、<code>sysctl net.netfilter.nf_conntrack_max</code>。</p>\n<p><strong>一句话总结</strong>：conntrack 是&quot;流的账本&quot;，NAT/状态防火墙都是账本上做的生意。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>",
+            "links": [
+              {
+                "project": "comnet",
+                "id": "linux-netfilter-tc-mv6idkjaa2tm",
+                "caption": "conntrack 与标记 ↔ comnet 的 Netfilter/tc 流量控制笔记"
+              }
+            ]
+          }
+        ],
+        "detail": "<p><strong>问题</strong>：防火墙/NAT/标记怎么&quot;合法地&quot;插进转发路径？</p>\n<p><strong>内核怎么解</strong>：在收发路径预埋 5 个 hook 点（PREROUTING/INPUT/FORWARD/OUTPUT/POSTROUTING），模块注册回调（优先级排序）；iptables/nftables 按表（filter/nat/mangle）组织规则链，规则匹配最终落到 hook 函数；改写与连接跟踪分离。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>nf_register_net_hook()</code>、<code>struct nf_hook_ops</code>、<code>NF_ACCEPT/DROP/STOLEN</code> 返回值、<code>net/ipv4/netfilter/</code>；命令 <code>iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE</code>、<code>nft list ruleset</code>。</p>\n<p><strong>一句话总结</strong>：Netfilter = 内核预留的&quot;检查站体系&quot;，iptables 只是其中一个前台。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "2-netfilter-mv6idkjb2lgq",
+            "caption": "Netfilter 框架 ↔ comnet 的 Netfilter 框架节点"
+          }
+        ]
+      },
+      {
+        "id": "kn-ipv6",
+        "topic": "IPv6 与 ICMPv6：ND、自动配置与多播",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：IPv6 没有 ARP/IGMP，邻居与地址配置靠什么？</p>\n<p><strong>内核怎么解</strong>：ICMPv6 承担一切控制面 —— ND（133-137 类型）做 ARP 的活（<code>nd_tbl</code> 邻居表）；路由通告 RA 驱动 SLAAC 自动配置（前缀 + 接口标识）；MLD 管多播成员。IPv6 收发路径与 v4 平行（<code>ipv6_rcv</code>/<code>ip6_output</code>），双栈主机按地址族分流。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>ipv6_rcv()</code>、<code>ndisc_rcv()</code>、<code>addrconf</code>、<code>struct ipv6hdr</code>；命令 <code>ip -6 addr</code>、<code>ip -6 neigh</code>、<code>rdisc6</code>。</p>\n<p><strong>一句话总结</strong>：ICMPv6 = &quot;把 ARP+IGMP+DHCP 简版全装进一个协议&quot;的 v6 设计哲学。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>"
+      },
+      {
+        "id": "kn-sockets",
+        "topic": "套接字层：从 socket() 系统调用到协议实现",
+        "expanded": false,
+        "children": [
+          {
+            "id": "kn-tcp-udp-surface",
+            "topic": "UDP 与 TCP 在内核中的接口面（本书覆盖范围内的概览）",
+            "expanded": false,
+            "children": [],
+            "detail": "<p><strong>问题</strong>：本书对传输层讲到哪 —— 接口面与实现入口。</p>\n<p><strong>内核怎么解</strong>：UDP：<code>udp_rcv</code> 按 hash 表（端口）分发到 socket，收发路径短；TCP：状态机 + 四元组 hash（<code>__inet_lookup</code>），三次握手/重传/拥塞窗口均在 <code>net/ipv4/tcp_*.c</code> —— 本版书以接口与骨架为主，TCP 深水区另有专书（详见待办）。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>udp_rcv()</code>、<code>tcp_v4_rcv()</code>、<code>tcp_connect()</code>、<code>struct tcp_sock</code>；命令 <code>ss -ti</code>（每连接 RTT/cwnd）、<code>nstat</code>。</p>\n<p><strong>一句话总结</strong>：UDP 是&quot;直通车&quot;，TCP 是&quot;带全套仪器的专列&quot; —— 入口都在 inetsw 注册表上。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>"
+          }
+        ],
+        "detail": "<p><strong>问题</strong>：<code>socket()/bind()/send()</code> 是怎么落到内核具体协议代码上的？</p>\n<p><strong>内核怎么解</strong>：<code>sys_socket</code> 按地址族在 <code>net_families[AF_INET]</code> 找创建函数（<code>inet_create</code>），按 type+protocol 在 inetsw 表挑协议（<code>struct proto</code>：tcp/udp/raw）；BSD 层 <code>struct socket</code> 包内核层 <code>struct sock</code>（inet_sock 扩展）；数据经 <code>sk_data_ready</code> 回调异步唤醒接收者。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>sock_create()</code>、<code>inet_create()</code>、<code>struct proto</code>/<code>struct sock</code>、<code>sk_data_ready()</code>；命令 <code>ss -tanp</code>（看状态与进程）、<code>ss -uap</code>。</p>\n<p><strong>一句话总结</strong>：套接字层是&quot;插座面板&quot;，按 AF+TYPE 把系统调用插到 tcp/udp/raw 的实现插座上。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "socket",
+            "caption": "套接字层 ↔ comnet 的 Socket 编程接口节点"
+          }
+        ]
+      },
+      {
+        "id": "kn-tools",
+        "topic": "观测与排障命令面（领域知识补充）",
+        "expanded": false,
+        "children": [],
+        "detail": "<p><strong>问题</strong>：书里的机制落到现场，用什么命令验证？</p>\n<p><strong>内核怎么解</strong>：配置面 = <code>ip link/addr/route/rule/netns</code>（rtnetlink）；观测面 = <code>ss</code>（socket 状态）、<code>ip -s link</code>（设备计数）、<code>ip neigh</code>（邻居状态机）、<code>conntrack</code>（流账本）、<code>tcpdump</code>（tap 点抓包）、<code>ethtool -S</code>（驱动计数）；proc 接口 <code>/proc/net/*</code> 与 sysctl 提供参数面。</p>\n<p><strong>关键函数/数据结构/命令</strong>：<code>ip route get</code>、<code>ss -ti</code>、<code>tcpdump -i eth0 -nn</code>、<code>sysctl -a | grep net.ipv4</code>。</p>\n<p><strong>一句话总结</strong>：内核网络的每个机制都有对应的&quot;仪表盘命令&quot; —— 学机制时顺手记命令，双向印证。</p>\n<p>【来源：领域知识】【置信度：内核机制为标准事实（可对 Linux 源码自证）；与书章节对应待核对】</p>",
+        "links": [
+          {
+            "project": "comnet",
+            "id": "md-m2-week3-4-wireshark",
+            "caption": "观测命令面 ↔ comnet M2 的 Wireshark 抓包笔记"
+          }
+        ]
+      },
+      {
+        "id": "kn-todo",
+        "topic": "未做与待核（本次入库边界）",
+        "expanded": false,
+        "children": [],
+        "detail": "<ul><li><strong>本地 PDF 解析待做</strong>：书签只有页码（#1…#547）⇒ 目录页文字层/正文解析待做；本项目主题树按领域知识铺开，<strong>未按书的真实章节编号组织</strong>。</li><li><strong>主题归属待核对</strong>：每主题与书的章节对应关系、书中专有组织方式（如单章讲多播路由/PPPoE/BlueZ/Android 网络栈等进阶话题）待与公开目录或实体书核对。</li><li><strong>未入库</strong>：多播路由（IGMP/mroute）、隧道与虚拟设备（tun/tap、VXLAN）、TCP 深水区（另见专书与 book-linux-net 项目）等进阶主题仅点名未展开。</li><li><strong>关联项目</strong>：<code>book-linux-net</code>（书2：现代内核网络机制与观测）、<code>comnet</code> M1/M2 笔记（netlink/Netfilter/skb/驱动实操）。</li><li>【来源：公开知识·待核对+领域知识】【置信度：边界声明，无待核内容时为终稿口径】</li></ul>"
+      }
+    ]
+  }
+}
