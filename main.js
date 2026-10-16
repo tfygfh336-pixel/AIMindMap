@@ -18,6 +18,8 @@ const { spawnSync, spawn } = require('child_process');
 const dshSidebar = require('./main-dsh-sidebar.js');
 const dropTarget = require('./src/drop-target.js');   // P7 落点判定（纯函数 ✓ 有单测 ✓ 屏幕坐标）
 const pathChain = require('./src/path-chain.js');     // 「路径 → 打开/预览」的**唯一判据处**（UMD 纯函数，零 I/O）
+const editorCandidates = require('./src/editor-candidates.js'); // 编辑器候选/两档/argv 的**判据处**（UMD 纯函数）
+const editorProbe = require('./src/editor-probe.js'); // 编辑器候选的**运行时探测**（I/O 可注入；见文件头"不写死"）
 
 const ROOT = __dirname;
 const REAL_PROJECTS_DIR = path.join(ROOT, 'projects');
@@ -1555,30 +1557,212 @@ function registerIpc() {
   //     （那会把今天能打开的 `localPath` 全部打不开）；
   //   · 判据**不做任何存在性探测**（本机 `X:` 是不可达映射网络盘，一句 existsSync 要 9–21 秒）——
   //     可访问性照旧由下面的 statSync（headless）与 `shell.openPath` 的返回值报。
-  ipcMain.handle('app:open-file', async (e, absPath) => {
+  /* 【本批 · 第 2/3 件】「在编辑器里打开」的**出口内一跳** —— 判据全在 `src/editor-candidates.js`（纯函数），
+   * 探测全在 `src/editor-probe.js`（I/O 可注入）。这里只做三件"必须跟 Electron/子进程打交道"的事：
+   *   ① 起进程（**argv 数组，全程不拼命令行字符串** —— 注入面为 0）；
+   *   ② 让用户挑（**原生对话框**，不新开 IPC 名字）；
+   *   ③ 挑不动时**响亮降级**（`shell.openPath`）或**拦下**（危险关联）。
+   *
+   * 为什么"起进程"要**等一小段再看**（`EARLY_FAILURE_WATCH_MS`）：启动器立刻失败（ENOENT / 权限）
+   * 与"起来了正在跑"在 spawn 那一瞬间看起来一样 ⇒ 只等 0ms 会把失败报成成功（**静默失效**）。
+   * 这个形态照内核 `dsh-host-open-in-app` 的 `launchWatchMs: 1000`（它实测的取值，见其 README 配置表）。
+   */
+  const EARLY_FAILURE_WATCH_MS = 1000;
+
+  /* ---- 用户选的编辑器：**记忆在应用级偏好文件里**（`<userData>/editor-prefs.json`）----
+   * ⚠️ 为什么不是 `localStorage`（第一版就是那样，被冒烟域 50 的**结构断言**判红 ✗）：
+   *   `scripts/smoke/50-五星评价.js` 有一条结构断言"**渲染层 0 处 localStorage**"——
+   *   那条规则是 R6 定的（反馈必须走宿主，不许在渲染层留影子状态）。本批原本把编辑器偏好放渲染层，
+   *   一跑就红 ⇒ 改成主进程侧的偏好文件。
+   * ⚠️ 为什么**不写进** `dsh-sidebar-prefs.json`（应用级偏好已有先例）：那个文件是
+   *   `main-dsh-sidebar.js` 的单一写者，从 main.js 再写一份就是**两个写者**（工程第一铁律禁止 ✗）。
+   *   ⇒ 另开一个**只有一个写者（本文件）**的偏好文件；写盘走既有的 `writeFileAtomic`（不新造写盘路径）。
+   * 语义：**只有用户在弹窗里真选过一次才记**（自动选中不记 —— 那不是用户的选择）。 */
+  function editorPrefFile() { return path.join(app.getPath('userData'), 'editor-prefs.json'); }
+  function loadEditorPref() {
+    try {
+      const j = JSON.parse(fs.readFileSync(editorPrefFile(), 'utf8'));
+      return typeof j.editor === 'string' ? j.editor : '';
+    } catch (err) { return ''; }   // 没记过 / 坏了都按"没记过"，不阻断打开 ✓
+  }
+  function saveEditorPref(id) {
+    if (!id) return;
+    try {
+      writeFileAtomic(editorPrefFile(), JSON.stringify({ editor: String(id), at: new Date().toISOString() }, null, 2) + '\n');
+    } catch (err) { /* 偏好存不下不致命：下次再问一遍 ✓ */ }
+  }
+
+  /** 起一个**分离**的子进程并给"早期失败"一个读数窗口；不阻塞主进程。 */
+  function launchDetached(file, args) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (r) => { if (!settled) { settled = true; resolve(r); } };
+      let child;
+      try {
+        child = spawn(file, args, { detached: true, stdio: 'ignore', windowsHide: true });
+      } catch (err) {
+        return done({ ok: false, err: (err && err.message) || String(err) });
+      }
+      child.on('error', (err) => done({ ok: false, err: (err && err.message) || String(err) }));
+      child.on('exit', (code) => { if (code) done({ ok: false, err: '启动器退出码 ' + code }); });
+      setTimeout(() => {
+        try { child.unref(); } catch (err) { /* 已经退出 */ }
+        done({ ok: true });
+      }, EARLY_FAILURE_WATCH_MS);
+    });
+  }
+
+  /** 让用户挑一个编辑器（**原生对话框**；只在非冒烟且确实有得挑时调用）。
+   *  返回选中的候选；用户取消 ⇒ `null`（调用方据此**不打开**，不猜 ✓）。 */
+  async function pickEditor(win, candidates) {
+    const rows = editorCandidates.summarize(candidates);
+    const shown = rows.slice(0, 4);
+    const more = rows.length - shown.length;
+    const res = await dialog.showMessageBox(win || undefined, {
+      type: 'question',
+      title: '用哪个编辑器打开',
+      message: '本机探测到的编辑器（打开方式会记住）',
+      detail: shown.map((r) => '· ' + r.label + '（' + r.found + '）').join('\n')
+        + (more > 0 ? '\n（另有 ' + more + ' 个未列出）' : '')
+        + '\n\n标「只能打开（跳不了行）」的那几个，我们不会假装跳到了某一行。',
+      buttons: shown.map((r) => r.label).concat(['取消']),
+      defaultId: 0,
+      cancelId: shown.length,
+      noLink: true
+    });
+    const i = res && typeof res.response === 'number' ? res.response : shown.length;
+    return i < shown.length ? candidates[i] : null;
+  }
+
+  /**
+   * 打开一个路径：**优先用探测到的编辑器**（能跳行就跳行），否则照旧交系统；危险关联拦下。
+   * @param {string} target 已经过 `pathChain` 判据的绝对路径
+   * @param {{line?:number,col?:number,editor?:string}} o 渲染层带的可选参数（**全部可选**）
+   */
+  async function openWithEditor(target, o, win) {
+    const ext = pathChain.extOf(target);
+    const probed = editorProbe.probe();
+    const assoc = (probed.associations && probed.associations[ext]) || { hazard: 'assoc-none' };
+    const hazard = assoc.hazard;
+    const line = editorCandidates.normalizeLine(o.line);
+    const base = {
+      candidates: editorCandidates.summarize(probed.candidates),
+      hazard: hazard,
+      probeStub: probed.stub === true,
+      line: line
+    };
+
+    let chosen = null, why = 'nothing-detected', stale = null;
+    const wanted = o.editor || loadEditorPref();   // 显式传入优先；否则用**上次真选过的那个**
+    if (wanted || probed.candidates.length) {
+      const pick = editorCandidates.choose(probed.candidates, wanted || '');
+      chosen = pick.candidate; why = pick.why; stale = pick.stalePreference;
+    }
+    // 有得挑、用户又没点过名 ⇒ 让他挑（**冒烟下不弹窗**：门禁里不许抢焦点/弹模态）
+    let autoChosen = false;
+    if (!chosen && probed.candidates.length > 1 && !isSmoke) {
+      chosen = await pickEditor(win, probed.candidates);
+      if (!chosen) return Object.assign(base, { ok: false, err: '没有选择编辑器（这次没有打开任何东西）', editor: null });
+      why = 'picked';
+      saveEditorPref(chosen.id);                   // ⭐ 只有**真选过一次**才记（下次默认它）
+    } else if (chosen && !wanted) {
+      autoChosen = true;
+    }
+
+    if (!chosen) {
+      /* 一个编辑器都没探到 ⇒ 两条路：
+       *   · 危险关联（WScript 会**执行**脚本 / 媒体播放器会去放 .ts）⇒ **拦下**并说清怎么改（任务书：不许交出去 ✗）；
+       *   · 其它 ⇒ 照旧 `shell.openPath`（既有行为一个字不改），但把"没有关联会弹选择框"这类如实带上。 */
+      if (editorCandidates.hazardLevel(hazard) === 'block') {
+        return Object.assign(base, {
+          ok: false, editor: null,
+          err: editorCandidates.hazardText(hazard) + '（没探到任何编辑器：装了 VS Code / Cursor / Trae 之后重试即可）'
+        });
+      }
+      try {
+        const r = await shell.openPath(target);
+        return Object.assign(base, {
+          ok: !r, err: r || null, editor: null, via: 'system',
+          note: editorCandidates.hazardText(hazard) || null
+        });
+      } catch (err) {
+        return Object.assign(base, { ok: false, err: err.message, editor: null, via: 'system' });
+      }
+    }
+
+    /* 选中的候选有两档（`src/editor-candidates.js` 的 TIERS）：
+     *   jump = 有 CLI 且它的 `--help` 自己声明了 `--goto` ⇒ 能打开**并跳行**；
+     *   open = 只有 exe（或 CLI 起不了）⇒ **只能打开**，返回里 `jumped:false` + note，
+     *          界面必须按"只能打开"显示 —— **不许让用户以为跳了** ✗。 */
+    if (chosen.tier === 'jump') {
+      const run = editorCandidates.commandArguments(chosen, target, line, o.col);
+      if (run) {
+        const r = await launchDetached(run.file, (chosen.cli.head || []).concat(run.args));
+        if (!r.ok) {
+          return Object.assign(base, {
+            ok: false, editor: chosen.id, via: 'cli', jumped: false, why: why, autoChosen: autoChosen,
+            err: '起编辑器失败：' + r.err
+          });
+        }
+        return Object.assign(base, {
+          ok: true, err: null, editor: chosen.id, via: 'cli', jumped: run.jumped, why: why, autoChosen: autoChosen,
+          note: run.jumped ? null : '没有行号信息 ⇒ 只打开文件（**没有跳行**）'
+        });
+      }
+    }
+    // open 档：起它自己（argv 数组），**不跳行**
+    if (chosen.exe && !/\.cmd$/i.test(chosen.exe)) {
+      const r = await launchDetached(chosen.exe, [target]);
+      return Object.assign(base, {
+        ok: r.ok, err: r.ok ? null : '起编辑器失败：' + r.err,
+        editor: chosen.id, via: 'exe', jumped: false, why: why, autoChosen: autoChosen,
+        note: '这个编辑器**只能打开**（跳不了行）：' + editorCandidates.TIER_TEXT.open
+      });
+    }
+    // 连 exe 都起不了 ⇒ **响亮降级**到系统关联（并说明为什么）
+    try {
+      const r = await shell.openPath(target);
+      return Object.assign(base, {
+        ok: !r, err: r || null, editor: chosen.id, via: 'system-fallback', jumped: false,
+        note: '编辑器档起不了，已交系统关联打开：' + editorCandidates.TIER_TEXT.open
+      });
+    } catch (err) {
+      return Object.assign(base, { ok: false, err: err.message, editor: chosen.id, via: 'system-fallback', jumped: false });
+    }
+  }
+
+  ipcMain.handle('app:open-file', async (e, absPath, opts) => {
+    /* ⭐ 签名只**多收一个可选参数**（`opts = {line, col, editor}`）——**不新开 IPC 名字**，
+     *   既有调用方（一个参数）行为逐字不变。为什么把"打开方式"挤进这一处而不是新开通道：
+     *   本工程最要紧的一条不变式是「**出口唯一**」（见上面那段说明与 `docs/ARCHITECTURE.md` 的 ADR）。 */
+    const o = (opts && typeof opts === 'object') ? opts : {};
     const decision = pathChain.decide({ kind: 'system', raw: absPath });
     /* 冒烟模式下的**出口调用账**（ctx.openFileLog）—— 让"点了到底有没有走唯一出口"这件事**可观测**。
      * 为什么需要它（不是"顺手加的测试钩子"）：渲染层拿 `window.desktop.app` 是 **contextBridge 冻结对象**，
      * 断言**装不上记录器**（实测：`desktop.app.openFile = …` 不生效）⇒ 出口那一跳在主进程侧本来就**不可见**；
-     * 而"点链接必须走 app:open-file、不许另开通道"正是这条链最要紧的判据。账在**非冒烟模式下一行都不记** ✓。 */
+     * 而"点链接必须走 app:open-file、不许另开通道"正是这条链最要紧的判据。账在**非冒烟模式下一行都不记** ✓。
+     * 本批给这条账**多了三个字段**（`line` / `editor` / `mode`）：跳行与"用户点了哪个编辑器"同样只在主进程侧可见 ✓。 */
     if (isSmoke) SMOKE_OPEN_FILE_LOG.push({ raw: String(absPath), ok: decision.ok === true,
-      abs: decision.abs, code: decision.code || '' });
+      abs: decision.abs, code: decision.code || '',
+      line: editorCandidates.normalizeLine(o.line), editor: o.editor || '', mode: 'headless' });
     if (!decision.ok) return { ok: false, err: '路径不允许打开：' + decision.reason };
     const target = decision.abs;
     // ⚠️ headless（--smoke / 导出图）下**绝不真的打开**：那会在跑验证的机器上弹出文件管理器/默认应用，
     // 每跑一次 verify 弹一次窗。但**判据照走**（路径可访问性），并把 headless 明确回报 ——
     // 这不是"静默降级"：调用方拿到 headless:true 就知道"校验过了、只是没开"。
+    // ⚠️ 同一条纪律**也管编辑器档**：headless 下**不探测、不弹选择框、不起编辑器** ——
+    //   探测要起子进程跑 `--help`（实测 1–2 秒/个），那是"门禁里做重活"，且会抢焦点 ✗。
     if (isSmoke) {
       try {
         const st = fs.statSync(target);
-        return { ok: true, headless: true, kind: st.isDirectory() ? 'dir' : 'file' };
+        return { ok: true, headless: true, kind: st.isDirectory() ? 'dir' : 'file',
+          editor: null, jumped: false, note: '冒烟/headless：没有探测编辑器、也没有真的打开' };
       } catch (err) {
         return { ok: false, headless: true, err: '路径不可访问：' + err.message };
       }
     }
     try {
-      const r = await shell.openPath(target);
-      return { ok: !r, err: r || null };
+      return await openWithEditor(target, o, BrowserWindow.fromWebContents(e.sender));
     } catch (err) { return { ok: false, err: err.message }; }
   });
 
@@ -2950,8 +3134,19 @@ async function runSmoke(win) {
      * 是关的（隔离关 = 跨域状态会互相污染，正是 MM_SMOKE_NO_ISOLATE 记的那件事），
      * 而 DOM 模态本来就不在"还原沙箱文件"的范围内 ⇒ 只靠隔离收不掉它 ✗。 */
     if (a.__domain !== smokeIsolateState.lastDomain) {
-      await isolateDomain();   // **域变了才隔离**（域内顺序不受影响 ✓）
+      /* ⭐ **采样顺序 = 先采残留、再做隔离写回**（2026-10-16 修，本批实测驱动）。
+       * 为什么必须这个顺序：`isolateDomain()` 自己会把沙箱文件**写回项目目录**，应用的文件监听器
+       * 立刻把它当成"外部（AI/CLI）改了盘上内容" ⇒ 弹出 `conc-banner` —— 而那一跳紧接着的残留检查
+       * 就会把**框架自己刚制造的浮层**算成"上一个域的残留"，报出**假红**（还会点名一个无辜的域 ✗）。
+       * 实测读数（`.review/20261016-改动清单面板/diag-boundary.js`，SMOKE_ONLY=16,18）：
+       *   · 同一跳 isolateDomain 打印 `已还原 3 个沙箱文件`；
+       *   · 被判定为"残留"的那个 banner 文本 = `外部（AI/CLI）已改盘上内容（5 处，其中 3 处与你的改动相撞）`
+       *     ⇒ 条数与来源都对得上"框架的写回"，不是域 16 自己的动作；
+       *   · 而且它**只在有文件被写回（n>0）时才出现** —— 那条 await 重载给了监听器触发的时间窗。
+       * 采样顺序换过来之后语义更正确：要判的是"上一个域**离开时**留了什么"，那是写回**之前**的状态 ✓。
+       * 注意**不改成"放过 banner"**：真由某个域自己弹出来的 banner 照样会被这一跳判红并点名（不放松判据 ✗）。 */
       const leftOpen = await resetDomainDialogs();
+      await isolateDomain();   // **域变了才隔离**（域内顺序不受影响 ✓）
       if (leftOpen && leftOpen.length) {
         // 记住"是谁留的"：若有域已经留过**同样名字**的模态，锅记在它身上更准（本轮实测过两次）
         const prior = smokeIsolateState.lastDomain && modalCulprit.get(smokeIsolateState.lastDomain);

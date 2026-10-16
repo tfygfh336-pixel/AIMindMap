@@ -26,6 +26,66 @@
 
 ## [Unreleased]
 
+### 「在编辑器里打开并跳行」批：候选**运行时探测** + 两档（能跳行 / 只能打开）+ 危险关联拦下（2026-10-16）
+
+- **一句话**：应用侧那条打开链（`app:open-file` → `shell.openPath`）**原本完全不知道编辑器存在** ——
+  本机实测 `.js` 的关联是 `WScript.exe "%1" %*`，于是"交系统打开"实际是**执行脚本** ✗。本批按用户
+  2026-10-16 的追加要求（「既然可以支持 cursor 也应该可以支持 VSC 和 trae 吧，打开的时候给一个可选项」）
+  补上：**探测本机有哪些编辑器、让用户挑、能跳行就跳行、跳不了就响亮标注**。
+- **判据只有一处实现**：新增 `src/editor-candidates.js`（UMD 纯函数：零 Electron、零 I/O）+
+  `src/editor-probe.js`（探测，I/O 全注入 ⇒ 可单测）；出口仍是**既有的** `app:open-file`
+  ——**不新开 IPC 名字**，只给它**多收一个可选参数** `{line, col, editor}`（老调用方逐字不变）。
+- **两档必须分清**（任务书硬要求）：`jump` = 有 CLI 且**它自己的 `--help` 声明了**
+  `-g --goto <file:line[:character]>`；`open` = 只有 exe / 只有 URL scheme / CLI 起不了 ——
+  界面按 `TIER_TEXT` 显示「**只能打开**（跳不了行）」，返回里 `jumped:false` + `note`，**绝不让用户以为跳了** ✗。
+- **本机实测（2026-10-16，读数见 `.review/20261016-改动清单面板/README.md`）**：
+  · `cursor 3.24.18`（PATH）与 **`Trae CN 3.4.3`**（注册表 scheme）**两个都在 `--help` 里印了 `--goto`**
+    ⇒ 本机两个都是 `jump` 档。⚠️ **Trae CN 是上一轮漏掉的一个**：只按"常见落点"探会判"没装"，
+    而 `HKCU\Software\Classes\trae-cn` + `D:\Program Files\Trae CN\bin\trae-cn.cmd` 都在
+    ⇒ **候选探测不许写死**这条不是洁癖，它在这台机器上已经漏过一个真编辑器。
+  · URL scheme：`cursor://` 与 `trae-cn://` **已注册**，但"带行号会不会真跳"**没有读数**
+    （发一次 URL 后 Cursor 的状态/日志里没有出现那个文件）⇒ URL scheme 一律只当 `open` 档，**不冒充跳行**。
+  · `--reuse-window`：两个 CLI 都**有**这个开关（`-r --reuse-window`），但**没有读数**说明"加了它对跳行
+    更可靠" ⇒ 按纪律**不加**（最小参数面），理由写在 `commandArguments()` 的注释里。
+- **危险关联拦下（第 3 件）**：`.js → WScript`（**执行**语义）与 `.ts → 播放器`（本机实测是
+  `PotPlayerMini64.TS`，不是 WMP）都判 `block`：**不交给系统**，返回里给"装编辑器 / 改默认应用"的指引；
+  `.md/.json/.mjs/.cjs` 本机**无关联** ⇒ 判 `note`（照旧 `shell.openPath`，但如实说会弹选择框）。
+  判据用**形状**而不是播放器名单（第一版只认 `wmplayer.exe` ⇒ 漏判 PotPlayer，被实测与单测各抓一次）。
+- **记住用户的选择**：**主进程侧**的 `<userData>/editor-prefs.json`（`main.js` 的 `loadEditorPref/saveEditorPref`，
+  写盘走既有 `writeFileAtomic`）——**只有用户在弹窗里真选过一次才记**（自动选中不记，那不算用户的选择）。
+  ⚠️ **第一版放在渲染层用 `localStorage`，被冒烟域 50 的结构断言判红**（"渲染层 0 处 localStorage"是 R6 定的规则：
+  反馈/偏好必须走宿主，不许在渲染层留影子状态）⇒ 改成主进程偏好文件。
+  ⚠️ **没有复用** `dsh-sidebar-prefs.json`：那个文件是 `main-dsh-sidebar.js` 的单一写者，
+  从 `main.js` 再写一份就是**两个写者**（工程第一铁律禁止 ✗）⇒ 另开一个**只有一个写者**的文件。
+  "上次选的那个还在不在、能不能跳行"一律以**每次探测**为准（`choose()` 带回 `stalePreference`）
+  ⇒ 用户卸载了编辑器时界面能如实说"上次那个没了"，不静默换一个。
+- **安全面**：路径判据仍走 `src/path-chain.js` 的 `kind:'system'`（出口那一道一个字没改）；
+  CLI 调用**参数化传 argv 数组**（`['--goto', '<abs>:<line>']`），**全程不拼命令行字符串**；
+  起进程带"早期失败读数窗口"（1000 ms，照内核 `dsh-host-open-in-app` 的 `launchWatchMs`）——
+  否则"立刻失败"与"起来了"在 spawn 那一瞬间长得一样（**静默失效**）。
+- **headless 纪律**：`--smoke` 下**不探测、不弹选择框、不起编辑器**（探测要起子进程跑 `--help`，
+  实测本机整轮 ≈ 3.7 s，那是"门禁里做重活"）；只把 `headless:true` 与新增的 `line/editor/mode`
+  三个字段记进**出口调用账**（`ctx.openFileLog`），供断言读。
+- **判别力证明（判据 ③）**：把"注册表 scheme"这一路探测源停用（= 复现"写死版"的行为）⇒
+  `tests/editor-probe.test.js` **必红 2 条**（含"常见落点全空也能找到 Trae CN"那条）；
+  原始 Buffer 逐字节还原（sha256 `72e42e3a…` / 15068 B / CR 0 三记一致）后**复绿 16/16**。
+  脚本与读数：`.review/20261016-改动清单面板/inject-prove.js`。
+- **冒烟框架的一处假红一并修掉（本批实测驱动）**：域边界的"干净前置"原先在 `isolateDomain()`
+  **写回沙箱文件之后**才采样 ⇒ 框架自己那一跳写盘会被应用的文件监听当成"外部改动"弹出
+  `conc-banner`，于是**框架自己制造的浮层被算成"上一个域的残留"**（还会点名一个无辜的域 ✗）。
+  实测读数（`diag-boundary.js`，SMOKE_ONLY=16,18）：同一跳打印 `已还原 3 个沙箱文件`，
+  而那张被判定为"残留"的 banner 文本 = `外部（AI/CLI）已改盘上内容（5 处，其中 3 处与你的改动相撞）`
+  ⇒ 条数与来源都对得上框架的写回而不是那个域的动作。**改法 = 把采样挪到写回之前**
+  （语义也更对：要判的是"上一个域离开时留了什么"）；**判据本身没放松** ✗ —— 域自己弹出来的浮层
+  照样会被判红并点名（那正是这条判据存在的理由，见 `main.js` 里那段注释）。
+- **同一批还带来一条纪律性事实（不属本仓库改动面）**：内核**已经**自带"每回合改动清单"这一面 ——
+  `@deepseek-ai/dsh-workspace-changes`（宿主录制器，`dsh-web-app` bundle 挂载）+ 客户端
+  `@deepseek-ai/dsh-client-ui-deliverables`（turn-tail 改动卡片 + 右栏 `changes-review` tab）。
+  运行实例侧实测：客户端清单里 `dsh-client-ui-deliverables` 在册、会话日志里 13 条
+  `workspace/changes` 事件 ⇒ **"缺的是人看不见"这个前提不成立**，故**没有**再写第二份面板实现
+  （第二份实现 = 破工程第一铁律）；依据与复核命令写进 `docs/DSH-EMBEDDED.md` 台账 B11。
+
+
 ### 测量驱动的动态侧栏宽度批：把**早就采到、却只进诊断**的 `overflow` 读数接回宽度控制（2026-10-16）
 
 - **一句话**：侧栏自动加宽原先只有**一条布尔路径** —— 右栏一开就把整侧栏加到 `RIGHTBAR_AUTO_WIDTH`(900)；

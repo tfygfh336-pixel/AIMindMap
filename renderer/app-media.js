@@ -75,6 +75,35 @@
     return { ok: true, url: window.MMPathChain.rendererUrlOf(project, file), reason: '', code: '' };
   }
 
+  /* ---------------- 【本批】"打开一个已判过的绝对路径"的唯一入口 ----------------
+   * 用户 2026-10-16 的追加要求是：「打开的时候给一个可选项」。**选择与"记住它"都在主进程**：
+   * 探测结果、选择弹窗、"上次选的是哪个"（`<userData>/editor-prefs.json`，写盘走既有 `writeFileAtomic`）
+   * 全在 `main.js` 那一侧。
+   * ⚠️ **渲染层不许留影子状态**：这里**没有** localStorage —— 这不是风格问题，而是冒烟域 50 的
+   *   结构断言（"渲染层 0 处 localStorage"）在守的一条规则（本批第一版就是那样被它判红的 ✗）；
+   *   那个偏好文件也**只有一个写者**（`main.js`），没有从别处再写一份。
+   * 渲染层只做两件事：把可选参数递过去、把主进程**如实回报**的结果显示出来
+   * （`jumped:false` + `note` = "只能打开，没跳行" 那种情形，必须让人看见 ✗ 不许静默）。
+   */
+  function requestOpen(abs, opts) {
+    if (!window.desktop || !window.desktop.app || !window.desktop.app.openFile) {
+      return Promise.resolve({ ok: false, err: '当前环境不支持打开文件（无主进程通道）' });
+    }
+    return Promise.resolve(window.desktop.app.openFile(abs, opts || {})).then((r) => {
+      const res = r || { ok: false, err: '未知原因' };
+      if (res.ok === false) {
+        setStatus('打不开：' + (res.err || '未知原因') + '｜' + abs, true);
+        return res;
+      }
+      if (res.note) setStatus(res.note + '｜' + abs, false);
+      return res;
+    }).catch((err) => {
+      const msg = (err && err.message) || err;
+      setStatus('打不开：' + msg + '｜' + abs, true);
+      return { ok: false, err: msg };
+    });
+  }
+
   /** 链的**唯一出口**：既有 IPC `app:open-file`（签名一个字不改、不新增平行通道）。
    *  ⚠️ 打不开**必须让人看见**（判据 3）：判据不通过显示 `reason`，主进程失败显示 `err` ——
    *  绝不"点了没反应"（本工程反复治过的静默失效类）。*/
@@ -83,20 +112,9 @@
       kind: input.kind, raw: input.raw, project: state.project, force: input.force
     });
     if (!d.ok) { setStatus('打不开：' + d.reason + '｜' + String(input.raw), true); return Promise.resolve(false); }
-    if (!window.desktop || !window.desktop.app || !window.desktop.app.openFile) {
-      setStatus('当前环境不支持打开文件（无主进程通道）：' + d.abs, true);
-      return Promise.resolve(false);
-    }
-    return Promise.resolve(window.desktop.app.openFile(d.abs)).then((r) => {
-      if (!r || r.ok === false) {
-        setStatus('打不开：' + ((r && r.err) || '未知原因') + '｜' + d.abs, true);
-        return false;
-      }
-      return true;
-    }).catch((err) => {
-      setStatus('打不开：' + ((err && err.message) || err) + '｜' + d.abs, true);
-      return false;
-    });
+    if (!window.MM.requestOpen) { setStatus('打开入口没加载：renderer/app-media.js 的 requestOpen', true); return Promise.resolve(false); }
+    // 行号：调用方给了就带（详情正文里的 `file:line` 引用走这条），没给就只打开文件。
+    return MM.requestOpen(d.abs, { line: input.line, col: input.col }).then((r) => r && r.ok !== false);
   }
 
   /* PDF 缩放：Chromium viewer 的 `#zoom=` **只在设置 src 那一刻生效** ——
@@ -312,6 +330,7 @@
   MM.attachmentPath = attachmentPath;      // 判据结果（含 reason）—— 本文件唯一一处向链取判据的入口
   MM.imageLinkOf = imageLinkOf;            // 图片区（app-detail-content.js）用它：判据 + 页面相对地址
   MM.openByChain = openByChain;            // 链的唯一出口（既有 app:open-file，失败必显示原因）
+  MM.requestOpen = requestOpen;            // 【本批】"打开一个已判过的绝对路径"的唯一入口（选择与记忆都在主进程）
   MM.openFilePreview = openFilePreview;
   MM.closeFilePreview = closeFilePreview;
   MM.renderRelated = renderRelated;

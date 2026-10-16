@@ -245,7 +245,9 @@
     const dc = fdQ(box, '.fd-detail-content');
     /* ⚠️⚠️ **`detail` 的契约是「HTML 优先」——这一行就是它的唯一落点**（`R7-0` 起钉死）：
      *   · 契约：`detail` 是**HTML 片段**（不是 Markdown）——`docs/DATA-FORMAT.md` §2.4；
-     *     先例读数：真实项目 `comnet` 的 **133 个含 detail 节点 100% 是 HTML**（同节）。
+     *     先例读数（**现算，不许抄数**）：`node scripts/detail-census.js comnet` —— 它打印
+     *     含 detail 的节点数：**这个数会随并发写入变**（实测 2026-10-16：工作区 753 / git HEAD 450、
+     *     而工程文档里一度写死的 "133" 是错的）⇒ 判据要取规模时**跑脚本拿**，别写死。
      *   · 所以正文走**裸 `innerHTML` 注入**：浏览器自己的解析器负责结构，**不做任何转换** ✓。
      *   · ✗✗ **不许**把这行改成"一律走会**转义裸 HTML** 的 `markdownToHtml`"
      *     （`src/convert.js` 文件头：它先整体转义再套行内语法）——那会把既有 HTML 节点
@@ -253,7 +255,10 @@
      *     Markdown 是 R7 主体的**另一条**路径（按 `detailMode`/渲染期探测**显式选**），
      *     两条路径**互斥**、不在这里混（`docs/DATA-FORMAT.md` §2.4 的警告）。
      *   · 机械守卫有两处（都在本批）：结构断言 `tests/`（本模块**零** `markdownToHtml`/`mdBlock`/
-     *     `mdInline` 调用）+ 冒烟真帧判据 `scripts/smoke/47-*.js`（HTML 夹具的标签**不当文字画出来**）。 */
+     *     `mdInline` 调用）+ 冒烟真帧判据 `scripts/smoke/47-*.js`（HTML 夹具的标签**不当文字画出来**）。
+     *   · **R7 起多了一层消毒**（`renderer/sanitize.js`）：白名单见 `src/html-whitelist.js`。
+     *     消毒**不改数据**、也不"一律重写"：它只在**真的动了字节**时才换掉注入串
+     *     （`changed === false` ⇒ 注入原始 `detail`）⇒ **默认档逐字节不变**这条判据仍然成立 ✓。 */
     if (detail && MM.Sanitize) MM.Sanitize.inject(dc, detail, { project: state.project });
     else dc.innerHTML = detail || '<span class="placeholder">（该节点无详情）</span>';
     // 条目层（v3）：条目化节点额外给出「逐条」呈现（清单 + 正文归属）。
@@ -262,7 +267,11 @@
     //   清单与属性标注，**不拼第二份 HTML**（见下方 renderFdItems 段落）。
     //   未条目化节点 ⇒ 这里只做"清掉上一位节点留下的清单"，**一个字节都不加**（回归判据）。
     renderFdItems(box, node);
-    /* 正文增强（R7）：三类链接的点击分支（事件委托，绑一次）+ mermaid 懒加载（异步，首屏不等它）。 */
+    /* 正文增强（R7）：三类链接的点击分支（事件委托，绑一次）+ mermaid 懒加载（异步，首屏不等它）。
+     * ⚠️ 它是**渲染期的 DOM 行为**，不写任何数据、也不改正文的字节来源：
+     *   · 链接点击一律走事件委托 ⇒ 不给正文元素加属性（"正文只有一份"不受影响）；
+     *   · mermaid / 笔记锚点是**异步**的（打开框之后），照热度条那句「异步刷新，不拖慢打开」；
+     *   · 默认档（无链接、无图源、无锚点）走完这一句**一个字节都不加** ⇒ 域 47 的字节判据照旧绿 ✓。 */
     if (MM.mdEnhance) MM.mdEnhance(box);
     // 热度条（第三件·A）：**展示**两条热度（人 / AI），数据来自主进程 `app:heat`（= CLI `heat --json`）。
     // ⚠️ 它写在**另一个容器**（`.fd-heat`）里，与上面那行 `dc.innerHTML = detail` **无关** ——
@@ -373,7 +382,9 @@
         // 而界面保存会把内存里的 assoc 写回去 —— 不同步就会用旧内存覆盖掉新笔记。
         syncAssocToState(r);
         renderAssocEntries(al, r, node);
-        /* 笔记锚点（R7）：关键词在正文里变成可打开它的链接（`.fd-notelink`）。 */
+        /* 笔记锚点（R7）：这篇笔记声明的**关键词**在正文里变成可打开它的链接（`.fd-notelink`）。
+         * ⚠️ 匹配**只作用于 DOM 文本节点**（跳过 code/pre/a 与属性值）⇒ `detail` 一个字节不动；
+         *   匹配不上**不是静默**：那篇笔记仍在上面「本页笔记」区（`assoc-list --node` 的口径已带出它）。 */
         if (MM.mdApplyAnchors) MM.mdApplyAnchors(fdQ(box, '.fd-detail-content'), node, r);
         setTimeout(() => positionFdBox(box), 20);
       }).catch(() => {
@@ -896,7 +907,7 @@
    * 且**失败必须让人看见**：路径不存在 / 盘没挂 / 权限不足时 `shell.openPath` 会返回错误串，
    * 这里把它显示在状态栏（绝不"点了没反应"—— 那是本工程反复治过的"静默失效"）。
    */
-  async function openLocalPath(p) {
+  async function openLocalPath(p, opts) {
     if (!p) return;
     if (!window.MMPathChain || typeof window.MMPathChain.decide !== 'function') {
       setStatus('路径判据模块没加载：src/path-chain.js', true);
@@ -907,16 +918,18 @@
       setStatus('打不开这个文件夹：' + d.reason + '｜' + p, true);
       return;
     }
-    if (!window.desktop || !window.desktop.app || !window.desktop.app.openFile) {
-      setStatus('当前环境不支持打开文件夹（无主进程通道）', true);
+    if (!window.MM.requestOpen) {
+      setStatus('打开入口没加载：renderer/app-media.js 的 requestOpen', true);
       return;
     }
     try {
-      const r = await window.desktop.app.openFile(d.abs);
+      // 【本批】走**同一条出口**（`MM.requestOpen` → 既有 IPC `app:open-file`）：它负责
+      // ① 带上"用户上次选的编辑器" ② 把"只能打开、没跳行"这类事实说出来（`note`）。
+      const r = await window.MM.requestOpen(d.abs, { line: opts && opts.line, col: opts && opts.col });
       if (!r || r.ok === false) {
         setStatus('打不开这个文件夹：' + ((r && r.err) || '未知原因') + '｜' + d.abs, true);
-      } else {
-        setStatus('已打开文件夹：' + d.abs);
+      } else if (!r.note) {
+        setStatus('已打开：' + d.abs + (r.editor ? '（' + r.editor + (r.jumped ? ' · 已跳到第 ' + r.line + ' 行' : ' · 只打开，未跳行') + '）' : ''));
       }
     } catch (e) {
       setStatus('打不开这个文件夹：' + ((e && e.message) || e) + '｜' + d.abs, true);
