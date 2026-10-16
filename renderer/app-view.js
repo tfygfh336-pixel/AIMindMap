@@ -1861,6 +1861,66 @@
       : '已恢复单中心模式：中心节点重新显示');
   }
 
+  /* ================= 【R5 · R2 期 5】结构轴 = 树结构 / 复杂结构 =================
+   * 用户 2026-10-14 插入的 R5：显示逻辑要分**两条轴** —— 树结构（既有父子树）与复杂结构
+   * （节点之间的连接关系不限于父子；边来自既有 `links[]` / `assoc[]` 两处表达，不新造字段）。
+   *
+   * ⚠️ **这不是**上面那条 `setRootMode` 轴：那条管的是「容器根显隐 + 根→顶层主题连线」、
+   *   持久化在 `meta.rootMode`；本条管的是「**边从哪来**」。两件事塞进一个键 = 一次改动写两件事 ✗
+   *   ⇒ 两条轴各自一个状态、各自一个入口，互不读写对方（域 51 有"两条轴正交"的判据）。
+   *
+   * 口径（用户 2026-10-16 拍板，本文件是它的**唯一实现**）：
+   *   · **会话级内存**：不写项目、不写 `meta`、不写应用偏好 —— 切模式**零序列化写入**；
+   *   · **默认 = 树结构**；**启动 / 切项目 ⇒ 回树结构**（不跨会话记忆，见 resetStructureMode）；
+   *   · 开放 `MM.structureMode()` 读数出口给菜单文案与冒烟断言（域 51）。
+   *
+   * 复杂档的呈现**不重写任何取舍**：直接复用关系层的**唯一入口** `MM.showRelated`
+   * （`renderer/app-related.js`）⇒「跨项目只标不画」「同一篇关联笔记成员之间不超过既有
+   * `CLIQUE_MAX` 才画团边、超过就不画」这些既有口径**一个字都没有第二份**（线数由域 51 与
+   * 既有模型现算对拍）。代价如实写在这里：它同时会开「关联信息」编辑条并把视图缩放到刚好
+   * 框住 —— 那正是点 🔗 的同一套呈现（换来的是一条不重复的实现 ✓）。
+   */
+  let fdStructureMode = 'tree';        // 'tree' | 'complex'（会话级；不进任何序列化产物）
+
+  /** 当前结构轴模式（菜单文案与冒烟断言读它） */
+  function structureMode() { return fdStructureMode; }
+
+  /** 会话级复位：**启动 / 切项目**回树结构（调用点在 app-actions.js 的 openProject）。
+   *  只动这一个内存读数：不碰关系层状态、不写盘、不改 `meta.rootMode` 那条旧轴。 */
+  function resetStructureMode() { fdStructureMode = 'tree'; return fdStructureMode; }
+
+  /** 切结构轴模式（菜单项的 action）。返回 Promise<{ok, mode, related, reason?}>；拿不到真值时
+   *  必带 reason 且**响亮说**（不静默 ✗）：
+   *   · `'tree'`    ⇒ 关系层走既有唯一出口 `MM.clearRelated()`（幂等）；
+   *   · `'complex'` ⇒ 对**当前选中节点**调既有 `MM.showRelated`；**没选中就响亮说**，层保持原样；
+   *   切档途中又被切回去（showRelated 内部有两次 IPC ⇒ 是异步的）⇒ 不把过期那一层留在屏上。 */
+  async function setStructureMode(mode) {
+    const want = mode === 'complex' ? 'complex' : 'tree';
+    if (fdStructureMode === want) { setStatus('已是该模式'); return { ok: true, mode: want, related: null }; }
+    fdStructureMode = want;
+    if (want === 'tree') {
+      if (MM.clearRelated) MM.clearRelated();
+      setStatus('已回到树结构模式：只画父子骨架');
+      return { ok: true, mode: want, related: null };
+    }
+    if (typeof MM.showRelated !== 'function') {
+      setStatus('复杂结构模式：拿不到 MM.showRelated（关系层没加载）⇒ 自由边画不出来', true);   // 不静默 ✗
+      return { ok: false, mode: want, related: null, reason: '缺 MM.showRelated' };
+    }
+    const jm = state.jm;
+    const sel = (jm && MM.adapter && MM.adapter.available(jm)) ? MM.adapter.getSelected(jm) : null;
+    if (!sel || !sel.id) {
+      setStatus('已切到复杂结构模式：选一个节点（或右键 → 🔗 关联节点），它的自由边就画在图上', true);
+      return { ok: true, mode: want, related: null, reason: '没有选中节点' };
+    }
+    const related = await MM.showRelated(sel.id);      // 它自己会报"画了几条线"（不重复报）
+    if (fdStructureMode !== 'complex') {               // 等待期间被切回树结构 ⇒ 别留过期的一层
+      if (MM.clearRelated) MM.clearRelated();
+      return { ok: true, mode: fdStructureMode, related: related, reason: '切换期间已切回树结构' };
+    }
+    return { ok: true, mode: want, related: related };
+  }
+
   /** 还原视图：把根节点重新居中（纯平移，不依赖滚动范围），并复位所有树偏移 */
   function resetView() {
     if (!state.jm) { setStatus('导图尚未就绪'); return; }
@@ -2015,6 +2075,9 @@
   MM.applyRootModeVisual = applyRootModeVisual;
   MM.applyThemeLayout = applyThemeLayout;  MM.applyRootMode = applyRootMode;
   MM.setRootMode = setRootMode;
+  MM.structureMode = structureMode;             // 【R5 · R2 期 5】结构轴（树 / 复杂）读数出口
+  MM.setStructureMode = setStructureMode;
+  MM.resetStructureMode = resetStructureMode;
   MM.resetView = resetView;
   MM.expandAll = expandAll;
   MM.collapseAll = collapseAll;

@@ -43,6 +43,10 @@
   const getPanState = () => MM.getPanState();
   const setViewScale = (s) => MM.setViewScale(s);
   const setRootMode = (mode) => MM.setRootMode(mode);
+  // 【R5 · R2 期 5】结构轴（树 / 复杂）——与上面那条 setRootMode（容器根显隐 + meta.rootMode）
+  // 是**两条轴**：这条只管「边从哪来」，会话级内存、零序列化写入（唯一实现在 app-view.js）。
+  const structureMode = () => MM.structureMode();
+  const setStructureMode = (mode) => MM.setStructureMode(mode);
   const isThemeMode = () => MM.isThemeMode();
   const editNode = (id) => MM.editNode(id);
   const deleteNode = (id) => MM.deleteNode(id);
@@ -247,6 +251,9 @@
     clearSelection: () => MM.clearSelection(),
     applySelection: (ids) => MM.applySelection(ids),
     setRootMode,
+    // 【R5 · R2 期 5】结构轴：现状读数 + 切换（菜单项与冒烟断言都走这两个）
+    structureMode,
+    setStructureMode,
     isThemeMode,
     editNode,
     deleteNode,

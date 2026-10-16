@@ -817,6 +817,9 @@
       projectEpoch++;   // 切换开始 ⇒ 在途的旧读盘结果一律作废（见 projectEpoch 说明）
       const r = await window.desktop.project.read(name);
       state.project = { name, file: r.file, version: r.version };
+      /* 【R5 · R2 期 5】结构轴（树 / 复杂）是**会话级**的：启动 / 切项目一律回树结构。
+       * 只复位那一个内存读数（app-view.js 的 resetStructureMode）—— 不写盘、不碰关系层状态。 */
+      if (MM.resetStructureMode) MM.resetStructureMode();
       state.history = new UndoStack(50);
       renderMind(r.data);
       state.history.push(snapshot()); // 初始状态入栈（撤销栈基座）

@@ -9,7 +9,7 @@
 
 面向 **AI 与人协作** 的智能笔记工具（思维导图式），人机共建并维护笔记：
 
-- **人用**：Electron 桌面界面（滚轮缩放、点击下钻、双击改名、节点上方浮动详情、图片双击预览、**中键拖动平移画布**、**md/pdf 附件内预览**）
+- **人用**：Electron 桌面界面（滚轮缩放、点击下钻、双击展开/收起（叶子双击 = 打开详情框）、节点上方浮动详情、图片双击预览、**中键拖动平移画布**、**md/pdf 附件内预览**）
 - **AI 用**：CLI（`cli/mm-cli.js`）+ MCP（`scripts/mcp-server.js`）
 - **数据**：`projects/<项目>/<项目>.json`（JSON 节点树，单一事实来源），图片存同项目 `assets/`（**每图必带 caption 备注**），附件文件存 `attachments/`（**每附件必带 caption**，随项目保存/打包）
 - **可移植**：`npm run dist` 打包 Windows 安装包（electron-builder NSIS）

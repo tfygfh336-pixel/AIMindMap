@@ -241,22 +241,30 @@ module.exports = [
     }
   },
   {
-    name: '用户路径④：双击**叶子节点**⇒ 只给状态说明、不弹编辑框、不报错（边界）',
+    name: '用户路径④：双击**叶子节点**⇒ 打开**它自己的**详情框（R5-3 新语义：无父子关系 ⇒ 开详情）、不弹编辑框、不报错（边界）',
     run: async (ctx) => {
-      const r = await execJson(ctx, `(function () {
+      const r = await execJson(ctx, `(async function () {
         var jm = window.MMApp.getState().jm, id = null;
         (function walk(n) { if (id || !n) return; var k = n.children || []; if (n.id && n.id !== 'root' && k.length === 0) { id = n.id; return; } k.forEach(walk); })(jm.get_node('root'));
         if (!id) return JSON.stringify({ ok: false, text: '找不到叶子节点' });
-        window.MMApp.showDetail(jm.get_node(id));     // 让状态栏有个干净起点
+        /* 从"一个框都没有"起（否则"框在"这个读数没有分辨力 —— 旧版开头先 showDetail 一次，
+         * 那样"双击后仍有一个框"在双击**什么也没做**时照样成立 ✗）。 */
+        await window.MMApp.closeAllFloatDetail();
         window.MM.setStatus('（探针起点）');
         var el = document.querySelector('jmnode[nodeid="' + id + '"]');
         if (!el) return JSON.stringify({ ok: false, text: '叶子不可见：' + id });
+        var before = window.MMApp.getFloatDetailState().boxes;
         el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
-        var status = (document.querySelector('#status-text') || {}).textContent || '';
+        var after = window.MMApp.getFloatDetailState();
         var dlg = document.getElementById('edit-dialog').style.display === 'flex';
         if (dlg) document.getElementById('edit-cancel').click();
-        // 期望：状态栏说明"没有子节点"（不静默 ✗）；编辑框不得弹出 ✓
-        return JSON.stringify({ ok: /没有子节点/.test(status) && !dlg, id: id, text: '叶子=' + id + ' 状态栏=' + JSON.stringify(status.slice(0, 60)) + ' 编辑框=' + dlg });
+        /* 期望（R5-3 起）：双击叶子 ⇒ **它自己的**详情框被打开（旧口径"只给状态说明"已被 R5-3 取代，
+         * 见 renderer/contextmenu.js 的 onDblClick）；编辑框仍不得弹出 ✓；不报错 ✓ */
+        var status = (document.querySelector('#status-text') || {}).textContent || '';
+        var ok = before === 0 && after.boxes === 1 && after.nodeId === id && !dlg;
+        return JSON.stringify({ ok: ok, id: id, text: '叶子=' + id + ' 框数 ' + before + '→' + after.boxes
+          + '（属主=' + JSON.stringify(after.nodeId) + '，应为 ' + JSON.stringify(id) + '） 编辑框=' + dlg
+          + ' 状态栏=' + JSON.stringify(String(status).slice(0, 60)) });
       })()`);
       return { ok: !!r.ok, text: r.text };
     }

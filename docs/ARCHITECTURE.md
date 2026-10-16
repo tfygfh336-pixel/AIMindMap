@@ -64,7 +64,7 @@
 | `app-actions.js` | 保存闸门与未保存判定（`isDirty`）、**并发冲突的两条出路**（`resolveConflict`：用磁盘版本 / 保留我的）、快照撤销重做、节点增删改、搜索、项目加载/切换、MD 导入导出 |
 | `app.js` | **接线层**：`wireUI()` + `window.MMApp` 对外导出 + `DOMContentLoaded` 启动 |
 | `editor.js` | **交互层**：编辑/图片/附件对话框、快捷键、MD 导入导出文件选择；只调 MMApp API，不直接改状态 |
-| `contextmenu.js` | **交互层**：节点/背景右键菜单 + 双击节点打开编辑对话框 |
+| `contextmenu.js` | **交互层**：节点/背景右键菜单 + 双击节点（**有子节点 = 展开/收起；无子节点 = 打开详情框**，R5-3 起；开详情只经 `MM.showDetail`）+ 结构轴菜单项（树 / 复杂，会话级，R2 期 5） |
 | `vendor/jsmind.js` | 第三方导图引擎（npm **jsmind@0.9.1** es6 版，本地化避免 CDN）。**升级前必须先读 `renderer/vendor/JSMIND-INTERNALS.md`** —— 那张表列着我们**主动接管**的内部符号（14 类 / 75 个代码行）与三条实测事实，是升级时**要人工回归的清单**（本节只说明"它是谁"，不复述那张表） |
 | `style.css` | 界面样式（含审计面板与命令面板） |
 

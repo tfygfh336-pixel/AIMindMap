@@ -2,7 +2,7 @@
  * AI MindMap — 右键菜单 + 双击编辑（contextmenu.js）
  * ------------------------------------------------------------
  * 人用交互增强（参考 XMind / FreeMind 等开源导图习惯）：
- *   - 双击节点      → 打开完整编辑对话框（标题+详情+展开）
+ *   - 双击节点      → 有子节点 = 展开/收起；无子节点（叶子 / 只连边的节点）= 打开详情框（R5-3）
  *   - 右键节点      → 编辑 / 新增子节点 / 新增同级 / 删除 /
  *                     展开 / 收起 / 添加图片
  *   - 右键空白背景  → 新建子节点（根下）/ 展开全部 / 收起全部 /
@@ -300,6 +300,34 @@
     openMenu(lastX, lastY, items);
   }
 
+  /** 【R5 · R2 期 5】结构轴菜单项（树结构 / 复杂结构）——**这是独立的一条轴**：
+   *  与「主题模式」（`setRootMode`：容器根显隐 + `meta.rootMode` 持久化）并列而互不相干 ——
+   *  把两件事合并进一个键 = 一次改动写两件事 ✗。文案照既有风格；复杂档的呈现走既有关系层
+   *  （唯一入口 `MM.showRelated`，见 `renderer/app-view.js` 的 setStructureMode）。
+   *  `setStructureMode` 返回 Promise ⇒ 失败要**响亮说**（照 themeSideItems 的写法，不静默 ✗）。 */
+  function structureModeItem() {
+    const app = () => window.MMApp;
+    const cur = app().structureMode ? app().structureMode() : 'tree';
+    const act = (mode) => () => {
+      let p = null;
+      try { p = app().setStructureMode(mode); }
+      catch (e) {                                     // 动作里抛异常必须**响亮**，不许静默消失 ✗
+        app().setStatus('切换结构模式没生效：' + ((e && e.message) || e), true);
+        return;
+      }
+      if (p && typeof p.then === 'function') {
+        p.then((r) => {
+          if (r && r.ok === false) app().setStatus('切换结构模式没生效：' + (r.reason || '未知原因'), true);
+        }).catch((e) => app().setStatus('切换结构模式没生效：' + ((e && e.message) || e), true));
+      } else if (!p) {
+        app().setStatus('切换结构模式没生效：没有 setStructureMode 入口', true);
+      }
+    };
+    return cur === 'complex'
+      ? { label: '回到树结构模式（只画父子骨架）', action: act('tree') }
+      : { label: '开启复杂结构模式（画节点之间的自由边）', action: act('complex') };
+  }
+
   function backgroundMenu() {
     const app = () => window.MMApp;
     // 主题模式判定必须走 MMApp.isThemeMode()。
@@ -314,6 +342,11 @@
       themed
         ? { label: '恢复单中心模式（显示中心节点）', action: () => app().setRootMode('tree') }
         : { label: '开启主题模式（顶层主题互相独立）', action: () => app().setRootMode('themes') },
+      /* 【R5 · R2 期 5】另一条轴：**结构轴 = 树结构 / 复杂结构**（边从哪来）。
+       * 与上面那条"主题模式"并列而**不是**同一件事：那条管容器根显隐、写 meta.rootMode；
+       * 这条会话级（不写盘），复杂档把当前选中节点的自由边交给既有关系层呈现。
+       * 复用既有入口的写法（`app().setXxx`）；返回 Promise，失败了要**响亮说**（照 themeSideItems）。 */
+      structureModeItem(),
       { label: '还原视图（找回导图）', action: () => app().resetView() },
       '---',
       { label: '展开全部', action: () => app().expandAll() },
@@ -396,18 +429,48 @@
   function onDblClick(e) {
     if (e.target.closest && e.target.closest('.overlay, #ctx-menu')) return;
     const target = e.target;
-    if (isNodeEl(target)) {
-      const id = getBindedNodeId(target);
-      // 双击 = **展开 / 收起**（用户 2026-10-08 定 ✓）。编辑改从右键菜单「编辑（F2）」进 ✓
-      //（那条本来就在，见本文件顶部的 nodeItems）——所以这里不再弹编辑框 ✗。
-      const fn = (window.MM && window.MM.toggleNodeExpanded)
-        || (window.MMApp && window.MMApp.toggleNodeExpanded);
-      if (id && fn) {
-        e.preventDefault();
-        fn(id);
-      } else if (id && window.MM && window.MM.setStatus) {
-        window.MM.setStatus('双击展开/收起还没接线（缺 toggleNodeExpanded）', true);   // 不静默 ✗
+    if (!isNodeEl(target)) return;
+    const id = getBindedNodeId(target);
+    if (!id) return;
+    const jm = window.MMApp && window.MMApp.getState && window.MMApp.getState().jm;
+    const node = jm && MM.adapter ? MM.adapter.getNode(jm, id) : null;
+    if (!node) {
+      // 拿不到节点 = 采不到真值 ⇒ **响亮说**，不许静默什么都不干 ✗
+      if (window.MM && window.MM.setStatus) {
+        window.MM.setStatus('双击：拿不到节点 ' + id + '（树是不是刚重载过？）', true);
       }
+      return;
+    }
+    /* 【R5-3 · R2 期 5】双击按「**有没有父子关系**」分岔：
+     *   有子节点 ⇒ 展开 / 折叠（用户 2026-10-08 定，一字不改）；
+     *   没有子节点（叶子 / 复杂结构里只连边、无子的节点 / 孤立节点）⇒ 打开**详情框**。
+     * ⚠️「有没有父子」必须**现算子节点数**（`node.children.length`），**不许读 `expanded`**：
+     *   真数据里两种形状都有 —— 光杆节点标着 expanded:false（假折叠）、叶子标着 expanded:true；
+     *   读 expanded 会把**折叠着的父节点**误判成叶子、把带展开标记的叶子误判成父节点
+     *   （域 51 的注入取证：把这一行改成读 expanded ⇒ 那两条判据必红）。
+     * ⚠️ 开详情**只经 `MM.showDetail`** —— 它是"打开详情框"的唯一入口（点线的"记访问"也挂在它里面）；
+     *   这里**不许**新开第二条开详情的路。R1 的两击配对判别（app-detail-content.js 的 pendingClick /
+     *   300ms 窗口 / `clickJudgeState`）本批一个字都没动：这条分岔只在 dblclick 这一拍上**选一个动作**。 */
+    const hasChildren = !!(node.children && node.children.length);
+    if (!hasChildren) {
+      if (typeof MM.showDetail === 'function') {
+        e.preventDefault();
+        MM.showDetail(node);
+        return;
+      }
+      // 缺 showDetail ⇒ 不许静默（与下面缺 toggleNodeExpanded 同一条纪律）
+      if (window.MM && window.MM.setStatus) {
+        window.MM.setStatus('双击开详情还没接线（缺 MM.showDetail）', true);
+      }
+      return;
+    }
+    const fn = (window.MM && window.MM.toggleNodeExpanded)
+      || (window.MMApp && window.MMApp.toggleNodeExpanded);
+    if (fn) {
+      e.preventDefault();
+      fn(id);
+    } else if (window.MM && window.MM.setStatus) {
+      window.MM.setStatus('双击展开/收起还没接线（缺 toggleNodeExpanded）', true);   // 不静默 ✗
     }
   }
 

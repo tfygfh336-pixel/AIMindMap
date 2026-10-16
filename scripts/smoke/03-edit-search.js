@@ -740,14 +740,23 @@ const assertions = [
     }
   },
   {
-    /* ── R1 判据③（用户原话：双击还会打开节点详情、遮挡视野 ✗）──
+    /* ── R1 判据③（用户原话：双击还会打开节点详情、遮挡视野 ✗）—— ⚠️ **2026-10-16（R5-3）口径反转** ──
      * 打**叶子**上：叶子双击不改布局 ⇒ 它下方那块（浮详情框出现的位置）的**真帧差分**才是可判的
      * （打在会展开的节点上时，子树增删会把整块画面改掉 ⇒ 像素判据分不清"框冒出来了"与"树展开了"✗）。
-     * 两条判据 + 一条正向对照：
-     *   · 命中测试：双击后**没有**任何一个"真的被打开"的框（`document.elementFromPoint(框中心)` 命中自己）；
-     *   · 真帧像素：那块 ROI 的非背景像素数**逐字不变**；
-     *   · 对照：同一块 ROI 上**单击必须真的冒出框**（命中测试说 1 + 像素变多）⇒ 上面两条不是空转 ✓。 */
-    name: 'R1 双击②（真输入 click×2 打在叶子上）⇒ 详情框**没被打开**（命中测试 + 真帧像素：那块区域无浮层遮挡）',
+     * ⚠️ **为什么反转**：R5-3 明确定下「**无父子关系的节点**双击 ⇒ **打开详情框**」（有意语义，
+     *   见设计稿 §R5-3 的语义表与 `renderer/contextmenu.js` 的 onDblClick）。本断言写于"双击叶子
+     *   什么都不做"的年代，守的是**旧事实** —— 事实变了、替旧事实站岗的判据必须**同批反转** ✗
+     *   （skill B4 成因④）。反转**没有放宽** R1：**恰恰判得更严** ——
+     *   修前实测 `showDetail` 调 **2** 次、访问日志 **+2**（单击那一对副作用各跑了一遍）；
+     *   现在必须是**恰好 1 次 / 恰好 +1**（只来自 `dblclick` 那一拍）⇒ **2 次就是 R1 回归**，照红 ✓。
+     *   （父节点那一档仍必须是 **0 次 / +0**，见本文件上面的 R1 双击① —— 那条一个字没动 ✓。）
+     * 五条判据 + 一条正向对照：
+     *   · 框**恰好 1 个**，且它是**这个叶子自己的**节点详情框（`elementFromPoint` 命中它自己）；
+     *   · 双击期间 `showDetail` 恰好 1 次、`recordHumanOpen`（记访问）恰好 1 次，且点名是这个节点；
+     *   · 访问日志条数恰好 **+1**（沙箱里现算，不写死数字）；
+     *   · 那块 ROI 的真帧像素**确实变了**（框不透明、盖住下面 ⇒ 像素变了；"没变"才是缺陷）；
+     *   · 对照：同一块 ROI 上**单击必须真的冒出框**（命中测试说 1 + 像素变了）⇒ 上面几条不是空转 ✓。 */
+    name: 'R1 双击②（真输入 click×2 打在叶子上）⇒ 只开**一个**框（就是这个叶子自己的详情框，来自 dblclick 那一拍）：showDetail / 记访问各**恰好 1 次**、访问日志的增量与"对照单击"逐字相等（都 = 一次打开的代价）、ROI 像素确实变了 —— 修前的形态是"showDetail 2 次"，那就是 R1 回归；R5-3 起"双击叶子 = 开详情"是有意语义',
     run: async (ctx) => {
       if (!ctx.input) return r1NoInput();
       const prep = await r1Prep(ctx, 'leaf');
@@ -755,6 +764,7 @@ const assertions = [
       const pick = await r1PickHittable(ctx, 'leaf');
       if (!pick.ok) return { ok: false, text: pick.text };
       const id = pick.node.id;
+      const topic = String(pick.node.topic || '');
       const roiOf = (rect) => r1RoiBelow(rect, pick.panel);
       let roi = roiOf(pick.node.rect);
       if (!roi) {
@@ -773,17 +783,25 @@ const assertions = [
         return { ok: false, text: '动手前的真帧读数采不到（scanRegion 失败）：' + JSON.stringify(scan0) + '—— 采不到真值 = 红 ✗' };
       }
 
+      const visitBefore = r1VisitLines();               // 双击前的访问条数（+1 那条判据的基线）
       await ctx.exec(R1_PROBE_ON);
+      await ctx.exec(R1_COUNT_ON);                      // 数 showDetail / recordHumanOpen（只包测试侧，不改产品）
       await r1DoubleClick(ctx, fresh.pt);
       await ctx.input.settle({ delayMs: 700 });
       const probeStr = await ctx.exec(R1_PROBE_OFF);
+      const dblCounts = r1Counts(await ctx.exec(R1_COUNT_OFF));
       const openAfterDbl = await ctx.exec(R1_OPEN_BOXES_JS);
       const scanDbl = r1Scan(await ctx.input.capture(), dev);
+      const afterDouble = await r1VisitSettled(2500);
 
-      /* 正向对照：同一块 ROI 上单击 ⇒ 必须真的冒出一个框（否则上面两条可能是"这块永远不动"的假绿 ✗）。
+      /* 正向对照：同一块 ROI 上单击 ⇒ 必须真的冒出一个框（否则上面几条可能是"这块永远不动"的假绿 ✗）。
        * ⚠️ 方向**不许写死"像素变多"**：框是不透明面板，它**盖住**下面那棵树时非背景像素反而会**变少**
        *   （实测：动手前 23443 → 框打开后 1569）⇒ 判据写"变多"会把**功能正常**判红 ✗。
-       *   所以对照只要求"这块画面**确实变了**（≠）" + 命中测试说"确实有 1 个框" ✓。 */
+       *   所以对照只要求"这块画面**确实变了**（≠）" + 命中测试说"确实有 1 个框" ✓。
+       * ⚠️ 这一跳**顺带当"一次打开的成本"的标尺**：访问日志的增量里除 `human-detail` 还带一条
+       *   `ai-related-hop`（打开详情时那次 AI 读相关知识点）⇒ 一次打开 = **2 行**（实测，别写死）。
+       *   双击的增量必须与这次单击的增量**逐字相等** ⇒ 等价于"双击只付了一次打开的代价" ✓。 */
+      const beforeClick = r1VisitLines();
       await ctx.input.click(fresh.pt);
       let openAfterClick = [], scanClick = scanDbl, controlOk = false;
       for (let i = 0; i < 4; i++) {
@@ -794,15 +812,29 @@ const assertions = [
             && scanClick && scanClick.ok === true && scanClick.hits !== scan0.hits) { controlOk = true; break; }
       }
       const clickTitle = (Array.isArray(openAfterClick) && openAfterClick[0]) ? String(openAfterClick[0].title) : '';
+      const afterClick = await r1VisitSettled(2500);
       await r1CloseBoxes(ctx);
 
-      const boxOk = Array.isArray(openAfterDbl) && openAfterDbl.length === 0;
-      const pixelOk = !!(scanDbl && scanDbl.ok === true && scanDbl.hits === scan0.hits);
+      const dblTitle = (Array.isArray(openAfterDbl) && openAfterDbl[0]) ? String(openAfterDbl[0].title) : '';
+      const boxOk = Array.isArray(openAfterDbl) && openAfterDbl.length === 1
+        && topic && dblTitle.indexOf(topic) >= 0;                 // 恰好一个框，且是这个叶子自己的
+      const countOk = dblCounts.showDetail.length === 1 && dblCounts.showDetail[0] === id
+        && dblCounts.record.length === 1 && dblCounts.record[0] === id;   // 恰好一次（2 次 = R1 回归）
+      const deltaDbl = afterDouble - visitBefore;                 // 双击的访问增量
+      const deltaClick = afterClick - beforeClick;                // 单击（= 一次打开）的访问增量
+      const visitOk = deltaDbl === deltaClick && deltaDbl > 0;    // 两者逐字相等 ⇒ 只付了一次代价
+      const pixelOk = !!(scanDbl && scanDbl.ok === true && scanDbl.hits !== scan0.hits);
       const probeOk = /"dblclick:2"/.test(String(probeStr));
-      return { ok: boxOk && pixelOk && controlOk && probeOk,
-        text: '叶子=' + pick.node.id + ' ROI=' + JSON.stringify(roi) + '（CSS px，已裁到面板内）'
-          + '｜双击后"真的被打开的框"=' + JSON.stringify(openAfterDbl) + '（必须 [] ✓）'
-          + '｜ROI 非背景像素：动手前=' + scan0.hits + ' → 双击后=' + (scanDbl && scanDbl.hits) + '（必须相等 ✓）'
+      return { ok: boxOk && countOk && visitOk && pixelOk && controlOk && probeOk,
+        text: '叶子=' + pick.node.id + '（' + topic + '）ROI=' + JSON.stringify(roi) + '（CSS px，已裁到面板内）'
+          + '｜双击后打开的框=' + JSON.stringify(openAfterDbl) + '（必须恰好 1 个且是这个叶子自己的 ✓）'
+          + '｜双击期间 showDetail=' + JSON.stringify(dblCounts.showDetail) + '（必须恰好 1 次且是这个 id ✓）'
+          + '／recordHumanOpen=' + JSON.stringify(dblCounts.record) + '（同上 ✓）'
+          + '／visit 调用=' + JSON.stringify(dblCounts.visit)
+          + '｜访问条数：双击前 ' + visitBefore + ' → ' + afterDouble + '（增量 ' + deltaDbl + '）'
+          + '；对照单击 ' + beforeClick + ' → ' + afterClick + '（增量 ' + deltaClick + '）'
+          + '（两个增量**必须逐字相等**且 > 0 ✓）'
+          + '｜ROI 非背景像素：动手前=' + scan0.hits + ' → 双击后=' + (scanDbl && scanDbl.hits) + '（必须**变了** ✓）'
           + '｜真事件探针含 dblclick:2=' + probeOk
           + '｜正向对照：单击后打开的框=' + JSON.stringify(openAfterClick) + '（标题=' + clickTitle + '）'
           + ' ROI 像素=' + (scanClick && scanClick.hits) + '（必须 1 个框且这块画面确实变了 ✓）｜' + prep.text };
