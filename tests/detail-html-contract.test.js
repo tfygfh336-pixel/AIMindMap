@@ -7,8 +7,11 @@
  *  ① **`detail` 的渲染契约 = HTML 优先**（`docs/DATA-FORMAT.md` §2.4.1）：
  *     正文的**唯一**落点是 `renderer/app-detail-content.js` 的 `dc.innerHTML = detail`。
  *     ✗✗ 一旦有人把它改成"一律走 `markdownToHtml`"（`src/convert.js`：**先整体转义**再套行内语法），
- *     既有 HTML 节点的标签会**显示成一堆字面量** —— 实测基线：`comnet` 的 **133 个含 detail 节点
- *     100% 是 HTML** ⇒ 那是**一次性砸掉 133 个节点的呈现**，本工程最重的损害类。
+ *     既有 HTML 节点的标签会**显示成一堆字面量** —— 既有语料的规模**现算**：
+ *     `node scripts/detail-census.js comnet`（**不许把数写死**：同一份文件工作区与 git HEAD
+ *     就是两个真值，实测 2026-10-16 工作区 753 个含 detail 节点 / git HEAD 450 个；
+ *     工程文档里一度出现的 "133" 是错的 —— 见 `.review/20261016-R7设计核查/`），
+ *     ⇒ 那是**一次性砸掉这些节点的呈现**，本工程最重的损害类。
  *     ⇒ 断言（剥注释后按**实现形状**扫）：该模块里**零** `markdownToHtml` / `mdBlock` / `mdInline`
  *     调用，且"detail 注入 innerHTML"那一跳必须在。
  *
@@ -37,6 +40,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -80,7 +84,8 @@ export function checkDetailHtmlContract(src) {
     ok: ok, hits: hits, hasHtmlInjection: hasHtmlInjection,
     reason: ok ? '' : (hits.length
       ? '正文渲染模块里出现了 Markdown 转换器调用：' + hits.join(', ')
-        + '（它会把裸 HTML 转义 ⇒ 既有 133 个 HTML 节点的标签会变成字面量）'
+        + '（它会把裸 HTML 转义 ⇒ 既有 HTML 节点的标签会变成一堆字面量。'
+        + '受影响规模**现算**：跑 node scripts/detail-census.js comnet，别写死数）'
       : '找不到"把 detail **裸注入** innerHTML"那一跳（正文的 HTML 优先路径不见了 —— '
         + '若这是有意的契约升级，请同批更新本断言并说明理由）')
   };
@@ -100,6 +105,53 @@ describe('① detail 的渲染契约 = HTML 优先（结构断言）', () => {
       + 'dc.innerHTML = detail || "";\n';
     expect(checkDetailHtmlContract(fake).ok).toBe(true);
   });
+
+  /* ---- 规模**现算**：不写死数，而是现读真语料，判"既有 detail 确实是 HTML" ----
+   * 这一段替代了原先写死的 "133 个含 detail 节点"（错数 + 天生会漂，见文件头 ①）。
+   * 取值走 `scripts/detail-census.js --json`（**唯一口径**：节点 = `data` 根对象递归 `children`；
+   * "含标签" = 命中白名单标签正则），本文件**不自己再写一份遍历** —— 那就是第二份会漂的实现 ✗。
+   * 断言的是**性质**（绝大多数既有 detail 含 HTML 标签 ⇒ "一律走 markdownToHtml" 真的会砸掉用户内容），
+   * **不是任何具体数字** ⇒ 并发写入让 comnet 从 450 涨到 753 也不会误红 ✓。
+   * 真语料读不到（项目被删/在写/JSON 半截）⇒ 如实**跳过并把原因打出来**，不静默假装通过。 */
+  const CENSUS_SCRIPT = 'scripts/detail-census.js';
+  const CENSUS_PROJECT = 'comnet';
+  const censusProbe = (() => {
+    try {
+      const out = execFileSync(process.execPath,
+        [path.join(ROOT, CENSUS_SCRIPT), '--json', CENSUS_PROJECT],
+        { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      const row = (JSON.parse(out).rows || [])[0];
+      if (!row) return { err: '脚本没给出 ' + CENSUS_PROJECT + ' 的行' };
+      return { row: row };
+    } catch (e) { return { err: String((e && e.message) || e) }; }
+  })();
+
+  it('口径的**唯一实现**在 scripts/detail-census.js（本文件不许再写一份遍历/白名单）', () => {
+    const src = read('tests/detail-html-contract.test.js');
+    // "按白名单标签正则扫 detail" 这件事只许出现在那个脚本里
+    expect(src, '本文件出现了自写的白名单标签正则 —— 请改用 scripts/detail-census.js 的口径')
+      .not.toMatch(/h1\|h2\|h3|h\[1-6\]\|p\|br/);
+    expect(src).toContain(CENSUS_SCRIPT);
+  });
+
+  it.skipIf(!!censusProbe.err)(
+    '既有语料：' + CENSUS_PROJECT + ' 的含 detail 节点**绝大多数含 HTML 标签**（规模现算，数字不写死）',
+    () => {
+      const r = censusProbe.row;
+      // 先判"取到的是真语料"：一个 detail 都没有 ⇒ 采不到真值（不是"通过"）
+      expect(r.withDetail, CENSUS_PROJECT + ' 一个含 detail 的节点都没有 ⇒ 采不到真值，'
+        + '这条不是通过（项目被清空？还是读错了文件？）').toBeGreaterThan(0);
+      const ratio = r.tagged / r.withDetail;
+      expect(ratio, '含白名单标签的比例只有 ' + (ratio * 100).toFixed(1) + '%（'
+        + r.tagged + '/' + r.withDetail + '）⇒ "既有 detail 是 HTML"这条前提不成立了：'
+        + '"一律走 markdownToHtml" 不再必然砸掉用户内容，本契约的前提要重新论证')
+        .toBeGreaterThan(0.9);
+    });
+  if (censusProbe.err) {
+    // 跳过原因必须可见（静默跳过 = 假绿）
+    // eslint-disable-next-line no-console
+    console.warn('⚠️ 规模现算这条被跳过：' + censusProbe.err);
+  }
 
   it('判别力：把注入那一跳改成"转义后再注入"（= 走 markdownToHtml 的后果）⇒ 必红', () => {
     const real = read(DETAIL_RENDER_MODULES[0]);
