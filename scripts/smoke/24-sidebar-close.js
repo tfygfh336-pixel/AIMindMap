@@ -121,7 +121,14 @@ module.exports = [
       const cssOk = ['min-width:0', '.dsh-narrow', '.dsh-narrow-xs', 'overflow-x:hidden']
         .every((k) => css.indexOf(k) >= 0);
 
-      // 右栏 ⇄ 自动加宽（用户要求）：几何状态机 + 注入契约
+      /* 右栏 ⇄ 自动加宽：几何状态机 + 注入契约。
+       * ⚠️ **2026-10-16（测量驱动批）有意反转了两处期望**（不是放宽判据 ✗，判据更紧了）：
+       *   · `w1` 从"等于 `RIGHTBAR_AUTO_WIDTH`(900)"改成"等于内核下限 `RIGHTBAR_PAGE_MIN`(756)"——
+       *     右栏档不再一步到上界，而是**垫到够用**，随后由实测的 `overflow` 决定要不要继续加
+       *     （那条闭环在域 53 里被端到端钉住）；
+       *   · `alreadyWide` 从 `false` 改成 `true` —— `ensureRightbarRoom()` 现在是幂等的
+       *     "没到下限就垫到下限"，所以在 900 上调它返回 **false**（够宽，没动手），返回值语义
+       *     与旧版一致；这一条同时钉住"够宽时宽度一个像素都不动"。 */
       sidebar.setWidth(694);
       await sleep(200);
       const wide1 = sidebar.ensureRightbarRoom();
@@ -136,6 +143,7 @@ module.exports = [
       sidebar.setWidth(900);
       await sleep(100);
       const alreadyWide = sidebar.ensureRightbarRoom();
+      const w4 = sidebar.getStatus().width;               // "够宽就别动"的另一半读数
       await sleep(100);
       await sidebar.releaseRightbarRoom();
       const js = sidebar.RIGHTBAR_WATCHER_JS || '';
@@ -152,10 +160,10 @@ module.exports = [
       const watcherState = sidebar.getStatus().rightbarWatcher;
       const installOk = installMs < 6000
         && typeof watcherState === 'string' && watcherState.length > 0;
-      const autoOk = wide1 === true && w1 === sidebar.RIGHTBAR_AUTO_WIDTH
+      const autoOk = wide1 === true && w1 === sidebar.RIGHTBAR_PAGE_MIN     // 垫到内核下限（不是一步到 900）
         && wide2 === false && w2 === w1                       // 幂等
         && released === true && w3 === 694                    // 还原到用户原宽度
-        && alreadyWide === false;                             // 够宽就别动
+        && alreadyWide === false && w4 === 900;               // 够宽就别动（一个像素都不动）
       sidebar.setWidth(694);
       await sleep(200);
 
@@ -191,7 +199,9 @@ module.exports = [
           + '｜【⤢】进=' + onlyOn + '（字形 ' + (railOnly && railOnly.collapse && railOnly.collapse.text) + '）'
           + ' 点击后=' + onlyOff + ' mapClosed=' + mapClosed + ' 页面回来=' + !!(back && back.hasMMApp)
           + '｜【③ 注入】必备项齐全=' + cssOk + ' 契约=' + watcherOk + ' 安装有终态=' + installOk + '（' + installMs + 'ms）'
-          + '｜【右栏自动加宽】加宽=' + wide1 + '/' + w1 + ' 还原=' + released + '/' + w3 + '＝' + autoOk
+          + '｜【右栏自动加宽】加宽=' + wide1 + '/' + w1 + '（内核下限 ' + sidebar.RIGHTBAR_PAGE_MIN
+          + '）幂等=' + wide2 + '/' + w2 + ' 还原=' + released + '/' + w3 + ' 够宽不动=' + alreadyWide
+          + '/' + w4 + '＝' + autoOk
           + '｜【关后】主内容可见=' + closed.mainShown + ' 让位=' + closed.reserved
           + '｜窗口 ' + win.width
       };

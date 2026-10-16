@@ -239,6 +239,15 @@ module.exports = {
     ctx.out('内核右栏: ' + (s.rightbarOpen ? '开着' : '关着')
       + '｜观察器 ' + (s.rightbarWatcher || '未装')
       + '｜自动加宽 ' + (s.autoWide ? ('生效中（原宽度 ' + s.autoWide.prev + '，现 ' + s.actualWidth + '）') : '未生效'));
+    // 测量驱动的**内容预算**（2026-10-16 批）：档位 + 区间 + 走到上界仍装不下时的**如实上报**。
+    // 这一行是给"我明明拖宽了它还是不显示"准备的：装不下不再是静默的 ✗
+    if (s.contentBudget) {
+      const b = s.contentBudget;
+      ctx.out('内容预算: ' + b.tier + '（区间 ' + b.min + '…' + b.max + '，步进 ' + b.step
+        + '，已加 ' + b.stepUps + ' 步，回退点 ' + b.prev + '）'
+        + (b.overflowAtCeiling ? '｜**内容仍装不下：已到宽度上限**' : '')
+        + (b.note ? '｜' + b.note : ''));
+    }
   },
 
   // ---- 供单测直接钉住等待逻辑（不是命令；见 tests/dsh-prefill-wait.test.js）----

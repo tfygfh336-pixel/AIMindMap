@@ -3349,6 +3349,10 @@ function startControlChannel() {
           // 内核右栏 ⇄ 侧栏自动加宽（用户要求）的实况
           rightbarOpen: !!s.rightbarOpen, autoWide: s.autoWide || null,
           rightbarWatcher: s.rightbarWatcher || null,
+          // 测量驱动的**内容预算**（2026-10-16 批）：档位 / 区间 / 每一步的实测读数 /
+          // 到上界仍溢出与否。**必须过这道白名单** —— 否则"拖宽了还是显示不全"这件事
+          // 在 dsh-status 里没有任何读数可看，人只能靠猜 ✗（不变量：仍不含 url/token ✓）
+          contentBudget: s.contentBudget || null,
           // 「真关」的判据（v0.19）：**视图在不在**、导图页是不是已被卸载 —— 断言/诊断别靠猜 ✓
           hasView: !!s.hasView, viewId: (typeof s.viewId === 'number' ? s.viewId : null),
           viewEpoch: s.viewEpoch || 0,

@@ -57,10 +57,17 @@ const MIN_WIDTH = 280;
 // available = view − 56（左栏图标轨道）− 400（中间列保底）≥ 300 ⇒ **view ≥ 756px**，
 // 而 720 上限连 756 都够不着 ⇒「打开侧边栏」永远只会"点一下就消失" ✗（实测 694 时 available=238 ✗）。
 const MAX_WIDTH = 900;
-// 右栏自动加宽的目标（view = 900 − 30 控制栏 = 870 ⇒ available = 414 ≥ 300 ✓）
+// 右栏预算的**上界**（view = 900 − 30 控制栏 = 870 ⇒ available = 414 ≥ 300 ✓）。
+// 2026-10-16（测量驱动批）起：右栏**不再**一步到位加到它 —— 按下面的预算档逐步加，
+// 每一步都由实测的 overflow 决定要不要继续；到它仍溢出就**如实上报**（见 state.contentBudget）。
 const RIGHTBAR_AUTO_WIDTH = 900;
 // 页面（view）达到这个宽度，内核就会给出 ≥ 300px 的右栏（见上面推导）
 const RIGHTBAR_PAGE_MIN = 756;
+// 内容预算的**步进**（见「内核右栏 ⇄ 侧栏自动加宽」整节）：
+// 一次加多少 / 最多加几次。两者相乘必须 ≥（上界 − 下界）否则永远到不了上界、也就永远不会上报 ✗
+//（144 / 54 = 2.67 ⇒ 3 步到上界 ✓；这里留 6 步的余量，到上界会被 clampWidth 卡住）。
+const WIDTH_STEP_PX = 54;
+const WIDTH_STEP_MAX = 6;
 
 /** 子进程 stdout 里带 token 的地址行（实测样例）：
  *    dsh web: http://127.0.0.1:6218/?token=xxxxxxxx
@@ -93,6 +100,16 @@ const state = {
   dockWidth: null,      // 关闭前的**停靠宽度**（重开还原它；关闭期间拖宽被禁用 ⇒ 不会被改坏）
   viewEpoch: 0,         // view 被创建过几次（**判别力**：重开必须是新视图，不是把旧的又挂回来）
   lastDestroyedViewId: null, // 最近一次被销毁的 view 的 webContents id（断言"真的销毁了"用）
+  // ── 测量驱动的宽度（2026-10-16「动态侧栏宽度」批）─────────────────────────────
+  //   两者分工（缺一个就读不出"为什么现在这么宽"）：
+  //   userTookOver —— **用户手动拖过宽度**的锁。自动档（右栏让位 / 内容预算）一律让步于它；
+  //                   只在"下一次右栏会话开始"（ensureRightbarRoom 真的动手时）复位 ⇒ 每次开右栏
+  //                   都给自动档一次机会，而不是"拖过一次就永远不再自动加宽" ✗。
+  //   contentBudget—— **内容预算的实况**（档位 / 区间 / 每一步的实测读数 / 到位与否 / 溢出实况）。
+  //                   它把"内容装不下"从只进诊断的读数变成**可回退、有读数、能上报**的状态机；
+  //                   区间是 [RIGHTBAR_PAGE_MIN…MAX_WIDTH]，步进 WIDTH_STEP_PX。
+  userTookOver: false,
+  contentBudget: null,
   shuttingDown: false
 };
 
@@ -437,6 +454,23 @@ function injectStubServiceForTest(url) {
   return true;
 }
 
+/* ---------------- 测试专用：**读数接缝**（`scripts/smoke/53-sidebar-width-budget.js` 用） -------
+ * 为什么需要（实测结论，2026-10-16）：本仓库冒烟/离屏窗口里 `WebContentsView.setBounds()` 不保证
+ *   页面视口跟着重排（见 `measurePageOverflow` 注释：连续 6 次改宽页面视口都不动）
+ *   ⇒"内容装不下 ⇒ 继续加宽 ⇒ 到上界上报"这条闭环在门禁环境里**跑不到**；
+ *   判据写在那里就成了"永远不判"的空转（本工程明令禁止的那一类）✗。
+ * 它只做一件事：让 `measurePageOverflow()` 用调用方给的**读数**代替真实页面读数。
+ *   · **不换 `state.view`**（第一版换过，结果 `relayout()` 的 `setBounds` 打到桩上、抛
+ *     `state.view.setBounds is not a function` —— 因为注入的定时器会在桩还在位时触发 relayout）；
+ *   · **不注入任何判据**：换了读数之后仍然走 `runContentBudget()` 那条真实编排
+ *     （同一份 `budgetTargetWidth`、同一个 `setWidth` 出口、同一份上报与读数序列）✓；
+ *   · 产品路径绝不设置它（导出名带 `__`，与 `__viewForTest` 同一档）。
+ * @param {null|function():{pageViewportWidth:number,innerWidth:number,scrollWidth:number,overflow:boolean}} fn */
+function setMeasureProbeForTest(fn) {
+  state.measureProbeForTest = typeof fn === 'function' ? fn : null;
+  return true;
+}
+
 /** 测试专用：把侧栏视图交出来（桩脚本要读它页面里的 DOM 真值）。没有视图返回 null。 */
 function viewForTest() { return state.view || null; }
 
@@ -734,6 +768,13 @@ function beginWidthDrag() {
     log('仅侧栏模式（导图页已卸载）：忽略拖宽（拖宽只调"停靠宽度"，会破坏重开时的还原值）');
     return;
   }
+  // **用户手动改宽度** = 自动档从此让位（右栏让位与内容预算都不再自动改宽/还原）。
+  // 写入点只有这一处（`endWidthDrag` 也走同一次拖拽，不必写两遍）。
+  // ⚠️ 放在**两个早退之后**（实测踩到）：原先写在最前面 ⇒ 仅侧栏模式下"根本没开始拖"也会把
+  // 自动档永久关掉（那条早退是 return，不是拖拽）。同一个坑在门禁里表现为跨域污染：
+  // 模拟一次拖宽之后，后面的「右栏自动加宽」整条红（加宽=false/694）—— 两个域各自都是对的 ✗。
+  state.userTookOver = true;
+  if (state.contentBudget) state.contentBudget.tier = 'user-takeover-pending';
   const { screen } = require('electron');
   log('开始拖宽（起始 ' + state.width + 'px）');
   dragTimer = setInterval(() => {
@@ -788,12 +829,33 @@ function setWidth(w) {
  * 为什么需要：内核在窄模式（view < 1024）下，右栏要求
  *   available = view − 56 − 400 ≥ 300  ⇒  view ≥ 756px
  * 而我们的侧栏上限是 720 ⇒ 那个面板**结构性打不开** ✗（表现为"点一下就消失"）。
- * 现在的做法：检测到"用户要开右栏"就把侧栏自动加宽到 RIGHTBAR_AUTO_WIDTH ✓
+ * 现在的做法：检测到"用户要开右栏"就自动加宽侧栏 ✓
  * （= 让内核有空间真的把右栏渲染出来），右栏关掉再还原到用户原来的宽度 ✓。
  * 两个信号缺一不可：
  *   · **意图**（必须）：点官方按钮或 Ctrl+Shift+B —— 宽度不够时状态属性根本不会变 ✗；
  *   · **事实**：官方 frame 的 `data-rightbar-collapsed` 属性（权威 ✓）。
  * 安全：只在我们**处于自动加宽状态**且用户没手动改过宽度时才还原 ✓。
+ *
+ * ── 2026-10-16（测量驱动批）：从"一步到 900"改成"**预算档 + 实测闭环**" ─────────────
+ * 改之前的缺口（只读取证确认过，不是推测）：`scheduleNarrowAdaptation()` 每次都实测并落下
+ * `state.narrow.metrics.overflow`（= 内容是否装不下），但它**只进 dsh-status 诊断**，
+ * 全文件没有一处拿它调宽度 ⇒ 自动加宽只有"整侧栏一步加到 900"这一条布尔路径。
+ * 现在：
+ *   · 右栏档起手 = `RIGHTBAR_PAGE_MIN`（内核硬下限：view ≥ 756 才给得出 ≥ 300px 的右栏），
+ *     不再一步到 `RIGHTBAR_AUTO_WIDTH`；上界仍是 900（= MAX_WIDTH，拖宽的上界）。
+ *   · **扳机是读数**：每次测量后看 `metrics.overflow` —— 清零就停（不继续加）；
+ *     仍溢出且没到上界 ⇒ `WIDTH_STEP_PX` 一步；到上界仍溢出 ⇒ **如实上报**（见下）。
+ *   · 去抖：步进**只发生在测量回调里**（`applyNarrowAdaptation` 末尾 → `reviseWidthBudget()`），
+ *     **绝不**在 `relayout()` 里无脑重试 —— relayout 在"加宽自己"和"拖宽每一帧"上都会触发，
+ *     在它里面重试就是"加宽 ⇒ 重排 ⇒ 又溢出 ⇒ 再加宽"的自激环 ✗。
+ *   · 回退：每次自动加宽都记 `prev`（`state.autoWide`；批内再加 `contentBudget.prev`），
+ *     右栏关掉且用户没手动改过 ⇒ 还原 `prev`；用户拖过 ⇒ 自动档让位（既有语义，复用 ✓）。
+ *   · 唯一改宽出口：仍然只有 `setWidth()` 一处（本节的每一步都经它 ✓）。
+ *   · 装不下要**看得见**：到上界仍溢出 ⇒ `contentBudget.overflowAtCeiling + note`，并经
+ *     `dsh-status` 的 `contentBudget` 字段说出去 —— 免得人"明明拖宽了它还是显示不全"却没线索。
+ * 为什么自动档可以用 `metrics.overflow` 当扳机而**不看 tab 名**：终端/文档/浏览器这些名字是
+ *   内核私有 DOM，会**静默失效**（台账 R6 那一类）；`scrollWidth > innerWidth` 是页面自己量的
+ *   事实。粗档只认"右栏开/关"，细档只认这一个读数 —— 名字只进日志与报告，不进判据 ✓。
  * 文档：docs/ARCHITECTURE.md、README「DSH 侧边栏」条、CHANGELOG。 */
 
 /** 注入到 DSH 页面里的观察器（每页只装一次，用页面上的标志位去重）。
@@ -858,26 +920,327 @@ async function installRightbarWatcher() {
   }
 }
 
-/** 需要就加宽（幂等）。返回 true 表示这次真的加宽了。 */
+/* ---------------- 测量驱动的宽度预算（右栏让位 ⟶ 内容装不下 ⟶ 继续加） ----------------
+ * 一处实现：**所有**"该多宽"的判断都在 `budgetTargetWidth()` 里（纯函数：宽度 + 右栏状态 → 目标宽）。
+ * 两个调用点，各司其职、互不重复：
+ *   · `ensureRightbarRoom()` —— 粗档（右栏开/关，权威信号）起手时算一次；
+ *   · `reviseWidthBudget()`  —— 细档：每次**实测**到 `metrics.overflow` 之后再看要不要继续走。
+ * 两条都不自己改宽：出口只有 `setWidth()` 一处 ✓。 */
+
+/** 右栏开、但侧栏窄于内核下限时，**够用就好**的目标宽 = 内核硬下限本身（不是一步到上界）。
+ *  为什么要 `Math.min(MAX_WIDTH, ...)`：`Math.max` 的结果超过上界时会被 `setWidth` 截住，
+ *  那样"以为加到了、其实没加"就变成静默空转 ✗ ⇒ 这里自己先夹住，调用方看到的就是真值。
+ *  ⚠️ 这里**不再额外加一个步进**（第一版写成 `max(下限, 当前 + 步进)`，实测让"垫到下限"落到
+ *  下限 **+54** —— 多垫一步没有读数依据，而且让"起手 = 内核下限"这条可判据的承诺失真 ✗）。
+ *  @param {number} cur 当前侧栏宽度（含控制栏；这里只用于兜底取大）
+ *  @returns {number} 目标宽（含控制栏） */
+function rightbarRoomTarget(cur) {
+  return Math.min(MAX_WIDTH, Math.max(RIGHTBAR_PAGE_MIN, cur));
+}
+
+/** 取一次页面的真实读数。**判据只有一条边：页面自己报的那条**（`documentElement.offsetWidth`）。
+ *  为什么不用 `view.getBounds().width` 当判据（实测踩出来的，2026-10-16）：
+ *    `WebContentsView.setBounds()` **不保证**页面视口跟着变 —— 实测（本仓库、离屏窗口）里
+ *    `getBounds()` 报 726、页面 `offsetWidth/innerWidth` 一直停在 390：连续 6 次改宽全是旧值，
+ *    连"窗口显示 + 重挂视图 + 主窗口 setContentSize"都不动，而同一次运行里对**裸** WebContentsView
+ *    直调 `setBounds()` 却能同步 ⇒ 这是**环境**事实（离屏窗口里这条链不重排），不是本模块的 bug。
+ *    结论用一句话记住：bounds 是"我们**要求**的边"，页面视口才是"用户**看到**的边"。
+ *      · 宽度控制的判据 = 页面视口（用户看到的）；bounds 只作对照读数（`boundsWidth`）；
+ *      · 三条读数（页面视口 / innerWidth / 要求的边）对不上 ⇒ **一致**才算数，
+ *        否则调用方走 `rejectStaleMeasurement()`：不做决定、如实记 `note`、补排一次测量。
+ *  @returns {Promise<{viewWidth:number, boundsWidth:number, pageViewportWidth:number,
+ *                     innerWidth:number, scrollWidth:number, overflow:boolean, consistent:boolean}>} */
+async function measurePageOverflow() {
+  const wc = state.view && state.view.webContents;
+  if (!wc) throw new Error('no-view');
+  const boundsW = state.view.getBounds().width;
+  // 测试专用接缝（产品路径永远不设置它）：见 `setMeasureProbeForTest` 的注释。
+  // 它只**替换读数**，不替换视图 —— 视图仍是真的，所以 `relayout()` 的 `setBounds` 照旧生效 ✓
+  if (typeof state.measureProbeForTest === 'function') {
+    const p = state.measureProbeForTest();
+    return { viewWidth: p.pageViewportWidth, boundsWidth: boundsW,
+      pageViewportWidth: p.pageViewportWidth, innerWidth: p.innerWidth,
+      scrollWidth: p.scrollWidth, overflow: !!p.overflow,
+      consistent: Math.abs(p.pageViewportWidth - p.innerWidth) <= 2 };
+  }
+  const info = await wc.executeJavaScript(
+    '(function(){var d=document.documentElement;'
+    + 'var sw=Math.max(d.scrollWidth,document.body?document.body.scrollWidth:0);'
+    + 'return {pageViewportWidth:d.offsetWidth,innerWidth:window.innerWidth,scrollWidth:sw,'
+    + 'overflow:sw>d.offsetWidth+1};'
+    + '})()');
+  return { viewWidth: info.pageViewportWidth, boundsWidth: boundsW,
+    pageViewportWidth: info.pageViewportWidth, innerWidth: info.innerWidth,
+    scrollWidth: info.scrollWidth, overflow: !!info.overflow,
+    consistent: Math.abs(info.pageViewportWidth - info.innerWidth) <= 2 };
+}
+
+/** 把一次读数记进预算的**读数序列**（给人与断言看的证据；只留最近 12 条防长跑爆内存）。
+ *  `dir` 是这一步的来由，不是推断：'below-floor' 右栏下限没够 / 'stepped' 因溢出加了一步 /
+ *  'at-ceiling' 到上界 / 其余是普通测量。 */
+function budgetRecord(b, m, dir) {
+  b.readings.push({ width: state.width, viewWidth: m.viewWidth, boundsWidth: m.boundsWidth,
+    innerWidth: m.innerWidth, scrollWidth: m.scrollWidth, overflow: m.overflow, dir: dir });
+  if (b.readings.length > 12) b.readings.splice(0, b.readings.length - 12);
+  b.width = state.width;
+  b.viewWidth = m.viewWidth;
+  b.boundsWidth = m.boundsWidth;
+  b.lastOverflow = m.overflow;
+  b.stepUps = (b.stepUps || 0) + (dir === 'stepped' ? 1 : 0);
+  b.pending = null;
+  b.tier = 'measured';
+}
+
+/** 开一次**内容预算会话**：只在"右栏开"这条粗档上武装（别的路径不许动宽度 ✓）。
+ *  为什么不看 tab 名：那是内核私有 DOM，会静默失效（见本节大注释）。 */
+function openContentBudget(reason) {
+  const b = {
+    active: true, reason: reason,
+    min: RIGHTBAR_PAGE_MIN, max: MAX_WIDTH, step: WIDTH_STEP_PX,
+    prev: state.autoWide ? state.autoWide.prev : state.width,   // 回退点（与 autoWide 同一个真值）
+    tier: 'opened',            // opened → awaiting-measure → measured → settled | unsupported
+    settled: false, unresolved: false, overflowAtCeiling: false,
+    stepUps: 0, readings: [], width: state.width, viewWidth: null,
+    lastOverflow: null, pending: null, note: null, at: new Date().toISOString()
+  };
+  state.contentBudget = b;
+  return b;
+}
+
+/** 预算的**目标宽度**（纯函数 —— 唯一的"该多宽"判断，别在别处再写一份 ✗）。
+ *  @param {number} cur 当前宽度（`state.width`，含控制栏）
+ *  @param {{lastOverflow:(boolean|null)}} b 内容预算（只读 `lastOverflow` 这一个读数）
+ *  @param {boolean} rightbarOpen 粗档：右栏是否开着（既有**事实**信号）
+ *  @returns {{width:number, dir:string}} 目标宽 + 这一步的来由 */
+function budgetTargetWidth(cur, b, rightbarOpen) {
+  // ① 粗档：右栏开着、侧栏还没到内核下限、**而垫到下限确实能把宽度推上去** ⇒ 垫到下限本身。
+  //   ⚠️ 最后那个 `target > cur` 不能省（实测踩到）：宽度已经是 756（下限）而 view = 726 < 756 时，
+  //   `rightbarRoomTarget(756)` 夹回来还是 756 ⇒ 若这一支照样 return，就会回一个"什么都没做"
+  //   却标着 `below-floor` 的结论，**把本该发生的"因溢出加一步"整支吞掉** —— 表现为
+  //   "内容一直溢出、宽度一直不动"（读数序列只剩第一条）。这条条件是它的判别力所在。
+  if (rightbarOpen) {
+    const target = rightbarRoomTarget(cur);
+    if (Math.max(0, cur - RAIL_WIDTH) < RIGHTBAR_PAGE_MIN && target > cur) {
+      return { width: target, dir: 'below-floor' };
+    }
+  }
+  // ② 细档：**唯一的扳机 = 实测读数**。内容不溢出 ⇒ 到此为止，不再加（这就是"测量驱动"）
+  if (b.lastOverflow !== true) return { width: cur, dir: 'fits' };
+  // ③ 溢出且还没到上界 ⇒ 加一步；到上界 ⇒ 不动（由调用方如实上报）
+  if (cur < MAX_WIDTH) {
+    return { width: Math.min(MAX_WIDTH, cur + WIDTH_STEP_PX), dir: 'stepped' };
+  }
+  return { width: cur, dir: 'at-ceiling' };
+}
+
+/** 加宽之后**必须再测一次**（闭环的另一半：不重测就不知道加宽有没有把内容装下）。
+ *  ⚠️ 重测**只在这一处**发生，而且用"量出来真的还是这条边"当判据 —— 而不是在 `relayout()` 里
+ *  重试（那会自激 ✗）。量到的那条边不对（窗口挤的 / 布局还没落 / 环境不重排）就**不判**，
+ *  把它交给 `rejectStaleMeasurement()` 的那条路（下一次注入会重来一遍）✓。
+ *  @param {object} b 内容预算（`b.pending.expectedView` = 这次加宽**之后**期望的 view 宽）
+ *  @returns {Promise<{done:boolean, reason:string, m?:object}>} */
+function scheduleBudgetMeasurement(b) {
+  if (!b || !b.active || b.settled) return Promise.resolve({ done: false, reason: 'inactive' });
+  const expectedView = b.pending ? b.pending.expectedView : null;
+  return measurePageOverflow().then((m) => {
+    if (expectedView !== null && Math.abs(m.viewWidth - expectedView) > 2) {
+      return { done: false, reason: 'pending-width（量到 ' + m.viewWidth + '，期望 ' + expectedView + '）' };
+    }
+    budgetRecord(b, m, 'remeasure');
+    b.tier = 'measured';
+    log('内容预算复查：页面视口 ' + m.viewWidth + '，内容 ' + m.scrollWidth
+      + (m.overflow ? ' ⇒ **仍横向溢出**' : ' ⇒ 内容已装下 ✓') + '（档位 ' + b.tier + '）');
+    return { done: true, reason: m.overflow ? 'still-overflow' : 'fits', m: m };
+  }).catch((e) => {
+    b.tier = 'unsupported';
+    b.note = '复查失败（读数取不到）: ' + String((e && e.message) || e);
+    return { done: false, reason: 'measure-failed: ' + b.note };
+  });
+}
+
+/** 预算编排：算目标宽 → 走**唯一出口** setWidth → 重测 → 到位就停 / 仍溢出且没到上界就再来一步 /
+ *  到上界仍溢出就**如实上报**（`overflowAtCeiling + note`，并 broadcastStatus ⇒ dsh-status 看得见 ✓）。
+ *
+ *  为什么是递归+上限而不是 while 循环：每一步都要**等一次真实重排与重测**（闭环），
+ *  上限由 `WIDTH_STEP_MAX` 与 `MAX_WIDTH` 双重夹住 ⇒ 不可能自激，也不需要"视情况"档。
+ *  @param {string} reason 这次的来由（进读数序列，便于事后回答"它为什么变宽了"）
+ *  @returns {Promise<{started:boolean, reason?:string, changed?:boolean, from?:number,
+ *                     to?:number, dir?:string, overflow?:(boolean|null), tier?:string,
+ *                     reported?:boolean, done?:boolean}>} */
+async function runContentBudget(reason) {
+  const b = state.contentBudget;
+  if (!b || !b.active || b.settled) return { started: false, reason: 'no-budget' };
+  if (!state.view || !state.view.webContents) return { started: false, reason: 'no-view' };
+  if (state.userTookOver) {                     // 用户手动拖过 ⇒ **自动档让位**（既有语义，复用 ✓）
+    b.settled = true; b.tier = 'user-takeover';
+    b.note = '用户手动改过宽度 ⇒ 自动档让位（不再自动加宽，也不还原）';
+    return { started: false, reason: 'user-takeover' };
+  }
+  let m = null;
+  try { m = await measurePageOverflow(); }
+  catch (e) {
+    b.tier = 'unsupported';
+    b.note = '读数取不到（不猜、也不改宽度）: ' + String((e && e.message) || e);
+    return { started: false, reason: 'measure-failed: ' + b.note };
+  }
+  /* ⚠️ **同源判据**（本函数唯一的进入条件，实测踩出来的）：
+   *   判据必须是"用户真的看到的那条边"= 页面视口（`measurePageOverflow` 已把 viewWidth 定义成它）。
+   *   还有两种让它失效的情形，都必须**不做决定**（宁可留 `note` 说清，也不猜 ✓）：
+   *     ① 页面视口与页面 innerWidth 对不上 ⇒ 这条读数自相矛盾；
+   *     ② 页面视口与"我们要求的边"（`state.width − RAIL_WIDTH`）对不上 ⇒ 改宽**没有落到页面上**：
+   *        离屏/无头窗口里实测到过 `getBounds()` 一直是新值、页面视口却纹丝不动（连续 6 次改宽全是
+   *        旧值）⇒ 这时任何"溢出/不溢出"的结论都是在讨论**上一轮**的布局，据此加宽就是凭空多垫 ✗。
+   *   两种都走 `rejectStaleMeasurement()`：补排一次测量（只补这一次）并**如实记进 note** ——
+   *   让"没测成"永远是**可见**的状态，而不是一个看起来成功的静默空转 ✓。 */
+  const want = Math.max(0, state.width - RAIL_WIDTH);
+  if (!m.consistent) {
+    rejectStaleMeasurement(b, '页面视口 ' + m.pageViewportWidth + ' ≠ innerWidth ' + m.innerWidth);
+    return { started: false, reason: 'stale-measurement' };
+  }
+  if (Math.abs(m.viewWidth - want) > 2) {
+    rejectStaleMeasurement(b, '页面视口 ' + m.viewWidth + ' ≠ 要求的边 ' + want
+      + '（bounds 报 ' + m.boundsWidth + ' ⇒ 改宽没落到页面上）');
+    return { started: false, reason: 'viewport-not-applied' };
+  }
+  const from = state.width;
+  /* ⚠️ 首次测量（`lastOverflow` 还是 null = 还没有任何读数）时要**用这一条的读数**定方向，
+   *  否则会出现最难看的一种形态：这条明明读到"溢出"，结论却是 `fits`、还把它标记成"到此为止"
+   *  ⇒ 该加宽的没加（实测踩到：闭环只留下第一条读数就不动了 ✗）。
+   *  只看**这一条**的读数、不看历史：这就是"测量驱动"的字面意思 ✓。 */
+  const effective = Object.assign({}, b,
+    { lastOverflow: b.lastOverflow === null ? m.overflow : b.lastOverflow });
+  const t = budgetTargetWidth(from, effective, !!state.rightbarOpen);
+  if (t.dir === 'fits') b.settled = true;       // 内容装得下 ⇒ 闭环到此为止
+  budgetRecord(b, m, t.dir);
+  if (t.width === from) {
+    // 不加宽。若"到上界仍溢出"，这里就是**上报**：不许静默挤（那是本批要修的困惑来源 ✗）
+    if (t.dir === 'at-ceiling') {
+      b.unresolved = true; b.overflowAtCeiling = true;
+      b.note = '内容仍然装不下：已到宽度上限 ' + MAX_WIDTH + '（页面 ' + b.viewWidth
+        + '：内容 ' + m.scrollWidth + ' > 可视 ' + m.innerWidth + '）';
+      log('⚠ ' + b.note + ' —— 不再加宽（到上界），如实上报而不是静默挤');
+    } else if (t.dir === 'fits') {
+      b.note = null;
+    }
+    broadcastStatus();
+    return { started: true, done: true, changed: false, from: from, to: from, dir: t.dir,
+      overflow: m.overflow, tier: b.tier, reported: t.dir === 'at-ceiling' };
+  }
+  setWidth(t.width);                            // ★ 唯一改宽出口
+  const expectedView = Math.max(0, state.width - RAIL_WIDTH);
+  b.pending = { expected: t.width, expectedView: expectedView };
+  log('测量驱动加宽：' + from + ' → ' + state.width + '（' + t.dir + '；再测一次确认内容装下）');
+  broadcastStatus();
+  if (b.stepUps >= WIDTH_STEP_MAX) {            // 只可能在 54×6 ≥ 144 时到（上界先拦住）—— 留作兜底
+    b.tier = 'step-limit';
+    b.note = '步进次数到上限（' + WIDTH_STEP_MAX + ' 次）⇒ 停止加宽并如实上报';
+    b.unresolved = true; b.settled = true;
+    broadcastStatus();
+    return { started: true, done: true, changed: true, from: from, to: state.width, dir: t.dir,
+      overflow: m.overflow, tier: b.tier, reported: true };
+  }
+  /* 加宽之后**必须再测一次**（闭环的另一半）：不重测就不知道加宽有没有把内容装下。
+   * 不 await：这次加宽自己已经排了下一次注入（`relayout` → `scheduleNarrowAdaptation`），
+   * 重测与它**同源**地来自那次注入 ⇒ 不需要在本函数里再压一条 await 链（省一次往返）。 */
+  scheduleBudgetMeasurement(b, expectedView).catch(() => {});
+  return { started: true, done: false, changed: true, from: from, to: state.width, dir: t.dir,
+    overflow: m.overflow, tier: b.tier, reported: false };
+}
+
+/** 需要就加宽（幂等）。返回 true 表示这次真的加宽了。
+ *  ⚠️ 这里**只是预算的第一步**（右栏下限档）—— 加了不一定就够，够不够由随后的**实测**说了算
+ *  （`reviseWidthBudget()` 拿到 overflow 才会继续加；到上界仍溢出就上报）。
+ *  `state.autoWide` 存在也**不早退**：实测驱动意味着"没到下限就垫到下限"这件事在任何时刻都成立
+ *  （例如用户把它拖窄了、或窗口变化后重来的那一次）—— 只在**用户手动拖过**时让位 ✓。
+ *  ⚠️ `userTookOver` 的复位**只能在这里**（实测踩到）：原先只写在 `releaseRightbarRoom()` 里，
+ *  而那条在 `autoWide` 已为 null 时会提前 return ⇒ 漏掉复位 ⇒ **一次拖宽把自动档永久关掉**
+ *  （门禁里表现为"后面的域整条红"，真机里表现为"从此右栏再也不会自动加宽，除非重启应用"✗）。
+ *  语义：让位只持续**一次右栏会话**；用户重开右栏 = 自动档重新获得一次机会 ✓。 */
 function ensureRightbarRoom() {
   const view = Math.max(0, state.width - RAIL_WIDTH);
   if (view >= RIGHTBAR_PAGE_MIN) return false;          // 已经够宽，不用动
-  if (state.autoWide) return false;                     // 已在自动加宽状态
-  state.autoWide = { prev: state.width };
-  setWidth(RIGHTBAR_AUTO_WIDTH);
-  log('内核右栏需要空间 → 自动加宽侧栏 ' + state.autoWide.prev + ' → ' + RIGHTBAR_AUTO_WIDTH);
+  if (state.userTookOver) return false;                 // 用户手动改过 ⇒ 自动档让位（既有语义 ✓）
+  if (!state.autoWide) {
+    state.userTookOver = false;                         // 新一次会话：复位（复位点只有这一处 ✓）
+    state.autoWide = { prev: state.width };
+    const b0 = openContentBudget('rightbar-open');
+    b0.tier = 'awaiting-measure';
+  }
+  const to = rightbarRoomTarget(state.width);
+  if (to === state.width) return false;                 // 到上界也还是不够（极窄窗口）⇒ 不动、不报
+  setWidth(to);                                         // ★ 同一条出口（右栏档 = 内核下限，不再一步到 900）
+  log('内核右栏需要空间 → 自动加宽侧栏 ' + state.autoWide.prev + ' → ' + state.width
+    + '（预算档 ' + RIGHTBAR_PAGE_MIN + '…' + MAX_WIDTH + '：够用即止，装不下才继续加）');
   broadcastStatus();
   return true;
 }
 
-/** 右栏关掉后还原（只在我们还在自动宽度、且用户没手动改过时还原 ✓）。 */
+/** 实测回调：每个测量点都问一次"当前宽度还合不合适"（唯一的细档扳机在这里）。
+ *  只在**右栏开**时动宽度 —— 右栏关着时一律不碰（把宽度留给用户与既有语义 ✓）。
+ *  读数与刚刚量到的那条边对不上（右栏让位/拖宽在两次 await 之间改过宽度）⇒ 不判、
+ *  **补排一次测量**（`rejectStaleMeasurement`）✓。
+ *  @returns {Promise<null|object>} 动了就返回 runContentBudget 的结果；没动返回 null */
+function reviseWidthBudget(reason, measured) {
+  if (!state.rightbarOpen) return Promise.resolve(null);
+  const b = state.contentBudget;
+  if (!b || !b.active || b.settled) return Promise.resolve(null);
+  if (measured && (Math.abs(measured.pageViewportWidth - measured.innerWidth) > 2
+    || Math.abs(measured.pageViewportWidth - measured.wantView) > 2)) {
+    rejectStaleMeasurement(b, '页面视口 ' + measured.pageViewportWidth
+      + ' ≠ innerWidth ' + measured.innerWidth + ' / 要求的边 ' + measured.wantView);
+    return Promise.resolve(null);
+  }
+  return runContentBudget(reason || 'revisit').catch((e) => {
+    b.tier = 'error';
+    b.note = '预算编排异常（如实记下、不改宽度）: ' + String((e && e.message) || e);
+    return null;
+  });
+}
+
+/** 读数与那条边不是同一次取样 ⇒ **不做决定**，补排一次测量（只补这一次，不是无限重试）。
+ *  为什么必须补一次：右栏让位与内容加宽都发生在注入的那两次 `await` 之间，那条新的边
+ *  **需要一次属于它自己的测量**才判得了；不补的话只能等用户下一次交互，表现为"点开右栏
+ *  要拖一下才生效"——那正是本工程早就修过的那个 bug 的形状，不能再造一个 ✗。
+ *  重排走既有的 `scheduleNarrowAdaptation`（重试次数与上限都由它管）；只在"右栏开着
+ *  且预算还在跑"时补，别把普通测量也变成循环 ✓。 */
+function rejectStaleMeasurement(b, why) {
+  b.staleSkips = (b.staleSkips || 0) + 1;
+  b.tier = 'stale-skip';
+  b.note = '读数与当前宽度不是同一次取样 ⇒ 本次不判、补排一次测量（' + why + '）';
+  // 状态出口要**当场**能看见"这次没判"（计数 + 原因）—— 否则诊断只能说"还在等测量"，
+  // 而人真正要问的是"它为什么没动"（这与本模块 narrowSkip 那条纪律同形 ✓）
+  broadcastStatus();
+  if (state.rightbarOpen && b.active && !b.settled) {
+    if (narrowTimer) { clearTimeout(narrowTimer); narrowTimer = null; }
+    scheduleNarrowAdaptation(false);
+  }
+  return b.staleSkips;
+}
+
+/** 右栏关掉后还原（只在我们还在自动宽度、且用户没手动改过时还原 ✓）。
+ *
+ *  "用户手动改过"的判据**只有一条**：`state.userTookOver`（唯一的写入点是拖宽 `beginWidthDrag()`）。
+ *  为什么不沿用旧写法 `state.width === RIGHTBAR_AUTO_WIDTH`：本批起自动档根本**不一定会到 900**
+ *  （够用即止 ⇒ 常见落在 756…900 之间的某一档），拿"等不等于上界"当"用户改过没有"的判据
+ *  会在**没人动过宽度**时判成"被手动改动过 ⇒ 不还原"✗ —— 那就是"用户拖宽过"这条保护
+ *  反向失效。语义没变（还是"手动改过就不还原"），换的是**能分辨这件事的那条读数**。 */
 function releaseRightbarRoom() {
   const auto = state.autoWide;
+  const budget = state.contentBudget;
+  if (budget) {                        // 预算会话结束：读数序列留着（诊断要能回答"刚才为什么那么宽"✓）
+    budget.active = false;
+    budget.settled = true;
+    budget.tier = 'released';
+  }
+  const tookOver = state.userTookOver;
+  const prev = auto ? auto.prev : (budget ? budget.prev : null);
+  state.userTookOver = false;          // 自动档复位（下一次右栏会话重新获得机会 ✓）
   if (!auto) return false;
   state.autoWide = null;
-  if (state.width === RIGHTBAR_AUTO_WIDTH) {
-    setWidth(auto.prev);
-    log('内核右栏关闭 → 还原侧栏宽度 ' + auto.prev);
+  if (!tookOver && typeof prev === 'number' && state.width !== prev) {
+    setWidth(prev);
+    log('内核右栏关闭 → 还原侧栏宽度 ' + prev
+      + '（右栏会话期间自动加宽到过 ' + (budget ? budget.width : '?') + '）');
     broadcastStatus();
     return true;
   }
@@ -928,6 +1291,15 @@ function show() {
     state.win.contentView.addChildView(state.rail);
   }
   state.visible = true;
+  /* 新一轮会话的**清理**（实测踩到，两处都是"状态比产品语义活得更久"）：
+   *   · 自动档的"用户改过宽度"锁只在**一次会话**内有效 ⇒ 每次 show() 复位。原先它只在
+   *     `releaseRightbarRoom()` 里复位，而那条在 `autoWide` 已为 null 时提前 return ⇒
+   *     一次拖宽把自动档**永久**关掉（真机：右栏从此不再自动加宽，除非重启应用 ✗；
+   *     门禁：域 53 模拟拖宽 ⇒ 后面的「右栏自动加宽」整条红）。
+   *   · 上一轮的 autoWide 也要清：不重新挂的话，`ensureRightbarRoom()` 会认为"已在自动加宽"
+   *     而算出的 prev 是上一轮的旧值 ⇒ 关右栏时还原到错的地方。 */
+  state.userTookOver = false;
+  state.autoWide = null;
   // 新一轮会话：窄宽适配重来一遍（服务可能换了端口/token ⇒ URL 变了 ⇒ 需要重新注入）
   scheduleNarrowAdaptation(true);
   relayout();
@@ -1049,6 +1421,20 @@ function getStatus() {
     actualWidth: occupiedWidth() || null,
     // 窄宽适配的实况（模式 + 是否横向溢出）—— 改布局要用它，不要拍脑袋
     narrow: state.narrow || null,
+    // 测量驱动的**内容预算**实况：档位 / 区间 / 每一步的实测读数 / 到上界仍溢出与否。
+    // 为什么必须进状态出口：到上界仍装不下时要**看得见**（否则用户只看到"拖宽了还是不显示"✗）
+    contentBudget: state.contentBudget ? {
+      active: state.contentBudget.active, settled: state.contentBudget.settled === true,
+      tier: state.contentBudget.tier,
+      reason: state.contentBudget.reason, min: state.contentBudget.min,
+      max: state.contentBudget.max, step: state.contentBudget.step,
+      prev: state.contentBudget.prev, width: state.contentBudget.width,
+      stepUps: state.contentBudget.stepUps, lastOverflow: state.contentBudget.lastOverflow,
+      overflowAtCeiling: state.contentBudget.overflowAtCeiling, unresolved: state.contentBudget.unresolved,
+      note: state.contentBudget.note, at: state.contentBudget.at,
+      staleSkips: state.contentBudget.staleSkips || 0,
+      readings: state.contentBudget.readings
+    } : null,
     // 为什么"尚未注入"——诊断要能回答它，否则只能靠猜 ✗
     narrowSkip: state.narrowSkip || null,
     // 内核右栏 ⇄ 自动加宽（用户要求）的实况
@@ -1189,16 +1575,35 @@ async function applyNarrowAdaptation() {
       + 'd.classList.toggle("dsh-narrow-xs",' + (mode === 'xs') + ');'
       + 'd.style.setProperty("--dsh-viewport-width","' + viewW + 'px");'
       + 'var sw=Math.max(d.scrollWidth,document.body?document.body.scrollWidth:0);'
-      + 'return {innerWidth:window.innerWidth,scrollWidth:sw,overflow:sw>window.innerWidth+1};'
+      + 'return {pageViewportWidth:d.offsetWidth,innerWidth:window.innerWidth,scrollWidth:sw,'
+      + 'overflow:sw>d.offsetWidth+1};'
       + '})()');
-    // 每次成功注入都顺手装一次右栏观察器：页面**重载**会清掉页面内的标志位，
-    // 所以不能"只装一次"；页面内自带 __mmRightbarWatched 去重 ✓（成本极低 ✓）。
-state.narrow = { viewWidth: viewW, mode: mode, metrics: info, at: new Date().toISOString() };
+    /* ⚠️ 判据必须是**页面自己报的那条边**（`documentElement.offsetWidth`），不是 `getBounds()`：
+     *   实测（2026-10-16）在离屏窗口里 `WebContentsView.setBounds()` 更新了 bounds、页面视口却
+     *   纹丝不动（连续 6 次改宽全停在同一个旧值），而同一次运行里直调 `setBounds` 又能同步 ⇒
+     *   "我们要求的边"与"用户看到的边"**不是一回事**。用户看到的是页面视口 ⇒ 宽度控制的判据用它，
+     *   bounds 只作对照读数（`boundsWidth`）。两条边对不上就不做决定、如实记进 `note`
+     *   （`rejectStaleMeasurement`）—— 绝不拿"要求的边"冒充"看到的边"去造一个看起来成功的空转 ✗。 */
+    const pageNow = info ? info.pageViewportWidth : viewW;
+    const mismatch = Math.abs(pageNow - viewW) > 2;
+    state.narrow = { viewWidth: pageNow, boundsWidth: viewW, mode: mode, metrics: info,
+      at: new Date().toISOString(), stale: mismatch };
     installRightbarWatcher().catch(() => {});
     state.narrowSkip = null;
-    log('窄宽适配: ' + mode + '（内容宽 ' + viewW + '）'
-      + (info ? '，页面 ' + info.innerWidth + ' / 内容 ' + info.scrollWidth
+    log('窄宽适配: ' + mode + '（页面视口 ' + pageNow + '（要求 ' + viewW + '）'
+      + (mismatch ? ' ⚠ 不一致' : '') + '）'
+      + (info ? '，内容 ' + info.scrollWidth
         + (info.overflow ? ' ⇒ **横向溢出**' : ' ⇒ 不溢出') : ''));
+    /* ★ 实测 → 宽度 这条闭环的**唯一接缝**（测量驱动的细档）：
+     *   上面那个 `overflow` 是本模块早就采到、却一直只进诊断的读数；从本批起它**接回宽度控制**
+     *   —— 右栏开着时由 `reviseWidthBudget()` 按它决定是否继续加宽，到上界仍溢出就上报
+     *   （`contentBudget.overflowAtCeiling`）。
+     * ⚠️ 为什么放在这里而不是 `relayout()`：relayout 在"加宽自己"与"拖宽每一帧"上都会触发，
+     *   在那里重试就是自激环（加宽 ⇒ 重排 ⇒ 又溢出 ⇒ 再加宽 ✗）。测量回调天然只在**测完之后**跑。
+     * 不 await：这一步不该拖住注入本身（失败只记状态、不阻断主流程 ✓ 见本函数上方纪律）。 */
+    reviseWidthBudget(info && info.overflow ? 'narrow-overflow' : 'narrow-fits',
+      info ? { pageViewportWidth: pageNow, innerWidth: info.innerWidth, wantView: viewW }
+        : { pageViewportWidth: -1, innerWidth: -1, wantView: viewW });
     return true;
   } catch (e) {
     // 注入失败不阻断主流程，但要**留下原因**（诊断里能看见，不要静默 ✗）
@@ -1550,7 +1955,14 @@ module.exports = {
   closeMapPage, openMapPage, destroyView, mapClosedPage, rendererDirty,
   setCurrentProject, bootProject, setMapPageListener,
   NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN,
+  WIDTH_STEP_PX, WIDTH_STEP_MAX,
   ensureRightbarRoom, releaseRightbarRoom, setNoSpawn, installRightbarWatcher,
+  // 测量驱动的宽度预算（2026-10-16 批）：编排 + **纯函数目标宽度**（唯一一份"该多宽"的判断）
+  // —— 导出是给冒烟域直接驱动它用的；域 53 走"真 WebContentsView 页面读数 + 测量接缝"两条路。
+  runContentBudget, budgetTargetWidth, rightbarRoomTarget, reviseWidthBudget,
+  // 测试专用（读数接缝：见 setMeasureProbeForTest 的注释 —— 冒烟环境页面视口不重排，
+  // 不换读数这条闭环在门禁里跑不到 ⇒ 会变成"永远不判"的空转 ✗）
+  __setMeasureProbeForTest: setMeasureProbeForTest,
   // ⑩ 把对话预填进侧栏输入框（不代替用户发送）
   prefillComposer, COMPOSER_PREFILL_JS,
   // 测试专用（见函数注释）：桩服务接上 / 交出视图。产品路径不要用这两个。
