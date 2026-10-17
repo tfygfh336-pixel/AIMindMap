@@ -295,7 +295,16 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 ### 2.6 脚本层（scripts/ —— 验证链、门禁与一次性工具）
 
 > **新接手的 AI**：想知道"验证是怎么跑的、门禁在哪、工具怎么用"，看这张表即可。
-> **`scripts/` 下每个文件都必须在本表出现** —— 由 **G8** 第 7 条判定守着（加脚本忘登记会变红）。
+> **`scripts/` 下每个 `.js` 都必须能被本表找到** —— 由 **G8** 第 7 条判定守着（加脚本忘登记会变红）。
+> 判定**递归扫整棵子树**，登记口径分两档：**顶层**文件按**文件名**登记（下表逐行；文件名出现在本文档即算入档）；
+> **子目录**文件必须按**完整相对路径**登记（`scripts/tools/x.js`）—— 否则"同名文件换个目录"会靠顶层那条登记
+> 蒙混过关。**规则确实相同**的子目录（一份目录级说明 + 自描述命名就够）**整目录豁免逐份登记**，
+> 写成 §5 那种前缀行：见下表末尾两行（`scripts/smoke/*` / `scripts/vision/*`）。
+> ⚠️ 这两条豁免在 2026-10-16 之前**不是声明、是"非递归扫描"的副作用**（旧实现只 `readdirSync` 顶层，
+> 子目录根本没进扫描面）：那时把 `mutate-gates.js` 挪进任何子目录就**免检**、挪回顶层又被抓 ——
+> 而它是本工程唯一检出过真事故的门禁的战功之一。现在豁免**只有一种写法**：
+> `scripts/docs-registry-check.js` 的 **`EXEMPT_DIRS`**（逐条带 `why`，是唯一判据）+ 本节一行前缀行。
+> `tests/` 不在扫描根内，同样不逐份登记（用例名与它覆盖的对象同名）。
 
 | 文件 | 职责 |
 |------|------|
@@ -334,6 +343,9 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `dsh-embedded-overrides.js` | **内置 DSH"本地覆盖值"的渲染器**（`render [--dry-run]` / `check`，`--home` 指向 dsh-home，`--runtime` 指向内置运行包）：把 `<dsh-home>\.embedded-overrides.json` 里的**陈述式**差异**幂等**渲染进 `profiles\web\cordis.patch.yml`。**它是那份 patch 的唯一写者**（新增"要渲染进 patch 的东西"请扩这里，别再开第二个写者 ✗）。两类被渲染的东西：**① 标量覆盖**（改已存在条目的已存在键；白名单 4 个条目，白名单外**报错退出**、不猜）；**② agent preset 声明**（`"$presets": {"<id>": {cloneFrom, order}}` ⇒ 插入一条 `@deepseek-ai/dsh-agent-preset` 行）—— 清单**从运行包自带的 `presets/<cloneFrom>.patch.yml` 生成**、只替换其中的 persona 文本，**不把清单抄进本仓库**（抄一份就是又一份会随内置 DSH 升级漂移的副本 —— 见 `docs/DSH-EMBEDDED.md` §5 的「快照漂移」✗）。写盘前先复制 `.bak-<时间>`；`check` 除比标量外，还会把生成块与"现在重新生成的结果"**逐行比对**（手改/半截都会被抓到）。**为什么需要**：那份 patch 是**生成物**，手改态既不可复现、事后也无人知道曾改过 —— 实测已发生一次（台账 A3）✗；写成 overrides 才能"重放一次就回到同一状态" ✓。纯函数与 CLI 端到端见 `tests/dsh-embedded-overrides.test.js`（22 条，全部在临时 home 上跑） |
 | `dsh-embedded-check.js` | **内置 DSH 升级后自检**（只读，不起 Electron；`--home` / `--json`）：10 项三态 `PASS/FAIL/UNKNOWN`（**UNKNOWN ≠ 通过** ✗），对照真值取自迁移回执 `receipt-migrate-*.json` 与它指向的 `packageDir\manifest.json`。**为什么需要**：内置实例的现状**只存在于 `%APPDATA%` 的现网状态里**，换运行包/重跑导入后"哪些改动还在"没有别的机械判据（台账 A3 就是靠它才发现手改已丢）；它读的是机器本地状态，**故意不进 verify**（会破坏"验证链可移植"这条前提）⇒ 它是 skill `embedded-dsh-maintain` 的必跑项 ✓ |
 | `dsh-prefill-stub.js` | **用桩服务走通 `prefillComposer` 的成功分支**（`npm run dsh:prefill-stub`，**不在 verify 里** —— 与 `dsh:e2e` / `dsh:resident` 同一类按需工具）。**为什么需要**：`dsh-prefill`（把文本投喂进侧栏输入框）在门禁里**永远走失败路径** —— 冒烟跑在 `setNoSpawn(true)` 下，`prefillComposer` 永远停在 `state.status !== 'running'` 那一句 ⇒ 成功路径（真的把字塞进页面输入框、真的派发 `input`/`change`）**没有任何门禁覆盖**，坏了也只有真机才发现（D7）。它起一个只回一段静态 HTML 的本地 HTTP 桩（随机端口、只监听 127.0.0.1），把它接成"已就绪的服务"（`__injectStubServiceForTest`，**测试专用入口**，产品路径的接管仍走 `adoptExistingService` 的 pid + HTTP 双探活），再调**真正的那份** `prefillComposer`：① 返回 `ok:true`；② **读 DOM 真值**确认文本真的落进 textarea（不信返回值）；③ 页面自己记的计数器证明 `input`/`change` 真的派发了；④ 负例：空文本必须响亮拒绝。`APPDATA` 指向临时目录 ⇒ 真实 `~/.dsh` 与 `%APPDATA%/AI MindMap` 零触碰 |
+
+| `scripts/smoke/*` | **冒烟断言域（整目录前缀覆盖：不逐份登记）**：全部 `NN-<域>.js` 由 `smoke-assertions.js` 按文件名顺序拼接执行，域号 + 文件名即目录级说明 ⇒ 规则相同，逐份登记等于把同一份清单抄两遍（判据 = `EXEMPT_DIRS`，见本节开头）。⚠️ 豁免的只是"逐文件进本表"，**不是**"不受管"：域内文件仍受 G5 执行、**V1** 可见性判据、**V2** 收尾纪律与 **G1** 编码门禁；**增删/改名一个域文件**照旧要同步 `changed-plan.js` 的域登记（**S2** 双向闭包会抓） |
+| `scripts/vision/*` | **离屏/读图取证工具（整目录前缀覆盖：不逐份登记）**：同一套目录级说明 + 自描述命名（画面判定 L0–L4 的分层判据见 §4），判定用的帧与落盘证据在 `.review/`；逐份登记只增维护面而无收获（判据同 `EXEMPT_DIRS`） |
 
 ## 3. 数据流
 

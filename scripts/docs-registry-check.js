@@ -249,14 +249,62 @@ function checkHandoverPointers(root) {
  * （`ui-state.js` / `dsh-capabilities.js` / `dsh-sidebar-skill.js`），`scripts/` 连**章节都没有**
  * —— 连 `verify.js`（验证链的单源）都不在架构文档里。新模块写了代码却不进文档，
  * 接手者就不知道它存在。
- * 范围刻意收窄：**只查 `src/*.js`、`cli/commands/*.js`、`scripts/*.js`（顶层）**。
- * 豁免 `tests/`、`scripts/smoke/`、`scripts/vision/` —— 它们有目录级说明 + 自描述命名，
- * 逐文件登记只增维护面而无收获。 */
+ * 范围：**递归扫 `src/`、`cli/commands/`、`scripts/` 整棵子树**（原先只扫顶层，见下）。
+ * 为什么必须递归（实测缺口，2026-10-16 T5 批）：非递归时 `scripts/smoke/` 里绝大多数文件
+ * 从未登记，而它们**根本没进过扫描面** ⇒ "豁免"不是一条声明，只是"非递归"这个**副作用**：
+ * 谁把 `scripts/mutate-gates.js` 挪进 `scripts/tools/`（或谁把这里改成递归），豁免就**无声消失**。
+ * `mutate-gates.js` 当初恰好在 `scripts/` 顶层才被本判定抓到 —— 它是本工程唯一检出过真事故的
+ * 门禁（G8）的战功之一 ⇒ 这条判定的豁免必须**显式可读**，不能靠扫描面形状。
+ * ⇒ 现在豁免只有一种写法：**`EXEMPT_DIRS`**（逐条带理由）+ `docs/ARCHITECTURE.md` §2.6 一行前缀行。
+ * 登记口径（两档，别混）：
+ *   - **顶层**文件：架构文档里出现**文件名**即算登记（历史口径，本批**刻意不动** ——
+ *     实测 89 个顶层文件里 51 个在文档里只有文件名、没有完整路径，立刻改路径口径要补 51 条登记，
+ *     那是把"机制"当成"内容"改）。⚠️ 这条口径的**已知假绿**（本批只核实、未修）：
+ *     `arch.includes(文件名)` 是**子串匹配、不是路径** ⇒ 文件名恰好出现在文档别处（哪怕一句散文）
+ *     就判"已登记"（读数与复现脚本见 `.review/20261016-T5-G8豁免/`；要收紧另开一批）。
+ *   - **子目录**文件：必须按**完整相对路径**入档（`scripts/tools/x.js`）。否则"同名文件换个目录"
+ *     会靠顶层那条登记蒙混过关 ⇒ 移个位置就等于免检。规则确实**相同**的目录（有目录级说明 +
+ *     自描述命名，逐份登记只增维护面而无收获）整目录登记进 `EXEMPT_DIRS`。
+ * 这两档合起来才是"现状零新登记即通过"：递归**不带来任何新增登记欠账**。 */
 const COVERED_DIRS = [
   { dir: 'src', what: '共享核心模块' },
   { dir: 'cli/commands', what: 'CLI 命令层' },
   { dir: 'scripts', what: '脚本层' }
 ];
+
+/** **子目录豁免的显式声明 —— 本判定的唯一豁免判据**。`{ dir, why }`，`dir` 按前缀口径（结尾斜杠）。
+ *  语义是"**这个目录里的文件不逐份登记**"，不是"这个目录不受管"：它们仍受 G1/G5/V1/V2 等门禁约束，
+ *  这里只免掉"逐文件进 §2.6 表"这一条。
+ *  ⚠️ 加一条之前先问：这个目录真的**规则相同**吗（一份目录级说明 + 自描述命名就能覆盖全部文件）？
+ *  规则不同就该拆目录，而不是加豁免 —— 与 `docs/ARCHITECTURE.md` §5「归档族由前缀行统一覆盖、
+ *  不需要逐份登记；例外只开给规则确实不同的目录」是**同一条判断标准**。 */
+const EXEMPT_DIRS = [
+  { dir: 'scripts/smoke/', why: '冒烟断言域：域号 + 文件名自描述、由 `smoke-assertions.js` 按文件名顺序拼接执行'
+    + '（目录级说明在 `docs/ARCHITECTURE.md` §2.6 前缀行）；逐份登记等于把同一份清单抄两遍' },
+  { dir: 'scripts/vision/', why: '离屏/读图取证工具：同一套目录级说明 + 自描述命名（§2.6 前缀行），'
+    + '判据与证据落在 `.review/`，逐份登记只增维护面而无收获' },
+  { dir: 'tests/', why: '单测/集成用例：用例名与它覆盖的对象同名（`X` ↔ `tests/X.test.js`），逐份登记只增维护面；'
+    + '本目录**本来也不在 `COVERED_DIRS` 的扫描根里**，登记在此是为了"哪天谁把它加进扫描根/挪进子目录，判定不变"' }
+];
+
+/** 递归列出 `relDir` 下全部 `.js`，返回**相对工程根**的 POSIX 路径（已排序）。
+ *  读不出来的子目录**不静默吞**：交给上层（不存在的目录由调用方先判存在性）。 */
+function listJsFiles(absDir, relDir, out) {
+  out = out || [];
+  for (const e of fs.readdirSync(absDir, { withFileTypes: true })) {
+    const rel = relDir + '/' + e.name;
+    if (e.isDirectory()) {
+      if (SKIP_DIRS.has(e.name)) continue;
+      listJsFiles(path.join(absDir, e.name), rel, out);
+    } else if (/\.js$/i.test(e.name)) out.push(rel);
+  }
+  return out.sort();
+}
+
+/** 是否落在显式豁免的目录里（前缀口径，与 `ARCHIVE_PREFIXES` 同形） */
+function isExemptFile(rel) {
+  return EXEMPT_DIRS.some(({ dir }) => (rel + '/').startsWith(dir.endsWith('/') ? dir : dir + '/'));
+}
 
 function checkModuleCoverage(root) {
   const problems = [];
@@ -266,12 +314,22 @@ function checkModuleCoverage(root) {
   COVERED_DIRS.forEach(({ dir, what }) => {
     const abs = path.join(root, dir);
     if (!fs.existsSync(abs)) return;
-    fs.readdirSync(abs).filter((f) => /\.js$/i.test(f)).sort().forEach((f) => {
-      // 用文件名匹配（架构文档里以 `文件.js` 形式出现）
-      if (arch.includes(f)) return;
-      problems.push({ kind: 'module-cover', rel: dir + '/' + f,
+    listJsFiles(abs, dir).forEach((rel) => {
+      if (isExemptFile(rel)) return;              // 显式豁免 —— 不再靠"非递归"这个副作用
+      const inSubdir = rel.slice(dir.length + 1).includes('/');
+      // 顶层 = 文件名口径（历史选择，本批不动）；子目录 = 完整路径口径（防"同名换目录"免检）
+      const registered = inSubdir
+        ? arch.includes(rel)
+        : arch.includes(path.posix.basename(rel));
+      if (registered) return;
+      problems.push({ kind: 'module-cover', rel,
         msg: what + '里的这个文件没有被 `docs/ARCHITECTURE.md` 提到 —— '
-          + '新接手的 AI 靠 §2 认识代码结构，新增文件要同批登记（§2.3 / §2.6 表）' });
+          + '新接手的 AI 靠 §2 认识代码结构，新增文件要同批登记（'
+          + (inSubdir
+            ? '子目录文件按**完整相对路径**登记进 §2.6 表；若整个目录规则确实相同，'
+              + '把它加进 `EXEMPT_DIRS` 并在 §2.6 补一行前缀行'
+            : '§2.3 / §2.6 表')
+          + '）' });
     });
   });
   return problems;

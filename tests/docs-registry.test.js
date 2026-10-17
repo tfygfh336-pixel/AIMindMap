@@ -382,6 +382,34 @@ describe('docs-registry-check：代码入档 / 归档横幅 / 工作目录状态
     } finally { clean(); }
   });
 
+  /* 下面两条是**移位不变**的常驻证明（对应 `.review/20261016-T5-G8豁免/` 的一次性读数）。
+   * 为什么必须常驻：判定的旧实现只扫顶层 ⇒ 豁免是"非递归"这个**副作用**。谁哪天把递归改回去
+   * （或把子目录判断改回文件名口径），一次性读数不会说话，这两条会红。 */
+  it('子目录里的**同名**文件不算已登记 → module-cover（换目录不能沿用顶层那条登记）', () => {
+    const [root, clean] = fakeProject(Object.assign({}, base, {
+      'src/known.js': '// 文档里登记过 `known.js`',
+      'scripts/tools/known.js': '// 同名，只换了目录 —— 文档里没有 scripts/tools/known.js'
+    }));
+    try {
+      const { problems } = checkRegistry(root, fakeRegistry());
+      const rels = problems.filter((p) => p.kind === 'module-cover').map((p) => p.rel);
+      expect(rels).toEqual(['scripts/tools/known.js']);
+    } finally { clean(); }
+  });
+
+  it('子目录文件按**完整相对路径**登记即通过（豁免不是唯一出路）', () => {
+    const [root, clean] = fakeProject(Object.assign({}, base, {
+      'docs/ARCHITECTURE.md': '# 架构\n\n| `known.js` | 已有模块 |\n'
+        + '| `scripts/tools/helper.js` | 子目录里按完整路径登记 |\n',
+      'src/known.js': '// ok',
+      'scripts/tools/helper.js': '// 已按路径登记'
+    }));
+    try {
+      const { problems } = checkRegistry(root, fakeRegistry());
+      expect(problems.filter((p) => p.kind === 'module-cover')).toEqual([]);
+    } finally { clean(); }
+  });
+
   it('归档文档缺「历史」横幅必红 → banner（grep 到旧稿会当成现状）', () => {
     const [root, clean] = fakeProject(Object.assign({}, base, {
       'docs/archive/OLD-2020.md': '# 旧审查\n\n正文\n'
