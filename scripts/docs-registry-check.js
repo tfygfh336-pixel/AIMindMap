@@ -937,7 +937,11 @@ function checkRegistry(root, registryMd) {
   //（⚠️ 标记只写这一处：判定标题与导出注释里都**不许**再出现 ⑮，否则 G9 判"标记重复"——实测踩到 ✗）
   checkStabilityCoverage(root).forEach((p) => problems.push(p));
 
-  return { problems, reg, docs };
+  // ⑯ 整行重复：受管 .md 的**表格数据行**不许逐字节重复（同一事实被写了两遍 = "写入两次"的残渣）
+  const dupRes = checkDuplicateRows(root, docs);
+  dupRes.problems.forEach((p) => problems.push(p));
+
+  return { problems, reg, docs, dupStats: dupRes.stats };
 }
 
 /** ⑭ 层取值表：`层` 必须在 `LAYER_ORDER` 内（权威在 `SKILL.md` B3）。
@@ -1071,6 +1075,157 @@ function checkStabilityCoverage(root, namesIn) {
   return problems;
 }
 
+/* ---------------- 判定：整行重复（同一事实被写了两遍） ----------------
+ * 为什么需要（真实事故，不是"文档洁癖"）：`3edf4a3` 从 `docs/ARCHITECTURE.md` 里清掉过 **3 组逐字节
+ * 相同的表格行**（1,744 / 1,062 / 932 字符，共 −6,882 B）。成因是"用 `git cat-file blob` 还原工作树"
+ * 与"登记"两步叠加 ⇒ **同一行被写了两次**。而**当时那道全链是绿的**：本门禁此前的各条判定查的是
+ * "文件有没有被登记""归档段有没有重复版本"，**没有一条查"同一行登记了几次"** ⇒ 门禁盲区。
+ * 而重复行恰恰是"写入两次"的**可见残渣**，也是"一份事实只写一处"被破坏的机械可查形态。
+ *
+ * 判据形态是**量出来的**，不是拍出来的（范围读数与逐条分类见 `.review/20261016-重复行门禁/`）：
+ *   扫描面 = 受管 `.md`（`collectDocs()` 现场取；**排除 `.review/` 工作产物区**）
+ *   对象   = **表格数据行**：以 `|` 开头，且既不是分隔行（`|---|`）、也不是表头行
+ *            （表头 = 紧跟分隔行的那一行，或一段连续 `|` 块的首行 —— 两档取并集，
+ *             因为受管 `.md` 里实测有 6 个表格块没有分隔行，只认"紧跟分隔行"会漏掉它们的表头）
+ *   判红   = 同一行在扫描面里出现 **≥2 次**（同一份文档内、或跨文档都算）
+ *
+ * 为什么**不设长度阈值**（本批最重要的一条读数）：在唯一有样本的语料（`.review/`，463 组）上，
+ * 重复表格数据行的长度是 **14 → 995 的连续分布**，T=1 到 T=400 之间每一档都还有几十到几百组
+ * ⇒ **没有拐点**，任何长度阈值都是拍的（挑一个"刚好让受管文档变 0"的数，正是"凑绿"✗）。
+ * 而受管 `.md`（33 份 / 13,836 行）在**任何**长度阈值下分子都是 0 ⇒ 阈值也不承担判别力。
+ * 判别力改由**形态**承担：受管 `.md` 里 47 组"任意行重复"**全部**是表格分隔行 / 表头行 /
+ * CHANGELOG 历史小标题 / 归档横幅 / 生成块的同一段注释（正当重复 47/47）⇒ "任意行重复即红"是
+ * **必然假红**；换成"表格数据行"后，正当重复被**结构上**排除，不靠白名单（白名单会把门禁变成恒真）。
+ *
+ * 已知边界（三档一起写，照 docs-for-ai G2）：**判红** = 受管 `.md` 的表格数据行重复；
+ * **只报告** = `.review/` 工作产物区整片不扫（那是分析稿，实测 463 组重复；扫它会让"只读仓库 +
+ * 只写工作区"的核查任务永远不可能变绿 —— docs-for-ai D1）；
+ * **跳过** = 正文里重复的散文 / 清单 / 小标题不判（实测正当重复 100%，与"有意重复"无法区分）。
+ *
+ * ⚠️ 能力边界（抓结果不抓动作）：本判定抓的是"**重复已经落在盘上**"这个结果，抓不住"谁写了两次"；
+ *    非表格形态的重复（散文、清单）在本判定之外 —— 那里没有可用的判据，见上面"跳过"档。 */
+const DUP_ROW_TABLE_SEP_RE = /^\|[\s:|-]+$/;
+
+/** 一行是否"表格分隔行"（`|---|` / `|:--|--:|` 这类） */
+function isTableSepLine(line) {
+  const s = String(line).trim();
+  return DUP_ROW_TABLE_SEP_RE.test(s) && s.includes('-');
+}
+
+/** 抽出一份文档里的**表格数据行**：返回 Map(整行原文 -> [行号(1 基), …])
+ *  @param {string} text 文档全文
+ *  判据只看**行本身与它的邻居**，不看它属于哪张表 —— 因此"表格里加一列"不会让本判定失准。 */
+function tableDataRows(text) {
+  const lines = String(text).split(/\r?\n/);
+  const n = lines.length;
+  const isPipe = lines.map((l) => l.trim().startsWith('|'));
+  const isSep = lines.map((l) => isTableSepLine(l));
+  const out = new Map();
+  for (let i = 0; i < n; i++) {
+    if (!isPipe[i] || isSep[i]) continue;
+    // ⚠️ 两档判据都只看**紧邻的物理行**：空行在 Markdown 里就是"表格结束"，
+    //    跨过空行去找邻居会把上一张表的数据行当成这张表的表头/数据（实测：跳过空行找邻居，
+    //    第二张表的块首行被当成了数据行 —— 单测当场抓到）。
+    const followedBySep = i + 1 < n && isSep[i + 1];                   // 表头：紧跟分隔行
+    const firstOfBlock = i === 0 || !isPipe[i - 1];                    // 表头：一段连续 `|` 块的首行
+    if (followedBySep || firstOfBlock) continue;                       // 表头行不算数据行
+    if (!out.has(lines[i])) out.set(lines[i], []);
+    out.get(lines[i]).push(i + 1);
+  }
+  return out;
+}
+
+/** 在册豁免 —— **封闭册**：只登记"这一处重复确实是正当的"个案，上界只减不增。
+ *  加一条之前先问一句：这两处真的是**两件不同的事实**吗？是 ⇒ 行文本来就该不同（改文不改册）；
+ *  不是 ⇒ 删掉一处。**把正当重复一律塞进册里**会让本判定变成恒真（skill B8 明令禁止）。
+ *  复审时机：每次改动本判定的口径（形态 / 扫描面）时；审：改本文件的人。 */
+const DUP_ROW_EXEMPT_MAX = 0;
+const DUP_ROW_EXEMPT = [
+  // { rel: 'docs/XXX.md', line: '| 整行原文 |', why: '为什么这处重复是正当的（含"为什么不能改文"）' }
+];
+
+/** 判定函数（标记在 `checkRegistry()` 里，见那里的 ⑯）：受管 `.md` 的表格数据行不许逐字节重复。
+ *  @param {string} root 工程根
+ *  @param {Array|string[]} [docsIn] 扫描面（`collectDocs()` 的结果或纯路径数组）；不给就现场收一遍。
+ *  @param {Array} [exemptIn] 豁免册（依赖注入，给单测用）；不给就用模块里的 `DUP_ROW_EXEMPT`。
+ *  @param {number} [exemptMaxIn] 豁免条数上界（依赖注入，给单测用）；不给就用 `DUP_ROW_EXEMPT_MAX`。
+ *  @returns {{problems: Array, stats: {files:number, rows:number, groups:number, exempt:number, exemptMax:number}}} */
+function checkDuplicateRows(root, docsIn, exemptIn, exemptMaxIn) {
+  const problems = [];
+  const exempt = Array.isArray(exemptIn) ? exemptIn : DUP_ROW_EXEMPT;
+  const exemptMax = Number.isFinite(exemptMaxIn) ? exemptMaxIn : DUP_ROW_EXEMPT_MAX;
+  const list = (docsIn || collectDocs(root))
+    .map((d) => (typeof d === 'string' ? d : d.rel))
+    .filter((rel) => /\.md$/i.test(rel))
+    .filter((rel) => !(rel === WORK_DIR || rel.startsWith(WORK_DIR + '/')));
+
+  const occ = new Map();     // 整行原文 -> [{rel, idx}]
+  let rows = 0;
+  list.forEach((rel) => {
+    let text = '';
+    try { text = fs.readFileSync(path.join(root, rel), 'utf8'); }
+    catch (e) {
+      // **采不到真值＝红**（skill A5）：读不出就不许静默跳过，否则"没判"会被读成"判过了"。
+      problems.push({ kind: 'unreadable', rel: rel,
+        msg: '读不出来（' + (e.code || '?') + '）—— 本判定无法自称已校验（采不到真值＝红）' });
+      return;
+    }
+    for (const [line, idxs] of tableDataRows(text)) {
+      rows += idxs.length;
+      if (!occ.has(line)) occ.set(line, []);
+      idxs.forEach((idx) => occ.get(line).push({ rel, idx }));
+    }
+  });
+
+  // 重复本身（豁免先扣掉：只在"被豁免的那一份文档里"扣，不给跨文件重复开后门）
+  const isExempt = (h, line) => exempt.some((e) => e && e.rel === h.rel && e.line === line);
+  let groups = 0;
+  occ.forEach((hits, line) => {
+    const kept = hits.filter((h) => !isExempt(h, line));
+    if (kept.length < 2) return;
+    groups++;
+    problems.push({ kind: 'dup-row', rel: [...new Set(kept.map((h) => h.rel))].join(' + '),
+      msg: '表格数据行重复 ' + kept.length + ' 次：' + kept.map((h) => h.rel + ':' + h.idx).join('、')
+        + ' —— 同一行逐字节写成多份 = **同一事实被写了两遍**（"写入两次"的可见残渣），'
+        + '直接破坏「一份事实只写一处」。处置三条（任选其一，说明理由即可）：'
+        + '① 删掉多余的那几行（只留一处，最常见）；'
+        + '② 若两处讲的确实是不同的事实 ⇒ 把行文改成不同（改文，不要改判据）；'
+        + '③ 若确认这处重复是正当的 ⇒ 登记进 `DUP_ROW_EXEMPT`（必须带 why，上界只减不增）'
+        + '\n     该行前段：' + JSON.stringify(line.length > 120 ? line.slice(0, 120) + '…' : line) });
+  });
+
+  // 封闭册三条：上界只减不增 / 悬挂登记 / 修好忘销账
+  if (exempt.length > exemptMax) {
+    problems.push({ kind: 'dup-exempt', rel: REGISTRY_DOC,
+      msg: '在册豁免 ' + exempt.length + ' 条 > 上界 ' + exemptMax
+        + '（**只减不增**）—— 新开豁免要么当场改文，要么说明为什么必须扩上界'
+        + '（扩上界是一次独立决定，不许顺手改）' });
+  }
+  exempt.forEach((e) => {
+    if (!e || !e.rel || !e.line) {
+      problems.push({ kind: 'dup-exempt', rel: REGISTRY_DOC,
+        msg: '豁免条目缺 `rel` / `line` —— 判据无从核对（悬挂登记）' });
+      return;
+    }
+    const hits = (occ.get(e.line) || []).filter((h) => h.rel === e.rel);
+    if (hits.length < 2) {
+      problems.push({ kind: 'dup-exempt', rel: e.rel,
+        msg: '豁免条目在仓库里已经**不再成立**（该行在这份文档里的表格数据行出现 ' + hits.length
+          + ' 次 < 2）—— 重复已经修好却忘了销账，或这条豁免指向的行已被改写（悬挂登记）。'
+          + '处置：把它从 `DUP_ROW_EXEMPT` 里删掉（这正是"逼人销账"）' });
+    }
+    if (!e.why) {
+      problems.push({ kind: 'dup-exempt', rel: e.rel,
+        msg: '豁免条目没写 `why` —— 没有理由的豁免等于把判据关掉（skill B8 明令：豁免必须写原因）' });
+    }
+  });
+
+  return { problems: problems, stats: {
+    files: list.length, rows: rows, groups: groups,
+    exempt: exempt.length, exemptMax: exemptMax
+  } };
+}
+
 /* ---------------- CLI ---------------- */
 
 function main() {
@@ -1088,7 +1243,7 @@ function main() {
     return;
   }
   const registryMd = fs.readFileSync(regPath, 'utf8');
-  const { problems, reg, docs } = checkRegistry(ROOT, registryMd);
+  const { problems, reg, docs, dupStats } = checkRegistry(ROOT, registryMd);
 
   // `--judgments`：把本门禁的判定清单**现场列出来**（从 `checkRegistry()` 的 ①…⑭ 标记与标题提取）。
   // 为什么需要：`docs/RULES.md` §2 不再逐条复制这份清单（复制过，结果"声明 13 条、只列 12 项"）——
@@ -1125,7 +1280,9 @@ function main() {
     ? '✗ 文档体系完整性有问题（' + problems.length + ' 处）：'
     : '✓ 登记与家门均合规（' + docs.length + ' 份 .md/.html 有家，根与顶层目录白名单干净）');
   problems.forEach((p) => {
-    const tag = p.kind === 'unregistered' ? '表外文档'
+    const tag = p.kind === 'dup-row' ? '整行重复'
+      : p.kind === 'dup-exempt' ? '豁免册不成立'
+        : p.kind === 'unregistered' ? '表外文档'
       : p.kind === 'stray' ? '家目录非法'
         : p.kind === 'dangling' ? '悬挂登记'
           : p.kind === 'junk' ? '乱放'
@@ -1174,6 +1331,12 @@ function main() {
     } catch (e) { return 0; }
   })();
   console.log('✓ CLI 稳定性表覆盖注册表全部命令（' + STABILITY_DOC + ' §1.2：' + stabCount + ' 条已登记）');
+  // 整行重复的**通过读数必须带分母与在册豁免条数**：只报一个 ✓，读者会把"没判"读成"判过了"
+  //（skill B8：豁免要计入真值、在输出里可见；A5：通过 / 总数 / 未验证三档都要看得见）。
+  if (dupStats) {
+    console.log('✓ 受管 .md 的表格数据行无逐字节重复（' + dupStats.files + ' 份 / ' + dupStats.rows
+      + ' 行已判；在册豁免 ' + dupStats.exempt + ' 条 / 上界 ' + dupStats.exemptMax + '）');
+  }
 
   // ---- 交接提示（不算违规，只提示） ----
   const notice = handoverNotice(ROOT);
@@ -1230,6 +1393,8 @@ module.exports = {
   writeRegistryTable, headerProblemLine, checkLayerValues,
   // 稳定性表覆盖的判定与纯函数（标记在 checkRegistry 里；`parseStabilityTable` 导出给单测）
   checkStabilityCoverage, parseStabilityTable, stabilitySection, STABILITY_DOC,
+  // 整行重复的判定与纯函数（标记在 checkRegistry 里；`tableDataRows` / `isTableSepLine` 导出给单测）
+  checkDuplicateRows, tableDataRows, isTableSepLine, DUP_ROW_EXEMPT, DUP_ROW_EXEMPT_MAX,
   section5, ROOT_DOCS, ROOT_FILES, TOP_DIRS, WORK_DIR, BANNER_RE, SCHEMA_FIELDS, RECENT_WINDOW_MIN,
   FUTURE_TOLERANCE_MS,
   REQUIRED_HEADER_KEYS, LAYER_ORDER, REG_BEGIN, REG_END

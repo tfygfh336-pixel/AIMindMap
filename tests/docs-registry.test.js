@@ -831,6 +831,130 @@ describe('docs-registry-check：CLI 稳定性表覆盖（G8 第 ⑮ 条判定）
   });
 });
 
+describe('docs-registry-check：整行重复（G8 第 ⑯ 条判定）', () => {
+  /** 真实事故的形状：`137ab3e` 把同一条表格行**连着写了两遍**（它是被"还原 + 登记"两步叠加写出来的）。
+   *  下面这份 fixture 就是那个形状的最小复现（相邻两行逐字节相同）。 */
+  const DUP_ROW = '| `path-chain.js` | **「路径 → 打开 / 预览」的判据 —— 唯一实现**（三段式） | `src/path-chain.js` |';
+  const table = (rows) => ['| 模块 | 作用 | 路径 |', '|------|------|------|'].concat(rows).join('\n');
+
+  it('tableDataRows：表头（紧跟分隔行 / 块首行）与分隔行都不算数据行；行号是 1 基', () => {
+    const md = [
+      '| 字段 | 必填 |',       // 1 表头（块首行 + 紧跟分隔行）
+      '|------|------|',       // 2 分隔行
+      '| a | 是 |',            // 3 数据行
+      '| b | 否 |',            // 4 数据行
+      '',
+      '| 名字 | 值 |',         // 6 表头（块首行；本块**没有分隔行** —— 受管 .md 里实测有 6 个这样的块）
+      '| x | 1 |'              // 7 数据行
+    ].join('\n');
+    const m = checker.tableDataRows(md);
+    expect([...m.keys()].sort()).toEqual(['| a | 是 |', '| b | 否 |', '| x | 1 |']);
+    expect(m.get('| a | 是 |')).toEqual([3]);
+    expect(m.get('| x | 1 |')).toEqual([7]);          // 只认"紧跟分隔行"会漏掉它的表头 ⇒ 这里靠"块首行"兜住
+  });
+
+  it('★ 判别力注入：同一条表格数据行写了两遍（相邻，真实事故的形状）⇒ 必红且点出两个行号', () => {
+    const [root, clean] = fakeProject({ 'docs/DUP.md': table([DUP_ROW, DUP_ROW]) });
+    try {
+      const r = checker.checkDuplicateRows(root, ['docs/DUP.md'], []);
+      expect(r.problems.length).toBe(1);
+      expect(r.problems[0].kind).toBe('dup-row');
+      expect(r.problems[0].msg).toMatch(/docs\/DUP\.md:3/);
+      expect(r.problems[0].msg).toMatch(/docs\/DUP\.md:4/);
+      expect(r.stats.groups).toBe(1);
+      // 对照：只留一份 ⇒ 不红（证明判的是"重复"，不是"有表格"）
+      const [root2, clean2] = fakeProject({ 'docs/DUP.md': table([DUP_ROW]) });
+      try {
+        expect(checker.checkDuplicateRows(root2, ['docs/DUP.md'], []).problems).toEqual([]);
+      } finally { clean2(); }
+    } finally { clean(); }
+  });
+
+  it('★ 跨文档重复同样必红（"一份事实只写一处"：两份文档各写一遍也是多副本）', () => {
+    const [root, clean] = fakeProject({
+      'docs/A.md': table([DUP_ROW]), 'docs/B.md': table([DUP_ROW])
+    });
+    try {
+      const r = checker.checkDuplicateRows(root, ['docs/A.md', 'docs/B.md'], []);
+      expect(r.problems.length).toBe(1);
+      expect(r.problems[0].msg).toMatch(/docs\/A\.md:3/);
+      expect(r.problems[0].msg).toMatch(/docs\/B\.md:3/);
+    } finally { clean(); }
+  });
+
+  it('★ 正当重复**不判红**（第三种答案）：分隔行 / 表头行重复、正文重复都是结构性的', () => {
+    // 为什么这条必须有：一个只会说"对/错"两档的判据，会把"有意重复"判成真缺陷（skill B4b / H3b）。
+    // 受管 .md 上实测 47 组"任意行重复"**全是正当重复** ⇒ 判据形态若选"任意行"就是必然假红。
+    const md = [
+      '| 字段 | 必填 |', '|------|------|', '| a | 是 |', '',
+      '| 字段 | 必填 |', '|------|------|', '| b | 否 |', '',   // 表头重复 + 分隔行重复
+      '#### 六、未做 / 未核实（诚实清单）', '',
+      '#### 六、未做 / 未核实（诚实清单）', '',                    // 历史小标题重复（CHANGELOG 实测就是这个形状）
+      '> ⚠️ **历史快照，已归档 —— 请勿作为现状引用。**', '',
+      '> ⚠️ **历史快照，已归档 —— 请勿作为现状引用。**', ''
+    ].join('\n');
+    const [root, clean] = fakeProject({ 'docs/OK.md': md });
+    try {
+      const r = checker.checkDuplicateRows(root, ['docs/OK.md'], []);
+      expect(r.problems).toEqual([]);
+      expect(r.stats.rows).toBe(2);      // 只数到了两条数据行 ⇒ 表头/分隔行确实被结构性排除
+    } finally { clean(); }
+  });
+
+  it('工作产物区（.review/）整片不扫：那里是分析稿，扫它会让"只写工作区"的任务永远不可能变绿', () => {
+    const [root, clean] = fakeProject({
+      'docs/A.md': table([DUP_ROW]),
+      '.review/probe/README.md': table([DUP_ROW])          // 同一行在工作产物区里也有一份
+    });
+    try {
+      // 即便把 .review 传进扫描面，它也必须被过滤掉
+      const r = checker.checkDuplicateRows(root, ['docs/A.md', '.review/probe/README.md'], []);
+      expect(r.problems).toEqual([]);
+      expect(r.stats.files).toBe(1);
+    } finally { clean(); }
+  });
+
+  it('豁免册是**封闭册**：在册且仍成立的豁免不判红；修好忘销账 / 缺 why / 超上界各自判红', () => {
+    const [root, clean] = fakeProject({ 'docs/DUP.md': table([DUP_ROW, DUP_ROW]) });
+    try {
+      const line = DUP_ROW;
+      // ① 在册 + 有 why + 未超上界 ⇒ 不判红（豁免允许，但必须登记在门禁侧并写原因）
+      //    ⚠️ 上界走**依赖注入**：本工程的上界现值是 0（零存量违例），不为单测去动那个数。
+      const ok = checker.checkDuplicateRows(root, ['docs/DUP.md'],
+        [{ rel: 'docs/DUP.md', line, why: '单测：正当重复的演示条目' }], 1);
+      expect(ok.problems).toEqual([]);
+      expect(ok.stats.exempt).toBe(1);
+      // ② 册上那条已经不再成立（重复被修好了却没销账）⇒ 必红（逼人销账）
+      const [root2, clean2] = fakeProject({ 'docs/DUP.md': table([DUP_ROW]) });
+      try {
+        const stale = checker.checkDuplicateRows(root2, ['docs/DUP.md'],
+          [{ rel: 'docs/DUP.md', line, why: '已修好但忘销账' }], 1);
+        expect(stale.problems.map((p) => p.kind)).toEqual(['dup-exempt']);
+        expect(stale.problems[0].msg).toMatch(/不再成立|销账/);
+      } finally { clean2(); }
+      // ③ 没有 why 的豁免 = 把判据关掉 ⇒ 必红
+      const noWhy = checker.checkDuplicateRows(root, ['docs/DUP.md'], [{ rel: 'docs/DUP.md', line }], 1);
+      expect(noWhy.problems.map((p) => p.kind)).toContain('dup-exempt');
+      expect(noWhy.problems.map((p) => p.msg).join('\n')).toMatch(/没写 `why`/);
+      // ④ 条数超过上界 ⇒ 必红（只减不增）
+      const over = checker.checkDuplicateRows(root, ['docs/DUP.md'],
+        [{ rel: 'docs/DUP.md', line, why: 'a' }, { rel: 'docs/DUP.md', line, why: 'b' }], 1);
+      expect(over.problems.map((p) => p.kind)).toContain('dup-exempt');
+      expect(over.problems.map((p) => p.msg).join('\n')).toMatch(/只减不增/);
+      // ⑤ 生产用的上界现值：0 条（本工程零存量违例 ⇒ 新出现一处重复就必须改文，不许加豁免）
+      expect(checker.DUP_ROW_EXEMPT_MAX).toBe(0);
+    } finally { clean(); }
+  });
+
+  it('真实工程：受管 .md 的表格数据行没有逐字节重复（本判定的回归守护 + 在册豁免不超上界）', () => {
+    const r = checker.checkDuplicateRows(ROOT);
+    expect(r.problems).toEqual([]);
+    expect(r.stats.files).toBeGreaterThan(20);
+    expect(r.stats.rows).toBeGreaterThan(300);              // 分母不是 0 ⇒ 判据真的扫到了东西
+    expect(checker.DUP_ROW_EXEMPT.length).toBeLessThanOrEqual(checker.DUP_ROW_EXEMPT_MAX);
+  });
+});
+
 describe('docs-registry-check：真实工程合规（回归守护）', () => {
   it('本工程无表外文档 / 散落文档 / 悬挂登记 / 交接死指针 / 未入档代码 / 缺横幅归档 / 无状态工作目录 / 契约缺字段 / 断号', () => {
     const md = fs.readFileSync(path.join(ROOT, 'docs', 'ARCHITECTURE.md'), 'utf8');

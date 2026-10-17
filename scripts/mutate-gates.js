@@ -30,7 +30,7 @@
  *     不在"最小版"里（也不该在一台正被别的流占着的机器上跑）。
  *   · 变体是**手工挑的**（每个门禁三条 + 对照），能回答"这几类破坏拦不拦"，
  *     **回答不了覆盖率**（"所有可能的破坏里拦住了百分之多少"）✗。
- *     G8 是唯一的例外：它的 **15 条判定逐条各造一条注入**（判定的权威清单由
+ *     G8 是唯一的例外：它的**每条判定逐条各造一条注入**（判定的权威清单由
  *     `node scripts/docs-registry-check.js --judgments` 现场取 —— 本文件不抄那份清单）。
  *     "门禁 × 有没有证明"的汇总表不在这里：住在
  *     `.review/20261016-T4-G8判别力/tools/coverage-table.js`（现算，欠账册与之一致性互校）。
@@ -541,12 +541,12 @@ const GATES = [
    * 有变异体检，而 G8 **是本工程唯一检出过真事故的门禁** ——
    *   事故③「台账说 L10 已落地，仓库里根本没那个文件」= 本批变体 `G8-3`（判定 ③ 悬挂登记）；
    *   事故④「`mutate-gates.js` 被文档点名却从未提交」  = 本批变体 `G8-7`（判定 ⑦ 代码未入档）。
-   * 也就是说：**最有用的一条门禁，此前没人证明过它会红**。本条目把它的 15 条判定逐条撞一遍。
+   * 也就是说：**最有用的一条门禁，此前没人证明过它会红**。本条目把它的每一条判定逐条撞一遍。
    * 判定编号（①…⑮）不在本文件抄一份 —— 权威清单是 `node scripts/docs-registry-check.js --judgments`；
    * 变体只挂"我撞的是哪一号"，缺号由 `tests/mutate-gates.test.js` 的覆盖用例现算。
    * ------------------------------------------------------------ */
   {
-    id: 'docs-registry', code: 'G8', title: '文档体系完整性（15 条判定）',
+    id: 'docs-registry', code: 'G8', title: '文档体系完整性（16 条判定）',
     script: 'scripts/docs-registry-check.js', args: [],
     seam: '镜像 CLI 全链（真子进程 + 真 exit code）：输入 = 副本里的文档 / 源码 / 归档 / 工作目录；'
       + '靶点一律用门禁**自己导出的纯函数**在现场找（`parseRegistryTable` / `collectDocHeaders` / '
@@ -688,9 +688,26 @@ const GATES = [
             && (ext.match(new RegExp('`' + n + '`', 'g')) || []).length === 1)[0] || null;
       } catch (e) { stabilityCmd = null; }
 
+      // ⑯（整行重复）：找一条**表格数据行**（不是表头、不是分隔行），靶点用门禁自己的
+      // `tableDataRows()` 现场找 —— 本工具不另抄一份"什么算数据行"的口径。
+      // 优先挑**两份文档以上都能命中**的那份：`docs/ARCHITECTURE.md`（表格最多，且它就是真实事故的现场）。
+      let dupRow = null;
+      for (const rel of ['docs/ARCHITECTURE.md', 'docs/DATA-FORMAT.md', 'docs/RULES.md',
+        'docs/EXTENSIONS.md', 'docs/VERIFY.md']) {
+        if (!fs.existsSync(path.join(M.root, rel))) continue;
+        const rows = dr.tableDataRows(M.read(rel));
+        for (const [line, idxs] of rows) {
+          // 行号 0 基 ⇒ 插到它**后面**；避开表格最后一行（那里插入会贴到下一段之外）
+          if (!idxs.length || line.trim().length < 20) continue;
+          dupRow = { rel, idx: idxs[0], line };
+          break;
+        }
+        if (dupRow) break;
+      }
+
       return {
         regEndLine, dupVersion, archiveDoc, roadIdx, moduleProbe, moduleProbeVisible, archHasArchitecture,
-        navDoc, headerDoc, numberingDoc, contractField, contractFieldPresent, stabilityCmd,
+        navDoc, headerDoc, numberingDoc, contractField, contractFieldPresent, stabilityCmd, dupRow,
         regCount: reg.exact.size, docsScanned: M.read('SKILL.md').length
       };
     },
@@ -854,6 +871,22 @@ const GATES = [
         }
       },
       {
+        id: 'G8-16', judgment: '⑯', kind: '注入违规', expect: 'caught', reason: /\[整行重复\]/,
+        name: '把同一条**表格数据行**再写一遍（真实事故的形状：`137ab3e` 的"还原 + 登记"两步叠加，'
+          + '实测写出过 3 组、共 −6,882 B，当时全链是绿的）',
+        apply(M, c) {
+          if (!c.dupRow) throw new Error('副本里找不到可复用的表格数据行，这一条测不了');
+          return M.edit(c.dupRow.rel, (s) => {
+            const ls = s.split('\n');
+            // 行号是 1 基 ⇒ 数组下标 idx-1；把这一行**原样再插一份**到它后面（相邻重复 = 事故的形状）
+            const at = c.dupRow.idx - 1;
+            if (ls[at] !== c.dupRow.line) throw new Error('靶点行已被别处改动，这一条测不了');
+            ls.splice(at + 1, 0, ls[at]);
+            return ls.join('\n');
+          });
+        }
+      },
+      {
         id: 'G8-h', kind: '无害对照', expect: 'unchanged',
         name: '只在**已归档**版本段的末尾追加一行散文（归档族只增不改 ⇒ 读数应逐字不变）',
         apply(M, c) {
@@ -937,7 +970,7 @@ function buildReport() {
     gates: [], summary: null, selfCheck: null,
     knownGaps: [
       '只测这五个门禁（G9 / S1 / G6+G7 / V1 / G8）；G1·G2·G3·G4·G5·V2·S2·S3 未测（要起 Electron 或跑全链）',
-      '变体是手工挑的三条 + 对照（G8 例外：15 条判定逐条各一条）：能回答"这几类破坏拦不拦"，'
+      '变体是手工挑的三条 + 对照（G8 例外：每条判定各一条）：能回答"这几类破坏拦不拦"，'
         + '除 G8 外回答不了覆盖率',
       '测的是门禁，不是产品行为（产品靠 G3/G4/G5）'
     ]
