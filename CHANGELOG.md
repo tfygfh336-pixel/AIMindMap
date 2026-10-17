@@ -749,6 +749,29 @@ G3 余量 **29.2 s**（39.789 / 69.0，+0.63 s = 新增 21 条单测）· G5 余
   运行实例侧实测：客户端清单里 `dsh-client-ui-deliverables` 在册、会话日志里 13 条
   `workspace/changes` 事件 ⇒ **"缺的是人看不见"这个前提不成立**，故**没有**再写第二份面板实现
   （第二份实现 = 破工程第一铁律）；依据与复核命令写进 `docs/DSH-EMBEDDED.md` 台账 B11。
+- **二次取证（同日第二批，只读，不改产品代码）**：上一轮只证到"装配面在册"；这一轮把"**用户到底为什么看不见**"
+  补成实测，结论是上一轮那句"缺的是人看不见 ⚠ 前提不成立"需要**再进一步**——面在，但它
+  **不是常驻 tab，而且有三种情形会被彻底吞掉**（依据与读数见 `.review/20261016-改动清单面板2/README.md`）：
+  - **它不是常驻入口**：tab 注册是无条件的（`dsh-client-ui-deliverables/lib/client.js:2297` + `:2298-2319`），
+    但 `canOpen` 只认 `dsh-resource://changes-review/session/<sid>/<seq>/<turn>`（`:2011`），唯一入口是
+    **回合尾部改动卡片里点一个文件**（`:2286-2288`）；右栏本身起手**折叠且零 tab**（`dsh-client-ui-sidebar-right/lib/client.js:5111-5114`）。
+    DOM 实测：`data-sidebar-right-open`=0 / tab 元素=0 / `[data-changes-review]`=0 / 可见文字「改动·变更」=0·0，
+    而 `client-ui-deliverables` 的 resource 加载数=**1**（bundle 确实加载了）⇒ **加载 ≠ 看得见**。
+  - **子代理会话一律不录**：`dsh-workspace-changes/lib/types/index.js:28-29` 逐字
+    `return origin === 'subagent' || (delegationDepth ?? 0) > 0 ? undefined : cwd;`。
+    本机实测 16/29 会话是子代理、`workspace/changes` **全 no**；13 个非子代理里只有 1 个 yes
+    ⇒ AI MindMap 里大量实际改文件的活是子代理干的，那一类**永远不会有卡片**。
+  - **摘要是 Host 进程内存态**：`:85` 的 `summary:(id,seq)=>byId.get(id)?.summary(seq)` + `:125` 的
+    `session/disposed ⇒ forget`。实测：日志里那 13 条事件拿 `(sessionId, seq)` 问运行实例
+    `GET /api/changes.summary` ⇒ **13/13 `404 Change summary unavailable.`**（⚠️ 判"路由在不在"必须看**正文**：
+    路由自己的报文是 `Change summary unavailable.`，网关通用报文是 `not found`，而**无 cookie 时两者都 401**）。
+    ⇒ **重开会话 / 重启应用 / 翻历史对话，都看不到改动**（内核 README 逐字："A conversation reopened after a
+    Host restart therefore has no card, and no comparison, for its earlier turns."）。
+  - **两个假绿陷阱（写下来免得下一个人重走）**：① 不能用 `script[src]` 数插件 —— SPA 插件是 esbuild 的 `??`
+    分块走动态 `import()`，DOM 里没有 `<script src>` 节点（第一版**误报全 0**；正解 `performance.getEntriesByType('resource')`）；
+    ② 不能只等"读数稳定"就收工 —— 首帧空壳 `bodyChars=233` 时同样"稳定"（第一版差点假绿）。
+  - **处置**：仍然**不写第二份面板**（三条真修法——持久化摘要 / 录子代理 / 给右栏一个常驻入口——**都在内核里**，
+    任一件都等于 fork 内核，破本批纪律）。台账 B11 补 ⑤⑥⑦ 与三条新复核命令。
 
 
 ### 测量驱动的动态侧栏宽度批：把**早就采到、却只进诊断**的 `overflow` 读数接回宽度控制（2026-10-16）
