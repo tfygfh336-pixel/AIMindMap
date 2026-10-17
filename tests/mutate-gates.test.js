@@ -13,12 +13,14 @@
  * ## 三层断言（为什么这么分层）
  *   ① **纯函数层**（毫秒级）：`classify()` 的口径 —— 尤其是"**无害变异不计漏过**"这条；
  *      `exitCodeFor()` 的退出码语义；`summarize()` 的账必须现算且封闭。
- *   ② **目录层**（毫秒级）：四个门禁都在册、每个都有 真变异 + 无害对照 + 负对照。
+ *   ② **目录层**（毫秒级 + 一次 `--judgments` 子进程）：五个门禁都在册、每个都有 真变异 + 无害对照 + 负对照；
+ *      G8 另有一条**判定级**覆盖用例（15 条判定各有注入，判定清单从门禁自己的 `--judgments` 现场取）。
  *      少了任何一类 ⇒ 判红（防止"覆盖被悄悄删掉"这种静默失效）。
  *   ③ **集成层**（**约 7 s**，真起子进程跑一次体检）：这是唯一能证明"它真的按事实判"的一层。
- *      刻意只跑 `--only=dep-direction` 这一个门禁：全量四门禁约 17 s，会把 `npm test`
- *      的成本推高一截，而"工具会不会乱报"这一条与"跑了几个门禁"无关 ✗。
- *      （全量体检仍是一条命令：`node scripts/mutate-gates.js`，见 `.review/20261013-门禁变异测试/README.md`。）
+ *      刻意只跑 `--only=dep-direction` 这一个门禁：全量五个门禁约 20 s（G8 自己的 19 条变体约 12 s），
+ *      会把 `npm test` 的成本推高一截，而"工具会不会乱报"这一条与"跑了几个门禁"无关 ✗。
+ *      （全量体检仍是一条命令：`node scripts/mutate-gates.js`，见 `.review/20261013-门禁变异测试/README.md` 与
+ *       `.review/20261016-T4-G8判别力/README.md`。）
  * ============================================================ */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -124,15 +126,33 @@ describe('① summarize()：汇总读数必须现算且封闭', () => {
 /* ---------------------------------------------------------------
  * ② 目录层：覆盖不许被悄悄删
  * --------------------------------------------------------------- */
-describe('② 变体目录：四个门禁都在册，每个都带"真变异 + 无害对照 + 负对照"', () => {
-  it('四个门禁（G9 / S1 / G6+G7 / V1）一个不少，且都写明了"注在哪一层"', () => {
+describe('② 变体目录：五个门禁都在册，每个都带"真变异 + 无害对照 + 负对照"', () => {
+  it('五个门禁（G9 / S1 / G6+G7 / V1 / G8）一个不少，且都写明了"注在哪一层"', () => {
     const ids = mg.GATES.map((g) => g.id).sort();
-    expect(ids).toEqual(['dep-direction', 'doc-facts', 'rules-consistency', 'visibility-judge']);
+    expect(ids).toEqual(['dep-direction', 'doc-facts', 'docs-registry', 'rules-consistency', 'visibility-judge']);
     mg.GATES.forEach((g) => {
       expect(g.seam, g.id + ' 缺 seam（必须写清：变异注在输入文本 / 程序集 / 门禁实现的哪一层）').toBeTruthy();
       expect(g.code, g.id + ' 没写门禁编号').toBeTruthy();
       expect(fs.existsSync(path.join(ROOT, g.script)), g.id + ' 的 script 不存在：' + g.script).toBe(true);
     });
+  });
+
+  it('G8 的**判定覆盖不许被悄悄删**：15 条判定各有注入变异体（清单用 `--judgments` 现场取，不写死条数）', () => {
+    const g8 = mg.GATES.find((g) => g.code === 'G8');
+    expect(g8, 'GATES 里没有 G8 条目').toBeTruthy();
+    const r = spawnSync(process.execPath,
+      [path.join(ROOT, 'scripts', 'docs-registry-check.js'), '--judgments'],
+      { cwd: ROOT, encoding: 'utf8', timeout: 60000 });
+    expect(r.status, '门禁自己列不出判定清单：' + String(r.stderr || '').slice(-300)).toBe(0);
+    // 判定编号的权威来源是门禁自己的输出（`  ① 标题` 这种行），本测试不抄一份清单
+    const marks = [...new Set((String(r.stdout).match(/^\s+([①-⑳])\s/gm) || []).map((s) => s.trim()))];
+    expect(marks.length, '门禁的 --judgments 一条判定都没列出').toBeGreaterThan(5);
+    const covered = new Set(g8.variants.filter((v) => v.expect === 'caught').map((v) => v.judgment).filter(Boolean));
+    const missing = marks.filter((m) => !covered.has(m));
+    expect(missing, '这些判定没有任何"注入 ⇒ 必红"的变异体：' + missing.join(' ')).toEqual([]);
+    // 反向：挂的编号必须在门禁自己的清单里（防"自己编一个判定号"混过覆盖检查）
+    const unknown = [...covered].filter((m) => !marks.includes(m));
+    expect(unknown, '变异体挂了门禁清单里没有的判定号：' + unknown.join(' ')).toEqual([]);
   });
 
   it('每个门禁 ≥2 条真变异（每条都得写明期望原因），且都带 无害对照 + 负对照', () => {

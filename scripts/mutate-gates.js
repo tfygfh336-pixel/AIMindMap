@@ -24,17 +24,21 @@
  * 而"条数声明"的权威副本是 `docs/RULES.md` §2 的门禁行）。
  *
  * 边界（诚实标注 —— 哪些**测不了**，别以为它包住一切）：
- *   · 只测**这四个门禁**：G9 `rules-consistency` · S1 `dep-direction-check` ·
- *     G6+G7 `doc-facts --check` · V1 `visibility-judge-check`。
- *     其余（G1/G2/G3/G4/G5/G8/V2/S2/S3）**未测**：它们要么要起 Electron、要么要跑全链，
+ *   · 只测**这五个门禁**：G9 `rules-consistency` · S1 `dep-direction-check` ·
+ *     G6+G7 `doc-facts --check` · V1 `visibility-judge-check` · G8 `docs-registry-check`。
+ *     其余（G1/G2/G3/G4/G5/V2/S2/S3）**未测**：它们要么要起 Electron、要么要跑全链，
  *     不在"最小版"里（也不该在一台正被别的流占着的机器上跑）。
  *   · 变体是**手工挑的**（每个门禁三条 + 对照），能回答"这几类破坏拦不拦"，
  *     **回答不了覆盖率**（"所有可能的破坏里拦住了百分之多少"）✗。
+ *     G8 是唯一的例外：它的 **15 条判定逐条各造一条注入**（判定的权威清单由
+ *     `node scripts/docs-registry-check.js --judgments` 现场取 —— 本文件不抄那份清单）。
+ *     "门禁 × 有没有证明"的汇总表不在这里：住在
+ *     `.review/20261016-T4-G8判别力/tools/coverage-table.js`（现算，欠账册与之一致性互校）。
  *   · 它测的是**门禁**，不是产品：产品行为仍靠 G3/G4/G5。
  *   · 门禁若**不支持指向外部输入**，就只能测"能测的那一半"——每个门禁的 `seam` 字段写明
  *     本工具注在哪一层（输入文本 / 一份程序集 / 门禁实现），没测到的部分记"未测"。
  *   · 它**不改任何门禁的判定**：钝化只发生在副本里，真仓的门禁逐字节不变（`--json` 里带
- *     真仓四份门禁脚本的 sha256 前后对照，供复核）。
+ *     真仓每份门禁脚本的 sha256 前后对照，供复核）。
  *
  * 用法：
  *   node scripts/mutate-gates.js                  # 全量体检（只读真仓；临时件在 %TEMP% 里自清）
@@ -113,17 +117,36 @@ function makeMirror() {
 }
 
 /** 副本的可写视图：**写入前先存原始字节**，用完 `restore()` 逐字节还原（只还原被写过的文件）。
- *  这样"每条变异体都是从同一个未变异的副本出发"这件事**由构造保证**，不靠人记得撤销。 */
+ *  这样"每条变异体都是从同一个未变异的副本出发"这件事**由构造保证**，不靠人记得撤销。
+ *  ⚠️ **连 mtime 一起还原**（2026-10-16 实测补的口子）：G8 这类门禁会在输出里打印
+ *  「最近 N 分钟内被改动的受管文件」这种**告知行**，而 `fs.writeFileSync` 会把 mtime 刷成"现在"
+ *  ⇒ 上一条变体还原过的文件会**留在窗口里**，于是后面每条变体（含无害对照）的读数都多出一行差异
+ *  ⇒ 无害对照被自己记成"假红"（实测：`docs/changelog` 那条对照就是这样红的）。
+ *  "逐字节还原"本来就该连时间戳一起 —— 否则副本并不是"未变异的副本"。
+ *  （写回 mtime 用 `fs.utimesSync`；`stat.mtime` 是亚毫秒精度，用 `Date` 回写会取整到毫秒级 ——
+ *   这仍足以让"最近 10 分钟"窗口的判定不变。） */
 function makeMirrorApi(root) {
   const saved = new Map();
+  const savedDirs = new Set();
   const abs = (rel) => path.join(root, rel.split('/').join(path.sep));
   const save = (rel) => {
     if (saved.has(rel)) return;
     const p = abs(rel);
-    saved.set(rel, fs.existsSync(p) ? fs.readFileSync(p) : null);
+    if (!fs.existsSync(p)) { saved.set(rel, null); return; }
+    const st = fs.statSync(p);
+    saved.set(rel, { buf: fs.readFileSync(p), atime: st.atime, mtime: st.mtime });
   };
   const read = (rel) => fs.readFileSync(abs(rel), 'utf8');
   const write = (rel, text) => { save(rel); fs.writeFileSync(abs(rel), text, 'utf8'); };
+  /** 造目录：G8 第 ⑨ 条（"工作目录必须声明死活"）的靶子就是一个**没有 README 的目录**。
+   *  与 `write()` 同一口径 —— 造之前先记"它原来不存在"，`restore()` 里递归删掉。
+   *  为什么不直接在变体里 `fs.mkdirSync`：那会把目录**留到后面每条变体**里（⑨ 的红会污染
+   *  后面的无害对照 ⇒ 记成"假红"），于是"每条变体都从未变异的副本出发"不再是构造保证 ✗。 */
+  const mkdir = (rel) => {
+    const p = abs(rel);
+    if (!fs.existsSync(p)) { fs.mkdirSync(p, { recursive: true }); savedDirs.add(p); }
+    return rel;
+  };
   const edit = (rel, fn) => {
     const before = read(rel);
     const after = fn(before);
@@ -133,14 +156,17 @@ function makeMirrorApi(root) {
   };
   const append = (rel, text) => edit(rel, (s) => (s.endsWith('\n') ? s : s + '\n') + text + '\n');
   const restore = () => {
-    for (const [rel, buf] of saved) {
+    for (const [rel, rec] of saved) {
       const p = abs(rel);
-      if (buf === null) fs.rmSync(p, { force: true });
-      else fs.writeFileSync(p, buf);
+      if (rec === null) { fs.rmSync(p, { force: true }); continue; }
+      fs.writeFileSync(p, rec.buf);
+      try { fs.utimesSync(p, rec.atime, rec.mtime); } catch (e) { /* 时间戳还原失败不该吞掉还原本身 */ }
     }
     saved.clear();
+    for (const p of savedDirs) fs.rmSync(p, { recursive: true, force: true });
+    savedDirs.clear();
   };
-  return { root, read, write, edit, append, restore, savedFiles: () => [...saved.keys()] };
+  return { root, read, write, mkdir, edit, append, restore, savedFiles: () => [...saved.keys()] };
 }
 
 /* ===============================================================
@@ -508,10 +534,358 @@ const GATES = [
         }
       }
     ]
+  },
+
+  /* ---------------------------- G8 ----------------------------
+   * 为什么给 G8 补这一条（2026-10-16 T4 批）：14 条门禁里当时只有 G9 / S1 / V1（＋与 G6 共用脚本的 G7）
+   * 有变异体检，而 G8 **是本工程唯一检出过真事故的门禁** ——
+   *   事故③「台账说 L10 已落地，仓库里根本没那个文件」= 本批变体 `G8-3`（判定 ③ 悬挂登记）；
+   *   事故④「`mutate-gates.js` 被文档点名却从未提交」  = 本批变体 `G8-7`（判定 ⑦ 代码未入档）。
+   * 也就是说：**最有用的一条门禁，此前没人证明过它会红**。本条目把它的 15 条判定逐条撞一遍。
+   * 判定编号（①…⑮）不在本文件抄一份 —— 权威清单是 `node scripts/docs-registry-check.js --judgments`；
+   * 变体只挂"我撞的是哪一号"，缺号由 `tests/mutate-gates.test.js` 的覆盖用例现算。
+   * ------------------------------------------------------------ */
+  {
+    id: 'docs-registry', code: 'G8', title: '文档体系完整性（15 条判定）',
+    script: 'scripts/docs-registry-check.js', args: [],
+    seam: '镜像 CLI 全链（真子进程 + 真 exit code）：输入 = 副本里的文档 / 源码 / 归档 / 工作目录；'
+      + '靶点一律用门禁**自己导出的纯函数**在现场找（`parseRegistryTable` / `collectDocHeaders` / '
+      + '`parseStabilityTable` / `REG_END` / `REGISTRY_DOC`），不在本工具里另抄一份判定口径。'
+      + '副本刻意不复制 `.review/`（工作产物区，重且天天在动）⇒ `prepareMirror()` 按 `docs/ROADMAP.md`'
+      + '「在飞 / 未收口」的指针把**目录存在性**补出来（第 ⑥ 条判的就是它、第 ⑨ 条判"有没有 README"）。'
+      + '不补的话基线会因"副本不完整"而红 —— 那是本工具的假红，不是门禁的读数 ✗。',
+    /** 副本忠实性（在**取基线之前**跑）：把「在飞 / 未收口」指针指向的 `.review/<目录>` 补成"目录 + README"。
+     *  ⚠️ 用裸 `fs` 写、**刻意不走 `M.write()`**：这几份属于**副本构造**，必须活过每一次 `restore()`
+     *  否则后面每条变体都在"指针已死"的副本上跑，无害对照会立刻变成假红。 */
+    prepareMirror(M) {
+      const made = [];
+      const rel = 'docs/ROADMAP.md';
+      if (!fs.existsSync(path.join(M.root, rel))) return made;
+      const lines = M.read(rel).split('\n');
+      const start = lines.findIndex((l) => /^##\s.*在飞\s*\/\s*未收口/.test(l));
+      if (start < 0) return made;
+      let end = lines.length;
+      for (let i = start + 1; i < lines.length; i++) if (/^##\s/.test(lines[i])) { end = i; break; }
+      /** 一个目录在副本里补 README（G8 第 ⑨ 条：`.review` 的直接子目录必须有 README 声明死活）。
+       *  只给 `.review/<第一段>` 这一层补 —— 与门禁的检查口径一致，不多补。 */
+      const ensureTopReadme = (refDir) => {
+        const seg = refDir.split('/');
+        if (seg[0] !== '.review' || seg.length < 2) return;
+        const top = path.join(M.root, seg[0], seg[1]);
+        if (!fs.existsSync(top)) { fs.mkdirSync(top, { recursive: true }); made.push(seg[0] + '/' + seg[1] + '/'); }
+        const rm = path.join(top, 'README.md');
+        if (!fs.existsSync(rm)) {
+          fs.writeFileSync(rm, '# 副本存根（变异体检）\n\n真仓里这个工作目录的内容不进副本；'
+            + '这里只补**存在性**，因为 G8 第 ⑥/⑨ 条读的正是"目录在不在 / 有没有 README"。\n', 'utf8');
+          made.push(seg[0] + '/' + seg[1] + '/README.md');
+        }
+      };
+      const seen = new Set();
+      lines.slice(start, end).forEach((l) => {
+        for (const m of l.matchAll(/`(\.review\/[^`\s]+)`/g)) {
+          const ref = m[1].replace(/[\\/]+$/, '');
+          if (/[<>*]/.test(ref) || seen.has(ref)) continue;   // 占位写法不是真指针（与门禁同口径）
+          seen.add(ref);
+          // 指针可能指向**目录**，也可能指向目录里的**一份文件**（实测两种都有）——
+          // 两种都要让 `fs.existsSync(ref)` 成立，但只有"目录"那种要自带 README。
+          const asFile = /\.(md|html?|json|jsonl|js|txt|png)$/i.test(ref);
+          const abs = path.join(M.root, ref.split('/').join(path.sep));
+          if (asFile) {
+            const dir = path.dirname(abs);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            ensureTopReadme(ref.slice(0, ref.lastIndexOf('/')));
+            if (!fs.existsSync(abs)) { fs.writeFileSync(abs, '（副本存根：内容不进副本）\n', 'utf8'); made.push(ref); }
+          } else {
+            if (!fs.existsSync(abs)) { fs.mkdirSync(abs, { recursive: true }); made.push(ref + '/'); }
+            ensureTopReadme(ref);
+          }
+        }
+      });
+      return made;
+    },
+    discover(M) {
+      const dr = realModule('scripts/docs-registry-check.js');
+      const arch = M.read('docs/ARCHITECTURE.md');
+      const reg = dr.parseRegistryTable(arch);
+      if (!reg.found) throw new Error('副本里找不到 §5 登记表（§5 段缺失）⇒ 判定 ①/③/⑩ 的靶点无从找起');
+      const archLines = arch.split('\n');
+
+      // ③（悬挂登记）：在 §5 表**末尾**（END 标记之前）插一行指向不存在文件的登记
+      const regEndLine = archLines.findIndex((l) => l.includes(dr.REG_END)) + 1;
+
+      // ⑤（归档重复）：拿一份**已归档**的版本号，把它的段再写回主文件（真事故的形状：两边各活一半）
+      let dupVersion = null;
+      let archiveDoc = null;
+      const archDir = path.join(M.root, 'docs', 'changelog');
+      if (fs.existsSync(archDir)) {
+        const main = M.read('CHANGELOG.md');
+        const vers = fs.readdirSync(archDir).filter((f) => /^v.+\.md$/i.test(f)).sort();
+        dupVersion = vers.map((f) => f.replace(/\.md$/i, ''))
+          .find((v) => !new RegExp('^## \\[' + v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\]', 'm').test(main))
+          || null;
+        archiveDoc = vers.length ? 'docs/changelog/' + vers[0] : null;
+      }
+
+      // ⑥（交接死指针）：插在「在飞 / 未收口」小节的表格里（小节与表头都在现场找，不写死行号）
+      let roadIdx = -1;
+      if (fs.existsSync(path.join(M.root, 'docs', 'ROADMAP.md'))) {
+        const ls = M.read('docs/ROADMAP.md').split('\n');
+        const s0 = ls.findIndex((l) => /^##\s.*在飞\s*\/\s*未收口/.test(l));
+        if (s0 >= 0) {
+          let e0 = ls.length;
+          for (let i = s0 + 1; i < ls.length; i++) if (/^##\s/.test(ls[i])) { e0 = i; break; }
+          let sep = -1;
+          for (let i = s0; i < e0; i++) if (/^\|\s*:?-{2,}/.test(ls[i])) { sep = i; break; }
+          roadIdx = (sep >= 0 ? sep : s0) + 1;
+        }
+      }
+
+      // ⑦（代码未入档）：文件名必须在架构文档里**查不到** —— 查得到就说明靶点会撞上
+      // "文件名子串也算登记"这条已知假绿（T5 记账：`src/editor.js` / `src/s.js` 会假绿），
+      // 那时这一条**测不了**，如实记未测，不许拿一个假绿当读数。
+      const moduleProbe = 'src/zz-t4-unregistered-probe.js';
+      const moduleProbeVisible = arch.includes(path.posix.basename(moduleProbe));
+      const archHasArchitecture = arch.includes('ARCHITECTURE.md');
+
+      // ⑩（导航不可达）：挑一份**按文件名在 SKILL.md 里能查到**的登记文档，给它改名
+      const skill = M.read('SKILL.md');
+      const navDoc = [...reg.exact].filter((x) => x.includes('/') && fs.existsSync(path.join(M.root, x)))
+        .map((x) => ({ rel: x, base: x.slice(x.lastIndexOf('/') + 1) }))
+        .filter((o) => skill.includes(o.base)
+          && [...reg.exact].filter((y) => y.includes(o.base)).length === 1)[0] || null;
+
+      // ⑬ / ⑭（元信息与生成的登记表）：挑一份**有合格元信息**的受管文档
+      //（排除 §5 的载体本身：改它的元信息会同时搅动 §5，两个判定会互相顶）
+      const headers = dr.collectDocHeaders(M.root)
+        .filter((e) => e.state === 'ok' && e.meta && e.rel.startsWith('docs/') && e.rel !== dr.REGISTRY_DOC);
+      const headerDoc = headers.length ? headers[0].rel : null;
+
+      // ⑫（章节断号）：挑一份**有编号章节**的 docs/*.md，在末尾插一个跳号章节
+      const numDeny = new Set(['ARCHITECTURE.md', 'ROADMAP.md', 'DATA-FORMAT.md', 'EXTENSIONS.md',
+        'RULES.md', 'CLI.md', 'VERIFY.md']);
+      let numberingDoc = null;
+      fs.readdirSync(path.join(M.root, 'docs')).filter((f) => /\.md$/i.test(f) && !numDeny.has(f)).sort()
+        .forEach((f) => {
+          if (numberingDoc) return;
+          const rel = 'docs/' + f;
+          const tops = (M.read(rel).match(/^##\s+(\d+)\./gm) || []).map((h) => Number(/^##\s+(\d+)\./.exec(h)[1]));
+          if (!tops.length) return;
+          numberingDoc = { rel, gap: Math.max.apply(null, tops) + 2 };
+        });
+
+      // ⑪a（契约缺字段）：`layout` 是契约里真实存在、且**不由 schema 校验**的那个字段
+      //（它正是判定 ⑪ 的出处：`meta.layout` 曾经在契约里根本没写）
+      const contractField = 'layout';
+      const contractFieldPresent = /\blayout\b/.test(M.read('docs/DATA-FORMAT.md'));
+
+      // ⑮（CLI 稳定性表覆盖）：挑一条**在整份文档里只出现一次**的注册表命令，把它从 §1.2 表里漏掉
+      let stabilityCmd = null;
+      try {
+        const ext = M.read('docs/EXTENSIONS.md');
+        const tab = dr.parseStabilityTable(ext);
+        stabilityCmd = realModule('cli/registry.js').list().map((c) => c.name)
+          .filter((n) => tab && tab.cmds.has(n)
+            && (ext.match(new RegExp('`' + n + '`', 'g')) || []).length === 1)[0] || null;
+      } catch (e) { stabilityCmd = null; }
+
+      return {
+        regEndLine, dupVersion, archiveDoc, roadIdx, moduleProbe, moduleProbeVisible, archHasArchitecture,
+        navDoc, headerDoc, numberingDoc, contractField, contractFieldPresent, stabilityCmd,
+        regCount: reg.exact.size, docsScanned: M.read('SKILL.md').length
+      };
+    },
+    variants: [
+      {
+        id: 'G8-1', judgment: '①', kind: '注入违规', expect: 'caught', reason: /\[表外文档\]/,
+        name: '在 `docs/` 下造一份**没进 §5 登记表**的文档（"这份文档没有家"）',
+        apply: (M) => M.write('docs/PROBE-T4-UNREGISTERED.md',
+          '# 变异注入探针（未登记）\n\n这一份故意不进 §5 登记表。\n')
+      },
+      {
+        id: 'G8-2', judgment: '②', kind: '注入违规', expect: 'caught', reason: /\[家目录非法\]/,
+        name: '把一份 .md 放到 `src/` 下（文档只能住在 `docs/` 或 `renderer/` 的应用 HTML）',
+        apply: (M) => M.write('src/PROBE-T4-STRAY.md', '# 变异注入探针（放错家门）\n')
+      },
+      {
+        id: 'G8-3', judgment: '③', kind: '注入违规', expect: 'caught', reason: /\[悬挂登记\]/,
+        name: '往 §5 表加一行**指向不存在文件**的登记（真实事故③的形状：台账说已落地、仓库里没那个文件）',
+        apply(M, c) {
+          if (!c.regEndLine) throw new Error('§5 里找不到 END 标记，这一条测不了');
+          return M.edit('docs/ARCHITECTURE.md', (s) => {
+            const ls = s.split('\n');
+            ls.splice(c.regEndLine - 1, 0,
+              '| 记录 | `docs/PROBE-T4-GHOST.md` | 变异注入探针（磁盘上不存在） | 无 | 无 |');
+            return ls.join('\n');
+          });
+        }
+      },
+      {
+        id: 'G8-4', judgment: '④', kind: '注入违规', expect: 'caught', reason: /\[乱放\]/,
+        name: '往**工程根**扔一个不在白名单里的文件（"AI 在工程根随手写 report"）',
+        apply: (M) => M.write('PROBE-T4-STRAY.bin', 'probe\n')
+      },
+      {
+        id: 'G8-5', judgment: '⑤', kind: '注入违规', expect: 'caught', reason: /\[历史重复\]/,
+        name: '把一份**已归档**的版本段再写回 `CHANGELOG.md`（同一段历史两处副本；两边都不进 G6 扫描）',
+        apply(M, c) {
+          if (!c.dupVersion) throw new Error('docs/changelog/ 里找不到"主文件里已经没有它"的版本号，这一条测不了');
+          return M.append('CHANGELOG.md',
+            '## [' + c.dupVersion + '] 变异注入：这一段同时躺在 docs/changelog/ 与主文件里\n');
+        }
+      },
+      {
+        id: 'G8-6', judgment: '⑥', kind: '注入违规', expect: 'caught', reason: /\[交接死指针\]/,
+        name: '在「在飞 / 未收口」小节里插一个指向**不存在目录**的证据指针（接手者白找一场）',
+        apply(M, c) {
+          if (c.roadIdx < 0) throw new Error('docs/ROADMAP.md 里找不到「在飞 / 未收口」小节，这一条测不了');
+          return M.edit('docs/ROADMAP.md', (s) => {
+            const ls = s.split('\n');
+            ls.splice(c.roadIdx, 0, '| **在飞** | 变异注入探针 | 目录不存在 | 无 | `.review/PROBE-T4-GHOST/` |');
+            return ls.join('\n');
+          });
+        }
+      },
+      {
+        id: 'G8-7', judgment: '⑦', kind: '注入违规', expect: 'caught', reason: /\[代码未入档\]/,
+        name: '造一个**架构文档里查不到**的 `src/` 模块（新代码不进文档 ⇒ 接手者不知道它存在）',
+        apply(M, c) {
+          if (c.moduleProbeVisible) {
+            throw new Error('探针文件名在架构文档里已经存在（会撞上"文件名子串也算登记"的已知假绿）'
+              + '，这一条测不了 —— 要测须另挑一个文档里不出现的名字');
+          }
+          return M.write(c.moduleProbe, '// 变异注入：一个谁也没登记过的 src 模块\n');
+        }
+      },
+      {
+        id: 'G8-8', judgment: '⑧', kind: '注入违规', expect: 'caught', reason: /\[归档缺横幅\]/,
+        name: '往 `docs/archive/` 造一份**开头 8 行没有任何历史标记**的旧稿（归档仍会被 grep 到）',
+        apply: (M) => M.write('docs/archive/PROBE-T4-NO-BANNER.md',
+          '# 变异注入探针：归档但没有横幅\n\n（开头 8 行内不含任何提示词；这份文件会被当成现状引用）\n')
+      },
+      {
+        id: 'G8-9', judgment: '⑨', kind: '注入违规', expect: 'caught', reason: /\[工作目录无状态\]/,
+        name: '在 `.review/` 下造一个**没有 README** 的工作目录（接手者无法判断能否删除）',
+        apply: (M) => M.mkdir('.review/PROBE-T4-NO-README')
+      },
+      {
+        id: 'G8-10', judgment: '⑩', kind: '注入违规', expect: 'caught', reason: /\[导航不可达\]/,
+        name: '把一份受管文档在 `SKILL.md` 导航里的名字改掉（登记了却从第一屏找不到 = 等于没有这份文档）',
+        apply(M, c) {
+          if (!c.navDoc) throw new Error('找不到"按文件名出现在 SKILL.md 里"的登记文档，这一条测不了');
+          const to = c.navDoc.base.replace(/\.md$/i, '-已改名.md');
+          return M.edit('SKILL.md', (s) => s.split(c.navDoc.base).join(to));
+        }
+      },
+      {
+        id: 'G8-11a', judgment: '⑪', kind: '注入违规', expect: 'caught', reason: /\[契约缺字段\]/,
+        name: '把 `docs/DATA-FORMAT.md` 里的字段名 `layout` 全部改名（契约失守：照着契约改就会漏）',
+        apply(M, c) {
+          if (!c.contractFieldPresent) throw new Error('契约里没有 `layout` 这个词，这一条测不了');
+          return M.edit('docs/DATA-FORMAT.md', (s) => {
+            const out = s.replace(new RegExp('\\b' + c.contractField + '\\b', 'g'), c.contractField + 'X');
+            if (out === s) throw new Error('变异没有生效');
+            if (new RegExp('\\b' + c.contractField + '\\b').test(out)) throw new Error('还有残留的字段名，变异不彻底');
+            return out;
+          });
+        }
+      },
+      {
+        id: 'G8-11b', judgment: '⑪', kind: '注入违规', expect: 'caught', reason: /\[检查表过期\]/,
+        name: '在副本的 `src/schema.js` 里出现一个**没进 `SCHEMA_FIELDS` 清单**的字段（新字段永远不会被检查）',
+        apply: (M) => M.append('src/schema.js',
+          '\n// 变异注入：node.probeT4Field —— 本判定读的是**源码文本**，所以这个写法也会被抓到\nvoid 0;\n')
+      },
+      {
+        id: 'G8-12', judgment: '⑫', kind: '注入违规', expect: 'caught', reason: /\[章节断号\]/,
+        name: '在一份受管文档末尾插一个**跳号**的一级章节（读者会去找一个不存在的节）',
+        apply(M, c) {
+          if (!c.numberingDoc) throw new Error('docs/ 里找不到带编号章节的文档，这一条测不了');
+          return M.edit(c.numberingDoc.rel, (s) => s.replace(/\s*$/, '')
+            + '\n\n## ' + c.numberingDoc.gap + '. 变异注入探针（故意跳号）\n\n（上一节的编号加二）\n');
+        }
+      },
+      {
+        id: 'G8-13', judgment: '⑬', kind: '注入违规', expect: 'caught', reason: /\[登记表过期\]/,
+        name: '手改一份文档头部元信息的 `作用` 行但不重生成 §5 表（表是生成的，不是手写的）',
+        apply(M, c) {
+          if (!c.headerDoc) throw new Error('副本里找不到带合格元信息的受管文档，这一条测不了');
+          return M.edit(c.headerDoc, (s) => {
+            const out = s.replace(/^(\s*作用[:：]\s*).+$/m, '$1变异注入：这句作用被手改了（登记表没重生成）');
+            if (out === s) throw new Error('没找到 `作用` 行，这一条测不了');
+            return out;
+          });
+        }
+      },
+      {
+        id: 'G8-14', judgment: '⑭', kind: '注入违规', expect: 'caught', reason: /\[层不在取值表\]/,
+        name: '把一份文档元信息的 `层` 改成**取值表里没有的值**（值不在表内 = 配置错误，不是文档错误）',
+        apply(M, c) {
+          if (!c.headerDoc) throw new Error('副本里找不到带合格元信息的受管文档，这一条测不了');
+          return M.edit(c.headerDoc, (s) => {
+            const out = s.replace(/^(\s*层[:：]\s*).+$/m, '$1变异注入不存在的层');
+            if (out === s) throw new Error('没找到 `层` 行，这一条测不了');
+            return out;
+          });
+        }
+      },
+      {
+        id: 'G8-15', judgment: '⑮', kind: '注入违规', expect: 'caught', reason: /稳定性三级表漏登记/,
+        name: '把一条注册表里的命令从 `docs/EXTENSIONS.md` §1.2 的三级表里漏掉（谁都不知道能不能依赖它）',
+        apply(M, c) {
+          if (!c.stabilityCmd) throw new Error('找不到"只在 §1.2 表里出现一次"的注册表命令，这一条测不了');
+          const tok = '`' + c.stabilityCmd + '`';
+          return M.edit('docs/EXTENSIONS.md', (s) => {
+            const ls = s.split('\n');
+            const s0 = ls.findIndex((l) => /^###\s*1\.2\b/.test(l));
+            if (s0 < 0) throw new Error('§1.2 段找不到');
+            let e0 = ls.length;
+            for (let i = s0 + 1; i < ls.length; i++) {
+              if (/^###\s/.test(ls[i]) || /^##\s/.test(ls[i])) { e0 = i; break; }
+            }
+            for (let i = s0; i < e0; i++) {
+              if (ls[i].includes(tok)) { ls[i] = ls[i].replace(tok, '`' + c.stabilityCmd + '-已漏掉`'); break; }
+            }
+            const out = ls.join('\n');
+            if (out === s) throw new Error('§1.2 表里没有 ' + tok + '，这一条测不了');
+            const tab = realModule('scripts/docs-registry-check.js').parseStabilityTable(out);
+            if (tab && tab.cmds.has(c.stabilityCmd)) throw new Error('命令还在表里（变异不彻底）');
+            return out;
+          });
+        }
+      },
+      {
+        id: 'G8-h', kind: '无害对照', expect: 'unchanged',
+        name: '只在**已归档**版本段的末尾追加一行散文（归档族只增不改 ⇒ 读数应逐字不变）',
+        apply(M, c) {
+          if (!c.archiveDoc) throw new Error('docs/changelog/ 里没有归档版本段，这一条测不了');
+          return M.append(c.archiveDoc, '（变异对照：这一行不含任何数字与版本段标记，门禁读数应与基线逐字相同）');
+        }
+      },
+      {
+        id: 'G8-h2', kind: '无害对照', expect: 'unchanged',
+        name: '只在 `.review/` 里写一份**非文档**工作产物（工作产物区任意文件都允许 ⇒ 读数应逐字不变）',
+        // ⚠️ 刻意用 `.txt` 而不是 `.md`：`collectDocs()` 会把 `.review/*.md` 也算进"有家的文档"，
+        // 于是成功行里的份数从 N 变 N+1 —— 那不是"门禁动了"，而是**这条对照本来就会动一个读数**。
+        // 选 `.txt` 才能把"工作产物区的豁免"这一件事单独隔出来测。
+        apply: (M) => M.write('.review/PROBE-T4-HARMLESS.txt',
+          '变异对照：工作产物区的一份稿子，不该动任何判定。\n')
+      },
+      {
+        id: 'G8-neg', judgment: '⑦', kind: '负对照', expect: 'escape', reason: /\[代码未入档\]/,
+        name: '先把门禁**钝化**（副本里 `checkModuleCoverage` 直接 return []）再注入 G8-7 的未入档模块 ⇒ 必须报"没拦下"',
+        apply(M, c) {
+          M.edit('scripts/docs-registry-check.js', (s) => s.replace(
+            'function checkModuleCoverage(root) {\n  const problems = [];',
+            'function checkModuleCoverage(root) {\n  const problems = [];\n'
+            + '  if (1) return problems;   // 负对照：门禁被钝化'));
+          return M.write(c.moduleProbe, '// 变异注入：一个谁也没登记过的 src 模块\n');
+        }
+      }
+    ]
   }
 ];
 
-/** 真仓的门禁模块（`require` 零副作用 —— 四份门禁都带 `require.main === module` 守卫，
+/** 真仓的门禁模块（`require` 零副作用 —— 每份门禁都带 `require.main === module` 守卫，
  *  所以本工具能借它们的**导出**在现场找靶点，而不是另抄一份口径）。 */
 function realModule(rel) { return require(path.join(REPO, rel)); }
 
@@ -562,8 +936,9 @@ function buildReport() {
     repoHashesBefore: null, repoHashesAfter: null, repoUnchanged: null,
     gates: [], summary: null, selfCheck: null,
     knownGaps: [
-      '只测这四个门禁（G9 / S1 / G6+G7 / V1）；G1·G2·G3·G4·G5·G8·V2·S2·S3 未测（要起 Electron 或跑全链）',
-      '变体是手工挑的三条 + 对照：能回答"这几类破坏拦不拦"，回答不了覆盖率',
+      '只测这五个门禁（G9 / S1 / G6+G7 / V1 / G8）；G1·G2·G3·G4·G5·V2·S2·S3 未测（要起 Electron 或跑全链）',
+      '变体是手工挑的三条 + 对照（G8 例外：15 条判定逐条各一条）：能回答"这几类破坏拦不拦"，'
+        + '除 G8 外回答不了覆盖率',
       '测的是门禁，不是产品行为（产品靠 G3/G4/G5）'
     ]
   };
@@ -596,6 +971,23 @@ function buildReport() {
       log('── ' + g.code + ' ' + g.title + '（' + g.script + '）──');
       log('   注在哪一层：' + g.seam);
       const row = { id: g.id, code: g.code, title: g.title, script: g.script, seam: g.seam, baseline: null, variants: [] };
+
+      // **副本忠实性前置**：必须在**取基线之前**跑。它做的事是"把副本补全到门禁真正会读的样子"
+      //（不是注入）—— 若留到 discover()（基线之后）才补，基线会被"副本不完整"染红，
+      // 而那正是本工具最不该冒充成读数的东西（照纪律乙：红必须是新红）。
+      // 用裸 `fs` 写、不走 `M.write()`：前置件属于**副本**，不该被 `restore()` 撤销。
+      if (typeof g.prepareMirror === 'function') {
+        try {
+          const made = g.prepareMirror(M) || [];
+          if (made.length) log('   副本前置（不是注入）：' + made.join('、'));
+        } catch (e) {
+          report.envError = '副本前置失败：' + g.id + '（' + ((e && e.message) || e) + '）';
+          row.baseline = { exit: null, ms: 0, spawnError: report.envError };
+          log('   ✗ ' + report.envError);
+          report.gates.push(row);
+          break;
+        }
+      }
 
       const base = runGate(mirror.root, g, env);
       if (base.spawnError || base.exit === null) {
@@ -725,7 +1117,8 @@ function printHuman(report) {
       + ' 条 · 假红 ' + sc.negFalseAlarm + ' 条（门禁被钝化后仍报"拦下"= 乱报 ✗）');
   }
   console.log('');
-  console.log('  真仓未改：' + (report.repoUnchanged ? '✓ 四份门禁 + docs/RULES.md 的 sha256 前后一致'
+  console.log('  真仓未改：' + (report.repoUnchanged
+    ? '✓ ' + new Set(GATES.map((g) => g.script)).size + ' 份门禁脚本 + docs/RULES.md 的 sha256 前后一致'
     : '✗ 有文件被改动（这不该发生）'));
   console.log('  未测/边界：');
   report.knownGaps.forEach((g) => console.log('    · ' + g));
