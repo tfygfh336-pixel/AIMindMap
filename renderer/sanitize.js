@@ -37,19 +37,43 @@
   const S = () => root.MMSanitizeState;
 
   /** 一次性读数（最近一次消毒的账；冒烟断言与排查读它，**不是**判据本身）。
-   *  ⚠️ 两套命名空间**必须分开**（计数器 vs `*ByTag` 明细），这是本批实测踩过的一个真 bug：
-   *  早期版本让 `note()` 直接写 `st.attrsRemoved` —— 而它同时是**数字计数器** ⇒
-   *  第一次 `note` 就把数字换成了对象，随后 `st.attrsRemoved += report.attrs` 做的是
-   *  `String({}) + 0 = '[object Object]0'`，再几轮变成 `'[object Object]2000…'`，
-   *  最后 `note` 往这个**字符串**上写属性 ⇒ `TypeError: Cannot create property 'border' on string …`
-   *  （在真实语料第 1327 条上才炸出来；是冒烟域 52 的"全量语料"那条判据抓到的）。 */
-  root.MMSanitizeState = root.MMSanitizeState || {
-    runs: 0, changed: 0, unwrapped: 0, attrsRemoved: 0, urlsBlocked: 0, remoteImgs: 0, headDropped: 0,
-    droppedByTag: {}, unwrappedByTag: {}, attrsRemovedByTag: {}, urlsBlockedByTag: {}
-  };
+   *  ⚠️ 两套命名空间**必须分开**（计数器 vs `*ByTag` 明细）。**同一个 bug 在本文件里发生过两次**：
+   *  ① 早期版本让 `note()` 直接写 `st.attrsRemoved` —— 而它同时是**数字计数器** ⇒
+   *     第一次 `note` 就把数字换成了对象，随后 `st.attrsRemoved += report.attrs` 做的是
+   *     `String({}) + 0 = '[object Object]0'`，再几轮变成 `'[object Object]2000…'`，
+   *     最后 `note` 往这个**字符串**上写属性 ⇒ `TypeError: Cannot create property 'border' on string …`
+   *     （在真实语料第 1327 条上才炸出来；是冒烟域 52 的"全量语料"那条判据抓到的）。
+   *  ② **`urlsBlocked` 漏了同一刀**（2026-10-18 修）：`note('img-blocked', 'urlsBlocked')` 写的是
+   *     **计数器**而不是 `urlsBlockedByTag` ⇒ 与 ① 逐字同形的 `[object Object]1` 污染，
+   *     且**下一次**有被拦图片时 `TypeError: Cannot create property 'img-blocked' on string …`
+   *     抛穿 `inject()`。为什么潜伏了这么久：触发条件是"**进入这次调用时** `state.urlsBlocked`
+   *     已为真值"，而全仓语料的被拦 URL 数 = 0 ⇒ 之后再也没有第二次被拦图片。
+   *  ⇒ **因此这条不变式现在有三道守**（不再靠人记得）：
+   *     · `note()` 的第二参**必须**以 `ByTag` 结尾（本文件的 `BUCKET_SUFFIX` 是唯一字面量）；
+   *     · 本文档初始化里的 `*ByTag` 键**必须是 `{}`**、其余键**必须是数字**；
+   *     · `tests/sanitize.test.js` 对**源码**做结构断言（桶名后缀 + 桶已声明为对象），
+   *       并对"连续两次被拦图片"做行为断言（node 侧，DOMParser 用注入的替身）。 */
+  /** 明细桶名的**唯一后缀**（`note()` 在运行期校验、`tests/` 在源码期校验 —— 同一个字面量） */
+  const BUCKET_SUFFIX = 'ByTag';
+  /** 初始状态**只写一处**（以前 `resetState` 里抄了一份逐字相同的对象 ⇒
+   *  加一个桶时漏改一边就是同一个 bug 的第三个变种）。 */
+  function freshState() {
+    return {
+      runs: 0, changed: 0, unwrapped: 0, attrsRemoved: 0, urlsBlocked: 0, remoteImgs: 0, headDropped: 0,
+      droppedByTag: {}, unwrappedByTag: {}, attrsRemovedByTag: {}, urlsBlockedByTag: {}
+    };
+  }
+  root.MMSanitizeState = root.MMSanitizeState || freshState();
 
-  /** 往**明细桶**里记一笔（桶名一律以 `ByTag` 结尾，与计数器分开 ✓） */
+  /** 往**明细桶**里记一笔（桶名一律以 `ByTag` 结尾，与计数器分开 ✓）。
+   *  ⚠️ 冲突即抛：把**数字计数器**当桶名传进来时，这里**立刻**报错并点名，
+   *  而不是像以前那样静默把计数器换成对象（那样要等到**下一次**调用才炸，且离现场很远）。 */
   function note(tag, bucket) {
+    if (String(bucket).slice(-BUCKET_SUFFIX.length) !== BUCKET_SUFFIX) {
+      throw new TypeError('sanitize.note(): 第二参必须是明细桶名（以 ' + BUCKET_SUFFIX
+        + ' 结尾），收到 ' + JSON.stringify(bucket)
+        + ' —— 这是**计数器**，写它会把数字换成对象（本文件已发生过两次，见上）');
+    }
     const st = S();
     if (!st[bucket]) st[bucket] = {};
     const key = String(tag);
@@ -132,8 +156,17 @@
       report.urls.push({ tag: tag, code: c.code, reason: c.reason, raw: String(value) });
       if (tag === 'img') {
         report.imgs += 1;
-        if (c.code === 'url-http-img' || c.code === 'url-blocked-scheme') note('img-blocked', 'urlsBlocked');
+        if (c.code === 'url-http-img' || c.code === 'url-blocked-scheme') note('img-blocked', 'urlsBlockedByTag');
+        /* ⚠️ 桶名必须是 `urlsBlockedByTag`（明细桶），**不是** `urlsBlocked`（数字计数器）——
+         *  写错就是 file header 里记的那次 `[object Object]` 事故的逐字重演。 */
         el.parentNode.replaceChild(blockedImgPlaceholder(doc, value, c.reason), el);
+        /* ⚠️ **`mutated = true` 不许省**（2026-10-18 修的真 bug ①）：占位元素是**改动**。
+         *  漏了这一行 ⇒ `changed` 停在 false ⇒ `inject()` 走"注入原始字节"那条路 ⇒
+         *  **占位被整段丢弃**、用户只看到一张坏图，而 `REASONS['url-http-img']` 承诺的
+         *  "可见占位 + 改成 https 即可显示"根本没发生。`a` 分支（下面几行）一直有这一行，`img` 漏了。
+         *  ⇒ 判据在 `scripts/smoke/52-详情渲染.js`（只有一张被拦图的**隔离**夹具）
+         *     与 `tests/sanitize.test.js`（node 侧，连续两张被拦图）两处各守一次。 */
+        mutated = true;
         return;
       }
       // `a`：**去掉 href**（点了也不会导航）+ 可见标记 + `title` 给原因。文字保留 ✓
@@ -209,10 +242,12 @@
     /** 表与判定（只读出口：判据不复制产品事实，需要就到这里取） */
     rules: function () { return W(); },
     state: function () { return Object.assign({}, S()); },
+    /** 清零（冒烟断言做"隔离读数"时用）。⚠️ 复用 `freshState()`，**不在这里再抄一份形状** */
     resetState: function () {
-      root.MMSanitizeState = { runs: 0, changed: 0, unwrapped: 0, attrsRemoved: 0, urlsBlocked: 0,
-        remoteImgs: 0, headDropped: 0, droppedByTag: {}, unwrappedByTag: {}, attrsRemovedByTag: {}, urlsBlockedByTag: {} };
+      root.MMSanitizeState = freshState();
       return true;
-    }
+    },
+    /** 只读自检出口：明细桶名后缀（`tests/` 拿它跟源码里的字面量对拍，不各写一份） */
+    bucketSuffix: function () { return BUCKET_SUFFIX; }
   };
 })(typeof window !== 'undefined' ? window : this);

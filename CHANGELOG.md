@@ -26,6 +26,53 @@
 
 ## [Unreleased]
 
+### 「sanitize两bug」修 `renderer/sanitize.js` 两个**HEAD 上就有**的真 bug（可见占位永远到不了用户眼前 / 第二张被拦图直接 TypeError）+ 补三处判据（2026-10-18）
+
+- **一句话**：两个 bug 都是"**机制正确、调用面漏一行**"，而**三处门禁全漏** —— 漏的原因不是"没人测"，
+  是**测法本身有洞**。本批把两个 bug 修掉，并把"漏"这件事本身做成能被打红的判据。
+- **bug①（可见占位被整段丢弃）**：`img` 被拦分支 `replaceChild(可见占位, el)` 之后**没有** `mutated = true`
+  （对照的 `a` 分支一直**有**）⇒ `changed` 停在 `false` ⇒ `inject()` 走"注入**原始字节**"那条路 ⇒
+  **占位被丢弃**、用户只看到一张坏图，而 `REASONS['url-http-img']` 承诺的"可见占位 + 改成 https 即可显示"
+  **根本没发生**。修法与读数：隔离输入（detail 里**只有一张**明文 http 图）`changed` **false → true**、
+  框内占位 **0 → 1**、活 `<img>` **1 → 0**。
+- **bug②（第二张被拦图起 `TypeError`）**：`note('img-blocked', 'urlsBlocked')` 把**数字计数器**当**明细桶名**写
+  ⇒ 第一次调用就把 `state.urlsBlocked` 换成 `{}`，收尾 `+=` 变成字符串 `"[object Object]1"`，
+  **下一次**被拦图片 `TypeError: Cannot create property 'img-blocked' on string '[object Object]1'` 抛穿 `inject()`。
+  ⚠️ 文件头 `:39-45` **自己就记着一模一样的 bug 曾经发生过一次**（`attrsRemoved`，那处修了），`urlsBlocked` 漏了。
+  ⇒ 除改成 `urlsBlockedByTag` 外，另加**运行期守卫**（`note()` 第二参不以 `ByTag` 结尾就当场抛并点名，
+  不再"静默污染、下一次才炸、离现场很远"）+ 初始状态**单源化**（`freshState()`：以前 `resetState()` 抄了一份
+  逐字相同的字面量，加桶时漏改一边就是同型 bug 的第三个变种）。
+- **三条新判据（各有"回退该修复 ⇒ 必红"读数）**：
+  ① **隔离**（冒烟域 52 新夹具 `s52-img-one`）：detail 里**只有一张被拦图**、没有任何别的必删项 ⇒
+  `changed === true` **且**占位真在 DOM 里（文本含"拦下"、原文留在 `data-blocked-src`、框里没有活的 http 图）。
+  旧的 `D_EVIL` 把 http 图和**一整串必删项**塞进同一个 detail ⇒ `changed` 被别的改动置真 ⇒ 漏了那一行也绿。
+  ② **连续**（新夹具 `s52-img-two` + 同一页面连续 `inject` 三次：1 张 · 1 张 · 一次 2 张）⇒ 一次都不抛、
+  计数器仍是**数字**、明细桶记满、两张都是占位。bug② 的触发条件是"**进入这次调用时** `state.urlsBlocked`
+  已为真值"，而**全仓 1327 条语料的被拦 URL = 0** ⇒ `D_EVIL` 之后再没有第二次被拦图片。
+  ③ **结构断言**（新文件 `tests/sanitize.test.js`）：`note()` 第二参必须是**字面量且以 `ByTag` 结尾**、
+  `*ByTag` 键必须是对象、其余键必须是数字、用到的桶必须已声明（扫**源码**，注释与字符串里的**不算** ——
+  第一版只抹注释 ⇒ 报错文案里那句 `sanitize.note(): …` 被当成真调用，假红）。
+- **`tests/sanitize.test.js`（新文件）**：`sanitize.js` 依赖全局 `DOMParser` ⇒ 一直只在冒烟里跑到、
+  node 侧**零覆盖**。本文件给模块**注入**一个替身（`vm.runInNewContext(源码, { window, DOMParser, … })`），
+  替身是"最小 DOM + 最小 HTML 解析器"（**没有新增依赖**，`package.json` 一字未动；
+  `@mixmark-io/domino` 只是 DSH 自带，没有写进来）。两条注入证据：不注 ⇒ 一调就 `ReferenceError`；
+  注进去的替身**真被调用**（spy 记账）。**替身的保真边界写在文件头**（void 元素 / 注释-PI / 前导文档级标签进
+  `head` 已实现；表格 foster parenting、`<p>` 自动闭合、实体全集、`<template>` **没实现**），
+  真引擎那一半由冒烟域 52 用 Chromium 的真 `DOMParser` 守着。
+- **判别力证明做进了用例里**（不只写在报告里）：`tests/sanitize.test.js` 有一组用例把两处修复**在内存里**
+  回退成原形态，断言"健康版绿、回退版红"两侧读数都在 ⇒ 这条证明**每次 `npm test` 都在跑**。
+  文件级另跑 7 个 case（node 4 + 冒烟 3），全部按期望红绿，**注入/还原一律原始 Buffer**
+  （`fs.readFileSync` → `fs.writeFileSync(p, buffer)`，**未用 `git checkout`**），
+  三记逐字节一致（`15747 B / CR 0 / sha256 3b3bd840…`，7/7 `restoredExact`）。
+- **顺带把"门禁为什么全漏"量出来了**：回退成 bug 形态时，**旧的那条 `D_EVIL` 断言三次跑（健康 / 回退① /
+  回退②）都是 `[PASS]`** —— 它在两种 bug 形态下都看不见。"一锅炖"那个洞现在有读数了。
+- **落点**：`renderer/sanitize.js`（两处修复 + 运行期守卫 + `BUCKET_SUFFIX` / `freshState()` 单源 +
+  `bucketSuffix()` 只读出口）· `scripts/smoke/52-详情渲染.js`（两个夹具 + 两条断言 + 文件头补"为什么必须补"，
+  域内断言 18 → **20**）· `tests/sanitize.test.js`（新）· `docs/VERIFY.md`（`facts:write` 重生成）。
+  证据：`.review/20261016-sanitize两bug/`（含**参数化**的 `tools/prove.js` + `tools/plan.json` +
+  每次跑的完整日志与 `proof-0.json`）。
+
+
 ### 「R6/R7 收尾 + 方法学规则补记」：把三条**用血换的**操作纪律升成铁律（R1a/R1b/R1c）+ 设计稿改「按符号定位」+ 两处终裁 + 一笔债登记（2026-10-18）
 
 - **一句话**：这一批**不改产品行为**，改的是"**下一批读到的人会不会被错的事实误导**"。三件修事实

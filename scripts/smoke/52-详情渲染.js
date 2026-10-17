@@ -1,7 +1,8 @@
 /* ============================================================
  * scripts/smoke/52-详情渲染.js —— `R7` 主体的**真机判据**（真帧 / 真鼠标 / 真像素 / 真鼠标坐标）
  * ------------------------------------------------------------
- * 本域守四件事（每条判据都照设计稿 **§⑫-3 改过的形态**写，不照 §⑨ 原稿）：
+ * 本域守四件事（每条判据都照设计稿 **§⑫-3 改过的形态**写，不照 §⑨ 原稿）；
+ * 另有 ①b/①c 两条是 `2026-10-18` 修两个真 bug 时**补上的判据**（见下面 ① 之后那两段）。
  *
  *  ① **消毒真的在跑**（§⑨-5 的换形态版）
  *     注入六类**踩在 CSP 真空档上**的东西：`<style>`（`style-src 'unsafe-inline'` 放行）、
@@ -14,6 +15,14 @@
  *     ⚠️ **反向前置**（§⑫-3.3）：先断言"被禁的标签**确实没成为元素**"且
  *     `MM.Sanitize.state()` 的**运行计数与 dropped 计数都 > 0** —— 证明这一档不是"因为没跑所以绿"。
  *     **判别力证明**见 `.review/20261016-R7实现/README.md`（去掉消毒那一步 ⇒ 本断言必红）。
+ *
+ *  ①b **隔离判据**（`2026-10-18` 补，修 bug① 时加的）：上面那一条把 http 图和**一整串必删项**塞进
+ *     同一个 detail ⇒ `changed` 被别的改动置真 ⇒ "被拦图片少了一行 `mutated = true`"也照样绿
+ *     （**这就是它漏过的原因**）。⇒ 另起一个**只含一张被拦图**的夹具：`changed` 必须为 true
+ *     **且**占位真在 DOM 里。回退那一行 ⇒ 本断言必红（读数见 `.review/20261016-sanitize两bug/README.md`）。
+ *  ①c **连续判据**（同批）：bug② 的触发条件是"**进入这次调用时** `state.urlsBlocked` 已为真值"，
+ *     而全仓语料的被拦 URL = 0 ⇒ `D_EVIL` 之后再没有第二次被拦图片 ⇒ 那个 `TypeError` 从没被跑到。
+ *     ⇒ 本条在**同一页面连续 inject** 三次（1 张 · 1 张 · 一次 2 张），再打开"两张连排"夹具。
  *
  *  ② **`<details>` 真能展开**（§⑨-1 + 反向前置）
  *     真鼠标点 `<summary>` 的屏幕坐标 ⇒ `open` 变了、`summary` 的 `clientHeight` 变化 > 0、
@@ -69,6 +78,8 @@ const N_AIM = 's52-aim';             // 站内链接的源
 const N_AIM_FAR = 's52-far';         // 深链末端（打开项目时在视野外）
 const N_NOTE = 's52-note';           // 笔记锚点所在节点
 const N_PLAIN = 's52-plain';         // 默认档（无链接、无图源、无锚点）
+const N_IMG_ONE = 's52-img-one';     // **隔离**夹具：detail 里**只有一张被拦图**（bug① 的红线）
+const N_IMG_TWO = 's52-img-two';     // **连排**夹具：一次两张被拦图（bug② 的触发条件）
 const CHAIN = 16;
 
 const NOTE_ID = 'a-s52-note';
@@ -89,6 +100,14 @@ const D_EVIL = '<style>#mm-canvas{position:fixed;inset:0;z-index:99999}</style>'
   + '<img src="http://example.invalid/plain.png" alt="明文图">'
   + '<img src="x" onerror="window.__pwned=4">'
   + '<p>这段文字必须留下</p>';
+/* ⭐ **隔离**夹具（bug① 的红线）：detail 里**只有一张明文 http 图** —— 没有 style/iframe/meta/base/
+ * svg/form/属性/链接任何一项别的必删项 ⇒ 这一次消毒的 `changed` **只可能**由"图片被拦"置真。
+ * `D_EVIL` 那种"塞满一锅"的形态**测不到**这件事（changed 被别的改动置真、占位照样出现）。 */
+const D_IMG_ONE = '<img src="http://example.invalid/only.png" alt="唯一一张">';
+/* ⭐ **连排**夹具（bug② 的触发条件）：一次渲染里连着两张被拦图。 */
+const D_IMG_TWO = '<p>两张被拦图</p><img src="http://example.invalid/a.png">'
+  + '<img src="http://example.invalid/b.png">';
+const D_IMG_SECOND = '<img src="http://example.invalid/second.png">';
 const D_MD_OK = '<p>下面是一张图</p><pre><code>graph TD; A[甲]--&gt;B[乙];</code></pre>';
 const D_MD_BAD = '<p>下面是一张坏图</p><pre><code>graph TD; A[unclosed</code></pre>';
 const D_PATH = '<p>路径三例：'
@@ -143,6 +162,8 @@ function buildFixture(ctx) {
     cli(ctx, ['add', PROJ, parent, '--topic', topic, '--id', id, '--detail', detail]).out.trim());
   add('s52-root', '52·折叠夹具', N_DETAILS, D_DETAILS);
   add('s52-root', '52·注入夹具', N_EVIL, D_EVIL);
+  add('s52-root', '52·单图隔离夹具', N_IMG_ONE, D_IMG_ONE);
+  add('s52-root', '52·双图连排夹具', N_IMG_TWO, D_IMG_TWO);
   add('s52-root', '52·Mermaid 好图', N_MD_OK, D_MD_OK);
   add('s52-root', '52·Mermaid 坏图', N_MD_BAD, D_MD_BAD);
   add('s52-root', '52·路径链接', N_PATH, D_PATH);
@@ -390,6 +411,156 @@ const assertions = [
       };
     }
   },
+
+  /* ----------------------------------------------------------------------
+   * ①b **隔离判据**：detail 里只有一张被拦图 ⇒ changed 必须为 true 且占位真进 DOM（bug①）
+   * -------------------------------------------------------------------- */
+  {
+    name: 'smoke-52 隔离判据（bug①：可见占位必须真的到用户眼前）：detail 里**只有一张被拦图**、'
+      + '没有任何别的必删项 ⇒ 那一次消毒的 `changed` 必须为 true，且占位 `.fd-img-blocked` **真在 DOM 里**'
+      + '（文本含"拦下"、原文留在 data-blocked-src、框里没有活的 http 图）；'
+      + '反向前置：本条先 `resetState()` 再取**自己的增量**（`D_EVIL` 那种"塞满一锅"的形态会把 changed 置真，测不到这件事）',
+    run: async (ctx) => {
+      const fx = ensureFixture(ctx);
+      const bad = fixtureFail(fx);
+      if (bad) return bad;
+      const opened = await openFixture(ctx);
+      if (!opened.ok) return { ok: false, text: '前置失败：' + opened.text };
+      /* 前置：夹具节点的 detail **真的只有那一张图**（写歪了这条断言就没有意义） */
+      const raw = (cliJson(ctx, ['get', PROJ, N_IMG_ONE, '--json', '--detail']) || {}).detail;
+      if (String(raw).indexOf('http://example.invalid/only.png') < 0) {
+        return { ok: false, text: '前置失败：夹具 detail 里没有那张被拦图（' + JSON.stringify(String(raw).slice(0, 100)) + '）' };
+      }
+      const before = await execJson(ctx, `(function () {
+        window.MM.Sanitize.resetState();
+        return JSON.stringify({ ok: true, s: JSON.parse(JSON.stringify(window.MM.Sanitize.state())) });
+      })()`);
+      if (!before.ok) return { ok: false, text: '前置失败：消毒模块不在（' + before.text + '）' };
+      const pinned = await pinDetailBox(ctx, N_IMG_ONE);
+      if (!pinned.ok) return { ok: false, text: '前置失败：' + pinned.text };
+      await ctx.exec(SETTLE);
+      const r = await execJson(ctx, `(function () {
+        var box = window.MM.fdPrimaryNodeBox();
+        var dc = box.el.querySelector('.fd-detail-content');
+        var ph = dc.querySelectorAll('.fd-img-blocked');
+        var imgs = Array.prototype.slice.call(dc.querySelectorAll('img'));
+        var liveHttp = imgs.filter(function (i) { return /^http:/i.test(i.getAttribute('src') || ''); });
+        return JSON.stringify({ ok: true,
+          placeholders: ph.length,
+          phText: ph.length ? String(ph[0].textContent || '') : '',
+          phSrc: ph.length ? String(ph[0].getAttribute('data-blocked-src') || '') : '',
+          phTitle: ph.length ? String(ph[0].getAttribute('title') || '') : '',
+          imgs: imgs.length,
+          liveHttp: liveHttp.length,
+          inner: String(dc.innerHTML || ''),
+          text: String(dc.textContent || ''),
+          /* ⚠️ 必须**深拷贝**：state() 是浅拷贝，嵌套桶是同一个对象的引用（增量会自己追平） */
+          s: JSON.parse(JSON.stringify(window.MM.Sanitize.state())) });
+      })()`);
+      if (!r.ok) return { ok: false, text: '取读数失败：' + r.text };
+      const st = r.s || {};
+      const b = before.s || {};
+      const dRuns = (st.runs || 0) - (b.runs || 0);
+      const dChanged = (st.changed || 0) - (b.changed || 0);
+      const dImgs = (st.remoteImgs || 0) - (b.remoteImgs || 0);
+      const bucket = (st.urlsBlockedByTag && st.urlsBlockedByTag['img-blocked']) || 0;
+      const ok = dRuns >= 1 && dChanged >= 1 && dImgs >= 1
+        && r.placeholders === 1 && r.imgs === 0 && r.liveHttp === 0
+        && /拦下/.test(r.phText) && /only\.png$/.test(r.phSrc) && /拦下/.test(r.phTitle)
+        && r.inner.indexOf('fd-img-blocked') >= 0
+        && bucket >= 1 && typeof st.urlsBlocked === 'number' && st.urlsBlocked >= 1 && st.urlsBlocked === bucket;
+      /* 为什么增量用 `>= 1` 而 DOM 计数用 `=== 1`：增量会被"这条断言窗口里渲染了几次"影响
+       * （产品侧异步刷新可能多渲染一次），而 **DOM 里只能有 1 个占位** 这件事与渲染次数无关。
+       * 判别力不受影响：bug① 形态下 changed 增量是 **0**、占位是 **0**、活图是 **1**。 */
+      return {
+        ok: ok,
+        text: '夹具 detail=' + JSON.stringify(String(raw).slice(0, 70)) + '（**只有一张被拦图**）'
+          + ' ｜ 消毒增量：runs +' + dRuns + ' · changed +' + dChanged + '（**这条是红线**：'
+          + '漏了 `mutated = true` 它就停在 0 ⇒ 调用方注入原始字节 ⇒ 占位被丢弃）· 被拦图片 +' + dImgs
+          + ' ｜ 框内：占位=' + r.placeholders + '（应 1）· 活 <img>=' + r.imgs + '（应 0）· 活的 http 图=' + r.liveHttp
+          + ' · 占位文本=' + JSON.stringify(r.phText.slice(0, 60)) + ' · 原文=' + JSON.stringify(r.phSrc)
+          + ' ｜ 计数器 urlsBlocked=' + JSON.stringify(st.urlsBlocked) + '（应数字 1）'
+          + ' · 明细桶 urlsBlockedByTag["img-blocked"]=' + bucket + '（应 1）'
+          + ' ｜ innerHTML 里含 `.fd-img-blocked`=' + (r.inner.indexOf('fd-img-blocked') >= 0)
+      };
+    }
+  },
+
+  /* ----------------------------------------------------------------------
+   * ①c **连续判据**：连续两次被拦图不许抛（bug② 的触发条件）
+   * -------------------------------------------------------------------- */
+  {
+    name: 'smoke-52 连续判据（bug②：第二张被拦图起不许 TypeError）：**连续两次**送进被拦图'
+      + '（"进入这次调用时 `state.urlsBlocked` 已为真值"正是那个 TypeError 的触发条件）⇒ 一次都不抛、'
+      + '计数仍是数字、明细桶记满；再打开"两张连排"的夹具 ⇒ 两张都是占位（不丢第二张、也不抛）',
+    run: async (ctx) => {
+      const fx = ensureFixture(ctx);
+      const bad = fixtureFail(fx);
+      if (bad) return bad;
+      const opened = await openFixture(ctx);
+      if (!opened.ok) return { ok: false, text: '前置失败：' + opened.text };
+      /* 第一步：**同一页面上连续调 inject**（隔离地复现"上一次已经拦过图"这个前置状态） */
+      const seq = await execJson(ctx, `(function () {
+        try {
+          window.MM.Sanitize.resetState();
+          var mk = function () { return document.createElement('div'); };
+          var d1 = mk(), d2 = mk(), d3 = mk();
+          var r1 = window.MM.Sanitize.inject(d1, ${JSON.stringify(D_IMG_ONE)});
+          var r2 = window.MM.Sanitize.inject(d2, ${JSON.stringify(D_IMG_SECOND)});
+          var r3 = window.MM.Sanitize.inject(d3, ${JSON.stringify(D_IMG_TWO)});
+          return JSON.stringify({ ok: true,
+            chg: [r1.changed, r2.changed, r3.changed],
+            ph: [d1.querySelectorAll('.fd-img-blocked').length,
+                 d2.querySelectorAll('.fd-img-blocked').length,
+                 d3.querySelectorAll('.fd-img-blocked').length],
+            s: JSON.parse(JSON.stringify(window.MM.Sanitize.state())) });
+        } catch (e) {
+          return JSON.stringify({ ok: false, text: String((e && e.message) || e) });
+        }
+      })()`);
+      if (!seq.ok) {
+        return { ok: false, text: '连续两次被拦图**抛错了**（bug② 的触发条件命中）：' + seq.text };
+      }
+      const s1 = seq.s || {};
+      const beforeOpen = await execJson(ctx, `JSON.stringify({ ok: true, s: JSON.parse(JSON.stringify(window.MM.Sanitize.state())) })`);
+      const pinned = await pinDetailBox(ctx, N_IMG_TWO);
+      if (!pinned.ok) return { ok: false, text: '前置失败：' + pinned.text };
+      await ctx.exec(SETTLE);
+      const r = await execJson(ctx, `(function () {
+        var box = window.MM.fdPrimaryNodeBox();
+        var dc = box.el.querySelector('.fd-detail-content');
+        var ph = dc.querySelectorAll('.fd-img-blocked');
+        return JSON.stringify({ ok: true,
+          placeholders: ph.length,
+          texts: Array.prototype.slice.call(ph).map(function (x) { return String(x.textContent || ''); }),
+          srcs: Array.prototype.slice.call(ph).map(function (x) { return String(x.getAttribute('data-blocked-src') || ''); }),
+          text: String(dc.textContent || ''),
+          s: JSON.parse(JSON.stringify(window.MM.Sanitize.state())) });
+      })()`);
+      if (!r.ok) return { ok: false, text: '取读数失败：' + r.text };
+      const b2 = beforeOpen.s || {};
+      const dBucket = ((r.s.urlsBlockedByTag || {})['img-blocked'] || 0) - ((b2.urlsBlockedByTag || {})['img-blocked'] || 0);
+      const dCounter = (r.s.urlsBlocked || 0) - (b2.urlsBlocked || 0);
+      const ok = seq.chg.join(',') === 'true,true,true'
+        && seq.ph.join(',') === '1,1,2'
+        && (s1.urlsBlockedByTag || {})['img-blocked'] === 4
+        && typeof s1.urlsBlocked === 'number' && s1.urlsBlocked === 4
+        && r.placeholders === 2 && dBucket >= 2 && dCounter >= 2
+        && /两张被拦图/.test(r.text);
+      return {
+        ok: ok,
+        text: '连续三次 inject（1 张 · 1 张 · **一次 2 张**）：changed=' + JSON.stringify(seq.chg)
+          + ' · 占位=' + JSON.stringify(seq.ph) + '（应 [1,1,2]）'
+          + ' · 明细桶 urlsBlockedByTag["img-blocked"]=' + JSON.stringify((s1.urlsBlockedByTag || {})['img-blocked'])
+          + '（应 4）· 计数器 urlsBlocked=' + JSON.stringify(s1.urlsBlocked)
+          + '（**必须是数字**；bug 形态下它会变成 "[object Object]1" 这种字符串）'
+          + ' ｜ 再打开"两张连排"夹具：占位=' + r.placeholders + '（应 2）'
+          + ' · 明细桶增量 +' + dBucket + ' · 计数器增量 +' + dCounter + '（应各 ≥ +2）'
+          + ' · 占位原文=' + JSON.stringify(r.srcs) + ' · 别的文字还在=' + /两张被拦图/.test(r.text)
+      };
+    }
+  },
+
 
   /* ----------------------------------------------------------------------
    * ② <details> 真能展开（真鼠标 + 真帧命中）
