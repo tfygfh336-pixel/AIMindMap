@@ -24,6 +24,12 @@ const { execFileSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 // 验证链的**唯一定义**在 scripts/verify.js（顺序/命令/耗时预算）；本文件只渲染它，不另抄一份。
 const verifyChain = require(path.join(__dirname, 'verify.js'));
+// 受管生成物的写盘出口：**原子写 + 并发版本闸门**（比较与报错**只有** `src/data-store.js` 的 `versionGate` 一处）。
+// 为什么必须走它：本文件是 `docs/VERIFY.md` 的**整文件重写**者，而一次 `--write` 要跑一遍 vitest（数十秒）——
+// 那正是别人可能改这份生成物的窗口。原先"读全文 → 改 → 写全文"中间**没有指纹比对**，
+// 后写者会整份覆盖先写者的改动，**没有任何东西能检出**（这正是 2026-10 那次 `docs/ARCHITECTURE.md`
+// 三行被两批各改一次冲掉的机器侧根因）。⇒ 只调 `data-store` 那一对函数，本文件**不写第二份比较逻辑**。
+const { readManagedText, writeManagedText } = require(path.join(__dirname, '..', 'src', 'data-store.js'));
 
 /* ---------------- 事实采集 ---------------- */
 function facts() {
@@ -468,10 +474,16 @@ function checkGeneratedDocs(v, fail) {
 
 function main() {
   const args = process.argv.slice(2);
+  // ---- `--write` 是整文件重写受管生成物 ⇒ **先把"我读到的是哪一版"带走**，再干那件几十秒的活 ----
+  // 顺序本身就是判据：句柄必须在 `facts()` **之前**读。反过来说，"写前才读一下、紧接着写"是
+  // **假闸门**（恒等放行，比没有更坏：它看起来在守）—— 理由逐字写在 `readVerifyDocHandle` 上。
+  const writeHandle = args.includes('--write') ? readVerifyDocHandle() : null;
   const v = facts();
 
-  if (args.includes('--write')) {
-    writeVerifyDoc(v);
+  if (writeHandle) {
+    // 用 `exitCode` 而不是 `process.exit()`：退出码一样，但不会在 stdout 还有未落盘的缓冲时把输出截断
+    // （本工程在"提前关闭管道"上踩过一次，见 docs/VERIFY.md「本机受限环境注意」）。
+    if (!writeVerifyDoc(v, writeHandle)) process.exitCode = 1;
     return;
   }
 
@@ -562,20 +574,79 @@ function main() {
   console.log('\ndoc-facts 校验通过');
 }
 
-function writeVerifyDoc(v) {
+/** `docs/VERIFY.md` 的绝对路径（**只在这里算一次** —— 别的函数不许自己拼这条路） */
+function verifyDocPath() {
+  return path.join(ROOT, 'docs', 'VERIFY.md');
+}
+
+/**
+ * `--write` 的**先读**：把"我读到的是哪一版"在读的那一刻带走，写回时交给闸门。
+ *
+ * ⚠️ 调用点必须在 `facts()` **之前**（见 `main()` 的注释）：`facts()` 会真跑一遍 vitest（数十秒），
+ * 那正是别人可能改这份生成物的窗口；等到"写之前"才读、读完立刻写，闸门**恒等放行** ——
+ * 那是假闸门，与 `src/data-store.js` 的 `writeManagedText` 注释里点名的失效形态是同一种。
+ *
+ * `optional:true` 的理由：**首次生成**时 `docs/VERIFY.md` 还不存在（`version = null` ⇒ 闸门按"新建"放行，
+ * 与本文件从前的行为一致）；其余情况读不到就是真问题，闸门会按"盘上已不存在"拒写。
+ * @param {string} [file] 仅单测用（默认 = 仓库里的 `docs/VERIFY.md`）
+ * @returns {{file:string, text:(string|null), version:(string|null)}}
+ */
+function readVerifyDocHandle(file) {
+  return readManagedText(file || verifyDocPath(), { optional: true });
+}
+
+/**
+ * 生成并写回 `docs/VERIFY.md`：**原子写 + 版本闸门**（写盘出口只有 `writeManagedText` 一处）。
+ *
+ * @param {object} v `facts()` 的返回值
+ * @param {{file:string, version:(string|null)}} handle **必须**是 `readVerifyDocHandle()` 的返回值。
+ *   ⇒ 本函数**不接受"不传句柄"**：不传就等于把闸门静默关掉，而"静默关掉"正是本批要消灭的形态
+ *   （宁可抛出来，也不许悄悄退回裸写）。
+ * @returns {boolean} 是否真的写了。`false` = 拒绝（真值缺失 / 并发冲突），两种情况都已打印原因与出路。
+ */
+function writeVerifyDoc(v, handle) {
+  if (!handle || typeof handle !== 'object' || !handle.file || !('version' in handle)) {
+    throw new Error('writeVerifyDoc 需要一个来自 readVerifyDocHandle() 的句柄 —— '
+      + '不带版本的整文件写回会把别人的改动静默抹掉（本工程不允许第二条无闸门的写路径）');
+  }
   // 取不到真值就**不要写**：VERIFY.md 是权威基线，写进一个 `null` 比不写更糟
   // （实测：vitest 一时跑不起来 → 生成出「null 用例」，而 --check 路径是拒绝的 —— 两条路必须一致）。
   if (v.unitTests === null || v.unitTests === undefined) {
     console.error('✗ 取不到单测用例数真值，**拒绝生成** docs/VERIFY.md：'
       + (v.unitTestsError || '未知原因'));
     console.error('  → 先让 `npm test` 能正常跑完（或直接 `npm run verify`，它会带着 G3 的结果调本步），再重试。');
-    process.exit(1);
+    return false;   // 退出码由 main() 统一给（同一份代码在单测里被调用，不能用 process.exit 杀掉 worker）
   }
-  fs.mkdirSync(path.join(ROOT, 'docs'), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, 'docs', 'VERIFY.md'), renderVerifyDoc(v), 'utf8');
+  fs.mkdirSync(path.dirname(handle.file), { recursive: true });
+  const content = renderVerifyDoc(v);
+  try {
+    writeManagedText(handle, content, {
+      // `label` / `hint` 只影响**报错文案**（比较逻辑不可配）；hint 是"被报的那一方真做得到的那一句"。
+      label: '生成物「' + path.relative(ROOT, handle.file).split(path.sep).join('/') + '」',
+      hint: '请重跑 `npm run facts:write`（它会重新读最新一版再生成）'
+    });
+  } catch (err) {
+    // **绝不允许静默**：报出两侧版本，并给出出路（F1：死指针不算出路）。
+    console.error('✗ 拒绝写入 ' + relOf(handle.file) + '：并发写入冲突 —— 盘上已不是本次读到的那个版本。');
+    console.error('    ' + ((err && err.message) || err));
+    if (err && err.code === 'VERSION_CONFLICT') {
+      console.error('    读到的版本（本次生成开始时）: ' + String(err.expectVersion));
+      console.error('    盘上的版本（写回时）:        '
+        + (err.actualVersion === null ? '（文件已不存在）' : String(err.actualVersion)));
+      console.error('  → 重跑 `npm run facts:write`：它会重新读取最新一版再生成。'
+        + '（磁盘上的内容**一个字节都没被改**，这次的生成结果被丢弃。）');
+    }
+    return false;
+  }
   console.log('已生成 docs/VERIFY.md（' + v.commands + ' 命令 / ' + v.mcpTools + ' 工具 / '
     + v.unitTests + ' 用例 / ' + v.cliAssertions + ' 集成断言 / ' + v.smokeAssertions + ' 冒烟断言 / '
     + v.visionAssertions + ' 视觉断言）');
+  return true;
+}
+
+/** 报错文案里用的相对路径（绝对路径对读日志的人没有信息量） */
+function relOf(file) {
+  return path.relative(ROOT, file).split(path.sep).join('/') || String(file);
 }
 
 /** 纯渲染：`docs/VERIFY.md` 的全文（G7 用同一个函数重算并逐字比对，所以**不能含时间等易变内容**） */
@@ -779,6 +850,9 @@ module.exports = {
   findSizeClaim, scanSizeClaims, SIZE_ANCHOR,
   findFutureVersion, scanFutureVersions, docSystemSnapshot, renderVerifyDoc,
   parseVitestCount,
+  // 写档（`--write`）的**两条腿**分开导出，单测才能分别打红它们（`tests/doc-write-gate.test.js`）：
+  //   `readVerifyDocHandle` = 读 + 带回版本；`writeVerifyDoc` = 渲染 + 过闸门写回（**必须**收到前者）
+  verifyDocPath, readVerifyDocHandle, writeVerifyDoc,
   // 第一屏（`SKILL.md`）步骤数 ↔ `STEPS.length`（纯函数那一半单独导出，便于单测）
   parseStepCountClaims, scanStepCount, stepCountProblem
 };

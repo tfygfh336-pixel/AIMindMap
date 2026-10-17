@@ -45,6 +45,12 @@
 
 const fs = require('fs');
 const path = require('path');
+// 受管文档的写盘出口：**原子写 + 并发版本闸门**（比较与报错**只有** `src/data-store.js` 的 `versionGate` 一处）。
+// 为什么必须走它：`--write` 是"读全文 → 换掉 §5 那两行标记之间的表 → 写全文"，
+// **中间没有指纹比对** ⇒ 两个会话同时生成时，后写者会把先写者的改动整份覆盖掉，且没有任何东西能检出。
+// ⚠️ 注意拼接形态：`out` 的是 `md.slice(0, s)` + 新表 + `md.slice(e)` —— **§5 之外的正文全部来自我读到的那份快照**，
+//    所以"整文件指纹"正是对的粒度（只比 §5 会漏掉"§1–§4 被整份回退"这一整类丢失，见证据 README §二）。
+const { readManagedText, writeManagedText } = require(path.join(__dirname, '..', 'src', 'data-store.js'));
 
 const ROOT = path.resolve(__dirname, '..');
 const REGISTRY_DOC = 'docs/ARCHITECTURE.md';   // §5 文档架构表 = 唯一登记处
@@ -742,7 +748,11 @@ function renderRegistryTable(entries) {
 /** 把生成好的表写回 §5（`--write` 模式）；返回是否成功 */
 function writeRegistryTable(root) {
   const archPath = path.join(root, REGISTRY_DOC);
-  const md = fs.readFileSync(archPath, 'utf8');
+  // **读全文的同时带回版本**：写回时过同一个闸门（比较仍在 `versionGate`，本文件不新写一份）。
+  // 非 `optional`：这份文件是本门禁的载体（`main()` 已先判存在）；读不到就是真问题，
+  // 不许静默当空文件（与 `collectDocHeaders` 的 `unreadable ⇒ 红`同一口径）。
+  const handle = readManagedText(archPath);
+  const md = handle.text;
   const entries = collectDocHeaders(root);
   const bad = entries.filter((e) => e.state !== 'ok');
   if (bad.length) {
@@ -759,7 +769,25 @@ function writeRegistryTable(root) {
   }
   const head = md.slice(0, md.indexOf('\n', s) + 1);
   const out = md.slice(0, s) + head.slice(head.indexOf(REG_BEGIN)) + '\n' + table + '\n' + md.slice(e);
-  fs.writeFileSync(archPath, out, 'utf8');
+  try {
+    writeManagedText(handle, out, {
+      // `label` / `hint` 只影响报错文案（比较逻辑不可配）
+      label: '登记表「' + REGISTRY_DOC + ' §5」',
+      hint: '请重跑 `npm run docs:registry`（它会重新读最新一版再生成）'
+    });
+  } catch (err) {
+    // **绝不允许静默**：报出两侧版本（前 8 位在闸门报文里，这里给完整值）与出路。
+    console.error('✗ 拒绝写入 ' + REGISTRY_DOC + ' §5：并发写入冲突 —— 盘上已不是本次读到的那个版本。');
+    console.error('    ' + ((err && err.message) || err));
+    if (err && err.code === 'VERSION_CONFLICT') {
+      console.error('    读到的版本（本次生成开始时）: ' + String(err.expectVersion));
+      console.error('    盘上的版本（写回时）:        '
+        + (err.actualVersion === null ? '（文件已不存在）' : String(err.actualVersion)));
+      console.error('  → 先重读该文件再重跑 `npm run docs:registry`。'
+        + '⚠️ 被拒的那次写会把 **§5 之外**（§1–§4）的改动整份回退，所以这不是"重试一下就好"的小事。');
+    }
+    return false;
+  }
   console.log('已生成 ' + REGISTRY_DOC + ' §5 登记表（来源：' + entries.filter((x) => x.meta).length
     + ' 份文档的头部元信息 + 2 行归档族前缀）');
   return true;
@@ -1054,7 +1082,10 @@ function main() {
   // `--write`：从各文档头部元信息**生成** §5 登记表（里程碑 T5）。
   // 与 `doc-facts --write` 同一模式：生成物由源重算，检查时再逐字比对。
   if (process.argv.includes('--write')) {
-    process.exit(writeRegistryTable(ROOT) ? 0 : 1);
+    // 用 `exitCode` 而不是 `process.exit()`：退出码完全一样，但不会在 stdout 还有缓冲时把
+    // **拒绝理由（含两侧版本）**截断 —— 那正是本文最需要被看见的一屏。
+    if (!writeRegistryTable(ROOT)) process.exitCode = 1;
+    return;
   }
   const registryMd = fs.readFileSync(regPath, 'utf8');
   const { problems, reg, docs } = checkRegistry(ROOT, registryMd);

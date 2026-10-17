@@ -26,6 +26,40 @@
 
 ## [Unreleased]
 
+### 「T2」文档登记面两条**整文件重写**补上版本闸门（`docs/VERIFY.md` / `docs/ARCHITECTURE.md` §5）（2026-10-16）
+
+- **一句话**：T3（`a65352c`）把并发写闸门收成 `src/data-store.js` 里**唯一**的一处（`versionGate` +
+  `readManagedText` / `writeManagedText`），但**两条最主要的整文件重写路径当时仍在裸写**、中间没有指纹比对：
+  `scripts/doc-facts.js` 的 `--write`（整份重写 `docs/VERIFY.md`）与 `scripts/docs-registry-check.js` 的
+  `--write`（读全文 → 换掉 §5 登记表 → 写全文）。并发时后写者整份覆盖先写者，**没有任何东西能检出** ——
+  2026-10 那次 `docs/ARCHITECTURE.md` 三行被两批各改一次冲掉，机器侧根因就是这个。
+- **先取证再动手**：两处都是**幂等生成器**（同一输入跑两遍，输出逐字节不变），都有 `--write`（生成）与
+  `--check`（逐字比对）两档，且各自的头部都声明了"改它要重跑生成命令、不要手改" ⇒ 缺的正是写那一半的闸门。
+- **落点**：`scripts/doc-facts.js` 新增 `readVerifyDocHandle()` / `writeVerifyDoc(v, handle)`，写盘改为
+  `writeManagedText`（原 `fs.writeFileSync` 删掉，**剥注释后裸写调用点 = 0**）；
+  `scripts/docs-registry-check.js` 的 `writeRegistryTable()` 改用 `readManagedText` 读、`writeManagedText` 写。
+  **比较逻辑一行都没新写** —— 两侧都只调 T3 那一个 `versionGate`（结构单测钉住：`scripts/` 里不许出现
+  `actualVersion`/`expectVersion` 的比较，也不许构造 `VERSION_CONFLICT`）。
+- **句柄必须"早读晚写"**：`doc-facts --write` 一次生成要跑一遍 vitest（数十秒），所以在 `facts()` **之前**
+  读句柄、**之后**才写回；若"写前才读一下、紧接着写"，闸门恒等放行 = **假闸门**（比没有更坏）。
+  结构断言把这条顺序钉住（`readVerifyDocHandle()` 必须在 `facts()` 之前），并已证明它能被打红。
+- **§5 那处为什么"整文件指纹"够用且必须**：拼接式是 `md.slice(0, s)` + 新表 + `md.slice(e)`
+  ⇒ **§5 之外的正文全部来自我读到的那份快照**，任何并发改动都会被我整份回退（不只是 §5 里那两行）。
+  只比 §5 区间会**漏掉「§1–§4 被回退」这一整类**。单测专门构造了"只改 §3、§5 区间一字节未动"的并发改动
+  ⇒ 整文件闸门**必须拒写**（`docs:registry` 那条于是不再"重试一下就好"：被拒的写本来会回退整份正文）。
+- **单写者路径逐字节不变**（真跑读数）：`npm run facts:write` 与 `npm run docs:registry` 在改前 / 改后
+  stdout / stderr / 生成物**三份一起**比，**逐字节相同**（`docs/VERIFY.md` sha256 `3e347b82…`、
+  `docs/ARCHITECTURE.md` sha256 `4a62cb4f…`，字节数与 CR 数同样不变）。
+- **判别力证明**（读数在 `.review/20261016-T2-登记面写闸门/`）：六个变异体各自让对应断言**必红** ——
+  ① 闸门比较改**恒等放行** ⇒ ①②⑥⑦ 红（另带 T3 的 4 条）；② 落点①**退回裸写** ⇒ ①②③⑨ 红；
+  ③ 落点②**退回裸写** ⇒ ⑥⑦⑨ 红；④ 把先读挪到 `facts()` **之后**（假闸门）⇒ ⑪ 红；
+  ⑤ 仍然拒写但**不报两侧指纹**（静默拒绝）⇒ ①② 红 —— 只拒不说等于没说；
+  ⑥ 拒写但**退出码仍是 0**（挂 CI 就等于没报）⇒ ⑪ 红。
+  每个变异体都用**原始 Buffer 逐字节还原**（sha256 + 字节数 + CR 数三记，**没用 `git checkout`**）后复绿。
+- **账（只核实不改）**：`scripts/` 里仍有别的裸写（`cli-integration.js` 写临时探针、`verify.js` 写
+  `.review/` 记录、`mutate-gates.js` 写副本……），它们写的是**临时件 / 证据**，不是受管资产 ⇒ 不在本批边界。
+
+
 ### 「T3」CHANGELOG 的写路径收口到统一闸门：从**裸写**改成原子写 + 版本闸门（2026-10-16）
 
 - **一句话**：`cli/commands/release.js` 的 `write()` 对 `CHANGELOG.md` 是**裸写**（纯 `fs.writeFileSync`，
