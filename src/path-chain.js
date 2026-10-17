@@ -2,10 +2,12 @@
  * src/path-chain.js — 「路径 → 打开 / 预览」的**唯一判据处**（UMD 纯逻辑：零 Electron、零 I/O）
  * ------------------------------------------------------------
  * ## 三段式契约（这条链的**全部**内容）
- *   ① **解析**：原始输入（节点里的相对路径 / `localPath` 绝对路径 / 正文里的路径）→ 规范绝对路径 `abs`；
+ *   ① **解析**：原始输入（节点里的相对路径 / `localPath` 绝对路径 / 正文里的路径 / **`http(s)` 网址**）
+ *       → 规范产物 `abs`（路径类 = 规范绝对路径；`externalUrl` = `new URL().href`）；
  *   ② **判据**：`decide({kind, raw, project, force})` → `{ok, abs, reason, action, code, kind}`
- *      （`action ∈ {preview, system, reject}` —— 取值表就是本文件的 `ACTIONS`）；
- *   ③ **出口只有一个**：既有 IPC `app:open-file`（`main.js`，**签名一个字不改、不加平行通道**）。
+ *      （`action ∈ {preview, system, external, reject}` —— 取值表就是本文件的 `ACTIONS`）；
+ *   ③ **出口只有一个**：既有 IPC `app:open-file`（`main.js`；**不新开 IPC 名字** ——
+ *      本批只把签名**多收一个可选参数** `opts.kind`，由 `EXIT_KINDS` 这张表决定按哪一档再守一道）。
  *   本模块只做 ①②；③ 在调用方（`renderer/app-media.js` / `renderer/app-detail-content.js` /
  *   `main.js` 的出口守卫），它们**一个字都不许再判一遍**。
  *
@@ -24,6 +26,17 @@
  *   |   |                          | 去卡它（那会把今天能打开的 `localPath` 全部打不开）；`action` 恒为 `system` |
  *   | 5 | **`action` 与改动前逐条等价或更严** | 绝不更松。等价性由**全量对拍**证：
  *   |   |                                    | `node scripts/pathchain-conformance.js`（差异必须 = 0）|
+ *   | 6 | **`http(s)` 只放行、别的协议一律拒** | `externalUrl` 一档：`new URL()` 解得开 → 协议**白名单**（`http:`/`https:`）
+ *   |   |                                    | → 不许带凭据；`action` 恒为 `external`（交系统浏览器）。
+ *   |   |                                    | `file:`/`javascript:`/`data:`/`vbscript:`/`blob:`/`aimm:` 与畸形串**全部** reject + 非空 reason |
+ *
+ * ## 这一档为什么进来（R7 的"声称有、实测没有"）
+ *   R7 设计稿 §4-1 说 `http(s)` 链接"**一律交系统默认浏览器打开**"，而 R7 实现时实测**本工程没有那个出口**
+ *   （唯一出口只收本机绝对路径）⇒ 当时只能"拦下 + 状态栏点名"。**本批把这条缺口补成真能力**，
+ *   形状选择是**并进这条链**（新增 `kind:'externalUrl'` + `action:'external'`）而不是新开一条 IPC：
+ *   `shell.openExternal` 是 Electron 安全清单点名的高危面（**不许**对不可信内容用）⇒ 它前面必须有一道
+ *   判据；而"这道判据应该长在哪"只有一个正确答案 —— **和路径判据同一处**。否则同一个"点一下东西出去"
+ *   的动作会有两份判据、两个出口，正是本工程反复治过的病。
  *
  * ## 为什么要有它（改动前的四处、四套判据）
  *   · `renderer/app-media.js` 的 `attachmentAbsPath` —— 只拼字符串（`base + '/' + rel`），**零校验**；
@@ -53,10 +66,22 @@
   'use strict';
 
   /** 允许的 `kind`（闭环取值表：传表外的值**响亮拿到 reject**，不是静默按某个默认档走） */
-  const KINDS = ['attachment', 'image', 'inline', 'localPath', 'system'];
+  const KINDS = ['attachment', 'image', 'inline', 'localPath', 'system', 'externalUrl'];
 
-  /** `action` 三档（唯一取值表） */
-  const ACTIONS = ['preview', 'system', 'reject'];
+  /** `action` 取值表。`external` 是**交系统浏览器**那一档（只对 `externalUrl` 生效），
+   *  与 `system`（交系统**关联程序打开本机文件/目录**）分开：两者出口机制不同
+   *  （`shell.openExternal(url)` vs `shell.openPath(路径)` + 编辑器档），
+   *  合并成一档会让出口 handler 只能靠"猜输入形状"分流 = 第二份判据。 */
+  const ACTIONS = ['preview', 'system', 'external', 'reject'];
+
+  /** 出口 handler（`app:open-file`）允许收的 `kind`：**只有这两档**能到出口。
+   *  ⚠️ 这是**出口那一侧的取值表**，由本模块给出、`main.js` 不许自己再列一份
+   *  （否则"哪几档能到出口"这件事就有了两处表达）。传表外的值 ⇒ handler 按 `system` 处理。 */
+  const EXIT_KINDS = ['system', 'externalUrl'];
+
+  /** `externalUrl` 的**协议白名单**（唯一一处）。只放这两个 —— 照 Electron 安全清单：
+   *  `shell.openExternal` **不许**对不可信内容用，所以行不行由这里判，出口只负责"照做"。 */
+  const ALLOWED_URL_PROTOCOLS = ['http:', 'https:'];
 
   /** 走**内预览**的扩展名：`md` 内联渲染、`pdf` 内嵌 iframe（`renderer/app-media.js` 的两条既有预览路）；其余交系统 */
   const PREVIEW_EXTS = ['md', 'markdown', 'pdf'];
@@ -85,7 +110,15 @@
     'path-not-absolute': '必须是**本机绝对路径**（形如 E:\\目录）',
     'path-escape': '路径逃出了项目目录（规范化后已不在当前项目之内，疑似 .. 逃逸）',
     'path-self': '这是项目目录本身，不是一个文件',
-    'path-too-long': '路径过长（超过 500 字符）'
+    'path-too-long': '路径过长（超过 500 字符）',
+    /* ---- `externalUrl` 那一档（本批新增）的三条：**protocol 白名单是唯一的放行开关** ----
+     * ⚠️ 这里**刻意没有** `path-url-no-host` 这一档：取证（`.review/20261016-外部链接出口/tools/url-probe-no-host.js`）
+     *   证明它**不可达** —— http:/https: 是 WHATWG 的 special scheme，解析器要么给出**非空** host，
+     *   要么直接抛 `ERR_INVALID_URL`（20 条畸形形状实测"白名单内且 host 为空"= **0 条**）。
+     *   加一条永远打不出来的 reject = 让人以为守住了 = 本工程最重的损害类别 ⇒ 不加。 */
+    'path-url-malformed': '这个网址解析不了（`new URL()` 失败：形状不完整或有非法字符），不接受',
+    'path-url-scheme': '这个协议不在放行名单里（只放行 http: / https:；file: / javascript: / data: / vbscript: / blob: 等一律拒绝）',
+    'path-url-credentials': '网址里带账号密码（形如 http://user:pass@host/…），不接受'
   };
 
   function isString(v) { return typeof v === 'string'; }
@@ -173,8 +206,10 @@
    * @param {{kind:string, raw:*, project?:{file?:string,name?:string}, force?:'system'}} input
    *   `kind`   —— `KINDS` 之一（`attachment`=节点 `files[].file`；`image`=节点 `images[].file`；
    *               `inline`=正文里的路径（R7 用，本批不消费、判据已备好）；`localPath`=节点里的本机目录；
-   *               `system`=已经解析好的绝对路径，交给**出口**再守一道）
-   *   `raw`    —— 原始输入（**不 trim、不改写**：产出的 `abs` 用的是它本身）
+   *               `system`=已经解析好的绝对路径，交给**出口**再守一道；
+   *               `externalUrl`=正文里的 `http(s)` 网址（**本批新增**，`action:'external'` = 交系统浏览器））
+   *   `raw`    —— 原始输入（**不 trim、不改写**：路径类产出的 `abs` 用的是它本身；
+   *               `externalUrl` 的 `abs` 是 `new URL(raw).href`，理由见该分支的注释）
    *   `project`—— `{file, name}`（`state.project`）；相对路径类缺它 ⇒ reject `no-project`
    *   `force`  —— `'system'` 表示调用方**明确要交系统打开**（预览头那颗按钮）：只把 `preview` 改判成
    *               `system`，**永远压不过 reject**（不是一条"更松"的口子）
@@ -200,6 +235,25 @@
     if (!raw.trim()) return fail('path-empty');
     if (hasControlChar(raw)) return fail('path-control-char');
     if (isUncOrDevice(raw)) return fail('path-unc-device');     // 判据 2：只按形状拒，绝不探存在性
+
+    /* ---- `externalUrl` 那一档（本批新增）：URL 协议的唯一判据 ----
+     * 安全面照 Electron 安全清单：`shell.openExternal` **不许**对不可信内容用
+     * ⇒ 一切放行决定都在这里，出口（`app:open-file`）只负责照做，**不再判第二遍**。
+     * 顺序有讲究：① 先 `new URL()` 解析（解析不了的就不该交出去）
+     *              ② 再协议白名单（`file:` / `javascript:` / `data:` / `vbscript:` / `blob:` / `aimm:` 全落在这一条）
+     *              ③ 再凭据（`http://user:pass@…`：交给浏览器会把密码带进历史/地址栏）。 */
+    if (kind === 'externalUrl') {
+      let u;
+      try { u = new URL(raw); }
+      catch (err) { return fail('path-url-malformed'); }
+      if (ALLOWED_URL_PROTOCOLS.indexOf(u.protocol) < 0) return fail('path-url-scheme');
+      if (u.username || u.password) return fail('path-url-credentials');
+      /* ⚠️ 交出去的 `abs` 是 `u.href`（**规范化后**的那一份），不是原始串：
+       *   这样"判的那一份"和"交出去的那一份"是同一个解析器的同一个产物，中间没有
+       *   "判 A 却开 B"的空档。代价（如实记）：`href` 会把中文域名转 punycode、
+       *   百分号编码路径、补默认路径 `/`、丢首尾空白 —— 都是浏览器自己也会做的事。 */
+      return pass(u.href, 'external');
+    }
 
     const project = inp.project;
     const projectFile = project && project.file;
@@ -229,6 +283,8 @@
     decide: decide,
     KINDS: KINDS, ACTIONS: ACTIONS, PREVIEW_EXTS: PREVIEW_EXTS, RELATIVE_KINDS: RELATIVE_KINDS,
     ABSOLUTE_KINDS: ABSOLUTE_KINDS, LOCAL_PATH_MAX: LOCAL_PATH_MAX,
+    // 出口面（**"哪几档能到出口"只有这一份表**；`main.js` 收 `opts.kind` 时用它过滤）
+    EXIT_KINDS: EXIT_KINDS, ALLOWED_URL_PROTOCOLS: ALLOWED_URL_PROTOCOLS,
     // 文案与纯函数（读数脚本与单测直接用；**调用方显示 reason，不许自拼报文**）
     REASONS: REASONS,
     projectDirOf: projectDirOf, extOf: extOf, normalizeForJudge: normalizeForJudge,

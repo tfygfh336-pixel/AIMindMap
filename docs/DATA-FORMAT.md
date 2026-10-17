@@ -328,7 +328,8 @@ Markdown 语法占比 **0%**。
 | 本机**绝对路径**（如 `E:\x\y.txt`） | 同上 | 同一判据模块的 `kind:'localPath'`（**只校验形状**：它天然在项目外） |
 | **站内链接** `aimm://<项目>/<节点id>[#<条目id>]` | 同项目 ⇒ 选中 + 展开祖先链 + **把目标带进视野**（不切项目）；跨项目 ⇒ 切项目；带 `#条目` ⇒ 额外高亮那一条 | 唯一实现 `MM.followNodeRef`（`renderer/app-actions.js`）+ `MM.fdSelectItem` |
 | **笔记锚点**（`assoc.anchors[]` 声明的关键词） | 用**同一个浮窗**打开那篇笔记（`createFdBox()`，不是新窗口） | 锚点声明在**笔记侧**；正文 `detail` **逐字节不动**（匹配的是渲染后的 DOM 文本节点，跳过 `code`/`pre`/`a` 与属性值） |
-| `http(s)` / `mailto` | **不导航**：本工程没有"交系统浏览器"的出口（唯一出口 `app:open-file` 只收本机绝对路径，且**不许加平行通道**）⇒ 拦下并在状态栏点名 URL 与原因 | 绝不静默跳走（也绝不把渲染进程导航成浏览器） |
+| `http(s)` 链接 | **交系统默认浏览器打开**（`shell.openExternal`；主窗口 URL 不变，应用不会变成浏览器） | 判据 = `src/path-chain.js` 的 **`kind:'externalUrl'`**（`new URL()` 解析 → 协议白名单只放 `http:`/`https:` → 拒带凭据；其余 scheme 与畸形串 reject）；出口 = **同一条** IPC `app:open-file`（`opts.kind` 分流，**不新造通道**） |
+| 其他 scheme（`mailto:` 等） | **不导航**：同一判据判成 reject ⇒ 拦下并在状态栏点名 URL 与该档的 `reason` | 绝不静默跳走（也绝不把渲染进程导航成浏览器）；`reason` 文案单源 = `src/path-chain.js` 的 `REASONS` |
 | 被拦下的地址（`javascript:` / `data:` 链接 / `..` 逃逸 / 明文 http 图） | 链接变灰+删除线（`title` 给原因）；图片变**可见占位** | 判据同 `src/html-whitelist.js` 的 URL 档与 `src/path-chain.js` |
 
 > ⚠️ **落盘仍是 `links[]`**：`aimm://` 只是**渲染层的文本 → 引用**的一种写法，

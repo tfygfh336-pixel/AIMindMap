@@ -1,12 +1,13 @@
 /* ============================================================
  * tests/path-chain.test.js — 「路径 → 打开 / 预览」判据的单元测试（vitest，**零 Electron**）
  * ------------------------------------------------------------
- * 锁住 `src/path-chain.js` 的五条判据（每条都要能被注入打红）：
+ * 锁住 `src/path-chain.js` 的六条判据（每条都要能被注入打红）：
  *   1 **禁 `..` 逃逸**（规范化后必须仍在当前项目目录之内）
  *   2 **禁 UNC / 设备路径**（`\\?\`、`\\.\`、`\\server\share`、`//host/share`）—— 且**零 I/O**
  *   3 **打不开必须显式报错**（每条 reject 的 `reason` 非空、且等于 `REASONS[code]` 这一份文案）
  *   4 **`localPath` 单开一档**（工作区外的绝对路径照样开；只校验形状，不校验存在性）
  *   5 **`action` 与改动前逐条等价或更严**（绝不更松；产物字节与改动前算式相同）
+ *   6 **`http(s)` 只放行、别的协议一律拒**（`externalUrl` 档 —— 外部链接出口批新增）
  * 外加三条**结构断言**（"只有一处实现"）：
  *   · 渲染层不再自己拼路径 / 不再自己判"能不能开"；
  *   · 判据的 `code`（一律带 `path-` 前缀）只在 `src/path-chain.js` 里出现；
@@ -18,7 +19,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { decide, rendererUrlOf, projectDirOf, REASONS, KINDS, ACTIONS, PREVIEW_EXTS } from '../src/path-chain.js';
+import {
+  decide, rendererUrlOf, projectDirOf, REASONS, KINDS, ACTIONS, PREVIEW_EXTS,
+  EXIT_KINDS, ALLOWED_URL_PROTOCOLS
+} from '../src/path-chain.js';
 import conformance from '../scripts/pathchain-conformance.js';
 
 const ROOT = path.resolve(__dirname, '..');
@@ -220,10 +224,15 @@ describe('path-chain 判据 5：action 三档与改动前等价或更严', () =>
   });
 
   it('取值表是闭环：KINDS / ACTIONS 就是文档里那两串', () => {
-    expect(KINDS).toEqual(['attachment', 'image', 'inline', 'localPath', 'system']);
-    expect(ACTIONS).toEqual(['preview', 'system', 'reject']);
+    expect(KINDS).toEqual(['attachment', 'image', 'inline', 'localPath', 'system', 'externalUrl']);
+    expect(ACTIONS).toEqual(['preview', 'system', 'external', 'reject']);
     expect(JUDGE('inline', 'attachments/a.md').action).toBe('preview');   // R7 的正文路径档，本批已备好
     expect(JUDGE('nope', 'x').code).toBe(CODE_PREFIX + 'unknown-kind');
+  });
+
+  it('出口那一侧的取值表也只有一份：`EXIT_KINDS` = 两条腿，且都在 `KINDS` 里', () => {
+    expect(EXIT_KINDS).toEqual(['system', 'externalUrl']);
+    for (const k of EXIT_KINDS) expect(KINDS, k).toContain(k);
   });
 
   it('纯函数：同输入同输出、不改入参（冻结对象下也不抛）', () => {
@@ -232,6 +241,103 @@ describe('path-chain 判据 5：action 三档与改动前等价或更严', () =>
     const b = decide(input);
     expect(a).toEqual(b);
     expect(input.raw).toBe('attachments/a.pdf');
+  });
+});
+
+describe('path-chain 判据 6：`http(s)` 只放行、别的协议一律拒（`externalUrl` 档）', () => {
+  it('合法 http / https ⇒ ok + `action` 为 external + `abs = new URL(raw).href`（判的那份就是交出去的那份）', () => {
+    for (const raw of ['http://example.com/a?b=1', 'https://example.com', 'https://例子.com/中文']) {
+      const d = JUDGE('externalUrl', raw);
+      expect(d.ok, raw).toBe(true);
+      expect(d.action, raw).toBe('external');
+      expect(d.abs, raw).toBe(new URL(raw).href);
+      expect(d.reason, raw).toBe('');
+    }
+    // 规范化确实发生了（否则上一条就等于"原样返还"，测不出东西）
+    expect(JUDGE('externalUrl', 'https://example.com').abs).toBe('https://example.com/');
+  });
+
+  it('这一档**不看项目**：没有 `project` 也照样放行（它不是路径，不该被 `no-project` 卡）', () => {
+    const d = decide({ kind: 'externalUrl', raw: 'https://example.com/x' });
+    expect(d.ok).toBe(true);
+    expect(d.action).toBe('external');
+    // 反证：同一条 raw 拿**相对路径**档判会 reject ⇒ 两档确实不同源
+    expect(decide({ kind: 'attachment', raw: 'https://example.com/x' }).ok).toBe(false);
+  });
+
+  it('危险 scheme **全部** reject + `code=path-url-scheme` + 非空 reason（文案单源）', () => {
+    for (const raw of [
+      'javascript:alert(1)', 'data:text/html,<b>x</b>', 'file:///E:/x.txt',
+      'vbscript:msgbox', 'blob:https://a/b', 'aimm://demo/n1',
+      'about:blank', 'chrome://settings', 'ftp://a/b'
+    ]) {
+      const d = JUDGE('externalUrl', raw);
+      expect(d.ok, raw).toBe(false);
+      expect(d.code, raw).toBe(CODE_PREFIX + 'url-scheme');
+      expect(d.action, raw).toBe('reject');
+      expect(d.abs, raw).toBeNull();
+      expect(d.reason.length, raw).toBeGreaterThan(0);
+      expect(d.reason, raw).toBe(REASONS[d.code]);      // 文案只有一处
+    }
+  });
+
+  it('带凭据的网址 reject（交出去会把账号密码带进地址栏与历史）', () => {
+    for (const raw of ['http://user:pass@example.com/x', 'https://user@example.com/x', 'https://a%40b@c/']) {
+      const d = JUDGE('externalUrl', raw);
+      expect(d.ok, raw).toBe(false);
+      expect(d.code, raw).toBe(CODE_PREFIX + 'url-credentials');
+      expect(d.reason.length, raw).toBeGreaterThan(0);
+      expect(d.reason, raw).toBe(REASONS[d.code]);
+    }
+  });
+
+  it('畸形 URL reject（`new URL()` 解不开的一律不交出去）', () => {
+    for (const raw of ['http://', 'https://', 'not a url', 'http://x:99999/', 'https://a b/', 'https:///']) {
+      const d = JUDGE('externalUrl', raw);
+      expect(d.ok, raw).toBe(false);
+      expect(d.code, raw).toBe(CODE_PREFIX + 'url-malformed');
+      expect(d.reason.length, raw).toBeGreaterThan(0);
+    }
+  });
+
+  it('设备路径 / UNC / 控制字符在这一档**也拒**（判据 2 先于 URL 档跑）', () => {
+    expect(JUDGE('externalUrl', '\\\\?\\C:\\Windows\\win.ini').code).toBe(CODE_PREFIX + 'unc-device');
+    expect(JUDGE('externalUrl', '\\\\NAS\\share\\x').code).toBe(CODE_PREFIX + 'unc-device');
+    expect(JUDGE('externalUrl', 'https://e.com/a\nb').code).toBe(CODE_PREFIX + 'control-char');
+    expect(JUDGE('externalUrl', 'https://e.com/a\u0000b').code).toBe(CODE_PREFIX + 'control-char');
+  });
+
+  it('`force` 传 system **压不过** reject，也改不了 `external`（不是一条更松的口子）', () => {
+    expect(JUDGE('externalUrl', 'https://example.com/x', PROJECT, 'system').action).toBe('external');
+    const rej = JUDGE('externalUrl', 'javascript:alert(1)', PROJECT, 'system');
+    expect(rej.ok).toBe(false);
+    expect(rej.action).toBe('reject');
+  });
+
+  it('协议白名单**就是那两条**，大写协议名/主机名同样放行（规范化后按小写判）', () => {
+    expect(ALLOWED_URL_PROTOCOLS).toEqual(['http:', 'https:']);
+    const d = JUDGE('externalUrl', 'HTTP://Example.COM/A');
+    expect(d.ok).toBe(true);
+    expect(d.abs).toBe('http://example.com/A');
+  });
+
+  /* 这一条是**反向证据**：本批本来打算加 `path-url-no-host`（"网址没有主机名"），
+   * 取证后发现它**不可达** —— http:/https: 是 WHATWG 的 special scheme，解析器要么给出非空 host、
+   * 要么直接抛 `ERR_INVALID_URL`。留一条永远打不出来的 reject = 让人以为守住了 ⇒ **不加**。
+   * 这条断言把"不加"这件事钉住，免得下次有人"顺手补上"一条空转的守卫。 */
+  it('`REASONS` 里**没有** `path-url-no-host`（不可达的守卫不许存在），且"不可达"有读数', () => {
+    expect(Object.keys(REASONS)).not.toContain(CODE_PREFIX + 'url-no-host');
+    let parsedWithEmptyHost = 0;
+    let threw = 0;
+    for (const raw of ['http://', 'https://', 'http://?x', 'http://#x', 'http://:80/', 'https:///',
+      'http://@', 'https://a b/', 'http://user@/x']) {
+      try {
+        const u = new URL(raw);
+        if ((u.protocol === 'http:' || u.protocol === 'https:') && !u.host) parsedWithEmptyHost++;
+      } catch (e) { threw++; }
+    }
+    expect(threw, '这些形状应当解析失败').toBeGreaterThan(0);
+    expect(parsedWithEmptyHost, '白名单内且 host 为空 ⇒ 0 条（否则 no-host 就该存在）').toBe(0);
   });
 });
 
@@ -272,6 +378,53 @@ describe('path-chain 结构断言：只有一处实现', () => {
     // 旧的拼接算式在渲染层彻底消失
     expect(media.indexOf('state.project.file.replace')).toBe(-1);
     expect(detail.indexOf('state.project.file.replace')).toBe(-1);
+  });
+});
+
+describe('path-chain 结构断言：外部链接也是**同一条出口**（不新开 IPC、不并列一份白名单）', () => {
+  it('全仓只有**一条** `ipcMain.handle(\'app:open-file\')`，且没有第二个"打开"IPC 名字', () => {
+    const main = stripComments(readFileSync(path.join(ROOT, 'main.js'), 'utf8'));
+    const handles = [...main.matchAll(/ipcMain\.handle\(\s*'([^']+)'/g)].map((m) => m[1]);
+    expect(handles.filter((n) => n === 'app:open-file').length,
+      'app:open-file 的 handler 必须恰好一处（出口唯一）').toBe(1);
+    expect(handles.filter((n) => /open[-_]?(url|external)|external|openExternal/i.test(n)),
+      '不许为"开外部东西"另立 IPC 名字').toEqual([]);
+  });
+
+  it('`shell.openExternal` 在 main.js 里**只出现一处**，且在 `app:open-file` 的 handler 之内', () => {
+    const main = stripComments(readFileSync(path.join(ROOT, 'main.js'), 'utf8'));
+    const hits = [...main.matchAll(/shell\.openExternal\(/g)].length;
+    expect(hits, 'main.js 里 shell.openExternal 只许有一处（多一处=多一条出口）').toBe(1);
+    const handlerAt = main.indexOf("ipcMain.handle('app:open-file'");
+    const callAt = main.indexOf('shell.openExternal(');
+    expect(handlerAt).toBeGreaterThan(-1);
+    expect(callAt).toBeGreaterThan(handlerAt);
+    // 调用点之后、下一个 ipcMain.handle 之前不许再有别的 handler 开头把它"隔"到另一个 handler 里
+    const nextHandler = main.indexOf('ipcMain.handle(', callAt);
+    expect(nextHandler === -1 || nextHandler > callAt).toBe(true);
+  });
+
+  it('协议白名单**只有一处**（`ALLOWED_URL_PROTOCOLS` 只在 src/path-chain.js）；外壳与渲染层都不自己列', () => {
+    for (const rel of ['main.js', 'preload.js', 'renderer/app-media.js', 'renderer/app-md.js']) {
+      const src = stripComments(readFileSync(path.join(ROOT, rel), 'utf8'));
+      expect(src.indexOf('ALLOWED_URL_PROTOCOLS'), rel + ' 不该自己列协议白名单').toBe(-1);
+      expect(src.indexOf("'http:'"), rel + ' 不该自己列协议白名单（字面量）').toBe(-1);
+      expect(src.indexOf('"http:"'), rel + ' 不该自己列协议白名单（字面量）').toBe(-1);
+    }
+    const chainSrc = stripComments(readFileSync(path.join(ROOT, 'src/path-chain.js'), 'utf8'));
+    expect(chainSrc.indexOf('ALLOWED_URL_PROTOCOLS'), '否则上一条会因为"谁都没列"而假绿').toBeGreaterThan(-1);
+    expect(chainSrc.indexOf("'http:'")).toBeGreaterThan(-1);
+  });
+
+  it('渲染层的 `http(s)` 链接走**判据 + 既有出口**：不直接碰 IPC、不自己判 scheme', () => {
+    const md = stripComments(readFileSync(path.join(ROOT, 'renderer/app-md.js'), 'utf8'));
+    expect(md.indexOf("kind: 'externalUrl'"), '正文链接必须落到 externalUrl 这一档').toBeGreaterThan(-1);
+    expect(md.indexOf('MM.openByChain'), '出口必须复用 openByChain（→ requestOpen → app:open-file）').toBeGreaterThan(-1);
+    expect(md.indexOf('desktop.app.openFile'), '渲染层不许自己直连 IPC').toBe(-1);
+    expect(md.indexOf('openExternal'), '渲染层不许自己提 shell.openExternal').toBe(-1);
+    // 而 `kind:'externalUrl'` **必须**在出口调用点（app-media.js）被原样递给主进程
+    const media = stripComments(readFileSync(path.join(ROOT, 'renderer/app-media.js'), 'utf8'));
+    expect(media.indexOf('kind: d.kind'), '出口调用点要把判据判出的档位递给主进程').toBeGreaterThan(-1);
   });
 });
 

@@ -17,7 +17,7 @@
 |------|----|------|
 | CLI 命令数 | 69 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 51 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 2158 用例 / 100 文件 | `tests/*.test.js`（vitest） |
+| 单元测试 | 2172 用例 / 100 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 535 | `scripts/cli-integration.js` |
 | 冒烟断言 | 323 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
@@ -43,7 +43,7 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 | 6 | S1 | `node scripts/dep-direction-check.js` | 10s | **单向依赖**（声明在 `docs/ARCHITECTURE.md` §4 原则 2：renderer → main/scripts → cli → src，不反向依赖）：扫第一方源码的 `require`/`import` 边，按**单源分层图**（本门禁的 `LAYERS`，只写一处）判方向 —— **反向边即红并指名 `A → B`**，同层成环与"指向分层图之外"也判红（在册豁免除外）。它守的正是 skill 点名的"性质成立、检查没建"那一类：这条约束一直成立（实测零回边），但**一次顺手 `require` 就能破而全链不红** ✗ |
 | 7 | S2 | `node scripts/collateral-check.js` | 10s | **改动即连带清单**：把"改动类型 → 连带处"做成**单源表**（本脚本的 `COLLATERAL`），并对其中**尚未机制化**的那几处直接断言（① MCP 派发到的每条 CLI 命令都必须存在；② 每个冒烟域都必须在断言注册面的索引里）；已机制化的那几处（G8 / G7 / G6 / V2 / V1 / G8 第 ⑮ 条…）**指过去复用**，只校验那个门禁真的挂在链上 ✗ 不重做。`--list` 现场打印全表（报错即指路） |
 | 8 | S3 | `node scripts/determinism-check.js` | 10s | **确定性产物**（判据 `A-08`）：产物登记表（声明面 = `docs/ARCHITECTURE.md` §5.2，双向闭包）里**真值比**的产物必须"同一状态**连续两次**重算逐字节相同"（含时钟 / 随机 / 顺序 / 工作区四类扰动，差异来源可分类）；**允许不确定**的产物必须在生成器里**点名标注**"非确定性、不得当真值"；自述是生成物却没进表的一律判红。**乙档上线**：被当证据真值用、但判定尚不存在的那些住在**门禁侧的封闭欠账册**里（`--debt` 现场取，只减不增，修好忘销账或册上对象不存在都判红） |
-| 9 | G3 | `npm test`（附加 JSON reporter 把用例数交给 G6，省一次 vitest 重跑） | 60s | 共享核心 `src/` 各模块（含 data-store 原子写、BOM 容错与并发版本闸门） |
+| 9 | G3 | `npm test`（附加 JSON reporter 把用例数交给 G6，省一次 vitest 重跑） | 69s | 共享核心 `src/` 各模块（含 data-store 原子写、BOM 容错与并发版本闸门） |
 | 10 | G6 | `node scripts/doc-facts.js --check` | 20s | 文档数字与真值一致（含**第一屏 `SKILL.md` 自报的验证链步骤数** == `STEPS.length`）、版本号四处一致 |
 | 11 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |
 | 12 | G4 | `node scripts/cli-integration.js` | 60s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |

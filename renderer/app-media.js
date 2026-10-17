@@ -8,7 +8,8 @@
  *      （attachmentPath / attachmentAbsPath / imageLinkOf / openByChain / openFilePreview / closeFilePreview）
  *      ⚠️ 「路径 → 打开 / 预览」的**判据不在这里**：唯一实现在 `src/path-chain.js`（UMD 纯函数，
  *         零 Electron、零 I/O，可 headless 单测）；本文件只**调**它，出口也只有一个 = 既有 IPC
- *         `app:open-file`（签名不改、不加平行通道）。三段式契约与该模块的五条判据见它的文件头。
+ *         `app:open-file`（**不新开 IPC 名字**；外部链接出口批只给它多收一个可选参数 `opts.kind`）。
+ *         三段式契约与该模块的六条判据见它的文件头。
  *   3) 相关知识点渲染 renderRelated（我引用谁 + 谁引用我，点击开新详情框）
  * 边界（本文件不负责）：
  *   · 详情框本身的创建/定位 → app-detail*.js（本文件只经 MM 转发 showDetail）
@@ -104,9 +105,12 @@
     });
   }
 
-  /** 链的**唯一出口**：既有 IPC `app:open-file`（签名一个字不改、不新增平行通道）。
+  /** 链的**唯一出口**：既有 IPC `app:open-file`（签名只多收可选参数、**不新增平行通道**）。
    *  ⚠️ 打不开**必须让人看见**（判据 3）：判据不通过显示 `reason`，主进程失败显示 `err` ——
-   *  绝不"点了没反应"（本工程反复治过的静默失效类）。*/
+   *  绝不"点了没反应"（本工程反复治过的静默失效类）。
+   *  【外部链接出口批】`opts.kind` 把**判据判出来的那一档**原样递给出口（`d.kind`）：
+   *  出口据此选"交系统关联"还是"交系统浏览器"。⚠️ 这里**不是**在判，只是把判据的结论搬过去
+   *  （取值表过滤仍在主进程用 `pathChain.EXIT_KINDS` 做，本文件不列候选）。 */
   function openByChain(input) {
     const d = window.MMPathChain.decide({
       kind: input.kind, raw: input.raw, project: state.project, force: input.force
@@ -114,7 +118,7 @@
     if (!d.ok) { setStatus('打不开：' + d.reason + '｜' + String(input.raw), true); return Promise.resolve(false); }
     if (!window.MM.requestOpen) { setStatus('打开入口没加载：renderer/app-media.js 的 requestOpen', true); return Promise.resolve(false); }
     // 行号：调用方给了就带（详情正文里的 `file:line` 引用走这条），没给就只打开文件。
-    return MM.requestOpen(d.abs, { line: input.line, col: input.col }).then((r) => r && r.ok !== false);
+    return MM.requestOpen(d.abs, { line: input.line, col: input.col, kind: d.kind }).then((r) => r && r.ok !== false);
   }
 
   /* PDF 缩放：Chromium viewer 的 `#zoom=` **只在设置 src 那一刻生效** ——

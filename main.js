@@ -1732,21 +1732,49 @@ function registerIpc() {
   }
 
   ipcMain.handle('app:open-file', async (e, absPath, opts) => {
-    /* ⭐ 签名只**多收一个可选参数**（`opts = {line, col, editor}`）——**不新开 IPC 名字**，
+    /* ⭐ 签名只**多收一个可选参数**（`opts = {line, col, editor, kind}`）——**不新开 IPC 名字**，
      *   既有调用方（一个参数）行为逐字不变。为什么把"打开方式"挤进这一处而不是新开通道：
-     *   本工程最要紧的一条不变式是「**出口唯一**」（见上面那段说明与 `docs/ARCHITECTURE.md` 的 ADR）。 */
+     *   本工程最要紧的一条不变式是「**出口唯一**」（见上面那段说明与 `docs/ARCHITECTURE.md` 的 ADR）。
+     * 【外部链接出口批】`opts.kind` 是**出口这一侧的分流开关**，取值表仍只有一份
+     *   （`pathChain.EXIT_KINDS`，见 `src/path-chain.js`）—— 本文件**不列**自己的候选清单，
+     *   传表外的值（含既有调用方传的 `'attachment'` 之类）一律按 `'system'`（=改动前行为）走 ✓。
+     *   ⚠️ 这不是"渲染层决定开什么"：`kind` 只决定**用哪一套判据**，而两套判据都在同一个模块里、
+     *   且都是"只收它该收的形状"⇒ 不存在"挑一套更松的规则绕过去"的口子（`file:` 拿 `externalUrl`
+     *   进不来，`https://` 拿 `system` 也进不来）。 */
     const o = (opts && typeof opts === 'object') ? opts : {};
-    const decision = pathChain.decide({ kind: 'system', raw: absPath });
+    const exitKind = (pathChain.EXIT_KINDS.indexOf(o.kind) >= 0) ? o.kind : 'system';
+    const decision = pathChain.decide({ kind: exitKind, raw: absPath });
     /* 冒烟模式下的**出口调用账**（ctx.openFileLog）—— 让"点了到底有没有走唯一出口"这件事**可观测**。
      * 为什么需要它（不是"顺手加的测试钩子"）：渲染层拿 `window.desktop.app` 是 **contextBridge 冻结对象**，
      * 断言**装不上记录器**（实测：`desktop.app.openFile = …` 不生效）⇒ 出口那一跳在主进程侧本来就**不可见**；
      * 而"点链接必须走 app:open-file、不许另开通道"正是这条链最要紧的判据。账在**非冒烟模式下一行都不记** ✓。
-     * 本批给这条账**多了三个字段**（`line` / `editor` / `mode`）：跳行与"用户点了哪个编辑器"同样只在主进程侧可见 ✓。 */
+     * 本批给这条账**多了三个字段**（`line` / `editor` / `mode`）：跳行与"用户点了哪个编辑器"同样只在主进程侧可见 ✓。
+     * 【外部链接出口批】再**多一个 `kind`**：出口那一侧现在有两条腿（交系统关联 / 交系统浏览器），
+     *   "点 http 链接到底走的是哪条腿"必须能在账里看见 —— 否则断言只能证明"调了出口"、证不了"调对了腿" ✓。 */
     if (isSmoke) SMOKE_OPEN_FILE_LOG.push({ raw: String(absPath), ok: decision.ok === true,
-      abs: decision.abs, code: decision.code || '',
+      abs: decision.abs, code: decision.code || '', kind: exitKind,
       line: editorCandidates.normalizeLine(o.line), editor: o.editor || '', mode: 'headless' });
-    if (!decision.ok) return { ok: false, err: '路径不允许打开：' + decision.reason };
+    if (!decision.ok) {
+      return { ok: false, err: (exitKind === 'externalUrl' ? '网址不允许打开：' : '路径不允许打开：') + decision.reason };
+    }
     const target = decision.abs;
+    /* 【外部链接出口批】`action:'external'` ⇒ 交**系统默认浏览器**（`shell.openExternal`）。
+     * ⚠️ 安全面：`decision.abs` 在这里**已经是判据放行过的那一份**（`new URL().href`，
+     *   协议只可能是 http: / https:、无凭据）—— 本 handler **不再判第二遍**（判据只有一处实现），
+     *   也**只**把这一份交出去（不是把请求里的原始串交出去）。
+     * ⚠️ headless 下同样**绝不真的开浏览器**（那会在跑验证的机器上弹窗/抢焦点），但判据照走、
+     *   并如实回报 `headless:true` —— 与下面路径档同一处置。 */
+    if (decision.action === 'external') {
+      if (isSmoke) {
+        return { ok: true, headless: true, kind: 'external', url: target,
+          editor: null, jumped: false, note: '冒烟/headless：判据过了，但没有真的交给系统浏览器' };
+      }
+      try {
+        await shell.openExternal(target);
+        return { ok: true, kind: 'external', url: target, editor: null, jumped: false,
+          note: '已交系统默认浏览器打开' };
+      } catch (err) { return { ok: false, err: '交系统浏览器失败：' + err.message }; }
+    }
     // ⚠️ headless（--smoke / 导出图）下**绝不真的打开**：那会在跑验证的机器上弹出文件管理器/默认应用，
     // 每跑一次 verify 弹一次窗。但**判据照走**（路径可访问性），并把 headless 明确回报 ——
     // 这不是"静默降级"：调用方拿到 headless:true 就知道"校验过了、只是没开"。

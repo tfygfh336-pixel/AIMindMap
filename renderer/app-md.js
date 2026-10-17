@@ -26,7 +26,8 @@
  * | 形态 | 点击发生什么 |
  * |---|---|
  * | 常规 · 工程内相对路径 / 本机绝对路径 | 判据 = `src/path-chain.js`（`kind:'inline'` / `'localPath'`），出口 = 既有 `app:open-file`（经 `MM.openByChain`）|
- * | 常规 · `http(s)` / `mailto` | 本工程**没有**"交系统浏览器"的出口（唯一出口 `app:open-file` 只收本机绝对路径，**不许加平行通道**）⇒ **拦下导航并响亮说明**（状态栏点名 URL 与原因），绝不静默跳走 |
+ * | 常规 · `http(s)` | **交系统默认浏览器**（R7 设计稿 §4-1 的口径，本批补上真出口）：判据 = `src/path-chain.js` 的 **`kind:'externalUrl'`**（只放行 `http:`/`https:`、不许带凭据），出口仍是既有 `app:open-file`（经 `MM.openByChain`，`opts.kind` 一路传到主进程）|
+ * | 常规 · 其他 scheme（`mailto:` 等） | 判据**同一档**判成 reject ⇒ **拦下导航 + 状态栏点名 URL 与该档的 `reason`**（不是静默、也不是"打不开就随便放行"）|
  * | 站内 · `aimm://项目/节点id[#条目id]` | `MM.followNodeRef(项目, 节点)`（同项目选中+滚到、跨项目切项目 —— **R7-0 的唯一实现**）；带 `#条目` 再 `MM.fdSelectItem` 高亮该条 |
  * | 独立笔记 · `.fd-notelink`（笔记锚点） | `MM.showAssocPage(assoc, 锚定节点)` —— **复用 `createFdBox()`**，不是新窗口 |
  * 点击一律用**事件委托**（`dc` 上一个监听器，绑一次）：既不为每个链接挂监听器，也不给正文加属性
@@ -226,11 +227,23 @@
       return;
     }
     if (c.ok && (c.kind === 'fragment')) return;    // 页内锚点：交给浏览器
-    // http(s) / mailto：本工程**没有**把 URL 交出去的出口（唯一出口只收本机绝对路径，且不许加平行通道）
-    // ⇒ 拦住默认导航（否则整个 Electron 渲染进程会被导航走 = 把应用变成浏览器），并**响亮说明**。
+    /* 【外部链接出口批】`http(s)` ⇒ **交系统默认浏览器**（设计稿 §4-1 的口径）。
+     * 判据与出口都复用既有那条链：`externalUrl` 这一档在 `src/path-chain.js`（只放行 http/https、
+     * 拒凭据与畸形串），出口仍是 `app:open-file`（`MM.openByChain` → `requestOpen`）。
+     * ⚠️ 这里**不判协议**：`c.scheme` 只用来把 `aimm` 分出去（那是站内），其余 scheme 一律交给
+     *   `externalUrl` 那一档去判 —— `mailto:` 之类会在那里拿到 reject 与非空 reason，
+     *   再由 `openByChain` 的"打不开必须让人看见"分支**点名到状态栏**（不是静默，也不是放行）。 */
+    if (c.ok && c.kind === 'scheme' && c.scheme !== 'aimm') {
+      ev.preventDefault();
+      if (MM.openByChain) MM.openByChain({ kind: 'externalUrl', raw: href });
+      else setStatus('没有打开出口（app-media.js 未加载）：' + href, true);
+      return;
+    }
+    /* 被 HTML 白名单挡在正文之外的地址（`javascript:` / `data:` / 协议相对 …）：
+     * 消毒期就标了 `.fd-link-blocked`，上面第 210 行已拦；走到这里的是**表外形状** ——
+     * 同样拦住导航并点名，绝不静默跳走（把应用变成浏览器是本工程最忌的失效）。 */
     ev.preventDefault();
-    setStatus('外部链接不在本工程的打开出口内（唯一出口 app:open-file 只收本机路径）：'
-      + href + ' —— 可复制后用系统浏览器打开', true);
+    setStatus('这个链接打不开（形状不在放行名单里）：' + href, true);
   }
 
   /**

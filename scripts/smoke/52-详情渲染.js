@@ -110,10 +110,20 @@ const D_IMG_TWO = '<p>两张被拦图</p><img src="http://example.invalid/a.png"
 const D_IMG_SECOND = '<img src="http://example.invalid/second.png">';
 const D_MD_OK = '<p>下面是一张图</p><pre><code>graph TD; A[甲]--&gt;B[乙];</code></pre>';
 const D_MD_BAD = '<p>下面是一张坏图</p><pre><code>graph TD; A[unclosed</code></pre>';
+/* 外链夹具的两个地址（**下方判据现算**用同一对常量，不写两处） */
+const URL_HTTP = 'https://example.invalid/s52-http';
+const URL_MAILTO = 'mailto:s52@example.invalid';
 const D_PATH = '<p>路径三例：'
   + '<a href="assets/probe.txt">本地相对</a> '
   + '<a href="../../../escape.txt">逃逸</a> '
-  + '<a href="E:\\r7\\probe.txt">本机绝对</a></p>';
+  + '<a href="E:\\r7\\probe.txt">本机绝对</a></p>'
+  /* 【外部链接出口批】外链两例：一个**合法 http(s)**（应走 `kind:'externalUrl'` 那一档 → 唯一出口）、
+   * 一个 `mailto:`（**白名单外**：判据同一档 reject ⇒ 不许调出口、且状态栏点名该档 reason）。
+   * 为什么用 `mailto:` 而不是 `javascript:` 当反例：`javascript:` 在**消毒期**就被 HTML 白名单拦成
+   * `.fd-link-blocked`、根本走不到"点击 → 判据"这一层 ⇒ 拿它测不到本批的分支（那是 R7 原来就有的路）。 */
+  + '<p>外链两例：'
+  + '<a href="' + URL_HTTP + '">外部网址</a> '
+  + '<a href="' + URL_MAILTO + '">邮件</a></p>';
 const D_AIM = '<p>站内：<a href="aimm://' + PROJ + '/' + N_AIM_FAR + '">跳到远端目标</a></p>';
 const D_NOTE = '<p>正文里有' + ANCHOR_TEXT + '这个词</p>';
 const D_PLAIN = '<h3>标题甲</h3><p>正文 <b>粗体</b></p>';
@@ -787,7 +797,10 @@ const assertions = [
   {
     name: 'smoke-52 常规路径链接走**唯一判据**（src/path-chain.js 的 kind:inline）+ **唯一出口**（app:open-file）：'
       + '真鼠标点工程内相对路径 ⇒ 出口收到的绝对路径与 decide({kind:"inline"}) 逐字相同；'
-      + '点 `..` 逃逸链接 ⇒ 出口**一次都不许被调**且状态栏可见报错；点本机绝对路径 ⇒ 走 localPath 档',
+      + '点 `..` 逃逸链接 ⇒ 出口**一次都不许被调**且状态栏可见报错；点本机绝对路径 ⇒ 走 localPath 档；'
+      + '【外部链接出口批】点 `http(s)` 链接 ⇒ 走 **kind:externalUrl** 那一档，出口调用账里出现一条'
+      + '`kind:"externalUrl"` 且 `abs` == decide({kind:"externalUrl"}).abs（= `new URL().href`）；'
+      + '点白名单外的 `mailto:` ⇒ **出口仍只被调过那几次**（判据在出口之前就拒了）且状态栏点名该档 reason',
     run: async (ctx) => {
       if (!ctx.input) return { ok: false, text: '真输入/截图底座不在（ctx.input 为空）⇒ 采不到真鼠标，判红 ✗' };
       const fx = ensureFixture(ctx);
@@ -855,19 +868,49 @@ const assertions = [
       void c3;
       const r3s = await execJson(ctx, `JSON.stringify({ ok: true, status: (document.querySelector('#status-text') || {}).textContent || '' })`);
       r3.status = r3s.status;
+      /* ---- 【外部链接出口批】④ 合法 http(s)：必须走 externalUrl 那一档 + 唯一出口 ---- */
+      const c4 = await clickLink('外部网址');
+      const r4 = { calls: led(), status: '' };
+      void c4;
+      const r4s = await execJson(ctx, `JSON.stringify({ ok: true, status: (document.querySelector('#status-text') || {}).textContent || '' })`);
+      r4.status = r4s.status;
+      /* ---- 【外部链接出口批】⑤ 白名单外的 mailto：判据在**出口之前**就拒 ⇒ 账本不许再长 ---- */
+      const c5 = await clickLink('邮件');
+      const r5 = { calls: led(), status: '' };
+      void c5;
+      const r5s = await execJson(ctx, `JSON.stringify({ ok: true, status: (document.querySelector('#status-text') || {}).textContent || '' })`);
+      r5.status = r5s.status;
 
       const relOk = r1.calls.length === 1 && r1.calls[0].ok === true && r1.calls[0].abs === expRel.abs;
       const escOk = r2.calls.length === 1 && /打不开/.test(r2.status) && r2.status.indexOf('逃出') >= 0;
       const absOk = r3.calls.length === 2 && r3.calls[1].abs === expAbs.abs;
-      const ok = relOk && escOk && absOk && expAbs.ok === true;
+      // ④⑤ 的期望值同样**现算**自产品判据（不在这里再写一遍白名单/规范化算式）
+      const expUrl = pathChain.decide({ kind: 'externalUrl', raw: URL_HTTP });
+      const expMail = pathChain.decide({ kind: 'externalUrl', raw: URL_MAILTO });
+      const urlOk = expUrl.ok === true && expUrl.action === 'external'
+        && r4.calls.length === 3 && r4.calls[2].ok === true
+        && r4.calls[2].kind === 'externalUrl' && r4.calls[2].abs === expUrl.abs
+        // headless 的"没有真的交出去"必须**看得见**（不静默）
+        && r4.status.indexOf('系统浏览器') >= 0;
+      const mailOk = expMail.ok === false && expMail.code === 'path-url-scheme'
+        && r5.calls.length === 3                       // **没有**新增第 4 条：出口在判据之后，压根没被调
+        && /打不开/.test(r5.status) && r5.status.indexOf(expMail.reason) >= 0;
+      const ok = relOk && escOk && absOk && urlOk && mailOk && expAbs.ok === true;
       return {
         ok: ok,
         text: '判据现算（src/path-chain.js）：inline 相对 ⇒ ' + JSON.stringify(expRel.abs)
           + '（action=' + expRel.action + '）；逃逸 ⇒ reject/' + expEsc.code + '；localPath ⇒ ' + JSON.stringify(expAbs.abs)
+          + '；externalUrl ⇒ action=' + expUrl.action + '/' + JSON.stringify(expUrl.abs)
+          + '；mailto ⇒ reject/' + expMail.code
           + ' ｜ 真鼠标点①本地相对：出口调用账=' + JSON.stringify(r1.calls) + ' ⇒ ' + relOk
           + ' ｜ 点②逃逸：调用账=' + JSON.stringify(r2.calls) + '（应仍只有第①次那一条 = 出口**没被调**）· 状态栏='
           + JSON.stringify(r2.status) + ' ⇒ ' + escOk
           + ' ｜ 点③本机绝对：调用账=' + JSON.stringify(r3.calls) + ' ⇒ ' + absOk
+          + ' ｜ 点④外部网址：调用账=' + JSON.stringify(r4.calls) + ' ⇒ kind='
+          + JSON.stringify((r4.calls[2] || {}).kind) + ' · 状态栏=' + JSON.stringify(r4.status) + ' ⇒ ' + urlOk
+          + '（headless 下**不真开浏览器**，但判据照走、且如实回报"没有真的交出去"）'
+          + ' ｜ 点⑤邮件：调用账=' + JSON.stringify(r5.calls) + '（**必须仍是 3 条** = 判据在出口之前就拒）· 状态栏='
+          + JSON.stringify(r5.status) + ' ⇒ ' + mailOk
           + ' ｜ 账本来自**主进程**（渲染层的 window.desktop.app 是冻结对象，装不上记录器）'
       };
     }

@@ -78,6 +78,9 @@ contextBridge.exposeInMainWorld('desktop', {
     /* 【本批】`opts` 可选：`{ line, col, editor }` —— 要跳到第几行、用哪个编辑器（用户上次选的 id）。
      * ⚠️ **通道名一个字没变、也没新开第二条**（"出口唯一"是本工程的不变式）：只是同一个
      *    `app:open-file` **多收一个可选参数** —— 老调用方（只传路径）行为逐字不变 ✓。
+     * 【外部链接出口批】`opts` 再多一个 `kind`（判据判出来的那一档）：`'externalUrl'` ⇒
+     *    出口交**系统默认浏览器**，其余/缺省 ⇒ 交系统关联打开本机文件（= 改动前行为）。
+     *    候选表不在这里 —— 主进程用 `src/path-chain.js` 的 `EXIT_KINDS` 过滤 ✓。
      * 返回值里新增 `editor` / `jumped` / `note` / `candidates`：**能不能跳行由主进程如实给**，
      * 渲染层只显示、不自己判断（`jumped:false` + `note` 就是"只能打开，没跳行"那种情形）。 */
     openFile: (absPath, opts) => ipcRenderer.invoke('app:open-file', absPath, opts),

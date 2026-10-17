@@ -366,7 +366,11 @@
  *                         ④ **三类链接**：常规路径走**唯一判据**（`src/path-chain.js` 的 `kind:'inline'`）
  *                         + **唯一出口**（`app:open-file`，出口调用账在主进程侧记 —— 渲染层的
  *                         `window.desktop.app` 是 contextBridge **冻结对象**，断言装不上记录器）；
- *                         `..` 逃逸**出口一次都没被调**且状态栏点名。站内链接 `aimm://` 真鼠标点 ⇒
+ *                         `..` 逃逸**出口一次都没被调**且状态栏点名。**外链两档（外部链接出口批）**：
+ *                         真鼠标点 `http(s)` ⇒ 走 `kind:'externalUrl'` 那一档、出口调用账里出现一条
+ *                         `kind:"externalUrl"` 且 `abs` == `decide({kind:'externalUrl'}).abs`（headless 不真开浏览器、
+ *                         但"没有真的交出去"要看得见）；点白名单外的 `mailto:` ⇒ **账本不许再长**（判据在出口之前就拒）
+ *                         且状态栏点名该档 `reason`。站内链接 `aimm://` 真鼠标点 ⇒
  *                         目标被选中 + 被带进视野 + 真帧命中它自己。独立笔记 = 复用 `createFdBox()`。
  *                         ⑤ **笔记锚点**（`assoc.anchors[{text}]`）：关键词成 `.fd-notelink` ⇒ 真鼠标点开
  *                         那篇笔记的新浮窗（`dataset.boxId` 递增 + 标题含笔记标题），**正文 sha256 不变**；

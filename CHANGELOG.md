@@ -26,6 +26,77 @@
 
 ## [Unreleased]
 
+### 「外部链接出口」批：把 R7 设计稿 §4-1 声称的「`http(s)` 一律交系统默认浏览器」补成**真能力** —— `src/path-chain.js` 新增 `kind:'externalUrl'` 一档，出口仍是**唯一那一处** IPC `app:open-file`（2026-10-17）
+
+- **一句话**：R7 实现批报告里那条「设计稿声称能做到、实测做不到」的债，本批还上；
+  形状是**并进既有判据链**（第六档），**不新开 IPC 名字** —— "出口唯一"这条不变式一个字没破。
+- **先取证（决定形状的那一步）**：全仓"打开外部 URL"的既有面只有**一处** ——
+  `main-dsh-sidebar.js:581` 的 `setWindowOpenHandler`（那是**内置 DSH 侧栏那个 WebContentsView 自己的**
+  window-open 拦截，`/^https?:\/\//` 正则 + `shell.openExternal`）。应用主窗口侧 **`main.js` 零命中**
+  （`openExternal` / `setWindowOpenHandler` / `will-navigate` / `new URL(` 四个词都是 0 条）。
+  ⇒ **本批是主窗口侧的第一个**，所以必须回答"这算不算平行通道"：**算，如果另开一条 IPC**。
+  故选择**并进 `src/path-chain.js`**（新增 `kind:'externalUrl'` + `action:'external'`），
+  出口复用 `app:open-file` 的**同一处 handler**（签名按需扩：只多收一个可选参数 `opts.kind`）。
+  ⚠️ `src/editor-candidates.js` 的 scheme 相关代码**不参与**本批：那个模块管的是"**编辑器/文件关联**"
+  （`assocHazard` 判 `wscript`/媒体抢注这类危险关联），本批管的是"**URL 协议**"，两者不同源、不同层，**没有混**。
+- **第六档判据（唯一实现，`src/path-chain.js`）**：`new URL(raw)` 解析 → 协议**白名单**（`ALLOWED_URL_PROTOCOLS`，
+  只 `http:`/`https:`）→ 拒**带凭据**（`http://user:pass@host`）。`action` 恒为 `external`。
+  `file:` / `javascript:` / `data:` / `vbscript:` / `blob:` / `aimm:` / `about:` / `chrome:` / `ftp:` **一律 reject**；
+  畸形串（`http://`、`not a url`、`http://x:99999/`、`https://a b/`）reject；UNC/设备路径与控制字符
+  在**更早**的判据 2/3 就被拒（对 URL 同样生效）。所有 reject **带非空 `reason`**，文案单源 `REASONS`。
+- **⭐ 交出去的是 `new URL(raw).href`（规范化后那一份），不是原始串**：这样"判的那一份"与"交出去的那一份"
+  是同一个解析器的同一个产物，中间没有"判 A 却开 B"的空档。**代价如实记**：中文域名会变 punycode、
+  路径百分号编码、补默认 `/`、丢首尾空白（都是浏览器自己也会做的事）。
+- **⭐ 一条**本来要加、取证后**不加**的判据（`path-url-no-host`）**：本想在"白名单内但没主机名"上再拦一道，
+  实测**不可达** —— http/https 是 WHATWG special scheme，解析器要么给**非空** host、要么直接抛
+  `ERR_INVALID_URL`（20 条畸形形状实测"白名单内且 host 为空"= **0 条**）。留一条永远打不出来的 reject
+  = 让人以为守住了 ⇒ **不加**，并把它做成单测里的一条**反向断言**（`REASONS` 里不许有它 + 可达性读数），
+  免得下次有人"顺手补上"一条空转的守卫。读数落 `.review/20261016-外部链接出口/tools/url-probe-no-host.js`。
+- **出口那一侧（`main.js` 的 `app:open-file`）**：按 `pathChain.EXIT_KINDS`（**表仍只有一份**）过滤 `opts.kind`，
+  表外值一律按 `'system'`（= 改动前行为，既有调用方**逐字不变**）；`action:'external'` ⇒
+  `shell.openExternal(decision.abs)`，**只交判据放行过的那一份**、handler 内**不再判第二遍**；
+  headless（`--smoke`）下**照样不真开浏览器**、判据照走并如实回报 `headless:true`。
+  出口调用账（`ctx.openFileLog`）**多一个 `kind` 字段** —— 让"点了 http 链接走的是哪条腿"在主进程侧**可观测**。
+- **渲染层**：`renderer/app-md.js` 的 `onLinkClick` 把 `aimm` 之外的 scheme 链接交给
+  `MM.openByChain({kind:'externalUrl', raw: href})`（判据 → 状态栏点名 → `requestOpen`），
+  `renderer/app-media.js` 的 `openByChain` 把 `d.kind` 原样递给主进程。渲染层**不列协议白名单、不碰 IPC**。
+  原先把 `http(s)` 也一并"拦下 + 说明"的那条状态栏文案**被真出口取代**；`mailto:` 之类仍在同一档被拒，
+  但现在点名的是**该档的 `reason`**（比以前更具体）。
+- **单测（`tests/path-chain.test.js` 28 → 42 条）**：判据 6 一组（合法 http/https 放行含中文域名与规范化读数 ·
+  9 个危险 scheme · 3 条带凭据 · 6 条畸形 · UNC/控制字符 · `force` 压不过 reject · 白名单就是那两条 ·
+  `no-host` 反向断言）+ **出口唯一的一组结构断言**（`ipcMain.handle('app:open-file')` 恰好 1 处、
+  没有任何 `open-url|open-external` 类 IPC 名字、`shell.openExternal` 在 `main.js` 里只 1 处且落在该 handler 内、
+  `ALLOWED_URL_PROTOCOLS` 只在 `path-chain.js` 出现而外壳与渲染层都是 0 条、正文链接必须落到 `externalUrl` 档
+  且经 `openByChain`）。
+- **判别力证明（两次注入，各自逐字节还原）**：见 `.review/20261016-外部链接出口/tools/inject-proof.js` ——
+  Ⓐ 把协议白名单开放到 `javascript:`/`data:`/`file:`/`vbscript:` ⇒ 判据 6 那组**必红**；
+  Ⓑ 给 `main.js` 塞第二条 IPC 名字 `app:open-url` ⇒ **出口唯一**那组结构断言**必红**。
+  两次都用注入前的**原始 Buffer** `fs.writeFileSync` 写回（**没有** `git checkout` / `restore` / `stash`，`R1a`），
+  并三记（sha256 + 字节数 + CR 数）复核还原，随后单测复绿。
+- **⚠️ G3 预算 `60000 → 69000ms`（本批同批改，理由与读数都写在 `scripts/verify.js` 那一处注释里）**：
+  数据型守卫 `tests/verify-budget.test.js` 的口径是「预算 ≥ 1.25 × 窗口内**最大**耗时」，而窗口（最近 10 次成功全链）
+  G3 的 Max 从 41293 跳到 **54987ms** ⇒ 1.25× = **68734** > 60000 ⇒ 比值 **1.0912**，**本批开工前基线就是红的**。
+  ⚠️ **这次尖峰是负载造成的、不是代码变慢**：同代码上两次是 41293 / 41469，这次 54987，同一次运行里 G5 也一起到了
+  994459ms ⇒ 抬预算抬的是**容错**，不是"承认 G3 变慢了"。
+  ⚠️ **自指陷阱（比红本身更值得记）**：`54987` 正是那次 run **自己**写进历史的，而守卫在**同一次 run 的 G3 里面**跑 ——
+  它读的是**上一次**的窗口（当时 Max 41293 ⇒ 1.25× = 51616 < 60000 ⇒ **绿**），跑完才把 54987 追加进历史 ⇒
+  **下一次** run 才红。⇒ **"一次负载尖峰"会在它自己那次 run 里显得绿、却把下一次 run 判红**，且 54987 是窗口里**最新**的一条
+  ⇒ **这个红会粘住**，直到再攒满 10 次。这是守卫的结构性特性（不是谁的错），但它意味着
+  **「本次全链 ok=true」不能证明"下一次也会绿"**。
+  ⚠️ **升级触发条件（写给下一次）**：若在**代码不变**的情况下 G3 再出现 **> 50s**，**先查负载/并发**
+  （同时段 G5、同机其它 Electron/vitest），**不要继续抬预算** —— 否则 1.25× 只是把红灯推迟，预算会一路漂上去而没人再看它。
+  ⚠️ **连带**：各步预算之和 1535000 → **1544000** ≤ `TOTAL_BUDGET_MS` **1600000** ✓（余量 65000 → **56000**）；
+  `tests/verify-budget.test.js` 与 `main.js` 的 `SMOKE_GUARD_MS` **都不需要改**（前者 `require` 现读 `STEPS` 不抄数字，
+  后者只守 G5 且 1560000 > 1300000 仍成立）；`docs/VERIFY.md` 是生成物 ⇒ 同批 `npm run facts:write` 重生成（G6 口径）。
+- **本批不做（明确排除，免得日后当成"没做完"）**：**不做应用内网页预览**（与"三面统一"口径一致：只读预览 + 交系统打开）、
+  **不动 CSP**、**不动**主窗口 `webPreferences`、**不碰** `dsh-home` / `vendor/dsh/**`、不要第二条 IPC 名字。
+- **如实偏差**：① 正文里的**明文 `http:` 图片**仍被 `src/html-whitelist.js` 拦下（R7 用户裁决），本批放行的是**点击链接**那一路，
+  **不是**"图片可联网"；② 本条改的是**主窗口**那条链，**内置 DSH 侧栏**那条 `setWindowOpenHandler`（`main-dsh-sidebar.js:581`）
+  **本批一个字没动** —— 两条都不新开 IPC，但它们**本来就不是同一条链**（侧栏视图没有渲染层的判据面），在此点名免得后人以为漏改；
+  ③ `docs/ARCHITECTURE.md` 工作树里有另一会话把 `path-chain.js` 那两行（§2.3 与 §4b ADR）**各复制成了两份**（HEAD 只有一份）——
+  本批**只把两份内容一起更新到同一份事实**，**没有替它删重复行**。
+
+
 ### 「sanitize两bug」修 `renderer/sanitize.js` 两个**HEAD 上就有**的真 bug（可见占位永远到不了用户眼前 / 第二张被拦图直接 TypeError）+ 补三处判据（2026-10-18）
 
 - **一句话**：两个 bug 都是"**机制正确、调用面漏一行**"，而**三处门禁全漏** —— 漏的原因不是"没人测"，
