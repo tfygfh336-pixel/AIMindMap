@@ -709,24 +709,21 @@
    *   mapWrite（这条回答是否已被用户落进导图）· code（是否含代码块或命令行样子的话）。
    *   stars≥4 ⇒ 出"满意"档候选（同一批信号换正面措辞）；≤3 ⇒ 出"不满意"档候选 ✓。 */
 
-  /** 候选数上限（常量；省 token 纪律的本地半边：候选先按信号出，超了就地截断） */
-  const ASK_FB_MAX_CANDIDATES = 4;
-
-  /** 信号采集（**纯函数**，冒烟经 MM.askCollectAnswerSignals 直接调）。只用界面上本来有的信息 ✓ */
-  function collectAnswerSignals(entry, st) {
-    const a = String((entry && entry.a) || '');
-    let hasCode = /```/.test(a);
-    if (!hasCode) {
-      hasCode = /(^|\n)[ \t]{0,8}(npm|npx|node|git|curl|wget|pip|python|cd|mkdir|cp|mv|rm|copy|del|dir|ls|cat|echo|set|export)\s+\S/.test(a);
-    }
-    return {
-      len: a.length,
-      lenBucket: a.length > 1200 ? 'long' : (a.length < 200 ? 'short' : 'mid'),
-      kind: ((st && st.kind) === 'explain') ? 'explain' : 'ask',
-      mapWritten: !!(entry && entry.written),
-      hasCode: hasCode
-    };
+  /* ⭐ 信号采集与候选推导的**唯一实现**在 `src/feedback-candidates.js`（UMD 纯函数：零 DOM、零 I/O、
+   *   可 node 直测）。本文件**只做薄转发**，不许再写一份实现 —— 那就是第二份会漂的口径。
+   *   为什么必须搬走（R6 收尾批实测）：冒烟 ② 的对拍**两侧同源**（DOM 与"现算"都走这同一个函数）
+   *   ⇒ 把纯函数改坏时两侧一起变、比对**恒等** ⇒ 实测"把候选改成固定写死"之后域 50 **18/18 全绿（漏过）**。
+   *   ⇒ "纯函数自己语义对不对"改由 `tests/feedback-candidates.test.js` 的夹具单测守（期望值手算、不调本模块）。
+   *   模块缺失 ⇒ **加载期响亮抛错**（照 `renderer/app-media.js` 对 `MMPathChain` 的守卫，不静默退化）。 */
+  if (!window.MMFeedbackCandidates
+    || typeof window.MMFeedbackCandidates.deriveFeedbackCandidates !== 'function'
+    || typeof window.MMFeedbackCandidates.collectAnswerSignals !== 'function') {
+    throw new Error('反馈候选模块没加载：src/feedback-candidates.js'
+      + '（renderer/index.html 的 <script> 漏了，或排在 app-ask.js 之后？）');
   }
+  const ASK_FB_MAX_CANDIDATES = window.MMFeedbackCandidates.ASK_FB_MAX_CANDIDATES;
+  const collectAnswerSignals = window.MMFeedbackCandidates.collectAnswerSignals;
+  const deriveFeedbackCandidates = window.MMFeedbackCandidates.deriveFeedbackCandidates;
 
   /** 星标行 HTML（**纯函数**）：5 颗星 + aria-label + 填充态（e.stars = 这条已点过的星）。
    *  ⚠️ 它长在 .ask-acts 动作行**末尾**（同一行 ⇒ "给这条回答打分"的归属一眼可辨 ✓）。 */
@@ -740,31 +737,6 @@
         + '；点星即刻记下，随后可补一句具体反馈）">★</button>';
     }
     return s + '</span>';
-  }
-
-  /** 信号 → 候选（**纯函数**）。每条 {text, signal}，signal 就是产生它的信号名 ✓ */
-  function deriveFeedbackCandidates(sig, stars) {
-    const bad = !(stars >= 4);
-    const out = [];
-    if (sig.lenBucket === 'long') out.push(bad
-      ? { text: '太长太啰嗦，重点不突出', signal: 'len' }
-      : { text: '够详细、覆盖面全', signal: 'len' });
-    if (sig.lenBucket === 'short') out.push(bad
-      ? { text: '太简略，信息量不够', signal: 'len' }
-      : { text: '简短直接，不绕弯', signal: 'len' });
-    if (sig.kind === 'explain') out.push(bad
-      ? { text: '解释不够生动具体', signal: 'kind' }
-      : { text: '解释清楚易懂', signal: 'kind' });
-    else out.push(bad
-      ? { text: '答非所问，没答到点上', signal: 'kind' }
-      : { text: '正面回答了我的问题', signal: 'kind' });
-    if (sig.hasCode) out.push(bad
-      ? { text: '代码/命令有错或有坑', signal: 'code' }
-      : { text: '代码/命令可直接照做', signal: 'code' });
-    if (sig.mapWritten) out.push(bad
-      ? { text: '写进导图后发现内容不合适', signal: 'mapWrite' }
-      : { text: '落进导图的内容正合适', signal: 'mapWrite' });
-    return out.slice(0, ASK_FB_MAX_CANDIDATES);   // 常量上限：截断发生在"候选"这一层 ✓
   }
 
   /** 反馈记录拼装（**形状纯函数**）。id 照 `f-` + 时间戳 base36 + 随机后缀的先例（与节点 id 区分 ✓） */

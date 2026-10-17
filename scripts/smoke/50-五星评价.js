@@ -17,13 +17,59 @@
  *   ⑥ 零网络：本轮问答带 .ask-stub 桩标记（app:ask 冒烟桩），全程零模型调用。
  *   ⑦ 默认档：删掉反馈文件 ⇒ 重开会话摘要条**如实消失**、读取返回 missing:true（不说"0 条" ✗）。
  *   补A（本批拍板）：真实 %APPDATA% 侧的 mm-feedback.jsonl 逐字节不变（--smoke 档没碰真实侧）。
- *   补B（结构）：main.js 的反馈路径推导与 append handler 都不含 projects/**；
+ *   补B（结构）：main.js 里 **`feedbackFile()` 的函数体**与 append handler 都不含 projects/**；
  *      渲染层 0 处 localStorage；preload 两条**纯透传**（各恰好一次 ipcRenderer.invoke）。
+ *      ⚠️ 射程要看清（下面 (a) 有实测）：补B 只扫 `function feedbackFile()` 到
+ *      `function feedbackRecordForAppend` 之间那一段 —— **路径常量定义行不在射程内**。
  *
- * 判别力（"临时改产品代码那一轮"，做法照 40/44/45/49 域；每次都记 SHA-256 并逐字节还原）：
- *   (a) 把 SMOKE_FEEDBACK_FILE 改到沙箱 projects/** 之下 ⇒ 补B 的路径断言必红（这正是红线 ✓）；
- *   (b) 把 loadFeedbackSummary 改成模块级缓存（读内存）⇒ ④ 的"库里新行出现"必红；
- *   (c) 把选项改成固定写死 ⇒ ② 的"可指回信号（与纯函数现算一致）"必红。
+ * 判别力（"临时改产品代码那一轮"，做法照 40/44/45/49 域；每次都记 SHA-256 并逐字节还原）。
+ * ---------------------------------------------------------------------------
+ * ⚠️ 本节三条声称**已被逐条实测**（R6 独立取证），其中 (a)(c) 的原文与实测**不符，已按读数订正**
+ *    —— 本段就是"域 50 订正批"的产物。读数出处 = `.review/20261016-R6验收/evidence.json`
+ *    （轮 0 基线 / 1 (b) / 2 (c) / 2b (c′) / 3 (a) / 3b (a′) / 3c (a″)，可用 `run-round.js` 复跑）。
+ *    ⚠️ 本批**跑过冒烟**（`npm run verify` 第 14 步 G5：冒烟三态 通过 323 / 总数 323，域 50 十条全绿），
+ *    但**没有重做"注入后再跑"那几轮** —— 下面三条的注入读数是 R6 取证那一批测的 ⇒ 每条都写明出处，
+ *    别把"R6 取证的读数"读成"刚才测的"。单域基线（R6 轮 0，`SMOKE_ONLY=50`）：通过 18 / 总数 18、exit 0。
+ *
+ *   (a) 【原声称】把 SMOKE_FEEDBACK_FILE 改到沙箱 projects/** 之下 ⇒ 补B 的路径断言必红（这正是红线 ✓）
+ *       【实测 ✗ 点名不准】注入打在 `const SMOKE_FEEDBACK_FILE = …` **常量定义行**上（轮 3）⇒
+ *       通过 14 / 总数 18、exit 1，红的是 **⑤**（现算"反馈文件不在项目数据里"）**+ ②③④ 级联**；
+ *       而 **补B 本身是绿的 —— 漏过这条红线**。
+ *       为什么漏：补B 的扫描面 = `mainSrc.slice(indexOf('function feedbackFile()'),
+ *       indexOf('function feedbackRecordForAppend'))`（main.js 现取：第 1192–1200 行、326 字符）
+ *       ⇒ 常量定义行（现第 66 行；R6 取证那轮记作第 60 行，行号已漂）**不在射程内**。
+ *       把同一注入挪进 `feedbackFile()` **函数体内**（轮 3b）补B 才红（14/18、exit 1，红 = ②③④+补B）。
+ *       ⚠️ 也别指望"把射程向前扩"就能补：补B 判的是 `indexOf('PROJECTS_DIR') < 0`，而
+ *       **`PROJECTS_DIR` 是合法标识符 `SMOKE_PROJECTS_DIR` 的子串**（常量定义行本身就写着它）
+ *       ⇒ 一扩面，**干净代码**当场假红（本批源码级探针的"轮 陷阱"读数：扩面 400 字符后 fbClean 由绿转红）。
+ *       ⚠️ 而且它是**字面**扫描 ⇒ 只看得见 "projects" 这个词，看不见"写进了项目数据目录"这件事：
+ *       轮 3c 把落点写成 `<沙箱>/comnet/mm-feedback.jsonl`（路径里没有 projects 字样）⇒ 补B 绿、只有 ⑤ 红。
+ *       ⇒ **准确表述**：补B 能守的是「`feedbackFile()` 函数体里没有 `projects` 字面、没有
+ *       `PROJECTS_DIR` 子串」；它**守不住**"路径常量定义行落在 projects/**"，也**守不住**字面之外的形态。
+ *       那条红线真正守得住的是 **⑤ 的现算判据**（本条断言跑在产品真实的路径推导结果上）。
+ *
+ *   (b) 【原声称】把 loadFeedbackSummary 改成模块级缓存（读内存）⇒ ④ 的"库里新行出现"必红
+ *       【实测 ✓ 成立】轮 1：通过 16 / 总数 18、exit 1，红 = **④**（+ ⑦ 级联：删库后摘要条还在）。
+ *       **原样保留** —— 这是三条里唯一一条原文就对的。
+ *
+ *   (c) 【原声称】把选项改成固定写死 ⇒ ② 的"可指回信号（与纯函数现算一致）"必红
+ *       【实测 ✗ 过度声称】轮 2：把 `deriveFeedbackCandidates` 改成**忽略入参、恒返常量候选** ⇒
+ *       域 50 **通过 18 / 总数 18、exit 0（全绿，漏过）**。
+ *       为什么漏：② 的对拍**两侧同源** —— DOM 的选项出自 `deriveFeedbackCandidates(collectAnswerSignals(...))`，
+ *       而"现算期望值"那一侧调的 `MM.askDeriveFeedbackCandidates` **就是同一个函数**
+ *       ⇒ 纯函数被改坏时两侧一起变、比对**恒等**（= 本工程反复治过的「两侧同源 ⇒ 门禁空转」）。
+ *       只有把写死挪到**真正生成 DOM 那一跳**（`openFeedbackPanel` 里的 `cands`，轮 2b）才红：
+ *       通过 17 / 总数 18、exit 1，红 = ②（DOM 报"够详细、覆盖面全"，现算报"简短直接，不绕弯"）。
+ *       ⇒ **准确表述**：② 只能守「**DOM 照纯函数画**」；「**纯函数自己的语义**」它守不住。
+ *       纯函数语义那一半由**新守门层**守（本批补上，形状照 `src/path-chain.js` 的先例）：
+ *         · `src/feedback-candidates.js` —— UMD 纯函数、零 DOM、零 I/O（从 `renderer/app-ask.js` 搬出，
+ *           渲染层只薄转发，`MM.ask*` 导出面不变）；
+ *         · `tests/feedback-candidates.test.js` —— 期望值由**夹具手算**（不调产品同一个函数）。
+ *       该层能被打红的读数（本批实测）：把 `deriveFeedbackCandidates` 注入成"忽略入参返常量"
+ *       ⇒ 18 个用例里 **10 条红、exit 1**；换成注入 `collectAnswerSignals` 同样 10 条红；
+ *       原始 Buffer 逐字节还原后复绿（exit 0）。详细三记见 `.review/20261016-域50订正/README.md`。
+ *       ⚠️ 补B 那条**断言名**里还留着旧口径（"main.js 反馈路径推导…都不含 projects/**"）。本批**没改名**：
+ *       改名要重跑一遍全链才拿得到匹配的 PASS 行；按"不把没验过的写成通过"，宁可在这儿留一行说明。
  *
  * 数据：运行时从界面自己的树里挑一个可见节点（不写死 id ✗）；反馈库路径来自主进程报给断言的
  *   AI_MINDMAP_FEEDBACK_FILE（冒烟档 = 沙箱根下，随沙箱清理；真实侧只读不改 ✓）。
