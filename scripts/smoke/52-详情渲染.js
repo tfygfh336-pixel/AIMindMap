@@ -62,6 +62,9 @@ const frameStats = require('../vision/frame-stats.js');
 const convert = require('../../src/convert.js');
 const census = require('../detail-census.js');
 const mm = require('../smoke-assertions.js');
+/* 唯一写盘出口（`src/data-store.js` 的 `writeFileAtomic`）：本域有两处写盘（夹具 assets/probe.txt 与真帧 PNG），
+ * 一律走它 —— 裸 `fs.writeFileSync` 会被 S2 的 [write-outlet] 判定抓（本批实测抓到过，见那两处的注释）。 */
+const DATA_STORE = require('../../src/data-store.js');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
@@ -192,7 +195,11 @@ function buildFixture(ctx) {
   try {
     const adir = path.join(probeDir(), 'assets');
     fs.mkdirSync(adir, { recursive: true });
-    fs.writeFileSync(path.join(adir, 'probe.txt'), 'R7 夹具：本机相对路径的目标文件\n', 'utf8');
+    /* 走**唯一写盘出口**（`docs/RULES.md` §1「新增写盘路径一律复用 writeFileAtomic，禁止裸 writeFileSync」）。
+     * 这一处原来是裸写：本域本来没提"受管资产名"所以 S2 的兜底判定一直没扫到它，
+     * 本批新增的分层代码提到 `projects` 之后 S2 立刻判红（`[write-outlet] … 2 处判不了目标的裸写`）
+     * —— 门禁抓得对：本文件确实有两处判不了目标的裸写，改成走出口比登记欠账干净。 */
+    DATA_STORE.writeFileAtomic(path.join(adir, 'probe.txt'), 'R7 夹具：本机相对路径的目标文件\n');
     steps.push('assets/probe.txt 已铺');
   } catch (e) { steps.push('assets 铺失败：' + ((e && e.message) || e)); }
   // 笔记锚点：成员 ≥2 + 一条 text 锚点（铺场时关键词**就在正文里**，否则写不进去 —— 这是产品口径）
@@ -285,7 +292,8 @@ function saveShot(name, img) {
   const png = img.toPNG();
   fs.mkdirSync(SHOT_DIR, { recursive: true });
   const file = path.join(SHOT_DIR, name);
-  fs.writeFileSync(file, png);
+  /* 同 `buildFixture` 那一处：走唯一写盘出口（S2 的 [write-outlet] 判定按**文件**兜底，裸写会连带判红） */
+  DATA_STORE.writeFileAtomic(file, png);
   const size = typeof img.getSize === 'function' ? img.getSize() : { width: 0, height: 0 };
   return { file: file, bytes: png.length, width: size.width, height: size.height,
     sha256: crypto.createHash('sha256').update(png).digest('hex').slice(0, 16) };
@@ -332,6 +340,217 @@ const hitPointExpr = `function hitPt(el) {
 }
 function rc(el) { var r = el.getBoundingClientRect();
   return { x: r.left, y: r.top, width: r.width, height: r.height }; }`;
+
+/* ============================================================
+ * 真实语料**真渲染**：分层抽样（纯函数，可复现；N 与分档阈值**现算不写死**）
+ * ------------------------------------------------------------
+ * 这一段的**全部理由**（缺口就在这里，别把它读成"再加一条断言"）：
+ *   · 第 ⑧ 条（下面那个"既有 detail 语料不被砸"）已经把全仓 detail 送进页面**逐个消毒**，
+ *     比的文字是 `textContent` vs `stripHtml` —— 但它注入的是**一个临时 `div`**，不是详情框；
+ *     ⇒ 它证明的是"**消毒**没砸字"，**不证明"详情框渲染出来是对的"**。
+ *   · 真帧那一半当时只有 **1 个夹具节点**（`D_DETAILS` / `D_EVIL` / …）覆盖
+ *     ⇒ "真实语料渲染出来是对的"这句话**没有任何读数**（R7 实现批报告 §六-4 的如实偏差）。
+ *
+ * 本段补的就是那一半，三条判据都对着**产品唯一的渲染入口**取：
+ *   ① 渲染**不抛错**；
+ *   ② 渲染后**可见文字**与 `stripHtml(detail)` 逐字相同（沿用 ⑧ 的既有范式：空白一律折掉再比）；
+ *   ③ **该层该有的结构真的出现**（表格是真 `<table>`、details 真是 `<details>`、图片是 `<img>`
+ *     且**非零几何**、纯文本**不进元素**、其它层**元素标签全在白名单内**）。
+ *
+ * ⚠️ **抽样就是抽样**：本段只给出"抽了 N 条、过了"这个读数，**不许**读成"全量都对"。
+ *    覆盖面（分母 / 抽样数 / 每层多少 / 哪些层**没有样本**）由断言报文**逐项打印**。
+ * ============================================================ */
+
+/** 层定义：**顺序即判定优先级** —— 一条 detail 只归一层（否则同一条会被数进两层，分母就虚了） */
+const RENDER_LAYERS = [
+  { key: 'table', label: '含表格', re: /<table\b/i },
+  { key: 'details', label: '含 details', re: /<details\b/i },
+  { key: 'img', label: '含图片', re: /<img\b/i },
+  { key: 'tags', label: '其它白名单标签', re: null },
+  { key: 'plain', label: '纯文本（无白名单标签）', re: null }
+];
+
+/** 每层取多少条：`clamp(ceil(√n), N_MIN, N_MAX)` —— **n 是该层的现算条数**，不是写死的 N。
+ *  为什么是 √n：层越大越该多抽（覆盖率随 √n 走），但线性抽样会把 93% 的那一层抽炸。
+ *  为什么有上下限：下限 2 保证"层再小也有两条可判"；上限 24 是**成本护栏**
+ *  （渲染逐个走真详情框，实测见 `.review/20261016-域52真渲染/读数.md` 的耗时分布）。 */
+const RENDER_N_MIN = 2;
+const RENDER_N_MAX = 24;
+
+/** 本判据愿意花在"逐个真渲染"上的**墙钟上限**（毫秒）。
+ *  它不是性能目标，是**对 G5 的增量上限**：抽样循环每跑一条现算一次成本，超预算就停下并**如实报还差几条**
+ *  （照本工程"预算即止涨线"的既有口径；实测读数与 G5 余量见 `.review/20261016-域52真渲染/读数.md`）。 */
+const RENDER_TOTAL_BUDGET_MS = 5000;
+
+/** 结构判据要点名的"关键标签"（只判**白名单里的**：白名单外的是 `unwrapEl` 拆壳留字，
+ *  数它们会把**设计意图**判成缺陷 —— `src/html-whitelist.js` 是这张表的唯一一份） */
+const RENDER_KEY_TAGS = ['pre', 'code', 'ul', 'ol', 'li', 'p', 'h1', 'h2', 'h3', 'h4',
+  'strong', 'b', 'em', 'blockquote', 'a', 'dl', 'dt', 'dd', 'hr', 'br'];
+
+/** 一条 detail 落在哪一层（**纯函数**，口径与 `RENDER_LAYERS` 同序） */
+function renderLayerOf(d, tagRe) {
+  for (const L of RENDER_LAYERS) if (L.re && L.re.test(d)) return L.key;
+  return tagRe.test(d) ? 'tags' : 'plain';
+}
+
+/** 去重后的白名单标签**名**个数（`data-census` 的 `TAG_RE` 是全局正则 ⇒ 每次都新建一份，别复用） */
+function tagCountOf(d, tagReSrc) {
+  const set = new Set();
+  const re = new RegExp(tagReSrc, 'gi');
+  let m;
+  while ((m = re.exec(d))) {
+    const tok = String(m[0] || '');
+    const name = tok.replace(/[<>\/\s]/g, '').toLowerCase();
+    if (name) set.add(name);
+  }
+  return set.size;
+}
+
+/** 等距抽样（**确定性、可复现**：不掷随机数，排序键固定 ⇒ 同一份语料必抽到同一批） */
+function sampleEvenly(sorted, k) {
+  const n = sorted.length;
+  if (k >= n) return sorted.slice();
+  const out = [];
+  const stride = n / k;
+  for (let i = 0; i < k; i++) {
+    const idx = Math.min(n - 1, Math.floor(i * stride + stride / 2));
+    out.push(sorted[idx]);
+  }
+  return out;
+}
+
+/** 现算"含白名单标签数"的分档阈值（分位点，**从这一份语料现算**；不用固定 1/2-3/4-7 这类写死的边界） */
+function tagCountCuts(values, parts) {
+  const v = values.slice().sort((a, b) => a - b);
+  const cuts = [];
+  for (let i = 1; i < parts; i++) {
+    const idx = Math.min(v.length - 1, Math.floor((i / parts) * v.length));
+    cuts.push(v[idx]);
+  }
+  return cuts;
+}
+
+/**
+ * 从**冒烟沙箱副本**（`AI_MINDMAP_PROJECTS_DIR`，与"被渲染的那些字节"同一快照）现算分母 + 分层抽样。
+ *
+ * 为什么分母取副本而不是真实 `projects/`：⑧ 那条拿真实目录当分母、再从副本读 detail，
+ * 两者是**两个快照**（并发会话正在写 `comnet.json` 时会有差）。
+ * 那在这种批里会变成**假红**（别人写入 ⇒ 我们判红）⇒ 本段的分母与被渲染的字节**必须同一快照**。
+ * 真实目录的现算值只作**参照**打印（不参与判定）。
+ * @returns {{ok:boolean, text?:string, strata?:object[], items?:object[], sampled?:object[]}}
+ */
+function buildRenderPlan() {
+  const dir = process.env.AI_MINDMAP_PROJECTS_DIR || '';
+  if (!dir) return { ok: false, text: '没有 AI_MINDMAP_PROJECTS_DIR（冒烟沙箱副本）⇒ 采不到真值' };
+  const tagReSrc = census.TAG_RE.source;
+  const items = [];
+  const unreadable = [];
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch (e) { return { ok: false, text: '沙箱副本读不出来：' + ((e && e.message) || e) }; }
+  /* ⭐ 只认"**真实 `projects/` 目录里也有的**项目名"。
+   * 为什么（实测，两处都踩过）：
+   *   ① 冒烟沙箱副本里会**长出别的域的夹具项目**（`smoke-*` / `zz-*` / `si39-*` …），它们带着自己的 detail
+   *      ⇒ 混进分母会把"真实语料"的读数污染掉（全链实测：分母 1327 → **1358**，且分位点边界跟着漂
+   *      `tags:1-3=582` 变成 `tags:1-2=335 · tags:3-4=792`）；
+   *   ② 域 52 自己的夹具（`smoke-detail-52`）更糟：它有 `D_EVIL` / `D_IMG_TWO` 这种**故意**含被拦构造的节点，
+   *      混进来会凭空造出"图片层有样本"，并让 ②③ 判红（= 拿夹具判夹具）。
+   * ⇒ 用**真实目录的名字**当白名单过滤（目录名只读一次，不会读到半截文件；内容仍取副本，副本不会被并发写坏）。
+   * 被排除的项目会**逐个点名 + 报它们各自有多少条 detail**（不许悄悄抹掉）。 */
+  let realNames = null;
+  try {
+    realNames = new Set(fs.readdirSync(path.join(ROOT, 'projects'), { withFileTypes: true })
+      .filter((x) => x.isDirectory() && !x.name.startsWith('.'))
+      .map((x) => x.name));
+  } catch (e) { realNames = null; }
+  if (!realNames) {
+    return { ok: false, text: '读不到真实 projects/ 的目录名 ⇒ 无法把"真实项目"与"冒烟夹具"分开，'
+      + '分母会混进夹具数据 ⇒ **采不到真值不是通过**' };
+  }
+  const excluded = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    if (e.name.startsWith('.')) continue;          // `.visits` / `.writers`：非项目（与 detail-census.js 同一套跳过规则）
+    if (e.name === PROJ || !realNames.has(e.name)) {
+      let n0 = 0;
+      try {
+        const j0 = JSON.parse(fs.readFileSync(path.join(dir, e.name, e.name + '.json'), 'utf8').replace(/^\uFEFF/, ''));
+        n0 = census.collectNodes(j0.data).filter((n) => n && typeof n.detail === 'string' && n.detail.trim()).length;
+      } catch (e2) { n0 = -1; }
+      excluded.push({ project: e.name, withDetail: n0 });
+      continue;
+    }
+    const f = path.join(dir, e.name, e.name + '.json');
+    if (!fs.existsSync(f)) continue;
+    let j;
+    try { j = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, '')); }
+    catch (err) { unreadable.push(e.name + '(' + ((err && err.message) || err) + ')'); continue; }
+    /* 递归口径**直接借** `scripts/detail-census.js` 的 `collectNodes` —— 不在这里写第二份 */
+    for (const n of census.collectNodes(j.data)) {
+      const d = n && n.detail;
+      if (typeof d !== 'string' || !d.trim()) continue;
+      items.push({ project: e.name, id: String(n.id), d: d, layer: renderLayerOf(d, census.TAG_RE) });
+    }
+  }
+  if (!items.length) {
+    return { ok: false, text: '沙箱副本里一条含 detail 的节点都没有 ⇒ **采不到真值不是通过**'
+      + (unreadable.length ? '（读不出来的项目：' + unreadable.join(' · ') + '）' : '') };
+  }
+  /* 排序键固定（项目 + 节点 id）⇒ 等距抽样可复现 */
+  items.sort((a, b) => (a.project + '/' + a.id < b.project + '/' + b.id ? -1 : 1));
+
+  const strata = [];
+  for (const L of RENDER_LAYERS) {
+    const list = items.filter((x) => x.layer === L.key);
+    if (!list.length) { strata.push({ key: L.key, label: L.label, n: 0, sampleN: 0, picked: [] }); continue; }
+    if (L.key !== 'tags') {
+      const sampleN = Math.max(RENDER_N_MIN, Math.min(RENDER_N_MAX, Math.ceil(Math.sqrt(list.length))));
+      strata.push({ key: L.key, label: L.label, n: list.length, sampleN: sampleN, picked: sampleEvenly(list, sampleN) });
+      continue;
+    }
+    /* `tags`（含白名单标签、但不含 table/details/img）占语料 93% ⇒ **再按"含白名单标签数"切一刀**，
+     * 边界用**本份语料的分位点现算**（打印实际数值，别处不许抄）。 */
+    const withCount = list.map((x) => Object.assign({}, x, { tagCount: tagCountOf(x.d, tagReSrc) }));
+    const cuts = tagCountCuts(withCount.map((x) => x.tagCount), 4);
+    const buckets = [[], [], [], []];
+    for (const x of withCount) {
+      let bi = 0;
+      while (bi < cuts.length && x.tagCount > cuts[bi]) bi++;
+      buckets[bi].push(x);
+    }
+    const seen = new Set();
+    buckets.forEach((bk) => {
+      if (!bk.length) return;
+      const lo = Math.min.apply(null, bk.map((x) => x.tagCount));
+      const hi = Math.max.apply(null, bk.map((x) => x.tagCount));
+      const key = 'tags:' + lo + '-' + hi;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const sampleN = Math.max(RENDER_N_MIN, Math.min(RENDER_N_MAX, Math.ceil(Math.sqrt(bk.length))));
+      strata.push({ key: key, label: '白名单标签数 ' + lo + '~' + hi, n: bk.length,
+        sampleN: sampleN, picked: sampleEvenly(bk, sampleN) });
+    });
+  }
+  /* ⭐ 抽样顺序 = **各层轮流取一条**（round-robin），不是"一层跑完再跑下一层"。
+   * 为什么（实测驱动）：本判据的渲染有**墙钟预算**（`RENDER_TOTAL_BUDGET_MS`），跑不完就要提前停；
+   * 若是"层顺序铺开"，预算一停后面的层**一条都没渲染** ⇒ 分层设计当场退化成一两层。
+   * 轮流取 ⇒ 无论停在哪，**每层都已被覆盖过**（这一点在报文里能看出来：每层都 ≥1）。 */
+  const sampled = [];
+  const queues = strata.map((s) => s.picked.slice());
+  let more = true;
+  while (more) {
+    more = false;
+    for (let i = 0; i < queues.length; i++) {
+      if (!queues[i].length) continue;
+      const x = queues[i].shift();
+      sampled.push({ k: strata[i].key + '|' + x.project + '/' + x.id, layer: strata[i].key,
+        project: x.project, id: x.id, d: x.d });
+      more = true;
+    }
+  }
+  return { ok: true, strata: strata, items: items, sampled: sampled, excluded: excluded,
+    unreadable: unreadable, denominator: items.length };
+}
 
 /* ============================================================
  * 断言
@@ -1291,6 +1510,370 @@ const assertions = [
           + ' · 被消毒改动过的=' + changed + ' 个（这些**不是**判红：含被禁构造的样本，消毒改它们正是设计意图 ——'
           + '实测这 2 个是 `<table border=…>` 一类**表外属性**被删）'
           + (samples.length ? ' · 不一致样本=' + JSON.stringify(samples) : '')
+      };
+    }
+  },
+
+  /* ----------------------------------------------------------------------
+   * ⑧b 真实语料**真渲染**（分层抽样 · 现算分母 · 现算 N）
+   * -------------------------------------------------------------------- */
+  {
+    name: 'smoke-52 真实语料**真渲染**（分层抽样）：从**现算分母**里按"含表格 / 含 details / 含图片 / 含白名单标签数（分位点现算）/ 纯文本"分层抽样，'
+      + '每条**逐个真渲染**（走产品唯一入口 MM.showDetail → renderFdBox → Sanitize.inject，落进真详情框的 .fd-detail-content），判①不抛错 '
+      + '②可见文字 == stripHtml(detail)（既有范式，逐字）③该层该有的结构真的出现（表格真 <table>／details 真 <details>／图片真 <img> 且**非零几何**／'
+      + '纯文本不进元素／其它层元素标签全在白名单内）；再对抽样里**最大那条**取一张**真帧**并用 elementFromPoint 命中它自己。'
+      + '⚠️ 抽样是抽样：报文逐项打印"分母 / 抽了几条 / 每层几条 / 哪些层没有样本"，**不许**读成"全量都对"',
+    run: async (ctx) => {
+      if (!ctx.input) return { ok: false, text: '真帧/截图底座不在（ctx.input 为空）⇒ 采不到真帧，判红 ✗' };
+      const fx = ensureFixture(ctx);
+      const bad = fixtureFail(fx);
+      if (bad) return bad;
+      const opened = await openFixture(ctx);
+      if (!opened.ok) return { ok: false, text: '前置失败：' + opened.text };
+
+      /* ---------- 1) 现算分母 + 分层抽样（全在 Node 侧，纯函数、可复现） ---------- */
+      const plan = buildRenderPlan();
+      if (!plan.ok) return { ok: false, text: plan.text };
+      if (!plan.sampled.length) return { ok: false, text: '抽样结果是 0 条 ⇒ 没测就"通过"是最坏的假绿，判红 ✗' };
+      /* 参照读数（**只打印、不判**）：真实目录的现算分母。
+       * 为什么不当判据：真实目录正被别的会话写（`comnet.json`），把它和副本对齐会让**别人的写入**变成我们的红。 */
+      let realTotal = null;
+      try { realTotal = census.total(census.censusAll().rows).withDetail; } catch (e) { realTotal = 'ERR:' + ((e && e.message) || e); }
+
+      /* ---------- 2) 摆好证据底座：把**旁路异步口**临时摘掉（正文渲染路径一字未改） ----------
+       * 实测依据（这一批踩出来的，不是想当然）：`showDetail` / `renderFdBox` 一次渲染会打**四个**
+       * 旁路 IPC（热度条两条 +「相关知识点」+「关联笔记」），**每一条都在主进程 spawn 一个 node 子进程**。
+       * 71 条 × 2~4 个子进程 ⇒ 这一步的墙钟从 ~0.4s 涨到 **21902ms**（本域单跑 43.5s→70.5s），
+       * 而**单条真渲染本身的中位数只有 3ms**（见报文）。
+       * 摘掉的是**旁路采样**：它们写的是 `.fd-heat` / `.fd-assoc` / `.fd-related` 三个**别的容器**，
+       * 与 `.fd-detail-content` 里被判的字节无关；`showDetail → renderFdBox → Sanitize.inject` 照原样跑。
+       * 摘完**立刻还原并复核**（还原失败 ⇒ 判红），且**真帧那一张走完整入口**（含这四个旁路口）。 */
+      const prep = await execJson(ctx, `(function () {
+        var out = { ok: true, mmStub: false, deskStub: false, frozen: null };
+        var MM = window.MM;
+        if (!MM) return JSON.stringify({ ok: false, text: '没有 MM' });
+        if (MM.closeAllFloatDetail) MM.closeAllFloatDetail();
+        var o = window.__s52orig || (window.__s52orig = {});
+        o.record = MM.heatBarsRecordHumanOpen || null;
+        o.refresh = MM.heatBarsRefresh || null;
+        o.desk = window.desktop || null;
+        if (o.record) MM.heatBarsRecordHumanOpen = function () {};
+        if (o.refresh) MM.heatBarsRefresh = function () {};
+        out.mmStub = !!(o.record || o.refresh);
+        var desk = o.desk, app = desk && desk.app;
+        out.frozen = desk ? { desk: Object.isFrozen(desk), app: app ? Object.isFrozen(app) : null } : null;
+        if (desk && app) {
+          /* 换掉 assoc / related 两档（其余通道原样保留：markRefStates 还要用 nodes）。
+           * 三种写法逐级退让（contextBridge 暴露的对象可能是冻结/不可写的，实测见报文）：
+           *   ① 直接给 desktop.app 的两个属性赋值；
+           *   ② Object.defineProperty(window, 'desktop', …) 换整个对象；
+           *   ③ 直接 defineProperty 覆盖 app.assoc / app.related。 */
+          var stubFn = function (name) {
+            if (name === 'assoc') return function () { return Promise.resolve({ ok: true, rows: [], count: 0 }); };
+            return function () { return Promise.resolve({ ok: true, items: [], count: 0 }); };
+          };
+          /* ① 属性赋值 */
+          try {
+            var a0 = app.assoc, r0 = app.related;
+            app.assoc = stubFn('assoc'); app.related = stubFn('related');
+            if (app.assoc !== a0 && app.related !== r0) { o.prop = true; o.a0 = a0; o.r0 = r0; out.deskStub = true; out.how = '属性赋值'; }
+            else { app.assoc = a0; app.related = r0; }
+          } catch (e5) { out.e5 = String((e5 && e5.message) || e5).slice(0, 80); }
+          if (!out.deskStub) {
+            /* ② 换整个 window.desktop（浅拷贝，其余键原样带上） */
+            try {
+              var fake = {};
+              for (var k in app) { try { fake[k] = app[k]; } catch (e1) {} }
+              fake.assoc = stubFn('assoc'); fake.related = stubFn('related');
+              var nd = {};
+              for (var k2 in desk) { try { nd[k2] = desk[k2]; } catch (e2) {} }
+              nd.app = fake;
+              try { window.desktop = nd; } catch (e3) {}
+              if (window.desktop !== nd) {
+                Object.defineProperty(window, 'desktop', { value: nd, configurable: true, writable: true });
+              }
+              if (window.desktop === nd) { o.fakeDesk = nd; out.deskStub = true; out.how = '换 window.desktop'; }
+            } catch (e4) { out.e4 = String((e4 && e4.message) || e4).slice(0, 80); }
+          }
+          if (!out.deskStub) {
+            /* ③ 对 app 上那两个键 redefine */
+            try {
+              o.a0 = app.assoc; o.r0 = app.related;
+              Object.defineProperty(app, 'assoc', { value: stubFn('assoc'), configurable: true, writable: true });
+              Object.defineProperty(app, 'related', { value: stubFn('related'), configurable: true, writable: true });
+              if (String(app.assoc).indexOf('Promise.resolve') >= 0) { o.prop = true; out.deskStub = true; out.how = 'redefineProperty'; }
+            } catch (e6) { out.e6 = String((e6 && e6.message) || e6).slice(0, 80); }
+          }
+        }
+        return JSON.stringify(out);
+      })()`);
+      if (!prep.ok) return { ok: false, text: '证据底座没摆好：' + prep.text };
+
+      /* ---------- 3) 逐个**真渲染**（一条样本一次 exec；**N 受现算预算约束**，不是写死的总数） ----------
+       * 为什么一条一次：单条成本**现算**（含旁路 IPC 的排队时间），跑到预算就停 ⇒ 本判据对 G5 的
+       * 增量有上限（`RENDER_TOTAL_BUDGET_MS`），不会因为它悄悄把冒烟推长。 */
+      const oneSampleExpr = (s) => `(function () {
+        try {
+          var MM = window.MM;
+          if (!MM) return JSON.stringify({ ok: false, text: '没有 MM' });
+          var ALLOW = ${JSON.stringify(census.WHITELIST_TAGS)};
+          var ALLOW_SET = {};
+          for (var a = 0; a < ALLOW.length; a++) ALLOW_SET[ALLOW[a]] = true;
+          var KEY_TAGS = ${JSON.stringify(RENDER_KEY_TAGS)};
+          /* 数"源里这个标签的开标签有几个"：**用 indexOf 不用正则** ——
+           * 本文件在模板字符串里写正则已经翻过两次车（八进制转义 / 反引号截断），这里干脆不写正则。 */
+          function countOpen(low, tag) {
+            var needle = '<' + tag, n = 0, i = 0, L = needle.length;
+            while ((i = low.indexOf(needle, i)) >= 0) {
+              var ch = low.charAt(i + L);
+              if (ch === '' || ch === '>' || ch === '/' || ch === ' ' || ch === '\\n' || ch === '\\r' || ch === '\\t') n += 1;
+              i += L;
+            }
+            return n;
+          }
+          /* 折掉空白再比（沿用第 ⑧ 条同一口径）。判空白用 char.trim() === ''（等价于 \\s），同样不写正则。 */
+          function sq(s) {
+            s = String(s === undefined || s === null ? '' : s);
+            var o = '';
+            for (var i = 0; i < s.length; i++) { var c = s.charAt(i); if (c.trim() === '') continue; o += c; }
+            return o;
+          }
+          var d = ${JSON.stringify(s.d)}, low = String(d).toLowerCase();
+          /* ⭐ **产品唯一入口**：showDetail → renderFdBox → MM.Sanitize.inject ⇒ 落进真详情框的正文容器。
+           * 节点对象是**内存里造的**（不写盘、不进项目数据）—— 本段测的是"渲染路径吃真实语料字节"，
+           * "从磁盘读节点"那一跳由 ⑧ 与其它域覆盖；这条边界也写在报文里。 */
+          MM.showDetail({ id: 's52-corpus', topic: '语料样本', detail: d });
+          var box = MM.fdPrimaryNodeBox ? MM.fdPrimaryNodeBox() : null;
+          if (!box || !box.el) return JSON.stringify({ ok: false, err: '详情框没开起来' });
+          box.el.style.left = '12px'; box.el.style.top = '12px';   // 取景确定（真帧那张也是同一个位置拍的）
+          var dc = box.el.querySelector('.fd-detail-content');
+          if (!dc) return JSON.stringify({ ok: false, err: '没有 .fd-detail-content' });
+          var rec = { ok: true };
+          /* ② 可见文字 vs stripHtml(detail)（既有范式） */
+          var exp = sq(window.MMConvert.stripHtml(d));
+          var got = sq(dc.textContent || '');
+          rec.textOk = (exp === got);
+          if (!rec.textOk) rec.textDiff = { expLen: exp.length, gotLen: got.length,
+            exp: exp.slice(0, 48), got: got.slice(0, 48) };
+          /* 结构：渲染出来的元素标签必须**全在白名单内**（白名单外的是 unwrapEl 拆壳 ⇒ 数它 = 判设计意图为缺陷） */
+          var els = dc.querySelectorAll('*'), badTags = [], dom = {};
+          for (var j = 0; j < els.length; j++) {
+            var tg = String(els[j].tagName || '').toLowerCase();
+            dom[tg] = (dom[tg] || 0) + 1;
+            if (!ALLOW_SET[tg] && badTags.length < 6) badTags.push(tg);
+          }
+          rec.elements = els.length;
+          rec.badTags = badTags;
+          var layer = ${JSON.stringify(s.layer)};
+          if (layer === 'table' || layer === 'details') {
+            var one = (layer === 'table') ? 'table' : 'details';
+            var want = countOpen(low, one), have = dom[one] || 0;
+            rec.struct = one + '：源 ' + want + ' / 渲染 ' + have;
+            rec.structOk = want > 0 && have === want && !badTags.length
+              && (one !== 'table' || !!dc.querySelector('table tr'));
+          } else if (layer === 'img') {
+            var wantI = countOpen(low, 'img'), imgs = dc.querySelectorAll('img'), geo = [], zero = 0;
+            for (var k2 = 0; k2 < imgs.length; k2++) {
+              var b2 = imgs[k2].getBoundingClientRect();
+              geo.push(Math.round(b2.width) + 'x' + Math.round(b2.height));
+              if (!(b2.width > 0 && b2.height > 0)) zero += 1;
+            }
+            rec.struct = 'img：源 ' + wantI + ' / 渲染 ' + imgs.length + ' / 几何 ' + geo.join(',') + ' / 零几何 ' + zero;
+            rec.structOk = wantI > 0 && imgs.length === wantI && zero === 0 && !badTags.length;
+          } else if (layer === 'plain') {
+            rec.struct = '纯文本：渲染出元素 ' + els.length + ' 个';
+            rec.structOk = els.length === 0 && !badTags.length && got.length > 0;
+          } else {
+            var mism = [];
+            for (var m2 = 0; m2 < KEY_TAGS.length; m2++) {
+              var kt = KEY_TAGS[m2], w2 = countOpen(low, kt);
+              if (!w2) continue;
+              var h2 = dom[kt] || 0;
+              if (h2 !== w2 && mism.length < 6) mism.push(kt + ' 源' + w2 + '/渲染' + h2);
+            }
+            rec.struct = '元素 ' + els.length + ' 个' + (mism.length ? ' · 不符：' + mism.join(' · ') : '');
+            rec.structOk = els.length > 0 && mism.length === 0 && !badTags.length;
+          }
+          return JSON.stringify(rec);
+        } catch (e) {
+          /* ① 渲染抛错：**单条不打断整批**（否则一条怪数据就让本判据没有读数），判据侧照样判红 */
+          return JSON.stringify({ ok: false, err: String((e && e.message) || e).slice(0, 200) });
+        }
+      })()`;
+      const recs = [];
+      let budgetUsed = 0;
+      let stoppedByBudget = 0;
+      for (const s of plan.sampled) {
+        if (budgetUsed > RENDER_TOTAL_BUDGET_MS) { stoppedByBudget = plan.sampled.length - recs.length; break; }
+        const t1 = Date.now();
+        const one = await execJson(ctx, oneSampleExpr(s));
+        const ms = Date.now() - t1;
+        budgetUsed += ms;
+        recs.push({ k: s.k, layer: s.layer, id: s.project + '/' + s.id, len: s.d.length, ms: ms,
+          ok: one.ok === true, err: one.err, textOk: one.textOk, textDiff: one.textDiff,
+          struct: one.struct, structOk: one.structOk, badTags: one.badTags, elements: one.elements });
+      }
+
+      /* ---------- 4) 立刻还原旁路口（**不许**把产品留在被改过的状态） ---------- */
+      const clean = await execJson(ctx, `(function () {
+        var MM = window.MM, o = window.__s52orig || {};
+        if (MM) {
+          if (o.record) MM.heatBarsRecordHumanOpen = o.record;
+          if (o.refresh) MM.heatBarsRefresh = o.refresh;
+        }
+        var restored = true;
+        if (MM && o.record && MM.heatBarsRecordHumanOpen !== o.record) restored = false;
+        if (MM && o.refresh && MM.heatBarsRefresh !== o.refresh) restored = false;
+        if (o.fakeDesk && o.desk && window.desktop === o.fakeDesk) window.desktop = o.desk;
+        if (o.desk && window.desktop !== o.desk) restored = false;
+        if (o.prop && o.desk && o.desk.app) {
+          try { o.desk.app.assoc = o.a0; o.desk.app.related = o.r0; } catch (e1) { restored = false; }
+          if (o.desk.app.assoc !== o.a0 || o.desk.app.related !== o.r0) restored = false;
+        }
+        try { delete window.__s52orig; } catch (e) {}
+        return JSON.stringify({ ok: true, restored: restored, deskBack: !o.desk || window.desktop === o.desk });
+      })()`);
+
+      const thrown = recs.filter((x) => x.ok !== true);
+      const textBad = recs.filter((x) => x.ok === true && x.textOk !== true);
+      const structBad = recs.filter((x) => x.ok === true && x.structOk !== true);
+
+      /* ---------- 5) 真帧：**真渲染过的那批里**最大的一条，走**完整入口**重渲染 + elementFromPoint 命中它自己 ----------
+       * 为什么取"真渲染过的那批"而不是"计划抽的那批"：预算可能提前停 ⇒ 计划里最大的那条也许没被渲染过，
+       * 拿它取帧就会让"真帧"与上面那批读数**不是同一批样本**（照 E3：判据与证据要同源）。两个数都打印。 */
+      const planBiggest = plan.sampled.slice().sort((a, b) => b.d.length - a.d.length)[0];
+      const byKey = {};
+      plan.sampled.forEach((x) => { byKey[x.k] = x; });
+      const renderedBiggest = recs.map((r2) => byKey[r2.k]).filter(Boolean)
+        .sort((a, b) => b.d.length - a.d.length)[0] || null;
+      const biggest = renderedBiggest || planBiggest;
+      const pinned = await execJson(ctx, `(function () {
+        var MM = window.MM;
+        if (MM.closeAllFloatDetail) MM.closeAllFloatDetail();
+        try {
+          MM.showDetail({ id: 's52-corpus-frame', topic: '语料真帧', detail: ${JSON.stringify(biggest.d)} });
+        } catch (e) { return JSON.stringify({ ok: false, text: '重渲染抛错：' + String((e && e.message) || e) }); }
+        var box = MM.fdPrimaryNodeBox ? MM.fdPrimaryNodeBox() : null;
+        if (!box || !box.el) return JSON.stringify({ ok: false, text: '详情框没开起来' });
+        if (MM.setFdBoxLock && MM.FD_LOCK) MM.setFdBoxLock(box, MM.FD_LOCK.SCREEN);
+        box.el.style.left = '12px'; box.el.style.top = '12px';
+        return JSON.stringify({ ok: true });
+      })()`);
+      if (!pinned.ok) return {
+        ok: false,
+        text: '循环读数（先给证据，再报失败）：①渲染抛错=' + thrown.length + ' / ②可见文字≠stripHtml=' + textBad.length
+          + ' / ③结构不符=' + structBad.length + '（本批真渲染 ' + recs.length + ' 条）'
+          + (thrown.length ? ' · 抛错点名：' + JSON.stringify(thrown.slice(0, 3)) : '')
+          + ' ｜ 真帧前置失败：' + pinned.text
+      };
+      await ctx.input.settle({ delayMs: 220 });
+      const frameExpr = `(function () {
+        ${hitPointExpr}
+        var box = window.MM.fdPrimaryNodeBox ? window.MM.fdPrimaryNodeBox() : null;
+        if (!box || !box.el) return JSON.stringify({ ok: false, text: '没有详情框' });
+        var dc = box.el.querySelector('.fd-detail-content');
+        if (!dc) return JSON.stringify({ ok: false, text: '没有 .fd-detail-content' });
+        var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+        var els = dc.querySelectorAll('*'), cands = [];
+        for (var i = 0; i < els.length; i++) {
+          var b = els[i].getBoundingClientRect();
+          if (!(b.width > 0 && b.height > 0)) continue;
+          cands.push({ el: els[i], area: b.width * b.height });
+        }
+        cands.sort(function (p, q) { return q.area - p.area; });
+        /* 目标块 = 正文里**面积最大、且中心点落在视口内能被 elementFromPoint 命中**的元素。
+         * 为什么要这道筛选（如实说）：最大那条语料的正文比视口高，面积最大的块可能整体滚出视口 ——
+         * 那时 elementFromPoint 取不到点是**正常**的（不是缺陷）；硬判它红就是拿尺子量不到当尺子坏了。 */
+        var target = null, pt = null, rank = -1;
+        for (var j = 0; j < cands.length && j < 60; j++) {
+          var p2 = hitPt(cands[j].el);
+          if (p2 && p2.x >= 0 && p2.y >= 0 && p2.x < vw && p2.y < vh) { target = cands[j].el; pt = p2; rank = j; break; }
+        }
+        if (!target) { target = dc; pt = hitPt(dc); rank = -1; }
+        if (!target || !pt) {
+          return JSON.stringify({ ok: false, text: '正文里没有任何元素被 elementFromPoint 命中（视口 ' + vw + 'x' + vh
+            + ' · 元素 ' + els.length + ' 个）' });
+        }
+        var br = target.getBoundingClientRect();
+        function cl(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+        var x0 = cl(br.left, 0, vw), y0 = cl(br.top, 0, vh);
+        var x1 = cl(br.right, 0, vw), y1 = cl(br.bottom, 0, vh);
+        if (!(x1 > x0 && y1 > y0)) return JSON.stringify({ ok: false, text: '目标块在视口外的部分取不到真帧证据' });
+        return JSON.stringify({ ok: true, tag: String(target.tagName || '').toLowerCase(), rank: rank,
+          cands: cands.length, pt: pt, text: String(target.textContent || '').slice(0, 48),
+          rects: { dpr: window.devicePixelRatio || 1, target: rc(target),
+            scan: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } } });
+      })()`;
+      const cap = await captureUntil(ctx, frameExpr, (r0, img) => {
+        const ink = frameStats.scanRegion(img, toDev(r0.rects.scan, r0.rects.dpr),
+          { predicate: frameStats.nonBackgroundPredicate() });
+        return { pass: !!(ink && ink.ok && ink.hits > 0), ink: ink };
+      }, 3);
+      if (!cap.ok) {
+        await execJson(ctx, '(function(){ if (window.MM && window.MM.closeAllFloatDetail) window.MM.closeAllFloatDetail(); return JSON.stringify({ok:true}); })()');
+        return { ok: false, text: '真帧读数/取景失败（第 ' + (cap.attempts || 0) + ' 次）：' + (cap.text || '') };
+      }
+      const fr = cap.rects;
+      const ink = (cap.judged && cap.judged.ink) ? cap.judged.ink : { ok: false, hits: 0 };
+      const shot = saveShot('52-corpus-real-frame.png', cap.img);
+      await execJson(ctx, '(function(){ if (window.MM && window.MM.closeAllFloatDetail) window.MM.closeAllFloatDetail(); return JSON.stringify({ok:true}); })()');
+
+      /* ---------- 6) 耗时分布 + 超时项（**阈值现算**：4 × 本批中位数；只报告、不判红） ---------- */
+      const msArr = recs.map((x) => x.ms).filter((v) => typeof v === 'number').sort((a, b) => a - b);
+      const med = msArr.length ? msArr[Math.floor(msArr.length / 2)] : 0;
+      const p90 = msArr.length ? msArr[Math.min(msArr.length - 1, Math.floor(msArr.length * 0.9))] : 0;
+      const msMax = msArr.length ? msArr[msArr.length - 1] : 0;
+      const slowCut = Math.max(50, med * 4);
+      const slow = recs.filter((x) => x.ms > slowCut)
+        .sort((a, b) => b.ms - a.ms)
+        .map((x) => x.layer + '|' + x.id + ' (' + x.len + 'B / ' + x.ms + 'ms)');
+
+      /* ---------- 7) 覆盖面 + 未覆盖项（**必须逐项打印**，不许让"抽样过了"被读成"全量对了"） ---------- */
+      const strataTxt = plan.strata.map((s) => s.key + '=' + s.n + (s.n ? '→' + s.sampleN : '（**本层无样本**）')).join(' · ');
+      const emptyLayers = plan.strata.filter((s) => !s.n).map((s) => s.label + '（' + s.key + '）');
+      const unsampled = plan.denominator - recs.length;
+      const cover = plan.denominator ? (recs.length / plan.denominator * 100) : 0;
+
+      const ok = thrown.length === 0 && textBad.length === 0 && structBad.length === 0
+        && clean.restored === true
+        && ink.ok === true && ink.hits > 0 && fr.pt;
+      return {
+        ok: ok,
+        text: '现算分母（**冒烟沙箱副本的内容 + 真实 `projects/` 的目录名**；与被渲染的字节同一快照）= '
+          + plan.denominator + ' 条含 detail 的节点'
+          + '（真实目录参照读数 = ' + realTotal + '，**只作参照不参与判定**：并发写入时两者本来就会不同）'
+          + ' · 排除的非真实项目（冒烟夹具）' + plan.excluded.length + ' 个'
+          + (plan.excluded.length ? '：' + plan.excluded.map((x) => x.project + '(' + x.withDetail + '条)').join(' · ') : '')
+          + ' ｜ 分层与抽样（每层 N = clamp(ceil(√n), ' + RENDER_N_MIN + ', ' + RENDER_N_MAX + ') **现算**）：' + strataTxt
+          + ' ⇒ 计划抽 **' + plan.sampled.length + '** 条 · **真渲染了 ' + recs.length + '** 条'
+          + (stoppedByBudget ? '（**预算到顶，少跑了 ' + stoppedByBudget + ' 条**：RENDER_TOTAL_BUDGET_MS='
+            + RENDER_TOTAL_BUDGET_MS + 'ms，已用 ' + budgetUsed + 'ms）' : '')
+          + ' · 覆盖率 **' + cover.toFixed(1) + '%**'
+          + ' ｜ ①渲染抛错=' + thrown.length + '（应 0）' + (thrown.length ? ' 点名：' + JSON.stringify(thrown.slice(0, 3)) : '')
+          + ' · ②可见文字≠stripHtml=' + textBad.length + '（应 0）' + (textBad.length ? ' 样本：' + JSON.stringify(textBad.slice(0, 3).map((x) => ({ k: x.k, d: x.textDiff }))) : '')
+          + ' · ③该层结构不符=' + structBad.length + '（应 0）' + (structBad.length ? ' 样本：' + JSON.stringify(structBad.slice(0, 3).map((x) => ({ k: x.k, s: x.struct, bad: x.badTags }))) : '')
+          + ' ｜ **耗时**（单条：一次真渲染的端到端墙钟，ms）：min=' + msArr[0] + ' 中位=' + med + ' p90=' + p90 + ' max=' + msMax
+          + ' · 超时阈值（现算 4×中位，下限 50ms）=' + slowCut + 'ms ⇒ 超时项 ' + slow.length + ' 条'
+          + (slow.length ? '：' + slow.slice(0, 8).join(' · ') + (slow.length > 8 ? ' …' : '') : '（一条也没有）')
+          + ' · 循环期摘掉的旁路口：热度条=' + (prep.mmStub ? '摘了' : '没摘')
+          + ' / 相关知识点+关联笔记=' + (prep.deskStub ? '摘了（' + prep.how + '）' : '**摘不掉**（desktop 冻结形态='
+            + JSON.stringify(prep.frozen) + '）⇒ 每条多两次 CLI 子进程')
+          + ' · 还原=' + clean.restored + '（应 true）'
+          + ' ｜ **本批没覆盖什么**（如实）：①' + (emptyLayers.length
+            ? '层 ' + emptyLayers.join(' / ') + ' **今天全仓 0 条样本** ⇒ 这两层的真实语料渲染**没有任何读数**（结构判据只剩夹具那条）'
+            : '五层都有样本')
+          + '；②还有 **' + unsampled + '** 条没被抽中（抽样 ≠ 全量；只证明"抽到的这些渲染是对的"）；'
+          + '③只判"可见文字 + 元素结构 + 一处真帧命中"，**不判**视觉排版/样式/颜色；'
+          + '④循环期热度条/相关知识点/关联笔记这三块**没加载**（旁路口摘掉了，见上），它们各有自己的域'
+          + ' ｜ **真帧**（真渲染过的那批里最大的一条 ' + biggest.d.length + 'B，' + biggest.project + '/' + biggest.id
+          + (renderedBiggest ? '' : '（⚠️ 本批一条都没渲染成 ⇒ 退用计划里最大那条）')
+          + '；计划里最大 = ' + planBiggest.d.length + 'B ' + planBiggest.project + '/' + planBiggest.id
+          + '；走**完整入口**含四个旁路口）：'
+          + '目标块=<' + fr.tag + '>（按面积排第 ' + (fr.rank + 1) + ' / 共 ' + fr.cands + ' 个可判块）'
+          + ' · elementFromPoint 命中它自己=真（点 ' + JSON.stringify(fr.pt) + '）'
+          + ' · 该块真帧墨像素=' + (ink.hits || 0) + ' · 文本=' + JSON.stringify(fr.text)
+          + ' · 帧=' + path.basename(shot.file) + '（' + shot.width + 'x' + shot.height + ' · ' + shot.bytes + 'B · sha256:' + shot.sha256 + '）'
+          + ' · 重拍 ' + cap.attempts + ' 次'
       };
     }
   },
