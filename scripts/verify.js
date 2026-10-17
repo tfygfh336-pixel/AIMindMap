@@ -298,7 +298,7 @@ const STEPS = [
   {
     step: 1, gate: 'G1', label: '编码完整性',
     cmd: 'node scripts/encoding-check.js', shown: '`npm run check:encoding`',
-    covers: '文件编码完整性：UTF-8 BOM / U+FFFD / 经典乱码特征',
+    covers: '文件编码完整性：UTF-8 BOM / U+FFFD / 经典乱码特征；**提交进 index 的文本行尾一律 LF**（判的是**提交面** —— 工作树混合由 `core.autocrlf` 决定，**不判**）；扫描面 = **git 判为文本的跟踪文件（不看扩展名）** + `TEXT_EXT` 白名单只管非受管转储，**没扫什么每次运行都打印**',
     budgetMs: 10000
   },
   {

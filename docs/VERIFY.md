@@ -17,7 +17,7 @@
 |------|----|------|
 | CLI 命令数 | 69 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 51 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 2197 用例 / 101 文件 | `tests/*.test.js`（vitest） |
+| 单元测试 | 2218 用例 / 102 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 535 | `scripts/cli-integration.js` |
 | 冒烟断言 | 324 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
@@ -35,7 +35,7 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 
 | 步 | 门禁 | 命令 | 耗时预算 | 覆盖 |
 |----|------|------|---------|------|
-| 1 | G1 | `npm run check:encoding` | 10s | 文件编码完整性：UTF-8 BOM / U+FFFD / 经典乱码特征 |
+| 1 | G1 | `npm run check:encoding` | 10s | 文件编码完整性：UTF-8 BOM / U+FFFD / 经典乱码特征；**提交进 index 的文本行尾一律 LF**（判的是**提交面** —— 工作树混合由 `core.autocrlf` 决定，**不判**）；扫描面 = **git 判为文本的跟踪文件（不看扩展名）** + `TEXT_EXT` 白名单只管非受管转储，**没扫什么每次运行都打印** |
 | 2 | G8 | `npm run check:docs` | 10s | 文档登记与家门：表外文档 / 散落文档 / 工程根与顶层目录乱放 / 悬挂登记（登记表 = `docs/ARCHITECTURE.md` §5；工作产物区 = `.review/`） |
 | 3 | G9 | `npm run check:rules` | 10s | 规则文件自洽：声明条数 == 表格行数 / 表格未被引用块或空行打断 / 编号引用闭合 / 实现列点名的脚本存在 |
 | 4 | V1 | `node scripts/visibility-judge-check.js` | 10s | 冒烟断言**判据的来源**：名字里声称"可见/看不见/遮挡/在框外/在面板内"的断言，必须有真判据（`elementFromPoint` 命中测试 / `scanRegion` 等真帧像素）或一行显式豁免（`判据-豁免: <原因>`）—— 只用 rect / 类名 / `style.display` 判"可见"的断言对**裁切与遮挡是盲的**（实测：同一元素被 `overflow:hidden` 裁掉时 rect 读数与正常显示完全相同，而真帧像素 81 vs 768） |
