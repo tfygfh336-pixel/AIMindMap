@@ -181,6 +181,19 @@ function changedFiles() {
   } catch (e) { return null; }
 }
 
+/** 批次越界检查的输入（T1 批）：读**别的在飞批次**的登记 + 把判定交给纯函数。
+ *  为什么 I/O 在这层：`scripts/changed-plan.js` 的 `planBoundary` 是**纯函数**（可单测、可注入），
+ *  读 `.review/claim-*.json` 这一步才需要 fs —— 与 `surfaceSelfCheck`（域号由调用方现算传进来）
+ *  同一分工：**判定与取数分开**（B6）。 */
+function evaluateBoundary(files, sel) {
+  const { claims, errors } = changedPlan.readClaims(path.join(ROOT, '.review'));
+  if (errors.length) {
+    console.log('   ⚠️ 有读不懂的「别批在飞登记」（**不计入** ⇒ 它认领的文件可能被误判成无人认领）：');
+    errors.forEach((e) => console.log('      · ' + e));
+  }
+  return changedPlan.planBoundary(files, { claimed: sel.claimed, claims });
+}
+
 /** 部分验证的记录（单独一格：不覆盖"上次全链"） */
 function writeLastVerifyChanged(run) {
   try {
@@ -778,6 +791,31 @@ function main() {
       for (const l of changedPlan.describeNotRun(plan)) console.log('   ' + l);   // ★ 没跑什么也必须说出来
       console.log('   改动文件 ' + files.length + ' 个：'
         + (files.length > 8 ? files.slice(0, 8).join('、') + ' 等' : files.join('、')));
+      /* ★ **批次越界检查**（T1 批，2026-10-17）—— 挂点选在这里，理由三条：
+       *   ① **清单已经取到了**（就是上面那份 `files`）⇒ 0 额外 I/O、0 额外耗时
+       *      （`architecture-for-ai` H3：不给高频动作加新成本）；
+       *   ② 默认全量档（`npm run verify` 不带开关）**一个字节都不多打** ⇒ 高频动作输出不变；
+       *   ③ 本工程对"这类检查该不该在链上"已有**两次裁决**：输入是**活的**工作树的检查
+       *      **不许成为卡点**（`scripts/pathchain-conformance.js:24-25` 的"它不许成为卡点"、
+       *      `scripts/collateral-check.js:24-27` 的"它不看 git status —— 新建/删除一个工作目录就
+       *      能让链变色 ✗，本工程真吃过这个假红"）⇒ 挂在 `--changed` 这一档正是它该在的地方。
+       *   判据 = 「改动文件里有没有**既不属于本次声明面、也不是运行副产物**的」。
+       *   三档（`testing-for-ai` B8，**跳过必须与通过可区分**）：
+       *     无 `--claimed` ⇒ **未验证**（响亮说"本次没判"，绝不读成绿）；
+       *     `--boundary=report`（默认，依据 = 实测误报率，见 changed-plan.js 的 BOUNDARY_DEFAULT）；
+       *     `--boundary=strict` ⇒ **在跑任何一步之前**判红（越界是"这批的边界面不成立"，不是"慢"）。 */
+      const boundary = evaluateBoundary(files, sel);
+      for (const l of changedPlan.describeBoundary(boundary)) console.log('   ' + l);
+      if (boundary.status === 'violation' && sel.boundaryMode === 'strict') {
+        console.error('');
+        console.error('✗ 批次越界（`--boundary=strict`）：声明面 [' + sel.claimed.join(', ') + '] 之外'
+          + '还有 ' + boundary.unclaimed.length + ' 个**源码级**改动文件（见上）');
+        console.error('  ⇒ 出路二选一：① 它们真属于本批 ⇒ 加进 `--claimed`；'
+          + '② 它们在别的批手里 ⇒ 让那个批登记 `.review/claim-<批名>.json`（格式见 changed-plan.js 的 readClaims）');
+        console.error('  ⇒ 本档在**任何一步之前**就判红：这不是"慢"，是"这批的边界面不成立"');
+        process.exitCode = 1;
+        return;
+      }
       if (process.argv.includes('--plan-only')) {
         console.log('   （--plan-only：只报计划，本次一步都没跑 ✓）');
         return;

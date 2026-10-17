@@ -74,8 +74,16 @@ describe('保守性：认不出的一律全量（这是这个模块唯一允许"
     'scripts/smoke-flags.js',               // 冒烟公共件（不是"域文件"）
     'scripts/smoke/util.js',                // 域目录里的**非域文件** ⇒ 全量 ✓（关键保守性）
     'package.json', 'vitest.config.js',
-    'projects/comnet/comnet.json',          // 真实数据
     'some/unknown/path.txt'
+    /* ⚠️ 2026-10-17（T1 批）**反转的一条旧事实**：这里原先还有
+     *    `'projects/comnet/comnet.json',   // 真实数据`
+     *  它当时是**对的**（那会儿 `projects/**` 命不中任何规则 ⇒ 兜底全量 ⇒ 至少不会漏）。
+     *  但实测暴露了它的代价：**用户只是用了软件**（界面上改一个节点、AI 用 CLI 写一条笔记）就让
+     *  `--changed` 从"9 步/十几秒"变成"14 步/二十几分钟"，而且**输出上完全看不出原因** ⇒ 落进
+     *  `testing-for-ai` A3b 点名的"把全链绑到每一次提交"，也撞 `docs/RULES.md` 的 **R3a**
+     *  （编辑笔记 ≠ 功能迭代，禁止跑 verify 全链）。
+     *  ⇒ 现在它归「运行副产物」档（`RULES` 的第一条，见下面那个 describe），**不再是无主文件**。
+     *  按 `testing-for-ai` B4 成因④（测试替旧事实站岗）：改事实的同批必须找出并**反转**它 —— 这就是。 */
   ];
   for (const f of MUST_BE_FULL) {
     it(f + ' ⇒ 全量', () => {
@@ -106,6 +114,194 @@ describe('干净工作树与摘要输出', () => {
     expect(lines.join('\n')).toContain('计划：');
     expect(lines.join('\n')).toContain('冒烟收窄到域：13');
     expect(lines.join('\n')).toContain('个文件');
+  });
+});
+
+/* ============================================================================
+ * 「运行副产物」档（T1 批，2026-10-17）：**不是源码、不是越界、也不许触发兜底全量**
+ * ----------------------------------------------------------------------------
+ * 实测依据：`projects/**`（用户的项目数据）原先命不中任何规则 ⇒ 兜底全量 ⇒
+ * **用户只是用了软件**就让 `--changed` 付全链的价（`docs/RULES.md` 的 R3a 明确不许这么干）。
+ * 这一档的判据（三条同时成立才算）：① 正常使用就会变；② 可重新生成 / 本身就是数据；③ 不改源码行为。
+ * ========================================================================== */
+describe('运行副产物档：不算越界、不触发兜底全量', () => {
+  const BP = ['projects/comnet/comnet.json', 'projects/x/assets/a.png',
+    'dist/x.exe', 'build/y', 'a/b.tmp', '.tmp-img/z.png', 'smoke-shot.png', 'smoke-frame.json', 'x/y.log'];
+
+  for (const f of BP) {
+    it(f + ' ⇒ 不是全量，只跑数据校验（G2）', () => {
+      const p = plan(f);
+      expect(p.full).toBe(false);
+      expect(p.steps).toContain('G2');
+      expect(p.steps).not.toContain('G5');        // 副产物不改源码行为 ⇒ 冒烟不为它跑
+      expect(p.byproducts.map((x) => x.path)).toEqual([f]);
+      expect(p.byproducts[0].label).toBeTruthy();  // 点名它是哪一类（"不许静默放过"）
+    });
+  }
+
+  it('**全是副产物** ⇒ reason 直说"运行副产物"，不写成含糊的"都在已知范围内"', () => {
+    const p = plan('projects/comnet/comnet.json');
+    expect(p.full).toBe(false);
+    expect(p.reason).toContain('运行副产物');
+    expect(p.reason).toContain('不是越界');
+    expect(describePlan(p).join('\n')).toContain('**不是越界、也不是无人认领**');
+  });
+
+  it('副产物 + 源码混着 ⇒ **源码那条说了算**（保守性不因这一档而松）', () => {
+    const p = plan('projects/comnet/comnet.json', 'src/schema.js');
+    expect(p.full).toBe(true);
+    const q = plan('projects/comnet/comnet.json', 'docs/RULES.md');
+    expect(q.full).toBe(false);
+    expect(q.steps).toContain('G3');              // 文档那一条的价还在
+    expect(q.steps).toContain('G2');              // 副产物那一条的价也在
+  });
+
+  it('判别力：**把副产物那条规则拿掉** ⇒ 同一批文件退回兜底全量（说明这一档真在起作用）', () => {
+    const files = ['projects/comnet/comnet.json'];
+    const withOut = planForFiles(files, { rules: cc.RULES.filter((r) => r.byproduct !== true) });
+    expect(withOut.full).toBe(true);
+    expect(planForFiles(files).full).toBe(false);
+  });
+
+  it('`--for byproduct`（SURFACES 那一面）与 RULES 那条**同一档**：steps 都是 BYPRODUCT_STEPS', () => {
+    const s = cc.SURFACES.filter((x) => x.id === 'byproduct')[0];
+    expect(s).toBeTruthy();
+    expect(s.steps).toEqual(cc.BYPRODUCT_STEPS);
+    const p = cc.planForSurface('byproduct');
+    expect(p.steps).toContain('G2');
+    expect(p.steps).not.toContain('G5');
+  });
+});
+
+/* ============================================================================
+ * 「批次越界检查」（T1 批）：本批声明面 × 实际改动清单
+ * ----------------------------------------------------------------------------
+ * `architecture-for-ai` E1 的**另一半**：一条命令能不能列出「本批声明的面之外」被改动的文件？
+ * 判据 = 「改动文件里有没有**既不属于本次声明面、也不是运行副产物**的」。
+ * 四个身份互斥（副产物 / 本批 / 别批在飞 / 无人认领），**只有"无人认领"会让判定变红**。
+ * 判别力证明（B4）：正反两向都钉死 —— 面外源码 ⇒ **必红**；只改 `projects/**` ⇒ **不许红**。
+ * ========================================================================== */
+describe('越界判定：三档 + 四种身份（正反两向的判别力）', () => {
+  const { planBoundary, describeBoundary, matchClaim } = cc;
+
+  it('没声明面 ⇒ `skipped`（**未验证，不是通过** —— 与 ok 必须可区分）', () => {
+    const r = planBoundary(['src/a.js'], {});
+    expect(r.status).toBe('skipped');
+    expect(r.ok).toBe(false);                 // ★ 关键：skipped 绝不许被读成 ok
+    expect(describeBoundary(r).join('\n')).toContain('本次没判');
+    expect(describeBoundary(r).join('\n')).toContain('未验证');
+  });
+
+  it('采不到改动清单（git 失败）⇒ `skipped`，理由说"采不到真值 ≠ 通过"', () => {
+    const r = planBoundary(null, { claimed: ['src/'] });
+    expect(r.status).toBe('skipped');
+    expect(r.reason).toContain('采不到真值');
+  });
+
+  it('工作树干净 ⇒ `skipped`，且说"这不算通过，只是没有输入"', () => {
+    const r = planBoundary([], { claimed: ['src/'] });
+    expect(r.status).toBe('skipped');
+    expect(r.reason).toContain('不算通过');
+  });
+
+  it('**面外有源码级文件 ⇒ 必红**（本判据"会红"的证明）', () => {
+    const r = planBoundary(['docs/x.md', 'src/zz-probe.js'], { claimed: ['docs/'] });
+    expect(r.status).toBe('violation');
+    expect(r.unclaimed).toEqual(['src/zz-probe.js']);
+    expect(describeBoundary(r).join('\n')).toContain('✗ src/zz-probe.js');
+  });
+
+  it('**只改了 `projects/**` ⇒ 不许红**（反方向：用户用了软件不该被判越界）', () => {
+    const r = planBoundary(['projects/comnet/comnet.json'], { claimed: ['scripts/changed-plan.js'] });
+    expect(r.status).toBe('ok');
+    expect(r.unclaimed).toEqual([]);
+    expect(r.byproduct.map((x) => x.path)).toEqual(['projects/comnet/comnet.json']);
+    const t = describeBoundary(r).join('\n');
+    expect(t).toContain('✓ 无越界');
+    expect(t).toContain('**不算越界**');
+  });
+
+  it('**别批已登记 ⇒ 不许红**（多批并发不制造假红）', () => {
+    const r = planBoundary(['src/a.js', 'docs/x.md'],
+      { claimed: ['docs/'], claims: [{ id: 'T9', files: ['src/a.js'] }] });
+    expect(r.status).toBe('ok');
+    expect(r.other.map((x) => x.batch)).toEqual(['T9']);
+  });
+
+  it('**别批没登记 ⇒ 会红**（三种身份不是"有就放过"；也说明 claim 登记不是装饰）', () => {
+    const r = planBoundary(['src/a.js', 'docs/x.md'], { claimed: ['docs/'] });
+    expect(r.status).toBe('violation');
+    expect(r.unclaimed).toEqual(['src/a.js']);
+  });
+
+  it('身份的四种取值**互斥且穷尽**：每个改动文件恰好落进一格（计数现算）', () => {
+    const r = planBoundary(
+      ['docs/x.md', 'src/mine.js', 'src/other.js', 'projects/p/p.json', 'root-new.txt'],
+      { claimed: ['docs/', 'src/mine.js'], claims: [{ id: 'T9', files: ['src/other.js'] }] });
+    expect(r.counts.files).toBe(5);
+    expect(r.counts.mine + r.counts.byproduct + r.counts.other + r.counts.unclaimed).toBe(r.counts.files);
+    expect(r.mine).toEqual(['docs/x.md', 'src/mine.js']);
+    expect(r.unclaimed).toEqual(['root-new.txt']);   // 工程根新文件：不是副产物 ⇒ 仍算无主
+  });
+
+  it('声明面三种写法都认：`dir/` 前缀 · 精确文件 · glob（`**` 跨目录、`*` 不跨）', () => {
+    expect(matchClaim('docs/RULES.md', 'docs/')).toBe(true);
+    expect(matchClaim('docs/RULES.md', 'docs/RULES.md')).toBe(true);
+    expect(matchClaim('tests/a/b.test.js', 'tests/')).toBe(true);
+    expect(matchClaim('tests/x.test.js', 'tests/*.test.js')).toBe(true);
+    expect(matchClaim('tests/sub/x.test.js', 'tests/*.test.js')).toBe(false);   // `*` 不跨目录
+    expect(matchClaim('renderer/a/b.js', 'renderer/**')).toBe(true);            // `**` 跨目录
+    expect(matchClaim('src/a.js', 'docs/')).toBe(false);
+    expect(matchClaim('docs', 'docs/')).toBe(true);                             // 前缀也认目录本身
+  });
+
+  it('打印必须三档可分（`B8`：只报"跑了什么"会把"没判"读成"过了"）', () => {
+    const t = (r) => describeBoundary(r).join('\n');
+    expect(t(planBoundary(['a'], {}))).toContain('本次没判');
+    expect(t(planBoundary(['projects/p/p.json'], { claimed: ['x/'] }))).toContain('✓ 无越界');
+    expect(t(planBoundary(['src/a.js'], { claimed: ['x/'] }))).toContain('✗');
+    const first = (r) => describeBoundary(r)[0];
+    expect(first(planBoundary(['a'], {})))
+      .not.toBe(first(planBoundary(['projects/p/p.json'], { claimed: ['x/'] })));
+  });
+});
+
+describe('别批在飞登记（`.review/claim-*.json`）的读取', () => {
+  const { readClaims } = cc;
+  /* ⚠️ 探针目录落在**系统临时目录**、名字带 pid（`E5`：临时物唯一化 + 别放进被扫描的树）。
+   * 为什么不放 `.review/` 下：G8 要求 `.review/` 的每个**直接子目录**都有 `README.md`
+   * （`docs-registry-check` 的 `checkWorkDirStatus`），而 vitest 是**并行**的 ⇒ 万一有人同时跑
+   * `check:docs`，会看见一个没有 README 的临时子目录 ⇒ **假红**（本工程真吃过这类并发假红）。 */
+  const os = require('node:os');
+  const dir = path.join(os.tmpdir(), 'mm-claim-probe-' + process.pid);
+
+  it('读得懂 ⇒ 计入；**读不懂 ⇒ 响亮列出且不计入**（不许把坏登记当"它认领了这些"）', () => {
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      fs.writeFileSync(path.join(dir, 'claim-ok.json'),
+        JSON.stringify({ batch: 'T9', files: ['src/a.js', 'tests/'] }), 'utf8');
+      fs.writeFileSync(path.join(dir, 'claim-broken.json'), '{ 这不是 JSON', 'utf8');
+      fs.writeFileSync(path.join(dir, 'claim-nofiles.json'), JSON.stringify({ batch: 'T8' }), 'utf8');
+      const r = readClaims(dir);
+      expect(r.claims).toEqual([{ id: 'T9', files: ['src/a.js', 'tests/'] }]);
+      expect(r.errors.length).toBe(2);
+      expect(r.errors.join('\n')).toContain('不计入');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('目录不存在 = 没有别批登记（正常，不报错）', () => {
+    const r = readClaims(path.join(ROOT, '.review', '不存在的目录-' + process.pid));
+    expect(r.claims).toEqual([]);
+    expect(r.errors).toEqual([]);
+  });
+
+  it('`claim-` 前缀之外的 json 不算登记（名字是判据的一部分）', () => {
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      fs.writeFileSync(path.join(dir, 'notaclaim.json'),
+        JSON.stringify({ batch: 'T7', files: ['src/b.js'] }), 'utf8');
+      expect(readClaims(dir).claims).toEqual([]);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });
 
@@ -306,7 +502,26 @@ describe('`--for` 的参数解析（一处实现：`parseForArgs`）', () => {
   const argv = (...a) => ['node', 'scripts/verify.js'].concat(a);
 
   it('不带开关 ⇒ mode=full（**默认档**：调用方据此保持 plan=null，一步都不裁）', () => {
-    expect(parseForArgs(argv())).toEqual({ mode: 'full', surface: null, domains: null, error: null });
+    expect(parseForArgs(argv())).toEqual({ mode: 'full', surface: null, domains: null,
+      claimed: null, boundaryMode: cc.BOUNDARY_DEFAULT, error: null });
+  });
+  it('`--claimed` / `--boundary` 只在 `--changed` 档有意义 ⇒ 别的档给了就**响亮拒绝**', () => {
+    expect(parseForArgs(argv('--claimed', 'src/')).error).toContain('只能跟着 `--changed`');
+    expect(parseForArgs(argv('--for', 'docs', '--boundary=strict')).error).toContain('只能跟着 `--changed`');
+  });
+  it('`--claimed a,b` ⇒ 解析成去空白的清单；空清单 ⇒ 报错（不许当"没给"）', () => {
+    expect(parseForArgs(argv('--changed', '--claimed', ' src/x.js , docs/ ')).claimed)
+      .toEqual(['src/x.js', 'docs/']);
+    expect(parseForArgs(argv('--changed', '--claimed', '  ')).error).toContain('空清单');
+  });
+  it('`--boundary` 只认 report / strict；**strict 必须带 `--claimed`**（否则没有声明面可判）', () => {
+    expect(parseForArgs(argv('--changed', '--boundary=strict')).error).toContain('必须同时给 `--claimed');
+    expect(parseForArgs(argv('--changed', '--claimed', 'src/', '--boundary=strict')).boundaryMode).toBe('strict');
+    expect(parseForArgs(argv('--changed', '--claimed', 'src/', '--boundary=nope')).error).toContain('只认');
+  });
+  it('默认档 = report（依据 = 实测误报率；这条把它钉住，别悄悄改成 strict）', () => {
+    expect(cc.BOUNDARY_DEFAULT).toBe('report');
+    expect(parseForArgs(argv('--changed')).boundaryMode).toBe('report');
   });
   it('--for docs / --for=docs 两种写法等价', () => {
     expect(parseForArgs(argv('--for', 'docs')).surface).toBe('docs');
@@ -398,6 +613,33 @@ describe('接线与"一处实现"：verify.js 只照表做事，别再抄一份�
 
   it('`--for all` 走**默认档**那条路（plan 保持 null ⇒ 输出与不带开关逐字节相同）', () => {
     expect(verifyText).toContain('plan = p.full ? null : p;');
+  });
+
+  /* ---- 批次越界检查（T1 批）的挂点：**既有门禁面**上，不新开全链步 ---- */
+  it('越界判定挂在 `--changed` 档里：判定/打印两个口都接上了', () => {
+    expect(verifyText).toContain('changedPlan.planBoundary(');
+    expect(verifyText).toContain('changedPlan.describeBoundary(');
+    expect(verifyText).toContain('changedPlan.readClaims(');
+  });
+
+  it('挂点位置：**在 `--changed` 分支里**、且在 `for (const s of STEPS)` **之前**（别批的改动不配让本批白跑十分钟）', () => {
+    const atChanged = verifyText.indexOf("else if (sel.mode === 'changed')");
+    /* ⚠️ 从 `atChanged` **往后**找：`evaluateBoundary(` 的**函数定义**在文件前部（≈第 185 行），
+     * 先从头 indexOf 会命中定义 ⇒ 这条接线检查会变成恒真的空转（本工程踩过这个形状）。 */
+    const atCall = verifyText.indexOf('evaluateBoundary(files, sel)', atChanged);
+    const atLoop = verifyText.indexOf('for (const s of STEPS) {');
+    expect(atChanged).toBeGreaterThan(0);
+    expect(atCall).toBeGreaterThan(atChanged);      // 在 changed 分支**之内**（不在默认全量档里）
+    expect(atCall).toBeLessThan(atLoop);            // 早于任何一步 ⇒ 判红不付链的价
+    expect(verifyText).toContain("sel.boundaryMode === 'strict'");
+  });
+
+  it('**不新开一条全链步**（H3：不给高频动作加新成本）—— STEPS 里没有任何越界门禁的编号', () => {
+    const stepsBlock = verifyText.slice(verifyText.indexOf('const STEPS = ['), verifyText.indexOf('const TOTAL_BUDGET_MS'));
+    expect(stepsBlock.length).toBeGreaterThan(1000);
+    expect(stepsBlock).not.toMatch(/gate:\s*'(B\d|BOUNDARY)/);
+    // 默认全量档**不进** changed 分支 ⇒ `npm run verify` 的输出不因这批改变
+    expect(verifyText).toContain("const sel = changedPlan.parseForArgs(process.argv);");
   });
 
   it('面表只有一处实现：`id: \'<面>\', what: …` 这种形态只许出现在 scripts/changed-plan.js', () => {
