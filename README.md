@@ -281,9 +281,16 @@ npm run dist:portable  # 绿色免安装 → build/AIMindMap-<版本>-portable.e
 本文**不再抄一份** —— 门禁清单曾经有三份副本（README / RULES / VERIFY），是"同一事实多副本"的典型；
 三方里只要有一份手工维护就会漂移。要跑就一句：**`npm run verify`**。
 
-**铁律（无法机械化，共 6 条；详见 `docs/RULES.md` §3）**
+**铁律（无法机械化，共 9 条；详见 `docs/RULES.md` §3）**
 
 1. **断言必须来自执行，而非推理**（R1）—— 写下"支持/会/返回"之前先跑一次；跑不了就写"未验证"。
+   它的三条**操作纪律**（同一句"必须实际执行过"的落地形态，2026-10-16 各自踩过一次）：
+   **R1a** 注入/回滚**绝不用 `git checkout`**（`core.autocrlf=true` 会把 LF 悄悄写成 CRLF）——
+   备份用 `fs.readFileSync` 的原始 Buffer、还原用 `fs.writeFileSync(p, buffer)`，
+   比对 **sha256 + 字节数 + CR 数** 三记；**R1b** 改文本文件一律 node `fs.writeFileSync(…, 'utf8')`，
+   不用 pwsh 的 `>` / `Add-Content` / `Set-Content`（实测落过 UTF-16 与 BOM）；
+   **R1c** 判据的"通过"只能来自它自己的 exit code（管道最后一句会吃掉 `$LASTEXITCODE`；
+   `node scripts/doc-facts.js` 不带 `--check` 是打印档、**恒 exit 0**，不是 G6 通过）。
 2. **双文档同步**（R2）—— 每次变更同步 `CHANGELOG.md`（`[Unreleased]`）+ `README.md`，缺一不可；发版用 `node cli/mm-cli.js release [版本号]`。
 3. **分层测试**（R3）—— 改核心加单测、加命令加集成断言、加渲染功能加冒烟断言。
 4. **编辑笔记 ≠ 功能迭代**（R3a）—— 纯笔记增删改（`add`/`edit`/`link`/`assoc-*` 等）**只跑一次 `node cli/mm-cli.js validate <项目>`**，
