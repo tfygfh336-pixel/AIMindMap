@@ -106,7 +106,7 @@ describe('S2 表自身：每一处连带都有身份（有守卫 / 是本门禁 
 
   it('双向闭包：表里声明的 S2 断言键 == 本门禁实现的 CHECKS（两个差集都要空）', () => {
     const declared = gate.declaredChecks(gate.COLLATERAL).map((d) => d.key);
-    expect(declared.slice().sort()).toEqual(gate.CHECKS.slice().sort());
+    expect([...new Set(declared)].sort()).toEqual(gate.CHECKS.slice().sort());
   });
 
   it('每一个"改动类型"至少写一处连带（空行 = 一张没用的表）', () => {
@@ -116,5 +116,147 @@ describe('S2 表自身：每一处连带都有身份（有守卫 / 是本门禁 
   it('真仓库整体：**上线就是绿的**（甲档：存量已补齐；挂链后这条应全绿）', () => {
     const r = gate.analyze();
     expect(r.problems).toEqual([]);
+  });
+});
+
+/* ============================================================
+ * ⑤ 写盘出口（`WRITE_OUTLET`）—— 受管资产的字节只允许从一个函数落盘
+ * ------------------------------------------------------------
+ * 三道：① 路径求值器本身能判什么/判不了什么（B4：纯函数要能单独喂输入）；
+ *       ② 判定在**真仓库**上是绿的且读数**分档平衡**（受管 + 非受管 + 判不了 == 总数）；
+ *       ③ 判别力：**内存注入**（不动真仓）⇒ 必须点名。完整注入证明见
+ *          `.review/20261016-写盘出口审计/tools/inject-and-restore.js`（含三条真实事故形状）。
+ * ============================================================ */
+describe('S2 ⑤ 写盘出口：路径求值器（纯函数）', () => {
+  const ctxOf = (file) => ({
+    bindings: new Map(),
+    returns: new Map(),
+    dir: path.dirname(path.join(ROOT, file)),
+    file: path.join(ROOT, file),
+    depth: 0,
+    seen: new Set()
+  });
+
+  it('字面量 / path.join / __dirname / 模板串 / `+` 拼接都能求值', () => {
+    const c = ctxOf('scripts/x.js');
+    expect(gate.evalPathExpr("'docs/VERIFY.md'", c)).toBe('docs/VERIFY.md');
+    expect(gate.evalPathExpr('`docs/${"CLI"}.md`', c)).toBe('docs/CLI.md');
+    expect(gate.evalPathExpr("path.join('a', 'b', 'c.md')", c)).toBe('a/b/c.md');
+    expect(gate.evalPathExpr("__dirname + '/../docs/RULES.md'", c).replace(/\\/g, '/'))
+      .toBe(path.join(ROOT, 'docs', 'RULES.md').replace(/\\/g, '/'));
+  });
+
+  it('**判不了就 null**（不猜）：函数参数 / os.tmpdir() / argv 一律 null', () => {
+    const c = ctxOf('scripts/x.js');
+    expect(gate.evalPathExpr('someParam', c)).toBe(null);
+    expect(gate.evalPathExpr("path.join(os.tmpdir(), 'x')", c)).toBe(null);
+    expect(gate.evalPathExpr("process.argv[2]", c)).toBe(null);
+  });
+
+  it('同文件零参函数的 return 会被追一跳（`doc-facts.js` 那种真实形状）', () => {
+    const c = ctxOf('scripts/doc-facts.js');
+    c.returns = new Map([['verifyDocPath', "path.join(__dirname, '..', 'docs', 'VERIFY.md')"]]);
+    expect(gate.evalPathExpr('verifyDocPath()', c).replace(/\\/g, '/'))
+      .toBe(path.join(ROOT, 'docs', 'VERIFY.md').replace(/\\/g, '/'));
+  });
+
+  it('绑定按**作用域**挑，不是"全文件取最后一处"（T3 实测张冠李戴过）', () => {
+    const src = [
+      'function a() {',
+      "  const p = path.join(ROOT, 'docs', 'RULES.md');",
+      '  write(p);',
+      '}',
+      'function b() {',
+      "  const p = path.join(ROOT, '.review', 'x.json');",
+      '  write(p);',
+      '}'
+    ].join('\n');
+    const list = gate.collectBindingList(src);
+    const blocks = gate.collectFunctionBlocks(src);
+    const atA = src.indexOf('write(p);');
+    const atB = src.lastIndexOf('write(p);');
+    expect(gate.bindingsAt(list, blocks, atA).get('p')).toContain('RULES.md');
+    expect(gate.bindingsAt(list, blocks, atB).get('p')).toContain('.review');
+  });
+});
+
+describe('S2 ⑤ 写盘出口：真仓库读数与判据', () => {
+  const r = gate.analyzeWriteOutlet(ROOT);
+
+  it('真仓库：判定 ⑤ 是绿的（存量逐条在册，没有计划外违规）', () => {
+    expect(r.problems.filter((p) => p.kind === 'write-outlet' || p.kind === 'ledger')).toEqual([]);
+  });
+
+  it('读数**分档平衡**：写调用点总数 == 受管 + 非受管 + 判不了（不许有"没归类"的黑洞）', () => {
+    const rd = r.readings;
+    expect(rd.writeSites).toBe(rd.managedSites + rd.unmanagedSites + rd.unresolvedSites);
+    expect(rd.writeSites).toBeGreaterThan(50);
+  });
+
+  it('欠账册**封闭**：条数 ≤ cap · 每条 why/close 齐 · kind/verdict 都是枚举值', () => {
+    expect(gate.WRITE_OUTLET_DEBT.length).toBeLessThanOrEqual(gate.WRITE_OUTLET_CAP);
+    gate.WRITE_OUTLET_DEBT.forEach((e) => {
+      expect(e.why, e.at).toBeTruthy();
+      expect(e.close, e.at).toBeTruthy();
+      expect(['file', 'self-atomic']).toContain(e.kind);
+      expect(['keep', 'debt']).toContain(e.verdict);
+    });
+    // 上限只减不增：写死成"当前条数"，多一条就必须同批抬 cap 并说明为什么
+    expect(gate.WRITE_OUTLET_CAP).toBe(9);
+  });
+
+  it('出口本体**不在**自造名单里（它是出口），且出口之外的每一个都在册', () => {
+    expect(r.selfAtomic).not.toContain(gate.WO_OUTLET_FILE);       // 出口本体刻意排除
+    expect(r.selfAtomic.length).toBeGreaterThan(0);
+    // 自查：真仓里凡是出现 tmp+rename 签名的非出口文件，都必须在册（否则 analyzeWriteOutlet 会报 write-outlet）
+    const want = gate.woScanTargets(ROOT).filter((rel) => rel !== gate.WO_OUTLET_FILE
+      && gate.hasSelfAtomicSignature(gate.blankQuoted(fs.readFileSync(path.join(ROOT, rel), 'utf8'),
+        { comments: true, strings: true })));
+    expect(want.sort()).toEqual(r.selfAtomic.slice().sort());
+    want.forEach((x) => {
+      expect(gate.WRITE_OUTLET_DEBT.some((e) => e.at === x && e.kind === 'self-atomic'), x).toBe(true);
+    });
+  });
+});
+
+describe('S2 ⑤ 写盘出口：判别力（**内存注入**，不动真仓）', () => {
+  it('往一份干净源码里注入一处裸写受管资产 ⇒ 必被点名（并解析出真实路径）', () => {
+    const src = "const fs = require('fs');\n"
+      + "function probe() {\n"
+      + "  fs.writeFileSync(path.join(__dirname, '..', 'docs', 'RULES.md'), 'x', 'utf8');\n"
+      + '}\n';
+    const sites = gate.scanWriteSites('scripts/zz-probe.js', src, ROOT);
+    expect(sites.length).toBe(1);
+    expect(sites[0].through).toBe(false);
+    const rel = path.relative(ROOT, sites[0].resolved).replace(/\\/g, '/');
+    expect(rel).toBe('docs/RULES.md');
+    expect(gate.woManagedFamily(rel).id).toBe('doc');
+  });
+
+  it('**出口调用根本不算写调用点**（`writeManagedText` / `writeFileAtomic` 是唯一出口）', () => {
+    const src = "const fs = require('fs');\n"
+      + 'function probe(h, t) {\n'
+      + '  writeManagedText(h, t);\n'
+      + '  return writeFileAtomic(path.join(__dirname, "..", "docs", "RULES.md"), t);\n'
+      + '}\n';
+    expect(gate.scanWriteSites('scripts/zz-probe.js', src, ROOT)).toEqual([]);
+    // 反向：把同一处换成裸写 ⇒ 必须算作写调用点（否则上面那条"空数组"毫无意义）
+    const bare = src.replace('return writeFileAtomic(', 'return fs.writeFileSync(');
+    expect(gate.scanWriteSites('scripts/zz-probe.js', bare, ROOT).length).toBe(1);
+  });
+
+  it('**报文里的示例写法不算实现**（字符串里的 `fs.writeFileSync(` 不许把自己判红）', () => {
+    // 这条是本批自己踩的坑：失败报文里写了「同时有 `fs.writeFileSync(` 与 `fs.renameSync(`」⇒ 自判红
+    const src = "const msg = '里同时有 `fs.writeFileSync(` 与 `fs.renameSync(`';\n";
+    expect(gate.hasSelfAtomicSignature(src)).toBe(true);                       // 原始文本里有（所以必须抹）
+    expect(gate.hasSelfAtomicSignature(gate.blankQuoted(src, { comments: true, strings: true }))).toBe(false);
+  });
+
+  it('**正则字面量里的引号不许把状态机带跑偏**（曾导致真违规静默漏过）', () => {
+    const src = "const s = String(t).replace(/[\\u001b]/g, '');\n"
+      + "fs.writeFileSync(path.join(__dirname, '..', 'docs', 'VERIFY.md'), s, 'utf8');\n";
+    const sites = gate.scanWriteSites('scripts/zz-probe.js', src, ROOT);
+    expect(sites.length).toBe(1);
+    expect(String(sites[0].resolved).replace(/\\/g, '/')).toContain('docs/VERIFY.md');
   });
 });

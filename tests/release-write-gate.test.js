@@ -231,8 +231,16 @@ describe('结构断言：写盘出口唯一 + 比较逻辑只一份（A1 / D1 / 
   it('只报告：全仓还有几处自造的 tmp+rename（T3 的账，**只核实不改**）', () => {
     /* 判定档 = { 通过, 真缺陷 } —— 但这里的"通过"只表示**本批没有新增**，
      * 不表示"全仓已经只剩一处"。存量按 testing-for-ai B4 的欠账册口径**只报告、不判红**
-     * （一次性全红的下场是门禁被关掉）；清单写在 .review/20261016-T3-CHANGELOG写闸门/README.md。 */
-    const KNOWN_DEBT = ['src/control.js', 'src/dsh-package.js'];   // 已核实的存量，见证据 README §五
+     * （一次性全红的下场是门禁被关掉）；清单写在 .review/20261016-T3-CHANGELOG写闸门/README.md。
+     *
+     * ⚠️ 2026-10-16（写盘出口审计批）：`KNOWN_DEBT` 这份**手抄的**清单已删掉 ——
+     * 它是"同一件事的第二处表达"（A3），而 S2 门禁的判定 ⑤（`WRITE_OUTLET`）已经把它做成了
+     * **封闭欠账册**（`scripts/collateral-check.js` 的 `WRITE_OUTLET_DEBT`，带 why / close / cap，
+     * 且**挂在 verify 链上**）。这里改为**引用那一份**，不维护副本。 */
+    const outlet = require('../scripts/collateral-check.js');
+    const KNOWN_DEBT = outlet.WRITE_OUTLET_DEBT
+      .filter((e) => e.kind === 'self-atomic' && e.verdict === 'keep')
+      .map((e) => e.at);
     const hits = [];
     for (const rel of SCAN_SURFACES) {
       for (const f of codeFilesUnder(rel)) {
@@ -240,11 +248,13 @@ describe('结构断言：写盘出口唯一 + 比较逻辑只一份（A1 / D1 / 
         if (/fs\.renameSync\s*\(/.test(src)) hits.push(path.relative(ROOT, f).split(path.sep).join('/'));
       }
     }
-    // 判红条件只有一条：出现**第三个**自造实现（既不是统一闸门、也不在已核实的欠账清单里）
-    const unexpected = hits.filter((f) => f !== 'src/data-store.js' && !KNOWN_DEBT.includes(f));
+    // 判红条件只有一条：出现**新的**自造实现（既不是统一闸门、也不在门禁侧的封闭欠账册里）
+    const unexpected = hits.filter((f) => f !== 'src/data-store.js'
+      && !outlet.WRITE_OUTLET_DEBT.some((e) => e.at === f && e.kind === 'self-atomic'));
     expect(unexpected, '新增了第二份原子写实现 ⇒ 违反 D1/D3（写盘出口只有一个函数）').toEqual([]);
     // 只报告读数（不参与判定）
     console.log('[只报告] 自造 tmp+rename 的文件：' + JSON.stringify(hits)
-      + '（其中 src/data-store.js = 统一闸门本身；' + JSON.stringify(KNOWN_DEBT) + ' = 已核实存量，未在本批改）');
+      + '（其中 src/data-store.js = 统一闸门本身；' + JSON.stringify(KNOWN_DEBT)
+      + ' = 门禁欠账册里标了"有据降级"的存量）');
   });
 });
