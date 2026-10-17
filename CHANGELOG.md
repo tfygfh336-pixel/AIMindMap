@@ -26,6 +26,39 @@
 
 ## [Unreleased]
 
+### 「T3」CHANGELOG 的写路径收口到统一闸门：从**裸写**改成原子写 + 版本闸门（2026-10-16）
+
+- **一句话**：`cli/commands/release.js` 的 `write()` 对 `CHANGELOG.md` 是**裸写**（纯 `fs.writeFileSync`，
+  既没有 `writeFileAtomic`、也没有版本检查），而 `docs/INCIDENTS.md` 派生禁令**第 5 条**明文禁止裸写
+  ⇒ **实现违反了工程的自家规则**。`CHANGELOG.md` 又是**触碰频次第 2 高**的共享资产（近 196 次提交里 100 次，
+  仅次于 `docs/VERIFY.md` 的 123 次），而且是**只增**的历史资产 —— 被整份覆写**丢的是历史**。
+- **先取证再动手（既有闸门的真实形态）**：任务书指向的 `src/concurrency.js` `fingerprint()` 是
+  **逐节点/逐对象**指纹，那是给"合并与冲突点名"用的，**不是写闸门**；真正的闸门比较在
+  `src/data-store.js` 的 `store.write` 里，口径是**整文件内容 sha1** ⇒ 它**本来就适用**于"整文件覆盖写"。
+  缺的不是语义，是**出口**（比较+报错内联在 `store.write` 函数体里，别人调不到）。
+- **做法（方案 ①：扩既有闸门，不新增第二套）**：把那段比较+报错抽成 `src/data-store.js` 的
+  **`versionGate()`** —— 现在是全仓**唯一**一处冲突比较、**唯一**一处构造 `VERSION_CONFLICT`
+  （有结构单测钉住，且该断言自己被打红过）；新增整文件受管文档的读写对
+  **`readManagedText()` / `writeManagedText()`**（原子写仍走 `writeFileAtomic`，比较仍走 `versionGate`）；
+  `release.js` 的 `read`/`write` 收成两行薄壳，**剥注释后裸写调用点 = 0**。
+  `docs-gen` 写的 `docs/CLI.md`（受管生成物）一并收口。
+- **单写者路径逐字节不变**（给读数）：真 `CHANGELOG.md`（687,153 B）过一遍新闸门再回读，
+  sha256 / 字节数 / CR 数**三记全等**（另 4 份受管文件同样全等）；真跑一次 `docs-gen` ⇒
+  `docs/CLI.md` 写前写后 sha256 `42b03735…a656c0` 不变、exit 0、`git status` 干净。
+  **成本如实说**：单次写从 10.15 ms 涨到 29.15 ms，其中原子性 3.45 ms 是禁令第 5 条本来就要求的，
+  版本闸门 15.55 ms 是本批新增的；`release` 是人工触发的低频命令、一次写 6 处 ⇒ 总量级仍是百毫秒内，
+  而**最高频的那些只读命令一个字节都没碰**。
+- **判别力证明**（读数在 `.review/20261016-T3-CHANGELOG写闸门/`）：① 把 `versionGate` 的比较改成
+  **恒等放行** ⇒ 4 条断言必红（含"读后盘上被改却不拒写 ⇒ 那次改动会被静默抹掉"）；
+  ② 把 `release.js` 的写路径**退回裸写** ⇒ 结构断言必红并点名 `fs.writeFileSync(`。
+  两次注入都用**原始 Buffer 逐字节还原**（sha256 + 字节数 + CR 数三记，**没用 `git checkout`**）后复绿。
+- **顺手核实（只核实、不改）**：全仓 278 个 .js / 372 个直接落盘调用点里，仍在**裸写受管资产**的只剩 2 处
+  —— `scripts/doc-facts.js:575`（整文件重写 `docs/VERIFY.md`）与 `scripts/docs-registry-check.js:762`
+  （整文件重写 `docs/ARCHITECTURE.md` §5 登记表），即 T2 卡点名的两条；另有 2 处**自造 tmp+rename**
+  （`src/control.js:78`、`src/dsh-package.js:186`）属"写盘出口不唯一"的形态，均未在本批改。
+  ⚠️ 静态扫描**会低估**（目标路径来自变量的调用点不命中规则）⇒ 那张清单是人工逐条核实的结论。
+
+
 ### 「T5」G8 的子目录豁免显式化：挪个文件进子目录不再免检（2026-10-16）
 
 - **一句话**：G8 第 ⑦ 条（"代码必须入档"）原先用**非递归** `readdirSync` 判 ⇒ 子目录**根本没进扫描面**，

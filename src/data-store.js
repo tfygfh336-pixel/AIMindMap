@@ -53,6 +53,43 @@
   }
 
   /**
+   * **并发版本闸门的唯一比较与报错实现**（`store.write` 与 `writeManagedText` 共用这一份）。
+   *
+   * 为什么必须是"一个函数"而不是各处各写一段 `if (actual !== expect) throw …`：
+   * 项目数据的写入与**整文件受管文档**的写入是两条写路径（后者没有"项目"这个载体，
+   * `store.write` 到不了 `CHANGELOG.md` / `docs/**`），但"盘上还是不是我读到的那一版"
+   * 是**同一件事**。`architecture-for-ai` A1/D2 明写：只共用底层原语（原子写、哈希函数）
+   * 而各自重写比较逻辑**不算共用** ⇒ 比较与报错只此一处，新写路径只许**调它**。
+   *
+   * 指纹口径 = **整文件内容哈希**（见 `versionOfText` 的注释：不用 mtime/size，两者都会让闸门静默失效）。
+   * ⇒ 它对"整文件覆盖写"（本函数另一半用例）与"整树 JSON 写回"用的是同一把尺子。
+   *
+   * @param {{label:string, hint:string,
+   *          expectVersion:(string|null|undefined), actualVersion:(string|null)}} o
+   *   `label` = 报错里"谁被改了"（例：`项目「comnet」` / `受管文件「CHANGELOG.md」`）；
+   *   `hint`  = 报错里的出路，**必须是被报的那一方真的做得到的那一句**（F1：死指针不算出路）。
+   * @throws {Error} `code === 'VERSION_CONFLICT'`，并带**完整**指纹
+   *   `expectVersion` / `actualVersion` / `label`（报文里为可读只印前 8 位，完整值在错误对象上）
+   */
+  function versionGate(o) {
+    const g = o || {};
+    // 调用方没声明"我读到的是哪一版" ⇒ 不设闸门（行为与从前完全一致；新建文件也是这一档）
+    if (g.expectVersion === undefined || g.expectVersion === null) return;
+    if (g.actualVersion === g.expectVersion) return;
+    const err = new Error('并发写入冲突：' + g.label + '在你读取之后已被其他写入者修改'
+      + '（读到 ' + String(g.expectVersion).slice(0, 8) + '，盘上 '
+      + (g.actualVersion === null ? '已不存在' : String(g.actualVersion).slice(0, 8)) + '）。'
+      + '写入已中止，以免静默覆盖那次改动 —— ' + g.hint + '。');
+    // 错误码：`src/concurrency.js` 的自动重放据此判断"这是可重放的版本冲突"。
+    // 有码之后，调用方不必去解析上面这段文案（文案会改）。
+    err.code = VERSION_CONFLICT;
+    err.expectVersion = g.expectVersion;
+    err.actualVersion = g.actualVersion;
+    err.label = g.label;
+    throw err;
+  }
+
+  /**
    * 原子写文件：同目录临时文件 → fsync 落盘 → rename 覆盖。
    * 同目录 rename 在 NTFS / POSIX 上均为原子操作，因此进程中断或磁盘写满
    * 只会留下临时文件，**不会产生被截断的目标文件**（防整库损坏）。
@@ -99,6 +136,65 @@
     }
     if (last) last.message = last.message + '（rename 已重试 ' + max + ' 次仍失败）';
     throw last;
+  }
+
+  /* ---------------- 整文件受管文本文档（CHANGELOG / docs/** / 生成物） ----------------
+   * 为什么需要这一对函数：`store.write` 的入口是**项目名**，它只覆盖 `projects/<项目>/<项目>.json`。
+   * 而 `CHANGELOG.md` / `docs/**` / 登记表 / 生成物是**另一类共享可变资产**（D1 的"闸门管的范围不止数据文件"），
+   * 它们没有项目载体 ⇒ 到不了 `store.write`。历史结果是这类资产**根本没有写闸门**：
+   * `cli/commands/release.js` 当时用一个纯 `fs.writeFileSync` 整份覆写 CHANGELOG.md，
+   * 而 `docs/INCIDENTS.md` 的派生禁令第 5 条**明文禁止裸写** ⇒ 实现违反了自家规则。
+   *
+   * 口径（三条，缺一条就退化成"第二个闸门"）：
+   *   ① 写盘仍走 `writeFileAtomic`（唯一原子写出口）；
+   *   ② 版本比对与报错仍走 `versionGate`（**同一份比较逻辑**，不在这里重写 ✗）；
+   *   ③ 调用方必须**先**用 `readManagedText` 读、**后**用 `writeManagedText` 写 —— 把"我读到的是哪一版"
+   *      从读的那一刻带到写的那一刻。⚠️ 若在同一处"读一下拿版本、紧接着写"，闸门恒等放行、
+   *      等于**假闸门**（比没有更坏：它看起来在守）。
+   */
+
+  /**
+   * 读一份受管文本文档，**同时带回它在盘上的版本指纹**（写回时交给闸门）。
+   * @param {string} file 绝对路径
+   * @param {{optional?:boolean}} [opts] `optional:true` ⇒ 文件读不到时不抛，返回 `text/version` 皆为 null
+   *   （给"生成物可能还不存在"那类调用方用；**默认抛** —— 受管文档读不到就是真问题，别静默当空文件 ✗）
+   * @returns {{file:string, text:(string|null), version:(string|null)}}
+   */
+  function readManagedText(file, opts) {
+    if (!fs) throw new Error('readManagedText 仅支持 Node 环境（浏览器端请走 CLI/IPC）');
+    let text = null;
+    try { text = fs.readFileSync(file, 'utf8'); } catch (e) {
+      if (opts && opts.optional) return { file: file, text: null, version: null };
+      throw e;
+    }
+    return { file: file, text: text, version: versionOfText(text) };
+  }
+
+  /**
+   * 写回一份受管文本文档：**原子写 + 与项目数据同一份版本闸门**。
+   * @param {{file:string, version:(string|null)}} handle `readManagedText()` 的返回值
+   * @param {string} content 要写的完整内容（整份覆写）
+   * @param {{label?:string, hint?:string}} [opts] 只影响报错文案（比较逻辑不可配 ✗）
+   * @returns {{file:string, version:string}} 刚写下去的那一版的指纹
+   * @throws {Error} `code === 'VERSION_CONFLICT'`（盘上已不是 `handle.version` 那一版）
+   */
+  function writeManagedText(handle, content, opts) {
+    if (!fs) throw new Error('writeManagedText 仅支持 Node 环境（浏览器端请走 CLI/IPC）');
+    const o = opts || {};
+    const h = handle || {};
+    const file = h.file;
+    if (!file) throw new Error('writeManagedText 需要一个来自 readManagedText() 的句柄（缺 file）');
+    // 旧内容**只读一次**：唯一用途是与调用方声明的版本比对（原子写本身不需要它）
+    let oldText = null;
+    try { oldText = fs.readFileSync(file, 'utf8'); } catch (e) { oldText = null; }
+    versionGate({
+      label: o.label || ('受管文件「' + file + '」'),
+      hint: o.hint || '请重新读取该文件后再改',
+      expectVersion: h.version,
+      actualVersion: oldText === null ? null : versionOfText(oldText)
+    });
+    writeFileAtomic(file, content);
+    return { file: file, version: versionOfText(content) };
   }
 
   function createStore(rootDir, validate) {
@@ -285,20 +381,14 @@
         // 实测两条真路径（见 main.js project:save 的注释）：内存里是子集时写回会删掉
         // 其他笔记；AI/CLI 在界面打开期间写的笔记会被界面的整树覆盖。
         // 口径：**宁可失败，也不静默丢数据**。不传 expectVersion 时行为与从前完全一致。
-        if (o.expectVersion !== undefined && o.expectVersion !== null) {
-          if (actualVersion !== o.expectVersion) {
-            const err = new Error('并发写入冲突：项目「' + name + '」在你读取之后已被其他写入者修改'
-              + '（读到 ' + String(o.expectVersion).slice(0, 8) + '，盘上 '
-              + (actualVersion === null ? '已不存在' : String(actualVersion).slice(0, 8)) + '）。'
-              + '写入已中止，以免静默覆盖那次改动 —— 请重新读取该项目后再改。');
-            // 错误码：`src/concurrency.js` 的自动重放据此判断"这是可重放的版本冲突"。
-            // 有码之后，调用方不必去解析上面这段文案（文案会改）。
-            err.code = VERSION_CONFLICT;
-            err.expectVersion = o.expectVersion;
-            err.actualVersion = actualVersion;
-            throw err;
-          }
-        }
+        // ⚠️ 比较与报错的实现**只此一份**（`versionGate`）—— `writeManagedText`（整文件受管文档）
+        //    走的是同一个函数；这里不许再出现一段 `if (actualVersion !== expectVersion)`。
+        versionGate({
+          label: '项目「' + name + '」',
+          hint: '请重新读取该项目后再改',
+          expectVersion: o.expectVersion,
+          actualVersion: actualVersion
+        });
 
         fs.mkdirSync(projectDir(name), { recursive: true });
         // 原子写：临时文件 + fsync + rename（CLI 全部写命令经此出口）
@@ -357,5 +447,9 @@
     };
   }
 
-  return { createStore, writeFileAtomic, parseProjectJson, versionOf, versionOfText };
+  return {
+    createStore, writeFileAtomic, parseProjectJson, versionOf, versionOfText,
+    // 并发版本闸门的**唯一**比较/报错实现 + 整文件受管文档的读写对（`cli/commands/release.js` 用）
+    versionGate, readManagedText, writeManagedText
+  };
 });

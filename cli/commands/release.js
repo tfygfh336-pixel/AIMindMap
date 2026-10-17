@@ -18,11 +18,33 @@ const path = require('path');
 const version = require('../../src/version.js');
 const changelogLib = require('../../src/changelog.js');
 const dshCaps = require('../../src/dsh-capabilities.js');
+const store = require('../../src/data-store.js');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
-function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
-function write(rel, content) { fs.writeFileSync(path.join(ROOT, rel), content, 'utf8'); }
+/** 读一份**受管文档**，返回 `{file, text, version}` —— 关键是那个 `version`：
+ *  它必须从**读的那一刻**带到**写的那一刻**，读写之间的任何别处写入才会被发现。
+ *
+ *  为什么不是"只读文本"（原先的形态）：`release` 是"读全部 → 改 → 整份覆写"，
+ *  中间那段里别的会话可能已经改过 CHANGELOG（本工程常态：CHANGELOG 常驻"半暂存"状态）。
+ *  只读文本时，那次改动会被**整份覆写静默抹掉**，而 CHANGELOG 是**只增**的历史资产 —— 丢的是历史。
+ *  `opts.optional` ⇒ 文件不存在时不抛（生成物 `docs/CLI.md`、滚动归档新文件这两处需要）。 */
+function read(rel, opts) { return store.readManagedText(path.join(ROOT, rel), opts); }
+
+/** 写回受管文档：**本文件里唯一的写盘出口**。
+ *
+ *  它做三件事，且**三件都不许在这里重写**：
+ *    ① 原子写（临时文件 + fsync + rename）→ `store.writeFileAtomic`（`docs/INCIDENTS.md` 派生禁令第 5 条）；
+ *    ② 版本比对 → `store.versionGate`（与 `store.write` **同一份**比较逻辑；A1：只共用原语而各写一份比较不算共用）；
+ *    ③ 冲突时**报出两侧指纹**并中止 → 同上。
+ *  ⚠️ 这里不许出现第二段 `if (version !== …) throw`，也不许退回裸 `fs.writeFileSync`
+ *     （那正是本批修掉的形态：实现违反了工程的自家禁令）。 */
+function write(handle, content) {
+  return store.writeManagedText(handle, content, {
+    label: '受管文件「' + path.relative(ROOT, handle.file).split(path.sep).join('/') + '」',
+    hint: '请重新读取该文件后再改（CHANGELOG.md 是只增的历史资产，整份覆写会丢历史）'
+  });
+}
 
 /** 渲染 docs/CLI.md 的完整内容（纯函数，不写盘）。
  *  抽出来的唯一理由：让「生成物是否已过期」可以被机械检查 ——
@@ -86,7 +108,10 @@ module.exports = {
     const registry = require('../registry.js');
     const content = renderCliDoc();
     fs.mkdirSync(path.join(ROOT, 'docs'), { recursive: true });
-    write('docs/CLI.md', content);
+    // 生成物也是受管资产 ⇒ 同样过闸门。读一次只为拿到"我读到的是哪一版"：
+    // 生成与写回之间若有人手改过 docs/CLI.md，宁可拒绝并报出两侧指纹，也不静默抹掉。
+    // `optional:true`：首次生成时文件还不存在（version=null ⇒ 闸门放行，与从前一致）。
+    write(read('docs/CLI.md', { optional: true }), content);
     ctx.out('已重生成 docs/CLI.md（' + registry.list().length + ' 条命令）');
   },
 
@@ -98,7 +123,7 @@ module.exports = {
    *  而「上轮改了什么」是最常被问的问题，且 git 侧无替代入口。
    *  索引从正文**现算**，不落生成物 ⇒ 永不漂移，也不需要额外维护步骤。 */
   changelog(ctx) {
-    const text = read('CHANGELOG.md');
+    const text = read('CHANGELOG.md').text;
     const idx = changelogLib.indexChangelog(text);
     const srcLines = text.split('\n');
     const kw = (ctx.args.grep === undefined || ctx.args.grep === true) ? null : String(ctx.args.grep);
@@ -270,7 +295,8 @@ module.exports = {
   },
 
   release(ctx) {
-    const pkg = JSON.parse(read('package.json'));
+    const pkgH = read('package.json');
+    const pkg = JSON.parse(pkgH.text);
     let next = ctx.args._[0];
     if (!next) {
       // 递增逻辑在 src/version.js（纯函数）：低位一律归零。
@@ -288,7 +314,10 @@ module.exports = {
     }
 
     // 1) CHANGELOG：[Unreleased] → [vX.Y.Z]（变换在 src/changelog.js，纯函数、有单测）
-    let changelog = read('CHANGELOG.md');
+    //    ⚠️ `clH` 是**读的那一刻**的句柄：写回时把它的 version 交给闸门。这是本命令最关键的一处 ——
+    //    CHANGELOG 只增不减，整份覆写丢掉的是历史。
+    const clH = read('CHANGELOG.md');
+    let changelog = clH.text;
     try {
       changelog = changelogLib.releaseChangelog(changelog, next, new Date().toISOString().slice(0, 10));
     } catch (err) {
@@ -303,40 +332,44 @@ module.exports = {
       split.archived.forEach((a) => {
         const rel = 'docs/changelog/' + a.version + '.md';
         fs.mkdirSync(path.join(ROOT, 'docs', 'changelog'), { recursive: true });
-        write(rel, changelogLib.renderArchiveFile(a, changelogLib.KEEP_RELEASED_SECTIONS));
+        // optional：归档文件通常还不存在（version=null ⇒ 闸门放行）；已存在时则真的比对，
+        // 免得同一版本段被两次发版写成不同内容而没人发现。
+        write(read(rel, { optional: true }), changelogLib.renderArchiveFile(a, changelogLib.KEEP_RELEASED_SECTIONS));
         archivedCount++;
       });
       changelog = split.main;
     } catch (err) {
       ctx.error('滚动归档失败：' + ((err && err.message) || err));
     }
-    write('CHANGELOG.md', changelog);
+    write(clH, changelog);
 
     // 2) package.json version + src/config.js APP_VERSION + package-lock.json
     //    版本号单源：这三处必须一致，否则运行时（渲染层/CLI init 写 meta.version）
     //    与打包产物版本会互相矛盾。
     pkg.version = next;
-    write('package.json', JSON.stringify(pkg, null, 2) + '\n');
+    write(pkgH, JSON.stringify(pkg, null, 2) + '\n');
 
-    const cfg = read('src/config.js');
-    const cfgNext = cfg.replace(/APP_VERSION:\s*'[^']*'/, "APP_VERSION: '" + next + "'");
-    if (cfgNext === cfg) ctx.error('src/config.js 未找到 APP_VERSION 字段，无法同步版本号');
-    write('src/config.js', cfgNext);
+    const cfgH = read('src/config.js');
+    const cfgNext = cfgH.text.replace(/APP_VERSION:\s*'[^']*'/, "APP_VERSION: '" + next + "'");
+    if (cfgNext === cfgH.text) ctx.error('src/config.js 未找到 APP_VERSION 字段，无法同步版本号');
+    write(cfgH, cfgNext);
 
     // package-lock.json 的顶层与 packages[""] 两处 version
+    let lockH = null;
     let lock = null;
-    try { lock = JSON.parse(read('package-lock.json')); } catch (e) { lock = null; }
+    try { lockH = read('package-lock.json'); lock = JSON.parse(lockH.text); } catch (e) { lock = null; lockH = null; }
     if (lock) {
       lock.version = next;
       if (lock.packages && lock.packages['']) lock.packages[''].version = next;
-      write('package-lock.json', JSON.stringify(lock, null, 2) + '\n');
+      write(lockH, JSON.stringify(lock, null, 2) + '\n');
     }
 
     // 3) README 版本锁
-    let readme = read('README.md');
+    const readmeH = read('README.md');
+    let readme = readmeH.text;
     readme = readme.replace(/当前版本：[\d.]+/g, '当前版本：' + next);
     readme = readme.replace(/AIMindMap-[\d.]+-setup\.exe/g, 'AIMindMap-' + next + '-setup.exe');
-    write('README.md', readme);
+    write(readmeH, readme);
 
     ctx.out('已发版 v' + next
       + '（CHANGELOG 段落 + package.json + src/config.js + package-lock.json + README 版本锁）'
@@ -344,7 +377,7 @@ module.exports = {
     // 交接面提醒：按 §5 准入第 5 条，「在飞 / 未收口」小节在发版时必须清空或移入版本段。
     // 这里只**提醒**（不代改）—— 该小节是给下一个接手的 AI 看的，清空前要人/AI 判断哪些还没收口。
     try {
-      const rm = read('docs/ROADMAP.md');
+      const rm = read('docs/ROADMAP.md').text;
       const seg = rm.split(/^##\s/m).find((s) => /在飞\s*\/\s*未收口/.test(s.split('\n')[0] || ''));
       const rows = seg ? (seg.match(/^\|\s*(在飞|已收口)\s*\|/gm) || []).length : 0;
       if (rows > 0) {
