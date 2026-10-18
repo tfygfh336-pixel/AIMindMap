@@ -37,28 +37,20 @@ const ROOT = path.resolve(__dirname, '..');
 const FIXTURE_REL = path.join('tests', 'fixtures', 'dsh-composed-tree-web.txt');
 /** 夹具正文的起点标记 —— 与 `scripts/dsh-assembly-probe.js` 的层标签同一条正则 */
 const BODY_START_RE = /^#\s*==/;
-const ROW_RE = /^(\s*)- id:\s*(\S.*?)\s*$/;
-const DISABLED_RE = /^(\s*)disabled:\s*(.+?)\s*$/;
+/* 行规则（`- id:` / `disabled:` / 缩进口径）**不在这里** —— 唯一实现在
+ * `scripts/dsh-assembly-probe.js` 的 `parseRows`，本文件通过 `readRows` 适配后使用（见下）。 */
 const NO_VENDOR_MSG = '找不到 DSH 运行包';
 
 /** 只在 `id` 行自己那一级（缩进 +2）上的 `disabled:` 才算这个包的 ——
- *  合成树里 `preset-*.config.plugins[]` 的嵌套行也有 `disabled:`，按"任意一条"读会张冠李戴。 */
+ *  合成树里 `preset-*.config.plugins[]` 的嵌套行也有 `disabled:`，按"任意一条"读会张冠李戴。
+ *
+ *  ⚠️ **实现只有一处**（H1）：行规则（缩进口径 + `disabled` 三态）在
+ *  `scripts/dsh-assembly-probe.js` 的 `parseRows` 里；本函数是它的**薄适配器**
+ *  （只把 `disabledRaw` 改名成 `disabled`，保持本文件调用方与测试的既有契约）。
+ *  本批之前这里是**第二份**同义实现，而且探针那份不看缩进 —— 两份漂开正是"同一件事两处表达"的老病。 */
 function readRows(text) {
-  const rows = [];
-  let cur = null;
-  for (const line of String(text || '').split(/\r?\n/)) {
-    const m = ROW_RE.exec(line);
-    if (m) {
-      if (cur) rows.push(cur);
-      cur = { id: m[2].replace(/^['"]|['"]$/g, ''), indent: m[1].length, disabled: null };
-      continue;
-    }
-    if (!cur) continue;
-    const d = DISABLED_RE.exec(line);
-    if (d && d[1].length === cur.indent + 2 && cur.disabled === null) cur.disabled = d[2];
-  }
-  if (cur) rows.push(cur);
-  return rows;
+  return require('./dsh-assembly-probe.js').parseRows(text)
+    .map((r) => ({ id: r.id, indent: r.indent, disabled: r.disabledRaw }));
 }
 
 /** 夹具 → { header, body }。正文起点 = 第一条 `# ==`（层标签），之前的一切都是出处头。 */
