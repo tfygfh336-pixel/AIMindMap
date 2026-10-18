@@ -372,3 +372,147 @@ describe('G9 对真实工程：docs/RULES.md 当前必须零问题', () => {
     }
   });
 });
+
+/* ============================================================
+ * G9 判定七 / 判定八：封闭欠账册（§7）的**复核面**
+ * ------------------------------------------------------------
+ * 真实缺口（本工程自己犯的）：`docs/RULES.md` §7 明写两句必须当缺陷处理的话 ——
+ * 「册上写着它有问题、而它已经没有问题了」与「册上的对象改名 / 删了」——
+ * 而在 2026-10-19 之前，G9 只核对「标题的条数 == 表格行数」（判定 ①）：**这两句一个判定都没有**。
+ * 一条只数行数的 cap 会慢慢退化成一张"历史清单"。
+ *
+ * ⚠️ 做不到的那一半如实标注：G9 判不了"这条债还在不在"（那要理解语义）。
+ * 能机械做的是两半 —— ⑦ 有没有一条 `node …` 复核命令、⑧ 在册对象里的仓库路径还在不在。
+ *
+ * 动手前的基线读数（`.review/20261019-G9册上条目/probe-ledger-baseline.js`）：
+ * 8 条里只有 1 条带 `node …` 命令；在册对象里能定位到仓库的路径 3 条（其中 1 条指向第三方包内部）。
+ * ============================================================ */
+describe('G9 判定七：欠账册每一条都必须带一条可执行的复核命令', () => {
+  /** 拼一张欠账表；`rows` 里每项 = [id, 在册对象单元格, close 单元格] */
+  const ledgerMd = (rows) => md(
+    '## 7. 封闭欠账册（跨批 · 共 ' + rows.length + ' 条 · **只减不增**）', '',
+    '| ID | 在册对象 | 裁决 | why | close | 出处 |', '|---|---|---|---|---|---|',
+    ...rows.map((r) => '| **' + r[0] + '** | ' + r[1] + ' | debt | w | ' + (r[2] || '') + ' | 出处 |')
+  );
+
+  it('某条没有 `node …` 复核命令 → 报「欠账缺复核命令」并**点名是哪一条**', () => {
+    const src = ledgerMd([['W3', '`src/control.js`', '**复核**：`node scripts/collateral-check.js`'],
+      ['W5', '`%TEMP%` 残留', '没有命令，只有散文']]);
+    const p = rc.analyze(src, {}).filter((x) => x.kind === 'ledger-cmd');
+    expect(p.length).toBe(1);
+    expect(p[0].msg).toContain('W5');
+    expect(p[0].msg).toContain('没有可执行的复核命令');
+  });
+
+  it('每条都带 → 不报', () => {
+    const src = ledgerMd([['W3', '`src/control.js`', '**复核**：`node scripts/collateral-check.js`'],
+      ['W5', '`%TEMP%` 残留', '**复核**：`node -e "console.log(1)"`']]);
+    expect(rc.analyze(src, {}).filter((x) => x.kind === 'ledger-cmd')).toEqual([]);
+  });
+
+  it('命令写在 `why` 栏也算（判定只要求"在这一行里"，**不绑列** —— 绑列会让纯格式改动假红）', () => {
+    const src = md(
+      '## 7. 封闭欠账册（共 1 条）', '',
+      '| ID | 在册对象 | 裁决 | why | close | 出处 |', '|---|---|---|---|---|---|',
+      '| **W3** | `src/control.js` | debt | 现跑 `node scripts/collateral-check.js` 就知道 | 散文 | 出处 |'
+    );
+    expect(rc.analyze(src, {}).filter((x) => x.kind === 'ledger-cmd')).toEqual([]);
+  });
+
+  it('只写了脚本名、没有 `node` 前缀的不算（要有**可执行**形态）', () => {
+    const src = ledgerMd([['W9', 'electron 不回收', '用 `probe-status-idle.js` 复核']]);
+    const p = rc.analyze(src, {}).filter((x) => x.kind === 'ledger-cmd');
+    expect(p.length).toBe(1);
+    expect(p[0].msg).toContain('W9');
+  });
+
+  it('**找不到欠账册整节 ⇒ 必须红**（采不到真值 = 红；照 skill `G4`：跳过不许伪装成通过）', () => {
+    const noLedger = md('## 2. 门禁', '', '| ID | 门禁 |', '|----|------|', '| **G1** | a |');
+    const p = rc.analyze(noLedger, {}).filter((x) => x.kind === 'ledger-cmd');
+    expect(p.length).toBe(1);
+    expect(p[0].msg).toContain('找不到');
+  });
+});
+
+describe('G9 判定八：欠账册「在册对象」里的仓库路径必须仍存在', () => {
+  const ledgerMd = (rows) => md(
+    '## 7. 封闭欠账册（跨批 · 共 ' + rows.length + ' 条 · **只减不增**）', '',
+    '| ID | 在册对象 | 裁决 | why | close | 出处 |', '|---|---|---|---|---|---|',
+    ...rows.map((r) => '| **' + r[0] + '** | ' + r[1] + ' | debt | w | **复核**：`node -e "console.log(1)"` | 出处 |')
+  );
+  /* 无豁免、上界 0 的规矩（测夹具用）：`scanLedger` 自带 opts，
+   * 而 `analyze()` 刻意**不加参数**（`mutate-gates.js` 的负对照按它的逐字签名锚点钝化门禁）。 */
+  const NO_EXEMPT = { nonRepoPaths: [], nonRepoCap: 0 };
+  const scan = (src) => rc.scanLedger(src.split('\n'), NO_EXEMPT);
+
+  it('在册对象点到的路径不存在 → 报「欠账对象已不在」并点名（"册上的对象改了名/删了"）', () => {
+    const src = ledgerMd([['W3', '`src/绝不存在的模块.js` 的 `writeJsonAtomic`']]);
+    const p = scan(src).problems;
+    expect(p.length).toBe(1);
+    expect(p[0].kind).toBe('ledger-path');
+    expect(p[0].msg).toContain('W3');
+    expect(p[0].msg).toContain('src/绝不存在的模块.js');
+  });
+
+  it('路径真存在 → 不报', () => {
+    const src = ledgerMd([['W3', '`scripts/rules-consistency.js` 的某函数']]);
+    expect(scan(src).problems).toEqual([]);
+  });
+
+  it('在册对象里**没有可定位路径** → 不判红，但要在读数里看得见（边界不许隐藏）', () => {
+    const src = ledgerMd([['W5', '`%TEMP%` 留下的沙箱目录（没有仓库路径）']]);
+    const lr = scan(src);
+    expect(lr.problems).toEqual([]);
+    expect(lr.unchecked).toEqual([{ id: 'W5', why: 'none', tokens: [] }]);
+    expect(lr.checkedRows).toBe(0);
+  });
+
+  it('通配 / 带参数 / 散文里的斜杠 / 行号区间 **都不当路径查**（否则是假红）', () => {
+    const src = ledgerMd([['W6', '`scripts/smoke/NN-*.js` · `ok / swept` · `:78-87` 这几类']]);
+    const lr = scan(src);
+    expect(lr.problems).toEqual([]);
+    expect(lr.checkedSites).toBe(0);
+  });
+
+  it('门禁侧登记过的非仓库路径（第三方包内）→ 不判红，且计入"在册豁免"', () => {
+    const src = ledgerMd([['W8', '`dsh-browser-plus` 包内 `docs/tool-reference.md` 把 id 写成可选']]);
+    expect(rc.analyze(src, {}).filter((x) => x.kind === 'ledger-path')).toEqual([]);
+    const lr = rc.scanLedger(src.split('\n'));
+    expect(lr.exempt).toBe(1);
+    expect(lr.unchecked[0]).toMatchObject({ id: 'W8', why: 'exempt' });
+  });
+
+  it('豁免表里的 token 在册上已经用不到 → 报"这条豁免该删"（豁免只减不增）', () => {
+    const src = ledgerMd([['W8', '`dsh-browser-plus` 包内文档（改成别的写法了）']]);
+    const p = rc.analyze(src, {}).filter((x) => x.kind === 'ledger-path');
+    expect(p.length).toBe(1);
+    expect(p[0].msg).toContain('该删');
+  });
+
+  it('豁免缺 reason → 报；豁免条数超上界 → 报', () => {
+    const src = ledgerMd([['W8', '`docs/tool-reference.md`']]);
+    const noReason = rc.scanLedger(src.split('\n'), {
+      nonRepoPaths: [{ token: 'docs/tool-reference.md', reason: '  ' }], nonRepoCap: 5
+    }).problems;
+    expect(noReason.length).toBe(1);
+    expect(noReason[0].msg).toContain('reason');
+
+    const overCap = rc.scanLedger(src.split('\n'), {
+      nonRepoPaths: [{ token: 'docs/tool-reference.md', reason: '第三方包内' }], nonRepoCap: 0
+    }).problems;
+    expect(overCap.length).toBe(1);
+    expect(overCap[0].msg).toContain('上界');
+  });
+});
+
+describe('G9 复核面：真实 docs/RULES.md 的欠账册当前必须"每条都能被复核"', () => {
+  it('每一条都有 `node …` 复核命令；条数与标题声明的「共 N 条」一致（数字从文档现算，不写死）', () => {
+    const lines = fs.readFileSync(path.join(ROOT, rc.RULES), 'utf8').split('\n');
+    const lr = rc.scanLedger(lines);
+    expect(lr.rows.length).toBeGreaterThan(0);
+    expect(lr.rows.filter((r) => !r.cmds.length).map((r) => r.id)).toEqual([]);
+    const claim = rc.parseCountClaims(lines).find((c) => /封闭欠账册/.test(c.heading));
+    expect(claim, '§7 标题里没找到「共 N 条」声明').toBeTruthy();
+    expect(lr.rows.length).toBe(claim.claimed);
+  });
+});

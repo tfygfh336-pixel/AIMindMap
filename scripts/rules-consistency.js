@@ -9,7 +9,7 @@
  *   · 文档数字曾在 6 份副本里互相矛盾 —— 由 G6 治住。
  * 同一个病用同一味药：**单源 + 机器校验**。G6 管"文档里的数字"，G9 管"规则文件自身的自洽"。
  *
- * 本条门禁的判定：**清单见 `analyze()` 里的 ①…⑥ 标记**（此处刻意不写死条数、也不重复枚举 ——
+ * 本条门禁的判定：**清单见 `analyze()` 里的 ①…⑧ 标记**（此处刻意不写死条数、也不重复枚举 ——
  * 写死过一次：加判定时它成了"同一门禁的又一种条数说法"，而它自己抓不到自己）。
  * 任一不满足即 exit 1；其中前两条各自对应一次**真实事故**：
  *   · 声明的条数 == 表格实际行数。
@@ -26,10 +26,20 @@
  *   · 其他文档对「铁律 / 门禁 / 元规则条数」的转述必须与实际一致。
  *   · 门禁声明的条数必须 == 实现脚本里判定标记的去重个数；标记必须唯一；
  *     实现脚本的文案与其他文档里都不得再写死这个条数（应指向标记）。
+ *   · **封闭欠账册（§7）的每一条必须带一条可执行的复核命令**（反引号包住、以 `node ` 开头）。
+ *     防的是 §7 自己声明过、却一直没有判定的那种腐坏：**「册上写着它有问题、而它已经没有问题了」**
+ *     （实测基线，2026-10-19：那 8 条里只有 1 条带 `node …` 命令 ⇒ 其余各条对下一个人只是散文）。
+ *     G9 判不了"这条债还在不在"（那要理解语义），但**能**判"这条还能不能被复核"。
+ *   · **封闭欠账册 `在册对象` 里点到的仓库路径必须仍存在**（§7 写着「册上的对象改名 / 删了」
+ *     必须当缺陷，同样一直没判定）。只查**能在仓库里定位**的 token：通配 / 带空格 / 非路径词一律不查，
+ *     并在输出里逐条打印"本条无路径可查" —— 边界要可见，不能把"没查"读成"查过了没问题"。
  *
  * 边界（诚实标注）：G9 只查**自洽**（前后是否一致），查不了**内容对不对** ——
  * 一条铁律是否真的"不可机械化"、一条门禁是否真的防住了它声称的损害，仍靠人判定。
  * 它也不查 CHANGELOG（历史记录里出现已退役的编号是正常的，不是缺陷）。
+ * 判定⑦ 只判**复核命令在不在**，**不判它跑不跑得通**（真跑就成了重活，照 skill §G 第 1 条：
+ * 门禁里不许起真服务 / 真网络）；判定⑧ 只判**路径在不在**，判不了"这个对象是不是还是那个语义"
+ * （例：`src/control.js` 还在、但那个函数已经被搬走 —— 那只能靠人复核，见各条的 `close` 栏）。
  *
  * ⚠️ **判定⑤认不出「引号里的历史引用」与「真实声明」的区别**。实测：本门禁上线时，
  * `ARCHITECTURE.md` 的 ADR 里为了记录缺陷写了"README 仍写『铁律…共 5 条』"，
@@ -179,7 +189,130 @@ function collectImplScripts(lines) {
   return out;
 }
 
-/** 纯函数形式的判定（清单见 `analyze()` 的 ①…⑥ 标记）；返回 problems[]（不打印、不退出），便于单测。 */
+/* ---------------- 封闭欠账册（§7）的**复核面**：判定 ⑦ / ⑧ 的常量与解析 ---------------- */
+
+/** §7 的定位靠**标题里的"封闭欠账册"**（不靠章节号：编号会动，名字是这一节的唯一标志）。 */
+const LEDGER_HEADING_RE = /^##\s+\d+\.\s*.*封闭欠账册/;
+
+/** 「在册对象」里允许出现、但**不在本仓库**的路径 token（第三方包内 / 机器本地路径）。
+ *  **必须登记在门禁侧**，不许由被检查的那一行自己说一句"这个别查"来决定要不要查（照 skill `B8`）：
+ *  每条要写 `reason`；条数有上界 `LEDGER_NON_REPO_CAP`（只减不增）；复审时机 = 每次动 §7 的条目时。
+ *  ⚠️ 收这条的理由是**实测**（本批基线读数）：`W8` 的「在册对象」写的是 `dsh-browser-plus` **包内**的
+ *  `docs/tool-reference.md` —— 直接当仓库路径查会得到**假红**。那一类只配进这张表；
+ *  **不许**为了消掉假红去放宽判定本身（放宽 = 以后真有仓库路径被删也不报了）。 */
+const LEDGER_NON_REPO_PATHS = [
+  { token: 'docs/tool-reference.md', reason: '在 `dsh-browser-plus` **第三方包内**（相对包根；本仓库没有这个文件）' }
+];
+const LEDGER_NON_REPO_CAP = 1;
+
+/** 取反引号包住的 token（行内代码），按出现顺序。用 charCode 拼出反引号：**注释里写反引号会把 markdown 写坏**。 */
+const TICK = String.fromCharCode(96);
+function collectTickedTokens(text) {
+  const s = String(text || '');
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== TICK) continue;
+    const j = s.indexOf(TICK, i + 1);
+    if (j < 0) break;
+    out.push(s.slice(i + 1, j));
+    i = j;
+  }
+  return out;
+}
+
+/** 把 `| a | b |` 拆成 ['a','b']（去掉行首/行尾的空串再 trim）。 */
+function parseCells(line) {
+  const parts = String(line).split('|');
+  if (parts.length && parts[0].trim() === '') parts.shift();
+  if (parts.length && parts[parts.length - 1].trim() === '') parts.pop();
+  return parts.map((c) => c.trim());
+}
+
+/** 像"仓库内路径"的 token：含 `/`，或以常见扩展名结尾。
+ *  **排除**：通配（含 `*`）、带空格（那是"路径 + 参数"，如 `scripts/x.js --list`）、带协议头。
+ *  实测误报面（都真的出现过）：`ok / swept / failed / errors`（散文里的斜杠）、`:78-87`（行号区间）、
+ *  `writeJsonAtomic`（标识符）、`%TEMP%`（机器路径）。 */
+function looksLikeRepoPath(tok) {
+  const t = String(tok || '').trim();
+  if (!t || t.includes('*') || /\s/.test(t)) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(t)) return false;
+  const bare = t.replace(/:\d+(-\d+)?$/, '');
+  return /[/\\]/.test(bare) || /\.(js|json|txt|md|css|html|vbs)$/i.test(bare);
+}
+
+/** 扫 §7 封闭欠账册：逐行解析 ID / 在册对象 / 复核命令，并对「在册对象」里的仓库路径做**存在性**检查。
+ *  返回 { rows, problems, checkedSites, checkedRows, exempt, unchecked }；problems 由 analyze() 的 ⑧ 收口。
+ *  纯函数（只读 fs.existsSync，不写盘、不打印），便于单测。 */
+function scanLedger(lines, opts) {
+  const o = opts || {};
+  const nonRepo = o.nonRepoPaths || LEDGER_NON_REPO_PATHS;
+  const cap = typeof o.nonRepoCap === 'number' ? o.nonRepoCap : LEDGER_NON_REPO_CAP;
+
+  const rows = [];
+  const problems = [];
+  const unchecked = [];
+  let checkedSites = 0;
+  let checkedRows = 0;
+  let exempt = 0;
+
+  const h = lines.findIndex((l) => LEDGER_HEADING_RE.test(l));
+  const tbl = h >= 0 ? firstTableAfter(lines, h + 1) : null;
+  if (tbl) {
+    for (let i = tbl.start + 2; i <= tbl.end; i++) {
+      const cells = parseCells(lines[i]);
+      const id = (cells[0] || '').replace(/\*/g, '').trim();
+      if (!/^[A-Za-z]+\d+$/.test(id)) continue;          // 只认形如 `**W3**` 的数据行
+      const toks = collectTickedTokens(lines[i]);
+      rows.push({ id, line: i + 1, cells, cmds: toks.filter((t) => /^node\s+\S/.test(t.trim())) });
+    }
+  }
+
+  // （承 ⑧）在册对象的路径存在性（+ 在册豁免的封闭性）
+  const used = new Set();
+  for (const r of rows) {
+    const cand = collectTickedTokens(r.cells[1] || '').filter(looksLikeRepoPath);
+    let sites = 0;
+    const exemptToks = [];
+    for (const raw of cand) {
+      const tok = raw.replace(/:\d+(-\d+)?$/, '');
+      const ex = nonRepo.find((e) => e.token === tok);
+      if (ex) { used.add(tok); exempt++; exemptToks.push(tok); continue; }
+      sites++;
+      checkedSites++;
+      if (!fs.existsSync(path.join(ROOT, tok))) {
+        problems.push({ kind: 'ledger-path', rel: RULES + ':' + r.line,
+          msg: '欠账 ' + r.id + ' 的「在册对象」点到 `' + tok + '`，但本仓库里没有这个文件 —— '
+            + '册上的对象已经改名/删了，却还挂在册上（' + RULES + ' §7 明写这必须当缺陷处理）。'
+            + '收口：销账（并把标题的上界减一），或把这一格改成现在的路径' });
+      }
+    }
+    if (sites) checkedRows++;
+    else if (exemptToks.length) unchecked.push({ id: r.id, why: 'exempt', tokens: exemptToks });
+    else unchecked.push({ id: r.id, why: 'none', tokens: [] });
+  }
+
+  // 豁免自己的封闭性：必须有原因 · 有上界 · **册上已经用不到的那条要删掉**（只减不增）
+  if (nonRepo.length > cap) {
+    problems.push({ kind: 'ledger-path', rel: 'scripts/rules-consistency.js',
+      msg: '「在册非仓库路径」豁免有 ' + nonRepo.length + ' 处 > 上界 ' + cap
+        + ' —— 豁免只减不增；要加必须同批抬上界并写明理由（抬上界是一次显式提交，不是顺手改个数字）' });
+  }
+  for (const e of nonRepo) {
+    if (!String(e.reason || '').trim()) {
+      problems.push({ kind: 'ledger-path', rel: 'scripts/rules-consistency.js',
+        msg: '豁免 `' + e.token + '` 没写 reason —— 不带原因的豁免迟早变成"谁都不敢删的黑洞"' });
+    }
+    if (!used.has(e.token)) {
+      problems.push({ kind: 'ledger-path', rel: 'scripts/rules-consistency.js',
+        msg: '豁免 `' + e.token + '` 在 ' + RULES + ' §7 的「在册对象」里已经找不到了 —— 这条豁免该删'
+          + '（豁免只减不增；留着它等于给将来某个同名 token 预先开好口子）' });
+    }
+  }
+
+  return { rows, problems, checkedSites, checkedRows, exempt, unchecked };
+}
+
+/** 纯函数形式的判定（清单见 `analyze()` 的 ①…⑧ 标记）；返回 problems[]（不打印、不退出），便于单测。 */
 function analyze(rulesText, docTexts) {
   const lines = String(rulesText || '').split('\n');
   const problems = [];
@@ -363,6 +496,31 @@ function analyze(rulesText, docTexts) {
     }
   }
 
+  // ⑦ 封闭欠账册：**每一条必须带一条可执行的复核命令**（反引号包住、以 `node ` 开头）。
+  //    实测缺口（2026-10-19 基线读数）：§7 那 8 条里只有 1 条带 `node …` 命令 ——
+  //    而 §7 自己写着「册上写着它有问题、而它已经没有问题了」必须当缺陷处理，却**一直没有判定**。
+  //    边界：只判**有没有**这条命令，**不判它跑不跑得通**（真跑是重活，照 skill §G 第 1 条）。
+  //    ⚠️ 这里**不加可选参数**（签名保持 `(rulesText, docTexts)`）：`scripts/mutate-gates.js` 的
+  //    负对照是按这一行的**逐字**锚点把本门禁钝化的 —— 签名一动，那条负对照会静默变成空转。
+  //    需要换一套在册豁免 / 上界来做单测的，直接调 `scanLedger(lines, opts)`（它自己带 opts）。
+  const ledger = scanLedger(lines);
+  if (!ledger.rows.length) {
+    problems.push({ kind: 'ledger-cmd', rel: RULES,
+      msg: '找不到「封闭欠账册」（`## N. …封闭欠账册` 这一节的表格里 0 条）—— '
+        + '门禁不能自称"已校验册上条目"：采不到真值 = 红（照 skill `G4`）' });
+  }
+  for (const r of ledger.rows) {
+    if (r.cmds.length) continue;
+    problems.push({ kind: 'ledger-cmd', rel: RULES + ':' + r.line,
+      msg: '欠账 ' + r.id + ' 没有可执行的复核命令 —— 每一条都必须用反引号包住一条 `node …` 命令'
+        + '（例：`node scripts/collateral-check.js`）。否则"这条债还成不成立"对下一个接手的人只是一句散文，'
+        + '而 §7 的判据正是「还了必须销账、销账必须有据」' });
+  }
+
+  // ⑧ 「在册对象」里点到的**仓库路径**必须仍存在（§7：「册上的对象改名 / 删了」必须当缺陷）。
+  //    只查能在仓库里定位的 token；查不到的**不判红**，但由 main() 打印"本条无路径可查"（边界可见）。
+  problems.push(...ledger.problems);
+
   return problems;
 }
 
@@ -405,6 +563,10 @@ function main() {
       const t = firstTableAfter(lines, c.line);
       console.log('  §' + c.section + ' 声明 ' + c.claimed + ' 条 / 表 ' + (t ? t.rows : '无表') + ' 行');
     }
+    const lr0 = scanLedger(lines);
+    console.log('  封闭欠账册: ' + lr0.rows.map((r) => r.id).join(', ')
+      + '（' + lr0.rows.length + ' 条；有 `node …` 复核命令 '
+      + lr0.rows.filter((r) => r.cmds.length).length + ' 条）');
     return;
   }
 
@@ -420,7 +582,9 @@ function main() {
         : p.kind === 'table' ? '表格结构'
           : p.kind === 'ref' ? '悬挂引用'
             : p.kind === 'restate' ? '转述条数'
-              : p.kind === 'gate-count' ? '判定条数不符' : '实现缺失';
+              : p.kind === 'ledger-cmd' ? '欠账缺复核命令'
+                : p.kind === 'ledger-path' ? '欠账对象已不在'
+                  : p.kind === 'gate-count' ? '判定条数不符' : '实现缺失';
       console.log('   [' + tag + '] ' + p.rel + ' —— ' + p.msg);
     }
     console.error('\n规则文件自洽门禁失败（' + problems.length + ' 处）');
@@ -431,13 +595,26 @@ function main() {
   console.log('✓ 编号引用闭合（文档里出现的 G/R/M 都有定义）');
   console.log('✓ 实现列点名的脚本都存在');
   console.log('✓ 门禁声明的「N 条判定」与实现脚本的标记数一致（且标记唯一）');
+  const lr = scanLedger(lines);
+  console.log('✓ 封闭欠账册 ' + lr.rows.length + ' 条：每条都带一条可执行的复核命令（`node …`）');
+  console.log('✓ 封闭欠账册「在册对象」：仓库路径存在性检查 ' + lr.checkedRows + '/' + lr.rows.length
+    + ' 条可查（共 ' + lr.checkedSites + ' 处）· 在册非仓库路径豁免 ' + lr.exempt
+    + ' 处 / 上界 ' + LEDGER_NON_REPO_CAP);
+  for (const u of lr.unchecked) {
+    console.log('   · ' + u.id + ' 本条无路径可查'
+      + (u.why === 'exempt'
+        ? '（在册对象只点到非本仓库路径：' + u.tokens.join('、') + ' —— 已在门禁侧登记豁免）'
+        : '（在册对象里没有能定位到仓库的路径 token）'));
+  }
   console.log('\n规则文件自洽门禁通过');
 }
 
 module.exports = {
   parseCountClaims, firstTableAfter, findIdRows, splitBlocks, sectionOf,
   collectReferences, collectImplScripts, analyze, RULES, SCAN_DOCS,
-  collectJudgmentMarkers, DECLARED_COUNT_RE, JUDGMENT_MARKER_RE
+  collectJudgmentMarkers, DECLARED_COUNT_RE, JUDGMENT_MARKER_RE,
+  scanLedger, collectTickedTokens, parseCells, looksLikeRepoPath,
+  LEDGER_NON_REPO_PATHS, LEDGER_NON_REPO_CAP, LEDGER_HEADING_RE
 };
 
 if (require.main === module) main();
