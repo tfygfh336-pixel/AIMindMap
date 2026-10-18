@@ -1980,6 +1980,27 @@ check('dsh-caps --unmounted：列出"磁盘上有但当前未挂载"的包（防
     return ok(r.out) && /未被任何装配挂载/.test(r.out) && r.out.split('\n').length > 5;
   })() : true);
 
+/* ---------------- 「装配面夹具」与运行包一致（2026-10-18 陈旧夹具批） ----------------
+ * 为什么必须有一条门禁：`tests/fixtures/dsh-composed-tree-web.txt` 自称"web 装配面"，
+ * 实测却落后两代（152 行 vs 287 行、缺 49 个 id，含 `ui-sidebar-terminal` / `ui-sidebar-browser`
+ * 这两个"侧栏入口"，另有 3 个反向残留）⇒ **照它数入口必错**。夹具现在由
+ * `scripts/dsh-fixture-freshness.js` 现生成、并在这里被钉住：改了运行包不改夹具 ⇒ 必红。
+ *
+ * ⚠️ **这条门禁的适用环境（不许含糊）**：它要读 `vendor/dsh/`，而 `vendor/` 被 `.gitignore`
+ *    忽略、**不在版本库**（`git ls-files vendor` = 0）。所以：
+ *      · **有运行包的机器**（本机 dev / 打包机）：真的比对合成树，"夹具过期"当场红；
+ *      · **没有运行包**（新克隆、无 vendor 的 CI）：**不静默跳过** —— 断言它 **exit 3 +
+ *        明确报文**（`找不到 DSH 运行包`），与 `dsh-caps` 那组同一条契约。
+ *    ⇒ 诚实说法：**CI 里覆盖到的是"响亮报错"契约，不是"夹具保鲜"本身**。保鲜只在有 vendor 处成立。
+ *    成本实测：一次 `--dump-config` ≈ 1.4 s（含 node 冷启动）⇒ 塞进 G4（预算 60 s）无压力。 */
+check('装配面夹具与运行包一致：改运行包不改夹具 ⇒ 必红（无 vendor 时断言它**响亮报错**而非静默跳过）', (() => {
+  const sp = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'dsh-fixture-freshness.js')],
+    { cwd: ROOT, encoding: 'utf8' });
+  const out = (sp.stdout || '') + (sp.stderr || '');
+  if (hasDshVendor) return sp.status === 0 && /夹具与运行包一致/.test(out);
+  return sp.status === 3 && /找不到 DSH 运行包/.test(out);
+})(), hasDshVendor ? 'vendor 在：比对合成树' : 'vendor 不在：只验"响亮报错"契约（保鲜未被覆盖）');
+
 /* ---------------- 窄读模式：--brief / --compact / --subtree ----------------
  * 逐条展开写（同下方理由：doc-facts 静态统计 check( 调用点）。 */
 run(['add', PROJ, 'root', '--topic', '窄读探针', '--id', 'narrow-probe']);
