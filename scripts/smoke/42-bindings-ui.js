@@ -91,8 +91,13 @@ function bindingRows(name) {
 }
 function seedSource(files) {
   /* 兜底：上一次**崩在半路**留下的陈旧根（> 30 分钟）清掉；正在跑的那一轮（含本次）一个都不动 ✓
-   * （年龄线为什么必须存在：并发跑同一域时，另一个会话的活目录和"残留"长得一模一样 ✗） */
-  tempRunRoot.sweepStale(RUN.prefix);
+   * （年龄线为什么必须存在：并发跑同一域时，另一个会话的活目录和"残留"长得一模一样 ✗）
+   * 1) 走 `sweepStaleOrThrow` 而**不是**裸 `sweepStale`：清扫失败（`ok:false`）⇒ 当场抛 ⇒
+   *    本断言判红（`[FAIL] … :: THREW: …`，报文带 对象/期望/实际），**不许**静默吞掉。
+   *    上一批把返回值改成三态，但三处调用都不看 ⇒ "清扫这条路坏了"与"没有陈旧项"在调用面上
+   *    仍是同一个"什么也没发生"（那正是本批还的债）。
+   * 2) 判断只有一处（`scripts/smoke/temp-run-root.js`），本域不写第二份。 */
+  tempRunRoot.sweepStaleOrThrow(RUN.prefix);
   RUN.reset('zz-bind-ui-src');
   Object.keys(files).forEach((f) => fs.writeFileSync(path.join(SRC_DIR, f), files[f], 'utf8'));
 }

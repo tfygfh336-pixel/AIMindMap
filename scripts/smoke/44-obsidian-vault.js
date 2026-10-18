@@ -160,7 +160,11 @@ function allLinks(name) {
 }
 
 function seedVault() {
-  tempRunRoot.sweepStale(RUN.prefix);          // 兜底：只清>30 分钟的陈旧根，正在跑的不动 ✓
+  /* 兜底：只清 > 30 分钟的陈旧根，正在跑的不动 ✓
+   * ⚠️ 走 `sweepStaleOrThrow`：清扫失败（`ok:false`）⇒ 当场抛 ⇒ 本断言判红（`THREW:` 里点名），
+   *    **不许**静默吞掉（"清扫这条路坏了"与"没有陈旧项"曾经在调用面上长得一模一样）。
+   *    判断只有一处（`scripts/smoke/temp-run-root.js`），本域不写第二份。 */
+  tempRunRoot.sweepStaleOrThrow(RUN.prefix);
   ['zz-w12-vault', 'zz-w12-vaultlib'].forEach((name) => {
     const dir = RUN.reset(name);
     fs.mkdirSync(path.join(dir, '.obsidian'), { recursive: true });   // ⇒ 主进程/CLI 都该认出"这是一个库"

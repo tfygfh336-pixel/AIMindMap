@@ -16,6 +16,8 @@
  *   ⭐ `sweepStale()` 的返回值**必须能区分三态**（`0 个陈旧项` / `N 个已清扫` / `清扫失败`）——
  *     2026-10-18 实测：它曾经在 `readdirSync` 抛错时只给一个 `swept:0`，把"清扫失败"与"没有陈旧项"
  *     压成同一个 0 ⇒ 判据对"清扫这条路整个坏掉"是瞎的（详见下面 `sweepStale` 的注释）；
+ *   ⭐ 域里**必须**走 `sweepStaleOrThrow()` 而不是裸 `sweepStale()`（见下面那一节）：
+ *     三态只有**被看**才有意义 —— 域 42/43/44 曾经三处都把返回值扔掉，`ok:false` 被静默吞掉；
  *   基名：`under(name)` 里的 `name` **必须是原来那个基名**（`zz-imp-lib` 之类）—— 域 43/44 的
  *         新项目名是主进程**从目录名推**出来的（`sanitizeProjectName(basename(dir))`），
  *         把唯一段写在基名上会连带改掉项目名 ⇒ 唯一段只许写在**父目录**上 ✓。
@@ -144,4 +146,80 @@ function sweepStale(prefix, opts) {
   return out;
 }
 
-module.exports = { planRunRoot, sweepStale, runTag, STALE_MS };
+/* ============================================================
+ * 域里的**唯一调用形态**：`sweepStaleOrThrow()` —— 清扫失败 ⇒ 该断言当场判红
+ * ------------------------------------------------------------
+ * 为什么要再包一层（2026-10-18 补的、还上一批登记的债）：
+ *   `sweepStale()` 已经被改成三态，但域 42 / 43 / 44 三处调用**都把返回值扔掉了**
+ *   （`tempRunRoot.sweepStale(RUN.prefix);` 这种裸表达式语句）⇒ `ok:false`（清扫这条路整个坏掉）
+ *   与 `swept:0`（没有陈旧项）在**调用面上**又合并成"什么也没发生"，一句失败都不会出现 ——
+ *   那正是本工程反复治的病（"一条会静默失败的判据，比缺失的更坏"，`architecture-for-ai` F1）。
+ *
+ * 为什么是"抛"而不是"在成功行里点名"：清扫失败意味着**这一次运行起手的前提没验成**
+ *   （残留有没有、清没清干净都不知道），此后几条断言都在一个来源不明的沙箱上跑 ⇒ 结论不可信。
+ *   `main.js` 的冒烟循环把断言抛错记成 `[FAIL] … :: THREW: …`（报文含 对象 / 期望 / 实际），
+ *   于是失败**比成功更响**，而不是被降级成日志里的一行（那正是上一批记下的债）。
+ *
+ * 为什么三个域不许各写一套判断：三份判断必然漂成三种口径（`A1` / `A3`）⇒ 判断只写在这里，
+ *   域里只留一句"调用"（三个域的文件里都注明了这条）。
+ *
+ * 判别力证明是**永久可复跑**的：`MM_SMOKE_INJECT=sweep-fail`（配 `SMOKE_ONLY=42|43|44`）
+ *   ⇒ 让 `readdirSync` 恒抛 ⇒ `sweepStale` 恒 `ok:false` ⇒ 那三个域**必须**当场红。
+ *   默认空 ⇒ 注入分支一次都不进（与改动前逐字节等价），且**不存在"改文件忘了还原"**这一类事故。
+ * ============================================================ */
+
+/** 判别力注入的键名（本仓既有约定 `MM_SMOKE_INJECT=<key>`；只认这一个值，别的注入值一概忽略） */
+const SWEEP_FAIL_KEY = 'sweep-fail';
+
+/**
+ * `MM_SMOKE_INJECT=sweep-fail` ⇒ 返回一只"`readdirSync` 恒抛"的 fs 桩（其余方法走真的），
+ * `sweepStale` 的第一步就会走进 `ok:false` 分支 —— 注入的是**生产路径上的同一处**失败，不是另写一条。
+ * @param {{fs?:object}} [opts]
+ */
+function injectSweepFail(opts) {
+  const key = String(process.env.MM_SMOKE_INJECT || '').trim();
+  if (key !== SWEEP_FAIL_KEY) return opts;
+  const base = (opts && opts.fs) || nodeFs;
+  const poisoned = new Proxy(base, {
+    get(t, k) {
+      if (k === 'readdirSync') {
+        return () => {
+          const e = new Error('EINJECTED: MM_SMOKE_INJECT=' + SWEEP_FAIL_KEY);
+          e.code = 'EINJECTED';
+          throw e;
+        };
+      }
+      return t[k];
+    }
+  });
+  return Object.assign({}, opts || {}, { fs: poisoned });
+}
+
+/**
+ * 域里的唯一调用形态：**清扫失败 ⇒ 抛**（该断言判红）；成功 ⇒ 返回三态读数并打一行成功读数。
+ * 报文按 `B1` 的三段写全：**对象**（前缀 + 扫描面）/ **期望** `ok:true` / **实际** `ok:false` 的原因。
+ * @returns {{ok:boolean, swept:number, kept:number, failed:number, names:string[],
+ *            errors:Array<{name:string,op:string,code:string}>, error:string}}
+ */
+function sweepStaleOrThrow(prefix, opts) {
+  const out = sweepStale(prefix, injectSweepFail(opts));
+  const where = ((opts && opts.os) || nodeOs).tmpdir();
+  if (out.ok !== true) {
+    const detail = out.error
+      ? 'error=' + out.error
+      : '逐条失败 ' + out.failed + ' 项：' + JSON.stringify(out.errors || []);
+    const e = new Error('兜底清扫失败（前缀 ' + prefix + '，扫描面 ' + where + '）：' + detail
+      + ' ⇒ **期望** ok:true，**实际** ok:false'
+      + ' ⇒ 本次「没有陈旧残留」无法判定（**不许**读成 0 项，也不许当成"没东西要清"）');
+    e.code = 'ESWEEP_FAILED';
+    e.sweep = out;
+    throw e;
+  }
+  /* 成功也留一行读数：否则"清扫这件事到底跑了没"在日志里没有痕迹 ——
+   * 绿的运行里也要能读出"已清几个 / 保留几个"，否则下一次怀疑它空转时又只能靠翻代码。 */
+  console.log('[temp-run-root] 兜底清扫 ' + prefix + '：已清 ' + out.swept + ' 项 / 新鲜保留 ' + out.kept
+    + ' 项（前缀不匹配的不计；扫描面 ' + where + '）');
+  return out;
+}
+
+module.exports = { planRunRoot, sweepStale, sweepStaleOrThrow, runTag, STALE_MS };
