@@ -52,6 +52,8 @@ const dshPackage = require('./src/dsh-package.js');
 const sidebarSkill = require('./src/dsh-sidebar-skill.js');
 // 第 4 面板（停靠面板）的几何**单源**：右侧让位带的三段算术只写在这一处（纯函数、零 Electron）
 const panelGeometry = require('./src/panel-geometry.js');
+// 第 4 面板的**页面本体**（唯一实现；本文件只把它包成 data: URL —— 理由见 dockPanelPageHtml 的注释）
+const dockPanelPage = require('./src/dock-panel-page.js');
 
 const SIDEBAR_WIDTH = 420;
 const MIN_WIDTH = 280;
@@ -127,7 +129,19 @@ const state = {
     epoch: 0,
     restores: 0,
     lastRestore: null,
-    pageErr: null
+    pageErr: null,
+    // ── 面板页 ⇄ 主进程的**消息桥**（第 2 批 a76bab32：「AI 改了哪些文件」清单的第一份业务内容）
+    //    bridge    —— 由**业务方**（`main.js`）注册的处理函数；本文件**不认识**改动清单这回事
+    //                 （它只知道"页面发来一条请求"，谁来回由业务方决定 ⇒ 面板底座与业务解耦）。
+    //    pageReady —— 页面 `did-finish-load` 之后才允许 executeJavaScript 推数据。
+    //    lastPush  —— 最近一次推送的读数（谁、多大、成没成）——失败**不许静默**，要有读数。
+    //    rendered  —— 页面自己回传的"我一共画了几行"（页面侧真值 ⇒ 判据可与主进程读数对拍）。
+    bridge: null,
+    pageReady: false,
+    pendingPush: null,
+    lastPush: null,
+    rendered: null,
+    lastMessage: null
   },
   panelView: null,          // 面板的 WebContentsView（惰性创建；关闭只摘不销毁，见 destroyPanel）
   lastDestroyedPanelId: null,
@@ -839,35 +853,75 @@ function clampWidth(w) {
  *   外加**独立 session partition**（与 DSH 页面零共享 cookie/localStorage/缓存）与外链交系统浏览器。
  * ⚠️ 判据**不许**用 capturePage()：主页面截图里没有原生视图（本工程两次事故：
  *   CHANGELOG.md:4434-4437、:4488；scripts/vision/window-shot.js:4）⇒ 本面板的判据一律
- *   getBounds() 对拍页面让位读数（scripts/smoke/54-dock-panel-geometry.js）。
+ *   getBounds() 对拍页面让位读数（`scripts/smoke/22-sidebar-gap.js` 的第 2 条断言）。
+ *   ⚠️ 订正（2026-10-18，第 2 批）：这里原先指向 `scripts/smoke/54-dock-panel-geometry.js`，
+ *      而那个文件**在底座批收口时就没有了**（那条判据并进了域 22，理由见域 22 的注释）——
+ *      留着一个不存在的路径就是死指针（RULES F1）。
  */
 
-/** 占位页（本批**只有它**：说清这是第 4 面板的底座与怎么关，不摆任何业务 UI）。
- *  为什么用 data: URL：本批不许新增静态资源/写盘面，且控制栏（railPageHtml）已是同一做法。
- *  ⚠️ 判据**不看这张页面的像素**（理由见上）；它只证明"面板里真的加载了一个页面"。 */
-function dockPanelPageHtml() {
-  return 'data:text/html;charset=utf-8,' + encodeURIComponent(
-    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
-    + 'html,body{margin:0;height:100%;background:#fff;color:#1f2329;'
-    + 'font:13px/1.7 "Segoe UI","Microsoft YaHei",sans-serif;overflow:hidden}'
-    + '#hd{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #e4e7ec;'
-    + 'background:#f7f8fa}'
-    + '#tt{flex:1 1 auto;font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
-    + '#x{flex:0 0 auto;width:24px;height:22px;border:none;border-radius:6px;background:transparent;'
-    + 'cursor:pointer;font-size:13px;line-height:1;color:#4e5969}'
-    + '#x:hover{background:#fdecec;color:#d93026}'
-    + '#bd{padding:14px 12px;color:#4e5969}'
-    + 'code{background:#f2f3f5;border-radius:3px;padding:1px 4px}'
-    + '</style></head><body>'
-    + '<div id="hd"><span id="tt">停靠面板（第 4 个原生视图 · 底座）</span>'
-    + '<button id="x" title="关闭停靠面板">✕</button></div>'
-    + '<div id="bd">这一版**只造底座**：几何 / 安全面 / 判据。'
-    + '浏览器、改动清单这些业务内容在下一批（看板卡 a76bab32）。'
-    + '<br>关闭入口：这里右上角 ✕ · 菜单「视图 → 切换停靠面板」。'
-    + '<br>让位读数：页面按 <code>--dsh-sidebar-width</code> 让出 '
-    + '（控制栏 30 + 侧栏 + 本面板）。</div>'
-    + '<script>document.getElementById("x").addEventListener("click",function(){'
-    + 'console.log("[dock-close]");});</script></body></html>');
+/** 面板页（第 2 批 a76bab32：第一份业务内容 =「AI 改了哪些文件」清单）。
+ *  ⚠️ 页面本体**不在本文件**：唯一实现是 `src/dock-panel-page.js`。搬出去的唯一理由是
+ *    那段页面 JS **只有真起视图才会被解析**（写完不跑冒烟 ⇒ 一句语法错的表现只是"面板一片空白"，
+ *    没有任何判据会红）；搬进 src/ 之后 node 单测能直接 `new Function(scriptOf())` 解析它
+ *    （`tests/dock-panel-page.test.js`）。本文件只负责"把它包成 data: URL 交给视图"，
+ *    一行业务文本都没有 —— 面板底座与业务内容彻底分开。 */
+function dockPanelPageHtml() { return dockPanelPage.dataUrl(); }
+
+/* ---------------- 面板页 ⇄ 主进程的消息桥（第 2 批 a76bab32） ----------------
+ * 面板**没有宿主 preload**（与侧栏 view 同一条安全口径：contextIsolation + sandbox + 零 preload），
+ * 所以页面唯一能说话的地方就是 `console.log` —— 这不是本批发明的，错误页的「重试」按钮与
+ * 占位页的 ✕ 用的都是这条通道（见本文件里另外两个 `console-message` 订阅）。
+ *
+ * 三条分工（改这里之前先读）：
+ *   ① **本文件不认识"改动清单"这回事** —— 它只把「页面发来了一条请求」交给注册进来的处理函数。
+ *      业务在 `main.js`（谁来回、回什么由业务方决定）⇒ 面板底座与业务内容解耦。
+ *   ② 页面标记的唯一真源是 `src/dock-panel-page.js` 的 `MARKERS`（页面自己按它们发）；
+ *      这里只按它们分派 —— 两边各写一份字符串就会在某次改名后**静默失联**（页面在请求、没人接）。
+ *   ③ 推数据只走 `pushDockPanelScript()`：`did-finish-load` 之前 executeJavaScript 会抛，
+ *      而"页面还没好"不是错误 —— 它有 `[mm-changelog:req]` 会再来一次（页面加载完自己请求）。 */
+
+/** 注册/清空面板页的消息处理（`main.js` 在 init 之后调一次；测试也可传 null 清掉） */
+function setDockPanelBridge(handlers) {
+  state.dock.bridge = handlers || null;
+  return true;
+}
+
+/** 往面板页里执行一段脚本（**唯一**的主→页面通道；失败不静默，记进 lastPush）。
+ *
+ * ⚠️ **页面还没加载完时不许丢数据**（本批实测踩到）：页面的请求是在 `DOMContentLoaded` 发的，
+ * 那个时刻 `did-finish-load` 还没来 ⇒ 第一次推送必然撞上"页面未就绪"。
+ * 第一版把这次推送记成 err 就扔了，结果是**面板第一次打开永远停在"读取中…"**
+ * （直到用户手动点刷新或拖一下窗口）。现在改成**排队 + pageReady 立刻补发**：
+ * 数据晚到几百毫秒是可以接受的，丢了它不行。 */
+function pushDockPanelScript(code, label) {
+  const v = state.panelView;
+  const rec = { label: label || 'push', at: Date.now(), bytes: String(code || '').length, ok: false, err: null, queued: false };
+  if (!v || !v.webContents || v.webContents.isDestroyed()) {
+    rec.err = '面板视图不在（可能还没建或已销毁）';
+    state.dock.lastPush = rec;
+    return rec;
+  }
+  if (!state.dock.pageReady) {
+    state.dock.pendingPush = { code: String(code || ''), label: rec.label, at: rec.at };
+    rec.queued = true;
+    rec.err = '页面还没加载完 ⇒ 已排队，pageReady 之后立刻补发';
+    state.dock.lastPush = rec;
+    return rec;
+  }
+  try {
+    const p = v.webContents.executeJavaScript(String(code || ''));
+    if (p && typeof p.catch === 'function') {
+      p.then(() => { rec.ok = true; }).catch((e) => {
+        rec.err = String((e && e.message) || e);
+        log('面板页 executeJavaScript 失败（' + rec.label + '）：' + rec.err);
+      });
+    } else { rec.ok = true; }
+  } catch (e) {
+    rec.err = String((e && e.message) || e);
+    log('面板页 executeJavaScript 抛错（' + rec.label + '）：' + rec.err);
+  }
+  state.dock.lastPush = rec;
+  return rec;
 }
 
 /** 惰性创建面板视图（与 ensureView 同形：三个安全开关逐字相同 + 独立 partition）。 */
@@ -888,16 +942,58 @@ function ensurePanel() {
     if (/^https?:\/\//.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
-  // 占位页里那个 ✕ 经 console 回传（面板没有宿主 preload —— 与错误页重试按钮同一条安全通道）
+  // 页面经 console 回传（面板没有宿主 preload —— 与错误页重试按钮同一条安全通道）
+  const M = dockPanelPage.MARKERS;
   view.webContents.on('console-message', (_e, _level, message) => {
-    if (message === '[dock-close]') {
-      log('停靠面板占位页的 ✕ 被点击 → 关闭面板');
+    const msg = String(message === undefined || message === null ? '' : message);
+    state.dock.lastMessage = { at: Date.now(), message: msg.slice(0, 200) };
+    if (msg === M.close) {
+      log('停靠面板页面里的 ✕ 被点击 → 关闭面板');
       closeDockPanel({ reason: 'panel-page-close' });
+      return;
+    }
+    if (msg === M.req || msg === M.reqForce) {
+      const force = msg === M.reqForce;
+      const b = state.dock.bridge;
+      if (!b || typeof b.onRequest !== 'function') {
+        // 没注册处理函数 ≠ 没事发生：**记下来**（页面在请求、没人接 = 面板会一直停在"读取中"）
+        log('面板页请求读数，但主进程没注册处理函数（setDockPanelBridge 没调？）');
+        return;
+      }
+      try {
+        const r = b.onRequest({ force: force, at: Date.now() });
+        if (r && typeof r.catch === 'function') {
+          r.catch((e) => { log('面板页请求处理失败：' + ((e && e.message) || e)); });
+        }
+      } catch (e) {
+        log('面板页请求处理抛错：' + ((e && e.message) || e));
+      }
+      return;
+    }
+    if (msg.indexOf(M.rendered) === 0) {
+      // 页面自己报"我这一轮画了几行" —— 页面侧真值（判据拿它和主进程读数对拍，不靠猜）
+      const n = Number(msg.slice(M.rendered.length).trim());
+      state.dock.rendered = isFinite(n) ? n : null;
+      return;
+    }
+  });
+  view.webContents.on('did-finish-load', () => {
+    state.dock.pageReady = true;
+    log('停靠面板页面已加载完（pageReady=true）');
+    // 页面在加载完**之前**发的请求不该白跑：把排队的那一次立刻补发（见 pushDockPanelScript 的注释）
+    const pending = state.dock.pendingPush;
+    state.dock.pendingPush = null;
+    if (pending) {
+      log('补发页面加载期间排队的推送（' + pending.label + '，' + String(pending.code || '').length + ' 字节）');
+      pushDockPanelScript(pending.code, (pending.label || 'push') + ':flush');
     }
   });
   view.webContents.loadURL(dockPanelPageHtml())
-    .catch((e) => { state.dock.pageErr = String((e && e.message) || e); log('面板占位页加载失败: ' + state.dock.pageErr); });
+    .catch((e) => { state.dock.pageErr = String((e && e.message) || e); log('停靠面板页面加载失败: ' + state.dock.pageErr); });
   state.panelView = view;
+  state.dock.pageReady = false;
+  state.dock.rendered = null;        // 新视图的"我画了几行"要从零起算（旧页面的计数没有意义）
+  state.dock.pendingPush = null;
   state.dock.epoch++;
   state.lastDestroyedPanelId = null;
   log('停靠面板视图已创建（第 ' + state.dock.epoch + ' 次，webContents id=' + viewIdOf(view) + '）');
@@ -957,7 +1053,7 @@ function openDockPanel(opts) {
 /** **关闭**停靠面板（默认只摘不销毁：面板是将来业务内容的容器，开关一次不该把它的状态丢掉；
  *  要回收内存走 destroyPanel() / closeDockPanel({destroy:true})）。
  *  ⚠️ 这里**必须重算几何**（setGeometry）：删掉那一步就是"关掉不还原"——面板还在屏上、
- *     页面还让着位。这条正是 scripts/smoke/54-* 的注入点（删它 ⇒ 必红）。 */
+ *     页面还让着位。这条正是 `scripts/smoke/22-sidebar-gap.js` 第 2 条断言的注入点（删它 ⇒ 必红）。 */
 function closeDockPanel(opts) {
   const o = opts || {};
   if (!state.dock.open) return { ok: true, already: true };
@@ -1772,7 +1868,18 @@ function getStatus() {
       clamped: state.geometry ? state.geometry.clamped : null,
       notes: state.geometry ? state.geometry.notes : [],
       restores: state.dock.restores,
-      lastRestore: state.dock.lastRestore
+      lastRestore: state.dock.lastRestore,
+      // ── 页面桥的读数（第 2 批 a76bab32）—— 每一条都回答"面板真的收到了吗"：
+      //    pageReady     —— 页面加载完没有（false 时推数据必然失败，别把失败当"没有数据"）
+      //    rendered      —— **页面自己报的**"我画了几行"（页面侧真值；判据拿它与主进程读数对拍）
+      //    lastPush      —— 最近一次推送 {label, bytes, ok, err}（推失败**不许静默**）
+      //    lastMessage   —— 最近一条页面 console 消息（截断 200 字；排查"页面在说话没人听"）
+      pageReady: !!state.dock.pageReady,
+      rendered: state.dock.rendered,
+      pendingPush: state.dock.pendingPush ? { label: state.dock.pendingPush.label, at: state.dock.pendingPush.at } : null,
+      lastPush: state.dock.lastPush,
+      lastMessage: state.dock.lastMessage,
+      bridgeRegistered: !!(state.dock.bridge && typeof state.dock.bridge.onRequest === 'function')
     },
     // 导图页的"真关"状态（关 = 页面被卸载；重开 = 重新加载 + 还原宽度/项目）
     mapPageClosed: state.mapPageClosed,
@@ -2271,6 +2378,9 @@ function prefillComposer(text) {
 
 module.exports = {
   init, reattach, toggle, show, hide, isVisible, getStatus,
+  // 工程根（= 侧栏 AI 会话的 cwd）。**导出给 main.js 采样「AI 改了哪些文件」用** ——
+  // 被采样的目录必须与 AI 真正干活的目录是同一个，所以这一处路径只在这里推导一次。
+  projectRoot,
   viewBounds,
   destroy, startService, stopService, restartService,
   // adoptOrStart 是对外生命周期入口（先接管后孵化）—— 导出供 headless 驻留测试
@@ -2289,6 +2399,8 @@ module.exports = {
   //   —— 导出的都是**产品路径**（菜单与冒烟域都调它们，不另写一条通道）
   openDockPanel, closeDockPanel, toggleDockPanel, setDockWidth, isDockOpen,
   panelBounds, geometrySnapshot, destroyPanel, ensurePanel, dockPanelPageHtml,
+  // 面板页 ⇄ 主进程的消息桥（第 2 批 a76bab32）：业务方注册处理函数 + 唯一的推送出口
+  setDockPanelBridge, pushDockPanelScript,
   DOCK_DEFAULTS: panelGeometry.DEFAULTS,
   setGeometry,
   NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN,

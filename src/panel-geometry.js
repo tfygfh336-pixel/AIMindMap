@@ -27,7 +27,7 @@
  *   ③ 面板与侧栏**同高**（都是整窗高）⇒ 没有第二条轴，高度这条不留"半高/上下分栏"的模糊地带；
  *   ④ 面板在**内侧**（不是窗口最右）⇒ 侧栏的 ✕／−／拖宽热区仍贴着 DSH 页面，不会被面板隔开。
  *
- * ## 三条不变式（本模块输出必须恒成立的几何事实；判据在 `scripts/smoke/54-*.js` 独立再算一遍）
+ * ## 三条不变式（本模块输出必须恒成立的几何事实；判据在 `scripts/smoke/22-sidebar-gap.js` 独立再算一遍）
  *   1. **贴接**：`panel.x + panel.width === rail.x`（面板右缘与控制栏左缘严格相接，不许有缝/重叠）；
  *   2. **锚右**：`view.x + view.width === winWidth`（DSH 内容贴窗口右缘 —— 侧栏位置不因面板而漂移）；
  *   3. **让位守恒**：`occupiedWidth === panel.width + rail.width + view.width`，且 `pageWidth >= 0`。

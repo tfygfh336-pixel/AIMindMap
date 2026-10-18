@@ -26,6 +26,71 @@
 
 ## [Unreleased]
 
+### 「AI 改了哪些文件」持久清单：补内核缺的两条（**子代理会话也记** + **重启后还在**），界面落在第 4 原生面板；顺带修掉底座批交出来的一个用户可见 bug（看板卡 a76bab32）（2026-10-18）
+
+- **一句话**：用户最初的需求是"用 DSH 写代码看不到 AI 改了哪些文件"。内核 `@deepseek-ai/dsh-workspace-changes` 会算这件事，但实测它是**当回合卡片里的临时 tab**、且缺两条 —— 本批**换数据源**（读 git working tree，与"谁写的"无关）把这两条补上，并给它第一个 UI（第 4 面板）。
+
+#### ① 为什么必须自己造：内核缺的那两条（逐字取证，`fdbf17d`）
+
+- **子代理会话一律不录**：`vendor/dsh/.../dsh-workspace-changes/lib/index.js:984-987` 逐字
+  `return origin === "subagent" || (delegationDepth ?? 0) > 0 ? undefined : cwd;` ⇒ 本机 29 个会话里 **16 个是全子代理、`changes` 全 no**。
+- **摘要是 Host 内存态**：同文件 `:1034-1039` 的 `forget` 里 `byId.delete(session.id)`；README 逐字 "A conversation reopened after a Host restart therefore has no card" ⇒ 日志里 13 条历史事件去问运行实例，**13/13 `404 Change summary unavailable.`**。
+- **而且它连"面板"都不是**：`package.json` 里**没有** `dsh.client` 字段 ⇒ web 客户端侧没有任何面。
+
+#### ② 数据源：选 **git working-tree 快照**，以及另两条各自为什么不选
+
+- **选的这条为什么对**：它读**盘上的工作树**，与"谁写的"无关 ⇒ 主会话 / 子代理会话 / 用户在外部编辑器改 / 别的进程写，全都一样看得见（**子代理覆盖是结构性的，不是靠某条分支补的**）；且它**不要求 DSH 在跑**（Host 停着、重启之后照样读）；而且它**就是内核自己用的那条源**（`lib/types/git.js` 的 snapshot tree + `diff-tree --numstat`）⇒ 两边讲同一个物理事实。
+- **不选"工具写入事件"（`dsh-tool-fs` / `dsh-tool-str-replace-editor`）**：① 那些事件活在 **Host 进程**（`workspaceChanges` 是 `ctx.provide` 的 Host 服务，`lib/index.js:1044`），面板在 **Electron 主进程**，要收它得先当 DSH 插件 ⇒ 触"不 fork 内核 / 不手改 `cordis.patch.yml`"红线；② 它是**会话内瞬态事件**，Host 不在跑就没有、重启就没了 —— 正是要补的那一半；③ 只覆盖"工具写的"，`bash` 重定向 / 其它进程 / 用户手改全漏 ⇒ 覆盖面反而更窄。
+- **不选"我们自己的写盘出口"（`writeFileAtomic` / `writeManagedText`）**：只覆盖我们写的那几类受管资产，对"AI 改了什么"覆盖率≈0 —— 答不上题目本身。
+- **⚠️ 口径必须与内核分得清**（否则就是"同一事实两处表达"）：内核 = **turn 起点树 → turn 终点树**（"本回合"）；本清单 = **HEAD → 采样那一刻**（"累计还没提交"）。两者**不是同一个数**（一个文件早先几轮就改过、本轮没动 ⇒ 内核记 0，我们仍记累计）⇒ 界面**逐字标注**「相对 HEAD 的**累计**改动（不是"本回合"）」，并把两条 git argv 印在页脚（追溯读数）。
+
+#### ③ 单一写者 / 只增 / 有界窗口（结构读数，不是形容词）
+
+- 新增 `src/change-log.js`（UMD；纯函数 + **唯一写盘者**）。落点 `<userData>/change-log.jsonl`（冒烟走沙箱根，真实 `%APPDATA%` 零触碰，与 `mm-feedback.jsonl` 同一先例）。
+- **为什么落点在被采样目录之外**：被采样的工作树**就是工程根**；日志若放进工程根，它自己会变成"被 AI 改过的文件"混进自家清单（自指），且每次采样都在写它 ⇒ 清单每次都变。**这条是实测踩出来的**（见 ⑦ 偏差②）。
+- **写盘只经** `src/data-store.js` 的 `writeFileAtomic`（注入进 `createStore`）。结构断言（`tests/change-log.test.js` 的「结构 ⑨」）：文件名 `change-log.jsonl` 全仓**只在 `src/change-log.js` 出现一次**（`main.js` 等处一律用 `FILE_NAME`）· 本模块里 `writeFileSync(` / `appendFile(` / `renameSync(` **0 次** · 对注入写出口 `writeAtomic(` **恰 1 处调用**。
+- **只增 ≠ 不设界**：记录只追加、从不改写既有行；但日志是"观察流水"不是账本 ⇒ 有界窗口 `MAX_RECORDS`(400)，裁剪时**保住每个文件的最新一条** —— 否则一个早先改过、之后没再动的文件会因为"那条老记录被裁掉"而**从清单里凭空消失**（把"还在改"说成"没改"）。
+- **采不到 ≠ 没有改动**：`readSnapshot` 的 `source` 分四档（`git` / `no-git` / `no-repo` / `error`），**只有 `ok:true` + 空 `rows` 才表示"真的没改"**；界面按白名单分支（`state !== 'ok' && state !== 'empty'` ⇒ 响亮报错 + 原因），绝不给一张空清单。
+
+#### ④ 界面：第 4 面板的第一份业务内容 —— **顺带修掉底座批交出来的一个用户可见 bug**
+
+- 页面本体新增 `src/dock-panel-page.js`；`main-dsh-sidebar.js` 只留一行 `dockPanelPageHtml() { return dockPanelPage.dataUrl(); }`。**为什么单独成模块**：页面里那段 JS **只有真起 `WebContentsView` 才会被解析**，写完不跑冒烟时一句语法错的表现只是"面板一片空白"；搬进 `src/` 后 node 单测能直接 `new Function(scriptOf())` 解析它（**本批第一版就是这么被咬的**：页面 JS 里嵌了 ASCII 双引号，把宿主那层字符串提前截断）。
+- 通信只用**既有那条安全通道**（面板无宿主 preload）：页面 `console.log('[mm-changelog:req]')` → 主进程采样 → `executeJavaScript` 推回 `window.__mmChangeLog.receive()`；页面画完回传 `[mm-changelog:rendered] <n>`。页面**零 innerHTML**（`createElement` + `textContent`）⇒ 文件名里的 `<`、`&`、`</script>` 不可能是结构。
+- **⚠️ 修掉的真 bug（底座批 `62dab56` 交出来的）**：页面的数据请求在 `DOMContentLoaded` 发出，而那时 `did-finish-load` 还没来 ⇒ **首次推送被丢、此后没人再请求 ⇒ 面板第一次打开永远停在「读取中…」**。修前读数（注入复现）：`页面就绪=false（pageReady=true rendered=null）｜推送={"ok":false,"err":"页面还没加载完…"}｜DOM 行数=0 主进程读数=19｜meta="读取中…"`。修法：`state.dock.pendingPush` **排队 + `pageReady` 后立刻补发**。修后：`rendered=19 / lastPush={label:"change-log:flush",ok:true}`。
+- 面板的**几何与开关语义一个字节没改**（`setGeometry` / `relayout` / `computeGeometry` 零改动）；本批只在拥有面板视图的那个文件里加了「页面 + 消息桥」两节。另订正了它里面两处**死指针**（指向已被删除的 `scripts/smoke/54-dock-panel-geometry.js`，几何判据实际住在域 22）。
+
+#### ⑤ 四条判据的读数（逐条给读数）
+
+- **① 每条记录能追溯到数据源**：独立探针里 **4/4 条**与"重跑同一条 git argv"逐条相同（`a.txt +2/−0` · `gone.txt +0/−3` · `new.txt +3/−0` · `bin.dat 二进制⇒null`）；冒烟里对真实工作区再跑一次：**19/19 条，漂移 0 消失 0**。
+- **② 单一写者**：见 ③ 的结构读数（三条）。
+- **③ 子代理会话的改动也记**：在**真实工作区**采一次，本子代理会话自己写的 4 个文件都在清单里（`src/change-log.js` · `src/dock-panel-page.js` · `tests/change-log.test.js` · `tests/dock-panel-page.test.js`）；**剥掉注释后**采样代码里对"会话/子代理"的引用数 = **0**（它根本不看会话身份）。
+- **④ 重启后还在**：起一个**全新 node 进程**读同一个 jsonl —— 文件清单与合计与父进程**逐项相同**（`{"files":4,"added":5,"deleted":3,"binary":1}`），且每条记录自带 `head`（能自证采自哪一版）。
+- **⑥ 能被打红（两条，都做完了完整闭环）**：(a) 注入「页面未就绪时不再排队」⇒ 冒烟域 22 **10/11**（FAIL 原文见上）⇒ 原始 Buffer + **三记**还原（sha256 `91222069…` / 146202 B / CR 2420 逐项相同）⇒ **11/11 复绿**；(b) 注入「`planAppend` 末尾 `fresh.pop()`」⇒ 单测 **8 failed / 40** ⇒ 三记还原（`6d7e0b07…` / 35867 B / CR 0）⇒ **57 passed / 2 files 复绿**。还原**绝不用** `git checkout`/`restore`/`stash`（R1a），读数在 `.review/20261018-改动清单/injection/`。
+
+#### ⑥ 排程：本批给 G3 / G5 加多少秒（**先量，不估**）
+
+- **G3 +0.96 s**（`tests/change-log.test.js` 547 ms + `tests/dock-panel-page.test.js` 417 ms；57 条用例 / 2 个文件，纯函数零 git 零 Electron）。
+- **G5 +5.6 s**：新增那条断言**自计时 4094–5071 ms**（其中 2 次真 git 采样 ≈1.08 s）+ **既有几何断言**因"面板页加载时会请求一次读数"多付 **1 次采样 ≈0.54 s**（两条都是 `ctx.changeLog.readings()` 的 `samples` / `beforeThisAssertion` / `thisAssertion` 读数，不是估的）。
+- **能不能放进更便宜的层？——已经这么分了**：算术（解析 / 去重 / 冲销 / 有界窗口 / 摘要 / JSONL 往返）⇒ **G3**；严格追溯 + **子代理覆盖** + **重启后还在** ⇒ **独立非链探针**（确定性临时仓库，链上 0 s）；**只有"接线"进 G5**（面板真的画出来 + 页面/主进程两侧读数逐条相同 + 口径与追溯印在页面上）。若要再省，可删掉冒烟里那 1 次"重跑 git 对拍"（≈0.54 s），严格版已在探针里。
+
+#### ⑦ 如实偏差（本批实测踩到的）
+
+- **偏差①**：见 ④ 那个"第一次打开停在读取中"的 bug（真产品 bug，已修 + 已做判别力证明）。
+- **偏差②**：探针第一版把清单文件放进被采样的临时仓库里 ⇒ 自指（四条改动变**五条**、冲销之后清单永远剩它一个、追溯 4/5）。不是产品缺陷，但正好把"为什么落点必须在被采样目录之外"实测了一遍。
+- **偏差③**：**未跟踪的二进制**曾被数出"1 行"（`git diff --numstat` 不管未跟踪文件 ⇒ 我们读盘数行数，拿 utf8 数含 NUL 的文件会得到"1 行"这种凭空数字）。修法：按**前 8000 字节有没有 NUL**（与 git 同口径）判二进制 ⇒ `add/del=null + binary:true + src:'binary'`，并补单测锁住。
+- **偏差④（同类三次，值得单记）**：结构断言**命中了它自己的自述**（`writeFileSync` / `delegationDepth` / 文件名 —— 三次都是我写的注释把判据判红）。处置一致：要么**剥注释再扫**，要么**干脆不把那个字面量写进注释**。
+- **偏差⑤**：`scripts/smoke/54-dock-panel-geometry.js` 是**死指针**（底座批 `62dab56` 的注释指着它，而文件在收口时被删、判据并进了域 22）。已在 `main-dsh-sidebar.js` 订正两处；`src/panel-geometry.js` 那一处由它自己的主人订正。**顺带核清了为什么底座批的 `fix-arch-54-refs.js` 没生效**：它只指向**一个文件**（`docs/ARCHITECTURE.md`），而 `54-…` 这个标识符是被 **`patch-sidebar.js` 与 `patch-docs.js` 两个 writer 写进 3 个文件**的 ⇒ 修 1 个、漏 2 个。教训不是"要打命中数"（它**有**命中数检查，`n !== 1` 就 exit 1），而是**收口前要对"被废止的标识符"做一次全仓 grep，并把命中数 0 当判据**。
+- **偏差⑥**：`.review/20261018-预算重算/`（**不是本批的目录**）缺 README 曾让 G8 红；已由它的主人补上（本批**没有**代写）。
+- **偏差⑦（我自己违反了 R1b，被 G1 当场抓住）**：我把全链日志用 pwsh 的 `Tee-Object -FilePath .review/…/verify-full.txt` 写出 ⇒ 那个文件 **3522 字节里 295 个 U+FFFD**（pwsh 按本地代码页解码子进程输出，中文全毁），而 `.review/` **在 G1 的扫描面里** ⇒ 全链第 1 步就红（`✗ ② U+FFFD 替换字符：1 处`）。用 node 删掉该文件后 G1 复绿。本目录下所有 `*.txt` / `*.json` 一律由 node 的 `fs.writeFileSync(…,'utf8')` 写。
+- **偏差⑧（如实记一条未定性的偶发）**：全链**第一次**跑出 G5 **325/326**，而**我自己的过滤命令**（`Select-Object -Last 70`）把那条 FAIL 行丢了 ⇒ **哪条断言红的、无法定性**；紧接着同一条命令重跑是 **326/326**，最终全链也是 326/326。⇒ **如实记为"未定性的偶发一红"**，不当成"已修"。我做的只有一件事：把**本批那条**断言里最可能受负载影响的一处（等页面报数的窗口）从 4.8s 放宽到 9.6s —— 它**不削弱**判别力（`no-queue` 注入根本没有第二次投递机会，等再久也不会自己好，注入实测 10/11 已证），且稳态开销为 0（正常 400–800ms 就退出循环）。
+
+#### ⑧ 全链读数（`npm run verify`）
+
+- **ok=true，13 步 / 1098.6s（预算 1770s，预算内）**：G1 1.7s · G8 0.8s · G9 0.6s · V1/V2/S1/S2/S3 各 ≤1.2s · **G3 40.4s / 69s** · G6+G7 0.9s · **G4 30.4s / 60s**（527/527 集成断言）· G2 1.9s · **G5 1017.4s / 1468s（326/326 passed，未验证 0；视觉断言 2/2）**。
+- **G5 与上一版的差**：本次 **1017.4s** vs 上次成功链 **1174.2s**（−156.8s）—— ⚠️ 这个差**不是**本批省下来的（本批实测**净增 5.6s**，见 ⑥），而是**同机负载波动**；把链间差读成本批收益是错的。
+- ⚠️ 全链跑完之后我又改了 CHANGELOG 与 `.review/` 下的证据（都是**文档/工作产物**，且 CHANGELOG **不在** `doc-facts` 的"当前事实"扫描面里）⇒ 随后**单独复跑** G1 / G8 / G9 / G6+G7 于最终工作树，全部 exit 0（读数见 `.review/20261018-改动清单/README.md` 的「收口读数」）。
+
+
 ### 第 4 个原生面板（停靠面板）· 第 1 批：**底座** —— 一个能开能关、几何正确、判据齐备的空面板（看板卡 e36a521a）（2026-10-18）
 
 - **一句话**：用户拍板「造」的"我们自己的第 4 个原生面板"，本批**只造底座**（几何 / 安全面 / `getBounds()` 判据 + 一个 `data:` 占位页），**不含任何业务内容**（浏览器 / 改动清单属第 2 批 `a76bab32`）。之所以先造底座：既有几何判据（冒烟域 11/22/24/53）全部围绕"右侧一条让位带"，而第 4 个原生视图会往这条带里塞第三个矩形 —— 再不把几何与判据立住，后面每加一次业务就要改一次判据。

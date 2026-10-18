@@ -20,6 +20,9 @@ const dropTarget = require('./src/drop-target.js');   // P7 落点判定（纯�
 const pathChain = require('./src/path-chain.js');     // 「路径 → 打开/预览」的**唯一判据处**（UMD 纯函数，零 I/O）
 const editorCandidates = require('./src/editor-candidates.js'); // 编辑器候选/两档/argv 的**判据处**（UMD 纯函数）
 const editorProbe = require('./src/editor-probe.js'); // 编辑器候选的**运行时探测**（I/O 可注入；见文件头"不写死"）
+/* 【第 2 批 a76bab32】「AI 改了哪些文件」清单：纯逻辑 + **唯一写盘者**都在 src/change-log.js。
+ * 本文件只负责"什么时候采、采哪个目录、把读数推给谁"（见下面「AI 改了哪些文件」那一节）。 */
+const changeLog = require('./src/change-log.js');
 
 const ROOT = __dirname;
 const REAL_PROJECTS_DIR = path.join(ROOT, 'projects');
@@ -1243,6 +1246,179 @@ function feedbackRecordForAppend(record) {
   if (!ok) return { error: 'target 不符合契约（kind ∈ node|nodes|project，各形状键白名单见 app-ask.js 的 makeFeedbackRecord）' };
   return { record: record };
 }
+
+/* ============================================================
+ * 「AI 改了哪些文件」清单（看板卡 a76bab32 · 第 2 批）
+ * ------------------------------------------------------------
+ * 这一节**只做四件事，一件算术都没有**：
+ *   ① 推导落点（正式 `<userData>/<FILE_NAME>`；冒烟 = 沙箱根 ⇒ 真实 %APPDATA% 零触碰）；
+ *      ⚠️ 这里**故意不写那个文件名的字面量**：它的唯一一份是 `src/change-log.js` 的 `FILE_NAME`。
+ *      本批实测踩到过一次 —— 我在注释里写了字面量，`tests/change-log.test.js` 的"全仓只出现一处"
+ *      结构断言当场变红。那条断言是对的：**注释里的名字也会让日后 grep 的人找错地方**。
+ *   ② 建**唯一写者**（`store.record()` 是唯一落盘调用，落盘只经 `writeFileAtomic`）；
+ *   ③ 采样的触发与**复用窗口**（间隔的真源在 `src/change-log.js` 的 `SAMPLE_MIN_INTERVAL_MS`）；
+ *   ④ 把读数推给第 4 面板（经 `dshSidebar.pushDockPanelScript` —— 唯一的主→页面通道）。
+ * 数据源为什么是 git working tree、为什么不选"工具写入事件"与"我们自己的写盘出口"、
+ * 以及与内核那个"本回合"读数的口径差别 —— 全部逐字写在 `src/change-log.js` 的文件头（单一真源）。
+ *
+ * ⚠️ 落点为什么在 userData 而**不在工程目录里**：被采样的工作树就是工程根本身。
+ *    日志若也放进工程根，它自己会变成"被 AI 改过的文件"混进自家清单（自指），
+ *    而且每次采样都在写它 ⇒ 清单每次都不一样。userData 在工程根之外 ⇒ 自指结构上不可能发生。
+ * ============================================================ */
+
+/** 清单文件路径（**唯一推导处**；文件名取自 `src/change-log.js` 的 `FILE_NAME`，别处不许再写一遍） */
+function changeLogFile() {
+  if (SMOKE_PROJECTS_DIR) return path.join(SMOKE_PROJECTS_DIR, changeLog.FILE_NAME);
+  return path.join(app.getPath('userData'), changeLog.FILE_NAME);
+}
+
+/** 惰性建（`app.getPath` 要等 ready；冒烟路径也走它） */
+let changeLogStoreHandle = null;
+function changeLogStore() {
+  if (!changeLogStoreHandle) {
+    changeLogStoreHandle = changeLog.createStore({
+      file: changeLogFile(),
+      writeFileAtomic: writeFileAtomic      // 唯一原子写出口（不许在本文件里自己写 tmp+rename）
+    });
+  }
+  return changeLogStoreHandle;
+}
+
+/** 采样账（读数用：采了几次、几次是复用的、最近一次为什么） */
+const CHANGE_LOG_STATE = { samples: 0, served: 0, reused: 0, lastAt: null, lastSnapshotAt: 0, lastPayload: null, lastRequest: null };
+
+/**
+ * 被采样的工作树 root —— **AI 的会话 cwd**，唯一真源是 `main-dsh-sidebar.js` 的 `projectRoot()`
+ * （侧栏 spawn 时 `cwd: projectRoot()`，DSH 会话继承它）⇒ 这里不另算一份路径。
+ * 为什么不按 session 问 Host 要 cwd：那正是内核的取法，而它取不到的恰好是本批要补的两种情形
+ * （子代理会话 / Host 重启后）—— 见 `src/change-log.js` 文件头。
+ */
+function changeLogRoot() {
+  try { return dshSidebar.projectRoot(); } catch (e) { return ROOT; }
+}
+
+/** 把"一次快照"折成**推给页面的那一份**（纯拼装，不含任何统计 —— 统计在 changeLog.summarize） */
+function buildChangePayload(snap, rec) {
+  const payload = {
+    v: 1,
+    at: snap.at,
+    atText: changeLog.fmtAt(snap.at),
+    servedAt: new Date().toISOString(),
+    source: snap.source,
+    cached: false,
+    cachedAgeMs: 0,
+    state: 'ok',
+    reason: null,
+    headShort: null,
+    root: snap.repoRoot || snap.rootInput || null,
+    rows: [],
+    totals: { files: 0, added: 0, deleted: 0, binary: 0 },
+    unitText: '',
+    trace: {},
+    observed: 0
+  };
+  if (!snap.ok) {
+    // **采不到 ≠ 没有改动**：state 直接给 source（no-git / no-repo / error / no-root），页面照它响亮报错
+    return Object.assign(payload, { state: snap.source, reason: snap.reason || '采不到数据源' });
+  }
+  const reading = (rec && rec.reading) ? rec.reading : changeLogStore().reading();
+  return Object.assign(payload, {
+    state: reading.rows.length ? 'ok' : 'empty',
+    at: reading.at || snap.at,
+    atText: reading.atText || changeLog.fmtAt(snap.at),
+    headShort: reading.headShort,
+    root: reading.root || payload.root,
+    rows: reading.rows,
+    totals: reading.totals,
+    unitText: reading.unitText,
+    trace: reading.trace,
+    observed: reading.observed,
+    // 本次采样的账（页面不显示，但读数对拍要看它：新增几条、冲销几条、有没有真写盘）
+    sample: { added: rec ? rec.added : 0, reverted: rec ? rec.reverted : 0, written: !!(rec && rec.written) },
+    notes: snap.notes || [],
+    git: snap.git || null,
+    bad: (snap.bad || []).length
+  });
+}
+
+/**
+ * 采一次样（必要时落盘）并返回**给页面的 payload**。
+ * `force:true` 绕过复用窗口（刷新按钮）；否则窗口内直接返回上一次的快照，
+ * 并**如实标** `cached:true + cachedAgeMs` —— 复用来的读数绝不许装成"刚采的"。
+ */
+function sampleChangeLog(opts) {
+  const o = opts || {};
+  const nowMs = Date.now();
+  const trigger = o.trigger || 'panel';
+  CHANGE_LOG_STATE.lastRequest = { at: nowMs, force: !!o.force, trigger: trigger };
+  if (!o.force && CHANGE_LOG_STATE.lastPayload
+      && (nowMs - CHANGE_LOG_STATE.lastSnapshotAt) < changeLog.SAMPLE_MIN_INTERVAL_MS) {
+    CHANGE_LOG_STATE.reused++;
+    CHANGE_LOG_STATE.served++;
+    return Object.assign({}, CHANGE_LOG_STATE.lastPayload, {
+      cached: true,
+      cachedAgeMs: nowMs - CHANGE_LOG_STATE.lastSnapshotAt,
+      servedAt: new Date(nowMs).toISOString()
+    });
+  }
+  const snap = changeLog.readSnapshot({ root: changeLogRoot() });
+  let rec = null;
+  if (snap.ok) {
+    rec = changeLogStore().record(snap.rows, {
+      at: snap.at,
+      root: snap.repoRoot || snap.rootInput,
+      head: snap.head,
+      trigger: trigger,
+      source: 'git'
+    });
+  }
+  CHANGE_LOG_STATE.samples++;
+  CHANGE_LOG_STATE.served++;
+  CHANGE_LOG_STATE.lastSnapshotAt = nowMs;
+  CHANGE_LOG_STATE.lastAt = new Date(nowMs).toISOString();
+  const payload = buildChangePayload(snap, rec);
+  CHANGE_LOG_STATE.lastPayload = payload;
+  return payload;
+}
+
+/** 采样 + 推给第 4 面板（**唯一的主→页面通道**）。面板没开/页面没好时 push 会记 `err`，不静默 */
+function pushChangeLogToPanel(opts) {
+  const payload = sampleChangeLog(opts);
+  const code = 'window.__mmChangeLog && window.__mmChangeLog.receive(' + JSON.stringify(payload) + ');';
+  const push = dshSidebar.pushDockPanelScript(code, 'change-log');
+  return { payload: payload, push: push };
+}
+
+/** 面板发来请求时该干什么（注册进 `main-dsh-sidebar.js` 的消息桥；面板底座不认识"改动清单"） */
+function installDockPanelBridge() {
+  dshSidebar.setDockPanelBridge({
+    onRequest: (info) => {
+      const force = !!(info && info.force);
+      pushChangeLogToPanel({ force: force, trigger: force ? 'refresh' : 'panel-open' });
+    }
+  });
+}
+
+/** 冒烟/探针用的读数与驱动（**只读 + 显式驱动**，不新开 IPC 名字） */
+const changeLogApi = {
+  file: () => changeLogFile(),
+  root: () => changeLogRoot(),
+  status: () => changeLogStore().status(),
+  /** 强制真采一次（绕过复用窗口），返回 payload */
+  sample: (opts) => sampleChangeLog(Object.assign({ force: true }, opts || {})),
+  /** 强采 + 推面板，返回 {payload, push} */
+  push: (opts) => pushChangeLogToPanel(Object.assign({ force: true }, opts || {})),
+  /** 只读当前清单（不采样、不写盘） */
+  reading: () => changeLogStore().reading(),
+  /** 采样账（采了几次 / 复用几次 / 最近一次请求） */
+  readings: () => Object.assign({}, CHANGE_LOG_STATE, { lastPayload: CHANGE_LOG_STATE.lastPayload ? {
+    state: CHANGE_LOG_STATE.lastPayload.state,
+    at: CHANGE_LOG_STATE.lastPayload.at,
+    headShort: CHANGE_LOG_STATE.lastPayload.headShort,
+    totals: CHANGE_LOG_STATE.lastPayload.totals,
+    cached: CHANGE_LOG_STATE.lastPayload.cached
+  } : null })
+};
 
 function registerIpc() {
   ipcMain.handle('project:list', () => listProjects());
@@ -2960,6 +3136,11 @@ async function runSmoke(win) {
   // 只能由 AI/CLI 写入）。`runCli` 在冒烟模式下已把项目根指向临时副本
   // （AI_MINDMAP_PROJECTS_DIR），所以断言用它是安全的 —— 绝不碰真实数据。
   const ctx = { exec, win, runCli: (args) => runCli(args) };
+  /* 【第 2 批 a76bab32】「AI 改了哪些文件」清单的**主进程侧读数与显式驱动**：
+   * 域 22 用它把"面板真的画了几行"与"清单里真的有几条"对拍 ——
+   * 两个数来自**不同来源**（页面 DOM 自报 vs 主进程 store），对拍才有判别力。
+   * 全在 main 进程内（`ctx.exec` 只是主→渲染的桥）⇒ **不需要新开 IPC 通道**（同 ctx.input 的先例）。 */
+  ctx.changeLog = changeLogApi;
   /* 出口调用账（只读切片 + 清零；见 `SMOKE_OPEN_FILE_LOG` 的声明处）：
    * 断言用"点之前/点之后各读一次"来判"这一跳有没有走唯一出口、走的是哪条绝对路径"。 */
   ctx.openFileLog = () => SMOKE_OPEN_FILE_LOG.map((x) => Object.assign({}, x));
@@ -3645,6 +3826,9 @@ app.whenReady().then(() => {
     if (!gotSingleLock) return;   // 已有实例：本次进程只负责把它调回前台（见上面的单实例说明）
     registerIpc();
     console.log('[main] registerIpc ok');
+    // 第 4 面板的消息桥（第 2 批 a76bab32）：面板页发来"要读数"时由本文件的 pushChangeLogToPanel 回它。
+    // 放在这里而不是窗口创建之后：它只登记一个处理函数（不依赖窗口，也不采任何样）。
+    installDockPanelBridge();
     if (exportImageArgs) {
       const win = createWindow({ width: 1680, height: 1050, show: false });
       console.log('[main] export-image window created');

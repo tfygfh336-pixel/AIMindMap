@@ -314,5 +314,133 @@ module.exports = [
           + '｜注：面板是原生 view，capturePage 截不到 —— 这类缺陷**只能靠几何判定**'
       };
     }
+  },
+  /* ================= 第 4 面板的**业务内容**：「AI 改了哪些文件」清单（2026-10-18 第 2 批 a76bab32）
+   * 为什么也落在这个域：第 4 面板的语义之家就是这里（上一块是它的几何，这一块是它的第一份内容），
+   * 与上一批把底座判据并进本文件同一理由 —— 不新开域就不用动 changed-plan 那张表，也不多付一次启动。
+   *
+   * 这一块判**四件事**（全在两处不同来源之间对拍，任一处同源都会退化成恒等）：
+   *   ① 页面真的收到了数据（`lastPush.ok === true`）且**自己报了行数**（`rendered !== null`）；
+   *   ② **页面自报的行数 == DOM 里真的存在的行元素数**（`[data-mm-cl-row]` 计数）；
+   *   ③ **DOM 行数 == 主进程 store 的读数行数**，且路径集合逐条相同
+   *      ⇒ 页面画的就是清单里那几条，没有漏画、没有凭空多画；
+   *   ④ 口径与追溯**印在页面上**（"累计" + `--numstat` 那串 argv）——
+   *      这是唯一能和内核「本回合」那个数混的地方，所以它必须是页面上看得见的字。
+   *
+   * ⚠️ 严格版的"每条记录都能由重跑的 git 复算"**不在这里**（它对工作树漂移敏感：
+   *    别的进程此刻改一个文件就会假红）。那条判据在**确定性**的独立探针里做
+   *    （`.review/20261018-改动清单/tools/probe-change-log.js`：临时仓库 + 手算行数 + 逐条对拍）。
+   *    这里只报"对上了几条"作为读数，不当判据。
+   * 收尾：关面板 + **真销毁**视图（V2：本域留下的东西自己收掉）。 */
+  {
+    name: '第 4 面板业务内容：改动清单 —— 页面自报行数==DOM 行数==主进程读数，且口径与追溯印在页面上',
+    run: async (ctx) => {
+      const t0 = Date.now();     // 自计时：这条断言给 G5 加了**多少毫秒**必须能被读出来（不是估的）
+      const cl = ctx.changeLog;
+      // 采样账的**本域起点**：借此把"本域里以前那几条断言额外付的采样钱"与"本断言自己花的"分开报
+      const samplesAtStart = cl ? cl.readings().samples : 0;
+      if (!cl) return { ok: false, text: 'ctx.changeLog 不存在 —— main.js 没把清单读数挂到冒烟 ctx 上（判据自己先断了）' };
+      const pre = await dockSetup(ctx);
+      sidebar.openDockPanel({ reason: 'changes-smoke', force: true });
+
+      // 页面给数据是异步的（页面加载完 → console 请求 → 主进程采样 → executeJavaScript 推回）。
+      // ⚠️ "页面加载期间发的请求"由主进程**排队并在 pageReady 后补发**（见 pushDockPanelScript 的注释）——
+      //    本批第一版没排队 ⇒ 面板第一次打开永远停在"读取中…"（就是这条断言抓出来的）。
+      // ⚠️ 等多久：**4.8s → 9.6s**（2026-10-18 全链第一次跑出 325/326，标识不明；最可能的机制是
+      //    52 个域跑完之后面板页加载变慢 ⇒ 等不够就判红）。放宽等待**不削弱**这条断言的判别力：
+      //    `no-queue` 那个注入根本没有第二次投递机会，等再久也不会自己好（注入实测 10/11 已证）。
+      //    ⇒ 稳态开销 0（页面正常 400–800ms 就报数，循环立刻退出）。
+      const waitOk = await (async () => {
+        for (let i = 0; i < 48; i++) {
+          await sleep(200);
+          const d = (sidebar.getStatus().dockPanel || {});
+          if (d.pageReady === true && d.rendered !== null && d.rendered !== undefined
+            && d.lastPush && d.lastPush.ok === true) return true;
+        }
+        return false;
+      })();
+      const dom = (sidebar.getStatus().dockPanel || {});
+      const mainSide = cl.status();
+      // 页面侧真值：DOM 里到底有几个行元素、路径是什么
+      const panelWcId = dom.viewId;
+      const panelWc = panelWcId === null || panelWcId === undefined ? null : webContents.fromId(panelWcId);
+      let page = null;
+      try {
+        page = panelWc ? await panelWc.executeJavaScript('(function(){'
+          + 'var rows = document.querySelectorAll("[data-mm-cl-row]");'
+          + 'var paths = []; for (var i = 0; i < rows.length; i++) paths.push(rows[i].getAttribute("data-mm-cl-row"));'
+          + 'var st = window.__mmChangeLog && window.__mmChangeLog.state;'
+          + 'return { domRows: rows.length, paths: paths,'
+          + '  selfRendered: st ? st.rendered : null,'
+          + '  payloadState: st && st.payload ? st.payload.state : null,'
+          + '  payloadPaths: st && st.payload && st.payload.rows ? st.payload.rows.map(function (r) { return r.path; }) : [],'
+          + '  meta: (document.getElementById("meta") || {}).textContent || "",'
+          + '  foot: (document.getElementById("ft") || {}).textContent || "" };'
+          + '})()') : null;
+      } catch (e) { page = { err: String((e && e.message) || e) }; }
+
+      // 收尾（V2）：先摘再销毁，且不碰侧栏宽度/可见性
+      sidebar.closeDockPanel({ reason: 'changes-teardown', destroy: true });
+      await sleep(300);
+
+      const mainPaths = ((mainSide.ok && mainSide.reading) ? mainSide.reading.rows : []).map((r) => r.path);
+      const domPaths = (page && Array.isArray(page.paths)) ? page.paths : [];
+      const sameSet = domPaths.length === mainPaths.length
+        && domPaths.slice().sort().join('|') === mainPaths.slice().sort().join('|');
+
+      // 读数（不当判据）：把页面上的路径拿去重跑一次真 git，看还能对得上几条（工作树可能已经漂移）
+      let trace = { checked: 0, same: 0, drift: 0, gone: 0, err: null };
+      try {
+        const fresh = cl.sample();
+        const byPath = new Map(((fresh && fresh.rows) || []).map((r) => [r.path, r]));
+        const cur = new Map(((mainSide.ok && mainSide.reading) ? mainSide.reading.rows : []).map((r) => [r.path, r]));
+        cur.forEach((rec, p) => {
+          trace.checked++;
+          const hit = byPath.get(p);
+          if (!hit) { trace.gone++; return; }
+          if (hit.add === rec.add && hit.del === rec.del && hit.status === rec.status) trace.same++;
+          else trace.drift++;
+        });
+      } catch (e) { trace.err = String((e && e.message) || e); }
+
+      const pushOk = !!(dom.lastPush && dom.lastPush.ok === true);
+      const selfReportOk = !!(page && typeof page.selfRendered === 'number' && page.selfRendered === page.domRows);
+      const footOk = !!(page && page.foot
+        && page.foot.indexOf('累计') >= 0 && page.foot.indexOf('--numstat') >= 0);
+      const metaOk = !!(page && page.meta && page.meta.indexOf('HEAD') >= 0);
+      const stateOk = !!(page && (page.payloadState === 'ok' || page.payloadState === 'empty'));
+      const bridgeOk = dom.bridgeRegistered === true;
+
+      const ok = pre.booted === true && waitOk && bridgeOk && pushOk && stateOk
+        && selfReportOk && page && page.domRows === mainPaths.length && sameSet
+        && footOk && metaOk;
+
+      return {
+        ok: !!ok,
+        text: '【改动清单】页面就绪=' + waitOk + '（pageReady=' + dom.pageReady + ' rendered=' + dom.rendered + '）'
+          + '｜桥已注册=' + bridgeOk + ' 推送=' + JSON.stringify(dom.lastPush)
+          + '｜页面 payload.state=' + (page && page.payloadState)
+          + '｜**DOM 行数=' + (page && page.domRows) + ' 页面自报=' + (page && page.selfRendered)
+          + ' 主进程读数=' + mainPaths.length + ' 路径逐条相同=' + sameSet + '**'
+          + ' 路径=' + JSON.stringify(domPaths.slice(0, 6))
+          + '｜口径与追溯印在页面上=' + footOk + '（foot=' + JSON.stringify(String((page && page.foot) || '').slice(0, 120)) + '）'
+          + '｜meta=' + JSON.stringify(String((page && page.meta) || '').slice(0, 90))
+          + '｜读数（非判据）重跑 git 对拍：查了 ' + trace.checked + ' 条，对上 ' + trace.same
+          + ' 漂移 ' + trace.drift + ' 消失 ' + trace.gone + (trace.err ? (' err=' + trace.err) : '')
+          + '｜**本断言自计时 ' + (Date.now() - t0) + 'ms**'
+          + '（采样账：' + JSON.stringify((function () {
+            const r = cl.readings();
+            return {
+              samples: r.samples,
+              // 本域**以前那几条断言**（几何块开面板时页面就会请求一次）已经付掉的采样次数
+              beforeThisAssertion: samplesAtStart,
+              thisAssertion: r.samples - samplesAtStart,
+              reused: r.reused,
+              lastTrigger: r.lastRequest && r.lastRequest.trigger
+            };
+          })()) + '）'
+          + '｜清单文件=' + cl.file()
+      };
+    }
   }
 ];
