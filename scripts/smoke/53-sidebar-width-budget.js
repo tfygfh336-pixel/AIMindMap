@@ -50,7 +50,13 @@ const RAIL = 30;                       // 与 main-dsh-sidebar.js 的 RAIL_WIDTH
 function mountProbe(decide) {
   sidebar.__setMeasureProbeForTest(() => {
     const st = sidebar.getStatus();
-    const vw = Math.max(0, Math.min(st.width, sidebar.occupiedWidth()) - RAIL);
+    // ⚠️ 第 4 面板底座批改了**这一条读数口径**（判据本身一字未动）：
+    //    原先写 `Math.min(st.width, sidebar.occupiedWidth()) - RAIL`，而 `occupiedWidth()` 自那批起
+    //    = **页面让位总量**（控制栏 + 侧栏 + 停靠面板），且侧栏收起时是 0 ⇒ 侧栏不可见时这里会算出 0，
+    //    把产品的"同源判据"逼进 stale-skip（实测：本域三条红，备注写"页面视口 0 ≠ 要求的边 726"）。
+    //    现在按"这条宽度**本应画成的边**"取 = `state.width − 控制栏`：侧栏可见时与旧式**完全相同**
+    //    （那时 occupiedWidth == state.width），侧栏收起时也仍然有定义 ✓。
+    const vw = Math.max(0, st.width - RAIL);
     const d = decide(vw);
     return { pageViewportWidth: vw, innerWidth: vw, scrollWidth: d.scrollWidth, overflow: d.overflow };
   });

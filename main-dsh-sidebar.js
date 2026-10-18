@@ -50,6 +50,8 @@ const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 const dshPackage = require('./src/dsh-package.js');
 const sidebarSkill = require('./src/dsh-sidebar-skill.js');
+// 第 4 面板（停靠面板）的几何**单源**：右侧让位带的三段算术只写在这一处（纯函数、零 Electron）
+const panelGeometry = require('./src/panel-geometry.js');
 
 const SIDEBAR_WIDTH = 420;
 const MIN_WIDTH = 280;
@@ -110,6 +112,26 @@ const state = {
   //                   区间是 [RIGHTBAR_PAGE_MIN…MAX_WIDTH]，步进 WIDTH_STEP_PX。
   userTookOver: false,
   contentBudget: null,
+  // ── 第 4 个原生面板（停靠面板 · 2026-10-18 底座批）─────────────────────────────
+  //   dock —— **意图**（开/关 + 期望宽度 + 上一次的 prev）。几何不在这里算：唯一计算处是
+  //           `src/panel-geometry.js` 的 computeGeometry()，唯一应用处是 relayout()。
+  //   prev —— 开/关前那一刻的 {open, width}（"关要一步回到原样"的可复核记录；关掉后**保留**，
+  //           不清成 null，否则事后无法回答"它还原到哪去了"）。
+  //   lastRestore —— 最近一次关闭时 **关前/关后两份几何快照**（逐项复原的取证点）。
+  // ⚠️ 别与 state.dockWidth 看混：**这个是第 4 面板**；state.dockWidth 是"导图页/侧栏切换时要还原的
+  //    停靠宽度"（另一个东西）。两者都叫"dock"是历史用词，改名字会动到既有的重开语义 ⇒ 这里只加注释指开。
+  dock: {
+    open: false,
+    width: panelGeometry.DEFAULTS.panelWidth,
+    prev: null,
+    epoch: 0,
+    restores: 0,
+    lastRestore: null,
+    pageErr: null
+  },
+  panelView: null,          // 面板的 WebContentsView（惰性创建；关闭只摘不销毁，见 destroyPanel）
+  lastDestroyedPanelId: null,
+  geometry: null,           // **最近一次应用的几何**（computeGeometry 的产物；读数/断言的单一事实）
   shuttingDown: false
 };
 
@@ -798,31 +820,288 @@ function clampWidth(w) {
   return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(w)));
 }
 
-/* ---------------- 几何 ---------------- */
+/* ---------------- 第 4 个原生面板（停靠面板 · 2026-10-18 底座批） ----------------
+ * 形态：右侧**二阶并列** —— [页面][面板][控制栏][DSH 侧栏]。
+ *   · 几何算术的**唯一计算处** = src/panel-geometry.js（纯函数，零 Electron ⇒ 有 node 单测）；
+ *   · 三个候选形态（并列 / 互斥 / 下缘）的取舍读数见那个模块的文件头与本批证据 README；
+ *   · 本批**只造底座**：能开能关、几何正确、判据齐备的空面板 + 一个占位页，**不含任何业务内容**
+ *     （浏览器 / 改动清单属第 2 批 a76bab32）。
+ *
+ * 三条分工（改代码前先读这三行，别混）：
+ *   ① 几何：relayout() 只调 computeGeometry() 再 setBounds —— **本文件没有第二段几何算术**；
+ *   ② 开/关：openDockPanel()/closeDockPanel() 只改**意图**（state.dock），然后走**同一条**
+ *      setGeometry() → relayout()（A1：唯一改几何出口，不新造第二套设置函数）；
+ *   ③ 让位：页面预留仍只有**一条** CSS 变量（--dsh-sidebar-width = 控制栏 + 侧栏 + 面板 之和），
+ *      发射点仍只有 notifyRenderer() 一处 ⇒ 渲染层不为这块新面板多学一个字。
+ *
+ * 安全面（Electron 清单 §13/§14/§15 —— **照抄既有侧栏 view 的取值，不自己发明**）：
+ *   contextIsolation:true / nodeIntegration:false / sandbox:true（与 ensureView 逐字相同），
+ *   外加**独立 session partition**（与 DSH 页面零共享 cookie/localStorage/缓存）与外链交系统浏览器。
+ * ⚠️ 判据**不许**用 capturePage()：主页面截图里没有原生视图（本工程两次事故：
+ *   CHANGELOG.md:4434-4437、:4488；scripts/vision/window-shot.js:4）⇒ 本面板的判据一律
+ *   getBounds() 对拍页面让位读数（scripts/smoke/54-dock-panel-geometry.js）。
+ */
 
-/** 侧栏几何：右侧 state.width 宽、全高，恒可见（宽度可拖拽调节）；
- *  折叠按钮钉在侧栏右上角（必须在 view 之后 addChild 才盖在上面）；
- *  dsh-only 模式下侧栏铺满全窗（主内容已隐藏）。 */
+/** 占位页（本批**只有它**：说清这是第 4 面板的底座与怎么关，不摆任何业务 UI）。
+ *  为什么用 data: URL：本批不许新增静态资源/写盘面，且控制栏（railPageHtml）已是同一做法。
+ *  ⚠️ 判据**不看这张页面的像素**（理由见上）；它只证明"面板里真的加载了一个页面"。 */
+function dockPanelPageHtml() {
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    + 'html,body{margin:0;height:100%;background:#fff;color:#1f2329;'
+    + 'font:13px/1.7 "Segoe UI","Microsoft YaHei",sans-serif;overflow:hidden}'
+    + '#hd{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #e4e7ec;'
+    + 'background:#f7f8fa}'
+    + '#tt{flex:1 1 auto;font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+    + '#x{flex:0 0 auto;width:24px;height:22px;border:none;border-radius:6px;background:transparent;'
+    + 'cursor:pointer;font-size:13px;line-height:1;color:#4e5969}'
+    + '#x:hover{background:#fdecec;color:#d93026}'
+    + '#bd{padding:14px 12px;color:#4e5969}'
+    + 'code{background:#f2f3f5;border-radius:3px;padding:1px 4px}'
+    + '</style></head><body>'
+    + '<div id="hd"><span id="tt">停靠面板（第 4 个原生视图 · 底座）</span>'
+    + '<button id="x" title="关闭停靠面板">✕</button></div>'
+    + '<div id="bd">这一版**只造底座**：几何 / 安全面 / 判据。'
+    + '浏览器、改动清单这些业务内容在下一批（看板卡 a76bab32）。'
+    + '<br>关闭入口：这里右上角 ✕ · 菜单「视图 → 切换停靠面板」。'
+    + '<br>让位读数：页面按 <code>--dsh-sidebar-width</code> 让出 '
+    + '（控制栏 30 + 侧栏 + 本面板）。</div>'
+    + '<script>document.getElementById("x").addEventListener("click",function(){'
+    + 'console.log("[dock-close]");});</script></body></html>');
+}
+
+/** 惰性创建面板视图（与 ensureView 同形：三个安全开关逐字相同 + 独立 partition）。 */
+function ensurePanel() {
+  if (state.panelView) return state.panelView;
+  const { WebContentsView, session, shell } = require('electron');
+  const view = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      session: session.fromPartition('persist:mm-dock-panel')
+    }
+  });
+  view.setBackgroundColor('#ffffff');
+  // 外链交系统浏览器（面板将来放浏览器/预览时的同一条规矩，照抄侧栏 view 的处理）
+  view.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  // 占位页里那个 ✕ 经 console 回传（面板没有宿主 preload —— 与错误页重试按钮同一条安全通道）
+  view.webContents.on('console-message', (_e, _level, message) => {
+    if (message === '[dock-close]') {
+      log('停靠面板占位页的 ✕ 被点击 → 关闭面板');
+      closeDockPanel({ reason: 'panel-page-close' });
+    }
+  });
+  view.webContents.loadURL(dockPanelPageHtml())
+    .catch((e) => { state.dock.pageErr = String((e && e.message) || e); log('面板占位页加载失败: ' + state.dock.pageErr); });
+  state.panelView = view;
+  state.dock.epoch++;
+  state.lastDestroyedPanelId = null;
+  log('停靠面板视图已创建（第 ' + state.dock.epoch + ' 次，webContents id=' + viewIdOf(view) + '）');
+  return view;
+}
+
+/** **真销毁**面板视图（与 destroyView 同形）：关面板默认只摘不销毁（见 closeDockPanel 的取舍），
+ *  需要真的回收内存时走这里（应用退出 / 调用方显式要）。 */
+function destroyPanel(reason) {
+  const v = state.panelView;
+  if (!v) return false;
+  if (state.win && !state.win.isDestroyed() && state.win.contentView) {
+    try { state.win.contentView.removeChildView(v); } catch (e) { /* 本来就不在树上 */ }
+  }
+  const id = viewIdOf(v);
+  try {
+    if (v.webContents && !v.webContents.isDestroyed()) v.webContents.close();
+  } catch (e) {
+    log('销毁停靠面板视图失败（不静默吞原因）: ' + ((e && e.message) || e));
+  }
+  state.panelView = null;
+  state.lastDestroyedPanelId = id;
+  log('停靠面板视图已销毁（' + reason + '，webContents id=' + id + '）');
+  return true;
+}
+
+/** 面板的宽度夹取（唯一一处）：上下限的真源是 src/panel-geometry.js 的 DEFAULTS。
+ *  ⚠️ 这里只夹"用户/调用方能给的档"，**不动**页面地板的夹取（那一条在 computeGeometry 里） */
+function clampDockWidth(w) {
+  const d = panelGeometry.DEFAULTS;
+  return Math.max(d.panelMinWidth, Math.min(d.panelMaxWidth, Math.round(Number(w) || 0)));
+}
+
+/** **打开**停靠面板。opts.force 允许"已经开着再开一次"（幂等重放，例如菜单连点）。 */
+function openDockPanel(opts) {
+  const o = opts || {};
+  if (!state.win || state.win.isDestroyed()) return { ok: false, reason: '主窗口不可用' };
+  if (state.dock.open && !o.force) return { ok: true, already: true, width: state.dock.width };
+  ensurePanel();
+  // 先挂后算：relayout() 只在视图存在时才会给它 setBounds
+  if (state.win.contentView) {
+    try { state.win.contentView.addChildView(state.panelView); } catch (e) { /* 已在树上 */ }
+  }
+  // prev 里连**开之前那份几何快照**一起记 —— "关回原样"的比对基准是**开之前**，不是"关那一刻"
+  //（后者本来就含面板，比出来必然不同 ⇒ 那条读数会永远 false，等于没记。实测踩到过）
+  state.dock.prev = {
+    open: state.dock.open, width: state.dock.width, at: Date.now(),
+    geometry: geometrySnapshot()
+  };
+  setGeometry({ dockOpen: true, dockWidth: typeof o.width === 'number' ? o.width : state.dock.width });
+  savePrefs();
+  broadcastStatus();
+  log('停靠面板已打开（宽 ' + state.dock.width + 'px；prev=' + JSON.stringify(state.dock.prev) + '）');
+  return { ok: true, opened: true, width: state.dock.width, geometry: state.geometry };
+}
+
+/** **关闭**停靠面板（默认只摘不销毁：面板是将来业务内容的容器，开关一次不该把它的状态丢掉；
+ *  要回收内存走 destroyPanel() / closeDockPanel({destroy:true})）。
+ *  ⚠️ 这里**必须重算几何**（setGeometry）：删掉那一步就是"关掉不还原"——面板还在屏上、
+ *     页面还让着位。这条正是 scripts/smoke/54-* 的注入点（删它 ⇒ 必红）。 */
+function closeDockPanel(opts) {
+  const o = opts || {};
+  if (!state.dock.open) return { ok: true, already: true };
+  const before = geometrySnapshot();
+  const prev = state.dock.prev;
+  setGeometry({ dockOpen: false, dockWidth: (prev && typeof prev.width === 'number') ? prev.width : state.dock.width });
+  if (state.panelView && state.win && !state.win.isDestroyed() && state.win.contentView) {
+    try { state.win.contentView.removeChildView(state.panelView); } catch (e) { /* ignore */ }
+  }
+  if (o.destroy) destroyPanel('关闭（destroy 档）');
+  const after = geometrySnapshot();
+  state.dock.restores++;
+  // 读数（**不是判据**）：判据在冒烟域里拿原始读数独立再算一遍，免得"两侧同源"变恒等
+  state.dock.lastRestore = {
+    reason: o.reason || null, at: Date.now(),
+    // opened = 开之前那份快照（落在 prev.geometry）；before = 关那一刻；after = 关之后。
+    // same = (opened == after)：这才是"关回原样"这句话的可复核形式。
+    opened: (prev && prev.geometry) || null, before: before, after: after,
+    same: sameGeometryReading((prev && prev.geometry) || null, after)
+  };
+  savePrefs();
+  broadcastStatus();
+  log('停靠面板已关闭（' + (o.reason || '未注明') + '；让位宽 ' + before.reserve + ' → ' + after.reserve
+    + '，逐项复原=' + state.dock.lastRestore.same + '）');
+  return { ok: true, closed: true, restore: state.dock.lastRestore };
+}
+
+function toggleDockPanel() {
+  return state.dock.open ? closeDockPanel({ reason: 'toggle' }) : openDockPanel({ reason: 'toggle' });
+}
+
+function setDockWidth(w) {
+  setGeometry({ dockWidth: w });
+  if (state.dock.open) savePrefs();
+  return { ok: true, width: state.dock.width };
+}
+
+function isDockOpen() { return !!state.dock.open; }
+
+/** 面板**实际** bounds（读原生视图；关闭期间是 0×0 —— "不在屏上"就说 0，不留旧值） */
+function panelBounds() {
+  try {
+    const r = state.panelView ? state.panelView.getBounds() : null;
+    return (r && r.width > 0) ? r : null;
+  } catch (e) { return null; }
+}
+
+/** 面板占位页地址（面板里真的加载了东西的取证点；不含 token/凭据） */
+function panelPageUrl() {
+  try { return state.panelView && state.panelView.webContents ? state.panelView.webContents.getURL() : null; }
+  catch (e) { return null; }
+}
+
+/** **一次几何快照**（关/开前后逐项对比用的读数）。
+ *  矩形只在宽度 > 0 时报 —— 否则"关着"与"开着但被夹成 0"会混成一个样子。 */
+function geometrySnapshot() {
+  const r = (v) => {
+    try {
+      const b = v ? v.getBounds() : null;
+      return (b && b.width > 0 && b.height > 0)
+        ? { x: b.x, y: b.y, width: b.width, height: b.height } : null;
+    } catch (e) { return null; }
+  };
+  let win = null;
+  try {
+    const s = (state.win && !state.win.isDestroyed()) ? state.win.getContentSize() : null;
+    if (s) win = { width: s[0], height: s[1] };
+  } catch (e) { win = null; }
+  return {
+    win: win,
+    rail: r(state.rail),
+    view: r(state.view),
+    panel: r(state.panelView),
+    reserve: occupiedWidth(),
+    sidebarWidth: sidebarBandWidth(),
+    dockOpen: !!state.dock.open,
+    dockWidth: state.dock.width,
+    applied: state.geometry ? {
+      occupiedWidth: state.geometry.occupiedWidth,
+      pageWidth: state.geometry.pageWidth,
+      panel: state.geometry.panel,
+      clamped: state.geometry.clamped
+    } : null
+  };
+}
+
+/** 两份快照是否逐项相同（**读数**，给 lastRestore 记一笔；判据由冒烟域独立再算） */
+function sameGeometryReading(a, b) {
+  if (!a || !b) return false;
+  const eq = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+  return eq(a.win, b.win) && eq(a.rail, b.rail) && eq(a.view, b.view)
+    && eq(a.panel, b.panel) && a.reserve === b.reserve && a.dockOpen === b.dockOpen;
+}
+
+/* ---------------- 几何（**唯一应用处**） ---------------- */
+
+/** 把当前**意图**算成几何并应用到三个原生视图上 —— **唯一改几何处**。
+ *  既有语义一字不改（侧栏带 = min(侧栏宽, 窗宽) / 极窄时先保内容 / dsh-only 铺满整窗），
+ *  只是这三条现在由 src/panel-geometry.js 的纯函数表达（可单测），这里只负责 setBounds。
+ *  ⚠️ 早退条件从 `!state.view` 放宽成 `!state.win`：**停靠面板不依赖侧栏视图存在** ——
+ *     侧栏没开（或已收起）时面板照样要能停在窗口右缘，否则"面板独立"这条就只是句话。 */
+const GEOM_ZERO = { x: 0, y: 0, width: 0, height: 0 };
 function relayout() {
-  if (!state.win || !state.view) return;
+  if (!state.win || state.win.isDestroyed()) return;
   const [w, h] = state.win.getContentSize();
   state.width = clampWidth(state.width);
-  const vw = state.dshOnly ? w : Math.min(state.width, w);
-  const sbX = state.dshOnly ? 0 : Math.max(0, w - vw);        // 侧栏左缘
-  const railW = Math.min(RAIL_WIDTH, vw);                      // 极窄时先保内容
-  if (state.rail) state.rail.setBounds({ x: sbX, y: 0, width: railW, height: h });
-  state.view.setBounds({ x: sbX + railW, y: 0, width: Math.max(0, vw - railW), height: h });
+  const g = panelGeometry.computeGeometry({
+    winWidth: w,
+    winHeight: h,
+    sidebarVisible: state.visible,
+    sidebarWidth: state.width,
+    railWidth: RAIL_WIDTH,
+    dshOnly: state.dshOnly,
+    panelOpen: state.dock.open,
+    panelWidth: state.dock.width
+  });
+  state.geometry = g;
+  // 三个矩形都来自同一份几何（顺序即"面板 → 控制栏 → 侧栏内容"，它们互不重叠）
+  if (state.rail) state.rail.setBounds(g.rail || GEOM_ZERO);
+  if (state.view) state.view.setBounds(g.view || GEOM_ZERO);
+  if (state.panelView) state.panelView.setBounds(g.panel || GEOM_ZERO);
   // ③ 窄宽适配：宽度变了重算一次（**不清状态、不打断进行中的重试** —— 原先每次 relayout
   //    都 reset，一旦有 resize 风暴就会被无限重置，表现为"永远没注入" ✗ 实测踩过）。
   state.narrowDiag = state.narrowDiag || { relayout: 0, scheduled: 0 };
   state.narrowDiag.relayout++;
-  scheduleNarrowAdaptation(false);
-  notifyRenderer(state.visible);
+  if (state.view) scheduleNarrowAdaptation(false);
+  notifyRenderer();
+}
+
+/** **唯一改几何的入口**：意图 → 几何。
+ *  A1 纪律：不许在别处再写一段"设宽度 + relayout"（那就是第二套几何设置函数）；
+ *  setWidth/setDockWidth/openDockPanel/closeDockPanel 全部只是它的薄壳。
+ *  @param {{width?:number, dockWidth?:number, dockOpen?:boolean}} patch */
+function setGeometry(patch) {
+  const p = patch || {};
+  if (typeof p.width === 'number') state.width = clampWidth(p.width);
+  if (typeof p.dockWidth === 'number') state.dock.width = clampDockWidth(p.dockWidth);
+  if (typeof p.dockOpen === 'boolean') state.dock.open = p.dockOpen;
+  relayout();
+  return state.geometry;
 }
 
 function setWidth(w) {
-  state.width = clampWidth(w);
-  relayout();
+  return setGeometry({ width: w });
 }
 
 /* ---------------- 内核右栏 ⇄ 侧栏自动加宽（用户要求） ----------------
@@ -1330,9 +1609,27 @@ function closeSidebar(opts) {
   broadcastStatus();
 }
 
-/** 侧栏**总占宽** = 控制栏 + 内容 view。让位宽度必须用它：
- *  只报 view 宽度会少报 RAIL_WIDTH ⇒ 页面少让一条 ⇒ 又出现"侧栏隔壁的灰色背景" ✗。 */
+/** **页面要预留的总宽** = 控制栏 + 侧栏内容 + 停靠面板（第 4 面板批起含面板）。
+ *  只报 view 宽度会少报 RAIL_WIDTH ⇒ 页面少让一条 ⇒ 又出现"侧栏隔壁的灰色背景" ✗；
+ *  第 4 面板批再补一条：**只报侧栏**会少报面板宽 ⇒ 面板会盖住页面右缘（同一种病）。
+ *  ⚠️ 次序很重要：**先认几何**（唯一计算处，它才是"我们现在要求画成什么样"），
+ *     bounds 求和只是启动早期（还没 relayout 过）的兼容回退 —— 反过来会让"侧栏已收起、
+ *     面板开着"这一档报出侧栏的旧 bounds（面板就白让了位）。 */
 function occupiedWidth() {
+  if (state.geometry) return state.geometry.occupiedWidth;
+  let w = 0;
+  try { if (state.rail) w += state.rail.getBounds().width; } catch (e) { /* ignore */ }
+  try { if (state.view) w += state.view.getBounds().width; } catch (e) { /* ignore */ }
+  try { if (state.panelView) w += state.panelView.getBounds().width; } catch (e) { /* ignore */ }
+  return w;
+}
+
+/** 侧栏**那条带**的宽（控制栏 + 内容，**不含**停靠面板）。
+ *  为什么单开一个读数：occupiedWidth() 现在是"页面让位总量"，而渲染层的**拖宽热区**
+ *  （侧栏左缘 ±8px）必须用侧栏自己的左缘 —— 拿总量当它有面板时就偏了整整一个面板宽，
+ *  表现为"在面板左边拖动，改的却是侧栏宽度"✗。 */
+function sidebarBandWidth() {
+  if (state.geometry) return state.geometry.sidebarBandWidth;
   let w = 0;
   try { if (state.rail) w += state.rail.getBounds().width; } catch (e) { /* ignore */ }
   try { if (state.view) w += state.view.getBounds().width; } catch (e) { /* ignore */ }
@@ -1401,7 +1698,9 @@ function hide() {
     try { state.win.contentView.removeChildView(state.rail); } catch (e) { /* ignore */ }
   }
   state.visible = false;
-  notifyRenderer(false);
+  // 收起侧栏 ⇒ 让位带只剩**停靠面板**（若它开着），面板从"侧栏内缘"贴到窗口右缘。
+  // 原先这里只发一条 notifyRenderer(false)：那会把仍在屏上的面板也报成 0（页面立刻被面板盖住 ✗）。
+  relayout();
   savePrefs();
 }
 
@@ -1419,6 +1718,8 @@ function getStatus() {
     // width 是"意图/偏好"，页面按它预留而侧栏按 bounds 绘制 —— 两者不一致时页面就多留一条，
     // 用户看到的是"侧栏隔壁的灰色背景"（实测 420 vs 308 ⇒ 112px 的缝，和用户截图一致）。
     actualWidth: occupiedWidth() || null,
+    // 侧栏**那条带**自己的宽（actualWidth 现在含停靠面板；渲染层的拖宽热区要用这个）
+    sidebarWidth: sidebarBandWidth(),
     // 窄宽适配的实况（模式 + 是否横向溢出）—— 改布局要用它，不要拍脑袋
     narrow: state.narrow || null,
     // 测量驱动的**内容预算**实况：档位 / 区间 / 每一步的实测读数 / 到上界仍溢出与否。
@@ -1448,6 +1749,31 @@ function getStatus() {
     viewId: viewIdOf(state.view),                 // 当前 view 的 webContents id（没有 = null）
     viewEpoch: state.viewEpoch,                   // 建过几次（重开必须 +1 ⇒ 是新视图，不是旧的挂回来）
     lastDestroyedViewId: state.lastDestroyedViewId, // 最近销毁的 view id（"真的销毁了"的取证点）
+    // ── 第 4 个原生面板（停靠面板）实况 —— 判据字段（冒烟域 54 直接读它，不猜）──────────
+    //   每个字段都回答一个**会让断言红**的问题：
+    //     open/width/prev      —— 开没开、意图多宽、上一次记下了什么（"关要回到原样"的依据）
+    //     applied/panelWidth   —— **要求**画成什么（几何单源的产物）
+    //     bounds               —— **实际**画成什么（原生 getBounds；capturePage 看不见它 ✗）
+    //     clamped/notes        —— 被夹到多少、为什么（不许静默挤）
+    //     restores/lastRestore —— 关过几次、最近一次关前/关后两份快照与逐项比对
+    dockPanel: {
+      open: !!state.dock.open,
+      width: state.dock.width,
+      prev: state.dock.prev,
+      epoch: state.dock.epoch,
+      hasView: !!state.panelView,
+      viewId: viewIdOf(state.panelView),
+      lastDestroyedViewId: state.lastDestroyedPanelId,
+      pageUrl: panelPageUrl(),
+      pageErr: state.dock.pageErr,
+      bounds: panelBounds(),
+      applied: state.geometry ? state.geometry.panel : null,
+      panelWidth: state.geometry ? state.geometry.panelWidth : 0,
+      clamped: state.geometry ? state.geometry.clamped : null,
+      notes: state.geometry ? state.geometry.notes : [],
+      restores: state.dock.restores,
+      lastRestore: state.dock.lastRestore
+    },
     // 导图页的"真关"状态（关 = 页面被卸载；重开 = 重新加载 + 还原宽度/项目）
     mapPageClosed: state.mapPageClosed,
     lastProject: state.lastProject,
@@ -1467,21 +1793,25 @@ function getStatus() {
  *   一旦不同，页面就会多留（或少留）一条 —— 用户看到的就是"侧栏隔壁的灰色背景"。
  *   有 view 时读 `getBounds().width`（真值）；还没有 view（服务正在启动）时按同一公式回退，
  *   否则会发 0 ⇒ 页面完全不让位 ⇒ 工具栏被盖住（那就是上一个 bug 的症状）。 */
-function notifyRenderer(visibleFlag) {
+function notifyRenderer() {
   if (!state.win || state.win.isDestroyed()) return;
-  let width = 0;
-  if (visibleFlag) {
-    const total = occupiedWidth();      // 控制栏 + 内容：只报 view 会少报一条 ✗
-    if (total > 0) {
-      width = total;
-    } else {
-      try {
-        const [w] = state.win.getContentSize();
-        width = state.dshOnly ? w : Math.min(state.width, w);
-      } catch (e) { width = state.width; }
-    }
+  // width = **页面要让出的总量**（控制栏 + 侧栏 + 停靠面板）。它的别名就是 CSS 变量
+  // --dsh-sidebar-width：渲染层那 5 处消费者（#main margin / #toolbar padding / .overlay 与
+  // #lightbox 的 right / .dialog-box 的 max-width）为一个数，所以面板一开它们**自动**正确。
+  let width = occupiedWidth();
+  if (!state.geometry && state.visible) {
+    // 还没算过几何（服务启动早期）：按同一公式回退，别发 0（发 0 = 页面一点都不让 ⇒ 工具栏被盖住）
+    try {
+      const [w] = state.win.getContentSize();
+      width = state.dshOnly ? w : Math.min(state.width, w);
+    } catch (e) { width = state.width; }
   }
-  state.win.webContents.send('dsh-sidebar:layout', { visible: !!visibleFlag, width: width });
+  state.win.webContents.send('dsh-sidebar:layout', {
+    visible: !!state.visible,
+    width: width,
+    // 侧栏那条带自己的宽（渲染层的拖宽热区用它；用总量会把热区推到面板左缘 ✗）
+    sidebarWidth: sidebarBandWidth()
+  });
 }
 
 /** 页面加载完成后再补发一次布局。
@@ -1676,6 +2006,7 @@ function savePrefs() {
 function destroy() {
   state.shuttingDown = true;
   endWidthDrag();
+  if (state.panelView) destroyPanel('应用退出');
   if (state.logTimer) { clearTimeout(state.logTimer); state.logTimer = null; }
   if (state.healthTimer) { clearInterval(state.healthTimer); state.healthTimer = null; }
   if (state.startTimer) { clearInterval(state.startTimer); clearTimeout(state.startTimer); state.startTimer = null; }
@@ -1954,6 +2285,12 @@ module.exports = {
   //   · openMapPage()            —— 重新加载导图页 + 还原停靠宽度 + 回到上次的项目
   closeMapPage, openMapPage, destroyView, mapClosedPage, rendererDirty,
   setCurrentProject, bootProject, setMapPageListener,
+  // 第 4 个原生面板（停靠面板 · 2026-10-18 底座批）：开/关/退化 + 两条几何读数
+  //   —— 导出的都是**产品路径**（菜单与冒烟域都调它们，不另写一条通道）
+  openDockPanel, closeDockPanel, toggleDockPanel, setDockWidth, isDockOpen,
+  panelBounds, geometrySnapshot, destroyPanel, ensurePanel, dockPanelPageHtml,
+  DOCK_DEFAULTS: panelGeometry.DEFAULTS,
+  setGeometry,
   NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN,
   WIDTH_STEP_PX, WIDTH_STEP_MAX,
   ensureRightbarRoom, releaseRightbarRoom, setNoSpawn, installRightbarWatcher,

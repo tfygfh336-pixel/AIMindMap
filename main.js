@@ -1093,6 +1093,12 @@ function buildMenu(win) {
       { type: 'separator' },
       // DSH 侧边栏：孵化独立实例（vendor 运行包 + 独立 DSH_HOME），与全局 3080 实例互不可见
       { label: '切换 DSH 侧边栏', accelerator: 'CmdOrCtrl+B', click: () => dshSidebar.toggle() },
+      // 第 4 个原生面板（停靠面板 · 2026-10-18 底座批）：**人类唯一的正门**（面板自己占位页上的
+      // ✕ 是第二个入口）。快捷键选 Ctrl+Shift+D —— 与既有加速键不撞（Ctrl+B 侧栏 / Ctrl+Shift+A 审计 /
+      // Ctrl+Shift+C 收起 / Ctrl+Shift+E 展开 / Ctrl+P 命令面板）。
+      // 本批只造底座：开出来是一张占位页（浏览器/改动清单在下一批 a76bab32）。
+      { label: '切换停靠面板（第 4 面板）', accelerator: 'CmdOrCtrl+Shift+D',
+        click: () => dshSidebar.toggleDockPanel() },
       { label: '重启 DSH 服务', click: () => dshSidebar.restartService() },
       // 驻留语义的必要正门：正常退出**不**收割服务，用户需要能主动停掉它（否则只能靠任务管理器）
       { label: '停止 DSH 服务', click: () => {

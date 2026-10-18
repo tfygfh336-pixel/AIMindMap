@@ -408,18 +408,29 @@
     let lastSidebarLayout = '';
     const applyLayout = (info) => {
       const visible = !!(info && info.visible);
-      const width = (visible && info.width) || 0;
-      const key = visible + ':' + width;
+      // ⚠️ 第 4 个原生面板（停靠面板）起，width 的语义 = **页面要让出的总量**
+      //    （控制栏 + 侧栏 + 面板），不再恒等于"侧栏可见时的占宽"：面板开着而侧栏收起时，
+      //    这个数**只含面板**。所以下面两件事要分开判：
+      //      · 让位 CSS 的开关（body.dsh-sidebar-on）按 width > 0
+      //      · 重开侧栏的圆钮（🤖）仍按 visible
+      //    混用会让"侧栏收起、面板开着"这一档要么露出灰缝、要么把 🤖 入口藏掉。
+      const width = (info && info.width) || 0;
+      // 侧栏**那条带**（控制栏 + 内容）的宽 —— 拖宽热区必须用它（用总量会偏一整个面板宽）
+      const sidebarWidth = (visible && info && info.sidebarWidth) || 0;
+      const key = visible + ':' + width + ':' + sidebarWidth;
       // 诊断留痕：最后一次**收到**的布局信息（给断言/排查用：能区分"事件没送到"与"送到的是旧值"）
-      window.__dshLayoutLast = { visible: visible, width: width, key: key, at: Date.now() };
+      window.__dshLayoutLast = { visible: visible, width: width, sidebarWidth: sidebarWidth, key: key, at: Date.now() };
       // ── 下面三件都是**纯 DOM 同步，每次必做**（幂等、代价极低）──
       // 教训：上一版把它们放进"状态没变就 return"的守卫里 ⇒ 一旦某条路径没触发状态变化，
       // 就让位变量/FAB 落空，用户看到"灰色背景"和"重开圆钮不见了"。守卫只该守住**扰动视图**的那件事。
-      document.body.classList.toggle('dsh-sidebar-on', visible);
+      document.body.classList.toggle('dsh-sidebar-on', width > 0);
       // `--dsh-sidebar-width` 必须显式写：不写就回落到 style.css 的兜底值 420px，
       // 而侧栏实际可能只有 308 ⇒ 页面多留 112px ⇒ 就是用户看到的"侧栏隔壁灰色背景"。
       document.body.style.setProperty('--dsh-sidebar-width', width + 'px');
       window.__dshSidebarW = width;
+      // 侧栏那条带自己的宽 + 侧栏是否在屏上（拖宽热区那两个前提，见下面的 sidebarLeftEdge）
+      window.__dshSidebarBandW = sidebarWidth;
+      window.__dshSidebarVisible = visible;
       // 折叠圆钮（🤖 重开入口）：侧栏可见时藏、折叠时显示
       const fab2 = document.getElementById('dsh-restore-fab');
       if (fab2) fab2.style.display = visible ? 'none' : 'flex';
@@ -439,7 +450,8 @@
       const st = window.desktop.dsh && window.desktop.dsh.status && window.desktop.dsh.status();
       // 优先用**实际占宽**（status().actualWidth，来自原生 view 的 bounds）：
       // `width` 只是意图/偏好，页面按它预留、侧栏按实际绘制 ⇒ 不一致就多留一条（灰缝）。
-      const fromStatus = (s) => { if (s) applyLayout({ visible: s.visible, width: s.actualWidth || s.width }); };
+      // actualWidth = **页面让位总量**（含停靠面板）；sidebarWidth = 侧栏那条带自己的宽
+      const fromStatus = (s) => { if (s) applyLayout({ visible: s.visible, width: s.actualWidth || s.width, sidebarWidth: s.sidebarWidth }); };
       if (st && typeof st.then === 'function') {
         st.then(fromStatus).catch(() => {});
       } else if (st) {
@@ -461,14 +473,17 @@
     // mousedown 进入拖拽 → mouseup / Escape 结束（宽度计算与 setBounds 全在主进程）。
     if (window.desktop.dsh && window.desktop.dsh.beginDrag) {
       let dragging = false;
-      const sidebarLeftEdge = () => window.innerWidth - (window.__dshSidebarW || 0);
+      // 侧栏左缘 = 窗口宽 − **侧栏带**宽（不是让位总量：面板开着时总量还含面板 ⇒ 热区偏一个面板宽）
+      const sidebarLeftEdge = () => (window.__dshSidebarVisible
+        ? window.innerWidth - (window.__dshSidebarBandW || 0) : -9999);
       window.addEventListener('mousemove', (e) => {
         if (dragging) return;
         const onEdge = Math.abs(e.clientX - sidebarLeftEdge()) <= 8;
         document.body.style.cursor = onEdge ? 'col-resize' : '';
       });
       window.addEventListener('mousedown', (e) => {
-        if (Math.abs(e.clientX - sidebarLeftEdge()) <= 8 && (window.__dshSidebarW || 0) > 0) {
+        if (window.__dshSidebarVisible && (window.__dshSidebarBandW || 0) > 0
+            && Math.abs(e.clientX - sidebarLeftEdge()) <= 8) {
           dragging = true;
           window.desktop.dsh.beginDrag();
           e.preventDefault();
