@@ -17,7 +17,7 @@
 |------|----|------|
 | CLI 命令数 | 69 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 51 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 2332 用例 / 106 文件 | `tests/*.test.js`（vitest） |
+| 单元测试 | 2333 用例 / 106 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 535 | `scripts/cli-integration.js` |
 | 冒烟断言 | 326 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
@@ -48,7 +48,7 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 | 11 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |
 | 12 | G4 | `node scripts/cli-integration.js` | 60s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |
 | 13 | G2 | `node cli/mm-cli.js validate-all` | 15s | 全部项目结构 + 悬挂链接 + 环 |
-| 14 | G5 | `npm run smoke` | 1468s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**；**分两档**（定档 = `scripts/verify.js` 的 `decideG5Tier`；名单与域数/断言数的**现算值** = `scripts/smoke-assertions.js` 的 `TIERS` / `tierSummary()`，每次冒烟都会打印）：`fast` = 只跑 `core` 域（**不产**截图 / 取景记录 / 视觉断言）、`full` = 全部域 + 视觉断言 + 取景记录；**必须 full 的条件（可判定）**：`--release` 放行点 / `--g5=full` / 历史里没有全量档 / 上次全量档是红的 / 距上次成功全量档 ≥ 24h / 取不到改动清单 / 改动命中 `scripts/smoke/**`·`scripts/smoke-*.js`·`main.js`。每次运行都打印**逐域耗时排行**（`summarizeTiming`），G5 预算按档取（快档 = `G5_FAST_BUDGET_MS`） |
+| 14 | G5 | `npm run smoke` | 1300s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**；**分两档**（定档 = `scripts/verify.js` 的 `decideG5Tier`；名单与域数/断言数的**现算值** = `scripts/smoke-assertions.js` 的 `TIERS` / `tierSummary()`，每次冒烟都会打印）：`fast` = 只跑 `core` 域（**不产**截图 / 取景记录 / 视觉断言）、`full` = 全部域 + 视觉断言 + 取景记录；**必须 full 的条件（可判定）**：`--release` 放行点 / `--g5=full` / 历史里没有全量档 / 上次全量档是红的 / 距上次成功全量档 ≥ 24h / 取不到改动清单 / 改动命中 `scripts/smoke/**`·`scripts/smoke-*.js`·`main.js`。每次运行都打印**逐域耗时排行**（`summarizeTiming`），G5 预算按档取（快档 = `G5_FAST_BUDGET_MS`） |
 
 > **只改了某一条冒烟断言时不必跑全链**：`SMOKE_ONLY=<文件前缀> npm run smoke`
 > （等价写法 `electron . --smoke-only=<文件前缀>`）只跑选中的那几个断言文件，
@@ -57,7 +57,11 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 > 真值只由全量运行代表（`npm run verify` 或 `npm run smoke` 不带选择串时）。
 > 选择规则、以及"筛错名字必须响亮失败（采不到真值 = 红）"见 `scripts/smoke-select.js`。
 
-> 耗时预算是**止涨线**（取实测的 2–3 倍），不是性能目标 —— 它防的是「每次只涨一点点、没人注意到」。
+> 耗时预算是**止涨线**，不是性能目标 —— 它防的是「每次只涨一点点、没人注意到」。
+> 倍数**不是**"实测的 2–3 倍"（本文件原先这么写，实测不成立，已订正）：口径 = `tests/verify-budget.test.js`
+> 的余量守卫「**预算 ≥ 1.25 × 窗口（最近 10 次）的 P90**」，昂贵步骤（G3/G4/G5）实际只有 1.25–1.43 倍；
+> 廉价门禁取 10/15/20 s 的整档，倍数远大于 2 但不具可比性。P90 在 n=10 时取**第 9 个值（第二大）**
+> ⇒ 单次负载尖峰不能永久抬线，而出现在 ≥2 条读数里的**持续变慢照样抬线**（历史逐条核过）。
 > 本链曾从 176 s 压到约 77 s（集成断言由"每条起一个进程"改为进程内调用），预算是让这个成果守得住。
 > 超预算时 `npm run verify` 会红，并提示"若增长合理就改 `scripts/verify.js` 的预算**并说明理由**"。
 

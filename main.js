@@ -3359,8 +3359,14 @@ async function runSmoke(win) {
   for (const a of assertions) {
     smokeState.last = a.name;
     /* 域边界 = 干净前置。**过滤运行照样要做** —— 每域隔离（isolateDomain）在过滤运行下
-     * 是关的（隔离关 = 跨域状态会互相污染，正是 MM_SMOKE_NO_ISOLATE 记的那件事），
-     * 而 DOM 模态本来就不在"还原沙箱文件"的范围内 ⇒ 只靠隔离收不掉它 ✗。 */
+     * **是开着的**：`isolateOn = smokeIsolate`（本文件 :148）**只看** `MM_SMOKE_NO_ISOLATE` /
+     * `MM_SMOKE_ISOLATE=0`，**不看 `SMOKE_ONLY`**；过滤跑时日志照样逐域打印
+     * `[smoke] 隔离：已还原 N 个沙箱文件`。实测（`.review/20261018-预算口径/smoke-only-08-16-18-29.log`，
+     * `SMOKE_ONLY=08,16,18,29` 的**过滤跑**）：`每域隔离已开启：快照沙箱文件 39 个` + **3 次**
+     * `隔离：已还原 1 / 3 / 3 个沙箱文件` ⇒ 过滤运行下隔离**确实是开着的**。
+     * ⚠️ 本注释曾写"过滤运行下是关的"—— 实测**不成立**，已订正。
+     * **隔离开着也仍要做这一跳**：DOM 模态/浮层不在"还原沙箱文件 + 重开项目"的范围内
+     * ⇒ 只靠隔离收不掉它，它会跨域存活并盖住后面域的画布 ✗。 */
     if (a.__domain !== smokeIsolateState.lastDomain) {
       /* ⭐ **采样顺序 = 先采残留、再做隔离写回**（2026-10-16 修，本批实测驱动）。
        * 为什么必须这个顺序：`isolateDomain()` 自己会把沙箱文件**写回项目目录**，应用的文件监听器

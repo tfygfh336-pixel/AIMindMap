@@ -15,6 +15,14 @@
  *     —— 旧口径由**最快的一天**决定、窗口一滚就假红（实测 250s 被挤出 ⇒ 最小值爬到 341.9s ⇒
  *     比值 1.579 ✗），而预算这条线防的是"太慢/挂死" ⇒ 基准该取**慢端**（理由详见 `recentMeasured`）。
  *     **只改口径、不动任何预算常量** ✓。
+ *   · 【2026-10-18 本批】**再次只改口径**：`1.25 × 窗口最大` → `1.25 × 窗口 P90`（n=10 ⇒ 第 9 个值）。
+ *     为什么必须换：上一版的基准是**最大值**，于是**一次负载尖峰会在窗口里赖满 10 次成功全链**，
+ *     期间预算被永久抬高（实测：窗口 max = 1 174 160ms 那条已被证明是机器慢 —— 同一次 run 里
+ *     G3 涨 1.267× / G4 涨 1.438×，而这两个步骤与冒烟域毫无关系 ⇒ 预算被抬到 1 468 000ms，
+ *     比值只剩 **1.0002**，止涨线失去牙）。而**分层**把这放大：全量档从每天 ~10 次降到 ~1 次
+ *     ⇒ 一条尖峰会赖 **~10 天**。换成 P90 后同样的 1.25 倍**只对慢端**生效，尖峰抬不动线。
+ *     ⚠️ 代价与它为什么**不会掩盖真实慢化**，见下面 `P90 口径：为什么它比 max 稳、又不放过变慢` 一节
+ *     —— 那一节同时有**结构判定**（`P90 不会掩盖「持续变慢」` 那条 it）钉住，不是只写在注释里。
  *
  * 最要紧的一条在最末：**`docs/RULES.md` 里声明的每个门禁，必须真的挂在
  * `scripts/verify.js` 的链上**。否则"在规则表里加了个门禁、却忘了挂进 verify"
@@ -34,30 +42,50 @@ const verify = require('../scripts/verify.js');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
+/** 口径实现（**全文件唯一定义**）：nearest-rank 百分位。
+ *  n=10 时 `P90 = 第 9 个值 = 第二大` ⇒ **只丢最大的那 1 条**（这条性质由下面那条结构判定钉住）。 */
+function p90Of(values) {
+  const a = values.slice().sort((x, y) => x - y);
+  return a[Math.max(1, Math.ceil(0.9 * a.length)) - 1];
+}
+
 /** 造一条结果记录 */
 const res = (gate, ms, budgetMs, skipped) => ({
   step: 0, gate, label: gate, ms, code: 0, budgetMs, skipped: !!skipped
 });
 
 /** 从验证历史（`.review/verify-history.jsonl`）取**真读数**：最近 K 次**成功**的全链，
- *  逐门禁取**最大**耗时。返回 `{ runs, byGateMax }`（没有可用历史 ⇒ `runs: 0, byGateMax: {}`）。
+ *  逐门禁取**窗口内该步的全部读数**，统计量由调用方按口径取。返回
+ *  `{ runs, byGate, byGateMax, byGateP90 }`（没有可用历史 ⇒ `runs: 0` 且两张表都是 `{}`）。
  *
  *  为什么**现读**而不是写死一张表：写死的表会静静过期 —— 本文件原先那张记的是 G5≈51s，
  *  而被取代时真值已是 235–421s（差 5–8 倍），于是"余量 > 1.8×"这条守卫**绿着却什么都没守** ✗。
  *
- *  为什么每门禁取**最大值**（**本批改的口径**，原先取最小值 ⇒ 见下）：
- *   · 预算这条线防的是"**太慢 / 挂死**"（`scripts/verify.js` 的注释：止涨线，不是性能目标）
- *     ⇒ 基准必须落在**慢端**：`预算 ≥ 1.25 × 窗口内最大耗时` 才是"最慢那一次也还留得住"。
- *   · 用**最小值**当基准会要求"预算 ≥ 1.8 × **最快**那次"⇒ 这条线**由最快的一天决定**，
- *     而窗口一滚（新链入窗、老链出窗）最小值就**往上爬** ⇒ 比值**自动下降** ⇒ 假红。
- *     实测（2026-10-14，就是本批）：G5 预算 540s 时，窗口最小值从 #110 的 250386ms 被挤出、
- *     最小变成 #117 的 **341884ms** ⇒ 540000/341884 = **1.5795** < 1.8 翻红；而同一窗口的
- *     **最大**值是 421206ms ⇒ 540000/421206 = 1.282 ≥ 1.25 **成立** ✓ ——
- *     同一批读数、同一条预算，两种基准给出相反结论 ⇒ 问题在**口径**，不在预算，所以本批改口径、
- *     **不动任何预算常量** ✓。
- *   · 慢端基准的代价（如实说）：某一次异常慢的读数（当天机器被别的活占住）会把阈值顶上去，
- *     可能要求更大的预算 —— 这正是它想说的话（"你最近真的慢过"）；真遇到时按既有纪律
- *     **改预算要在 `scripts/verify.js` 里说明理由**，而不是把这条守卫调松 ✗。
+ *  ## P90 口径：为什么它比 max 稳、又不放过变慢（2026-10-18 本批）
+ *  基准必须落在**慢端**（预算这条线防的是"太慢 / 挂死"，`scripts/verify.js` 的注释：止涨线不是性能目标）
+ *  —— 这条不因为换口径而改变：P90 与 median 都仍在慢端，`P90 ≥ median` 恒成立。
+ *
+ *  **① 为什么它比 max 稳**：n=10 时 `P90 = nearest-rank 第 9 个值 = **第二大**` ⇒ 它**只丢最大的那 1 条**。
+ *  最大值的病是"**任何一次**异常读数都会顶住阈值"（当天机器被别的活占住 ⇒ 要求更大的预算），
+ *  而这条线一旦被尖峰顶上去，**同一次尖峰会在窗口里赖满 10 次成功链**（分层之后 = ~10 天）；
+ *  更糟的是它把比值压到 1.0002（零余量）—— 那时它已经不是止涨线，是**随机红灯**（照 `B8`：
+ *  长期假红的下场是被无视，连真红也不看）。P90 只丢掉那**一个**最极端的观测，噪声顶不动它。
+ *
+ *  **② 为什么它不会掩盖"真实变慢"**（这是换口径的**前提**，不是附注）：
+ *   · 慢化只出现在 **1 条**读数里 ⇒ P90 不动 —— 这正是要的：**1 条读数不是趋势**，它与尖峰在数据上
+ *     本来就不可区分（历史判例：2026-10-18T05:43 的 1 174 160ms 之后两条相对跳前基线是 ×0.98 / ×1.00）；
+ *   · 慢化出现在 **≥2 条**读数里 ⇒ P90 = 那两条里**较低**的一条；台阶式慢化（两条都停在新高度）下
+ *     **P90 = max** ⇒ 两个口径的要求**完全相同**，抬线幅度也相同；
+ *   · **逐步式**变慢（连续多次小幅上升）⇒ 窗口里进入新高度的读数远多于 2 条 ⇒ P90 与 max **同步**抬。
+ *     实测（`counterexample2.js` 对全历史逐窗口扫）：9 段"P90 连续上升"（最长 14 步、+118.9%）里
+ *     `1.25×P90` **同步抬同样的百分比** ⇒ 没有一段被掩盖。
+ *  · **代价如实说**：台阶式慢化会**延迟 1 条读数**被发现（那一条还没进第 9 位）。这条延迟是已知且
+ *    有界的（1 条 = 全量档一轮），换来的是"尖峰一次抬不动线" —— 两者代价不对等，故选这一侧。
+ *
+ *  **③ 这条不变量守的是什么**：它不判"快慢好不好"，只判**预算有没有跟着真实慢端重算**。
+ *  真判错时的正确动作是**改预算并在 `scripts/verify.js` 里说明理由**，而不是把这条守卫调松 ✗。
+ *  升级触发条件（写给下一次）：P90 涨到 ≥ `预算/1.25` ⇒ 本条判红 ⇒ 先分辨「工作量增长 / 机器负载」
+ *  （分辨法：看**同一次 run 的 G3、G4 是否同向同量级大涨** —— 那是负载的指纹），再决定抬线。
  *
  *  为什么是最近 **K=10** 次：太远的历史会掩盖"最近真的变慢了"；只取最近 1 次则等于拿一天的
  *  负载当基线。本工程一天内跑 10+ 次全链（2026-10-13 实测），10 次≈一两天，量级合适。
@@ -76,33 +104,43 @@ function recentMeasured(k) {
     if (r && r.ok === true && r.partial !== true && Array.isArray(r.steps)) ok.push(r);
   }
   const win = ok.slice(-k);
-  const byGateMax = {};
+  const byGate = {};
   for (const r of win) {
     for (const s of r.steps) {
       // skipped 的步骤 ms=0（与上一步共用一次调用）⇒ 不能读成"这一步很快"
       if (!s || s.skipped === true || typeof s.ms !== 'number' || s.ms <= 0) continue;
-      if (byGateMax[s.gate] === undefined || s.ms > byGateMax[s.gate]) byGateMax[s.gate] = s.ms;
+      (byGate[s.gate] = byGate[s.gate] || []).push(s.ms);
     }
   }
-  return { runs: win.length, byGateMax };
+  // max 与 P90 都返回：**判定只用 P90**，max 只进报错报文（让读者看见"尖峰有多大"）
+  const byGateMax = {};
+  const byGateP90 = {};
+  for (const g of Object.keys(byGate)) {
+    byGateMax[g] = Math.max.apply(null, byGate[g]);
+    byGateP90[g] = p90Of(byGate[g]);
+  }
+  return { runs: win.length, byGate, byGateMax, byGateP90 };
 }
 
 /* ============================================================================
  * 分层之后，`G5` 的读数窗口要**单独取**（2026-10-18 加）
  * ----------------------------------------------------------------------------
- * 口径**一个字都没改**：仍是「预算 ≥ 1.25 × 窗口内该步的**最大**耗时」。
- * 变的只是"读哪个窗口"——因为 `recentMeasured` 取的是**最近 10 条记录**，而分层之后这 10 条里
+ * **统计量**已改（2026-10-18 本批）：不再是「窗口内最大耗时」，而是 **P90**（理由见上面「P90 口径」一节）。
+ * 变的还有"读哪个窗口"——因为 `recentMeasured` 取的是**最近 10 条记录**，而分层之后这 10 条里
  * 绝大多数是 **fast 档**（只跑 core 域，实测约全量档的 1/5）。照旧窗口会有两种坏结果：
  *   ① 拿快档读数当基准 ⇒ 守卫对着一个小数字空转（绿着，什么都没守）；
  *   ② 若改口径"只认全量档"却仍只看最近 10 条 ⇒ 窗口里可能**一条 G5 全量读数都没有** ⇒
  *      守卫**完全不判 G5**（静默失去守卫，比假红更坏）。
  * ⇒ 取「**跨全部历史**最近的 K 次**全量档** G5 读数」。
- * ⚠️ 代价如实说：全量档现在约每天一次 ⇒ 一条尖峰会在这个窗口里赖 **K 天**（见 CHANGELOG 的偏差一节）。
+ * ⚠️ 代价如实说（**换 P90 之后这条已经变了**，别照旧读）：全量档现在约每天一次，所以
+ *  · 换 P90 **之前**：一条尖峰会让预算被抬高，并在窗口里赖 **K 天**；
+ *  · 换 P90 **之后**：**单条尖峰抬不动线**（它只是被丢掉的那 1 条），代价换成"台阶式慢化滞后 1 条读数"
+ *    （见上面那一节 ② 与 CHANGELOG 的偏差一节）。
  * ========================================================================= */
 function recentFullG5(k) {
   let text;
   try { text = fs.readFileSync(path.join(ROOT, verify.VERIFY_HISTORY), 'utf8'); }
-  catch (e) { return { readings: [], max: null, lastAt: null }; }
+  catch (e) { return { readings: [], max: null, p90: null, lastAt: null }; }
   const readings = [];
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -116,9 +154,11 @@ function recentFullG5(k) {
     readings.push({ at: r.at, ms: s.ms });
   }
   const win = readings.slice(-k);
+  const ms = win.map((x) => x.ms);
   return {
     readings: win,
-    max: win.length ? Math.max.apply(null, win.map((x) => x.ms)) : null,
+    max: ms.length ? Math.max.apply(null, ms) : null,
+    p90: ms.length ? p90Of(ms) : null,
     lastAt: win.length ? win[win.length - 1].at : null
   };
 }
@@ -165,9 +205,10 @@ describe('验证链耗时预算：判定逻辑', () => {  it('全在预算内 �
     expect(old.totalMs).toBeGreaterThan(150000);
   });
 
-  it('预算留足余量：**最慢那一次**离预算还有 1.25 倍以上（否则会变成随机红灯）', () => {
+  it('预算留足余量：**最慢的那一端**离预算还有 1.25 倍以上（口径 = 窗口 P90；否则会变成随机红灯）', () => {
     // 实测**现读** `.review/verify-history.jsonl` 的真读数，**不写死数字**（原因见 recentMeasured 上方）✓
-    const { runs, byGateMax } = recentMeasured(10);
+    // 口径：**预算 ≥ 1.25 × 窗口内该步的 P90**（n=10 ⇒ 第 9 个值 = 第二大；理由见上面那一节 P90 口径说明）
+    const { runs, byGateMax, byGateP90 } = recentMeasured(10);
     if (!runs) {
       // 没有历史（首次运行 / `.review/` 被清理过）⇒ 本项**未判定**，**不是**"通过" ✗（措辞必须让人看出区别）。
       // 窗口为空（历史文件在、但一条"成功且非 partial"的记录都没有）走的是**同一条分支**：
@@ -183,22 +224,50 @@ describe('验证链耗时预算：判定逻辑', () => {  it('全在预算内 �
      * 取不到全量档读数时**不静默**：响亮说明"这一条本轮不判"，并靠下面 `judged > 0` 保证
      * 不会整体空转。 */
     const g5full = recentFullG5(10);
-    if (g5full.max !== null) byGateMax.G5 = g5full.max;
+    if (g5full.max !== null) { byGateMax.G5 = g5full.max; byGateP90.G5 = g5full.p90; }
     else {
       console.warn('⚠️ G5 的预算余量：**未判定** —— 历史里还没有一条**全量档**的 G5 读数'
         + '（分层之后快档不算）。要判定请跑一次 `npm run verify -- --release`。这一条**不是**通过 ✗');
       delete byGateMax.G5;
+      delete byGateP90.G5;
     }
     for (const s of verify.STEPS) {
-      if (!s.budgetMs || !byGateMax[s.gate]) continue;   // 历史里没有读数的门禁（如新增步骤）无从判定
+      if (!s.budgetMs || !byGateP90[s.gate]) continue;   // 历史里没有读数的门禁（如新增步骤）无从判定
       judged++;
-      // 口径：**预算 ≥ 1.25 × 窗口内该步的**最大**耗时**（基准取慢端；理由见 recentMeasured 上方）
-      const need = 1.25 * byGateMax[s.gate];
-      expect(s.budgetMs / byGateMax[s.gate], s.gate + ' 的预算余量（基准 = 最近 ' + runs
-        + ' 次成功全链里的**最大**耗时 ' + byGateMax[s.gate] + 'ms ⇒ 1.25× = ' + Math.round(need)
-        + 'ms，预算 ' + s.budgetMs + 'ms）').toBeGreaterThanOrEqual(1.25);
+      const p90 = byGateP90[s.gate];
+      const need = 1.25 * p90;
+      expect(s.budgetMs / p90, s.gate + ' 的预算余量（基准 = 最近 ' + runs
+        + ' 次成功全链里的 **P90** = ' + p90 + 'ms ⇒ 1.25× = ' + Math.round(need)
+        + 'ms，预算 ' + s.budgetMs + 'ms；同窗口 max = ' + byGateMax[s.gate] + 'ms —— max 只作参照，不参与判定）')
+        .toBeGreaterThanOrEqual(1.25);
     }
     expect(judged, '至少要判定一个门禁（否则这条守卫等于空转 ✗）').toBeGreaterThan(0);
+  });
+
+  /* ---------------------------------------------------------------
+   * **口径的判别力证明**（换个口径之后必须重新证明它没被换废）：
+   * 换 P90 的**唯一前提**是"它不会掩盖真实慢化"。上面那段注释是理由，这里是**判定**：
+   * 三个构造必须同时成立 —— ① 1 条慢 ⇒ P90 不动（尖峰抬不动线）；
+   * ② ≥2 条慢 ⇒ P90 抬到新高度，且**与 max 口径的要求完全相同**；③ P90 仍在慢端（≥ median）。
+   * 少任何一条，这条口径就退化成"平均值/中位数"或"另一个 max"，换它就没有意义 ✗。
+   * --------------------------------------------------------------- */
+  it('**P90 不会掩盖"持续变慢"**：1 条慢它不动（尖峰抬不动线）· ≥2 条慢它必抬（与 max 要求相同）', () => {
+    const base = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109];
+    // n=10 时 P90 = 第 9 个值 = **第二大** ⇒ 单调序列里它是 108，不是最大值 109（这条本身就在证明口径）
+    expect(p90Of(base), '单调序列里 P90 = 第二大 = 108（若等于 109，那这条口径就不是 P90 而是 max ✗）').toBe(108);
+    // ① **单条**慢（尖峰）⇒ P90 必须不动；否则一次负载尖峰就会永久抬线（正是上一版换掉它的原因）
+    const oneSlow = base.slice(); oneSlow[9] = 300;
+    expect(p90Of(oneSlow), '只有 1 条读数变慢时 P90 必须**不动** —— 那是尖峰，不是趋势').toBe(108);
+    // ② **2 条**同时慢（能被看见的最小持续慢化）⇒ P90 落到新高度，且与 max 口径要求**完全相同**
+    const twoSlow = base.slice(); twoSlow[8] = 300; twoSlow[9] = 300;
+    expect(p90Of(twoSlow), '≥2 条读数变慢时 P90 必须抬到新高度（抬不动就说明它在掩盖真实慢化 ✗）').toBe(300);
+    expect(p90Of(twoSlow), '台阶式慢化下两个口径的要求必须相同（否则换口径就悄悄放宽了止涨线 ✗）')
+      .toBe(Math.max.apply(null, twoSlow));
+    // ③ P90 仍在**慢端**：它 ≥ median ⇒ 不会把"整体变慢了"当噪声平均掉
+    const sorted10 = base.slice().sort((x, y) => x - y);
+    const median10 = (sorted10[4] + sorted10[5]) / 2;
+    expect(p90Of(base)).toBeGreaterThanOrEqual(median10);
+    expect(p90Of(base), 'P90 不许等于 median —— 那说明它已经退化成"典型值"，看不见慢端').not.toBe(median10);
   });
 });
 
