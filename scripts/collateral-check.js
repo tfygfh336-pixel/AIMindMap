@@ -18,7 +18,8 @@
  *   而 `S2` 那几处的集合与 `CHECKS` 的键必须**双向相等**（声明 ⊆ 实现 且 实现 ⊆ 声明）：
  *   表里写了没人实现 ⇒ 红；实现了没写进表 ⇒ 也红（对偶缺口，`E6` 第三条路 2）。
  *
- * 判定清单见 `analyze()` 里的 ①②③④ 标记（此处刻意不写死条数：写死了就会漂）。
+ * 判定清单（编号只在下面正文与 `--list` 里出现，本行不写条数 —— 条数只有一个权威）：
+ *   ①②③④ 是**连带清单**那几条，⑤ 那一节自己有若干条（写盘出口），各自的编号与能力边界只在那一节写一次。
  *
  * 【本门禁还实现第五条判定：⑤ 写盘出口（`WRITE_OUTLET`）—— 见文件下部"⑤"那一节】
  * 它守的那条规则**声明早就有、检查一直没建**：`docs/ARCHITECTURE.md` §6 横切规矩 ① 与
@@ -126,7 +127,11 @@ const COLLATERAL = [
       { at: '受管资产（文档 / 登记表 / 生成物 / 变更日志 / 项目数据）的写调用点', role: 'self', check: 'WRITE_OUTLET',
         note: '本门禁直接断言：解析得到的写目标落在受管资产上、又没走出口 ⇒ 红（判据与欠账册在文件下部"⑤"）' },
       { at: '自造的 tmp + rename（第二份"原子写"）', role: 'self', check: 'WRITE_OUTLET',
-        note: '判定的另一半：新出现第三个自造实现 ⇒ 红；存量逐条在册（带 why / close）' }
+        note: '判定的另一半：新出现第三个自造实现 ⇒ 红；存量逐条在册（带 why / close）' },
+      { at: '`src/data-store.js` 的 `writeFileAtomic` 的**原子语义**（写 tmp → fsync → rename）', role: 'self',
+        check: 'WRITE_OUTLET',
+        note: '判定 ③（2026-10-19 补）：三条腿任一条掉了、或内容被直接写到目标 ⇒ 红。'
+          + '实测（`e0f992c` 的 I3）：把原子实现换成一把裸写，旧的四道判据**全绿** —— 降级方向以前没人看' }
     ]
   },
   {
@@ -320,11 +325,23 @@ function analyze(opts) {
  *   实测：这条规则**没有任何门禁扫过**，而"写盘出口只有一个函数"这条不变式实际上有 **4 份**
  *   （1 份闸门 + 3 份自造/绕过；其中 2 份已经由 T2/T3 收口，2 份存量在册）。
  *
- * 两条判定（互补，缺一条就漏一半）：
+ * 互补的几条判定（**缺任何一条就漏一个方向**；编号见下）：
  *   ① **裸写受管资产**：写调用点的**目标路径**（按字面量求值解析出来的）落在受管资产上、
  *      且这一处没走 `writeFileAtomic` / `writeManagedText` ⇒ 红。
  *   ② **自造第二份原子写**：文件里同时出现 `fs.writeFileSync(` 与 `fs.renameSync(`（tmp + rename
  *      的签名）⇒ 它就是"第二份写盘出口"⇒ 红（出口本体 `src/data-store.js` 除外）。
+ *   ③ **出口本体不许被降级**（2026-10-19 本批补）：`src/data-store.js` 的 `writeFileAtomic` 必须仍然
+ *      "写 tmp → fsync → rename"，三条腿任一条掉了、或内容被直接写到目标 ⇒ 红。
+ *      为什么必须有这一条（★实测 `e0f992c` 的 I3）：**降级方向**以前判不出来 —— 换成一把裸写后
+ *      ② 的签名（两个名字同时出现）反而**不成立**，① 的目标是形参、④ 要文件"提得到受管资产名"
+ *      而出口本体提不到 ⇒ **四道全盲**。判据与能力边界见 `outletAtomicVerdict` 的头注。
+ *   ④ **按调用点兜底**（本批从"按文件"改成"按调用点"）：一处裸写**判不了目标**、而它所在文件
+ *      **提得到受管资产名** ⇒ 这一处必须在册。按文件兜底时，整文件豁免会**先短路**（`main.js`
+ *      就是这个形状：实测 I1 因此 exit 0），改了粒度之后新增的第 8 处会红。
+ *
+ * 豁免（`B8`：豁免是一等公民，但**不由被检查方决定**）：登记在门禁侧的 `WRITE_OUTLET_DEBT`，
+ *   两种粒度 —— `kind: 'file'`（整文件）与 `kind: 'site'`（逐调用点，按**第一实参签名**匹配，
+ *   带 `n` = 处数）。**两道 cap**：条数 `WRITE_OUTLET_CAP` + 面 `WRITE_OUTLET_SITE_CAP`（见册头）。
  *
  * 为什么要**解析路径**而不是像 T3 那样按调用行的文本猜（那版实测两个方向都不准）：
  *   · 猜不准的**漏**：`fs.writeFileSync(p, …)` 里 `p = path.join(ROOT,'docs','VERIFY.md')` ——
@@ -396,32 +413,62 @@ const WO_OUTLET_FILE = 'src/data-store.js';
 
 /* ---------------------------------------------------------------
  * 欠账册（**封闭**：上限只减不增；每条必写 `why` 与 `close`；工具当场核三条）
- *   每条：{ at, kind, verdict, why, close }
- *     · `at`      —— 仓库相对路径（POSIX）
- *     · `kind`    —— `'file'`（整文件的写调用点豁免）/ `'self-atomic'`（自造 tmp+rename）
- *     · `verdict` —— `'keep'`（**有据的降级**：语义与出口不同，且写清了升级触发条件）
- *                   / `'debt'`（**欠账**：应当收口，只是不在本批）
- *   三条机械判定（见 `analyzeWriteOutlet`）：**在册算欠账**（有条目没违例 ⇒ 修好忘销账 ⇒ 红）·
- *   **条数 ≤ cap**（只减不增）· **册上的文件必须存在**（改名/删 ⇒ 红）。
+ *   每条：{ at, kind, verdict, why, close }，`kind` 三档：
+ *     · `'file'`      —— **整文件**的写调用点豁免（该文件里所有写调用点都算在册）
+ *     · `'site'`      —— **逐调用点**豁免：另带 `sites: [{ sig, n, what }]`，
+ *                        `sig` = 该写调用的**第一实参原文**（折行归一成单空格）⇒ 行号漂移不影响匹配；
+ *                        `n` = 册上记的**处数**（同一文件里同签名的写可能不止一处）
+ *     · `'self-atomic'` —— 自造 tmp+rename（判定 ② 的对象）
+ *   为什么要有 `'site'`（本批收窄的依据）：整文件豁免挡掉的是"**这个文件以后新增的**"写，
+ *   而 `main.js` 是今天最容易回潮的文件（W1 就回潮在它身上）⇒ 照 `B8` 的 ③"豁免要有数量上界"
+ *   把它从"整个文件"缩到"7 个已知调用点"：**已知 7 处仍豁免，第 8 处判红**。
+ *   代价（如实说，`R6`）：签名是**第一实参原文** ⇒ 有人把它重命名（`out` → `captureOut`）就会报红。
+ *   这一档**故意保留**这种红 —— 被豁免的裸写本来就应该在改动时被重新看一眼；报文会直接给出
+ *   "册上是哪个签名、现在看到的是什么"，改册是一行的事。
  * --------------------------------------------------------------- */
 const WRITE_OUTLET_CAP = 8;
+/** 「豁免**面**」的上界（分子：被在册豁免覆盖的写调用点数，现测 82）。
+ *  为什么必须有第二条 cap：`WRITE_OUTLET_CAP` 数的是**例外单元**（条目数），这一条数的是
+ *  **被藏起来的调用点**。把 1 条「整文件豁免」拆成 N 条「逐调用点豁免」，条目数涨、**面一点没小**
+ *  ⇒ 只卡条数就等于允许"拆细换额度"（`A3`：数字要能表达它声称表达的那件事）。
+ *  面**只减不增**：要新增一处豁免就必须先还掉一处旧的（或同批把这条 cap 抬起来并写清为什么）。 */
+const WRITE_OUTLET_SITE_CAP = 82;
 const WRITE_OUTLET_DEBT = [
   {
     at: 'main.js',
-    kind: 'file',
+    // 2026-10-19：`file` → `site`（本批）。**豁免面没变小（还是这 7 处），变的是"第 8 处会不会红"** ——
+    // 原来的整文件豁免让判定 ①/④ 对这个文件**整体短路**：实测把 W1 的探针写回 `projects/` ⇒ S2 exit 0；
+    // 关掉豁免才 exit 1（点名 `main.js` 里那两处）。收窄后同样的注入**直接判红**，而 7 处已知的仍豁免。
+    kind: 'site',
+    sites: [
+      { sig: 'res.filePath', n: 1,
+        what: '导出图片：用户在**保存对话框**里选的路径（`res` 来自 `dialog.showSaveDialog`）⇒ 仓库外' },
+      { sig: 'feedbackFile()', n: 1,
+        what: '`<userData>/mm-feedback.jsonl`（正式档）或沙箱里的 `mm-feedback.jsonl`（冒烟档）⇒ 两支都在仓库外。'
+          + '求值器追不进去的真因：`feedbackFile()` 有**两个** `return`，而 `collectZeroArgReturns` 只取第一个' },
+      { sig: 'p', n: 1,
+        what: '`p = path.join(SMOKE_PROJECTS_DIR, rel)` —— 冒烟"沙箱副本还原"写回；`SMOKE_PROJECTS_DIR` = '
+          + '`fs.mkdtempSync(path.join(os.tmpdir(), …))` ⇒ 仓库外' },
+      { sig: 'dumpTo', n: 1,
+        what: '`process.env.MM_SMOKE_TIMING_OUT` 指定的计时 JSON（**默认一个字节都不写**）。⚠️ 这是 7 处里'
+          + '**唯一"目标不由我们定"**的一处：环境变量原则上可以指进仓库 ⇒ 它的 `close` 比别的更该盯' },
+      { sig: 'out', n: 2,
+        what: '`--out` 指定的截图 / 合成图输出路径（两个 CLI 入口各一处，都来自 argv）⇒ 仓库外' },
+      { sig: "path.join(REAL_PROJECTS_DIR, '_leak-inject-probe.json')", n: 1,
+        what: '**这 7 处里唯一的真裸写**：受管资产 `projects/_leak-inject-probe.json`。它只在 '
+          + '`MM_SMOKE_LEAK_INJECT=1` 下生效、是**判别力证明用**的故意注入（跑完复核必须判红）' }
+    ],
     verdict: 'keep',
-    why: '6 处判不了目标的裸写，**逐个人工核过**（行号会漂，按符号找 —— `--list` 逐条打印）：'
-      + '`res.filePath`（导出图片时用户在保存对话框选的路径）· `feedbackFile()`（`<userData>/feedback.jsonl`）· '
-      + '`path.join(SMOKE_PROJECTS_DIR, …)`（冒烟沙箱副本）· `process.env.MM_SMOKE_TIMING_OUT` 指定的计时 JSON · '
-      + '`out` 两处（截图/合成图的输出路径，`--out` 或沙箱）—— **全部落在仓库之外或用户输出目录，非受管**。'
-      + '另有 1 处**受管资产裸写**（`path.join(REAL_PROJECTS_DIR, "_leak-inject-probe.json")`），它只在 '
-      + '`MM_SMOKE_LEAK_INJECT=1` 下生效、是**判别力证明用**的故意注入（跑完复核必须判红）⇒ 本条给它的整文件豁免。'
-      + ' **`.validate` 校验探针写进 `projects/<项目>/` 的那一处已偿（2026-10-19）**：那是本条唯一的真欠账，现在保存闸门改成'
-      + '**进程内**校验（`src/data-store.js` 的 `createProjectValidator`，与 CLI 写路径同一个工厂）⇒ 不再有临时文件。'
-      + '于是本条从 `debt` 降为 `keep`（照原 `close` 栏的写法："清掉之后本条降为 keep"）。',
+    why: '**7 处逐一人工核过**（2026-10-19 现算的签名见 `sites[].sig` / `--list` 逐条打印）：6 处**判不了**'
+      + '（目标来自保存对话框 / `<userData>` / `%TEMP%` 沙箱 / argv，求值器算不出来，人工核实 5 处在仓库外、'
+      + '`dumpTo` 那处由环境变量定）+ 1 处**真裸写**（`projects/_leak-inject-probe.json`，判别力注入，门控）。'
+      + ' **`.validate` 校验探针写进 `projects/<项目>/` 的那一处已偿（2026-10-19）**：保存闸门改成**进程内**校验'
+      + '（`src/data-store.js` 的 `createProjectValidator`，与 CLI 写路径同一个工厂）⇒ 不再有临时文件。'
+      + ' 本批把 `kind` 从 `file` 收窄成 `site`：**已知 7 处仍豁免，新增的第 8 处判红**。',
     close: '升级触发条件（命中任一条就回来收口）：① 上面任何一处写目标改成**工程内**路径'
-      + '（例如导出默认落到工程根、冒烟沙箱改到 `projects/` 下）；② 那个泄漏注入探针从 '
-      + '`MM_SMOKE_LEAK_INJECT` 门控变成默认路径（那时它就不再是"判别力证明"而是真违规）。'
+      + '（例如导出默认落到工程根、冒烟沙箱改到 `projects/` 下；`dumpTo` 那条环境变量指进仓库也算）；'
+      + '② 那个泄漏注入探针从 `MM_SMOKE_LEAK_INJECT` 门控变成默认路径（那时它就不再是"判别力证明"而是真违规）；'
+      + '③ `feedbackFile()` / `SMOKE_PROJECTS_DIR` 改成工程内路径（那时 `sig` 就能求值了，也就该走出口）。'
   },
   {
     at: 'src/control.js',
@@ -442,7 +489,10 @@ const WRITE_OUTLET_DEBT = [
     at: 'scripts/cli-integration.js',
     kind: 'file',
     verdict: 'keep',
-    why: '集成断言必须在**真实** `projects/` 下造"读不出来的项目 / 坏 JSON / 悬挂成员"这类夹具 —— '
+    why: '**为什么仍是整文件豁免（本批未逐点收窄）**：这个文件今天有 **64 处**判不了目标的裸写（夹具造坏数据），'
+      + '逐点登记 64 条签名不可维护、且每次加夹具都要改门禁 —— 照 `R6` 先量价值：它没有回潮史，'
+      + '而 main.js 有（W1）。**代价如实说**：这个文件里新增的裸写今天不会被判红（豁免面 64 处在册）。'
+      + '原始理由：集成断言必须在**真实** `projects/` 下造"读不出来的项目 / 坏 JSON / 悬挂成员"这类夹具 —— '
       + '它验的正是 `store` 对坏数据的反应，走出口（会先校验）就**造不出**这些前置条件。'
       + '其余夹具写在 %TEMP% 沙箱（md/pdf/png 输入）。全部自建自删。',
     close: '升级触发条件：若 CLI 提供一个 **test-only 的原始写入口**（如 `mm-cli raw-write --for-test`），'
@@ -452,7 +502,9 @@ const WRITE_OUTLET_DEBT = [
     at: 'main-dsh-sidebar.js',
     kind: 'file',
     verdict: 'keep',
-    why: '3 处判不了的写目标：`162 path.join(dir, "SKILL.md")`（`dir` = 用户选的**技能目录**，'
+    why: '**为什么仍是整文件豁免（本批未逐点收窄）**：3 处、无回潮史；收窄只是把"整个文件"换成 3 条签名，'
+      + '收益（挡"第 4 处"）小于签名漂移带来的假红面 —— 本批只收窄了有回潮史的 `main.js`。'
+      + '原始理由：3 处判不了的写目标：`162 path.join(dir, "SKILL.md")`（`dir` = 用户选的**技能目录**，'
       + '这是内置侧栏往用户目录写说明书，不是本仓的 `SKILL.md`）· `349 serviceInfoFile()` / '
       + '`1657 prefsFile()`（都 = `path.join(userDataPath(), …)`，即**应用数据目录**）。'
       + '三者都在仓库之外。',
@@ -463,7 +515,9 @@ const WRITE_OUTLET_DEBT = [
     at: 'scripts/mutate-gates.js',
     kind: 'file',
     verdict: 'keep',
-    why: '5 处判不了的写目标全部落在 **%TEMP% 的镜像副本**（`abs(rel)` = 副本根相对路径、'
+    why: '**为什么仍是整文件豁免（本批未逐点收窄）**：6 处里有 2 对同名签名（`outArg` ×2 / `p`），'
+      + '逐点登记挡不住"同签名新增一处"，收益小；无回潮史。原始理由：5 处判不了的写目标全部落在 '
+      + '**%TEMP% 的镜像副本**（`abs(rel)` = 副本根相对路径、'
       + '`path.join(top, "README.md")` = 副本里的存根）与 **`--out=` 指定的报告文件**。'
       + '注入与还原都只动副本（`M.write` / 原始 Buffer 还原），**真仓一个字节不动**。',
     close: '升级触发条件：若变异体检改成"直接在真仓注入"（那会破坏 `repoUnchanged` 前提），'
@@ -483,7 +537,8 @@ const WRITE_OUTLET_DEBT = [
     at: 'scripts/register-batch-writer.js',
     kind: 'file',
     verdict: 'keep',
-    why: '`104 fs.writeFileSync(file, …)` 里的 `file = path.join(dir, reg.batchId + ".json")`，'
+    why: '**为什么仍是整文件豁免（本批未逐点收窄）**：只有 1 处（`sig=file`），收窄与整文件等价、'
+      + '没有额外收益。原始理由：`104 fs.writeFileSync(file, …)` 里的 `file = path.join(dir, reg.batchId + ".json")`，'
       + '`dir` = **`.review/batches/`**（工作产物区里的"批登记面"）—— 它写的是本机协作登记，'
       + '不是受管资产（`.review/` 可整目录删、不进扫描、不进版本库）。它"提得到受管资产名"'
       + '只是因为在参数说明里写了 `\'projects\'`。',
@@ -493,7 +548,9 @@ const WRITE_OUTLET_DEBT = [
     at: 'scripts/smoke/50-五星评价.js',
     kind: 'file',
     verdict: 'keep',
-    why: '`468 fs.appendFileSync(FEEDBACK_FILE, …)` 里的 `FEEDBACK_FILE = feedbackFile()` = '
+    why: '**为什么仍是整文件豁免（本批未逐点收窄）**：只有 1 处（`sig=FEEDBACK_FILE`），'
+      + '收窄与整文件等价、没有额外收益。原始理由：`468 fs.appendFileSync(FEEDBACK_FILE, …)` 里的 '
+      + '`FEEDBACK_FILE = feedbackFile()` = '
       + '`<userData>/feedback.jsonl`（**应用数据目录**）。这一行是冒烟故意"绕开渲染层直接写库"，'
       + '为的是证明摘要条读的是**文件**而不是内存。',
     close: '升级触发条件：若反馈库被挪进工程内（例如随项目保存），就必须改为走写盘出口。'
@@ -514,7 +571,7 @@ function woManagedFamily(rel) {
   return null;
 }
 
-/** 受管资产的**名字**（判定 ③ 的输入：一个文件"提得到"受管资产吗）。
+/** 受管资产的**名字**（判定 ④ 的输入：一个文件"提得到"受管资产吗）。
  *  与 `woManagedFamily` 同源：根文档名 + 登记文档的路径/basename + `docs` / 两个归档前缀 / `projects`。
  *  ⚠️ **必须是"整条字符串就是这个名字"**（`'docs'` / `'docs/RULES.md'` / `'CHANGELOG.md'`），
  *  不是"文本里出现过这个词"。理由（实测）：`scripts/encoding-check.js` 里有一句
@@ -945,7 +1002,7 @@ function scanWriteSites(rel, rawSrc, root) {
 }
 
 /** 用一个**已经抹好的两个视图**扫写调用点（给 `analyzeWriteOutlet` 复用 ——
- *  它每个文件本来就要建这两个视图（判定 ②/③ 都要看），再让 `scanWriteSites` 建一遍是纯浪费：
+ *  它每个文件本来就要建这两个视图（判定 ①/②/④ 都要看），再让 `scanWriteSites` 建一遍是纯浪费：
  *  实测 S2 因此从 ~0.3s 涨到 10.6s（把 10s 预算撞穿）。 */
 function scanViews(rel, detectView, argView, root) {
   const base = root || ROOT;
@@ -995,9 +1052,174 @@ function woScanTargets(root) {
   }).sort();
 }
 
-/** 自造 tmp+rename 的签名（判定 ②）：剥注释后同时有 writeFileSync 与 renameSync */
+/** 自造 tmp+rename 的签名（判定 ②）：剥注释后同时有 writeFileSync 与 renameSync
+ *  ⚠️ 这条签名**只挡"第二份实现"**，挡不住"把唯一的实现降级"—— 降级后 rename 那条腿没了，
+ *  签名反而**不成立** ⇒ 越弱越不红。那一半由判定 ③（`outletAtomicVerdict`）兜。 */
 function hasSelfAtomicSignature(code) {
   return /fs\s*\.\s*writeFileSync\s*\(/.test(code) && /fs\s*\.\s*renameSync\s*\(/.test(code);
+}
+
+/* ---------------------------------------------------------------
+ * 判定 ③：出口本体的原子写**不许降级**（`tmp → fsync → rename` 三条腿必须都在）
+ * ---------------------------------------------------------------
+ * ★为什么需要这一条（实测，`e0f992c` 的 I3 注入）：把 `writeFileAtomic` 的原子实现换成**一把裸写**
+ * （无 tmp / 无 fsync / 无 rename）⇒ 旧判据 **exit 0（绿）**。机制是四道全盲：
+ *   ① 判定 ② 的签名要求"`writeFileSync` 与 `renameSync` **同时出现**"—— 降级把 rename 那条腿删了，
+ *      签名反而不成立 ⇒ **越弱越不红**（方向性缺陷，不是覆盖率不足）；
+ *   ② 判定 ② 按文件名排除出口本体（它本来就必须同时有那两个名字，不排除就恒红）；
+ *   ③ 出口本体的写调用点第一实参是**函数形参** ⇒ 路径求值器判不了 ⇒ 落在"判不了"那一档；
+ *   ④ 按文件兜底（判定 ④）要"文件提得到受管资产名"—— `src/data-store.js` 提不到。
+ *   ⇒ **出口本体在四道判据里全是盲区**，而它正是"断电留半截文件"这一族风险的**唯一**防线。
+ *      "并发/写坏"那一族的守卫如果可以被悄悄换成更弱的东西而没人红，那它守的就不是它声称的东西。
+ *
+ * 判据形态（源码**形状**断言；输入是**剥注释 + 抹字符串**的代码 —— `B4b`：报文与注释里的示例写法
+ * 不是实现，本文件自己的失败报文里就写着那两个名字）：
+ *   `writeFileAtomic` 的函数体必须同时成立三条腿 ——
+ *     · `write`  ：有写调用，且**没有**一处把内容直接写到它自己的第一个形参（= 写 tmp，不写目标）；
+ *     · `fsync`  ：有 fsync（`fsyncSync` / `fsync` / `.sync()` / `.datasync()`）；
+ *     · `rename` ：有 rename（`renameSync` / `renameWithRetry` / `.rename()`）。
+ *   任一条不成立 ⇒ **红**，报文点名缺哪条腿。**定义找不到 / 出现两份 ⇒ 也红**（采不到真值 = 红，`A5`）。
+ *
+ * 能力边界（诚实标注，别以为它包住一切）：
+ *   · 它判"**形状在不在**"，判不了"**语义对不对**"（例如把 rename 的目标换成同一目录下的错文件，
+ *     形状仍成立）；
+ *   · 它只钉**出口本体**这一个函数。**调用点**被换成裸写（I3 的真实形状是
+ *     `fs.writeFileSync(activePath(userDataPath), …)`，裸写的是 `<userData>` 下的运行包指针）
+ *     这一条**抓不到** —— 那处目标既不是受管资产、也求值不出来；要抓它得让求值器认更多写法
+ *     （见 `evalPathExpr` 的能力边界），那是另一批。
+ */
+
+/** 出口本体里那个函数的名字（判定 ③ 的扫描靶；**唯一一处**） */
+const WO_OUTLET_FN = 'writeFileAtomic';
+
+/** 三条腿的人话（报文与 `--list` 都从这里取，别在别处再写一份） */
+const WO_ATOMIC_LEG_TEXT = {
+  write: '写 tmp（先写同目录临时文件，不直接写目标）',
+  fsync: 'fsync（先落盘，再替换）',
+  rename: 'rename（原子替换目标）',
+  param: '第一个形参（没有它判不了"写的是不是目标" ⇒ 判不了 = 红）'
+};
+
+/**
+ * 判定 ③ 的判据本体（**纯函数**：入参是源码文本）。
+ * @returns {{ok:boolean, defs:number, line:(number|null), param:(string|null),
+ *            write:boolean, fsync:boolean, rename:boolean,
+ *            direct:string[], missing:string[]}} `missing` ∈ `WO_ATOMIC_LEG_TEXT` 的键（+ `'def'`）
+ */
+function outletAtomicVerdict(src) {
+  const code = blankQuoted(src, { comments: true, strings: true });
+  const re = new RegExp('function\\s+' + WO_OUTLET_FN + '\\s*\\(', 'g');
+  const defs = [];
+  let m;
+  while ((m = re.exec(code))) defs.push(m.index);
+  const out = { ok: false, defs: defs.length, line: null, param: null,
+    write: false, fsync: false, rename: false, direct: [], missing: [] };
+  // 0 份 = 函数没了（改名/搬走）；2 份 = 说不清哪一份是出口 ⇒ 两种都"采不到真值"
+  if (defs.length !== 1) { out.missing.push('def'); return out; }
+  const def = defs[0];
+  out.line = code.slice(0, def).split('\n').length;
+
+  // 形参表的第一个形参（= "目标文件"）
+  const open = code.indexOf('(', def);
+  if (open < 0) { out.missing.push('def'); return out; }
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === '(') depth++;
+    else if (code[i] === ')') { depth--; if (depth === 0) { close = i; break; } }
+  }
+  if (close < 0) { out.missing.push('def'); return out; }
+  const params = splitTopLevel(code.slice(open + 1, close), ',');
+  out.param = params.length && params[0] ? params[0].trim() : null;
+
+  // 函数体
+  const bodyOpen = code.indexOf('{', close);
+  if (bodyOpen < 0) { out.missing.push('def'); return out; }
+  let d2 = 0;
+  let bodyClose = -1;
+  for (let i = bodyOpen; i < code.length; i++) {
+    if (code[i] === '{') d2++;
+    else if (code[i] === '}') { d2--; if (d2 === 0) { bodyClose = i; break; } }
+  }
+  if (bodyClose < 0) { out.missing.push('def'); return out; }
+  const body = code.slice(bodyOpen + 1, bodyClose);
+
+  out.rename = /\brenameSync\s*\(|\brenameWithRetry\s*\(|\.rename\s*\(/.test(body);
+  out.fsync = /\bfsyncSync\s*\(|\bfsync\s*\(|\.sync\s*\(|\.datasync\s*\(/.test(body);
+
+  // 写调用：有几处、有没有一处直接写目标（= 第一个形参）
+  let writes = 0;
+  let acc = 0;
+  body.split('\n').forEach((line) => {
+    const lineStart = acc;
+    acc += line.length + 1;
+    findWriteCalls(line).forEach((hit) => {
+      writes++;
+      const arg = firstArgAt(body, lineStart + hit.index + hit.call.length);
+      const a = arg == null ? null : arg.trim();
+      if (a && out.param && a === out.param) out.direct.push(a);
+    });
+  });
+  out.write = writes > 0 && out.direct.length === 0;
+  if (writes === 0) out.missing.push('write');
+  else if (out.direct.length) out.missing.push('write');       // 直接写目标 ⇒ 没写 tmp
+  if (!out.fsync) out.missing.push('fsync');
+  if (!out.rename) out.missing.push('rename');
+  if (!out.param) out.missing.push('param');                   // 读不出形参 ⇒ "写的是不是目标"判不了
+  out.ok = out.missing.length === 0;
+  return out;
+}
+
+/** 把 `outletAtomicVerdict` 的结论译成一句人话（`--list` 与判红报文共用） */
+function describeAtomicVerdict(v) {
+  if (v.missing.indexOf('def') >= 0) {
+    return v.defs === 0
+      ? '找不到 `' + WO_OUTLET_FN + '` 的定义（改名/搬走了？）⇒ **采不到真值 = 红**'
+      : '`' + WO_OUTLET_FN + '` 有 ' + v.defs + ' 份定义 ⇒ 说不清哪一份是出口 ⇒ **采不到真值 = 红**';
+  }
+  const why = v.direct.length
+    ? '内容被**直接写到目标** `' + v.direct[0] + '`（没有先写同目录临时文件）'
+    : (v.write ? '' : '函数体里**一次写调用都没有**');
+  const lost = v.missing.map((k) => WO_ATOMIC_LEG_TEXT[k]).filter(Boolean);
+  return (why ? why + '；' : '') + (lost.length ? '缺：' + lost.join(' / ') : '三条腿都在');
+}
+
+/** 写调用点「签名」的归一（`B8` ③ 逐调用点豁免的匹配口径，**唯一一处**）：
+ *  = 该写调用的**第一实参原文**，折行/多个空白归一成单空格后去首尾。
+ *  为什么用签名而不是行号（实测）：册上写着的行号已经漂过 —— 上批的报文点名 `main.js:1664`,
+ *  而现测那一处（真裸写注入探针）在 `main.js:3139`；按行号登记等于给门禁装一个**必红**的时钟。
+ *  代价：重命名实参（`out` → `captureOut`）会报红 —— 这一档**故意保留**（见册头注释）。
+ */
+function normSig(target) {
+  return String(target == null ? '' : target).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 由欠账册建一个「**这一处写调用点是否在册**」的判定器（**纯函数** —— 可以单独喂一本假册，
+ * 于是"逐调用点豁免到底怎么匹配"这件事能被单测钉住，`B6`）。
+ *   两种粒度：
+ *     · `kind: 'file'` ⇒ 该文件里**所有**写调用点都算在册（按文件跳过）；
+ *     · `kind: 'site'` ⇒ 只有 `sites[].sig` 命中**这一处**的第一实参才在册（按调用点跳过）。
+ *   `sig` 匹配走 `normSig`（折行/多余空白归一）⇒ 调用行换行不必改册。
+ */
+function makeExemptMatcher(ledger) {
+  const fileExempt = new Set();
+  const sigExempt = new Map();                     // 文件 → Set(签名)
+  (ledger || []).forEach((e) => {
+    if (!e || !e.at) return;
+    if (e.kind === 'file') { fileExempt.add(e.at); return; }
+    if (e.kind !== 'site') return;
+    const set = sigExempt.get(e.at) || new Set();
+    (e.sites || []).forEach((x) => { if (x && x.sig) set.add(normSig(x.sig)); });
+    sigExempt.set(e.at, set);
+  });
+  return {
+    fileExempt: fileExempt,
+    sigExempt: sigExempt,
+    /** 这个写调用点是否**在册**（`target` = 第一实参原文） */
+    isExempt: (rel, target) => fileExempt.has(rel)
+      || (sigExempt.has(rel) && sigExempt.get(rel).has(normSig(target)))
+  };
 }
 
 /**
@@ -1010,7 +1232,11 @@ function analyzeWriteOutlet(root) {
   const { stripComments } = require(path.join(ROOT, 'scripts', 'dep-direction-check.js'));
   const problems = [];
   const ledger = WRITE_OUTLET_DEBT.map((e) => e);
-  const ledgerFiles = new Set(ledger.filter((e) => e.kind === 'file').map((e) => e.at));
+  // 豁免的**两种粒度**（`B8` ①：豁免登记在门禁侧，被检查方在自己文件里写一行不算）
+  const exempt = makeExemptMatcher(ledger);
+  const ledgerFiles = exempt.fileExempt;
+  const sigExempt = exempt.sigExempt;
+  const isExempt = exempt.isExempt;
 
   const files = woScanTargets(base);
   const matchers = woAssetNameMatchers();
@@ -1018,7 +1244,9 @@ function analyzeWriteOutlet(root) {
   const selfAtomic = [];
   const unmanaged = [];
   const unresolved = [];
-  /** 判定 ③ 的对象：文件"提得到"受管资产名、又有**判不了**的裸写 ⇒ 它可能在写受管资产 */
+  /** 每个文件的**全部裸写调用点**（`through === false`）—— 逐调用点豁免的"处数"核对要用 */
+  const byFile = new Map();
+  /** 判定 ④ 的对象：文件"提得到"受管资产名、又有**判不了**的裸写 ⇒ 它可能在写受管资产 */
   const suspects = new Map();
   let writeSites = 0;
   files.forEach((rel) => {
@@ -1032,8 +1260,10 @@ function analyzeWriteOutlet(root) {
     writeSites += sites.length;
     sites.forEach((s) => {
       if (s.through) return;                                     // 走出口：不是裸写
+      if (!byFile.has(rel)) byFile.set(rel, []);
+      byFile.get(rel).push(s);
       if (s.resolved == null) {
-        unresolved.push(s);                                       // 判不了：可见计数，不判红（判定 ③ 兜底）
+        unresolved.push(s);                                       // 判不了：可见计数，判定 ④ 兜底
         if (namesAsset) {
           if (!suspects.has(rel)) suspects.set(rel, []);
           suspects.get(rel).push(s);
@@ -1049,9 +1279,9 @@ function analyzeWriteOutlet(root) {
     });
   });
 
-  // ---- 判定 ①：受管资产上的裸写（整文件在册豁免除外）----
+  // ---- 判定 ①：受管资产上的裸写（在册豁免除外 —— 整文件在册 / 逐调用点在册两种粒度都算）----
   all.forEach((s) => {
-    if (ledgerFiles.has(s.rel)) return;
+    if (isExempt(s.rel, s.target)) return;
     problems.push({
       kind: 'write-outlet',
       msg: '受管资产上有**裸写**：`' + s.rel + ':' + s.line + '` 写的是 `' + s.targetRel + '`'
@@ -1070,26 +1300,55 @@ function analyzeWriteOutlet(root) {
     });
   });
 
-  // ---- 判定 ③：覆盖面（文件级封闭）——
-  //   一个文件**提得到**受管资产名、又有判不了目标的裸写 ⇒ 它可能在写受管资产 ⇒ 必须在册
-  //   （人工核实过"它其实写的是 %TEMP% / .review 证据"才算过关）。这一条兜的正是
+  // ---- 判定 ③：出口本体的原子写**不许降级**（治 I3：把唯一实现换成更弱的裸写）----
+  //   为什么是这一条而不是"再加一条受管资产裸写判红"：I3 的注入点在**调用点**、目标在 `<userData>`
+  //   ⇒ 它既不是受管资产、也求值不出来；能机械判定的只有**出口本体本身**的原子形状。
+  const outletSrc = (() => {
+    try { return fs.readFileSync(path.join(base, WO_OUTLET_FILE), 'utf8'); } catch (e) { return null; }
+  })();
+  const atomic = outletSrc == null
+    ? { ok: false, defs: 0, line: null, param: null, write: false, fsync: false, rename: false,
+      direct: [], missing: ['def'], unreadable: true }
+    : outletAtomicVerdict(outletSrc);
+  if (!atomic.ok) {
+    problems.push({
+      kind: 'outlet-atomic',
+      msg: '出口本体 `' + WO_OUTLET_FILE + (atomic.line ? ':' + atomic.line : '') + '` 的 `' + WO_OUTLET_FN
+        + '` **被降级成非原子写了**：' + describeAtomicVerdict(atomic)
+        + ' —— 原子写（同目录 tmp → fsync → rename）是"断电/进程中断不留半截文件"的唯一防线，'
+        + '把它换成更弱的写法就是**把守卫删掉而不报红**（实测：`e0f992c` 的 I3 注入正是这样绿着通过的）'
+    });
+  }
+
+  // ---- 判定 ④：覆盖面（**逐调用点**封闭）——
+  //   一处裸写**判不了目标**、而它所在的文件**提得到**受管资产名 ⇒ 它可能在写受管资产 ⇒ 这一处必须在册
+  //   （人工核实过"它其实写的是 %TEMP% / `<userData>` / argv"才算过关）。这一条兜的正是
   //   "目标路径来自变量"那个天然盲区：`docs-registry-check.js` T2 之前就是这种形状
   //   （写在 `writeRegistryTable(root)` 里，调用行上根本没有 `docs/`）。
+  //   ⚠️ 本批把粒度从**文件**改成**调用点**：文件级那一版遇到整文件豁免就**先短路**，
+  //   而 `main.js` 正是整文件在册的那一个 ⇒ 判定 ④ 对 main.js 从来没机会看一眼（实测 I1 因此 exit 0）。
   Array.from(suspects.keys()).sort().forEach((rel) => {
-    if (ledgerFiles.has(rel)) return;
-    problems.push({
-      kind: 'write-outlet',
-      msg: '`' + rel + '` 既提得到受管资产名、又有 ' + suspects.get(rel).length
-        + ' 处**判不了目标**的裸写（行 '
-        + suspects.get(rel).slice(0, 6).map((s) => s.line).join(', ')
-        + (suspects.get(rel).length > 6 ? ' …' : '')
-        + '）⇒ 它可能在写受管资产 —— 要么改成走出口，要么连同"人工核实结论"登记进'
-        + ' `WRITE_OUTLET_DEBT`（`kind: file`）'
+    if (ledgerFiles.has(rel)) return;                    // 整文件在册：这一档仍是文件粒度（明写在案）
+    suspects.get(rel).forEach((s) => {
+      if (isExempt(rel, s.target)) return;               // 这一处逐调用点登记过
+      problems.push({
+        kind: 'write-outlet',
+        msg: '`' + rel + ':' + s.line + '` 的裸写**目标判不了**（第一实参 `' + normSig(s.target) + '`），'
+          + '而该文件**提得到受管资产名** ⇒ 它可能在写受管资产 —— 要么改成走出口，'
+          + '要么把**这一处**连同"人工核实结论"登记进 `WRITE_OUTLET_DEBT`'
+          + '（`kind: "site"` + `sites: [{ sig: "' + normSig(s.target) + '", n: 1, what: "…" }]`）'
+      });
     });
   });
 
-  // ---- 欠账册四条机械判定（在册算欠账 / 只减不增 / 册上文件必须存在 / 每条 why+close）----
+  // ---- 欠账册的机械判定 ----
+  //   · 册上的文件必须存在（改名/删 ⇒ 红）
+  //   · `file`：当前既没写受管资产、也没判不了的裸写 ⇒ 修好忘销账 ⇒ 红
+  //   · `site`：逐签名的**处数**必须**双向相等** —— 少了 = 修好忘销账；多了 = **新增的裸写**（本批要抓的）
+  //   · `self-atomic`：签名没了 ⇒ 修好忘销账 ⇒ 红
+  //   · kind / verdict 枚举 · 每条 why+close · 条目数 ≤ cap · 豁免面 ≤ siteCap
   const managedFiles = new Set(all.map((s) => s.rel));
+  const countSig = (rel, sig) => (byFile.get(rel) || []).filter((s) => normSig(s.target) === sig).length;
   ledger.forEach((e) => {
     if (!fs.existsSync(path.join(base, e.at))) {
       problems.push({ kind: 'ledger', msg: '欠账册上写着 `' + e.at + '`，但磁盘上没这个文件（改名/删了？）' });
@@ -1102,12 +1361,45 @@ function analyzeWriteOutlet(root) {
           + '也没有判不了目标的裸写** —— 修好了就销账（照 cap 只减不增：同批把 cap 也调小）' });
       }
     }
+    if (e.kind === 'site') {
+      if (!Array.isArray(e.sites) || !e.sites.length) {
+        problems.push({ kind: 'ledger', msg: '欠账册条目 `' + e.at + '` 是逐调用点豁免（`kind: "site"`），'
+          + '却没有任何 `sites: [{ sig, n, what }]` —— 没有签名就等于整文件豁免，那要写成 `kind: "file"` 并说明理由' });
+      } else {
+        e.sites.forEach((x) => {
+          if (!x || !x.sig || !normSig(x.sig)) {
+            problems.push({ kind: 'ledger', msg: '欠账册条目 `' + e.at + '` 有一处 `sites[]` 没写 `sig`' });
+            return;
+          }
+          if (!x.what) {
+            problems.push({ kind: 'ledger', msg: '欠账册条目 `' + e.at + '` 的 `sig: "' + x.sig
+              + '"` 没写 `what`（每一处都要说清"这处目标到底是什么、为什么落在仓库外"）' });
+          }
+          const want = x.n === undefined ? 1 : x.n;
+          if (!Number.isInteger(want) || want < 1) {
+            problems.push({ kind: 'ledger', msg: '欠账册条目 `' + e.at + '` 的 `sig: "' + x.sig
+              + '"` 的 `n` 必须是 ≥1 的整数（它是"这一签名记几处"的口径）' });
+            return;
+          }
+          const got = countSig(e.at, normSig(x.sig));
+          if (got < want) {
+            problems.push({ kind: 'ledger', msg: '欠账册在 `' + e.at + '` 的 `sig: "' + x.sig + '"` 上记了 '
+              + want + ' 处，实际只有 ' + got + ' 处 —— 改走出口了 / 删了？那就**销账**（cap 只减不增：同批调小）' });
+          } else if (got > want) {
+            problems.push({ kind: 'ledger', msg: '欠账册在 `' + e.at + '` 的 `sig: "' + x.sig + '"` 上只记了 '
+              + want + ' 处，实际有 ' + got + ' 处 ⇒ **多出来的那处是新增的裸写**：改成走出口，'
+              + '要么重新裁决并把 `n` 加一（逐调用点豁免的意义就在这里：新增一处不该被旧签名带过去）' });
+          }
+        });
+      }
+    }
     if (e.kind === 'self-atomic' && !selfAtomic.includes(e.at)) {
       problems.push({ kind: 'ledger', msg: '欠账册写着 `' + e.at + '` 有自造 tmp+rename，但它**已经没有了**'
         + ' —— 修好了就销账（同批把 cap 也调小）' });
     }
-    if (e.kind !== 'file' && e.kind !== 'self-atomic') {
-      problems.push({ kind: 'ledger', msg: '欠账册条目 `' + e.at + '` 的 `kind` 只能是 `file` 或 `self-atomic`' });
+    if (e.kind !== 'file' && e.kind !== 'site' && e.kind !== 'self-atomic') {
+      problems.push({ kind: 'ledger', msg: '欠账册条目 `' + e.at + '` 的 `kind` 只能是 `file` / `site` / '
+        + '`self-atomic`（整文件豁免 / 逐调用点豁免 / 自造 tmp+rename）' });
     }
     if (e.verdict !== 'keep' && e.verdict !== 'debt') {
       problems.push({ kind: 'ledger', msg: '欠账册条目 `' + e.at + '` 的 `verdict` 只能是 `keep`（有据降级）'
@@ -1123,6 +1415,8 @@ function analyzeWriteOutlet(root) {
       + '（cap **只减不增**：新增一条须同批抬 cap 并写明为什么这一条短期清不掉）' });
   }
 
+  const exemptSites = all.filter((s) => isExempt(s.rel, s.target)).length
+    + unresolved.filter((s) => isExempt(s.rel, s.target)).length;
   const readings = {
     files: files.length,
     writeSites: writeSites,
@@ -1133,30 +1427,48 @@ function analyzeWriteOutlet(root) {
     selfAtomic: selfAtomic.length,
     ledger: ledger.length,
     cap: WRITE_OUTLET_CAP,
+    siteCap: WRITE_OUTLET_SITE_CAP,
     debt: ledger.filter((e) => e.verdict === 'debt').length,
     keep: ledger.filter((e) => e.verdict === 'keep').length,
-    exemptedSites: all.filter((s) => ledgerFiles.has(s.rel)).length,
+    exemptedSites: all.filter((s) => isExempt(s.rel, s.target)).length,   // 兼容旧读数口径：受管命中里的在册数
+    exemptSites: exemptSites,                                             // 分子：被豁免覆盖的**全部**调用点
+    fileExemptFiles: ledgerFiles.size,
+    siteExemptFiles: sigExempt.size,
+    siteExemptSignatures: [...sigExempt.values()].reduce((n, s) => n + s.size, 0),
+    atomicOk: atomic.ok,
     tokens: new Set(matchers.map((m) => m.label)).size
   };
   if (readings.writeSites !== readings.managedSites + readings.unmanagedSites + readings.unresolvedSites) {
     problems.push({ kind: 'closure', msg: '写调用点分档不平：总数 ' + readings.writeSites + ' ≠ 受管 '
       + readings.managedSites + ' + 非受管 ' + readings.unmanagedSites + ' + 判不了 ' + readings.unresolvedSites });
   }
+  if (exemptSites > WRITE_OUTLET_SITE_CAP) {
+    problems.push({ kind: 'ledger', msg: '豁免**面**涨了：被在册豁免覆盖的写调用点 ' + exemptSites
+      + ' 处 > 上限 ' + WRITE_OUTLET_SITE_CAP + '（`WRITE_OUTLET_SITE_CAP` 只减不增 —— '
+      + '把整文件豁免拆成逐调用点豁免**不会**缩小面，只卡条数就等于允许"拆细换额度"）' });
+  }
 
   const notes = [
     '写盘出口：扫描面 ' + readings.files + ' 个第一方文件 / ' + readings.writeSites + ' 个写调用点'
       + ' —— 受管资产 ' + readings.managedSites + '（其中 ' + readings.exemptedSites + ' 处在册豁免）· '
       + '非受管 ' + readings.unmanagedSites + ' · **判不了 ' + readings.unresolvedSites + '**（目标来自参数/运行时，'
-      + '本判据算不出来 —— 逐条列在 `--list` 里，不假装查过；判定 ③ 按**文件**兜底，'
+      + '本判据算不出来 —— 逐条列在 `--list` 里，不假装查过；判定 ④ 按**调用点**兜底，'
       + '提得到受管资产名又有判不了裸写的文件有 ' + readings.suspectFiles + ' 个）',
+    '豁免面（分子）：**' + readings.exemptSites + ' 处**写调用点被在册豁免覆盖 / 上限 ' + readings.siteCap
+      + ' —— 整文件豁免 ' + readings.fileExemptFiles + ' 个文件 · 逐调用点豁免 ' + readings.siteExemptFiles
+      + ' 个文件（' + readings.siteExemptSignatures + ' 条签名）',
     '自造 tmp+rename：' + readings.selfAtomic + ' 个文件（'
       + (selfAtomic.join(' / ') || '无') + '）—— 出口本体 `' + WO_OUTLET_FILE + '` 除外',
+    '出口本体原子性（判定 ③）：' + (atomic.ok ? '三条腿都在 ✓' : '**被降级 ✗**') + ' —— '
+      + describeAtomicVerdict(atomic),
     '欠账册：' + readings.ledger + ' 条 / 上限 ' + readings.cap + '（欠账 ' + readings.debt
       + ' · 有据降级 ' + readings.keep + '）；受管资产名 tokens ' + readings.tokens + ' 个（从 §5 登记表现取）'
   ];
   return {
     problems, notes, sites: all, selfAtomic: selfAtomic, unmanaged: unmanaged,
-    unresolved: unresolved, suspects: suspects, ledger: ledger, cap: WRITE_OUTLET_CAP, readings: readings
+    unresolved: unresolved, suspects: suspects, ledger: ledger, cap: WRITE_OUTLET_CAP,
+    siteCap: WRITE_OUTLET_SITE_CAP, atomic: atomic, byFile: byFile,
+    exemptSites: exemptSites, readings: readings
   };
 }
 
@@ -1173,8 +1485,11 @@ function main() {
       console.log('');
       console.log('▸ ' + row.when + '   [' + row.id + ']');
       row.places.forEach((p) => {
-        const who = p.gate === 'S2' ? '本门禁直接断言（S2）'
-          : p.gate ? '已有门禁 ' + p.gate + '（复用，不重做）' : '残差（未机械化）';
+        // ⚠️ 这条分支以前按 `p.gate` 挑，于是 `role: 'self'`（本门禁直接断言）的连带处
+        // 被印成"残差（未机械化）"—— 输出把"有人守"说成"没人守"，本批一并修（`D1`：输出也是契约）。
+        const who = p.role === 'self' ? '本门禁直接断言（' + p.check + '）'
+          : p.role === 'body' ? '本体（发生这类改动的地方）'
+            : p.gate ? '已有门禁 ' + p.gate + '（复用，不重做）' : '残差（未机械化）';
         console.log('    · ' + p.at);
         console.log('        ' + who + ' —— ' + p.note);
       });
@@ -1184,12 +1499,30 @@ function main() {
     r.notes.forEach((n) => console.log('  · ' + n));
     console.log('  · 本门禁自己实现的断言：' + CHECKS.join(' / '));
     console.log('');
+    console.log('== ⑤ 判定 ③：出口本体 ' + WO_OUTLET_FILE + ' 的 `' + WO_OUTLET_FN + '` 三条腿 ==');
+    const a = r.writeOutlet.atomic;
+    console.log('  ' + (a.ok ? '✓ 三条腿都在' : '✗ 被降级') + '（定义 ' + a.defs + ' 份'
+      + (a.line ? '，第 ' + a.line + ' 行起' : '') + (a.param ? '，目标形参 `' + a.param + '`' : '') + '）');
+    ['write', 'fsync', 'rename'].forEach((k) => {
+      console.log('    ' + (a[k] ? '✓' : '✗') + ' ' + WO_ATOMIC_LEG_TEXT[k]);
+    });
+    if (a.direct.length) console.log('    ✗ 直接把内容写到 `' + a.direct[0] + '`（没有 tmp）');
+    console.log('');
     console.log('== ⑤ 写盘出口：受管资产上的裸写（逐条）==');
     if (!r.writeOutlet.sites.length) console.log('  （无：所有落在受管资产上的写调用点都走了出口或在册豁免）');
+    const listFileExempt = new Set(r.writeOutlet.ledger.filter((e) => e.kind === 'file').map((e) => e.at));
+    const listSigExempt = new Map();
+    r.writeOutlet.ledger.filter((e) => e.kind === 'site').forEach((e) => {
+      (e.sites || []).forEach((x) => {
+        if (!listSigExempt.has(e.at)) listSigExempt.set(e.at, new Set());
+        listSigExempt.get(e.at).add(x.sig);
+      });
+    });
+    const listExempt = (rel, target) => listFileExempt.has(rel)
+      || (listSigExempt.has(rel) && listSigExempt.get(rel).has(normSig(target)));
     r.writeOutlet.sites.forEach((s) => {
-      const exempt = r.writeOutlet.ledger.some((e) => e.kind === 'file' && e.at === s.rel);
-      console.log('  ' + (exempt ? '[在册豁免] ' : '') + s.rel + ':' + s.line + '  [' + s.call + '] → '
-        + s.targetRel + '   ' + s.family.label);
+      console.log('  ' + (listExempt(s.rel, s.target) ? '[在册豁免] ' : '') + s.rel + ':' + s.line
+        + '  [' + s.call + '] → ' + s.targetRel + '   ' + s.family.label);
     });
     console.log('');
     console.log('== ⑤ 写盘出口：判不了的目标（目标来自参数/运行时 —— 如实计数，不假装查过）==');
@@ -1197,20 +1530,35 @@ function main() {
     const byFile = new Map();
     r.writeOutlet.unresolved.forEach((s) => {
       if (!byFile.has(s.rel)) byFile.set(s.rel, []);
-      byFile.get(s.rel).push(s.line);
+      byFile.get(s.rel).push(s);
     });
+    // 逐条打出**签名**（第一实参原文）：一是让"判不了"可审计，二是**逐调用点豁免要照着它写 sig**
+    // （以前只打行号，而册上的行号已经漂过一次 ⇒ 照着行号登记必红）。
     Array.from(byFile.keys()).sort().forEach((f) => {
-      console.log('  ' + f + '  ×' + byFile.get(f).length + '（行 ' + byFile.get(f).slice(0, 12).join(', ')
-        + (byFile.get(f).length > 12 ? ' …' : '') + '）');
+      const arr = byFile.get(f);
+      console.log('  ' + f + '  ×' + arr.length
+        + (listFileExempt.has(f) ? '  [整文件在册豁免]' : ''));
+      arr.slice(0, 14).forEach((s) => {
+        console.log('      ' + (listExempt(f, s.target) ? '[在册] ' : '       ') + '行 ' + s.line
+          + '  [' + s.call + ']  sig=' + (normSig(s.target) || '(取不到)'));
+      });
+      if (arr.length > 14) console.log('      … 还有 ' + (arr.length - 14) + ' 处（只印前 14 处）');
     });
     console.log('');
     console.log('== ⑤ 欠账册（封闭：cap 只减不增；每条 why / close）==');
     r.writeOutlet.ledger.forEach((e) => {
       console.log('  · ' + e.at + '  [' + e.kind + ' · ' + e.verdict + ']');
+      if (e.kind === 'site') {
+        (e.sites || []).forEach((x) => {
+          console.log('      site：sig=' + x.sig + '  ×' + (x.n === undefined ? 1 : x.n)
+            + ' —— ' + (x.what || '（缺 what）'));
+        });
+      }
       console.log('      why  ：' + e.why);
       console.log('      close：' + e.close);
     });
-    console.log('  合计 ' + r.writeOutlet.ledger.length + ' 条 / 上限 ' + r.writeOutlet.cap);
+    console.log('  合计 ' + r.writeOutlet.ledger.length + ' 条 / 上限 ' + r.writeOutlet.cap
+      + '；豁免面（被覆盖的写调用点）' + r.writeOutlet.exemptSites + ' 处 / 上限 ' + r.writeOutlet.siteCap);
     return;
   }
 
@@ -1233,13 +1581,16 @@ module.exports = {
   COLLATERAL, CHECKS, extractMcpCommands, mcpCallSites, smokeDomains,
   missingFromIndex, declaredChecks, referencedGates, mountedGates, analyze,
   // ⑤ 写盘出口（判定与读数都在这里，别在别处再写一份）
-  WRITE_OUTLET_CAP, WRITE_OUTLET_DEBT, WO_OUTLET_FILE, WO_WRITE_NAMES, findWriteCalls,
-  woManagedFamily, evalPathExpr,
+  WRITE_OUTLET_CAP, WRITE_OUTLET_SITE_CAP, WRITE_OUTLET_DEBT, WO_OUTLET_FILE, WO_WRITE_NAMES, findWriteCalls,
+  woManagedFamily, evalPathExpr, normSig,
   splitTopLevel, wholeCall, collectBindings, collectBindingList, collectFunctionBlocks, bindingsAt,
   collectZeroArgReturns,
   blankQuoted, firstArgAt, scanWriteSites, scanViews, woScanTargets, woAssetNameMatchers,
   buildScopeIndex,
-  hasSelfAtomicSignature, analyzeWriteOutlet
+  hasSelfAtomicSignature, analyzeWriteOutlet,
+  // 判定 ③：出口本体的原子写不许降级（判据本体是纯函数，可单独喂源码）
+  WO_OUTLET_FN, WO_ATOMIC_LEG_TEXT, outletAtomicVerdict, describeAtomicVerdict,
+  makeExemptMatcher
 };
 
 if (require.main === module) main();
