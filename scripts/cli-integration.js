@@ -71,9 +71,12 @@ function probeDirNames() {
 }
 
 /** 访问日志目录 `<项目根>/.visits/` —— "它在哪"的唯一实现是 `src/data-store.js`，这里不自己拼路径 */
-function visitLogDir() {
+function visitLogStore() {
   return require(path.join(ROOT, 'src', 'data-store.js'))
-    .createStore(path.join(ROOT, 'projects'), () => {}).visitDir();
+    .createStore(path.join(ROOT, 'projects'), () => {});
+}
+function visitLogDir() {
+  return visitLogStore().visitDir();
 }
 
 /* ---------------- 沙箱 worker 模式（由下面 §9.2 的 runSandboxWorker 子进程调起） ----------------
@@ -86,38 +89,217 @@ function visitLogDir() {
  *   （顶层 `return` 在 CJS 里合法；`runSandboxWorker` 是函数声明，提升可用）。 */
 if (process.argv[2] === '--sandbox-worker') { runSandboxWorker(); return; }
 
-/* ---------------- 开工前清扫历史残留 ----------------
+/* ---------------- 开工前**自愈**：扫己方前缀的残留探针 ----------------
  * 本脚本在**真实** projects/ 下造探针项目（store 与 CLI 同源，不另设根），
  * 结尾统一 rm。但脚本被中断（Ctrl+C / 超时被杀 / 崩溃）时收尾不执行 ——
  * 残留的 `it-probe-*` 会出现在应用的**项目列表**里，还会被 validate-all 当项目数。
  * （实测残留：it-probe-mucp3f55 让 "全部 2 个项目校验通过" 多算一个假项目。）
  * ⚠️ 崩在半路还会留下 **`it-broken-*`**（那份**故意写坏的** JSON 探针）—— 它比普通残留更毒：
  *   `validate-all` 会因 JSON 解析失败而**整条链在 G2 判红**（实测 2026-10-10：一次改脚本时的
- *   ReferenceError 中断，留下 `it-broken-mv1rcfov`，把全链从"绿"变成"步骤 9 退出码 1"）。
+ *   ReferenceError 中断，留下 `it-broken-mv1rcfov`，把全链从"绿"变成"步骤 9 退出码 1"；
+ *   2026-10-19 又一次：`it-broken-mve2g4ps` 等 10 个 `it-*` 让 `ae07a226` 开工第一件事
+ *   就是先证明"这不是我改坏的"）。
  *   故两类前缀都清 —— 自己的残留要自己收干净，否则下一个跑链的人会以为工程坏了。
- * 只清扫**超过 10 分钟没动过**的：正在并发跑的另一份集成测试持有的是新鲜目录，
- * 不能误删（本工程存在并行 agent 同时跑门禁的常态）。 */
-function sweepStaleProbes() {
-  const dir = path.join(ROOT, 'projects');
-  let removed = 0;
+ *
+ * ⭐ **旧口径（"只清超过 10 分钟没动过的"）为什么不够** —— 本批实测的机制，不是猜：
+ *   全链里 **步骤 12 = G4（本脚本）· 步骤 13 = G2（validate-all）**（`scripts/verify.js` 的 `STEPS`），
+ *   也就是 G2 **紧跟在**本脚本之后。于是"本脚本刚被中断 ⇒ 下一轮全链的 G2 现场"里，
+ *   残留的年龄**必然**小于 10 分钟 ⇒ 年龄线一定放过它 ⇒ 假红稳定复现，而且要等满 10 分钟才可能自愈。
+ *   年龄线本来是给"**并发**跑的另一份本脚本"留的余地（它的探针新鲜，不能误删），但它把
+ *   "上次崩溃的残留"与"别人正在跑的探针"压成了同一个信号 —— 两者根本不同，只是都"新"。
+ *
+ * ⇒ 解法：把"还有没有另一份本脚本在跑"**直接问出来**（登记文件 + pid 活性），不靠年龄猜：
+ *   · 没有别的实例 ⇒ 盘上**任何**己方前缀的探针目录都只可能是上次崩溃留下的 ⇒ **发现即清**
+ *   · 有别的实例   ⇒ 只清"超过 10 分钟没动过"的（保守口径：宁可留到下一轮，也不误删别人正在用的）
+ *   登记落在 `%TEMP%/mm-live-runs/` 下的一个**空目录**（名字 = `run-<pid>-<开工时刻36进制>-<随机>`；
+ *   **不在 projects/ 里** ⇒ 不会被 validate-all 当项目，也不往用户的真实项目目录里添东西）。
+ *   ⭐ 为什么登记是"建目录"而不是"写文件"：目录创建**原子** ⇒ 没有"半个登记文件"这种失败形态；
+ *     登记内容全在名字里 ⇒ **不必写内容** ⇒ 不新增写盘调用点（`WRITE_OUTLET_SITE_CAP` 只减不增，
+ *     S2 数的是"面"：上一版写 json 的那一版实测就把它从 82 顶到 83）。
+ *   进程被 SIGKILL 时它留成僵尸目录，下次按 pid 判死自动清掉。
+ * ⚠️ 边界（如实登记）：pid 被系统复用给无关进程时，会把"没有别人"误判成"有别人" ⇒
+ *   方向是**保守**（不删，不误删），`MAX_RUN_MS` 给僵尸登记封顶。
+ * ⚠️ 自愈**不依赖**收尾：`process.on('exit')` 与 SIGINT/SIGTERM 只是兜底（见下面
+ *   `sweepThisRunDebris`）；被 SIGKILL / taskkill /F 打死时唯一能救的是"下一次开跑"。 */
+const STARTED_AT = Date.now();
+const LIVE_DIR = path.join(os.tmpdir(), 'mm-live-runs');
+const RUN_CLAIM = path.join(LIVE_DIR, 'run-' + process.pid + '-' + STARTED_AT.toString(36) + '-' + Math.random().toString(36).slice(2, 8));   // 空目录：内容全在名字里
+const MAX_RUN_MS = 30 * 60 * 1000;      // 僵尸登记封顶（本脚本一轮 < 2 分钟）
+const SWEEP_GRACE_MS = 10 * 60 * 1000;  // 保守年龄线：projects/ 只在"确实有另一份在跑"时用；%TEMP% 一律用
+/** 本脚本自己 mkdtemp 出来的 %TEMP% 根（前缀逐字来自 6 处 `mkdtempSync`：mm-it- / mm-imp- /
+ *  mm-impdir- / mm-lib- / mm-sb- / mm-w19-）。**只认这几个前缀**：%TEMP% 里别人的 mm-* 一个都不碰。 */
+const OWN_TEMP_PREFIXES = ['mm-it-', 'mm-imp-', 'mm-impdir-', 'mm-lib-', 'mm-sb-', 'mm-w19-'];
+
+/** 登记"我在跑"（供**别的实例**的开跑自愈判断"要不要保守"）—— **建一个空目录**，内容全在名字里 */
+function writeRunClaim() {
   try {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      // 前缀清单只有一处（文件顶部的 `PROBE_PREFIX`）：各流的探针按 §4.1 分前缀
-      // （`it-probe-`/`it-broken-` 是本脚本自有的；流探针另见 §53/§54 等）
+    fs.mkdirSync(LIVE_DIR, { recursive: true });
+    fs.mkdirSync(RUN_CLAIM);
+  } catch (err) { /* 登记不上 ⇒ 自愈退化成保守口径（见 liveSiblingRuns 的 ok:false） */ }
+}
+function releaseRunClaim() {
+  try { fs.rmSync(RUN_CLAIM, { recursive: true, force: true }); } catch (err) { /* 退出路径不许再抛 */ }
+}
+/** 还活着的**另一份**本脚本。顺带清掉僵尸登记（pid 已经死了的那些）。
+ *  返回 {ok, runs}：`ok:false` = 登记目录读不出来（判不了 ⇒ 调用方必须保守）。
+ *  ⚠️ 名字解析不出 pid / 开工时刻的条目一律**当死**（清掉）：僵尸目录留在那里会把每一次开跑
+ *  都变成"有别人在跑" ⇒ 自愈永久失效，比残留本身更坏（"删不掉"与"有人占着"不许压成同一个读数）。 */
+function liveSiblingRuns() {
+  const runs = [];
+  let names = [];
+  try { names = fs.readdirSync(LIVE_DIR); }
+  catch (err) { return { ok: !!(err && err.code === 'ENOENT'), runs }; }   // 目录不存在 = 从没有实例登记过
+  for (const f of names) {
+    if (f === path.basename(RUN_CLAIM)) continue;                          // 自己那条不算"别人"
+    if (f.indexOf('run-') !== 0) continue;
+    const p = path.join(LIVE_DIR, f);
+    const m = f.split('-');                                                // run-<pid>-<起于36进制>-<随机>
+    const pid = Number(m[1]);
+    const startedAt = parseInt(m[2], 36);
+    let alive = false;
+    if (isFinite(pid) && pid > 0 && pid !== process.pid && isFinite(startedAt)) {
+      try { process.kill(pid, 0); alive = true; }
+      catch (err) { alive = !!(err && err.code === 'EPERM'); }             // EPERM = 进程在，只是不许发信号
+    }
+    if (alive && Date.now() - startedAt > MAX_RUN_MS) alive = false;       // 超龄 ⇒ pid 复用 / 僵尸
+    if (!alive) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (err) { /* 清僵尸失败不判红 */ } continue; }
+    runs.push({ pid: pid, startedAt: startedAt, file: f });
+  }
+  return { ok: true, runs };
+}
+/** `projects/` 下己方前缀（`PROBE_PREFIX`）的探针目录：**没有别的实例就发现即清**。
+ *  只碰前缀表命中的目录；用户的真实项目与别的工具的目录一个都不碰。 */
+function sweepOwnProbes(sib) {
+  const dir = path.join(ROOT, 'projects');
+  const conservative = !sib.ok || sib.runs.length > 0;
+  const removed = [];
+  const kept = [];
+  let entries = null;
+  let err = '';
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch (e) { if (!(e && e.code === 'ENOENT')) err = String((e && e.message) || e); }   // ENOENT = 本轮会自己建
+  if (entries) {
+    for (const e of entries) {
       if (!e.isDirectory() || !PROBE_PREFIX.test(e.name)) continue;
       const p = path.join(dir, e.name);
-      try {
-        if (Date.now() - fs.statSync(p).mtimeMs < 10 * 60 * 1000) continue; // 可能是别人正在跑的
-        fs.rmSync(p, { recursive: true, force: true });
-        removed++;
-      } catch (err) { /* 单个失败不影响本轮 */ }
+      if (conservative) {
+        let young = false;
+        try { young = Date.now() - fs.statSync(p).mtimeMs < SWEEP_GRACE_MS; } catch (e2) { young = false; }
+        if (young) { kept.push(e.name); continue; }   // 可能是别人正在跑的（只在有别的实例时才这么判）
+      }
+      try { fs.rmSync(p, { recursive: true, force: true }); removed.push(e.name); }
+      catch (e2) { kept.push(e.name); }
     }
-  } catch (err) { /* projects/ 不存在：本轮会自己建 */ }
-  if (removed) console.log('[清扫] 删除 ' + removed + ' 个历史残留探针项目（上次跑被中断）');
+  }
+  // 这些名字的**访问日志**（在项目目录之外）跟着清：**只清真删掉的那些名字**
+  // （真项目的使用痕迹一个都不碰 —— 路径推导走 DataStore.visitLogFile 这一处，不自己拼）
+  let logs = 0;
+  if (removed.length) {
+    try {
+      const store = visitLogStore();
+      const vl = store.visitDir();
+      if (fs.existsSync(vl)) {
+        for (const name of removed) {
+          try { fs.rmSync(store.visitLogFile(name), { force: true }); logs++; } catch (e) { /* 不判红 */ }
+        }
+      }
+    } catch (e) { /* 不判红 */ }
+  }
+  return { removed, kept, logs, err, conservative, runs: sib.runs };
 }
+/** `%TEMP%` 下己方 mkdtemp 根（见 `OWN_TEMP_PREFIXES`）：本脚本被中断时它们同样会留一堆
+ *  （本机实测：`mm-it-*` 252 个、`mm-imp*` 12 个）。这里的残留**不影响任何门禁**（只占磁盘），
+ *  所以口径比 projects/ 更保守：**一律用 10 分钟年龄线**，并且**跳过本轮自己那个**（`keepNames`，
+ *  否则会把整轮要用的 TMP 删掉）。 */
+function sweepOwnTempRoots(keepNames) {
+  const names = [];
+  let entries = [];
+  try { entries = fs.readdirSync(os.tmpdir(), { withFileTypes: true }); }
+  catch (e) { return { removed: 0, names, err: String((e && e.message) || e) }; }
+  for (const e of entries) {
+    if (!e.isDirectory() || keepNames.indexOf(e.name) >= 0) continue;
+    if (!OWN_TEMP_PREFIXES.some((pre) => e.name.indexOf(pre) === 0)) continue;
+    const p = path.join(os.tmpdir(), e.name);
+    let young = false;
+    try { young = Date.now() - fs.statSync(p).mtimeMs < SWEEP_GRACE_MS; } catch (e2) { young = false; }
+    if (young) continue;
+    try { fs.rmSync(p, { recursive: true, force: true }); names.push(e.name); } catch (e2) { /* 单个失败不影响本轮 */ }
+  }
+  return { removed: names.length, names, err: '' };
+}
+/** 开工前自愈（**主路**）。名字沿用 `sweepStaleProbes`：本文件十几处注释按这个名字索引它的前缀表。
+ *  读数分**三态**（"读不出来"绝不许混进"无残留"）：清掉了 / 无残留 / 扫不动并点名原因。 */
+function sweepStaleProbes() {
+  writeRunClaim();
+  const sib = liveSiblingRuns();
+  const pj = sweepOwnProbes(sib);
+  const tp = sweepOwnTempRoots([path.basename(TMP), path.basename(LIVE_DIR)]);
+  if (pj.err) console.log('[自愈] ⚠️ 扫不掉 projects/（' + pj.err + '）—— 本轮可能带着上次的残留开跑');
+  if (pj.removed.length) {
+    console.log('[自愈] 上次运行被中断，已清 ' + pj.removed.length + ' 个残留探针目录：' + pj.removed.join(', ')
+      + (pj.logs ? '（连同 ' + pj.logs + ' 个旁路访问日志）' : ''));
+  }
+  if (tp.removed) {
+    const head = tp.names.slice(0, 5).join(', ') + (tp.names.length > 5 ? ' …（共 ' + tp.names.length + ' 个）' : '');
+    console.log('[自愈] 上次运行被中断，已清 ' + tp.removed + ' 个残留 %TEMP% 临时根：' + head);
+  }
+  if (pj.conservative && pj.kept.length) {
+    console.log('[自愈] 检测到另一份集成测试在跑（pid ' + pj.runs.map((r) => r.pid).join('/') + ' 起于 '
+      + pj.runs.map((r) => new Date(r.startedAt).toISOString()).join('/') + '）⇒ 新鲜（<'
+      + Math.round(SWEEP_GRACE_MS / 60000) + ' 分钟）的己方探针目录本轮不动：' + pj.kept.join(', '));
+  }
+  if (!pj.conservative && !pj.removed.length && !tp.removed && !pj.err) {
+    console.log('[自愈] 开工前扫己方前缀探针：无残留（前缀 ' + PROBE_PREFIX.source + '）');
+  }
+  return pj;
+}
+let crashSwept = false;
+/** 收尾兜底（**不是主路**）：本轮**新出现**的己方前缀探针目录（开工快照里没有的）+ 它们的访问日志。
+ *  只在"跑体没走完"时用；幂等 —— `finally` / `exit` / 信号三处都调它也只做一次。
+ *  ⚠️ 边界（与既有崩溃路径同一条，如实登记）：并发起跑、且**在本次之后**才建出探针目录的那一份，
+ *  会被这次兜底扫一起清掉 —— 这个险只在**跑体没走完**时冒。 */
+function sweepThisRunDebris(why) {
+  if (crashSwept) return;
+  crashSwept = true;
+  const swept = [];
+  probeDirNames().forEach((name) => {
+    if (PRE_EXISTING_PROBES.has(name)) return;   // 开工前就在：可能是并发跑的别人
+    try { fs.rmSync(path.join(ROOT, 'projects', name), { recursive: true, force: true }); swept.push(name); }
+    catch (e) { /* 收尾失败不判红 */ }
+  });
+  if (swept.length) {
+    console.log('[收尾] ' + why + ' ⇒ 按探针前缀兜底清掉 ' + swept.length + ' 个本次新建的探针项目：' + swept.join(', '));
+  }
+  // 访问日志（在项目目录之外，删项目目录删不掉它）：按前缀清 —— 过滤口径 = 顶部那张 PROBE_PREFIX
+  try {
+    const vl = visitLogDir();
+    if (fs.existsSync(vl)) {
+      fs.readdirSync(vl).filter((f) => PROBE_PREFIX.test(f))
+        .forEach((f) => { try { fs.rmSync(path.join(vl, f), { force: true }); } catch (e) { /* 收尾失败不判红 */ } });
+    }
+  } catch (e) { /* 收尾失败不判红 */ }
+}
+/* 兜底一：`exit` 事件 —— 正常结束、`process.exit()`、**未捕获异常**都会触发它（SIGKILL 不会）。
+ * 正常跑完（`bodyCompleted`）时什么都不做：那时末尾的清理段已经按名单收干净了。 */
+process.on('exit', () => {
+  try { if (!bodyCompleted) sweepThisRunDebris('进程退出（跑体没走完：未捕获异常 / 提前 process.exit）'); }
+  catch (e) { /* 退出路径不许再抛 */ }
+  releaseRunClaim();
+});
+/* 兜底二：信号。⚠️ 如实登记其局限：跑体是**一大段同步代码** ⇒ 信号回调要等它让出事件循环才轮到，
+ * 所以 Ctrl-C 的实际行为接近"这一段跑完、清完再退出"，不是"立刻停"；要立刻停只能用 SIGKILL 类
+ * （taskkill /F、任务管理器结束进程）—— 那种情况**只有下次开跑的自愈**能救，这正是主路。 */
+['SIGINT', 'SIGTERM', 'SIGHUP'].forEach((sig) => {
+  process.on(sig, () => {
+    console.log('[收尾] 收到 ' + sig + ' ⇒ 先清本次探针再退出');
+    try { sweepThisRunDebris('收到 ' + sig); } catch (e) { /* 退出路径不许再抛 */ }
+    releaseRunClaim();
+    process.exit(sig === 'SIGINT' ? 130 : 143);
+  });
+});
 sweepStaleProbes();
-/* 开工前就在的探针目录（**快照**）：崩溃路径的宽口径收尾要排除它们 ——
- * 那些可能是**正在并发跑**的另一份集成持有的新鲜目录（顶部 10 分钟口径放过的正是它们）。 */
+/* 开工前**扫完之后**还在的己方前缀目录（快照）：跑体没走完时的兜底收尾要排除它们 ——
+ * 那些要么是并发跑的另一份集成正在用的（保守口径放过的），要么是删不掉的。 */
 const PRE_EXISTING_PROBES = probeDirNames();
 
 /** 失败契约违规记录：**每个** run() 都被检查，因此全部断言都顺带验证契约，
@@ -310,7 +492,7 @@ function runSandboxWorker() {
 /* ---------------- 用例序列（整段包在 `try` 里 ⇒ 崩在半路也走末尾的 `finally` 清理） ----------------
  * 为什么必须包：任何**半路崩溃**（断言抛错、未捕获异常、探针里手滑一次）都会跳过末尾的清理段，
  * 于是本次的探针项目留在真实 `projects/` 里 —— 下次跑链时 `validate-all` 多算一个项目、应用项目
- * 列表多一个假项目，而唯一的自愈途径是**10 分钟后**的 `sweepStaleProbes()`（实测踩到过：
+ * 列表多一个假项目，而自愈途径是**下一次开跑**时的 `sweepStaleProbes()`（本批把它改成"发现即清"：见文件顶部那段说明。这句注记留着，因为它正是"不能把收尾当主路"的实测依据。实测踩到过：
  * `it-broken-*` 残留直接把全链从绿变成"步骤 9 退出码 1"）。⇒ 跑体整段进 `try`、清理段进 `finally`。
  * ⚠️ 异常照旧**往上抛**（`finally` 不 catch）：崩了就该以非 0 退出，不许被清理段吞掉。
  * ⚠️ 两个副作用写在明处，免得后来者以为它是笔误：
@@ -6982,17 +7164,9 @@ try { fs.rmSync(path.join(ROOT, 'projects', PROJ2), { recursive: true, force: tr
 try { fs.rmSync(XP_DIR, { recursive: true, force: true }); } catch (e) {}   // 8.7 的跨项目探针项目
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) {}
 /* 崩在半路的兜底档：本次**新出现**的探针目录（快照里没有的）按前缀一起收掉。
- * 正常跑完那一档**不执行**它 —— 见上面两档口径的说明。 */
-if (!bodyCompleted) {
-  const now = probeDirNames();
-  let swept = 0;
-  now.forEach((name) => {
-    if (PRE_EXISTING_PROBES.has(name)) return;                  // 开工前就在：可能是并发跑的别人
-    try { fs.rmSync(path.join(ROOT, 'projects', name), { recursive: true, force: true }); swept++; }
-    catch (e) { /* 收尾失败不判红 */ }
-  });
-  if (swept) console.log('[收尾] 崩在半路 ⇒ 按探针前缀兜底清掉 ' + swept + ' 个本次新建的探针项目');
-}
+ * 正常跑完那一档**不执行**它 —— 见上面两档口径的说明。
+ * 实现只一处（`sweepThisRunDebris`）：`exit` 事件与信号回调调的也是它（幂等）。 */
+if (!bodyCompleted) sweepThisRunDebris('崩在半路');
 /* 访问日志（热度条探针那几节钦的）：**在项目目录之外**（`<项目根>/.visits/<项目名>.jsonl`）⇒
  * 删项目目录删不掉它。不删就每跑一次留一份（本机实测：连跑几轮后 `projects/.visits/` 里
  * 堆了十几份 `it-probe-heat-*.jsonl`；`imp-probe-*.jsonl` 同样会留）—— 探针的收尾必须连**日志**

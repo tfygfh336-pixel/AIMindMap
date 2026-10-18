@@ -26,6 +26,43 @@
 
 ## [Unreleased]
 
+### 探针目录残留：`cli-integration.js` 的探针项目在**被中断**时留在 `projects/` ⇒ 下一轮 **G2 假红**；改成**下一次开跑自愈**（并实测四种中断形态）
+
+- **病机是链序，不是"忘了清理"**：`scripts/verify.js` 的 **step 12 = G4 本脚本 · step 13 = G2 `validate-all`**，
+  且首败即停 ⇒ 上一轮 G4 **被中断**的残留，在**下一轮 step 12** 被看见时**必然 < 10 分钟**
+  ⇒ 既有的"10 分钟年龄线"**一定放过** ⇒ step 13 的 G2 把它当项目验 ⇒ **假红**。
+  （`ae07a226` 开工第一件事就是先证明"这红不是我造成的" —— 一整个批的时间。）
+  ⚠️ 而且残留落在 **`projects/`（用户的真实项目目录）**，不是 `%TEMP%`。
+- **四种中断形态（实测）**：未捕获异常 / `process.exit` ⇒ **`exit` 回调跑得到**；
+  **`taskkill /F`·`child.kill()` ⇒ 一条回调都不跑**；**Windows 的 `process.kill(pid,'SIGINT'/'SIGTERM')`
+  走 `TerminateProcess`、不是信号** ⇒ 回调也不跑；
+  真 Ctrl-C 的 emit 会**在同步大块里排队**。⇒ **主路只能是"下一次开跑自愈"**，`exit`/信号只作兜底。
+- **修（判断只一处）**：开跑前 `sweepStaleProbes()` = **活实例登记（空目录锁）+ 没有别的实例 ⇒ 发现即清**；
+  有别的实例 ⇒ **退回 10 分钟年龄线**（保守）。`process.on('exit')` + `SIGINT/SIGTERM/SIGHUP` 与末尾 `finally`
+  **都调同一个幂等的 `sweepThisRunDebris()`**。读数**三态**（清掉了 / 无残留 / 扫不动并点名原因）。
+  打印原文：`[自愈] 上次运行被中断，已清 N 个残留探针目录：…（连同 N 个旁路访问日志）`。
+  顺带清掉本脚本自己的 **267 个** `%TEMP%` 残留根。
+- ⭐ **没有抬 cap（`WRITE_OUTLET_SITE_CAP` 82 → 82）**：把"活实例登记"从**写 json 文件**
+  换成**建空目录锁**（`fs.mkdirSync('%TEMP%/mm-live-runs/run-<pid>-<开工时刻36进制>-<随机>')`，
+  **pid 与开工时刻全编码在目录名里，不必写内容**）。
+  **理由不止"躲计数"**：目录创建是**原子的**，没有"半个登记文件"这种失败形态 ⇒ 是更对的锁。
+  ⚠️ **父代理裁定：这不是"为过门禁变形代码"** —— 它没动门禁、没动册（`collateral-check.js` 与
+  `tests/collateral-check.test.js` 一个字节未改）、且**主动登记了"形状确实是因为 82 这条线才改的"**并备了回滚口径。
+  **但记一条边界**（见下 §偏差-5）：`WO_WRITE_NAMES` 是**按 API 名**判定的 ⇒ **换一个 API 就看不见**。
+- **判别力证明（四组，只认 exit code）**：
+  **A** 预置坏 JSON ⇒ 打印并清掉、**G2 1 → 0**、`528/528`、exit 0；
+  **B** 原始 Buffer 还原后同样预置 + 10 s 后 `TerminateProcess` ⇒ **零打印、残留原封不动 ⇒
+  `[PROOF-FAIL]` exit 1（必红成立）**；**C** 修回来 ⇒ 把 B 两次中断留下的 5 个一起清（"已清 7 个"）、复绿；
+  **D 护栏**：假装另一实例在跑 ⇒ 打印"本轮不动"、残留保留（**护栏没被删**）。
+  三记还原：原始 Buffer + `sha256 137e4256… / 503,802 B / CR 0`，`ok:true` **逐字节一致**。
+- **W5 不是同一形状（纠正上游假设）**：`main.js` 的启动清扫**已存在**（`sweepSmokeHusks`），
+  缺的不是"加自愈"，而是它**只调非递归 `rmdirSync`** ⇒ **非空壳物理上删不掉**：
+  实测 **35 个壳 / 34 个非空 / 1,113 文件 / 226.6 MB 永远留着**。
+  ⇒ 药方 = **递归删 + 年龄线 + 活实例登记**，**不是"只报不删"**。（**按边界未动 `main.js`**，另派。）
+- 第三族读数：`%TEMP%` 共 **23,947 个 `mm-*`**（`mm-control-test-*` 13,193、`mm-bind*` 8,913 是 vitest 造的），
+  其中属于本脚本的 **267 个本批已治**。
+
+
 ### 装配探针 `dsh-assembly-probe.js` 的**判定力**缺陷：18 行 `disabled: !!js` 全被读成"启用"、105 行 preset 内联行被算成顶层 ⇒ 改成**三态 + 缩进层级 + 命中面**，并把它"能判什么 / 不判什么"写回脚本头（2026-10-19）
 
 - **病（现算，不手抄；`150bc4a` 按边界未修，本批收口）**：`scripts/dsh-assembly-probe.js` 是**给 AI 读装配面**的探针 —— 它**每次都给结论**，所以判错不是"少一个读数"，而是**主动给出错答案**。三处实测：① `DISABLED_RE = /^\s*disabled:\s*true\s*$/` 只认字面 `true` ⇒ 现跑合成树里 **18 行** `disabled: !!js …` 全被读成"启用"，`--probe ui-sidebar-browser` 打印「**它是启用行**」，而它在 web profile 下**其实是关的**（`!!js ctx.get('profileContext')?.name !== 'desktop'`；`profileContext.name = options.profile = 'web'`，出处 `vendor/dsh/app/lib/profile-boot-BZ2ZjNWi.js:259,273`）。用 **vendor 自己的求值器**（`@deepseek-ai/cordis-plugin-loader` 导出的 `evaluate` —— `src/config/entry.ts:87-95` 的 `disabledOf()` 判 `disabled` 用的就是它）在本机 + `profileContext={name:'web'}` 下逐行求值：这 18 行里 **7 行实际是关**（`bash-sandbox` / `ui-sidebar-browser` / `tool-bash`×3 / `terminal-bash` / `persistent-bash`）、11 行是开 —— 旧探针**18 行全说"启用"**，对的那 11 行是**蒙对的**（它根本没看表达式）。② `parseComposed` 捕获了 `- id:` 行的缩进却**从不用** ⇒ 合成树里 **105 行** preset 内联行（`preset-standard` 32 / `preset-ptc` 33 / `preset-cordis` 33 / `preset-minimal` 7）被算成顶层；`presetOnlyIds` 因此打印「（无）」，把它自己文档里的代表 `persona` 吃掉。③ **同一探针还有三处"看起来权威、其实不成立"**（本批一并修）：(a) preset 目录写死成 `@deepseek-ai/dsh-agent-presets/presets/<preset>/agent.cordis.yml` —— 本运行包里**没有这个包**，`readdirSync` 抛 ENOENT 被 `catch` 静默吞掉 ⇒ 那段判定**一直在空转**（把路径修好、旧逻辑**照样**打印「（无）」：它是"任意层级出现过"就算在树里）；(b) `bundles=` 那行打的是**请求** —— 实测请求 **9 个**、真挂上的层只有 **2 个**（`base` + `web-app`）、**7 个被跳过**（隔离 home 里解析不到，`--dump-config` 的 **stderr 2001 B** 逐条说明），旧实现还把 stderr **拼进正文一起解析**（于是 `--patch` 的 diff 里会混进那 7 条告警行，而它们逐条带**临时目录路径**）；修后只比 **stdout** —— ⚠️ **如实记一条残留**：loader 自己会给补丁层加一条**层标签**（`# == …, patched by <补丁文件绝对路径>`），它在合成结果里、探针去不掉（演示补丁的 diff 就是 `+3 / -1`，其中 2 行是这条标签）；(c) 同 id 多行时 `rows.find()` **只报第一行**（实测 `tool-bash` / `persona` / `compaction-basic` 等 **34 个 id 各出现 3–4 次**），而补丁命中的是 `buildMap` 里**最后索引者**。
