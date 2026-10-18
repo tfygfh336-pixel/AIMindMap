@@ -404,34 +404,24 @@ const WO_OUTLET_FILE = 'src/data-store.js';
  *   三条机械判定（见 `analyzeWriteOutlet`）：**在册算欠账**（有条目没违例 ⇒ 修好忘销账 ⇒ 红）·
  *   **条数 ≤ cap**（只减不增）· **册上的文件必须存在**（改名/删 ⇒ 红）。
  * --------------------------------------------------------------- */
-const WRITE_OUTLET_CAP = 9;
+const WRITE_OUTLET_CAP = 8;
 const WRITE_OUTLET_DEBT = [
   {
     at: 'main.js',
     kind: 'file',
-    verdict: 'debt',
-    why: '6 处判不了目标的裸写，**逐个人工核过**：`985 res.filePath`（用户在保存对话框选的路径）· '
-      + '`1536 feedbackFile()`（`<userData>/feedback.jsonl`）· `3114 SMOKE_PROJECTS_DIR`（冒烟沙箱副本）· '
-      + '`3446/3488 out`（截图输出路径，`--out` 或沙箱）—— **全部落在仓库之外或用户输出目录，非受管**。'
-      + '但 `1470` 那一处是真问题：`probe = file + ".<pid>.<ts>.validate"` 把探针**写进了 '
-      + '`projects/<项目>/` 里面**（为了跑 `mm-cli validate <probe>` 验数据），既绕过了写盘出口，'
-      + '又把一个临时文件放进了数据目录（崩溃会留残留）。',
-    close: '何时清：把 `1470` 的探针改写到 `os.tmpdir()`（`validate` 吃的是显式路径，不需要和项目同目录），'
-      + '或给 `store` 加一个进程内 `validatePayload(payload)` 入口（首选，连临时文件都不要）。'
-      + '清掉之后本条降为 `keep` 或整条销账（cap 同批调小）。'
-  },
-  {
-    at: 'src/dsh-package.js',
-    kind: 'self-atomic',
-    verdict: 'debt',
-    why: '`writeActiveAtomic`（第 183 行起）**已经**有 fsync，与 `writeFileAtomic` 只差 tmp 命名与 '
-      + 'rename 重试（出口那版更强）。它注释里给的理由是"本模块可能在没有 data-store 的环境里被 require"'
-      + '—— **实测今天不成立**：4 个消费者（`src/dsh-ask.js` / `scripts/dsh-e2e.js` / '
-      + '`scripts/dsh-maintenance.js` / `tests/dsh-package.test.js`）全在仓内 Node 端。',
-    close: '何时清：把 `writeActiveAtomic` 改成 `fs.mkdirSync(dir,{recursive:true})` + '
-      + '`writeFileAtomic(activePath(userDataPath), JSON.stringify(data, null, 2))`，删掉 12 行自造实现，'
-      + '同批把注释里那条"可能没有 data-store"的理由改准（改成"曾经的理由，已不成立"）。'
-      + '行为差异只有 tmp 命名与 rename 重试（后者更好），成本 1 处。'
+    verdict: 'keep',
+    why: '6 处判不了目标的裸写，**逐个人工核过**（行号会漂，按符号找 —— `--list` 逐条打印）：'
+      + '`res.filePath`（导出图片时用户在保存对话框选的路径）· `feedbackFile()`（`<userData>/feedback.jsonl`）· '
+      + '`path.join(SMOKE_PROJECTS_DIR, …)`（冒烟沙箱副本）· `process.env.MM_SMOKE_TIMING_OUT` 指定的计时 JSON · '
+      + '`out` 两处（截图/合成图的输出路径，`--out` 或沙箱）—— **全部落在仓库之外或用户输出目录，非受管**。'
+      + '另有 1 处**受管资产裸写**（`path.join(REAL_PROJECTS_DIR, "_leak-inject-probe.json")`），它只在 '
+      + '`MM_SMOKE_LEAK_INJECT=1` 下生效、是**判别力证明用**的故意注入（跑完复核必须判红）⇒ 本条给它的整文件豁免。'
+      + ' **`.validate` 校验探针写进 `projects/<项目>/` 的那一处已偿（2026-10-19）**：那是本条唯一的真欠账，现在保存闸门改成'
+      + '**进程内**校验（`src/data-store.js` 的 `createProjectValidator`，与 CLI 写路径同一个工厂）⇒ 不再有临时文件。'
+      + '于是本条从 `debt` 降为 `keep`（照原 `close` 栏的写法："清掉之后本条降为 keep"）。',
+    close: '升级触发条件（命中任一条就回来收口）：① 上面任何一处写目标改成**工程内**路径'
+      + '（例如导出默认落到工程根、冒烟沙箱改到 `projects/` 下）；② 那个泄漏注入探针从 '
+      + '`MM_SMOKE_LEAK_INJECT` 门控变成默认路径（那时它就不再是"判别力证明"而是真违规）。'
   },
   {
     at: 'src/control.js',

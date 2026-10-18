@@ -6,6 +6,7 @@
  *   - 解析项目名 → projects/<name>/<name>.json 绝对路径
  *   - 读 / 写项目 JSON（写前过 schema.validateProject）
  *   - 全部写盘走原子写（临时文件 + fsync + rename，见 writeFileAtomic）
+ *   - 落盘前的校验走 `store.validatePayload()`（**进程内、不落盘**；GUI 保存闸门的入口）
  *   - 解析时剥离 UTF-8 BOM
  *   - 列出全部项目
  *   - assets/ 与 attachments/ 目录管理（确保存在）
@@ -195,6 +196,41 @@
     });
     writeFileAtomic(file, content);
     return { file: file, version: versionOfText(content) };
+  }
+
+  /* ---------------- 「落盘前校验」的**唯一装配**（CLI 与 GUI 共用） ----------------
+   * 项目数据"什么算合法"只有一处实现：`src/schema.js` 的 `validateProject`（本模块**刻意不**
+   * require schema —— 存取层不依赖校验实现，靠 `createStore` 的第二参注入）。
+   * 而"校验没通过时抛什么"曾经有**两份**：CLI 写路径（`cli/core.js` 的 `validateBeforeWrite`）
+   * 与 GUI 保存路径（`main.js` 的 `project:save`）—— 后者原本是"把载荷写成
+   * `projects/<项目>/<项目>.json.<pid>.<ts>.validate`，再 spawn 一条 `mm-cli validate <探针>`"，
+   * 于是既**绕过唯一写盘出口**、又在**用户数据目录**里留探针（崩溃时不删；2026-10-19 已偿）。
+   * 现在两条路径共用这一个工厂 ⇒ 判据、入参、错误文案都不可能分叉。
+   */
+
+  /**
+   * 造一个「落盘前校验」函数：`(data, projectName) => void`，**不通过就抛**（通过时返回 undefined）。
+   *
+   * @param {{validateProject:function}} schema 校验实现（`src/schema.js`；由调用方传入，不在这里 require）
+   * @param {string} projectsRoot 项目根（跨项目悬挂检测要读盘；= CLI 的 `ctx.PROJECTS_DIR`）
+   * @returns {(data:object, name:string) => void}
+   * @throws {Error} 文案 **`校验失败: <errors>`**（这句话**只在这一个地方拼**）
+   *
+   * ⚠️ **`projectName` 必须是显式入参**，别指望推断：`mm-cli validate <文件>` 那条命令是从
+   *    **文件的父目录名**推断项目名的（`cli/commands/project.js` 的 `selfProject`；动机见
+   *    `docs/changelog/v0.16.0.md` —— 界面删掉被引用节点后，**第一次**保存就得被拦下）。
+   *    所以 GUI 侧**不能**靠"把探针放进 `projects/<项目>/`"，也**不能**靠"把它挪进 `os.tmpdir()`"
+   *    来解决：后者会让 `selfProject` 变 null、退回"纯读盘校验"，**静默改变语义**。
+   *    项目名在保存流程里本来就已知（`path.basename(path.dirname(file))`），直接传即可。
+   */
+  function createProjectValidator(schema, projectsRoot) {
+    if (!schema || typeof schema.validateProject !== 'function') {
+      throw new Error('createProjectValidator 需要一个含 validateProject() 的 schema（别传 null）');
+    }
+    return function validateProjectOrThrow(data, name) {
+      const v = schema.validateProject(data, projectsRoot, name);
+      if (!v.ok) throw new Error('校验失败: ' + v.errors.join('; '));
+    };
   }
 
   function createStore(rootDir, validate) {
@@ -449,6 +485,7 @@
 
   return {
     createStore, writeFileAtomic, parseProjectJson, versionOf, versionOfText,
+    createProjectValidator,
     // 并发版本闸门的**唯一**比较/报错实现 + 整文件受管文档的读写对（`cli/commands/release.js` 用）
     versionGate, readManagedText, writeManagedText
   };

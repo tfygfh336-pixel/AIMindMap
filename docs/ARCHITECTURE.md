@@ -247,8 +247,13 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 - `preload.js`：contextBridge 暴露 `window.desktop`（projects/project.save/**project.peek**（只读探视：
   取盘上内容与两份版本，**不推进**闸门记录）/asset.import/
   app.exportMd/app.importMd/app.version/on/dsh.status/onProjectDiskChange）。渲染层**无 Node 权限**，只能走 IPC。
-- **保存闸门**：`project:save` 先把数据写临时文件 → 跑 `mm-cli validate` →
-  通过才 rename 覆盖正式文件；坏数据拒收且不污染原文件。
+- **保存闸门**：`project:save` 先做**进程内**校验（`data-store.createProjectValidator` —— 与 CLI 写路径
+  同一个工厂，判据与错误文案不会分叉；**不落任何临时文件**）→ 通过才 `writeFileAtomic` 原子覆盖正式文件；
+  坏数据拒收且不污染原文件。⚠️ 它**曾经**是"把载荷写成 `projects/<项目>/<项目>.json.<pid>.<ts>.validate`
+  再 spawn 一条 `mm-cli validate <探针>`"：探针落在**用户数据目录**里（崩溃留残留、绕过唯一写盘出口），
+  2026-10-19 已偿。**别改成"把探针挪去 `os.tmpdir()`"** —— CLI 的 `validate` 靠**探针的父目录名**推断项目名
+  （`selfProject`），挪出去会让"同项目成员以这份待写数据为准"静默失效（实测：删掉仍被 assoc 引用的节点后
+  保存会被放行），故项目名现在是**显式入参**。
 - **保存时的并发处理（多路同时编辑）**：盘上版本 ≠ 渲染层读到的那一版时，**能合就合、合不了才拦** ——
   用三方（`baseAtRead` 记的"界面读到的那份" / 界面内存 / 盘上最新）走 `src/concurrency.js` 的 `mergeTrees`：
   两边改的对象**不相交 ⇒ 自动合并**（双方改动都保留）；**相交 ⇒ 不写盘**，把**冲突对象名** +
@@ -320,7 +325,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | 文件 | 职责 |
 |------|------|
 | `verify.js` | **验证链的运行器**：`STEPS` 是"执行顺序 / 每步命令 / 耗时预算"的**唯一定义**，`docs/VERIFY.md` 的链表由它渲染；首败即停 |
-| `encoding-check.js` | **G1** 文件编码完整性（UTF-8 BOM / U+FFFD / 经典乱码特征） |
+| `encoding-check.js` | **G1** 文件编码完整性（判定清单见 `docs/RULES.md` §2 —— **本表不复述**，也不写条数：这里的枚举漂过一次（少列了"提交面行尾"那条），照着本表改门禁就会漏判 ⇒ 第二份清单就是第二份会漂的副本）。扫描面与"这次没扫什么"每次运行都打印；要逐条看实现自报的清单跑 `node scripts/encoding-check.js --list` |
 | `docs-registry-check.js` | **G8** 文档体系完整性（**判定清单现场取**：`npm run check:docs -- --judgments` 会从实现的**全部**判定标记打印全套；条数由 `docs/RULES.md` §2 声明并与标记机械对齐 —— **本表不复述**，复述一次就是第二份会漂移的副本）；`--write` 从各文档头部元信息**生成** §5 登记表（`npm run docs:registry`，`npm run check:docs` 为校验模式） |
 | `rules-consistency.js` | **G9** 规则文件自洽：声明条数 == 表格行数、表格未被空行打断、编号引用闭合、实现列点名的脚本存在、其他文档的条数转述一致、**门禁声明的判定条数 == 实现脚本的判定标记数**（且标记唯一；实现脚本文案里也不得写死条数）；逐条清单见 `docs/RULES.md` §2，**本表不复述** |
 | `visibility-judge-check.js` | **V1** 可见性判据门禁：扫描 `scripts/smoke/*.js`，凡**名字**里声称可见性（可见/不可见/遮挡/面板内/框外/看得见/看不见）的断言，判据必须是**真判据**（`document.elementFromPoint` 命中测试 ⇒ 抓遮挡；`scanRegion` / `isAccentBlue` / `bitmapInfo` 等真帧像素 ⇒ 抓裁切）或一行显式豁免 `判据-豁免: <原因>` —— 只用 rect / 类名 / `style.display` 判"可见"的断言**对裁切与遮挡是盲的**（实测：同一元素被父元素 `overflow:hidden` 裁掉时 rect 读数与正常显示**完全相同**，而真帧像素 81 px vs 768 px）⇒ 它在"用户根本看不到"时照样绿 ✗。判定清单现场取：`--list`（逐条分类）· `--debt`（既有欠账，**只减不增**，含"为什么是欠账 + 怎么迁"）· `--selftest`（**判别力自检**：内存注入 ⇒ 必红 ⇒ 撤销 ⇒ 必绿，不碰任何文件）；`npm run check:visibility` 单跑。**能力边界**：它查判据的**来源**，查不了判据用得对不对（`elementFromPoint` 也能传错坐标）；名字里不写可见性词的断言它抓不到 ⇒"**名字要说清凭什么判**"是配套纪律（名字是这门禁的输入 ✗）。⚠️ **编号是 V1 而不是 G 号**：门禁编号的唯一权威是 `docs/RULES.md` §2，而本门禁上线时该文件正被另一个会话占用（脏文件、禁止提交）⇒ 待它交回后并入 §2（界时只改 `scripts/verify.js` 的 gate 串、本行与两处 `tests/` 期望；**不是**再挂一个门禁） |

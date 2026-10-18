@@ -202,7 +202,8 @@ describe('S2 ⑤ 写盘出口：真仓库读数与判据', () => {
       expect(['keep', 'debt']).toContain(e.verdict);
     });
     // 上限只减不增：写死成"当前条数"，多一条就必须同批抬 cap 并说明为什么
-    expect(gate.WRITE_OUTLET_CAP).toBe(9);
+    // 2026-10-19：9 → 8（偿掉 `src/dsh-package.js` 的自造 tmp+rename 后销账，同批降 cap）
+    expect(gate.WRITE_OUTLET_CAP).toBe(8);
   });
 
   it('出口本体**不在**自造名单里（它是出口），且出口之外的每一个都在册', () => {

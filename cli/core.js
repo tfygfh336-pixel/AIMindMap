@@ -21,7 +21,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { createStore } = require('../src/data-store.js');
+const { createStore, createProjectValidator } = require('../src/data-store.js');
 const concurrency = require('../src/concurrency.js');
 const schema = require('../src/schema.js');
 const tree = require('../src/tree-utils.js');
@@ -548,10 +548,10 @@ function createContext(argv, meta) {
    * ⚠️ 覆盖范围（如实说，别声称全仓）：走 `ctx.write` / `ctx.mutate` 两条写路径的命令都在内；
    *    自带预览、**不走**这两条路的命令（`import-project` / `import-dir` / `migrate items` / `apply`）
    *    仍不在内 —— 清单与出路见 `docs/ITEM-MODEL.md` 的「预览与真跑同一份判据」一节。 */
-  function validateBeforeWrite(data, name) {
-    const v = schema.validateProject(data, PROJECTS_DIR, name);
-    if (!v.ok) throw new Error('校验失败: ' + v.errors.join('; '));
-  }
+  /* ⚠️ 本函数的**实现**只在 `src/data-store.js` 的 `createProjectValidator` 那一处
+   *（`校验失败: <errors>` 的文案也只在那里拼）—— GUI 的保存闸门（`main.js` 的 `project:save`）
+   * 用的是**同一个工厂** ⇒ "命令行说能写、界面保存却报另一种错"这类分叉不会发生。 */
+  const validateBeforeWrite = createProjectValidator(schema, PROJECTS_DIR);
   const store = createStore(PROJECTS_DIR, validateBeforeWrite);
   /**
    * 「**谁在写**」—— 变更日志里那一列，多路同时编辑时用来回答"是谁改的"。

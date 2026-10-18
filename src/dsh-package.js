@@ -26,11 +26,11 @@
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('fs'), require('path'));
+    module.exports = factory(require('fs'), require('path'), require('./data-store.js'));
   } else {
-    root.MMDshPackage = factory(null, null);
+    root.MMDshPackage = factory(null, null, null);
   }
-})(typeof self !== 'undefined' ? self : this, function (fs, path) {
+})(typeof self !== 'undefined' ? self : this, function (fs, path, dataStore) {
   'use strict';
 
   const ACTIVE = 'active.json';
@@ -178,20 +178,22 @@
     return path.join(runtimesDir(userDataPath), ACTIVE);
   }
 
-  /** 原子写 active.json（临时文件 + rename；复用 data-store 的约定但独立实现，
-   *  因为本模块可能在没有 data-store 的环境（纯脚本）里被 require）。 */
+  /** 原子写 active.json —— **走唯一写盘出口**：`src/data-store.js` 的 `writeFileAtomic`
+   *  （同目录临时文件 → fsync → rename；rename 带**有界重试**，吸收 Windows 上目标被另一个
+   *  进程短暂占用时的 `EPERM`/`EBUSY`/`EACCES`）。
+   *  ⚠️ 这里**曾经是自造的第二份 tmp+rename**（2026-10-19 已偿），注释给的理由是"本模块可能在没有
+   *  data-store 的环境（纯脚本）里被 require" —— **该理由经实测不成立**：
+   *  全部消费者都在仓内 Node 端（`main-dsh-sidebar.js` / `src/dsh-ask.js` /
+   *  `scripts/dsh-e2e.js` / `scripts/dsh-maintenance.js` / `tests/dsh-package.test.js`），
+   *  `data-store.js` 自身也是 CommonJS + 纯 Node。而且自造那版比出口版**弱**：没有 rename 重试。
+   *  UMD 形态保留（浏览器分支不 require 任何东西，见文件头"浏览器侧不用它"），`require` 只发生在
+   *  Node 分支；因此浏览器分支下 `dataStore` 为 null，误用会**响亮报错**而不是静默半截写。 */
   function writeActiveAtomic(userDataPath, data) {
-    const dir = runtimesDir(userDataPath);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = path.join(dir, ACTIVE + '.' + process.pid + '.' + Date.now() + '.tmp');
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-    try {
-      const fd = fs.openSync(tmp, 'r+');
-      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-      fs.renameSync(tmp, activePath(userDataPath));
-    } finally {
-      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (e) { /* ignore */ }
+    if (!dataStore || typeof dataStore.writeFileAtomic !== 'function') {
+      throw err('EINVAL', 'writeActiveAtomic 仅支持 Node 环境（浏览器端不写 active.json）');
     }
+    fs.mkdirSync(runtimesDir(userDataPath), { recursive: true });
+    dataStore.writeFileAtomic(activePath(userDataPath), JSON.stringify(data, null, 2));
   }
 
   /* ---------- 锁 ---------- */

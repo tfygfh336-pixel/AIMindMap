@@ -2404,17 +2404,23 @@ module.exports = {
   validate(ctx) {
     const target = ctx.projectName;
     if (!target) ctx.error('缺少项目名或 JSON 文件路径');
-    // 项目名 或 文件路径（含 .tmp 等任意扩展名——主进程保存前校验临时文件依赖此）
+    // 项目名 或 文件路径（含 .tmp 等任意扩展名 —— 历史上主进程保存前的校验临时文件就长这样，
+    // 现在那条路改成了进程内校验，但"任意扩展名的文件路径"这个容忍度照旧：别人递一个临时文件进来
+    // 也必须能验，别因为扩展名把它当成项目名）。
     const file = fs.existsSync(target)
       ? target
       : path.join(ctx.PROJECTS_DIR, target, target + '.json');
     if (!fs.existsSync(file)) ctx.error('找不到项目: ' + target);
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    // 自项目推断：主进程保存前校验的是 `projects/<项目>/<项目>.json.<pid>.validate`
-    // 这类**同目录临时文件**（见 main.js），父目录名就是项目名。据此让"同项目成员"
-    // 以这份待写数据为准 —— 否则界面删掉被引用的节点后，第一次保存会因为闸门看的是
-    // 磁盘旧态而放行，第二次保存才突然被拒（实测），用户完全看不懂。
+    // 自项目推断：**项目根内**的文件按"父目录名就是项目名"推断（例如有人手工递一份
+    // `projects/<项目>/<项目>.json.<pid>.<ts>.validate` 这种同目录临时文件）。据此让"同项目成员"
+    // 以这份待写数据为准 —— 否则删掉被引用的节点后，第一次校验会因为闸门看的是
+    // 磁盘旧态而放行，第二次才突然被拒（实测），用户完全看不懂。
     // 不在项目根内的文件（如 import 的临时包）推断不出项目名，退回纯读盘校验。
+    // ⚠️ 所以想"把临时探针挪出 `projects/<项目>/`"的人注意：`os.tmpdir()` 里没有这个父目录名 ⇒
+    // `selfProject` 变 null ⇒ 上面那条语义**静默失效**（实测：删掉仍被 assoc 引用的节点后保存被放行）。
+    // GUI 的保存闸门因此改成**进程内**校验并**显式传项目名**（`src/data-store.js` 的
+    // `createProjectValidator`），别再退回"临时文件 + 本命令"那条路。
     const absFile = path.resolve(file);
     const absRoot = path.resolve(ctx.PROJECTS_DIR);
     const selfProject = absFile.indexOf(absRoot + path.sep) === 0

@@ -155,6 +155,11 @@ const smokeIsolate = !!SMOKE_PROJECTS_DIR && !process.env.MM_SMOKE_NO_ISOLATE
 //   · project:read 完全不校验（坏数据照样送进渲染层）。
 const store = require('./src/data-store.js').createStore(PROJECTS_DIR);
 const { writeFileAtomic, versionOf, versionOfText } = require('./src/data-store.js');
+/* 落盘前校验（**进程内**，不落盘）：与 CLI 写路径**同一个工厂**（`createProjectValidator`）
+ * ⇒ 判据与错误文案不可能分叉。装配细节（以及"为什么不能靠临时文件的父目录名推断项目名"）
+ * 写在 `src/data-store.js` 的 `createProjectValidator` 注释里，这里不复制。 */
+const validateProjectOrThrow = require('./src/data-store.js')
+  .createProjectValidator(require('./src/schema.js'), PROJECTS_DIR);
 const concurrency = require('./src/concurrency.js');
 /* 【W13】界面侧导入的两份读数（`import-md` 的文本回显 / `import-dir` 的 `--json` 报告 → 同一种形状）。
  * 纯函数、零 I/O ⇒ 有单测（tests/import-reading.test.js）；"界面自己数一遍"是第二份实现 ✗。
@@ -1572,11 +1577,12 @@ function registerIpc() {
   });
 
   ipcMain.handle('project:save', (e, file, data, opts) => {
-    // 数据安全闸门：写盘前必须通过 CLI validate（防坏数据写坏笔记）。
-    // 校验只能针对文件路径，故先落一个校验用临时文件；校验通过后再走
-    // writeFileAtomic 原子覆盖（临时文件 + fsync + rename），保证中断不会产生半截文件。
-    // 历史问题：原实现直接 rename 校验临时文件，未 fsync，且临时文件以固定 ".tmp" 结尾，
-    // 并发保存会互相覆盖。
+    // 数据安全闸门：写盘前必须通过校验（防坏数据写坏笔记）。校验是**进程内**的一次函数调用
+    // （`validateProjectOrThrow`，与 CLI 写路径同一个工厂 ⇒ 判据/文案不会分叉），**不落任何临时文件**；
+    // 通过后再走 writeFileAtomic 原子覆盖（临时文件 + fsync + rename），保证中断不会产生半截文件。
+    // 历史问题（都已消失）：① 原实现把载荷写成 `projects/<项目>/…validate` 再 spawn `mm-cli validate`，
+    // 临时文件落在**用户数据目录**里；② 更早的实现直接 rename 校验临时文件，未 fsync，且临时文件以
+    // 固定 ".tmp" 结尾，并发保存会互相覆盖。
     // —— 关联笔记（assoc）的归属说明 ——
     // 节点树由渲染层拥有，但 assoc **只由 AI/CLI 写**：界面的标题/正文编辑走 `assoc-edit`、
     // 删节点时的清剪走 `assoc-prune`/`links-prune`，**渲染层从不在本地改 assoc**。
@@ -1653,41 +1659,40 @@ function registerIpc() {
         message: '保存期间又有别的写入者改动了这个项目，本次未写入（盘上内容未变）。请再点一次保存。' };
     }
 
-    const probe = file + '.' + process.pid + '.' + Date.now() + '.validate';
-    fs.writeFileSync(probe, JSON.stringify(payload, null, 2), 'utf8');
+    const json = JSON.stringify(payload, null, 2);
+    // 落盘前校验：**进程内**（不落盘、没有临时文件），校验的就是**即将写下去的那份字节**
+    // （`JSON.parse(json)` 与 `writeFileAtomic(file, json)` 用的是同一个字符串）。
+    // 历史实现（2026-10-19 偿掉的债）：把载荷写成 `projects/<项目>/<项目>.json.<pid>.<ts>.validate`，
+    // 再 spawn 一条 `mm-cli validate <探针>` —— 探针落在**用户数据目录**里，崩溃留残留、
+    // 且绕过唯一写盘出口。现在走 `data-store` 的 `createProjectValidator`（与 CLI 写路径同一个
+    // 工厂 ⇒ 判据/文案不会分叉），项目名**显式**传。
+    // ⚠️ 别把探针"只挪去 os.tmpdir()"就算修好：CLI 那条 `validate` 靠**探针的父目录名**推断
+    // 项目名（`selfProject`），挪出去会让"同项目成员以这份待写数据为准"**静默失效** ——
+    // 界面删掉被引用节点后第一次保存就会被放行（理由见 `cli/commands/project.js` 的 validate）。
     try {
-      const res = spawnSync(process.execPath, [CLI, 'validate', probe], {
-        cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
-        env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' })
-      });
-      const ok = res.status === 0 && !/^error:/.test((res.stdout || ''));
-      if (!ok) {
-        // 剥掉 mm-cli 的 "error: " 前缀，避免错误信息出现 "failed: error: 校验失败" 这样的双前缀
-        const detail = ((res.stdout || '') + (res.stderr || '')).replace(/^error:\s*/, '').trim();
-        throw new Error('validation failed: ' + detail.slice(0, 300));
-      }
-      const json = JSON.stringify(payload, null, 2);
-      // 变更日志要"改了什么"，得先拿到**写入之前**盘上的内容（读失败按"盘上没有"处理）
-      let oldText = null;
-      try { oldText = fs.readFileSync(file, 'utf8'); } catch (e) { oldText = null; }
-      writeFileAtomic(file, json);
-      const writtenVersion = versionOfText(json);
-      // 自己写下的这一份就是最新版：**版本与基线都要推进**，免得下一次保存误报冲突
-      versionAtRead.set(projName, writtenVersion);
-      baseAtRead.set(projName, JSON.parse(json));
-      // 变更日志（阶段 3）：GUI 保存**不走 `store.write`**，所以这里显式记一条 ——
-      // 实现只有 `store.recordChange` 一份（别在本地再写一套"改了什么"的定义，会漂移）。
-      // 它是辅助产物：失败**不能让保存失败**，但**绝不静默**（打 stderr）。
-      try {
-        store.recordChange(projName, { oldText: oldText, data: payload, version: writtenVersion, writer: 'gui' });
-      } catch (err) {
-        console.error('warning: 变更日志写入失败（本次数据已写入，日志缺一条）：'
-          + ((err && err.message) || err));
-      }
-      return { ok: true, merged: merged, version: writtenVersion, file: file };
-    } finally {
-      try { if (fs.existsSync(probe)) fs.unlinkSync(probe); } catch (err) { /* ignore */ }
+      validateProjectOrThrow(JSON.parse(json), projName);
+    } catch (err) {
+      // 文案与旧路径逐字一致：旧路径剥掉 mm-cli 的 `error: ` 前缀后得到 `校验失败: …`
+      throw new Error('validation failed: ' + ((err && err.message) || String(err)).slice(0, 300));
     }
+    // 变更日志要"改了什么"，得先拿到**写入之前**盘上的内容（读失败按"盘上没有"处理）
+    let oldText = null;
+    try { oldText = fs.readFileSync(file, 'utf8'); } catch (e) { oldText = null; }
+    writeFileAtomic(file, json);
+    const writtenVersion = versionOfText(json);
+    // 自己写下的这一份就是最新版：**版本与基线都要推进**，免得下一次保存误报冲突
+    versionAtRead.set(projName, writtenVersion);
+    baseAtRead.set(projName, JSON.parse(json));
+    // 变更日志（阶段 3）：GUI 保存**不走 `store.write`**，所以这里显式记一条 ——
+    // 实现只有 `store.recordChange` 一份（别在本地再写一套"改了什么"的定义，会漂移）。
+    // 它是辅助产物：失败**不能让保存失败**，但**绝不静默**（打 stderr）。
+    try {
+      store.recordChange(projName, { oldText: oldText, data: payload, version: writtenVersion, writer: 'gui' });
+    } catch (err) {
+      console.error('warning: 变更日志写入失败（本次数据已写入，日志缺一条）：'
+        + ((err && err.message) || err));
+    }
+    return { ok: true, merged: merged, version: writtenVersion, file: file };
   });
 
   ipcMain.handle('asset:import', (e, projectName, nodeId, srcPath, caption, source, tags) => {
