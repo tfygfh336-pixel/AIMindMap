@@ -26,6 +26,48 @@
 
 ## [Unreleased]
 
+### `dsh-caps` 的 preset 平面**恒为空**：它读的 preset 路径指向**发行包里不存在的包** ⇒ 核心叙事「host `disabled: true` ≠ 不可用，preset 会重挂」**在输出里从未出现过一次**
+
+- **病**：`cli/commands/release.js` 的 agent 平面发现写死成
+  `path.join(nm, 'dsh-agent-presets', 'presets', name, 'agent.cordis.yml')` ——
+  而实测 **`@deepseek-ai/` 下没有 `dsh-agent-presets` 这个包**（`fs.existsSync` 恒 false ⇒ `if` 静默跳过）。
+- **实测的真实形态（不假设）**：`@deepseek-ai/` 下 **depth-1 带 `presets/` 的包只有 1 个 = `dsh-web-app`**；
+  **平铺文件、没有任何子目录**：`presets/{cordis,minimal,ptc,standard}.patch.yml`。
+  ⚠️ 干扰项 `libreoffice-kit-win32-x64/program/presets` 存在于 **depth-2**（LibreOffice 自带，与 agent preset 无关），
+  已排除并点名；探针用"**走过目录数 892**"自证**不是"搜不到才说没有"**（第一版探针跳过 `node_modules` ⇒ 零命中还说"没有"，当场改了）。
+- **修**：改成扫 `@deepseek-ai/<包>/presets/*.patch.yml`；**找不到时响亮报错退出**
+  （`error: preset 平面为空：在 282 个包里没有一个 '<包>/presets/*.patch.yml'`），**不再静默跳过**。
+  层数：修前 `host 9 / preset 0` ⇒ 修后 **`host 9 / preset 4`**（**4 = 实测文件数**）。
+- **判据（两个不同实现，不是自证）**：`tests/dsh-caps-preset-plane.test.js`
+  比较 `discoverPresetLayers()` 的 preset 层数 **==** 该测试文件**裸 `fs` 独立扫描**出的 `*.patch.yml` 个数。
+  **9 passed / 1 skipped**。
+- **判别力**：注入"路径改回不存在的包 + 子目录" ⇒ **vitest exit 1**，
+  `AssertionError: preset 层数为 0 ⇒ **preset 平面为空** … expected 0 to be greater than 0`；
+  `dsh-caps` 同时 **exit 1**。原始 Buffer 写回 ⇒ `31,932 B / sha256 745960fb… / CR 0 / LF 574` ⇒ **exit 0** 复绿。
+- ⭐ **「host `disabled:true` 被 preset 重挂」的实例存在，共 20 个**（**不是"叙事不成立"**）。
+  样例 `agent-instructions`：host `dsh-web-app/cordis.patch.yml:546`（**547 `disabled: true`**）⟶
+  preset `presets/standard.patch.yml:16`（**无 disabled**）。
+  另一个更能说明"只按包名会漏"的：`compaction-basic` = `cordis.patch.yml:506-507`（**纯 id 覆盖、不带 name**）⟶ `presets/standard.patch.yml:70-71`。
+  ⚠️ **本批自查抓掉自己 6 个假阳性**：第一版按 id 配对量出 **24**，逐条核原文发现
+  **`tool-ralph` 的 preset 侧同样 `disabled: true`** ⇒ 那是"**两边都关**"不是"重挂"。
+  收紧成"**preset 那一行自己必须是启用的、`expr` 不算**"后 = **20**
+  （剔除 `tool-ralph` / `tool-workflow` / `workflow-ptc` 两侧都禁用；
+  `tool-bash` / `tool-pwsh` / `tool-plugin-manager` 的 preset 侧是 `!!js` **未知**）。
+  口径已写进代码注释 + **一正一反两条断言**（`tool-ralph` **必须不在**、`agent-instructions` **必须在**），
+  并同步改准 `docs/ARCHITECTURE.md`（**24 → 20**，连带口径）。
+- **输出里新看到的东西**：修前 layer 表最后一行就是 `host dsh-web-app …`，之后**没有任何 preset / 实例信息**；
+  修后多出 4 行 `preset preset:dsh-web-app/{cordis,minimal,ptc,standard}` + 末尾一段
+  「host `disabled: true` 但 preset 重挂」的实例（20 个；口径 …）；
+  `--json` 新增 `presets{packages,files,layerCount:4}` · `remountCount:20` · `remounts[]`（每条带 host 层 + 行号、preset 层 + 行号）。
+- **同型两处顺手改准**：① `release.js` 注释"host 实测为 `dsh-base` 与 `dsh-web-app`"**早已不成立**
+  （实测 **9 套并列 bundle**）；② `docs/changelog/v0.16.0.md:561` 仍写着 `presets/*/agent.cordis.yml`
+  —— 那是**归档族、只增不改**，**本批未动**（点明留档，别顺手改归档）。
+- ⚠️ **边界外登记（建议单独开批）**：`src/dsh-capabilities.js` 的**按 id 覆盖**行（`- id: X` + `disabled: true`
+  **不带 name**）**没有落到包上** ⇒ `--json` 的 `packages[].layers` 因此把
+  `dsh-compaction-basic` / `dsh-agent-instructions` 在 `dsh-web-app` 层的 `disabled: true` **显示成 `false`**
+  ⇒ **per-layer 禁用状态不全**。本批只能在 `release.js` 里另算一遍用于展示实例；`src/dsh-capabilities.js` **未动**。
+
+
 ### 探针目录残留：`cli-integration.js` 的探针项目在**被中断**时留在 `projects/` ⇒ 下一轮 **G2 假红**；改成**下一次开跑自愈**（并实测四种中断形态）
 
 - **病机是链序，不是"忘了清理"**：`scripts/verify.js` 的 **step 12 = G4 本脚本 · step 13 = G2 `validate-all`**，

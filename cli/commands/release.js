@@ -46,6 +46,147 @@ function write(handle, content) {
   });
 }
 
+/** agent 平面（preset）装配层的**发现**：`@deepseek-ai/<包>/presets/*.patch.yml`。
+ *
+ *  ⚠️ 这里曾是一个**恒空**的发现路径（`385767e` 实测，2026-10-19 修）：
+ *    旧代码写死 `@deepseek-ai/dsh-agent-presets/presets/<name>/agent.cordis.yml` —— 两处都错：
+ *      ① 包名：`dsh-agent-presets` 在发行包里**不存在**（`existsSync` = false）；
+ *      ② 文件名：真实形态是**平铺的 `presets/<preset>.patch.yml`**，连子目录都没有。
+ *    ⇒ `if (existsSync(...))` 恒假、**静默跳过** ⇒ `kind:'preset'` 层一次都没出现过。
+ *    代价不是"少一层"：`src/dsh-capabilities.js` 的核心叙事「host 行 `disabled: true` **≠ 不可用**
+ *    —— preset 会把同一 id 重挂」在读的人眼里**无法观察、无法核对**。所以：
+ *    · 扫面改成 `@deepseek-ai/<包>/presets/` 下所有 `.patch.yml`（**不写死包名**，将来多一个载体也会自动进入）；
+ *    · **找不到不静默** —— 返回读数，由 `dshCaps` 响亮报（见 `presetPlaneProblem`）。
+ *
+ *  ⚠️ 只认 **depth-1** 的包目录：`@deepseek-ai/libreoffice-kit-win32-x64/program/presets` 也存在，
+ *    那是 LibreOffice 自带的、与 DSH agent preset 无关（实测读数：depth-1 命中的只有 `dsh-web-app`）。
+ *
+ *  @param {string} nm `.../node_modules/@deepseek-ai` 的绝对路径
+ *  @returns {{layers:Array<{layer:string,kind:string,text:string}>, packages:string[],
+ *    files:Array<{pkg:string,file:string}>, emptyDirs:string[], noDeclare:string[], scanned:number}}
+ *    `packages` = 带 `presets/` 的包（**去重**，实测 1 个）；
+ *    `files` = 真正读进来的 preset 文件（实测 4 个 ⇒ preset 层数应当 = 4）；
+ *    `emptyDirs` = 有 `presets/` 却一个 `*.patch.yml` 都没有的包（**点名，不静默**）；
+ *    `noDeclare` = 文件里**没有** `@deepseek-ai/dsh-agent-preset` 声明的（那不是 preset 段，值得警惕）。
+ */
+function discoverPresetLayers(nm) {
+  const layers = [];
+  const packages = [];
+  const files = [];
+  const emptyDirs = [];
+  const noDeclare = [];
+  const names = fs.readdirSync(nm).sort();
+  let scanned = 0;
+  for (const name of names) {
+    let isDir = false;
+    try { isDir = fs.statSync(path.join(nm, name)).isDirectory(); } catch (e) { isDir = false; }
+    if (!isDir) continue;
+    scanned++;
+    const dir = path.join(nm, name, 'presets');
+    if (!fs.existsSync(dir)) continue;
+    packages.push(name);
+    let found = [];
+    try { found = fs.readdirSync(dir).filter((f) => /\.patch\.yml$/.test(f)).sort(); } catch (e) { found = []; }
+    if (!found.length) { emptyDirs.push(name); continue; }
+    for (const f of found) {
+      const text = fs.readFileSync(path.join(dir, f), 'utf8');
+      if (text.indexOf('@deepseek-ai/dsh-agent-preset') < 0) noDeclare.push(name + '/presets/' + f);
+      files.push({ pkg: name, file: f });
+      // 层名带载体包：不同包将来可能有同名 preset，只写 `preset:<file>` 会撞名
+      layers.push({ layer: 'preset:' + name + '/' + f.replace(/\.patch\.yml$/, ''), kind: 'preset', text });
+    }
+  }
+  return { layers, packages, files, emptyDirs, noDeclare, scanned };
+}
+
+/** preset 平面**为空**时的报错文案（有内容 ⇒ 返回 `null`）。**纯函数**，供单测直接钉住。
+ *  为什么单独抽出来：这条判据的全部意义是"空的时候必须红" —— 埋在命令体里就没法被单测引入
+ *  （`B6`：门禁/判据要可被单测引入，`require` 零副作用）。 */
+function presetPlaneProblem(scan) {
+  if (scan && scan.layers && scan.layers.length) return null;   // 有层 ⇒ 不是"空"
+  return 'preset 平面为空：在 ' + (scan && scan.scanned ? scan.scanned + ' 个包里' : '运行包里')
+    + '没有一个 `<包>/presets/*.patch.yml`'
+    + '\n（真实形态：`@deepseek-ai/dsh-web-app/presets/{standard,ptc,minimal,cordis}.patch.yml` —— 平铺文件、无子目录；'
+    + '\n 历史缺陷：这里曾写死 `dsh-agent-presets/presets/<name>/agent.cordis.yml`，该包在发行包里不存在 ⇒ 恒空 ⇒ 静默跳过）'
+    + '\n⇒ 这份报告将支撑不住「host 行 disabled:true ≠ 不可用，preset 会重挂」那条叙事，'
+    + '\n  故**不出**一份 preset 平面为空的报告：先查 vendor 运行包的 `@deepseek-ai/*/presets/` 在哪。';
+}
+
+/** 找出「host 平面按 id 算 = `disabled: true`，但某个 preset 又把它挂回来」的实例 —— **两处行号**。
+ *  这就是 `dsh-capabilities.js` 那条叙事**可观察**的落点：不给实例，那句话就只是一句话。
+ *
+ *  口径（写在代码里，别写在散文里）：
+ *   · **按 id** 配对，不按包名 —— 实测真实装配里大量禁用写成 `- id: X` + `disabled: true`
+ *     （**不给 name**，按 id 覆盖上游同名行，patch 语义）；只按包名配对会把这类**全漏掉**
+ *     （实测：按包名 2 个实例、按 id 24 个）。
+ *   · 有效状态只沿**一条**装配序列算：`dsh-base` → preset 自己那个包。host bundle 是**并列**的
+ *     （acp-app / headless / sdk-app … 是彼此替代的另一套），混着算会把另一套的禁用当成本套的（**假实例**）。
+ *   · 只有**声明了** `disabled` 的行才改状态：未声明 ≠ 重置成启用（patch 合并语义）。
+ *   · `disabled: !!js …`（`expr`）**不算**实例：它的真假运行期才知道，本模块不求值、不猜。
+ *   · **preset 那一行自己也不能是禁用**：两边都 `disabled: true` 不是"重挂"而是"两边都关"（实测有这一档，
+ *     例如 `tool-ralph`）—— 只按 id 配对会把它算进去，那是**假阳性**（本批自查抓到并修掉）。
+ *  @returns {Array<{id:string, pkg:string|null, host:{layer:string,line:number,state:string},
+ *    presets:Array<{layer:string,line:number}>}>}
+ */
+function findRemounts(layers) {
+  const base = 'dsh-base';
+  const byLayer = new Map();
+  for (const l of layers || []) byLayer.set(l.layer, l);
+  /** 一个层里 `id → {state, line}`（只收 inFace 的行；`expr` 单独记，最终不算实例） */
+  const rowsOf = (layerName) => {
+    const l = byLayer.get(layerName);
+    if (!l) return null;
+    const map = new Map();
+    for (const r of dshCaps.parseMountRows(l.text)) {
+      if (!r.inFace) continue;
+      const cur = map.get(r.id) || { state: 'absent', line: 0, name: null, setBy: 0 };
+      if (r.name) cur.name = r.name;
+      if (r.disabledState !== 'absent') { cur.state = r.disabledState; cur.line = r.line; cur.setBy = r.line; }
+      map.set(r.id, cur);
+    }
+    return map;
+  };
+  const baseRows = rowsOf(base);
+  if (!baseRows) return [];
+  const out = [];
+  for (const l of layers || []) {
+    if (l.kind !== 'preset') continue;
+    // preset 层名形如 `preset:dsh-web-app/standard` ⇒ 载体包
+    const m = /^preset:([^/]+)\//.exec(l.layer);
+    const pkg = m ? m[1] : null;
+    const pkgRows = pkg && pkg !== base ? rowsOf(pkg) : null;
+    // 有效状态：base 先、bundle 后（同一 id 后声明者覆盖）
+    const eff = new Map();
+    for (const src of [baseRows, pkgRows]) {
+      if (!src) continue;
+      for (const [id, v] of src) {
+        const cur = eff.get(id) || { state: 'absent', line: 0, layer: '', name: null };
+        if (v.name) cur.name = v.name;
+        if (v.state !== 'absent') { cur.state = v.state; cur.line = v.line; cur.layer = (src === baseRows ? base : pkg); }
+        eff.set(id, cur);
+      }
+    }
+    for (const r of dshCaps.parseMountRows(l.text)) {
+      if (!r.inFace || !r.id) continue;
+      const e = eff.get(r.id);
+      if (!e || e.state !== 'literal-true') continue;   // host 侧必须按 id 算 = 字面 true
+      // ⚠️ **preset 这一行自己也不能是禁用**，否则那不是"重挂"、是"两边都关" ⇒ 假阳性。
+      //    实测反例（本批自查抓到）：`tool-ralph` 的 host `dsh-base:446-448` 是 `disabled: true`，
+      //    而 `presets/standard.patch.yml:125-127` **也**是 `disabled: true` —— 只按 id 配对会把它算成实例。
+      //    这一类（preset 侧自己也禁用，或 preset 侧是 `!!js` 表达式 ⇒ 未知）实测共 6 个 id。
+      if (r.disabledState === 'literal-true') continue;
+      if (r.disabledState === 'expr') continue;         // preset 侧未知 ⇒ 不当证据（不求值、不猜）
+      const prev = out.filter((x) => x.id === r.id && x.host.layer === e.layer && x.host.line === e.line)[0];
+      const entry = { id: r.id, pkg, host: { layer: e.layer, line: e.line, state: e.state },
+        presets: [{ layer: l.layer, line: r.line }] };
+      if (prev) prev.presets.push(entry.presets[0]);
+      else out.push(entry);
+    }
+  }
+  out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return out;
+}
+
 /** 渲染 docs/CLI.md 的完整内容（纯函数，不写盘）。
  *  抽出来的唯一理由：让「生成物是否已过期」可以被机械检查 ——
  *  scripts/doc-facts.js 用同一函数重渲染并与磁盘上的 CLI.md 逐字比对，
@@ -104,6 +245,11 @@ function renderCliDoc() {
 }
 
 module.exports = {
+  // 纯函数（无 I/O 的那部分）导出给单测：`tests/dsh-caps-preset-plane.test.js` 直接用
+  // 真实 `vendor/dsh` 与**独立磁盘扫描**两条读数钉住 preset 平面的层数（照 `B6`：判据要可被单测引入）。
+  discoverPresetLayers,
+  presetPlaneProblem,
+  findRemounts,
   docsGen(ctx) {
     const registry = require('../registry.js');
     const content = renderCliDoc();
@@ -249,36 +395,55 @@ module.exports = {
     const a = ctx.args;
     if (a.grep === true) ctx.error('--grep 需要一个关键词：dsh-caps --grep 关键词');
 
-    // ---- host 平面：凡带 cordis.patch.yml 的包（实测为 dsh-base 与 dsh-web-app）----
+    // ---- host 平面：凡带 cordis.patch.yml 的包（实测 **9 套并列 bundle**：dsh-base / dsh-web-app /
+    //      dsh-headless / dsh-acp-app / dsh-sdk-app / dsh-sdk-minimal / dsh-experimental-* …）----
     // 自动发现而非硬编码路径 —— 将来多一个 host bundle 会自动进入统计，不会被静默漏掉。
+    // （旧注释写"实测为 dsh-base 与 dsh-web-app"，早已与实测不符 —— 那是"声称与实际不是一回事"，
+    //  2026-10-19 一并改准。）
     const layers = [];
     for (const name of fs.readdirSync(nm).sort()) {
       const p = path.join(nm, name, 'cordis.patch.yml');
       if (fs.existsSync(p)) layers.push({ layer: name, kind: 'host', text: fs.readFileSync(p, 'utf8') });
     }
-    // ---- agent 平面：presets/<name>/agent.cordis.yml（同样自动发现）----
-    const presetsDir = path.join(nm, 'dsh-agent-presets', 'presets');
-    if (fs.existsSync(presetsDir)) {
-      for (const name of fs.readdirSync(presetsDir).sort()) {
-        const p = path.join(presetsDir, name, 'agent.cordis.yml');
-        if (fs.existsSync(p)) {
-          layers.push({ layer: 'preset:' + name, kind: 'preset', text: fs.readFileSync(p, 'utf8') });
-        }
-      }
+    // ---- agent 平面：`@deepseek-ai/*/presets/*.patch.yml`（见 `discoverPresetLayers` 头部的事故记录）----
+    const presetScan = discoverPresetLayers(nm);
+    layers.push(...presetScan.layers);
+    // **不许静默跳过**：preset 平面为空 ⇒ 这份报告撑不住它自己的核心叙事 ⇒ 响亮报错，不出空报告
+    const planeProblem = presetPlaneProblem(presetScan);
+    if (planeProblem) ctx.error(planeProblem);
+    if (presetScan.emptyDirs.length) {
+      // 有 `presets/` 但一个 `*.patch.yml` 都没有 —— 按纪律点名（别让它静默消失）
+      ctx.out('⚠️ 以下包的 `presets/` 目录里没有 `*.patch.yml`（不计入 preset 平面）：'
+        + presetScan.emptyDirs.join(', '));
+    }
+    if (presetScan.noDeclare.length) {
+      ctx.out('⚠️ 以下 preset 文件里**没有** `@deepseek-ai/dsh-agent-preset` 声明 —— 它可能不是 preset 段，'
+        + '却是按"preset"计数的：' + presetScan.noDeclare.join(', '));
     }
     if (!layers.length) {
-      ctx.error('在 ' + nm + ' 下没找到任何装配文件（cordis.patch.yml / agent.cordis.yml）');
+      ctx.error('在 ' + nm + ' 下没找到任何装配文件（cordis.patch.yml / presets/*.patch.yml）');
     }
 
     const diskPackages = fs.readdirSync(nm).filter((n) => {
       try { return fs.statSync(path.join(nm, n)).isDirectory(); } catch (e) { return false; }
     });
     const model = dshCaps.buildModel({ layers, diskPackages });
+    const remounts = findRemounts(layers);
 
     if (a.json) {
       // Map 不能直接 stringify ⇒ 转成「包 → 各层状态」的数组
       ctx.outJson({
         layers: model.layers,
+        // preset 平面的**发现读数**（层数 = 实测文件数；层数 0 ⇒ 上面已经报错退出，走不到这里）
+        presets: {
+          packages: presetScan.packages,
+          files: presetScan.files.map((x) => x.pkg + '/presets/' + x.file),
+          layerCount: presetScan.layers.length,
+          emptyDirs: presetScan.emptyDirs
+        },
+        // 「host disabled:true 但 preset 重挂」的实例 —— 这就是 dsh-capabilities 那条叙事的可核对落点
+        remountCount: remounts.length,
+        remounts,
         diskCount: model.diskCount,
         mountedCount: model.mounted.length,
         unmountedCount: model.unmounted.length,
@@ -292,6 +457,26 @@ module.exports = {
       grep: a.grep === undefined ? null : String(a.grep),
       unmounted: !!a.unmounted
     }));
+    // 叙事 → 可观察：把「host 行 disabled:true，但 preset 把同一 id 挂回来」的实例连同**两处行号**印出来。
+    // 不给实例，`renderReport` 顶部那条规则就只是一句话（本批修的正是"声称能做到、实测看不到"）。
+    if (!a.grep && !a.unmounted) {
+      ctx.out('');
+      ctx.out('「host `disabled: true` 但 preset 重挂」的实例（' + remounts.length + ' 个；'
+        + '口径：按 **id**、沿 `dsh-base → 载体包` 一条序列算有效状态；'
+        + 'preset 那一行**自己也得是启用的**（两边都禁用不算重挂）；`expr` 不算）');
+      if (!remounts.length) {
+        ctx.out('   **0 个** —— 本运行包上这条叙事**不成立**（preset 平面有 ' + presetScan.layers.length
+          + ' 层，但没有任何 id 是"host 禁用 + preset 挂回且自己是启用的"）⇒ 别把它当事实用，先查凭据。');
+      }
+      for (const r of remounts.slice(0, 12)) {
+        ctx.out('   · ' + r.id + ' ⟶ host ' + r.host.layer + ':' + r.host.line
+          + '（`- id:` 行，紧随 `disabled: true`）'
+          + ' ／ preset ' + r.presets.map((p) => p.layer.replace(/^preset:/, '') + ':' + p.line).join(', '));
+      }
+      if (remounts.length > 12) {
+        ctx.out('   …（共 ' + remounts.length + ' 个，`--json` 的 `remounts` 给全量）');
+      }
+    }
   },
 
   release(ctx) {
