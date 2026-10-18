@@ -573,3 +573,245 @@ module.exports.closeDialogs = async function closeDialogs(ctx) {
   const list = Array.isArray(raw) ? raw : [];
   return { n: list.length, names: list.map((d) => d && d.name).filter(Boolean) };
 };
+
+/* ================= G5 **逐域耗时台账** + 排行（2026-10-18 加） =================
+ * 为什么非有不可：G5 一项占全链 **93%**，而链上**只有整步一个读数** —— "时间花在哪个域"从来没被量过。
+ * 没有这份读数，"分层 / 抽样 / 拆分"只能凭感觉拆（`testing-for-ai` A2：先量再优化）。
+ * 它与 `scripts/verify.js` 的逐**步**耗时表是同一件事的两层：那层说"G5 用了多久"，这层说"G5 里谁用的"。
+ *
+ * 分工照 `B6`（判定逻辑与 I/O 分开）：
+ *   · `createTiming()` —— 一个**只有四个方法**的台账；不读时钟（时刻由调用方递进来）、不碰 fs。
+ *   · `summarizeTiming()` / `formatTimingLines()` —— **纯函数**，可单测（`tests/smoke-timing.test.js`）。
+ *
+ * 三条刻意的口径（都会被读的人误解，所以写死在这里）：
+ *   ① `boundaryMs` **单独记**：域边界那一跳（收残留 + 还原沙箱文件 + 重载项目）**不是**断言本身的开销，
+ *      却随"跑几个域"线性增长 ⇒ 分层的收益必须把这一档算进去，不能只算断言耗时。
+ *   ② `totalMs = boundaryMs + assertMs`（该域可归因耗时之和；不把域之间的空隙摊给它）。
+ *   ③ 台账**只量不改判**：不参与任何判据、不影响退出码 —— 拿掉它不改变任何结论。
+ */
+module.exports.createTiming = function createTiming() {
+  const rows = [];
+  const byDomain = new Map();
+  let cur = null;
+  let boundaryMs = 0;
+  const mk = (domain) => {
+    let r = byDomain.get(domain);
+    if (!r) {
+      r = { domain: domain, assertions: 0, assertMs: 0, boundaryMs: 0, totalMs: 0 };
+      byDomain.set(domain, r);
+      rows.push(r);
+    }
+    return r;
+  };
+  const close = () => {
+    if (!cur) return;
+    const r = mk(cur);
+    r.boundaryMs += boundaryMs > 0 ? boundaryMs : 0;
+    r.totalMs = r.boundaryMs + r.assertMs;
+    cur = null;
+    boundaryMs = 0;
+  };
+  return {
+    /** 进入一个新域（自动收口上一个域的账）。`now` 只为将来记墙钟留位，当前口径不用。 */
+    beginDomain(domain, now) { close(); cur = domain; boundaryMs = 0; mk(domain); return now; },
+    /** 域边界那一跳花了多久（收残留 + 隔离写回 + 重载） */
+    endBoundary(ms) { if (cur && ms > 0) boundaryMs += ms; },
+    /** 一条断言体花了多久（成功与 THREW 两条路径都要记 —— 否则"贵的域"会被漏掉） */
+    addAssertion(domain, ms) {
+      const r = mk(domain);
+      r.assertions += 1;
+      if (ms > 0) r.assertMs += ms;
+      if (!cur) r.totalMs = r.boundaryMs + r.assertMs;
+    },
+    /** 收口最后一个域 */
+    end() { close(); },
+    rows() { return rows.map((r) => Object.assign({}, r)); }
+  };
+};
+
+/**
+ * 逐域耗时排行（**纯函数**）：把台账行整理成一张"谁最贵"的表。
+ * @param {Array<{domain:string,assertions:number,assertMs:number,boundaryMs:number}>} rows
+ * @param {{topN?:number}} [opts] `topN` 只影响 `top`（`rank` 永远全量 —— 只报"前 N 名"而藏起其余 = 假口径）
+ * @returns {{count:number, assertions:number, domainMs:number, boundaryMs:number, assertMs:number,
+ *   rank:Array<{domain:string,assertions:number,assertMs:number,boundaryMs:number,totalMs:number,share:number}>,
+ *   top:Array, topMs:number, topShare:number}}
+ *   `share` = 该域占**全部域耗时**的比例（0–1；分母是 `domainMs`，**不含**启动 / 截图 / 收尾 —— 那几段不在本台账里）。
+ */
+module.exports.summarizeTiming = function summarizeTiming(rows, opts) {
+  const o = opts || {};
+  const list = (Array.isArray(rows) ? rows : []).filter(Boolean);
+  const norm = list.map((r) => {
+    const assertMs = Math.max(0, Number(r.assertMs) || 0);
+    const boundaryMs = Math.max(0, Number(r.boundaryMs) || 0);
+    return {
+      domain: String(r.domain || '(未命名域)'),
+      assertions: Math.max(0, Number(r.assertions) || 0),
+      assertMs: assertMs,
+      boundaryMs: boundaryMs,
+      totalMs: assertMs + boundaryMs,
+      share: 0
+    };
+  });
+  const domainMs = norm.reduce((n, r) => n + r.totalMs, 0);
+  // 降序；耗时相同按域名字典序 —— **读数是确定的**，同一份台账两次排出同一个名次（否则"排行"自己不可复现）
+  norm.sort((a, b) => (b.totalMs - a.totalMs) || (a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0));
+  norm.forEach((r) => { r.share = domainMs > 0 ? r.totalMs / domainMs : 0; });
+  const topN = Number.isInteger(o.topN) && o.topN > 0 ? o.topN : norm.length;
+  const top = norm.slice(0, topN);
+  const topMs = top.reduce((n, r) => n + r.totalMs, 0);
+  return {
+    count: norm.length,
+    assertions: norm.reduce((n, r) => n + r.assertions, 0),
+    domainMs: domainMs,
+    boundaryMs: norm.reduce((n, r) => n + r.boundaryMs, 0),
+    assertMs: norm.reduce((n, r) => n + r.assertMs, 0),
+    rank: norm,
+    top: top,
+    topMs: topMs,
+    topShare: domainMs > 0 ? topMs / domainMs : 0
+  };
+};
+
+/**
+ * 把排行渲染成**逐行文本**（纯函数：不打印、不判红，调用方决定去哪）。
+ * @param {ReturnType<typeof summarizeTiming>} summary
+ * @param {{tierOf?:(domain:string)=>string|null, title?:string}} [opts]
+ *   `tierOf` 给了就在每行标出该域所属的分层（分层表是单一权威，本函数不复制它）
+ * @returns {string[]}
+ */
+module.exports.formatTimingLines = function formatTimingLines(summary, opts) {
+  const s = summary || { rank: [], domainMs: 0, assertions: 0, boundaryMs: 0, assertMs: 0, count: 0 };
+  const o = opts || {};
+  const sec = (ms) => (Math.round((Number(ms) || 0) / 100) / 10).toFixed(1) + 's';
+  const pct = (x) => (Math.round((Number(x) || 0) * 1000) / 10).toFixed(1) + '%';
+  const lines = [];
+  lines.push(o.title || '==== G5 逐域耗时排行（现算；域 = scripts/smoke/NN-*.js）====');
+  if (!s.rank.length) {
+    lines.push('  （台账是空的：本轮一个域都没跑 —— 这不是"很快"，是**没有读数** ✗）');
+    return lines;
+  }
+  lines.push('  名次  域                       耗时      占比    断言  断言均值  域边界'
+    + (o.tierOf ? '  分层' : ''));
+  s.rank.forEach((r, i) => {
+    const avg = r.assertions > 0 ? r.assertMs / r.assertions : 0;
+    const tier = o.tierOf ? (o.tierOf(r.domain) || '—') : null;
+    lines.push('  ' + String(i + 1).padEnd(5)
+      + String(r.domain).padEnd(24)
+      + sec(r.totalMs).padStart(8)
+      + pct(r.share).padStart(8)
+      + String(r.assertions).padStart(6)
+      + sec(avg).padStart(9)
+      + sec(r.boundaryMs).padStart(8)
+      + (o.tierOf ? '  ' + tier : ''));
+  });
+  lines.push('  ' + '合计（域 ' + s.count + ' 个）'.padEnd(28) + sec(s.domainMs).padStart(8)
+    + '  100.0%' + String(s.assertions).padStart(7)
+    + '         ' + sec(s.boundaryMs).padStart(8));
+  lines.push('  口径：域耗时 = 断言体耗时 + 域边界那一跳（收残留 + 还原沙箱 + 重载项目）；'
+    + '**不含**启动 / 截图 / 视觉断言 / 收尾 —— 那几段不在本台账里。');
+  return lines;
+};
+
+/* ================= G5 **分层表**：`core`（每轮全链）/ `deep`（分层抽样） =================
+ * 本表是**唯一权威**："哪一档含哪些域"只写在这里；`scripts/verify.js` 的 `decideG5Tier` 只决定
+ * "这一轮该跑哪一档"，不复制名单。**机械化那一半**：`tests/smoke-tiers.test.js` 现算
+ * `scripts/smoke/` 的域清单与本表比对 ⇒ **新加一个域却没登记分层 ⇒ G3 判红**（铁律 R6 的落地）。
+ *
+ * 分档依据（**2026-10-18 现算**，台账 JSON 见 `.review/20261018-G5分层/g5-timing-full-BEFORE.json`）：
+ *   · 全量冒烟 G5 = **1031.5 s**，其中逐域 **1025.4 s（99.4%）**；
+ *     启动 1.3 s + runSmoke 前置 0.2 s + 收尾 4.6 s（截图/视觉断言/复核/清理）；
+ *   · **域边界那一跳合计只有 15.3 s（1.5%）** ⇒ "每域隔离太贵"这个假设**不成立**，
+ *     "把域拆细/合并"也省不到时间：**成本几乎全在断言体里**；
+ *   · ⇒ 分档规则只有一条：**单域实测 ≥ 15 s 的进 `deep`**。
+ *     `deep` = 19 个域 / 142 条断言 / **834.1 s = 81.3%**；
+ *     `core` = 33 个域 / 184 条断言 / **191.3 s = 18.7%**（每轮都跑，约 3 分钟）。
+ *   ⚠️ 15 s 这条线是**当时读数**定的（`05-pan-lock` 14.7 s 贴线、留在 core；下一个 34-user-paths 14.1 s）；
+ *   名单是**钉死的**，不随耗时自动漂（`B1b`：门禁常量不绑滚动读数）—— 要重排就**重新量、重新钉**，
+ *   并把新读数写进 CHANGELOG。涨价由 `scripts/verify.js` 的 `G5_FAST_BUDGET_MS`（core 档止涨线）守。
+ *
+ * ⚠️ 分层**不改任何判据**：`deep` 的断言一条都没少，只是**跑得没那么勤**（触发条件可判定，
+ * 见 `scripts/verify.js` 的 `decideG5Tier` 与 `docs/RULES.md` 的 R6）。
+ */
+const TIERS = [
+  {
+    tier: 'core',
+    why: '便宜（单域 ≤ 15 s）且守住"其它域都假设它成立"的前提（加载 / 保存 / 隔离 / 关闭 / 收尾），'
+      + '合计约 3 分钟 ⇒ 没有理由抽样',
+    domains: ['01', '02', '04', '05', '06', '07', '08', '09', '10', '13', '14', '16', '17', '18',
+      '20', '21', '23', '24', '26', '27', '28', '29', '30', '31', '33', '34', '35', '38', '41', '44',
+      '47', '50', '53']
+  },
+  {
+    tier: 'deep',
+    why: '贵（单域 ≥ 15 s；大头是**真鼠标拖动 / 真帧逐像素 / 真 CLI 子进程 / 重开项目**），'
+      + '19 个域吃掉 81.3% 的逐域耗时 ⇒ 按频率跑（每日一次 / 放行点 / 底板改动 / 上次红）',
+    domains: ['03', '11', '12', '15', '19', '22', '25', '36', '37', '39', '40', '42', '43', '45',
+      '46', '48', '49', '51', '52']
+  }
+];
+
+/** 域号归一：`'22-sidebar-gap.js'` / `'22'` / `22` / `2` ⇒ `'22'` / `'02'`
+ *  （表里只写域号、不写文件名 —— 改名不用改表；单数字补零，免得 `Number('01')` 掉成 `1` 后认不出） */
+function tierNum(x) {
+  const m = String(x === undefined || x === null ? '' : x).trim().match(/^(\d+)/);
+  if (!m) return '';
+  return m[1].length === 1 ? '0' + m[1] : m[1];
+}
+
+const TIER_OF = new Map();
+TIERS.forEach((t) => (t.domains || []).forEach((d) => TIER_OF.set(tierNum(d), t.tier)));
+
+/** 某个域属于哪一档（`'core'` / `'deep'`；没登记 ⇒ `null`，由 `tierSummary()` 判红） */
+module.exports.tierOf = function tierOf(domain) { return TIER_OF.get(tierNum(domain)) || null; };
+
+/** 分层表的**现算读数**（域数 / 断言数 / core 档的 `SMOKE_ONLY` 选择串）+ 自检。
+ *  `ok:false` ⇒ 表与 `scripts/smoke/` 的域清单分叉（漏登记 / 悬挂登记 / 重复登记）⇒ 调用方判红。
+ *  `inject` 只为**单测与判别力证明**（喂坏表看它会不会红），正常运行不传 ⇒ 用本模块的真表/真清单。
+ * @param {{files?:string[], groups?:Array<{file:string,assertions:Array}>, tiers?:Array}} [inject]
+ * @returns {{ok:boolean, errors:string[], core:{domains:number,assertions:number,only:string[]},
+ *   deep:{domains:number,assertions:number,only:string[]}, all:{domains:number,assertions:number}}}
+ */
+module.exports.tierSummary = function tierSummary(inject) {
+  const inj = inject || {};
+  const fs_ = Array.isArray(inj.files) ? inj.files : files;
+  const gs = Array.isArray(inj.groups) ? inj.groups : groups;
+  const tiers = Array.isArray(inj.tiers) ? inj.tiers : TIERS;
+  const of = new Map();
+  tiers.forEach((t) => (t.domains || []).forEach((d) => {
+    const n = tierNum(d);
+    if (n && !of.has(n)) of.set(n, t.tier);
+  }));
+  const out = {
+    ok: true, errors: [],
+    core: { domains: 0, assertions: 0, only: [] },
+    deep: { domains: 0, assertions: 0, only: [] },
+    all: { domains: 0, assertions: 0 }
+  };
+  const have = fs_.map(tierNum);
+  out.all.domains = have.length;
+  out.all.assertions = gs.reduce((n, g) => n + ((g.assertions || []).length), 0);
+  gs.forEach((g) => {
+    const num = tierNum(g.file);
+    const t = of.get(num);
+    if (!t || !out[t]) {
+      out.errors.push('域 ' + g.file + ' 没有登记分层（`TIERS`）：新加的域必须同批归到 core 或 deep');
+      return;
+    }
+    out[t].domains += 1;
+    out[t].assertions += (g.assertions || []).length;
+    if (t === 'core') out.core.only.push(num);
+  });
+  const seen = new Map();
+  tiers.forEach((t) => (t.domains || []).forEach((d) => {
+    const num = tierNum(d);
+    if (!num) { out.errors.push('分层表里有读不懂的域号：' + JSON.stringify(d)); return; }
+    if (seen.has(num)) out.errors.push('域 ' + num + ' 在分层表里登记了两次（' + seen.get(num) + ' 与 ' + t.tier + '）');
+    else seen.set(num, t.tier);
+    if (have.indexOf(num) < 0) out.errors.push('分层表里登记了 `scripts/smoke/` 里不存在的域号（悬挂登记）：' + num);
+  }));
+  out.core.only.sort();
+  out.ok = out.errors.length === 0;
+  return out;
+};
+

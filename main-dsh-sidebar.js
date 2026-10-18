@@ -2404,6 +2404,10 @@ module.exports = {
   DOCK_DEFAULTS: panelGeometry.DEFAULTS,
   setGeometry,
   NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN,
+  // 默认宽度（`SIDEBAR_WIDTH`）导出给**冒烟断言的前置复位**用：域 17 的"文件预览 ≥60% 视口"隐含
+  // "页面没被侧栏让位吃掉宽度"这个前提，而抽样档里上游域（11/12/22）不在 ⇒ 它得自己把前提摆好。
+  // 导出而不是在断言里手抄 420 —— 默认宽只许有一处（改这里不用改断言）。
+  SIDEBAR_WIDTH,
   WIDTH_STEP_PX, WIDTH_STEP_MAX,
   ensureRightbarRoom, releaseRightbarRoom, setNoSpawn, installRightbarWatcher,
   // 测量驱动的宽度预算（2026-10-16 批）：编排 + **纯函数目标宽度**（唯一一份"该多宽"的判断）

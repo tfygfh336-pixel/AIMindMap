@@ -95,6 +95,7 @@ const VERIFY_HISTORY = '.review/verify-history.jsonl';
 /** 一条历史记录（除 `envIn` 外都是纯计算：便于单测"字段映射"那一半） */
 function buildVerifyHistory(run, results, envIn) {
   const env = envIn || { node: process.version, host: os.hostname(), freeMemMB: Math.round(os.freemem() / 1048576) };
+  const g5 = (results || []).filter((x) => x && x.gate === 'G5')[0] || null;
   return {
     at: run.finishedAt,                       // ISO 时间（与 last-verify.json 同一个时刻，便于两份记录对齐）
     ok: run.ok,
@@ -102,6 +103,11 @@ function buildVerifyHistory(run, results, envIn) {
     totalMs: run.totalMs,
     // `--changed` 的部分验证要标出来：它**不能**当耗时基线（只跑了几步，比出来是假信号 ✗）
     partial: run.partial === true,
+    /* G5 本轮跑的是哪一档（`full` / `fast` / `subset` / `skipped`）。
+     * 为什么必须落盘：`readLastFullG5()` 靠它判"全量档有没有过期"（分层抽样的触发条件是机械可判的），
+     * 而 `tests/verify-budget.test.js` 的余量守卫要**只用全量档读数**——快档读数会让它空转。
+     * 老记录没有这个字段 ⇒ 按 `'full'` 读（分层之前 G5 跑的就是全部域）。 */
+    g5Tier: !g5 ? 'skipped' : (g5.skipped === true ? 'skipped' : (g5.tier || 'full')),
     // 每步：门禁 / 耗时 / 退出码 / 是否超预算。另外带上 skipped（G7 与 G6 共用一次调用时 ms=0）——
     // 免得事后看历史时把"这一步没单独跑"误读成"耗时 0 秒、很健康"。
     steps: results.map((r) => ({
@@ -109,7 +115,10 @@ function buildVerifyHistory(run, results, envIn) {
       ms: r.ms,
       code: r.code,
       overBudget: r.budgetMs > 0 && r.ms > r.budgetMs,
-      skipped: r.skipped === true
+      skipped: r.skipped === true,
+      // G5 的档位（`full` / `fast` / `subset`）：**快档读数不能当全量档的基线**
+      // （`tests/verify-budget.test.js` 的余量守卫与 `readLastFullG5` 都靠这个字段区分）
+      tier: r.gate === 'G5' ? (r.tier || 'skipped') : undefined
     })),
     node: env.node,
     host: env.host,
@@ -209,6 +218,161 @@ function readLastVerifyChanged() {
   catch (e) { return null; }
 }
 
+/* ================================================================================
+ * G5 **分层**：`core`（每轮全链）/ `deep`（按频率 + 放行点）—— 2026-10-18 加
+ * --------------------------------------------------------------------------------
+ * 为什么要有它（现算读数，不是估计）：G5 一项占全链 **93%**（最近 10 次成功全链 994–1174 s，
+ * 合计 1100–1280 s），而**全链时长是每一次 AI 迭代都要付的固定成本**。每批"往 G5 里顺手多加
+ * 一条断言"单看都合理，合起来就把验证推到"没人愿意跑"—— 而**跳过验证**是本工程最重的损害
+ * 类别（"没做，却看不出没做"）的入口。
+ *
+ * 做法只有两条，且**都不动任何判据**（不删断言、不降阈值、不放松任何一条判定）：
+ *   ① **分层**：`core` 域每轮都跑、`deep` 域按频率跑（表是单一权威，在
+ *      `scripts/smoke-assertions.js` 的 `TIERS`；哪个域进哪一档由**实测耗时**决定，见那里的注释）；
+ *   ② **抽样的触发条件可判定**：`decideG5Tier()` 是纯函数（`tests/verify-budget.test.js` 有
+ *      逐条触发条件的判别力证明 —— 去掉任一输入，档位必须变）。
+ *
+ * ⚠️ 四条边界（如实写在这里；漏一条就会变成"看起来验过了"）：
+ *   · **快档的绿不是全量真值**：它没跑 `deep` 域，也没有视觉断言 / 取景记录（快档走既有的
+ *     `SMOKE_ONLY` 通道，那条路本来就"不产截图 / 取景记录 / 视觉断言"，见 `docs/VERIFY.md`）
+ *     ⇒ 输出必须**逐个点名没跑什么**（域数与断言数都给出）。
+ *   · **快档不能盖掉一次红色的全量档**：上次全量档红着 ⇒ 本轮强制全量（否则会拿"快档绿"
+ *     把已知的 deep 缺陷洗掉 —— 本工程最重的损害类别）。
+ *   · **全量档不许过期**：距上次**成功**的全量档 ≥ `G5_FULL_EVERY_MS`（24h）⇒ 本轮强制全量。
+ *   · **放行点/交付前**：`--release` 强制全量；`--g5=fast|full` 是人手里的放大器（它能覆盖的
+ *     只有"该轮到全量了"这一条周期触发，覆盖不了上面三条硬条件）。
+ * ================================================================================ */
+const G5_TIERS = ['fast', 'full'];
+/** 全量档的最长间隔：距上次**成功**全量档 ≥ 此值 ⇒ 本轮强制全量（"每日一档"）。 */
+const G5_FULL_EVERY_MS = 24 * 60 * 60 * 1000;
+/** `core` 档的**独立止涨线**（实测 core 档墙钟的 1.25–2 倍；口径与各步预算一致：止涨线，不是性能目标）。
+ *  ⚠️ 它与 `STEPS` 里 G5 的 `budgetMs`（全量档）是**两条线**：全量档的线不动。 */
+const G5_FAST_BUDGET_MS = 420000;
+/** 「冒烟底板 + 判据实现」：改了这些文件 ⇒ **每个域**的结论都可能变 ⇒ 必须全量档。
+ *  ⚠️ 刻意**不**收 `renderer/**` 一类产品代码：那会让"每次改界面"都退化成全量、分层就白做了；
+ *  产品侧的风险由「每日/放行点全量」这条频率兜住 —— **不假装它是可推导的**（这是抽样，不是证明）。 */
+const G5_DEEP_FLOOR_RE = /^(scripts\/smoke\/|scripts\/smoke-[^/]*\.js$|main\.js$)/;
+
+/** `--release` / `--g5=fast|full` 的解析（纯函数，入口只有这一处；非法值当场报错，不静默落回）。 */
+function parseTierArgs(argv) {
+  const args = (argv || []).slice(2);
+  const pick = (name) => {
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === name) return args[i + 1] === undefined ? '' : args[i + 1];
+      if (args[i].indexOf(name + '=') === 0) return args[i].slice(name.length + 1);
+    }
+    return null;
+  };
+  const release = args.indexOf('--release') >= 0;
+  const raw = pick('--g5');
+  let explicit = null;
+  let error = null;
+  if (raw !== null) {
+    const v = String(raw).trim();
+    if (G5_TIERS.indexOf(v) < 0) {
+      error = '`--g5` 只认 ' + G5_TIERS.join(' / ') + '（收到 ' + JSON.stringify(v) + '）';
+    } else explicit = v;
+  }
+  return { release: release, explicit: explicit, error: error };
+}
+
+/** 把毫秒说成人话（"36.2h"）—— 只用于打印，不参与判定 */
+function fmtHours(ms) {
+  return (Math.round((Number(ms) || 0) / 36000) / 100).toFixed(2) + 'h';
+}
+
+/**
+ * 本轮 G5 该跑哪一档（**纯函数**：时钟 / 历史 / 改动清单都由调用方递进来 ⇒ 可单测、可注入坏输入做
+ * 判别力证明 —— 与 `checkBudgets` / `planBoundary` 同一分工）。
+ * @param {{explicit?:'fast'|'full'|null, release?:boolean, now?:number,
+ *   lastFull?:{at:string,ok:boolean}|null, changedFiles?:string[]|null, fullEveryMs?:number}} input
+ * @returns {{tier:'fast'|'full', hits:Array<{code:string,why:string}>, auto:Array,
+ *   overrode:Array, explicit:string|null}}
+ *   `hits` = **造成这一档的全部理由**（打印用；空数组 = 没有任何硬条件 ⇒ 快档）；
+ *   `auto` = 自动条件（周期 / 历史 / 改动面）；`overrode` = 被**显式 fast** 覆盖掉的周期触发。
+ */
+function decideG5Tier(input) {
+  const o = input || {};
+  const now = Number.isFinite(o.now) ? o.now : 0;
+  const everyMs = Number.isFinite(o.fullEveryMs) && o.fullEveryMs > 0 ? o.fullEveryMs : G5_FULL_EVERY_MS;
+  const auto = [];
+  const lastFull = o.lastFull || null;
+  if (!lastFull) {
+    // 没有记录 ⇒ 不知道 deep 档上次是什么时候跑的 ⇒ 按"未知"处理（未知不是绿，见 A5）
+    auto.push({ code: 'no-full-record', hard: true,
+      why: '历史里没有一条**跑过 G5 的全量档**记录（' + VERIFY_HISTORY + '）⇒ 不知道 deep 域上次是什么时候跑的' });
+  } else if (lastFull.ok !== true) {
+    auto.push({ code: 'last-full-red', hard: true,
+      why: '上次全量档**是红的**（' + String(lastFull.at || '?') + '）⇒ 不许用快档把它盖过去' });
+  } else {
+    const at = Date.parse(lastFull.at);
+    if (!Number.isFinite(at)) {
+      auto.push({ code: 'last-full-unparsable', hard: true,
+        why: '上次全量档的时间读不懂（' + JSON.stringify(lastFull.at) + '）⇒ 按"不知道"处理' });
+    } else if (now - at >= everyMs) {
+      auto.push({ code: 'stale', hard: false,
+        why: '距上次成功全量档 ' + fmtHours(now - at) + '（阈值 ' + fmtHours(everyMs) + '）⇒ 该轮到全量了' });
+    }
+  }
+  const files = o.changedFiles;
+  if (files === null || files === undefined) {
+    auto.push({ code: 'no-changes', hard: true,
+      why: '取不到改动清单（没有 git / 不在仓库里）⇒ 抽样没有依据' });
+  } else {
+    const floor = (files || []).map((f) => String(f).trim().replace(/\\/g, '/'))
+      .filter((f) => G5_DEEP_FLOOR_RE.test(f));
+    if (floor.length) {
+      auto.push({ code: 'floor', hard: true,
+        why: '改动命中**冒烟底板 / 判据实现** ' + floor.length + ' 个（'
+          + floor.slice(0, 3).join('、') + (floor.length > 3 ? ' 等' : '')
+          + '）⇒ 每个域的结论都可能变' });
+    }
+  }
+  const strong = [];
+  if (o.release === true) strong.push({ code: 'release', why: '放行点 / 交付前（`--release`）：这一档不许省' });
+  if (o.explicit === 'full') strong.push({ code: 'explicit-full', why: '显式要求全量档（`--g5=full`）' });
+  if (strong.length) return { tier: 'full', hits: strong.concat(auto), auto: auto, overrode: [], explicit: 'full' };
+  const hard = auto.filter((h) => h.hard !== false);
+  if (o.explicit === 'fast') {
+    // 显式 fast 只压过**周期触发**（"该轮到全量了"），压不过"未知 / 上次红 / 底板改动"这三条硬条件
+    if (hard.length) {
+      return { tier: 'full', hits: hard.concat(auto.filter((h) => h.hard === false)),
+        auto: auto, overrode: [], explicit: 'fast' };
+    }
+    return { tier: 'fast', hits: [], auto: auto, overrode: auto.slice(), explicit: 'fast' };
+  }
+  return { tier: auto.length ? 'full' : 'fast', hits: auto, auto: auto, overrode: [], explicit: null };
+}
+
+/**
+ * 历史里最近一条「**真的跑过 G5** 的全量档」记录（供 `decideG5Tier` 的周期 / 红色判定）。
+ * 口径三条（都会被误读，所以写死）：
+ *   ① 分层之前的老记录没有 `g5Tier` 字段 ⇒ **当时跑的就是全部域** ⇒ 按 `'full'` 读；
+ *   ② `partial: true`（`--changed` / `--for` 的部分验证）**不算** —— 它本来就不是全量；
+ *   ③ 记录里 G5 那一步必须**真的跑过**（`skipped` 或 `code === null` 都不算）：否则"失败在 G1"这种
+ *      记录会把全量档的时钟重置掉 —— 而 deep 域其实一个都没跑 ✗。
+ * @returns {{at:string|null, ok:boolean, totalMs:number|null}|null}
+ */
+function readLastFullG5() {
+  let text;
+  try { text = fs.readFileSync(path.join(ROOT, VERIFY_HISTORY), 'utf8'); }
+  catch (e) { return null; }                      // `.review/` 是可随时整包删掉的工作产物区
+  const lines = text.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!String(lines[i]).trim()) continue;
+    let r;
+    try { r = JSON.parse(lines[i]); } catch (e) { continue; }   // 坏行跳过（半截行是可能的）
+    if (!r || r.partial === true) continue;
+    const tier = r.g5Tier === undefined ? 'full' : r.g5Tier;
+    if (tier !== 'full') continue;
+    const g5 = Array.isArray(r.steps) ? r.steps.filter((s) => s && s.gate === 'G5')[0] : null;
+    if (!g5 || g5.skipped === true || g5.code === null || g5.code === undefined) continue;
+    return { at: r.at || null, ok: r.ok === true, totalMs: typeof r.totalMs === 'number' ? r.totalMs : null };
+  }
+  return null;
+}
+
+
 /** 与上一条历史逐门禁比较（纯函数，便于单测）。
  *  `skipped` 的步骤（与上一步共用一次调用）不参与比较 —— 它的 ms 是 0，比出来是假信号 ✗ */
 function historyDelta(prev, results, currentTotalMs) {
@@ -220,6 +384,12 @@ function historyDelta(prev, results, currentTotalMs) {
     if (r.skipped) continue;
     const p = byGate[r.gate];
     if (!p || p.skipped || typeof p.ms !== 'number') continue;
+    /* G5 **跨档比较是假信号**：快档（只跑 core 域）与全量档的耗时差一个数量级，
+     * 拿它当"这轮快了 800s"会让人以为优化成功 ✗ ⇒ 档不同就只说读数、不给差。 */
+    if (r.gate === 'G5' && r.tier !== undefined && p.tier !== undefined && p.tier !== r.tier) {
+      out.byGate[r.gate] = { ms: p.ms, deltaMs: null, why: '档不同（上次 ' + p.tier + ' / 本次 ' + r.tier + '）' };
+      continue;
+    }
     out.byGate[r.gate] = { ms: p.ms, deltaMs: r.ms - p.ms };
   }
   if (typeof prev.totalMs === 'number' && typeof currentTotalMs === 'number') {
@@ -431,7 +601,13 @@ const STEPS = [
   {
     step: 14, gate: 'G5', label: '冒烟（Electron 无头）',
     cmd: 'npm run smoke', shown: '`npm run smoke`',
-    covers: '渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**',
+    covers: '渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**；'
+      + '**分两档**（定档 = `scripts/verify.js` 的 `decideG5Tier`；名单与域数/断言数的**现算值** = '
+      + '`scripts/smoke-assertions.js` 的 `TIERS` / `tierSummary()`，每次冒烟都会打印）：'
+      + '`fast` = 只跑 `core` 域（**不产**截图 / 取景记录 / 视觉断言）、`full` = 全部域 + 视觉断言 + 取景记录；'
+      + '**必须 full 的条件（可判定）**：`--release` 放行点 / `--g5=full` / 历史里没有全量档 / 上次全量档是红的 / '
+      + '距上次成功全量档 ≥ 24h / 取不到改动清单 / 改动命中 `scripts/smoke/**`·`scripts/smoke-*.js`·`main.js`。'
+      + '每次运行都打印**逐域耗时排行**（`summarizeTiming`），G5 预算按档取（快档 = `G5_FAST_BUDGET_MS`）',
     // 预算调整史（每次都带实测依据 ✓）：
     //   · 2026-09-29：22-* / 23-* 要**真建原生侧栏 view**，实测 130.7s ⇒ 120s 不成立 ⇒ 150s。
     //   · 2026-09-30：查明那三条断言的耗时大头是**顺手孵化了一个真的内置 DSH 服务**
@@ -748,6 +924,17 @@ function main() {
     process.exitCode = 1;
     return;
   }
+  /* 工作区改动清单**只取一次**（≈几十 ms）：`--changed` 用它选步，G5 分层用它判"冒烟底板有没有被改"。
+   * 取不到 ⇒ `null`（两边各自的语义：`--changed` 退回全量、分层**强制全量档**）。 */
+  const cf = changedFiles();
+  /* `--release` / `--g5=fast|full`（G5 分层的显式开关）。**非法值当场红**，不静默落回某一档 ——
+   * 一个写错的开关值若被静默当成默认，等于"你以为在全量档里跑，其实没有"。 */
+  const selTier = parseTierArgs(process.argv);
+  if (selTier.error) {
+    console.error('✗ ' + selTier.error);
+    process.exitCode = 1;
+    return;
+  }
   if (sel.mode === 'for') {
     // **门禁自己核对这张表**（域号在 scripts/smoke/ 里真实存在 / 每个域恰好被一个面登记 /
     // 条数现算）——刻意放在**跑任何一步之前**：表坏了就该当场红，而不是先付十几分钟的链再发现。
@@ -790,7 +977,7 @@ function main() {
       console.log('');
     }
   } else if (sel.mode === 'changed') {
-    const files = changedFiles();
+    const files = cf;
     if (files === null) {
       console.log('⚠️ --changed：取不到 git 改动清单（没有 git / 不在仓库里？）⇒ **退回全量**');
       console.log('');
@@ -840,11 +1027,81 @@ function main() {
     }
   }
   console.log('');
+  /* ── G5 **定档**（在跑任何一步之前；档位的理由必须当场可见）──────────────────────────
+   * 三档（`B8`：判定档数必须 ≥ 要区分的状态数）：
+   *   `full`   = 全部域 + 视觉断言 + 取景记录（全量真值口径）
+   *   `fast`   = 只跑 `core` 域（走既有 `SMOKE_ONLY` ⇒ **不产**截图/取景记录/视觉断言）
+   *   `subset` = 人点名的改动面 / 域（`--for` / `--changed` 的 `smokeOnly`）—— 面自己声明的必跑集赢
+   *   `skipped`= 本轮计划里没有 G5
+   * ⚠️ 快档的"通过"**不是**全量真值 —— 下面必须逐个点名没跑多少（域数 + 断言数）。 */
+  const g5Planned = !plan || plan.full === true || plan.steps.indexOf('G5') >= 0;
+  let g5RunTier = 'skipped';
+  let g5SmokeOnly = null;      // null = 全部域
+  let g5TierInfo = null;       // 分层表的现算读数（域数 / 断言数）
+  let g5Decision = null;
+  if (g5Planned) {
+    g5Decision = decideG5Tier({
+      explicit: selTier.explicit, release: selTier.release,
+      now: Date.now(), lastFull: readLastFullG5(), changedFiles: cf
+    });
+    const narrow = (plan && plan.smokeOnly && plan.smokeOnly.length) ? plan.smokeOnly : null;
+    try { g5TierInfo = require('./smoke-assertions.js').tierSummary(); }
+    catch (e) { g5TierInfo = { ok: false, error: String((e && e.message) || e) }; }
+    if (narrow) {
+      g5RunTier = 'subset';
+      g5SmokeOnly = narrow;
+    } else if (g5Decision.tier === 'fast') {
+      if (g5TierInfo && g5TierInfo.ok && g5TierInfo.core && g5TierInfo.core.only.length) {
+        g5RunTier = 'fast';
+        g5SmokeOnly = g5TierInfo.core.only;
+      } else {
+        // 采不到 core 档清单 ⇒ **退回全量**（更多的覆盖总是更安全）+ 响亮说明（A5：采不到真值不能静默）
+        g5RunTier = 'full';
+        console.log('⚠️ G5 分层：本应跑 fast 档，但**采不到 core 域清单**（'
+          + ((g5TierInfo && g5TierInfo.error) || 'scripts/smoke-assertions.js 的 tierSummary() 不可用')
+          + '）⇒ **本轮退回全量档**（更多的覆盖总是更安全 ✓）');
+      }
+    } else {
+      g5RunTier = 'full';
+    }
+    // ── 打印：这一档为什么是这一档 + 没跑什么（跳过必须与通过可区分）──
+    console.log('== G5 分层：本轮 **' + g5RunTier + ' 档** ==');
+    if (g5Decision.hits.length) {
+      for (const h of g5Decision.hits) console.log('   · [' + h.code + '] ' + h.why);
+    } else {
+      console.log('   · 没有任何一条"必须全量"的条件成立（距上次成功全量档 '
+        + (() => { const lf = readLastFullG5(); return lf && lf.at ? fmtHours(Date.now() - Date.parse(lf.at)) : '?'; })()
+        + '，阈值 ' + fmtHours(G5_FULL_EVERY_MS) + '；改动清单取到了且没碰冒烟底板）');
+    }
+    if (g5Decision.overrode && g5Decision.overrode.length) {
+      console.log('   ⚠️ 你显式要求了 fast 档（`--g5=fast`）⇒ **下面这条周期条件被覆盖了**：'
+        + g5Decision.overrode.map((h) => h.why).join('；') + '（放行点/交付前请用 `--release`）');
+    }
+    if (g5RunTier === 'fast' && g5TierInfo && g5TierInfo.ok) {
+      const deepN = g5TierInfo.deep.domains;
+      const deepA = g5TierInfo.deep.assertions;
+      const allA = g5TierInfo.all.assertions;
+      console.log('   core 档：' + g5TierInfo.core.domains + ' 个域 / ' + g5TierInfo.core.assertions + ' 条断言（本轮会跑）');
+      console.log('   ⚠️ **deep 档 ' + deepN + ' 个域 / ' + deepA + ' 条断言（占断言总数 '
+        + (allA ? Math.round((deepA / allA) * 1000) / 10 : '?') + '%）本轮没跑**，且快档**不产**'
+        + '截图 / 取景记录 / 视觉断言 —— 所以本轮"验证通过"**不是全量真值** ✗');
+      console.log('   ⇒ 它们会在这些条件下跑（可判定的，见 `scripts/verify.js` 的 `decideG5Tier`）：'
+        + '距上次成功全量档 ≥ 24h · 上次全量档是红的 · 冒烟底板/域文件被改 · 放行点 `--release` · `--g5=full`');
+      console.log('   ⇒ 最近一次真跑了全量档：' + (() => {
+        const lf = readLastFullG5();
+        return lf ? (String(lf.at || '?').replace('T', ' ').slice(0, 19) + (lf.ok ? '（绿）' : '（红 ✗）'))
+          : '（历史里没有 —— 这本身就是该跑全量的理由，下一轮会自动升档）';
+      })());
+    } else if (g5RunTier === 'subset') {
+      console.log('   （走改动面/域的收窄集：' + g5SmokeOnly.join(', ') + ' —— 面自己声明的必跑集优先于分层）');
+    }
+    console.log('');
+  }
+
   for (const s of STEPS) {
     // 计划外 ⇒ 跳过（G7 是"与 G6 共用一次调用"，G6 在计划里它就跟着跑 ✓）
     const inPlan = !plan || plan.full || plan.steps.indexOf(s.gate) >= 0
-      || (s.gate === 'G7' && plan.steps.indexOf('G6') >= 0);
-    if (!inPlan) {
+      || (s.gate === 'G7' && plan.steps.indexOf('G6') >= 0);    if (!inPlan) {
       results.push({ step: s.step, gate: s.gate, label: s.label, ms: 0, code: null,
         budgetMs: 0, skipped: true, skippedBy: 'changed' });
       continue;
@@ -869,14 +1126,21 @@ function main() {
       opts.env = Object.assign({}, process.env,
         { AI_MINDMAP_UNIT_TESTS: String(unitTestsFromChain) });
     }
-    // 冒烟收窄：走既有的 SMOKE_ONLY（选择器会"筛错名字响亮失败"，并自标"过滤运行不是全量真值" ✓）
-    if (plan && plan.smokeOnly && s.gate === 'G5') {
-      opts.env = Object.assign({}, opts.env || process.env, { SMOKE_ONLY: plan.smokeOnly.join(',') });
+    /* 冒烟收窄：走既有的 SMOKE_ONLY（选择器会"筛错名字响亮失败"，并自标"过滤运行不是全量真值" ✓）。
+     * 两个来源，优先级见上面的定档块：① 改动面/域点名的 `plan.smokeOnly`（面自己声明的必跑集）；
+     * ② 分层 fast 档的 `core` 域清单。两者都没有 ⇒ 不设 SMOKE_ONLY ⇒ 全量档。 */
+    if (s.gate === 'G5' && g5SmokeOnly && g5SmokeOnly.length) {
+      opts.env = Object.assign({}, opts.env || process.env, { SMOKE_ONLY: g5SmokeOnly.join(',') });
     }
     const r = spawnSync(s.cmd, opts);
     const ms = Date.now() - t0;
     const code = r.status === null ? 1 : r.status;
-    results.push({ step: s.step, gate: s.gate, label: s.label, ms, code, budgetMs: s.budgetMs });
+    // G5 的预算**按档取**：快档有独立的止涨线（`G5_FAST_BUDGET_MS`），全量档沿用 STEPS 里那条线。
+    // ⚠️ 两条线都不许为了"过"而抬 —— 抬线要按 `tests/verify-budget.test.js` 的口径说明理由。
+    const effBudget = (s.gate === 'G5' && g5RunTier === 'fast') ? G5_FAST_BUDGET_MS : s.budgetMs;
+    const row = { step: s.step, gate: s.gate, label: s.label, ms, code, budgetMs: effBudget };
+    if (s.gate === 'G5') { row.tier = g5RunTier; if (g5SmokeOnly) row.smokeOnly = g5SmokeOnly.slice(); }
+    results.push(row);
 
     if (resFile) {
       unitTestsFromChain = readUnitTests(resFile);
@@ -934,8 +1198,10 @@ function main() {
     console.log('  ' + pad(r.step, 3) + pad(r.gate, 6)
       + pad(fmt(r.ms), 9) + pad(fmt(r.budgetMs), 9)
       + pad(over ? '⚠ 超出' : fmt(r.budgetMs - r.ms), 9)
-      + pad(d ? fmt(d.ms) : '—', 10) + pad(d ? fmtDelta(d.deltaMs) : '—', 10)
-      + r.label + (r.code === 0 ? '' : '  ← exit ' + r.code));
+      + pad(d ? fmt(d.ms) : '—', 10)
+      + pad(d ? (d.deltaMs === null ? '（档不同）' : fmtDelta(d.deltaMs)) : '—', 12)
+      + r.label + (r.tier ? '  ［' + r.tier + ' 档' + (r.smokeOnly ? '：' + r.smokeOnly.length + ' 个域' : '') + '］' : '')
+      + (r.code === 0 ? '' : '  ← exit ' + r.code));
   }
   console.log('  ' + '合计'.padEnd(9) + fmt(chk.totalMs).padEnd(9) + fmt(chk.totalBudgetMs).padEnd(9)
     + (chk.overTotal ? '⚠ 超出' : fmt(chk.totalBudgetMs - chk.totalMs)).padEnd(10)
@@ -966,7 +1232,7 @@ function main() {
     }
     const run = {
       finishedAt: new Date().toISOString(), ok: false, failedGate: failed.step.gate,
-      totalMs: chk.totalMs, version: pkgVersion(), partial,
+      totalMs: chk.totalMs, version: pkgVersion(), partial, g5Tier: g5RunTier,
       steps: results.map((r) => ({ gate: r.gate, ms: r.ms, code: r.code }))
     };
     // 部分验证写**另一个**格子：`last-verify.json` 回答的是"上次**全链**绿没绿"，
@@ -998,10 +1264,16 @@ function main() {
   }
 
   console.log((partial ? '部分验证通过' : '验证通过') + '（' + (partial ? '计划内 ' : '') + chk.ranCount + ' 步 / ' + fmt(chk.totalMs)
-    + '，预算内）' + (partial ? ' —— **不是全量真值**；发版/交付前请跑 `npm run verify`' : ''));
+    + '，预算内）' + (partial ? ' —— **不是全量真值**；发版/交付前请跑 `npm run verify`' : '')
+    /* ⚠️ 快档的"通过"必须当场降调：不写这一句，读者会把"core 域绿了"读成"全部域绿了"
+     * （本工程最重的损害类别：没做，却看不出没做）。 */
+    + (g5RunTier === 'fast'
+      ? '\n⚠️ 但 G5 本轮是 **fast 档**（只跑 core 域，deep 域 + 视觉断言 + 取景记录都没跑）'
+        + ' ⇒ 这次"通过"**不是全量真值**；放行点/交付前请 `npm run verify -- --release`'
+      : ''));
   const run = {
     finishedAt: new Date().toISOString(), ok: true, failedGate: null,
-    totalMs: chk.totalMs, version: pkgVersion(), partial,
+    totalMs: chk.totalMs, version: pkgVersion(), partial, g5Tier: g5RunTier,
     steps: results.map((r) => ({ gate: r.gate, ms: r.ms, code: r.code }))
   };
   if (partial) writeLastVerifyChanged(run); else writeLastVerify(run);
@@ -1050,6 +1322,9 @@ function backupHint() {
 module.exports = {
   STEPS, TOTAL_BUDGET_MS, TEST_RESULTS, checkBudgets, readUnitTests,
   LAST_VERIFY, readLastVerify, checkBackupFreshness, BACKUP_DIRS,
+  // G5 分层（2026-10-18）：档位判定是**纯函数**（可单测、可注入做判别力证明）+ 两条线 + 底板正则
+  G5_TIERS, G5_FULL_EVERY_MS, G5_FAST_BUDGET_MS, G5_DEEP_FLOOR_RE,
+  parseTierArgs, decideG5Tier, readLastFullG5, fmtHours,
   // 验证历史（追加入口 + 组记录那一半是纯函数，便于单测）
   VERIFY_HISTORY, buildVerifyHistory, writeVerifyHistory,
   // 度量列：与上一次**成功**的验证比较（纯函数 + 一个读取口，便于单测）

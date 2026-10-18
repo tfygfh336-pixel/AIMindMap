@@ -355,11 +355,11 @@ describe('G9 对真实工程：docs/RULES.md 当前必须零问题', () => {
     expect(problems.map((p) => '[' + p.kind + '] ' + p.rel + ' ' + p.msg)).toEqual([]);
   });
 
-  it('真实 RULES.md 解析出 9 个门禁 / 9 条铁律 / 4 条元规则', () => {
+  it('真实 RULES.md 解析出 9 个门禁 / 10 条铁律 / 4 条元规则', () => {
     const lines = fs.readFileSync(path.join(ROOT, rc.RULES), 'utf8').split('\n');
     const ids = rc.findIdRows(lines).map((r) => r.id);
     expect(ids.filter((i) => i[0] === 'G')).toEqual(['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9']);
-    expect(ids.filter((i) => i[0] === 'R')).toEqual(['R1', 'R1a', 'R1b', 'R1c', 'R2', 'R3', 'R3a', 'R4', 'R5']);
+    expect(ids.filter((i) => i[0] === 'R')).toEqual(['R1', 'R1a', 'R1b', 'R1c', 'R2', 'R3', 'R3a', 'R4', 'R5', 'R6']);
     expect(ids.filter((i) => i[0] === 'M')).toEqual(['M1', 'M2', 'M3', 'M4']);
   });
 

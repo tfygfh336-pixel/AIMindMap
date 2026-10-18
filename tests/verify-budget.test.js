@@ -87,8 +87,43 @@ function recentMeasured(k) {
   return { runs: win.length, byGateMax };
 }
 
-describe('验证链耗时预算：判定逻辑', () => {
-  it('全在预算内 → 不报超预算，合计正确', () => {
+/* ============================================================================
+ * 分层之后，`G5` 的读数窗口要**单独取**（2026-10-18 加）
+ * ----------------------------------------------------------------------------
+ * 口径**一个字都没改**：仍是「预算 ≥ 1.25 × 窗口内该步的**最大**耗时」。
+ * 变的只是"读哪个窗口"——因为 `recentMeasured` 取的是**最近 10 条记录**，而分层之后这 10 条里
+ * 绝大多数是 **fast 档**（只跑 core 域，实测约全量档的 1/5）。照旧窗口会有两种坏结果：
+ *   ① 拿快档读数当基准 ⇒ 守卫对着一个小数字空转（绿着，什么都没守）；
+ *   ② 若改口径"只认全量档"却仍只看最近 10 条 ⇒ 窗口里可能**一条 G5 全量读数都没有** ⇒
+ *      守卫**完全不判 G5**（静默失去守卫，比假红更坏）。
+ * ⇒ 取「**跨全部历史**最近的 K 次**全量档** G5 读数」。
+ * ⚠️ 代价如实说：全量档现在约每天一次 ⇒ 一条尖峰会在这个窗口里赖 **K 天**（见 CHANGELOG 的偏差一节）。
+ * ========================================================================= */
+function recentFullG5(k) {
+  let text;
+  try { text = fs.readFileSync(path.join(ROOT, verify.VERIFY_HISTORY), 'utf8'); }
+  catch (e) { return { readings: [], max: null, lastAt: null }; }
+  const readings = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let r;
+    try { r = JSON.parse(line); } catch (e) { continue; }
+    if (!r || r.ok !== true || r.partial === true || !Array.isArray(r.steps)) continue;
+    const s = r.steps.filter((x) => x && x.gate === 'G5')[0];
+    if (!s || s.skipped === true || typeof s.ms !== 'number' || s.ms <= 0) continue;
+    // 老记录没有 tier 字段 ⇒ 分层之前 G5 跑的就是全部域
+    if (s.tier !== undefined && s.tier !== 'full') continue;
+    readings.push({ at: r.at, ms: s.ms });
+  }
+  const win = readings.slice(-k);
+  return {
+    readings: win,
+    max: win.length ? Math.max.apply(null, win.map((x) => x.ms)) : null,
+    lastAt: win.length ? win[win.length - 1].at : null
+  };
+}
+
+describe('验证链耗时预算：判定逻辑', () => {  it('全在预算内 → 不报超预算，合计正确', () => {
     const r = verify.checkBudgets([res('G1', 100, 10000), res('G8', 200, 10000)], 150000);
     expect(r.overStep).toEqual([]);
     expect(r.overTotal).toBe(false);
@@ -144,6 +179,16 @@ describe('验证链耗时预算：判定逻辑', () => {
       return;
     }
     let judged = 0;
+    /* G5 的读数**单独取**（分层之后它可能整轮是 fast 档）：见 `recentFullG5` 上方那一节。
+     * 取不到全量档读数时**不静默**：响亮说明"这一条本轮不判"，并靠下面 `judged > 0` 保证
+     * 不会整体空转。 */
+    const g5full = recentFullG5(10);
+    if (g5full.max !== null) byGateMax.G5 = g5full.max;
+    else {
+      console.warn('⚠️ G5 的预算余量：**未判定** —— 历史里还没有一条**全量档**的 G5 读数'
+        + '（分层之后快档不算）。要判定请跑一次 `npm run verify -- --release`。这一条**不是**通过 ✗');
+      delete byGateMax.G5;
+    }
     for (const s of verify.STEPS) {
       if (!s.budgetMs || !byGateMax[s.gate]) continue;   // 历史里没有读数的门禁（如新增步骤）无从判定
       judged++;
@@ -245,6 +290,148 @@ describe('两条不变量的机械守卫（从代码现读，不抄数字）', (
     expect(verify.TOTAL_BUDGET_MS, '合计预算（' + verify.TOTAL_BUDGET_MS + 'ms）必须 ≥ 各步预算之和（'
       + sum + 'ms，从 STEPS 现算）：合计红只说"整条链慢了"、说不出是哪一步 ⇒ 它不许抢在单步前面发声')
       .toBeGreaterThanOrEqual(sum);
+  });
+});
+
+/* ============================================================================
+ * G5 **分层**（2026-10-18 加）：档位判定 + 两条线 + 跨档不可比
+ * ----------------------------------------------------------------------------
+ * 为什么这些必须是单测而不是注释：分层的全部风险是"**该跑全量的那一轮跑了快档，而没人看得出来**"。
+ * 判据（`B4` 判别力证明）：**逐条触发条件各注入一次 ⇒ 档位必须变成 full**；把触发条件拿掉 ⇒ 回到 fast。
+ * 少守一条，就等于给"抽样"开了一个没有守卫的口子（而口子开着时，输出看起来完全正常）。
+ * ========================================================================= */
+describe('G5 分层：decideG5Tier（纯函数；逐条触发条件都能判）', () => {
+  const HOUR = 3600 * 1000;
+  const NOW = Date.parse('2026-10-18T12:00:00.000Z');
+  const fresh = { at: new Date(NOW - HOUR).toISOString(), ok: true };      // 1 小时前成功跑完全量档
+  const clean = (o) => Object.assign({ now: NOW, lastFull: fresh, changedFiles: ['renderer/app.js'] }, o);
+
+  it('全部条件都不成立 ⇒ fast（这是唯一的"省时间"出口，且必须是默认）', () => {
+    const d = verify.decideG5Tier(clean({}));
+    expect(d.tier).toBe('fast');
+    expect(d.hits).toEqual([]);
+  });
+
+  it('`--release`（放行点 / 交付前）⇒ full', () => {
+    const d = verify.decideG5Tier(clean({ release: true }));
+    expect(d.tier).toBe('full');
+    expect(d.hits.map((h) => h.code)).toContain('release');
+  });
+
+  it('`--g5=full` ⇒ full', () => {
+    const d = verify.decideG5Tier(clean({ explicit: 'full' }));
+    expect(d.tier).toBe('full');
+    expect(d.hits.map((h) => h.code)).toContain('explicit-full');
+  });
+
+  it('历史里没有全量档记录 ⇒ full（"不知道"不是绿）', () => {
+    const d = verify.decideG5Tier(clean({ lastFull: null }));
+    expect(d.tier).toBe('full');
+    expect(d.hits.map((h) => h.code)).toContain('no-full-record');
+  });
+
+  it('上次全量档是红的 ⇒ full（不许用快档把已知的 deep 缺陷洗掉）', () => {
+    const d = verify.decideG5Tier(clean({ lastFull: { at: new Date(NOW - HOUR).toISOString(), ok: false } }));
+    expect(d.tier).toBe('full');
+    expect(d.hits.map((h) => h.code)).toContain('last-full-red');
+  });
+
+  it('距上次成功全量档 ≥ 24h ⇒ full（"每日一档"这条不许靠人记得）', () => {
+    const old = { at: new Date(NOW - 25 * HOUR).toISOString(), ok: true };
+    const d = verify.decideG5Tier(clean({ lastFull: old }));
+    expect(d.tier).toBe('full');
+    expect(d.hits.map((h) => h.code)).toContain('stale');
+    // 边界：正好 23h 还不该升档（否则它会天天升、快档永远跑不到）
+    const young = { at: new Date(NOW - 23 * HOUR).toISOString(), ok: true };
+    expect(verify.decideG5Tier(clean({ lastFull: young })).tier).toBe('fast');
+  });
+
+  it('取不到改动清单（没有 git / 不在仓库里）⇒ full（抽样没有依据）', () => {
+    const d = verify.decideG5Tier(clean({ changedFiles: null }));
+    expect(d.tier).toBe('full');
+    expect(d.hits.map((h) => h.code)).toContain('no-changes');
+  });
+
+  it('改动命中冒烟底板 / 域文件 / main.js ⇒ full，并**点名**是哪些文件', () => {
+    const d = verify.decideG5Tier(clean({
+      changedFiles: ['renderer/app.js', 'scripts/smoke/46-节点级拖动.js', 'scripts/smoke-select.js', 'main.js']
+    }));
+    expect(d.tier).toBe('full');
+    const floor = d.hits.filter((h) => h.code === 'floor')[0];
+    expect(floor, '底板条件必须触发').toBeTruthy();
+    expect(floor.why).toContain('scripts/smoke/46-节点级拖动.js');
+  });
+
+  it('改动只在产品代码 / 文档里 ⇒ **不**触发底板条件（否则"每次改界面都全量"，分层就白做了）', () => {
+    const d = verify.decideG5Tier(clean({ changedFiles: ['renderer/app-view.js', 'docs/RULES.md', 'tests/a.test.js'] }));
+    expect(d.tier).toBe('fast');
+  });
+
+  it('显式 `--g5=fast` 只压得过"该轮到全量了"，压不过硬条件', () => {
+    const young = { at: new Date(NOW - HOUR).toISOString(), ok: true };
+    // ① 只有周期条件 ⇒ 允许覆盖，但必须把**被覆盖的那条**说出来（跳过要与通过可区分）
+    const stale = { at: new Date(NOW - 30 * HOUR).toISOString(), ok: true };
+    const over = verify.decideG5Tier(clean({ lastFull: stale, explicit: 'fast' }));
+    expect(over.tier).toBe('fast');
+    expect(over.overrode.map((h) => h.code)).toEqual(['stale']);
+    // ② 硬条件（上次红）⇒ 显式 fast 也不生效
+    const red = verify.decideG5Tier(clean({ lastFull: { at: new Date(NOW - HOUR).toISOString(), ok: false }, explicit: 'fast' }));
+    expect(red.tier).toBe('full');
+    expect(red.hits.map((h) => h.code)).toContain('last-full-red');
+    // ③ 底板被改 ⇒ 同样不生效
+    const floor = verify.decideG5Tier(clean({ changedFiles: ['scripts/smoke/01-core.js'], explicit: 'fast' }));
+    expect(floor.tier).toBe('full');
+    expect(young.ok).toBe(true);
+  });
+
+  it('parseTierArgs：`--release` / `--g5=fast|full` 都认；非法值**当场报错**（不静默落回某一档）', () => {
+    expect(verify.parseTierArgs(['node', 'x'])).toEqual({ release: false, explicit: null, error: null });
+    expect(verify.parseTierArgs(['node', 'x', '--release']).release).toBe(true);
+    expect(verify.parseTierArgs(['node', 'x', '--g5', 'fast']).explicit).toBe('fast');
+    expect(verify.parseTierArgs(['node', 'x', '--g5=full']).explicit).toBe('full');
+    const bad = verify.parseTierArgs(['node', 'x', '--g5=quick']);
+    expect(bad.error, '写错的档位值必须报错 —— 静默落回默认等于"你以为在全量档里跑，其实没有"').toBeTruthy();
+  });
+});
+
+describe('G5 分层：两条止涨线 + 跨档不可比 + 名单只有一处', () => {
+  it('快档有自己的止涨线，且必须**明显小于**全量档的线（否则"分层"没省任何东西）', () => {
+    const g5 = verify.STEPS.find((s) => s.gate === 'G5');
+    expect(verify.G5_FAST_BUDGET_MS).toBeGreaterThan(0);
+    expect(verify.G5_FAST_BUDGET_MS, '快档预算必须小于全量档预算（实测快档约 1/5）')
+      .toBeLessThan(g5.budgetMs * 0.5);
+  });
+
+  it('冒烟守卫仍 > 全量档预算（不变量①不因为分层而失效）', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+    const guardMs = Number(src.match(/const\s+SMOKE_GUARD_MS\s*=\s*(\d+)\s*;/)[1]);
+    const g5 = verify.STEPS.find((s) => s.gate === 'G5');
+    expect(guardMs).toBeGreaterThan(g5.budgetMs);
+  });
+
+  it('historyDelta：G5 跨档**不给差**（快档 200s 与全量档 1017s 的差是假信号）', () => {
+    const prev = { totalMs: 1100000, steps: [{ gate: 'G5', ms: 1017000, tier: 'full' }] };
+    const d = verify.historyDelta(prev, [{ gate: 'G5', ms: 200000, tier: 'fast' }], 260000);
+    expect(d.byGate.G5.ms).toBe(1017000);
+    expect(d.byGate.G5.deltaMs, '跨档比出来的差必须为 null（打印成"—"），不许显示"快了 817s"').toBe(null);
+    // 同档才给差
+    const same = verify.historyDelta(prev, [{ gate: 'G5', ms: 1000000, tier: 'full' }], 1100000);
+    expect(same.byGate.G5.deltaMs).toBe(-17000);
+  });
+
+  it('域名单**只有一处**：verify.js 不许手抄域号清单（单一权威 = smoke-assertions.js 的 TIERS）', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'scripts', 'verify.js'), 'utf8');
+    // 五个以上连续的两位数字字面量 = 一张手抄的域号清单
+    const listLike = src.match(/'(\d{2})'(?:\s*,\s*'\d{2}'){4,}/);
+    expect(listLike, 'verify.js 里出现了手抄的域号清单：分档名单只能写在 smoke-assertions.js 的 TIERS').toBe(null);
+    expect(src).toContain('tierSummary()');
+  });
+
+  it('快档的"通过"必须当场降调（不许让读者把 core 域绿读成全部域绿）', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'scripts', 'verify.js'), 'utf8');
+    expect(src).toContain('fast 档');
+    expect(src).toContain('不是全量真值');
+    expect(src).toContain('--release');
   });
 });
 

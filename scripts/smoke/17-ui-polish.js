@@ -236,6 +236,41 @@ const assertions = [
   {
     name: '④ 文件预览：大画布（≥60% 视口）+ PDF 铺满 + #zoom=page-width',
     run: async (ctx) => {
+      /* ⭐ **自建前置**（2026-10-18，G5 分层批）：这条断言隐含"页面没被侧栏让位吃掉宽度"这个
+       * **跨域状态** —— 全量链里它是上游域（11/12/22）跑完留下的；而**分层抽样档只跑 `core` 域**
+       * 时上游那几个域（在 `deep` 档）不在 ⇒ 实测假红：预览框 **698×752**（698/1424 = 49% < 60%）。
+       * 修法照本工程既有的「入口前置复位」（`testing-for-ai` §G 第 3 条；同 04/06/09/29/30 域的"自建前置"）：
+       * **判据一个字没改**（仍是 ≥60% 视口 + PDF 铺满 + `#zoom=page-width`），只是这里自己把前提摆好。
+       *
+       * ⚠️ **两种合格状态**（第一版只认默认宽，被全量链当场打红 —— 那次侧栏是**关着**的：
+       *   `让位宽 694→0`，页面侧 CSS 变量就是 0，于是"必须是 420"这条前提根本不成立，
+       *   而预览框其实有 1310×752（92% 视口）**判据本身是通过的** ⇒ 是前提写错了，不是产品坏了）：
+       *   · **0** —— 侧栏关着（`body:not(.dsh-sidebar-on)` 的默认），预览拿整窗；
+       *   · **产品默认宽**（`SIDEBAR_WIDTH`，单一权威在 `main-dsh-sidebar.js`）。
+       *   **不合格**的只有一种：侧栏开着且被拖得很宽（那才是"大画布被挤小"）。
+       *   遇到不合格就把它设回默认宽（量完还原），前后两个读数都写进报文（**前提立不住照样判红** ✗）。 */
+      const sidebar = require(path.join(__dirname, '..', '..', 'main-dsh-sidebar.js'));
+      const DEFAULT_W = sidebar.SIDEBAR_WIDTH;
+      const readReserve = async () => {
+        const n = parseInt(String(await ctx.exec(
+          '(getComputedStyle(document.body).getPropertyValue("--dsh-sidebar-width")||"")')).trim(), 10);
+        return Number.isFinite(n) ? n : 0;
+      };
+      const okReserve = (w) => w === 0 || w === DEFAULT_W;
+      let preW = null, preBefore = null, preSet = null, preBack = null, preErr = null;
+      try {
+        preW = sidebar.getStatus().width;
+        preBefore = await readReserve();
+        if (!okReserve(preBefore)) {
+          sidebar.setWidth(DEFAULT_W);
+          // `setWidth` 是异步广播（主进程 → IPC → 渲染层改 CSS 变量）⇒ 轮询到落定；超时不抛，读数进报文
+          for (let i = 0; i < 12; i++) {
+            if (okReserve(await readReserve())) break;
+            await new Promise((r2) => setTimeout(r2, 100));
+          }
+        }
+        preSet = await readReserve();
+      } catch (e) { preErr = String((e && e.message) || e); }
       const r = await ctx.exec(`(async () => {
         var jm = window.MMApp.getState().jm;
         var node = null, rel = '';
@@ -264,12 +299,19 @@ const assertions = [
       // 实测：不关它 ⇒ 域 18 开始时框架的干净前置收到 file-preview 并判红 ✗）。
       // 顺序刻意放在截图**之后**（截图要的就是"预览打开着"的画面）。
       const closed = await mm.closeDialogs(ctx);
+      // 还原宽度（量完就还，别给下游域留状态）；还原结果进报文
+      try { if (preW !== null) { sidebar.setWidth(preW); preBack = sidebar.getStatus().width; } }
+      catch (e) { preErr = (preErr ? preErr + ' / ' : '') + String((e && e.message) || e); }
+      const preOk = preErr === null && okReserve(preSet) && preBack === preW;
       const big = r.found && r.w >= r.vw * 0.6 && r.h >= r.vh * 0.6;
       const filled = r.found && r.pdfW >= r.bodyW * 0.95;
       return {
-        ok: big && filled && /zoom=page-width/.test(String(r.srcTail)),
+        ok: preOk && big && filled && /zoom=page-width/.test(String(r.srcTail)),
         text: r.found
-          ? '预览框 ' + r.w + '×' + r.h + '（视口 ' + r.vw + '×' + r.vh + '）· fp-body ' + r.bodyW + '(' + r.bodyDisplay + ')'
+          ? '前置（让位复位）：页面让位宽 ' + preBefore + '→' + preSet
+            + '（合格 = 0 或默认 ' + DEFAULT_W + '）· 侧栏宽还原=' + preBack + '（原 ' + preW + '）'
+            + ' · 异常=' + (preErr || '无')
+            + ' ｜ 预览框 ' + r.w + '×' + r.h + '（视口 ' + r.vw + '×' + r.vh + '）· fp-body ' + r.bodyW + '(' + r.bodyDisplay + ')'
             + ' · PDF 框 ' + r.pdfW + '×' + r.pdfH + ' [flex=' + r.pdfFlex + ' width=' + r.pdfW2 + ' display=' + r.pdfDisplay + ']'
             + ' · src 尾=' + JSON.stringify(r.srcTail) + ' · 截图 ' + file
             + ' · 收尾关掉的浮层=' + closed.n

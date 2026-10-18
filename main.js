@@ -29,6 +29,11 @@ const REAL_PROJECTS_DIR = path.join(ROOT, 'projects');
 const CLI = path.join(ROOT, 'cli', 'mm-cli.js');
 
 const isSmoke = process.argv.includes('--smoke');
+/* 进程起点（本文件模块加载那一刻）。**唯一用途**：把 G5 的墙钟拆成
+ * 「启动 / runSmoke 前置 / 逐域 / 收尾」四段，好让"G5 为什么这么贵"有一份现算读数
+ * （`scripts/verify.js` 的逐**步**耗时表只回答"G5 用了多久"，回答不了"贵在哪"）。
+ * 它**不参与任何判据**。 */
+const PROCESS_T0 = Date.now();
 /** 冒烟模式下的**出口调用账**（`ctx.openFileLog()` 交给断言）：见 `app:open-file` handler 里的说明。
  *  非冒烟模式下这个数组**永远是空的**（每次 push 都在 `if (isSmoke)` 里）⇒ 不产生任何行为差异 ✓。 */
 const SMOKE_OPEN_FILE_LOG = [];
@@ -2955,6 +2960,7 @@ function registerIpc() {
  * 不依赖键盘/鼠标，供 CI 与 AI 迭代验证使用。
  */
 async function runSmoke(win) {
+  const runSmokeStartAt = Date.now();
   // ⚠️ 断言清单的**加载**必须响亮失败：某个 `scripts/smoke/NN-*.js` 在 require 期抛错时，
   // 旧行为是抛成 UnhandledPromiseRejection ⇒ 整轮**静默挂住**、只能等守卫超时，
   // 输出里连一条断言都没有（这个坑真实踩过两次：一次是探针文件，一次是 require 路径写错）。
@@ -3343,6 +3349,13 @@ async function runSmoke(win) {
     } catch (e) { /* 窗口没了就跳过 ✓ 别让隔离本身变成新的失败源 ✗ */ }
     if (n) console.log("[smoke] 隔离：已还原 " + n + " 个沙箱文件");
   };
+  /* ⭐ **G5 逐域耗时台账**（2026-10-18，本批加）：为什么必须有 —— G5 占全链 93%，而链上只有
+   * "G5 用了多久"这一个读数，"时间花在哪个域"从来没被量过。没有它，任何分层 / 抽样 / 拆分都只能
+   * 凭感觉拆（`testing-for-ai` A2：先量再优化）。纯逻辑在 `scripts/smoke-assertions.js` 的
+   * `createTiming` / `summarizeTiming` / `formatTimingLines`（有单测），这里只递时刻。
+   * ⚠️ 它**只量不改判**：不参与任何判据、不影响退出码（拿掉它不改变任何结论）。 */
+  const timing = allAssertions.createTiming();
+  const loopStartAt = Date.now();
   for (const a of assertions) {
     smokeState.last = a.name;
     /* 域边界 = 干净前置。**过滤运行照样要做** —— 每域隔离（isolateDomain）在过滤运行下
@@ -3360,8 +3373,11 @@ async function runSmoke(win) {
        *   · 而且它**只在有文件被写回（n>0）时才出现** —— 那条 await 重载给了监听器触发的时间窗。
        * 采样顺序换过来之后语义更正确：要判的是"上一个域**离开时**留了什么"，那是写回**之前**的状态 ✓。
        * 注意**不改成"放过 banner"**：真由某个域自己弹出来的 banner 照样会被这一跳判红并点名（不放松判据 ✗）。 */
+      timing.beginDomain(a.__domain, Date.now());       // 台账：进入本域（自动收口上一个域）
+      const boundaryAt = Date.now();
       const leftOpen = await resetDomainDialogs();
       await isolateDomain();   // **域变了才隔离**（域内顺序不受影响 ✓）
+      timing.endBoundary(Date.now() - boundaryAt);      // 域边界那一跳的成本**单独记**（它随域数线性增长）
       if (leftOpen && leftOpen.length) {
         // 记住"是谁留的"：若有域已经留过**同样名字**的模态，锅记在它身上更准（本轮实测过两次）
         const prior = smokeIsolateState.lastDomain && modalCulprit.get(smokeIsolateState.lastDomain);
@@ -3398,8 +3414,10 @@ async function runSmoke(win) {
       try { win.webContents.forcefullyCrashRenderer(); } catch (e) { /* 忽略 */ }
       await new Promise((r) => setTimeout(r, 400));
     }
+    const assertAt = Date.now();
     try {
       const r = await a.run(ctx);
+      timing.addAssertion(a.__domain, Date.now() - assertAt);
       /* 三态（2026-10-12 加，见 `scripts/smoke-assertions.js` 的 `tally()` 与域 39 的剪贴板判据）：
        * `unverified` 是**可选的第三态** —— "环境坏了、真值采不到"时由断言自己给出原因串。
        * ⚠️ **fail-safe**：它只许出现在 `ok:true` 的结果上；一条结果既报"未验证"又报失败时**按失败计**，
@@ -3420,12 +3438,16 @@ async function runSmoke(win) {
       }
     } catch (err) {
       const msg = String((err && err.message) || err);
+      // 台账：THREW 的那条也必须进账 —— 否则"最贵的域"恰好是抛错的那个时会被漏掉 ✗
+      timing.addAssertion(a.__domain, Date.now() - assertAt);
       // 这条**必须**带上"是哪条断言"：窗口一死，后面的断言会连锁报 destroyed，
       // 只看消息分不清"谁先死"✗（实测就是靠这一点才定位到域 29 ✓）
       results.push({ name: a.name, ok: false,
         text: 'THREW: ' + msg + (/destroyed/.test(msg) ? '（渲染进程/窗口已销毁 ⇒ 见 [smoke] 死亡行）' : '') });
     }
   }
+  const loopEndAt = Date.now();
+  timing.end();
   // 冒烟断言的条数**到此为止** —— 后面追加的"取景记录/视觉断言"不是冒烟断言，
   // 不能混进这个数字（否则 `docs/VERIFY.md` 的冒烟真值会与运行输出对不上）。
   const smokeCount = results.length;
@@ -3638,6 +3660,61 @@ async function runSmoke(win) {
    * ⚠️ 开关关着时这一项恒为 0（短路）⇒ 退出码与加它之前完全一致 ✓；数量由 `tally()` 的严格档读数给，
    * 这里不自己数（`B1`）。 */
   const strictFailures = strictOn ? smokeStrict.failed : 0;
+  /* ---- G5 的时间构成 + 逐域耗时排行（现算，每次都打印）--------------------------------
+   * 为什么打印在这里（而不是链上）：`scripts/verify.js` 的逐**步**耗时表回答"G5 用了多久"，
+   * **回答不了"贵在哪"** —— 而 G5 就是全链的瓶颈（占 93%）。这一节把 G5 拆成四段：
+   *   ① 启动（进程起点 → runSmoke）② runSmoke 前置（清单加载 / 真实数据基线 / 沙箱快照 / 选择器）
+   *   ③ 逐域（每域 = 断言体 + 域边界那一跳）④ 收尾（截图 / 取景 / 视觉断言 / 真实数据复核 / 临时目录）
+   * 四段之和 ≈ G5 的墙钟（差的是打印本身与进程退出）。
+   * ⚠️ 这几行**只报读数、不判红**：它们是"下次要动哪里的证据"，不是判据（判据是预算）。 */
+  {
+    const printAt = Date.now();
+    const summary = allAssertions.summarizeTiming(timing.rows());
+    const bootMs = runSmokeStartAt - PROCESS_T0;
+    const setupMs = loopStartAt - runSmokeStartAt;
+    const domainsMs = loopEndAt - loopStartAt;
+    const tailMs = Math.max(0, printAt - loopEndAt);
+    const sec = (ms) => (Math.round((Number(ms) || 0) / 100) / 10).toFixed(1) + 's';
+    const share = (x) => (Math.round((Number(x) || 0) * 1000) / 10).toFixed(1) + '%';
+    const whole = bootMs + setupMs + domainsMs + tailMs;
+    console.log('');
+    console.log('==== G5 时间构成（现算；四段互不重叠，合计 ' + sec(whole) + ' ≈ 本步墙钟）====');
+    console.log('  ① 启动（进程起点 → runSmoke）      ' + sec(bootMs).padStart(9) + '  ' + share(whole ? bootMs / whole : 0).padStart(7)
+      + '   ← Electron + 页面加载 + did-finish-load 后 500ms');
+    console.log('  ② runSmoke 前置                       ' + sec(setupMs).padStart(9) + '  ' + share(whole ? setupMs / whole : 0).padStart(7)
+      + '   ← 断言清单加载 / 真实数据基线 / 沙箱快照 / 选择器');
+    console.log('  ③ 逐域（' + String(summary.count).padStart(2) + ' 个域 / ' + String(summary.assertions).padStart(3)
+      + ' 条断言）              ' + sec(domainsMs).padStart(9) + '  ' + share(whole ? domainsMs / whole : 0).padStart(7)
+      + '   ← 明细见下面的逐域排行');
+    console.log('  ④ 收尾（截图 / 视觉断言 / 复核 / 清理） ' + sec(tailMs).padStart(9) + '  ' + share(whole ? tailMs / whole : 0).padStart(7)
+      + '   ← 含一张真帧 + L2 视觉断言 + 真实数据复核');
+    allAssertions.formatTimingLines(summary, {
+      // 分层表存在时自动多一列（单一权威在 `scripts/smoke-assertions.js` 的 `TIERS`，这里不复制）
+      tierOf: typeof allAssertions.tierOf === 'function' ? allAssertions.tierOf : null
+    }).forEach((l) => console.log(l));
+    /* 机器可读的一份：**只在显式给了路径时**才写（`MM_SMOKE_TIMING_OUT=<绝对路径>`）——
+     * 默认一个字节都不落盘：不为一次读数新增写盘路径（也不给 G8/S3 添新的"产物"）。 */
+    const dumpTo = process.env.MM_SMOKE_TIMING_OUT;
+    if (dumpTo) {
+      try {
+        fs.writeFileSync(dumpTo, JSON.stringify({
+          at: new Date().toISOString(),
+          tier: process.env.MM_SMOKE_TIER || '(未设)',
+          smokeOnly: spec || '',
+          phases: { bootMs: bootMs, setupMs: setupMs, domainsMs: domainsMs, tailMs: tailMs, wholeMs: whole },
+          totals: {
+            domains: summary.count, assertions: summary.assertions,
+            domainMs: summary.domainMs, assertMs: summary.assertMs, boundaryMs: summary.boundaryMs
+          },
+          domains: summary.rank
+        }, null, 2) + '\n', 'utf8');
+        console.log('[smoke] 逐域耗时台账已写出：' + dumpTo);
+      } catch (e) {
+        console.log('[smoke] ⚠ 逐域耗时台账**没写出去**（' + ((e && e.message) || e)
+          + '）—— 读数只在上面那份文本里 ✓（不影响本次结论）');
+      }
+    }
+  }
   app.exit((failed.length || realWriteLeak || strictFailures) ? 1 : 0);   // 真实数据被动过 ⇒ 即便断言全绿也判红 ✓
 }
 
