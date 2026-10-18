@@ -387,6 +387,18 @@ const assertions = [
       const mark2 = '甲自动同步 ' + STAMP;
       fs.appendFileSync(path.join(SRC_DIR, 'a.md'), '\n\n## ' + mark2 + '\n正文\n', 'utf8');
       const autoBack = await waitUntil(() => readRaw(P).indexOf(mark2) >= 0, 25000);
+      /* ⭐【判据间歇红批】还要等**这一轮的播报真的落定**（条件 + 上限，不是固定 sleep）。
+       * 为什么：主进程"写项目 JSON"与渲染层"亮播报"之间隔着
+       *   写盘 → 发 `bind-synced` → 渲染层 `applyReadings` → `showBindBanner`（中间还有一次 `project:peek`）
+       * ⇒ **"JSON 里已经有 mark2" 不等于 "播报已经到"**，这段窗口在负载下会变宽。
+       * 晚到的播报会躲过下一个域开头那句 `closeBindBanner()`，把「丁」读到的那一条盖成本条的读数 ——
+       * 实测红的样子正是这样：banner 报「新增 0 个文件 / 更新 1 个」（= 本条改成 a.md 的那一轮）
+       * 而「丁」期望"新增 1 个文件"。
+       * 把它并进本条的 `ok` 是**加强**：「自动同步发生了」与「播报真的到了」本来就是两件事。 */
+      const bannerSettled = await waitUntil(async () => {
+        const s = await bindState(ctx);
+        return !!(s && s.banner && s.banner.shown === true && /自动同步/.test(String(s.banner.text || '')));
+      }, 15000);
 
       return {
         ok: pauseClick.ok === true && paused.ok === true
@@ -398,6 +410,7 @@ const assertions = [
           && resumeBtnClick.ok === true && resumed.ok === true
           && wdResumed.active === 1
           && autoBack.ok === true
+          && bannerSettled.ok === true
           && fileNodes(P).length === 2,
         text: '暂停：点击=' + pauseClick.ok + ' 读数=' + JSON.stringify(sp)
           + ' CLI --watch-dirs active=' + wdPaused.active + '/' + wdPaused.total
@@ -409,6 +422,7 @@ const assertions = [
           + ' · 「继续」点击=' + resumeBtnClick.ok + ' 读数=' + JSON.stringify(sr)
           + ' CLI active=' + wdResumed.active
           + ' · 继续后**不点按钮**改文件 ⇒ 自动同步=' + autoBack.ok + '（' + autoBack.ms + 'ms）'
+          + ' 这一轮播报已落定=' + bannerSettled.ok + '（' + bannerSettled.ms + 'ms）'
       };
     }
   },
@@ -418,14 +432,36 @@ const assertions = [
     run: async (ctx) => {
       await ctx.exec('(function () { try { if (window.MMApp.bindCloseBanner) window.MMApp.bindCloseBanner(); }'
         + ' catch (e) {} if (window.MMApp.resetView) window.MMApp.resetView(); return 1; })()');
+      /* ⭐【判据间歇红批】**排空上一轮**：即使「丙」已经等到自己的播报落定，这里再兜一层 ——
+       * 见到任何亮着的 banner 就收掉，直到"确实关着为止"（**轮询 + 上限 8 s**，不是固定 sleep）。
+       * `closeBindBanner()` 只改 display、**不清 `bannerText`** ⇒ 那个句柄文案正好当"上一轮"的基线：
+       * 之后只要文案**变了**，就说明"新的一轮播报到了"（这是机械判据，不靠猜）。 */
+      const drained = await waitUntil(async () => {
+        const s = await bindState(ctx);
+        if (s && s.banner && s.banner.shown) {
+          await ctx.exec('(function () { try { if (window.MMApp.bindCloseBanner) window.MMApp.bindCloseBanner(); } catch (e) {} return 1; })()');
+          return false;
+        }
+        return true;
+      }, 8000, 120);
+      const prevBanner = (await bindState(ctx)) || {};
+      const prevText = String((prevBanner.banner && prevBanner.banner.text) || '');
       const beforeIds = fileNodes(P).map((n) => n.id).sort();
       fs.writeFileSync(path.join(SRC_DIR, 'c.md'), C_MD, 'utf8');   // 新增一个文件 ⇒ 等**自动**同步（不点按钮）
       const synced = await waitUntil(() => fileNodes(P).some((n) => n.topic === 'c'), 30000);
       const cNode = fileNodes(P).filter((n) => n.topic === 'c')[0] || null;
+      /* 等**这一次**的播报：① 文案与上一轮**不同**（新的一轮播报到了）② 文案里就是本条要的那句话。
+       * 条件 + 上限（12 s），不是"读一次、读到什么算什么"。
+       * `bannerSeen` 把观察到的**每一条**都留痕：万一先到一条别的、后来才对，报告里**看得见**
+       * （不静默吸收 —— 这是本工程反复踩过的那一类）。 */
+      const bannerSeen = [];
       const bannerShown = await waitUntil(async () => {
-        const st = await bindState(ctx);
-        return !!(st && st.banner && st.banner.shown);
-      }, 12000);
+        const s = await bindState(ctx);
+        const t = String((s && s.banner && s.banner.text) || '');
+        const shown = !!(s && s.banner && s.banner.shown);
+        if (shown && t && bannerSeen.indexOf(t) < 0) bannerSeen.push(t);
+        return shown && t !== prevText && /新增 1 个文件/.test(t);
+      }, 12000, 150);
       const st = await bindState(ctx);
       const bannerHit = await hitSel(ctx, '#bind-banner-open');
       const openClick = await clickSel(ctx, '#bind-banner-open');
@@ -477,6 +513,8 @@ const assertions = [
           + ' · 点那一行：命中它自己=' + rowClick.ok + ' · 选中的节点=' + selected
           + '（应为 ' + (cNode && cNode.id) + '）'
           + ' · 跳过去之后画布上命中=' + (visible && visible.hit) + '（是它自己=' + (visible && visible.self) + '）'
+          + ' · 上一轮播报已排空=' + drained.ok + '（上一轮文案「' + prevText.slice(0, 40) + '」）'
+          + ' · 观察到的播报=' + JSON.stringify(bannerSeen.map((x) => x.slice(0, 40)))
       };
     }
   },

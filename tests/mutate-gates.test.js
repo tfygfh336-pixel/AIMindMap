@@ -235,9 +235,43 @@ describe('③ 集成：真跑一次体检 —— 真变异必须拦下、无害/
     expect(report.repoUnchanged, '体检动了真仓的文件（这绝不该发生）').toBe(true);
   });
 
-  it('临时副本自清：%TEMP% 里不留 dsh-mutate-gates-* 目录', () => {
+  /* ⚠️ 这一条原来写的是「%TEMP% 里不许有**任何** `dsh-mutate-gates-*`」——
+   * 而它**声称**验的是"这一轮的副本自清了"。作用域不对，实测会随机红（`B4b`/`B4c`：判定档数/作用域
+   * 与它声称要区分的状态对不上）：
+   *   2026-10-18 实测（`.review/20261018-判据间歇红/`，G3 ×10 的 #9）：
+   *   `AssertionError: 副本没自清：dsh-mutate-gates-ljNc7u: expected [...] to deeply equal []`，
+   *   而跑完立刻查 `%TEMP%` ⇒ **现存 0 个** ⇒ 那个目录当时属于**同机另一个会话并发跑的同一套单测**。
+   * ⇒ 拆成两条：**甲 判红**（本轮**自己那一个**镜像已清）· **乙 只报告**（全机残留读数，可见但不判红 ——
+   *   "别人留下的会吃盘"仍然是真风险，只是**不该由这条判据替它判红**）。 */
+  it('甲 本轮**自己的**那一个镜像目录已自清（作用域 = 本轮，不扫全机）', () => {
+    /* 镜像根是子进程 mkdtemp 出来的，只有它的 stderr 知道叫什么：`  副本（可写）：<root>（N 个文件 / …）` */
+    const stderr = String(res && res.stderr ? res.stderr : '');
+    const m = stderr.match(/副本（可写）：(.+?)（/);
+    expect(m, '体检没打印副本路径 ⇒ 这条判据无从判定（不许静默放过）').toBeTruthy();
+    const mine = m[1];
+    expect(mine.indexOf(mg.MIRROR_PREFIX) >= 0, '取到的路径不是镜像目录：' + mine).toBe(true);
+    expect(fs.existsSync(mine), '本轮自己的副本没自清：' + mine).toBe(false);
+  });
+
+  it('乙 **只报告不判红**：全机还剩几个 dsh-mutate-gates-*（计数不为 0 时写在成功行里可见）', () => {
     const left = fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith(mg.MIRROR_PREFIX));
-    expect(left, '副本没自清：' + left.join(', ')).toEqual([]);
+    let bytes = 0, oldestMin = null;
+    left.forEach((d) => {
+      const p = path.join(os.tmpdir(), d);
+      try { const st = fs.statSync(p); const ageMin = Math.round((Date.now() - st.mtimeMs) / 60000);
+        if (oldestMin === null || ageMin > oldestMin) oldestMin = ageMin; } catch (e) { /* 读不到就不算 */ }
+      try { bytes += fs.readdirSync(p).length; } catch (e) { /* 同上 */ }
+    });
+    /* 读数**始终打印**（成功时也看得见）；不判红 —— 全机残留是别人的/历史的，不是本轮的结论 */
+    console.log('[mutate-gates] 全机 `' + mg.MIRROR_PREFIX + '*` 残留读数：' + left.length + ' 个'
+      + (left.length ? '（最早 ' + oldestMin + ' 分钟前；顶层条目合计 ' + bytes + ' 条）：' + left.join(', ') : '')
+      + ' —— **只报告，不判红**（判红的是「甲」：本轮自己那一个）');
+    if (left.length) {
+      console.warn('[mutate-gates] ⚠️ 全机还有 ' + left.length + ' 个 ' + mg.MIRROR_PREFIX + '*（最早 '
+        + oldestMin + ' 分钟前）—— 大概率是**并发的另一轮**或历史残留；要清就手工删，别让这条判据判红别人');
+    }
+    /* 恒真断言只用来把读数带进报告（不是判据；判据在「甲」里） */
+    expect(typeof left.length, '全机残留读数（只报告）：' + left.length + ' 个').toBe('number');
   });
 
   it('未做的部分在报告里可见（未验证不许伪装成已通过）', () => {
