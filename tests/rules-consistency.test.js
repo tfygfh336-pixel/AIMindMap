@@ -505,6 +505,19 @@ describe('G9 判定八：欠账册「在册对象」里的仓库路径必须仍�
   });
 });
 
+describe('G9 `--judgments`：判定清单从源码现场取（不维护第二份清单）', () => {
+  it('列出的清单与 `collectJudgmentMarkers` 的去重结果**逐条一致**（两种读法不许分叉）', () => {
+    const abs = path.join(ROOT, 'scripts', 'rules-consistency.js');
+    const listed = rc.listJudgments(abs);
+    const info = rc.collectJudgmentMarkers(abs);
+    expect(listed.length).toBe(info.uniq);
+    expect(listed.map((x) => x.mark)).toEqual(info.marks);
+    listed.forEach((j) => {
+      expect(j.title.length, '标记 ' + j.mark + ' 没取到标题').toBeGreaterThan(2);
+    });
+  });
+});
+
 describe('G9 复核面：真实 docs/RULES.md 的欠账册当前必须"每条都能被复核"', () => {
   it('每一条都有 `node …` 复核命令；条数与标题声明的「共 N 条」一致（数字从文档现算，不写死）', () => {
     const lines = fs.readFileSync(path.join(ROOT, rc.RULES), 'utf8').split('\n');
@@ -514,5 +527,148 @@ describe('G9 复核面：真实 docs/RULES.md 的欠账册当前必须"每条都
     const claim = rc.parseCountClaims(lines).find((c) => /封闭欠账册/.test(c.heading));
     expect(claim, '§7 标题里没找到「共 N 条」声明').toBeTruthy();
     expect(lr.rows.length).toBe(claim.claimed);
+  });
+});
+
+/* ============================================================
+ * G9 判定九：`docs/ROADMAP.md`「在飞」表的「下一步」列
+ * ------------------------------------------------------------
+ * 真实事故（2026-10-19，用户当天直接要求补这条）：当时「在飞」表里 3 条有 2 条是"做完没结案"
+ * ⇒ **「下一步」在文档里根本不存在** ⇒ 任何人问一个支线问题，执行者没有回程票
+ * （那天 6 个在飞批次里 3 个是支线，主链从工程开发漂到内容整理/资料搜集）。
+ *
+ * 这里锁的是**窄口径**（宁可只挡"整格是空话"，不去做语义判断）：
+ *   ① 为空 / 只剩占位符 ⇒ 必红；② 词块**全部**是禁词 ⇒ 必红；
+ *   ③ **具体动作必须仍绿**（证明它不会乱红）；④ 禁词出现在长句里 ⇒ 只报告不判红；
+ *   ⑤ 列序变了仍能判（**按表头文字定位**，不写死下标）；⑥ 采不到真值（无小节 / 无表 / 无该列）⇒ 必红；
+ *   ⑦ 0 条数据行 ⇒ **跳过且可区分**（"发版时清空本小节"是明写的规矩）。
+ * ⚠️ 断言里**不写禁词表的条数**：它是实现的一部分，抄进测试就成了第二份会漂的副本。
+ * ============================================================ */
+describe('G9 判定九：ROADMAP「在飞」表的「下一步」列（非空且不得只含空话）', () => {
+  /** 拼一张假的「在飞」表；`rows` 里每项 = [状态, 主题, 下一步] */
+  const roadmap = (rows) => {
+    const head = ['状态', '主题', '当前结论', '下一步', '证据'];
+    const line = (cells) => '| ' + cells.join(' | ') + ' |';
+    return md(
+      '## 在飞 / 未收口（**交接面**）', '',
+      line(head), '|' + head.map(() => '------').join('|') + '|',
+      ...rows.map((r) => line([r[0], r[1], '结论', r[2], '`docs/RULES.md`']))
+    );
+  };
+  const nx = (text) => rc.scanNextStep(text);
+
+  it('「下一步」为空 → 判红，并**点名是哪一行 / 哪个主题**', () => {
+    const r = nx(roadmap([['在飞', '某条在飞的事', '']]));
+    expect(r.problems.length).toBe(1);
+    expect(r.problems[0].kind).toBe('next-step');
+    expect(r.problems[0].msg).toContain('某条在飞的事');
+    expect(r.problems[0].msg).toContain('空的');
+  });
+
+  it('「下一步」只写了禁词（整格就是那一个词）→ 判红，并点名那个禁词', () => {
+    const banned = rc.NEXT_STEP_BANNED[0];
+    const r = nx(roadmap([['在飞', '某条在飞的事', banned]]));
+    expect(r.problems.length).toBe(1);
+    expect(r.problems[0].msg).toContain(banned);
+  });
+
+  it('禁词表里的**每一个**词单独成格都必须判红（证明表不是只挂了第一个）', () => {
+    rc.NEXT_STEP_BANNED.forEach((w) => {
+      const r = nx(roadmap([['在飞', '某条在飞的事', w]]));
+      expect(r.problems.length, '禁词「' + w + '」没被判红').toBe(1);
+      expect(r.problems[0].msg).toContain(w);
+    });
+  });
+
+  it('只剩占位符（`—`）也按"空"处理 → 判红（占位符不是动作）', () => {
+    const r = nx(roadmap([['在飞', '某条在飞的事', '—']]));
+    expect(r.problems.length).toBe(1);
+  });
+
+  it('**具体动作必须仍绿**（这条是"不会乱红"的证明）：`node cli/mm-cli.js visit --help`', () => {
+    const r = nx(roadmap([['在飞', '某条在飞的事', '`node cli/mm-cli.js visit --help`']]));
+    expect(r.problems).toEqual([]);
+    expect(r.rows[0].verdict).toBe('pass');
+  });
+
+  it('禁词**出现在更长的句子里** → 不判红，但要能在读数里看见（只报告档不许静默）', () => {
+    const banned = rc.NEXT_STEP_BANNED[0];
+    const r = nx(roadmap([['在飞', '某条在飞的事', banned + ' `docs/RULES.md` §7 的裁决']]));
+    expect(r.problems).toEqual([]);
+    expect(r.rows[0].verdict).toBe('pass');
+    expect(r.rows[0].banned).toEqual([banned]);
+  });
+
+  it('**列序变了仍能判**（按表头文字定位：把「下一步」挪到第 2 列，空值照样判红）', () => {
+    const lines = md(
+      '## 在飞 / 未收口（**交接面**）', '',
+      '| 状态 | 下一步 | 主题 | 证据 |', '|---|---|---|---|',
+      '| 在飞 |  | 某条在飞的事 | `docs/RULES.md` |'
+    );
+    const r = nx(lines);
+    expect(r.columnIndex).toBe(1);
+    expect(r.problems.length).toBe(1);
+    expect(r.problems[0].msg).toContain('某条在飞的事');
+  });
+
+  it('表头没有「下一步」列 → 判红（删掉/改名那一列就能让本条静默失效 ⇒ 采不到真值 = 红）', () => {
+    const lines = md(
+      '## 在飞 / 未收口（**交接面**）', '',
+      '| 状态 | 主题 | 当前结论 | 证据 |', '|---|---|---|---|',
+      '| 在飞 | 某条 | 结论 | `docs/RULES.md` |'
+    );
+    const r = nx(lines);
+    expect(r.problems.length).toBe(1);
+    expect(r.problems[0].msg).toContain('没有');
+  });
+
+  it('找不到「在飞 / 未收口」小节 → 判红（改个标题就能把守卫关掉，故不许静默跳过）', () => {
+    const r = nx(md('## 已发版', '', '| a | b |', '|---|---|', '| 1 | 2 |'));
+    expect(r.problems.length).toBe(1);
+    expect(r.problems[0].msg).toContain('在飞');
+  });
+
+  it('本节**0 条数据行** → 跳过（不判红），且跳过原因**可区分**（"发版时清空"是明文规矩）', () => {
+    const lines = md(
+      '## 在飞 / 未收口（**交接面**）', '',
+      '| 状态 | 主题 | 当前结论 | 下一步 | 证据 |', '|---|---|---|---|---|'
+    );
+    const r = nx(lines);
+    expect(r.problems).toEqual([]);
+    expect(r.rows).toEqual([]);
+    expect(r.skip).toEqual({ why: 'no-rows' });
+  });
+
+  it('不按 `状态` 列放行（`状态=已收口` 也照样判 —— 否则被检查方自己就能把守卫关掉）', () => {
+    const r = nx(roadmap([['已收口', '某条已收口的事', rc.NEXT_STEP_BANNED[0]]]));
+    expect(r.problems.length).toBe(1);
+  });
+
+  it('`analyze()` 接线：`docTexts` 里给了坏 ROADMAP ⇒ 出 next-step 问题；没给 ⇒ 不判红（单测常只喂部分文档）', () => {
+    const rules = md('## 2. 门禁', '', '| ID | 门禁 |', '|----|------|', '| **G1** | a |');
+    const bad = roadmap([['在飞', '某条在飞的事', '']]);
+    const withDoc = rc.analyze(rules, { [rc.NEXT_STEP_REL]: bad }).filter((p) => p.kind === 'next-step');
+    expect(withDoc.length).toBe(1);
+    const without = rc.analyze(rules, {}).filter((p) => p.kind === 'next-step');
+    expect(without).toEqual([]);
+  });
+
+  it('纯函数三态：pass / empty / banned（`classifyNextStepCell` 不依赖文本环境）', () => {
+    expect(rc.classifyNextStepCell('`node cli/mm-cli.js visit --help`').verdict).toBe('pass');
+    expect(rc.classifyNextStepCell('   ').verdict).toBe('empty');
+    expect(rc.classifyNextStepCell('`—`').verdict).toBe('empty');
+    expect(rc.classifyNextStepCell(rc.NEXT_STEP_BANNED.join('，')).verdict).toBe('banned');
+  });
+
+  it('真实 docs/ROADMAP.md 的「下一步」列当前必须全绿（并打印每行放行理由，便于人工复核）', () => {
+    const rel = rc.NEXT_STEP_REL;
+    const p = path.join(ROOT, rel);
+    expect(fs.existsSync(p), rel + ' 不存在 —— 判定 ⑨ 的真值面就没了').toBe(true);
+    const r = rc.scanNextStep(fs.readFileSync(p, 'utf8'));
+    expect(r.problems.map((x) => x.rel + ' ' + x.msg)).toEqual([]);
+    expect(r.rows.length).toBeGreaterThan(0);
+    r.rows.forEach((row) => {
+      expect(row.verdict, row.line + ' 行「' + row.label + '」').toBe('pass');
+    });
   });
 });

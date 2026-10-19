@@ -9,7 +9,7 @@
  *   · 文档数字曾在 6 份副本里互相矛盾 —— 由 G6 治住。
  * 同一个病用同一味药：**单源 + 机器校验**。G6 管"文档里的数字"，G9 管"规则文件自身的自洽"。
  *
- * 本条门禁的判定：**清单见 `analyze()` 里的 ①…⑧ 标记**（此处刻意不写死条数、也不重复枚举 ——
+ * 本条门禁的判定：**清单见 `analyze()` 里的 ①…⑨ 标记**（此处刻意不写死条数、也不重复枚举 ——
  * 写死过一次：加判定时它成了"同一门禁的又一种条数说法"，而它自己抓不到自己）。
  * 任一不满足即 exit 1；其中前两条各自对应一次**真实事故**：
  *   · 声明的条数 == 表格实际行数。
@@ -33,6 +33,13 @@
  *   · **封闭欠账册 `在册对象` 里点到的仓库路径必须仍存在**（§7 写着「册上的对象改名 / 删了」
  *     必须当缺陷，同样一直没判定）。只查**能在仓库里定位**的 token：通配 / 带空格 / 非路径词一律不查，
  *     并在输出里逐条打印"本条无路径可查" —— 边界要可见，不能把"没查"读成"查过了没问题"。
+ *   · **`docs/ROADMAP.md`「在飞 / 未收口」表的「下一步」列必须非空、且不得只含空话**
+ *     （禁词表 = `NEXT_STEP_BANNED`；逐条能力边界见 `scanNextStep()` 的头注释）。
+ *     防的是 2026-10-19 诊断出的**主链被打断**：当时「在飞」3 条里 **2 条是"做完没结案"** ⇒
+ *     **「下一步」在文档里根本不存在** ⇒ 任何人问一个支线问题，执行者**没有回程票**
+ *     （那天 6 个在飞批次里 3 个是支线，主链从工程开发漂到内容整理/资料搜集）。
+ *     人写的那半在 `docs/AI-GUIDE.md` §4（「任一批次收口 / 交接报告必须带一行「主链状态」」）；
+ *     本条是**机械判的那半** —— 也是那一行文字所承诺的判据。
  *
  * 边界（诚实标注）：G9 只查**自洽**（前后是否一致），查不了**内容对不对** ——
  * 一条铁律是否真的"不可机械化"、一条门禁是否真的防住了它声称的损害，仍靠人判定。
@@ -40,6 +47,7 @@
  * 判定⑦ 只判**复核命令在不在**，**不判它跑不跑得通**（真跑就成了重活，照 skill §G 第 1 条：
  * 门禁里不许起真服务 / 真网络）；判定⑧ 只判**路径在不在**，判不了"这个对象是不是还是那个语义"
  * （例：`src/control.js` 还在、但那个函数已经被搬走 —— 那只能靠人复核，见各条的 `close` 栏）。
+ * 判定⑨ 只判**空**与**整格都是禁词**，**判不了"这条动作是否真的可执行"** —— 详见 `scanNextStep()`。
  *
  * ⚠️ **判定⑤认不出「引号里的历史引用」与「真实声明」的区别**。实测：本门禁上线时，
  * `ARCHITECTURE.md` 的 ADR 里为了记录缺陷写了"README 仍写『铁律…共 5 条』"，
@@ -47,8 +55,9 @@
  * （如"把条数写成 5"），不要去弱化判定（放宽正则会让它再也抓不住真声明）。
  *
  * 用法：
- *   node scripts/rules-consistency.js          # 门禁（exit 0/1）
- *   node scripts/rules-consistency.js --list   # 打印解析结果（编号集合、条数、打断点）
+ *   node scripts/rules-consistency.js              # 门禁（exit 0/1）
+ *   node scripts/rules-consistency.js --judgments  # 打印判定清单（**从源码标记现场取**，不维护第二份）
+ *   node scripts/rules-consistency.js --list       # 打印解析结果（编号集合、条数、欠账册、「下一步」列读数）
  * 挂载点：`npm run verify`（纯文本解析，毫秒级；紧随 G8 之后）。
  * ============================================================ */
 'use strict';
@@ -172,6 +181,24 @@ function collectJudgmentMarkers(absPath) {
     else seen.push(m[1]);
   }
   return { uniq: seen.length, dup: dup, marks: seen };
+}
+
+/** **现场取**判定清单（`--judgments` 用）：只认行首注释里的圈码标记行（形如"两斜线 + ①"），标题取标记后的一小段。
+ *  为什么从源码现场取、而不是维护一份清单：清单抄一份就是第二份会漂的副本 —— 本工程为此吃过两次亏
+ *  （一处写「共 5 条」表却 6 行；另一处四处三个说法）。标记与条数的**权威仍是**
+ *  `docs/RULES.md` §2 的门禁行（由判定⑥ 对齐），这里只是"同一份实现的另一种读法"。
+ *  同形工具：G8 的 `node scripts/docs-registry-check.js --judgments`。 */
+function listJudgments(absPath) {
+  const text = fs.readFileSync(absPath, 'utf8');
+  const out = [];
+  for (const line of text.split('\n')) {
+    const m = /^\s*\/\/\s*([①-⑳])\s*(.*)$/.exec(line);
+    if (!m) continue;
+    // 标题 = 标记后的第一小句（到 `；` / `。` 为止），去掉 markdown 强调与行内代码
+    const raw = m[2].split(/[；;。]/)[0].replace(/[*`]/g, '').trim();
+    out.push({ mark: m[1], title: raw.slice(0, 80) });
+  }
+  return out;
 }
 
 /** 从 §2 表里抽出"实现"列点名的仓库内脚本路径（含 `/` 且以 .js 结尾；跳过含 * 的） */
@@ -312,7 +339,134 @@ function scanLedger(lines, opts) {
   return { rows, problems, checkedSites, checkedRows, exempt, unchecked };
 }
 
-/** 纯函数形式的判定（清单见 `analyze()` 的 ①…⑧ 标记）；返回 problems[]（不打印、不退出），便于单测。 */
+/* ---------------- 判定 ⑨ 的常量与解析：`docs/ROADMAP.md`「在飞」表的「下一步」列 ----------------
+ * 见文件头注释的判定清单与那一条的边界说明。这里只补两件**实现级**的东西：
+ *   · 禁词**一处实现**（`NEXT_STEP_BANNED`）—— 文档与报告里只许写"禁词表在门禁里"，不许各抄一份
+ *     （抄一份就是第二份会漂的副本，本工程已经为此吃过两次亏）；
+ *   · **列位置不写死**：按表头文字找「下一步」列（实测这张表加过「证据」列，列序变过）。
+ */
+
+/** 「在飞」小节的标题形状 —— 与 G8 判定⑥**同一个形状**（靠名字定位，不靠章节号：编号会动）。 */
+const IN_FLIGHT_HEADING_RE = /^##\s.*在飞\s*\/\s*未收口/;
+const NEXT_STEP_REL = 'docs/ROADMAP.md';
+const NEXT_STEP_COLUMN = '下一步';
+const NEXT_STEP_THEME_COLUMN = '主题';
+
+/** 「下一步」里的**空话禁词**（**一处实现**；文档只许引用本表，不许再抄一份）。
+ *  收词判据 = 这句话**不告诉你下一步做什么**，而它经常被用来代替"下一步"。
+ *  实测来源：用户 2026-10-19 的诊断里点名了前三个；其余几个是同一次盘点里出现过的同型说法。
+ *  ⚠️ 这张表是**判红**的依据，不是"语义词典"：判的是"整格是不是只剩这些词"，不是"句子里有没有"。 */
+const NEXT_STEP_BANNED = ['继续推进', '视情况', '看情况', '待定', '按需', '后续再说', 'TODO', '再说'];
+
+/** 只剩这些**占位符**的单元格按"空"处理（占位符不是动作）。 */
+const NEXT_STEP_PLACEHOLDERS = ['-', '—', '–', '——', '…', '...'];
+
+/** 把「下一步」单元格切成"词块"：去掉 markdown 强调 / 行内代码标记，按标点与空白切分。
+ *  纯函数（无 IO），便于单测。**切分只为回答"整格是不是全是禁词"**，不承担语义判断。
+ *  ⚠️ 反引号在这里按"标记"剥掉，所以 `node cli/mm-cli.js …` 这类命令会**保留内容**（它含 `/` 与空格，
+ *  切成多块，块块非禁词）⇒ 具体动作必然放行 —— 这是刻意的窄口径（宁可漏过，不可乱红）。 */
+function splitNextStepCell(cell) {
+  const s = String(cell == null ? '' : cell).replace(/[*`]/g, '');
+  return s.split(/[\s\u3000·、，,。；;：:！!？?（）()\[\]【】<>|/]+/).filter(Boolean);
+}
+
+/** 判一个「下一步」单元格 ⇒ `{verdict, tokens, banned}`。
+ *  `verdict` 三态：`pass` / `empty`（空或只有占位符）/ `banned`（词块**全部**是禁词）。
+ *  纯函数。**只在 "banned" 上判红** —— 禁词出现在**更长的句子**里（例：`继续推进 §7 的裁决`）走 `pass`，
+ *  由 main() 打一行"只报告"提示（照 skill `B8`：判不准的那一档要打印理由，不许伪装成判过）。 */
+function classifyNextStepCell(cell) {
+  const raw = String(cell == null ? '' : cell).replace(/[*`]/g, '').trim();
+  const tokens = splitNextStepCell(cell);
+  const banned = tokens.filter((t) => NEXT_STEP_BANNED.some((w) => t.toLowerCase() === w.toLowerCase()));
+  if (!raw || NEXT_STEP_PLACEHOLDERS.includes(raw) || !tokens.length) {
+    return { verdict: 'empty', tokens, banned };
+  }
+  if (banned.length === tokens.length) return { verdict: 'banned', tokens, banned };
+  return { verdict: 'pass', tokens, banned };
+}
+
+/** 扫 `docs/ROADMAP.md`「在飞 / 未收口」表，逐行判「下一步」列。
+ *
+ *  **能力边界（三档，必须与门禁输出一致；照 skill `B8`）**：
+ *   · **判红**：① 单元格**为空**（或只有占位符 `-` / `—` / `…`）；
+ *             ② 单元格切出的**词块全部**落在 `NEXT_STEP_BANNED` 里（例：下一步 = `继续推进`）；
+ *             ③ 采不到真值：**小节 / 表格 / 「下一步」列**缺一即红（删掉标题或那一列就能让本条静默失效，
+ *                照 skill `B8`「适用条件不得由被检查方自己决定」）。
+ *   · **只报告（不判红）**：禁词**出现在更长的句子里**（例：`继续推进 §7 的裁决`）—— 本判据数的是
+ *             "整格是不是空话"，不做语义判断，故只打印一行提示（打印在输出里，见 main()）。
+ *   · **跳过（不判红，但**当场打印跳过了什么、在哪、多少**）**：本节表里 **0 条数据行**
+ *             （"发版时本小节必须清空或移入版本段"是 `docs/ROADMAP.md` 头部的明文规矩，那时整列没有对象）。
+ *             **跳过与"通过"分开打印、分开计数** —— 不声明地跳过比假红更坏（照 skill `A5` / `B8`）。
+ *
+ *  ⚠️ **本判据挡不住"写得像动作但是空话"**：它只认"空"与"整格都是禁词"。
+ *    例：`看 ROADMAP 的下一步` / `推进主链` / `按计划做` / `把这件事做完` 全都**会放行**。
+ *    判断"一条动作是否真的可执行"需要理解语义 —— 按本工程 M1（无据不做假硬门禁）**刻意不做**：
+ *    语义判据会造长期假红，最后连真红也没人看。
+ *    它也**判不了"无 / 无需后续"这类断言式的空**（`已收口` 行里这是正常写法）—— 那是内容对错，属人工残差。
+ *
+ *  **反绕过**：**不按 `状态` 列筛行** —— 若 `状态=已收口` 能跳过检查，被检查方自己就能把守卫关掉。
+ *
+ *  返回 `{ found, hasTable, columnIndex, rows, problems, skip }`：
+ *  `rows[] = {line, label, cell, verdict, tokens, banned}`（`label` = 该行「主题」列，供点名用）。
+ *  纯函数（只读传入的文本；不打印、不退出），便于单测、`--list` 与 main() 复用。 */
+function scanNextStep(roadmapText) {
+  const out = { found: false, hasTable: false, columnIndex: -1, rows: [], problems: [], skip: null };
+  if (roadmapText == null) { out.skip = { why: 'no-text' }; return out; }
+  const lines = String(roadmapText).split('\n');
+  const head = lines.findIndex((l) => IN_FLIGHT_HEADING_RE.test(l));
+  if (head < 0) {
+    out.problems.push({ kind: 'next-step', rel: NEXT_STEP_REL,
+      msg: '找不到标题形如「## … 在飞 / 未收口」的小节 —— 删掉或改名这个标题就能让判定 ⑨ 静默失效，'
+        + '故按红处理（照 skill `B8`：适用条件不得由被检查方自己决定）。'
+        + '收起：把标题改回来（形如 `## 在飞 / 未收口（**交接面** …）`）' });
+    return out;
+  }
+  out.found = true;
+  const tbl = firstTableAfter(lines, head + 1);
+  if (!tbl) {
+    out.problems.push({ kind: 'next-step', rel: NEXT_STEP_REL + ':' + (head + 1),
+      msg: '「在飞 / 未收口」小节里没有表格 —— 交接面没有表就无从判「下一步」；'
+        + '删掉表同样能让本条静默失效，故按红处理。收起：发版清空也请**保留表头**（0 条数据行是"跳过"档）' });
+    return out;
+  }
+  out.hasTable = true;
+  const strip = (c) => String(c == null ? '' : c).replace(/[*`]/g, '').trim();
+  const headerCells = parseCells(lines[tbl.start]);
+  const col = headerCells.findIndex((c) => strip(c) === NEXT_STEP_COLUMN);
+  const themeCol = headerCells.findIndex((c) => strip(c) === NEXT_STEP_THEME_COLUMN);
+  if (col < 0) {
+    out.problems.push({ kind: 'next-step', rel: NEXT_STEP_REL + ':' + (tbl.start + 1),
+      msg: '表头里没有「' + NEXT_STEP_COLUMN + '」列（现有表头：' + headerCells.join(' / ') + '）—— '
+        + '删掉或改名这一列就能让本条静默失效，故按红处理。收起：表头保留一格写作「' + NEXT_STEP_COLUMN + '」' });
+    return out;
+  }
+  out.columnIndex = col;
+  for (let i = tbl.start + 2; i <= tbl.end; i++) {
+    const cells = parseCells(lines[i]);
+    const cell = cells[col] == null ? '' : cells[col];
+    const c = classifyNextStepCell(cell);
+    const rawLabel = strip(themeCol >= 0 ? cells[themeCol] : '');
+    const label = rawLabel ? rawLabel.slice(0, 48) : '第 ' + (i + 1) + ' 行';
+    out.rows.push({ line: i + 1, label, cell: String(cell).trim(), verdict: c.verdict, tokens: c.tokens, banned: c.banned });
+    if (c.verdict === 'empty') {
+      out.problems.push({ kind: 'next-step', rel: NEXT_STEP_REL + ':' + (i + 1),
+        msg: '「' + label + '」这一行的「' + NEXT_STEP_COLUMN + '」是空的 —— 在飞的事没有"下一步"'
+          + '就等于把回程票丢了（2026-10-19 主链被打断就是这个形状：3 条在飞里 2 条做完没结案、'
+          + '「下一步」在文档里根本不存在）。收起：写一条**可执行命令或可指派动作**'
+          + '（例：`node cli/mm-cli.js visit --help`），或把这一条从「在飞」挪进版本段' });
+    } else if (c.verdict === 'banned') {
+      out.problems.push({ kind: 'next-step', rel: NEXT_STEP_REL + ':' + (i + 1),
+        msg: '「' + label + '」这一行的「' + NEXT_STEP_COLUMN + '」只写了空话（' + c.banned.join('、') + '）—— '
+          + '它看起来像动作，但谁也不知道下一步做什么。禁词表在 `scripts/rules-consistency.js` 的 `NEXT_STEP_BANNED`。'
+          + '收起：换成可执行命令或可指派动作；'
+          + '⚠️ 本判据只判"整格是不是空话"，**判不了"这条动作是否真的可执行"**（见 `scanNextStep` 的边界注释）' });
+    }
+  }
+  if (!out.rows.length) out.skip = { why: 'no-rows' };
+  return out;
+}
+
+/** 纯函数形式的判定（清单见 `analyze()` 的 ①…⑨ 标记）；返回 problems[]（不打印、不退出），便于单测。 */
 function analyze(rulesText, docTexts) {
   const lines = String(rulesText || '').split('\n');
   const problems = [];
@@ -521,6 +675,15 @@ function analyze(rulesText, docTexts) {
   //    只查能在仓库里定位的 token；查不到的**不判红**，但由 main() 打印"本条无路径可查"（边界可见）。
   problems.push(...ledger.problems);
 
+  // ⑨ `docs/ROADMAP.md`「在飞 / 未收口」表的「下一步」列：**非空**且**不得只含空话**。
+  //    逐条能力边界（判红 / 只报告 / 跳过）与"挡不住什么"见 `scanNextStep()` 的头注释。
+  //    ⚠️ 与 ⑦ 同一个纪律：**`analyze()` 的签名不许动**（`mutate-gates.js` 的负对照按这一行的
+  //    逐字签名锚点把本门禁钝化的 —— 签名一动那条负对照会静默变成空转）。
+  //    所以 ⑨ 的输入从 `docTexts` 取（`docs/ROADMAP.md` 本来就在 `SCAN_DOCS` 里）；
+  //    单测常只喂部分文档（`analyze(src, {})`）⇒ 缺这一份时记"跳过"、**不判红**；
+  //    而**真门禁**由 main() 把"读不到 ROADMAP"单独判红（采不到真值 = 红，照 skill `G4`）。
+  problems.push(...scanNextStep(docTexts && docTexts[NEXT_STEP_REL]).problems);
+
   return problems;
 }
 
@@ -554,7 +717,15 @@ function main() {
   const metas = idRows.filter((r) => r.id[0] === 'M').map((r) => r.id);
 
   const listMode = process.argv.includes('--list');
-  if (listMode) {
+  const judgmentsMode = process.argv.includes('--judgments');
+  if (listMode || judgmentsMode) {
+    if (judgmentsMode) {
+      console.log('规则文件自洽门禁（G9）—— 判定清单（**从源码的判定标记行现场取**，不维护第二份清单）');
+      const js = listJudgments(__filename);
+      for (const j of js) console.log('  ' + j.mark + ' ' + j.title);
+      console.log('  共 ' + js.length + ' 条（条数与标记的权威 = ' + RULES + ' §2 的 G9 行，由判定⑥ 与这里对齐）');
+      return;
+    }
     console.log('规则文件自洽门禁（G9）—— 解析结果');
     console.log('  门禁 G : ' + gates.join(', '));
     console.log('  铁律 R : ' + rules.join(', '));
@@ -567,10 +738,26 @@ function main() {
     console.log('  封闭欠账册: ' + lr0.rows.map((r) => r.id).join(', ')
       + '（' + lr0.rows.length + ' 条；有 `node …` 复核命令 '
       + lr0.rows.filter((r) => r.cmds.length).length + ' 条）');
+    const ns0 = scanNextStep(readDoc(NEXT_STEP_REL));
+    console.log('  「' + NEXT_STEP_COLUMN + '」列（' + NEXT_STEP_REL + '）: '
+      + ns0.rows.length + ' 行数据 · 列位置 #' + (ns0.columnIndex + 1)
+      + (ns0.skip ? ' · 跳过（' + ns0.skip.why + '）' : ''));
+    for (const r of ns0.rows) {
+      console.log('    ' + r.line + ' 行 [' + r.verdict + '] ' + r.label
+        + (r.banned.length ? '（含禁词：' + r.banned.join('、') + '）' : ''));
+    }
     return;
   }
 
-  const problems = analyze(rulesText, collectDocTexts());
+  const docTexts = collectDocTexts();
+  const problems = analyze(rulesText, docTexts);
+  // 采不到真值 = 红（照 skill `G4`）：`analyze()` 对"没给 ROADMAP"记跳过（单测常只喂部分文档），
+  // 但**真门禁**里读不到这份文件就必须红 —— 否则删掉/改坏文件名的效果是"判定静默消失"。
+  if (!docTexts[NEXT_STEP_REL]) {
+    problems.push({ kind: 'next-step', rel: NEXT_STEP_REL,
+      msg: '读不到 ' + NEXT_STEP_REL + ' ⇒ 判定 ⑨ 无从判起。门禁不能自称"已校验下一步列"'
+        + '（采不到真值 = 红，照 skill `G4`）。收起：恢复这份文件，或把文件名改动同步到 `SCAN_DOCS`' });
+  }
   console.log('== 规则文件自洽门禁（G9）==');
   console.log('   ' + RULES + '：门禁 ' + gates.length + ' 个 / 铁律 ' + rules.length
     + ' 条 / 元规则 ' + metas.length + ' 条');
@@ -584,7 +771,8 @@ function main() {
             : p.kind === 'restate' ? '转述条数'
               : p.kind === 'ledger-cmd' ? '欠账缺复核命令'
                 : p.kind === 'ledger-path' ? '欠账对象已不在'
-                  : p.kind === 'gate-count' ? '判定条数不符' : '实现缺失';
+                  : p.kind === 'next-step' ? '下一步为空/空话'
+                    : p.kind === 'gate-count' ? '判定条数不符' : '实现缺失';
       console.log('   [' + tag + '] ' + p.rel + ' —— ' + p.msg);
     }
     console.error('\n规则文件自洽门禁失败（' + problems.length + ' 处）');
@@ -606,15 +794,39 @@ function main() {
         ? '（在册对象只点到非本仓库路径：' + u.tokens.join('、') + ' —— 已在门禁侧登记豁免）'
         : '（在册对象里没有能定位到仓库的路径 token）'));
   }
+
+  // （承 ⑨）的读数（**放行理由要打印出来**，照 skill `B8`：接手者要能分清"它真的过了"与"它没能力判"）
+  const ns = scanNextStep(docTexts[NEXT_STEP_REL]);
+  if (ns.skip && ns.skip.why === 'no-rows') {
+    console.log('⤼ 跳过：「在飞 / 未收口」表里 **0 条数据行**'
+      + '（"发版时本小节必须清空或移入版本段"是 `' + NEXT_STEP_REL + '` 头部的明文规矩）—— '
+      + '跳过的对象 = **整列、0 行**；跳过 ≠ 通过（本条不计入上面那些 ✓）');
+  } else if (ns.rows.length) {
+    const passed = ns.rows.filter((r) => r.verdict === 'pass');
+    console.log('✓ 「在飞」表的「' + NEXT_STEP_COLUMN + '」列：' + passed.length + '/' + ns.rows.length
+      + ' 行非空且不是空话（按表头文字定位该列 #' + (ns.columnIndex + 1) + '，**列序不写死**）');
+    for (const r of ns.rows) {
+      if (r.verdict !== 'pass') continue;
+      const bannedNote = r.banned.length
+        ? '；⚠️ 含禁词 ' + r.banned.join('、') + ' 但句中还有别的内容 ⇒ **只报告、不判红**（本判据不做语义判断）'
+        : '';
+      console.log('   · ' + r.line + ' 行「' + r.label + '」放行：词块 ' + r.tokens.length + ' 个，起头「'
+        + r.tokens.slice(0, 3).join(' ') + '」' + bannedNote);
+    }
+    console.log('   ⚠️ 能力边界：只判「空」与「整格都是禁词」，**挡不住"写得像动作但是空话"**'
+      + '（如"按计划推进"会放行）—— 判"动作是否真可执行"要理解语义，按 M1 刻意不做');
+  }
   console.log('\n规则文件自洽门禁通过');
 }
 
 module.exports = {
   parseCountClaims, firstTableAfter, findIdRows, splitBlocks, sectionOf,
   collectReferences, collectImplScripts, analyze, RULES, SCAN_DOCS,
-  collectJudgmentMarkers, DECLARED_COUNT_RE, JUDGMENT_MARKER_RE,
+  collectJudgmentMarkers, DECLARED_COUNT_RE, JUDGMENT_MARKER_RE, listJudgments,
   scanLedger, collectTickedTokens, parseCells, looksLikeRepoPath,
-  LEDGER_NON_REPO_PATHS, LEDGER_NON_REPO_CAP, LEDGER_HEADING_RE
+  LEDGER_NON_REPO_PATHS, LEDGER_NON_REPO_CAP, LEDGER_HEADING_RE,
+  scanNextStep, classifyNextStepCell, splitNextStepCell,
+  NEXT_STEP_BANNED, NEXT_STEP_PLACEHOLDERS, NEXT_STEP_REL, IN_FLIGHT_HEADING_RE
 };
 
 if (require.main === module) main();

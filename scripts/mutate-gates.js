@@ -255,8 +255,9 @@ const GATES = [
   {
     id: 'rules-consistency', code: 'G9', title: '规则文件自洽',
     script: 'scripts/rules-consistency.js', args: [],
-    seam: '镜像 CLI 全链（真子进程 + 真 exit code）：输入 = 副本的 docs/RULES.md 与各受管文档；'
-      + '门禁自己的判定 ①…⑥ 全在同一进程里跑（本工具不改它的判定，只改它的输入）',
+    seam: '镜像 CLI 全链（真子进程 + 真 exit code）：输入 = 副本的 docs/RULES.md、各受管文档'
+      + '与 docs/ROADMAP.md（判定 ⑨ 的靶子）；门禁自己的判定 ①…⑨ 全在同一进程里跑'
+      + '（本工具不改它的判定，只改它的输入）',
     discover(M) {
       const rc = realModule('scripts/rules-consistency.js');
       const rel = rc.RULES;
@@ -273,7 +274,14 @@ const GATES = [
       });
       const refRow = rows.filter((r) => r.id[0] === 'R' && referenced.has(r.id)).pop() || null;
       const gateRows = rows.filter((r) => r.id[0] === 'G');
-      return { rc, rel, claim, refRow, gateRows };
+      // 判定 ⑨ 的靶子：ROADMAP「在飞」表里**当前放行**的某一行 + 该表「下一步」列的**实际列号**
+      // （列号从门禁自己的解析器取，本文件不写死 —— 实测那张表加过「证据」列，列序变过）
+      let ns = { col: -1, rows: [] };
+      try {
+        const sc = realModule('scripts/rules-consistency.js').scanNextStep(M.read(rc.NEXT_STEP_REL));
+        ns = { col: sc.columnIndex, rows: sc.rows.filter((x) => x.verdict === 'pass') };
+      } catch (e) { ns = { col: -1, rows: [] }; }
+      return { rc, rel, claim, refRow, gateRows, ns };
     },
     variants: [
       {
@@ -310,6 +318,40 @@ const GATES = [
           return M.edit(c.rel, (s) => {
             const ls = s.split('\n');
             ls.splice(c.refRow.idx, 1);
+            return ls.join('\n');
+          });
+        }
+      },
+      {
+        id: 'G9-4', kind: '注入违规', expect: 'caught', reason: /\[下一步为空\/空话\]/, judgment: '⑨',
+        name: '把 `docs/ROADMAP.md`「在飞」表里某一行的「下一步」改成**禁词**（看起来像动作、其实谁也不知道下一步做什么）'
+          + ' —— 禁词从门禁自己的表里取，本文件不抄词表',
+        apply(M, c) {
+          const row = c.ns.rows[0];
+          if (!row || c.ns.col < 0) throw new Error('ROADMAP「在飞」表里没有可用的数据行，这一条测不了');
+          const word = c.rc.NEXT_STEP_BANNED[0];
+          return M.edit(c.rc.NEXT_STEP_REL, (s) => {
+            const ls = s.split('\n');
+            const parts = ls[row.line - 1].split('|');    // `| a | b |` ⇒ ['', ' a ', ' b ', '']，格 k = parts[k+1]
+            if (parts.length < c.ns.col + 3) throw new Error('这一行的列数比表头少，靶点没找对');
+            parts[c.ns.col + 1] = ' ' + word + ' ';
+            ls[row.line - 1] = parts.join('|');
+            return ls.join('\n');
+          });
+        }
+      },
+      {
+        id: 'G9-5', kind: '注入违规', expect: 'caught', reason: /\[下一步为空\/空话\]/, judgment: '⑨',
+        name: '把 `docs/ROADMAP.md`「在飞」表里某一行的「下一步」**清空**（在飞的事没有"下一步"= 把回程票丢了）',
+        apply(M, c) {
+          const row = c.ns.rows[0];
+          if (!row || c.ns.col < 0) throw new Error('ROADMAP「在飞」表里没有可用的数据行，这一条测不了');
+          return M.edit(c.rc.NEXT_STEP_REL, (s) => {
+            const ls = s.split('\n');
+            const parts = ls[row.line - 1].split('|');
+            if (parts.length < c.ns.col + 3) throw new Error('这一行的列数比表头少，靶点没找对');
+            parts[c.ns.col + 1] = ' ';
+            ls[row.line - 1] = parts.join('|');
             return ls.join('\n');
           });
         }
