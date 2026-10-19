@@ -99,45 +99,42 @@ if (SMOKE_PROJECTS_DIR) {
 }
 const PROJECTS_DIR = SMOKE_PROJECTS_DIR || REAL_PROJECTS_DIR;
 
-/* 冒烟**启动时**清扫"上一轮留下的空壳"。
+/* 冒烟**启动时**清扫"上一轮留下的死壳"（`ai-mind-map-smoke-*`）。
  *
- * 为什么非在**启动时**做不可（本批实测读数，别再猜机制）：退出时那份清理**清不掉自己的目录** ——
- * `fs.rmSync()` 递归删之后，顶层 rmdir 一直 `EPERM`（实测连试 6 次、每次读数都是
- * `{"code":"EPERM","left":1,"names":["comnet"]}`），也就是沙箱里那个**项目目录 `comnet` 被
- * 本进程的某个句柄占着**（内容能删、这个目录不能删）⇒ 清到最后只剩一个**空壳**。
- * 而**换一个进程就立刻能删**（实测：新进程对上一轮的壳 `rmdirSync` 一次成功）—— 所以阻塞方
- * 只活在本进程生命周期内，唯一能清掉它的时机是**下一轮的启动**。
- *
- * 三条护栏（缺一条就别做这一条）：
- *   ① 只认 `os.tmpdir()` 下的**直接子目录**且名字前缀是 `ai-mind-map-smoke-`（就是上面 mkdtemp 的命名）；
- *   ② 只调 **`rmdirSync`（非递归）** ⇒ 有内容的目录**物理上删不掉**，不可能误删"正在跑的那一轮"的数据 ✓；
- *   ③ 跳过 mtime 在最近 60 秒内的 —— 活着的沙箱只在"建好目录、还没拷项目"的**微秒窗口**里是空的，
- *      60 秒的余量把"误删别人正在用的沙箱"这条风险压到实际为零。
- * 读数照旧**打印**（清掉几个 / 还剩几个非空的没动），**不当门禁**：非空的那些是历史崩溃留下的
- * （实测有 5 条：comnet 的 assets/attachments 都在），该不该删要人看，不该由冒烟替人决定 ✗。 */
-function sweepSmokeHusks() {
-  const tmp = os.tmpdir();
-  const mine = path.basename(SMOKE_PROJECTS_DIR || '');
-  const out = { swept: 0, kept: 0, held: 0, error: '' };
-  let entries = [];
-  try { entries = fs.readdirSync(tmp, { withFileTypes: true }); }
-  catch (err) { out.error = String((err && err.message) || err); return out; }
-  for (const e of entries) {
-    if (!e.isDirectory() || e.name === mine) continue;
-    if (e.name.indexOf('ai-mind-map-smoke-') !== 0) continue;
-    const p = path.join(tmp, e.name);
-    let st = null;
-    try { st = fs.statSync(p); } catch (err) { continue; }
-    if (Date.now() - st.mtimeMs < 60 * 1000) { out.held += 1; continue; }   // 可能是在跑的那一轮：不动 ✓
-    try { fs.rmdirSync(p); out.swept += 1; } catch (err) { out.kept += 1; } // 非空/被占用 ⇒ 不动 ✓（非递归）
-  }
-  return out;
-}
+ * ⚠️ 这一段的旧形状（本批推翻，读数现算）：清扫**本来就存在**，但它只调**非递归** `rmdirSync`
+ *   ⇒ **非空壳物理上永远删不掉**。实测 `%TEMP%` 共 35 个壳：空 1 / 非空 **34**，1,113 文件 / 226.6 MB
+ *   —— 也就是说"启动自愈"一直在跑，只是**删不动**（不是"没有自愈"）。
+ * 非递归当年是为了"不可能误删正在跑的那一轮"（旧头注的 ②③），**那个目标仍然成立** ⇒ 本批没有
+ *   "改成递归就完事"，而是把手段换成两条**显式**活性判据：**活实例登记（pid 判活）+ 年龄线**。
+ *   为什么 60 秒那条线必须重定：它当年**靠非递归兜底**才安全，而一轮 full 冒烟实测 **1004.6 s**
+ *   ⇒ 递归之后"开跑第 61 秒的活沙箱"是常态，60 秒线会删掉正在跑的那一轮。
+ * 为什么非在**启动时**做不可（实测，别再猜机制）：退出时那份清理**清不掉自己的顶层目录** ——
+ *   `fs.rmSync()` 递归删之后顶层 rmdir 恒 `EPERM`（连试 6 次同一读数）⇒ 阻塞方是本进程的句柄、
+ *   随进程死亡才释放 ⇒ 唯一能清它的时机是**下一轮启动**。
+ * 判定逻辑**全在** `scripts/smoke/husk-sweep.js`（含年龄线取值理由、活登记范式、三档读数、删不掉怎么报）：
+ *   抽出去才能有单测 —— `main.js` 要 Electron 才能加载，内联在这里的判定**从来没被单测跑过**
+ *   （与 `src/control-poll.js` 当年同一个理由）。这里只做接线与打印，**一处实现**。
+ * ⚠️ 边界（不变）：模块给的"删不掉"读数**不并入 exit code** —— 占着目录的可能是杀毒/索引/另一个
+ *   冒烟进程，把它当红会造一个新的假红源。要不要升级成门禁，等跨机器读数再说。 */
 if (SMOKE_PROJECTS_DIR) {
-  const husks = sweepSmokeHusks();
-  console.log('[smoke] 启动清扫上一轮的空壳：清掉 ' + husks.swept + ' 个 · 跳过（刚生成的）' + husks.held
-    + ' 个 · 非空残留没动 ' + husks.kept + ' 个（要清得人工确认）'
-    + (husks.error ? ' ｜⚠️ 列举失败：' + husks.error : ''));
+  const huskSweep = require('./scripts/smoke/husk-sweep.js');
+  /* 名字保留 `sweepSmokeHusks`：本文件另有 2 处注释（退出路径那段、G5 收尾那段）按名字指到它，
+   * 改名会让那两处指向一个不存在的实体（"声称与实体必须一致"）。实现只有一份，在模块里。 */
+  const sweepSmokeHusks = huskSweep.sweepHusks;
+  /* 活实例登记 = **空目录锁**：`%TEMP%/mm-live-runs/smoke-<pid>-<开工时刻36进制>-<随机>`，内容全在名字里。
+   * 为什么是"建目录"而不是"写文件"：目录创建**原子**（没有"半个登记文件"这种失败形态），且不新增写盘调用点。
+   * 前缀 `smoke-`（**不是** `run-`）：`scripts/cli-integration.js` 的 `liveSiblingRuns()` 只认 `run-`，
+   *   两边互不认作"兄弟" —— 否则本登记会让 G4 退回保守口径，而 G2 紧跟其后 ⇒ **G2 假红**。 */
+  const smokeClaim = huskSweep.makeClaim();
+  process.on('exit', () => smokeClaim.release());   // `app.exit()` 不触发 `will-quit` ⇒ 兜底挂在这个钩子上
+  /* ⚠️ `selfName` 必须是**自己的沙箱目录名**、`selfClaimName` 才是登记名 —— 两个名字混用会出现
+   * "每轮都把自己那份算成 self-fresh 暂不动"的读数（本批第一次全链 G5 的 `暂不动 1 个（self-fresh 1）`
+   * 就是它：那一份不是别人的壳，是本进程刚 mkdtemp 的沙箱）。旧实现用 `path.basename(SMOKE_PROJECTS_DIR)`。 */
+  console.log(huskSweep.message(sweepSmokeHusks({
+    selfName: path.basename(SMOKE_PROJECTS_DIR),
+    selfClaimName: smokeClaim.name,
+    claimOk: smokeClaim.ok
+  })));
 }
 
 /* 每域隔离：**默认开** ✓ —— 每个域开跑前还原沙箱副本，并让应用重载当前项目。
