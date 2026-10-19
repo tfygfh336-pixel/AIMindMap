@@ -29,8 +29,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
@@ -39,7 +39,7 @@ const P = 's7-idem-probe';
 /** 跨项目作用域断言用的第二个项目 */
 const P2 = 's7-idem-probe-2';
 /** 每个用例自己的 ops 文件目录（与项目目录同一沙箱根，别写进工程） */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-idem-'));
+const SANDBOX = makeTmp('mm-idem-');
 const OPS_DIR = path.join(SANDBOX, 'ops');
 fs.mkdirSync(OPS_DIR, { recursive: true });
 
@@ -109,7 +109,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* 收尾失败不影响判定 */ }
+  cleanupAll();
 });
 
 /* ============================================================================

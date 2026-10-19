@@ -19,15 +19,16 @@
  * ============================================================ */
 import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
-/* ---- ① 沙箱（必须在 require cli/main.js 之前设好）---- */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-heatsensor-'));
+/* ---- ① 沙箱（必须在 require cli/main.js 之前设好）----
+ * 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（下面的 `afterAll`）。 */
+const SANDBOX = makeTmp('mm-heatsensor-');
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 
 const { invokeSync } = require('../cli/main.js');
@@ -45,7 +46,7 @@ const run = (argv) => invokeSync(argv);
 const logFile = (name) => store.visitLogFile(name);
 
 afterAll(() => {
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* 沙箱删不掉不影响判定 */ }
+  cleanupAll();
 });
 
 /** 日志里的事件（**只解析成功的行**；坏行会被读方响亮拦下，不在本文件的范围内） */

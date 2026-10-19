@@ -41,12 +41,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
-/* ---- ① 重定向必须先于 require cli/main.js（cli/core.js 的 PROJECTS_DIR 是模块加载时定型的） ---- */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-b6-sbx-'));
-const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-b6-work-'));
+/* ---- ① 重定向必须先于 require cli/main.js（cli/core.js 的 PROJECTS_DIR 是模块加载时定型的） ----
+ * 两个根都走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（下面的 `afterAll`）。 */
+const SANDBOX = makeTmp('mm-b6-sbx-');
+const WORK = makeTmp('mm-b6-work-');
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 
 const { invokeSync } = require('../cli/main.js');
@@ -168,8 +170,7 @@ function assertDirRefsLanded(name, want) {
 }
 
 afterAll(() => {
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* 清不掉不影响结论 */ }
-  try { fs.rmSync(WORK, { recursive: true, force: true }); } catch (e) { /* 同上 */ }
+  cleanupAll();
 });
 
 /* ============================================================================

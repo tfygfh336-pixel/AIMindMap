@@ -10,16 +10,24 @@
  *   → `done/<token>.json`。本文件钉住三件事：
  *   ① 写入互不覆盖；② 认领只有一个赢家（同一条命令不会被派发两次）；③ 回执按 token 认。
  * ============================================================ */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 const control = require(path.resolve(__dirname, '..', 'src', 'control.js'));
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'mm-control-test-'));
+/* ---------------- 临时目录：**每次创建都登记**，收尾只此一处 ----------------
+ * 病（2026-10-19 实测）：`tmp()` 在本文件里被 **9 个用例各调一次**（每个用例一个独立目录），
+ * 旧实现是一个裸 `mkdtempSync` ⇒ 建出来的目录**一个都没人删**。
+ * 读数：一次 `vitest run tests/control.test.js tests/link-caption.test.js` ⇒
+ *       `%TEMP%` 里 `mm-control-test-*` **+9**。
+ * 清理形态（`recursive + force`、失败响亮但不判红、三态读数）统一收在 `tests/_tmp-cleanup.js`
+ * —— 别在本文件里再写一份 `fs.rmSync`（那份删不到"建了却没被引用"的目录，正是这个病的来源）。 */
+const tmp = () => makeTmp('mm-control-test-');
+afterAll(cleanupAll);
 
 describe('控制通道：多槽 + 序号（修「两个 CLI 同时下命令互相覆盖」）', () => {
   it('两条并发命令各有各的槽：后写的不覆盖先写的，两条都在 pending 里', () => {

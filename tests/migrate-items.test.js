@@ -27,14 +27,15 @@
  * ============================================================ */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
-/* ---- ① 临时项目根（必须在 require cli/main.js 之前） ---- */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-s1-migrate-'));
+/* ---- ① 临时项目根（必须在 require cli/main.js 之前） ----
+ * 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（文末 `afterAll`）。 */
+const SANDBOX = makeTmp('mm-s1-migrate-');
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 
 const { invokeSync } = require('../cli/main.js');
@@ -152,7 +153,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* 收尾失败不影响判定 */ }
+  cleanupAll();
   // 只删本文件造的那几个备份（契约要求备份落在工程的 .review 下 ⇒ 测试也要自己收干净）
   [P, P_RESTORE].forEach((n) => {
     try { fs.rmSync(backupPathOf(n), { force: true }); } catch (e) { /* ignore */ }

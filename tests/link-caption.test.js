@@ -21,16 +21,19 @@
  *   2) **不起子进程**：本工程记过"受限环境（企业 EDR/沙箱）下管道 stdio 会 EPERM 假失败"
  *      （见 docs/VERIFY.md）。故用进程内 `invokeSync`（与 `tests/cli-main.test.js` 同一口径）。
  * ============================================================ */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
-/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ---- */
-const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-k8-'));
+/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ----
+ * ⚠️ 收尾（2026-10-19 实测的病）：这个目录在**模块加载时**就建好、整个文件共用，
+ *   旧实现建完之后**完全没收尾** ⇒ 一次 `vitest run` 就在 `%TEMP%` 里留一个 `mm-k8-*`。
+ *   ⇒ 改走公共件（创建即登记 + 文件末尾 `afterAll`），清理形态与语义见 `tests/_tmp-cleanup.js`。 */
+const TMP_ROOT = makeTmp('mm-k8-');
 process.env.AI_MINDMAP_PROJECTS_DIR = TMP_ROOT;
 const { invokeSync } = require('../cli/main.js');
 const core = require('../cli/core.js');
@@ -41,6 +44,9 @@ if (path.resolve(core.PROJECTS_DIR) !== path.resolve(TMP_ROOT)) {
   throw new Error('项目根重定向未生效（cli/core.js 已被更早加载）：PROJECTS_DIR='
     + core.PROJECTS_DIR + ' 期望=' + TMP_ROOT + ' —— 本测试拒绝运行，以免写进真实 projects/');
 }
+
+/* 收尾只此一处：删掉本文件建的那一个项目根（失败**响亮但不判红**，见公共件头部）。 */
+afterAll(cleanupAll);
 
 const SRC = 'it-k8-src';
 const DST = 'it-k8-dst';

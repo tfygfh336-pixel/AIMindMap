@@ -38,11 +38,11 @@
  * ============================================================ */
 import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
@@ -56,8 +56,9 @@ const require = createRequire(import.meta.url);
  *   （取值理由与全库最慢用例的读数都在那里；本文件 A1 的 11129 ms 就是那张表里的第一条）。
  *   性能该由链上的 `npm run verify` 预算管，单测只管"对不对" ✓ */
 
-/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ---- */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-w8-dry-'));
+/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ----
+ * 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（下面的 `afterAll`）。 */
+const SANDBOX = makeTmp('mm-w8-dry-');
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 
 const { invokeSync } = require('../cli/main.js');
@@ -79,7 +80,7 @@ if (path.resolve(core.PROJECTS_DIR) !== path.resolve(SANDBOX)) {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 afterAll(() => {
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* 沙箱删不掉不影响判定 */ }
+  cleanupAll();
 });
 
 /* ============================================================================
@@ -316,7 +317,7 @@ describe('W8-A 判据①：--dry-run 之后盘上逐字节零变化', () => {
       const countFiles = (d) => (fs.existsSync(d) ? fs.readdirSync(d).length : 0);
       const assetsDir = path.join(projDir(SRC), 'assets');
       // 造一个真图片 + 一份带引用的 md（都在 SANDBOX 外的临时目录里，别污染项目根）
-      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-w8-assets-'));
+      const tmp = makeTmp('mm-w8-assets-');
       const png = path.join(tmp, 'p.png');
       fs.writeFileSync(png, Buffer.from('89504e470d0a1a0a', 'hex'));
       const mdDir = path.join(tmp, 'doc');
@@ -344,7 +345,8 @@ describe('W8-A 判据①：--dry-run 之后盘上逐字节零变化', () => {
         expect(realMd.code, realMd.out).toBe(0);
         expect(countFiles(assetsDir), '真跑必须复制引用资源').toBe(2);
       } finally {
-        fs.rmSync(tmp, { recursive: true, force: true });
+        // 收尾**不在这里**：这条目录已由 `makeTmp` 登记，删盘唯一入口是 `afterAll(cleanupAll)`。
+        void tmp;
       }
     });
 });

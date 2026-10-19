@@ -24,14 +24,15 @@
  * ============================================================ */
 import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
-/* ---- ① 沙箱（必须在 require cli/core.js 之前设好：它的 PROJECTS_DIR 是模块加载时定型的） ---- */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-s1-model-'));
+/* ---- ① 沙箱（必须在 require cli/core.js 之前设好：它的 PROJECTS_DIR 是模块加载时定型的） ----
+ * 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（下面的 `afterAll`）。 */
+const SANDBOX = makeTmp('mm-s1-model-');
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 
 const M = require('../src/item-model.js');
@@ -46,7 +47,7 @@ if (path.resolve(core.PROJECTS_DIR) !== path.resolve(SANDBOX)) {
 }
 
 afterAll(() => {
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* 收尾失败不影响判定 */ }
+  cleanupAll();
 });
 
 /** 全项目唯一的条目 id 集合（`newItemId()` 只产候选，唯一性由调用方查 —— 契约 §5.1） */

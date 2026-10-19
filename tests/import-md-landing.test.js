@@ -61,15 +61,16 @@
  * ============================================================ */
 import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
-/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ---- */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-w14-land-'));
-const FIXDIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-w14-landfix-'));
+/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ----
+ * 两个根都走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（下面的 `afterAll`）。 */
+const SANDBOX = makeTmp('mm-w14-land-');
+const FIXDIR = makeTmp('mm-w14-landfix-');
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 
 const { invokeSync } = require('../cli/main.js');
@@ -84,8 +85,7 @@ if (path.resolve(core.PROJECTS_DIR) !== path.resolve(SANDBOX)) {
 }
 
 afterAll(() => {
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* 删不掉不影响判定 */ }
-  try { fs.rmSync(FIXDIR, { recursive: true, force: true }); } catch (e) { /* 同上 */ }
+  cleanupAll();
 });
 
 /* ============================================================================

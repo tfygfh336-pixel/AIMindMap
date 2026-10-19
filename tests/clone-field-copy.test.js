@@ -26,15 +26,17 @@
  * ============================================================ */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(__dirname, '..');
 
 /* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ---- */
-const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-clone-'));
+/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ----
+ * 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（`afterAll(cleanupAll)`）。 */
+const TMP_ROOT = makeTmp('mm-clone-');
 process.env.AI_MINDMAP_PROJECTS_DIR = TMP_ROOT;
 const { invokeSync } = require('../cli/main.js');
 const core = require('../cli/core.js');
@@ -271,7 +273,8 @@ describe('丙组 · 端到端（沙箱 + invokeSync）：clone / apply 都带全
     fs.writeFileSync(projFile(), JSON.stringify(d, null, 2), 'utf8');
   });
 
-  afterAll(() => { fs.rmSync(TMP_ROOT, { recursive: true, force: true }); });
+  /* 收尾只此一处：删掉**所有**登记过的临时根（含将来新加的）——形态见 `tests/_tmp-cleanup.js`。 */
+  afterAll(cleanupAll);
 
   it('clone 一个含 items + localPath + origin 的节点：副本逐字段带过去，且源不动', () => {
     const before = JSON.stringify(nodeOnDisk('n1'));

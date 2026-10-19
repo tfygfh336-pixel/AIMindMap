@@ -24,14 +24,16 @@
  * ============================================================ */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
 /* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ---- */
-const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-clone-links-'));
+/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ----
+ * 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（`afterAll(cleanupAll)`）。 */
+const TMP_ROOT = makeTmp('mm-clone-links-');
 process.env.AI_MINDMAP_PROJECTS_DIR = TMP_ROOT;
 const { invokeSync } = require('../cli/main.js');
 const core = require('../cli/core.js');
@@ -105,7 +107,8 @@ beforeAll(() => {
   expect(run('validate', P).code, '夹具本身必须先是合法的').toBe(0);
 });
 
-afterAll(() => { fs.rmSync(TMP_ROOT, { recursive: true, force: true }); });
+/* 收尾只此一处：删掉**所有**登记过的临时根（含将来新加的）——形态见 `tests/_tmp-cleanup.js`。 */
+afterAll(cleanupAll);
 
 /* ============================================================
  * 甲组 · ① 默认档：引用语义（边逐字仍指原物）+ "没被重指向"看得见

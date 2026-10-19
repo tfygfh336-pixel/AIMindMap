@@ -16,22 +16,31 @@
  *   纯逻辑测试（不碰 CLI）与端到端测试（`tests/bind-sync.test.js`）分开：
  *   这一份只 import `src/`，**不设** `AI_MINDMAP_PROJECTS_DIR`（没有写盘路径）。
  * ============================================================ */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 const di = require('../src/doc-import.js');
 const schema = require('../src/schema.js');
 
-/* ---------------- 夹具：一个临时"源文件夹" + 一棵空树 ---------------- */
+/* ---------------- 夹具：一个临时"源文件夹" + 一棵空树 ----------------
+ * ⚠️ **临时目录收尾（2026-10-19 实测的病）**：`mkSrc()` 每调一次就建一个**新目录**，
+ *   而它在本文件里几乎每个用例都要建**两个** —— `beforeEach` 一个 + 用例体内再一个。
+ *   旧实现只删 `TMP` **当前值**（= 最后一次建的那个）⇒ `beforeEach` 那个被**孤儿化**，
+ *   读数：一次 `npx vitest run tests/bindings.test.js` ⇒ `%TEMP%` 里 `mm-bind-*` **+21**（当时的用例数下）。
+ *   现状实测（2026-10-20）：28 个用例 ⇒ 登记 **49** 个目录（28 × `beforeEach` + 21 × 用例体内），
+ *   与 `%TEMP%` 的增量口径一致；公共件的三态读数那一行就是这么核对出来的。
+ *   ⇒ 现在**每次创建都登记**（走公共件），删盘的唯一入口是文件末尾的 `afterAll`（`afterEach` 只清引用）。
+ * 清理的形态与语义（`recursive + force` = 550ed82 的教训 / 失败响亮但不判红 / 三态读数）**收在公共件**
+ * `tests/_tmp-cleanup.js` —— 本文件只声明"用哪个前缀"，不再复制那 15 行。 */
 let TMP = null;
 let SRC = null;
 
 function mkSrc(files) {
-  TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-bind-'));
+  TMP = makeTmp('mm-bind-');
   SRC = path.join(TMP, 'notes');
   fs.mkdirSync(SRC, { recursive: true });
   Object.keys(files || {}).forEach((rel) => {
@@ -43,10 +52,8 @@ function mkSrc(files) {
 }
 
 beforeEach(() => { mkSrc({}); });
-afterEach(() => {
-  try { if (TMP) fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) { /* 沙箱删不掉不影响判定 */ }
-  TMP = null; SRC = null;
-});
+afterEach(() => { TMP = null; SRC = null; });   // 只清引用：**删盘的唯一入口**是文件末尾的 afterAll
+afterAll(cleanupAll);
 
 const BINDING = (over) => Object.assign({
   id: 'wb-1', dir: SRC, mode: 'flat', include: ['*.md'],

@@ -36,14 +36,19 @@
  * ============================================================ */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
-/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ---- */
-const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-s6-'));
+/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ----
+ * ⚠️ 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（= `mkdtempSync` + **创建即登记**）。
+ *   本文件此前是**裸 `mkdtempSync` 且全文没有任何收尾**（一个 `rmSync` 都没有）⇒
+ *   每跑一次就在 `%TEMP%` 里留下一个 `mm-s6-*`。实测（2026-10-19 改造前）：
+ *     单跑本文件一次 ⇒ `mm-s6-*` **+1**（真零 TEMP 下也是 +1：`mm-s6-Lhr4rT`）；
+ *     `%TEMP%` 里已积到 **779** 个 —— 全工程最大的一个家族（占全部 `mm-*` 的 77%）。 */
+const TMP_ROOT = makeTmp('mm-s6-');
 process.env.AI_MINDMAP_PROJECTS_DIR = TMP_ROOT;
 const { invokeSync } = require('../cli/main.js');
 const core = require('../cli/core.js');
@@ -55,6 +60,11 @@ if (path.resolve(core.PROJECTS_DIR) !== path.resolve(TMP_ROOT)) {
   throw new Error('项目根重定向未生效（cli/core.js 已被更早加载）：PROJECTS_DIR='
     + core.PROJECTS_DIR + ' 期望=' + TMP_ROOT + ' —— 本测试拒绝运行，以免写进真实 projects/');
 }
+
+/* 收尾**只此一处**：删掉所有登记过的临时根（含将来在这个文件里新加的那些）。
+ * ⚠️ 别在用例里再补一份 `fs.rmSync(TMP_ROOT, …)` —— 那正是本文件此前留 779 个残留的形状：
+ *   "清理代码看着有"却删不到"建了却没被引用"的那一个（判据见 `tests/_tmp-cleanup.js` 头注释）。 */
+afterAll(cleanupAll);
 
 /* 探针一律 `it-s6-` 前缀（§4.1 的锚点分配；与别的流的探针互不踩） */
 const SRC = 'it-s6-src';

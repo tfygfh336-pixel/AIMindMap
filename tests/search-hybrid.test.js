@@ -52,11 +52,13 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
-/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ---- */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-w4-hybrid-'));
+/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ----
+ * 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（下面的 `afterAll`）。 */
+const SANDBOX = makeTmp('mm-w4-hybrid-');
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 
 const { invokeSync } = require('../cli/main.js');
@@ -94,7 +96,7 @@ function cleanup(only) {
 afterAll(() => {
   cleanup();
   heatSensor.__setEnabledForTest(true);
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* 沙箱删不掉不影响判定 */ }
+  cleanupAll();
 });
 
 /* ---------------- 夹具工具 ---------------- */

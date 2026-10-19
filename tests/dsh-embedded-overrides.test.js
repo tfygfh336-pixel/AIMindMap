@@ -13,7 +13,7 @@
  * **正在用**的实例，测试写坏它的 patch 文件 = 侧栏起不来 ✗。故每个用例都显式传
  * `--home <临时目录>`，脚本里没有任何一步会回落到默认 home ✓。
  * ============================================================ */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +21,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'dsh-embedded-overrides.js');
@@ -88,13 +89,19 @@ function run(...args) {
 
 beforeEach(() => {
   // `<tmp>/dsh-home` 的形状要与真实实例一致：patch 在 profiles/web 下
-  home = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-embedded-ov-'));
+  // 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（**创建即登记**；每用例一个，收尾在 `afterAll`）。
+  home = makeTmp('mm-embedded-ov-');
   fs.mkdirSync(path.join(home, 'profiles', 'web'), { recursive: true });
   patch = path.join(home, 'profiles', 'web', 'cordis.patch.yml');
   fs.writeFileSync(patch, fixtureLines().join('\n'), 'utf8');
 });
 
-afterEach(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) { /* 清理失败不影响结论 */ } });
+/* 收尾**不在这里**：删盘唯一入口是下面的 `afterAll(cleanupAll)`（`afterEach` 只清引用）。
+ * 旧实现是 `afterEach` 里 `rmSync(home)`——它只删"当前那个变量"，且把失败吞成静默。 */
+afterEach(() => { home = null; });
+
+/* 收尾**只此一处**：删掉所有登记过的假 dsh-home（本文件每个用例一个）。形态见 `tests/_tmp-cleanup.js`。 */
+afterAll(cleanupAll);
 
 describe('render：把陈述式 overrides 渲染进 patch', () => {
   it('值落到 correct 条目，check 随后退出 0', () => {

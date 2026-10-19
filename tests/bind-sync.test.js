@@ -27,11 +27,11 @@
  * ============================================================ */
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -44,8 +44,10 @@ const WATCH_DEADLINE_MS = 5000;
 const DEBOUNCE_MS = 200;
 const NO_WATCH = process.env.MM_BIND_NO_WATCH === '1';
 
-/* ---- ① 临时目录上建项目根（必须在 require cli/main.js 之前） ---- */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-bindsync-'));
+/* ---- ① 临时目录上建项目根（必须在 require cli/main.js 之前） ----
+ * 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），
+ * 收尾只此一处：文末 `afterAll` 里 `disarm()` **之后**的 `cleanupAll()`（watcher 先关、目录后删）。 */
+const SANDBOX = makeTmp('mm-bindsync-');
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 
 const { invokeSync } = require('../cli/main.js');
@@ -123,7 +125,7 @@ function disarm() {
 afterEach(() => { disarm(); });
 afterAll(() => {
   disarm();                                 // ⚠️ 先关 watcher（判据：watcher 先关、目录后删）
-  rmrf(SANDBOX);
+  cleanupAll();                             // 再删（recursive+force；失败响亮但不判红 —— 见 tests/_tmp-cleanup.js）
 });
 
 /** **复刻主进程守护的那三步**（`main.js` 的 `bindWatchersFor` + `runBindSyncFor`）：

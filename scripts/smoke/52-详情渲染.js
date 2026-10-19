@@ -47,7 +47,11 @@
  *
  *  ⑤ **既有语料不被砸**（§⑨-7 的规模版）：拿 `scripts/detail-census.js` 的**现算**真值当分母，
  *     把全仓 detail（分批传进页面）逐个消毒后比"浏览器 `textContent`" vs "`stripHtml`（我们的实现）"
- *     —— **判据 = 消毒没动过字节的那些必须逐字相同 + 覆盖面 ≥ 现算真值**（不写死任何语料数字）。
+ *     —— 判据 = 消毒没动过字节的那些必须逐字相同 + 消毒改过的那些原有文字一个不少。
+ *     ⚠️ 覆盖面这一项**2026-10-19 复核批改成三档**（实测假红驱动）：原来分母取**真实**目录、
+ *     字节取**沙箱副本**（两个快照）⇒ 同机有别的批在写语料时 `items===total` 恒假 ⇒ **每次都红**。
+ *     现在 = 真漏读快照里的条目 ⇒ 判红；只有"真实 vs 快照"不同 ⇒ **只报告**并打印 Δ + 真实侧指纹证据。
+ *     口径依据与三条读数见 `.review/20261019-域52真渲染复核/复核读数.md`。
  *  ⑥ **渲染不进数据**（§⑨-9）：渲染前后项目 JSON 的 sha256 逐字节相同；无链接节点的 `innerHTML`
  *     与 CLI 的 `detail` 逐字节相同（默认档不变）。
  *
@@ -1394,13 +1398,54 @@ const assertions = [
     name: 'smoke-52 既有 detail 语料不被砸（§⑨-7 的规模版）：把**现算**出来的全仓 detail 分批送进页面逐个消毒，'
       + '断言①"消毒没动过字节的那些"里浏览器 `textContent` 与 `src/convert.js` 的 `stripHtml` **逐字相同**；'
       + '②"消毒改过的那些"里**原有可见文字一个不少**（子序列判定——补上"消毒删字"那条溜过①的路）；'
-      + '③覆盖面 ≥ 现算真值（分母来自 scripts/detail-census.js，**不写死任何语料数字**）',
+      + '③覆盖面**三档**：真漏读快照里的条目 ⇒ **判红**；"真实目录现算"与"本轮快照"不同（有人在并发写语料）⇒ '
+      + '**只报告**并打印 Δ + 真实侧指纹证据（**不判红**，见本条开头那段实测依据）。'
+      + '分母一律来自 scripts/detail-census.js 的现算，**不写死任何语料数字**',
     run: async (ctx) => {
       const cen = census.censusAll();
       if (cen.error) return { ok: false, text: '采不到真值：' + cen.error };
       const total = census.total(cen.rows).withDetail;
       if (!(total > 0)) {
         return { ok: false, text: '现算真值 = 0 个含 detail 的节点 ⇒ **采不到真值不是通过**（项目被清空？读错目录？）' };
+      }
+      /* ⭐ 【2026-10-19 复核批】把"覆盖面"改成**三档**，理由是一条实测假红：
+       *   本条原来拿 `census.censusAll()`（**真实** `projects/`，断言运行那一刻）当分母，却从**沙箱副本**
+       *   （进程启动那一刻拷的）读 detail 字节 —— **两个快照**。只要同机有别的批在写语料，两者必然不等
+       *   ⇒ `items.length === total` 恒假 ⇒ **每次都红**，而红的是"别人在写"，不是产品缺陷。
+       *   实测（本批）：`SMOKE_ONLY=52` 一次运行里 真实=1507 / 副本=1457（Δ=50），同一秒
+       *   `book-linux-src-fun.json` 的 sha1 在 14:49:49 变过一次（真实=c406fdb56040 → 现值 cf495caefa94）。
+       *   ⚠️ 同域的 ⑧b（真实语料**真渲染**）**早就**是这个口径（分母取副本、真实目录只作参照打印）——
+       *   本条是与它对齐，不是新发明一种口径。
+       * ⇒ 现在的判定分三档（答案空间要 ≥ 状态数，见 B4b；三档都要能说出"它凭什么是这个档"）：
+       *   ① **覆盖一致**：`items.length === copyTotal === total` ⇒ 通过（覆盖 100% 且与真实现算相同）；
+       *   ② **只报告（不判红）**：`items.length === copyTotal` 而 `total !== copyTotal`
+       *      ⇒ 我们**没漏副本里的任何一条**，只是"真实目录"与"本轮快照"不同；打印 Δ + 真实侧文件指纹读数
+       *      + 放行理由。**这一档不是豁免、也不是放宽**：真漏读会落到 ③；
+       *   ③ **判红**：副本里读不出/缺项目（`copyBad`/`copyMissing`）或 `items.length < copyTotal`
+       *      ⇒ 我们**漏读了快照里的 N 条**（真缺陷 / 采不到真值）。
+       * 免责边界（如实写）：副本被"撕成半截但还能解析"这种退化，本条**判不了** —— 那是
+       * `scripts/smoke/tear-snapshot.js` 的诊断（它只报告、不判红），别以为本条的 ② 覆盖了它。 */
+      const copyDir = process.env.AI_MINDMAP_PROJECTS_DIR || '';
+      /** 真实侧 `.json` 的指纹（**独立于被渲染的字节**：判"两个快照不同"这件事的正证据） */
+      const realFp = (() => {
+        const out = {};
+        for (const row of cen.rows) {
+          try {
+            out[row.project] = crypto.createHash('sha1')
+              .update(fs.readFileSync(path.join(ROOT, 'projects', row.project, row.project + '.json')))
+              .digest('hex').slice(0, 12);
+          } catch (e) { out[row.project] = 'ERR'; }
+        }
+        return out;
+      })();
+      /* 副本口径的**现算**分母：**复用** `census.censusProjectFile`（不在本文件写第二份数法），
+       * 且**独立于** `items` 的收集路径（items 读不出来的文件在这里会显式记成 bad/missing ⇒ 判红）。 */
+      const copyStats = { total: 0, bad: [], missing: [] };
+      for (const row of cen.rows) {
+        const f = path.join(copyDir, row.project, row.project + '.json');
+        if (!copyDir || !fs.existsSync(f)) { copyStats.missing.push(row.project); continue; }
+        try { copyStats.total += census.censusProjectFile(f, row.project).withDetail; }
+        catch (e) { copyStats.bad.push(row.project + '：' + ((e && e.message) || e)); }
       }
       // 收集语料（读的是冒烟沙箱副本，绝不碰真实数据）
       const items = [];
@@ -1496,19 +1541,52 @@ const assertions = [
         }
       }
       const cover = items.length ? (checked / items.length) : 0;
-      const ok = items.length === total && unchangedMismatch === 0 && thrown === 0 && textLoss === 0
-        && cover >= 0.999;
+      /* ---- 三档判定（口径见本条开头那段注释） ---- */
+      const snapshotDelta = total - copyStats.total;          // 真实 − 副本（**只报告**）
+      const readShort = copyStats.total - items.length;       // 副本里我们**没读到的条数**（>0 ⇒ 判红）
+      const copyBroken = copyStats.missing.concat(copyStats.bad);
+      const tier = (copyBroken.length || readShort > 0) ? '判红'
+        : (snapshotDelta !== 0 ? '只报告' : '覆盖一致');
+      /* 真实侧指纹在断言窗口里变没变（证据；只打印，不参与判定 —— 真实侧的任何变化都**不是**本次写的，
+       * 本次只写沙箱副本；"真实数据零写入"那条由 main.js 的守卫单独判）。 */
+      const realFpAfter = {};
+      for (const row of cen.rows) {
+        try {
+          realFpAfter[row.project] = crypto.createHash('sha1')
+            .update(fs.readFileSync(path.join(ROOT, 'projects', row.project, row.project + '.json')))
+            .digest('hex').slice(0, 12);
+        } catch (e) { realFpAfter[row.project] = 'ERR'; }
+      }
+      const realMoved = Object.keys(realFp).filter((k) => realFp[k] !== realFpAfter[k])
+        .map((k) => k + '(' + realFp[k] + '→' + realFpAfter[k] + ')');
+      const ok = unchangedMismatch === 0 && thrown === 0 && textLoss === 0
+        && tier !== '判红';
       return {
         ok: ok,
-        text: '现算（scripts/detail-census.js）：' + cen.rows.length + ' 个项目 · 含 detail 的节点 **' + total + '** 个'
-          + '（**这个数会随并发写入变，判据只拿它当分母，不写死**）'
-          + ' · 送进页面逐个消毒=' + checked + '（覆盖面 ' + (cover * 100).toFixed(1) + '%）'
+        text: '现算（scripts/detail-census.js）：' + cen.rows.length + ' 个项目'
+          + ' · **真实** projects/ 里含 detail 的节点 = ' + total + '（**参照读数**：这个数会随并发写入变）'
+          + ' · **本轮快照**（沙箱副本，与被渲染的字节同一份）里含 detail 的节点 = ' + copyStats.total
+          + '（缺项目 ' + copyStats.missing.length + ' / 读不出 ' + copyStats.bad.length + '）'
+          + ' ⇒ 覆盖面判定档 = **' + tier + '**'
+          + (tier === '只报告'
+            ? '（**放行理由**：我们**没有漏副本里的任何一条**（items ' + items.length + ' == 副本现算 ' + copyStats.total
+              + '），只是"真实目录现算 ' + total + '" 与"本轮快照 ' + copyStats.total + '" 差 Δ=' + snapshotDelta
+              + ' 条 —— 两个快照不同，不是缺陷；真实侧文件指纹在本断言窗口内的变化：'
+              + (realMoved.length ? realMoved.join(' · ') : '**无**（变化发生在副本拍下之后、断言开始之前）')
+              + '。⚠️ 这一档**不**等于"覆盖了全仓"：本节只对**快照里的 ' + copyStats.total + ' 条**负责）'
+            : '')
+          + (tier === '判红'
+            ? '（**判红依据**：' + (copyBroken.length ? '副本里读不出/缺项目 ' + JSON.stringify(copyBroken) : '')
+              + (readShort > 0 ? '我们漏读了快照里的 ' + readShort + ' 条（items ' + items.length
+                + ' < 副本现算 ' + copyStats.total + '）' : '') + '）'
+            : '')
+          + ' · 送进页面逐个消毒=' + checked + '（占本轮语料 ' + (cover * 100).toFixed(1) + '%）'
           + ' · 消毒**没动过字节**的那些里文字不一致=' + unchangedMismatch + '（应 0）'
           + ' · 消毒**改过**的那些里"原有可见文字被删"=' + textLoss + '（应 0：允许新增占位文字，不允许丢字）'
           + (lossSamples.length ? ' · 丢字样本=' + JSON.stringify(lossSamples) : '')
           + ' · 消毒抛错=' + thrown + '（应 0）' + (errSamples.length ? ' · 抛错样本=' + JSON.stringify(errSamples) : '')
-          + ' · 被消毒改动过的=' + changed + ' 个（这些**不是**判红：含被禁构造的样本，消毒改它们正是设计意图 ——'
-          + '实测这 2 个是 `<table border=…>` 一类**表外属性**被删）'
+          + ' · 被消毒改动过的=' + changed + ' 个（**不判红**：含被禁构造的样本，消毒改它们正是设计意图 ——'
+          + '逐条成因见 .review/20261019-域52真渲染复核/复核读数.md）'
           + (samples.length ? ' · 不一致样本=' + JSON.stringify(samples) : '')
       };
     }

@@ -43,18 +43,19 @@
  * ============================================================ */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 
 /** A 组的**结构断言**要读这个文件的源码（归一化的谓词必须只有一处） */
 const SRC_ITEM_SRC = fileURLToPath(new URL('../src/item-src.js', import.meta.url));
 
-/* ---- ① 沙箱：必须在 require cli/main.js 之前设好 ---- */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-s4-'));
+/* ---- ① 沙箱：必须在 require cli/main.js 之前设好 ----
+ * 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（下面的 `afterAll`）。 */
+const SANDBOX = makeTmp('mm-s4-');
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 
 const { invokeSync } = require('../cli/main.js');
@@ -248,7 +249,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* 收尾失败不影响判定 */ }
+  cleanupAll();
 });
 
 /** `patch` 里的取条目（与 `itemIn` 同口径，但作用在"还没落盘的 j"上） */

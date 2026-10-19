@@ -19,11 +19,11 @@
  * ============================================================ */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECK = path.join(ROOT, 'scripts', 'dsh-embedded-check.js');
@@ -51,7 +51,9 @@ const len = (s) => Buffer.byteLength(s);
  * —— 那些字段名正是本文件要锁的东西。
  */
 function buildInstance(opts = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-embedded-check-'));
+  /* 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`：**创建即登记**（本文件多处 `buildInstance()`
+   * 是在 describe 的 `beforeAll` / 用例体里建的，任何"只删某个局部变量"的收尾都覆盖不全）。 */
+  const root = makeTmp('mm-embedded-check-');
   const home = path.join(root, 'dsh-home');
   const profile = path.join(home, 'profiles', 'web');
   const opId = 'migrate-test00000000';
@@ -109,12 +111,16 @@ function buildInstance(opts = {}) {
   return { root, home, profile, pkgDir, payload };
 }
 
-const rm = (dir) => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* 清理失败不影响结论 */ } };
+/* 删盘**唯一入口**是 `cleanupAll` —— 别处不再各写一份 `rmSync`。
+ * ⚠️ 这里这条是**模块级兜底**：本文件有多个 describe 各自建实例（`buildInstance()` 四处 +
+ *   `beforeAll` 里一处），而"最后一个 describe"（§5 模式声明）里是**用例体内**各建一个 ——
+ *   只在用例体内建、又没有自己的 `afterAll` ⇒ 那三个目录只能靠这条兜底删（实测：去掉它 ⇒ 一次漏 3 个）。 */
+afterAll(cleanupAll);
 
 describe('--json 的形状：机器侧能直接读', () => {
   let r, tmp;
   beforeAll(() => { tmp = buildInstance(); r = runCheck(tmp.home); });
-  afterAll(() => rm(tmp.root));
+  afterAll(cleanupAll);
 
   it('是合法 JSON 数组、10 项、编号 1..10 不重不漏', () => {
     expect(Array.isArray(r.items)).toBe(true);
@@ -143,7 +149,7 @@ describe('--json 的形状：机器侧能直接读', () => {
 describe('真实字段名：第 3/4/5/10 项按回执 + 投递包清单判定', () => {
   let r, tmp;
   beforeAll(() => { tmp = buildInstance(); r = runCheck(tmp.home); });
-  afterAll(() => rm(tmp.root));
+  afterAll(cleanupAll);
 
   it('第 3 项 PASS：现网 bundles 与**投递包副本**逐字一致（回执里没有 bundles 字段 ✗）', () => {
     expect(r.by.get(3).state).toBe('PASS');
@@ -184,12 +190,12 @@ describe('真实字段名：第 3/4/5/10 项按回执 + 投递包清单判定', 
 describe('缺文件的 home：不崩，且不许静默放过', () => {
   let r, tmp;
   beforeAll(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-embedded-empty-'));
+    tmp = makeTmp('mm-embedded-empty-');
     fs.mkdirSync(path.join(tmp, 'dsh-home', '.agent-presets', 'test-preset'), { recursive: true });
     fs.writeFileSync(path.join(tmp, 'dsh-home', '.agent-presets', 'test-preset', 'preset.yml'), 'name: test-preset\n');
     r = runCheck(path.join(tmp, 'dsh-home'));
   });
-  afterAll(() => rm(tmp));
+  afterAll(cleanupAll);
 
   it('没有 profile/package.json ⇒ 第 3 项 FAIL（不是崩，也不是 UNKNOWN 糊过去）', () => {
     expect(r.by.get(3).state).toBe('FAIL');
@@ -218,7 +224,7 @@ describe('判别力：坏掉之后必须变红（三个故障同装一个实例�
     tmp = buildInstance({ dirtiesPayload: true, extraBundles: ['dest-only-plugin'], extraDeployed: ['task-board/board.json'] });
     r = runCheck(tmp.home);
   });
-  afterAll(() => rm(tmp.root));
+  afterAll(cleanupAll);
 
   it('载荷被动过 ⇒ 第 4 项 FAIL，并同时报出"期望 / 实际"两侧', () => {
     expect(r.by.get(4).state).toBe('FAIL');
@@ -258,7 +264,6 @@ describe('第 5 项「模式声明」的判别力（2026-10-08 新判据）', ()
     const r = runCheck(tmp.home);
     expect(r.by.get(5).state).toBe('PASS');
     expect(r.by.get(5).detail).toContain('mymode');
-    rm(tmp.root);
   });
 
   it('声明了、但 patch 里**没有**那一行 ⇒ FAIL（这才是要抓的失败形态：以为加了、其实没生效）', () => {
@@ -267,7 +272,6 @@ describe('第 5 项「模式声明」的判别力（2026-10-08 新判据）', ()
     const r = runCheck(tmp.home);
     expect(r.by.get(5).state).toBe('FAIL');
     expect(r.by.get(5).detail).toContain('patch 里没有对应行');
-    rm(tmp.root);
   });
 
   it('声明了、但 patch 文件根本不存在 ⇒ FAIL（不是崩、也不是 UNKNOWN 糊过去）', () => {
@@ -276,6 +280,5 @@ describe('第 5 项「模式声明」的判别力（2026-10-08 新判据）', ()
     const r = runCheck(tmp.home);
     expect(r.by.get(5).state).toBe('FAIL');
     expect(r.by.get(5).detail).toContain('找不到 patch 文件');
-    rm(tmp.root);
   });
 });

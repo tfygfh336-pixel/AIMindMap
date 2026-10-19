@@ -15,16 +15,17 @@
  * ============================================================ */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 const tear = require('../scripts/smoke/tear-snapshot.js');
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-tear-'));
+/* 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（下面的 `afterAll`）。 */
+const WORK = makeTmp('mm-tear-');
 
 const REAL = path.join(WORK, 'real');
 const COPY = path.join(WORK, 'copy');
@@ -45,7 +46,7 @@ beforeAll(() => {
   fs.cpSync(REAL, COPY, { recursive: true });
 });
 afterAll(() => {
-  try { fs.rmSync(WORK, { recursive: true, force: true }); } catch (e) { /* 清不掉不影响结论 */ }
+  cleanupAll();
 });
 
 describe('口径：只比 .json（含点文件）、以副本清单为准、读不出来算"真实缺失"', () => {

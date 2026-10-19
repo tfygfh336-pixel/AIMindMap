@@ -14,10 +14,10 @@
  *   - 非法项目名（路径穿越）被拒
  *   - **并发版本闸门**：expectVersion 过期时拒写且磁盘一字不动（见文件末段）
  * ============================================================ */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 import { createStore, versionOf, versionOfText } from '../src/data-store.js';
 
 let root;
@@ -34,14 +34,23 @@ const tmpLeftovers = (dir) =>
   fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.tmp')) : [];
 
 beforeEach(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-ds-'));
+  /* 每个用例一个**独立**沙箱根：建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记）。
+   * ⚠️ 旧实现是"裸 mkdtemp + afterEach 删**当前值**"——只要有一个用例在体里另建目录，
+   *   那个目录就没人引用、也没人删（`tests/bindings.test.js` 的病就是这个形状：当时一次漏 21 个；
+ *   该文件现为 28 用例 ⇒ 一次登记 49 个目录 = 28 × `beforeEach` + 21 × 用例体内）。 */
+  root = makeTmp('mm-ds-');
   store = createStore(root); // 不传 validate：本文件只测存储层本身
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
-  try { fs.rmSync(root, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+  /* 收尾**不在这里**：删盘唯一入口是文件末尾的 `afterAll(cleanupAll)`（`afterEach` 只清引用）。
+   * 理由：`afterEach` 只能删它看得见的那个变量，删不到"建了却没被引用"的目录 —— 那正是漏盘的形状。 */
+  root = null;
 });
+
+/* 收尾**只此一处**：删掉所有登记过的沙箱根（本文件每个用例一个）。形态见 `tests/_tmp-cleanup.js`。 */
+afterAll(cleanupAll);
 
 describe('data-store', () => {
   it('write → read 往返（落点 projects/<n>/<n>.json）', () => {

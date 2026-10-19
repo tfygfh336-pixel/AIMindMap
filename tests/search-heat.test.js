@@ -26,16 +26,18 @@
  *      CLI 子进程的，那正是要证明的"同源"路径）。
  * ============================================================ */
 import { describe, it, expect, afterAll } from 'vitest';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 const fs = require('fs');
 
 /* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ---- */
-const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-search-heat-'));
+/* ---- ① 先在临时目录上建项目根（必须在 require cli/main.js 之前） ----
+ * 建目录走 `tests/_tmp-cleanup.js` 的 `makeTmp`（创建即登记），收尾只此一处（见下面的 `afterAll`）。 */
+const SANDBOX = makeTmp('mm-search-heat-');
 process.env.AI_MINDMAP_PROJECTS_DIR = SANDBOX;
 
 const { invokeSync } = require('../cli/main.js');
@@ -62,9 +64,9 @@ if (path.resolve(core.PROJECTS_DIR) !== path.resolve(SANDBOX)) {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const KW = '闸门';
 
-afterAll(() => {
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* 沙箱删不掉不影响判定 */ }
-});
+/* 收尾只此一处：删掉**所有**登记过的临时根（含将来新加的）——形态见 `tests/_tmp-cleanup.js`。
+ * 旧实现只删 `SANDBOX` 一个变量、且把失败吞掉 ⇒ "建了却没被引用"的目录会静默留下。 */
+afterAll(cleanupAll);
 
 /* ---------------- 夹具 ---------------- */
 

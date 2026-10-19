@@ -17,17 +17,25 @@
  * ⚠️ 判据一律读**盘上的回执文件**（真值），不是读桩里记下的调用次数 ——
  *    "回执写没写出去"才是调用方唯一能看见的东西 ✓
  * ============================================================ */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 const control = require(path.resolve(__dirname, '..', 'src', 'control.js'));
 const { createControlPoller } = require(path.resolve(__dirname, '..', 'src', 'control-poll.js'));
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'mm-control-poll-'));
+/* ---------------- 临时目录：**收集每一个**，收尾一次删干净 ----------------
+ * 病（2026-10-19 实测）：`tmp()` 在本文件里被 **7 个用例各调一次**（每个用例一个独立目录），
+ * 旧实现只把"最后一个路径"留在变量里 ⇒ 其余 6 个永久留在 `%TEMP%`
+ * （读数：一次 `npx vitest run tests/control-poll.test.js` ⇒ `%TEMP%` 里 `mm-control-poll-*` **+7**）。
+ * ⇒ 现在**每次创建都登记**，删盘的唯一入口是 `afterAll(cleanupAll)`（没有别的 `fs.rmSync` 收尾）。
+ * 清理的形态与语义（`recursive + force` = 550ed82 的教训 / 失败响亮但不判红 / 三态读数）**收在公共件**
+ * `tests/_tmp-cleanup.js` —— 本文件只声明"用哪个前缀"，不再复制那 15 行。 */
+const tmp = () => makeTmp('mm-control-poll-');
+afterAll(cleanupAll);
 
 /** 一个可控的"慢命令"：返回 { promise, resolve } —— 用来把"异步期间又轮询了一拍"写实 */
 function deferred() {
