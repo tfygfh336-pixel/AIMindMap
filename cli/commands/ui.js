@@ -243,7 +243,7 @@ module.exports = {
     // 这一行是给"我明明拖宽了它还是不显示"准备的：装不下不再是静默的 ✗
     if (s.contentBudget) {
       const b = s.contentBudget;
-      ctx.out('内容预算: ' + b.tier + '（区间 ' + b.min + '…' + b.max + '，步进 ' + b.step
+      ctx.out('内容预算: ' + b.tier + '（带宽区间 ' + b.min + '…' + b.max + '（含控制栏），步进 ' + b.step
         + '，已加 ' + b.stepUps + ' 步，回退点 ' + b.prev + '）'
         + (b.overflowAtCeiling ? '｜**内容仍装不下：已到宽度上限**' : '')
         + (b.note ? '｜' + b.note : ''));

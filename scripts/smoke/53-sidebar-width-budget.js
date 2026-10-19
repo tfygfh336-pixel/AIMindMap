@@ -35,11 +35,12 @@
  * ============================================================ */
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const sidebar = require(path.join(__dirname, '..', '..', 'main-dsh-sidebar.js'));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const RAIL = 30;                       // 与 main-dsh-sidebar.js 的 RAIL_WIDTH 同源
+const RAIL = sidebar.RAIL_WIDTH;       // **就是** main-dsh-sidebar.js 的 RAIL_WIDTH（不再手抄 30）
 
 /** 装一条**可控读数**：`decide(页面视口宽)` 返回 `{scrollWidth, overflow}`。
  *  页面视口报"**这条宽度本应画成的边**"（`state.width − 控制栏`，窗口更窄时取实际占宽）——
@@ -99,45 +100,84 @@ module.exports = [
   {
     name: '侧栏宽度预算：状态机（纯函数）—— 溢出才加一步 / 清零就停 / 到上界就上报',
     run: async () => {
-      const MIN = sidebar.RIGHTBAR_PAGE_MIN;          // 756 = 内核右栏下限（侧栏宽，含控制栏）
+      /* ⚠️ 两个量必须分得清（2026-10-19 单位修复批）：
+       *   PAGE_MIN = 756 = **页面视口**门槛（内核 computeColumns 算出来的）；
+       *   BAND     = 786 = **侧栏带宽**下限 = PAGE_MIN + RAIL_WIDTH(30)。
+       *   上一版拿 PAGE_MIN 当带宽 ⇒ 带 756 ⇒ 视口 726 ⇒ available 270 < 300 ⇒ 右栏仍算 0 宽，
+       *   而当时的断言期望值也写的 756 ⇒ 门禁锁着缺陷、照样绿。下面这一半就是那个缺口的判据。 */
+      const PAGE_MIN = sidebar.RIGHTBAR_PAGE_MIN;     // 756 = 内核右栏下限（**页面视口**口径）
+      const BAND = sidebar.RIGHTBAR_MIN_BAND;         // 786 = 带宽口径 = PAGE_MIN + RAIL
+      const RAILPX = sidebar.RAIL_WIDTH;              // 30 = 控制栏（导出的唯一真源）
       const MAX = sidebar.MAX_WIDTH;                  // 900 = 上界
       const STEP = sidebar.WIDTH_STEP_PX;
       const T = (cur, lastOverflow, rightbarOpen) => sidebar.budgetTargetWidth(
         cur, { lastOverflow: lastOverflow }, rightbarOpen === undefined ? true : rightbarOpen);
-      // ① 右栏开着但侧栏**窄到垫得动**（这里 672：view = 642 < 756）⇒ 垫到**内核下限本身**
+      // ① 右栏开着但侧栏**窄到垫得动**（这里 BAND−STEP = 732 < 786）⇒ 垫到**带宽下限本身**
       //   （不是一步到上界）—— 这是"预算档"最要紧的一条读数
-      const atFloor = T(MIN - RAIL - STEP, null);
-      //    已经够宽（view = 1482 ≥ 756）⇒ 别动
-      const b = T(MIN * 2, null);
-      //    刚好在下限上（756：view 726 < 756 但**垫不上去了**）⇒ 这一支不该再回 below-floor
+      const atFloor = T(BAND - STEP, null);
+      //    已经够宽（BAND*2 ≥ 786）⇒ 别动
+      const b = T(BAND * 2, null);
+      //    刚好在带宽下限上（786：垫不上去了）⇒ 这一支不该再回 below-floor
       //   （垫不动却照样 return 会吞掉"因溢出加一步" ⇒ 见 budgetTargetWidth 里的注释）
-      const atExact = T(MIN, null);
+      const atExact = T(BAND, null);
+      //    680（< 786）⇒ 必须垫到 786：这一条就是"756 那个旧值"的判别力所在
+      const fromOld = T(PAGE_MIN, null);
       // ② 读到"装得下" ⇒ 停在原地（这就是"测量驱动"；若实现改成"一律加到上界" ⇒ 这里必红）
       const c = T(810, false);
       // ③ 仍溢出且没到上界 ⇒ 加一步
-      const d = T(MIN, true);
+      const d = T(BAND, true);
       const d2 = T(810, true);
       // ④ 到上界仍溢出 ⇒ 不动（由编排如实上报；若实现"超上界继续加" ⇒ 这里必红）
       const e = T(MAX, true);
       // ⑤ 右栏关着时不算"下限"这条（宽度留给用户与既有语义）
-      const f = T(MIN - 100, null, false);
-      const ok = atFloor.width === MIN && atFloor.dir === 'below-floor'
-        && b.width === MIN * 2 && b.dir === 'fits'
-        && atExact.width === MIN && atExact.dir === 'fits'
+      const f = T(BAND - 100, null, false);
+      /* ── 单位 + 内核锚（本批新增的判据，零额外进程：都在本断言内现算）─────────────────
+       * 三件事，缺一条这个 30px 缺口就会再次溜过门禁：
+       *  a) 换算关系：BAND === PAGE_MIN + RAIL（两个名字不许退化成同一个数）；
+       *  b) 内核现算：把 BAND 换成页面视口后，套 vendor 的 `computeColumns` 公式，available 必须 ≥ 300，
+       *     而且**少一个步进就够不着**（786−54 ⇒ available 246 < 300）⇒ 这条不能让地板虚高；
+       *  c) 内核源码锚：三个常数（56 / 400 / 300）是**内核私有事实**，直接回读 vendor 源码确认公式还在 ——
+       *     内核升级改了预算 ⇒ 这里当场红，提示重新推导（而不是继续拿旧数字判）。 */
+      const KERNEL = { rail: 56, center: 400, rightbarMin: 300 };   // 照抄 computeColumns
+      const bandOk = BAND === PAGE_MIN + RAILPX;
+      const viewportAtBand = BAND - RAILPX;                          // 786 − 30 = 756
+      const availableAtBand = viewportAtBand - KERNEL.rail - KERNEL.center;
+      const availableMinusStep = (BAND - STEP - RAILPX) - KERNEL.rail - KERNEL.center;
+      const kernelMathOk = availableAtBand >= KERNEL.rightbarMin
+        && availableMinusStep < KERNEL.rightbarMin;
+      const kernelFile = path.join(__dirname, '..', '..', 'vendor', 'dsh', 'app', 'node_modules',
+        '@deepseek-ai', 'dsh-client-ui-layout', 'lib', 'client.js');
+      let kernelSrc = '';
+      try { kernelSrc = fs.readFileSync(kernelFile, 'utf8'); } catch (e) { kernelSrc = ''; }
+      const kernelAnchorOk = !!kernelSrc
+        && kernelSrc.indexOf('const available = viewport - s - 400;') >= 0
+        && kernelSrc.indexOf('available < 300') >= 0
+        && kernelSrc.indexOf('collapsedWidth = 56') >= 0;
+      const ok = atFloor.width === BAND && atFloor.dir === 'below-floor'
+        && b.width === BAND * 2 && b.dir === 'fits'
+        && atExact.width === BAND && atExact.dir === 'fits'
+        && fromOld.width === BAND && fromOld.dir === 'below-floor'
         && c.width === 810 && c.dir === 'fits'
-        && d.width === MIN + STEP && d.dir === 'stepped'
+        && d.width === BAND + STEP && d.dir === 'stepped'
         && d2.width === 810 + STEP && d2.dir === 'stepped'
         && e.width === MAX && e.dir === 'at-ceiling'
-        && f.width === MIN - 100 && f.dir === 'fits';
+        && f.width === BAND - 100 && f.dir === 'fits'
+        && bandOk && kernelMathOk && kernelAnchorOk;
       return {
         ok: ok,
-        text: '区间 ' + MIN + '…' + MAX + ' 步进 ' + STEP
-          + '｜垫得动 ' + (MIN - RAIL - STEP) + '（view ' + (MIN - 2 * RAIL - STEP) + '）⇒'
-          + atFloor.width + '/' + atFloor.dir + '（不是一步到 ' + MAX + '）'
-          + '｜刚好在下限 ' + atExact.width + '（view ' + (MIN - RAIL) + '）⇒' + atExact.dir
-          + '｜已够 ' + (MIN * 2) + '⇒' + b.dir + '｜清零 810⇒' + c.dir
-          + '｜溢出 810⇒' + d2.width + '/' + d2.dir
+        text: '带宽区间 ' + BAND + '…' + MAX + '（页面视口 ' + PAGE_MIN + ' + 控制栏 ' + RAILPX
+          + '）步进 ' + STEP
+          + '｜垫得动 ' + (BAND - STEP) + ' ⇒' + atFloor.width + '/' + atFloor.dir + '（不是一步到 ' + MAX + '）'
+          + '｜旧值 ' + PAGE_MIN + '（= 上一版的地板）⇒' + fromOld.width + '/' + fromOld.dir + '（必须垫到 ' + BAND + '）'
+          + '｜刚好在带宽下限 ' + atExact.width + '⇒' + atExact.dir
+          + '｜已够 ' + (BAND * 2) + '⇒' + b.dir + '｜清零 810⇒' + c.dir
+          + '｜溢出 810⇒' + d2.width + '/' + d2.dir + '｜溢出 ' + BAND + '⇒' + d.width + '/' + d.dir
           + '｜到上界 ' + MAX + '⇒' + e.dir + '｜右栏关着⇒' + f.dir
+          + '｜【单位】带宽−控制栏=' + viewportAtBand + '≥ 视口门槛 ' + PAGE_MIN + '=' + bandOk
+          + '｜【内核现算】' + viewportAtBand + '−' + KERNEL.rail + '−' + KERNEL.center + '='
+          + availableAtBand + '≥' + KERNEL.rightbarMin + ' 且少一步=' + availableMinusStep + '<'
+          + KERNEL.rightbarMin + ' ⇒ ' + kernelMathOk
+          + '｜【内核源码锚】' + (kernelAnchorOk ? '56/400/300 公式仍在' : '⚠ 内核公式变了，需重新推导')
       };
     }
   },
@@ -175,11 +215,14 @@ module.exports = [
           && (bB.readings || []).length >= 2;
         sidebar.releaseRightbarRoom();
 
-        const ok = startW === sidebar.RIGHTBAR_PAGE_MIN && firstOver && lastFits
-          && widthA === 900 && okB;
+        /* 口径变更（2026-10-19 单位修复）：起手从「视口门槛 756」改成「带宽下限 786」⇒ 目标 864（内容 860）
+         * 落在 894（= 786 + 54 + 54）而不是 900 —— 够用即止，不再多垫一步。 */
+        const expectA = Math.min(sidebar.MAX_WIDTH, sidebar.RIGHTBAR_MIN_BAND + 2 * sidebar.WIDTH_STEP_PX);
+        const ok = startW === sidebar.RIGHTBAR_MIN_BAND && firstOver && lastFits
+          && widthA === expectA && okB;
         return {
           ok: ok,
-          text: '【A 会清零】起手 ' + startW + ' ⇒ 序列=[' + seqA.join(' → ') + '] 收口=' + widthA
+          text: '【A 会清零】带宽起手 ' + startW + '（页面视口 ' + (startW - RAIL) + '）⇒ 序列=[' + seqA.join(' → ') + '] 收口=' + widthA
             + '（清零=' + lastFits + '）'
             + ' 明细A=' + JSON.stringify((bA.readings || []).map((r) => r.width + '/' + r.viewWidth + '/' + r.scrollWidth + '/' + (r.overflow ? '溢' : '好')))
             + '｜【B 永远溢出】序列=[' + seqB.join(' → ') + '] 末宽=' + stB.width
@@ -253,7 +296,7 @@ module.exports = [
         const released = sidebar.releaseRightbarRoom();
         const after = sidebar.getStatus().width;
         const ok = yielded && released === false && after === 520 && prev === 694
-          && widthAfterAuto === sidebar.RIGHTBAR_PAGE_MIN;
+          && widthAfterAuto === sidebar.RIGHTBAR_MIN_BAND;
         return {
           ok: ok,
           text: '自动加宽的 prev=' + prev + '（' + prev + '→' + widthAfterAuto + '）'
@@ -282,10 +325,10 @@ module.exports = [
         // ① 起点被记下：`autoWide.prev` 与 `contentBudget.prev` 是同一条真值（694）
         const recorded = st1.autoWide && st1.autoWide.prev === 694 && b1.prev === 694;
         // ② 起手 = 内核下限（不是上界）
-        const stepUp = st1.width === sidebar.RIGHTBAR_PAGE_MIN;
+        const stepUp = st1.width === sidebar.RIGHTBAR_MIN_BAND;
         // ③ 再走一步（仍溢出）⇒ **回退点不变**（回退点是"用户原来的宽度"，不是"上一步"）
         await sleep(900);        // 等"加宽自己排的那次注入"过掉（它可能带一条 stale-skip）
-        const stepTarget = sidebar.RIGHTBAR_PAGE_MIN + sidebar.WIDTH_STEP_PX;
+        const stepTarget = sidebar.RIGHTBAR_MIN_BAND + sidebar.WIDTH_STEP_PX;
         await driveBudget('smoke-step', { untilSteps: 1 });
         const st2 = sidebar.getStatus();
         const b2 = st2.contentBudget || {};
@@ -301,7 +344,7 @@ module.exports = [
           ok: ok,
           text: '加宽=' + widened + '（694→' + st1.width + '）｜记下回退点=' + recorded
             + '（autoWide.prev=' + (st1.autoWide && st1.autoWide.prev) + '，budget.prev=' + b1.prev + '）'
-            + '｜再走一步到 ' + st2.width + '（=' + sidebar.RIGHTBAR_PAGE_MIN + '+'
+            + '｜再走一步到 ' + st2.width + '（=' + sidebar.RIGHTBAR_MIN_BAND + '+'
             + sidebar.WIDTH_STEP_PX + ' ? ' + stepped + '）回退点仍=' + b2.prev
             + '｜右栏关掉还原=' + rel + ' ⇒ 宽度 ' + back.width + '（期望 694）'
             + '，预算会话 active=' + (back.contentBudget && back.contentBudget.active)
@@ -357,7 +400,7 @@ module.exports = [
         //   tier 会被后续测量改写，拿它当判据就是"读数与判据不是同一次取样"的同类错 ✗）。
         //   ⚠️ 本环境的读数**必然**不一致（页面视口停在旧边），所以这里不会恒真；
         //   若有人把同源判据删掉 ⇒ 计数不增 ⇒ 本条**当场红**（见注入口径：注入 5）。
-        const noBlindStep = st.width <= sidebar.RIGHTBAR_PAGE_MIN;
+        const noBlindStep = st.width <= sidebar.RIGHTBAR_MIN_BAND;
         const told = b.staleSkips >= 1 && typeof b.note === 'string' && b.note.length > 0;
         const ok = sameSource && noBlindStep && told;
 
@@ -373,7 +416,7 @@ module.exports = [
           innerWidth: Math.max(0, sidebar.getStatus().width - RAIL) - 26,
           scrollWidth: 3000, overflow: true
         }));
-        sidebar.setWidth(sidebar.RIGHTBAR_PAGE_MIN);
+        sidebar.setWidth(sidebar.RIGHTBAR_MIN_BAND);
         const w0 = sidebar.getStatus().width;
         await sidebar.runContentBudget('smoke-self-inconsistent');
         await sleep(150);
@@ -388,7 +431,7 @@ module.exports = [
           text: '真页面读数 视口=' + dom.pageViewportWidth + ' innerWidth=' + dom.innerWidth
             + '（要求的边 ' + want + '，与要求一致=' + (Math.abs(dom.pageViewportWidth - want) <= 2) + '）'
             + '｜预算 tier=' + b.tier + ' 加宽步数=' + b.stepUps + ' 宽度=' + st.width
-            + '（<= ' + sidebar.RIGHTBAR_PAGE_MIN + '=' + noBlindStep + '）'
+            + '（<= ' + sidebar.RIGHTBAR_MIN_BAND + '=' + noBlindStep + '）'
             + '｜同源判据拦下过一次=' + told + '（staleSkips=' + b.staleSkips + '）'
             + '｜喂矛盾读数（页面视口 = 要求的边、innerWidth 少 26）⇒ 不加宽=' + noStepOnInconsistent
             + '（' + w0 + '→' + wAfter + '，步数 ' + bInc.stepUps + '）且记了原因=' + toldInc

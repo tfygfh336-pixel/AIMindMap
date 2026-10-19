@@ -26,6 +26,36 @@
 
 ## [Unreleased]
 
+### 右栏预算是**带宽**口径：地板 756 → 786（`7df6188` 少垫了一个控制栏宽）
+
+`7df6188`（测量驱动批）把右栏档从「一步到 900」改成「起手垫到内核下限 `RIGHTBAR_PAGE_MIN`(756)」——
+**垫错了 30px**：756 是**页面视口**（DSH 页面自己的 viewport）的门槛，而 `state.width` 是**整条带**
+（控制栏 `RAIL_WIDTH` 30 + DSH 页面）。带宽 756 ⇒ 页面视口 726 ⇒ 内核
+`computeColumns()`（`vendor/dsh/app/node_modules/@deepseek-ai/dsh-client-ui-layout/lib/client.js`）算出的
+`available = 726 − 56 − 400 = 270 < 300` ⇒ 右栏宽仍被算成 **0**，也就是那个批次本来要修的
+「点一下就消失」原封不动地回来了；而当时的门禁因为期望值也写的 756 ⇒ **是绿的**。
+
+现在：
+- 新增 `RIGHTBAR_MIN_BAND = RIGHTBAR_PAGE_MIN + RAIL_WIDTH` = **786**（`RAIL_WIDTH` 声明上移到常量区，
+  顶层 `const` 有 TDZ；一处常量只留一处声明），`rightbarRoomTarget` / `budgetTargetWidth` 的判据与目标
+  / `contentBudget.min` / 加宽日志全部改按**带宽**口径，两个量分成了两个名字；
+- 判据不再只比「宽度等于某个数」：域 53 断言 ① 增加**单位 + 内核锚**三条现算读数 ——
+  ①`RIGHTBAR_MIN_BAND − RAIL_WIDTH ≥ RIGHTBAR_PAGE_MIN`；②套内核公式 `available = 视口 − 56 − 400 ≥ 300`
+  且**少一个步进就够不着**（`786−54` ⇒ 246 < 300，防止地板虚高）；③**回读 vendor 内核源码**核对 56/400/300
+  三个常数与公式串仍在（内核升级改了预算 ⇒ 当场红、提示重新推导）。域 24 的 `autoOk` 同批把期望
+  从 756 改成 786（有意的口径变更，不是放宽判据）；
+- 实测（`SMOKE_ONLY=24,53`，`electron . --smoke`）：改前 **15/15 passed / exit 0**（缺陷在绿里，
+  报文里写着 `756/726`），改后 **15/15 passed / exit 0 / 墙钟 12.7s**，读数变成
+  `页面视口 756 / available 300`；判别力：注入「786 → 785」（差 1 像素）/「重放 756」/「关掉不还原」
+  ⇒ 逐条必红，原始 Buffer 逐字节还原后 sha256 + 字节数 + CR 三项相同 ⇒ 复绿。
+- 顺带记录一处**用法偏差**：`main.js:3019` 注释说 `electron . --smoke-only=20,21` 与
+  `SMOKE_ONLY=20,21 npm run smoke` 等价，但开关是 `process.argv.includes('--smoke')`
+  ⇒ 只给 `--smoke-only=` 时冒烟**不跑**、反而把真界面拉起来且永不收口（实测 `isSmoke=false`、零断言）。
+  本批不改（属别的面板），只记读数；正确跑法一律 `electron . --smoke` + `SMOKE_ONLY` 环境变量。
+
+证据：`.review/20261019-侧栏宽度单位修复/`（README / `unit-table.js` / `injection-proof.json` / 冒烟日志）。
+
+
 ### 交接面自检：`ROADMAP` 的「看板卡 28 张」**同日实测是 42 张** ⇒ 交接面不许写会腐的值；并把「证据指针存在」从"只守它自己举的例子"拓宽到全类
 
 - **腐化实录（本批最硬的证据）**：`930e5f2` 我在 `docs/ROADMAP.md` 写了「**DSH 看板卡（28 张）**」，

@@ -160,7 +160,13 @@ module.exports = [
       const watcherState = sidebar.getStatus().rightbarWatcher;
       const installOk = installMs < 6000
         && typeof watcherState === 'string' && watcherState.length > 0;
-      const autoOk = wide1 === true && w1 === sidebar.RIGHTBAR_PAGE_MIN     // 垫到内核下限（不是一步到 900）
+      /* ⚠️ 2026-10-19（单位修复批）**同批反转**一处期望：`w1` 从 `RIGHTBAR_PAGE_MIN`(756) 改成
+       * `RIGHTBAR_MIN_BAND`(786)。理由不是放宽判据：756 是**页面视口**门槛，带宽必须再 + 控制栏 30
+       * （内核 computeColumns: available = viewport − 56 − 400 ≥ 300）—— 上一版拿 756 当带宽，
+       * 于是页面视口只有 726、available 270 ⇒ 右栏照样打不开，而这条断言是绿的。
+       * 末尾那个 `MIN_BAND − RAIL ≥ PAGE_MIN` 就是让「两个口径不许再退化成同一个数」。 */
+      const autoOk = wide1 === true && w1 === sidebar.RIGHTBAR_MIN_BAND     // 垫到内核下限（带宽口径，不是一步到 900）
+        && (sidebar.RIGHTBAR_MIN_BAND - sidebar.RAIL_WIDTH >= sidebar.RIGHTBAR_PAGE_MIN)  // 单位：带宽→视口
         && wide2 === false && w2 === w1                       // 幂等
         && released === true && w3 === 694                    // 还原到用户原宽度
         && alreadyWide === false && w4 === 900;               // 够宽就别动（一个像素都不动）
@@ -199,7 +205,8 @@ module.exports = [
           + '｜【⤢】进=' + onlyOn + '（字形 ' + (railOnly && railOnly.collapse && railOnly.collapse.text) + '）'
           + ' 点击后=' + onlyOff + ' mapClosed=' + mapClosed + ' 页面回来=' + !!(back && back.hasMMApp)
           + '｜【③ 注入】必备项齐全=' + cssOk + ' 契约=' + watcherOk + ' 安装有终态=' + installOk + '（' + installMs + 'ms）'
-          + '｜【右栏自动加宽】加宽=' + wide1 + '/' + w1 + '（内核下限 ' + sidebar.RIGHTBAR_PAGE_MIN
+          + '｜【右栏自动加宽】加宽=' + wide1 + '/' + w1 + '（带宽下限 ' + sidebar.RIGHTBAR_MIN_BAND
+          + '＝视口门槛 ' + sidebar.RIGHTBAR_PAGE_MIN + '+控制栏 ' + sidebar.RAIL_WIDTH
           + '）幂等=' + wide2 + '/' + w2 + ' 还原=' + released + '/' + w3 + ' 够宽不动=' + alreadyWide
           + '/' + w4 + '＝' + autoOk
           + '｜【关后】主内容可见=' + closed.mainShown + ' 让位=' + closed.reserved

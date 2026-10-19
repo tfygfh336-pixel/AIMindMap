@@ -57,6 +57,11 @@ const dockPanelPage = require('./src/dock-panel-page.js');
 
 const SIDEBAR_WIDTH = 420;
 const MIN_WIDTH = 280;
+/* 控制栏宽（拖宽热区 + −/✕ 两个按钮都在这一条里；原先热区 6px、按钮浮在页面上 ✗）。
+ *  声明位置 2026-10-19（单位修复批）从"左缘控制栏"那一节**上移到这里**：下面 `RIGHTBAR_MIN_BAND`
+ *  要做"带宽 → 页面视口"的换算，而顶层 `const` 的初始化表达式受 **TDZ** 约束（写在后面就是
+ *  ReferenceError）⇒ 一份常量只留一处声明，位置按依赖顺序摆 ✓。 */
+const RAIL_WIDTH = 30;
 // 上限 720 → 900：内核右栏在窄模式（view < 1024）下需要
 // available = view − 56（左栏图标轨道）− 400（中间列保底）≥ 300 ⇒ **view ≥ 756px**，
 // 而 720 上限连 756 都够不着 ⇒「打开侧边栏」永远只会"点一下就消失" ✗（实测 694 时 available=238 ✗）。
@@ -67,6 +72,20 @@ const MAX_WIDTH = 900;
 const RIGHTBAR_AUTO_WIDTH = 900;
 // 页面（view）达到这个宽度，内核就会给出 ≥ 300px 的右栏（见上面推导）
 const RIGHTBAR_PAGE_MIN = 756;
+/* ⚠️ **单位**（2026-10-19「侧栏宽度单位修复」批）：上面 756 是**页面视口**（DSH 页面自己的 viewport）
+ *  的门槛，**不是**侧栏这条带的宽度。内核源码（只读引用，不改运行包）——
+ *  `vendor/dsh/app/node_modules/@deepseek-ai/dsh-client-ui-layout/lib/client.js` 的
+ *  `computeColumns(viewport, sidebar, rightbar, collapsedWidth = 56)`：
+ *      const available = viewport - s - 400;      // s = 左栏（视口 < 1024 时自动折叠成图标轨 56）
+ *      const r = rightbar === 0 || available < 300 ? 0 : …;
+ *  ⇒ 视口必须 ≥ 56 + 400 + 300 = 756；而本文件的 `state.width` 是**整条带**
+ *  （控制栏 RAIL_WIDTH + DSH 页面）⇒ 页面视口 = state.width − RAIL_WIDTH
+ *  ⇒ 带的**下限**必须是 756 + 30 = **786**（不是 756）。
+ *  为什么单列一个常量而不是就地 +30：上一批（7df6188）把 756 直接当带宽用 ⇒ 带 756 只得到视口 726、
+ *  `available = 726 − 456 = 270 < 300` ⇒ 内核照样把右栏算成 **0 宽**（"点一下就消失"那个 bug
+ *  原封不动回来 ✗），而当时的门禁因为期望值也写的 756 ⇒ **是绿的**。这个 30px 的差不是数字错，
+ *  是"两个量共用了一个名字" ⇒ 修法是把**两个量分成两个名字**（本常量 + 上面那条）。 */
+const RIGHTBAR_MIN_BAND = RIGHTBAR_PAGE_MIN + RAIL_WIDTH;
 // 内容预算的**步进**（见「内核右栏 ⇄ 侧栏自动加宽」整节）：
 // 一次加多少 / 最多加几次。两者相乘必须 ≥（上界 − 下界）否则永远到不了上界、也就永远不会上报 ✗
 //（144 / 54 = 2.67 ⇒ 3 步到上界 ✓；这里留 6 步的余量，到上界会被 clampWidth 卡住）。
@@ -111,7 +130,7 @@ const state = {
   //                   都给自动档一次机会，而不是"拖过一次就永远不再自动加宽" ✗。
   //   contentBudget—— **内容预算的实况**（档位 / 区间 / 每一步的实测读数 / 到位与否 / 溢出实况）。
   //                   它把"内容装不下"从只进诊断的读数变成**可回退、有读数、能上报**的状态机；
-  //                   区间是 [RIGHTBAR_PAGE_MIN…MAX_WIDTH]，步进 WIDTH_STEP_PX。
+  //                   区间是 [RIGHTBAR_MIN_BAND…MAX_WIDTH]（**带宽**口径，含控制栏），步进 WIDTH_STEP_PX。
   userTookOver: false,
   contentBudget: null,
   // ── 第 4 个原生面板（停靠面板 · 2026-10-18 底座批）─────────────────────────────
@@ -703,8 +722,8 @@ function loadCurrentUrl() {
  *     → '[dsh-drag-end]' → 主进程 endWidthDrag()（"松手即停"）
  *   · 兜底：页面 mousemove 检测 e.buttons===0（丢 mouseup 的场景）也结束；
  *     主渲染层 mouseup / Escape 同样结束（拖拽起点在渲染层边缘热区时） */
-/* 控制栏宽度：拖宽热区 + −/✕ 两个按钮都在这一条里（原先热区 6px、按钮浮在页面上 ✗） */
-const RAIL_WIDTH = 30;
+/* RAIL_WIDTH 的声明在文件顶部常量区（「控制栏宽」那条）—— 顶层 const 有 TDZ，
+ * `RIGHTBAR_MIN_BAND` 在常量区就要用它做带宽→视口的换算。这里只剩拖动计时器。 */
 let dragTimer = null;
 
 /* ---------------- 左侧原生控制栏（把三个浮层并成一条） ----------------
@@ -1216,7 +1235,9 @@ function setWidth(w) {
  * `state.narrow.metrics.overflow`（= 内容是否装不下），但它**只进 dsh-status 诊断**，
  * 全文件没有一处拿它调宽度 ⇒ 自动加宽只有"整侧栏一步加到 900"这一条布尔路径。
  * 现在：
- *   · 右栏档起手 = `RIGHTBAR_PAGE_MIN`（内核硬下限：view ≥ 756 才给得出 ≥ 300px 的右栏），
+ *   · 右栏档起手 = `RIGHTBAR_MIN_BAND`（= 内核硬下限 **756 页面视口** + 控制栏 30 = **786 带宽**）。
+ *     ⚠️ 2026-10-19 修：上一版写的是 `RIGHTBAR_PAGE_MIN` **本身**（把"视口门槛"当成了"带宽"）
+ *     ⇒ 带 756 只得到视口 726、available 270 ⇒ 右栏照样打不开，而门禁是绿的。
  *     不再一步到 `RIGHTBAR_AUTO_WIDTH`；上界仍是 900（= MAX_WIDTH，拖宽的上界）。
  *   · **扳机是读数**：每次测量后看 `metrics.overflow` —— 清零就停（不继续加）；
  *     仍溢出且没到上界 ⇒ `WIDTH_STEP_PX` 一步；到上界仍溢出 ⇒ **如实上报**（见下）。
@@ -1302,7 +1323,7 @@ async function installRightbarWatcher() {
  *   · `reviseWidthBudget()`  —— 细档：每次**实测**到 `metrics.overflow` 之后再看要不要继续走。
  * 两条都不自己改宽：出口只有 `setWidth()` 一处 ✓。 */
 
-/** 右栏开、但侧栏窄于内核下限时，**够用就好**的目标宽 = 内核硬下限本身（不是一步到上界）。
+/** 右栏开、但侧栏窄于内核下限时，**够用就好**的目标宽 = 内核下限**换算成带宽**（786，不是一步到上界）。
  *  为什么要 `Math.min(MAX_WIDTH, ...)`：`Math.max` 的结果超过上界时会被 `setWidth` 截住，
  *  那样"以为加到了、其实没加"就变成静默空转 ✗ ⇒ 这里自己先夹住，调用方看到的就是真值。
  *  ⚠️ 这里**不再额外加一个步进**（第一版写成 `max(下限, 当前 + 步进)`，实测让"垫到下限"落到
@@ -1310,7 +1331,9 @@ async function installRightbarWatcher() {
  *  @param {number} cur 当前侧栏宽度（含控制栏；这里只用于兜底取大）
  *  @returns {number} 目标宽（含控制栏） */
 function rightbarRoomTarget(cur) {
-  return Math.min(MAX_WIDTH, Math.max(RIGHTBAR_PAGE_MIN, cur));
+  // ⚠️ 这里算的是**带宽** ⇒ 地板必须用 RIGHTBAR_MIN_BAND（= 视口门槛 + 控制栏），
+  //    用 RIGHTBAR_PAGE_MIN 就是本批修的那个 30px 错（带 756 ⇒ 视口 726 ⇒ 内核仍算 0 宽）。
+  return Math.min(MAX_WIDTH, Math.max(RIGHTBAR_MIN_BAND, cur));
 }
 
 /** 取一次页面的真实读数。**判据只有一条边：页面自己报的那条**（`documentElement.offsetWidth`）。
@@ -1371,7 +1394,8 @@ function budgetRecord(b, m, dir) {
 function openContentBudget(reason) {
   const b = {
     active: true, reason: reason,
-    min: RIGHTBAR_PAGE_MIN, max: MAX_WIDTH, step: WIDTH_STEP_PX,
+    min: RIGHTBAR_MIN_BAND,            // **带宽**口径（含控制栏）—— 与 width/prev 同一坐标系
+    max: MAX_WIDTH, step: WIDTH_STEP_PX,
     prev: state.autoWide ? state.autoWide.prev : state.width,   // 回退点（与 autoWide 同一个真值）
     tier: 'opened',            // opened → awaiting-measure → measured → settled | unsupported
     settled: false, unresolved: false, overflowAtCeiling: false,
@@ -1390,12 +1414,14 @@ function openContentBudget(reason) {
 function budgetTargetWidth(cur, b, rightbarOpen) {
   // ① 粗档：右栏开着、侧栏还没到内核下限、**而垫到下限确实能把宽度推上去** ⇒ 垫到下限本身。
   //   ⚠️ 最后那个 `target > cur` 不能省（实测踩到）：宽度已经是 756（下限）而 view = 726 < 756 时，
-  //   `rightbarRoomTarget(756)` 夹回来还是 756 ⇒ 若这一支照样 return，就会回一个"什么都没做"
+  //   `rightbarRoomTarget(786)` 夹回来还是 786 ⇒ 若这一支照样 return，就会回一个"什么都没做"
   //   却标着 `below-floor` 的结论，**把本该发生的"因溢出加一步"整支吞掉** —— 表现为
   //   "内容一直溢出、宽度一直不动"（读数序列只剩第一条）。这条条件是它的判别力所在。
   if (rightbarOpen) {
     const target = rightbarRoomTarget(cur);
-    if (Math.max(0, cur - RAIL_WIDTH) < RIGHTBAR_PAGE_MIN && target > cur) {
+    // 判据与目标必须在**同一坐标系**里比：`cur` 是带宽、`RIGHTBAR_MIN_BAND` 也是带宽。
+    // （上一版拿 `cur - RAIL` 去比 RIGHTBAR_PAGE_MIN，却回一个 756 的**带宽**目标 ⇒ 差 30px。）
+    if (cur < RIGHTBAR_MIN_BAND && target > cur) {
       return { width: target, dir: 'below-floor' };
     }
   }
@@ -1533,7 +1559,7 @@ async function runContentBudget(reason) {
  *  语义：让位只持续**一次右栏会话**；用户重开右栏 = 自动档重新获得一次机会 ✓。 */
 function ensureRightbarRoom() {
   const view = Math.max(0, state.width - RAIL_WIDTH);
-  if (view >= RIGHTBAR_PAGE_MIN) return false;          // 已经够宽，不用动
+  if (view >= RIGHTBAR_PAGE_MIN) return false;          // 已经够宽（view = 页面视口，口径 ✓），不用动
   if (state.userTookOver) return false;                 // 用户手动改过 ⇒ 自动档让位（既有语义 ✓）
   if (!state.autoWide) {
     state.userTookOver = false;                         // 新一次会话：复位（复位点只有这一处 ✓）
@@ -1545,7 +1571,7 @@ function ensureRightbarRoom() {
   if (to === state.width) return false;                 // 到上界也还是不够（极窄窗口）⇒ 不动、不报
   setWidth(to);                                         // ★ 同一条出口（右栏档 = 内核下限，不再一步到 900）
   log('内核右栏需要空间 → 自动加宽侧栏 ' + state.autoWide.prev + ' → ' + state.width
-    + '（预算档 ' + RIGHTBAR_PAGE_MIN + '…' + MAX_WIDTH + '：够用即止，装不下才继续加）');
+    + '（预算档 ' + RIGHTBAR_MIN_BAND + '…' + MAX_WIDTH + '：够用即止，装不下才继续加）');
   broadcastStatus();
   return true;
 }
@@ -2403,7 +2429,7 @@ module.exports = {
   setDockPanelBridge, pushDockPanelScript,
   DOCK_DEFAULTS: panelGeometry.DEFAULTS,
   setGeometry,
-  NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN,
+  NARROW_CSS, RIGHTBAR_WATCHER_JS, RIGHTBAR_AUTO_WIDTH, RIGHTBAR_PAGE_MIN, RIGHTBAR_MIN_BAND, RAIL_WIDTH,
   // 默认宽度（`SIDEBAR_WIDTH`）导出给**冒烟断言的前置复位**用：域 17 的"文件预览 ≥60% 视口"隐含
   // "页面没被侧栏让位吃掉宽度"这个前提，而抽样档里上游域（11/12/22）不在 ⇒ 它得自己把前提摆好。
   // 导出而不是在断言里手抄 420 —— 默认宽只许有一处（改这里不用改断言）。
