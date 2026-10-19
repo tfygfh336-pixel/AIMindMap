@@ -115,6 +115,20 @@ function presetPlaneProblem(scan) {
 /** 找出「host 平面按 id 算 = `disabled: true`，但某个 preset 又把它挂回来」的实例 —— **两处行号**。
  *  这就是 `dsh-capabilities.js` 那条叙事**可观察**的落点：不给实例，那句话就只是一句话。
  *
+ *  ⚠️ **它为什么还在 `release.js`（而不是被 `packages[].layers` 替掉）—— 实测，不是偏好**：
+ *    · 本函数判的是 **per-id**（同一个 `- id:` 的**两处行号**），而 `packages[].layers` 是 **per-(包, 层)**；
+ *      实测同一批数据：id 级 **20** 个实例、包级只有 **18** 个 —— 差的那 2 个不是误差，
+ *      是 `tool-subagent` / `tool-subagent-fork`（同一个包 `dsh-tool-subagent`）与
+ *      `tool-subagent-control` / `tool-subagent-list-agents`（同一个包 `dsh-tool-subagent-control`）
+ *      被包级合并了。而"重挂"的证据恰恰是**同一 id 的两处行号**，包级给不出。
+ *    · 包级还判不出「preset 侧自己也是禁用 / 未知」这一档（实测 `dsh-plugin-manager` /
+ *      `dsh-tool-bash` / `dsh-tool-pwsh` / `dsh-tool-ralph` 这 4 个包就在这档里）——
+ *      它们不是实例，包级看到的是"host 禁用 + preset 也出现"，会误当成实例。
+ *    · ⇒ **保留**。但**共用的推导一件都不许在这文件里另写一份**（H1）：
+ *      「装配序列」与「preset 层的载体包」两个推导都从 `src/dsh-capabilities.js` 取
+ *      （`assemblySequenceOf` / `presetCarrierOf`）、行解析用它的 `parseMountRows`。
+ *      2026-10-19 本文件曾自己写着 `const base = 'dsh-base'` + `/^preset:([^/]+)\//` 两处副本，已删。
+ *
  *  口径（写在代码里，别写在散文里）：
  *   · **按 id** 配对，不按包名 —— 实测真实装配里大量禁用写成 `- id: X` + `disabled: true`
  *     （**不给 name**，按 id 覆盖上游同名行，patch 语义）；只按包名配对会把这类**全漏掉**
@@ -129,9 +143,13 @@ function presetPlaneProblem(scan) {
  *    presets:Array<{layer:string,line:number}>}>}
  */
 function findRemounts(layers) {
-  const base = 'dsh-base';
   const byLayer = new Map();
   for (const l of layers || []) byLayer.set(l.layer, l);
+  // 序列起点由模块的 `assemblySequenceOf` 给出（H1：本文件**不再**写 `'dsh-base'` 字面量）。
+  // 起点不在 ⇒ 无从算"有效状态"：返回空，而不是拿别的层当下限凭空算一遍。
+  const anyPreset = (layers || []).filter((l) => l.kind === 'preset')[0];
+  const seqRoot = anyPreset ? dshCaps.assemblySequenceOf(anyPreset)[0] : null;
+  if (!seqRoot || !byLayer.has(seqRoot)) return [];
   /** 一个层里 `id → {state, line}`（只收 inFace 的行；`expr` 单独记，最终不算实例） */
   const rowsOf = (layerName) => {
     const l = byLayer.get(layerName);
@@ -146,23 +164,22 @@ function findRemounts(layers) {
     }
     return map;
   };
-  const baseRows = rowsOf(base);
-  if (!baseRows) return [];
   const out = [];
   for (const l of layers || []) {
     if (l.kind !== 'preset') continue;
-    // preset 层名形如 `preset:dsh-web-app/standard` ⇒ 载体包
-    const m = /^preset:([^/]+)\//.exec(l.layer);
-    const pkg = m ? m[1] : null;
-    const pkgRows = pkg && pkg !== base ? rowsOf(pkg) : null;
-    // 有效状态：base 先、bundle 后（同一 id 后声明者覆盖）
+    // ⚠️ 装配序列与载体包**都从模块取**（同一判断不许两个实现）：seq 由先到后、含本层
+    const seq = dshCaps.assemblySequenceOf(l);
+    const pkg = dshCaps.presetCarrierOf(l.layer);
+    // 有效状态：沿序列依次叠加（同一 id 后声明者覆盖先声明者），本层自己不算"host 侧"
     const eff = new Map();
-    for (const src of [baseRows, pkgRows]) {
+    for (const ln of seq) {
+      if (ln === l.layer) continue;
+      const src = rowsOf(ln);
       if (!src) continue;
       for (const [id, v] of src) {
         const cur = eff.get(id) || { state: 'absent', line: 0, layer: '', name: null };
         if (v.name) cur.name = v.name;
-        if (v.state !== 'absent') { cur.state = v.state; cur.line = v.line; cur.layer = (src === baseRows ? base : pkg); }
+        if (v.state !== 'absent') { cur.state = v.state; cur.line = v.line; cur.layer = ln; }
         eff.set(id, cur);
       }
     }

@@ -216,6 +216,116 @@ describe('buildModel：三轴事实（磁盘 × 装配 × disabled）', () => {
 });
 
 /* ============================================================
+ * 纯 id 覆盖行（`- id: X` + `disabled: …`，**不带 `name`**）必须落到包上
+ * ------------------------------------------------------------
+ * ⚠️ **这里曾是一个静默缺口（2026-10-19 修）**：原 `buildModel` 只按「带 `name:` 的行」归属包，
+ *   于是这类行的 `disabled` **整条记录都不进 `packages[].layers`**（不是读成 `false`，是消失）。
+ *   实测 40 行（其中 33 行自带 `disabled`），全在 host 层、`dsh-web-app` 一层就 24 行。
+ *   ⇒ `dsh-compaction-basic` / `dsh-agent-instructions` 在 `dsh-web-app` 层 `disabled: true`
+ *   在输出里**完全看不到** —— 读报告的人会以为"该能力在 host 层是启用的"。
+ * ============================================================ */
+describe('纯 id 覆盖行的归属：沿装配序列找该 id 的声明行', () => {
+  it('`assemblySequenceOf`：host 层 = `dsh-base` → 本层；preset 层 = `dsh-base` → 载体 → 本层', () => {
+    expect(caps.assemblySequenceOf({ layer: 'dsh-base', kind: 'host' })).toEqual(['dsh-base']);
+    expect(caps.assemblySequenceOf({ layer: 'dsh-web-app', kind: 'host' })).toEqual(['dsh-base', 'dsh-web-app']);
+    expect(caps.assemblySequenceOf({ layer: 'preset:dsh-web-app/standard', kind: 'preset' }))
+      .toEqual(['dsh-base', 'dsh-web-app', 'preset:dsh-web-app/standard']);
+    // 层名不带载体（旧式 / 合成层）也不能少算自己
+    expect(caps.assemblySequenceOf({ layer: 'preset:std', kind: 'preset' })).toEqual(['dsh-base', 'preset:std']);
+  });
+
+  it('`presetCarrierOf`：载体包只有一处推导（release.js 的 findRemounts 也用它）', () => {
+    expect(caps.presetCarrierOf('preset:dsh-web-app/standard')).toBe('dsh-web-app');
+    expect(caps.presetCarrierOf('dsh-web-app')).toBe(null);
+  });
+
+  it('**同层声明的纯 id 行落到包**（`disabled: true` 不再消失）', () => {
+    const m = caps.buildModel({
+      layers: [{ layer: 'dsh-web-app', kind: 'host',
+        text: "- id: x\n  name: '@deepseek-ai/dsh-x'\n- id: y\n  name: '@deepseek-ai/dsh-y'\n- id: x\n  disabled: true\n" }],
+      diskPackages: ['dsh-x', 'dsh-y']
+    });
+    // x 在这一层有"启用"的声明行 + 纯 id 的 `disabled: true` ⇒ 三态合并 启用 > 禁用
+    expect(m.packageLayers.get('dsh-x')).toEqual([{ layer: 'dsh-web-app', disabled: false }]);
+    expect(m.layers[0]).toMatchObject({ overridesById: 1, resolvedById: 1 });
+    expect(m.idUnresolved).toEqual([]);
+  });
+
+  it('**跨层（`dsh-base` 声明、`dsh-web-app` 只给 id + disabled）**：落到声明那个包上', () => {
+    const m = caps.buildModel({
+      layers: [
+        { layer: 'dsh-base', kind: 'host', text: "- id: compaction-basic\n  name: '@deepseek-ai/dsh-compaction-basic'\n" },
+        { layer: 'dsh-web-app', kind: 'host', text: "- id: compaction-basic\n  disabled: true\n" }
+      ],
+      diskPackages: ['dsh-compaction-basic']
+    });
+    expect(m.packageLayers.get('dsh-compaction-basic')).toEqual([
+      { layer: 'dsh-base', disabled: false },
+      { layer: 'dsh-web-app', disabled: true }
+    ]);
+    expect(m.idResolvedRows).toBe(1);
+  });
+
+  it('**解析不到声明 ⇒ 不猜**：`pkg` 不进挂载集，记进 `idUnresolved` 并在报告里点名', () => {
+    const m = caps.buildModel({
+      layers: [{ layer: 'dsh-web-app', kind: 'host', text: "- id: ghost\n  disabled: true\n" }],
+      diskPackages: ['dsh-x']
+    });
+    expect(m.mounted).not.toContain('ghost');
+    expect(m.idUnresolved).toEqual([{
+      layer: 'dsh-web-app', id: 'ghost', line: 1, reason: 'no-declaration',
+      disabledState: 'literal-true', candidates: []
+    }]);
+    const rep = caps.renderReport(m, {});
+    expect(rep).toMatch(/解析不到唯一的包/);
+    expect(rep).toMatch(/ghost/);
+  });
+
+  it('**多候选 ⇒ 不猜**：列出全部候选（照 `expr` 三态口径），不挑一个', () => {
+    const m = caps.buildModel({
+      layers: [{ layer: 'dsh-web-app', kind: 'host', text:
+        "- id: x\n  name: '@deepseek-ai/dsh-a'\n- id: x\n  name: '@deepseek-ai/dsh-b'\n- id: x\n  disabled: true\n" }],
+      diskPackages: ['dsh-a', 'dsh-b']
+    });
+    expect(m.idUnresolved).toHaveLength(1);
+    expect(m.idUnresolved[0].reason).toBe('ambiguous');
+    expect(m.idUnresolved[0].candidates.map((c) => c.pkg)).toEqual(['dsh-a', 'dsh-b']);
+    expect(caps.renderReport(m, {})).toMatch(/多候选：dsh-a/);
+  });
+
+  it('**另一套并列 bundle 里同名 id 的声明与本层无关**（不许跨 bundle 串）', () => {
+    const m = caps.buildModel({
+      layers: [
+        { layer: 'dsh-headless', kind: 'host', text: "- id: x\n  name: '@deepseek-ai/dsh-x'\n" },
+        { layer: 'dsh-web-app', kind: 'host', text: "- id: x\n  disabled: true\n" }
+      ],
+      diskPackages: ['dsh-x']
+    });
+    // `dsh-headless` 不在 `dsh-web-app` 的序列里 ⇒ 该行**解析不到包**，而不是借用另一套的
+    expect(m.idUnresolved.map((u) => u.layer)).toEqual(['dsh-web-app']);
+    expect(m.packageLayers.get('dsh-x')).toEqual([{ layer: 'dsh-headless', disabled: false }]);
+  });
+
+  it('**纯 id 行没写 `disabled` ⇒ 不贡献状态**（否则会把同层另一行的 `disabled: true` 抹成启用）', () => {
+    const m = caps.buildModel({
+      layers: [
+        { layer: 'dsh-base', kind: 'host', text: "- id: p\n  name: '@deepseek-ai/dsh-p'\n" },
+        { layer: 'dsh-web-app', kind: 'host', text:
+          "- id: q\n  name: '@deepseek-ai/dsh-p'\n  disabled: true\n"
+          + "- id: p\n  config:\n    a: 1\n" }],
+      diskPackages: ['dsh-p']
+    });
+    // 注意：带 `name` 的行是**一次真实挂载**，未写 `disabled` = 默认启用（那是另一条口径，别混）；
+    // 这里故意让"纯 id 行"只改 config —— 它不该把 q 行的禁用抹掉。
+    expect(m.packageLayers.get('dsh-p'), 'p 行只改 config、没声明启用，不该把 q 行的禁用抹掉').toEqual([
+      { layer: 'dsh-base', disabled: false },
+      { layer: 'dsh-web-app', disabled: true }
+    ]);
+  });
+});
+
+
+/* ============================================================
  * 真实文件：验证**按行解析真正依赖的两条前提**（不是"装配面扁平"那条假前提）
  * ============================================================ */
 describe('真实 vendor 装配文件（前提验证）', () => {
@@ -353,5 +463,163 @@ describe('真实 vendor 装配文件（前提验证）', () => {
     expect(m.unmounted.length).toBeGreaterThan(0);   // 确实有"在磁盘但没挂载"的包
     expect(m.missingOnDisk.length).toBeLessThan(5);  // 不该有大批对不上的名字（那说明归一化坏了）
     expect(m.mounted.length - m.missingOnDisk.length + m.unmounted.length).toBe(m.diskCount);
+  });
+});
+
+/* ============================================================
+ * 真实文件：`packages[].layers` 的 `disabled` 与**裸读 yml** 逐条一致
+ * ------------------------------------------------------------
+ * 判据不是"模块算得跟自己一样"（那是自证），而是拿一个**另一个实现**来对：
+ * 下面 `bareScanRows` 只做"最近上方 `- id:` 行 +2 缩进"的**原始行扫描**
+ * （不看 `parseMountRows` 的容器栈判断），再按
+ * 「带 name ⇒ 归 shortName(name)」「不带 name ⇒ 沿 `base → 载体 → 本层` 找该 id 的 name 声明」
+ * 独立算出每个 (包, 层) 的三态并合并，**与 `buildModel` 的 `packageLayers` 逐条比对**。
+ *
+ * 判别力（两次注入都实测变红，见 `.review/20261019-caps-id-override/README.md`）：
+ *   · 把纯 id 行的 `disabled: true` 丢掉（当 `absent` 处理）⇒ 红；
+ *   · 把归属退回"只认带 name 的行"（修复前的行为）⇒ 红。
+ * ============================================================ */
+describe('真实 vendor 装配文件：per-layer disabled 与裸读 yml 逐条一致', () => {
+  const hasVendor = fs.existsSync(DSH_NM);
+
+  /** **裸读**：原始行扫描，只认"最近上方 `- id:` 行的 +2 缩进"这一条，不看容器栈 */
+  function bareScanRows(text) {
+    const lines = String(text).split('\n');
+    const rows = [];
+    for (let i = 0; i < lines.length; i++) {
+      const m = /^(\s*)- id:\s*(\S.*?)\s*$/.exec(lines[i]);
+      if (!m) continue;
+      const indent = m[1].length;
+      const row = { id: m[2].replace(/^['"]|['"]$/g, ''), line: i + 1, name: null, disabledRaw: null };
+      for (let k = i + 1; k < lines.length; k++) {
+        const l = lines[k];
+        if (l.trim() === '' || /^\s*#/.test(l)) continue;
+        if (/^\s*/.exec(l)[0].length <= indent) break;             // 这一条目结束
+        const km = /^(\s*)(name|disabled):\s*(.*?)\s*$/.exec(l);
+        if (!km || km[1].length !== indent + 2) continue;           // 更深的不属于这一行
+        if (km[2] === 'name' && row.name === null) row.name = km[3].replace(/^['"]|['"]$/g, '');
+        if (km[2] === 'disabled' && row.disabledRaw === null) row.disabledRaw = km[3];
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /** 三态（与模块同一口径，但独立算） */
+  function stateOfRaw(raw) {
+    if (raw === null) return 'absent';
+    if (String(raw).trim() === 'true') return 'literal-true';
+    if (String(raw).trim() === 'false') return 'literal-false';
+    return 'expr';
+  }
+
+  const LAYERS = [];
+  if (hasVendor) {
+    for (const name of fs.readdirSync(DSH_NM).sort()) {
+      const p = path.join(DSH_NM, name, 'cordis.patch.yml');
+      if (fs.existsSync(p)) LAYERS.push({ layer: name, kind: 'host', carrier: null, file: p });
+      const d = path.join(DSH_NM, name, 'presets');
+      if (!fs.existsSync(d)) continue;
+      for (const f of fs.readdirSync(d).filter((x) => /\.patch\.yml$/.test(x)).sort()) {
+        LAYERS.push({ layer: 'preset:' + name + '/' + f.replace(/\.patch\.yml$/, ''), kind: 'preset', carrier: name, file: path.join(d, f) });
+      }
+    }
+    for (const L of LAYERS) L.text = fs.readFileSync(L.file, 'utf8');
+  }
+
+  /** 独立算出「每个 (包, 层) 的 disabled」——**只用裸读的行 + 装配序列** */
+  function truthPairs() {
+    const decl = new Map();     // id → [{pkg, layer}]
+    for (const L of LAYERS) {
+      for (const r of bareScanRows(L.text)) {
+        if (!r.name || r.name.indexOf(':') >= 0) continue;
+        if (!decl.has(r.id)) decl.set(r.id, []);
+        decl.get(r.id).push({ pkg: caps.shortName(r.name), layer: L.layer });
+      }
+    }
+    // ⚠️ 这里的序列是**判据侧的独立实现**（故意不调 `caps.assemblySequenceOf`）——
+    //    「另一侧读数」要是也调被测函数，这条判据就退化成自证。
+    const seqOf = (L) => {
+      const carrier = L.kind === 'preset' ? L.carrier : L.layer;
+      const seq = ['dsh-base'];
+      if (carrier && carrier !== 'dsh-base') seq.push(carrier);
+      if (seq.indexOf(L.layer) < 0) seq.push(L.layer);
+      return seq;
+    };
+    const acc = new Map();      // layer\0pkg → disabled
+    const merge = (a, b) => (a === false || b === false ? false : (a === null || b === null ? null : true));
+    const unresolved = [];
+    for (const L of LAYERS) {
+      const seq = seqOf(L);
+      for (const r of bareScanRows(L.text)) {
+        const st = stateOfRaw(r.disabledRaw);
+        let pkg = null;
+        if (r.name && r.name.indexOf(':') >= 0) continue;                 // 合成分组，不是包
+        if (r.name) pkg = caps.shortName(r.name);
+        else {
+          const c = (decl.get(r.id) || []).filter((x) => seq.indexOf(x.layer) >= 0);
+          const uniq = [...new Set(c.map((x) => x.pkg))];
+          if (uniq.length !== 1) { unresolved.push({ layer: L.layer, id: r.id, uniq }); continue; }
+          pkg = uniq[0];
+        }
+        const key = L.layer + '\u0000' + pkg;
+        // 口径（与模块声明一致，这里独立实现一遍）：
+        //   带 `name` 的行 = 一次真实挂载 ⇒ 未写 `disabled` 就是**默认启用**（false），参与合并；
+        //   不带 `name` 的纯 id 行 = 不是挂载 ⇒ 未写 `disabled` **不贡献状态**（写了才参与合并）。
+        if (st === 'absent' && !r.name) {
+          if (!acc.has(key)) acc.set(key, false);
+          continue;
+        }
+        const val = st === 'literal-true' ? true : (st === 'expr' ? null : false);
+        acc.set(key, acc.has(key) ? merge(acc.get(key), val) : val);
+      }
+    }
+    return { acc, unresolved };
+  }
+
+  it.runIf(hasVendor)('**裸读口径下，纯 id 覆盖行全部解析到唯一的包**（推导唯一性，现算）', () => {
+    const { unresolved } = truthPairs();
+    expect(unresolved, '真实装配面上一旦出现"同 id 多包声明"或"无声明"，本判据就不再唯一 —— '
+      + '那时 `packageOfRow` 必须报 null 并点名，别改成猜一个候选').toEqual([]);
+  });
+
+  it.runIf(hasVendor)('`buildModel` 的 `packageLayers` == 裸读 yml 独立算出的 (包, 层) disabled —— **逐条**', () => {
+    const { acc } = truthPairs();
+    const m = caps.buildModel({
+      layers: LAYERS.map((L) => ({ layer: L.layer, kind: L.kind, text: L.text })),
+      diskPackages: []
+    });
+    const got = [];
+    for (const [pkg, list] of m.packageLayers) for (const x of list) got.push({ pkg, layer: x.layer, disabled: x.disabled });
+    const want = [...acc.entries()].map(([k, v]) => {
+      const [layer, pkg] = k.split('\u0000');
+      return { pkg, layer, disabled: v };
+    });
+    const norm = (a) => a.slice().sort((x, y) => (x.pkg + '\u0000' + x.layer < y.pkg + '\u0000' + y.layer ? -1 : 1));
+    expect(norm(got), '每一条 (包, 层) 的 disabled 都必须与裸读 yml 算出的相同')
+      .toEqual(norm(want));
+    expect(m.idUnresolved, '真实装配面上不该有解析不到包的纯 id 行').toEqual([]);
+    expect(m.idOverrideRows, '纯 id 覆盖行必须真的存在（为 0 说明口径变了，先复核再改断言）').toBeGreaterThan(0);
+    expect(m.idResolvedRows).toBe(m.idOverrideRows);
+  });
+
+  it.runIf(hasVendor)('**叙事落点**：`dsh-compaction-basic` / `dsh-agent-instructions` 在 `dsh-web-app` 层 = `disabled: true`', () => {
+    const m = caps.buildModel({
+      layers: LAYERS.map((L) => ({ layer: L.layer, kind: L.kind, text: L.text })),
+      diskPackages: []
+    });
+    for (const pkg of ['dsh-compaction-basic', 'dsh-agent-instructions']) {
+      const hit = (m.packageLayers.get(pkg) || []).filter((x) => x.layer === 'dsh-web-app')[0];
+      expect(hit, pkg + ' 必须在 dsh-web-app 层有记录 —— 缺了它就是"纯 id 覆盖行的 disabled 又消失了"')
+        .toBeTruthy();
+      expect(hit.disabled, pkg + ' 在 dsh-web-app 层是 `disabled: true`（裸读 yml 可复核）').toBe(true);
+    }
+    // 再独立确认一次原文里真有这两行（不靠模块自己的读数自证）
+    const web = fs.readFileSync(path.join(DSH_NM, 'dsh-web-app', 'cordis.patch.yml'), 'utf8').split('\n');
+    for (const id of ['compaction-basic', 'agent-instructions']) {
+      const i = web.findIndex((l) => new RegExp('^- id:\\s*' + id + '\\s*$').test(l));
+      expect(i, '原文里应有 `- id: ' + id + '`（无 name 的顶层行）').toBeGreaterThanOrEqual(0);
+      expect(web[i + 1].trim(), '紧随其后必须就是 `disabled: true`').toBe('disabled: true');
+    }
   });
 });

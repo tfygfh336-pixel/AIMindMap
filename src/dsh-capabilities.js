@@ -52,6 +52,28 @@
  * `expr`（`disabled: !!js …`）**不求值、不猜**：`disabled` 为 `null`（**未知**），报告里单独点名，
  * 既不计入 disabled、也**不**当作启用。运行期口径的唯一来源是运行期自己
  * （出处见 `scripts/dsh-assembly-probe.js` 文件头「它明确不回答什么」）。
+ *
+ * ------------------------------------------------------------
+ * ⚠️ **第三条前提（2026-10-19 补，原本是个静默缺口）**：**纯 id 覆盖行也要落到包上**
+ * ------------------------------------------------------------
+ * 有一类行**只有 id、没有 `name`**：`- id: compaction-basic` + `disabled: true`
+ * （patch 语义：按 id 覆盖上游那一行）。**原实现只按「带 `name:` 的行」归属包**
+ * ⇒ 这类行的 `disabled` **一行都没进 `packages[].layers`**（不是读成 `false`，是**整条记录消失**）。
+ * 实测：13 个装配文件里这样的行 **40 行**（其中 **33 行**自己声明了 `disabled`），
+ * 全在 host 层 —— `dsh-web-app` 一层就 **24 行**。后果不是"少几个数"：
+ * `dsh-compaction-basic` / `dsh-agent-instructions` 在 **`dsh-web-app` 层 `disabled: true`**
+ * 这件事在输出里**完全看不到**，而读这个报告的人（AI 或人）会据此认为"该能力在 host 层是启用的"
+ * —— 它其实被关着，只是 preset 又把它挂回来了。**这正是本模块存在理由的反面。**
+ *
+ * 现在按**装配序列**归属（`assemblySequenceOf`）：纯 id 行没有包名 ⇒ 沿
+ * `dsh-base` → 载体包 → 本层 找到**该 id 的 `name:` 声明行**，那个声明行的包就是它该落的包。
+ * **推导唯一性（现算，不是假设）**：216 个有 `name` 声明的 id，**没有一个**被 ≥2 个不同包声明过；
+ * 40 行纯 id 行在三种口径（只看本层之前 / 整层 / 全仓 13 文件不分层序）下**读数完全相同**（40/40 唯一）。
+ * ⇒ 真实装配面上这条推导**唯一**，不需要猜。
+ * **但"现在唯一"不等于"永远唯一"**：`packageOfRow` 在 `no-declaration` / `ambiguous` 两种情形下
+ * **返回 `pkg:null` 并给出全部候选**，`buildModel` 记进 `idUnresolved`、报告里**逐行点名**，
+ * **不猜一个候选**（与 `expr` 三态同一条纪律）。若要它变红，删掉的是 `idUnresolved` 的**渲染**，
+ * 不是这条判断。
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -102,7 +124,8 @@
   /**
    * 解析一个装配文件里的「挂载行」。**按行解析，但按缩进算归属**。
    * 每行是 `- id: <id>`，其后的 `name:` / `disabled:` / `group:` 只认**该行自己那一级**
-   * （缩进 = 行缩进 + 2）。`name` 可以为 null —— 那表示这一行**按 id 覆盖**上游同名行（patch 语义）。
+   * （缩进 = 行缩进 + 2）。`name` 可以为 null —— 那表示这一行**按 id 覆盖**上游同名行（patch 语义）；
+   * **它该落到哪个包不由本函数决定**，见 `packageOfRow`（沿装配序列找同 id 的 `name:` 声明行）。
    * @param {string} text
    * @returns {Array<{id:string, line:number, indent:number, depth:number, container:string,
    *   inFace:boolean, name:string|null, group:boolean,
@@ -195,8 +218,85 @@
   }
 
   /**
+   * preset 层名 `preset:<载体>/<名字>` ⇒ **载体包**短名；不是 preset 层 ⇒ `null`。
+   * 载体 = 那个「把 preset 文件一起发出来」的包（实测只有 `dsh-web-app`）。
+   * ⚠️ 这条正则**全工程只在这里一处**：`cli/commands/release.js` 的 `findRemounts` 用它取载体包，
+   * 不再自己写一遍 `/^preset:([^/]+)\//`（H1：同一个推导不许有两个实现）。
+   */
+  function presetCarrierOf(layerName) {
+    const m = /^preset:([^/]+)\//.exec(String(layerName));
+    return m ? m[1] : null;
+  }
+
+  /**
+   * 装配序列：一条 patch 链上「后声明者覆盖先声明者」的顺序。
+   * **纯 id 覆盖行**（`- id: X` + `disabled: …`，**不带 `name`**）就是靠它找到自己该落到哪个包 ——
+   * 它自己没有包名，只能沿序列找到**该 id 的 `name:` 声明行**。
+   *   · host 层 `L`：`dsh-base` → `L`（`L` 就是 `dsh-base` 时只有它自己）
+   *   · preset 层 `preset:<载体>/<名字>`：`dsh-base` → `<载体>` → 本层
+   * `dsh-base` 打头是装配事实（每套 bundle 都以它为核心、overlay 层按 id 覆盖它），
+   * 而不是按层名排序猜出来的 —— 见 `tests/dsh-capabilities.test.js` 对真实文件那条序列断言。
+   * ⚠️ **本层自己永远在序列里**（同一份 patch 文件内的 `- id:` 行可以互相按 id 覆盖；实测"只看本行之前"
+   * 与"整层都算"在真实 13 个装配文件上**读数完全相同**，取更简单的整层口径）。
+   * @param {{layer:string, kind:string, carrier?:string}} layer
+   * @returns {string[]} 层名序列（由先到后，含本层）
+   */
+  function assemblySequenceOf(layer) {
+    const name = String(layer.layer);
+    let carrier = null;
+    if (layer.kind === 'preset') carrier = presetCarrierOf(name) || layer.carrier || null;
+    else carrier = name;
+    const seq = ['dsh-base'];
+    if (carrier && carrier !== 'dsh-base') seq.push(carrier);
+    if (seq.indexOf(name) < 0) seq.push(name);
+    return seq;
+  }
+
+  /**
+   * `id → 该 id 的**声明行**` 索引。只收**带 `name` 且不是合成分组**的行 ——
+   * 那才是真正"把一个包挂上去"的行；纯 id 覆盖行靠它反查归属。
+   * @returns {Map<string, Array<{layer:string, line:number, name:string, pkg:string}>>}
+   */
+  function buildDeclarationIndex(layers) {
+    const idx = new Map();
+    for (const l of layers || []) {
+      for (const r of parseMountRows(l.text)) {
+        if (!r.inFace || !r.name || r.name.indexOf(':') >= 0) continue;
+        if (!idx.has(r.id)) idx.set(r.id, []);
+        idx.get(r.id).push({ layer: String(l.layer), line: r.line, name: r.name, pkg: shortName(r.name) });
+      }
+    }
+    return idx;
+  }
+
+  /**
+   * 一行 `- id:` 该落到哪个包 —— **这个判断只在本模块一处**（`buildModel` 唯一的归属入口）。
+   * @param {object} row parseMountRows 的一行（须 `inFace`）
+   * @param {string[]} seq 该行所属层的 `assemblySequenceOf`
+   * @param {Map} declIndex `buildDeclarationIndex` 的产物
+   * @returns {{pkg:string|null, how:'name'|'id-override'|'group'|'no-declaration'|'ambiguous',
+   *   candidates:Array<{layer:string, line:number, name:string, pkg:string}>}}
+   *   `how='name'` ⇒ 行自带包名（**不查索引**）；`'group'` ⇒ 合成分组，不是包；
+   *   `'id-override'` ⇒ 纯 id 覆盖行在序列里找到**唯一**声明；`'no-declaration'` / `'ambiguous'`
+   *   ⇒ **解析不出唯一的包，`pkg=null`（不许猜）**，由 `buildModel` 记进 `idUnresolved` 并逐个点名。
+   */
+  function packageOfRow(row, seq, declIndex) {
+    if (row.name) {
+      if (row.name.indexOf(':') >= 0) return { pkg: null, how: 'group', candidates: [] };
+      return { pkg: shortName(row.name), how: 'name', candidates: [] };
+    }
+    const all = (declIndex && declIndex.get(row.id)) || [];
+    // 只认**落在本层装配序列里**的声明：另一个并行的 host bundle 里同名 id 的声明与本行无关
+    const cands = all.filter((c) => seq.indexOf(c.layer) >= 0);
+    const pkgs = [];
+    for (const c of cands) if (pkgs.indexOf(c.pkg) < 0) pkgs.push(c.pkg);
+    if (pkgs.length === 1) return { pkg: pkgs[0], how: 'id-override', candidates: cands };
+    return { pkg: null, how: pkgs.length ? 'ambiguous' : 'no-declaration', candidates: cands };
+  }
+
+  /**
    * 合成能力边界模型。
-   * @param {{layers:Array<{layer:string, kind:string, text:string}>, diskPackages:string[]}} input
+   * @param {{layers:Array<{layer:string, kind:string, text:string, carrier?:string}>, diskPackages:string[]}} input
    *   `kind`: `host`（host bundle，并列的几套）或 `preset`（agent 平面）
    */
   function buildModel(input) {
@@ -205,14 +305,17 @@
     const groups = [];               // 形如 `cordis:group` 的**合成分组**，不是包（去重记）
     const undeclared = [];           // 容器落不到声明三类的行 —— **不在能力面内**，逐个点名
     const exprRows = [];             // `disabled` 是表达式的行 —— 启用状态**未知**
+    const idUnresolved = [];         // 纯 id 覆盖行**解析不到唯一的包** ⇒ 不许猜，逐个点名
     const containers = {};           // 容器分类计数（现算，供报告印出"面到底长什么样"）
     for (const c of CONTAINERS.concat(['undeclared'])) containers[c] = 0;
+    const declIndex = buildDeclarationIndex(input.layers);
 
     for (const l of input.layers || []) {
       const rows = parseMountRows(l.text);
       const inFace = rows.filter((r) => r.inFace);
       const outside = rows.filter((r) => !r.inFace);
       const named = inFace.filter((r) => r.name);
+      const seq = assemblySequenceOf(l);
       const stat = {
         layer: l.layer,
         kind: l.kind,
@@ -221,6 +324,8 @@
         overridesById: inFace.length - named.length, // 只给 id 不给 name ⇒ 覆盖上游同名行
         disabled: inFace.filter((r) => r.disabledState === 'literal-true').length,
         disabledExpr: inFace.filter((r) => r.disabledState === 'expr').length,
+        /** 按 id 覆盖行里**成功落到某个包**的行数（≤ `overridesById`；差额 = `idUnresolved` 里属于本层的） */
+        resolvedById: 0,
         /** 不在能力面内的行数（容器没落在声明三类里）—— 非 0 就是"判定可能不完整" */
         undeclared: outside.length
       };
@@ -230,23 +335,38 @@
       for (const r of inFace) {
         if (r.disabledState === 'expr') exprRows.push({ layer: l.layer, id: r.id, line: r.line, raw: r.disabledRaw });
       }
-      for (const r of named) {
-        if (r.name.indexOf(':') >= 0) { // 合成分组，非包
+      for (const r of inFace) {
+        const res = packageOfRow(r, seq, declIndex);
+        if (res.how === 'group') {                       // 合成分组（`cordis:group`），非包
           if (groups.indexOf(r.name) < 0) groups.push(r.name);
           continue;
         }
-        const pkg = shortName(r.name);
-        if (!packageLayers.has(pkg)) packageLayers.set(pkg, []);
+        if (!res.pkg) {                                  // **解析不出唯一的包 ⇒ 不猜**，点名
+          idUnresolved.push({
+            layer: l.layer, id: r.id, line: r.line, reason: res.how,
+            disabledState: r.disabledState, candidates: res.candidates
+          });
+          continue;
+        }
+        const viaId = res.how === 'id-override';
+        if (viaId) stat.resolvedById += 1;
+        if (!packageLayers.has(res.pkg)) packageLayers.set(res.pkg, []);
         // 同一层内同一包可能多行（不同 id），去重按"层 + 启用状态"记（三态合并）
-        const list = packageLayers.get(pkg);
+        const list = packageLayers.get(res.pkg);
         const hit = list.filter((x) => x.layer === l.layer)[0];
-        if (hit) hit.disabled = mergeDisabled(hit.disabled, r.disabled);
-        else list.push({ layer: l.layer, disabled: r.disabled });
+        if (!hit) {
+          // 纯 id 覆盖行**没写 `disabled`** ⇒ 它不是一次"挂载"、也不声明启用：只登记"碰过这一层"。
+          // ⚠️ 不能把它当 `disabled: false` 参与合并 —— 那会把同层另一行的 `disabled: true` 静默抹成"启用"。
+          list.push({ layer: l.layer, disabled: viaId && r.disabledState === 'absent' ? false : r.disabled });
+        } else if (!viaId || r.disabledState !== 'absent') {
+          hit.disabled = mergeDisabled(hit.disabled, r.disabled);
+        }
       }
     }
     const disk = (input.diskPackages || []).slice().sort();
     const diskSet = new Set(disk);
     const mounted = [...packageLayers.keys()].sort();
+    const idOverrideRows = layers.reduce((a, l) => a + l.overridesById, 0);
     return {
       layers,
       diskCount: disk.length,
@@ -262,7 +382,12 @@
       /** 容器落不到声明三类的行 —— **不在能力面内**，`renderReport` 逐个点名 */
       undeclared,
       /** `disabled` 是表达式的行 —— 启用状态**未知**，`renderReport` 逐个点名 */
-      exprRows
+      exprRows,
+      /** 纯 id 覆盖行（`- id: X` 不带 `name`）总数，以及其中**进了包归属**的行数 */
+      idOverrideRows,
+      idResolvedRows: layers.reduce((a, l) => a + l.resolvedById, 0),
+      /** 纯 id 覆盖行里**解析不到唯一的包**的（无声明 / 多候选）—— **不猜**，`renderReport` 逐个点名 */
+      idUnresolved
     };
   }
 
@@ -327,10 +452,34 @@
     }
     out.push('');
     out.push('装配层（host bundle 与 agent preset 是两种东西，分开看）：');
-    out.push('   类别   层                                  行数  有 name  按 id 覆盖  disabled  表达式');
+    out.push('   类别   层                                  行数  有 name  按 id 覆盖  其中已落包  disabled  表达式');
     for (const l of model.layers) {
       out.push('   ' + pad(l.kind, 7) + pad(l.layer, 36) + pad(l.rows, 6) + pad(l.withName, 9)
-        + pad(l.overridesById, 11) + pad(l.disabled, 10) + l.disabledExpr);
+        + pad(l.overridesById, 11) + pad(l.resolvedById, 12) + pad(l.disabled, 10) + l.disabledExpr);
+    }
+    // ---- 纯 id 覆盖行：**不带 name** 的 `- id: X` + `disabled:` 靠装配序列找到包 ----
+    // 不给这段读数，`packages[].layers` 的 per-layer 禁用状态就会**静默缺一块**：
+    // 那类行（实测 `dsh-web-app/cordis.patch.yml` 有 24 行）原先**一行都没落到包上**。
+    if (model.idOverrideRows) {
+      out.push('');
+      out.push('按 id 覆盖行（`- id: X` 但**不带 `name`**）：' + model.idOverrideRows + ' 行，其中 '
+        + model.idResolvedRows + ' 行已按装配序列落到包（序列：`dsh-base` → 载体包 → 本层）');
+      if (model.idResolvedRows === model.idOverrideRows) {
+        out.push('   ⇒ **全部落包**（这类行的 `disabled` 不再从 per-layer 面上消失）—— 这条是现算，不是承诺');
+      }
+    }
+    if (model.idUnresolved.length) {
+      out.push('');
+      out.push('⚠️ **有 ' + model.idUnresolved.length + ' 行按 id 覆盖**（不带 `name`）**解析不到唯一的包** ⇒ '
+        + '这些行的 `disabled` **没有**计入任何包的 per-layer 状态，**本模块不猜**（逐个点名）：');
+      for (const u of model.idUnresolved) {
+        const why = u.reason === 'ambiguous'
+          ? '多候选：' + u.candidates.map((c) => c.pkg + '（' + c.layer + ':' + c.line + '）').join(' / ')
+          : '装配序列里找不到该 id 的 `name:` 声明行';
+        out.push('   · ' + u.layer + ':' + u.line + '  ' + u.id + '（`disabled` ' + u.disabledState + '）—— ' + why);
+      }
+      out.push('   ⇒ 这些行**确实可能改到某个包的启用状态**；要修就补上"该 id 由哪个包声明"这件事，');
+      out.push('     不要把这条警告改小，也不要改成"猜一个候选"。');
     }
     out.push('');
     out.push('磁盘上的 @deepseek-ai 包：' + model.diskCount + ' 个'
@@ -393,6 +542,8 @@
 
   return {
     parseMountRows, buildModel, statusOf, renderReport, shortName,
-    disabledStateOf, disabledLabel, stateLabel, mergeDisabled, CONTAINERS, ENTRY_LIST_HOLDERS
+    disabledStateOf, disabledLabel, stateLabel, mergeDisabled, CONTAINERS, ENTRY_LIST_HOLDERS,
+    // 纯 id 覆盖行的归属判断（H1：全工程的「一行该落到哪个包」只此一处）
+    assemblySequenceOf, buildDeclarationIndex, packageOfRow, presetCarrierOf
   };
 });

@@ -26,6 +26,52 @@
 
 ## [Unreleased]
 
+### `dsh-caps` 的 per-layer `disabled` **漏了一整类行**：纯 id 覆盖行（`- id: X` + `disabled: true` 不带 `name`）**一条都没落到包上**
+
+- **病**：`buildModel` **只按「带 `name:` 的行」归属包**。装配面里另有一类**纯 id 覆盖行** ——
+  实测 **33 行**（`dsh-web-app` 一层就 **24** 行），它们的 `disabled` **整条记录都不进 `packages[].layers`**。
+  ⚠️ **不是"显示成 `false`"，是"该条记录根本不存在"**（父代理给的前提被本批精化了）。
+  与**独立实测**（vendor 的 **js-yaml 4.3.2** 按结构解析）逐条比对：修前 **值错 0 / 层缺 35 / 层多 0**（303 条 vs 真值 **338** 条）。
+  ⇒ `dsh-compaction-basic` / `dsh-agent-instructions` 在 **`dsh-web-app` 层 `disabled: true`** 在输出里完全看不到，
+  而读它的人会据此认为"该能力在 host 层是启用的"（**它其实被关着，只是 preset 又挂回来了**）
+  —— **这正是本模块存在理由的反面**（它存在的理由就是回答"某能力到底挂没挂载"）。
+- **推导唯一性（现算，所以不猜）**：**216** 个有 `name` 声明的 id，**0 个**被 ≥2 个不同包声明过；
+  33 行在**三种口径**（只看本层之前 / 整层 / 全仓 13 文件不分层序）下读数**完全相同**（40/40 唯一）。
+  反向核查：**换名 0 处 · 缺包 0 处 · 同一 id 出现 ≥2 个 `name` 字面 0 个**。
+- **修（H1：判断只一处）**：新增 `packageOfRow(row, seq, declIndex)` —— 沿**装配序列**
+  （`dsh-base` → 载体包 → 本层）找该 id 的 `name:` 声明行；**解析不出唯一包 ⇒ 返回 `null` + 全部候选**，
+  `buildModel` 记进 `idUnresolved`、报告**逐行点名**，**不猜**（与 `expr` 三态同一条纪律）。
+  顺带定死一条口径：**带 `name` 的行** = 一次真实挂载，未写 `disabled` = 默认启用、参与合并；
+  **不带 `name` 的行** = 不是挂载，未写 `disabled` **不贡献状态**
+  （写成 `false` 会把同层另一行的 `disabled: true` **静默抹成"启用"** —— 有单测钉住）。
+- **判据（两个不同实现，不是自证）**：`packageLayers` 与**裸读 yml 独立算出的 (包, 层) `disabled`**
+  **338 条逐条相等**（`compare.js` exit 0）。
+- **判别力**：注入「丢掉纯 id 行的 `disabled: true`」⇒ **28 条值错** + vitest **exit 1**；
+  注入「归属退回只认 `name` 行」⇒ **35 条层缺** + vitest **exit 1**；
+  原始 Buffer（`32,900 B / sha256 44b568a218… / CR 0`）还原 ⇒ `Buffer.compare === 0` ⇒ **复绿**。
+- **H1 的另一半**：`release.js` 的 `findRemounts` **保留** —— 它判 **per-id + 两处行号** = **20** 个实例；
+  包级只能给 **18** 个包（2 对被并行 id 合并）、**无行号**、**判不出"preset 侧也禁用/未知"那 4 个包**
+  ⇒ 两者**不是重复实现**。但它内部两份重复推导（`'dsh-base'` 序列起点、`/^preset:([^/]+)\//` 载体正则）
+  **已删**，改取模块新导出的 `assemblySequenceOf` / `presetCarrierOf`；
+  改后 `remounts` / `packages` / `layers` 与改前**逐字节相同**、`remountCount` 仍 **20**。
+- **范围没扩**：`diskCount 282 / mounted 199 / unmounted 83 / missingOnDisk 0 / remountCount 20`
+  与**包集合修前修后完全不变**，只多 **35 条 per-layer 记录**（303 → 338）。
+- **叙事修前/修后**：
+  `dsh-caps --grep compaction` 修前 → `dsh-compaction-basic 挂载于 dsh-base, preset:…`（**没有 dsh-web-app**）；
+  修后 → `… dsh-base, dsh-web-app(disabled), preset:…` ✓
+
+### 同批点明的两处「两个"完整"被混用 / 两个"禁用"口径没写清」
+
+1. **`packages[].layers` 被当权威 per-layer 读数，却有 35 条记录静默缺失**，
+   而报告**同时写着"落不到这三类的行：0 ⇒ 判定完整"** —— 那个"完整"守的是**容器面**，不是**归属面**。
+   ⇒ 现在 `idOverrideRows` / `idResolvedRows` / `idUnresolved` 三个读数把**归属面**也变成现算、可核对的。
+2. **同一份数据里有两个不同的"禁用"口径，此前没有任何文档写出分工**：
+   模块是 **per-(包, 层)** 三态合并（启用 > 未知 > 禁用），`release.js` 是 **per-id** 沿序列 last-write-wins。
+   两者给出**不同答案（20 vs 18）**，而文档只写"host `disabled: true` ≠ 不可用，preset 会重挂"
+   ⇒ 读者很自然会把 `packages[].layers` 当成那条叙事的**证据**，**它其实支持不住**
+   （丢 id 身份、丢行号、判不出"两边都关"）。已在 `docs/ARCHITECTURE.md` 那一行把**两个口径的分工与各自读数**写清。
+
+
 ### `dsh-caps` 的 preset 平面**恒为空**：它读的 preset 路径指向**发行包里不存在的包** ⇒ 核心叙事「host `disabled: true` ≠ 不可用，preset 会重挂」**在输出里从未出现过一次**
 
 - **病**：`cli/commands/release.js` 的 agent 平面发现写死成

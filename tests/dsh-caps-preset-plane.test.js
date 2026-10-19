@@ -146,6 +146,22 @@ describe('叙事可观察：「host disabled:true 被 preset 重挂」必须给�
     expect(ids).toContain('agent-instructions');
   });
 
+  it('序列口径与 `src/dsh-capabilities.js` **同一处**：载体包那一步也在（不是只认 `dsh-base`）', () => {
+    // H1：`findRemounts` 不再自己写 `dsh-base` / `/^preset:([^/]+)\//` 两份推导，
+    //     改取模块的 `assemblySequenceOf` / `presetCarrierOf`。这条把"载体那一步"钉住 ——
+    //     如果有人把它退回成"只看 dsh-base"，`dsh-web-app` 那一行的禁用就看不见了 ⇒ 必红。
+    const layers = [
+      { layer: 'dsh-base', kind: 'host', text: "- id: x\n  name: '@deepseek-ai/dsh-x'\n" },
+      { layer: 'dsh-web-app', kind: 'host', text: "- id: x\n  disabled: true\n" },
+      { layer: 'preset:dsh-web-app/std', kind: 'preset', text: "- id: x\n  name: '@deepseek-ai/dsh-x'\n" }
+    ];
+    const r = releaseCmd.findRemounts(layers);
+    expect(r, '载体包 `dsh-web-app` 上按 id 的 `disabled: true` 必须进入有效状态').toHaveLength(1);
+    expect(r[0].id).toBe('x');
+    expect(r[0].pkg, '载体包取模块的 `presetCarrierOf`').toBe('dsh-web-app');
+    expect(r[0].host, 'host 侧指向**载体包那一行**，不是 `dsh-base`').toEqual({ layer: 'dsh-web-app', line: 1, state: 'literal-true' });
+  });
+
   it('口径钉住：`disabled: !!js …`（expr）**不算**实例（运行期才知道，不求值不猜）', () => {
     const layers = [
       { layer: 'dsh-base', kind: 'host', text: "- id: x\n  name: '@deepseek-ai/dsh-x'\n  disabled: !!js process.platform === 'win32'\n" },
