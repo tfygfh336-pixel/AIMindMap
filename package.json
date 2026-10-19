@@ -1,7 +1,7 @@
 {
   "name": "ai-mind-map",
   "productName": "AI MindMap",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "面向 AI 与人协作的智能笔记工具：思维导图式笔记 + 人用界面 + AI 用 CLI/MCP（Electron + jsMind，AI MindMap）",
   "main": "main.js",
   "author": "Doubao",

@@ -14,7 +14,7 @@
 - **数据**：`projects/<项目>/<项目>.json`（JSON 节点树，单一事实来源），图片存同项目 `assets/`（**每图必带 caption 备注**），附件文件存 `attachments/`（**每附件必带 caption**，随项目保存/打包）
 - **可移植**：`npm run dist` 打包 Windows 安装包（electron-builder NSIS）
 
-当前版本：0.18.0（v0.14.0：附件挂载 + 文件夹导出 + 中键平移 + 工具栏精简；v0.13.0 更名 AI MindMap + 事故恢复重建）
+当前版本：0.19.0（v0.14.0：附件挂载 + 文件夹导出 + 中键平移 + 工具栏精简；v0.13.0 更名 AI MindMap + 事故恢复重建）
 
 ---
 
