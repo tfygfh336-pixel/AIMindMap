@@ -12,7 +12,8 @@
  *
  * 跑法：`node scripts/pathchain-conformance.js`（`--json` 出机器可读读数；`--project <名>` 只看一个）
  * 退出码：**0** = 报出读数且差异 0 · **1** = 有差异（**这是读数，不是工具坏了** —— 但按上线条件，
- *         有差异就不许上线，必须先定性）· **2** = **采不到真值**（项目目录读不到 / JSON 解析不了）
+ *         有差异就不许上线，必须先定性）· **2** = **采不到真值**（项目目录读不到 / JSON 解析不了 /
+ *         **ADR 的「逐类终裁」表读不到** —— 后者意味着"不纳入 + 理由"这一节没有权威可引，那同样是采不到真值）
  *
  * 三条纪律（都在实现里落了）：
  *   ① **只读**：只 `readFileSync`，一个字节都不写（`projects/**` 正被别的会话并发改写）；
@@ -23,6 +24,17 @@
  * （`src/path-chain.js`）。两者对拍完，oracle 留在这里当"回退的证据"。
  * ⚠️ 本工具**不挂在 verify 链上**（与 `detail-census.js` / `recon-integration.js` 同一处置）：
  *   它的输入是**活的** `projects/**`，同一时刻工作区与 git HEAD 就是两个真值 ⇒ 它不许成为卡点。
+ *
+ * ## 「已裁决不纳入」那一半（2026-10-19 · 覆盖裁决批补的）
+ * 「取证里逐条点名了、但去留没定」的 5 类字段（`items[].src` / `origin.src` / `links[]` /
+ * `bindings[].dir` / `assoc[].members`）现在**逐类有终裁**：五条都是**不纳入**，理由各自不同。
+ * 两条硬规矩：
+ *   ① **终裁与理由的唯一权威是 `docs/ARCHITECTURE.md` §4b 的「逐类终裁」那张表** ——
+ *      本脚本**不在代码里抄第二份**：运行时把那张表读出来**原样打印**；读不到就 exit **2**
+ *      （"采不到真值"）并在报文里指名改哪儿。改 ADR 的理由 ⇒ 输出自动跟着变；两面不会漂。
+ *   ② 那 5 类里的 `links[]` / `assoc[].members` **旧版根本没扫**（`collectPathFields` 里没有这两段）
+ *      ⇒ 输出里的"0 条"读起来像"没有"，实际是"没看"。**沉默比差异更坏**（本工程反复治过的一类损害），
+ *      本版起逐类**真的数出来**：`links[]` 与 `assoc` 成员按条计，且标注它们**连路径都不是**。
  * ============================================================ */
 'use strict';
 
@@ -76,45 +88,144 @@ function legacyLocalPath(p) {
 }
 
 /* ================================================================
- * 二、语料：逐个项目、逐条路径类字段
+ * 二、语料：逐个项目、逐条路径类字段（**一次遍历出两份**）
  * ================================================================ */
 
-/** 路径类字段的**点名清单**（键 = 人话类别，值 = 是否被打开链消费） */
+/** 字段点名清单（**"哪些字段算路径类"的唯一清单**）。
+ *  `consumed: true`  = **在打开链上** ⇒ 喂两套判据、比差异；
+ *  `consumed: false` = **已裁决不纳入** ⇒ **只数条数、绝不判**（判它等于给一个没有消费者的面新增一条判据）；
+ *  `pathShaped: false` = 它**连路径都不是**（`links[]` 的 `{project,id}`、`assoc[].members` 的节点 id）。 */
 const FIELD_CLASSES = [
-  { id: 'files[].file', consumed: true, note: '附件：md/pdf 内预览，其余交系统（renderer/app-media.js）' },
-  { id: 'images[].file', consumed: true, note: '图片：详情框 <img> + 灯箱（renderer/app-detail-content.js）' },
-  { id: 'localPath', consumed: true, note: '本机文件夹：详情框链接 / 右键菜单 / 预览头 → app:open-file' },
-  { id: 'items[].src', consumed: false, note: '条目"出处"（file:line / URL）—— 由 src/item-src.js 解析，**渲染层今天没有打开入口**' },
-  { id: 'origin.src', consumed: false, note: '来源指纹的源文件/URL —— 只做溯源比对，**没有打开入口**' },
-  { id: 'links[].project / id', consumed: false, note: '跨项目链接标识，**不是文件路径**（走 switchProject）' },
-  { id: 'bindings[].dir', consumed: false, note: '工作区绑定的目录 —— 由 CLI bind-sync 消费，界面不经打开链' },
-  { id: 'assoc[].members', consumed: false, note: '节点 id，**不是路径**' }
+  { id: 'files[].file', consumed: true, pathShaped: true, note: '附件：md/pdf 内预览，其余交系统（renderer/app-media.js）' },
+  { id: 'images[].file', consumed: true, pathShaped: true, note: '图片：详情框 <img> + 灯箱（renderer/app-detail-content.js）' },
+  { id: 'localPath', consumed: true, pathShaped: true, note: '本机文件夹：详情框链接 / 右键菜单 / 预览头 → app:open-file' },
+  { id: 'items[].src', consumed: false, pathShaped: true, note: '条目"出处"（file:line / URL）—— 由 src/item-src.js 解析；渲染层只当**文本**显示（无打开入口）' },
+  { id: 'origin.src', consumed: false, pathShaped: true, note: '来源指纹的源文件/URL —— 只做导入幂等比对' },
+  { id: 'links[]', consumed: false, pathShaped: false, note: '{project, id, caption}：站内标识，走 switchProject（**不是路径**）' },
+  { id: 'bindings[].dir', consumed: false, pathShaped: true, note: '工作区绑定目录 —— 消费方是 CLI bind-sync（成组读写），不是"点开一个目标"' },
+  { id: 'assoc[].members', consumed: false, pathShaped: false, note: '节点 id 集合（**不是路径**）；打开那篇笔记走浮窗，与文件打开无关' }
 ];
 
-/** 收集一个项目 JSON 里全部路径类字段（只读；返回 [{classId, raw, jsonPath, kind}]） */
-function collectPathFields(data) {
-  const out = [];
+/** 已裁决不纳入的 5 类（= 上面 `consumed:false` 的那 5 条）。理由**不在本文件里**，从 ADR 表原样读。 */
+const ADJUDICATED_IDS = FIELD_CLASSES.filter((f) => !f.consumed).map((f) => f.id);
+
+/** 其中**连路径都不是**的两类（打印时单独标出：塞进路径判据 = 把不是路径的东西当路径判） */
+const NON_PATH_IDS = ['links[]', 'assoc[].members'];
+
+/** 终裁与理由的**唯一权威**：`docs/ARCHITECTURE.md` 里标题含这个锚的那张引用块表 */
+const ADR_FILE = path.join(ROOT, 'docs', 'ARCHITECTURE.md');
+const ADR_ANCHOR = '逐类终裁';
+
+/**
+ * 一次遍历，产出两份：
+ *   ① `entries`     —— 路径类条目（喂两套判据：在链上 3 类 + 是路径但裁决不纳入的 3 类）；
+ *   ② `adjudicated` —— **已裁决不纳入**的 5 类**计数**（只数，**不判**）。
+ * `sub` 是几个**分量读数**（只为让"它不是路径"这件事可核）：`links[].project` / `.id` 各几条、
+ * assoc 有几个条目、`items[].src` 有几条走的是**数组形态**。
+ */
+function collectFields(data) {
+  const entries = [];
+  const adjudicated = {};
+  ADJUDICATED_IDS.forEach((id) => { adjudicated[id] = 0; });
+  const sub = { linksProject: 0, linksId: 0, assocEntries: 0, itemsSrcArrayForm: 0 };
+  const bump = (id) => { adjudicated[id] = (adjudicated[id] || 0) + 1; };
+
   const walk = (node, where) => {
     if (!node || typeof node !== 'object') return;
     const at = where || 'root';
     (node.files || []).forEach((f, i) => {
-      if (f && typeof f.file === 'string') out.push({ classId: 'files[].file', raw: f.file, jsonPath: at + '.files[' + i + '].file', kind: 'attachment' });
+      if (f && typeof f.file === 'string') pushEntry(entries, 'files[].file', f.file, at + '.files[' + i + '].file', 'attachment');
     });
     (node.images || []).forEach((im, i) => {
-      if (im && typeof im.file === 'string') out.push({ classId: 'images[].file', raw: im.file, jsonPath: at + '.images[' + i + '].file', kind: 'image' });
+      if (im && typeof im.file === 'string') pushEntry(entries, 'images[].file', im.file, at + '.images[' + i + '].file', 'image');
     });
-    if (typeof node.localPath === 'string') out.push({ classId: 'localPath', raw: node.localPath, jsonPath: at + '.localPath', kind: 'localPath' });
+    if (typeof node.localPath === 'string') pushEntry(entries, 'localPath', node.localPath, at + '.localPath', 'localPath');
     (node.items || []).forEach((it, i) => {
-      if (it && typeof it.src === 'string') out.push({ classId: 'items[].src', raw: it.src, jsonPath: at + '.items[' + i + '].src', kind: null });
+      if (!it || typeof it !== 'object') return;
+      const at2 = at + '.items[' + i + '].src';
+      /* `src` 是 `string | string[]`（见 `src/item-src.js` 的 `normalizeSrc`）⇒ **数组形态必须逐个数**：
+       * 旧版只认 `typeof === 'string'`，一条带 3 个出处的条目会被数成 0（"没看"冒充"没有"）。 */
+      if (typeof it.src === 'string') {
+        pushEntry(entries, 'items[].src', it.src, at2, null);
+        bump('items[].src');
+      } else if (Array.isArray(it.src)) {
+        sub.itemsSrcArrayForm += 1;
+        it.src.forEach((s, j) => {
+          if (typeof s === 'string' && s.trim()) {
+            pushEntry(entries, 'items[].src', s, at2 + '[' + j + ']', null);
+            bump('items[].src');
+          }
+        });
+      }
     });
-    if (node.origin && typeof node.origin.src === 'string') out.push({ classId: 'origin.src', raw: node.origin.src, jsonPath: at + '.origin.src', kind: null });
+    if (node.origin && typeof node.origin.src === 'string') {
+      pushEntry(entries, 'origin.src', node.origin.src, at + '.origin.src', null);
+      bump('origin.src');
+    }
+    (node.links || []).forEach((l) => {
+      if (!l || typeof l !== 'object') return;
+      bump('links[]');
+      if (typeof l.project === 'string' && l.project) sub.linksProject += 1;
+      if (typeof l.id === 'string' && l.id) sub.linksId += 1;
+    });
     (node.children || []).forEach((c, i) => walk(c, at + '.children[' + i + ']'));
   };
   walk(data && data.data, 'data');
   // 项目级字段（不在节点树上）
   (data && data.bindings || []).forEach((b, i) => {
-    if (b && typeof b.dir === 'string') out.push({ classId: 'bindings[].dir', raw: b.dir, jsonPath: 'bindings[' + i + '].dir', kind: null });
+    if (b && typeof b.dir === 'string') {
+      pushEntry(entries, 'bindings[].dir', b.dir, 'bindings[' + i + '].dir', null);
+      bump('bindings[].dir');
+    }
   });
+  (data && data.assoc || []).forEach((a) => {
+    if (!a || !Array.isArray(a.members)) return;
+    sub.assocEntries += 1;
+    a.members.forEach(() => bump('assoc[].members'));
+  });
+  return { entries: entries, adjudicated: adjudicated, sub: sub };
+}
+
+function pushEntry(list, classId, raw, jsonPath, kind) {
+  list.push({ classId: classId, raw: raw, jsonPath: jsonPath, kind: kind });
+}
+
+/** 兼容旧导出：只要路径类条目（`entries` 那一半） */
+function collectPathFields(data) { return collectFields(data).entries; }
+
+/* ================================================================
+ * 二·六、已裁决不纳入的**理由**从哪来（唯一权威 = `docs/ARCHITECTURE.md` 那张表）
+ * ------------------------------------------------------------
+ * 为什么不把理由抄进本脚本：抄一份必然漂（本工程的老病），而那张表是 ADR 正文、由人写给人看。
+ * ⇒ 运行时读出来**原样打印**；读不到就 **exit 2**（"采不到真值"），报文指名要改哪儿。
+ * 表行形状（ADR §4b）：`> | \`字段\` | **裁决** | 理由 |` —— 只认这一种，别的行忽略。
+ * ================================================================ */
+function readAdrVerdicts() {
+  const out = { file: 'docs/ARCHITECTURE.md', anchor: ADR_ANCHOR, found: false, rows: {}, missing: [], error: '' };
+  let txt = '';
+  try {
+    txt = fs.readFileSync(ADR_FILE, 'utf8');
+  } catch (e) {
+    out.error = '读不到 ' + ADR_FILE + '（' + ((e && e.message) || e) + '）';
+    out.missing = ADJUDICATED_IDS.slice();
+    return out;
+  }
+  const lines = txt.split(/\r?\n/);
+  const start = lines.findIndex((ln) => ln.indexOf(ADR_ANCHOR) >= 0);
+  if (start < 0) {
+    out.error = 'ADR 里找不到含「' + ADR_ANCHOR + '」的标题行（那张表被改名或删了？）';
+    out.missing = ADJUDICATED_IDS.slice();
+    return out;
+  }
+  for (let i = start; i < lines.length; i += 1) {
+    const ln = lines[i];
+    if (ln.indexOf('>') !== 0) break;                 // 引用块（那张表所在）结束
+    const m = /^>\s*\|\s*`([^`]+)`\s*\|\s*\*\*([^*]+)\*\*\s*\|\s*(.*?)\s*\|\s*$/.exec(ln);
+    if (m) out.rows[m[1]] = { verdict: m[2], reason: m[3] };
+  }
+  out.missing = ADJUDICATED_IDS.filter((id) => !out.rows[id]);
+  out.found = out.missing.length === 0;
+  if (!out.found) out.error = 'ADR 的「' + ADR_ANCHOR + '」表里缺这几类：' + out.missing.join(' · ');
   return out;
 }
 
@@ -242,6 +353,13 @@ function run(opts) {
     projects: [],
     fieldClasses: FIELD_CLASSES,
     totals: { projectsScanned: 0, projectsFailed: 0, entries: 0, uniques: 0, consumed: 0, notConsumed: 0 },
+    /* 「已裁决不纳入」那一半：**理由从 ADR 原样读**（`readAdrVerdicts`），条数是**实测**的。
+     * `entries` = 5 类合计处数；`nonPath` = 其中连路径都不是的那两类（`links[]` / `assoc` 成员）。 */
+    adjudicatedOut: {
+      ids: ADJUDICATED_IDS, nonPathIds: NON_PATH_IDS,
+      perClass: {}, sub: { linksProject: 0, linksId: 0, assocEntries: 0, itemsSrcArrayForm: 0 },
+      entries: 0, nonPath: 0, adr: null
+    },
     byClass: {},
     legacyAccept: 0,
     freshAccept: 0,
@@ -250,6 +368,8 @@ function run(opts) {
     synthetic: null,
     lines: []
   };
+  ADJUDICATED_IDS.forEach((id) => { report.adjudicatedOut.perClass[id] = 0; });
+  report.adjudicatedOut.adr = readAdrVerdicts();
 
   for (const dir of dirs) {
     const p = readProject(dir);
@@ -259,12 +379,20 @@ function run(opts) {
       report.lines.push('  ✗ ' + dir + '：' + p.error);
       continue;
     }
-    const entries = collectPathFields(p.data);
-    const consumed = entries.filter((e) => !!e.kind && e.classId !== 'bindings[].dir');
+    const fields = collectFields(p.data);
+    const entries = fields.entries;                       // ① 路径类条目（喂判据）
+    const consumed = entries.filter((e) => !!e.kind);     // ② 在打开链上（有 kind 才判）
     report.totals.projectsScanned += 1;
     report.totals.entries += entries.length;
     report.totals.consumed += consumed.length;
     report.totals.notConsumed += entries.length - consumed.length;
+    ADJUDICATED_IDS.forEach((id) => {
+      const n = fields.adjudicated[id] || 0;
+      report.adjudicatedOut.perClass[id] += n;
+      if (NON_PATH_IDS.indexOf(id) >= 0) report.adjudicatedOut.nonPath += n;
+      report.adjudicatedOut.entries += n;
+    });
+    Object.keys(fields.sub).forEach((k) => { report.adjudicatedOut.sub[k] += fields.sub[k]; });
     const counts = {};
     consumed.forEach((e) => { counts[e.classId] = (counts[e.classId] || 0) + 1; });
     report.projects.push({ name: dir, file: p.file, counts: counts, error: '' });
@@ -333,25 +461,50 @@ function main() {
   } else {
     console.log('全量对拍：路径判据（src/path-chain.js）× 现状实现（改动前那几行）');
     console.log('  ⚠️ 只读：projects/*/*.json 一个字节都不写；两套判据都不做存在性探测');
+    const ao = report.adjudicatedOut;
     console.log('  项目 ' + report.totals.projectsScanned + ' 个（读不到 ' + report.totals.projectsFailed + ' 个）'
       + ' · 路径类字段 ' + report.totals.entries + ' 条'
-      + '（其中**在打开链上**的 ' + report.totals.consumed + ' 条 · 不在链上的 ' + report.totals.notConsumed + ' 条）');
+      + '（**在打开链上** ' + report.totals.consumed + ' 条 · 是路径但**已裁决不纳入** ' + report.totals.notConsumed + ' 条）');
+    console.log('  另：**已裁决不纳入**的 5 类合计 ' + ao.entries + ' 处，其中**连路径都不是**的 ' + ao.nonPath + ' 处'
+      + '（`links[]` ' + ao.perClass['links[]'] + ' · `assoc[].members` ' + ao.perClass['assoc[].members'] + '）'
+      + ' —— 这两类**上一版根本没扫**（那时输出"0 条"= 没看，不是没有；本版起如实数出来）');
     console.log('');
-    console.log('  逐类读数（在链上的三类才是"能不能打开"的真读数）：');
+    console.log('  ① **在打开链上**的三类（"能不能打开"的真读数；差异必须 = 0）：');
     console.log('    类别'.padEnd(20) + '条数'.padStart(7) + '现状accept'.padStart(12) + '新判据accept'.padStart(14) + '差异'.padStart(6));
-    for (const id of Object.keys(report.byClass)) {
-      const c = report.byClass[id];
-      console.log('    ' + id.padEnd(18) + String(c.entries).padStart(7) + String(c.legacyAccept).padStart(12)
-        + String(c.freshAccept).padStart(14) + String(c.diffs).padStart(6) + (c.consumed ? '' : '   （不在打开链上）'));
-    }
-    console.log('');
-    console.log('  定点名清单（"其他路径类字段"逐条点名：在不在打开链上、为什么）：');
     for (const f of FIELD_CLASSES) {
-      const c = report.byClass[f.id] || { entries: 0 };
-      console.log('    · ' + f.id.padEnd(22) + String(c.entries).padStart(5) + ' 条  '
-        + (f.consumed ? '【在链上】' : '【不在链上】') + ' ' + f.note);
+      if (!f.consumed) continue;
+      const c = report.byClass[f.id] || { entries: 0, legacyAccept: 0, freshAccept: 0, diffs: 0 };
+      console.log('    ' + f.id.padEnd(18) + String(c.entries).padStart(7) + String(c.legacyAccept).padStart(12)
+        + String(c.freshAccept).padStart(14) + String(c.diffs).padStart(6));
     }
     console.log('');
+    console.log('  ② **已裁决不纳入**的 5 类（行首是**实测条数**，理由按 ADR 原文打印）：');
+    console.log('     终裁与理由的**唯一权威 = docs/ARCHITECTURE.md §4b 的「' + ADR_ANCHOR + '」表** ——');
+    console.log('     本工具运行时读那一张表、**原样打印**，不在代码里抄第二份（两处不会漂）。');
+    ADJUDICATED_IDS.forEach((id) => {
+      const row = ao.adr && ao.adr.rows ? ao.adr.rows[id] : null;
+      const n = ao.perClass[id] || 0;
+      const tag = NON_PATH_IDS.indexOf(id) >= 0 ? '［不是路径］' : '［是路径、不是被打开的对象］';
+      const extra = (id === 'assoc[].members') ? ('（' + ao.sub.assocEntries + ' 个 assoc 条目）') : '';
+      console.log('    · ' + id.padEnd(18) + String(n).padStart(5) + ' 处' + extra + '  ' + tag
+        + ' **不纳入** — ' + (row ? row.reason : '（ADR 里读不到 —— 见下面的「ADR 同步」行）'));
+    });
+    if (ao.adr && ao.adr.found) {
+      console.log('    ✓ ADR 同步：' + ADJUDICATED_IDS.length + '/' + ADJUDICATED_IDS.length
+        + ' 类在 `' + (ao.adr.anchor) + '` 表里逐条找到（读到 ' + Object.keys(ao.adr.rows).length + ' 行）'
+        + ' —— 改那张表的理由，本段输出**自动**跟着变');
+    } else {
+      console.log('    ✗ ADR 同步：' + ((ao.adr && ao.adr.error) || '读不到那张表'));
+      console.log('      ⇒ 这是**采不到真值**（"已裁决不纳入 + 理由"这一节没有权威可引），不是"没有不纳入的类"');
+      console.log('      ⇒ 修法：把 `docs/ARCHITECTURE.md` §4b 的「' + ADR_ANCHOR + '」表补齐（每类一行 `| `字段` | **不纳入** | 理由 |`）');
+    }
+    console.log('');
+    if (ao.sub.itemsSrcArrayForm || ao.sub.linksProject || ao.sub.assocEntries) {
+      console.log('    分量读数（用来核"它不是路径"这件事，不参与判据）：'
+        + '`links[].project` ' + ao.sub.linksProject + ' 条 · `links[].id` ' + ao.sub.linksId + ' 条'
+        + ' · assoc 条目 ' + ao.sub.assocEntries + ' 个 · `items[].src` 数组形态的条目 ' + ao.sub.itemsSrcArrayForm + ' 条');
+      console.log('');
+    }
     console.log('  合计：现状 accept ' + report.legacyAccept + ' 条 · 新判据 accept ' + report.freshAccept + ' 条');
     console.log('  差异（ok 不同）：' + report.diffs.length + ' 条（去重后 ' + report.totals.uniques + ' 个不同的路径）');
     report.diffs.forEach((d) => {
@@ -385,6 +538,10 @@ function main() {
       console.log('✗ 有项目读不到 ⇒ 采不到真值（按门禁口径：采不到真值 = 红，不许当成"没差异"）');
       process.exit(2);
     }
+    if (!report.adjudicatedOut.adr || !report.adjudicatedOut.adr.found) {
+      console.log('✗ 「已裁决不纳入 + 理由」这一节没有权威可引 ⇒ **采不到真值**（不是"没有不纳入的类"）');
+      process.exit(2);
+    }
     if (sy.failed) {
       console.log('✗ 合成样本有 ' + sy.failed + ' 条与期望不符 ⇒ 判据的形状面被改动过了，先定性再谈别的');
       process.exit(1);
@@ -403,5 +560,7 @@ if (require.main === module) main();
 module.exports = {
   run, runSynthetic, judgeOne, SYNTHETIC, SYNTHETIC_PROJECT,
   legacyAttachment, legacyImage, legacyLocalPath, legacyAttachmentAbs, legacyImageUrl,
-  collectPathFields, FIELD_CLASSES
+  collectFields, collectPathFields, FIELD_CLASSES,
+  // 「已裁决不纳入」那一半（理由从 ADR 读，条数是实测的）
+  ADJUDICATED_IDS, NON_PATH_IDS, ADR_ANCHOR, readAdrVerdicts
 };
