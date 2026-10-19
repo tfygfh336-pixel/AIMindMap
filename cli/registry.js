@@ -376,6 +376,37 @@ function init() {
       + '应用开着才守护',
     fn: loadFile('project').bindSync
   });
+  /* 【LP】`learn-path` —— **学习链路（Learning Path）**：若干本已入库的书 ⇒ 一条**有序**的链路 ⇒
+   * 落成一个**新项目**（判据与排序全在 `src/learn-path.js`；设计稿在 `.review/20261020-LP-学习链路/`）。
+   * 与 `R8` 的两种产物（无序图谱 / 无序新树）**不是同一个东西**：那两种都没有"顺序"这一维，
+   * 而这条命令的全部价值就在顺序上（判据 = 无环 + 每步为什么排在这）。
+   * ⚠️ 它是**写命令**（新建项目）⇒ 必须同时登记在 `cli/core.js` 的 `WRITE_COMMANDS`（`--idem`）
+   * 与 `DRY_RUN_COMMANDS`（`--dry-run`）两处；不登记的话前者把它当只读命令拒掉、后者报"不写盘"。 */
+  register({
+    name: 'learn-path',
+    aliases: ['lp'],
+    usage: 'learn-path <项目…> [--out <新项目名>] [--order 项目,…] [--limit n] [--title 标题] [--force] [--json] [--dry-run]',
+    options: ['out', 'order', 'limit', 'title', 'force', 'json'],
+    desc: '【LP】**学习链路**：把若干本已入库的书（或若干份有树 + 正文的资料/经验）排成'
+      + '**一条有序的链路**，落成一个**新项目**（`projects/<--out>/`）：步骤顺序 = `children` 顺序，'
+      + '每步的 `links[]` 指回原书节点，`detail` 里写着"为什么排在这"。**输入只读**（生成前后对'
+      + '输入项目逐字节对拍，任一字节不同即响亮失败）。'
+      + '**有序从哪来**（封闭四档，写在每步的 `why.kind` 里）：`chapter-order` 书内章序（权威）、'
+      + '`explicit-prereq` 人工标注的显式前置（权威：`links[].caption` 以「前置：」开头）、'
+      + '`term-affinity` 术语共现导航（**弱** —— 共现是对称的，只决定"下一步学谁"，**不宣布前置**）、'
+      + '`mechanical` 确定性兜底序（书序 → 书内序 → nodeId；**机械序，如实标注，不冒充推断**）。'
+      + '图只有两种边（书内骨架 + 显式前置）⇒ 共现/兜底**不可能造出环**；真成环时**响亮拒绝并逐条点名'
+      + '成环的边**（含声明处 `at`），**一条边都不静默丢**。`unresolvedEdges` 点名"指向非学习单元的'
+      + '显式前置"（未生效的前置绝不当没事）。`gaps` = **跳级读数**（这一步引用了路径外的知识点，'
+      + '按 outside-path / later / not-a-unit 三档计数）。'
+      + '**AI 预算**：单位 = **调用次数**（计数来自调用日志的**条数**，不是自报计数器），'
+      + '上界公式见 `src/learn-path.js` 的 `AI_BUDGET.maxCalls`；**本版是纯程序侧切片，maxCalls = 0、'
+      + '一次也不调模型**（AI 只留接口位）。'
+      + '`--order` 只影响**同分优先**（不覆盖章序与显式前置）；`--out` 缺省 `学习链路-<N>书`，'
+      + '已存在则拒绝（覆盖必须显式 `--force`）；`--limit` 只生成前 N 步（`truncated` 如实报）；'
+      + '`--json` 给全量报告（含 `sourceIntegrity` 与 `determinism.sha256` —— 同输入两次必须同一个值）。',
+    fn: loadFile('learn-path').learnPath
+  });
   register({ name: 'export-json', usage: 'export-json <项目> <输出.json>', options: [], desc: '导出为 aimap 单文件（图片 base64 内嵌，可移植）', fn: loadFile('project').exportJson });
   register({ name: 'export-html', usage: 'export-html <项目> <输出目录>', options: [], desc: '导出为静态站点（index.html + assets/，可分享部署；相关知识点已内联为可跳转链接）', fn: loadFile('project').exportHtml });
   register({ name: 'import-json', usage: 'import-json <aimap.json> [--name 项目名]', options: ['name'], desc: '从 aimap 单文件导入为新项目（解包图片）', fn: loadFile('project').importJson });

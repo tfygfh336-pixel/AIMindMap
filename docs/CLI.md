@@ -58,6 +58,7 @@
 | `merge-project` | merge-project <目标项目> <源项目> [<源项目…>] [--parent <id>] [--links keep|repoint] [--group-id <id>] [--dry-run] [--json] |
 | `export-md` | export-md <项目> <输出目录> [--format heading|list] [--with-detail] |
 | `bind-sync` | bind-sync <项目> [--bind --dir <目录> --mode flat|mirror --include <模式,…> --ignore <模式,…> --ext <扩展名,…> --debounce <毫秒> --id <绑定id>] [--binding <绑定id>] [--pause|--resume|--unbind|--list] [--watch-dirs] [--forget-snapshot] [--confirm-deletions] [--json] [--dry-run] |
+| `learn-path` | learn-path <项目…> [--out <新项目名>] [--order 项目,…] [--limit n] [--title 标题] [--force] [--json] [--dry-run] |
 | `export-json` | export-json <项目> <输出.json> |
 | `export-html` | export-html <项目> <输出目录> |
 | `import-json` | import-json <aimap.json> [--name 项目名] |
@@ -381,6 +382,14 @@ node cli/mm-cli.js export-md <项目> <输出目录> [--format heading|list] [--
 
 ```
 node cli/mm-cli.js bind-sync <项目> [--bind --dir <目录> --mode flat|mirror --include <模式,…> --ignore <模式,…> --ext <扩展名,…> --debounce <毫秒> --id <绑定id>] [--binding <绑定id>] [--pause|--resume|--unbind|--list] [--watch-dirs] [--forget-snapshot] [--confirm-deletions] [--json] [--dry-run]
+```
+
+### learn-path
+
+【LP】**学习链路**：把若干本已入库的书（或若干份有树 + 正文的资料/经验）排成**一条有序的链路**，落成一个**新项目**（`projects/<--out>/`）：步骤顺序 = `children` 顺序，每步的 `links[]` 指回原书节点，`detail` 里写着"为什么排在这"。**输入只读**（生成前后对输入项目逐字节对拍，任一字节不同即响亮失败）。**有序从哪来**（封闭四档，写在每步的 `why.kind` 里）：`chapter-order` 书内章序（权威）、`explicit-prereq` 人工标注的显式前置（权威：`links[].caption` 以「前置：」开头）、`term-affinity` 术语共现导航（**弱** —— 共现是对称的，只决定"下一步学谁"，**不宣布前置**）、`mechanical` 确定性兜底序（书序 → 书内序 → nodeId；**机械序，如实标注，不冒充推断**）。图只有两种边（书内骨架 + 显式前置）⇒ 共现/兜底**不可能造出环**；真成环时**响亮拒绝并逐条点名成环的边**（含声明处 `at`），**一条边都不静默丢**。`unresolvedEdges` 点名"指向非学习单元的显式前置"（未生效的前置绝不当没事）。`gaps` = **跳级读数**（这一步引用了路径外的知识点，按 outside-path / later / not-a-unit 三档计数）。**AI 预算**：单位 = **调用次数**（计数来自调用日志的**条数**，不是自报计数器），上界公式见 `src/learn-path.js` 的 `AI_BUDGET.maxCalls`；**本版是纯程序侧切片，maxCalls = 0、一次也不调模型**（AI 只留接口位）。`--order` 只影响**同分优先**（不覆盖章序与显式前置）；`--out` 缺省 `学习链路-<N>书`，已存在则拒绝（覆盖必须显式 `--force`）；`--limit` 只生成前 N 步（`truncated` 如实报）；`--json` 给全量报告（含 `sourceIntegrity` 与 `determinism.sha256` —— 同输入两次必须同一个值）。
+
+```
+node cli/mm-cli.js learn-path <项目…> [--out <新项目名>] [--order 项目,…] [--limit n] [--title 标题] [--force] [--json] [--dry-run]
 ```
 
 ### export-json

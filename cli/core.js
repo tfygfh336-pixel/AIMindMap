@@ -312,6 +312,10 @@ const WRITE_COMMANDS = Object.freeze([
   // `recheck`（条目复校）**也会写盘**：显式 `--write-verified` 时写回 verified{at,by,how}。
   // 不写这一行，它带 `--idem` 会被当成"只读命令"响亮拒绝（`health` 不写盘，故不在本清单里）。
   'recheck',
+  // 【LP】`learn-path`（学习链路）**会写盘**：它**新建**一个产物项目（`ctx.write` ⇒ 与别的写命令
+  // 同一条闸门：写盘前校验 / 原子写 / 并发版本闸门 / `--dry-run` 中央短路）。
+  // 不写这一行，它带 `--idem` 会被当成只读命令拒掉。
+  'learn-path',
   // 【R4】`bind-sync`（绑定工作区文件夹的同步/绑定/解绑）**也写盘**：同步走 `ctx.mutate`、
   // 绑定动作走 `ctx.mutate` ⇒ 与别的写命令同一条闸门（不写这一行，它带 `--idem` 会被当成只读命令拒掉）。
   'bind-sync'
@@ -392,6 +396,10 @@ const DRY_RUN_COMMANDS = Object.freeze([
   'item-add', 'item-edit', 'item-remove', 'item-move', 'item-order', 'render-detail',
   'remove-image', 'remove-file',
   'init', 'theme-layout',
+  // 【LP】`learn-path`：走**中央短路**（命令体里没有任何 dry-run 分支 —— `tests/w8-dry-run.test.js`
+  // 静态把守）。它是"新建项目"型的写命令 ⇒ 与 `init` 同一档：dry-run 报 `created:true` + `changed:[]`，
+  // 而**输入项目一个字节都不动**（那本来就是只读的）。
+  'learn-path',
   // ② 中央短路 + 命令层关物理副作用
   'add-image', 'add-file', 'import-md',
   // ③ 清理型

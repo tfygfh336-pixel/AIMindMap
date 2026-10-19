@@ -7249,6 +7249,155 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
     }
   }
 
+  /* ============================================================================
+   * 【LP】`learn-path`（学习链路）的端到端断言
+   * ----------------------------------------------------------------------------
+   * 为什么必须在**真工程 + 真 `projects/` 根**上跑：它要"跨项目读盘 → 新建一个项目 →
+   * 再回来对拍输入的字节"，单测（`tests/learn-path.test.js`）里那份 `%TEMP%` 沙箱证明的是
+   * **同一套代码**在别处也成立，但"真盘上两个真项目 + 真 store.write 闸门"这一半只有这里覆盖得到。
+   *
+   * 五条判据各一条断言（判据 1 两条：一次跑内的指纹 + 两次跑之间逐字节）：
+   *   1 确定性 · 2 无环 · 3 可追溯（产物里的 `lp-why:` 能反查到 `--json` 的 why）·
+   *   4 不改原书（独立 sha256 对拍，不信命令自报）· 5 预算（`ai.calls = 0`）
+   * + `--dry-run` 与真跑**同一份判据**、负例三条（同名 / 已存在 / `--order` 越界）。
+   *
+   * 探针一律 `it-probe-lp*` 前缀 ⇒ 文件顶部 `sweepStaleProbes()` 的 `it-probe-` 表已覆盖；
+   * 本块自带 `finally` 收尾 + 残留自检（崩在半路也留不下假项目）。
+   * ========================================================================== */
+  {
+    const LPA = 'it-probe-lp-a';
+    const LPB = 'it-probe-lp-b';
+    const LPOUT = 'it-probe-lp-out';
+    /* `crypto` **在本块里 require**（不往文件顶部加 require）：本文件是与别的批次共享的，
+     * 顶部导入区每动一次就多一次撞车面；这一行只服务本块。 */
+    const crypto = require('crypto');
+    const lpdir = (n) => path.join(ROOT, 'projects', n);
+    const lpfile = (n) => path.join(lpdir(n), n + '.json');
+    const lpSha = (n) => crypto.createHash('sha256').update(fs.readFileSync(lpfile(n))).digest('hex');
+    const lpJson = (r) => { try { return JSON.parse(r.out); } catch (e) { return null; } };
+    try {
+      // ── 造两本迷你书（每本：章节点 + 两个小节；术语刻意让乙书与甲书共享） ──
+      run(['init', LPA, '--title', '链路探针·书甲']);
+      run(['add-root', LPA, '--id', 'a-ch1', '--topic', '第1章 导论', '--detail', '<p>基础：<code>sk_buff</code></p>']);
+      run(['add', LPA, 'a-ch1', '--id', 'a-s1', '--topic', '1.1 收包',
+        '--detail', '<ul><li><code>sk_buff</code> 与 <code>napi_gro_receive</code></li></ul>']);
+      run(['add', LPA, 'a-ch1', '--id', 'a-s2', '--topic', '1.2 发包',
+        '--detail', '<ul><li><code>dev_queue_xmit</code></li></ul>']);
+      run(['add-root', LPA, '--id', 'a-ch2', '--topic', '第2章 进阶', '--detail', '<p>进阶 <code>qdisc</code></p>']);
+      run(['init', LPB, '--title', '链路探针·书乙']);
+      run(['add-root', LPB, '--id', 'b-ch1', '--topic', '第一章 基础', '--detail', '<p><code>sk_buff</code> 导读</p>']);
+      run(['add', LPB, 'b-ch1', '--id', 'b-s1', '--topic', '1.1 缓冲',
+        '--detail', '<ul><li><code>sk_buff</code> <code>napi_gro_receive</code> <code>qdisc</code></li></ul>']);
+
+      const lpShaA0 = lpSha(LPA);
+      const lpShaB0 = lpSha(LPB);
+      const lpArgs = ['learn-path', LPA, LPB];
+
+      /* ---- ① --dry-run：报计划 + 一个字节不写（产物目录都不该出现） ---- */
+      const lpdry = run(lpArgs.concat(['--out', LPOUT, '--dry-run', '--json']));
+      const lpdryJ = lpJson(lpdry);
+      check('LP·判据①（dry-run） `learn-path … --dry-run --json` 报出计划（`dryRun:true` + `created:true`）、'
+        + 'exit 0，且**产物目录一个都没出现**（判据 5 的"预算 ≤ 上界"与"不改原书"在预览期同样成立）',
+        ok(lpdry.out) && !!lpdryJ && lpdryJ.dryRun === true && !!lpdryJ.plan && lpdryJ.plan.created === true
+          && !fs.existsSync(lpdir(LPOUT)),
+        lpdryJ ? ('dryRun=' + lpdryJ.dryRun + ' created=' + (lpdryJ.plan && lpdryJ.plan.created)
+          + ' 产物存在=' + fs.existsSync(lpdir(LPOUT))) : String(lpdry.out).slice(0, 200));
+
+      /* ---- ② 真跑：产物是新项目 + 五条判据读数 ---- */
+      const lprun = run(lpArgs.concat(['--out', LPOUT, '--json']));
+      const lpJ = lpJson(lprun);
+      check('LP·判据①（确定性） 一次跑内 `determinism.sha256` 是 64 位十六进制指纹；'
+        + '判据②（无环）`graph.acyclic === true` 且 `cycles` 为空；判据③（可追溯）**每一步**都带'
+        + ' `why.kind` + `why.evidence`；判据⑤（预算）`ai.unit === \'calls\'`、`ai.calls === 0`、'
+        + '`ai.maxCalls === 0`（本版纯程序侧，一次也不调模型）',
+        ok(lprun.out) && !!lpJ
+          && /^[0-9a-f]{64}$/.test(lpJ.determinism && lpJ.determinism.sha256 || '')
+          && lpJ.graph.acyclic === true && (lpJ.graph.cycles || []).length === 0
+          && lpJ.steps.length > 0
+          && lpJ.steps.every((s) => s.why && s.why.kind && s.why.evidence)
+          && lpJ.ai.unit === 'calls' && lpJ.ai.calls === 0 && lpJ.ai.maxCalls === 0,
+        lpJ ? ('steps=' + lpJ.steps.length + ' acyclic=' + lpJ.graph.acyclic
+          + ' ai.calls=' + lpJ.ai.calls + '/' + lpJ.ai.maxCalls
+          + ' sha=' + String(lpJ.determinism.sha256).slice(0, 12)) : String(lprun.out).slice(0, 200));
+
+      /* ---- ③ 判据④：**独立** sha256 对拍（不信命令自报） ---- */
+      check('LP·判据④（不改原书） 独立复算：真跑前后两本探针书的 JSON sha256 **逐字节相同**'
+        + '（命令自报的 `sourceIntegrity.unchanged` 只是旁证，判据以这里为准）',
+        lpSha(LPA) === lpShaA0 && lpSha(LPB) === lpShaB0 && !!lpJ && lpJ.sourceIntegrity.unchanged === true,
+        '甲 ' + (lpSha(LPA) === lpShaA0) + ' ｜ 乙 ' + (lpSha(LPB) === lpShaB0)
+          + ' ｜ 自报=' + (lpJ && lpJ.sourceIntegrity.unchanged));
+
+      /* ---- ④ 第二次同输入 ⇒ 指纹逐字相同（判据①的端到端一半） ---- */
+      const lprun2 = run(lpArgs.concat(['--out', LPOUT, '--force', '--json']));
+      const lpJ2 = lpJson(lprun2);
+      check('LP·判据①（两次跑逐字节） 同一份输入连跑两次（第二次 `--force` 覆盖）⇒ '
+        + '`determinism.sha256` 与 `steps` 全量 JSON **都逐字相同**（不是"看起来差不多"）',
+        ok(lprun2.out) && !!lpJ2 && !!lpJ
+          && lpJ2.determinism.sha256 === lpJ.determinism.sha256
+          && JSON.stringify(lpJ2.steps) === JSON.stringify(lpJ.steps),
+        lpJ2 ? ('sha 相同=' + (lpJ2.determinism.sha256 === lpJ.determinism.sha256)
+          + ' steps 逐字相同=' + (JSON.stringify(lpJ2.steps) === JSON.stringify(lpJ.steps))) : 'json 解析失败');
+
+      /* ---- ⑤ 产物本身立得住：validate 通过 + 顺序=children 顺序 + links 指回原书 + lp-why 可反查 ---- */
+      run(['validate', LPOUT]);
+      const lpOutFile = lpfile(LPOUT);
+      const lpOutData = JSON.parse(fs.readFileSync(lpOutFile, 'utf8'));
+      const lpKids = lpOutData.data.children || [];
+      const lpToks = lpKids.map((k) => (/lp-why:v1\|([^<]*)/.exec(String(k.detail || '')) || [])[1] || '');
+      const lpWhyOk = lpKids.every((k, i) => {
+        const m = /lp-why:v1\|kind=([a-z-]+)\|conf=([a-z]+)\|overlap=(\d+)\|/.exec(String(k.detail || ''));
+        return !!m && !!lpJ && m[1] === lpJ.steps[i].why.kind && m[2] === lpJ.steps[i].why.confidence
+          && Number(m[3]) === lpJ.steps[i].why.evidence.overlap;
+      });
+      check('LP·判据③（产物可反查）+ 产物合法性 生成的 `projects/' + LPOUT + '/`：`validate` 通过、'
+        + '步骤顺序 = `children` 顺序（`lp-0001…` 连续）、每步 `links[0]` 指回原书节点、'
+        + '`detail` 里的 `lp-why:` 行与 `--json` 的 `why.kind`/`confidence`/`overlap` **逐字段相同**',
+        ok(run(['validate', LPOUT]).out)
+          && !!lpJ && lpKids.length === lpJ.steps.length
+          && lpKids.every((k, i) => k.id === 'lp-' + String(i + 1).padStart(4, '0')
+            && k.links && k.links.length === 1
+            && k.links[0].project === lpJ.steps[i].project
+            && k.links[0].id === lpJ.steps[i].nodeId)
+          && lpWhyOk,
+        'children=' + lpKids.length + ' / steps=' + (lpJ ? lpJ.steps.length : '?')
+          + ' ｜ lp-why 逐字段一致=' + lpWhyOk + ' ｜ 首个 token=' + String(lpToks[0] || '').slice(0, 60));
+
+      /* ---- ⑥ 判据②的判别力：注入互相「前置：」的两条边 ⇒ 必须 exit 1 并**逐条点名环上边** ---- */
+      const lpLink1 = run(['link', LPB, 'b-s1', '--to', LPA, '--id', 'a-s2', '--caption', '前置：乙先学甲的发包']);
+      const lpLink2 = run(['link', LPA, 'a-s2', '--to', LPB, '--id', 'b-s1', '--caption', '前置：甲先学乙的缓冲']);
+      const lpCyc = run(lpArgs.concat(['--out', LPOUT + '-cyc']));
+      check('LP·判据②（成环必红且不丢边） 注入两条互相「前置：」的边 ⇒ `learn-path` **exit 1**，报文点名'
+        + '「链路成环」+ **环上每一条边**（`lp-` 两本书的节点名 + caption 原样），并且**没有产出半个项目**'
+        + '（不许"断一条边凑合排完"这种静默补救）',
+        ok(lpLink1.out) && ok(lpLink2.out) && !ok(lpCyc.out)
+          && /成环/.test(lpCyc.out) && lpCyc.out.indexOf('a-s2') >= 0 && lpCyc.out.indexOf('b-s1') >= 0
+          && lpCyc.out.indexOf('前置：') >= 0
+          && !fs.existsSync(lpdir(LPOUT + '-cyc')),
+        String(lpCyc.out).trim().split('\n')[0].slice(0, 160));
+      // 清掉注入的边（探针项目随后整个删掉，但保持"删之前状态干净"这条纪律）
+      run(['unlink', LPB, 'b-s1', '--to', LPA, '--id', 'a-s2']);
+      run(['unlink', LPA, 'a-s2', '--to', LPB, '--id', 'b-s1']);
+
+      /* ---- ⑦ 负例三条：同名 / 已存在 / --order 越界 ---- */
+      const lpSame = run(['learn-path', LPA, LPB, '--out', LPA]);
+      const lpExists = run(lpArgs.concat(['--out', LPOUT]));
+      const lpOrder = run(lpArgs.concat(['--out', LPOUT + '-x', '--order', 'comnet']));
+      check('LP·负例（三条都是**响亮拒绝**、exit 1、且都不留半个产物） ① `--out` 与输入同名 '
+        + '② 产物已存在且没给 `--force` ③ `--order` 里有不在输入里的项目',
+        !ok(lpSame.out) && /不能与输入项目同名/.test(lpSame.out)
+          && !ok(lpExists.out) && /已存在/.test(lpExists.out)
+          && !ok(lpOrder.out) && /不在本次输入里/.test(lpOrder.out)
+          && !fs.existsSync(lpdir(LPOUT + '-x')),
+        '同名=' + !ok(lpSame.out) + ' 已存在=' + !ok(lpExists.out) + ' order越界=' + !ok(lpOrder.out));
+    } finally {
+      [LPA, LPB, LPOUT, LPOUT + '-cyc', LPOUT + '-x'].forEach((n) => {
+        try { fs.rmSync(lpdir(n), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+      });
+      const left = [LPA, LPB, LPOUT, LPOUT + '-cyc', LPOUT + '-x'].filter((n) => fs.existsSync(lpdir(n)));
+      check('LP·收尾 探针项目清干净（残留 ' + left.length + ' 个 —— 现算）', left.length === 0, JSON.stringify(left));
+    }
+  }
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;
