@@ -12,9 +12,10 @@
  *      判红的只有"**域跑完时还有东西开着**"这一种。本工程有过真实教训：一条过严的门禁
  *      会被人直接关掉，那等于没有 ✗。
  * ============================================================ */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -144,3 +145,95 @@ describe('V2 判别力：真实仓库里那条合规断言被抹掉收尾 ⇒ �
     expect(bad.map((b) => b.file)).toEqual([]);
   });
 });
+
+/* ---------------------------------------------------------------
+ * ④ **跳过档必须可见**（对账批 `G-20` 剩的那半，2026-10-19）
+ *    改前的实测：同一处"打开命令面板却不收尾"，加一行 `收尾-豁免:` ⇒ exit 0，
+ *    而成功行与**未变异副本逐字相同**、理由一个字都没打印 ⇒ 跳过档伪装成通过档（照 `A5` 等于不存在 ✗）。
+ *    这里把"看得见"拆成四件事各来一条用例：**能逐条枚举** / **能报出爆炸半径** /
+ *    **有上界且超了要红** / **真仓读数不超上界**。打印本身（`[豁免] …`）由源码形状守。
+ * --------------------------------------------------------------- */
+describe('V2 跳过档：豁免必须逐条可见，且受只减不增的上界约束', () => {
+  const created = [];
+  afterAll(() => {
+    // 清理的唯一入口：本文件造一个目录就登记一次（本工程"每跑一次漏 N 个临时目录"的老病）
+    created.forEach((d) => fs.rmSync(d, { recursive: true, force: true }));
+  });
+
+  it('findExemptions() 逐条抽出行号与原因；写在代码行/单行块注释里的**不算**（口径与旧版一致）', () => {
+    const src = [
+      'module.exports = [',                     // 1
+      '  {',                                    // 2
+      "    name: '甲',",                         // 3
+      '    run: async (ctx) => {',              // 4
+      '      // 收尾-豁免: 理由一',              // 5
+      '      await window.MMApp.openPalette();', // 6
+      '      const note = "收尾-豁免: 代码行里不算";', // 7
+      '    }',                                  // 8
+      '  }',                                    // 9
+      '];',                                     // 10
+      '/*',                                     // 11
+      ' * 收尾-豁免: 理由二（块注释的 ` * ` 行也算：它是给人看的说明）', // 12
+      ' */',                                    // 13
+      '/* 收尾-豁免: 单行块注释不算（旧口径只认 `//`/` * ` 行） */' // 14
+    ].join('\n');
+    const ex = gate.findExemptions(src);
+    expect(ex.length).toBe(2);
+    expect(ex[0]).toEqual({ line: 5, reason: '理由一' });
+    expect(ex[1].line).toBe(12);
+    expect(ex[1].reason).toContain('理由二');
+  });
+
+  it('整份文件级豁免的**爆炸半径**可枚举：`problems` 空了，但 `suppressed` 点名它放过了哪一段', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-v2-exempt-'));
+    created.push(dir);
+    const src = fixture([{ name: '甲：开了不收尾', body: ['await window.MMApp.openPalette();'] }])
+      + '// 收尾-豁免: 单测用 —— 这一段留给下一个断言关\n';
+    fs.writeFileSync(path.join(dir, '01-probe.js'), src, 'utf8');
+
+    const rows = gate.scanAll(dir);
+    expect(rows.length).toBe(1);
+    expect(rows[0].problems).toEqual([]);                        // 整份文件级豁免 ⇒ 不判红（口径未变）
+    expect(rows[0].exemptions.length).toBe(1);                   // 但豁免本身是**读数**，看得见
+    expect(rows[0].suppressed.length).toBe(1);                   // 并且能报出"它放过了什么"
+    expect(rows[0].suppressed[0].seg).toBe('甲：开了不收尾');
+
+    const s = gate.summarize(rows);
+    expect(s.exemptTotal).toBe(1);
+    expect(s.exemptFiles).toEqual(['01-probe.js']);
+    expect(s.exempt[0].reason).toContain('单测用');
+    expect(s.suppressed[0].problems.length).toBe(1);
+  });
+
+  it('summarize()：计数 / 上界 / 超上界都是纯函数读数（不打印、不退出）', () => {
+    const rows = [
+      { file: 'a.js', problems: [], exemptions: [{ line: 3, reason: 'r1' }, { line: 9, reason: 'r2' }], suppressed: [] },
+      { file: 'b.js', problems: [], exemptions: [], suppressed: [] }
+    ];
+    const over = gate.summarize(rows, 1);
+    expect(over.exemptTotal).toBe(2);
+    expect(over.cap).toBe(1);
+    expect(over.overCap).toBe(true);                             // 2 > 1 ⇒ 超上界（**上界真的在守**）
+    expect(over.exemptFiles).toEqual(['a.js']);
+    expect(gate.summarize(rows, 2).overCap).toBe(false);         // 边界：等于上界不算超
+    expect(gate.summarize(rows).cap).toBe(gate.EXEMPT_CAP);      // 默认上界只有一处实现
+  });
+
+  it('真仓读数：豁免条数 ≤ 上界，且上界是个**非负整数**（值是门禁侧唯一一份，别处不抄）', () => {
+    const s = gate.summarize(gate.scanAll());
+    expect(s.files).toBeGreaterThan(0);
+    expect(Number.isInteger(gate.EXEMPT_CAP)).toBe(true);
+    expect(gate.EXEMPT_CAP).toBeGreaterThanOrEqual(0);
+    expect(s.exemptTotal).toBeLessThanOrEqual(gate.EXEMPT_CAP);
+    expect(s.overCap).toBe(false);
+  });
+
+  it('main() 里确实**打印**了豁免（逐条 + 计数 + 整份豁免告警 + 上界），不是只在内存里数一遍', () => {
+    // 源码形状守门：删掉任何一处，这条用例与 `node scripts/smoke-state-check.js` 的真实输出都会对不上
+    expect(gateSrc).toMatch(/\[豁免\]\s+' \+ SMOKE_REL/);
+    expect(gateSrc).toMatch(/显式豁免（`收尾-豁免:`）：' \+ r\.exemptTotal/);
+    expect(gateSrc).toMatch(/整份文件级豁免\*\* ⇒ 本域其余判据一并失效/);
+    expect(gateSrc).toMatch(/超过上界 ' \+ r\.cap/);
+  });
+});
+

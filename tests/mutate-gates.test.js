@@ -13,11 +13,11 @@
  * ## 三层断言（为什么这么分层）
  *   ① **纯函数层**（毫秒级）：`classify()` 的口径 —— 尤其是"**无害变异不计漏过**"这条；
  *      `exitCodeFor()` 的退出码语义；`summarize()` 的账必须现算且封闭。
- *   ② **目录层**（毫秒级 + 一次 `--judgments` 子进程）：五个门禁都在册、每个都有 真变异 + 无害对照 + 负对照；
+ *   ② **目录层**（毫秒级 + 一次 `--judgments` 子进程）：在册门禁都在册、每个都有 真变异 + 无害对照 + 负对照；
  *      G8 另有一条**判定级**覆盖用例（15 条判定各有注入，判定清单从门禁自己的 `--judgments` 现场取）。
  *      少了任何一类 ⇒ 判红（防止"覆盖被悄悄删掉"这种静默失效）。
  *   ③ **集成层**（**约 7 s**，真起子进程跑一次体检）：这是唯一能证明"它真的按事实判"的一层。
- *      刻意只跑 `--only=dep-direction` 这一个门禁：全量五个门禁约 20 s（G8 自己的 19 条变体约 12 s），
+ *      刻意只跑 `--only=dep-direction` 这一个门禁：全量体检比它贵一个数量级（G8 那一条自己的判定级变体就占掉一大截），
  *      会把 `npm test` 的成本推高一截，而"工具会不会乱报"这一条与"跑了几个门禁"无关 ✗。
  *      （全量体检仍是一条命令：`node scripts/mutate-gates.js`，见 `.review/20261013-门禁变异测试/README.md` 与
  *       `.review/20261016-T4-G8判别力/README.md`。）
@@ -126,10 +126,11 @@ describe('① summarize()：汇总读数必须现算且封闭', () => {
 /* ---------------------------------------------------------------
  * ② 目录层：覆盖不许被悄悄删
  * --------------------------------------------------------------- */
-describe('② 变体目录：五个门禁都在册，每个都带"真变异 + 无害对照 + 负对照"', () => {
-  it('五个门禁（G9 / S1 / G6+G7 / V1 / G8）一个不少，且都写明了"注在哪一层"', () => {
+describe('② 变体目录：在册门禁一个不少，每个都带"真变异 + 无害对照 + 负对照"', () => {
+  it('每个在册门禁都在 GATES 里（清单是**枚举**，不是计数 —— 加门禁时这里必须跟着加），且都写明了"注在哪一层"', () => {
     const ids = mg.GATES.map((g) => g.id).sort();
-    expect(ids).toEqual(['dep-direction', 'doc-facts', 'docs-registry', 'rules-consistency', 'visibility-judge']);
+    expect(ids).toEqual(['collateral-check', 'dep-direction', 'doc-facts', 'docs-registry',
+      'rules-consistency', 'smoke-state', 'visibility-judge']);
     mg.GATES.forEach((g) => {
       expect(g.seam, g.id + ' 缺 seam（必须写清：变异注在输入文本 / 程序集 / 门禁实现的哪一层）').toBeTruthy();
       expect(g.code, g.id + ' 没写门禁编号').toBeTruthy();

@@ -11,7 +11,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  releaseChangelog, indexChangelog, splitChangelog, renderArchiveFile, searchArchives, PLACEHOLDER
+  releaseChangelog, indexChangelog, splitChangelog, renderArchiveFile, searchArchives, PLACEHOLDER,
+  checkChangelogStructure
 } from '../src/changelog.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -385,5 +386,130 @@ describe('changelog 归档检索', () => {
     if (!fs.existsSync(dir)) return;                       // 尚无归档则不判
     const r = searchArchives(dir, 'history.js 下沉');
     expect(r.totalHits).toBeGreaterThan(0);
+  });
+});
+
+/* ============================================================
+ * checkChangelogStructure —— CHANGELOG.md 的「文件自身结构完整性」门禁
+ * ------------------------------------------------------------
+ * 为什么这组必须存在（不是"顺手多写几条"）：
+ * 2026-10-19 **一天之内** CHANGELOG.md 被工程外的一次性脚本弄坏三次，**没有一道判据拦住**：
+ *   事故 1/2（批 `94fcd4d1`）：裸 `fs.writeFileSync` 整份覆写撞并发会话 ⇒ **两个 `# CHANGELOG` 头**（938,727 B）；
+ *   事故 3（批 `f8fd853e`）：`before.slice(0, cut)` 拼接点少加了两个字符 ⇒ **文件头
+ *                 （registry 块 + `## [Unreleased]` 行）被整段截掉**。
+ * 本文件上半部分那些用例为什么放过它们（父代理已查证）—— 刻意不写条数，那类数字每次补测都在变：
+ *   · 它们测的是 `src/changelog.js` 的**变换逻辑**（"把 [Unreleased] 变成版本段"等），
+ *     喂的是**合成输入** ⇒ **从不检查磁盘上那一份文件的结构**；
+ *   · 写盘出口判据扫的是**仓库源码**里的 `fs.writeFileSync` 调用点 ⇒ 三次都来自**工程外**脚本，扫描面覆盖不到。
+ * ⇒ 没有任何判据在问"这个文件现在还好吗"。下面这组就是那个问题。
+ *
+ * **判别力怎么证的**：把磁盘上那份真实文本读进内存，在**字符串上**注入破坏，再喂给纯函数
+ * ⇒ **真仓 `CHANGELOG.md` 一个字节都不写**（本组除了"读一次原文"，没有任何 fs 写调用）。
+ * 五个注入各必红并**点名是哪一条判据**，外加一条"原样 ⇒ 必须绿"的反证（防判据乱红）。
+ * 最后一条**如实钉住能力边界**：内容被悄悄改掉时它仍然绿 —— 它只验结构。
+ * ============================================================ */
+describe('checkChangelogStructure（CHANGELOG.md 文件自身结构完整性）', () => {
+  const CL = path.join(ROOT, 'CHANGELOG.md');
+  /** 磁盘上那份真实文本（**只读**；所有注入都发生在返回的字符串上，不落盘） */
+  const real = () => fs.readFileSync(CL, 'utf8');
+  const codes = (r) => r.problems.map((p) => p.code);
+
+  it('采得到真值：磁盘上的 CHANGELOG.md 必须存在且不是空壳（取不到就是红，不是跳过）', () => {
+    expect(fs.existsSync(CL)).toBe(true);
+    expect(real().length).toBeGreaterThan(1000);
+  });
+
+  it('反证：原样文本 ⇒ 必须绿（判据不许乱红）', () => {
+    const r = checkChangelogStructure(real());
+    expect(r.problems).toEqual([]);
+    expect(r.ok).toBe(true);
+  });
+
+  it('注入①：把整份文件拼两遍（两个 `# CHANGELOG` 头）⇒ 必红，点名 H1_COUNT', () => {
+    // 事故 1/2 的形状：并发会话各自覆写 ⇒ 后落盘的那份没带上对方，两份被拼在一起
+    const src = real();
+    const doubled = src + '\n' + src;
+    const r = checkChangelogStructure(doubled);
+    expect(r.ok).toBe(false);
+    expect(codes(r)).toContain('H1_COUNT');
+    const p = r.problems.find((x) => x.code === 'H1_COUNT');
+    expect(p.message).toMatch(/出现 2 次/);
+    expect(p.message).toMatch(/拼接/);
+    // 只认"行首"而不认子串的证据：这份被拼坏的文件里子串出现 12 次，判据报的是 2 次
+    // （真文件里子串就有 6 次，5 次在别批的散文里讲这个指标 ⇒ `includes` 写法对原样文件也会红）
+    expect(doubled.split('# CHANGELOG').length - 1).toBeGreaterThan(2);
+  });
+
+  it('注入②：删掉 `## [Unreleased]` 那一行 ⇒ 必红，点名 UNRELEASED_COUNT', () => {
+    const src = real();
+    const broken = src.replace(/^## \[Unreleased\][^\n]*\n/m, '');
+    expect(broken).not.toBe(src);                        // 注入真的生效（防"没改就判红"的假证明）
+    const r = checkChangelogStructure(broken);
+    expect(r.ok).toBe(false);
+    expect(codes(r)).toEqual(['UNRELEASED_COUNT']);       // 只这一条：不许连坐其余判据
+    expect(r.problems[0].message).toMatch(/出现 0 次/);
+  });
+
+  it('注入③：截掉头部前言（registry 块 + 约定块）⇒ 必红，点名 PREAMBLE_NO_REGISTRY', () => {
+    // 事故 3 的形状（文件头被整段截掉）。这里**保留**标题与 `## [Unreleased]` 行，
+    // 好让这条注入单独考验"前言区"这一条判据 —— 连标题一起截掉的真实形状另有一条（③b）。
+    const src = real();
+    const at = src.search(/^## \[Unreleased\]/m);
+    expect(at).toBeGreaterThan(0);
+    const broken = src.slice(0, src.indexOf('\n') + 1) + '\n' + src.slice(at);
+    expect(broken.length).toBeLessThan(src.length);       // 前言真的被截掉了
+    const r = checkChangelogStructure(broken);
+    expect(r.ok).toBe(false);
+    expect(codes(r)).toEqual(['PREAMBLE_NO_REGISTRY']);
+    expect(r.problems[0].message).toMatch(/registry 元信息块/);
+    expect(r.problems[0].message).toMatch(/头部被整段截掉/);
+  });
+
+  it('注入③b：连 `# CHANGELOG` 标题一起整段截掉（事故 3 的真实形状）⇒ 必红，H1_COUNT=0 且前言为空', () => {
+    const src = real();
+    const at = src.search(/^## \[Unreleased\]/m);
+    const r = checkChangelogStructure(src.slice(at));
+    expect(r.ok).toBe(false);
+    expect(codes(r)).toContain('H1_COUNT');               // 0 次 = 标题没了
+    expect(r.problems.find((x) => x.code === 'H1_COUNT').message).toMatch(/出现 0 次/);
+    expect(codes(r)).toContain('PREAMBLE_EMPTY');
+  });
+
+  it('注入④：复制一个同名 `###` 段 ⇒ 必红，点名 DUP_ENTRY_NAME', () => {
+    const src = real();
+    const m = /^### (.+?)\s*$/m.exec(src);
+    expect(m).toBeTruthy();
+    const broken = src + '\n' + m[0] + '\n\n- 注入的重复段正文\n';
+    const r = checkChangelogStructure(broken);
+    expect(r.ok).toBe(false);
+    expect(codes(r)).toEqual(['DUP_ENTRY_NAME']);
+    expect(r.problems[0].message).toMatch(/× 2/);         // 真的数出"出现了两次"，不是"好像重复"
+  });
+
+  it('注入⑤：复制一个同名 `## [` 段 ⇒ 必红，点名 DUP_SECTION_NAME', () => {
+    const src = real();
+    const m = /^## \[(v[^\]]+)\][^\n]*$/m.exec(src);
+    expect(m).toBeTruthy();
+    // 只复制**段标题**（正文换成别的）⇒ 单独考验"段名不许重复"这一条，不被 ④ 的 `###` 重名连坐。
+    // 整段连正文一起复制的真实情形会同时踩 ④ 与 ⑤ —— 两条都红正是想要的。
+    const broken = src + '\n' + m[0] + '\n\n### 注入的重复段正文\n\n- 无\n';
+    const r = checkChangelogStructure(broken);
+    expect(r.ok).toBe(false);
+    expect(codes(r)).toEqual(['DUP_SECTION_NAME']);
+    expect(r.problems[0].message).toMatch(/段名不许重复/);
+  });
+
+  it('能力边界（如实钉住）：内容被悄悄改掉 ⇒ **仍然绿** —— 本判据只验结构，不验内容', () => {
+    // 这条守的**不是一个功能，而是一条边界**（`testing-for-ai` B8：已知边界要写进文档）。
+    // 为什么必须钉住：不钉住的话，下一个人会以为"有这道门禁 ⇒ CHANGELOG 不会被改坏了"，
+    // 而反例就摆在这里 —— 把 `[Unreleased]` 里第一条 `- ` 的正文整行换掉，结构仍然完整，判据仍然绿。
+    // 抓内容级损坏需要"内容基线"（某个哈希/计数），本工程没有这份基线；
+    // 要做就得先决定基线怎么维护（每次合法改动都要重算一次），那是另一件事。
+    const src = real();
+    const broken = src.replace(/^- .*$/m, '- 这一行的内容被悄悄改掉了（结构完全不变）');
+    expect(broken).not.toBe(src);
+    const r = checkChangelogStructure(broken);
+    expect(r.ok).toBe(true);                              // ← 边界：判据看不见内容变化
+    expect(r.problems).toEqual([]);
   });
 });

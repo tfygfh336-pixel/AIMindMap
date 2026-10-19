@@ -410,3 +410,404 @@ describe('S2 ⑤ 逐调用点豁免：真仓库读数', () => {
     expect(un.length).toBe(6);
   });
 });
+
+/* ============================================================
+ * ⑥ 笔记正文残留（`NOTE_RESIDUE`）—— `detail` 里不许留 Markdown 定界符
+ * ------------------------------------------------------------
+ * 为什么有这一段：`detail` 的语义是 **innerHTML**（`docs/DATA-FORMAT.md` §2.4），
+ * 写进去的 `**粗体**` / 反引号会**原样显示**，而 `validate-all` 只校结构、**全绿**。
+ * 上一批只补了「标签开闭」那一半（`.review/20261019-PDF正文核对/check-html.mjs`），
+ * **Markdown 残留一直没有任何机器门禁**（`ada00407` 实测一批里数十处）。
+ * 三档一起测（`B8`）：判红 / 只报告 / 跳过；**"含 `*` 就判红"是刻意不做的**（`int *p;` 必须绿）。
+ * 完整注入证明（含逐字节还原）见 `.review/20261019-Markdown残留门禁/proof-inject.mjs`。
+ * ============================================================ */
+describe('S2 ⑥ 笔记正文残留：判据是纯函数（可单独喂输入）', () => {
+  const hitsOf = (html) => gate.scanDetailResidue(html).hits;
+  const failOf = (html) => hitsOf(html).filter((h) => h.tier === 'fail');
+  const reportOf = (html) => hitsOf(html).filter((h) => h.tier === 'report');
+
+  it('判红档：成对 `**粗体**` / 成对反引号 / 围栏 / `[字](链)` / 行首 `#` —— 各一条', () => {
+    expect(failOf('<p>这里 **粗体** 了</p>').map((h) => h.rule)).toEqual(['bold-pair']);
+    expect(failOf('<p>这里 `dmesg | tail` 了</p>').map((h) => h.rule)).toEqual(['code-span']);
+    // 围栏只报 `fence` 一条（三个反引号不许同时被 code-span 再报一遍）
+    expect(failOf('<p>围栏：```js</p>').map((h) => h.rule)).toEqual(['fence']);
+    expect(failOf('<p>看 [设计稿](docs/x.md) 去</p>').map((h) => h.rule)).toEqual(['link']);
+    expect(failOf('# 一、标题\n正文').map((h) => h.rule)).toEqual(['heading-raw']);
+  });
+
+  it('**不假红**：`int *p;` / `a*b` / `*.js` / `2*a*b` 里的 `*` 都不进判红档', () => {
+    // 这条是本判据的核心边界：`int *p;` 只有**一个** `*`（不成对）⇒ 判据看不见它
+    expect(failOf('<p>C 指针 int *p; 与 char **pp;</p>')).toEqual([]);
+    expect(failOf('<p>乘法 a*b、通配 *.js、正则 a*?b</p>')).toEqual([]);
+    // `2*a*b` 成对但**无法与乘号分辨** ⇒ 只报告，绝不判红
+    expect(failOf('<p>公式 2*a*b 与 3*x*y</p>')).toEqual([]);
+    expect(reportOf('<p>公式 2*a*b</p>').map((h) => h.rule)).toContain('italic-pair');
+    // Python dunder 与"成对下划线"同形 ⇒ 只报告
+    expect(failOf('<p>入口 __main__ 与 __init__</p>')).toEqual([]);
+    expect(reportOf('<p>入口 __main__ 与 __init__</p>').map((h) => h.rule)).toContain('underline-pair');
+  });
+
+  it('跳过档：`<code>` / `<pre>` / 注释里的残留是**内容**，不计入任何一档', () => {
+    const r = gate.scanDetailResidue('<p><code>**这不是残留**</code></p>'
+      + '<pre><code>`也不是`</code></pre><!-- **更不是** -->');
+    expect(r.hits).toEqual([]);
+    // `<pre><code>…</code></pre>` 里那个 code 被 pre 段整段吃掉（嵌套只算最外层一段）⇒ code=1
+    expect(r.masked.code).toBe(1);
+    expect(r.masked.pre).toBe(1);
+    expect(r.masked.comment).toBe(1);
+  });
+
+  it('掩掉区块**保留换行**（行号与列号不许漂：报错要能直接定位）', () => {
+    const html = '<pre><code>a\nb\nc</code></pre>\n<p>**坏在这里**</p>';
+    const h = gate.scanDetailResidue(html).hits.filter((x) => x.tier === 'fail');
+    expect(h.length).toBe(1);
+    expect(h[0].line).toBe(4);                       // 掩掉的三行仍在 ⇒ 行号是原文的行号
+  });
+
+  it('同一输入两次结果一致（纯函数，没有隐藏状态）', () => {
+    const html = '<p>**a** `b` [c](d) 2*x*y</p>';
+    expect(JSON.stringify(gate.scanDetailResidue(html).hits))
+      .toBe(JSON.stringify(gate.scanDetailResidue(html).hits));
+  });
+
+  it('判据表本身：tier 只有 fail / report 两档，且每条都写了 why（放行理由要能打印）', () => {
+    gate.NOTE_RESIDUE_RULES.forEach((r) => {
+      expect(['fail', 'report'], r.id).toContain(r.tier);
+      expect(r.why, r.id).toBeTruthy();
+      expect(Boolean(r.re) || Boolean(r.scan), r.id).toBe(true);
+    });
+  });
+
+  it('`判定档` 至少容得下三档（`B4c`）：通过 / 判红 / 只报告 —— 不许把"有意保留"与"真缺陷"压成一个数', () => {
+    expect(Object.keys(gate.NOTE_RESIDUE_TIERS).sort()).toEqual(['fail', 'report', 'skip']);
+  });
+});
+
+describe('S2 ⑥ 笔记正文残留：真仓库读数与封闭欠账册', () => {
+  const r = gate.analyzeNoteResidue(path.join(ROOT, 'projects'));
+
+  it('真仓库：判定 ⑥ 是绿的（存量逐条在册，没有计划外残留）', () => {
+    expect(r.problems).toEqual([]);
+  });
+
+  it('读数分档平衡：判红命中 == 在册覆盖 + 计划外（在册的必须逐处对得上）', () => {
+    expect(r.readings.failHits).toBeGreaterThanOrEqual(r.readings.exemptHits);
+    expect(r.readings.exemptHits).toBeLessThanOrEqual(gate.NOTE_RESIDUE_HIT_CAP);
+    // 绿的前提：**每一处判红命中都在册**
+    expect(r.readings.failHits).toBe(r.readings.exemptHits);
+  });
+
+  it('欠账册**封闭**：条数 ≤ cap · 每条 project/node/rules/why/close 齐 · 规则 id 必须是判红档的', () => {
+    expect(gate.NOTE_RESIDUE_DEBT.length).toBeLessThanOrEqual(gate.NOTE_RESIDUE_CAP);
+    const failIds = gate.NOTE_RESIDUE_RULES.filter((x) => x.tier === 'fail').map((x) => x.id);
+    gate.NOTE_RESIDUE_DEBT.forEach((e) => {
+      expect(e.project, JSON.stringify(e)).toBeTruthy();
+      expect(e.node, JSON.stringify(e)).toBeTruthy();
+      expect(e.why, e.project + '::' + e.node).toBeTruthy();
+      expect(e.close, e.project + '::' + e.node).toBeTruthy();
+      expect(Object.keys(e.rules).length, e.project + '::' + e.node).toBeGreaterThan(0);
+      Object.keys(e.rules).forEach((id) => expect(failIds, id).toContain(id));
+    });
+  });
+
+  it('**面上界与册逐处对齐**：册上处数之和 == `NOTE_RESIDUE_HIT_CAP`（改册就要同批改 cap）', () => {
+    const sum = gate.NOTE_RESIDUE_DEBT.reduce((s, e) => s
+      + Object.keys(e.rules).reduce((t, id) => t + e.rules[id], 0), 0);
+    expect(sum).toBe(gate.NOTE_RESIDUE_HIT_CAP);
+    expect(gate.NOTE_RESIDUE_CAP).toBe(gate.NOTE_RESIDUE_DEBT.length);
+  });
+});
+
+describe('S2 ⑥ 笔记正文残留：判别力（**临时夹具**，不碰 projects/**）', () => {
+  const os = require('node:os');
+  const fsx = require('node:fs');
+  const proj = (nodes) => ({ version: 3, data: { id: 'root', topic: 'r', children: nodes } });
+
+  /** 在系统临时目录造一个"扫描根"（`E2`：整段 try/finally 收尾，失败也清） */
+  function withFixture(files, fn) {
+    const dir = fsx.mkdtempSync(path.join(os.tmpdir(), 'mm-note-residue-'));
+    try {
+      Object.keys(files).forEach((name) => {
+        fsx.mkdirSync(path.join(dir, name), { recursive: true });
+        fsx.writeFileSync(path.join(dir, name, name + '.json'), JSON.stringify(files[name]), 'utf8');
+      });
+      return fn(dir);
+    } finally {
+      fsx.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('干净夹具 ⇒ 绿；注入 `**粗体**` ⇒ **必红并点名项目/节点/规则**', () => {
+    withFixture({ 'fx': proj([{ id: 'n1', topic: 't', detail: '<p>干净</p>' }]) }, (dir) => {
+      expect(gate.analyzeNoteResidue(dir, null).problems).toEqual([]);
+      fsx.writeFileSync(path.join(dir, 'fx', 'fx.json'),
+        JSON.stringify(proj([{ id: 'n1', topic: 't', detail: '<p>坏了 **粗体**</p>' }])), 'utf8');
+      const bad = gate.analyzeNoteResidue(dir, null).problems;
+      expect(bad.length).toBe(1);
+      expect(bad[0].kind).toBe('note-residue');
+      expect(bad[0].msg).toContain('`fx`');
+      expect(bad[0].msg).toContain('n1');
+      expect(bad[0].msg).toContain('bold-pair');
+      expect(bad[0].msg).toContain('--detail-md');            // 必须给出唯一修法
+    });
+  });
+
+  it('注入 `int *p;` ⇒ **仍绿**（不假红；这是本判据最重要的一条边界）', () => {
+    withFixture({ 'fx': proj([{ id: 'n1', detail: '<p>int *p; 与 char **pp; 与 a*b</p>' }]) }, (dir) => {
+      const res = gate.analyzeNoteResidue(dir, null);
+      expect(res.problems).toEqual([]);
+      expect(res.readings.failHits).toBe(0);
+    });
+  });
+
+  it('欠账册四条机械判定各自能红：悬挂 / 已偿未销账 / 处数偏大 / 处数变多（新增）', () => {
+    const html = '<p>**a** **b**</p>';                       // 2 处 bold-pair
+    withFixture({ 'fx': proj([{ id: 'n1', detail: html }]) }, (dir) => {
+      const book = (rules, node) => [{ project: 'fx', node: node || 'n1', rules: rules, why: 'w', close: 'c' }];
+      expect(gate.analyzeNoteResidue(dir, book({ 'bold-pair': 2 })).problems).toEqual([]);   // 恰好对上 ⇒ 绿
+      // ① 已偿未销账
+      const paid = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 2, 'code-span': 1 })).problems;
+      expect(paid.map((p) => p.kind)).toEqual(['ledger']);
+      expect(paid[0].msg).toContain('已偿');
+      // ② 处数偏大（部分修好没改册）
+      const less = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 5 })).problems;
+      expect(less.map((p) => p.kind)).toEqual(['ledger']);
+      expect(less[0].msg).toContain('偏大');
+      // ③ 处数变多 ⇒ 是**新增残留**，不许用旧条目吞
+      const more = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 1 })).problems;
+      expect(more.map((p) => p.kind)).toEqual(['note-residue']);
+      expect(more[0].msg).toContain('比在册的多');
+      // ④ 悬挂登记（册上的节点在数据里已不存在）
+      const dangling = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 2 }, 'n-gone')).problems;
+      expect(dangling.map((p) => p.kind)).toContain('ledger');
+      expect(dangling.map((p) => p.msg).join('\n')).toContain('悬挂');
+    });
+  });
+
+  it('扫描根不存在 ⇒ **采不到真值 = 红**（`A5`，不许静默当绿）', () => {
+    const res = gate.analyzeNoteResidue(path.join(ROOT, '.review', '不存在的扫描根-zz'), null);
+    expect(res.problems.length).toBe(1);
+    expect(res.problems[0].msg).toContain('采不到真值');
+  });
+
+  it('读不出的项目文件 ⇒ **未验证档**：打印、不参与计数、不阻断（`A5` 第三条路）', () => {
+    withFixture({ 'fx': proj([{ id: 'n1', detail: '<p>干净</p>' }]) }, (dir) => {
+      fsx.mkdirSync(path.join(dir, 'broken'), { recursive: true });
+      fsx.writeFileSync(path.join(dir, 'broken', 'broken.json'), '{ 这不是 JSON', 'utf8');
+      const res = gate.analyzeNoteResidue(dir, null);
+      expect(res.problems).toEqual([]);                       // 不阻断
+      expect(res.readings.unverified).toBe(1);                 // 但**出现在读数里**
+      expect(res.readings.unverifiedFiles[0]).toContain('broken');
+      expect(res.readings.projects).toBe(1);                   // 不参与计数
+      expect(res.notes.join('\n')).toContain('未验证 1 个');
+    });
+  });
+});
+
+/* ============================================================
+ * ⑥ 的第 6 条规则 `tag-in-code`：**「标记已经被转换器吃掉」的痕迹**
+ * ------------------------------------------------------------
+ * 为什么加它（第 2 次实证，两次都有现场）：
+ *   ①–⑤ 抓的是**源头的标记**（`**` / 反引号 / 围栏 / `[]()` / 行首 `#`）；
+ *   `*` 被 `markdownToHtml` 吃成 `<em>` 之后**形状完全合法** ⇒ 以前任何门禁都抓不到。
+ *   现场一：批 `b3a53636`，`2R*8` → `2R<em>8</em>`（人工发现改成 `2R×8`）；
+ *   现场二：批 `02d26501`，`<code>linux-netfilter-tc-<em></code>` 与 `<code>qos-</em></code>`
+ *   —— 两个通配 `*` 跨 code 边界配对，把 `<code>` 劈成两半。该批原话：「该坏字任何门禁都抓不到」。
+ * 完整注入证明（%TEMP% 副本 + 原始 Buffer 逐字节还原 + 三记）见
+ *   `.review/20261020-S2-tag-in-code/proof/`（基线绿 / 两注入必红 / 两对照必绿）。
+ * ============================================================ */
+describe('S2 ⑥ 第 6 条 `tag-in-code`：强调标签跑进代码区（窄判据）', () => {
+  const hitsOf = (html) => gate.scanDetailResidue(html).hits;
+  const failOf = (html) => hitsOf(html).filter((h) => h.tier === 'fail');
+  const reportOf = (html) => hitsOf(html).filter((h) => h.tier === 'report');
+
+  it('**四种形状全判红**：开闭都在里 / 开在里闭在外 / 开在外闭在里 / 只开没闭', () => {
+    // ① 全长在里（`<code>siginfo_t*, void*</code>` 那一类：两个指针星号在同一 code 区内配对）
+    expect(failOf('<p><code>handler(int, siginfo_t<em>, void</em>)</code></p>').map((h) => h.rule))
+      .toEqual(['tag-in-code', 'tag-in-code']);
+    // ② 开在里、闭在外（`02d26501` 现场的一半）
+    expect(failOf('<p><code>linux-netfilter-tc-<em></code> 与 <code>qos-</em></code></p>')
+      .map((h) => h.rule)).toEqual(['tag-in-code', 'tag-in-code']);
+    // ③ 开在外、闭在里（同一现场的另一半；也覆盖"`<strong>` 只开没闭"）
+    expect(failOf('<p><code>qos-</em></code></p>').map((h) => h.rule)).toEqual(['tag-in-code']);
+    expect(failOf('<p>扫 <code>fixtures/<strong></code> 一字未动</p>').map((h) => h.rule)).toEqual(['tag-in-code']);
+    // ④ `<pre>` 与 `<code>` 同权：`<pre>` 里的内容也是字面代码
+    expect(failOf('<pre>grep -r x <em>' + '</pre>').map((h) => h.rule)).toEqual(['tag-in-code']);
+  });
+
+  it('**不假红（主边界）**：正文里的 `<em>` / `<strong>` 永不判红 —— 全库实测 13,700 处', () => {
+    expect(failOf('<p>正文里的 <em>强调</em> 与 <strong>加粗</strong> 都合法</p>')).toEqual([]);
+    // 强调**包在 code 外面**是合法写法（要强调一段代码就这么写）⇒ 必须绿
+    expect(failOf('<p><em><code>rm -rf x</code></em></p>')).toEqual([]);
+    expect(failOf('<p><strong><code>make</code></strong></p>')).toEqual([]);
+  });
+
+  it('**不假红（第二条边界）**：代码区里的 `*` 是字面量（上一批实测的"跳过档"）', () => {
+    // 真实现场里的合法写法：指针 / 通配 / 乘号放在 <code> 里，没有 <em>
+    expect(failOf('<p>结构体 <code>struct Qdisc *q</code> 是字面指针</p>')).toEqual([]);
+    expect(failOf('<p>扫 <code>src/*.js</code> 的 require（通配是字面量）</p>')).toEqual([]);
+    expect(failOf('<p>算一下 <code>8*4096</code></p>')).toEqual([]);
+  });
+
+  it('**`&lt;em&gt;` 转义后的字面量不算标签**（这是"代码里本来就有尖括号"的边界）', () => {
+    expect(failOf('<p><code>&lt;em&gt;标签&lt;/em&gt; 是字面量</code></p>')).toEqual([]);
+    expect(failOf('<p><code>if (a &lt; b &amp;&amp; c &gt; d) x()</code></p>')).toEqual([]);
+  });
+
+  it('**多个 `<code>` 逐个配对，绝不把 A 的开标签和 B 的闭标签配成一对**', () => {
+    // A 段里成对、B 段干净 ⇒ 只报 A 段那 2 处，B 段的 `<em>` 前面的闭标签不能被算给 A
+    const html = '<p><code>a <em>b</em></code> · <code>c</code> · <em>正文强调</em></p>';
+    const h = failOf(html);
+    expect(h.length).toBe(2);
+    expect(h.map((x) => x.rule)).toEqual(['tag-in-code', 'tag-in-code']);
+    // 两处都必须落在 A 段（列号 < A 段结束的位置），不许窜到正文那个 `<em>` 上
+    expect(h.every((x) => x.col < 34)).toBe(true);
+  });
+
+  it('只报告档：代码区里的 `<b>` / `<i>` / `<span>`… —— 转换器不产这些，推不出来源 ⇒ 不判红', () => {
+    expect(failOf('<p><code><b>x</b></code></p>')).toEqual([]);
+    expect(reportOf('<p><code><b>x</b></code></p>').map((h) => h.rule))
+      .toEqual(['other-inline-in-code', 'other-inline-in-code']);
+    expect(reportOf('<p><code><span class="k">int</span></code></p>').map((h) => h.rule))
+      .toEqual(['other-inline-in-code', 'other-inline-in-code']);
+    // 放行理由必须写在判据表里（`B8`：只报告档要能打印为什么放行）
+    const rule = gate.NOTE_RESIDUE_RULES.find((x) => x.id === 'other-inline-in-code');
+    expect(rule.tier).toBe('report');
+    expect(rule.why).toContain('转换器');
+  });
+
+  it('跳过档**逐项计数**：正文强调的处数单独统计（不许把"没判"说成"过了"）', () => {
+    const r = gate.scanDetailResidue('<p><em>a</em> <strong>b</strong> 与 <code>struct X *p</code></p>');
+    expect(r.hits).toEqual([]);
+    // 按**开标签**计 = 强调元素的个数（`<em>a</em>` 只算 1 处，不是 2 个标签）；放行但**计数**
+    expect(r.masked.emphasisOutside).toBe(2);
+    expect(r.masked.codeOpens).toBe(1);                // 1 个代码区被逐段扫过
+    // 注释里的不算（等长抹掉 ⇒ 行列号不漂，这也是既有口径）
+    const c = gate.scanDetailResidue('<p>x</p><!-- <code>a <em>b</em></code> -->');
+    expect(c.hits).toEqual([]);
+    expect(c.masked.emphasisOutside).toBe(0);
+  });
+
+  it('同一输入两次结果一致（纯函数，没有隐藏状态）', () => {
+    const html = '<p><code>a <em>b</code> <em>正文</em></p>';
+    expect(JSON.stringify(gate.scanDetailResidue(html).hits))
+      .toBe(JSON.stringify(gate.scanDetailResidue(html).hits));
+  });
+
+  it('判据表：第 6 条在册、是判红档、且**只认两个强调标签**（窄在哪要能读出来）', () => {
+    const rule = gate.NOTE_RESIDUE_RULES.find((x) => x.id === 'tag-in-code');
+    expect(rule, '判据表里没有 tag-in-code').toBeTruthy();
+    expect(rule.tier).toBe('fail');
+    expect(rule.why).toContain('<code>');              // 理由里必须点明"代码区里没有强调的正当用途"
+    expect([...gate.NOTE_EMPHASIS_TAGS].sort()).toEqual(['em', 'strong']);   // 只有转换器会产的这两个
+    expect([...gate.NOTE_CODE_TAGS].sort()).toEqual(['code', 'pre']);
+    // 「见 `<em>` 就红」是**刻意不做**的：判红色标签集合里不许混进 `<b>` / `<i>` / `<span>`
+    [...gate.NOTE_OTHER_INLINE_TAGS].forEach((t) => expect(gate.NOTE_EMPHASIS_TAGS.has(t)).toBe(false));
+  });
+
+  it('读数契约：`masked` 里新增的两个计数不许缺（闸门输出会打印它们）', () => {
+    const r = gate.scanDetailResidue('<p><code>a</code><em>b</em></p>');
+    expect(r.masked).toHaveProperty('codeOpens');
+    expect(r.masked).toHaveProperty('emphasisOutside');
+    expect(r.masked).toHaveProperty('pre');
+    expect(r.masked).toHaveProperty('code');
+    expect(r.masked).toHaveProperty('comment');
+  });
+});
+
+/* ------------------------------------------------------------
+ * 转换器 ↔ 门禁的**闭环**（2026-10-20 根治后补，批 `markdown-star-rootfix`）
+ * ------------------------------------------------------------
+ * `tag-in-code` 抓的是「`*` 已经被 `markdownToHtml` 吃掉」的产物。这条闭环把两端接上：
+ *   **凡转换器自己产出的 detail，喂回 `tag-in-code` 必须零命中** —— 代码区里的 `*` 一个都不许丢。
+ * 判别力：把 `src/convert.js` 里 `inline()` 的占位保护去掉 ⇒ 本块必红
+ *   （实测产物 `<code>src/<em>.js</code>` / `<code>siginfo_t<em>, void</em></code>` 正是存量那 16 处的形状）。
+ * ============================================================ */
+describe('转换器产物 × 第 6 条 `tag-in-code`：闭环（新写的数据不许再被判红）', () => {
+  const convert = require('../src/convert.js');
+
+  it('含 `*` 的代码区经 markdownToHtml 之后，`tag-in-code` 零命中', () => {
+    const mds = [
+      '`src/*.js` 与 `lib/*.js`',
+      '`handler(int, siginfo_t*, void*)`',
+      '`linux-netfilter-tc-*` 与 `qos-*`',
+      '## 标题 `src/*.js` 与 `lib/*.js`\n\n- 项 `a*b*c`'
+    ];
+    for (const md of mds) {
+      const html = convert.markdownToHtml(md);
+      expect(html).not.toContain('<em>');                      // 一个 `*` 都没被吃
+      expect(gate.scanDetailResidue(html).hits, '「' + md + '」⇒ ' + html).toEqual([]);
+    }
+  });
+
+  it('混写的字面 `<code>` 按契约被转义成**字面文本** ⇒ `*` 一个不少，且判红档零命中', () => {
+    const html = convert.markdownToHtml('<code>handler(int, siginfo_t*, void*)</code>');
+    expect(html).toBe('<p>&lt;code&gt;handler(int, siginfo_t*, void*)&lt;/code&gt;</p>');
+    const r = gate.scanDetailResidue(html);
+    expect(r.hits.filter((h) => h.tier === 'fail')).toEqual([]);   // 一个 `<em>`/`<strong>` 都不产
+    // 但**如实记一笔**：转义之后那段 `*…*` 落入正文，与真强调同形 ⇒ 门禁只能在**只报告档**点名它
+    expect(r.hits.map((h) => h.rule)).toEqual(['italic-pair']);
+  });
+
+  it('正文强调仍然照常产出 `<em>`（门禁只判"代码区里"，不会因此假红）', () => {
+    const html = convert.markdownToHtml('正文 **粗** 与 `src/*.js` 与 *斜*');
+    expect(html).toBe('<p>正文 <strong>粗</strong> 与 <code>src/*.js</code> 与 <em>斜</em></p>');
+    const r = gate.scanDetailResidue(html);
+    expect(r.hits).toEqual([]);
+    expect(r.masked.emphasisOutside).toBe(2);                  // 正文 2 个强调元素被计数放行
+  });
+});
+
+describe('S2 ⑥ 第 6 条 `tag-in-code`：判别力（临时夹具，真仓 projects/ 一个字节不动）', () => {
+  const os = require('node:os');
+  const fsx = require('node:fs');
+  const proj = (nodes) => ({ version: 3, data: { id: 'root', topic: 'r', children: nodes } });
+
+  function withFixture(files, fn) {
+    const dir = fsx.mkdtempSync(path.join(os.tmpdir(), 'mm-note-residue-tag-'));
+    try {
+      Object.keys(files).forEach((name) => {
+        fsx.mkdirSync(path.join(dir, name), { recursive: true });
+        fsx.writeFileSync(path.join(dir, name, name + '.json'), JSON.stringify(files[name]), 'utf8');
+      });
+      return fn(dir);
+    } finally {
+      fsx.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('注入 `<code>…-<em></code>` ⇒ **必红**并点名项目 / 节点 / 规则 / 片段（两个现场都要红）', () => {
+    withFixture({ fx: proj([{ id: 'n1', topic: 't', detail: '<p>干净</p>' }]) }, (dir) => {
+      expect(gate.analyzeNoteResidue(dir, null).problems).toEqual([]);
+      fsx.writeFileSync(path.join(dir, 'fx', 'fx.json'),
+        JSON.stringify(proj([{ id: 'n1', topic: 't',
+          detail: '<p><code>linux-netfilter-tc-<em></code> 与 <code>qos-</em></code></p>' }])), 'utf8');
+      const bad = gate.analyzeNoteResidue(dir, null).problems;
+      expect(bad.length).toBe(2);                     // 开标签、闭标签各一处
+      bad.forEach((p) => {
+        expect(p.kind).toBe('note-residue');
+        expect(p.msg).toContain('`fx`');              // 项目
+        expect(p.msg).toContain('n1');                // 节点
+        expect(p.msg).toContain('tag-in-code');       // 规则名
+        expect(p.msg).toContain('--detail-md');       // 必须给出唯一修法
+      });
+      expect(bad[0].msg).toContain('linux-netfilter-tc-<em>');   // 片段（能直接定位）
+      expect(bad[1].msg).toContain('qos-</em>');
+    });
+  });
+
+  it('同一份夹具里写 `<code>struct Qdisc *q</code>` 与正文 `<em>强调</em>` ⇒ **读数一个字不变**', () => {
+    const clean = '<p>结构体 <code>struct Qdisc *q</code> 与正文 <em>强调</em></p>';
+    withFixture({ fx: proj([{ id: 'n1', topic: 't', detail: clean }]) }, (dir) => {
+      const res = gate.analyzeNoteResidue(dir, null);
+      expect(res.problems).toEqual([]);
+      expect(res.readings.failHits).toBe(0);
+      expect(res.readings.reportHits).toBe(0);
+      expect(res.readings.inCodeFail).toBe(0);
+      // 跳过档的读数**必须照样报出来**（放行也要有数）
+      expect(res.readings.masked.codeOpens).toBe(1);
+      expect(res.readings.masked.emphasisOutside).toBe(1);     // 按开标签计：1 个强调元素
+      expect(res.notes.join('\n')).toContain('命中强调标签 0 处');
+    });
+  });
+});

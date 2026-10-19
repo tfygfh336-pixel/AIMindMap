@@ -24,12 +24,16 @@
  * 而"条数声明"的权威副本是 `docs/RULES.md` §2 的门禁行）。
  *
  * 边界（诚实标注 —— 哪些**测不了**，别以为它包住一切）：
- *   · 只测**这五个门禁**：G9 `rules-consistency` · S1 `dep-direction-check` ·
- *     G6+G7 `doc-facts --check` · V1 `visibility-judge-check` · G8 `docs-registry-check`。
- *     其余（G1/G2/G3/G4/G5/V2/S2/S3）**未测**：它们要么要起 Electron、要么要跑全链，
+ *   · 在册门禁 = **GATES 里那几条**（2026-10-19 起：G9 `rules-consistency` ·
+ *     S1 `dep-direction-check` · S2 `collateral-check` · G6+G7 `doc-facts --check` ·
+ *     V1 `visibility-judge-check` · V2 `smoke-state-check` · G8 `docs-registry-check`）。
+ *     ⚠️ **这里刻意不数"几个"**：写死过一次（那时写的是"这五个门禁"，而 S2 与 V2 早已在册）
+ *     ⇒ 台账自述先于代码腐坏。现成读数看 `GATES.map(g => g.code)` 或运行时的
+ *     "被判的门禁："那一行。
+ *     其余（G1/G2/G3/G4/G5/S3）**未测**：它们要么要起 Electron、要么要跑全链，
  *     不在"最小版"里（也不该在一台正被别的流占着的机器上跑）。
- *   · 变体是**手工挑的**（每个门禁三条 + 对照），能回答"这几类破坏拦不拦"，
- *     **回答不了覆盖率**（"所有可能的破坏里拦住了百分之多少"）✗。
+ *   · 变体是**手工挑的**（每个门禁至少两条真变异 + 一份无害对照 + 一份负对照；条数见 `variants`，此处不写死），
+ *     能回答"这几类破坏拦不拦"，**回答不了覆盖率**（"所有可能的破坏里拦住了百分之多少"）✗。
  *     G8 是唯一的例外：它的**每条判定逐条各造一条注入**（判定的权威清单由
  *     `node scripts/docs-registry-check.js --judgments` 现场取 —— 本文件不抄那份清单）。
  *     "门禁 × 有没有证明"的汇总表不在这里：住在
@@ -245,6 +249,80 @@ function exitCodeFor(report, opts) {
 }
 
 /* ===============================================================
+ * S2 ⑥ 的夹具（笔记数据扫描根）—— **只读真仓，写在副本**
+ * ---------------------------------------------------------------
+ * 为什么不用真仓数据当靶子：`projects/comnet/` 是**使用态数据**，别的批会并发改写
+ * ⇒ 拿它注入/复原必然假红（而且会让"注入"污染用户数据）。
+ * 为什么夹具是**仓内的一个文件**（`tests/fixtures/note-residue/…`）而不是 `prepareMirror()` 现造：
+ * 现造要在本文件里多一处裸写调用点 ⇒ S2 ⑤ 的「豁免面」会从 82 涨到 83、
+ * 撞穿 `WRITE_OUTLET_SITE_CAP`（实测：加完之后真仓 S2 直接 red ✗）。改成仓内夹具后
+ * **一个写调用点都不新增**，那条 cap 的"只减不增"也就没被稀释。
+ * 夹具里刻意放了**全套合法例外**（`int *p;` / `a*b` / `*.js` / `<code>` 里的残留）
+ * ⇒ 基线本身同时就是"不假红"的证明。
+ * =============================================================== */
+const S2_FIXTURE_REL = 'tests/fixtures/note-residue/fx-proj/fx-proj.json';
+/** 改夹具里靶子节点的 detail（走 `M.edit` ⇒ 每条变体都从"未变异的副本"出发） */
+function S2SetDetail(M, rel, html) {
+  return M.edit(rel, (s) => {
+    const o = JSON.parse(s);
+    o.data.children[1].detail = html;
+    return JSON.stringify(o, null, 2);
+  });
+}
+
+/* ===============================================================
+ * V2 的注入靶子（**全在副本里**，不新增写调用点、不需要夹具）
+ * ---------------------------------------------------------------
+ * 为什么不需要夹具：V2（`scripts/smoke-state-check.js`）读的是**冒烟域源码文本**
+ * （`scripts/smoke/NN-*.js`），而副本里本来就有一份完整拷贝 ⇒ 直接改副本即可。
+ * ⚠️ 反例（本工程已付过代价）：曾经在 `prepareMirror()` 里用裸 `fs` 现造夹具
+ * ⇒ `mutate-gates.js` 多一个写调用点 ⇒ S2 ⑤ 的**豁免面** 82 → 83、撞穿
+ * `WRITE_OUTLET_SITE_CAP` ⇒ 真仓 S2 当场 exit 1。本条目**一个写调用点都不新增**
+ * （只借用既有的 `M.edit` / `M.append`）。
+ * =============================================================== */
+/** 收尾动作的**替身**：不含任何 `CLOSERS` 词（`mutProbeNoopCloser` 里没有 `close…` 形态）
+ *  ⚠️ 刻意**不**写成 `closeDialogsX` 那种"原词 + 后缀" —— 门禁是**子串匹配**，
+ *  `'closeDialogsX'.indexOf('closeDialogs') >= 0` ⇒ 变异等于没做（第一次就这么写，被自检抓住）。 */
+const V2_NOOP_CLOSER = 'mutProbeNoopCloser';
+/** "打开浮层但从不收尾"的注入段：形状照 `V1-3` 那条（append 一个合法的 `{ name, run }` 入口）。
+ *  ⚠️ 这段文本里**不得**出现任何 `CLOSERS` 词，否则门禁会把它读成"已经收尾" ⇒ 漏过。 */
+const V2_OPEN_PROBE = [
+  '{',
+  "  name: '变异注入探针：打开命令面板读一屏（这一段没有收尾）',",
+  '  run: async (ctx) => {',
+  "    const w = await ctx.exec('JSON.stringify(window.MMApp.openPalette()).length');",
+  '    return { ok: Number(w) > 8 };',
+  '  }',
+  '}'
+].join('\n');
+
+/** 把该文件里**出现过的收尾动作全部**换成替身（⇒ 最后一个"打开且此后没关过"的动作无法收尾） */
+function V2StripClosers(M, c) {
+  if (!c.stripRel) throw new Error('副本里找不到"把收尾动作删掉就会漏"的冒烟域，这一条测不了');
+  return M.edit(c.stripRel, (s) => {
+    let out = s;
+    c.stripTokens.forEach((t) => { out = out.split(t).join(V2_NOOP_CLOSER); });
+    if (out === s) throw new Error('没有可替换的收尾动作，靶点没找对');
+    const left = c.stripTokens.filter((t) => out.indexOf(t) >= 0);
+    if (left.length) throw new Error('收尾动作还有残留（变异不彻底）：' + left.join('、'));
+    return out;
+  });
+}
+
+/** "豁免把判定短路掉"的注入段（变体 `V2-3`）：一段**打开却从不收尾**的断言 + **两行** `收尾-豁免:`。
+ *  为什么这么造（2026-10-19 对账批 `G-20`）：门禁的豁免是**整份文件级**的 —— 一行 `收尾-豁免:`
+ *  就让整个域闭嘴。所以"豁免能不能随手加"只能靠**条数上界**拦；这一段把它撞穿上界 ⇒ 必须红。
+ *  ⚠️ 三条约束（写错就测不到）：① 两行都必须落在**行首注释**（门禁只认 `//` / ` * ` 行）；
+ *  ② 文本里**不得**出现任何 `CLOSERS` 词（否则被判成"已经收尾"）；③ 只用既有的 `M.append`，
+ *  不新增写调用点（S2 ⑤ 的「豁免面」cap 只减不增）。 */
+const V2_EXEMPT_PROBE = [
+  '// 收尾-豁免: 变异注入 A —— 这一段故意不收尾，用来证明"豁免条数超上界必红"',
+  '// 收尾-豁免: 变异注入 B —— 同上，第二条只为撞穿门禁声明的上界',
+  V2_OPEN_PROBE
+].join('\n');
+
+
+/* ===============================================================
  * 变体目录（四个门禁 · 手工挑）
  *   expect: 'caught'   真变异，期望拦下
  *           'unchanged' 无害对照，期望读数逐字不变
@@ -424,6 +502,103 @@ const GATES = [
     ]
   },
 
+  /* ---------------------------- S2 ---------------------------- */
+  {
+    id: 'collateral-check', code: 'S2', title: '连带清单 + 写盘出口 + 笔记正文残留',
+    script: 'scripts/collateral-check.js',
+    // 数据扫描根指到**仓内夹具**：真仓 `projects/` 一个字节不动，也不依赖使用态数据
+    //（`comnet` 会被别的批并发改写 ⇒ 拿它当注入靶子必然假红）。
+    args: ['--note-root=tests/fixtures/note-residue'],
+    seam: '镜像 CLI 全链（真子进程 + 真 exit code）：本批注入两个面 ——'
+      + '**判定 ⑥ 的数据输入**（副本里 `tests/fixtures/note-residue/fx-proj/fx-proj.json` 的 `node.detail`；'
+      + '门禁自己的判据一个字没改，`--note-root=` 只把扫描根指向仓内夹具，默认仍指向真仓 `projects/`）'
+      + '与**判定 ② 的输入文本**（副本里 `scripts/smoke-assertions.js` 的「分域文件（仅索引）」段 —— '
+      + '门禁读的是**文本**，不是 require 它，所以抹掉一个文件名不会把门禁自己弄崩）',
+    discover() { return { fixture: S2_FIXTURE_REL }; },
+    variants: [
+      {
+        id: 'S2-1', kind: '注入违规', expect: 'caught', reason: /\[note-residue\]/, judgment: '⑥',
+        name: '把 `**粗体**` 写进 detail（`ada00407` 的缺陷形状：`validate-all` 全绿、渲染成坏字）'
+          + ' ⇒ 必须点名项目 / 节点 / 规则 / 行列 / 片段',
+        apply: (M, c) => S2SetDetail(M, c.fixture, '<p>这一行是干净的，但下一行坏了：**粗体残留**啊</p>')
+      },
+      {
+        id: 'S2-2', kind: '注入违规', expect: 'caught', reason: /\[note-residue\]/, judgment: '⑥',
+        name: '把成对反引号 `` `dmesg | tail` `` 写进 detail ⇒ 必须判红（行内代码该写 `<code>`）',
+        apply: (M, c) => S2SetDetail(M, c.fixture, '<p>这一行写了 `dmesg | tail` 这种行内代码</p>')
+      },
+      {
+        id: 'S2-4', kind: '注入违规', expect: 'caught', reason: /规则 `tag-in-code`/, judgment: '⑥',
+        name: '把 `02d26501` 的**真实坏字**写进 detail：`<code>linux-netfilter-tc-<em></code>` 与 '
+          + '`<code>qos-</em></code>`（两个通配 `*` 被转换器跨 code 边界配对、把 `<code>` 劈成两半）'
+          + ' ⇒ 必须判红并点名规则 `tag-in-code`（①–⑤ 抓不到这种形状：源头的 `*` 已经没了）',
+        apply: (M, c) => S2SetDetail(M, c.fixture,
+          '<p><code>linux-netfilter-tc-<em></code> 与 <code>qos-</em></code></p>')
+      },
+      {
+        id: 'S2-5', kind: '注入违规', expect: 'caught', reason: /规则 `tag-in-code`/, judgment: '⑥',
+        name: '只放**闭标签**进代码区（`<code>qos-</em></code>`，开标签在 code 外）⇒ 同样必须判红'
+          + '（"跨出 code 边界"两个方向都要抓）',
+        apply: (M, c) => S2SetDetail(M, c.fixture, '<p>只放一个闭合：<code>qos-</em></code></p>')
+      },
+      {
+        id: 'S2-4c', kind: '无害对照', expect: 'unchanged',
+        name: '把第 6 条规则的**两条主边界**写进 detail：`<code>struct Qdisc *q</code>`（代码区里的 `*` 是字面量）'
+          + ' 与正文 `<em>强调</em>`（不在代码区里的正常强调）⇒ 读数必须**逐字不变**'
+          + '（判据不是"见 `<em>` 就红"；与基线**同码区数 / 同正文强调数**才比得出来，故两者都各一处）',
+        apply: (M, c) => S2SetDetail(M, c.fixture,
+          '<p>结构体 <code>struct Qdisc *q</code> 是字面指针；正文里的 <em>强调</em> 合法。</p>')
+      },
+      {
+        id: 'S2-index', kind: '注入违规', expect: 'caught', reason: /\[smoke-index\]/, judgment: '②',
+        name: '把某个冒烟域的文件名从**断言注册面索引**里抹掉（`scripts/smoke-assertions.js` 的'
+          + '「分域文件（仅索引）」段查不到它）—— 域**照样会跑**（自动发现），但接手者不知道它存在'
+          + '（实测存量曾经有 11 处这种"跑了但没人知道"）',
+        apply(M) {
+          const entryRel = 'scripts/smoke-assertions.js';
+          const src = M.read(entryRel);
+          const names = fs.readdirSync(path.join(M.root, 'scripts', 'smoke'))
+            .filter((f) => /^\d+-.+\.js$/.test(f)).sort();
+          // 只挑"在索引里**只出现一次**"的文件名：抹掉后一定真的查不到（出现两次的要抹两处，
+          // 那会让变异"看起来做了、实际没做"⇒ 漏过被误记成门禁的盲区）
+          const target = names.find((n) => (src.split(n).length - 1) === 1) || null;
+          if (!target) throw new Error('索引里找不到"只出现一次"的冒烟域文件名，这一条测不了');
+          return M.edit(entryRel, (s) => {
+            const out = s.split(target).join('（变异注入：已从索引里抹掉）');
+            if (out === s) throw new Error('变异没有生效（靶点没找对）');
+            if (out.indexOf(target) >= 0) throw new Error('文件名还有残留（变异不彻底）：' + target);
+            return out;
+          });
+        }
+      },
+      {
+        id: 'S2-3', kind: '无害对照', expect: 'unchanged',
+        name: '把**合法例外**写进 detail：`int *p;` / `char **pp;` / `a*b` / `*.js` / `a*?b`（全是裸写、不成对）'
+          + ' 再加一处正文 `<em>` 与一处 `<code>struct Qdisc *q</code>`'
+          + ' ⇒ 读数必须**逐字不变**（"不假红"的机器版：判据不是"含 * 就红"，也不是"见 `<em>` 就红"）。'
+          + ' 每个 `*` 各占一行是**判据的口径**（只抓单行内的**成对**定界符），不是为了让读数好看；'
+          + ' 末行那两处是**同码区数 / 同正文强调数**的钉子（面子读数与基线一致才比得出"逐字不变"）',
+        apply: (M, c) => S2SetDetail(M, c.fixture,
+          '<p>指针 int *p;</p>\n<p>指针的指针 char **pp;</p>\n<p>乘法 a*b</p>\n<p>通配 *.js</p>\n<p>正则 a*?b</p>\n'
+          + '<p>正文 <em>强调</em> 合法，<code>struct Qdisc *q</code> 里的星号是字面量</p>')
+      },
+      {
+        id: 'S2-neg', kind: '负对照', expect: 'escape', reason: /\[note-residue\]/, judgment: '⑥',
+        name: '先把判据**钝化**（副本里 `scanDetailResidue()` 直接返回空命中）再注入**两种**残留：'
+          + '`S2-1` 的 `**粗体**` 与 `S2-4` 的 `<code>…-<em></code>`（两代缺陷各一处）'
+          + ' ⇒ 必须如实报"没拦下"（证明"拦下"不是恒真：判据一钝，工具就会说漏过）',
+        apply: (M, c) => {
+          M.edit('scripts/collateral-check.js', (s) => s.replace(
+            "  const src = String(text == null ? '' : text);\n  const m = noteResidueMask(src);",
+            '  if (1) return { hits: [], masked: { pre: 0, code: 0, comment: 0 } };   // 负对照：判据被钝化\n'
+            + "  const src = String(text == null ? '' : text);\n  const m = noteResidueMask(src);"));
+          return S2SetDetail(M, c.fixture, '<p>这一行是干净的，但下一行坏了：**粗体残留**啊</p>'
+            + '<p><code>linux-netfilter-tc-<em></code></p>');
+        }
+      }
+    ]
+  },
+
   /* -------------------------- G6 / G7 ------------------------- */
   {
     id: 'doc-facts', code: 'G6+G7', title: '文档数字与版本一致性 + 生成物未过期',
@@ -573,6 +748,111 @@ const GATES = [
             c.realJudgeTokens.forEach((tok) => { out = out.split(tok).join('getComputedStyle'); });
             return out;
           });
+        }
+      }
+    ]
+  },
+
+  /* ---------------------------- V2 ----------------------------
+   * 为什么补这一条（2026-10-19 对账批 P0 第二条）：`docs/RULES.md` §2 表后那句曾写着
+   * 「V1 / V2 的判别力证明与豁免口径尚未补齐」—— V1 补过之后这句话对 V1 已经过期，
+   * 而对 V2 **仍然成立**：V2 从来不在 GATES 里，却一直以"✅ 挂链的门禁"身份出现在
+   * `docs/VERIFY.md` 的链路表里 ⇒ 一条**从没红过**的门禁被当成"已在守"。
+   * 本条目把它的三条**真判据**各撞一遍（见下 variants 的 id）：能不能拦下"漏收尾"（`V2-1`）、
+   * 能不能拦下"新写一段漏收尾"（`V2-2`）、以及**豁免条数超上界**能不能拦下（`V2-3`）——
+   * 最后那一条是 `G-20` 剩的那半：豁免是**整份文件级**的（一行让整个域闭嘴），
+   * 所以"豁免不许随手加"只能靠上界，而"上界真的在守"必须被实测过，不能只写在注释里 ✗。
+   * ------------------------------------------------------------ */
+  {
+    id: 'smoke-state', code: 'V2', title: '冒烟域内自收尾（跨域状态污染）',
+    script: 'scripts/smoke-state-check.js', args: [],
+    seam: '镜像 CLI 全链（真子进程 + 真 exit code）：输入 = 副本里的**冒烟域源码文本**'
+      + '（`scripts/smoke/NN-*.js`）；靶点用门禁**自己导出的纯函数**'
+      + '（`analyzeSource()` / `CLOSERS` / `OPENERS`）在现场找 —— 本工具不另抄一份'
+      + '"什么算打开 / 什么算收尾"的口径。而且**先预测再审**：只有"把收尾动作换成替身"或'
+      + '"追加一段未收尾的开浮层断言"在纯函数上**已经**变成问题时，才选那个域当靶子'
+      + '（否则这一条会在一个"删了也不红"的文件上跑，然后被记成漏过 —— 那是靶子挑错，不是门禁的读数）'
+      + ' ⚠️ 三条**能力边界**（写在这里，别以为它包住一切）：'
+      + '① V2 读的是**静态源码文本**，判不了"收尾动作到底关没关掉那个东西"（`closeDialogs` 选择器写错也认）；'
+      + '② 它**不读** `main.js` 的运行时兜底（域开始的干净前置）—— 那一层要真起 Electron 才会触发，'
+      + '不在"最小版"里；'
+      + '③ **"注册面索引"不在本域**：索引住在 `scripts/smoke-assertions.js`，由 **S2 判定 ②** 守'
+      + '（对应变体 `S2-index`，就在上面 S2 那一条里）—— 别指望 V2 会红。',
+    discover(M) {
+      const ss = realModule('scripts/smoke-state-check.js');
+      const dir = path.join(M.root, 'scripts', 'smoke');
+      const files = fs.readdirSync(dir).filter((f) => /^\d+-.+\.js$/.test(f)).sort();
+      const relOf = (f) => 'scripts/smoke/' + f;
+      const closerTokens = ss.CLOSERS.map((c) => c.token);
+      let strip = null, appendRel = null, cleanRel = null;
+      for (const f of files) {
+        const src = M.read(relOf(f));
+        // 只挑**基线干净**的域：基线本来就红的话，`classify()` 会把原因判成"归不了因"（未测）
+        if (ss.analyzeSource(src).length) continue;
+        if (!cleanRel) cleanRel = relOf(f);
+        if (!appendRel && ss.analyzeSource(src + '\n' + V2_OPEN_PROBE + '\n').length) appendRel = relOf(f);
+        if (strip) continue;
+        const toks = closerTokens.filter((t) => src.indexOf(t) >= 0);
+        if (!toks.length) continue;
+        let out = src;
+        toks.forEach((t) => { out = out.split(t).join(V2_NOOP_CLOSER); });
+        if (!ss.analyzeSource(out).length) continue;   // 删掉收尾也不红 ⇒ 这个域不适合当靶子
+        strip = { rel: relOf(f), tokens: toks };
+      }
+      return {
+        stripRel: strip ? strip.rel : null,
+        stripTokens: strip ? strip.tokens : null,
+        appendRel, cleanRel,
+        scanCount: files.length, closerCount: closerTokens.length
+      };
+    },
+    variants: [
+      {
+        id: 'V2-1', kind: '注入违规', expect: 'caught', reason: /\[未收尾\]/,
+        name: '把某个冒烟域里出现过的**收尾动作全部换成不认识的标识符**'
+          + '（`closeDialogs(ctx)` / `closeAudit` / `closePalette` ⇒ `mutProbeNoopCloser`）'
+          + ' ⇒ 域跑完时浮层还开着，必须点名"哪个域、哪一段、第几行、打开了什么"',
+        apply: (M, c) => V2StripClosers(M, c)
+      },
+      {
+        id: 'V2-2', kind: '注入违规', expect: 'caught', reason: /\[未收尾\]/,
+        name: '在某个**干净的**冒烟域末尾追加一段"打开命令面板、从不收尾"的断言'
+          + '（真实形状：新写一条 `openPalette` 断言忘了给收尾 ⇒ 模态跨域存活）',
+        apply(M, c) {
+          if (!c.appendRel) {
+            throw new Error('副本里找不到"追加一段未收尾的开浮层断言就会红"的干净冒烟域，这一条测不了');
+          }
+          return M.append(c.appendRel, V2_OPEN_PROBE);
+        }
+      },
+      {
+        id: 'V2-h', kind: '无害对照', expect: 'unchanged',
+        name: '只在冒烟域源码里加一行注释（不含任何"打开 / 收尾"词 ⇒ 读数应逐字不变）',
+        apply(M, c) {
+          if (!c.cleanRel) throw new Error('副本里没有基线干净的冒烟域，这一条测不了');
+          return M.append(c.cleanRel, '// 变异对照：只加一行注释');
+        }
+      },
+      {
+        id: 'V2-3', kind: '注入违规', expect: 'caught', reason: /超过上界/,
+        name: '在某个**干净的**冒烟域末尾追加一段"打开命令面板、从不收尾"的断言，**再加两行** `收尾-豁免:`'
+          + ' ⇒ 豁免是**整份文件级**的（整个域立刻闭嘴），所以这一处只能靠**豁免条数上界**拦住 ⇒ '
+          + '必须点名"超过上界"并判红（证明上界真的在守，而不是只打印一行好看的读数）',
+        apply(M, c) {
+          if (!c.cleanRel) throw new Error('副本里没有基线干净的冒烟域，这一条测不了');
+          return M.append(c.cleanRel, V2_EXEMPT_PROBE);
+        }
+      },
+      {
+        id: 'V2-neg', kind: '负对照', expect: 'escape', reason: /\[未收尾\]/,
+        name: '先把门禁**钝化**（副本里 `analyzeSource()` 直接 `return []`）再注入 V2-1 的同一处破坏'
+          + ' ⇒ 必须如实报"没拦下"',
+        apply(M, c) {
+          M.edit('scripts/smoke-state-check.js', (s) => s.replace(
+            'function analyzeSource(src) {\n  const text = String(src);',
+            'function analyzeSource(src) {\n  if (1) return [];   // 负对照：门禁被钝化\n'
+            + '  const text = String(src);'));
+          return V2StripClosers(M, c);
         }
       }
     ]
@@ -1011,7 +1291,10 @@ function buildReport() {
     repoHashesBefore: null, repoHashesAfter: null, repoUnchanged: null,
     gates: [], summary: null, selfCheck: null,
     knownGaps: [
-      '只测这五个门禁（G9 / S1 / G6+G7 / V1 / G8）；G1·G2·G3·G4·G5·V2·S2·S3 未测（要起 Electron 或跑全链）',
+      // ⚠️ 这里**刻意不写"几个门禁"**：写死过一次（"只测这六个门禁"），而 V2 当时根本不在册 ——
+      // 那种自述会先于代码腐坏（判分口径的权威副本是上面的 GATES 数组 + 运行时那行"被判的门禁："）
+      '在册门禁 = `GATES` 里那几条：G9 / S1 / S2 / G6+G7 / V1 / V2 / G8；'
+        + '其余（G1·G2·G3·G4·G5·S3）未测（要起 Electron 或跑全链）',
       '变体是**手工挑的**（每个门禁 ≥2 条真变异 + 1 无害对照 + 1 负对照；G8 例外：每条判定各一条）：'
         + '能回答"这几类破坏拦不拦"，除 G8 外回答不了覆盖率'
         + '（**这里刻意不写"几条"**：那个数会随加变体而漂，现成读数看上面的"变异体 N"汇总行）',

@@ -309,6 +309,138 @@ function searchArchives(dir, keyword, perFile) {
   return out;
 }
 
+/* ---------------- 文件自身结构完整性（"这个文件现在还好吗"） ----------------
+ * 存在理由：本文件其余函数都在**变换**（releaseChangelog / splitChangelog）或**索引**
+ * （indexChangelog / searchArchives），**没有一个在问"磁盘上这份文件的结构还完整吗"**。
+ * 2026-10-19 一天之内 CHANGELOG.md 被**工程外的一次性脚本**弄坏三次，没有一道判据拦住：
+ *   ① 裸 `fs.writeFileSync` 整份覆写撞并发会话 ⇒ 两个 `# CHANGELOG` 头；
+ *   ② 同一种写法的第二次 ⇒ 同上；
+ *   ③ `before.slice(0, cut)` 拼接点少加了两个字符 ⇒ 文件头（registry 块 + `## [Unreleased]` 行）被整段截掉。
+ * 为什么既有判据全都没拦住：`tests/changelog.test.js` 测的是**变换逻辑**、喂的是**合成输入**
+ * （从不看磁盘上那一份）；写盘出口判据扫的是**仓库源码**里的 `fs.writeFileSync` 调用点 ——
+ * 三次都来自**工程外**脚本，扫描面覆盖不到。⇒ 缺的是"只看文件自身形状"的判据。
+ *
+ * ⚠️ 判据**只认行首**：`# CHANGELOG` 这个**子串**在正文里会合法地出现多次
+ * （实测那份文件里 6 次，其中 5 次是别批在散文里讲这个指标本身）⇒ 用 `includes` 写成的判据**恒绿**。
+ * ⚠️ 前言区的特征**只在前言区这一片里找**，不在全文里找 —— 理由同上。
+ *
+ * **能力边界（这条判据抓不到什么，别指望它）**：它只验**结构**。某条 `###` 的正文被改掉/删掉、
+ * 数字被悄悄改动、错别字 —— 全都**照样绿**。它拦的是"整份文件被拼接 / 截断"这一类**形状级**损坏；
+ * 拦不住"内容级"损坏（那需要内容基线，本工程没有 CHANGELOG 的内容基线）。
+ * ============================================================ */
+
+/** 计数（`re` 必须带 `g`；用 `String.match`，不会被上一次的 `lastIndex` 带偏） */
+function countHits(text, re) {
+  const m = text.match(re);
+  return m ? m.length : 0;
+}
+
+/** 收集每条命中的第 1 个捕获组（`re` 必须带 `g`） */
+function collectGroup1(text, re) {
+  const out = [];
+  for (const m of text.matchAll(re)) out.push(m[1]);
+  return out;
+}
+
+/** 把名字数组分组，返回出现 ≥2 次的那部分 `[名, 次数]`（按首次出现顺序） */
+function groupDups(names) {
+  const cnt = new Map();
+  names.forEach(function (n) { cnt.set(n, (cnt.get(n) || 0) + 1); });
+  const out = [];
+  cnt.forEach(function (c, n) { if (c > 1) out.push([n, c]); });
+  return out;
+}
+
+/** 把重名列表渲染成一行可读报文。**必须限长**：整份文件被拼两遍时会有上百条重名 */
+function briefDups(pairs) {
+  const CAP = 5;
+  const shown = pairs.slice(0, CAP).map(function (p) {
+    const name = p[0].length > 60 ? p[0].slice(0, 60) + '…' : p[0];
+    return '「' + name + '」× ' + p[1];
+  });
+  return shown.join(' · ') + (pairs.length > CAP ? ' …等共 ' + pairs.length + ' 个重名' : '');
+}
+
+/**
+ * CHANGELOG.md 的**文件自身结构完整性**体检（纯函数，不读盘、不写盘、不改文件）。
+ *
+ * 与 `releaseChangelog` / `splitChangelog` 的分工：那两个在**改**文件（输入 → 输出），
+ * 本函数在**看**文件（喂磁盘上那份原文，产出"它现在还好吗"）。
+ * ⇒ 它**不能**喂 `tests/changelog.test.js` 里那种合成夹具 —— 那些夹具是为"变换逻辑"最小化的输入，
+ * 本来就不含本工程的 registry 块。本函数检查的是**本工程 CHANGELOG.md 的契约**（标题 + registry 块 + 约定说明）。
+ *
+ * 判据一律用**关系**（恰好 1 个 / 不重复 / 前言区非空），不写死任何计数 ——
+ * `###` 有多少条、文件多大每次提交都在变，写死必然过期。
+ *
+ * ⚠️ 本函数**刻意不被 `releaseChangelog` 等现有流程调用**（加它只为"能体检"，不改发版行为）。
+ * 想接进发版前自检时再单独决定，那是行为变更。
+ *
+ * @param {string} text CHANGELOG.md 全文
+ * @returns {{ok:boolean, problems:Array<{code:string, message:string}>}}
+ *          `ok === true` 当且仅当 `problems` 为空；`code` 供断言点名，`message` 供人读
+ */
+function checkChangelogStructure(text) {
+  const src = String(text === undefined || text === null ? '' : text);
+  const problems = [];
+  const add = function (code, message) { problems.push({ code: code, message: message }); };
+
+  // ① 行首一级头**恰好 1 个**。
+  //    多于 1 = 两份文件被拼接（事故 ①② 的形状）；0 = 文件头被整段截掉（事故 ③ 的形状）。
+  //    **只认行首**：正文里合法地讲这个指标时，这个子串会出现多次（实测同一份文件里子串 6 次）。
+  const h1 = countHits(src, /^# CHANGELOG\b/gm);
+  if (h1 !== 1) {
+    add('H1_COUNT', '行首一级头「# CHANGELOG」出现 ' + h1 + ' 次（应恰好 1 次）'
+      + (h1 > 1
+        ? '：最可能是一份文件被**整份拼接了两次**（多会话各自覆写，其中一份没带上另一份）'
+        : '：最可能是**文件头被整段截掉**（拼接时切点算错）'));
+  }
+
+  // ② `## [Unreleased]` **恰好 1 个** —— 与 splitChangelog 的后置不变量同一个写法
+  //    （同一件事只写一处口径；这里再写一遍是因为那里是"滚动后自检"，这里是"文件现状体检"）。
+  const unreleased = countHits(src, /^## \[Unreleased\]/gm);
+  if (unreleased !== 1) {
+    add('UNRELEASED_COUNT', '`## [Unreleased]` 出现 ' + unreleased + ' 次（应恰好 1 次）'
+      + (unreleased > 1 ? '：当前工作区被重复了一份' : '：当前工作区被整段截掉 / 漏写'));
+  }
+
+  // ③ 头部前言（标题与第一个 `## [` 之间的内容）非空，且含可识别特征。
+  //    ⚠️ 特征**只在前言区这一片里找**：在全文里找，正文里的一句散文就能让它假通过（实测踩过的坑）。
+  const firstSection = src.search(/^## \[/m);
+  const preamble = firstSection < 0 ? src : src.slice(0, firstSection);
+  if (!/\S/.test(preamble)) {
+    add('PREAMBLE_EMPTY', '头部前言为空（标题之下、第一个 `## [` 之前一个字都没有）');
+  } else {
+    const reg = /^<!--\s*registry\b[\s\S]*?-->/m.exec(preamble);
+    if (!reg) {
+      add('PREAMBLE_NO_REGISTRY', '头部前言里没有 registry 元信息块（`<!-- registry … -->`）'
+        + '：最可能是**头部被整段截掉**（事故 ③ 的形状）');
+    } else {
+      const restText = preamble.slice(0, reg.index) + preamble.slice(reg.index + reg[0].length);
+      if (!/\S/.test(restText)) {
+        add('PREAMBLE_NO_TEXT', '头部前言里除 registry 块之外没有任何正文'
+          + '（标题下的约定说明被截掉了）');
+      }
+    }
+  }
+
+  // ④ `###` 段名不许重复 —— 拼接或重复插入的形状。
+  const entryDups = groupDups(collectGroup1(src, /^### (.+?)\s*$/gm));
+  if (entryDups.length) {
+    add('DUP_ENTRY_NAME', '有 ' + entryDups.length + ' 个 `###` 段名出现了不止一次'
+      + '（`###` 段名应全文件唯一）：' + briefDups(entryDups));
+  }
+
+  // ⑤ `## [` 段总数 = 段名去重后的数量（段名不许重复）。
+  const sectionNames = collectGroup1(src, /^## \[([^\]]+)\]/gm);
+  const uniqCount = new Set(sectionNames).size;
+  if (sectionNames.length !== uniqCount) {
+    add('DUP_SECTION_NAME', '`## [版本]` 段共 ' + sectionNames.length + ' 个，但只有 ' + uniqCount
+      + ' 个不同段名（段名不许重复）：' + briefDups(groupDups(sectionNames)));
+  }
+
+  return { ok: problems.length === 0, problems: problems };
+}
+
 module.exports = {
   releaseChangelog,
   indexChangelog,
@@ -316,6 +448,7 @@ module.exports = {
   splitChangelog,
   renderArchiveFile,
   searchArchives,
+  checkChangelogStructure,
   PLACEHOLDER,
   KEEP_RELEASED_SECTIONS
 };

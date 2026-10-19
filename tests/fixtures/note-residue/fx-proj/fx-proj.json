@@ -1,0 +1,19 @@
+{
+  "version": 3,
+  "data": {
+    "id": "root",
+    "topic": "S2 ⑥ 夹具根（笔记正文残留判据的靶子 —— 不是使用态数据）",
+    "children": [
+      {
+        "id": "n-clean",
+        "topic": "干净（合法例外都在这一条里）",
+        "detail": "<p>指针 <code>int *p;</code>、乘法 a*b、通配 *.js、围栏的兄弟 <code>**x**</code></p>\n<p>正文强调 <em>合法</em> 与 <strong>加粗</strong>；结构体 <code>struct Qdisc *q</code> 里的星号是字面量</p>"
+      },
+      {
+        "id": "n-target",
+        "topic": "注入靶子",
+        "detail": "<p>这一行是干净的正文，带 <code>int *p;</code> 一个字面量，另有正文 <em>强调</em> 一处。</p>"
+      }
+    ]
+  }
+}

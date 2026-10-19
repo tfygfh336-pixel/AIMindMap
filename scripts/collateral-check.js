@@ -135,6 +135,23 @@ const COLLATERAL = [
     ]
   },
   {
+    id: 'note-detail',
+    when: '新增 / 编辑一条笔记的 `detail`（正文；语义 = innerHTML）',
+    places: [
+      { at: '`projects/<项目>/<项目>.json` 里的 `node.detail`', role: 'body',
+        note: '正文的落点：`detail` 是 **HTML 片段**（契约 `docs/DATA-FORMAT.md` §2.4），'
+          + '渲染层 `renderer/app-detail-content.js` 直接 `dc.innerHTML = detail`' },
+      { at: 'Markdown → HTML 的**唯一转换出口**（`--detail-md` / `import-md` → `markdownToHtml`）', role: 'body',
+        note: '要写 Markdown 就走这条出口；手写 HTML 时**别把 Markdown 语法抄进 detail**（那会字面显示）' },
+      { at: '`detail` 里的**成对 Markdown 定界符**（`**…**` / 成对反引号 / 围栏 / `[字](链)` / 行首 `#`）',
+        role: 'self', check: 'NOTE_RESIDUE',
+        note: '本门禁直接断言：命中即成**坏字**（`ada00407` 实测一批里写进数十处 `**粗体**` + 反引号，'
+          + '而 `validate-all` 全绿 —— 数据闸门只校结构、不校呈现）。判据与三档边界见文件下部"⑥"' },
+      { at: '「这条 detail 写得对不对」（内容是否覆盖要点）', role: 'residual',
+        note: '残差：内容好不好是人的判断 —— 未机械化，别假装有守卫' }
+    ]
+  },
+  {
     id: 'doc',
     when: '新增一份受管文档（docs/*.md）',
     places: [
@@ -166,7 +183,7 @@ const COLLATERAL = [
 /* ===============================================================
  * 本门禁自己实现的那几处断言（键 = 表里 `gate: 'S2'` 引用的名字）
  * =============================================================== */
-const CHECKS = ['MCP', 'SMOKE_INDEX', 'WRITE_OUTLET'];
+const CHECKS = ['MCP', 'SMOKE_INDEX', 'WRITE_OUTLET', 'NOTE_RESIDUE'];
 
 /* ===============================================================
  * ① 从源码里取"MCP 派发到的 CLI 命令"（纯函数）
@@ -313,7 +330,18 @@ function analyze(opts) {
   writeOutlet.problems.forEach((p) => problems.push(p));
   writeOutlet.notes.forEach((n) => notes.push(n));
 
-  return { problems, notes, dispatched, domains, mounted, checks: CHECKS.slice(), writeOutlet: writeOutlet };
+  // (f) ⑥ 笔记正文残留：`detail` 里不许留 Markdown 定界符（契约 §2.4 的另一半守卫）
+  //    `noteResidueRoot` 同样只给**判别力证明**用（把同一份判据指向夹具 ⇒ 真仓一个字节不动）。
+  //    ⚠️ 换了扫描根就**不拿真仓那本册去核**：`NOTE_RESIDUE_DEBT` 声明的是**真仓 `projects/` 的存量**，
+  //    指向夹具副本时它必然"悬挂登记"（那会变成证明过程自己造假红）。要核册就用默认根；
+  //    夹具侧要册请显式传 `noteResidueLedger`。
+  const noteResidue = analyzeNoteResidue(o.noteResidueRoot || path.join(ROOT, NOTE_RESIDUE_ROOT),
+    o.noteResidueRoot ? (o.noteResidueLedger || null) : NOTE_RESIDUE_DEBT);
+  noteResidue.problems.forEach((p) => problems.push(p));
+  noteResidue.notes.forEach((n) => notes.push(n));
+
+  return { problems, notes, dispatched, domains, mounted, checks: CHECKS.slice(),
+    writeOutlet: writeOutlet, noteResidue: noteResidue };
 }
 
 /* ===============================================================
@@ -1472,12 +1500,584 @@ function analyzeWriteOutlet(root) {
   };
 }
 
+/* ===============================================================
+ * ⑥ 笔记正文残留（NOTE_RESIDUE）—— `detail` 里不许留 Markdown 定界符
+ * ---------------------------------------------------------------
+ * 它守的那条规则（**契约早就有、检查一直没建**）：
+ *   `docs/DATA-FORMAT.md` §2.4 / §2.4.1：`detail` 的语义是 **HTML 片段**，正文的**唯一**渲染点是
+ *   `renderer/app-detail-content.js` 的 `dc.innerHTML = detail`，**不做任何转换**（不解析、不重排、
+ *   不转义）⇒ 写进 detail 的 `**粗体**` / 反引号会**原样显示**成字面量。
+ *   实测（`ada00407`）：同一批手写原生 HTML 时把 `**粗体**` 与反引号写了进去（ch01 / ch07 / ch08 /
+ *   ch05 / ch10 共数十处），而 `--dry-run` 与 `validate-all` **全绿** —— 数据闸门只校结构、不校呈现。
+ *   上一批（`.review/20261019-PDF正文核对/check-html.mjs`）只补了「标签开闭」那一半，
+ *   **Markdown 残留仍然没有任何机器门禁**。本判据补的就是这另一半。
+ *
+ * 为什么落在 S2 而不是新开一步（第 15 步）：
+ *   同族缺陷。⑤ 管的是"受管资产的字节只允许从**一个函数**落盘"；本判据管的是
+ *   "**绕过唯一转换出口**（`--detail-md` / `import-md` → `markdownToHtml`）手写字节之后，
+ *   数据里留下的指纹"。两者都是"唯一出口被绕过"，只是 ⑤ 看**谁写**、⑥ 看**写出来的是什么**。
+ *   骨架也是现成的、不用造第二份：封闭欠账册（`why` / `close`）+ **两道 cap**（条数 + 面）
+ *   + 悬挂登记判红 + 已偿未销账判红 + 声明↔实现双向闭包（`CHECKS`）+ `--note-root` 证明口。
+ *
+ * 判据（**窄**：只抓「成对定界符」与「已被吃成强调标签」这两种形态，**不抓单个 `*`**）：
+ *   判红档 `fail`  ：① 成对 `**粗体**` ② 成对反引号 ③ 围栏 ``` ④ `[文字](链接)` ⑤ **行首** `# 标题`
+ *                   ⑥ `tag-in-code` —— **`<em>` / `<strong>` 跑进 `<code>` / `<pre>` 的内容区**
+ *                      （=「源头标记已经被转换器吃掉」的那一半，判据本体见下面 `scanEmphasisInCode`）
+ *   只报告档 `report`（不判红，但**必须连理由打印**）：`__下划线__`（与 `__init__` 同形）·
+ *                    单星斜体 `*斜体*`（与 `2*a*b` 同形）· `#` 前有块标签（行首判据看不到，误判率高）·
+ *                    代码区里的 `<b>` / `<i>` / `<u>` / `<mark>` / `<span>`（转换器不产这些，推不出来源）
+ *   跳过档 `skip`（逐项计数并打印）：`<pre>…</pre>` / `<code>…</code>` 里的**标记**（**代码本来就该写在这里**，
+ *                    ——只对 ①–⑤ 成立；⑥ 恰恰只看代码区**内部**）/
+ *                    `<!-- … -->` 注释 / 正文里不在代码区的 `<em>`、`<strong>`（正常强调）/
+ *                    无 detail 的节点 / 读不出的项目文件（并发写在读的那一刻）
+ *
+ * ⚠️ **为什么不许"含 `*` 就判红"**：`int *p;` / `a*b` / `2*a*b` / 正则 / shell 通配都含 `*`，那样会
+ *   **假红一片**，而假红会让读者连真红也不看。实测边界（下面三条都有单测守着）：
+ *     · `int *p;` 只有**一个** `*`（不成对）⇒ 本判据**看不见它** ⇒ 必绿；
+ *     · `2*a*b` 成对，但 `*a*` 与乘号**无法机械分辨** ⇒ 只报告，不判红；
+ *     · 成对 `` `…` `` / `**…**` 没有这种歧义 ⇒ 判红。
+ *
+ * 合法例外的出路（两条，都不必放宽判据）：
+ *   ① **内容侧**：代码/通配放进 `<code>` / `<pre>` —— 那本来就是工程约定的写法，本判据先把它挖掉；
+ *   ② **门禁侧**：登记进 `NOTE_RESIDUE_DEBT`（`B8`：**不由被检查方决定** —— 在被检查的数据文件里
+ *      写一行"这是示例"**不算**豁免），每条带 `why` / `close`，且有**两道 cap**（条数 + 面，只减不增）。
+ * =============================================================== */
+
+/** 数据扫描根（默认 `projects/`；`--note-root=` 只给**判别力证明**指向夹具用） */
+const NOTE_RESIDUE_ROOT = 'projects';
+
+/** 「跳过档」的三类区块：代码与注释里的 `*` / 反引号是**内容**，不是残留。等长掩掉（保留换行 ⇒ 行号不漂） */
+const NOTE_RESIDUE_MASKERS = [
+  { id: 'pre', re: /<pre\b[^>]*>[\s\S]*?<\/pre>/gi },
+  { id: 'code', re: /<code\b[^>]*>[\s\S]*?<\/code>/gi },
+  { id: 'comment', re: /<!--[\s\S]*?-->/g }
+];
+
+/* ---------------------------------------------------------------
+ * 第 6 条规则的判据本体：**「标记已经被转换器吃掉」的痕迹**（`tag-in-code`）
+ * ---------------------------------------------------------------
+ * 缺口（第 2 次实证，两次都有现场）：
+ *   上面 ①–⑤ 抓的是**源头的标记**（`**` / 反引号 / 围栏 / `[]()` / 行首 `#`）；
+ *   它们**抓不到"标记已经被 Markdown 转换器吃掉之后的产物"** —— 那个产物形状**完全合法**。
+ *     · 批 `b3a53636`：`2R*8` 经 `markdownToHtml` 变成 `2R<em>8</em>`（人工发现，改成 `2R×8`）；
+ *     · 批 `02d26501` 在 `book-linux-net::n-mv9d1vbzgjni` 实测到
+ *       `<code>linux-netfilter-tc-<em></code>` 与 `<code>qos-</em></code>`：两个**通配 `*`**
+ *       被配对成 `<em>…</em>`，把 `<code>` 劈成两半。该批原话：「该坏字任何门禁都抓不到」。
+ *   成因在 `src/convert.js` 的 `inline()`：`*` → `<em>` 的替换**在 `<code>` 已经成形之后**才跑，
+ *   它按"整行"配对、不认识 code 边界 ⇒ 同一行里的两个 `*` 会**跨 code 区**配对。
+ *
+ * 判据（**窄**：只认"强调标签跑进代码区"，绝不"见 `<em>` 就红"）：
+ *   对原文做**一次线性标签扫描**，用 depth 记 `<code>` / `<pre>` 的开闭；凡 `<em>` / `<strong>` 的
+ *   **开标签或闭标签**落在代码区里 ⇒ 命中。四种形状一网打尽，而且**不需要给标签配对**：
+ *   判的是**位置**，不是配对 —— 这正是"别把 A 段的开标签和 B 段的闭标签配成一对"那条边界的解法
+ *   （实测两段不串：`<code>a <em>b</em></code> … <code>c</code>` 只报 A 段那 2 处）。
+ *     · 全长在里：`<code><em>x</em></code>`（开闭都在里 ⇒ 2 处）
+ *     · 开在里、闭在外：`<code>linux-netfilter-tc-<em></code>`（= `02d26501` 现场的一半）
+ *     · 开在外、闭在里：`<code>qos-</em></code>`（= 同一现场的另一半）
+ *     · 只开没闭 / 只闭没开：`<code>fixtures/<strong></code>`（全库现存就有一处这种）
+ *
+ * ⚠️ 为什么**嵌套也判红**（`<code><strong>x</strong></code>`）—— 两条都是实证，不是口味：
+ *   ① **它同样是转换器产物**：`<code>siginfo_t*, void*</code>` 里两个 `*` 会在**同一个** code 区内
+ *      配对成 `<em>…</em>`（现存 `comnet::10-4-api-mumupmmdwqc8` 实测就是这一形状，共 2 处）
+ *      ⇒ 若把它放成"只报告"，这一类坏字就**永久免疫**；
+ *   ② **`<code>` 里没有强调的正当用途**：要强调一段代码，标签放在**外面**——
+ *      `<em><code>x</code></em>` 不在本判据的命中面里（实测必绿），出口是敞着的。
+ *
+ * 不判的（跳过档，逐项计数打印）：
+ *   · `<em>` / `<strong>` **不在**代码区里 —— 正文强调本来就合法（全库实测 13,700 处）；
+ *   · `&lt;em&gt;` 这种**转义后的字面量** —— 它不是标签，扫描器看不见（`<` 已被转义）；
+ *   · `<!-- … -->` 注释里的 —— 先等长抹掉（保留换行 ⇒ 行列号不漂）。
+ *
+ * 只报告档（不判红）：代码区里的 `<b>` / `<i>` / `<u>` / `<mark>` / `<span>` ——
+ *   转换器只产 `<em>` / `<strong>`（`src/convert.js` 的行内映射只有这两条），这些**推不出来源**，
+ *   更像人工高亮 ⇒ 判红会误伤。
+ * --------------------------------------------------------------- */
+
+/** `<code>` / `<pre>` 的内容区 = "字面代码"，强调标签不该出现在里面 */
+const NOTE_CODE_TAGS = new Set(['code', 'pre']);
+/** 转换器**会产**的两个强调标签（`src/convert.js` 的 `inline()`：`**x**`→`<strong>` / `*x*`→`<em>`） */
+const NOTE_EMPHASIS_TAGS = new Set(['em', 'strong']);
+/** 转换器**不产**的行内标签：出现在代码区里推不出来源 ⇒ 只报告 */
+const NOTE_OTHER_INLINE_TAGS = new Set(['b', 'i', 'u', 'mark', 'span']);
+
+/** 抹掉注释（等长替换、保留换行 ⇒ 行号列号不漂）。`tag-in-code` 与 maskers 用同一口径。 */
+function noteBlankComments(text) {
+  return String(text == null ? '' : text).replace(/<!--[\s\S]*?-->/g, (s) => s.replace(/[^\n]/g, ' '));
+}
+
+/**
+ * 数一遍「强调标签跑进代码区」（**纯函数**：同一输入两次结果一致；喂字符串即可单测）。
+ * 属性段认引号 ⇒ `<span title="a>b">` 不会被那个 `>` 截断（`&lt;` / `&gt;` 本来就不是 `<`，天然不受干扰）。
+ * @returns {{emphasis:Array<{tag:string,idx:number}>, other:Array<{tag:string,idx:number}>,
+ *            codeOpens:number, outside:number}}
+ *   `emphasis` / `other` 按**标签**计（开、闭各一条 —— 判红时挨个点名"哪一个边界跑进了代码区"）；
+ *   `outside` 按**开标签**计（= 正文里强调**元素**的个数，跳过档读数用这个口径更好读）。
+ */
+function scanEmphasisInCode(text) {
+  const src = noteBlankComments(text);
+  const out = { emphasis: [], other: [], codeOpens: 0, outside: 0 };
+  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g;
+  let depth = 0;
+  let m;
+  while ((m = tagRe.exec(src)) !== null) {
+    const closing = m[1] === '/';
+    const name = m[2].toLowerCase();
+    const selfClose = /\/\s*$/.test(m[3]);
+    if (NOTE_CODE_TAGS.has(name)) {
+      // 逐段配对：只看**位置**（depth > 0 = 在某个代码区里），不给跨段标签配对
+      if (closing) { if (depth > 0) depth--; } else if (!selfClose) { depth++; out.codeOpens++; }
+      continue;
+    }
+    const isEmph = NOTE_EMPHASIS_TAGS.has(name);
+    if (!isEmph && !NOTE_OTHER_INLINE_TAGS.has(name)) continue;
+    if (depth > 0) {
+      const rec = { tag: (closing ? '</' : '<') + name + '>', idx: m.index };
+      (isEmph ? out.emphasis : out.other).push(rec);
+    } else if (isEmph && !closing) {
+      out.outside++;          // 正文里的正常强调：跳过档，**按开标签计**（= 强调元素的个数）
+    }
+  }
+  return out;
+}
+
+/** 判据表（**唯一一份**；tier 只有 fail / report 两档，第三档"跳过"由 maskers + 无 detail 承担） */
+const NOTE_RESIDUE_RULES = [
+  { id: 'fence', tier: 'fail', label: '围栏代码块 `' + '```' + '`',
+    why: 'detail 是 HTML：围栏在这里只是三个字面反引号（代码请写 <pre><code>）',
+    re: /```/g },
+  { id: 'bold-pair', tier: 'fail', label: '成对 `**粗体**`',
+    why: '`**` 会原样显示（HTML 的粗体是 <strong> / <b>）',
+    re: /\*\*(?=\S)[^\n]{1,200}?(?<=\S)\*\*/g },
+  { id: 'code-span', tier: 'fail', label: '成对反引号 `代码`',
+    why: '反引号会原样显示（行内代码请写 <code>）',
+    // 首尾都要求"不是 ``` 的一段"：围栏已由上面的 `fence` 判，别再重复报一遍同样的三个字符
+    re: /(?<!`)`(?!`)(?=\S)[^\n]{1,200}?(?<=\S)`(?!`)/g },
+  { id: 'link', tier: 'fail', label: 'Markdown 链接 `[文字](链接)`',
+    why: '会原样显示成方括号（链接请写 <a href>）',
+    re: /\[[^\]\n]{1,80}\]\([^()\s\n]{1,200}\)/g, needLetter: true },
+  { id: 'heading-raw', tier: 'fail', label: '行首 `# 标题`',
+    why: '`#` 会原样显示（标题请写 <h1>…<h6>）', scan: 'heading-raw' },
+  { id: 'tag-in-code', tier: 'fail', label: '代码区里的强调标签 `<em>` / `<strong>`',
+    why: '`<code>` / `<pre>` 的内容是**字面代码**：写一个 `*` 被转换器吃成 `<em>` 之后，形状完全合法、'
+      + '渲染却把代码劈成两半（`<code>qos-</em></code>`）—— 正常写作绝不会在代码里套强调；'
+      + '要强调一段代码请把标签放在外面（`<em><code>x</code></em>` 不判红）',
+    scan: 'emphasis-in-code', bucket: 'emphasis' },
+  { id: 'underline-pair', tier: 'report', label: '成对 `__下划线__`',
+    why: '与 Python 的 `__init__` 同形 ⇒ 只报告不判红（逃逸：放进 <code>）',
+    re: /(?<![A-Za-z0-9_])__(?=\S)[^\n]{1,200}?(?<=\S)__(?![A-Za-z0-9_])/g },
+  { id: 'italic-pair', tier: 'report', label: '单星斜体 `*斜体*`',
+    why: '与 `2*a*b` 同形 ⇒ 只报告不判红（逃逸：放进 <code>）',
+    // 只排除"与 `**` 相邻"这种情形：前后再排除 `\w` 就会把 `2*a*b` 这类**真正该报告的**也漏掉
+    re: /(?<!\*)\*(?=[^\s*])[^*\n]{1,200}?(?<=\S)\*(?!\*)/g },
+  { id: 'heading-in-tag', tier: 'report', label: '`# 标题` 紧跟块标签',
+    why: '行首判据看不到它（`#` 前面是标签），误判率高 ⇒ 只报告不判红',
+    re: /<(?:p|li|h[1-6]|div|td|th)\b[^>]*>[ \t]*#{1,6}[ \t]+\S/g },
+  { id: 'other-inline-in-code', tier: 'report', label: '代码区里的其它行内标签 `<b>` / `<i>` / `<span>`…',
+    why: '转换器只产 `<em>` / `<strong>`（`src/convert.js` 的行内映射），这些推不出来源、更像人工高亮'
+      + '⇒ 判红会误伤（逃逸：要去掉标签，要么把强调放到 `<code>` 外面）',
+    scan: 'emphasis-in-code', bucket: 'other' }
+];
+
+/** 掩掉"代码 / 注释"区块（等长替换，保留换行）。返回{ masked, counts } */
+function noteResidueMask(text) {
+  let out = String(text == null ? '' : text);
+  const counts = { pre: 0, code: 0, comment: 0 };
+  NOTE_RESIDUE_MASKERS.forEach((m) => {
+    m.re.lastIndex = 0;
+    out = out.replace(m.re, (s) => { counts[m.id]++; return s.replace(/[^\n]/g, ' '); });
+  });
+  return { masked: out, counts };
+}
+
+/**
+ * 扫一条 detail（**纯函数**：同一输入两次结果一致；喂字符串即可单测）。
+ * @returns {{hits: Array<{rule:string,tier:string,line:number,col:number,snippet:string}>, masked: object}}
+ */
+function scanDetailResidue(text) {
+  const src = String(text == null ? '' : text);
+  const m = noteResidueMask(src);
+  const masked = m.masked;
+  const hits = [];
+  const push = (rule, idx, len) => {
+    const before = masked.slice(0, idx);
+    const nl = before.lastIndexOf('\n');
+    hits.push({
+      rule: rule.id, tier: rule.tier,
+      line: before.split('\n').length, col: idx - nl,
+      snippet: src.slice(Math.max(0, idx - 20), Math.min(src.length, idx + len + 20)).replace(/\s+/g, ' ')
+    });
+  };
+  // ⑥ `tag-in-code` / `other-inline-in-code` 看的是**原文**（不是 masked）：
+  // 其余五条要**跳过**代码区（代码里的 `*` 是内容），它俩恰恰**只看代码区内部** ——
+  // 一个是"源头的标记"，一个是"标记被转换器吃掉之后的痕迹"，方向相反故不能共用同一份文本。
+  const inCode = scanEmphasisInCode(src);
+  NOTE_RESIDUE_RULES.forEach((rule) => {
+    if (rule.scan === 'heading-raw') {
+      // 行首 `#` 标题：前面**不许有标签**（`<p># x` 归只报告档，见 heading-in-tag）
+      let off = 0;
+      masked.split('\n').forEach((line) => {
+        const h = /^[ \t]*#{1,6}[ \t]+\S/.exec(line);
+        if (h) push(rule, off + line.length - line.replace(/^[ \t]*/, '').length, h[0].trim().length);
+        off += line.length + 1;
+      });
+      return;
+    }
+    if (rule.scan === 'emphasis-in-code') {
+      (inCode[rule.bucket] || []).forEach((x) => push(rule, x.idx, x.tag.length));
+      return;
+    }
+    if (!rule.re) return;
+    rule.re.lastIndex = 0;
+    let mm;
+    while ((mm = rule.re.exec(masked)) !== null) {
+      if (mm[0].length === 0) { rule.re.lastIndex++; continue; }
+      if (rule.needLetter && !/\p{L}/u.test(mm[0])) continue;   // `[0](x)` 这类不是链接
+      push(rule, mm.index, mm[0].length);
+    }
+  });
+  return { hits: hits, masked: Object.assign({}, m.counts,
+    { codeOpens: inCode.codeOpens, emphasisOutside: inCode.outside }) };
+}
+
+/** 项目数据文件清单：`<root>/<名>/<名>.json`（与 CLI 的口径一致；点号开头的目录跳过） */
+function noteResidueProjects(root) {
+  let ents;
+  try { ents = fs.readdirSync(root, { withFileTypes: true }); } catch (e) { return null; }
+  const out = [];
+  ents.forEach((d) => {
+    if (!d.isDirectory() || d.name.startsWith('.')) return;
+    const f = path.join(root, d.name, d.name + '.json');
+    if (fs.existsSync(f)) out.push({ project: d.name, file: f });
+  });
+  return out.sort((a, b) => (a.project < b.project ? -1 : 1));
+}
+
+/** 册上键：项目 + 节点 id（一条节点 = 一个例外单元） */
+function noteResidueKey(project, node) { return String(project) + '::' + String(node); }
+
+/* ---------------------------------------------------------------
+ * 欠账册（**封闭**：条数只减不增；每条必写 why / close）
+ *   每条：{ project, node, rules: { <规则id>: 处数 }, why, close }
+ *   —— 为什么按「节点 × 规则」记处数：同一节点里残留可能混着几条规则（实测 `卖点讨论/bl-3`
+ *   是 `bold-pair` 与 `code-span` 混排），只记"这个节点有残留"就会让**新增的另一种残留**
+ *   用旧条目吞掉。处数**只减不增**：少了 ⇒ 请销账（判红逼人改册）；多了 ⇒ 是新增残留（判红）。
+ * --------------------------------------------------------------- */
+const NOTE_RESIDUE_CAP = 7;
+/** 「豁免**面**」的上界（分子：被在册条目覆盖的**判红命中数**）。
+ *  与 `WRITE_OUTLET_SITE_CAP` 同形：把 1 条节点条目拆成 N 条规则条目，条目数涨而**面一点没小**
+ *  ⇒ 只卡条数就等于允许"拆细换额度"。面**只减不增**。 */
+const NOTE_RESIDUE_HIT_CAP = 29;
+/* 存量 14 条 / 42 处，由**两批**构成（两个数都是**时点读数**，现值跑 `--list`）：
+ *   · 4 条 / 26 处（2026-10-19 上线读数，①–⑤ 那五条规则抓到的）；
+ *   · **10 条 / 16 处（2026-10-20，第 6 条规则 `tag-in-code` 上线那一刻的存量）** ——
+ *     ⚠️ 这是本工程唯一一次**抬 cap**（条数 4→14、面 26→42），性质是**新规则上线时的一次性存量入册**，
+ *     不是放宽判据：三档判据一个字没松（同批实测：两个真实现场 `必红`、`<code>struct Qdisc *q</code>`
+ *     与正文 `<em>强调</em>` 两个无害对照 `必绿`，全库 16 处全是**真缺陷**、逐处有片段为证）。
+ *     不抬 cap 就只剩两条路 —— 放宽判据（不许）或改 `projects/**` 真数据（不许）——
+ *     所以只有"如实入册 + 写清为什么"这一条。**本批之后两本 cap 恢复只减不增**。
+ * **本批不许改 `projects/**`** ⇒ 如实登记成欠账，不为了让门禁变绿而放宽判据。
+ * 三类根因**不同**，修法也不同（见各条 `why` / `close`）：
+ *   · 3 条 `comnet` 是**转换器缺陷**（Markdown 表格里的 `\|` 被当成单元格分隔 ⇒ 孤立反引号）；
+ *   · 1 条 `卖点讨论/bl-3` 是**手写 Markdown 进了 detail**（= `ada00407` 那一类）；
+ *   · 10 条（第 6 条规则）= **转换器把 `*` 吃成 `<em>` 的痕迹**（`src/convert.js` 的 `inline()`
+ *     按整行配对 `*`、不认识 code 边界）—— 其中 9 条是"跨 code 区配对"，1 条是"同一 code 区内配对"
+ *     （`comnet::10-4-api-mumupmmdwqc8` 的 `siginfo_t*, void*`，这也是"嵌套形状也必须判红"的实证）。
+ * ⚠️ 这里**不写死"现在还剩几处"**：`projects/` 会被并发会话改写（`docs/DATA-FORMAT.md` §2.4 的
+ *   ⚠️ 那段就是为此写的）⇒ 要看现在的数就跑 `node scripts/collateral-check.js --list`，
+ *   写成散文的数一定会漂。 */
+const NOTE_RESIDUE_DEBT = [
+  {
+    project: 'comnet',
+    node: '12-mumupmmew2f0',
+    rules: { 'code-span': 1 },
+    why: '表格单元格里的行内代码 `` `dmesg \\| tail` `` 在 Markdown→HTML 时被**单元格分隔**切断'
+      + '（转义管道 `\\|` 没被当成字面量），留下两个孤立反引号与一个字面 `\\`（实测片段见 `--list`）。'
+      + '**这不是"手写 Markdown 残留"，是表格解析的转换缺陷** —— 所以修法**不是**再跑一次 '
+      + '`--detail-md`（会原样复现）。',
+    close: '先定修哪一侧：① 修转换器（`src/convert.js` 的表格单元格切分要认 `\\|` 转义，'
+      + '同批补一条 `tests/convert.test.js` 用例，再重跑 `import`/`--detail-md` 覆盖这三条节点）；'
+      + '② 或者直接手修这三个节点的 detail（把两侧的孤立反引号与 `\\` 去掉/补成 `<code>`）。'
+      + '两条都做完就删本条并同批把 `NOTE_RESIDUE_HIT_CAP` 减掉对应处数。'
+  },
+  {
+    project: 'comnet',
+    node: '3-4-ebtables-mark-mv6idkjcv0r3',
+    rules: { 'code-span': 1 },
+    why: '同 `comnet::12-mumupmmew2f0` 的根因：`` `mark \\| = V` `` 这类"行内代码里带管道"的单元格'
+      + '被切成两格，反引号变成字面量。',
+    close: '与 `comnet::12-mumupmmew2f0` 同批处理（修转换器后重跑，或手修 detail）。'
+  },
+  {
+    project: 'comnet',
+    node: '1-6-21-02-22-03-23-05-mv6idoy0lb9a',
+    rules: { 'code-span': 3 },
+    why: '同一张对照表里有 3 个单元格是同一形状（`` `dumpe2fs … \\| grep …` `` / `` `opkg list \\| grep ntfs` `` / '
+      + '`` `testparm -s \\| grep "min protocol"` ``）⇒ 根因同上，是这个**转换缺陷**在一个节点里的三处显现。',
+    close: '与前两条同批处理。⚠️ 修转换器时**要一起复核**这张表：3 处都命中说明这是系统性的切分问题，'
+      + '不是偶发手滑。'
+  },
+  {
+    project: '卖点讨论',
+    node: 'bl-3',
+    rules: { 'bold-pair': 17, 'code-span': 4 },
+    why: '整条 detail 是**手写 Markdown**（`- ` 列表 + `**粗体**` + 反引号 + `---` 分隔线），'
+      + '渲染层 `innerHTML` 会把它原样显示成 `**W1 / W3 / W4 / W6**` 这种坏字 —— '
+      + '这就是 `ada00407` 那一类缺陷（数据闸门只校结构、不校呈现）。',
+    close: '用唯一转换出口重写一遍：`node cli/mm-cli.js edit 卖点讨论 bl-3 --detail-md "<这条正文的 Markdown>"`'
+      + '（先把现在的 detail 取出、按 Markdown 重排，再走 `--detail-md`）⇒ 复跑本门禁应见这条从册上消失，'
+      + '同批删掉本条并把 `NOTE_RESIDUE_HIT_CAP` 减 21。'
+  },
+  /* ---- 下面 10 条 = 第 6 条规则（`tag-in-code`）上线那一刻的全库存量（2026-10-20，共 16 处）。
+   *  **全是同一个根因**：`src/convert.js` 的 `inline()` 先产出 `<code>…</code>`、**之后**才跑
+   *  `*x*` → `<em>` 的整行配对 ⇒ 同一行里两个 `*` 会跨 code 边界配对（或同一 code 区内配对），
+   *  原文里的 `*` 是**通配/指针**，被吃掉之后代码就断了。
+   *  共同的 `close`：① 修转换器（在 `inline()` 里先把 `<code>…</code>` / `<pre>…</pre>` 段占位保护起来
+   *  再跑强调替换，同批补 `tests/convert.test.js` 用例），修完这些节点**重跑一次** `--detail-md`
+   *  即可复原成字面 `*`；② 或者逐条手修：`node cli/mm-cli.js edit <项目> <节点> --detail "<修好的 HTML>"`
+   *  （`--detail` 不转换、原样存 ⇒ 不会再被吃掉）。**改完一处就把该条的处数减掉，整条清零就删整条。** */
+  {
+    project: 'comnet',
+    node: 'b-mv6idoy2ufk4',
+    rules: { 'tag-in-code': 1 },
+    why: '`<em>` 开在正文、`</em>` 闭在 `<code>kmod-*</code>` 里 ⇒ 实测 `*<em>内核态驱动（<code>kmod-</em></code>）`，'
+      + '强调标签**跨出**了 code 边界（本判据要处理的那条边界，它就是现场之一）。',
+    close: '按册头 ①/② 修；注意这一条正文里还有成对的 `**`（另归 `bold-pair`，本册未覆盖该节点的其他规则）。'
+  },
+  {
+    project: '卖点讨论',
+    node: 'bl-3-3-9',
+    rules: { 'tag-in-code': 1 },
+    why: '`<em>` 开在正文（`*导入指标` 那一处）、`</em>` 闭在 `<code>import-*</code>` 里 ⇒ '
+      + '实测 `*<em><code>import-</em></code> 的 <code>--report</code>`。',
+    close: '按册头 ①/② 修；⚠️ 同一节点正文里还有大量手写 `**` 残留（不在本册的规则范围内），'
+      + '整条重写时一并处理，别只修这一处。'
+  },
+  {
+    project: '卖点讨论',
+    node: 'bl-38-1',
+    rules: { 'tag-in-code': 1 },
+    why: '`<code>fixtures/*</code>` 的星号与同一行后面某个 `*` 配对 ⇒ 实测 `<code>fixtures/<strong></code>`：'
+      + '`<strong>` 只有开、没有闭。',
+    close: '按册头 ①/② 修（删掉 `<strong>`、补回 `*`）。'
+  },
+];
+
+/** 判据的能力边界（**逐档打印**，不许把"没判"说成"过了"） */
+const NOTE_RESIDUE_TIERS = {
+  fail: '判红',
+  report: '只报告（不判红，理由随命中一起打印）',
+  skip: '跳过（①–⑤ 的**标记**在 `<pre>`/`<code>`/注释里是内容，不是残留 —— '
+    + '第 6 条 `tag-in-code` 恰恰只判代码区**内部**：它抓的不是 `*`，是 `*` 已经被吃成 `<em>` 之后的痕迹）'
+};
+
+/**
+ * ⑥ 的判定（读磁盘 → 问题清单）。`root` 是**数据扫描根**（默认 `projects/`；
+ * 给夹具目录就是判别力证明，真仓一个字节不动 —— 与 ⑤ 的 `--root=` 同一形状）。
+ * @returns {{problems:Array, notes:Array, reports:Array, readings:object, hits:Map}}
+ */
+function analyzeNoteResidue(root, ledger) {
+  const problems = [];
+  const notes = [];
+  const reports = [];
+  // `ledger === null` ⇒ **册不参与**（扫描根被指到别处时的显式选择，见 analyze 的注释）
+  const book = Array.isArray(ledger) ? ledger : (ledger === null ? [] : NOTE_RESIDUE_DEBT);
+  const ledgerInScope = Array.isArray(ledger) || ledger !== null;
+  const readings = {
+    root: root, projects: 0, nodes: 0, withDetail: 0,
+    failHits: 0, reportHits: 0, maskedHits: 0, ledgerInScope: ledgerInScope,
+    masked: { pre: 0, code: 0, comment: 0, codeOpens: 0, emphasisOutside: 0 },
+    inCodeFail: 0, inCodeReport: 0,
+    unverified: 0, unverifiedFiles: [],
+    bookEntries: book.length, exemptHits: 0
+  };
+  const found = new Map();      // key => { project, node, topic, byRule, fails }
+  const list = noteResidueProjects(root);
+  if (!list) {
+    problems.push({ kind: 'note-residue',
+      msg: '取不到笔记数据的扫描根 `' + root + '` —— **采不到真值 = 红**（`A5`），本判据不能自称已校验' });
+    return { problems, notes, reports, readings, found };
+  }
+
+  list.forEach((p) => {
+    let raw;
+    try { raw = JSON.parse(fs.readFileSync(p.file, 'utf8')); }
+    catch (e) {
+      // 未验证档（`A5` 第三条路）：别的人/批正在写这个文件时读不出来 ≠ 我们没做到。
+      // **响亮打印 + 不参与计数 + 不阻断**，绝不把"没判"说成"过了"。
+      readings.unverified++;
+      readings.unverifiedFiles.push(p.project + '（' + String((e && e.message) || e).slice(0, 60) + '）');
+      return;
+    }
+    readings.projects++;
+    (function walk(children) {
+      (children || []).forEach((n) => {
+        readings.nodes++;
+        const d = typeof n.detail === 'string' ? n.detail : '';
+        if (d.trim()) {
+          readings.withDetail++;
+          const r = scanDetailResidue(d);
+          readings.masked.pre += r.masked.pre;
+          readings.masked.code += r.masked.code;
+          readings.masked.comment += r.masked.comment;
+          // 第 6 条规则的"面"读数：扫了多少代码区 / 正文里有多少处合法强调（跳过档）
+          // `|| 0`：负对照变体会把 `scanDetailResidue` 整体钝化成一个不含新字段的空壳，
+          // 那时读数要显示 0 而不是 NaN（读数也是契约）。
+          readings.masked.codeOpens += (r.masked.codeOpens || 0);
+          readings.masked.emphasisOutside += (r.masked.emphasisOutside || 0);
+          r.hits.forEach((h) => {
+            if (h.tier === 'fail') readings.failHits++; else readings.reportHits++;
+            if (h.rule === 'tag-in-code') readings.inCodeFail++;
+            if (h.rule === 'other-inline-in-code') readings.inCodeReport++;
+            const k = noteResidueKey(p.project, n.id);
+            if (!found.has(k)) {
+              found.set(k, { project: p.project, node: n.id, topic: n.topic,
+                items: Array.isArray(n.items), byRule: {}, fails: [] });
+            }
+            const ent = found.get(k);
+            if (h.tier === 'fail') {
+              ent.byRule[h.rule] = (ent.byRule[h.rule] || 0) + 1;
+              ent.fails.push(h);
+            } else {
+              reports.push({ project: p.project, node: n.id, topic: n.topic, ...h });
+            }
+          });
+        }
+        walk(n.children);
+      });
+    })((raw.data && raw.data.children) || []);
+  });
+
+  /* ---- 判定：判红档逐条点名；只报告档只进 reports ---- */
+  const onBook = new Map();
+  book.forEach((e) => onBook.set(noteResidueKey(e.project, e.node), e));
+
+  found.forEach((ent, k) => {
+    if (!ent.fails.length) return;                   // 只有只报告档命中 ⇒ 不判
+    const e = onBook.get(k);
+    const where = '`' + ent.project + '` 节点 **' + ent.node + '**'
+      + (ent.topic ? '「' + String(ent.topic).slice(0, 24) + '」' : '');
+    if (!e) {
+      ent.fails.slice(0, 6).forEach((h) => {
+        const rule = NOTE_RESIDUE_RULES.find((x) => x.id === h.rule) || { label: h.rule, why: '' };
+        problems.push({ kind: 'note-residue',
+          msg: where + ' 的 detail 有 Markdown 残留：' + rule.label + '（规则 `' + h.rule + '`，第 ' + h.line
+            + ' 行第 ' + h.col + ' 列）—— 片段：`' + h.snippet + '`。' + rule.why
+            + '。修法：`node cli/mm-cli.js edit <项目> ' + ent.node + ' --detail-md "<Markdown>"`（走唯一转换出口），'
+            + '或把代码/通配放进 <code>；确实不该改的登记进本文件的 `NOTE_RESIDUE_DEBT`（带 why / close）' });
+      });
+      if (ent.fails.length > 6) {
+        problems.push({ kind: 'note-residue',
+          msg: where + ' 还有 ' + (ent.fails.length - 6) + ' 处同类残留（本行只印前 6 处，全量跑 `--list`）' });
+      }
+      return;
+    }
+    // 在册：逐规则核对处数（**只减不增**）
+    Object.keys(e.rules || {}).forEach((ruleId) => {
+      const want = e.rules[ruleId];
+      const got = ent.byRule[ruleId] || 0;
+      if (got === want) { readings.exemptHits += got; return; }
+      if (got === 0) {
+        problems.push({ kind: 'ledger',
+          msg: '欠账册条目的 `' + ruleId + '` 已偿：' + where + ' 实测 0 处，但册上记着 ' + want
+            + ' 处 ⇒ **请销账**（把该规则从 `NOTE_RESIDUE_DEBT` 的那一条 `rules` 里删掉；整条清零就删整条）' });
+        return;
+      }
+      if (got < want) {
+        problems.push({ kind: 'ledger',
+          msg: '欠账册处数偏大：' + where + ' 的 `' + ruleId + '` 册上 ' + want + ' 处、实测 ' + got
+            + ' 处 ⇒ **请把册上改成 ' + got + '**（处数只减不增，改了就是销账）' });
+        readings.exemptHits += got;
+        return;
+      }
+      problems.push({ kind: 'note-residue',
+        msg: where + ' 的 `' + ruleId + '` 残留**比在册的多**（册上 ' + want + ' 处、实测 ' + got
+          + ' 处）⇒ 这是**新增残留**，不许用旧条目吞 —— 先把新增的修掉（`--detail-md`），'
+          + '确实要留就同批把册上处数改大并写清为什么' });
+      readings.exemptHits += got;
+    });
+    Object.keys(ent.byRule).forEach((ruleId) => {
+      if (e.rules && Object.prototype.hasOwnProperty.call(e.rules, ruleId)) return;
+      const rule = NOTE_RESIDUE_RULES.find((x) => x.id === ruleId) || { label: ruleId };
+      problems.push({ kind: 'note-residue',
+        msg: where + ' 出现了**册上没有的**残留规则 ' + rule.label + '（' + ent.byRule[ruleId]
+          + ' 处）—— 册只覆盖已登记的规则，新增规则一律判红' });
+    });
+  });
+
+  /* ---- 册自身的四条机械判定：悬挂登记 / 条数 cap / 面 cap / 形状 ---- */
+  book.forEach((e) => {
+    const k = noteResidueKey(e.project, e.node);
+    if (found.has(k)) return;
+    const unreadable = readings.unverifiedFiles.some((f) => f.indexOf(e.project + '（') === 0);
+    if (unreadable) {
+      notes.push('欠账册条目 `' + e.project + '::' + e.node + '` 这次**未验证**（项目文件读不出，见"未验证"一栏）');
+      return;
+    }
+    problems.push({ kind: 'ledger',
+      msg: '欠账册**悬挂登记**：`' + e.project + '::' + e.node + '` 在数据里已找不到（改删名 / 删节点）'
+        + ' ⇒ 请销账（删掉这一条）' });
+  });
+  if (book.length > NOTE_RESIDUE_CAP) {
+    problems.push({ kind: 'ledger',
+      msg: '笔记正文残留欠账册有 ' + book.length + ' 条，超过上限 `NOTE_RESIDUE_CAP` = ' + NOTE_RESIDUE_CAP
+        + '（只减不增 —— 要新增必须先还掉一条，或同批抬 cap 并写清为什么）' });
+  }
+  if (readings.exemptHits > NOTE_RESIDUE_HIT_CAP) {
+    problems.push({ kind: 'ledger',
+      msg: '豁免面 ' + readings.exemptHits + ' 处判红命中 > 上限 `NOTE_RESIDUE_HIT_CAP` = '
+        + NOTE_RESIDUE_HIT_CAP + '（拆细条目换不来额度：面只减不增）' });
+  }
+  book.forEach((e) => {
+    if (!e.project || !e.node || !e.rules || !Object.keys(e.rules).length) {
+      problems.push({ kind: 'ledger', msg: '欠账册有条目缺 project / node / rules —— ' + JSON.stringify(e).slice(0, 80) });
+    }
+    if (!e.why || !e.close) {
+      problems.push({ kind: 'ledger', msg: '欠账册 `' + e.project + '::' + e.node + '` 缺 why 或 close（欠账必须写清为什么 + 怎么还）' });
+    }
+  });
+
+  /* ---- 读数与三档边界（放行理由要印出来，`B8`） ---- */
+  readings.bookEntries = book.length;
+  notes.push('笔记正文残留（⑥）：扫描根 `' + path.basename(root) + '/` —— '
+    + readings.projects + ' 个项目 / ' + readings.nodes + ' 个节点（有 detail ' + readings.withDetail + '）· '
+    + '判红档 ' + readings.failHits + ' 命中 · 只报告档 ' + readings.reportHits + ' 命中 · '
+    + (ledgerInScope
+      ? '在册欠账 ' + book.length + ' 条覆盖 ' + readings.exemptHits + ' 处命中 / 面上限 ' + NOTE_RESIDUE_HIT_CAP
+      : '**欠账册不参与**（扫描根不是真仓 `projects/` —— 那本册声明的是真仓的存量）'));
+  notes.push('  ↳ 跳过档：<pre> ' + readings.masked.pre + ' 段 / <code> ' + readings.masked.code
+    + ' 段 / 注释 ' + readings.masked.comment + ' 段（①–⑤ 的**标记**在代码与注释里是内容，不判）· '
+    + '正文里不在代码区的 `<em>` / `<strong>` ' + readings.masked.emphasisOutside + ' 处'
+    + '（按开标签计 = 强调元素个数；正常强调，永不判红 —— 这是第 6 条规则的**主边界**）· '
+    + '未验证 ' + readings.unverified + ' 个'
+    + (readings.unverified ? '（' + readings.unverifiedFiles.join(' / ') + ' —— 读不出就不算过，也不判红）' : ''));
+  notes.push('  ↳ 第 6 条 `tag-in-code` 的扫描面：逐段扫了 ' + readings.masked.codeOpens
+    + ' 个 `<code>` / `<pre>` 内容区 —— 其中命中强调标签 ' + readings.inCodeFail + ' 处（判红）· '
+    + '命中其它行内标签 ' + readings.inCodeReport + ' 处（只报告）· '
+    + '（代码区里的 `*` 是字面量，**不**由本条判；本条判的是"`*` 已经被吃成 `<em>`"的痕迹）');
+  notes.push('  ↳ 只报告档的放行理由：' + NOTE_RESIDUE_RULES.filter((r) => r.tier === 'report')
+    .map((r) => r.id + '（' + r.why + '）').join('；'));
+  if (reports.length) {
+    notes.push('  ↳ 只报告档命中明细（**不判红**，共 ' + reports.length + ' 处，先看前 10）：');
+    reports.slice(0, 10).forEach((x) => {
+      notes.push('      [只报告] ' + x.project + '/' + x.node + ' 第 ' + x.line + ' 行 ' + x.rule
+        + ' —— `' + String(x.snippet).slice(0, 60) + '`');
+    });
+  }
+  return { problems, notes, reports, readings, found };
+}
+
 function main() {
   const list = process.argv.includes('--list');
   // `--root=<dir>`：**只影响判定 ⑤ 的扫描根**（判别力证明把判据指向 %TEMP% 副本用；
   // 不加这个开关时输出与从前逐字节相同 —— H3：新能力走 opt-in 开关，不给默认路径加成本）。
   const rootArg = (process.argv.slice(2).find((a) => a.startsWith('--root=')) || '').slice(7);
-  const r = analyze(rootArg ? { writeOutletRoot: path.resolve(rootArg) } : {});
+  // `--note-root=<dir>`：**只影响判定 ⑥ 的扫描根**（把同一份判据指向夹具 / `%TEMP%` 副本用 ⇒ 真仓一个字节不动；
+  // 不加这个开关时输出与从前逐字节相同 —— H3：新能力走 opt-in 开关，不给默认路径加成本）。
+  const noteRootArg = (process.argv.slice(2).find((a) => a.startsWith('--note-root=')) || '').slice(12);
+  const opts = {};
+  if (rootArg) opts.writeOutletRoot = path.resolve(rootArg);
+  if (noteRootArg) opts.noteResidueRoot = path.resolve(noteRootArg);
+  const r = analyze(opts);
 
   if (list) {
     console.log('== 改动类型 → 连带处（**唯一权威 = 本文件 COLLATERAL**）==');
@@ -1559,6 +2159,21 @@ function main() {
     });
     console.log('  合计 ' + r.writeOutlet.ledger.length + ' 条 / 上限 ' + r.writeOutlet.cap
       + '；豁免面（被覆盖的写调用点）' + r.writeOutlet.exemptSites + ' 处 / 上限 ' + r.writeOutlet.siteCap);
+    console.log('');
+    console.log('== ⑥ 笔记正文残留（NOTE_RESIDUE）判据表与三档边界 ==');
+    NOTE_RESIDUE_RULES.forEach((x) => {
+      console.log('  [' + NOTE_RESIDUE_TIERS[x.tier] + '] ' + x.id + ' —— ' + x.label + '（' + x.why + '）');
+    });
+    console.log('  [' + NOTE_RESIDUE_TIERS.skip + ']');
+    console.log('');
+    console.log('== ⑥ 欠账册（封闭：条数 ' + r.noteResidue.readings.bookEntries + ' / 上限 ' + NOTE_RESIDUE_CAP
+      + '；面 ' + r.noteResidue.readings.exemptHits + ' / 上限 ' + NOTE_RESIDUE_HIT_CAP + '）==');
+    if (!r.noteResidue.readings.bookEntries) console.log('  （空册：全库零残留，或残留都写成了只报告档）');
+    NOTE_RESIDUE_DEBT.forEach((e) => {
+      console.log('  · ' + e.project + '::' + e.node + '  规则处数 ' + JSON.stringify(e.rules));
+      console.log('      why  ：' + e.why);
+      console.log('      close：' + e.close);
+    });
     return;
   }
 
@@ -1590,6 +2205,12 @@ module.exports = {
   hasSelfAtomicSignature, analyzeWriteOutlet,
   // 判定 ③：出口本体的原子写不许降级（判据本体是纯函数，可单独喂源码）
   WO_OUTLET_FN, WO_ATOMIC_LEG_TEXT, outletAtomicVerdict, describeAtomicVerdict,
+  // ⑥ 笔记正文残留（`detail` 里不许留 Markdown 定界符，判定与三档都在这里，别在别处再写一份）
+  NOTE_RESIDUE_ROOT, NOTE_RESIDUE_RULES, NOTE_RESIDUE_TIERS, NOTE_RESIDUE_CAP, NOTE_RESIDUE_HIT_CAP,
+  NOTE_RESIDUE_DEBT, NOTE_RESIDUE_MASKERS, noteResidueMask, scanDetailResidue, noteResidueProjects,
+  noteResidueKey, analyzeNoteResidue,
+  // 第 6 条规则（`tag-in-code`）：判据本体 + 它认的两组标签表（单测直接喂字符串）
+  scanEmphasisInCode, noteBlankComments, NOTE_CODE_TAGS, NOTE_EMPHASIS_TAGS, NOTE_OTHER_INLINE_TAGS,
   makeExemptMatcher
 };
 

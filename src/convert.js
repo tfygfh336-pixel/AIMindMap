@@ -9,6 +9,9 @@
  *   - 导出带 detail 时写成引用块（每行前缀 "> "），导入时先剥掉该前缀再转 HTML
  *   - 表格导出为 GFM 表格，导入时反向还原为 <table>
  *   - markdownToHtml 会先做 HTML 转义再套用行内语法，避免 md 里的裸标签被当 HTML 注入
+ *   - **行内代码区（反引号 / 字面 <code>·<pre>）在套行内语法前先占位保护**：
+ *     代码里的 `*` 是**内容**（通配符 / 指针星号 / 乘号），不许被强调解析吃掉
+ *     （判据与现场见 `inline()` 头顶那段注释）
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -125,9 +128,28 @@
     return c.ok ? { ok: true, raw: String(raw) } : { ok: false, reason: c.reason };
   }
 
+  /**
+   * ⚠️⚠️ **代码区必须先占位保护、再跑强调替换**（2026-10-20 根治；现场与判据见 `tests/convert.test.js`）：
+   *  这三条行内替换以前是**顺序裸跑**的 —— 反引号先变成 `<code>…</code>`，而 `*` → `<em>` 的替换
+   *  **随后**在**整行**上按"两个星号配一对"扫，它**不认识 code 边界** ⇒ 同一行里的两个 `*`
+   *  （通配符 / C 指针星号 / 乘号）会**跨 code 区**配对，把 `<code>` 劈成两半。实测产物：
+   *    · `` `src/*.js` 与 `lib/*.js` `` ⇒ `<code>src/<em>.js</code>`、`<code>lib/</em>.js</code>`（开闭落在两个区里）；
+   *    · `` `handler(int, siginfo_t*, void*)` `` ⇒ `<code>siginfo_t<em>, void</em>)</code>`
+   *      —— **`siginfo_t*` 少了 `*` 就不是那个类型**，这是把「知识」改错，不是排版难看；
+   *    · `` `linux-netfilter-tc-*` 与 `qos-*` `` ⇒ `<code>linux-netfilter-tc-<em></code>` / `<code>qos-</em></code>`
+   *      （全库实测存量 **16 处 / 10 个节点**，且**任何门禁以前都抓不到** —— 产物形状完全合法）；
+   *    · `` `**强调**` `` ⇒ `<code><strong>强调</strong></code>`（代码里套了强调标签）。
+   *  **修法不是"遇到 `<code>` 就跳过"的正则**（那治不了跨段配对、嵌套、也管不到反引号形式），
+   *  而是**占位**三步：① 代码区挖成不参与任何替换的占位符 ② 跑强调/链接/图片 ③ 把占位符**还原**。
+   *  代码区 = 反引号行内代码 + Markdown 里混写的 `<code>` / `<pre>` 字面标签（此时已被 `escapeHtml`
+   *  转成 `&lt;code&gt;…&lt;/code&gt;` —— 它仍然是"代码区"，其内的 `*` 同样不许吃）。
+   *  **合法正文强调的渲染结果一个字节都不许变**（`**粗**` / `*斜*` / `` `c` `` 都有单测钉住）。
+   *  ❌ `2R*8` 这类**不在代码区**的星号与真强调**字面无法区分** ⇒ 本函数**不承诺**处理（`a*b*c` 仍出 `<em>`）。 */
   function inline(s) {
     let x = String(s);
-    x = x.replace(/`([^`]+)`/g, '<code>$1</code>');
+    const sent = codeSentinel(x);             // ②-0 选一个"正文里一定没有"的哨兵（见 codeSentinel）
+    const st = stashCode(x, sent);            // ②-1 代码区先占位（此后它不参与下面的任何替换）
+    x = st.text;
     x = x.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     x = x.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     x = x.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, url) => {
@@ -138,7 +160,53 @@
       const u = safeUrl(url, 'a');
       return u.ok ? '<a href="' + u.raw + '">' + text + '</a>' : text;
     });
-    return x;
+    return restoreCode(x, st.stash, sent);    // ②-2 还原（单趟：还原进去的字节不会再被扫）
+  }
+
+  /* ---------- 代码区占位保护（`inline()` 用；纯函数、无状态、无随机数） ---------- */
+
+  /** 占位符的哨兵。**必须不可能与正文冲突** ⇒ 只有在输入里**真的找不到**它时才算数：
+   *  撞一次就把它撑长一格再看（`\u0001MM\u0002` → `\u0001\u0001MM\u0002\u0002` → …）⇒
+   *  输入长度有限 ⇒ 循环必终止，且终止时那个哨兵一定**不在**输入里 ⇒ 占位符不可能与正文撞车。
+   *  **不用随机数**：同一份输入必须产出同一份结果（否则快照、门禁读数、逐字节 diff 全都不可比）。
+   *  字符选择：只要没有 `*` `!` `[` `]` `(` `)` 反引号这几类字符，上面的强调/图片/链接正则就消费不到占位符。 */
+  function codeSentinel(s) {
+    let sent = '\u0001MM\u0002';
+    while (s.indexOf(sent) >= 0) sent = '\u0001' + sent + '\u0002';
+    return sent;
+  }
+
+  /** 把「代码区」挖成占位符，返回 `{ text, stash }`。
+   *  代码区两族：① 反引号行内代码 `` `…` ``（反引号不参与 `escapeHtml`，此时仍是原文）
+   *             ② Markdown 里混写的 `<code>` / `<pre>` 字面标签（此时已被转义成 `&lt;code&gt;…&lt;/code&gt;`）
+   *  一次左到右扫描、**取最先开始的那一个**（外层优先）⇒ 嵌套与"代码里有反引号"都不会走样。 */
+  function stashCode(s, sent) {
+    const stash = [];
+    // 注入证明按**本行**打（去掉第二个分支 ⇒ 字面 `<code>` 区不再受保护；见 tests/convert.test.js 的判别力用例）
+    const re = /`([^`]+)`|&lt;(code|pre)(?:\s[^&<>]*)?&gt;([\s\S]*?)&lt;\/\2&gt;/g;
+    let text = '';
+    let last = 0;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      text += s.slice(last, m.index) + sent + stash.length + sent;
+      // 反引号 ⇒ 产物与改前**逐字节相同**（`x` → `<code>x</code>`）；字面标签区 ⇒ 原样（它已经是转义文本）
+      stash.push(m[1] === undefined ? m[0] : '<code>' + m[1] + '</code>');
+      last = re.lastIndex;
+    }
+    return { text: text + s.slice(last), stash: stash };
+  }
+
+  /** 还原占位符（`哨兵+序号+哨兵`）。单趟替换：还原进去的字节**不再**被扫描 ⇒ 不可能套娃。 */
+  function restoreCode(s, stash, sent) {
+    if (!stash.length) return s;      // 没有代码区 ⇒ 原样返回（零改动路径）
+    const parts = s.split(sent);      // 偶数位是正文、奇数位是序号
+    let out = parts[0];
+    for (let k = 1; k + 1 < parts.length; k += 2) {
+      const v = stash[Number(parts[k])];
+      // 兜底：序号对不上（不该发生）就把占位符**原样留下** —— 响亮地坏，绝不静默丢代码
+      out += (v === undefined ? sent + parts[k] + sent : v) + parts[k + 1];
+    }
+    return out;
   }
 
   function isTableRow(t) {
