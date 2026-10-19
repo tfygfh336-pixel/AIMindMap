@@ -16,14 +16,17 @@
  * 文档冗余不是靠"提醒作者注意"能治的（与 G6 防的数字漂移同一种病：
  * 同一事实多副本 + 无单源），所以按本项目一贯做法**把约定变成门禁**。
  *
- * 判定：**清单以 `checkRegistry()` 里的 ①…⑭ 标记为准**，本节不再写死条数。
+ * 判定：**清单以 `checkRegistry()` 里的标记（形如 `// 圈号`）为准**，本节不抄一份、不写死条数。
  *   （写死过一次：加到第 13 条时只更新了架构文档一处，于是同一个门禁的条数在
  *    **四个地方四种说法**（规则文件 12 / 架构文档 13 / 本注释"三条" / 代码 13）——
  *    这正是本工程反复修的那类病。现有两道防线：`RULES.md` §2 的 G8 行声明的条数由 **G9**
- *    与本文件的标记数机械对齐；本注释只留"看标记"的指路。）
- * 位置：①…⑭ 十四个判定都在 `checkRegistry()` 里（工程根 / 登记 / 家门 / 悬挂 /
- *   根与顶层白名单 / 归档重复 / 交接死指针 / 代码入档 / 归档横幅 / 工作目录状态 /
- *   导航可达 / 契约覆盖 / 章节编号 / 登记表一致性 / 层取值表）。任一不满足即 exit 1。
+ *    与本文件的标记数机械对齐；本注释只留"看标记"的指路。
+ *    ⚠️ 2026-10-19 复核发现的**第三个漂移面**：本注释原先自己抄了一份"①…⑭ 十四个判定 + 判定名清单"，
+ *    而代码里已经有到 ⑯ 的标记、清单列了 15 项 —— 三个数字没有一个对得上，且**没有任何门禁抓得到它**
+ *    （G9 只认「N 条判定」这种写法）。⇒ 抄清单这件事本身就是漂移源，已整段删掉。
+ * 位置：全部判定都在 `checkRegistry()` 里（标记即清单）。
+ *   **逐条清单不抄在这里 —— 现场取：`node scripts/docs-registry-check.js --judgments`**。
+ *   任一不满足即 exit 1。
  *   （**标记必须唯一** —— 实测曾有两个 ①，导致"数一遍"得到错误的条数。）
  * 2026-09-29 补三处"不严"（复核报来的三处，全部复核属实，另有两处同源）：
  *   · **元信息块要求四行齐备** —— 原先只强制 `层`/`作用`，缺 `不该写`/`更新方式` 也能过，
@@ -214,11 +217,44 @@ function checkArchiveNoDuplicate(root) {
   return problems;
 }
 
-/* ---------------- 第六条判定：交接面的"在飞"证据指针必须存在 ----------------
+/* ---------------- 第六条判定：交接面的证据指针必须能解析 ----------------
  * 为什么需要：`docs/ROADMAP.md` 的「在飞 / 未收口」小节是**交接面** —— 新接手的 AI 靠它知道
- * "现在做到哪了、下一步做什么"。若它指向的 `.review/<目录>` 已被删或改名，指针就成了**死指针**：
+ * "现在做到哪了、下一步做什么"。若它指向的东西已被删或改名，指针就成了**死指针**：
  * 接手者会去找一个不存在的工作目录，或以为那件工作从未发生。
- * 这条只能机械判"目录在不在"，判不了"状态写得对不对"（那是 R5 的残差）。 */
+ * 这条只能机械判"指针解不解得开"，判不了"状态写得对不对"、"这串是不是真的那条证据"（那是残差）。
+ *
+ * **扫描面（2026-10-19 拓宽，实测缺口存档在 `.review/20261019-看板交接面自检/`）**：
+ * 原先只查 `.review/` 前缀的反引号 ⇒ 同一张表里另外 31 处反引号**一处都没查**，
+ * 其中 3 处是**裸文件名**（`05-残留与未定项.md` 这类）：写的人以为自己在给指针，
+ * 而从仓库根解析不出任何东西 —— 读者只能靠猜它属于哪个工作目录。
+ * 现在按**形状**决定"这串算不算仓库路径指针"，凡算的一律 `fs.existsSync`：
+ * 含 `/` 或以常见文件后缀结尾，且**不是**占位（`< > *`）、**不是**命令行散文（含空格）、
+ * **不是**带端口的 host 或 npm 规格（含 `:` / `@`）、**不是**域名形状（`github.com/x/y`）。
+ * 不查的那些（函数名 / commit 短哈希 / 版本号 / 命令）本来就**不是路径**，硬查只会制造假红。
+ *
+ * **同一小节里还有第二件事要核**：状态列的取值必须在**固定词表**内（`HANDOVER_STATUS_VOCAB`）——
+ * 词表外的值（实测出现过 `待批准`）把"要不要做"变成自由发挥：读者得自己猜它算不算没做完。
+ * 加粗不算区别（`**在飞**` 与 `在飞` 同义）。 */
+const HANDOVER_STATUS_VOCAB = ['未开始', '在飞', '外部阻塞', '已收口', '已废弃'];
+
+/** 这一串反引号算不算"**仓库相对**路径指针"（决定要不要去 `fs.existsSync`）。
+ *  判**形状**、不判语义 —— 本门禁判不了"这串是不是真的那条证据"。
+ *  **能力边界（必须诚实）**：机器本地路径（`%USERPROFILE%\…` / `~/…` / `C:\…` / 以 `/` 或 `\` 开头）
+ *  **一律不查** —— 它们指向仓库外，本门禁在任何别的机器上都没有可判的东西。
+ *  实测：这条拓宽第一次跑就抓到了本仓自己文档里的 `%USERPROFILE%\.dsh\task-board\ledger-v2.json`
+ *  （那是一条**外部真源**的取法说明）—— 那是**判定的假红**，不是文档的错，故按类放行；
+ *  放行的这一类由文档自己用「外部真源」写明，不假装查过。 */
+function isRepoPathPointer(ref) {
+  if (!ref) return false;
+  if (/[\s<>*]/.test(ref)) return false;                             // 命令行散文 / 占位写法
+  if (/[:@]/.test(ref)) return false;                                // `host:port` / npm 规格 `pkg@1.2.3`
+  if (/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+\//.test(ref)) return false;  // 域名形状（`github.com/owner/repo`）
+  if (/^[%\\/~]/.test(ref)) return false;                            // 机器本地 / 绝对路径：仓库外，不查
+  const hasSlash = /[\\/]/.test(ref);
+  const hasExt = /\.(md|markdown|html?|mjs|cjs|js|json|jsonl|txt|csv|svg|png|jpe?g|vbs|ps1|ya?ml)$/i.test(ref);
+  return hasSlash || hasExt;
+}
+
 function checkHandoverPointers(root) {
   const problems = [];
   const p = path.join(root, 'docs', 'ROADMAP.md');
@@ -230,21 +266,43 @@ function checkHandoverPointers(root) {
   for (let i = start + 1; i < lines.length; i++) {
     if (/^##\s/.test(lines[i])) { end = i; break; }
   }
+
+  // ── 甲：路径类指针必须解析得出真实文件 / 目录
   const seen = new Set();
   for (let i = start; i < end; i++) {
-    for (const m of lines[i].matchAll(/`(\.review\/[^`\s]+)`/g)) {
-      const ref = m[1].replace(/[\\/]+$/, '');          // 去掉结尾斜杠
+    for (const m of lines[i].matchAll(/`([^`]+)`/g)) {
+      const raw = m[1].trim();
       // 跳过**占位写法**（`.review/<目录>` / `.review/*`）—— 那是规矩说明，不是真指针。
       // （实测：本判定第一次上线就抓到了自己规矩文字里的 `.review/<目录>`。）
-      if (/[<>*]/.test(ref)) continue;
+      if (/[<>*]/.test(raw)) continue;
+      const ref = raw.replace(/[\\/]+$/, '');           // 去掉结尾斜杠
+      if (!isRepoPathPointer(ref)) continue;            // 函数名 / commit / 命令 / 版本号都不查
       if (seen.has(ref)) continue;
       seen.add(ref);
-      if (!fs.existsSync(path.join(root, ref))) {
+      if (!fs.existsSync(path.join(root, ref.split('/').join(path.sep)))) {
         problems.push({ kind: 'handover', rel: 'docs/ROADMAP.md:' + (i + 1),
-          msg: '「在飞 / 未收口」的证据指针指向不存在的目录 ' + ref
-            + ' —— 交接面不能有死指针（删工作目录时同步更新该小节）' });
+          msg: '「在飞 / 未收口」的证据指针指向不存在的路径 ' + ref
+            + ' —— 交接面不能有死指针。两条出路：① 删工作目录 / 改文件名时同步改这一条；'
+            + '② 裸文件名写成**从仓库根解析得出**的完整路径（例：`.review/<日期>-<主题>/某文件.md`）' });
       }
     }
+  }
+
+  // ── 乙：状态列取值必须在固定词表内（加粗不算区别）
+  // 边界：本判定**假设该小节里"第一列是状态"的表格只有一张** —— 若哪天在同一个
+  // `##` 小节里并排放第二张表（第一列不是状态），它会误判。真到那天再按表头定位。
+  for (let i = start; i < end; i++) {
+    const line = lines[i];
+    if (!/^\|/.test(line)) continue;
+    const cell = (line.split('|')[1] || '').replace(/[*`]/g, '').trim();
+    if (!cell) continue;                                 // 表头分隔行 / 空行
+    if (/^:?-{2,}/.test(cell)) continue;                 // `|---|` 对齐行
+    if (cell === '状态') continue;                       // 表头
+    if (HANDOVER_STATUS_VOCAB.includes(cell)) continue;
+    problems.push({ kind: 'handover-status', rel: 'docs/ROADMAP.md:' + (i + 1),
+      msg: '「在飞 / 未收口」的状态列写了 ' + cell + '，不在固定词表内'
+        + '（' + HANDOVER_STATUS_VOCAB.join(' / ') + '）—— 词表外的词让"要不要做"靠猜。'
+        + '要新状态就同批改本判定的词表与 `docs/ROADMAP.md` 的口径行，别在现场发明一个' });
   }
   return problems;
 }
@@ -904,7 +962,7 @@ function checkRegistry(root, registryMd) {
   // ⑤ 归档族与主文件不得重复版本段（两边都不进 G6 扫描 ⇒ 只能在这里抓）
   checkArchiveNoDuplicate(root).forEach((p) => problems.push(p));
 
-  // ⑥ 交接面的"在飞"证据指针必须存在（死指针 = 接手者白找一场）
+  // ⑥ 交接面可核对：证据指针都得解析得到 + 状态列得在固定词表内（死指针 = 接手者白找一场）
   checkHandoverPointers(root).forEach((p) => problems.push(p));
 
   // ⑦ 代码文件必须被架构文档提到（文档↔代码对应：接手者靠 §2 认识代码结构）
@@ -1245,7 +1303,7 @@ function main() {
   const registryMd = fs.readFileSync(regPath, 'utf8');
   const { problems, reg, docs, dupStats } = checkRegistry(ROOT, registryMd);
 
-  // `--judgments`：把本门禁的判定清单**现场列出来**（从 `checkRegistry()` 的 ①…⑭ 标记与标题提取）。
+  // `--judgments`：把本门禁的判定清单**现场列出来**（从 `checkRegistry()` 的圈号标记与标题提取）。
   // 为什么需要：`docs/RULES.md` §2 不再逐条复制这份清单（复制过，结果"声明 13 条、只列 12 项"）——
   // 改为指路到这条命令，清单永远与实现同步。
   if (process.argv.includes('--judgments')) {
@@ -1288,6 +1346,7 @@ function main() {
           : p.kind === 'junk' ? '乱放'
             : p.kind === 'duplicate' ? '历史重复'
               : p.kind === 'handover' ? '交接死指针'
+                : p.kind === 'handover-status' ? '交接状态词表'
                 : p.kind === 'module-cover' ? '代码未入档'
                   : p.kind === 'banner' ? '归档缺横幅'
                     : p.kind === 'workdir' ? '工作目录无状态'
@@ -1315,7 +1374,7 @@ function main() {
   console.log('✓ 根与顶层目录白名单干净（' + ROOT_FILES.length + ' 个根文件 + ' + TOP_DIRS.length + ' 个顶层目录）');
   console.log('✓ 登记表无悬挂条目（' + reg.exact.size + ' 份声明的文档都存在）');
   console.log('✓ 归档族与主文件无重复版本段（docs/changelog/ vs CHANGELOG.md）');
-  console.log('✓ 交接面「在飞 / 未收口」的证据指针都存在（docs/ROADMAP.md）');
+  console.log('✓ 交接面「在飞 / 未收口」的证据指针都解析得出真实路径 + 状态列都在固定词表内（docs/ROADMAP.md）');
   console.log('✓ 代码文件都在架构文档里登记过（src/ · cli/commands/ · scripts/）');
   console.log('✓ 归档文档都带「历史」横幅（docs/archive/）');
   console.log('✓ 工作目录都声明了死活（.review/*/README.md）');
