@@ -17,7 +17,7 @@
 |------|----|------|
 | CLI 命令数 | 71 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 51 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 2581 用例 / 110 文件 | `tests/*.test.js`（vitest） |
+| 单元测试 | 2597 用例 / 110 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 567 | `scripts/cli-integration.js` |
 | 冒烟断言 | 326 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
@@ -101,8 +101,8 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 
 | 事实 | 值 | 来源 |
 |------|----|------|
-| 受管文档（登记表登记数） | 14 份 | `docs/ARCHITECTURE.md` §5 表 |
-| 登记表分层的条目分布 | 入口 2 · 治理 1 · 契约 5 · 设计 3 · 记录 3 · 归档 2 | 同上（含归档族的前缀行） |
+| 受管文档（登记表登记数） | 15 份 | `docs/ARCHITECTURE.md` §5 表 |
+| 登记表分层的条目分布 | 入口 2 · 治理 1 · 契约 6 · 设计 3 · 记录 3 · 归档 2 | 同上（含归档族的前缀行） |
 | 归档族 | `docs/archive/` 6 份 · `docs/changelog/` 17 份 | 磁盘现场统计（只增不改，不逐份登记） |
 | 工作产物区（`.review/`） | 见 `.review/*/README.md` 的状态行（**目录清单刻意不进本文件**：工作区可随时整目录删除，清单写进来会让"新建/删除一个工作目录"变成"生成物过期" ✗） | 各目录的 `README.md`，死活判定见 G8（`npm run check:docs`） |
 | 上次全链结果 | 见 `.review/last-verify.json`（`npm run verify` 与 `npm run check:docs` 都会打印当前值） | 每次 `npm run verify` 写入 |

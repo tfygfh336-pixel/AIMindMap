@@ -205,3 +205,127 @@ describe('代码区占位保护：`*` 不被强调解析吃掉', () => {
     expect(markdownToHtml(md)).not.toMatch(/[\u0001\u0002]/);
   });
 });
+
+/* ============================================================
+ * 分隔线（hr）与表格单元格的 `\|` 转义（2026-10-20 根治）
+ * ------------------------------------------------------------
+ * 两个缺陷都在**同一个函数**：`src/convert.js` 的 `markdownToHtml()`
+ * （**唯一实现处**：渲染层 `renderer/app-core.js` 的 `mdBlock` 直接转调它；
+ *   `mdInline`/`topicMarkup` 只做加粗与行内代码，**不解析表格、也不解析分隔线**）。
+ *   A 没有 hr 分支：`---` 不命中围栏/表格/标题/列表 ⇒ 落进段落 ⇒ 产出 `<p>---</p>`
+ *     —— 界面上是**三个字面短横**（与 `**` 显示成星号同一类坏字）。现场：`卖点讨论/bl-3`。
+ *   B 单元格切分不认 `\|`：`` `dmesg \| tail` `` 被当成两格 ⇒ 两个孤立反引号 + 一个字面 `\`
+ *     —— 这正是 `NOTE_RESIDUE` 欠账册里 **3 条 / 5 处**的形状
+ *     （`comnet::12-mumupmmew2f0` / `comnet::3-4-ebtables-mark-mv6idkjcv0r3` /
+ *      `comnet::1-6-21-02-22-03-23-05-mv6idoy0lb9a`）。
+ *
+ * 判别力（两处各自承重，注入记录在 `.review/20261020-markdown-star-rootfix/hr-pipe/`）：
+ *   · 把 A 的 `HR_LINE` 分支删掉 ⇒「目标 A」全红；
+ *   · 把 B 的占位保护删掉（退回 `split('|')`）⇒「目标 B」全红。
+ * ============================================================ */
+
+describe('分隔线 hr 与表格单元格的 \\| 转义', () => {
+  /* —— A 目标：分隔线是**标记**，不是文字 ⇒ <hr>（不算丢内容） —— */
+
+  it('目标 A：`---` ⇒ <hr>（不是 <p>---</p>）', () => {
+    expect(markdownToHtml('---')).toBe('<hr>');
+    expect(markdownToHtml('---')).not.toContain('<p>---</p>');
+  });
+
+  it('目标 A：`***` ⇒ <hr>（不是 <em>，也不是三个字面星号）', () => {
+    expect(markdownToHtml('***')).toBe('<hr>');
+    expect(markdownToHtml('***')).not.toContain('<em>');
+  });
+
+  it('目标 A：`___` / 夹空格的 `- - -` / `* * *` / 更长的 `-----` 都认', () => {
+    expect(markdownToHtml('___')).toBe('<hr>');
+    expect(markdownToHtml('- - -')).toBe('<hr>');
+    expect(markdownToHtml('* * *')).toBe('<hr>');
+    expect(markdownToHtml('-----')).toBe('<hr>');
+  });
+
+  it('目标 A：夹在正文里的分隔线单独成行', () => {
+    expect(markdownToHtml('文本行\n---\n后续文本')).toBe('<p>文本行</p>\n<hr>\n<p>后续文本</p>');
+  });
+
+  it('目标 A：`hr` 在渲染层白名单里（否则消毒会把 <hr> 剥掉）', async () => {
+    // 本批**没有**改白名单 —— 这条断言把"为什么不用改"钉住（`hr` 本来就在表里）
+    const w = await import('../src/html-whitelist.js');
+    expect(w.ALLOW_TAGS).toContain('hr');
+    expect(w.isAllowedTag('hr')).toBe(true);
+  });
+
+  /* —— A 反证：列表不许被吃成分隔线（插错位置就是这两种坏法） —— */
+
+  it('反证 A：`- 项一` / `- 项二` 仍是 <ul><li>（没被吃成分隔线）', () => {
+    expect(markdownToHtml('- 项一\n- 项二')).toBe('<ul><li>项一</li><li>项二</li></ul>');
+    expect(markdownToHtml('* 项一\n* 项二')).toBe('<ul><li>项一</li><li>项二</li></ul>');
+  });
+
+  it('反证 A：只有两个标记仍是列表项、混用符号不是分隔线、`***x***` 不是分隔线', () => {
+    expect(markdownToHtml('- -')).toBe('<ul><li>-</li></ul>');            // 两个 `-` ⇒ 列表项
+    expect(markdownToHtml('-*-')).toBe('<p>-*-</p>');                     // 混用符号 ⇒ 不是分隔线
+    expect(markdownToHtml('***x***')).not.toContain('<hr>');              // 强调+粗体 ⇒ 不是分隔线
+    expect(markdownToHtml('***x***')).toContain('<strong>x</strong>');
+  });
+
+  /* —— B 目标：`\|` 是**字面竖线**，不是单元格分隔 —— */
+
+  it('目标 B：`` | `dmesg \\| tail` | 说明 | `` ⇒ 该格是 <code>dmesg | tail</code>（一个反引号对）', () => {
+    const html = markdownToHtml('| 命令 | 说明 |\n| --- | --- |\n| `dmesg \\| tail` | 看尾部 |');
+    expect(html).toBe('<table><tr><th>命令</th><th>说明</th></tr>'
+      + '<tr><td><code>dmesg | tail</code></td><td>看尾部</td></tr></table>');
+    expect(html).not.toContain('`');      // 不许留孤立反引号（= 欠账册里那 5 处坏字）
+    expect(html).not.toContain('\\');     // 不许留字面反斜杠
+  });
+
+  it('目标 B：非代码区的转义竖线同样落在**同一格**里', () => {
+    expect(markdownToHtml('| a | b |\n| --- | --- |\n| x \\| y | z |'))
+      .toBe('<table><tr><th>a</th><th>b</th></tr><tr><td>x | y</td><td>z</td></tr></table>');
+  });
+
+  it('目标 B 的边界：`\\\\|` = 字面反斜杠 + **真·单元格分隔**（GFM 口径）', () => {
+    expect(markdownToHtml('| a | b |\n| --- | --- |\n| x \\\\| y |'))
+      .toBe('<table><tr><th>a</th><th>b</th></tr><tr><td>x \\</td><td>y</td></tr></table>');
+  });
+
+  it('目标 B 的边界：三个反斜杠 + 竖线 ⇒ 字面反斜杠 + **字面竖线**（同一格）', () => {
+    expect(markdownToHtml('| a | b |\n| --- | --- |\n| x \\\\\\| y |'))
+      .toBe('<table><tr><th>a</th><th>b</th></tr><tr><td>x \\| y</td></tr></table>');
+  });
+
+  /* —— B 反证：不碰的输入必须逐字节不变 —— */
+
+  it('反证 B：普通表格（无转义）逐字节不变', () => {
+    expect(markdownToHtml('| 维度 | 电路交换 |\n| --- | --- |\n| 资源 | 独占 |'))
+      .toBe('<table><tr><th>维度</th><th>电路交换</th></tr><tr><td>资源</td><td>独占</td></tr></table>');
+    expect(markdownToHtml('| 表头 | b |\n| --- | --- |\n| **粗** | *斜* |'))
+      .toBe('<table><tr><th>表头</th><th>b</th></tr><tr><td><strong>粗</strong></td><td><em>斜</em></td></tr></table>');
+  });
+
+  it('反证 B：**不紧跟竖线**的反斜杠一个字不动（`C:\\\\temp` 原样出两格）', () => {
+    expect(markdownToHtml('| a | b |\n| --- | --- |\n| C:\\\\temp | x |'))
+      .toBe('<table><tr><th>a</th><th>b</th></tr><tr><td>C:\\\\temp</td><td>x</td></tr></table>');
+  });
+
+  it('反证 B：段落里的 `\\|` 不在本批改动面（非表格文本原样保留）', () => {
+    expect(markdownToHtml('a\\|b')).toBe('<p>a\\|b</p>');
+  });
+
+  /* —— 占位符的两条硬性质（与 `inline()` 的 `codeSentinel()` 同一口径） —— */
+
+  it('占位符不可能与正文冲突：正文里出现同形哨兵也不串（哨兵自动撑长）', () => {
+    const sentinelish = '\u0001CELL\u0002P\u0001CELL\u0002';
+    const html = markdownToHtml('| a | b |\n| --- | --- |\n| ' + sentinelish + ' \\| y |');
+    expect(html).toContain(sentinelish);                                   // 正文原样，没被当成占位符吃掉
+    expect(html).toContain('| y');                                        // 转义竖线仍是字面
+    expect(html.replace(sentinelish, '')).not.toMatch(/[\u0001\u0002]/);   // 除正文自带那处，不泄漏占位符
+  });
+
+  it('产物确定性：同一份输入连跑两次逐字节相同（占位符零随机、零时钟）', () => {
+    const md = '| 命令 | 说明 |\n| --- | --- |\n| `dmesg \\| tail` | 看尾部 |\n\n---\n\n- 项一\n- 项二';
+    expect(markdownToHtml(md)).toBe(markdownToHtml(md));
+    expect(markdownToHtml(md)).toContain('<hr>');
+    expect(markdownToHtml(md)).toContain('<code>dmesg | tail</code>');
+  });
+});

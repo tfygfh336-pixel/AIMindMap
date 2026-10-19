@@ -469,6 +469,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | 契约 | `docs/CLI.md` | 命令参考 | —（**勿手改**） | `docs-gen` 生成（G7 校验） |
 | 契约 | `docs/DATA-FORMAT.md` | 数据契约：全部字段、版本演进与兼容承诺 | 命令用法、架构理由 | 改 schema 必同步 |
 | 契约 | `docs/EXTENSIONS.md` | 扩展契约：稳定性等级、如何新增命令/工具 | CLI 全量签名（指向 CLI.md） | 手写 |
+| 契约 | `docs/FEATURES.md` | 产品功能的名字唯一权威 —— 代号 ↔ 中文名 ↔ 一句话 ↔ 承载命令/域 ↔ 实现状态（人与 AI 用同一个词指同一件事） | 命令的完整用法与选项（→ `docs/CLI.md`，生成物）；**"这个功能要不要做"**（→ `projects/卖点讨论` 的待做台账 `bl-3` 子树）；修复/bugfix 与门禁条数（→ `CHANGELOG.md` / `docs/RULES.md` §2）；工程欠账与阶段（→ `docs/ROADMAP.md`「在飞」）；内部模块职责与实现理由（→ `docs/ARCHITECTURE.md` §2） | 手写（新增或改一个功能的名字时**同批**改这里 + 思维导图 `projects/卖点讨论` 的「功能名册」子树；改完跑 `node cli/mm-cli.js validate 卖点讨论` 与 `npm run docs:registry`） |
 | 契约 | `docs/ITEM-MODEL.md` | 条目层 v3 唯一契约：条目形状、items↔detail 派生、CLI/模块签名、迁移、并发粒度 | v2 字段全表（见 DATA-FORMAT）、命令完整用法（见 CLI.md）、实现进度与计划 | 改冻结项前先改本文，再同批同步受影响的下游流 |
 | 契约 | `docs/VERIFY.md` | 验证基线（各类计数 + 验证链） | 被测功能说明 | `doc-facts --write` 生成 |
 | 设计 | `docs/AI-GUIDE.md` | AI 操作规范：怎么读写、验证链、坑 + **笔记内容写作规范（节点粒度 / detail / caption）** | 工程流程（指向 RULES/ARCHITECTURE） | 手写 |

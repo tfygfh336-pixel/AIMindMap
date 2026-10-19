@@ -1762,11 +1762,11 @@ function noteResidueKey(project, node) { return String(project) + '::' + String(
  *   是 `bold-pair` 与 `code-span` 混排），只记"这个节点有残留"就会让**新增的另一种残留**
  *   用旧条目吞掉。处数**只减不增**：少了 ⇒ 请销账（判红逼人改册）；多了 ⇒ 是新增残留（判红）。
  * --------------------------------------------------------------- */
-const NOTE_RESIDUE_CAP = 7;
+const NOTE_RESIDUE_CAP = 3;
 /** 「豁免**面**」的上界（分子：被在册条目覆盖的**判红命中数**）。
  *  与 `WRITE_OUTLET_SITE_CAP` 同形：把 1 条节点条目拆成 N 条规则条目，条目数涨而**面一点没小**
  *  ⇒ 只卡条数就等于允许"拆细换额度"。面**只减不增**。 */
-const NOTE_RESIDUE_HIT_CAP = 29;
+const NOTE_RESIDUE_HIT_CAP = 5;
 /* 存量 14 条 / 42 处，由**两批**构成（两个数都是**时点读数**，现值跑 `--list`）：
  *   · 4 条 / 26 处（2026-10-19 上线读数，①–⑤ 那五条规则抓到的）；
  *   · **10 条 / 16 处（2026-10-20，第 6 条规则 `tag-in-code` 上线那一刻的存量）** ——
@@ -1816,17 +1816,6 @@ const NOTE_RESIDUE_DEBT = [
     close: '与前两条同批处理。⚠️ 修转换器时**要一起复核**这张表：3 处都命中说明这是系统性的切分问题，'
       + '不是偶发手滑。'
   },
-  {
-    project: '卖点讨论',
-    node: 'bl-3',
-    rules: { 'bold-pair': 17, 'code-span': 4 },
-    why: '整条 detail 是**手写 Markdown**（`- ` 列表 + `**粗体**` + 反引号 + `---` 分隔线），'
-      + '渲染层 `innerHTML` 会把它原样显示成 `**W1 / W3 / W4 / W6**` 这种坏字 —— '
-      + '这就是 `ada00407` 那一类缺陷（数据闸门只校结构、不校呈现）。',
-    close: '用唯一转换出口重写一遍：`node cli/mm-cli.js edit 卖点讨论 bl-3 --detail-md "<这条正文的 Markdown>"`'
-      + '（先把现在的 detail 取出、按 Markdown 重排，再走 `--detail-md`）⇒ 复跑本门禁应见这条从册上消失，'
-      + '同批删掉本条并把 `NOTE_RESIDUE_HIT_CAP` 减 21。'
-  },
   /* ---- 下面 10 条 = 第 6 条规则（`tag-in-code`）上线那一刻的全库存量（2026-10-20，共 16 处）。
    *  **全是同一个根因**：`src/convert.js` 的 `inline()` 先产出 `<code>…</code>`、**之后**才跑
    *  `*x*` → `<em>` 的整行配对 ⇒ 同一行里两个 `*` 会跨 code 边界配对（或同一 code 区内配对），
@@ -1835,31 +1824,6 @@ const NOTE_RESIDUE_DEBT = [
    *  再跑强调替换，同批补 `tests/convert.test.js` 用例），修完这些节点**重跑一次** `--detail-md`
    *  即可复原成字面 `*`；② 或者逐条手修：`node cli/mm-cli.js edit <项目> <节点> --detail "<修好的 HTML>"`
    *  （`--detail` 不转换、原样存 ⇒ 不会再被吃掉）。**改完一处就把该条的处数减掉，整条清零就删整条。** */
-  {
-    project: 'comnet',
-    node: 'b-mv6idoy2ufk4',
-    rules: { 'tag-in-code': 1 },
-    why: '`<em>` 开在正文、`</em>` 闭在 `<code>kmod-*</code>` 里 ⇒ 实测 `*<em>内核态驱动（<code>kmod-</em></code>）`，'
-      + '强调标签**跨出**了 code 边界（本判据要处理的那条边界，它就是现场之一）。',
-    close: '按册头 ①/② 修；注意这一条正文里还有成对的 `**`（另归 `bold-pair`，本册未覆盖该节点的其他规则）。'
-  },
-  {
-    project: '卖点讨论',
-    node: 'bl-3-3-9',
-    rules: { 'tag-in-code': 1 },
-    why: '`<em>` 开在正文（`*导入指标` 那一处）、`</em>` 闭在 `<code>import-*</code>` 里 ⇒ '
-      + '实测 `*<em><code>import-</em></code> 的 <code>--report</code>`。',
-    close: '按册头 ①/② 修；⚠️ 同一节点正文里还有大量手写 `**` 残留（不在本册的规则范围内），'
-      + '整条重写时一并处理，别只修这一处。'
-  },
-  {
-    project: '卖点讨论',
-    node: 'bl-38-1',
-    rules: { 'tag-in-code': 1 },
-    why: '`<code>fixtures/*</code>` 的星号与同一行后面某个 `*` 配对 ⇒ 实测 `<code>fixtures/<strong></code>`：'
-      + '`<strong>` 只有开、没有闭。',
-    close: '按册头 ①/② 修（删掉 `<strong>`、补回 `*`）。'
-  },
 ];
 
 /** 判据的能力边界（**逐档打印**，不许把"没判"说成"过了"） */
