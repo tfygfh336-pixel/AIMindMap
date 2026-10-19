@@ -329,3 +329,141 @@ describe('分隔线 hr 与表格单元格的 \\| 转义', () => {
     expect(markdownToHtml(md)).toContain('<code>dmesg | tail</code>');
   });
 });
+
+/* ============================================================
+ * 导出方向的两处新行为（2026-10-20 收口B 批；**与上面那一段成对**）
+ * ------------------------------------------------------------
+ * 上面那个 describe 守的是**导入方向**（`---` ⇒ `<hr>`、`\|` ⇒ 字面竖线）。
+ * 本段守的是**反方向的逆映射** —— 两处只改一侧就会出现「导出件再导入」才暴露的坏字：
+ *   · A「`<hr>` ⇒ `---`」：改前导出把 `<hr>` **整行丢掉**（落到"去掉残留标签"被当标签删），
+ *     而导入方向早就认 `---` ⇒ **往返一次分隔线就没了**。现场：`卖点讨论/bl-3`。
+ *   · B「单元格里的 `|` 写成 `\|`」：改前导出直出裸 `|`（`cell.join(' | ')`）⇒ 导入时被当**真分隔符**，
+ *     导出件再导入就**多切出一格**。相邻反斜杠按 `2k+1` 加（`escapeCellText()` 头顶那段）。
+ * 反证安排：A 用"不含 `<hr>` 的四类语料导出串逐字节不变"、B 用"没有竖线的格子一个字节不动"，
+ *   防止反向改动（把分隔线/转义撒得太宽）也能被抓住。
+ * 已知缺口（本段**不修**，只记录）：GFM 表格只导出**表头 + 分隔行**时（原表只有一行、且那行是
+ *   `<td>`），导入回来仍是 `<th>` —— 表头/数据行的身份在 GFM 里由**位置**决定，往返不保。
+ * ============================================================ */
+
+describe('导出方向：`<hr>` ⇒ `---` 与 GFM 单元格 `\\|` 转义（与导入方向成对）', () => {
+  /** `<hr>` 个数（开标签口径：`<hr>` / `<hr/>` / `<hr />` 都算） */
+  const hrCount = (s) => (String(s).match(/<hr\b/gi) || []).length;
+  /** 一行里**未转义**的竖线个数：前面跟了**奇数**个反斜杠的 `|` 是字面量（GFM 口径），不是分隔符 */
+  const unescapedPipes = (s) => {
+    let n = 0;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] !== '|') continue;
+      let k = 0;
+      for (let j = i - 1; j >= 0 && s[j] === '\\'; j--) k++;
+      if (k % 2 === 0) n++;
+    }
+    return n;
+  };
+  /** 按 GFM 口径切一格表格行（剥首尾各一个 `|`）⇒ 格数 */
+  const gfmCells = (line) => unescapedPipes(String(line).trim().replace(/^\|/, '').replace(/\|$/, '')) + 1;
+  /** 导出结果里的**表头行**（第一条含 `|` 且不是 `| --- |` 那种分隔行的行） */
+  const headRow = (md) => String(md).split('\n').find((l) => l.includes('|') && !/^\s*\|?\s*:?-{3,}/.test(l));
+  /** 一行里"连续反斜杠 + 竖线"那个片段最长是几个反斜杠（`2k+1` 规则的读数口径） */
+  const backslashesBeforePipe = (s) => Math.max(0, ...(String(s).match(/\\+\|/g) || []).map((m) => m.length - 1));
+  /** `<td>` / `<th>` 的总数（"一格都没多切"的读数） */
+  const cellCount = (html) => (String(html).match(/<t[dh]\b/gi) || []).length;
+
+  /* —— A 目标：`<hr>` 必须导出成 `---`，否则往返丢分隔线 —— */
+
+  it('目标 A：`<p>a</p><hr><p>b</p>` 往返后 `<hr>` 恰好 1 个（不是 0 个）', () => {
+    const md = htmlToMarkdown('<p>a</p><hr><p>b</p>');
+    // 导出成**独占一行**的 `---`（粘在上一段尾巴上（`a---`）就不是标记了）
+    expect(md.split('\n').filter((l) => l.trim() === '---')).toHaveLength(1);
+    const back = markdownToHtml(md);
+    expect(hrCount(back)).toBe(1);
+    expect(back).toBe('<p>a</p>\n<hr>\n<p>b</p>');   // 分隔线落在两段**之间**，不是首也不是尾
+  });
+
+  it('目标 A：只有 `<hr>` ⇒ 导出 `---` ⇒ 回来仍是 1 个 `<hr>`', () => {
+    const md = htmlToMarkdown('<hr>');
+    expect(md).toBe('---');
+    expect(markdownToHtml(md)).toBe('<hr>');
+    expect(hrCount(markdownToHtml(md))).toBe(1);
+  });
+
+  it('目标 A：两个 `<hr>` 且在末尾 ⇒ 回来 2 个（不折成 1 个、也不冒出第 3 个）', () => {
+    const md = htmlToMarkdown('<p>a</p><hr><hr>');
+    expect(md.split('\n').filter((l) => l.trim() === '---')).toHaveLength(2);
+    expect(hrCount(markdownToHtml(md))).toBe(2);
+    expect(markdownToHtml(md)).toBe('<p>a</p>\n<hr>\n<hr>');
+  });
+
+  it('反证 A：不含 `<hr>` 的语料，导出串逐字节不变、且**不许冒出** `---`', () => {
+    // 四类块级语料各一条：段落 / 标题 / 列表 / 围栏代码（改前改后必须同形）
+    const cases = [
+      ['<p>只有段落一行</p>', '只有段落一行'],
+      ['<h2>标题二</h2>', '## 标题二'],
+      ['<ul><li>项一</li><li>项二</li></ul>', '- 项一\n- 项二'],
+      ['<pre>line1\nline2</pre>', '```\nline1\nline2\n```'],
+    ];
+    cases.forEach(([html, want]) => {
+      const md = htmlToMarkdown(html);
+      expect(md).toBe(want);                      // 与改前同形：这一步没碰它们
+      expect(md).not.toContain('---');            // 反证：不许凭空多出分隔线
+      expect(hrCount(markdownToHtml(md))).toBe(0); // 也不许往返后多出 <hr>
+    });
+  });
+
+  /* —— B 目标：单元格里的 `|` 必须写成 `\|`，否则导出件再导入**多切一格** —— */
+
+  it('目标 B：`<td>a | b</td>` 导出含 `\\|`，按「未转义竖线」切出来仍是**一格**', () => {
+    const md = htmlToMarkdown('<table><tr><td>a | b</td></tr></table>');
+    const row = headRow(md);
+    expect(md).toContain('\\|');                  // 导出写了转义竖线（改前是裸 `|`）
+    expect(gfmCells(row)).toBe(1);                // ← 核心读数：一格，不是两格
+    expect(unescapedPipes(row.replace(/^\|/, '').replace(/\|$/, ''))).toBe(0); // 行内没有真分隔符
+    // 往返：还是一格、竖线还是字面量
+    // ⚠️ 只有表头行的表（原表就一行 `<td>`）回来是 `<th>` —— GFM 用位置区分表头/数据，**既有行为**，
+    //    本段不承诺它（见文件头「往返约定」的已知缺口），这里只钉"格数没变、内容没丢"。
+    const back = markdownToHtml(md);
+    expect(cellCount(back)).toBe(1);
+    expect(back).toContain('a | b');
+    expect(back).not.toContain('\\');             // 传入的那个转义反斜杠不许留在产物里
+  });
+
+  it('反证 B：普通两格不受转义影响（导出串里没有 `\\|`、切出来仍是两格）', () => {
+    const md = htmlToMarkdown('<table><tr><td>x</td><td>y</td></tr></table>');
+    expect(md).toBe('| x | y |\n| --- | --- |');  // 逐字节钉住：普通表格的导出**一个字没动**
+    expect(md).not.toContain('\\|');
+    expect(gfmCells(headRow(md))).toBe(2);
+  });
+
+  it('反证 B：单元格里没有 `|` 时，导出串里一个 `\\|` 都没有', () => {
+    // 反斜杠**不跟竖线**的地方（`C:\temp`）必须原样出：转义只认「以竖线收尾」的片段
+    const md = htmlToMarkdown('<table><tr><th>键</th><th>值</th></tr><tr><td>plain</td><td>C:\\temp</td></tr></table>');
+    expect(md).toBe('| 键 | 值 |\n| --- | --- |\n| plain | C:\\temp |');
+    expect(md).not.toContain('\\|');
+  });
+
+  /* —— C 边界：`2k+1` 规则（只转竖线的"随手写法"会在这里劈格） —— */
+
+  it('目标 C：`a \\| b`（反斜杠紧跟竖线，k=1）⇒ 导出 3 个反斜杠 + 竖线，往返仍是一格且逐字还原', () => {
+    const cell = 'a \\| b';                       // 字面：a · 空格 · 反斜杠 · 竖线 · 空格 · b
+    const md = htmlToMarkdown('<table><tr><td>' + cell + '</td></tr></table>');
+    // 2k+1 = 3：**不是** 2 个（2 个是偶数 ⇒ 导入时那个 `|` 被当成真分隔符 ⇒ 多切一格）
+    expect(headRow(md)).toBe('| a ' + '\\'.repeat(3) + '| b |');
+    expect(md).toBe('| a ' + '\\'.repeat(3) + '| b |\n| --- |');
+    expect(backslashesBeforePipe(md)).toBe(3);
+    expect(gfmCells(headRow(md))).toBe(1);
+    const back = markdownToHtml(md);
+    expect(cellCount(back)).toBe(1);              // 一格都没多切
+    expect(back).toContain(cell);                 // 反斜杠与竖线都逐字回来（不是 `a | b`）
+  });
+
+  it('目标 C：`a \\\\| b`（两个反斜杠 + 竖线，k=2）⇒ 导出 5 个反斜杠 + 竖线，往返仍是一格', () => {
+    const cell = 'a \\\\| b';                     // 字面：a · 空格 · \ · \ · 竖线 · 空格 · b
+    const md = htmlToMarkdown('<table><tr><td>' + cell + '</td></tr></table>');
+    expect(headRow(md)).toBe('| a ' + '\\'.repeat(5) + '| b |');   // 2k+1 = 5（不是 3、不是 4）
+    expect(md).toBe('| a ' + '\\'.repeat(5) + '| b |\n| --- |');
+    expect(backslashesBeforePipe(md)).toBe(5);
+    expect(gfmCells(headRow(md))).toBe(1);
+    const back = markdownToHtml(md);
+    expect(cellCount(back)).toBe(1);
+    expect(back).toContain(cell);
+  });
+});

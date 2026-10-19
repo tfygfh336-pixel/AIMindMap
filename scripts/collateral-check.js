@@ -1762,11 +1762,11 @@ function noteResidueKey(project, node) { return String(project) + '::' + String(
  *   是 `bold-pair` 与 `code-span` 混排），只记"这个节点有残留"就会让**新增的另一种残留**
  *   用旧条目吞掉。处数**只减不增**：少了 ⇒ 请销账（判红逼人改册）；多了 ⇒ 是新增残留（判红）。
  * --------------------------------------------------------------- */
-const NOTE_RESIDUE_CAP = 3;
+const NOTE_RESIDUE_CAP = 0;
 /** 「豁免**面**」的上界（分子：被在册条目覆盖的**判红命中数**）。
  *  与 `WRITE_OUTLET_SITE_CAP` 同形：把 1 条节点条目拆成 N 条规则条目，条目数涨而**面一点没小**
  *  ⇒ 只卡条数就等于允许"拆细换额度"。面**只减不增**。 */
-const NOTE_RESIDUE_HIT_CAP = 5;
+const NOTE_RESIDUE_HIT_CAP = 0;
 /* 存量 14 条 / 42 处，由**两批**构成（两个数都是**时点读数**，现值跑 `--list`）：
  *   · 4 条 / 26 处（2026-10-19 上线读数，①–⑤ 那五条规则抓到的）；
  *   · **10 条 / 16 处（2026-10-20，第 6 条规则 `tag-in-code` 上线那一刻的存量）** ——
@@ -1786,36 +1786,6 @@ const NOTE_RESIDUE_HIT_CAP = 5;
  *   ⚠️ 那段就是为此写的）⇒ 要看现在的数就跑 `node scripts/collateral-check.js --list`，
  *   写成散文的数一定会漂。 */
 const NOTE_RESIDUE_DEBT = [
-  {
-    project: 'comnet',
-    node: '12-mumupmmew2f0',
-    rules: { 'code-span': 1 },
-    why: '表格单元格里的行内代码 `` `dmesg \\| tail` `` 在 Markdown→HTML 时被**单元格分隔**切断'
-      + '（转义管道 `\\|` 没被当成字面量），留下两个孤立反引号与一个字面 `\\`（实测片段见 `--list`）。'
-      + '**这不是"手写 Markdown 残留"，是表格解析的转换缺陷** —— 所以修法**不是**再跑一次 '
-      + '`--detail-md`（会原样复现）。',
-    close: '先定修哪一侧：① 修转换器（`src/convert.js` 的表格单元格切分要认 `\\|` 转义，'
-      + '同批补一条 `tests/convert.test.js` 用例，再重跑 `import`/`--detail-md` 覆盖这三条节点）；'
-      + '② 或者直接手修这三个节点的 detail（把两侧的孤立反引号与 `\\` 去掉/补成 `<code>`）。'
-      + '两条都做完就删本条并同批把 `NOTE_RESIDUE_HIT_CAP` 减掉对应处数。'
-  },
-  {
-    project: 'comnet',
-    node: '3-4-ebtables-mark-mv6idkjcv0r3',
-    rules: { 'code-span': 1 },
-    why: '同 `comnet::12-mumupmmew2f0` 的根因：`` `mark \\| = V` `` 这类"行内代码里带管道"的单元格'
-      + '被切成两格，反引号变成字面量。',
-    close: '与 `comnet::12-mumupmmew2f0` 同批处理（修转换器后重跑，或手修 detail）。'
-  },
-  {
-    project: 'comnet',
-    node: '1-6-21-02-22-03-23-05-mv6idoy0lb9a',
-    rules: { 'code-span': 3 },
-    why: '同一张对照表里有 3 个单元格是同一形状（`` `dumpe2fs … \\| grep …` `` / `` `opkg list \\| grep ntfs` `` / '
-      + '`` `testparm -s \\| grep "min protocol"` ``）⇒ 根因同上，是这个**转换缺陷**在一个节点里的三处显现。',
-    close: '与前两条同批处理。⚠️ 修转换器时**要一起复核**这张表：3 处都命中说明这是系统性的切分问题，'
-      + '不是偶发手滑。'
-  },
   /* ---- 下面 10 条 = 第 6 条规则（`tag-in-code`）上线那一刻的全库存量（2026-10-20，共 16 处）。
    *  **全是同一个根因**：`src/convert.js` 的 `inline()` 先产出 `<code>…</code>`、**之后**才跑
    *  `*x*` → `<em>` 的整行配对 ⇒ 同一行里两个 `*` 会跨 code 边界配对（或同一 code 区内配对），
@@ -1839,7 +1809,14 @@ const NOTE_RESIDUE_TIERS = {
  * 给夹具目录就是判别力证明，真仓一个字节不动 —— 与 ⑤ 的 `--root=` 同一形状）。
  * @returns {{problems:Array, notes:Array, reports:Array, readings:object, hits:Map}}
  */
-function analyzeNoteResidue(root, ledger) {
+function analyzeNoteResidue(root, ledger, opts) {
+  /* 上限覆盖 —— **只给判别力证明用**，生产默认走模块常量（行为零变化）。
+   * 为什么要这个口子：欠账册清零后 NOTE_RESIDUE_CAP 已是 0（另一条用例要求
+   * "CAP 必须等于册的条数"，清零后它俩都是 0），而「欠账册四条机械判定」那条
+   * 用例必须拿**夹具册**去考四条判定 ⇒ 必然撞 CAP=0。给夹具一个显式额度，
+   * 判定的逻辑一条不改。 */
+  const capDebt = (opts && typeof opts.capDebt === "number") ? opts.capDebt : NOTE_RESIDUE_CAP;
+  const capHits = (opts && typeof opts.capHits === "number") ? opts.capHits : NOTE_RESIDUE_HIT_CAP;
   const problems = [];
   const notes = [];
   const reports = [];
@@ -1981,15 +1958,15 @@ function analyzeNoteResidue(root, ledger) {
       msg: '欠账册**悬挂登记**：`' + e.project + '::' + e.node + '` 在数据里已找不到（改删名 / 删节点）'
         + ' ⇒ 请销账（删掉这一条）' });
   });
-  if (book.length > NOTE_RESIDUE_CAP) {
+  if (book.length > capDebt) {
     problems.push({ kind: 'ledger',
-      msg: '笔记正文残留欠账册有 ' + book.length + ' 条，超过上限 `NOTE_RESIDUE_CAP` = ' + NOTE_RESIDUE_CAP
+      msg: '笔记正文残留欠账册有 ' + book.length + ' 条，超过上限 `NOTE_RESIDUE_CAP` = ' + capDebt
         + '（只减不增 —— 要新增必须先还掉一条，或同批抬 cap 并写清为什么）' });
   }
-  if (readings.exemptHits > NOTE_RESIDUE_HIT_CAP) {
+  if (readings.exemptHits > capHits) {
     problems.push({ kind: 'ledger',
       msg: '豁免面 ' + readings.exemptHits + ' 处判红命中 > 上限 `NOTE_RESIDUE_HIT_CAP` = '
-        + NOTE_RESIDUE_HIT_CAP + '（拆细条目换不来额度：面只减不增）' });
+        + capHits + '（拆细条目换不来额度：面只减不增）' });
   }
   book.forEach((e) => {
     if (!e.project || !e.node || !e.rules || !Object.keys(e.rules).length) {

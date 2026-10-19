@@ -562,23 +562,25 @@ describe('S2 ⑥ 笔记正文残留：判别力（**临时夹具**，不碰 proj
 
   it('欠账册四条机械判定各自能红：悬挂 / 已偿未销账 / 处数偏大 / 处数变多（新增）', () => {
     const html = '<p>**a** **b**</p>';                       // 2 处 bold-pair
+    /* 夹具册不参与生产 cap：清零后 NOTE_RESIDUE_CAP 是 0，这里显式给足额度 */
+    const CAP_FOR_FIXTURE = { capDebt: 99, capHits: 99 };
     withFixture({ 'fx': proj([{ id: 'n1', detail: html }]) }, (dir) => {
       const book = (rules, node) => [{ project: 'fx', node: node || 'n1', rules: rules, why: 'w', close: 'c' }];
-      expect(gate.analyzeNoteResidue(dir, book({ 'bold-pair': 2 })).problems).toEqual([]);   // 恰好对上 ⇒ 绿
+      expect(gate.analyzeNoteResidue(dir, book({ 'bold-pair': 2 }), CAP_FOR_FIXTURE).problems).toEqual([]);   // 恰好对上 ⇒ 绿
       // ① 已偿未销账
-      const paid = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 2, 'code-span': 1 })).problems;
+      const paid = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 2, 'code-span': 1 }), CAP_FOR_FIXTURE).problems;
       expect(paid.map((p) => p.kind)).toEqual(['ledger']);
       expect(paid[0].msg).toContain('已偿');
       // ② 处数偏大（部分修好没改册）
-      const less = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 5 })).problems;
+      const less = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 5 }), CAP_FOR_FIXTURE).problems;
       expect(less.map((p) => p.kind)).toEqual(['ledger']);
       expect(less[0].msg).toContain('偏大');
       // ③ 处数变多 ⇒ 是**新增残留**，不许用旧条目吞
-      const more = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 1 })).problems;
+      const more = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 1 }), CAP_FOR_FIXTURE).problems;
       expect(more.map((p) => p.kind)).toEqual(['note-residue']);
       expect(more[0].msg).toContain('比在册的多');
       // ④ 悬挂登记（册上的节点在数据里已不存在）
-      const dangling = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 2 }, 'n-gone')).problems;
+      const dangling = gate.analyzeNoteResidue(dir, book({ 'bold-pair': 2 }, 'n-gone'), CAP_FOR_FIXTURE).problems;
       expect(dangling.map((p) => p.kind)).toContain('ledger');
       expect(dangling.map((p) => p.msg).join('\n')).toContain('悬挂');
     });
