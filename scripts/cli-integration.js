@@ -7133,6 +7133,122 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   }
 }
 
+  /* ============================================================================
+   * `merge-project`（把若干个已有项目整棵并进一个已有项目）的集成断言
+   * ----------------------------------------------------------------------------
+   * 为什么必须在**真实工程 + 真实 `projects/` 根**上跑一遍（单测覆盖不到的那一半）：
+   *   · 它要**跨项目读盘**（读的是另一个项目的 `<项目>/<项目>.json`）⇒ 只有真盘上有两个项目才作数；
+   *   · 它落的是 `ctx.mutate`（版本闸门 / 写盘前校验 / 一次原子写）⇒ 端到端才验得到"拒绝时盘上零改动"。
+   * 单测侧（进程内、`src/merge-project.js` 的纯逻辑，不需要跑 CLI）见 `tests/merge-project.test.js`。
+   * 探针一律 `it-probe-merge-` 前缀 ⇒ 文件顶部 `sweepStaleProbes()` 的 `it-probe-` 前缀表已覆盖
+   * （崩在半路也留不下假项目）；本块自带 `finally` 收尾 + 残留自检。
+   * ⚠️ 贴完必须跑 `npm run facts:write`：集成断言数是 G6 的真值，不同步就判红。
+   * ========================================================================== */
+  {
+    const MGA = 'it-probe-merge-a';
+    const MGB = 'it-probe-merge-b';
+    const mgdir = (n) => path.join(ROOT, 'projects', n);
+    const mgRead = (n) => JSON.parse(fs.readFileSync(path.join(mgdir(n), n + '.json'), 'utf8'));
+    const mgWalk = (node, fn) => { fn(node); (node.children || []).forEach((c) => mgWalk(c, fn)); };
+    const mgIds = (root) => { const s = []; mgWalk(root, (n) => s.push(n.id)); return s; };
+    /* ⚠️ 造"带 origin 的源"**不新开写盘点**：本文件新增一处裸写就会把「写盘出口」的豁免面
+     * 从 82 顶到 83（`scripts/collateral-check.js` 的 `WRITE_OUTLET_SITE_CAP` **只减不增**）。
+     * 所以走产品自己的两条命令接力：`export-md` 产出一份真 md → `import-md` 把它导进源项目
+     *（`origin` 只由导入类命令写，`add` 没有 `--origin`）。顺带多验了一段既有链路。 */
+    const mgExpDir = path.join(TMP, 'merge-export');
+    try {
+      /* 两个探针项目：A = 目标，B = 源。 */
+      run(['init', MGA, '--title', '合并目标']);
+      run(['add-root', MGA, '--topic', '甲主题', '--id', 'mga-t1']);
+      run(['init', MGB, '--title', '合并来源']);
+      const mgExp = run(['export-md', MGA, mgExpDir]);
+      check('合并·造源（export-md 产出 md）', ok(mgExp.out) && /已导出文件夹/.test(mgExp.out), mgExp.out.trim().slice(0, 120));
+      const mgImp = run(['import-md', MGB, path.join(mgExpDir, MGA + '.md')]);
+      check('合并·造源（import-md 进 B，带 origin）', ok(mgImp.out) && /新增/.test(mgImp.out), mgImp.out.trim().slice(0, 120));
+      run(['add', MGB, 'root', '--topic', '乙书零散节点', '--id', 'mgb-x']);
+      /* B 里放两条边：一条指向 A（合并后天然是自指边）、一条指向 B 自己（同项目内） */
+      const mgLink1 = run(['link', MGB, 'mgb-x', '--to', MGA, '--id', 'mga-t1', '--caption', 'B→A']);
+      check('合并·造边（B → A）', ok(mgLink1.out) && /已添加链接/.test(mgLink1.out), mgLink1.out.trim().slice(0, 120));
+      run(['link', MGB, 'mgb-x', '--to', MGB, '--id', 'root', '--caption', 'B→B 根']);
+
+      const mgA0 = mgIds(mgRead(MGA).data).length;
+      const mgB0 = mgIds(mgRead(MGB).data).length;
+      const mgBOrigin = [];
+      mgWalk(mgRead(MGB).data, (n) => { if (n.origin) mgBOrigin.push(n.id); });
+      check('合并·前置读数（B 里有带 origin 的节点）', mgBOrigin.length > 0, 'origin 节点 ' + mgBOrigin.length + ' 个');
+
+      /* ---- ① dry-run：读数齐全、盘上零改动 ---- */
+      const mgDry = run(['merge-project', MGA, MGB, '--dry-run', '--json']);
+      let mgDryJ = null;
+      try { mgDryJ = JSON.parse(mgDry.out); } catch (e) { mgDryJ = null; }
+      check('合并·dry-run 可解析且报出将新增节点数',
+        ok(mgDry.out) && !!mgDryJ && mgDryJ.dryRun === true && mgDryJ.totals.addedNodes === mgB0,
+        mgDryJ ? 'added=' + mgDryJ.totals.addedNodes + ' / B 节点 ' + mgB0 : mgDry.out.trim().slice(0, 160));
+      check('合并·dry-run 盘上零改动（目标还是原来的节点数）', mgIds(mgRead(MGA).data).length === mgA0,
+        'A 节点 ' + mgIds(mgRead(MGA).data).length + ' vs ' + mgA0);
+
+      /* ---- ② 真跑：节点数 = 原 + 源；分组节点就是源根（topic 相同）；origin 逐字带走 ---- */
+      const mgReal = run(['merge-project', MGA, MGB, '--json']);
+      let mgJ = null;
+      try { mgJ = JSON.parse(mgReal.out); } catch (e) { mgJ = null; }
+      check('合并·真跑 exit 0 且与 dry-run 同一份读数',
+        ok(mgReal.out) && !!mgJ && mgJ.totals.addedNodes === (mgDryJ && mgDryJ.totals.addedNodes),
+        mgJ ? 'added=' + mgJ.totals.addedNodes : mgReal.out.trim().slice(0, 160));
+      const mgA1 = mgRead(MGA);
+      const mgA1ids = mgIds(mgA1.data);
+      check('合并·节点数 = 原 + 源', mgA1ids.length === mgA0 + mgB0, mgA0 + ' + ' + mgB0 + ' = ' + (mgA0 + mgB0) + '，实际 ' + mgA1ids.length);
+      const mgGroupId = 'merge-' + MGB;
+      const mgGroup = (() => { let f = null; mgWalk(mgA1.data, (n) => { if (n.id === mgGroupId) f = n; }); return f; })();
+      check('合并·分组节点 id 是确定性的 merge-<源项目名>', !!mgGroup, String(mgGroupId));
+      check('合并·分组节点的 topic 就是源根的 topic（它是源根本身，只换了 id）',
+        !!mgGroup && mgGroup.topic === mgRead(MGB).data.topic, mgGroup ? mgGroup.topic : '');
+      const mgAfter = new Map();
+      mgWalk(mgA1.data, (n) => mgAfter.set(n.id, n));
+      /* 源 B 的每个节点 → 合并后在 A 里的同一 id（根换成分组 id） */
+      const mgSrcNodes = new Map();
+      mgWalk(mgRead(MGB).data, (n) => mgSrcNodes.set(n.id, n));
+      const mgBIds = [...mgSrcNodes.keys()].filter((id) => id !== mgRead(MGB).data.id);
+      const mgOriginBad = mgBOrigin
+        .filter((id) => id !== mgRead(MGB).data.id)
+        .filter((id) => !mgAfter.get(id) || JSON.stringify(mgAfter.get(id).origin) !== JSON.stringify(mgSrcNodes.get(id).origin));
+      check('合并·origin 逐条原样带走（src/sha256/at/tool 逐字相同）', mgOriginBad.length === 0,
+        mgBOrigin.length + ' 个 origin 节点，不一致 ' + mgOriginBad.length + ' 个' + (mgOriginBad.length ? ' :: ' + mgOriginBad.slice(0, 3).join(',') : ''));
+      const mgTopicBad = mgBIds.filter((id) => !mgAfter.get(id) || mgAfter.get(id).topic !== mgSrcNodes.get(id).topic);
+      check('合并·topic 逐条对得上（源非根节点 ' + mgBIds.length + ' 个）', mgTopicBad.length === 0,
+        '不一致 ' + mgTopicBad.length + ' 个' + (mgTopicBad.length ? ' :: ' + mgTopicBad.slice(0, 3).join(',') : ''));
+      check('合并后 validate（id 全局唯一 / 无悬挂边）', ok(run(['validate', MGA]).out));
+
+      /* ---- ③ 幂等：同一份源合并两次 ⇒ 拒绝并指名上一次落到哪 ---- */
+      const mgAgain = run(['merge-project', MGA, MGB]);
+      check('合并·幂等（第二次 exit 1 且指名 `' + mgGroupId + '`）',
+        !ok(mgAgain.out) && /已经合并过/.test(mgAgain.out) && mgAgain.out.indexOf(mgGroupId) >= 0,
+        mgAgain.out.trim().split('\n')[0].slice(0, 160));
+
+      /* ---- ④ 边：指向 A 的那条不动（合并后即自指），指向 B 的那条按 --links keep 原样带着 ---- */
+      let mgToB = 0, mgToA = 0;
+      mgWalk(mgAfter.get(mgGroupId), (n) => (n.links || []).forEach((l) => { if (l.project === MGB) mgToB++; if (l.project === MGA) mgToA++; }));
+      check('合并·--links keep：指向目标项目的边成了自指边（' + mgToA + ' 条）', mgToA >= 1, 'toA=' + mgToA);
+      check('合并·--links keep：指向源项目的边**原样带走**（' + mgToB + ' 条，源项目保留 ⇒ 不悬挂）', mgToB >= 1, 'toB=' + mgToB);
+
+      /* ---- ⑤ 撤销：删分组节点即撤销，源项目一个字节没动 ---- */
+      const mgUndo = run(['remove', MGA, mgGroupId]);
+      check('合并·撤销（remove 分组节点）', ok(mgUndo.out) && ok(run(['validate', MGA]).out), mgUndo.out.trim().slice(0, 120));
+      check('合并·撤销后节点数回到原值', mgIds(mgRead(MGA).data).length === mgA0, String(mgIds(mgRead(MGA).data).length));
+      check('合并·源项目 B 一个字节没被改（节点数与主题都对得上）',
+        mgIds(mgRead(MGB).data).length === mgB0 && mgRead(MGB).data.topic === '合并来源', 'B 节点 ' + mgIds(mgRead(MGB).data).length);
+
+      /* ---- ⑥ 负例：父节点不存在 / 源=目标 / --links 非法取值 ---- */
+      check('合并·负例 父节点不存在 ⇒ 拒绝', !ok(run(['merge-project', MGA, MGB, '--parent', 'no-such-node']).out));
+      check('合并·负例 源=目标 ⇒ 拒绝', !ok(run(['merge-project', MGA, MGA]).out));
+      check('合并·负例 --links 非法取值 ⇒ 拒绝', !ok(run(['merge-project', MGA, MGB, '--links', 'nonsense']).out));
+    } finally {
+      [MGA, MGB].forEach((n) => { try { fs.rmSync(mgdir(n), { recursive: true, force: true }); } catch (e) { /* ignore */ } });
+      try { fs.rmSync(mgExpDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }   // 导出产物（TMP 内）
+      const left = [MGA, MGB].filter((n) => fs.existsSync(mgdir(n)));
+      check('合并·收尾 探针项目清干净（残留 ' + left.length + ' 个 —— 现算）', left.length === 0, JSON.stringify(left));
+    }
+  }
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;

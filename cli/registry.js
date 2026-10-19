@@ -323,6 +323,29 @@ function init() {
       + '`--no-vault` = **显式关掉**（库目录里也只想拿结构时用）⇒ 与从前**逐字节相同**。'
       + '**不做**：笔记嵌入的正文合并（transclusion）、反向同步（本工程 → Obsidian）、daily notes 与插件语法；'
       + '`[[页#^块引用]]` 这类认得出但转不了的按"逐条点名"处理。', fn: loadFile('project').importDir });
+  register({
+    name: 'merge-project',
+    usage: 'merge-project <目标项目> <源项目> [<源项目…>] [--parent <id>] [--links keep|repoint] '
+      + '[--group-id <id>] [--dry-run] [--json]',
+    options: ['parent', 'links', 'groupId', 'json'],
+    desc: '**把若干个已有项目整棵并进一个已有项目**（唯一的跨项目"搬整棵树"入口；`move`/`clone` 都只收一个项目名，'
+      + '`import-*` 建的是新项目）。每个源项目成为目标里的**一个分组节点** —— 而且它就是**源项目的根节点本身**，'
+      + '只把 id 换成确定性的 `merge-<源项目名>`（全库 9 个项目的根 id 都是 `root`、根节点上只有 '
+      + '`{id,topic,expanded,children}`、且全库**没有任何** links/assoc/anchors 指向 `id===\'root\'`）⇒ 换这一个 id '
+      + '不可能改指任何边。**其余每一个 id 一律逐字带走、绝不重签发**：id 是 `links[]` / `assoc.members[]` 的唯一键，'
+      + '重签发就是静默改指或改悬空（照 `clone --repoint-items` 的先例）。`origin` 逐字原样带走（溯源不重算）。'
+      + '`--parent` 缺省 `root`（每本书成为目标的一个顶层主题）。`--links`：默认 `keep` = 边一个字节都不改'
+      + '（源项目**默认保留** ⇒ 跨项目边不悬挂）；`repoint` = 把"指向本次也合并进来的源项目"的边改指到目标项目内'
+      + '**同 id** 的节点（根改指那个分组节点），**每一条都逐条核验**目标 id 在源里真实存在，任一条不过 ⇒ '
+      + '整条命令拒绝并点名，**绝不按序号猜**。**幂等**：`merge-<源项目名>` 已存在且该源全部非根 id 都已在目标里 ⇒ '
+      + '拒绝并指名上一次合并落到哪个节点（判定键不用 `origin.src+sha256`：合并的输入是一个项目而不是一份文件，'
+      + '而携带的 id 逐字相同，比指纹更硬）；**没有 `--force`**（再写一份必须重签发 471 个 id，那正是被禁止的）。'
+      + '**一次原子写**（全源都验过才动盘，失败不留半个合并）；`--dry-run` 与真跑**同一份判据**（同一个函数 + 同一份'
+      + '写盘前校验 ⇒ 预览说能成，真跑必能成）。**不合并** `data.assoc` / `data.bindings` / 未知节点字段 / '
+      + '`meta.formatVersion` 与目标不同的源 —— 一律**拒绝并点名**，绝不静默丢。**不删源项目**、也不提供删；'
+      + '撤销是一条既有命令：`remove <目标项目> <分组节点id>`。',
+    fn: loadFile('merge').mergeProject
+  });
   register({ name: 'export-md', usage: 'export-md <项目> <输出目录> [--format heading|list] [--with-detail]', options: ['format', 'withDetail'], desc: '导出为文件夹：<项目>.md + assets/ + attachments/（v0.16 起）', fn: loadFile('project').exportMd });
   register({
     name: 'bind-sync',

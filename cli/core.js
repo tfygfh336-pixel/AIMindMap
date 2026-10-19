@@ -298,8 +298,11 @@ const WRITE_COMMANDS = Object.freeze([
   'link', 'unlink', 'links-prune',
   // 图片与附件（cli/commands/assets.js）：数据面（节点上的引用）经 mutate ✓
   'add-image', 'remove-image', 'add-file', 'remove-file',
-  // 导入与项目级写入（cli/commands/project.js / qa.js）
+  // 导入与项目级写入（cli/commands/project.js / qa.js / merge.js）
   'import-md', 'import-project', 'import-json', 'ask-apply',
+  // `merge-project`（把若干个已有项目整棵并进一个已有项目）**也写盘**：走 `ctx.mutate` ⇒
+  // 与别的写命令同一条闸门。不写这一行，它带 `--idem` 会被当成"只读命令"响亮拒绝。
+  'merge-project',
   // 条目层写入（cli/commands/item.js / migrate.js，契约 docs/ITEM-MODEL.md §3）
   // 说明：这份清单是**手写的**（见上面注释：逐条登记才能被 `--idem` 的归属守门认得），
   // 新增写命令必须**同批**把名字加进来，否则它带 `--idem` 会被当成"只读命令"拒掉。
@@ -395,6 +398,10 @@ const DRY_RUN_COMMANDS = Object.freeze([
   'links-prune', 'assoc-prune',
   // ④ 已有自备预览（原样保留）
   'apply', 'recheck', 'migrate', 'import-project', 'import-dir', 'ask', 'ask-apply',
+  // ⑥【本批】`merge-project`：走**中央短路**（命令体里没有任何 dry-run 分支）+ 命令层只读盘。
+  //    它跑的是"同一个改动函数 + 同一份写盘前校验"⇒ 预览期每一条拒绝都照原样抛出、报文逐字相同
+  //    （判据：`.review/20261019-merge-project/` 与 tests/merge-project.test.js 的 D 组）。
+  'merge-project',
   // ⑤ 中央短路 + 命令层关物理副作用（【R4】绑定同步）：`ctx.mutate` 会自动短路 ⇒ 数据面零改动；
   //    而**旁路快照**（`.bindings.json`）是命令层的物理副作用，由命令层读同一个 `ctx.dryRun` 关掉
   //    （与 `add-image` / `import-md` 的"资源复制"同一形状）

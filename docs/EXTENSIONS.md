@@ -33,7 +33,7 @@
 | 级别 | 含义 | 命令 |
 |------|------|------|
 | **稳定** | 名称、参数、JSON 字段结构不会在非大版本中变更 | 数据读写类：`read`/`list`/`get`/`search`/`add`/`edit`/`move`/`remove`/`validate`/`validate-all`/`projects`/`stats`/`assets`/`files`/`init` |
-| **演进中** | 可用，但字段可能增补（不影响既有字段） | 树与资源：`backlinks`/`related`/`orphans`/`mentions`/`clone`/`add-root`/`expand-depth`/`theme-layout`/`link`/`unlink`/`links`/`links-prune`/`add-image`/`remove-image`/`add-file`/`remove-file`<br>导入导出：`import-md`/`import-project`/`import-dir`/`bind-sync`（绑定工作区文件夹：`--bind`/`--pause`/`--resume`/`--unbind`/`--list`/`--watch-dirs` 与"同步一次"，R4）/`export-md`/`export-json`/`export-html`/`import-json`<br>事务（操作清单一次生效）：`apply`<br>条目层写原语（契约 `docs/ITEM-MODEL.md` §3）：`item-add`/`item-edit`/`item-remove`/`item-move`/`item-order`/`render-detail`、`migrate`（`migrate items` 子命令：v2→v3 条目层迁移）<br>条目层复校与体检：`recheck`/`health`<br>关联笔记：`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`<br>AI 问答：`ask`/`ask-apply`<br>界面协作：`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`<br>历史：`changes`/`changelog`<br>访问热度：`visit`/`heat`<br>跨项目检索：`search-all`（一次扫全库，每条命中带 `project`；`--scope` 收窄范围） |
+| **演进中** | 可用，但字段可能增补（不影响既有字段） | 树与资源：`backlinks`/`related`/`orphans`/`mentions`/`clone`/`add-root`/`expand-depth`/`theme-layout`/`link`/`unlink`/`links`/`links-prune`/`add-image`/`remove-image`/`add-file`/`remove-file`<br>导入导出：`import-md`/`import-project`/`import-dir`/`bind-sync`（绑定工作区文件夹：`--bind`/`--pause`/`--resume`/`--unbind`/`--list`/`--watch-dirs` 与"同步一次"，R4）/`merge-project`（把若干个**已有项目**整棵并进一个已有项目；每个源成为一个分组节点 `merge-<源项目名>`，除源根外的 id 逐字带走、`origin` 原样带走；跨项目边默认 `--links keep` 不改、`repoint` 才逐条核验改指）/`export-md`/`export-json`/`export-html`/`import-json`<br>事务（操作清单一次生效）：`apply`<br>条目层写原语（契约 `docs/ITEM-MODEL.md` §3）：`item-add`/`item-edit`/`item-remove`/`item-move`/`item-order`/`render-detail`、`migrate`（`migrate items` 子命令：v2→v3 条目层迁移）<br>条目层复校与体检：`recheck`/`health`<br>关联笔记：`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`<br>AI 问答：`ask`/`ask-apply`<br>界面协作：`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`<br>历史：`changes`/`changelog`<br>访问热度：`visit`/`heat`<br>跨项目检索：`search-all`（一次扫全库，每条命中带 `project`；`--scope` 收窄范围） |
 | **内部** | 工程维护用，不保证兼容 | `docs-gen`/`release` |
 
 > **`clone` 的条目级边口径（v3，2026-10）**：仍列「**演进中**」—— 名称、既有参数与既有 JSON 面未变，
@@ -54,7 +54,20 @@
 > 盘上零改动**并点名（与别的 op 的执行期失败同一形状；`--dry-run` 里同样看得见）；
 > ③ MCP `clone_node` 增补 `json: true`（拿 `itemEdges`；**只加参数、不新增工具**，工具数不变）。
 >
-> ⚠️ **本表必须覆盖 `cli/registry.js` 里的全部命令**（每条命令**恰好**落在某一级里）——
+> **`merge-project` 的 id 与边口径（2026-10-19）**：列「**演进中**」—— 名称、既有参数与既有 JSON 面都是
+> 新命令的第一版，`--json` 的字段可能增补。三条对外承诺（改动前先读，改了就是改契约）：
+>   ① **除源项目根那一个 id 之外，每一个节点 id 都逐字保持不变**（不重签发）。分组节点就是**源项目的根**，
+>      只把 `root` 换成确定性的 `merge-<源项目名>` ⇒ 所以"合并后的节点 id 还能不能拿来用"的答案是
+>      **能，除了那一个分组 id**。撞号一律**拒绝并点名**，不自动改名。
+>   ② `origin` **逐字原样带走**（`src`/`sha256`/`at`/`tool` 一个字都不重算 —— 它是溯源，不是指纹）。
+>   ③ `links[]` **默认一个字节都不改**（`--links keep`）：源项目默认保留 ⇒ 跨项目边不会悬挂；
+>      `--links repoint` 才把"指向本次也合并进来的源项目"的边改指目标项目内**同 id** 的节点
+>      （指源的根则改指那个分组节点），**每一条都逐条核验**，一条核验不过 ⇒ **整条命令拒绝并点名**，
+>      绝不按序号猜。**幂等**：同一份源合并两次会被拒并**指名上一次落到哪个分组节点**；没有 `--force`。
+>   判据：`tests/merge-project.test.js`（38 条纯逻辑用例，含每一条拒绝分支"目标数据零改动"）+
+>      `scripts/cli-integration.js` 的「合并·*」组（22 条端到端断言）。
+>
+> **本表必须覆盖 `cli/registry.js` 里的全部命令**（每条命令**恰好**落在某一级里）——
 > 门禁 G8 的第 ⑮ 条判定（`scripts/docs-registry-check.js` 的 `checkStabilityCoverage`）机械核对。
 >
 > **`search` 的条目层增补（v3，2026-10）**：仍列「**稳定**」—— 名称、参数、**既有**字段结构未变；
