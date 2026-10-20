@@ -461,6 +461,25 @@ function init() {
   // 引用关系（backlinks / related 已在下方「引用关系」区登记，此处只加 orphans）
   register({ name: 'orphans', usage: 'orphans <项目> [--json] [--content-only] [--limit n]', options: ['json', 'contentOnly', 'limit'], desc: '关系审计：列出无任何引用关系的节点，并区分「含内容待处理」与「纯结构正常」', fn: loadFile('relations').orphans });
   register({ name: 'mentions', usage: 'mentions <项目> [--json] [--min-length n] [--include-structural] [--cross] [--limit n]', options: ['json', 'minLength', 'includeStructural', 'cross', 'limit'], desc: '未链接提及：正文提到了某节点却没建 links（orphans 的另一半，告诉你"该往哪连"）；--cross 扫描跨项目两个方向', fn: loadFile('relations').mentions });
+  /* 【W16 / 功能代号 `CC`「概念目录」】概念提取（**不是**关系查询：见 cli/commands/relations.js 里
+   * `contents` 的注释）。判据、`count` 口径与「概念索引」的生成全在 `src/mentions.js` 的
+   * `conceptCatalog` / `indexBranch`；`--apply` 的写盘走 `ctx.mutate`（dry-run / 幂等键 / 写盘前校验
+   * 全在同一管道）。`--json` 的字段只增不改，故列「演进中」（`docs/EXTENSIONS.md` §1.2）。 */
+  register({
+    name: 'contents',
+    usage: 'contents <项目> [--json] [--depth N] [--parent <id>] [--min-count N] [--apply] [--dry-run]',
+    options: ['json', 'depth', 'parent', 'minCount', 'apply'],
+    desc: '概念目录（`CC`）：把树聚合成**按书内出现顺序**排的概念清单（同名合并、每条带落点 id 与路径），'
+      + '可 `--apply` 一键补成「概念索引」分支（挂在 `--parent` 下，缺省 root；**幂等**，重复跑就地更新、'
+      + '清单没变则一个字节都不写）。「概念」的判据可复算：概念名 = 标题去章节号前缀（`1.1 收包` → `收包`，'
+      + '`802.11` 这类不会被误吃）· 同名（大小写折叠）合并 · `count` = 落点数 + 正文提及数，'
+      + '**提及与 `mentions` 共用同一份命中计算**（`src/mentions.js` 的 `findMentions`）；'
+      + '纯分组容器（无正文/无标签/无链接但有子节点）不算概念。`--parent` 限定作用域子树、'
+      + '`--depth N` 限定层数、`--min-count N` 只留出现 N 次以上的概念。'
+      + '**它不从 `tags` 派生**：标签是跨书共享的 39 词受控词表（`docs/TAGS.md`），'
+      + '本书的概念数是数百个 —— 两者粒度与范围都不同，`tags` 只作为附加列随每条概念带出',
+    fn: loadFile('relations').contents
+  });
 
   // 关联笔记（N 元实体；界面里是「相关知识点」区可打开的二级页面）
   register({ name: 'assoc-list', usage: 'assoc-list <项目> [--node <id>] [--json] [--raw]', options: ['node', 'json', 'raw'], desc: '列出关联笔记（--node 看该节点**所属**的与**锚在**它的；--raw 附带原始实体）', fn: loadFile('assoc').assocList });

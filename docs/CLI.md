@@ -78,6 +78,7 @@
 | `links-prune` | links-prune <项目> [--nodes a,b] [--items a#i-1,b#i-2] [--dry-run] |
 | `orphans` | orphans <项目> [--json] [--content-only] [--limit n] |
 | `mentions` | mentions <项目> [--json] [--min-length n] [--include-structural] [--cross] [--limit n] |
+| `contents` | contents <项目> [--json] [--depth N] [--parent <id>] [--min-count N] [--apply] [--dry-run] |
 | `assoc-list` | assoc-list <项目> [--node <id>] [--json] [--raw] |
 | `assoc-add` | assoc-add <项目> --members a,b,c | --anchor "项目/节点id#text:关键词" [--anchor …] [--title 标题] [--note html | --note-md markdown] [--id id] [--force] [--dry-run] |
 | `assoc-edit` | assoc-edit <项目> <assocId> [--title 标题] [--note html | --note-md markdown] [--clear-note] [--members a,b,c] [--anchor …] [--clear-anchors] [--dry-run] |
@@ -542,6 +543,14 @@ node cli/mm-cli.js orphans <项目> [--json] [--content-only] [--limit n]
 
 ```
 node cli/mm-cli.js mentions <项目> [--json] [--min-length n] [--include-structural] [--cross] [--limit n]
+```
+
+### contents
+
+概念目录（`CC`）：把树聚合成**按书内出现顺序**排的概念清单（同名合并、每条带落点 id 与路径），可 `--apply` 一键补成「概念索引」分支（挂在 `--parent` 下，缺省 root；**幂等**，重复跑就地更新、清单没变则一个字节都不写）。「概念」的判据可复算：概念名 = 标题去章节号前缀（`1.1 收包` → `收包`，`802.11` 这类不会被误吃）· 同名（大小写折叠）合并 · `count` = 落点数 + 正文提及数，**提及与 `mentions` 共用同一份命中计算**（`src/mentions.js` 的 `findMentions`）；纯分组容器（无正文/无标签/无链接但有子节点）不算概念。`--parent` 限定作用域子树、`--depth N` 限定层数、`--min-count N` 只留出现 N 次以上的概念。**它不从 `tags` 派生**：标签是跨书共享的 39 词受控词表（`docs/TAGS.md`），本书的概念数是数百个 —— 两者粒度与范围都不同，`tags` 只作为附加列随每条概念带出
+
+```
+node cli/mm-cli.js contents <项目> [--json] [--depth N] [--parent <id>] [--min-count N] [--apply] [--dry-run]
 ```
 
 ### assoc-list

@@ -7398,6 +7398,212 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
     }
   }
 
+  /* ============================================================================
+   * 【W16】`contents`（功能代号 `CC`「概念目录」，台账 `W16`）的端到端断言
+   * ----------------------------------------------------------------------------
+   * 为什么必须在**真工程 + 真 `projects/` 根**上跑：单测（`tests/contents-concepts.test.js`）
+   *   证的是**纯逻辑**（判据 / 聚合 / 生成物形状）；这里证的是另一半 ——
+   *   命令面 exit code、**不带 `--apply` 时一个字节不写**、`--dry-run` 的零写盘、
+   *   以及 **`--apply` 连跑两次幂等**（项目 JSON 的 sha256 逐字节不变、`.changes.jsonl` 不增行）。
+   *   "不写盘"一律用**独立 sha256 对拍**，不信命令自报。
+   *
+   * 探针项目固定 `it-probe-w16`（前缀 `it-probe-` ⇒ 文件顶部 `sweepStaleProbes()` 已覆盖）；
+   * 本块自带 `finally` 收尾 + 残留自检（崩在半路也留不下假项目）。
+   * ========================================================================== */
+  {
+    const WC = 'it-probe-w16';
+    const wcdir = (n) => path.join(ROOT, 'projects', n);
+    const wcfile = (n) => path.join(wcdir(n), n + '.json');
+    const wclog = (n) => path.join(wcdir(n), '.changes.jsonl');
+    /* `crypto` **在本块里 require**（不往文件顶部加 require）：本文件与别的批次共享，
+     * 顶部导入区每动一次就多一次撞车面（与 §LP 那条注释同一条纪律）。 */
+    const crypto = require('crypto');
+    const wcSha = (n) => crypto.createHash('sha256').update(fs.readFileSync(wcfile(n))).digest('hex');
+    const wcLogLines = (n) => (fs.existsSync(wclog(n))
+      ? fs.readFileSync(wclog(n), 'utf8').split('\n').filter((x) => x.trim()).length : 0);
+    const wcLastChanged = (n) => {
+      const lines = fs.readFileSync(wclog(n), 'utf8').split('\n').filter((x) => x.trim());
+      const e = JSON.parse(lines[lines.length - 1]);
+      return (e.changed || []).slice().sort();
+    };
+    /** 解析 `--json` 档（`run()` 把 stderr 也并了进来 ⇒ 万一有 warning，从第一个 `{` 起解析） */
+    const wcJson = (r) => {
+      try { return JSON.parse(r.out); } catch (e) { /* 落到下面再试一次 */ }
+      const at = String(r.out).indexOf('{');
+      if (at < 0) return null;
+      try { return JSON.parse(String(r.out).slice(at)); } catch (e) { return null; }
+    };
+    const wcRoot = (n) => JSON.parse(fs.readFileSync(wcfile(n), 'utf8')).data;
+    try {
+      /* ---- 造一棵"四件事都在"的迷你树：章节号标题 / 跨章同名 / 正文提及 / 纯分组容器 ---- */
+      run(['init', WC, '--title', '概念目录探针']);
+      run(['add-root', WC, '--id', 'wc-ch1', '--topic', '第1章 收包与发包', '--detail', '<p>本章讲收包</p>']);
+      run(['add', WC, 'wc-ch1', '--id', 'wc-s11', '--topic', '收包路径', '--detail', '<ul><li>收包路径 与 NAPI</li></ul>']);
+      run(['add', WC, 'wc-ch1', '--id', 'wc-s12', '--topic', 'NAPI 轮询', '--detail', '<ul><li>NAPI 轮询</li></ul>']);
+      run(['add-root', WC, '--id', 'wc-ch2', '--topic', '第2章 深入', '--detail', '<p>重复概念与正文提及的例子</p>']);
+      run(['add', WC, 'wc-ch2', '--id', 'wc-s21', '--topic', '2.1 收包路径', '--detail', '<ul><li>再次讲收包路径</li></ul>']);
+      run(['add', WC, 'wc-ch2', '--id', 'wc-s22', '--topic', '概念容器']);
+      run(['add', WC, 'wc-s22', '--id', 'wc-s221', '--topic', '子概念甲', '--detail', '<p>甲</p>']);
+      run(['add', WC, 'wc-ch2', '--id', 'wc-s23', '--topic', '提到收包的一节', '--detail', '<ul><li>见 收包路径 与 NAPI 轮询</li></ul>']);
+
+      /* ---- A 可复现：--json 跑两次逐字节相同 ---- */
+      const wcR1 = run(['contents', WC, '--json']);
+      const wcR2 = run(['contents', WC, '--json']);
+      const wcCJ = wcJson(wcR1);
+      check('W16·判据 A（可复现） `contents <项目> --json` exit 0，且**跑两次输出逐字节相同**'
+        + '（无时间戳、无随机、键序固定 —— 与 G-11「不加开关时输出逐字相同」同一口径）',
+        wcR1.code === 0 && wcR2.code === 0 && wcR1.out === wcR2.out && !!wcCJ,
+        'exit=' + wcR1.code + '/' + wcR2.code + ' 逐字节相同=' + (wcR1.out === wcR2.out)
+          + ' 字节=' + Buffer.byteLength(wcR1.out, 'utf8'));
+
+      /* ---- B 判据②：概念名 = 标题去章节号前缀 + 同名合并；count = 落点 + 提及 ---- */
+      const wcByName = new Map();
+      ((wcCJ && wcCJ.items) || []).forEach((x) => wcByName.set(x.name, x));
+      const wcDupe = wcByName.get('收包路径');
+      check('W16·判据 B（什么算一个概念） `收包路径` 与 `2.1 收包路径` 合成**一个**概念（章节号前缀被剥掉）：'
+        + 'ids=[wc-s11,wc-s21]、nodes=2、mentions=2、count=4 —— 即"落点数 + 正文提及数"',
+        !!wcDupe && wcDupe.ids.length === 2 && wcDupe.ids[0] === 'wc-s11' && wcDupe.ids[1] === 'wc-s21'
+          && wcDupe.nodes === 2 && wcDupe.mentions === 2 && wcDupe.count === 4,
+        wcDupe ? ('ids=' + wcDupe.ids.join(',') + ' nodes=' + wcDupe.nodes
+          + ' mentions=' + wcDupe.mentions + ' count=' + wcDupe.count) : '概念 `收包路径` 不存在');
+
+      /* ---- C 判据③：纯分组容器不算概念（它的子节点照算） ---- */
+      check('W16·判据 C（纯分组容器不算概念） 无正文/无标签/无链接但**有子节点**的 `概念容器` 不在清单里；'
+        + '它的子节点 `子概念甲` 在；`carriers` 比 `nodes` 少 1（现算，不是写死的数）',
+        !!wcCJ && !wcByName.has('概念容器') && wcByName.has('子概念甲')
+          && wcCJ.carriers === wcCJ.nodes - 1,
+        wcCJ ? ('nodes=' + wcCJ.nodes + ' carriers=' + wcCJ.carriers
+          + ' 容器在清单里=' + wcByName.has('概念容器') + ' 子概念甲在清单里=' + wcByName.has('子概念甲')) : 'json 解析失败');
+
+      /* ---- D 判据④：与 `mentions` **共用**命中计算（逐概念对拍，不是"总数差不多"） ---- */
+      const wcMJ = wcJson(run(['mentions', WC, '--json']));
+      const wcToCount = new Map();
+      ((wcMJ && wcMJ.items) || []).forEach((it) => wcToCount.set(it.to, (wcToCount.get(it.to) || 0) + 1));
+      const wcMismatch = [];
+      ((wcCJ && wcCJ.items) || []).forEach((it) => {
+        let n = 0;
+        it.ids.forEach((id) => { n += (wcToCount.get(id) || 0); });
+        if (n !== it.mentions) wcMismatch.push(it.name + '（' + it.mentions + ' vs ' + n + '）');
+      });
+      check('W16·判据 D（与 mentions 共用命中计算） 每条概念的 `mentions` == `mentions --json` 里 `to` 落在该概念 ids 的条数'
+        + '（逐概念逐条相等 ⇒ 同一份 findMentions 实现，不是第二套解析）',
+        !!wcMJ && !!wcCJ && wcMismatch.length === 0,
+        '不一致 ' + wcMismatch.length + ' 条' + (wcMismatch.length ? '：' + wcMismatch.slice(0, 3).join('；') : ''));
+
+      /* ---- E 不带 --apply 绝不写盘（独立 sha256 + 日志行数对拍） ---- */
+      const wcSha0 = wcSha(WC);
+      const wcLog0 = wcLogLines(WC);
+      const wcText = run(['contents', WC]);
+      const wcSha1 = wcSha(WC);
+      const wcLog1 = wcLogLines(WC);
+      check('W16·判据 E（不带 --apply 时绝不写盘） 文本档 exit 0 且人可读（含口径行 + 逐条编号 + 落点/提及读数）；'
+        + '跑前跑后项目 JSON 的 **sha256 相同**、`.changes.jsonl` 行数不变',
+        wcText.code === 0 && /口径：概念名/.test(wcText.out) && /1\. /.test(wcText.out)
+          && /落点 \d+ · 提及 \d+/.test(wcText.out) && wcSha0 === wcSha1 && wcLog0 === wcLog1,
+        'exit=' + wcText.code + ' sha 相同=' + (wcSha0 === wcSha1) + ' 日志行 ' + wcLog0 + '→' + wcLog1);
+
+      /* ---- F --apply 生成「概念索引」：一个分支、每概念一子节点、links 回指落点 ---- */
+      const wcAp1 = run(['contents', WC, '--apply']);
+      const wcRoot1 = wcRoot(WC);
+      const wcIdx = (wcRoot1.children || []).filter((c) => c && c.topic === '概念索引');
+      const wcIdxKids = (wcIdx[0] && wcIdx[0].children) || [];
+      const wcPrefixes = ['前置：', '前置:', 'prereq:', '对照：', '补充：', '出自：', '同义：'];
+      const wcCaptionOk = wcIdxKids.every((c) => (c.links || []).every((l) => {
+        const cap = String(l.caption || '');
+        return l.project === WC && wcPrefixes.every((pre) => cap.indexOf(pre) !== 0);
+      }));
+      const wcLandingOk = wcIdxKids.every((c) => (c.links || []).every((l) => !!String(l.id || '')));
+      check('W16·判据 F（一键补成节点） `--apply` 后 root 下**恰好一个**「概念索引」分支，'
+        + '子节点数 == 概念数，每个子节点的 links 都指回本项目、且 caption **不带任何类型前缀**'
+        + '（docs/TAGS.md §11：类型只有 5 种，"索引条目"不是其中任何一种 ⇒ 走该节规则 2 的自由文本）',
+        wcAp1.code === 0 && wcIdx.length === 1 && wcIdxKids.length === (wcCJ ? wcCJ.shown : -1)
+          && wcCaptionOk && wcLandingOk && ok(run(['validate', WC]).out),
+        'exit=' + wcAp1.code + ' 分支数=' + wcIdx.length + ' 子节点=' + wcIdxKids.length
+          + ' caption 合规=' + wcCaptionOk + ' 回指齐全=' + wcLandingOk);
+
+      /* ---- G --apply 幂等：第二次 sha256 逐字节不变、日志不增行、明说未写盘 ---- */
+      const wcShaAp1 = wcSha(WC);
+      const wcLogAp1 = wcLogLines(WC);
+      const wcAp2 = run(['contents', WC, '--apply']);
+      const wcShaAp2 = wcSha(WC);
+      const wcLogAp2 = wcLogLines(WC);
+      const wcRoot2 = wcRoot(WC);
+      const wcIdx2 = (wcRoot2.children || []).filter((c) => c && c.topic === '概念索引');
+      check('W16·判据 G（--apply 幂等） 连跑第二次：exit 0、项目 JSON 的 **sha256 与第一次逐字节相同**、'
+        + '`.changes.jsonl` **不多一行**、输出里明说「未写盘」，「概念索引」仍**只有一支**（没造第二份）',
+        wcAp2.code === 0 && wcShaAp1 === wcShaAp2 && wcLogAp1 === wcLogAp2
+          && /未写盘/.test(wcAp2.out) && wcIdx2.length === 1,
+        'exit=' + wcAp2.code + ' sha 相同=' + (wcShaAp1 === wcShaAp2) + ' 日志行 ' + wcLogAp1 + '→' + wcLogAp2
+          + ' 分支数=' + wcIdx2.length);
+
+      /* ---- H 生成物不污染只读读数（自指循环的回归守卫） ---- */
+      const wcAfter = run(['contents', WC, '--json']);
+      check('W16·判据 H（生成物不污染只读读数） 已有「概念索引」之后，`contents --json` 的输出**与 --apply 之前逐字节相同**'
+        + '（实测过的缺陷：不摘掉生成物，索引会把自己算成一个概念、第二次 --apply 就永远不幂等）',
+        wcAfter.code === 0 && wcAfter.out === wcR1.out,
+        '逐字节相同=' + (wcAfter.out === wcR1.out)
+          + '（前 ' + Buffer.byteLength(wcR1.out, 'utf8') + ' B / 后 ' + Buffer.byteLength(wcAfter.out, 'utf8') + ' B）');
+
+      /* ---- I --dry-run 零写盘，且报告的对象清单 == 真跑后日志的 changed（W8 判据③） ---- */
+      run(['add', WC, 'wc-ch2', '--id', 'wc-s24', '--topic', '新增概念乙', '--detail', '<p>乙</p>']);
+      const wcShaD0 = wcSha(WC);
+      const wcLogD0 = wcLogLines(WC);
+      const wcDry = run(['contents', WC, '--apply', '--dry-run']);
+      const wcDryJ = wcJson(run(['contents', WC, '--apply', '--dry-run', '--json']));
+      const wcShaD1 = wcSha(WC);
+      const wcLogD1 = wcLogLines(WC);
+      const wcReal = run(['contents', WC, '--apply']);
+      const wcRealChanged = wcLastChanged(WC);
+      const wcPlan = (wcDryJ && wcDryJ.plan && wcDryJ.plan.changed) || null;
+      check('W16·判据 I（--dry-run 零写盘 + 报告与真跑同源） `contents --apply --dry-run`：输出带 `[dry-run 未写盘]`、'
+        + '`--json` 里 `dryRun:true` 且 `plan` 有对象清单；跑前跑后 sha256 与日志行数**都不变**；'
+        + '而**计划里的对象清单 == 真跑后 `.changes.jsonl` 末条的 `changed`**（逐条相等）',
+        wcDry.code === 0 && /dry-run 未写盘/.test(wcDry.out) && !!wcDryJ
+          && wcDryJ.dryRun === true && Array.isArray(wcPlan) && wcPlan.length > 0
+          && wcShaD0 === wcShaD1 && wcLogD0 === wcLogD1
+          && wcReal.code === 0 && JSON.stringify(wcPlan) === JSON.stringify(wcRealChanged),
+        'dry exit=' + wcDry.code + ' 计划 ' + (wcPlan ? wcPlan.length : 'null') + ' 项 · 真跑 changed '
+          + wcRealChanged.length + ' 项 · 逐条相等=' + (!!wcPlan && JSON.stringify(wcPlan) === JSON.stringify(wcRealChanged))
+          + ' · sha 未变=' + (wcShaD0 === wcShaD1) + ' 日志 ' + wcLogD0 + '→' + wcLogD1);
+
+      /* ---- J 纯开关的响亮拒绝 + 作用域三开关的读数 ---- */
+      const wcBad = run(['contents', WC, '--apply=false']);
+      const wcScoped = wcJson(run(['contents', WC, '--parent', 'wc-ch1', '--json']));
+      const wcShallow = wcJson(run(['contents', WC, '--depth', '1', '--json']));
+      const wcMC = wcJson(run(['contents', WC, '--min-count', '2', '--json']));
+      check('W16·判据 J（开关语义） `--apply=false` ⇒ exit 1 并说清"纯开关 / 去掉开关"（照 --dry-run 的先例）；'
+        + '`--parent` 只扫该子树（scope.parent=wc-ch1）、`--depth 1` 只算顶层、`--min-count 2` 只留 count≥2',
+        wcBad.code === 1 && /纯开关/.test(wcBad.out)
+          && !!wcScoped && wcScoped.scope.parent === 'wc-ch1' && wcScoped.nodes < (wcCJ ? wcCJ.nodes : 0)
+          && !!wcShallow && wcShallow.scope.depth === 1 && wcShallow.nodes === 2
+          && !!wcMC && wcMC.items.every((x) => x.count >= 2) && wcMC.shown < wcMC.concepts,
+        'apply=false exit=' + wcBad.code
+          + ' · parent.nodes=' + (wcScoped && wcScoped.nodes)
+          + ' · depth1.nodes=' + (wcShallow && wcShallow.nodes)
+          + ' · minCount2=' + (wcMC && (wcMC.shown + '/' + wcMC.concepts)));
+
+      /* ---- K `--parent` 是"写进那个子树"，且与根作用域那支**不撞 id**（实测缺陷回归） ---- */
+      const wcSub1 = run(['contents', WC, '--parent', 'wc-ch1', '--apply']);
+      const wcSub2 = run(['contents', WC, '--parent', 'wc-ch1', '--apply']);
+      const wcRootK = wcRoot(WC);
+      const wcCh1 = (wcRootK.children || []).filter((c) => c && c.id === 'wc-ch1')[0] || {};
+      const wcSubIdx = (wcCh1.children || []).filter((c) => c && c.topic === '概念索引');
+      check('W16·判据 K（`--parent` 写进子树 + 两支索引**不撞 id**） `--parent wc-ch1 --apply` 在该子树下生成'
+        + '**本作用域**的那一支（id 带作用域后缀），与根作用域那一支**并存**且 `validate` 仍通过；'
+        + '再跑一次仍未写盘。（实测缺陷：不带作用域后缀时 `校验失败: [contents-index] 重复 id`）',
+        wcSub1.code === 0 && !!wcCh1.id && wcSubIdx.length === 1
+          && wcSubIdx[0].id !== 'contents-index' && ok(run(['validate', WC]).out)
+          && wcSub2.code === 0 && /未写盘/.test(wcSub2.out),
+        'parent-apply exit=' + wcSub1.code + ' 子树下分支数=' + wcSubIdx.length
+          + ' 分支 id=' + (wcSubIdx[0] && wcSubIdx[0].id)
+          + ' 第二次未写盘=' + (wcSub2.code === 0 && /未写盘/.test(wcSub2.out)));
+    } finally {
+      try { fs.rmSync(wcdir(WC), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+      check('W16·收尾 探针项目清干净（残留 ' + (fs.existsSync(wcdir(WC)) ? 1 : 0) + ' 个 —— 现算）',
+        !fs.existsSync(wcdir(WC)), String(wcdir(WC)));
+    }
+  }
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;

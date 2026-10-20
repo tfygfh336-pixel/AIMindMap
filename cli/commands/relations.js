@@ -14,6 +14,12 @@
  *   mentions <项目> [--json] [--min-length n] [--include-structural] [--cross] [--limit n]
  *     未链接提及：正文**提到了**某节点却没有为它建 links —— orphans 缺失的另一半。
  *     --cross 额外扫描跨项目两个方向（in/out），同名歧义不猜、照报并标记
+ *   contents <项目> [--json] [--depth N] [--parent <id>] [--min-count N] [--apply]
+ *     概念目录（功能代号 `CC`，台账 `W16`）：把树**聚合成一份按书内出现顺序排的概念清单**
+ *     （同名合并、每条带落点 id）；`--apply` 才在指定父节点下生成/就地更新「概念索引」分支。
+ *     **它是"概念提取"，不是关系查询** —— 与上面三条同族（都从既有数据里提取视图），
+ *     但它不回答"谁引用了谁"，而是回答"这棵树讲了哪些概念"。计算在 src/mentions.js 的
+ *     `conceptCatalog` / `indexBranch`（与 `mentions` **共用**同一份命中计算）。
  * 计算逻辑在 src/relations.js 与 src/mentions.js（UMD，单测覆盖纯部分；本项目做 fs 注入）。
  * ============================================================ */
 'use strict';
@@ -22,6 +28,9 @@ const fs = require('fs');
 const path = require('path');
 const relations = require('../../src/relations.js');
 const mentions = require('../../src/mentions.js');
+/** 「这次别写盘」的哨兵（`cli/core.js` 的唯一实现）：`contents --apply` 发现"已经是最新的"时用它
+ *  ⇒ `ctx.mutate` 一次盘都不写、`.changes.jsonl` 也不多一条（幂等的判据见命令体）。 */
+const { SKIP_WRITE } = require('../core.js');
 
 /** 读取全部项目（{ name, data }），供跨项目反查 */
 function loadAllProjects(PROJECTS_DIR) {
@@ -43,6 +52,9 @@ function arrowOf(dir) {
   if (dir === 'in') return '←';
   return '↔';
 }
+
+/** `contents` 人读档里"中间层级"那一截的最大长度（**只与内容有关、与终端宽度无关** ⇒ 输出仍可逐字节复现） */
+const VIA_MAX = 64;
 
 module.exports = {
   backlinks(ctx) {
@@ -327,5 +339,184 @@ module.exports = {
     }
 
     if (summary.truncated) ctx.out('\n（已按 --limit 截断；去掉 --limit 或调大以查看全部）');
+  },
+
+  /**
+   * 概念目录（功能代号 `CC`，台账 `W16`，名字权威见 `docs/FEATURES.md`）。
+   *
+   * ## 它回答的是哪一句人话
+   *   「**这棵树讲了哪些概念**」。一棵书树里只有"章节容器"和"叶子知识点"，读者想问这句话时
+   *   只能自己从几百个节点里挑一遍。本命令把树**聚合成一份按书内出现顺序排的概念清单**
+   *   （同名合并、每条带落点 id），并可选地把这份清单**一键补成节点**（生成「概念索引」分支）。
+   *
+   * ## 它是"概念提取"，不是关系查询（与上面三条的分工）
+   *   `backlinks` / `related` / `mentions` 回答"**谁和谁有关系**"；`contents` 回答"**这棵树讲了哪些
+   *   概念、各在哪儿**"。共用的是**同一份命中计算**（`src/mentions.js` 的 `findMentions` ——
+   *   `count` 里"正文提及数"那一半逐条来自它），不是同一张报表。
+   *
+   * ## 「什么算一个概念」的可复算判据 —— **只在 `src/mentions.js` 的 `conceptCatalog` 一处**
+   *   （候选面 = 前序遍历、作用域根不算；承载体 = 有正文/有标签/有链接/是叶子；
+   *     概念名 = 标题去章节号前缀；count = 落点数 + 正文提及数）。本命令不另写一份口径。
+   *
+   * ## 写入那一半（`--apply`）三件事
+   *   ① **不带 `--apply` 时绝不写盘**（只读那一半一次 `ctx.write` / `ctx.mutate` 都不调）；
+   *   ② 写在**新分支**「概念索引」下（挂在 `--parent` 指定的节点，缺省 `root`），
+   *      每个概念一个子节点，`links[]` 用工程既有的链接语法回指落点，`caption` 是自由文本
+   *      （**不带类型前缀**：`docs/TAGS.md` §11 的类型只有 5 种，"索引条目"不是其中任何一种，
+   *      该节规则 2 明写"允许不带任何类型前缀"）；
+   *   ③ **幂等**：这一支认 `id` 或 `topic`（`src/mentions.js` 的 `CONCEPT_INDEX_ID` /
+   *      `CONCEPT_INDEX_TOPIC`）⇒ 第二次跑**就地更新**，绝不造第二份；内容一致时返回
+   *      `SKIP_WRITE`（**一个字节都不写**，连 `.changes.jsonl` 都不多一条）。
+   *      概念节点的 id 由概念名哈希而来（`shortHash`，不含时间/随机）⇒ 清单不变则 id 不变。
+   */
+  contents(ctx) {
+    /* `--apply` 是**纯开关**：带值的写法一律响亮拒绝（照 `--dry-run` 的先例）。
+     * 为什么不能猜：`--apply=false` 当成"开"会把一次预览变成真写；当成"关"又会让一次
+     * 本该写的调用**静默不写**（调用方以为写了）—— 两种都危险，所以唯一的正解是不猜。 */
+    if (ctx.args.apply !== undefined && ctx.args.apply !== true) {
+      ctx.error('--apply 是**纯开关**（不带值）：写法 `… --apply`。要"不写盘"就把这个开关去掉'
+        + '（`--apply=false` 这类两态写法本工程一律**响亮拒绝**：猜错方向两种都危险 ——'
+        + '当成"开"会把一次预览变成真写，当成"关"会让一次本该写的调用静默不写）。（收到 '
+        + JSON.stringify(ctx.args.apply) + '）');
+    }
+    const wantApply = ctx.args.apply === true;
+    const parentId = (ctx.args.parent === undefined || ctx.args.parent === null) ? '' : String(ctx.args.parent).trim();
+    const depth = ctx.intOption('depth', { min: 1, def: 0 });        // 0 = 不限层数
+    const minCount = ctx.intOption('minCount', { min: 1, def: 1 });
+    const { data } = ctx.read();
+    const scopeRoot = parentId ? ctx.tree.find(data.data, parentId) : data.data;
+    if (!scopeRoot) ctx.error('节点不存在: ' + parentId);
+    const catalogOpts = { depth: depth, minCount: minCount, selfProject: ctx.projectName };
+    const catalog = mentions.conceptCatalog(scopeRoot, catalogOpts);
+
+    const payload = {
+      project: ctx.projectName,
+      scope: {
+        parent: parentId || null,
+        parentTopic: parentId ? String(scopeRoot.topic) : null,
+        depth: depth || null,
+        minCount: minCount
+      },
+      nodes: catalog.scanned,
+      carriers: catalog.carriers,
+      concepts: catalog.concepts,
+      shown: catalog.shown,
+      mentions: catalog.mentions,
+      withMentions: catalog.withMentions,
+      duplicates: catalog.duplicates,
+      items: catalog.items
+    };
+
+    /* 人读档：**一次 `ctx.out` 打完整段**（不是逐行打）——
+     * dry-run 的中央标记是按"每条消息首行"加的，逐行打会让每一行都挂上标记（见 `cli/core.js` 的 `out`）。 */
+    const listLines = () => {
+      const lines = [];
+      lines.push(ctx.projectName + '：扫 ' + catalog.scanned + ' 个节点 → 承载体 ' + catalog.carriers
+        + ' · 概念 ' + catalog.concepts
+        + (catalog.shown !== catalog.concepts ? '（--min-count ' + minCount + ' 只列 ' + catalog.shown + ' 个）' : '')
+        + '；顺序 = 第一次出现的位置（不是按次数排行）');
+      lines.push('口径：概念名 = 标题去章节号前缀 · 同名合并；count = 落点数 + 正文提及数'
+        + '（提及与 mentions 命令同一实现：src/mentions.js 的 findMentions）');
+      lines.push('      正文提及合计 ' + catalog.mentions + ' 处，涉及 ' + catalog.withMentions + ' 个概念；'
+        + '多落点概念 ' + catalog.duplicates + ' 个'
+        + (parentId ? '；作用域 = 「' + String(scopeRoot.topic) + '」子树' : '；作用域 = 整棵树'));
+      if (!catalog.shown) { lines.push('  （没有可提取的概念）'); return lines; }
+      lines.push('');
+      const width = String(catalog.shown).length;
+      catalog.items.forEach((c, i) => {
+        // 只保留"中间层级"（去掉作用域根与概念自身）；太长就留**离它最近**的那一截 ——
+        // 截断只跟内容长度有关，与终端宽度无关 ⇒ 两次跑仍逐字节相同（G-11 同一条纪律）。
+        let via = c.pathNames.slice(1, Math.max(1, c.pathNames.length - 1)).join(' / ');
+        if (via.length > VIA_MAX) via = '…' + via.slice(-(VIA_MAX - 1));
+        lines.push('  ' + String(i + 1).padStart(width, ' ') + '. ' + c.name
+          + '  落点 ' + c.nodes + ' · 提及 ' + c.mentions + ' · #' + c.firstId
+          + (via ? '   ← ' + via : ''));
+      });
+      return lines;
+    };
+
+    if (!wantApply) {
+      if (ctx.args.json) { ctx.outJson(payload); return; }
+      ctx.out(listLines().join('\n'));
+      if (ctx.dryRun) {
+        ctx.out('（本次只读：没给 --apply ⇒ 一个字节都没写。`--dry-run` 的"将改哪些对象"只在 '
+          + '--apply 时才有对象可报）');
+      }
+      return;
+    }
+
+    /* ---- 写入那一半 ----
+     * 走 `ctx.mutate`：并发自动重放 / 写盘前校验 / `--dry-run` 中央短路 / 幂等键 都在那一条管道上，
+     * 本命令**一条都不另写**。改动函数里在"将要写下去的那份数据"上**重算一遍清单**
+     * （与上面只读那一半同一个 `conceptCatalog`），所以预览与真跑不可能给出两份读数。 */
+    const state = {
+      parentId: '', parentTopic: '', branchId: '',
+      created: false, updated: false, unchanged: false, empty: false, childNodes: 0, links: 0
+    };
+    ctx.mutate((d) => {
+      const target = parentId ? ctx.tree.find(d.data, parentId) : d.data;
+      if (!target) ctx.error('节点不存在: ' + parentId);
+      state.parentId = String(target.id === undefined ? '' : target.id);
+      state.parentTopic = String(target.topic === undefined ? '' : target.topic);
+      const inner = mentions.conceptCatalog(target, catalogOpts);
+      // `scopeId` 让非根作用域生成物的 id 带后缀（否则给子树再生成一支时会撞 id —— 实测过）
+      const desired = mentions.indexBranch(inner.items, { project: ctx.projectName, scopeId: target.id });
+      state.childNodes = desired.children.length;
+      state.links = desired.children.reduce((n, c) => n + ((c.links || []).length), 0);
+      // 0 个概念 ⇒ **不造空壳分支**（一个没有条目的"索引"只会让人以为生成失败）
+      if (!inner.items.length) { state.empty = true; return SKIP_WRITE; }
+      const kids = Array.isArray(target.children) ? target.children.slice() : [];
+      let at = -1;
+      for (let i = 0; i < kids.length; i++) {
+        const c = kids[i];
+        if (c && (c.id === desired.id || mentions.isConceptIndexNode(c))) { at = i; break; }
+      }
+      if (at >= 0) {
+        // 就地更新：**保留**这一支上用户自己加的东西（`expanded` / `localPath` …），只换生成物那四样
+        const existing = kids[at];
+        state.branchId = String(existing.id === undefined ? '' : existing.id);
+        const next = Object.assign({}, existing, {
+          topic: desired.topic, detail: desired.detail, links: desired.links, children: desired.children
+        });
+        if (mentions.sameIndexBranch(next, existing)) { state.unchanged = true; return SKIP_WRITE; }
+        kids[at] = next;
+        state.updated = true;
+      } else {
+        state.branchId = desired.id;
+        kids.push(desired);
+        state.created = true;
+      }
+      target.children = kids;
+      return d;
+    });
+
+    payload.apply = {
+      parent: state.parentId || null,
+      parentTopic: state.parentTopic || null,
+      branchId: state.branchId || null,
+      created: state.created,
+      updated: state.updated,
+      unchanged: state.unchanged,
+      childNodes: state.childNodes,
+      links: state.links
+    };
+    if (ctx.args.json) { ctx.outJson(payload); return; }
+
+    const tail = [];
+    tail.push(listLines().join('\n'));
+    tail.push('');
+    if (state.empty) {
+      tail.push('没有可提取的概念（作用域内 0 个承载体）⇒ 不生成空的「概念索引」，本次未写盘');
+    } else {
+      const where = '（挂在「' + state.parentTopic + '」下）';
+      const figures = state.childNodes + ' 个概念条目、' + state.links + ' 条回指落点的链接';
+      if (state.created) tail.push('已创建「概念索引」' + where + '：' + figures);
+      else if (state.updated) tail.push('已就地更新「概念索引」' + where + '：' + figures);
+      else {
+        tail.push('「概念索引」已是最新' + where + '：' + figures
+          + ' —— 本次**未写盘**（幂等：同一份清单生成同一支；第二次不会造第二份）');
+      }
+    }
+    ctx.out(tail.join('\n'));
   }
 };

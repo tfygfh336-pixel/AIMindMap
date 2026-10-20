@@ -85,6 +85,10 @@ function parseArgs(argv) {
     if (a === '--clear-note') { out.clearNote = true; continue; }
     if (a === '--clear-anchors') { out.clearAnchors = true; continue; }
     if (a === '--dry-run') { out.dryRun = true; continue; }
+    // 【W16】`contents --apply` 的写开关：**纯布尔** ⇒ 必须在这里登记，否则会被通用分支
+    // 按"--key value"处理、把后面的位置参数（项目名 / 父 id）吞成它的值 ——
+    // 与 `--deep` / `--explain` 同一种病。带 `=` 的写法（`--apply=false`）由命令侧**响亮拒绝**。
+    if (a === '--apply') { out.apply = true; continue; }
     if (a === '--clean-assoc') { out.cleanAssoc = true; continue; }
     if (a === '--clean-links') { out.cleanLinks = true; continue; }
     // 其余纯布尔开关显式登记（否则会被通用分支按"--key value"吞掉下一个位置参数）
@@ -318,7 +322,11 @@ const WRITE_COMMANDS = Object.freeze([
   'learn-path',
   // 【R4】`bind-sync`（绑定工作区文件夹的同步/绑定/解绑）**也写盘**：同步走 `ctx.mutate`、
   // 绑定动作走 `ctx.mutate` ⇒ 与别的写命令同一条闸门（不写这一行，它带 `--idem` 会被当成只读命令拒掉）。
-  'bind-sync'
+  'bind-sync',
+  // 【W16】`contents`（概念目录 `CC`）：**不带 `--apply` 时一个字节都不写**；带 `--apply` 时
+  // 在指定父节点下生成/就地更新「概念索引」分支（走 `ctx.mutate` ⇒ 与别的写命令同一条闸门）。
+  // 它算写命令，是因为"会写盘"这件事与开关无关 —— 登记在这里它才拿得到 `--dry-run` / `--idem`。
+  'contents'
 ]);
 
 /* ============================================================================
@@ -396,6 +404,11 @@ const DRY_RUN_COMMANDS = Object.freeze([
   'item-add', 'item-edit', 'item-remove', 'item-move', 'item-order', 'render-detail',
   'remove-image', 'remove-file',
   'init', 'theme-layout',
+  /* 【W16】`contents`：走**中央短路**（命令体里没有任何 `ctx.dryRun` 分支 —— 它读的是 `ctx.args.apply`，
+   * 即"要不要写"这件事本身，而不是"要不要预演"）。两种调用都成立：
+   *   · `contents 项目 --apply --dry-run` ⇒ 报"将改动哪些对象"、**一个字节都不写**（W8 契约）；
+   *   · `contents 项目 --dry-run`（不给 `--apply`）⇒ 本来就不写，`planWrite` 也就没有对象可报。 */
+  'contents',
   // 【LP】`learn-path`：走**中央短路**（命令体里没有任何 dry-run 分支 —— `tests/w8-dry-run.test.js`
   // 静态把守）。它是"新建项目"型的写命令 ⇒ 与 `init` 同一档：dry-run 报 `created:true` + `changed:[]`，
   // 而**输入项目一个字节都不动**（那本来就是只读的）。
