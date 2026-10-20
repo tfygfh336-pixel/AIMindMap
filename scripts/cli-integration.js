@@ -7954,9 +7954,14 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
     check('W21·D `point` 是**只读**命令：`WRITE_COMMANDS` / `DRY_RUN_COMMANDS` 里都没有它'
       + '（那两个清单的语义是"会改盘"，进去就是假声明）',
       !!w21point && w21core.WRITE_COMMANDS.indexOf('point') < 0
-        && w21core.DRY_RUN_COMMANDS.indexOf('point') < 0
-        && JSON.stringify(w21reg.allowedOptions('point')) === JSON.stringify(['mode']),
-      w21point ? 'options=' + JSON.stringify(w21reg.allowedOptions('point')) : '没注册');
+        && w21core.DRY_RUN_COMMANDS.indexOf('point') < 0,
+      w21point ? '在册；WRITE_COMMANDS 命中=' + (w21core.WRITE_COMMANDS.indexOf('point') >= 0)
+        + ' / DRY_RUN_COMMANDS 命中=' + (w21core.DRY_RUN_COMMANDS.indexOf('point') >= 0) : '没注册');
+    /* ⚠️ 2026-10-20 修：本条原来还断言 `allowedOptions('point') === ['mode']`，但报文只说
+     * "只读"两件事 —— **断言判的东西和它宣称的不是一回事**。而 `point` 后来补了 `--json`/`--compact`
+     * （`cli-options` 门禁要求的），这个 `['mode']` 就成了"改了实现没改断言"的化石。
+     * 它逃过检查的**唯一原因**是：W21 批自述"没跑 cli-integration 本体"⇒ 本条**从未被执行过**。
+     * 选项登记的判据归 `tests/cli-options.test.js`（那是它的唯一职责），不在这里重复。 */
 
     const w21ask = w21mcp.TOOLS.filter((t) => t.name === 'ask_apply')[0];
     check('W21·E MCP 侧：工具数 = 52（写死真值）+ `ask_apply` 存在、必填只有 project·id、挂了 dry_run'
