@@ -29,6 +29,7 @@
 | `search` | search <项目> <关键词|--tag 标签> [--json] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] [--mode <预设>] [--weights <路由=权重,…>] [--recall <路由>] [--explain] |
 | `search-all` | search-all <关键词|--tag 标签> [--scope 项目名,…] [--json] [--compact] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] [--mode <预设>] [--weights <路由=权重,…>] [--recall <路由>] [--explain] |
 | `stats` | stats <项目> [--json] |
+| `tags` | tags [<项目>…] [--json] [--vocab] |
 | `init` | init <项目> [--title 标题] [--dry-run] |
 | `backlinks` | backlinks <项目> <id> [--json] |
 | `related` | related <项目> <id> [--json] [--depth N] |
@@ -151,6 +152,14 @@ node cli/mm-cli.js search-all <关键词|--tag 标签> [--scope 项目名,…] [
 
 ```
 node cli/mm-cli.js stats <项目> [--json]
+```
+
+### tags
+
+**标签清单**（只读）：有哪些标签、各多少个节点、分布在哪几个项目 —— 答的是 `stats` 答不了的那半（`stats` 只给标签总数，而 `search --tag` 要求你先知道标签名）。**不给项目名 = 全库**（按项目名升序扫）；点名项目 = 只扫这些（`tags 甲 乙`）。`--vocab` 追加**词表核对**三条判据：① 出现的标签是否都在 `docs/TAGS.md` §4 那个闭集里（`tags[].inVocab`）；② 落点是否达到 §2 第 6 条 / §8 判据① 的下限（≥5；§4 该行写明「门面特性」的 ≥3）；③ §4 里有、本次扫描面 0 落点的"词表空转"。⚠️ `--vocab` **必须点名项目**：那份词表的标题是「7 本书共用」，而"哪几个项目适用"在盘上没有机器可读的声明（`comnet` 有自己的标签，不受它约束）⇒ 全库只给清单、不给合规判断（不带项目名会响亮拒绝并给出路）。**不做标签之间的共现/孤岛/层级**（理由见 `cli/commands/project.js` 的 `tags` 函数头）。`--json` **两跑逐字节相同**：键序固定、无时间戳、排序一律码点序（不用 locale）。
+
+```
+node cli/mm-cli.js tags [<项目>…] [--json] [--vocab]
 ```
 
 ### init

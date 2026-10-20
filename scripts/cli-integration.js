@@ -7604,6 +7604,226 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
     }
   }
 
+  /* ============================================================================
+   * 【W5】`tags`（**标签清单**，只读）的端到端断言
+   * ----------------------------------------------------------------------------
+   * 台账 `.review/20261010-卖点与功能-常驻讨论/待做清单.md:126` 的 `W5a` 前半句：
+   *   「列出**全部标签 + 计数** ✓（现在 `stats` 只给标签总数 ✗）」—— 后半句
+   *   （某标签下的跨项目节点清单）已由 `search-all --tag` 兑现，本块只管前半句与三条契约判据。
+   *
+   * 为什么必须在这里（真 `projects/` 根 + 进程内 CLI）：单测（`tests/tag-census.test.js`）证纯逻辑；
+   *   这一层证的是**命令面**：exit code / **一个字节都不写盘** / `--json` 两跑逐字节相同 /
+   *   三条词表判据**真的有判别力**（造坏 ⇒ 红）/ 四条闸门各自响亮失败。
+   *
+   * ⚠️ 三条判据的**判别力**是本块的重点，不是"跑通就行"：
+   *   · 两个 §4 里的标签**各 4 个落点**，一个（普通标签）必须判红、一个（§4 该行写了「门面特性」）
+   *     必须判绿 —— 差别**只**来自"下限 5 还是 3"。解析器一旦忽略「门面特性」，后者会以 floor 5 判红
+   *     ⇒ 判据 F 立刻变红（这就是注入式证明：把判据的输入改掉，断言必须变色）。
+   *   · 一个**不在 §4** 的标签必须 inVocab=false（判据 E）；
+   *   · 一个 §4 有、但本探针里 0 落点的标签必须进 `vocab.unused`（判据 G）。
+   *
+   * 探针项目固定 `it-probe-w5-` 前缀（文件顶部 `sweepStaleProbes()` 已覆盖），本块自带 `finally`
+   * 收尾 + 残留自检；夹具直接写 JSON（少 28 次 CLI 调用），随后用 `validate` **证明夹具是合法数据**。
+   * ========================================================================== */
+  {
+    const W5TAG = Date.now().toString(36);
+    const W5A = 'it-probe-w5-a-' + W5TAG;      // 判据面（--vocab 三条）
+    const W5B = 'it-probe-w5-b-' + W5TAG;      // 跨项目合并面
+    const w5dir = (n) => path.join(ROOT, 'projects', n);
+    const w5file = (n) => path.join(w5dir(n), n + '.json');
+    const w5log = (n) => path.join(w5dir(n), '.changes.jsonl');
+    const crypto = require('crypto');
+    const w5sha = (f) => (fs.existsSync(f)
+      ? crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex').slice(0, 16)
+      : '-');
+    /** 一个探针项目的"零写盘"快照：项目 JSON 与变更日志的 sha256 + mtime */
+    const w5snap = (n) => [w5file(n), w5log(n)]
+      .map((f) => w5sha(f) + '@' + (fs.existsSync(f) ? fs.statSync(f).mtimeMs : -1)).join(' | ');
+    /** 建一个探针项目：**走真 CLI**（`init` + `add` + `edit --tags`），不自己拼 JSON。
+     *  理由两条：① 少一处"目标判不了"的裸写 —— S2 ⑤ 的**豁免面只减不增**，本文件虽然整文件在册，
+     *  也不该往里加处数；② 夹具是被**写盘闸门**造出来的，"`validate` 通过"才不是"我们以为合法"。 */
+    const w5mk = (n, children) => {
+      run(['init', n, '--title', n]);
+      children.forEach((c) => {
+        run(['add', n, 'root', '--id', c.id, '--topic', c.topic]);
+        if (c.tags && c.tags.length) run(['edit', n, c.id, '--tags', c.tags.join(',')]);
+      });
+    };
+    const w5json = (r) => {
+      try { return JSON.parse(r.out); } catch (e) { /* 落到下面再试一次 */ }
+      const at = String(r.out).indexOf('{');
+      if (at < 0) return null;
+      try { return JSON.parse(String(r.out).slice(at)); } catch (e) { return null; }
+    };
+    /* §4 的**独立**解析（本文件不 require 命令层的 `readTagVocabulary`：那是"被测实现"，
+     * 用它来造夹具就成了自证。这里按文档自身的表格形状再读一遍 —— 两个独立读者必须agree）。 */
+    const w5vocab = [];
+    {
+      const lines = fs.readFileSync(path.join(ROOT, 'docs', 'TAGS.md'), 'utf8').split(/\r?\n/);
+      let inSec = false;
+      for (let i = 0; i < lines.length; i++) {
+        if (!inSec) { if (/^##\s*4\./.test(lines[i])) inSec = true; continue; }
+        if (/^##\s*5\./.test(lines[i])) break;
+        const m = /^\|\s*`([^`]+)`\s*\|/.exec(lines[i]);
+        if (m) w5vocab.push({ tag: m[1], facade: lines[i].indexOf('门面特性') >= 0 });
+      }
+    }
+    const w5plain = w5vocab.filter((x) => !x.facade).map((x) => x.tag);
+    const w5facade = w5vocab.filter((x) => x.facade).map((x) => x.tag);
+    /* 夹具用的三个词**从文档里现取**（不写死）：改词表不该让本块按旧名单判红。 */
+    const T_FLOOR = w5plain.length > 1 ? w5plain[1] : null;      // 普通标签：4 落点 ⇒ 应判红（<5）
+    const T_UNUSED = w5plain.length > 0 ? w5plain[0] : null;     // §4 有、探针里 0 落点 ⇒ 应进 unused
+    const T_FACADE = w5facade.length > 0 ? w5facade[0] : null;   // 门面特性：4 落点 ⇒ 应判绿（≥3）
+    const T_MADEUP = 'w5-不在词表里的标签-' + W5TAG;             // 造坏：闭集判据必须抓得到
+    const w5nd = (id, tags) => ({ id: id, topic: 'w5 探针 ' + id, expanded: true,
+      tags: tags, children: [] });
+    try {
+      check('W5·前提 §4 里解析出足够造夹具的标签（普通 ≥2 个、门面特性 ≥1 个）'
+        + '—— 解析不出就没法判"放宽口径到底生效没有"：§4 现有 ' + w5vocab.length + ' 条（'
+        + w5facade.length + ' 条写明门面特性）',
+        w5vocab.length >= 3 && w5plain.length >= 2 && w5facade.length >= 1,
+        '§4 条数=' + w5vocab.length + ' 普通=' + w5plain.length + ' 门面=' + w5facade.length);
+      if (!T_FLOOR || !T_UNUSED || !T_FACADE) throw new Error('§4 夹具词取不到（上一句已判红）');
+
+      /* ---- 夹具：WA 十个节点（无标签 1 个）、WB 四个节点 ---- */
+      /*  WA：n1..n4 = T_FLOOR（4 落点）· n5..n8 = T_FACADE（4 落点）· n9 = 造坏词 · n10 = 无标签 */
+      w5mk(W5A, [].concat(
+        [1, 2, 3, 4].map((i) => w5nd('wa-n' + i, [T_FLOOR])),
+        [5, 6, 7, 8].map((i) => w5nd('wa-n' + i, [T_FACADE])),
+        [w5nd('wa-n9', [T_MADEUP]), w5nd('wa-n10', [])]));
+      /*  WB：m1..m3 = T_FACADE（跨项目合计 7）· m4 = T_FLOOR（合计 5） */
+      w5mk(W5B, [].concat(
+        [1, 2, 3].map((i) => w5nd('wb-m' + i, [T_FACADE])),
+        [w5nd('wb-m4', [T_FLOOR])]));
+
+      check('W5·夹具合法 两个探针项目都过 `validate`（夹具本身不是坏数据）',
+        run(['validate', W5A]).code === 0 && run(['validate', W5B]).code === 0);
+
+      /* ---- A 只读：一个字节都不写 ---- */
+      const snapBefore = [w5snap(W5A), w5snap(W5B)];
+      const rA1 = run(['tags', W5A, W5B, '--json']);
+      run(['tags', W5A, '--vocab', '--json']);
+      run(['tags', W5A, W5B]);
+      run(['tags', '--json']);
+      const snapAfter = [w5snap(W5A), w5snap(W5B)];
+      check('W5·判据 A（只读）`tags` 全部档位跑完，两个探针项目的 JSON 与 `.changes.jsonl`'
+        + '的 sha256 + mtime **逐项不变**（不信命令自报，独立对拍）',
+        snapBefore[0] === snapAfter[0] && snapBefore[1] === snapAfter[1],
+        snapBefore.join(' ‖ ') + (snapBefore[0] === snapAfter[0] && snapBefore[1] === snapAfter[1]
+          ? ' ⇒ 未变' : ' ⇒ **变了** ' + snapAfter.join(' ‖ ')));
+
+      /* ---- B 确定性：两跑逐字节相同（含 --vocab 档） ---- */
+      const rB1 = run(['tags', W5A, W5B, '--json']);
+      const rB2 = run(['tags', W5A, W5B, '--json']);
+      const rB3 = run(['tags', W5A, '--vocab', '--json']);
+      const rB4 = run(['tags', W5A, '--vocab', '--json']);
+      check('W5·判据 B（确定性）`--json` 与 `--vocab --json` **各跑两次输出逐字节相同**'
+        + '（键序固定、无时间戳、排序走码点序不用 locale —— 与 G-11 同一口径）',
+        rA1.code === 0 && rB1.code === 0 && rB1.out === rB2.out
+          && rB3.code === 0 && rB3.out === rB4.out,
+        '普通档相同=' + (rB1.out === rB2.out) + ' 词表档相同=' + (rB3.out === rB4.out)
+          + ' 字节=' + Buffer.byteLength(rB1.out, 'utf8'));
+
+      /* ---- C 计数口径与跨项目分布（手算对拍） ---- */
+      const jC = w5json(rB1);
+      const byTag = new Map(((jC && jC.tags) || []).map((t) => [t.tag, t]));
+      const cFacade = byTag.get(T_FACADE);
+      const cFloor = byTag.get(T_FLOOR);
+      const cMade = byTag.get(T_MADEUP);
+      const expectOrder = [T_FACADE, T_FLOOR, T_MADEUP];   // 7 / 5 / 1 个节点 ⇒ 降序
+      check('W5·判据 C（计数口径 + 跨项目分布）两个项目合并：`' + T_FACADE + '` 7 个节点'
+        + '（' + W5B + ' 3 / ' + W5A + ' 4）、`' + T_FLOOR + '` 5 个、造坏词 1 个；'
+        + 'tagCount=3、nodes=16（**含两个 root**）、taggedNodes=13、untaggedNodes=3；顺序 = 节点数降序',
+        !!jC && jC.tagCount === 3 && jC.nodes === 16 && jC.taggedNodes === 13
+          && jC.untaggedNodes === 3 && jC.projects.length === 2
+          && !!cFacade && cFacade.nodes === 7 && cFacade.projects.length === 2
+          && cFacade.projects[0].project === W5A && cFacade.projects[0].nodes === 4
+          && cFacade.projects[1].project === W5B && cFacade.projects[1].nodes === 3
+          && !!cFloor && cFloor.nodes === 5 && !!cMade && cMade.nodes === 1
+          && JSON.stringify(jC.tags.map((t) => t.tag)) === JSON.stringify(expectOrder),
+        jC ? ('tagCount=' + jC.tagCount + ' nodes=' + jC.nodes + ' tagged=' + jC.taggedNodes
+          + ' untagged=' + jC.untaggedNodes + ' 顺序=' + jC.tags.map((t) => t.tag).join('>')) : '解析失败');
+
+      /* ---- D 与 `stats` 同一个"数标签"实现（不许有第二份遍历） ---- */
+      const jD1 = w5json(run(['tags', W5A, '--json']));
+      const jD2 = w5json(run(['stats', W5A, '--json']));
+      check('W5·判据 D（数标签只有一处实现）单项目 `tags` 的 tagCount / nodes / taggedNodes'
+        + ' **逐项等于** `stats` 的同名读数（两个读数是同一个遍历的两种分辨率）',
+        !!jD1 && !!jD2 && jD1.tagCount === jD2.tags && jD1.nodes === jD2.nodes
+          && jD1.taggedNodes === jD2.taggedNodes,
+        jD1 && jD2 ? ('tags: ' + jD1.tagCount + '/' + jD1.nodes + '/' + jD1.taggedNodes
+          + ' vs stats: ' + jD2.tags + '/' + jD2.nodes + '/' + jD2.taggedNodes) : '解析失败');
+
+      /* ---- E 闭集判据有判别力 ---- */
+      const jE = w5json(rB3);
+      const eByTag = new Map(((jE && jE.tags) || []).map((t) => [t.tag, t]));
+      check('W5·判据 E（闭集，造坏 ⇒ 红）造的那个不在 §4 的标签 `inVocab === false`，'
+        + '两个 §4 里的标签 `inVocab === true`（判据不是恒真：有反例时它真的会变）',
+        !!jE && !!eByTag.get(T_MADEUP) && eByTag.get(T_MADEUP).inVocab === false
+          && !!eByTag.get(T_FLOOR) && eByTag.get(T_FLOOR).inVocab === true
+          && !!eByTag.get(T_FACADE) && eByTag.get(T_FACADE).inVocab === true,
+        jE ? (T_MADEUP + '=' + (eByTag.get(T_MADEUP) || {}).inVocab
+          + ' ' + T_FLOOR + '=' + (eByTag.get(T_FLOOR) || {}).inVocab) : '解析失败');
+
+      /* ---- F 落点下限 + 门面特性的放宽**真的生效**（本块的核心判别力证明） ---- */
+      const fBelow = new Map((((jE && jE.vocab) || {}).belowFloor || []).map((b) => [b.tag, b]));
+      check('W5·判据 F（落点下限 + 门面特性放宽，造坏 ⇒ 红）两个标签**各 4 个落点**：'
+        + '普通标签 `' + T_FLOOR + '` 进 belowFloor（floor=5），§4 里写明「门面特性」的 `'
+        + T_FACADE + '` **不进**（floor=3）。若解析器忽略那四个字，后者会以 floor 5 判红 ⇒ 本断言变红',
+        !!jE && !!fBelow.get(T_FLOOR) && fBelow.get(T_FLOOR).nodes === 4
+          && fBelow.get(T_FLOOR).floor === 5 && !fBelow.get(T_FACADE),
+        jE ? ('belowFloor=' + JSON.stringify((jE.vocab || {}).belowFloor || [])
+          + ' 门面被误判=' + (fBelow.has(T_FACADE) ? '是（✗）' : '否（✓）')) : '解析失败');
+
+      /* ---- G 反向缺口：§4 有、本探针里 0 落点 ---- */
+      const gUnused = ((jE && jE.vocab) || {}).unused || [];
+      check('W5·判据 G（反向缺口）§4 里有、这批项目里 **0 落点**的 `' + T_UNUSED
+        + '` 出现在 `vocab.unused` 里（词表空转要看得见），而**有落点**的标签不在里面',
+        !!jE && gUnused.indexOf(T_UNUSED) >= 0
+          && gUnused.indexOf(T_FLOOR) < 0 && gUnused.indexOf(T_FACADE) < 0,
+        'unused 条数=' + gUnused.length + ' 含 ' + T_UNUSED + '=' + (gUnused.indexOf(T_UNUSED) >= 0)
+          + ' 含 ' + T_FLOOR + '=' + (gUnused.indexOf(T_FLOOR) >= 0));
+
+      /* ---- H 四条闸门各自响亮失败 ---- */
+      const h1 = run(['tags', '--vocab']);
+      const h2 = run(['tags', W5A, '--vocab=false']);
+      const h3 = run(['tags', 'it-probe-w5-不存在的项目-' + W5TAG]);
+      check('W5·判据 H（闸门）① `--vocab` 不点名项目 ⇒ exit 1 + `error:`；'
+        + '② `--vocab=false` ⇒ exit 1（纯布尔不收赋值）；③ 点名不存在的项目 ⇒ exit 1 且报文列出库里现有的',
+        h1.code === 1 && /^error:/m.test(h1.out) && h2.code === 1 && /^error:/m.test(h2.out)
+          && h3.code === 1 && /^error:/m.test(h3.out) && h3.out.indexOf(W5A) >= 0,
+        'exit=' + h1.code + '/' + h2.code + '/' + h3.code
+          + ' 点名不存在时列出库里现有项目=' + (h3.out.indexOf(W5A) >= 0));
+
+      /* ---- I `--vocab` 是纯布尔：后面的项目名不许被吞 ---- */
+      const rI = run(['tags', W5A, '--vocab', W5B, '--json']);
+      const jI = w5json(rI);
+      check('W5·判据 I（纯布尔登记）`tags A --vocab B --json`：扫描面**两个项目都在**、'
+        + '且 `vocab` 键真的出现 ⇒ 写在 flag 后面的项目名没有被当成它的值吞掉',
+        rI.code === 0 && !!jI && !!jI.vocab && jI.projects.length === 2
+          && jI.projects.indexOf(W5A) >= 0 && jI.projects.indexOf(W5B) >= 0,
+        jI ? 'projects=' + JSON.stringify(jI.projects) : ('exit=' + rI.code));
+
+      /* ---- J 全库档只给清单、不给判据 ---- */
+      const jJ = w5json(run(['tags', '--json']));
+      const jJtags = ((jJ && jJ.tags) || []);
+      check('W5·判据 J（全库 = 清单，不是合规）`tags --json`：`vocab` 与 `inVocab` **都不出现**'
+        + '（不给 --vocab 就不读 `docs/TAGS.md`、也不替调用方认定适用范围），`projects` 升序',
+        !!jJ && jJ.mode === 'library' && jJ.vocab === undefined
+          && jJtags.every((t) => t.inVocab === undefined)
+          && JSON.stringify(jJ.projects) === JSON.stringify(jJ.projects.slice().sort()),
+        jJ ? ('mode=' + jJ.mode + ' 有 vocab 键=' + (jJ.vocab !== undefined)
+          + ' 项目数=' + jJ.projects.length) : '解析失败');
+    } finally {
+      [W5A, W5B].forEach((n) => {
+        try { fs.rmSync(w5dir(n), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+      });
+      const left = [W5A, W5B].filter((n) => fs.existsSync(w5dir(n)));
+      check('W5·收尾 两个探针项目清干净（残留 ' + left.length + ' 个 —— 现算）',
+        left.length === 0, left.join(',') || '无残留');
+    }
+  }
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;

@@ -238,6 +238,13 @@ function init() {
       + '同样是**跨项目合计 + 逐项目分账**；命中形状仍是 **12 键**（开的是 `matchIn` 取值表，不是加键）',
     fn: loadFile('project').searchAll });
   register({ name: 'stats', usage: 'stats <项目> [--json]', options: ['json'], desc: '项目统计（节点数/深度/图片数/链接数）', fn: loadFile('project').stats });
+  /* 【W5】标签清单。**为什么叫 `tags` 而不叫 `tag-*`**：`docs/FEATURES.md` §3 的 `TC`（标签治理，
+   * 台账 `W10`）那一行的证据句逐字写着「命令表里 `tag-*` **零条**」—— 一旦这里占用 `tag-` 前缀，
+   * 那条证据当场过期，而 `TC` 那一行不在本批的许改范围。`tags` 与 `assets`/`files`/`links`
+   * 同属"列清单"那一族，正好让 `tag-*` 这个命名空间留给标签治理。
+   * **不新立功能代号**：`docs/FEATURES.md` §5 第 108 行已裁定 `W5` 是"打包项"、不收录、
+   * 无代号（且 §2 第 3 条不许代理自行起名）⇒ 本命令只以命令名出现。 */
+  register({ name: 'tags', usage: 'tags [<项目>…] [--json] [--vocab]', options: ['json', 'vocab'], desc: '**标签清单**（只读）：有哪些标签、各多少个节点、分布在哪几个项目 —— 答的是 `stats` 答不了的那半（`stats` 只给标签总数，而 `search --tag` 要求你先知道标签名）。**不给项目名 = 全库**（按项目名升序扫）；点名项目 = 只扫这些（`tags 甲 乙`）。`--vocab` 追加**词表核对**三条判据：① 出现的标签是否都在 `docs/TAGS.md` §4 那个闭集里（`tags[].inVocab`）；② 落点是否达到 §2 第 6 条 / §8 判据① 的下限（≥5；§4 该行写明「门面特性」的 ≥3）；③ §4 里有、本次扫描面 0 落点的"词表空转"。⚠️ `--vocab` **必须点名项目**：那份词表的标题是「7 本书共用」，而"哪几个项目适用"在盘上没有机器可读的声明（`comnet` 有自己的标签，不受它约束）⇒ 全库只给清单、不给合规判断（不带项目名会响亮拒绝并给出路）。**不做标签之间的共现/孤岛/层级**（理由见 `cli/commands/project.js` 的 `tags` 函数头）。`--json` **两跑逐字节相同**：键序固定、无时间戳、排序一律码点序（不用 locale）。', fn: loadFile('project').tags });
   register({ name: 'init', usage: 'init <项目> [--title 标题] [--dry-run]', options: ['title'], desc: '创建空项目（meta + root 节点）', fn: loadFile('project').init });
   register({ name: 'backlinks', usage: 'backlinks <项目> <id> [--json]', options: ['json'], desc: '查看节点反向链接（谁引用了我，跨项目）', fn: loadFile('relations').backlinks });
   register({ name: 'related', usage: 'related <项目> <id> [--json] [--depth N]', options: ['json', 'depth'], desc: '查看节点相关知识点（我引用谁 + 谁引用我，双向合并去重；--depth N 扩到 N 跳邻域，N 任意正整数，防环 + 结果上限 500 条，超限响亮报错）', fn: loadFile('relations').related });

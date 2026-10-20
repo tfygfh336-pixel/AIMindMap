@@ -22,6 +22,11 @@ const MMConfig = require('../../src/config.js');   // 版本号单源（APP_VERS
 const schema = require('../../src/schema.js');     // 契约取值表 + 绑定迁移（`bind-sync` 取用，别抄字面量）
 const uiState = require('../../src/ui-state.js');  // 界面脏信号（`bind-sync` 的纪律①：脏就不写）
 const docImport = require('../../src/doc-import.js');  // 功能 5a：md/txt/docx → 提纲（三种前端、一个建树入口）
+/* 【W5】`cli/core.js`：本文件只用它两样东西 —— `readTagVocabulary`（读 `docs/TAGS.md` §4 的唯一入口）
+ * 与 `TAG_FLOOR` / `TAG_FLOOR_FACADE`（§8 判据① 的两个下限）。为什么走 core 而不是自己拼路径：
+ * 见下方 `mergeTagCounts` 上面那段"为什么 `docs/TAGS.md` 的读取不放在本文件"。
+ * 依赖方向 `cli/commands/* → cli/core.js` 是既有形态（`cli/commands/relations.js` 取 `SKIP_WRITE` 同此）。 */
+const core = require('../core.js');
 // 条目层的两件**纯**助手（`mintItemId` / `rerender`）从条目命令那一份实现取 —— `import-md` 的
 // "前导正文落成首条条目"必须与 `item-*` 六条命令用**同一份** id 铸造与 detail 重建口径（见那里的导出注释）。
 const itemCommands = require('./item.js');
@@ -461,6 +466,84 @@ function scopeList(raw, all) {
       + ' —— 名字要写目录名（`projects/` 下那一层），不是 meta.name。' };
   }
   return { ok: true, names: want.slice().sort(compareProjectNames), scoped: true };
+}
+
+/* ---------------- 【W5】标签清单（`tags`）的命令层零件 ----------------
+ * 为什么零件在命令层、纯逻辑在 `src/`：这里要**读盘**（`ctx.store` 扫项目），而 `src/query.js` 的
+ * `computeTagCounts` 是"不读盘、不认识项目名"的纯函数（与 `computeStats` 同一个分工）。
+ * **数标签只有一处实现**：逐项目计数全走 `query.computeTagCounts`，这里只做跨项目合并 ——
+ * 不许再写一遍遍历（否则"根节点算不算""重复标签算几次"迟早两处各说一套，那是最贵的病）。
+ *
+ * ⚠️ **`docs/TAGS.md` 的读取刻意不放在本文件**（在 `cli/core.js` 的 `readTagVocabulary`）：
+ * 本文件有 3 处**目标判不了**的存量裸写（`mdFile` / `index.html` / `file`），而 S2 ⑤ 的写盘出口门禁
+ * 判定 ④ 的规则是"文件里出现受管资产名字面量 + 有判不了的裸写 ⇒ 可能在写受管资产"——
+ * 一在这里 `path.join(…, 'docs', 'TAGS.md')`，这 3 处存量会当场变红，而豁免面 siteCap 82
+ * **只减不增**（`scripts/collateral-check.js` 的 `WRITE_OUTLET_SITE_CAP`）⇒ 只能让"读受管文本"
+ * 留在本来就归它管的那一层（`cli/core.js` 已经持有 `PROJECTS_DIR` 这个工程级路径事实）。
+ */
+
+/**
+ * 跨项目合并一份标签清单（`tags` 的骨架）。
+ *
+ * 口径（判据，可复算）：
+ *   · 扫描顺序 = 传入的 `names` 顺序（调用方已按**项目名升序**排好 ⇒ 与文件系统序无关）；
+ *   · 每个项目的节点数/带标签节点数/逐标签计数**全部来自** `query.computeTagCounts`（唯一实现）；
+ *   · `projectsOf(t) = [{project, nodes}]` 按项目名升序（确定序）；
+ *   · `tags[]` 按 `nodes` **降序**、同数按标签名**码点升序**（显示口径；两跑逐字节相同）；
+ *   · 读不动的项目：`strict`（点名项目时）⇒ 报错；否则登记进 `unreadable[]` 并继续
+ *     —— 与 `health` 的库级模式同一条纪律（读数命令不该被一个坏文件挡住，但也绝不静默）。
+ *
+ * @returns {{projects:string[], nodes:number, taggedNodes:number, untaggedNodes:number,
+ *            tagCount:number, tags:Array, unreadable:Array}}
+ */
+function mergeTagCounts(ctx, names, strict) {
+  const unreadable = [];
+  const scanned = [];
+  const merged = new Map();           // tag → { nodes, byProject: Map<project, nodes> }
+  let nodes = 0;
+  let taggedNodes = 0;
+
+  names.forEach((name) => {
+    let data = null;
+    try { data = ctx.store.read(name).data; }
+    catch (e) {
+      const why = (e && e.message) || String(e);
+      if (strict) ctx.error('项目读不了：' + name + '（' + why + '）—— 点名的项目读不动就不给读数'
+        + '（半份清单比没有清单更容易被当真）。');
+      unreadable.push({ project: name, error: why });
+      return;
+    }
+    const one = query.computeTagCounts(data && data.data);
+    nodes += one.nodes;
+    taggedNodes += one.taggedNodes;
+    one.counts.forEach((c) => {
+      const cur = merged.get(c.tag) || { nodes: 0, byProject: new Map() };
+      cur.nodes += c.nodes;
+      cur.byProject.set(name, (cur.byProject.get(name) || 0) + c.nodes);
+      merged.set(c.tag, cur);
+    });
+    scanned.push(name);
+  });
+
+  const tags = Array.from(merged.keys()).map((tag) => {
+    const cur = merged.get(tag);
+    const byProject = Array.from(cur.byProject.keys()).sort(query.compareStrings)
+      .map((p) => ({ project: p, nodes: cur.byProject.get(p) }));
+    return { tag: tag, nodes: cur.nodes, projects: byProject };
+  });
+  // 显示口径：节点数降序 → 标签名升序（**不用 localeCompare**：那按环境 locale 定序，
+  // 而 `--json` 承诺两跑 sha256 相同）
+  tags.sort((a, b) => (b.nodes - a.nodes) || query.compareStrings(a.tag, b.tag));
+
+  return {
+    projects: scanned,
+    nodes: nodes,
+    taggedNodes: taggedNodes,
+    untaggedNodes: nodes - taggedNodes,
+    tagCount: tags.length,
+    tags: tags,
+    unreadable: unreadable
+  };
 }
 
 /**
@@ -1063,6 +1146,172 @@ module.exports = {
     const s = Object.assign({ project: ctx.projectName }, query.computeStats(data.data));
     if (ctx.args.json) ctx.outJson(s);
     else Object.keys(s).forEach((k) => ctx.out(k + ': ' + s[k]));
+  },
+
+  /**
+   * 【W5】`tags` —— **标签清单**（只读）：有哪些标签、各多少个节点、分布在哪几个项目。
+   *
+   * ## 为什么需要它（台账原话，不是我的发明）
+   * `.review/20261010-卖点与功能-常驻讨论/待做清单.md:126` 逐字：
+   *   「**W5a 跨项目标签聚合**：列出**全部标签 + 计数** ✓（现在 `stats` 只给标签总数 ✗）、
+   *     某标签下的**跨项目节点清单** ✓。」
+   * 后半句已经兑现（`search-all --tag`，见 `docs/FEATURES.md` §5 第 108 行的既有裁决：
+   * "其聚合那半已由 `CS` 承载"）；**前半句没有出口** —— `stats` 只给 `tags: <个数>`，
+   * 而 `search --tag` **要求你先知道标签名**。于是"这库里到底有哪些标签"是个死结：
+   * 不认识它，标签这一维就只剩"点一个已知标签"。
+   *
+   * ## 明确不做（逐条都有可复算的理由，见 `.review/20261020-W5-tag-relations/00-定题.md` §2/§5.3）
+   *   · **标签之间的共现图**：7 本书 432 个带标签节点里 87.3% 只带 1 个标签；真实共现只有 38 对、
+   *     最强一对 5 个节点、94.9% 的标签对从不同时出现 ⇒ 印出来是把"默认状态"当异常报告。
+   *     而且共现统计**已有归属**（`待做清单.md:150` 把"同类 = 共现统计"写进 `W10`）。
+   *   · **孤岛（只出现在 1 个节点上的标签）**：`docs/TAGS.md` §2 第 4 条 + §8 判据①（≥5 落点）
+   *     已经保证它**恒为空**（实测 7 本书 0 个）⇒ 永远输出空表的判据不是判据。
+   *   · **标签树 / 上位 / 下位**：`docs/TAGS.md` §3 已把标签钉成"**平的**、不带前缀"（5 条理由）。
+   *   · **某标签下的节点清单**：已有 `search-all --tag`，重做就是第二份实现。
+   *   · **写盘**（改标签 / 批量迁移）：那是标签治理（`TC`/`W10`）的活。
+   *
+   * ## 三条契约判据（只在 `--vocab` 下给）
+   *   ① **闭集**：出现的标签是不是 `docs/TAGS.md` §4 那个词表里的（`tags[].inVocab`）；
+   *   ② **落点下限**：`docs/TAGS.md` §2 第 6 条 + §8 判据①（≥5 落点；某本书的门面特性 ≥3 ——
+   *      "门面特性"按 §4 该行有没有那四个字**机械识别**，§8 原文就是"脚本按这四个字识别"）；
+   *   ③ **反向缺口**：§4 里有、本次扫描面里 **0 落点**的标签（词表空转）。
+   *   ②与③**不重叠**：0 落点只进③，`0 < 落点 < 下限` 才进②（同一件事不报两遍）。
+   *
+   * ## ⚠️ `--vocab` 为什么必须点名项目（本命令唯一一条"反直觉"的规矩）
+   *   `docs/TAGS.md` 的标题写的是「**7 本书共用**词表」—— 词表**有适用范围**，而"哪几个项目属于
+   *   那 7 本"**在盘上没有机器可读的声明**：`comnet` 就有另一套标签（`协议`/`机制`/`概念`…），
+   *   那**不是越界**，是**不受这份词表约束**。
+   *   ⇒ 本命令**不替调用方认定适用范围**：
+   *     · 不给项目名 = **全库** = 一个"清单"问题，不是一个"合规"问题 ⇒ 拒绝给判据（exit 1 + 出路）；
+   *     · **点名项目 = 调用方声明"这几本适用那份词表"** ⇒ 才给三条判据。
+   *   这条同时挡掉一个静默陷阱：全库跑判据会把 `comnet` 那 12 个自有标签打成"不在词表内"，
+   *   而它们本来就不该被这个词表管。
+   *
+   * ## 确定性与只读
+   *   · **只读**：不写项目、不写变更日志、不进 `WRITE_COMMANDS`（`--idem` 会被 dispatch 拒绝）；
+   *   · 扫描顺序 = 项目名**码点升序**；`tags[]` = 节点数降序 → 标签名码点升序；项目内分布同理
+   *     ⇒ `--json` **两跑逐字节相同**（无时间戳、无随机、无 locale 依存的排序）。
+   */
+  tags(ctx) {
+    // ---- ① `--vocab` 的形态闸门（纯布尔；带 `=` 的写法与 `contents --apply` 同一条口径）----
+    if (typeof ctx.args.vocab === 'string') {
+      ctx.error('`--vocab` 是**纯布尔**开关，不接受 `=` 赋值（收到 `--vocab=' + ctx.args.vocab + '`）。'
+        + '去掉值即可：`tags <项目…> --vocab`。');
+    }
+    const wantVocab = !!ctx.args.vocab;
+
+    // ---- ② 扫描面：点名 ⇒ 只扫这些；不点名 ⇒ 全库（项目名升序 = 确定序）----
+    const all = storeProjectNames(ctx);
+    if (!all.length) {
+      ctx.error('库里一个项目都没有（`projects/` 下没有 <名字>/<名字>.json）—— 先 `init <项目>`。');
+    }
+    const named = [];
+    (Array.isArray(ctx.args._) ? ctx.args._ : []).forEach((x) => {
+      const n = (typeof x === 'string') ? x.trim() : '';
+      if (n && named.indexOf(n) < 0) named.push(n);
+    });
+    let names = all;
+    if (named.length) {
+      const missing = named.filter((n) => all.indexOf(n) < 0);
+      if (missing.length) {
+        ctx.error('点名的项目不在库里：' + missing.join(' / ')
+          + ' · 库里现有 ' + all.length + ' 个：' + all.join(' / ')
+          + ' · 名字要写目录名（`projects/` 下那一层），不是 meta.name；'
+          + '全库清单请直接 `tags`（不给项目名）');
+      }
+      names = named.slice().sort(compareProjectNames);
+    }
+
+    // ---- ③ `--vocab` 的适用范围闸门（理由见函数头那一节）----
+    if (wantVocab && !named.length) {
+      ctx.error('`--vocab` 必须**点名项目**（例：`tags ' + all[0] + ' --vocab`）：'
+        + '`docs/TAGS.md` 的标题是「**7 本书共用**词表」—— 词表**有适用范围**，而"哪几个项目属于'
+        + '那 7 本"在盘上没有机器可读的声明（`comnet` 就有另一套标签，不受这份词表约束）。'
+        + '⇒ 不给项目名 = 全库 = 一个**清单**问题、不是一个**合规**问题，本命令不替你认定适用范围。'
+        + '要判词表，就把适用的那几本**点名**出来。');
+    }
+
+    // ---- ④ 扫盘（逐项目计数走 `src/query.js` 的唯一实现；本层只合并）----
+    const scan = mergeTagCounts(ctx, names, named.length > 0);
+
+    // ---- ⑤ 词表核对（懒解析：不给 `--vocab` 就一个字节都不读词表）----
+    let vocab = null;
+    let vocabSet = null;
+    let outOfVocab = [];
+    if (wantVocab) {
+      const v = core.readTagVocabulary();
+      if (!v.ok) ctx.error(v.message);
+      vocabSet = new Set(v.items.map((it) => it.tag));
+      const nodesOf = new Map(scan.tags.map((t) => [t.tag, t.nodes]));
+      const unused = [];        // §4 有、扫描面 0 落点（文档序 ⇒ 读出来还看得出分组）
+      const belowFloor = [];    // 0 < 落点 < 下限
+      v.items.forEach((it) => {
+        const n = nodesOf.get(it.tag) || 0;
+        if (n === 0) { unused.push(it.tag); return; }
+        const floor = it.facade ? core.TAG_FLOOR_FACADE : core.TAG_FLOOR;
+        if (n < floor) belowFloor.push({ tag: it.tag, nodes: n, floor: floor });
+      });
+      outOfVocab = scan.tags.filter((t) => !vocabSet.has(t.tag)).map((t) => t.tag);
+      vocab = { source: 'docs/TAGS.md §4', count: v.items.length, unused: unused, belowFloor: belowFloor };
+    }
+
+    // ---- ⑥ 输出（JSON 键序写死；`inVocab`/`unreadable`/`vocab` 只在真有内容时出现）----
+    const tagsOut = scan.tags.map((t) => {
+      const o = { tag: t.tag, nodes: t.nodes, projects: t.projects };
+      if (vocabSet) o.inVocab = vocabSet.has(t.tag);
+      return o;
+    });
+    if (ctx.args.json) {
+      const payload = {
+        ok: true,
+        mode: named.length ? 'named' : 'library',
+        projects: scan.projects,
+        nodes: scan.nodes,
+        taggedNodes: scan.taggedNodes,
+        untaggedNodes: scan.untaggedNodes,
+        tagCount: scan.tagCount,
+        tags: tagsOut
+      };
+      if (scan.unreadable.length) payload.unreadable = scan.unreadable;
+      if (vocab) payload.vocab = vocab;
+      ctx.outJson(payload);
+      return;
+    }
+
+    // ---- 文本档 ----
+    // 「读不动的项目」必须排在**读数之前**：不然人家先读到一堆数字、最后才知道它们不完整。
+    if (scan.unreadable.length) {
+      ctx.out('⚠ 读不动、本次**没扫到**的项目 ' + scan.unreadable.length + ' 个（下面的读数里不含它们）：');
+      scan.unreadable.forEach((u) => ctx.out('  · ' + u.project + '：' + u.error));
+      ctx.out('');
+    }
+    ctx.out('标签清单 · ' + (named.length ? '点名的 ' + scan.projects.length + ' 个项目'
+      : '全库 ' + scan.projects.length + ' 个项目')
+      + ' / ' + scan.nodes + ' 个节点（带标签 ' + scan.taggedNodes
+      + ' · 无标签 ' + scan.untaggedNodes + '）｜ 不同标签 ' + scan.tagCount + ' 个');
+    if (!scan.tagCount) {
+      ctx.out('  （这批项目里一个标签都没有 —— 不是命令坏了：本命令数的是 `node.tags`，空就是空。'
+        + '要打标签见 `edit --tags` / `item-add --tags`，词表见 `docs/TAGS.md`。）');
+    }
+    scan.tags.forEach((t) => {
+      ctx.out('  ' + t.nodes + ' 个节点 · ' + t.tag + ' · '
+        + t.projects.map((p) => p.project + ' ' + p.nodes).join(' / '));
+    });
+
+    if (vocab) {
+      ctx.out('');
+      ctx.out('词表核对（来源 docs/TAGS.md §4，共 ' + vocab.count + ' 个标签；'
+        + '扫描面 = 你点名的 ' + scan.projects.length + ' 个项目）');
+      ctx.out('  · 不在词表内的标签：' + (outOfVocab.length
+        ? outOfVocab.length + ' 个 — ' + outOfVocab.join(' / ') : '0 个'));
+      ctx.out('  · 落点低于下限：' + (vocab.belowFloor.length
+        ? vocab.belowFloor.map((b) => b.tag + '（' + b.nodes + ' < ' + b.floor + '）').join(' / ') : '0 个')
+        + '（下限 ≥' + core.TAG_FLOOR + '；§4 里写明「门面特性」的行 ≥' + core.TAG_FLOOR_FACADE + '）');
+      ctx.out('  · 词表里有但 0 落点：' + (vocab.unused.length
+        ? vocab.unused.length + ' 个 — ' + vocab.unused.join(' / ') : '0 个'));
+      ctx.out('  ⚠ 「不在词表内」只对你**点名的那几个项目**成立：`docs/TAGS.md` 的标题是'
+        + '「7 本书共用词表」，别把不受它约束的项目（如 `comnet`）一起点进来再报违规。');
+    }
   },
 
   init(ctx) {

@@ -44,6 +44,64 @@ const PROJECTS_DIR = process.env.AI_MINDMAP_PROJECTS_DIR
   ? path.resolve(process.env.AI_MINDMAP_PROJECTS_DIR)
   : path.resolve(__dirname, '..', 'projects');
 
+/** 仓库根 —— 与 `PROJECTS_DIR` 同一条纪律：**工程级路径事实只在这里说一次**。
+ *  为什么放在本文件而不是各命令里：`docs/TAGS.md` 是**唯一一份**要被命令读的受管文本，
+ *  而"受管资产的路径字面量"在 S2 ⑤ 写盘出口门禁里是有代价的 —— 判定 ④ 的规则是
+ *  "文件里出现受管资产名字面量 **且** 有目标判不了的裸写 ⇒ 它可能在写受管资产"。
+ *  `cli/commands/project.js` 有 3 处这样的存量裸写（`import-md` / `export-md` 等的目标来自参数），
+ *  一旦它自己拼这个词表路径，那 3 处会当场变红，而豁免面 siteCap **只减不增**。
+ *  ⇒ "读受管文本"留在这里：本文件 **0 个写调用点**（`cli/core.js` 的写管道全部走
+ *  `src/data-store.js` 的出口），读一份只读文档是它的正当职责。 */
+const REPO_ROOT = path.resolve(__dirname, '..');
+
+/** 受管文本的**只读**加载（目前只有一份：标签词表）。
+ *
+ *  行为：读 `docs/TAGS.md` → 机械解析 §4 的标签表。**这是"词表"的唯一来源**，
+ *  代码里**绝不许**抄一份标签名单：抄了之后词表一改，判据就成了第二个答案，而没人知道它过期了。
+ *
+ *  解析口径（对着 §4 的表格形状，逐条可查）：
+ *    · 扫描面 = `## 4.` 到下一个 `## 5.` 之间；
+ *    · 一行一条标签：表格行第一列是 `` `标签名` ``（`| \`xxx\` | 分组 | …`）；
+ *    · **门面特性** = 该行文本里含「门面特性」四个字 —— 这是 `docs/TAGS.md` §8 原文的识别口径
+ *      （"脚本按这四个字识别，不认口头声明"），本函数照办，不另立判据。
+ *
+ *  @returns {{ok:true, items:Array<{tag:string, facade:boolean}>} | {ok:false, message:string}}
+ *    `items` 保持**文档序**（§4 的分组顺序有意义，按它印出来的"没落点的词"才读得懂）。
+ *    `ok:false` 时**不猜**：调用方必须响亮拒绝（一个坏掉的词表解析不许静默退化成"0 条判据"）。
+ */
+function readTagVocabulary() {
+  const file = path.join(REPO_ROOT, 'docs', 'TAGS.md');
+  let text = null;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) {
+    return { ok: false, message: '读不到词表文件 ' + file + '（' + ((e && e.message) || e) + '）—— '
+      + '`--vocab` 的判据以 `docs/TAGS.md` §4 为唯一来源，没有它就不给结论。' };
+  }
+  const lines = text.split(/\r?\n/);
+  let inSec = false;
+  const items = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!inSec) { if (/^##\s*4\./.test(line)) inSec = true; continue; }
+    if (/^##\s*5\./.test(line)) break;
+    const m = /^\|\s*`([^`]+)`\s*\|/.exec(line);
+    if (m) items.push({ tag: m[1], facade: line.indexOf('门面特性') >= 0 });
+  }
+  if (!items.length) {
+    return { ok: false, message: '`docs/TAGS.md` 里解析不出 §4 的标签表（`## 4.` 与 `## 5.` 之间'
+      + '第一列写成 `` `标签名` `` 的表格行）—— 词表格式变了就得同批改本解析'
+      + '（`cli/core.js` 的 `readTagVocabulary`），别让判据静默变成"0 个标签"。' };
+  }
+  return { ok: true, items: items };
+}
+
+/** `docs/TAGS.md` §2 第 6 条 / §8 判据① 的**落点下限**（那两个数是文档里的文字规定，
+ *  这里是它唯一一份**可执行**副本 —— 改判据要同批改 `docs/TAGS.md`，否则判据会照旧值判）。
+ *    · 常规：≥5 个落点（`TAG_FLOOR`）；
+ *    · 放宽：某本书的**门面特性** ≥3（`TAG_FLOOR_FACADE`）—— 走这条路的标签必须在 §4 该行
+ *      写明「门面特性」四个字（§8 原文："脚本按这四个字识别，不认口头声明"）。 */
+const TAG_FLOOR = 5;
+const TAG_FLOOR_FACADE = 3;
+
 /** 极简参数解析：--key value / --key=value / --flag / 位置参数 */
 function parseArgs(argv) {
   const out = { _: [] };
@@ -76,6 +134,11 @@ function parseArgs(argv) {
     // 【W4】`search` / `search-all` 的 `--explain`：也是**纯布尔** ⇒ 同样登记
     //   （不登记就会被通用分支按"--key value"吞掉后面的关键词 —— 与 `--no-heat` 同一种病）。
     if (a === '--explain') { out.explain = true; continue; }
+    // 【W5】`tags --vocab` 的词表核对开关：**纯布尔** ⇒ 必须在这里登记，否则会被通用分支
+    // 按"--key value"处理、把后面点名的项目（`tags book-a --vocab book-b`）吞成它的值 ——
+    // 与 `--deep` / `--apply` / `--no-heat` 同一种病（位置参数少一个 ⇒ 报错指向别处）。
+    // 带 `=` 的写法（`--vocab=false`）由命令侧**响亮拒绝**（与 `--apply` 同一条口径）。
+    if (a === '--vocab') { out.vocab = true; continue; }
     // ⚠️ `--mode` / `--weights` **带值**，故意**不**在这里登记（走通用分支：`--mode x` / `--mode=x`）。
     // 纯布尔 flag 显式登记：否则会被通用分支按"--key value"处理，
     // 一旦后面跟了位置参数（如 `mentions 项目 --include-structural 5`）就被误吞成值。
@@ -1004,6 +1067,8 @@ function createContext(argv, meta) {
 
 module.exports = {
   createContext, parseArgs, optionKey, unknownOptions, parseIntOption, optionFlag, PROJECTS_DIR,
+  // ---- 【W5】受管文本的只读加载（`docs/TAGS.md` §4 词表）+ 词表判据的两个下限 ----
+  REPO_ROOT, readTagVocabulary, TAG_FLOOR, TAG_FLOOR_FACADE,
   unknownShortOptions, SHORT_OPTIONS,
   // ---- 写管道流（S7）：幂等键 ----
   IdemReplay, SKIP_WRITE, GLOBAL_OPTIONS, IDEM_MAX, WRITE_COMMANDS, normalizeIdemKey, readChangeEntries,

@@ -186,6 +186,58 @@
       originNodes: originNodes, originSources: originSet.size };
   }
 
+  /** 字符串的**确定序**比较（码点序）。
+   *  为什么不用 `localeCompare`：它按运行环境的 locale/collation 定序 ⇒ 换机器/换 Node 版本
+   *  就可能换顺序，而这条命令的输出要能**两跑 sha256 相同**（`--json` 的确定性承诺）。
+   *  与 `cli/commands/project.js` 里项目名的比较是同一条口径。 */
+  function compareStrings(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }
+
+  /**
+   * **标签清单**（tag ↔ node 的 membership，逐标签计节点数）—— 本文件是"数标签"的唯一实现处。
+   *
+   * 为什么放在这里（而不是命令层另写一份遍历）：`computeStats` 里的 `tags` 计数就是
+   * `tagSet.size`（紧挨在上面），它与"有哪些标签、各多少个节点"是**同一件事的两种分辨率**
+   * —— 两处各写一份遍历，必然在"根节点算不算""空串算不算""同一个标签写两遍算几次"上分叉。
+   * ⇒ 清单在这里；跨项目合并与 `docs/TAGS.md` 的契约核对在命令层（`cli/commands/project.js`
+   * 的 `tags`），因为那两件事都不是"遍历一棵树"。
+   *
+   * 口径（每一条都是判据，可复算，无自由裁量）：
+   *   · **遍历面** = 整棵树，**含根节点**（与 `computeStats` 同一面，两个读数才对得上）。
+   *   · `nodes` = 遍历到的节点总数；`taggedNodes` = `n.tags` 非空的节点数；
+   *     `untaggedNodes` = `nodes - taggedNodes`。**无标签不是缺陷**（`docs/TAGS.md` §10
+   *     明确允许无标签、"宁可不打不许硬塞"）⇒ 本函数只报数，不判好赖。
+   *   · 同一个节点上重复写同一个标签只计 **1** 次（节点数语义，不是字符串出现次数）。
+   *   · **不做词表判断**：`docs/TAGS.md` §4 的闭集有**适用范围**（标题写的是"7 本书共用"），
+   *     而"哪些项目适用"在盘上没有机器可读的声明 ⇒ 这里不认识词表，谁想比谁自己声明（见命令层）。
+   *
+   * @param {object} root 节点树根
+   * @returns {{nodes:number, taggedNodes:number, untaggedNodes:number,
+   *            counts:Array<{tag:string, nodes:number}>}}
+   *   `counts` 按 **tag 码点升序**（确定序；"按节点数降序"是**显示口径**，由调用方做）。
+   */
+  function computeTagCounts(root) {
+    let nodes = 0;
+    let taggedNodes = 0;
+    const map = new Map();
+    tree.walk(root, (n) => {
+      nodes++;
+      const tags = (n && Array.isArray(n.tags)) ? n.tags : [];
+      if (!tags.length) return;
+      taggedNodes++;
+      const seen = new Set();          // 同节点内重复的同一个标签只算一次
+      tags.forEach((t) => {
+        // 空白串也**不算**：`src/schema.js` 对 `tags[]` 的判据是 `!t.trim()` ⇒ 全空白项本来就是
+        // 坏数据。这里与那条判据对齐（否则"能过校验的数据"与"本函数认的标签"会各说一套）。
+        if (typeof t !== 'string' || !t.trim() || seen.has(t)) return;
+        seen.add(t);
+        map.set(t, (map.get(t) || 0) + 1);
+      });
+    });
+    const counts = Array.from(map.keys()).sort(compareStrings)
+      .map((tag) => ({ tag: tag, nodes: map.get(tag) }));
+    return { nodes: nodes, taggedNodes: taggedNodes, untaggedNodes: nodes - taggedNodes, counts: counts };
+  }
+
   /**
    * 搜索（**内容已整体下沉到 `src/item-index.js`**；这里保留 v2 的名字当兼容入口，
    * 老调用方与 `tests/query.test.js` 用的都是它）。
@@ -223,6 +275,6 @@
     return lines;
   }
 
-  return { collectImages, buildReadView, buildNodeList, getNodeView, computeStats, searchNodes, treeLines,
-    getItemView, readItemsView };
+  return { collectImages, buildReadView, buildNodeList, getNodeView, computeStats, computeTagCounts,
+    compareStrings, searchNodes, treeLines, getItemView, readItemsView };
 });
