@@ -239,6 +239,21 @@
       </template>
       <!-- 搜索结果面板（全文搜索） -->
       <div id="search-results" style="display:none"></div>
+      <!-- 标签视图面板（app-tag-view.js，功能代号 TV / 台账 W9）：
+           与「关联视图」平行的一条轴 —— 高亮带该标签的节点、虚化其余、缩放到刚好框住。
+           成员**现场派生**（src/tree-utils.js 的 nodesByTag），面板里没有"存的清单"。
+           位置与搜索结果面板同一块（顶部条带），`fitToNodes` 会按它的高度让出顶部，
+           所以最上面那排成员不会被这条压住。默认 display:none ⇒ 不开视图时一个像素都不占。 -->
+      <div id="tag-view-panel" style="display:none" data-count="0">
+        <div class="tv-head">
+          <span class="tv-title" id="tag-view-title"></span>
+          <span class="tv-count" id="tag-view-count"></span>
+          <span class="tv-spacer"></span>
+          <button id="tag-view-search" type="button" title="用全文搜索看这个标签（改造前的老入口，留着不删）">🔍 用搜索看</button>
+          <button id="tag-view-close" type="button" title="关闭（Esc）">✕</button>
+        </div>
+        <div id="tag-view-body"></div>
+      </div>
     </div>
   </div>
 
@@ -420,6 +435,7 @@
   <script src="app-palette.js"></script>
   <script src="app-assoc.js"></script>
   <script src="app-related.js"></script>
+<script src="app-tag-view.js"></script>
   <script src="app-heat-bars.js"></script>
   <script src="app-ask.js"></script>
   <script src="app-import.js"></script>

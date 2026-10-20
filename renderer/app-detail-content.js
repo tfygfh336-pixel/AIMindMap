@@ -285,7 +285,16 @@
       const chip = document.createElement('span');
       chip.className = 'tag-chip';
       chip.textContent = '#' + t;
-      chip.addEventListener('click', () => { $('#search-box').value = '#' + t; runSearch(t); });
+      chip.addEventListener('click', () => {
+        /* 标签视图（功能代号 `TV` / 台账 `W9`）：点标签 = 看"这个标签下的节点在导图上的分布"
+         * （高亮 + 虚化其余 + 缩放到刚好框住，成员由 `tags` **现场派生**）。
+         * 改造前这里跑的是**关键词**搜索 —— 实测那条路会多命中：97 个「项目×标签」对里 53 对是成员集的
+         * 真超集、累计多 530 个节点（最坏 `comnet` 的 `802.11`：15 个成员 → 110 条命中）。
+         * ⚠️ 旧能力**不删**：视图面板里有「🔍 用搜索看」，走的就是原来这条 `runSearch`。
+         * （`MM.showTagView` 不存在时退回老行为 —— 分域加载/单文件调试时不至于点了没反应。） */
+        if (MM.showTagView) { MM.showTagView(t); return; }
+        $('#search-box').value = '#' + t; runSearch(t);
+      });
       tc.appendChild(chip);
     });
     // 本机文件夹链接（可选字段 localPath，见 docs/DATA-FORMAT.md §2.5）：

@@ -19,6 +19,33 @@
     (node.children || []).forEach((c) => walk(c, fn, d + 1));
   }
 
+  /** 收集**带某个标签**的节点 —— `W9` 标签视图的成员来源（**派生，不存**）。
+   *
+   *  ⚠️ 这个函数存在的唯一理由：**成员清单不落盘**。
+   *    台账 `W9` 点出的核心难点是"新加了一个带该标签的节点，怎么让 AI 不忘记更新标签笔记"，
+   *    根治办法不是提醒（靠记忆必然漏），而是让成员**根本不存在第二份**：视图每次渲染都从这里现算
+   *    ⇒ 新节点自动出现在视图里，零同步问题。若哪天有人把成员改成"读笔记里存的清单"，
+   *    这条不变式就破了 —— `scripts/smoke/54-标签视图.js` 有一条断言就是"在页面里独立算一遍再比"。
+   *
+   *  **匹配口径与 CLI 的 `search --tag` 同一套**：`tags` 数组里**逐字相等**（不是前缀/包含/小写化），
+   *  依据是 `src/item-index.js` 的 `hasTag`（`list.indexOf(tag) >= 0`）。
+   *  两处口径必须一致，否则"点标签看到的"与"`--tag` 查到的"会分成两份事实。
+   *
+   *  顺序 = **树序**（先父后子）⇒ 界面清单与导图上的位置一一对应。
+   *  脏数据（`tags` 不是数组、标签是空串、节点是 null）一律**跳过而不抛**：
+   *  那是 `validate` 该报的事，渲染层不该因为一条坏数据整屏炸掉。 */
+  function nodesByTag(root, tag) {
+    const key = (tag === undefined || tag === null) ? '' : String(tag);
+    const out = [];
+    if (!key) return out;
+    walk(root, (n) => {
+      if (!n) return;
+      const list = Array.isArray(n.tags) ? n.tags : [];
+      if (list.indexOf(key) >= 0) out.push(n);
+    });
+    return out;
+  }
+
   /** 按 id 查找节点 */
   function find(root, id) {
     let out = null;
@@ -99,5 +126,5 @@
   // 但全工程无任何调用方（仅被单测引用，制造了"在用"的假象），已删除。
   // 需要层级时用 walk(root, (node, depth) => ...) 或 pathTo(root, id).length。
 
-  return { walk, find, count, flatten, leafIds, removeNode, moveNode, pathTo };
+  return { walk, find, count, flatten, leafIds, nodesByTag, removeNode, moveNode, pathTo };
 });

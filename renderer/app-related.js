@@ -850,6 +850,10 @@
 
   MM.showRelated = showRelated;
   MM.clearRelated = clearRelated;
+  /* 「缩放到刚好框住这批节点」——**唯一一份几何实现**。
+   * 标签视图（`renderer/app-tag-view.js`）也用它：同一件事（算包围盒 → 一趟出 s/x/y）两处各写一份
+   * 必然漂移，而这条一旦漂，"框住"就成了两种视觉口径。`insetTop` 是给顶部条带让出的高度。 */
+  MM.fitToNodes = fitToNodes;
   MM.redrawRelatedLines = redrawLines;
   MM.scheduleRelatedRedraw = scheduleRedraw;
   MM.isRelatedActive = isActive;

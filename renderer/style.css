@@ -633,6 +633,53 @@ jmnode.mm-rel-hit {
   box-shadow: 0 0 0 4px rgba(43, 93, 214, 0.18);
 }
 jmnode.mm-rel-dim { opacity: 0.32; }
+
+/* ---------------- 标签视图（app-tag-view.js · 功能代号 `TV` · 台账 `W9`） ----------------
+ * 与「关联视图」平行的一条轴（**不是**标签之间的关系图）：
+ *   高亮带该标签的节点 / 虚化其余 / 缩放到刚好框住 —— **不画成员之间的连线**。
+ *   为什么没有连线：那等于两两连线 C(n,2) —— 7 本书里最大的标签 21 个成员 = 210 条，
+ *   `comnet` 的 `协议` 177 个成员 = 15,576 条；而"同标签"只说明同一件事 ⇒ 连线不携带任何信息，
+ *   还会宣称不存在的两两关系（读数见 `.review/20261020-W9-tag-view/00-定题.md` §0）。
+ * 类名与关联视图**刻意不同**（`mm-tag-*` vs `mm-rel-*`）：两个视图可以同时开着，互不误清。
+ * 纪律同上一段：只写类、只用 jsMind 不碰的属性（outline / box-shadow / opacity）。
+ * 配色换成青绿（#12a08c）：两轴同时开着时一眼能分辨"我在看哪一条"。 */
+jmnode.mm-tag-hit {
+  outline: 2px solid #12a08c; outline-offset: 1px;
+  box-shadow: 0 0 0 4px rgba(18, 160, 140, 0.18);
+}
+jmnode.mm-tag-dim { opacity: 0.30; }
+
+/* 标签视图面板：顶部条带（与搜索结果面板同一块位置）；让位靠 `MM.fitToNodes` 的 insetTop */
+#tag-view-panel {
+  position: absolute; top: 46px; left: 14px; right: 14px; z-index: 41;
+  display: flex; flex-direction: column;
+  max-height: 34%;
+  background: #fff; border: 1px solid #e4e7ec; border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.12); font-size: 13px; overflow: hidden;
+}
+#tag-view-panel .tv-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px solid #f0f2f5;
+}
+#tag-view-panel .tv-title { font-weight: 600; color: #12a08c; }
+#tag-view-panel .tv-count { color: #86909c; font-size: 12px; }
+#tag-view-panel .tv-spacer { flex: 1 1 auto; }
+#tag-view-panel button {
+  background: none; border: 1px solid #e4e7ec; border-radius: 4px; cursor: pointer;
+  font-size: 12px; color: #4e5969; padding: 2px 8px;
+}
+#tag-view-panel button:hover { border-color: #12a08c; color: #12a08c; }
+#tag-view-panel #tag-view-close { border-color: transparent; font-size: 14px; }
+#tag-view-panel #tag-view-body {
+  padding: 8px 12px; overflow: auto; display: flex; flex-wrap: wrap; gap: 6px;
+}
+#tag-view-panel .tv-item {
+  cursor: pointer; border: 1px solid #e4e7ec; border-radius: 12px;
+  padding: 2px 10px; font-size: 12px; color: #1f2329; background: #fcfcfd;
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#tag-view-panel .tv-item:hover { border-color: #12a08c; color: #12a08c; background: #f2fbf9; }
+#tag-view-panel .tv-empty { color: #86909c; font-size: 12px; padding: 6px 0; }
 /* 关系层（挂在 fdViewEls 里，随导图同变换） */
 #mm-rel-layer { pointer-events: none; }
 #mm-rel-layer .mm-rel-line {
