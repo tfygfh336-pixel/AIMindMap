@@ -69,6 +69,56 @@ function classifyStatFailure(p, e, noun) {
   return { code: 'stat-failed', message: '读不了这个路径（' + (c || (e && e.message) || '未说明原因') + '）: ' + p };
 }
 
+/* ---------------- ⓪¹ 形状 → 结论（**纯核心**，G-15 下沉 2026-10-20）----------------
+ * 拆出来的理由（与 `schema.validateProject` 同一个病）：下面两个"看 stat 再拼人话"的函数
+ * 本来只有**一次 `fs.statSync` 是脏的**，但探针按"函数体里有没有 fs"判 ⇒ 整份被判成需盘，
+ * 于是 `tests/doc-import.test.js` 想验"目录入参怎么说"就得先 `mkdtempSync('mm-dirgate-')`。
+ * 现在判据本体在这里：入参是**形状**（`{kind, readable}`），**一个字节的盘都不碰**；
+ * 脏的那一步（stat / access）留在下面的薄壳里。
+ *
+ * 形状口径（封闭取值，别自己加第四种）：
+ *   `kind`     ∈ 'dir' | 'file' | 'other'（other = 设备/命名管道/特殊节点）
+ *   `readable` = 该路径读不读得了（**只对 dir / file 有意义**；由壳真探一次得到）
+ * 返回 `null` = 这个源可以用；否则 `{code, message}`（message 已含出路，调用方直接 ctx.error）。
+ */
+function describeSourceShape(shape, filePath) {
+  const p = String(filePath);
+  const s = shape || {};
+  if (s.kind === 'dir') return { code: 'is-dir', message: directoryMessage(p) };
+  if (s.kind !== 'file') {
+    return { code: 'not-regular-file', message: '这不是一个普通文件（可能是设备/命名管道/特殊节点）: ' + p
+      + '；导入只接受普通文件（.md / .txt / .docx / .pdf）' };
+  }
+  if (s.readable === false) {
+    return { code: 'denied', message: '文件存在，但没有读权限: ' + p
+      + '（用 icacls / 文件属性检查权限，或复制到可读位置再导入）' };
+  }
+  // 空文件不是"读不了"，是"导出来会是空树"—— 交给格式识别给出更准的话（不在这里判死 ✗）
+  return null;
+}
+
+/** 目录入参的形状 → 结论（**纯核心**；与 `describeSourceShape` 对称，口径各自独立不许合并）。 */
+function describeDirShape(shape, dir) {
+  const p = String(dir);
+  const s = shape || {};
+  if (s.kind === 'dir') {
+    if (s.readable === false) {
+      return { code: 'denied', message: '这个目录存在，但没有读权限: ' + p
+        + '（用 icacls / 目录属性检查权限，或复制到可读位置再导入）' };
+    }
+    return null;
+  }
+  if (s.kind === 'file') {
+    return { code: 'not-dir', message: '这是一个**文件**，不是目录: ' + p
+      + '。整库导入（`import-dir`）要的是一个**目录**：它会把目录结构镜像成一棵树。'
+      + '出路（二选一）：① 单个文件建新项目：node cli/mm-cli.js import-project <新项目名> "' + p + '"；'
+      + '② 追加到一个已有项目：node cli/mm-cli.js import-md <项目> "' + p + '" --parent <父节点id>'
+      + '（复制文件再导入也行，但那样会多出一份来源不同的指纹记录 ⇒ 同名文件会被当成两份来源）' };
+  }
+  return { code: 'not-regular-file', message: '这不是一个普通文件或目录（可能是设备/命名管道/特殊节点）: ' + p
+    + '；整库导入只接受**普通目录**' };
+}
+
 function describeImportSourceProblem(filePath) {
   const p = String(filePath);
   let st = null;
@@ -80,21 +130,13 @@ function describeImportSourceProblem(filePath) {
     //   只把名词换掉（'文件' / '目录'）—— 两条路各写一份 errno 映射必然漂移 ✗
     return classifyStatFailure(p, e, '文件');
   }
-
-  if (st.isDirectory()) return { code: 'is-dir', message: directoryMessage(p) };
-  if (!st.isFile()) {
-    return { code: 'not-regular-file', message: '这不是一个普通文件（可能是设备/命名管道/特殊节点）: ' + p
-      + '；导入只接受普通文件（.md / .txt / .docx / .pdf）' };
-  }
+  const kind = st.isDirectory() ? 'dir' : (st.isFile() ? 'file' : 'other');
+  // 只有"普通文件"才需要探可读性（目录/特殊节点在上面就是终局，与拆分前同一顺序）
+  if (kind !== 'file') return describeSourceShape({ kind: kind }, p);
   // stat 成功 ≠ 能打开：Windows 的 ACL 拒绝要到 open 那一刻才报，故这里真探一次可读性
-  try {
-    fs.accessSync(p, fs.constants.R_OK);
-  } catch (e) {
-    return { code: 'denied', message: '文件存在，但没有读权限: ' + p
-      + '（用 icacls / 文件属性检查权限，或复制到可读位置再导入）' };
-  }
-  // 空文件不是"读不了"，是"导出来会是空树"—— 交给格式识别给出更准的话（不在这里判死 ✗）
-  return null;
+  let readable = true;
+  try { fs.accessSync(p, fs.constants.R_OK); } catch (e) { readable = false; }
+  return describeSourceShape({ kind: kind, readable: readable }, p);
 }
 
 /* ---------------- ⓪′ 体量闸门：几百 MB 的 txt/docx 不许整份读进内存 ----------------
@@ -164,24 +206,12 @@ function describeImportDirProblem(dir) {
   const p = String(dir);
   let st = null;
   try { st = fs.statSync(p); } catch (e) { return classifyStatFailure(p, e, '目录'); }
-  if (st.isDirectory()) {
-    // stat 成功 ≠ 能读（Windows 的 ACL 要到 readdir 那一刻才报）；这里真探一次
-    try { fs.accessSync(p, fs.constants.R_OK); }
-    catch (e) {
-      return { code: 'denied', message: '这个目录存在，但没有读权限: ' + p
-        + '（用 icacls / 目录属性检查权限，或复制到可读位置再导入）' };
-    }
-    return null;
-  }
-  if (st.isFile()) {
-    return { code: 'not-dir', message: '这是一个**文件**，不是目录: ' + p
-      + '。整库导入（`import-dir`）要的是一个**目录**：它会把目录结构镜像成一棵树。'
-      + '出路（二选一）：① 单个文件建新项目：node cli/mm-cli.js import-project <新项目名> "' + p + '"；'
-      + '② 追加到一个已有项目：node cli/mm-cli.js import-md <项目> "' + p + '" --parent <父节点id>'
-      + '（复制文件再导入也行，但那样会多出一份来源不同的指纹记录 ⇒ 同名文件会被当成两份来源）' };
-  }
-  return { code: 'not-regular-file', message: '这不是一个普通文件或目录（可能是设备/命名管道/特殊节点）: ' + p
-    + '；整库导入只接受**普通目录**' };
+  const kind = st.isDirectory() ? 'dir' : (st.isFile() ? 'file' : 'other');
+  if (kind !== 'dir') return describeDirShape({ kind: kind }, p);
+  // stat 成功 ≠ 能读（Windows 的 ACL 要到 readdir 那一刻才报）；这里真探一次
+  let readable = true;
+  try { fs.accessSync(p, fs.constants.R_OK); } catch (e) { readable = false; }
+  return describeDirShape({ kind: kind, readable: readable }, p);
 }
 
 /* ================= ⓪′ 来源指纹 origin：批量导入**幂等**的前提 =================
@@ -2447,6 +2477,8 @@ module.exports = {
   zipFindEntry, docxParagraphs, docxToOutline, docToOutline, finishOutline,
   // 导入源闸门（把"为什么读不了"说准 + 给出路）与来源指纹 origin（幂等的前提，唯一实现）
   describeImportSourceProblem, directoryMessage, describeImportDirProblem, classifyStatFailure,
+  // G-15 下沉：上面两个「看 stat 再拼人话」的**纯核心**（入参是形状 `{kind, readable}`，不碰盘）
+  describeSourceShape, describeDirShape,
   // 整库导入（import-dir）：目录走查 + 跳过分类 + 容器拼装（**建树仍只有 markdown.js 一处**）
   IMPORT_EXT_DEFAULT, IMPORTABLE_EXT, SKIP_DIR_NAMES, MAX_IMPORT_FILES_DEFAULT,
   SKIP_LABEL, SKIP_SHORT, entrySkipReason, normalizeExtList, scanImportDir, buildDirImportTree, uniqueIdGen,

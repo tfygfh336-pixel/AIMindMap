@@ -12,6 +12,7 @@
  * ============================================================ */
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 
 const require = createRequire(import.meta.url);
@@ -332,25 +333,26 @@ describe('doc-import：导入源闸门（原因准确 + 给出路）', () => {
   const osx = require('node:os');
 
   it('★ 目录入参：说清"这是目录不是文件" + 指向**已实现**的 import-dir + 给出**可执行**的出路', () => {
-    const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'mm-dirgate-'));
-    try {
-      const p = di.describeImportSourceProblem(dir);
-      expect(p).not.toBe(null);
-      expect(p.code).toBe('is-dir');
-      expect(p.message).toContain('目录');
-      expect(p.message).toContain('不是文件');
-      expect(p.message).toContain('import-dir');
-      // 批 5 之前这句写的是"尚未实现"；`import-dir` 落地后它必须**指给真实的命令**，
-      // 并且把用法整句写出来（"提示去看某命令"和"能照着敲"是两回事 ✓）
-      expect(p.message).not.toContain('尚未实现');
-      expect(p.message).toContain('node cli/mm-cli.js import-dir');
-      // 出路必须是**现在就能跑**的真实命令（不是"敬请期待"）
-      expect(p.message).toContain('import-md');
-      expect(p.message).toContain('import-project');
-      // 不许露出 Node 的原始 errno 文本（那正是本条的病根）
-      expect(p.message).not.toContain('EISDIR');
-      expect(di.directoryMessage(dir)).toBe(p.message);
-    } finally { fsx.rmSync(dir, { recursive: true, force: true }); }
+    /* G-15 下沉（2026-10-20）：这一条原先要 `mkdtempSync('mm-dirgate-')` 造一个真目录。
+     * 它判的其实只是"拿到 kind='dir' 该怎么说话" ⇒ 现在直接喂**形状**，不造盘。
+     * 断言原文未改（含"不许露 EISDIR""必须是现在能跑的真实命令"这几条）。 */
+    const dir = 'D:/somedir/某目录';
+    const p = di.describeSourceShape({ kind: 'dir' }, dir);
+    expect(p).not.toBe(null);
+    expect(p.code).toBe('is-dir');
+    expect(p.message).toContain('目录');
+    expect(p.message).toContain('不是文件');
+    expect(p.message).toContain('import-dir');
+    // 批 5 之前这句写的是"尚未实现"；`import-dir` 落地后它必须**指给真实的命令**，
+    // 并且把用法整句写出来（"提示去看某命令"和"能照着敲"是两回事 ✓）
+    expect(p.message).not.toContain('尚未实现');
+    expect(p.message).toContain('node cli/mm-cli.js import-dir');
+    // 出路必须是**现在就能跑**的真实命令（不是"敬请期待"）
+    expect(p.message).toContain('import-md');
+    expect(p.message).toContain('import-project');
+    // 不许露出 Node 的原始 errno 文本（那正是本条的病根）
+    expect(p.message).not.toContain('EISDIR');
+    expect(di.directoryMessage(dir)).toBe(p.message);
   });
 
   it('不存在的路径：报文写"文件不存在"并说清相对路径按哪个目录解析（不冒充权限问题）', () => {
@@ -367,6 +369,75 @@ describe('doc-import：导入源闸门（原因准确 + 给出路）', () => {
     try {
       expect(di.describeImportSourceProblem(f)).toBe(null);
     } finally { fsx.unlinkSync(f); }
+  });
+});
+
+/* ============================================================
+ * G-15 下沉（2026-10-20）：两个「看 stat 再拼人话」的**纯核心**
+ * ------------------------------------------------------------
+ * `describeSourceShape(shape, p)` / `describeDirShape(shape, p)` 的入参是**形状**
+ * （`{kind:'dir'|'file'|'other', readable?}`），**一个字节的盘都不碰** ⇒ 下面一条夹具都不用造。
+ * 脏的那一步（stat / accessSync）留在薄壳 `describeImportSourceProblem` /
+ * `describeImportDirProblem` 里，前面那一组仍然在测它们（真实路径 + 真文件）。
+ * ⚠️ 新断言：`kind:'other'` 与 `readable:false` 这两档**原先一条单测都没有**
+ *    （造出"特殊节点"与"无权限文件"两种真夹具都不可移植）—— 下沉之后它们最便宜。
+ * ============================================================ */
+describe('doc-import：形状 → 结论（纯核心，不造盘）', () => {
+  it('describeSourceShape：dir ⇒ is-dir；file+可读 ⇒ null；file+不可读 ⇒ denied', () => {
+    expect(di.describeSourceShape({ kind: 'dir' }, 'D:/x').code).toBe('is-dir');
+    expect(di.describeSourceShape({ kind: 'file', readable: true }, 'D:/x.md')).toBe(null);
+    const denied = di.describeSourceShape({ kind: 'file', readable: false }, 'D:/x.md');
+    expect(denied.code).toBe('denied');
+    expect(denied.message).toContain('没有读权限');
+  });
+
+  it('describeSourceShape：other（设备/管道/特殊节点）⇒ not-regular-file，且列出接受哪些格式', () => {
+    const p = di.describeSourceShape({ kind: 'other' }, '\\\\?\\pipe\\x');
+    expect(p.code).toBe('not-regular-file');
+    expect(p.message).toContain('普通文件');
+    ['.md', '.txt', '.docx', '.pdf'].forEach((ext) => expect(p.message).toContain(ext));
+  });
+
+  it('describeSourceShape：形状缺省/空对象 ⇒ 按 other 判（不静默放行未知形状）', () => {
+    [undefined, null, {}, { kind: 'nonsense' }].forEach((s) => {
+      expect(di.describeSourceShape(s, 'D:/x').code, JSON.stringify(s)).toBe('not-regular-file');
+    });
+  });
+
+  it('describeDirShape：dir+可读 ⇒ null；dir+不可读 ⇒ denied；file ⇒ not-dir；other ⇒ not-regular-file', () => {
+    expect(di.describeDirShape({ kind: 'dir', readable: true }, 'D:/d')).toBe(null);
+    expect(di.describeDirShape({ kind: 'dir' }, 'D:/d')).toBe(null);          // readable 缺省 = 不作否定判据
+    const denied = di.describeDirShape({ kind: 'dir', readable: false }, 'D:/d');
+    expect(denied.code).toBe('denied');
+    expect(denied.message).toContain('这个目录存在');
+    const notDir = di.describeDirShape({ kind: 'file' }, 'D:/f.md');
+    expect(notDir.code).toBe('not-dir');
+    expect(notDir.message).toContain('import-project');
+    expect(notDir.message).toContain('import-md');
+    expect(di.describeDirShape({ kind: 'other' }, 'D:/p').code).toBe('not-regular-file');
+  });
+
+  it('两条判据**对称但各管一侧**：同一种形状在两条路上结论相反（不许合并成一份）', () => {
+    // file 在"单文件导入"这条路上是合法的（null），在"整库导入"这条路上是被拒的（not-dir）
+    expect(di.describeSourceShape({ kind: 'file', readable: true }, 'D:/f.md')).toBe(null);
+    expect(di.describeDirShape({ kind: 'file' }, 'D:/f.md').code).toBe('not-dir');
+    // dir 反过来
+    expect(di.describeSourceShape({ kind: 'dir' }, 'D:/d').code).toBe('is-dir');
+    expect(di.describeDirShape({ kind: 'dir' }, 'D:/d')).toBe(null);
+  });
+
+  it('薄壳与纯核心**同一套报文**（真路径 → 壳 → 与直接喂形状的结论逐字节相同）', () => {
+    /* 不造盘：用两个**本来就存在的真实路径**当夹具：
+     *   · `os.tmpdir()` 一定是个已存在的**目录**；
+     *   · 本测试文件自己一定是个**可读的普通文件**。
+     * 这两点足以驱动壳里那两步脏操作（stat / accessSync），而不用 `mkdtempSync`。 */
+    const os = require('node:os');
+    const self = fileURLToPath(import.meta.url);
+    const dir = os.tmpdir();
+    expect(di.describeImportSourceProblem(self)).toEqual(di.describeSourceShape({ kind: 'file', readable: true }, self));
+    expect(di.describeImportSourceProblem(dir)).toEqual(di.describeSourceShape({ kind: 'dir' }, dir));
+    expect(di.describeImportDirProblem(dir)).toEqual(di.describeDirShape({ kind: 'dir', readable: true }, dir));
+    expect(di.describeImportDirProblem(self)).toEqual(di.describeDirShape({ kind: 'file' }, self));
   });
 });
 

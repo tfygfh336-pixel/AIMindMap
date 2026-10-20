@@ -331,6 +331,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 
 | 文件 | 职责 |
 |------|------|
+| `mcp-server.js` | **MCP 服务器**（零第三方依赖的 stdio JSON-RPC；每个工具 = 一次 `mm-cli` 调用，不复制业务逻辑）—— 职责、错误分流与边界见 **§2.5**。本行是它的**入档登记行**：G8 第 ⑦ 条只认"登记表的第一列"，§2.5 的标题与 §6 里那句 `scripts/mcp-server.js` 属于散文，不算入档（2026-10-20 收紧口径时才暴露出它一直只靠散文过关） |
 | `verify.js` | **验证链的运行器**：`STEPS` 是"执行顺序 / 每步命令 / 耗时预算"的**唯一定义**，`docs/VERIFY.md` 的链表由它渲染；首败即停 |
 | `encoding-check.js` | **G1** 文件编码完整性（判定清单见 `docs/RULES.md` §2 —— **本表不复述**，也不写条数：这里的枚举漂过一次（少列了"提交面行尾"那条），照着本表改门禁就会漏判 ⇒ 第二份清单就是第二份会漂的副本）。扫描面与"这次没扫什么"每次运行都打印；要逐条看实现自报的清单跑 `node scripts/encoding-check.js --list` |
 | `docs-registry-check.js` | **G8** 文档体系完整性（**判定清单现场取**：`npm run check:docs -- --judgments` 会从实现的**全部**判定标记打印全套；条数由 `docs/RULES.md` §2 声明并与标记机械对齐 —— **本表不复述**，复述一次就是第二份会漂移的副本）；`--write` 从各文档头部元信息**生成** §5 登记表（`npm run docs:registry`，`npm run check:docs` 为校验模式） |
@@ -756,4 +757,83 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 - **这条门禁判不了什么**：① **`detail` 的"该不该这么大"** —— 它只判"有没有超出量级"，判不了"这本书的详情是不是写太长了"；
   ② **资源体积**（图片 / 附件）—— 已被 §7.1 排除在 `export-json` 上界之外；
   ③ **`search` 命中**的"该不该这么多" —— 那是 `--limit` / `--max-bytes` 的调用方选择，不是入口的形状问题。
+
+---
+
+## 8. `src/` 的「纯 / 需盘」划分（`G-15`）
+
+> **为什么这一节在架构里**：它回答的是"**这段逻辑该怎么切**"，不是"必须遵守什么"（那是 `docs/RULES.md`）。
+> 判据能机械复算 —— 只有一句话：**函数体里有没有 `fs.`**（先剥注释，见下面的坑）。
+> 相关：`docs/RULES.md` §3 `R3`（分层测试）· `.review/20261020-调研/15-纯函数清点.md`（清点原文）·
+> `.review/20261020-下沉/README.md`（本批落地的证据）。
+
+### 8.1 三档口径（先写清，免得下一个人读出另一套数）
+
+| 档 | 判据 | 能不能"喂对象就测" |
+|---|---|---|
+| **纯** | 函数体里没有 `fs.` / 没有 `Date.now()` / 没有随机 / 没有网络 | ✓ 直接喂入参 |
+| **需盘** | 函数体里有 `fs.` | ✗ 得先造文件系统 |
+| **混时钟/随机** | 无 `fs.` 但有 `Date.now()` / `Math.random()` / 网络 | ⚠️ 时钟通常可注入（见 8.3） |
+
+**清点读数**（`src/` 47 文件 / 642 个导出名，其中 454 个是真函数）：
+**384 纯（84.6%）· 44 需盘（9.7%）· 26 混时钟/随机（5.7%）**。
+⇒ **"加一条断言很便宜"基本成立** —— 九成核心逻辑喂对象就够。
+需盘的 44 个**只出现在 13 个文件**里，且高度成团（`dsh-package` 11 / `doc-import` 8 / `data-store` 5 / `control` 5）。
+
+⚠️ **两个把数读错的坑（都实际踩过）**：
+① 探针**必须先剥注释** —— 本工程的注释大量在解释 API 本身（"为什么不用 `fs.writeFileSync`"），
+   不剥就会把解释当成违规（第一版读数因此偏了 3 类假阳性）；
+② **`new Date()` 空参才是取时刻**，`new Date(str)` 是纯解析。
+
+### 8.2 标准切法：「纯核心 + 注入式 IO 壳」
+
+一个函数只要**有一段判据被 `fs` 连累**，就按这条缝劈开，**外部行为逐字节不变**：
+
+```
+需要盘的（旧）  f(data, root, …)                        ← 喂数据不够，还要一个真目录
+拆成（新）      fInPlace(data)                          ← 纯核心：喂对象就够
+                fCrossRefs(data, readProject, …)        ← 纯核心：读别人的东西由参数注入
+                f(data, root, …)                        ← 三行胶水：把 readProject 接到 fs 上
+```
+
+**注入点的形状**（本工程已定的口径，别另发明）：
+`readProject(name) → {ok:true, data} | {ok:false, reason:'no-project'|'unreadable', detail?}` ——
+三档**一一对应拆分前那三种返回**（文件不存在 / 读或解析失败 / 读到了），所以报文一个字都不用改。
+
+**已落地的四处（2026-10-20，`G-15`）**：
+
+| 模块 | 纯核心（喂对象/字符串就够） | 注入点 | IO 壳 |
+|---|---|---|---|
+| `src/schema.js` | `validateInPlace(data)` | —（本就不读盘） | `validateProject` |
+| `src/schema.js` | `validateCrossRefs(data, readProject, selfProject, opts)` | `readProject` | `makeProjectReader(projectsRoot)` |
+| `src/heat.js` | `heatFromLogText(text, opts)` | —（文本即入参） | `readHeatFile` |
+| `src/doc-import.js` | `describeSourceShape(shape, p)` / `describeDirShape(shape, p)` | —（形状即入参） | `describeImportSourceProblem` / `describeImportDirProblem` |
+| `src/item-src.js` | `fingerprintOf(text, bytes, mtimeMs)` | —（文本即入参） | `fingerprint(abs, cache)` |
+
+**收益的诚实口径（别夸）**：本机实测 `mkdtemp+rm = 3.223 ms/次`，155 处调用点 ≈ **0.5–1.8 s**，
+相对全链数百秒是**噪声** ⇒ **不要用"更快"当这条的理由**。真实收益是：
+① 去掉 `%TEMP%` 泄漏与清理竞态这一类失败模式；② 让"加一条断言"不必先想"我要在哪造个目录"。
+
+### 8.3 哪些**不该**下沉（判断，不是规则）
+
+判"能拆"的标准是**存在一条"喂数据就能判"的边界**，不是"重构一下更好看"。反例（**不要**去拆）：
+
+- **`src/control.js` 的 `listPending` / `claim` / `writeResult` / `clear`**：产品行为**就是**文件语义
+  （原子认领、孤儿清扫、互斥）⇒ 拆了等于把被测物拆掉。
+- **`src/dsh-package.js` 的 `readManifest` / `acquireRuntimeLock` 等 7 个**：单个都是"读/写/锁"，没有中间边界。
+- **`src/data-store.js`**：**已经做对了** —— 每个"要盘"的都有纯孪生兄弟（`versionOf` / `versionOfText`），
+  别再造第二份。
+- **`src/editor-probe.js`**：同款已做对（`probe` 只是 `probeWith(defaultIo)` 的糖）。
+- **时钟可注入的**（`src/heat.js` 的 `computeHeat`、`src/heat.js` 的 `readHeatFile` 的 `o.now`）：
+  它**已经**是"不传才取现在"的 idiom ⇒ 不必再劈一刀。
+
+### 8.4 双端（UMD）铁律
+
+`src/` 是 UMD（Node + 浏览器双端）。**纯核心绝不许引 `fs`**，`fs` 只能留在已由 UMD 工厂注入的壳里。
+理由：Node 侧单测**发现不了**这条错（那里 `fs` 是真的），而浏览器侧会在运行时炸。
+门禁：`tests/g15-umd-dual.test.js`（在**无 `module` / 无 `require`** 的沙箱里加载，验三件事 ——
+纯核心能用、IO 壳**响亮抛错**、`validateProject` 不因缺 `fs` 而崩）。
+⚠️ `src/item-src.js` 与 `src/doc-import.js` **本来就是 Node-only**（实测 `require is not defined`），
+那条事实也被同一个文件钉住 —— 免得将来有人把它读成"下沉弄坏了双端"。
+
 

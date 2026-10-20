@@ -256,13 +256,38 @@ function loadFile(abs, cache) {
   return rec;
 }
 
-/** 文件级指纹（公开：`health --json` 的 `criteria` 与测试都用得到它；带缓存） */
+/**
+ * **纯核心**：文件内容（文本）+ 体量 + mtime → 文件级指纹（G-15 下沉，2026-10-20）。
+ *
+ * 拆分前 `fingerprint` 是"读一个文件再算指纹"两件事黏在一起 ⇒ 探针判它需盘，
+ * 想验"指纹算法本身"（同一段文本必得同一个 sha、行数怎么数）就得先落一个文件。
+ * 现在算法纯的：`text` 进、`{sha256, bytes, lineCount}` 出，**一个字节的盘都不碰**；
+ * 读盘留在 `fingerprint` 里（它现在是 `loadFile` + 本函数，两行）。
+ *
+ * @param {string} text 文件全文（utf8）
+ * @param {number} [bytes] 文件字节数（= `fs.statSync().size`；缺省按文本 utf8 长度算）
+ * @param {number} [mtimeMs] 文件 mtime 毫秒（缺省 null）
+ * @returns {{sha256:string, bytes:number, mtimeMs:number|null, lineCount:number}}
+ */
+function fingerprintOf(text, bytes, mtimeMs) {
+  const s = (text === undefined || text === null) ? '' : String(text);
+  return {
+    sha256: sha256(s),
+    bytes: Number.isFinite(bytes) ? Number(bytes) : Buffer.byteLength(s, 'utf8'),
+    mtimeMs: Number.isFinite(mtimeMs) ? Number(mtimeMs) : null,
+    lineCount: countLines(s)
+  };
+}
+
+/** 文件级指纹（公开：`health --json` 的 `criteria` 与测试都用得到它；带缓存）
+ *  G-15 下沉后它只剩"读 + 交给纯核心算"（两行）；算法本身见 `fingerprintOf`。 */
 function fingerprint(abs, cache) {
   const f = loadFile(abs, cache);
   if (!f.ok) return f;
+  const fp = fingerprintOf(f.text, f.bytes, f.mtimeMs);
   return {
-    ok: true, path: f.path, bytes: f.bytes, sha256: f.sha256,
-    mtimeMs: f.mtimeMs, lineCount: f.lineCount
+    ok: true, path: f.path, bytes: fp.bytes, sha256: fp.sha256,
+    mtimeMs: fp.mtimeMs, lineCount: fp.lineCount
   };
 }
 
@@ -490,6 +515,7 @@ module.exports = {
   normalizeSrc: normalizeSrc, parseRef: parseRef, parseSrcList: parseSrcList, matchesSrc: matchesSrc,
   // 读盘（带缓存）
   createCache: createCache, loadFile: loadFile, fingerprint: fingerprint,
+  fingerprintOf: fingerprintOf,
   resolveFile: resolveFile, sha256: sha256, countLines: countLines,
   // 判定
   judgeRef: judgeRef, isStale: isStale, verifiedAtOf: verifiedAtOf,

@@ -1049,7 +1049,42 @@
   }
 
   /**
+   * **纯核心**：日志文本 → 两条榜（G-15 下沉，2026-10-20）。
+   *
+   * 拆分前这一整套判据（解析 → 响亮校验 → 未来时间戳 → 算榜）住在 `readHeatFile` 里，
+   * 而那函数还要 `fs.existsSync` / `readTail` ⇒ 探针判它"需盘"，于是
+   * **"坏行必须报错"这类纯文本判据也得先造一个日志文件**（`tests/heat.test.js` 为此
+   * 建了一个 `SANDBOX`）。现在把它整段搬出来：喂一段**字符串**就能测。
+   *
+   * 判据与报文**一个字都没改**（`assertClean` 仍是唯一的失败判定处）；
+   * `now` 与同文件其它函数一样可注入（不传才取现在）—— 同一个 idiom，不另发明。
+   *
+   * @param {string} text 日志文本（可以只是尾部一段切片）
+   * @param {{now?:number, file?:string, offset?:number, line?:number|null}} [opts]
+   *   `offset` / `line` 用于定位诊断（见 `parseEvents`）；`file` 只进报文。
+   * @returns {{heat:object, lines:number, events:number}}
+   * @throws {Error} 坏行 / 未知通道 / 时间乱序 / 未来时间戳（**绝不静默当 0**）
+   */
+  function heatFromLogText(text, opts) {
+    const o = opts || {};
+    const now = Number.isFinite(o.now) ? Number(o.now) : Date.now();
+    const parsed = parseEvents(text, { offset: o.offset, line: o.line });
+    assertClean(parsed, { file: o.file });
+    const future = parsed.events.filter((e) => e.atMs - now > FUTURE_TOLERANCE_MS);
+    if (future.length) {
+      throw new Error('访问日志里有 ' + future.length + ' 条**未来时间戳**（比现在晚超过 '
+        + Math.round(FUTURE_TOLERANCE_MS / 1000) + ' 秒）—— 时钟回拨或日志被手改过：\n'
+        + future.slice(0, 5).map((e) => '  · ' + fmtIssue({ line: e.line, offset: e.offset, inTail: e.inTail, reason: 'at=' + e.at })).join('\n')
+        + '\n窗口口径按"现在"倒推一个月，未来事件会让窗口失真 ⇒ **报错，不静默计入/丢弃**。'
+        + '出路：修掉这几行的时间，或删掉该日志（旁路产物、可随时删）。');
+    }
+    return { heat: computeHeat(parsed.events, { now: now }), lines: parsed.lines, events: parsed.events.length };
+  }
+
+  /**
    * **命令层用的唯一入口**：读日志（窄查询默认 / `full:true` 全量）→ 响亮校验 → 算出两条榜。
+   *
+   * G-15 下沉后它只剩 I/O：找到文件、取文本、把文本交给 `heatFromLogText`（纯核心）。
    *
    * @param {string} file 日志文件的**绝对路径**
    * @param {{now?:number, full?:boolean, chunk?:number, maxBytes?:number}} [opts]
@@ -1070,22 +1105,14 @@
     } else {
       tail = readTail(file, { windowStart: windowStart, chunk: o.chunk, maxBytes: o.maxBytes });
     }
-    const parsed = parseEvents(tail.text, { offset: tail.fromOffset, line: tail.complete ? 1 : null });
-    assertClean(parsed, { file: file });
-    const future = parsed.events.filter((e) => e.atMs - now > FUTURE_TOLERANCE_MS);
-    if (future.length) {
-      throw new Error('访问日志里有 ' + future.length + ' 条**未来时间戳**（比现在晚超过 '
-        + Math.round(FUTURE_TOLERANCE_MS / 1000) + ' 秒）—— 时钟回拨或日志被手改过：\n'
-        + future.slice(0, 5).map((e) => '  · ' + fmtIssue({ line: e.line, offset: e.offset, inTail: e.inTail, reason: 'at=' + e.at })).join('\n')
-        + '\n窗口口径按"现在"倒推一个月，未来事件会让窗口失真 ⇒ **报错，不静默计入/丢弃**。'
-        + '出路：修掉这几行的时间，或删掉该日志（旁路产物、可随时删）。');
-    }
-    const heat = computeHeat(parsed.events, { now: now });
+    const core = heatFromLogText(tail.text, {
+      now: now, file: file, offset: tail.fromOffset, line: tail.complete ? 1 : null
+    });
     return {
-      file: file, exists: true, now: now, heat: heat,
+      file: file, exists: true, now: now, heat: core.heat,
       log: {
         bytesRead: tail.bytesRead, fileBytes: tail.fileSize, fromOffset: tail.fromOffset,
-        complete: tail.complete, full: !!o.full, lines: parsed.lines, events: parsed.events.length
+        complete: tail.complete, full: !!o.full, lines: core.lines, events: core.events
       }
     };
   }
@@ -1100,6 +1127,9 @@
     heatFromRank, rankToHeat,
     heatProfile, NO_VISIT_REASON, DIM_TOP, derivedHeat,
     computeHeat, appendEvent, readTail, readHeatFile,
+    // G-15 下沉：`readHeatFile` 的**纯核心** —— 喂一段日志文本就够（不读盘），
+    // 判据与报文与拆分前逐字节相同（`assertClean` 仍是唯一的失败判定处）。
+    heatFromLogText,
     __setHeatMapperForTest, __resetHeatMapperForTest,
     __setSearchRankForTest, __resetSearchRankForTest
   };

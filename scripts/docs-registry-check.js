@@ -378,30 +378,71 @@ function isExemptFile(rel) {
   return EXEMPT_DIRS.some(({ dir }) => (rel + '/').startsWith(dir.endsWith('/') ? dir : dir + '/'));
 }
 
+/** 从架构文档里抽出**登记行** = 每个表格行的**第一列**（文件列），返回 `{line, cell}`。
+ *
+ *  为什么要这样抽（2026-10-20 收口的一处假绿）：旧判定是 `arch.includes(文件名)` —— **全文子串**，
+ *  于是"某文件没进登记表、但正文某句散文（或**别人那一行的职责列**）提到它名字"就判已登记。
+ *  实测形状（`renderer/sanitize.js` 等 4 个）：登记表里没有它，§2.3 有一句"消毒 `sanitize.js`"，
+ *  判定照样绿 ⇒ 新接手的 AI 按 §2 认识代码结构时**看不见它**。（那 4 处已由同批补登记修掉；
+ *  本条判定以前抓不到它们，是它自己的洞。）
+ *  为什么只认**第一列**而不是"任一表格行"：职责列里常常提到**别的**文件名
+ *  （例：`dsh-fixture-freshness.js` 那一行的职责写着 `scripts/cli-integration.js`）——
+ *  "被别人的职责提了一嘴"与散文提一嘴同型，只是换了个位置。真正的登记 = 这个名字是**那行自己的主语**。
+ *  实测读数（收口时）：受判 119 个文件里 **118** 个自己就是某张表的一行主语，唯一例外是
+ *  `scripts/mcp-server.js`（只在 §2.5 的标题与 §6 一条任务行的职责列里出现）⇒ 收紧到"第一列"
+ *  **不产生假红**，只把这一处真缺口暴露出来（该处已补登记行）。
+ *  能力边界：① 判不了"这一行写的内容对不对"（只判"这个名字是不是某行主语"）；
+ *  ② 也判不了"它该登记在哪一层"（`§2.1/§2.3/§2.6` 的分层是人的判断，报错里只给三个候选）；
+ *  ③ **可以**把名字塞进任何一张无关表格的第一列来骗过本条 —— 那是"故意绕过"，与"忘了登记"不同类。 */
+function registrationRows(md) {
+  const out = [];
+  String(md || '').split(/\r?\n/).forEach((line, i) => {
+    if (!/^\s*\|/.test(line)) return;                       // 只认表格行
+    const cells = line.split('|');
+    if (cells.length < 3) return;                           // `|` 开头的行切出来首尾是空串
+    let cell = (cells[1] || '').replace(/\*\*/g, '').replace(/`/g, '');
+    cell = cell.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').trim();   // 去掉 markdown 链接语法，留文字
+    if (!cell || /^-+$/.test(cell)) return;                  // 分隔行
+    if (cell === '文件' || cell === '文档') return;           // 表头
+    out.push({ line: i + 1, cell: cell });
+  });
+  return out;
+}
+
+/** 名字边界匹配：前后都不许是标识符字符（**`.` 也算** —— 否则 `app.js.bak` / `app.jsx` 会把 `app.js`
+ *  的登记蒙过去；允许前面是 `/` `` ` `` `|` 空格 —— 路径写法照样命中）。
+ *  为什么要边界：不做边界就等于又开了一个"子串匹配"的口子，而子串匹配正是这一条判定旧实现的病根。 */
+function nameHit(text, key) {
+  const esc = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('(^|[^A-Za-z0-9_.\\-])' + esc + '($|[^A-Za-z0-9_.\\-])').test(String(text || ''));
+}
+
 function checkModuleCoverage(root) {
   const problems = [];
   const archPath = path.join(root, 'docs', 'ARCHITECTURE.md');
   if (!fs.existsSync(archPath)) return problems;
   const arch = fs.readFileSync(archPath, 'utf8');
+  const rows = registrationRows(arch);
   COVERED_DIRS.forEach(({ dir, what }) => {
     const abs = path.join(root, dir);
     if (!fs.existsSync(abs)) return;
     listJsFiles(abs, dir).forEach((rel) => {
       if (isExemptFile(rel)) return;              // 显式豁免 —— 不再靠"非递归"这个副作用
       const inSubdir = rel.slice(dir.length + 1).includes('/');
-      // 顶层 = 文件名口径（历史选择，本批不动）；子目录 = 完整路径口径（防"同名换目录"免检）
-      const registered = inSubdir
-        ? arch.includes(rel)
-        : arch.includes(path.posix.basename(rel));
+      // 顶层 = 文件名口径；子目录 = 完整路径口径（防"同名换目录"免检）。
+      // 两档都**只在登记行（表格第一列）里找**，不再全文子串匹配（见 `registrationRows` 的注释）。
+      const key = inSubdir ? rel : path.posix.basename(rel);
+      const registered = rows.some((r) => nameHit(r.cell, key));
       if (registered) return;
       problems.push({ kind: 'module-cover', rel,
-        msg: what + '里的这个文件没有被 `docs/ARCHITECTURE.md` 提到 —— '
+        msg: what + '里的这个文件没有被 `docs/ARCHITECTURE.md` 的**登记表行**收进去 —— '
           + '新接手的 AI 靠 §2 认识代码结构，新增文件要同批登记（'
           + (inSubdir
             ? '子目录文件按**完整相对路径**登记进它所属层的那张表（渲染层 §2.1 / 共享核心 §2.3 / 脚本层 §2.6）；'
               + '若整个目录规则确实相同，把它加进 `EXEMPT_DIRS` 并在 §2.6 补一行前缀行'
             : '§2.1 / §2.3 / §2.6 表')
-          + '）' });
+          + '）。⚠️ 只在**散文里提到名字不算入档**（那是本判定以前的假绿来源：'
+          + '`arch.includes(文件名)` 是全文子串匹配，一句"消毒 `sanitize.js`"就能让整条判定变绿）' });
     });
   });
   return problems;
@@ -605,26 +646,227 @@ function checkArchiveBanners(root) {
  * 为什么需要：`.review/` 是"可随时整目录删除"的工作产物区，但**没有任何东西告诉接手者
  * 哪些目录还在用**。实测：一个工作目录当天还在被写入（70 个文件），却没有任何状态标记 ——
  * 接手者要么误删在飞工作，要么把陈旧分析当现状。
- * 规则：`.review/` 的**直接子目录**必须有 `README.md` 声明状态（在飞 / 已收口 / 已废弃）；
+ * 规则：`.review/` 的**直接子目录**必须有 `README.md` 声明状态（在飞 / 已收口 / 已废弃 / 已完成）；
  * 直接放在 `.review/` 下的散落文件豁免（它们是单文件产物，没有"目录死活"可言）。
  * **工具自建目录豁免**：`.review/vision/` 由 `scripts/vision/record.js` 按需创建，
- * 是"读图留痕"的固定用途存储（用途已在 §2.4 / §4b 写明），不属于"某次任务的临时工作目录"。 */
+ * 是"读图留痕"的固定用途存储（用途已在 §2.4 / §4b 写明），不属于"某次任务的临时工作目录"。
+ *
+ * ── 2026-10-20 收口的一处**规则宽、实现窄**（本判定的旧实现是假的）──
+ * 旧实现只判 `fs.existsSync(README.md)`：**任意空文件都能让它变绿**，而规则要的是「**声明状态**」。
+ * 实测形状：`.review/` 的受判直接子目录**全部**都有 README ⇒ 本判定全绿，而其中
+ * **39 个**通篇不含任何状态词 ⇒ "接手者能不能删"这件事**从来没被判过一次**。
+ * ⇒ 现在真的判状态词：`README.md` 正文里必须出现 `WORKDIR_STATUS_VOCAB` 里的一个词。
+ * 词表为什么是这四个（**不自创**，两条依据都写在这里）：
+ *   · `在飞` / `已收口` / `已废弃` —— **规则原文**就是这三个（本节上面那句，也是报错文案的 `状态：…`）；
+ *   · `已完成` —— **实测加进来的**：同一批清点里 16 个目录用它声明状态（其中 7 个除此之外
+ *     一个词都没有），它与 `已收口` 同义、同样直接回答"能不能删"。不认它只会把这 7 个
+ *     **本来已经声明了状态**的目录推进欠账册 ⇒ 那是假红。
+ *   · **刻意不认**的写法（每条都有实测理由，不是漏了）：`收口` 是动词（"全链收口"这类叙述
+ *     出现在 75 个目录里），而 `未收口` 也含这两个字 ⇒ 认它会把**反向状态读成正向**；
+ *     `未收口` / `已落地` / `已交付` 这类近义散文让下一个接手者靠猜，正是这条规则要消灭的形态
+ *     ⇒ 它们进欠账册（销账动作 = 改写成词表里的一行），**不放宽词表去迁就**。
+ * 边界（`B8`：判不了的那半也要写清楚）：
+ *   · 只判"**有没有**状态词"，判不了"这个词是不是**当前**状态"、"是不是指**本目录**"
+ *     （例：README 里写"上一批已收口、本批在飞"，两词都在 ⇒ 通过）。那要读语义，属人工残差。
+ *   · 也不判它与 `docs/ROADMAP.md`「在飞 / 未收口」是否**一致** —— 两侧词表不同（那份是表格列
+ *     取值 `HANDOVER_STATUS_VOCAB`，本份是 README 正文词），合并会把"写在哪"这件事混掉。
+ * 存量怎么办（`B4` 的封闭欠账册，**不许一次全判红**——长期红的门禁下场是被关掉）：
+ * `README_STATUS_DEBT` 在册的放过、但**计数必须可见**；不在册的一律判红；
+ * **在册却已经声明了状态 ⇒ 判红**（修好忘销账）；条数有上界（只减不增）。 */
 const WORK_DIR_EXEMPT = new Set(['vision']);
 
-function checkWorkDirStatus(root) {
+/** 第⑨条认哪些状态词（**唯一来源** —— 理由见上面那段注释，别在别处再抄一份词表）。 */
+const WORKDIR_STATUS_VOCAB = ['在飞', '已收口', '已废弃', '已完成'];
+
+/** 从 README 正文里取出命中的状态词（按词表顺序返回，让输出稳定、可逐字比对）。 */
+function readmeStatusWords(text) {
+  const t = String(text || '');
+  return WORKDIR_STATUS_VOCAB.filter((w) => t.includes(w));
+}
+
+/** 欠账的**销账动作**：统一一份（39 条各抄一遍只会多出 39 份会各自漂的副本）。
+ *  写在这里而不是每条 entry 里 —— 与 `NEXT_STEP_BANNED` / `EXEMPT_DIRS` 同一处置。
+ *  ⚠️ **删目录也算结清**：`.review/` 的规矩就是"可随时整目录删除"，
+ *  所以销账册上的目录哪天不存在了，本判定**不判红、只报告**（判红会让"删杂物"这个正确动作变红）。 */
+const README_STATUS_DEBT_CLOSE = '在它的 `README.md` 里写一行 `状态：在飞|已收口|已废弃|已完成`，'
+  + '或**直接删掉这个已废弃的目录**（删目录也算结清），然后**同批**把这条从本册删掉';
+
+/** **封闭欠账册**：第⑨条"真的判状态词"上线时仓库里已经存在的存量（只减不增）。
+ *  为什么要有这本册：一次性全判红 ⇒ 长期红 ⇒ 没人再看门禁（`B4` 明令禁止）。
+ *  三条机械判定（与 `DUP_ROW_EXEMPT` / `WRITE_OUTLET_DEBT` / `NONVISUAL_DEBT` 完全一致）：
+ *    ① **在册** ⇒ 放过，但**计数在通过行里可见**；
+ *    ② **不在册** ⇒ 判红（新目录不许再写不带状态的 README）；
+ *    ③ **在册却已声明状态** ⇒ 判红（修好忘销账；`why` 里写了怎么销账）。
+ *  第四条是本册**专有**的：账上目录**已不存在** ⇒ 只报告（见 `README_STATUS_DEBT_CLOSE` 的说明）。
+ *  ⚠️ 加条目 = 放宽判定，必须同批抬 `README_STATUS_DEBT_MAX` 并在 CHANGELOG 说明为什么。
+ *  复审时机：每次改本判定的口径时；审：改本文件的人。 */
+const README_STATUS_DEBT = [
+  { dir: '20261014-全网借鉴日报',
+    why: 'README 通篇不含词表状态词；正文 5.0 KB' },
+  { dir: '20261016-R7未核实实测',
+    why: 'README 通篇不含词表状态词；正文 25.9 KB' },
+  { dir: '20261016-全网借鉴日报',
+    why: 'README 通篇不含词表状态词；正文 4.2 KB' },
+  { dir: '20261016-改动清单面板',
+    why: 'README 通篇不含词表状态词；用的是近义写法 收口/已落地；正文 18.4 KB' },
+  { dir: '20261018-文档预览桥-前置取证',
+    why: 'README 通篇不含词表状态词；正文 4.7 KB' },
+  { dir: '20261018-清扫失败可见',
+    why: 'README 通篇不含词表状态词；正文 3.8 KB' },
+  { dir: '20261018-陈旧夹具',
+    why: 'README 通篇不含词表状态词；正文 2.4 KB' },
+  { dir: '20261019-LP节点名格式',
+    why: 'README 通篇不含词表状态词；正文 2.5 KB' },
+  { dir: '20261019-Markdown残留门禁',
+    why: 'README 通篇不含词表状态词；正文 2.9 KB' },
+  { dir: '20261019-caps-id-override',
+    why: 'README 通篇不含词表状态词；正文 4.0 KB' },
+  { dir: '20261019-em坏字销账',
+    why: 'README 通篇不含词表状态词；用的是近义写法 收口/未收口；正文 13.6 KB' },
+  { dir: '20261019-merge-project',
+    why: 'README 通篇不含词表状态词；正文 4.6 KB' },
+  { dir: '20261019-preset平面',
+    why: 'README 通篇不含词表状态词；正文 8.9 KB' },
+  { dir: '20261019-三本书命中率',
+    why: 'README 通篇不含词表状态词；正文 37.7 KB' },
+  { dir: '20261019-偿三笔债-W1W2W7',
+    why: 'README 通篇不含词表状态词；正文 18.2 KB' },
+  { dir: '20261019-四本书完整内容',
+    why: 'README 通篇不含词表状态词；正文 39.6 KB' },
+  { dir: '20261019-域52真渲染复核',
+    why: 'README 通篇不含词表状态词；正文 3.4 KB' },
+  { dir: '20261019-建49回',
+    why: 'README 通篇不含词表状态词；正文 2.5 KB' },
+  { dir: '20261019-进程内存原文补全',
+    why: 'README 通篇不含词表状态词；正文 43.1 KB' },
+  { dir: '20261020-80211真书核对',
+    why: 'README 通篇不含词表状态词；正文 32.6 KB' },
+  { dir: '20261020-LP-学习链路',
+    why: 'README 通篇不含词表状态词；用的是近义写法 已交付；正文 3.6 KB' },
+  { dir: '20261020-S2-tag-in-code',
+    why: 'README 通篇不含词表状态词；正文 1.8 KB' },
+  { dir: '20261020-markdown-star-rootfix',
+    why: 'README 通篇不含词表状态词；正文 4.0 KB' },
+  { dir: '20261020-内核网络真书核对',
+    why: 'README 通篇不含词表状态词；正文 26.8 KB' },
+  { dir: '20261020-分隔线残留',
+    why: 'README 通篇不含词表状态词；正文 2.8 KB' },
+  { dir: '20261020-台账清账',
+    why: 'README 通篇不含词表状态词；正文 4.5 KB' },
+  { dir: '20261020-收口B',
+    why: 'README 通篇不含词表状态词；用的是近义写法 收口；正文 1.0 KB' },
+  { dir: '20261020-测试补全',
+    why: 'README 通篇不含词表状态词；正文 4.9 KB' },
+  { dir: '20261020-词表修正',
+    why: 'README 通篇不含词表状态词；正文 5.8 KB' },
+  { dir: '20261020-门禁A',
+    why: 'README 通篇不含词表状态词；正文 8.1 KB' },
+  { dir: '20261020-门禁B',
+    why: 'README 通篇不含词表状态词；正文 21.6 KB' },
+  { dir: '20261020-阶段2.1-proc-mem',
+    why: 'README 通篇不含词表状态词；正文 3.2 KB' },
+  { dir: '20261020-阶段2.2-src-fun',
+    why: 'README 通篇不含词表状态词；正文 1.0 KB' },
+  { dir: '20261020-阶段2.3-wifi7',
+    why: 'README 通篇不含词表状态词；用的是近义写法 收口；正文 13.8 KB' },
+  { dir: '20261020-阶段2.4-linux-net',
+    why: 'README 通篇不含词表状态词；用的是近义写法 已交付；正文 4.6 KB' },
+  { dir: '20261020-阶段2.5-topdown',
+    why: 'README 通篇不含词表状态词；正文 6.6 KB' },
+  { dir: '20261020-阶段2.6-80211',
+    why: 'README 通篇不含词表状态词；用的是近义写法 收口；正文 3.8 KB' },
+  { dir: 'changelog-size-2026-10-05',
+    why: 'README 通篇不含词表状态词；正文 0.7 KB' }
+];
+
+/** 欠账条数上界：**只减不增**（写成字面量而不是 `README_STATUS_DEBT.length` ——
+ *  后者会算出自己的长度，册子上限就永远不会被触发，等于没有上界）。
+ *
+ *  ⚠️ **上界必须等于当前条目数**，不能留余量：留 1 格余量就等于"可以悄悄加回 1 条而不触发任何检查"，
+ *  而加条目 = 放宽判定 —— 那正是这本封闭册存在的反面。销掉一条就要同批把上界降一格（本行：
+ *  2026-10-20 销 `20261020-下沉`（它的 README 已声明 `已收口`）⇒ 39 → **38**）。 */
+const README_STATUS_DEBT_MAX = 38;
+
+/** 判定函数（标记在 `checkRegistry()` 里，见那里的 ⑨）。
+ *  @param {string} root 工程根
+ *  @param {Object} [opts] 依赖注入（给单测用，`B6`：判定逻辑要能被喂输入）
+ *  @param {Array} [opts.debt] 欠账册；不给就用模块里的 `README_STATUS_DEBT`（生产路径只走这条）
+ *  @param {number} [opts.debtMax] 欠账条数上界；不给就用 `README_STATUS_DEBT_MAX`
+ *  @returns {{problems: Array, stats: {dirs:number, declared:number, debt:number, debtStale:number,
+ *    exempt:number, debtDangling:string[], debtTotal:number, debtMax:number, vocab:string[]}}}
+ *  ⚠️ 返回的是 `{problems, stats}`（以前是裸数组）—— `stats` 就是"在册存量也算看得见"的那一半：
+ *  `B8` 要求豁免**计入真值、在门禁输出里可见**，只打印一个 ✓ 会让读者把"没判"读成"判过了"。 */
+function checkWorkDirStatus(root, opts) {
+  const o = opts || {};
+  const sameRoot = !o.rootIsFixture && path.resolve(root) === path.resolve(ROOT);
+  // 拿别的根跑（单测 / 变异体检）时**不许**套用真仓那本册：册上写的是真仓的目录名，
+  // 套上去会把 fixture 里的同名目录当欠账放过 ⇒ 假绿（与 `NOTE_RESIDUE_DEBT` 同一处置）。
+  const debt = Array.isArray(o.debt) ? o.debt : (sameRoot ? README_STATUS_DEBT : []);
+  const debtMax = Number.isFinite(o.debtMax) ? o.debtMax : README_STATUS_DEBT_MAX;
+  const debtDirs = new Set(debt.map((d) => d.dir));
   const problems = [];
+  const stats = { dirs: 0, declared: 0, debt: 0, debtStale: 0, exempt: 0,
+    debtDangling: [], debtTotal: debt.length, debtMax: debtMax, vocab: WORKDIR_STATUS_VOCAB.slice() };
   const dir = path.join(root, WORK_DIR);
-  if (!fs.existsSync(dir)) return problems;
+  if (!fs.existsSync(dir)) return { problems, stats };
+  const seen = new Set();
   fs.readdirSync(dir, { withFileTypes: true }).forEach((e) => {
     if (!e.isDirectory()) return;
-    if (WORK_DIR_EXEMPT.has(e.name)) return;
-    if (!fs.existsSync(path.join(dir, e.name, 'README.md'))) {
-      problems.push({ kind: 'workdir', rel: WORK_DIR + '/' + e.name + '/',
-        msg: '工作目录没有 README.md 声明状态 —— 补三行（主题 / 开始日期 / 状态：在飞|已收口|已废弃），'
+    if (WORK_DIR_EXEMPT.has(e.name)) { stats.exempt++; return; }
+    stats.dirs++;
+    seen.add(e.name);
+    const rel = WORK_DIR + '/' + e.name + '/';
+    const readme = path.join(dir, e.name, 'README.md');
+    if (!fs.existsSync(readme)) {
+      problems.push({ kind: 'workdir', rel: rel,
+        msg: '工作目录没有 README.md 声明状态 —— 补三行（主题 / 开始日期 / 状态：'
+          + WORKDIR_STATUS_VOCAB.join('|') + '），'
           + '否则接手者无法判断它能否删除，也无法与 `docs/ROADMAP.md` 的「在飞 / 未收口」对上' });
+      return;
     }
+    let text;
+    try { text = fs.readFileSync(readme, 'utf8'); } catch (err) {
+      // 读不出 ≠ 通过（`A5`：采不到真值 = 红）
+      problems.push({ kind: 'workdir', rel: rel,
+        msg: 'README.md 读不出（' + err.message + '）—— 采不到状态就当没声明，不许静默放过' });
+      return;
+    }
+    const words = readmeStatusWords(text);
+    if (words.length) {
+      if (debtDirs.has(e.name)) {
+        // **修好忘销账**：账上还挂着它、它却已经合规 ⇒ 判红，逼人同批销账。
+        //（这里的序号用 `1)` 这类写法，不写圈号 —— 圈号是判定标记，写了会被 G9 判"标记重复" ✗）
+        stats.debtStale++;
+        problems.push({ kind: 'workdir-debt-stale', rel: rel,
+          msg: '欠账册还记着这个目录，但它的 README **已经声明了状态**（' + words.join(' / ') + '）—— '
+            + '**修好忘销账**：把 `' + e.name + '` 这条从 `README_STATUS_DEBT` 删掉'
+            + '（册子只减不增，挂着已结清的条目会让"还剩多少欠账"永远是个假数）。销账动作见 '
+            + '`README_STATUS_DEBT_CLOSE`' });
+        return;
+      }
+      stats.declared++;
+      return;
+    }
+    if (debtDirs.has(e.name)) { stats.debt++; return; }             // 在册 ⇒ 放过，计数可见
+    // 不在册 ⇒ 判红（这就是"任意空文件都能变绿"被堵掉的那条路）
+    problems.push({ kind: 'workdir-status', rel: rel,
+      msg: '工作目录的 README.md **没有声明状态**（正文里找不到 ' + WORKDIR_STATUS_VOCAB.join(' / ')
+        + ' 中的任何一个词）—— 规则要的不是"有个 README 文件"，而是"接手者能判断它能不能删"。'
+        + '补一行 `状态：' + WORKDIR_STATUS_VOCAB.join('|') + '`；'
+        + '确实是已存在的存量、本轮修不了 ⇒ 登记进 `scripts/docs-registry-check.js` 的 '
+        + '`README_STATUS_DEBT`（带 why，并同批抬上界）' });
   });
-  return problems;
+  // 账上目录已不存在 ⇒ **只报告**，不判红。理由：`.review/` 的规矩是"可随时整目录删除"，
+  //    删掉一个已废弃目录正是通行的结清方式 —— 判红会把"删杂物"这个正确动作变红（假红）。
+  //    代价如实说：册子可能一直挂着一批已结清的条目 ⇒ 所以它**在通过行里打印条数**，逼人看见。
+  debt.forEach((d) => { if (!seen.has(d.dir)) stats.debtDangling.push(d.dir); });
+  // **册子超上界 ⇒ 判红**（与根是不是真仓无关：这是册子自身的记账不变量，读的是"给了几本账/多高上界"）。
+  if (debt.length > debtMax) {
+    problems.push({ kind: 'workdir', rel: 'scripts/docs-registry-check.js',
+      msg: '封闭欠账册超上界：现有 ' + debt.length + ' 条 > `README_STATUS_DEBT_MAX` = ' + debtMax
+        + ' —— 加欠账条数 = 放宽判定，必须同批抬上界并在 CHANGELOG 说明为什么' });
+  }
+  return { problems, stats };
 }
 
 /* ---------------- 第十条判定：受管文档必须能从 SKILL.md 找到（导航可达） ----------------
@@ -979,8 +1221,10 @@ function checkRegistry(root, registryMd) {
   // ⑧ 归档文档必须自带「历史」横幅（归档仍会被 grep 到）
   checkArchiveBanners(root).forEach((p) => problems.push(p));
 
-  // ⑨ 工作目录必须声明死活（在飞 / 已收口 / 已废弃）
-  checkWorkDirStatus(root).forEach((p) => problems.push(p));
+  // ⑨ 工作目录必须声明死活（在飞 / 已收口 / 已废弃 / 已完成）
+  const wd = checkWorkDirStatus(root);
+  wd.problems.forEach((p) => problems.push(p));
+  const workdirStats = wd.stats;
 
   // ⑩ 受管文档必须能从 SKILL.md 导航找到（第一屏可达 = 接手者知道它存在）
   checkNavCoverage(root, reg).forEach((p) => problems.push(p));
@@ -1007,7 +1251,7 @@ function checkRegistry(root, registryMd) {
   const dupRes = checkDuplicateRows(root, docs);
   dupRes.problems.forEach((p) => problems.push(p));
 
-  return { problems, reg, docs, dupStats: dupRes.stats };
+  return { problems, reg, docs, dupStats: dupRes.stats, workdirStats };
 }
 
 /** ⑭ 层取值表：`层` 必须在 `LAYER_ORDER` 内（权威在 `SKILL.md` B3）。
@@ -1309,7 +1553,7 @@ function main() {
     return;
   }
   const registryMd = fs.readFileSync(regPath, 'utf8');
-  const { problems, reg, docs, dupStats } = checkRegistry(ROOT, registryMd);
+  const { problems, reg, docs, dupStats, workdirStats } = checkRegistry(ROOT, registryMd);
 
   // `--judgments`：把本门禁的判定清单**现场列出来**（从 `checkRegistry()` 的圈号标记与标题提取）。
   // 为什么需要：`docs/RULES.md` §2 不再逐条复制这份清单（复制过，结果"声明 13 条、只列 12 项"）——
@@ -1358,6 +1602,8 @@ function main() {
                 : p.kind === 'module-cover' ? '代码未入档'
                   : p.kind === 'banner' ? '归档缺横幅'
                     : p.kind === 'workdir' ? '工作目录无状态'
+                      : p.kind === 'workdir-status' ? '工作目录未声明状态词'
+                        : p.kind === 'workdir-debt-stale' ? '欠账已结清未销账'
                       : p.kind === 'nav-cover' ? '导航不可达'
                         : p.kind === 'contract' ? '契约缺字段'
                           : p.kind === 'contract-stale' ? '检查表过期'
@@ -1387,7 +1633,21 @@ function main() {
   // 这句仍是 "src/ · cli/commands/ · scripts/"，于是"扫了哪几个目录"当场就成了第二种说法。
   console.log('✓ 代码文件都在架构文档里登记过（' + COVERED_DIRS.map((d) => d.dir + '/').join(' · ') + '）');
   console.log('✓ 归档文档都带「历史」横幅（docs/archive/）');
-  console.log('✓ 工作目录都声明了死活（.review/*/README.md）');
+  // 第⑨条的通过读数**必须带分母 + 在册欠账 + 账上已不存在的条数**：只报一个 ✓，
+  // 读者会把"没判"读成"判过了"（skill B8 / A5；本判定恰恰是"看起来在判、其实只判了文件存在"过的那一处）。
+  if (workdirStats) {
+    console.log('✓ 工作目录的 README 都声明了状态（.review/*/README.md：受判 ' + workdirStats.dirs
+      + ' 个目录 · 已声明 ' + workdirStats.declared + ' · 在册欠账 ' + workdirStats.debt
+      + '/' + workdirStats.debtMax + ' · 工具自建目录豁免 ' + workdirStats.exempt
+      + ' · 词表 ' + workdirStats.vocab.join('|') + '）');
+    if (workdirStats.debtDangling.length) {
+      console.log('ℹ️ 欠账册上这 ' + workdirStats.debtDangling.length + ' 条目录已不存在（等于已结清）：'
+        + workdirStats.debtDangling.slice(0, 5).join('、')
+        + (workdirStats.debtDangling.length > 5 ? ' 等' : '')
+        + ' —— **请把这几条从 `README_STATUS_DEBT` 删掉**（册子只减不增；'
+        + '删目录本身就是 .review/ 的合法结清方式，故这里只报告、不判红）。');
+    }
+  }
   console.log('✓ 受管文档都能从 SKILL.md 导航找到（第一屏可达）');
   console.log('✓ 数据契约覆盖了 schema 校验的字段（docs/DATA-FORMAT.md）');
   console.log('✓ 受管文档的章节编号连续（无断号）');
@@ -1457,6 +1717,11 @@ module.exports = {
   parseRegistryTable, isRegistered, collectDocs, checkRegistry, checkRootLayout,
   checkArchiveNoDuplicate, checkHandoverPointers, checkModuleCoverage,
   checkArchiveBanners, checkWorkDirStatus, checkNavCoverage,
+  // 第⑦条的登记行解析（导出给单测：`registrationRows` / `nameHit` 是那档"只认表格第一列"的判据）
+  registrationRows, nameHit,
+  // 第⑨条的词表与封闭欠账册（导出给单测：判别力的四个方向都在 `tests/` 里常驻）
+  WORKDIR_STATUS_VOCAB, readmeStatusWords, README_STATUS_DEBT, README_STATUS_DEBT_MAX,
+  README_STATUS_DEBT_CLOSE, WORK_DIR_EXEMPT,
   checkContractCoverage, checkSectionNumbering, handoverNotice, recentlyChanged,
   parseHeaderBlock, parseDocHeader, collectDocHeaders, renderRegistryTable, checkRegistryTable,
   writeRegistryTable, headerProblemLine, checkLayerValues,

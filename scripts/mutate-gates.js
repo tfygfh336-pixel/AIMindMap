@@ -888,8 +888,14 @@ const GATES = [
       if (start < 0) return made;
       let end = lines.length;
       for (let i = start + 1; i < lines.length; i++) if (/^##\s/.test(lines[i])) { end = i; break; }
-      /** 一个目录在副本里补 README（G8 第 ⑨ 条：`.review` 的直接子目录必须有 README 声明死活）。
-       *  只给 `.review/<第一段>` 这一层补 —— 与门禁的检查口径一致，不多补。 */
+      /** 一个目录在副本里补 README（G8 第 ⑨ 条：`.review` 的直接子目录必须有 README **声明状态词**）。
+       *  只给 `.review/<第一段>` 这一层补 —— 与门禁的检查口径一致，不多补。
+       *
+       *  ⚠️ 2026-10-20 订正：第 ⑨ 条原先**只判 README 存不存在**，这条存根因此只写了一段"存在性"说明。
+       *  该条已改成**必须出现状态词**（`在飞`/`已收口`/`已废弃`/`已完成`）⇒ 旧存根会在这条门禁下判红，
+       *  而变异体检要求"期望原因**只出现在变体、不出现在基线**" ⇒ 基线先红会让 G8-9 那一行
+       *  **退化成"报漏过"**（噪音，噪音的下场是被无视）。所以存根必须自带状态词。
+       *  写的是"已收口"而不是"在飞"：副本是跑完即删的一次性镜像，本来就不该被接手者当成在飞工作。 */
       const ensureTopReadme = (refDir) => {
         const seg = refDir.split('/');
         if (seg[0] !== '.review' || seg.length < 2) return;
@@ -897,8 +903,10 @@ const GATES = [
         if (!fs.existsSync(top)) { fs.mkdirSync(top, { recursive: true }); made.push(seg[0] + '/' + seg[1] + '/'); }
         const rm = path.join(top, 'README.md');
         if (!fs.existsSync(rm)) {
-          fs.writeFileSync(rm, '# 副本存根（变异体检）\n\n真仓里这个工作目录的内容不进副本；'
-            + '这里只补**存在性**，因为 G8 第 ⑥/⑨ 条读的正是"目录在不在 / 有没有 README"。\n', 'utf8');
+          fs.writeFileSync(rm, '# 副本存根（变异体检）\n\n'
+            + '状态：已收口（副本存根，跑完即删）\n\n'
+            + '真仓里这个工作目录的内容不进副本；这里只补**存在性 + 状态词**，因为 G8 第 ⑥ 条读"目录在不在"、'
+            + '第 ⑨ 条读"README 有没有**声明状态词**"（2026-10-20 之前只读存在性，那是本条判据的已知假绿）。\n', 'utf8');
           made.push(seg[0] + '/' + seg[1] + '/README.md');
         }
       };

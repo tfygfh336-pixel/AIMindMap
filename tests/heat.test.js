@@ -707,3 +707,120 @@ describe('L. 定义只有一处（命令层不抄口径）', () => {
     expect(heat.FILE_NAME.startsWith('.')).toBe(true);
   });
 });
+
+/* ============================================================================
+ * M. G-15 下沉（2026-10-20）：`readHeatFile` 的**纯核心** `heatFromLogText`
+ * ----------------------------------------------------------------------------
+ * 拆分前这些判据（坏行 / 未知通道 / 乱序 / 未来时间戳 / 算榜）只能经 `readHeatFile` 测，
+ * 而那个函数要 `existsSync` + `readTail` ⇒ 每条都得先落一个日志文件到 `%TEMP%`。
+ * 现在它们是"喂一段字符串"的纯函数，**断言比原来更狠**：
+ *   · 原来只能"写坏文件 → 读 → 期望抛错"，现在能**逐条点名**（含字节偏移与行号）；
+ *   · 原来要开 CLI 子进程验的"未来时间戳"档，现在一次调用就够。
+ * ⚠️ 下面**没有一处** mkdtemp —— 与上面各组的沙箱完全隔离。
+ * ========================================================================== */
+describe('M. `heatFromLogText`（纯核心：喂日志文本就够，不读盘）', () => {
+  const NOW = Date.parse('2026-10-20T12:00:00.000Z');
+  const at = (offsetMs) => new Date(NOW + offsetMs).toISOString();
+  const ev = (node, ch, offsetMs, extra) => JSON.stringify(Object.assign({
+    v: heat.ENTRY_VERSION, at: at(offsetMs), node: node, ch: ch
+  }, extra || {}));
+  const logText = (...lines) => lines.join('\n') + '\n';
+
+  it('M1 合法日志 ⇒ 给出两条榜 + 行数/事件数，且**不碰 fs**（连 require 都不需要）', () => {
+    const text = logText(ev('a', 'human-detail', -1000), ev('a', 'ai-get', -900), ev('b', 'human-detail', -800));
+    const r = heat.heatFromLogText(text, { now: NOW });
+    expect(r.events).toBe(3);
+    expect(r.lines).toBe(3);
+    expect(r.heat).toBeTruthy();
+    // 与"读真文件再算"逐字节一致（同一个 computeHeat，split 没有改变读数）
+    expect(JSON.stringify(r.heat)).toBe(JSON.stringify(heat.computeHeat(heat.parseEvents(text, {}).events, { now: NOW })));
+  });
+
+  it('M2 空文本 ⇒ 0 事件、0 行（**不是** NaN / 崩）', () => {
+    ['', '\n', null, undefined].forEach((v) => {
+      const r = heat.heatFromLogText(v, { now: NOW });
+      expect(r.events).toBe(0);
+      expect(r.lines).toBe(0);
+    });
+  });
+
+  it('M3 坏行 ⇒ **抛错并点名**（行号 + 偏移 + 原文），绝不静默当 0', () => {
+    const text = logText(ev('a', 'human-detail', -1000), '{ 这不是 JSON');
+    expect(() => heat.heatFromLogText(text, { now: NOW })).toThrow(/坏行/);
+    let msg = '';
+    try { heat.heatFromLogText(text, { now: NOW, file: 'X.jsonl' }); } catch (e) { msg = e.message; }
+    expect(msg).toMatch(/第 2 行/);              // 真行号（opts.line 给了基准才有）
+    expect(msg).toMatch(/原文/);                  // 把坏行原文贴出来
+    expect(msg).toMatch(/不等于/);                // 并且明说"这**不等于**这些节点没被访问过"
+  });
+
+  it('M4 认不出的通道 ⇒ 抛错（通道表只有 CHANNELS 一处，不许自行加权）', () => {
+    expect(() => heat.heatFromLogText(logText(ev('a', 'made-up-channel', -1000)), { now: NOW }))
+      .toThrow(/认不出的通道/);
+  });
+
+  it('M5 时间乱序 ⇒ 抛错（窄查询的前提被破坏，给读数就会少算）', () => {
+    const text = logText(ev('a', 'human-detail', -100), ev('b', 'human-detail', -9000));
+    expect(() => heat.heatFromLogText(text, { now: NOW })).toThrow(/时间乱序/);
+  });
+
+  it('M6 未来时间戳 ⇒ 抛错（时钟回拨/手改），并点出那一行的 at', () => {
+    const future = at(heat.FUTURE_TOLERANCE_MS + 60000);
+    const text = logText(JSON.stringify({ v: heat.ENTRY_VERSION, at: future, node: 'a', ch: 'human-detail' }));
+    expect(() => heat.heatFromLogText(text, { now: NOW })).toThrow(/未来时间戳/);
+    let msg = '';
+    try { heat.heatFromLogText(text, { now: NOW }); } catch (e) { msg = e.message; }
+    expect(msg).toContain(future);
+  });
+
+  it('M7 `now` 可注入：同一份日志换 `now` ⇒ 读数随之变（窗口是滚动的，不是常量）', () => {
+    /* ⚠️ 先说清口径（写错过一次）：`events` = **解析出的条数**（与窗口无关），
+     * 窗口过滤发生在 `computeHeat` 里 ⇒ 该看 `heat.sample.events` 与 `heat.window`。 */
+    const text = logText(ev('a', 'human-detail', -1000));
+    const near = heat.heatFromLogText(text, { now: NOW });
+    const far = heat.heatFromLogText(text, { now: NOW + heat.WINDOW_MS + 86400000 });
+    expect(near.events).toBe(1);
+    expect(far.events).toBe(1);                   // 解析条数不变（它只数"读到了几条"）
+    expect(near.heat.sample.events).toBe(1);      // 窗口内 = 1
+    expect(far.heat.sample.events).toBe(0);       // 出了 30 天窗口 ⇒ 算不进来
+    expect(far.heat.sample.dropped).toBe(1);
+    expect(far.heat.window.from).not.toBe(near.heat.window.from);
+  });
+
+  it('M8 不传 now ⇒ 取现在（同文件其它函数的 idiom）；这与"未来时间戳"判据一致', () => {
+    // 相对**真·当前时刻**造一条"刚刚发生"的事件 ⇒ 不传 now 也应落在窗口内
+    const justNow = logText(JSON.stringify({
+      v: heat.ENTRY_VERSION, at: new Date(Date.now() - 1000).toISOString(), node: 'a', ch: 'human-detail'
+    }));
+    const r = heat.heatFromLogText(justNow, {});
+    expect(r.events).toBe(1);
+    expect(r.heat.sample.events).toBe(1);
+    // 而一条**真·未来**的事件（不管传不传 now）都必须抛错
+    const future = logText(JSON.stringify({
+      v: heat.ENTRY_VERSION,
+      at: new Date(Date.now() + heat.FUTURE_TOLERANCE_MS + 60000).toISOString(), node: 'a', ch: 'human-detail'
+    }));
+    expect(() => heat.heatFromLogText(future, {})).toThrow(/未来时间戳/);
+  });
+
+  it('M9 `offset`/`line` 只影响**定位**，不影响读数（纯核心的这块是纯诊断信息）', () => {
+    const text = logText(ev('a', 'human-detail', -1000), '{bad json');
+    let withLoc = '';
+    let withoutLoc = '';
+    try { heat.heatFromLogText(text, { now: NOW, offset: 4096, line: 101 }); } catch (e) { withLoc = e.message; }
+    try { heat.heatFromLogText(text, { now: NOW }); } catch (e) { withoutLoc = e.message; }
+    expect(withLoc).toMatch(/第 102 行/);          // 基准行号 + 读区内序号
+    expect(withLoc).toMatch(/文件偏移/);            // 给了 offset 就报真偏移
+    expect(withoutLoc).toMatch(/读区第 2 行/);      // 没给基准 ⇒ 只能说"读区内第几行"
+  });
+
+  it('M10 与 `readHeatFile` 是**同一套判据**（读真文件的读数 == 纯核心对同一段文本的读数）', () => {
+    const p = newProject();
+    writeSpec(p, { 'human-detail': { 'node-a': 2 } }, Date.now() - 60 * 1000);
+    const file = heat.readHeatFile(logFile(p), { now: Date.now() });
+    const pure = heat.heatFromLogText(fs.readFileSync(logFile(p), 'utf8'), { now: file.now });
+    expect(JSON.stringify(pure.heat)).toBe(JSON.stringify(file.heat));
+    expect(pure.lines).toBe(file.log.lines);
+    expect(pure.events).toBe(file.log.events);
+  });
+});

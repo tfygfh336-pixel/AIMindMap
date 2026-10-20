@@ -395,6 +395,57 @@ describe('S4-A item-src：归一化 / 解析 / 与检索面同口径', () => {
     expect(cache.reads).toBe(1);
     expect(cache.files.size).toBe(1);
   });
+
+  /* ------------------------------------------------------------
+   * G-15 下沉（2026-10-20）：`fingerprint` 的**纯核心** `fingerprintOf(text, bytes, mtimeMs)`
+   * ------------------------------------------------------------
+   * 拆分前"读文件 → 算指纹"是一件事 ⇒ 探针判 `fingerprint` 需盘；
+   * 想验**算法本身**（同一段文本必得同一个 sha、行数怎么数、CRLF 算不算两行）就得先落文件。
+   * 现在这几条**一个字节的盘都不碰**（与上面的 sandbox 完全隔离）。
+   * 下面这些期望值是 `node -e "crypto.createHash('sha256')…"` 实算出来的，不是抄来的。
+   * ------------------------------------------------------------ */
+  it('G15 `fingerprintOf`：喂文本就够 —— sha256/bytes/lineCount 三个读数逐样本钉死', () => {
+    const cases = [
+      // [文本, 期望 sha256 前 12 位, 期望 lineCount]
+      ['', 'e3b0c44298fc', 0],                                  // 空文件 = 0 行
+      ['a', 'ca978112ca1b', 1],
+      ['a\nb\n', '911169ddaaf1', 2],                            // 末尾换行**不额外算一行**
+      ['a\nb', '7e18f737311b', 2],
+      ['a\r\nb\r\n', '58055bdcc737', 2],                        // CRLF 仍是 2 行（不按 \r\n 再切一次）
+      ['中文内容\n第二行\n', 'cf3b1cc1fce5', 2] // 多字节：bytes 按 utf8 算，不是按字符数
+    ];
+    cases.forEach(([text, sha12, lines]) => {
+      const fp = itemSrc.fingerprintOf(text, undefined, undefined);
+      expect(fp.sha256.slice(0, 12), JSON.stringify(text)).toBe(sha12);
+      expect(fp.lineCount, JSON.stringify(text)).toBe(lines);
+      expect(fp.bytes).toBe(Buffer.byteLength(text, 'utf8'));
+    });
+    expect(itemSrc.fingerprintOf('中文内容\n第二行\n').bytes).toBe(23);   // 6 汉字×3 + 2×\n + 2 汉字×3 = 23
+  });
+
+  it('G15 `fingerprintOf`：显式给的 bytes/mtimeMs 原样带出（不被文本长度覆盖）；null/NaN ⇒ 有明确缺省', () => {
+    expect(itemSrc.fingerprintOf('abc', 999, 12345)).toMatchObject({ bytes: 999, mtimeMs: 12345 });
+    expect(itemSrc.fingerprintOf('abc', undefined, undefined).bytes).toBe(3);
+    expect(itemSrc.fingerprintOf('abc', undefined, undefined).mtimeMs).toBe(null);
+    expect(itemSrc.fingerprintOf('abc', NaN, NaN)).toMatchObject({ bytes: 3, mtimeMs: null });
+    // null/undefined 文本 == 空文本（同 `sha256('')`），绝不抛
+    expect(itemSrc.fingerprintOf(null).sha256).toBe(itemSrc.sha256(''));
+    expect(itemSrc.fingerprintOf(undefined).lineCount).toBe(0);
+  });
+
+  it('G15 `fingerprint` 与 `fingerprintOf` **逐字节等价**（读真文件的读数 == 纯核心对同一段文本的读数）', () => {
+    ['', 'a', 'a\nb\n', 'a\nb', 'a\r\nb\r\n', '中文内容\n第二行\n'].forEach((body, i) => {
+      const abs = path.join(SANDBOX, 'refs', 'g15-fp-' + i + '.md');
+      fs.writeFileSync(abs, body, 'utf8');
+      const f = itemSrc.fingerprint(abs);
+      const st = fs.statSync(abs);
+      const pure = itemSrc.fingerprintOf(body, st.size, st.mtimeMs);
+      expect(f.sha256, JSON.stringify(body)).toBe(pure.sha256);
+      expect(f.bytes).toBe(pure.bytes);
+      expect(f.mtimeMs).toBe(pure.mtimeMs);
+      expect(f.lineCount).toBe(pure.lineCount);
+    });
+  });
 });
 
 /* ============================================================================

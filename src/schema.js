@@ -209,10 +209,42 @@
    *   直到 assoc-prune 才解开。跨项目成员只能读盘（磁盘是唯一真值），保持不变。
    */
   function validateProject(data, projectsRoot, selfProject, opts) {
+    // 上半截（字段/节点/条目/环路/offset/绑定/assoc 结构）与下半截（跨项目引用）各自是**纯的**，
+    // 见下面两个函数的注释；这里只做接线。错误数组按**原来的先后**拼起来 ⇒ 报文逐字节不变。
+    const inPlace = validateInPlace(data);
+    // 顶层不是对象时下半截无从下手（与拆分前一样**立即返回**，不再往下走）
+    if (!data || typeof data !== 'object') return inPlace;
+    if (!projectsRoot || !fs || !path) return inPlace;      // 与拆分前的守卫逐字对应
+    const cross = validateCrossRefs(data, makeProjectReader(projectsRoot), selfProject, opts);
+    const errors = inPlace.errors.concat(cross.errors);
+    return { ok: errors.length === 0, errors: errors };
+  }
+
+  /** 一条错误进数组的**唯一一处**（`[节点id] 说明` 的形状只在这里拼）
+   *  —— 上半截与下半截共用它，所以两段的报文不可能各长一样。 */
+  function makeCollector() {
     const errors = [];
     const err = (msg, nodeId) => {
       errors.push(nodeId ? '[' + nodeId + '] ' + msg : msg);
     };
+    return { errors: errors, err: err };
+  }
+
+  /**
+   * **纯核心（一）**：只判"这份数据自身说不说得通" —— 字段 / 节点 / 条目 / 环路 / offset /
+   * 工作区绑定 / assoc 结构。**不读盘、不看时钟、不碰网络**：喂一个对象就够。
+   *
+   * 它是 G-15 下沉出来的：原先它是 `validateProject` 的上半截，因为下半截要跨项目读盘，
+   * 整份导出被探针判成"需盘"，于是测试想覆盖"缺 meta / id 不规范 / 条目 id 撞号"
+   * 这类**纯字段**判据也得先造一棵假项目树。
+   *
+   * @param {object} data 待校验的项目数据（**即将落盘的那一份**）
+   * @returns {{ok:boolean, errors:string[]}}
+   */
+  function validateInPlace(data) {
+    const c = makeCollector();
+    const errors = c.errors;
+    const err = c.err;
     if (!data || typeof data !== 'object') { err('顶层必须是对象'); return { ok: false, errors }; }
     if (!data.meta || typeof data.meta !== 'object') err('缺少 meta');
     else {
@@ -346,194 +378,244 @@
       const assocCheck = assoc.validateAll(data.assoc);
       if (!assocCheck.ok) assocCheck.errors.forEach((e) => err(e));
     }
+    return { ok: errors.length === 0, errors: errors };
+  }
 
-    // 悬挂检测（需跨项目文件系统）：链接目标 + 关联成员，同一处逻辑
-    if (projectsRoot && fs && path) {
-      // 同项目成员的节点集合（惰性构建：绝大多数项目没有悬挂问题，不必先遍历）
-      let selfIds = null;
-      /** 某项目的 JSON 里是否存在该节点；不可读时返回异常标记（调用方报"无法读取"） */
-      const nodeExists = (proj, nodeId) => {
-        // 同项目：以入参 `data` 为准 —— 那才是即将写下去的真值。
-        // 读盘会把"我刚删掉的那个节点"算成还在（磁盘尚未覆盖），闸门因此漏判。
-        if (selfProject && proj === selfProject) {
-          if (selfIds === null) {
-            selfIds = new Set();
-            flatten(data && data.data).forEach((n) => { if (n && n.id !== undefined) selfIds.add(n.id); });
-          }
-          return selfIds.has(nodeId) ? 'yes' : 'no';
-        }
-        const p = path.join(projectsRoot, proj, proj + '.json');
-        if (!fs.existsSync(p)) return 'no-project';
-        try {
-          const pd = JSON.parse(fs.readFileSync(p, 'utf8'));
-          const found = (function findNode(r) {
-            if (!r) return false;
-            if (r.id === nodeId) return true;
-            return (r.children || []).some(findNode);
-          })(pd.data);
-          return found ? 'yes' : 'no';
-        } catch (e) {
-          return 'unreadable:' + (e.message || e);
-        }
-      };
+  /**
+   * 「跨项目读盘」的**唯一注入点**（`validateCrossRefs` 的默认实现）。
+   * 拆出来是因为它是下半截里**唯一**需要文件系统的动作：其余全是"拿到别的项目的数据之后怎么判"。
+   *
+   * @param {string} projectsRoot 项目根（`projects/<项目>/<项目>.json` 的父目录）
+   * @returns {(proj:string) => {ok:true, data:object} | {ok:false, reason:'no-project'}
+   *          | {ok:false, reason:'unreadable', detail:string}}
+   *   三档**与拆分前的三种返回一一对应**（`no-project` = 文件不存在；`unreadable` = 读/解析失败），
+   *   所以报文（"项目不存在" / "无法读取（原因）" / "不存在"）一个字都不用改。
+   */
+  function makeProjectReader(projectsRoot) {
+    return function readProject(proj) {
+      // 浏览器侧 fs/path 是 null（UMD 工厂收到 null）⇒ **响亮拒绝**，别让它以
+      // "Cannot read properties of null" 这种形状漏出去（那是"看不出发生了什么"）
+      if (!fs || !path) {
+        throw new Error('makeProjectReader 需要 Node 环境（浏览器端不校验跨项目引用，请走 CLI）');
+      }
+      const p = path.join(projectsRoot, proj, proj + '.json');
+      if (!fs.existsSync(p)) return { ok: false, reason: 'no-project' };
+      try {
+        return { ok: true, data: JSON.parse(fs.readFileSync(p, 'utf8')) };
+      } catch (e) {
+        return { ok: false, reason: 'unreadable', detail: (e.message || e) };
+      }
+    };
+  }
 
-      /**
-       * 把上面那份"在不在"的判断**再走一遍、但把节点对象带出来**（条目级悬挂需要 `node.items`）。
-       * 为什么必须与 `nodeExists` **共用同一段解析**（而不是再读一次盘）：
-       *   · 同项目**必须走待写数据 `data`**（理由见上：读盘会把刚删掉的节点算成还在）；
-       *   · 跨项目的读盘只发生一次（这里返回对象；`nodeExists` 那边照旧只问在不在）。
-       * 返回值：`{ok:true, node}` | `{ok:false, reason:'no-project'|'no'|'unreadable', detail?}`。
-       * ⚠️ 节点不存在 / 项目读不出来 ⇒ 返回 `{ok:false}` 而**不在这里报错** ——
-       *   那一档上面（节点级）已经报过，重复报会把同一处坏数据报两遍，读者以为有两处坏。
-       */
-      const targetNodeOf = (proj, nodeId) => {
-        if (selfProject && proj === selfProject) {
-          let hit = null;
-          (function findNode(n) {
-            if (!n || hit) return;
-            if (n.id === nodeId) { hit = n; return; }
-            (n.children || []).forEach(findNode);
-          })(data && data.data);
-          return hit ? { ok: true, node: hit } : { ok: false, reason: 'no' };
-        }
-        const p = path.join(projectsRoot, proj, proj + '.json');
-        if (!fs.existsSync(p)) return { ok: false, reason: 'no-project' };
-        try {
-          const pd = JSON.parse(fs.readFileSync(p, 'utf8'));
-          let hit = null;
-          (function findNode(n) {
-            if (!n || hit) return;
-            if (n.id === nodeId) { hit = n; return; }
-            (n.children || []).forEach(findNode);
-          })(pd.data);
-          return hit ? { ok: true, node: hit } : { ok: false, reason: 'no' };
-        } catch (e) {
-          return { ok: false, reason: 'unreadable', detail: (e.message || e) };
-        }
-      };
-
-      /**
-       * 条目级悬挂：**同一处判据**（`relations.targetHasItem`）+ **分开的报文**。
-       * 为什么与"节点不存在"分开报：**修法不同** ——
-       *   节点不存在 ⇒ 这条边该剪（目标整个没了）；
-       *   节点还在、条目已删 ⇒ **这条边**该剪，但内容可能该恢复（或换个条目指向）。
-       * 报同一种会把修法指错；而"节点还在、条目不在"恰恰是最容易被当成"节点级没问题"漏过去的一档。
-       */
-      const itemDangling = (l, at) => {
-        if (!targetHasItemOf) return;                       // 浏览器侧未注入 ⇒ 跳过（门禁在 CI 侧）
-        if (!l || !l.item) return;                          // 节点级引用：上面那一档已经判过
-        const t = targetNodeOf(l.project, l.id);
-        if (!t.ok) return;                                  // 节点/项目那一档上面已报，不重复报
-        const chk = targetHasItemOf(t.node, l.item);
-        if (chk.ok) return;
-        err('悬挂链接: ' + l.project + '/' + l.id + '#' + l.item + ' 不存在'
-          + '（**节点还在、条目已被删**）—— 修法：`links-prune <项目>` 剪掉这条边；'
-          + '若只是条目被误删，先 `item-add` / `item-move` 把它恢复或改指向'
-          + (chk.ids.length ? '（该节点现有条目：' + chk.ids.join(', ') + '）' : '（该节点现在没有条目层）'),
-        at);
-      };
-
-      /** `anchorState` 的唯一实现来自 `src/relations.js`（浏览器侧未注入 ⇒ 这一档跳过，门禁在 CI 侧） */
-      const anchorStateOf = (relations && typeof relations.anchorState === 'function')
-        ? relations.anchorState : null;
-
-      /**
-       * 标签索引（`tag` 锚点用）：`project|tag` 的集合成员查询 —— **强判据**（不是文本匹配）。
-       * 范围口径（本工程**显式定死**，免得"标签是全局还是项目内"长期悬着）：
-       *   · 锚点**没写** `project` ⇒ 在**当前项目**里判；
-       *   · 锚点**写了** `project`  ⇒ 在那个项目里判；
-       *   · 项目读不出来 ⇒ 返回 `null`（"采不到真值"）⇒ 判成 `unreadable`，**不当作失效**。
-       */
-      const tagIndex = (() => {
-        const cache = {};
-        function tagsIn(proj) {
-          if (cache[proj] !== undefined) return cache[proj];
-          const set = new Set();
-          if (selfProject && proj === selfProject) {
-            flatten(data && data.data).forEach((n) => ((n && n.tags) || []).forEach((t) => set.add(String(t))));
-            cache[proj] = set;
-            return set;
-          }
-          const p = path.join(projectsRoot, proj, proj + '.json');
-          try {
-            if (!fs.existsSync(p)) { cache[proj] = null; return null; }
-            const pd = JSON.parse(fs.readFileSync(p, 'utf8'));
-            (function w(n) { if (!n) return; ((n.tags) || []).forEach((t) => set.add(String(t))); (n.children || []).forEach(w); })(pd.data);
-            cache[proj] = set;
-            return set;
-          } catch (e) { cache[proj] = null; return null; }
-        }
-        return {
-          hasTag(tag, proj) {
-            const s = tagsIn(proj);
-            if (s === null) return null;                    // 读不出来 ⇒ 不猜
-            return s.has(String(tag));
-          }
-        };
-      })();
-
-      flatten(data.data).forEach((n) => {
-        (n.links || []).forEach((l, i) => {
-          if (!l || typeof l !== 'object') { err('links[' + i + '] 不是对象', n.id); return; }
-          if (!l.project || !l.id) { err('links[' + i + '] 缺少 project/id', n.id); return; }
-          const r = nodeExists(l.project, l.id);
-          if (r === 'no-project') err('悬挂链接: 项目不存在 ' + l.project, n.id);
-          else if (r === 'no') err('悬挂链接: ' + l.project + '/' + l.id + ' 不存在', n.id);
-          else if (r !== 'yes') err('悬挂链接: 无法读取 ' + l.project + '（' + r.slice(11) + '）', n.id);
-          itemDangling(l, n.id);          // ← 加这一行（条目级：节点在、条目不在）
-        });
-      });
-
-      // 关联成员悬挂：成员指向的节点若已不存在，该关联就是坏的。
-      // 与悬挂链接同样按项目名读盘（不是 meta.name）——成员里的 project 就是项目目录名。
-      (Array.isArray(data.assoc) ? data.assoc : []).forEach((a, ai) => {
-        if (!a || !Array.isArray(a.members)) return;
-        a.members.forEach((m, mi) => {
-          if (!m || typeof m !== 'object' || !m.project || !m.id) return;  // 结构问题已由 validateAll 报过
-          const r = nodeExists(m.project, m.id);
-          const at = 'assoc[' + ai + '].members[' + mi + ']';
-          if (r === 'no-project') err('悬挂关联成员: 项目不存在 ' + m.project, at);
-          else if (r === 'no') err('悬挂关联成员: ' + m.project + '/' + m.id + ' 不存在', at);
-          else if (r !== 'yes') err('悬挂关联成员: 无法读取 ' + m.project + '（' + r.slice(11) + '）', at);
-          itemDangling(m, at);            // ← 加这一行（assoc 成员的条目级同款）
-        });
-        /* ---- 笔记锚点（R7）：`assoc.anchors[]` 的失效检测 ----------------------------
-         * 判据**只有一处实现**：`relations.anchorState`（内部先调 `refState`，只补 no-tag / bad-anchor）。
-         * 这里只负责"把判据接进闸门 + 点名 + 给修法"，不自己 walk 树、不自己判文本。
-         * ⚠️ **锚点不在 `allRefs` 里**（锚点不是边，见 `docs/DATA-FORMAT.md` §2.6）⇒ 它**不参与**
-         *   图距离（`src/item-index.js`）与关系栏（`src/related-model.js`），那两处**不改代码**。
-         * ⚠️⚠️ **默认档不判锚点**（`opts.checkAnchors === true` 才判）—— 这一条**是实测逼出来的**：
-         *   `validate` 同时是**写盘闸门**（每次写之前跑一遍）⇒ 若 `bad-anchor`/`no-tag` 默认算错，
-         *   则"改写正文里那句话"或"去掉一个标签"这两件**正常事**会把整个项目变成**只读**
-         *   （实测：`edit r7p n-root --detail …` 直接 `error: 校验失败: … 失效锚点（bad-anchor）`）。
-         *   而这两档本来就是**弱判据**（会随时间自然失效），修它要改的是**笔记**而不是正文。
-         *   ⇒ 口径：**默认 `validate` 不做锚点判定**（默认档逐字节不变）；`validate --anchors`
-         *     显式**判红**（点名 + 给修法）；`assoc-prune [--dry-run]` **总是报告**（只报不剪）；
-         *     界面侧失效锚点画成坏引用态（`.is-dangling` + `title`）。**三段都不静默** ✓ */
-        if (!anchorStateOf || !selfProject) return;
-        if (!(opts && opts.checkAnchors === true)) return;
-        const ans = Array.isArray(a.anchors) ? a.anchors : [];
-        ans.forEach((an, ni) => {
-          if (!an || typeof an !== 'object') return;                       // 结构问题已由 validateAll 报过
-          const at = 'assoc[' + ai + '].anchors[' + ni + ']';
-          const where = an.project || selfProject;
-          let root = null;
-          if (where === selfProject) root = data.data;
-          else {
-            const p = path.join(projectsRoot, where, where + '.json');
-            try { root = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')).data : null; }
-            catch (e) { root = null; }
-          }
-          const st = anchorStateOf(an, { root: root, project: where }, tagIndex);
-          if (st.state === 'ok') return;
-          /* 三档分开报（**修法不同**，报同一种会把路指错）：读不出来 ⇒ 先修项目；
-           * 标签没了 ⇒ 加回标签或删锚点；正文改了 ⇒ 改锚点文本。 */
-          err('失效锚点（' + st.state + '）: ' + (st.label || '(无点名)') + ' —— ' + st.hint
-            + '（锚点不是边：它只决定"从哪儿点得进来"，不参与关系栏与图距离）', at);
-        });
-      });
+  /**
+   * **纯核心（二）**：跨项目引用 —— 悬挂链接 / 悬挂关联成员 / 条目级悬挂 / 失效锚点。
+   *
+   * @param {object} data 待校验的项目数据
+   * @param {(proj:string) => ({ok:true,data:object}|{ok:false,reason:string,detail?:string})} readProject
+   *   **注入点**：`proj → 那个项目的 JSON 对象`。生产实现是 `makeProjectReader(projectsRoot)`
+   *   （读 `projects/<proj>/<proj>.json`）；单测直接传一个查内存表的函数即可，
+   *   于是这一整档（含"项目不存在/读不出来/条目已被删"三类报文）**不必造任何目录**。
+   * @param {string} [selfProject] 入参 `data` 对应的项目名。给了它，**本项目**的成员
+   *   以 `data` 自身为准（`readProject` 根本不会被问到自己）。
+   * @param {{checkAnchors?:boolean}} [opts]
+   * @returns {{ok:boolean, errors:string[]}}
+   */
+  function validateCrossRefs(data, readProject, selfProject, opts) {
+    if (typeof readProject !== 'function') {
+      throw new Error('validateCrossRefs 需要一个 readProject(proj) 注入函数（别传 null）');
     }
-    return { ok: errors.length === 0, errors };
+    const c = makeCollector();
+    const errors = c.errors;
+    const err = c.err;
+    // 同项目成员的节点集合（惰性构建：绝大多数项目没有悬挂问题，不必先遍历）
+    let selfIds = null;
+    /** 某项目的 JSON 里是否存在该节点；不可读时返回异常标记（调用方报"无法读取"） */
+    const nodeExists = (proj, nodeId) => {
+      // 同项目：以入参 `data` 为准 —— 那才是即将写下去的真值。
+      // 读盘会把"我刚删掉的那个节点"算成还在（磁盘尚未覆盖），闸门因此漏判。
+      if (selfProject && proj === selfProject) {
+        if (selfIds === null) {
+          selfIds = new Set();
+          flatten(data && data.data).forEach((n) => { if (n && n.id !== undefined) selfIds.add(n.id); });
+        }
+        return selfIds.has(nodeId) ? 'yes' : 'no';
+      }
+      const r = readProject(proj);
+      if (!r || !r.ok) {
+        return (r && r.reason === 'no-project') ? 'no-project' : ('unreadable:' + ((r && r.detail) || '未说明原因'));
+      }
+      const pd = r.data;
+      try {
+        const found = (function findNode(r2) {
+          if (!r2) return false;
+          if (r2.id === nodeId) return true;
+          return (r2.children || []).some(findNode);
+        })(pd.data);
+        return found ? 'yes' : 'no';
+      } catch (e) {
+        return 'unreadable:' + (e.message || e);
+      }
+    };
+
+    /**
+     * 把上面那份"在不在"的判断**再走一遍、但把节点对象带出来**（条目级悬挂需要 `node.items`）。
+     * 为什么必须与 `nodeExists` **共用同一段解析**（而不是再读一次盘）：
+     *   · 同项目**必须走待写数据 `data`**（理由见上：读盘会把刚删掉的节点算成还在）；
+     *   · 跨项目的读盘只发生一次（这里返回对象；`nodeExists` 那边照旧只问在不在）。
+     * 返回值：`{ok:true, node}` | `{ok:false, reason:'no-project'|'no'|'unreadable', detail?}`。
+     * ⚠️ 节点不存在 / 项目读不出来 ⇒ 返回 `{ok:false}` 而**不在这里报错** ——
+     *   那一档上面（节点级）已经报过，重复报会把同一处坏数据报两遍，读者以为有两处坏。
+     */
+    const targetNodeOf = (proj, nodeId) => {
+      if (selfProject && proj === selfProject) {
+        let hit = null;
+        (function findNode(n) {
+          if (!n || hit) return;
+          if (n.id === nodeId) { hit = n; return; }
+          (n.children || []).forEach(findNode);
+        })(data && data.data);
+        return hit ? { ok: true, node: hit } : { ok: false, reason: 'no' };
+      }
+      const r = readProject(proj);
+      if (!r || !r.ok) {
+        return { ok: false, reason: (r && r.reason) || 'unreadable', detail: (r && r.detail) || '未说明原因' };
+      }
+      const pd = r.data;
+      try {
+        let hit = null;
+        (function findNode(n) {
+          if (!n || hit) return;
+          if (n.id === nodeId) { hit = n; return; }
+          (n.children || []).forEach(findNode);
+        })(pd.data);
+        return hit ? { ok: true, node: hit } : { ok: false, reason: 'no' };
+      } catch (e) {
+        return { ok: false, reason: 'unreadable', detail: (e.message || e) };
+      }
+    };
+
+    /**
+     * 条目级悬挂：**同一处判据**（`relations.targetHasItem`）+ **分开的报文**。
+     * 为什么与"节点不存在"分开报：**修法不同** ——
+     *   节点不存在 ⇒ 这条边该剪（目标整个没了）；
+     *   节点还在、条目已删 ⇒ **这条边**该剪，但内容可能该恢复（或换个条目指向）。
+     * 报同一种会把修法指错；而"节点还在、条目不在"恰恰是最容易被当成"节点级没问题"漏过去的一档。
+     */
+    const itemDangling = (l, at) => {
+      if (!targetHasItemOf) return;                       // 浏览器侧未注入 ⇒ 跳过（门禁在 CI 侧）
+      if (!l || !l.item) return;                          // 节点级引用：上面那一档已经判过
+      const t = targetNodeOf(l.project, l.id);
+      if (!t.ok) return;                                  // 节点/项目那一档上面已报，不重复报
+      const chk = targetHasItemOf(t.node, l.item);
+      if (chk.ok) return;
+      err('悬挂链接: ' + l.project + '/' + l.id + '#' + l.item + ' 不存在'
+        + '（**节点还在、条目已被删**）—— 修法：`links-prune <项目>` 剪掉这条边；'
+        + '若只是条目被误删，先 `item-add` / `item-move` 把它恢复或改指向'
+        + (chk.ids.length ? '（该节点现有条目：' + chk.ids.join(', ') + '）' : '（该节点现在没有条目层）'),
+      at);
+    };
+
+    /** `anchorState` 的唯一实现来自 `src/relations.js`（浏览器侧未注入 ⇒ 这一档跳过，门禁在 CI 侧） */
+    const anchorStateOf = (relations && typeof relations.anchorState === 'function')
+      ? relations.anchorState : null;
+
+    /**
+     * 标签索引（`tag` 锚点用）：`project|tag` 的集合成员查询 —— **强判据**（不是文本匹配）。
+     * 范围口径（本工程**显式定死**，免得"标签是全局还是项目内"长期悬着）：
+     *   · 锚点**没写** `project` ⇒ 在**当前项目**里判；
+     *   · 锚点**写了** `project`  ⇒ 在那个项目里判；
+     *   · 项目读不出来 ⇒ 返回 `null`（"采不到真值"）⇒ 判成 `unreadable`，**不当作失效**。
+     */
+    const tagIndex = (() => {
+      const cache = {};
+      function tagsIn(proj) {
+        if (cache[proj] !== undefined) return cache[proj];
+        const set = new Set();
+        if (selfProject && proj === selfProject) {
+          flatten(data && data.data).forEach((n) => ((n && n.tags) || []).forEach((t) => set.add(String(t))));
+          cache[proj] = set;
+          return set;
+        }
+        const r = readProject(proj);
+        if (!r || !r.ok) { cache[proj] = null; return null; }
+        try {
+          const pd = r.data;
+          (function w(n) { if (!n) return; ((n.tags) || []).forEach((t) => set.add(String(t))); (n.children || []).forEach(w); })(pd.data);
+          cache[proj] = set;
+          return set;
+        } catch (e) { cache[proj] = null; return null; }
+      }
+      return {
+        hasTag(tag, proj) {
+          const s = tagsIn(proj);
+          if (s === null) return null;                    // 读不出来 ⇒ 不猜
+          return s.has(String(tag));
+        }
+      };
+    })();
+
+    flatten(data.data).forEach((n) => {
+      (n.links || []).forEach((l, i) => {
+        if (!l || typeof l !== 'object') { err('links[' + i + '] 不是对象', n.id); return; }
+        if (!l.project || !l.id) { err('links[' + i + '] 缺少 project/id', n.id); return; }
+        const r = nodeExists(l.project, l.id);
+        if (r === 'no-project') err('悬挂链接: 项目不存在 ' + l.project, n.id);
+        else if (r === 'no') err('悬挂链接: ' + l.project + '/' + l.id + ' 不存在', n.id);
+        else if (r !== 'yes') err('悬挂链接: 无法读取 ' + l.project + '（' + r.slice(11) + '）', n.id);
+        itemDangling(l, n.id);          // ← 加这一行（条目级：节点在、条目不在）
+      });
+    });
+
+    // 关联成员悬挂：成员指向的节点若已不存在，该关联就是坏的。
+    // 与悬挂链接同样按项目名读盘（不是 meta.name）——成员里的 project 就是项目目录名。
+    (Array.isArray(data.assoc) ? data.assoc : []).forEach((a, ai) => {
+      if (!a || !Array.isArray(a.members)) return;
+      a.members.forEach((m, mi) => {
+        if (!m || typeof m !== 'object' || !m.project || !m.id) return;  // 结构问题已由 validateAll 报过
+        const r = nodeExists(m.project, m.id);
+        const at = 'assoc[' + ai + '].members[' + mi + ']';
+        if (r === 'no-project') err('悬挂关联成员: 项目不存在 ' + m.project, at);
+        else if (r === 'no') err('悬挂关联成员: ' + m.project + '/' + m.id + ' 不存在', at);
+        else if (r !== 'yes') err('悬挂关联成员: 无法读取 ' + m.project + '（' + r.slice(11) + '）', at);
+        itemDangling(m, at);            // ← 加这一行（assoc 成员的条目级同款）
+      });
+      /* ---- 笔记锚点（R7）：`assoc.anchors[]` 的失效检测 ----------------------------
+       * 判据**只有一处实现**：`relations.anchorState`（内部先调 `refState`，只补 no-tag / bad-anchor）。
+       * 这里只负责"把判据接进闸门 + 点名 + 给修法"，不自己 walk 树、不自己判文本。
+       * ⚠️ **锚点不在 `allRefs` 里**（锚点不是边，见 `docs/DATA-FORMAT.md` §2.6）⇒ 它**不参与**
+       *   图距离（`src/item-index.js`）与关系栏（`src/related-model.js`），那两处**不改代码**。
+       * ⚠️⚠️ **默认档不判锚点**（`opts.checkAnchors === true` 才判）—— 这一条**是实测逼出来的**：
+       *   `validate` 同时是**写盘闸门**（每次写之前跑一遍）⇒ 若 `bad-anchor`/`no-tag` 默认算错，
+       *   则"改写正文里那句话"或"去掉一个标签"这两件**正常事**会把整个项目变成**只读**
+       *   （实测：`edit r7p n-root --detail …` 直接 `error: 校验失败: … 失效锚点（bad-anchor）`）。
+       *   而这两档本来就是**弱判据**（会随时间自然失效），修它要改的是**笔记**而不是正文。
+       *   ⇒ 口径：**默认 `validate` 不做锚点判定**（默认档逐字节不变）；`validate --anchors`
+       *     显式**判红**（点名 + 给修法）；`assoc-prune [--dry-run]` **总是报告**（只报不剪）；
+       *     界面侧失效锚点画成坏引用态（`.is-dangling` + `title`）。**三段都不静默** ✓ */
+      if (!anchorStateOf || !selfProject) return;
+      if (!(opts && opts.checkAnchors === true)) return;
+      const ans = Array.isArray(a.anchors) ? a.anchors : [];
+      ans.forEach((an, ni) => {
+        if (!an || typeof an !== 'object') return;                       // 结构问题已由 validateAll 报过
+        const at = 'assoc[' + ai + '].anchors[' + ni + ']';
+        const where = an.project || selfProject;
+        let root = null;
+        if (where === selfProject) root = data.data;
+        else {
+          const r = readProject(where);
+          try { root = (r && r.ok) ? r.data.data : null; }
+          catch (e) { root = null; }
+        }
+        const st = anchorStateOf(an, { root: root, project: where }, tagIndex);
+        if (st.state === 'ok') return;
+        /* 三档分开报（**修法不同**，报同一种会把路指错）：读不出来 ⇒ 先修项目；
+         * 标签没了 ⇒ 加回标签或删锚点；正文改了 ⇒ 改锚点文本。 */
+        err('失效锚点（' + st.state + '）: ' + (st.label || '(无点名)') + ' —— ' + st.hint
+          + '（锚点不是边：它只决定"从哪儿点得进来"，不参与关系栏与图距离）', at);
+      });
+    });
+    return { ok: errors.length === 0, errors: errors };
   }
 
   /** 形状校验：只校验节点**自身字段**并递归子节点；不做 id 去重/环检测（见 checkIdsAndCycles） */
@@ -868,6 +950,11 @@
 
   return {
     validateProject, validateNode, checkIdsAndCycles, checkItemIds, flatten, ID_RE,
+    // G-15 下沉：`validateProject` 拆出的两个**纯核心** + 读盘注入点的默认实现。
+    // `validateInPlace(data)`  —— 纯：字段/节点/条目/环路/offset/绑定/assoc 结构（喂对象就够）
+    // `validateCrossRefs(data, readProject, selfProject, opts)` —— 纯：跨项目引用，readProject 注入
+    // `makeProjectReader(projectsRoot)` —— 默认读盘实现（生产用；测试不传它）
+    validateInPlace, validateCrossRefs, makeProjectReader,
     NODE_FIELDS, NODE_FIELD_NAMES, NODE_FIELDS_REQUIRED, NODE_FIELDS_OPTIONAL, NODE_FIELD_DESC,
     parseFieldLines, analyzeCloneFieldCopy,
     // 工作区文件夹绑定（R4）的取值表 + 迁移（**唯一一处**；消费方从这里取，别抄字面量）
