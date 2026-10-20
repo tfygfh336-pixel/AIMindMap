@@ -596,7 +596,18 @@ const STEPS = [
     // 于是整条链只需要跑**一次** vitest（以前 doc-facts 会再跑一次：慢约 5 s，
     // 而且正是那一次在负载高时偶发取不到真值、把 G6 判红）。
     // `--reporter=default` 保留人看的输出，故这一步的观感与 `npm test` 一致。
-    cmd: 'node node_modules/vitest/vitest.mjs run --pool=threads --reporter=default '
+    //
+    // ⚠️ `--maxWorkers=4`（2026-10-20，内存占用批）：本机 **16 逻辑核 / 8 物理核**，vitest 默认池
+    //    会开 **16 个 worker**，每个都加载整套模块图 ⇒ 实测这一段 RSS 增量约 2.4–3.2 GB，
+    //    与 G5 的 4.5 GB 峰值叠加会把整机推到 77%+（实测：连跑两轮后提交内存 80%，
+    //    连带把同机其它界面拖卡/拖崩）。
+    //    选 4 而不是 2 是**实测拐点**（同一棵树、独占、2026-10-20 三次现跑）：
+    //      默认 16 worker → **39.4 s**；`--maxWorkers=4` → **42.6 s**（+3.2 s，+8%）；
+    //      `--maxWorkers=2` → **70.8 s** ⇒ **已超 69 s 预算**，不能用。
+    //    ⇒ 多花 3.2 s 换约 1/4 的 worker 内存；且 42.6 s 距预算仍有 26 s 余量。
+    //    ⚠️ 若将来 G3 在**代码不变**时又逼近 69 s，先查是不是并行批次在跑（`R7`），
+    //       **不要**因为这一段变慢就回退 `--maxWorkers`（回退等于把内存问题还给整机）。
+    cmd: 'node node_modules/vitest/vitest.mjs run --pool=threads --maxWorkers=4 --reporter=default '
       + '--reporter=json --outputFile=' + TEST_RESULTS,
     shown: '`npm test`（附加 JSON reporter 把用例数交给 G6，省一次 vitest 重跑）',
     covers: '共享核心 `src/` 各模块（含 data-store 原子写、BOM 容错与并发版本闸门）',
