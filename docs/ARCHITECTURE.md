@@ -471,6 +471,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | 契约 | `docs/EXTENSIONS.md` | 扩展契约：稳定性等级、如何新增命令/工具 | CLI 全量签名（指向 CLI.md） | 手写 |
 | 契约 | `docs/FEATURES.md` | 产品功能的名字唯一权威 —— 代号 ↔ 中文名 ↔ 一句话 ↔ 承载命令/域 ↔ 实现状态（人与 AI 用同一个词指同一件事） | 命令的完整用法与选项（→ `docs/CLI.md`，生成物）；**"这个功能要不要做"**（→ `projects/卖点讨论` 的待做台账 `bl-3` 子树）；修复/bugfix 与门禁条数（→ `CHANGELOG.md` / `docs/RULES.md` §2）；工程欠账与阶段（→ `docs/ROADMAP.md`「在飞」）；内部模块职责与实现理由（→ `docs/ARCHITECTURE.md` §2） | 手写（新增或改一个功能的名字时**同批**改这里 + 思维导图 `projects/卖点讨论` 的「功能名册」子树；改完跑 `node cli/mm-cli.js validate 卖点讨论` 与 `npm run docs:registry`） |
 | 契约 | `docs/ITEM-MODEL.md` | 条目层 v3 唯一契约：条目形状、items↔detail 派生、CLI/模块签名、迁移、并发粒度 | v2 字段全表（见 DATA-FORMAT）、命令完整用法（见 CLI.md）、实现进度与计划 | 改冻结项前先改本文，再同批同步受影响的下游流 |
+| 契约 | `docs/TAGS.md` | 7 本书 560 个有正文的节点共用的**一套打标签用词**（39 个标签，每个都带"命中词"判定依据与真实典型节点）与**一套书内关联类型**（`links[].caption` 的前缀约定），使 N 路并行打出的标签可比较、可机械检查 | 打标签的**结果**（那是 `projects/<项目>/<项目>.json` 的 `tags` 字段）；`tags`/`links` 的字段形状与校验（→ `docs/DATA-FORMAT.md` §2.1/§2.5）；`learn-path` 的算法、档位与排序（→ `src/learn-path.js` 文件头注释）；某个标签"该不该存在"的讨论稿（→ `.review/20261020-阶段2标签词表/`）；每本书的目录结构（→ 该书项目自己） | 手写（增/删/改一个标签或一种关联类型时**同批**改 §4 与 §5/§11，再跑 `node scripts/docs-registry-check.js` 与 §8 的词表体检命令） |
 | 契约 | `docs/VERIFY.md` | 验证基线（各类计数 + 验证链） | 被测功能说明 | `doc-facts --write` 生成 |
 | 设计 | `docs/AI-GUIDE.md` | AI 操作规范：怎么读写、验证链、坑 + **笔记内容写作规范（节点粒度 / detail / caption）** | 工程流程（指向 RULES/ARCHITECTURE） | 手写 |
 | 设计 | `docs/ARCHITECTURE.md` | 分层决策与理由、模块职责、架构约束、改哪里 | 具体数字（指向 VERIFY.md）、规则全表 | 手写 |

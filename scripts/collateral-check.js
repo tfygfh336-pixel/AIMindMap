@@ -1640,6 +1640,32 @@ function scanEmphasisInCode(text) {
   return out;
 }
 
+/**
+ * 扫「整段 `<p>` 里只有分隔线记号」（`hr-as-text`）：作者写 Markdown `---` 想要一条分隔线，
+ * 结果被当成字面正文留在段落里（界面上就是三个短横）。**纯函数**：喂字符串即可单测。
+ *
+ * 排除三类（它们的 `<p>---</p>` 是**内容**，不是残留）：
+ *   · `<td>` / `<th>` 里 —— 表格单元格里的 `---` 可能是数据；
+ *   · `<code>` / `<pre>` 里 —— 字面代码；
+ *   · `<!-- -->` 注释里。
+ * 只认「整段只有记号」：`<p>a ---</p>` **不算**（带一个字都不算）。
+ * @returns {{hits:Array<{mark:string,idx:number,len:number}>}}
+ */
+function scanHrAsText(text) {
+  let src = noteBlankComments(text);
+  /* 等长抹白（保留换行）⇒ 下标与原文一一对应，报错位置不漂 */
+  const blank = (re) => { src = src.replace(re, (s) => s.replace(/[^\n]/g, " ")); };
+  blank(/<td\b[^>]*>[\s\S]*?<\/td>/gi);
+  blank(/<th\b[^>]*>[\s\S]*?<\/th>/gi);
+  blank(/<code\b[^>]*>[\s\S]*?<\/code>/gi);
+  blank(/<pre\b[^>]*>[\s\S]*?<\/pre>/gi);
+  const re = /<p\b[^>]*>\s*(-{2,}|\*{2,}|_{2,})\s*<\/p>/gi;
+  const hits = [];
+  let m;
+  while ((m = re.exec(src)) !== null) hits.push({ mark: m[1], idx: m.index, len: m[0].length });
+  return { hits: hits };
+}
+
 /** 判据表（**唯一一份**；tier 只有 fail / report 两档，第三档"跳过"由 maskers + 无 detail 承担） */
 const NOTE_RESIDUE_RULES = [
   { id: 'fence', tier: 'fail', label: '围栏代码块 `' + '```' + '`',
@@ -1675,7 +1701,11 @@ const NOTE_RESIDUE_RULES = [
   { id: 'other-inline-in-code', tier: 'report', label: '代码区里的其它行内标签 `<b>` / `<i>` / `<span>`…',
     why: '转换器只产 `<em>` / `<strong>`（`src/convert.js` 的行内映射），这些推不出来源、更像人工高亮'
       + '⇒ 判红会误伤（逃逸：要去掉标签，要么把强调放到 `<code>` 外面）',
-    scan: 'emphasis-in-code', bucket: 'other' }
+    scan: 'emphasis-in-code', bucket: 'other' },
+  { id: 'hr-as-text', tier: 'fail', label: '整段只有分隔线记号 `<p>---</p>`',
+    why: 'Markdown 的 --- / *** / ___ 被当成正文留在了段落里（分隔线请写 <hr>）；' +
+      '<td>/<th> 里的不算（那是表格数据），<code>/<pre> 与注释里的也不算',
+    scan: 'hr-as-text' }
 ];
 
 /** 掩掉"代码 / 注释"区块（等长替换，保留换行）。返回{ masked, counts } */
@@ -1711,6 +1741,8 @@ function scanDetailResidue(text) {
   // 其余五条要**跳过**代码区（代码里的 `*` 是内容），它俩恰恰**只看代码区内部** ——
   // 一个是"源头的标记"，一个是"标记被转换器吃掉之后的痕迹"，方向相反故不能共用同一份文本。
   const inCode = scanEmphasisInCode(src);
+  /* ⑦ 的输入：**不能**用 masked（那是"代码区已抹白"的口径）—— 它在原文上再抹掉表格与代码区 */
+  const hrAsText = scanHrAsText(src);
   NOTE_RESIDUE_RULES.forEach((rule) => {
     if (rule.scan === 'heading-raw') {
       // 行首 `#` 标题：前面**不许有标签**（`<p># x` 归只报告档，见 heading-in-tag）
@@ -1724,6 +1756,11 @@ function scanDetailResidue(text) {
     }
     if (rule.scan === 'emphasis-in-code') {
       (inCode[rule.bucket] || []).forEach((x) => push(rule, x.idx, x.tag.length));
+      return;
+    }
+
+    if (rule.scan === 'hr-as-text') {
+      hrAsText.hits.forEach((x) => push(rule, x.idx, x.len));
       return;
     }
     if (!rule.re) return;
