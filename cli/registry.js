@@ -41,6 +41,11 @@ const itemIndexSpec = require('../src/item-index.js');
  * 迟早漂移（而漂移的方向恰好是"AI 照着文档写的权重与实际生效的不是一批"）。
  */
 const paletteSpec = require('../src/palette-rank.js');
+/**
+ * 【`TL`／`W2`】时间线的**日志文件名**从 `src/changes.js` 现取（同 heatSpec / itemIndexSpec 的纪律）：
+ * 日志名是那一处定义的，desc 里抄一个字面量就是第二份副本 —— 改名那天文档会静默说谎。
+ */
+const changesSpec = require('../src/changes.js');
 /** 【W4】把预设表渲染成 `balanced(text=1,graph=0.5…)` 这种一行一段（**只回显，不判断**） */
 function modeLine(id) {
   const w = paletteSpec.MODES[id];
@@ -188,7 +193,7 @@ function init() {
   register({ name: 'read', usage: 'read <项目> [--json] [--brief] [--skeleton] [--compact] [--subtree id] [--items <条目id,…>] [--images]', options: ['json', 'brief', 'skeleton', 'subtree', 'items', 'images'], compatOptions: ['detail'], desc: '读取项目可读视图（树 + 详情 + 图片清单）。四个变窄开关可叠加：--brief 去长文本 / --skeleton 再去 tags+links（只要结构）/ --subtree <id> 只要某棵子树 / --compact 单行 JSON；实测全叠加比全量省约 86%（`--detail` 不再写进用法但**照旧可用**：--json 下是空操作、文本模式下响亮报错并给出替代路径 —— 老调用方不会因为"它被移除了"而突然失败）。**`--items <条目id,…>` 是条目层（v3）的另一档**：只取这几条的正文，返回 `{meta,project,itemCount,items:[条目视图]}`；任一条目 id 不存在 ⇒ **整体失败并逐个点名**（不给半份），且与 --brief/--skeleton/--subtree 互斥（两种口径不混）', fn: loadFile('project').read });
   register({ name: 'list', aliases: ['tree'], usage: 'list <项目> [--json]', options: ['json'], desc: '树形列出项目全部节点', fn: loadFile('project').list });
   register({ name: 'get', usage: 'get <项目> <id> [--json] [--item <itemId>] [--detail] [--images]', options: ['json', 'item', 'detail', 'images'], desc: '查看节点（路径/详情/图片）。`--item <itemId>` 取**单条条目**（条目视图：nodeId/nodeTopic/path/itemId/type/html|qa/src/tags/at/by/verified，空值不产生噪音键）；不给它时行为同 v2，**并且**条目化节点额外带 `items` 摘要数组（`{itemId,type,src,verified,at,bytes}`，不含正文）', fn: loadFile('project').get });
-  register({ name: 'search', usage: 'search <项目> <关键词|--tag 标签> [--json] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] [--mode <预设>] [--weights <路由=权重,…>] [--recall <路由>] [--explain]', options: ['json', 'topicOnly', 'tag', 'full', 'src', 'verified', 'type', 'since', 'limit', 'maxBytes', 'noHeat', 'mode', 'weights', 'recall', 'explain'], desc: '搜索（**默认口径 = 搜条目**：节点 topic ∪ 条目正文；`--topic-only` 回退 v2 只搜标题）。**命中 = 关键词是命中面的「非连续子序列」**（大小写不敏感 —— 与界面命令面板**同一个谓词、同一份打分**，`src/palette-rank.js` 是唯一实现处）：`闸门` 命中 `闸 与 门` 之间隔了字的标题，`tp` 命中 `TCP`；纯 `--tag`（无关键词）不参与这套排序。**顺序 = 那份模糊打分升序，同分保持「深度优先 + 条目序」** ⇒ 本机没有热度日志（或加 `--no-heat`）时，同一查询的节点顺序与命令面板**逐条相同**。命中形状：`{id,topic,nodeId,nodeTopic,itemId,type,itemized,matchIn,snippet,src,verified,score}`（`id`/`topic` 是 v2 兼容别名；未条目化节点 itemId=null/type=null/itemized=false；`score` 仍是**子串出现次数**，模糊命中回落 1）。过滤：`--tag`（条目级标签 → item-tag / 节点级 → node-tag；未条目化节点照 v2 报 tag）、`--src`（src 子串，字符串或数组任一项）、`--verified`（只要已核条目）、`--type`（text|rich|qa）、`--since <ISO>`（at >= ISO；不给未条目化的节点命中）；`--full` 在默认口径之上再并上 v2 的额外面（图片 caption / 节点级标签 / 链接说明）。排序：模糊打分（上面那一条）先定基线，热度（人 / AI 两条，近 30 天窗口）作为**一个封顶向量**在其上重排 —— 只重排、不改变命中与否，占总分 ≤ 8%（取值与理由的唯一一处：src/heat.js 的 SEARCH_RANK）；本机没有该日志时**不参考热度**（≠ 热度为 0，`--json` 的 heat.reason 会说明）。`--no-heat`：**显式**跳过热度日志 —— 本次调用**完全不碰它（不读、不写、不排序）**：日志坏了 / 认不出通道 / 时间乱序时这是**先拿到结果**的出口（往坏日志里再追加一条只会搅得更坏 ⇒ 写入这一半也必须一起关）；⚠ 它不改变默认档：默认遇到坏日志仍然**响亮失败**（不许静默降级成"按 0 排"）。预算：`--limit`（缺省 200，上界 1000）/ `--max-bytes`（缺省 65536，16–4194304）；`--json` 顶层 `{project,keyword,hits,hitCount,truncated,mode,budget:{bytes,estTokens,limit,maxBytes},heat:{applied,reason,weights,windowDays,rankedNodes,hitNodes,log}}`，超限截断并给续取方式（budget.resume）。非法值（含 --verified/--type/--since 写错）**当场报错**，不静默退化成默认值或"0 命中"。'
+  register({ name: 'search', usage: 'search <项目> <关键词|--tag 标签> [--json] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO|Nd|Nh|Nm|Nw>] [--now <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] [--mode <预设>] [--weights <路由=权重,…>] [--recall <路由>] [--explain]', options: ['json', 'topicOnly', 'tag', 'full', 'src', 'verified', 'type', 'since', 'now', 'limit', 'maxBytes', 'noHeat', 'mode', 'weights', 'recall', 'explain'], desc: '搜索（**默认口径 = 搜条目**：节点 topic ∪ 条目正文；`--topic-only` 回退 v2 只搜标题）。**命中 = 关键词是命中面的「非连续子序列」**（大小写不敏感 —— 与界面命令面板**同一个谓词、同一份打分**，`src/palette-rank.js` 是唯一实现处）：`闸门` 命中 `闸 与 门` 之间隔了字的标题，`tp` 命中 `TCP`；纯 `--tag`（无关键词）不参与这套排序。**顺序 = 那份模糊打分升序，同分保持「深度优先 + 条目序」** ⇒ 本机没有热度日志（或加 `--no-heat`）时，同一查询的节点顺序与命令面板**逐条相同**。命中形状：`{id,topic,nodeId,nodeTopic,itemId,type,itemized,matchIn,snippet,src,verified,score}`（`id`/`topic` 是 v2 兼容别名；未条目化节点 itemId=null/type=null/itemized=false；`score` 仍是**子串出现次数**，模糊命中回落 1）。过滤：`--tag`（条目级标签 → item-tag / 节点级 → node-tag；未条目化节点照 v2 报 tag）、`--src`（src 子串，字符串或数组任一项）、`--verified`（只要已核条目）、`--type`（text|rich|qa）、`--since <ISO|相对时长>`（at >= 界；**给了它就不给未条目化的节点命中** —— 节点上本来没有写入时间（`TL` 的节点级时间走 `timeline` 命令）；相对时长 `7d`/`24h`/`90m`/`2w` **必须配 `--now <ISO>`**，否则**报错**：本命令不读墙钟 —— 读墙钟会让同一查询两跑结果不同）；`--full` 在默认口径之上再并上 v2 的额外面（图片 caption / 节点级标签 / 链接说明）。排序：模糊打分（上面那一条）先定基线，热度（人 / AI 两条，近 30 天窗口）作为**一个封顶向量**在其上重排 —— 只重排、不改变命中与否，占总分 ≤ 8%（取值与理由的唯一一处：src/heat.js 的 SEARCH_RANK）；本机没有该日志时**不参考热度**（≠ 热度为 0，`--json` 的 heat.reason 会说明）。`--no-heat`：**显式**跳过热度日志 —— 本次调用**完全不碰它（不读、不写、不排序）**：日志坏了 / 认不出通道 / 时间乱序时这是**先拿到结果**的出口（往坏日志里再追加一条只会搅得更坏 ⇒ 写入这一半也必须一起关）；⚠ 它不改变默认档：默认遇到坏日志仍然**响亮失败**（不许静默降级成"按 0 排"）。预算：`--limit`（缺省 200，上界 1000）/ `--max-bytes`（缺省 65536，16–4194304）；`--json` 顶层 `{project,keyword,hits,hitCount,truncated,mode,budget:{bytes,estTokens,limit,maxBytes},heat:{applied,reason,weights,windowDays,rankedNodes,hitNodes,log}}`，超限截断并给续取方式（budget.resume）。非法值（含 --verified/--type/--since 写错）**当场报错**，不静默退化成默认值或"0 命中"。'
       /* 【W4】混合检索：**何时用** + "不给就逐字节不变" + 数字一律从 `src/palette-rank.js` **现取** */
       + '混合检索（**W4**）：**不给 `--mode` / `--weights` 时这一层是关的 —— 输出与从前逐字节相同**；'
       + '给了才启用，且只在**既有命中内部**重排（不增删命中、不改命中形状与 hitCount）。'
@@ -221,7 +226,7 @@ function init() {
    * 相同的选项在这里**逐字同一个语义**（它们逐个项目转发给同一个 `searchItems`），所以多出来的
    * 只有"范围"这一维 —— 不新增第二套过滤/排序/预算口径。两条硬上限的数字从 `src/item-index.js`
    * **现取**（desc 会进 `docs/CLI.md`；抄一份数字在这里迟早漂移）。 */
-  register({ name: 'search-all', usage: 'search-all <关键词|--tag 标签> [--scope 项目名,…] [--json] [--compact] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] [--mode <预设>] [--weights <路由=权重,…>] [--recall <路由>] [--explain]', options: ['json', 'topicOnly', 'tag', 'full', 'src', 'verified', 'type', 'since', 'scope', 'limit', 'maxBytes', 'noHeat', 'mode', 'weights', 'recall', 'explain'], desc: '**跨项目检索**：一次调用扫**全库**（`projects/` 下全部项目，按**项目名升序**），每条命中带 `project` —— 这是卖点 1 那句"AI 不必每次上网搜"的技术前提（从前 `search` 必须点名**单个**项目）。`--scope 项目甲,项目乙` 把范围收回来（名单里的项目不存在 ⇒ **报错并逐个点名**；`--scope` 裸写/空名单 ⇒ 报错，不静默当"全库"）；其余选项与 `search` **同一个语义**（同一条 `searchItems` 实现）：`--tag` / `--full` / `--topic-only` / `--src` / `--verified` / `--type` / `--since` / `--limit` / `--max-bytes`；**命中口径与排序口径也逐字同一条**（命中 = 关键词是命中面的**非连续子序列**；项目内顺序 = 模糊打分升序、同分保持「深度优先 + 条目序」—— 打分与定序的唯一实现在 `src/palette-rank.js`，界面命令面板吃的是同一份）。顺序 = **项目名升序 × 项目内既有顺序**（项目内与 `search <该项目>` 逐条同序，含它自己的热度榜）；**不做跨项目重排**（**热度重排**的唯一实现是 `src/item-index.js` 的 `orderByHeat`；跨项目比分数会是第二份排序实现，且 nodeId 只在项目内唯一）。热度**逐项目各算各的榜**（人 / AI 两条，窗口 ' + heatSpec.WINDOW_DAYS + ' 天，封顶见 `src/heat.js` 的 SEARCH_RANK）；`--no-heat` = `search` 的同名开关（本次完全不碰任何项目的热度日志）。两条**硬上限**（调用方改不了，越限 ⇒ **响亮报错 + 一条命中都不返回**，与"截断"是两件事）：命中总数 ' + itemIndexSpec.SCAN_MAX_HITS + ' 条、扫描耗时 ' + itemIndexSpec.SCAN_MAX_MS + ' ms（取值与报文都在 `src/item-index.js` 的 `scanGate`）。`--limit` / `--max-bytes` 是**调用方预算**：截断时如实写 `truncated` 并给续取方式。**不许静默少扫**：某个项目的**数据读不出来** ⇒ 跳过它，但在 `skipped` 里逐个点名（文本档一行 `⚠ 跳过项目「…」`，汇总行写"⚠ 另有 N 个项目没扫成"）；它的**热度日志坏了** ⇒ 整体失败并点名那个项目（与 `search` 同一条纪律，出路 `--no-heat`）。无命中时**明确报"0 条"**（不是空输出）。`--json` 顶层 `{keyword,tag,scoped,scope,scanned,skipped,hits,hitCount,truncated,mode,budget,heat:{applied,reason,weights,windowDays,rankedNodes,hitNodes,perProject}}`'
+  register({ name: 'search-all', usage: 'search-all <关键词|--tag 标签> [--scope 项目名,…] [--json] [--compact] [--topic-only] [--full] [--tag <t>] [--src <s>] [--verified] [--type text|rich|qa] [--since <ISO|Nd|Nh|Nm|Nw>] [--now <ISO>] [--limit <n>] [--max-bytes <n>] [--no-heat] [--mode <预设>] [--weights <路由=权重,…>] [--recall <路由>] [--explain]', options: ['json', 'topicOnly', 'tag', 'full', 'src', 'verified', 'type', 'since', 'now', 'scope', 'limit', 'maxBytes', 'noHeat', 'mode', 'weights', 'recall', 'explain'], desc: '**跨项目检索**：一次调用扫**全库**（`projects/` 下全部项目，按**项目名升序**），每条命中带 `project` —— 这是卖点 1 那句"AI 不必每次上网搜"的技术前提（从前 `search` 必须点名**单个**项目）。`--scope 项目甲,项目乙` 把范围收回来（名单里的项目不存在 ⇒ **报错并逐个点名**；`--scope` 裸写/空名单 ⇒ 报错，不静默当"全库"）；其余选项与 `search` **同一个语义**（同一条 `searchItems` 实现）：`--tag` / `--full` / `--topic-only` / `--src` / `--verified` / `--type` / `--since` / `--limit` / `--max-bytes`；**命中口径与排序口径也逐字同一条**（命中 = 关键词是命中面的**非连续子序列**；项目内顺序 = 模糊打分升序、同分保持「深度优先 + 条目序」—— 打分与定序的唯一实现在 `src/palette-rank.js`，界面命令面板吃的是同一份）。顺序 = **项目名升序 × 项目内既有顺序**（项目内与 `search <该项目>` 逐条同序，含它自己的热度榜）；**不做跨项目重排**（**热度重排**的唯一实现是 `src/item-index.js` 的 `orderByHeat`；跨项目比分数会是第二份排序实现，且 nodeId 只在项目内唯一）。热度**逐项目各算各的榜**（人 / AI 两条，窗口 ' + heatSpec.WINDOW_DAYS + ' 天，封顶见 `src/heat.js` 的 SEARCH_RANK）；`--no-heat` = `search` 的同名开关（本次完全不碰任何项目的热度日志）。两条**硬上限**（调用方改不了，越限 ⇒ **响亮报错 + 一条命中都不返回**，与"截断"是两件事）：命中总数 ' + itemIndexSpec.SCAN_MAX_HITS + ' 条、扫描耗时 ' + itemIndexSpec.SCAN_MAX_MS + ' ms（取值与报文都在 `src/item-index.js` 的 `scanGate`）。`--limit` / `--max-bytes` 是**调用方预算**：截断时如实写 `truncated` 并给续取方式。**不许静默少扫**：某个项目的**数据读不出来** ⇒ 跳过它，但在 `skipped` 里逐个点名（文本档一行 `⚠ 跳过项目「…」`，汇总行写"⚠ 另有 N 个项目没扫成"）；它的**热度日志坏了** ⇒ 整体失败并点名那个项目（与 `search` 同一条纪律，出路 `--no-heat`）。无命中时**明确报"0 条"**（不是空输出）。`--json` 顶层 `{keyword,tag,scoped,scope,scanned,skipped,hits,hitCount,truncated,mode,budget,heat:{applied,reason,weights,windowDays,rankedNodes,hitNodes,perProject}}`'
       /* 【W4】混合检索：与 `search` **同一个开关、同一处语义**（逐项目各算各的融合） */
       + '。混合检索（**W4**）：`--mode` / `--weights` / `--explain` = `search` 的同名开关'
       + '（同一处解析与同一份路由表，`src/palette-rank.js`）；**不给 `--mode` / `--weights` 时这一层是关的**'
@@ -538,6 +543,30 @@ function init() {
       + '（⚠ `read --json` 不含 version）。'
       + '⚠ 答不出来时**报错并非 0 退出**（锚点滑出窗口 / 本机无日志）—— 那**不等于"没有变更"**',
     fn: loadFile('changes').changes
+  });
+
+  /* 【`TL`「时间线」· 台账 `W2`】节点级的"最近改了什么"（**只读**）。
+   * 与上面 `changes` 的分工写在这里（最容易混的一对）：`changes` 列**写入事件**（谁/何时/改了哪些对象，
+   * 按 rev 排，为了并发避让）；`timeline` 列**笔记**（哪个节点、何时，按时间排，为了"看看最近做了什么"）。
+   * 两者读同一份 `.changes.jsonl`、共用同一份投影（`src/changes.js` 的 `lastTouchedByNode`）。
+   * ⚠️ 它是**只读**命令：不进 `cli/core.js` 的 `WRITE_COMMANDS`、不记热度 ⇒ `--json` 两跑逐字节相同。
+   * ⚠️ 相对 `--since 7d` **必须**配 `--now <ISO>`：本命令不读墙钟（读墙钟 ⇒ 两跑不同 ⇒ 判据当场破）。 */
+  register({
+    name: 'timeline',
+    usage: 'timeline [<项目>] [--since <ISO|Nd|Nh|Nm|Nw>] [--now <ISO>] [--limit n] [--json]',
+    options: ['since', 'now', 'limit', 'json'],
+    desc: '时间线（只读，`TL`／台账 `W2`）：**哪些笔记最近被改过**，按时间新→旧。'
+      + '不给项目名 ⇒ 全库（与 `changes` 同一形态）。时间来源 = 变更日志（`'
+      + changesSpec.FILE_NAME + '`，唯一写盘出口顺带产生）：'
+      + '窗口内出现过的节点给**精确**时间（`atSource:"changes"`）、没出现的只知"**早于**窗口起点"'
+      + '（`before-window`，给上界不给假时间）、本项目没有日志则 `unknown` —— '
+      + '三档**都可分辨**，且 `summary` 逐档计数（"时间未知"绝不静默消失）。'
+      + '⚠ 节点上没有 `updatedAt` 这类字段（`src/schema.js` 的契约表 15 项里没有），'
+      + '`origin.at` 是**导入**时刻、不是改动时刻 ⇒ 只作 `importedAt` 信息列，不参与排序与判定。'
+      + '排序 = `at` 降序 → 项目名升序 → nodeId 升序（`(项目,nodeId)` 全库唯一 ⇒ **同时间戳也有唯一答案**）。'
+      + '`--since` 收绝对时间或相对时长（`m`/`h`/`d`/`w`）；**相对时长必须配 `--now <ISO>`**'
+      + '（不读墙钟：读墙钟会让两跑结果不同）。`--limit 0` = 不截断',
+    fn: loadFile('timeline').timeline
   });
 
   // 访问热度（热度条第一件：先只做"能读出来" —— 事件日志 + 窗口/排名口径 + 读出来，不碰检索与界面）

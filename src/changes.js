@@ -207,10 +207,87 @@
     return list.length ? list[list.length - 1] : null;
   }
 
+  /* ==========================================================================
+   * 「这个节点最后一次被写是什么时候」—— 日志的**第二种投影**（时间线 `TL`·台账 `W2`）
+   * --------------------------------------------------------------------------
+   * 为什么必须住在这个文件里：日志的键（`node:<id>` 这些）**只在这里定义**（`buildEntry` 之上、
+   * `concurrency.fingerprint` 之下，两处是同一张表的两面）。任何一个调用方要按节点读日志，
+   * 都得先把 key 拆回节点 id —— 那就是**第二份解析**，必然与指纹那一份漂移。
+   * 于是拆键与投影都放这里，命令层只消费 `byNode`。
+   *
+   * 与 `groupByObject` 的分工（**别拿错**）：那个给"某个对象被谁碰过"的流水（并发避让），
+   * 这个只给每个节点的**最后一次**（时间线的候选集）。两者都从同一批 entries 现算。
+   *
+   * ⚠️ 投影**不做 I/O、不读时钟**：`at` 来自日志条目本身，窗口边界（`windowFrom`）也是日志自带的。
+   * ======================================================================== */
+
+  /** 一条 `changed` 键属于**哪个节点**（唯一解析处；解析不出来返回 `null`）。
+   *
+   *  键的四种节点形态（与 `src/concurrency.js` 的 `fingerprint` 逐字对应）：
+   *   `node:<id>`（节点自身字段）· `children:<id>`（它的子表顺序）· `items:<id>`（它的条目 id 表）
+   *   · `item:<id>#<条目id>`（它的某一条条目）。
+   *  `assoc:<id>` / `meta` 不是节点（那是项目级对象）⇒ `null`（时间线不认它们，**不静默归给根节点**）。 */
+  function nodeIdOfKey(key) {
+    const k = String(key === undefined || key === null ? '' : key);
+    let m = /^(?:node|children|items):(.+)$/.exec(k);
+    if (m) return m[1];
+    m = /^item:([^#]+)#/.exec(k);
+    if (m) return m[1];
+    return null;
+  }
+
+  /**
+   * 每个节点"**最后一次有记录的改动**"。
+   *
+   * 返回 `{byNode, windowFrom, windowTo, entries, unparsable, unresolvedKeys}`：
+   *   · `byNode: Map<nodeId, {at, ms, rev}>` —— 窗口内出现过就取**最晚那条**（`at` 用毫秒比，ISO 串原样留着给输出）；
+   *   · `windowFrom` / `windowTo` —— 日志窗口的起止（**窗口外节点的唯一上界**：没出现在日志里 ⇒ 更早）；
+   *   · `unparsable` —— `at` 不是可解析时间的条目数（**如实计数**，不把它当成"这条没改过"）；
+   *   · `unresolvedKeys` —— 拆不回节点 id 的键（`assoc:` / `meta` 这类，**正常存在**，只报数不多说）。
+   *
+   * ⚠️ **窗口外 ≠ 时间未知**：日志存在 ⇒ 窗口外节点的改动时间有一个**可靠上界**（`windowFrom`），
+   *    因为日志只追加、只在超窗口时从头部裁（`appendLog`），而每次写盘都记一条
+   *    （`src/data-store.js` 的 `recordChange`，GUI 保存那条路径也调它）。所以"没出现"⇒"早于窗口起点"。
+   *    这条推理是**时间线敢给 `before-window` 这一档**的全部依据，改动本文件时别把它拆了。
+   */
+  function lastTouchedByNode(entries) {
+    const list = Array.isArray(entries) ? entries : [];
+    const byNode = new Map();
+    let windowFrom = null;
+    let windowTo = null;
+    let unparsable = 0;
+    let unresolvedKeys = 0;
+    list.forEach((e) => {
+      const iso = String(e.at);
+      const parsed = Date.parse(iso);
+      const ms = Number.isFinite(parsed) ? parsed : null;
+      if (ms === null) { unparsable++; return; }
+      // 窗口起止按**时间**取（不是按数组首尾）：日志是有界窗口，但不保证外部没往里手工追加过行
+      if (windowFrom === null || ms < windowFrom.ms) { windowFrom = { at: iso, ms: ms }; }
+      if (windowTo === null || ms > windowTo.ms) { windowTo = { at: iso, ms: ms }; }
+      (e.changed || []).forEach((k) => {
+        const id = nodeIdOfKey(k);
+        if (id === null) { unresolvedKeys++; return; }
+        const cur = byNode.get(id);
+        if (!cur || ms > cur.ms) byNode.set(id, { at: iso, ms: ms, rev: e.rev });
+      });
+    });
+    return {
+      byNode: byNode,
+      windowFrom: windowFrom ? windowFrom.at : null,
+      windowTo: windowTo ? windowTo.at : null,
+      entries: list.length,
+      unparsable: unparsable,
+      unresolvedKeys: unresolvedKeys
+    };
+  }
+
   return {
     FILE_NAME, ENTRY_VERSION, MAX_ENTRIES, OUT_MAX,
     buildEntry, serializeEntry, parseLog, appendLog, since, groupByObject, lastEntry,
     // ---- 写管道流（S7）：幂等键的读面 ----
-    idemLookup, entryResult
+    idemLookup, entryResult,
+    // ---- 时间线（`TL`·`W2`）：日志的第二种投影（按节点取"最后一次改动"）----
+    nodeIdOfKey, lastTouchedByNode
   };
 });

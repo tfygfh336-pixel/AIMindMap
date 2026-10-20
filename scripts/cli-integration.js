@@ -2602,6 +2602,103 @@ run(['remove', PROJ, 'cc-b']);
   run(['remove', PROJ, 'chg-probe']);
 }
 
+/* ---------------- 23b. 时间线（`timeline`：节点级的"最近改了什么" · 产品代号 `TL` · 台账 `W2`） ----------------
+ * 与上面 `changes` 读**同一份**日志，但列的是**笔记**而不是**写入事件**。这里必须钉住的是四条边界
+ * （它们是这条命令与"随便排个序"的区别；**不用圈号枚举** —— 本文件的圈号是门禁 G8 的判定标记，重复即判红）：
+ *   · **不读墙钟**：相对的 `--since 7d` 不给 `--now` 必须**报错**，给了才出界；
+ *   · **两跑逐字节相同**：同一调用两次的输出必须相等（这是"时间线"这种功能最容易破的一条）；
+ *   · **排序可复算**：`at` 降序 → 项目名升序 → nodeId 升序（同时间戳也有唯一答案，下面独立复算一遍）；
+ *   · **"时间未知"不许静默消失**：日志被删时全部节点降级成 `unknown`，`--since` 下它们**不返回但被计数**
+ *     （"没回你"与"没有这条数据"是两件事）。
+ * 夹具复用上一条探针项目（它的日志已经很丰富了）；删日志那一段用 try/finally 还原，
+ * 免得后面依赖日志的断言被它带坏。 */
+{
+  const tlFirst = run(['timeline', PROJ, '--json', '--limit', '0']);
+  const tlJ = (() => { try { return JSON.parse(tlFirst.out); } catch (e) { return null; } })();
+  check('timeline --json：exit 0、scope 是点名的项目、**首键固定**（键序不许随实现漂）',
+    tlFirst.code === 0 && !!(tlJ && tlJ.scope === PROJ && Object.keys(tlJ)[0] === 'scope'),
+    tlJ && Object.keys(tlJ).join(','));
+
+  check('timeline：三档时间来源**逐档计数**,且三档之和 == 节点总数（"时间未知"也是被数出来的）',
+    !!(tlJ && tlJ.summary.withTime + tlJ.summary.beforeWindow + tlJ.summary.unknown === tlJ.summary.nodes
+      && tlJ.summary.nodes > 10),
+    tlJ && JSON.stringify({ nodes: tlJ.summary.nodes, c: tlJ.summary.withTime, bw: tlJ.summary.beforeWindow, un: tlJ.summary.unknown }));
+
+  const tlRows = (tlJ && tlJ.rows) || [];
+  const tlOrderKey = (r) => [r.at ? Date.parse(r.at) : null, r.project, r.nodeId];
+  let tlOrderOk = true;
+  for (let i = 1; i < tlRows.length; i++) {
+    const p = tlOrderKey(tlRows[i - 1]);
+    const q = tlOrderKey(tlRows[i]);
+    let c = 0;
+    if (p[0] !== null && q[0] !== null) c = q[0] - p[0];                 // at 降序
+    else if (p[0] !== null) c = -1;                                      // 有时间的恒在前
+    else if (q[0] !== null) c = 1;
+    if (c === 0) c = (p[1] < q[1] ? -1 : p[1] > q[1] ? 1 : (p[2] < q[2] ? -1 : p[2] > q[2] ? 1 : 0));
+    if (c > 0) { tlOrderOk = false; break; }
+  }
+  check('timeline：输出次序能被**独立复算**（at 降序 → 项目名升序 → nodeId 升序，全序无并列）',
+    tlRows.length > 0 && tlOrderOk, '行数 ' + tlRows.length);
+
+  const tlAgain = run(['timeline', PROJ, '--json', '--limit', '0']);
+  check('timeline：同一调用两跑输出**逐字节相同**（无时钟、无随机、排序是全序）',
+    tlAgain.out === tlFirst.out, '两份长度 ' + tlFirst.out.length + ' / ' + tlAgain.out.length);
+
+  const tlNoNow = run(['timeline', PROJ, '--since', '7d']);
+  check('timeline --since 相对时长（不给 --now）⇒ 报错且非 0，并点名缺什么（绝不偷偷读墙钟）',
+    !ok(tlNoNow.out) && tlNoNow.code !== 0 && /相对/.test(tlNoNow.out) && /--now/.test(tlNoNow.out),
+    tlNoNow.out.trim().slice(0, 110));
+
+  const tlNowIso = '2026-10-20T00:00:00Z';
+  const tlBound = Date.parse(tlNowIso) - 7 * 24 * 60 * 60 * 1000;
+  const tlSince = run(['timeline', PROJ, '--since', '7d', '--now', tlNowIso, '--json', '--limit', '0']);
+  const tlSinceJ = (() => { try { return JSON.parse(tlSince.out); } catch (e) { return null; } })();
+  check('timeline --since 7d --now <ISO> ⇒ exit 0，界 = now − 7 天，且每一条命中都 >= 界',
+    tlSince.code === 0 && !!(tlSinceJ && tlSinceJ.since && tlSinceJ.since.ms === tlBound
+      && tlSinceJ.rows.every((r) => Date.parse(r.at) >= tlBound)),
+    tlSinceJ && ('界 ' + tlSinceJ.since.at + ' 命中 ' + tlSinceJ.rows.length));
+
+  // 只读：跑过 timeline 之后日志一个字节都不许多（不记热度、不进 WRITE_COMMANDS）
+  const tlLogFile = path.join(ROOT, 'projects', PROJ, '.changes.jsonl');
+  const tlLogBefore = fs.existsSync(tlLogFile) ? fs.readFileSync(tlLogFile, 'utf8') : null;
+  run(['timeline', PROJ]);
+  run(['timeline', PROJ, '--since', '1d', '--now', tlNowIso]);
+  const tlLogAfter = fs.existsSync(tlLogFile) ? fs.readFileSync(tlLogFile, 'utf8') : null;
+  check('timeline 是**只读**的：跑完变更日志逐字节不变（不写盘、不记热度）',
+    tlLogBefore !== null && tlLogBefore === tlLogAfter);
+
+  // 日志被删 ⇒ 全部降级成 unknown；`--since` 下它们**不返回但被计数**（"时间未知"不静默消失）
+  try {
+    if (fs.existsSync(tlLogFile)) fs.rmSync(tlLogFile);
+    const tlNoLog = run(['timeline', PROJ, '--json', '--limit', '0']);
+    const tlNoLogJ = (() => { try { return JSON.parse(tlNoLog.out); } catch (e) { return null; } })();
+    check('timeline（没有日志）⇒ 全部节点 `unknown`，且 summary 逐条数得出（不是"没有节点"）',
+      tlNoLog.code === 0 && !!(tlNoLogJ && tlNoLogJ.summary.unknown === tlNoLogJ.summary.nodes
+        && tlNoLogJ.rows.every((r) => r.atSource === 'unknown' && r.at === null)),
+      tlNoLogJ && ('nodes ' + tlNoLogJ.summary.nodes + ' unknown ' + tlNoLogJ.summary.unknown));
+    const tlNoLogSince = run(['timeline', PROJ, '--since', '1d', '--now', tlNowIso, '--json', '--limit', '0']);
+    const tlNoLogSinceJ = (() => { try { return JSON.parse(tlNoLogSince.out); } catch (e) { return null; } })();
+    check('timeline --since（没有日志）⇒ 0 条命中，但**如实报** excludedNoTime == 节点总数（不静默排除）',
+      tlNoLogSince.code === 0 && !!(tlNoLogSinceJ && tlNoLogSinceJ.rows.length === 0
+        && tlNoLogSinceJ.summary.excludedNoTime === tlNoLogSinceJ.summary.nodes
+        && tlNoLogSinceJ.summary.nodes > 10),
+      tlNoLogSinceJ && ('rows ' + tlNoLogSinceJ.rows.length + ' excludedNoTime ' + tlNoLogSinceJ.summary.excludedNoTime));
+  } finally {
+    /* ⚠️ 还原走**唯一原子写出口**（`src/data-store.js` 的 `writeFileAtomic`），不新开裸写点：
+     * 本文件里每加一处 `fs.writeFileSync` 就把「写盘出口」的豁免面顶高 1 处
+     * （`scripts/collateral-check.js` 的 `WRITE_OUTLET_SITE_CAP` **只减不增** —— 上一条探针
+     * 就踩过同样的坑，把 82 顶到 83）。 */
+    if (tlLogBefore !== null) {
+      require(path.join(ROOT, 'src', 'data-store.js')).writeFileAtomic(tlLogFile, tlLogBefore);
+    }
+  }
+
+  // 未知选项照旧响亮（新命令自动进同一道闸）
+  const tlBadOpt = run(['timeline', PROJ, '--nope']);
+  check('timeline 不认识的选项 ⇒ 非 0 且点名（新命令自动进同一条闸，不需要自己写一份）',
+    !ok(tlBadOpt.out) && tlBadOpt.code !== 0, tlBadOpt.out.trim().slice(0, 90));
+}
+
 /* ---------------- 24. 阶段 4：修复类与导入类命令也走 mutate ----------------
  * 判据不止"没报错"：
  *   ① 并发**不相交**时自动合并（我和对方的改动都在）；

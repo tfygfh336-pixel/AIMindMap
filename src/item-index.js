@@ -261,18 +261,78 @@
   }
 
   /**
-   * `--since <ISO>`：**当场判非法**。契约只对 `--limit`/`--max-bytes` 明说"非法值要报错"，
-   * 但一个写错的时间串会静默变成"0 命中"，而"0 命中"与"条件写错"在回显上分不开 ——
-   * 同一个坑（静默退化）就同一套处理。返回 `{ok, value(毫秒|null), reason}`；**不取 now**。
+   * **相对时长** `<n><单位>`（单位封闭四档：`m` 分钟 / `h` 小时 / `d` 天 / `w` 周，大小写不敏感）。
+   * 返回毫秒数，认不出 ⇒ `null`（**不抛**：调用方要能分辨"这不是相对时长"与"这是个坏时间"）。
+   *
+   * 为什么单位表是**封闭**的而不是走 `Date.parse` 的宽松形态：`Date.parse('7d')` 在 V8 里是 `NaN`，
+   * 而 `Date.parse('2026')` 是**合法的**（= 2026-01-01）—— 宽松解析会把"写错的相对时长"读成一个
+   * 莫明其妙的时间点。时间线/`--since` 的界一错，结果就是"少回一半"且**看不出来**
+   * （同 `parseSince` 上面那条"静默退化"的理由）。⇒ 只认这四档，别的一律当"不是相对时长"。
+   * ⚠️ 刻意**不收负号与小数的怪写法**（`-1d` / `1.5d` 一律认不出）：时间界往前推才有意义，
+   * 往后推等于"未来"，那不是一个"自某时以来"能表达的语义。
    */
-  function parseSince(v) {
+  const DURATION_UNITS = Object.freeze({ m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000, w: 7 * 24 * 60 * 60 * 1000 });
+  function parseDuration(v) {
+    if (v === undefined || v === null) return null;
+    const m = /^\s*(\d+)\s*([mhdw])\s*$/i.exec(String(v));
+    if (!m) return null;
+    const n = Number(m[1]);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n * DURATION_UNITS[m[2].toLowerCase()];
+  }
+
+  /**
+   * `--now <ISO>`：由调用方**显式**给出的"现在"。返回 `{ok, value(毫秒|null), reason}`。
+   *
+   * 为什么"现在"必须是个参数（本工程唯一一处允许出现墙钟的例外就在调用方，**不在这里**）：
+   * `--since 7d` 若自己去读 `Date.now()`，同一条命令两跑的界会差几毫秒 —— 跨过毫秒边界时
+   * 命中集就变了，而 `--json` 的判据是"两跑 sha256 相同"。⇒ 时钟是**输入**，不是环境。
+   * 只收绝对时间：`--now 7d` 是自我指涉（"七天后之前"？），一律拒绝并说明。
+   */
+  function parseNow(v) {
     if (v === undefined || v === null || v === '') return { ok: true, value: null, reason: '' };
+    if (parseDuration(v) !== null) {
+      return { ok: false, value: null,
+        reason: '--now 需要一个**绝对**时间（如 2026-10-20 或 2026-10-20T00:00:00Z），收到 ' + JSON.stringify(v)
+          + '：相对时长自己指自己（"现在"不能由"多久之前"算出来）' };
+    }
     const ms = Date.parse(String(v));
     if (!Number.isFinite(ms)) {
       return { ok: false, value: null,
-        reason: '需要一个能解析的时间（如 2026-10-11 或 2026-10-11T04:00:00Z），收到 ' + JSON.stringify(v) };
+        reason: '需要一个能解析的绝对时间（如 2026-10-20 或 2026-10-20T00:00:00Z），收到 ' + JSON.stringify(v) };
     }
     return { ok: true, value: ms, reason: '' };
+  }
+
+  /**
+   * `--since <ISO|相对时长>`：**当场判非法**。契约只对 `--limit`/`--max-bytes` 明说"非法值要报错"，
+   * 但一个写错的时间串会静默变成"0 命中"，而"0 命中"与"条件写错"在回显上分不开 ——
+   * 同一个坑（静默退化）就同一套处理。返回 `{ok, value(毫秒|null), relative, reason}`。
+   *
+   * 两种形态、一个出口：绝对时间（`2026-10-11` / `2026-10-11T04:00:00Z`）与相对时长（`7d`）。
+   * **相对时长必须给 `now`**（`--now` 的毫秒值）：不给 ⇒ `ok:false` + 点名缺什么 ——
+   * 绝不偷偷读墙钟（理由见 `parseNow`）。`now` 只有相对形态才用得上，绝对形态给了也不影响结果。
+   *
+   * @param {*} v `--since` 原值
+   * @param {number|null} [nowMs] 已经解析好的"现在"（**毫秒**；来自 `parseNow` 的 `value`）
+   */
+  function parseSince(v, nowMs) {
+    if (v === undefined || v === null || v === '') return { ok: true, value: null, relative: null, reason: '' };
+    const dur = parseDuration(v);
+    if (dur !== null) {
+      if (!Number.isFinite(nowMs)) {
+        return { ok: false, value: null, relative: null,
+          reason: String(v) + ' 是**相对时长**，需要一个显式的"现在"：加 `--now <ISO>`'
+            + '（本命令不读墙钟 —— 读墙钟会让 --json 两跑不同，"最近 7 天"就不可复现了）' };
+      }
+      return { ok: true, value: nowMs - dur, relative: { raw: String(v), ms: dur, base: nowMs }, reason: '' };
+    }
+    const ms = Date.parse(String(v));
+    if (!Number.isFinite(ms)) {
+      return { ok: false, value: null, relative: null,
+        reason: '需要一个能解析的时间（如 2026-10-11 或 2026-10-11T04:00:00Z，或相对时长 7d），收到 ' + JSON.stringify(v) };
+    }
+    return { ok: true, value: ms, relative: null, reason: '' };
   }
 
   /** `--type <t>`：取值表封闭（§1），非法值当场报错并给出允许集。 */
@@ -671,8 +731,10 @@
   /**
    * **时效**的取值（W4 的 `time` 路）：只取条目上**现成的那一格** —— `at`；
    * 没有 `at` 的 `qa` 条目回落到 `qa.at`（同一条记录上现成的时间真值）。
-   *   · **不派生**（不看变更日志、不加字段）：那是 W2 的活（清单 W2 一节给了两条路线与取舍），
-   *     本件只兑现"这一路已经在跑、来源是既有真值"这件事，别抢它的设计权 ✗；
+   *   · **不派生**（不看变更日志、不加字段）：**`TL`/台账 `W2` 已落地并有意不扩这一路**
+   *     —— 节点级的派生时间（变更日志）属于 `timeline` 命令，不进检索排序。三条理由
+   *     （两种"时效"口径会在同一个结果里并存 / "时间未知"会被排序吞掉 / 会改动既有 `--mode`
+   *     读数与黄金集）写在 `.review/20261020-W2-recency/00-定题.md` §3.3，别在这里再抄一份。
    *   · 取不到时间 ⇒ 返回 `null` = **"没有时间信息"**（不是"时间 = 0"）⇒ 这一条**不参与**这一路，
    *     `--explain` 里如实体现（"时间未知"这件事看得见，不是被静默排到末尾 ✗）。
    */
@@ -824,7 +886,12 @@
     if (!vf.ok) return fail('bad-option', '--verified ' + vf.reason);
     const tf = parseType(o.type);
     if (!tf.ok) return fail('bad-option', '--type ' + tf.reason);
-    const sf = parseSince(o.since);
+    /* `--now` 与 `--since` 在这里**同一道闸**（时间线的界是这两条的产物，缺一条就判不出界）：
+     * `--now` 先解成毫秒，`--since` 再拿它当相对时长的基点。两条都在碰任何东西之前判，
+     * 报文各自点名缺什么 / 该改哪个标志。⚠️ 本模块**不读时钟**：`o.now` 是调用方给的**输入**。 */
+    const nf = parseNow(o.now);
+    if (!nf.ok) return fail('bad-option', nf.reason);
+    const sf = parseSince(o.since, nf.value);
     if (!sf.ok) return fail('bad-option', '--since ' + sf.reason);
     /* 【W4】混合检索的**参数闸门也在这一处**（与上面三条同一条纪律）：`--mode` / `--weights`
      * 写错了就在碰任何东西之前红，而且报文来自唯一那一份解析（命令层不复制一份条件表）。
@@ -1129,7 +1196,7 @@
     text: '这一路没参与：没有关键词（纯 --tag 检索没有可打分的东西）',
     graph: '这一路恒空：没有文本头名（无关键词）或本项目没有任何 links / assoc 边可用',
     trust: '这一路恒空：候选一条都没有（不可能出现，出现即数据有问题）',
-    time: '这一路恒空：本批命中里没有一条带时间信息（取值只认 item.at / qa.at；W2 未落地不派生）',
+    time: '这一路恒空：本批命中里没有一条带时间信息（取值只认 item.at / qa.at）',
     semantic: '这一路没装（W3 未落地）'
   });
 
@@ -1287,6 +1354,10 @@
     srcMatches: srcMatches, passItemFilters: passItemFilters,
     // 选项解析
     parseFlag: parseFlag, parseSince: parseSince, parseType: parseType, normalizeItemIds: normalizeItemIds,
+    /* 【`TL`/`W2`】时间界的解析：`--since`（绝对或相对）+ `--now`（显式的"现在"）+ 相对时长的单位表。
+     * 导出这三件是因为 `timeline` 命令与 `search` **必须用同一份口径**（同一个"7 天"），
+     * 而"现在"永远是**调用方给的输入**（本模块不读时钟）。 */
+    parseNow: parseNow, parseDuration: parseDuration, DURATION_UNITS: DURATION_UNITS,
     // 索引
     buildIndexes: buildIndexes, findItem: findItem,
     // 视图

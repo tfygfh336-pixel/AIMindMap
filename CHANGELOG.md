@@ -1983,6 +1983,150 @@ learn-path book-linux-src-fun --dry-run   exit 0
 - `docs/ROADMAP.md`：`W21` 从"在飞/未收口"摘掉或改状态，并把证据指针指到
   `.review/20261020-W21-ask-apply/01-验收读数.md`。
 
+### 【台账 `W26`】使用者版 skill：先把「能不能加载」做成读数，再把使用者入口放进**已经加载的那一份**（2026-10-20）
+
+> 预写段：本文件**不去改 `CHANGELOG.md`**（父代理收口时统一并入 `[Unreleased]`）。
+
+#### 定题结论：`W26` 的真问题不是"加载不了"
+
+台账原文（`.review/20261010-卖点与功能-常驻讨论/待做清单.md:284-302`）判断"外部会话技能目录里没有它 ⇒ 外置 AI 走不了这条路"。
+**该判断已经过期**：`%USERPROFILE%\.dsh\skills\ai-mind-map` 是一条指向本工程根的**目录联接**，
+所以新会话读到的是**仓库根这份 `SKILL.md` 本身**（sha256 三记**两侧相同**：`9039c2e2…` / 20892 B / CR 0 —— 这是改动前的读数，
+判据判的是"两侧相等"这个关系，不是一个固定哈希）。
+
+⇒ 真问题是 **"加载了，但加载的是维护者版"**：第一屏写着「步骤数 15 步」「`npm run verify`」「门禁 G8」，
+而一个"只用它记笔记"的人/AI 需要的东西（`docs/AI-GUIDE.md` 的操作规范、"写完只跑 validate"）藏在很远的地方。
+
+#### 改动：只动一个文件（`SKILL.md`，+53 / −1，**无删除**）
+
+1. **第一屏加二分岔** —— `只记笔记 → 使用者 5 步` / `维护工程 → 接手 5 步`。顺带把"被本机豆包加载"这句不精确的说法
+   换成"被加载 + 指向文末的机制说明"。
+2. **新增 `## 使用者 5 步`**：读 `AI-GUIDE` → `projects` → `list`/`search`/`read --subtree` → `ui-state` 写前协调 → 写完只跑 `validate`。
+   **命令一个没抄**（指向本文 CLI 段）、**写作规范一个没抄**（指向 `AI-GUIDE`）、**验收口径只指过去**（`RULES.md` M3 + 本文铁律第 3 条表）。
+3. **新增 `## 这个 skill 是怎么被加载的`**（本批唯一新增事实）：装载点、有序根与"同名靠前盖靠后"、目录型/扁平型判据、
+   frontmatter 硬要求（`---` + `name` + `description`，缺则静默忽略）、本机 junction 事实、一行自检、换机器 `mklink /J` 修法，
+   以及动作现场禁令「**别在工程里新建 `.dsh/skills/`**」（`TOP_DIRS` 白名单里没有它 ⇒ G8 当场红）。
+
+#### 为什么**不**新建一份"使用者版 skill 文件"（这是本条最重要的判断）
+
+四个候选落点，**没有一个同时满足"真能被加载 + 不过门禁红线 + 不产生第二份事实"**：
+
+| 落点 | 能加载 | 能过门禁 |
+|------|-------|---------|
+| 工程根 `SKILL-user.md` | ✗ | ✗ `ROOT_DOCS`/`ROOT_FILES` 白名单只许三份入口文档 |
+| `docs/SKILL-user.md` | ✗（`docs/` 不是 skill 根） | ✓ |
+| `<根>/.dsh/skills/…` | ✓（优先级最高） | ✗ `TOP_DIRS` 无 `.dsh`，且 `collectDocs` 不跳它 ⇒ 双重红；要改就得动 `scripts/**` |
+| 用户级再挂一条 junction | ✓ | ✓（在仓库外，门禁看不见） |
+
+最后一条虽然"能过"，但它是把本任务要治的病（**手工联接、双副本**）再复制一份。
+⇒ 唯一"既真加载、又不新增副本"的落点是**已经加载的那份文件本身**。
+**不分开 ⇒ 没有第二份 ⇒ 漂移不可能发生** —— 这比"分开再想办法同步"更符合工程那两次漂移的真实病因
+（手抄总预算 700s vs 真值 1770s、手抄步骤数漂两轮，都是"同一事实抄了第二份"）。
+
+#### 判据（全部当场跑，只认 exit code）
+
+- `node scripts/doc-facts.js --check` ⇒ **exit 0**（第一屏「步骤数 15 步」== `STEPS.length` ✓；用例 3023 / 131 未变）
+- `node scripts/docs-registry-check.js` ⇒ **exit 0**（表格逐行不重复 · 导航可达 · 章节编号连续全部照旧）
+- `node node_modules/vitest/vitest.mjs run --pool=threads` ⇒ **exit 0**（`131 passed`；`3022 passed | 1 skipped (3023)`）
+- `node scripts/encoding-check.js` ⇒ **exit 0**
+- `node scripts/collateral-check.js` ⇒ **exit 0**
+- `node .review/20261020-S2-tag-in-code/find-bare-angle.js` ⇒ **exit 0**，读数 **0 节点 · 0 片段**
+- **加载实证**：`node .review/20261020-W26-skill/probe-load.js` ⇒ **exit 0**（根里扫得到 + 与仓库根同一份字节 + frontmatter 合规）
+- **注入证明**：同一条命令 `--root=<不存在的目录>` ⇒ **exit 1**（逐条列出哪条不成立）⇒ 该判据能红，不是恒绿
+
+#### ⚠️ 本批**不跑** `npm run verify`（`R7`）、**不跑** `doc-facts --write`（父代理统一跑）
+
+#### 如实偏差（四条）
+
+1. **台账验收判据 ①（全新会话演练：检索→写一条→校验 + 演练记录）未做** —— 当前有多个批次在并发改同一工作树，
+   在并发窗口里对 `projects/` 做真实写入得到的演练记录不可信。**记"未验"，不记"已验"**。
+2. **`tests/` 零改动**，且本轮**写不成**"使用者节不许出现命令原文"这条单测：`FACT_OUTLETS` 的 `unit-files`
+   真值出口是生成物 `docs/VERIFY.md`，而重生成要跑被禁的 `doc-facts --write` ⇒ 一动 `tests/`，验收第 3 条当场不绿。
+3. **装载步骤仍不可一条命令复现**：仓库里没有任何代码建那条 junction，本批也没加（`scripts/**` 禁改）。
+   SKILL.md 里给的是**手工修法 + 自检命令**，不是自动化安装 —— "写在动作现场"，不等于"已机械化"。
+4. **`docs/ARCHITECTURE.md` 零改动**：本批不新增受管文档，§5 没有新登记项（表是生成的，也不该手改）。
+   `docs/AI-GUIDE.md` **零字节改动**（别的会话在改它）。
+
+#### 证据
+
+`.review/20261020-W26-skill/` —— `00-定题.md`（5 问）· `01-实证.md`（读数日志，含一次判据写错造成的**假红**留档）·
+`02-决策与改动.md` · `probe-load.js`（可重跑自检 + 注入证明）。
+
+### 【功能】`TL`「时间线」落地：新命令 `timeline`（节点级"最近改了什么"）+ `--since` 认相对时长（台账 `W2`）（2026-10-20）
+
+> 这一段是给 `CHANGELOG.md` 的 `[Unreleased]` 用的**预写稿**（`CHANGELOG.md` 不在本批可改范围；由收口那一批贴进去）。
+
+#### 为什么是"从日志派生"，而不是给节点加 `updatedAt`
+
+台账 §W2 给了两条路线，本批**按实测选了①（派生）**，而且第②条是**做不成**、不是不想做：
+
+- 节点上**根本没有时间字段**：`src/schema.js` 的契约字段表 `NODE_FIELDS` 共 15 项，`createdAt`/`updatedAt`/`mtime`/`ts`/`time` **一个都没有**。
+- 条目层那条时间（`items[].at`）在**真实语料里是空集**：10 个项目 2310 个节点**全是 v2、0 个条目** ⇒ `search --since <ISO>` 今天在任何真实项目上都只能回 **0 命中**（实测过）。
+- 唯一可用于"最后改动时间"的真值是**变更日志** `projects/<项目>/.changes.jsonl`（`src/changes.js` 文件头写明它由唯一写盘出口顺带产生，GUI 保存那条路径也调它）⇒ 实测覆盖 **1785 / 2310** 个节点；剩下 **525** 个（`comnet` 349 + `卖点讨论` 176，日志正好满 200 条=已被裁剪）**只有上界**。
+- 路线②（加可选字段 `updatedAt`）要连带四处：`NODE_FIELDS` 表 → `docs/DATA-FORMAT.md` §2 → `cli/commands/edit.js` 的 `cloneNode` 字段表 → `renderer/app-core.js` 的 `walk()` 整树写回。前两处有门禁盯着（G8 的⑪数据契约覆盖、`analyzeCloneFieldCopy`），而 **`renderer/**` 与 `docs/DATA-FORMAT.md` 都在本批禁区** ⇒ 四条齐改越界、只改两条当场判红。
+
+#### 三档时间来源（**都能分辨**，不是"时间未知"一句糊过去）
+
+| `atSource` | 判据 | 实测条数 | 能说出口的话 |
+|---|---|---|---|
+| `changes` | 节点 id 出现在日志窗口内任一条的 `changed` 里 | 1785 | 最后一次改动 = 那条的 `at`（**精确**） |
+| `before-window` | 日志在、但这条没出现 | 525 | 最后一次改动 **早于**窗口起点（**只有上界**，不给假时间） |
+| `unknown` | 本项目**没有日志** | 0（代码必须处理：删了日志就是这一档） | **时间未知**（不是"时间 = 0"） |
+
+`before-window` 这个上界**是可证的**：日志只追加、只在超窗口时从**头部**裁剪，而每次写盘都记一条 ⇒ 节点若在窗口起点之后被改过，那条记录必然在窗口里。**不拿 `origin.at` 冒充改动时间**：它是**导入**那一刻（全库 65 个节点有），导入后又被改过、而那次改动已滑出窗口的节点会因此报出一个更早的假时间 ⇒ 它只作 `importedAt` 信息列，不参与排序与判定。
+
+#### 新增 `timeline`（只读 · 产品代号 `TL`）
+
+```
+node cli/mm-cli.js timeline [<项目>] [--since <ISO|Nd|Nh|Nm|Nw>] [--now <ISO>] [--limit n] [--json]
+```
+
+- 不给项目名 ⇒ **全库**（与 `changes [<项目>]` 同一形态）。与 `changes` 读**同一份**日志、共用**同一份**投影（`src/changes.js` 的 `lastTouchedByNode`）：`changes` 答"谁动过哪些对象"（写入事件，按 `rev`），`timeline` 答"哪些笔记最近被改过"（节点，按时间）。
+- **排序是全序**：`at` 降序 → 项目名升序 → `nodeId` 升序。`(项目,nodeId)` 全库唯一 ⇒ **同时间戳也有唯一答案、可手算复算**。这不是洁癖：实测 1785 条有精确时间的行里 **1187 条（66.5%）落在只有 28 个并列组**中，最大一组 **364 个节点同在一毫秒**。项目名比较**不用 `localeCompare`**（跟随运行环境 locale ⇒ 换机器顺序就变）。
+- **没有精确时间的行恒排在有时间的行之后**（`before-window` / `unknown` 各按项目+id），**永不插进序列里** —— 不编造位置。
+- **不静默排除**：`--since` 下"时间未知/只有上界"的节点不返回，但 `summary.excludedNoTime` **逐条数得出**；文本档明说"这不是没命中"。
+
+#### `--since` 认相对时长（**本任务最容易破的一条**：可复现）
+
+- `--since 7d` / `24h` / `90m` / `2w`（单位封闭四档；`7x` / `-1d` / `1.5d` 一律不认 —— 不走 `Date.parse` 的宽松形态，否则写错会被读成另一个时间点）。
+- **相对时长必须配 `--now <ISO>`**，缺它**当场 exit 1** 并点名。理由是一条判据：读墙钟 ⇒ 同一条命令两跑的界差几毫秒 ⇒ 跨过毫秒边界时命中集就变，而 `--json` 要求两跑 sha256 相同。⇒ **时钟是输入，不是环境**。绝对 `--since 2026-10-01` 不受影响。
+- `--now` 只收绝对时间（`--now 7d` 是自我指涉 ⇒ 拒绝）。
+- 同一份解析器（`src/item-index.js` 的 `parseSince`/`parseNow`/`parseDuration`）供 `search` / `search-all` / `timeline` 三处用 ⇒ "7 天"只有一个定义。
+
+#### 判据（全部当场跑，只认 exit code）
+
+- `node node_modules/vitest/vitest.mjs run --pool=threads` ⇒ **exit 0**（**3050 passed | 1 skipped（3051）**，132 文件；基线 3023 ⇒ **+28**，只增不减）。
+- `node cli/mm-cli.js validate-all` ⇒ **exit 0**（全部 10 个项目校验通过）。
+- `node scripts/docs-registry-check.js` ⇒ **exit 0**（`timeline` 已登记 §2.2；稳定性表覆盖 93 条）。
+- `node scripts/encoding-check.js` ⇒ **exit 0**。
+- `node scripts/collateral-check.js` ⇒ **exit 0**（写盘出口豁免面 **82 处 / 上限 82** —— 集成断言里还原日志走 `src/data-store.js` 的 `writeFileAtomic`，**没有新开裸写点**）。
+- `node .review/20261020-S2-tag-in-code/find-bare-angle.js` ⇒ **exit 0**、**0 节点 / 0 片段**。
+- `node scripts/cli-integration.js` ⇒ **613/613 PASS**（新增 10 条 `timeline` 断言，**逐条都真跑过**，见 `[PASS] timeline …` 十行）。
+- `--json` 两跑 sha256 相同：`.review/20261020-W2-recency/probe/03-repro.js`（5 组用例全 ✓，含 `--limit 0` 全库 873 KB）。
+- 排序唯一性：同一脚本对 2310 行做**独立复算**（不信 CLI 的排序，只用 `(at, project, nodeId)` 重排）⇒ 与输出**不符 0 处**；最大并列桶 364 条的桶内次序 = (项目名升序, nodeId 升序) ✓；三档计数之和 = 节点总数 ✓。
+
+#### 连带面（R5）
+
+- **GUI 交互**：**零影响** —— 不碰 `renderer/**` / `main*.js`；没有新面板、没有新快捷键（时间线是 CLI 只读命令）。
+- **CLI 命令表**：76 → **77**（`timeline`）；`search` / `search-all` **只增一个选项** `--now`（不给它时行为逐字节不变，`--since` 收的绝对时间照旧）。
+- **MCP**：**不新增工具**（工具数 52 不变）—— 按 `docs/EXTENSIONS.md` §1.3，"CLI 有、MCP 没有"是**允许的边界**，门禁只管反方向。
+- **数据格式**：**零新字段**（这是选路线①的直接后果；`docs/DATA-FORMAT.md` 一个字节没动）。
+- **生成物**：`docs/CLI.md` 由 `docs-gen` 重生成（77 条命令）；`docs/ARCHITECTURE.md` §2.2 补 `commands/timeline.js` 一行；`docs/EXTENSIONS.md` §1.2 把 `timeline` 登记进「演进中」；`docs/FEATURES.md` 的 `TL` 行按实测改写（承载 / 实现状态 `未实现（部分）` → `已实现` / 备注）。
+- **`MR` 的 `time` 路由**：**有意不扩**（`src/palette-rank.js` 那句"W2 落地后由 W2 扩来源"已改成如实）。三条理由：① 一个结果里会并存"条目级 `--since`"与"节点级派生时间"两种时效口径；② 没有时间的候选只是"不出名次"，"时间未知"会被排序吞掉；③ 会改动既有 `--mode`/`--weights` 读数与黄金集。
+
+#### 如实偏差（四条，逐条给读数）
+
+1. **`MR` 的 `time` 路由不扩**（上面那一节）—— 预登记承诺**没兑现**，两处文字已改成"已落地但有意不扩 + 理由指针"，不留会过期的承诺。
+2. **时间线视图不做**：一棵按时间排的树会与 `children` 这个**唯一顺序真源**冲突（`LP` 的 `chapter-order` 就指着它），且要动 `renderer/**`（禁区）。
+3. **时间线索引不建**：全库现算一次实测 **36 ms**（读 10 个项目 + 10 份日志 + 派生 2310 节点），而 W7 量过起进程地板 ≈ 500 ms；索引的收益上限就是那 36 ms，代价是**第二份真值**（日志可随时整份删）＋三条不可判据化的对账。
+4. **`docs/ITEM-MODEL.md` §3.4 的一处文档债**：那一行写 `--since <ISO>`，现在还应包括相对时长。该文件不在本批可改范围 ⇒ **未改**；行为口径**没变**（仍是"按条目 `at` 过滤、不返回未条目化节点"），只是**可接受的输入形态变宽了**。
+5. **`docs/VERIFY.md` 未重生成**：单测用例数 3023 → 3051、命令数 76 → 77 都会让它过期。按父代理的调度，`npm run facts:write` 由收口那一批统一跑（避免多批互相覆盖）⇒ 本批 `node scripts/doc-facts.js --check` 的**唯一**红就是这一处（读数：`docs/VERIFY.md:20 写的是 3023，应为 3051`）。
+
+#### 证据
+
+- `.review/20261020-W2-recency/00-定题.md`（5 问逐条实测 + 做/不做判断）· `probe/01-time-sources.js`（时间来源覆盖率）· `probe/02-derive.js`（派生 / 并列桶 / 窗口起点 / 36 ms）· `probe/03-repro.js`（两跑 sha256 + 排序独立复算 + 计数自洽）。
+- 单测 `tests/timeline.test.js`（28 条：键解析 / 三档来源 / 全序 / 相对时间 / 零写盘身份）· 集成断言 `scripts/cli-integration.js` 的「23b」段（10 条）。
+
 ## [v0.19.0] - 2026-10-19
 
 ### 预算统计量 `1.25×P90` → `1.25×median`：n=10 的 P90 = **第二大** ⇒ 只容忍一条尖峰；今天已两次被尖峰抬线（1300→1468、1300→1350），换 median 并把多付的 50s 还回去（G5 1350s→1300s）

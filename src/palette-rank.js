@@ -195,7 +195,12 @@
       source: 'item.verified（已核）/ node.origin（导入而来，见 src/schema.js）', installed: true,
       recall: false }),
     Object.freeze({ id: 'time', label: '时效',
-      source: 'item.at（**只取既有真值**；W2 落地后由 W2 扩来源）', installed: true,
+      // 【`TL`/`W2` 落地时复核过这一行】原先写的是"**只取既有真值**；W2 落地后由 W2 扩来源"，
+      // 而 W2 落地后**有意不扩**（`timeline` 命令的节点级派生时间不进检索排序）。三条理由写在
+      // `.review/20261020-W2-recency/00-定题.md` §3.3 —— 这里只留一句"为什么止步"，
+      // 别在代码里再存一份论证（同一事实一处）。
+      source: 'item.at（只取条目上的既有真值；`TL` 已落地但**有意不扩**到节点级派生时间）',
+      installed: true,
       recall: false }),
     Object.freeze({ id: 'semantic', label: '语义近似',
       source: 'W3（向量 / 语义）——**未安装**，权重收下但不产生名次',

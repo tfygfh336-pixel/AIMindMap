@@ -599,7 +599,7 @@ function scanAll(ctx, opts) {
 
     const r = itemIndex.searchItems(root && root.data, {
       keyword: o.keyword, tag: o.tag, full: o.full, topicOnly: o.topicOnly,
-      src: o.src, verified: o.verified, type: o.type, since: o.since,
+      src: o.src, verified: o.verified, type: o.type, since: o.since, now: o.now,
       // 本次**不卡调用方预算**（预算在合并之后一次算）：给"上限+1"与不设字节上限，
       // 于是每个项目的 `hits` 是完整的、`hitCount` 更是截断前的真值 ⇒ 上游超限绝不会被这里藏住 ✓
       limit: itemIndex.SCAN_MAX_HITS + 1, maxBytes: Number.MAX_SAFE_INTEGER,
@@ -941,6 +941,9 @@ module.exports = {
     const r = query.searchNodes(data.data, {
       keyword: ctx.args._[1], tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
       src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
+      /* 【`TL`/`W2`】`--now`：相对 `--since 7d` 的唯一起点。**原样透传**给纯逻辑层判（缺它 ⇒ 那边当场红），
+       * 命令层不自己判"给了没给" —— 那不是第二份条件表，那会变成第二个报文。 */
+      now: ctx.args.now,
       limit: limit, maxBytes: maxBytes,
       heat: boost,
       mode: ctx.args.mode, weights: ctx.args.weights, explain: !!ctx.args.explain,
@@ -1044,6 +1047,7 @@ module.exports = {
     const probe = itemIndex.searchItems({ id: '', topic: '', children: [] }, {
       keyword: ctx.args._[0], tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
       src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
+      now: ctx.args.now,
       // 【W4】混合检索的参数闸门也在那一处：`--mode` / `--weights` 写错的报文与 `search` 逐字同源
       // 【W4b】`--recall` 同走这一个闸门（"必须与 --mode/--weights 同给"、取值合法性都只有那一份）
       mode: ctx.args.mode, weights: ctx.args.weights, recall: ctx.args.recall
@@ -1059,6 +1063,7 @@ module.exports = {
       names: sc.names, keyword: ctx.args._[0],
       tag: ctx.args.tag, full: !!ctx.args.full, topicOnly: !!ctx.args.topicOnly,
       src: ctx.args.src, verified: ctx.args.verified, type: ctx.args.type, since: ctx.args.since,
+      now: ctx.args.now,
       noHeat: nh.value, mode: probe.mode,
       // 【W4】混合检索：逐个项目各自融合（`--mode` / `--weights` / `--explain` 与 `search` 同名同义）
       // 【W4b】扩召回也逐个项目各自算（`--recall` 与 `search` 同名同义；邻域是项目内的）
