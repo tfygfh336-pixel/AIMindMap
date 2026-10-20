@@ -313,7 +313,14 @@ function checkHandoverPointers(root) {
  * （`ui-state.js` / `dsh-capabilities.js` / `dsh-sidebar-skill.js`），`scripts/` 连**章节都没有**
  * —— 连 `verify.js`（验证链的单源）都不在架构文档里。新模块写了代码却不进文档，
  * 接手者就不知道它存在。
- * 范围：**递归扫 `src/`、`cli/commands/`、`scripts/` 整棵子树**（原先只扫顶层，见下）。
+ * 范围：**递归扫 `COVERED_DIRS` 里的四个目录**（`src/`、`cli/commands/`、`scripts/`、`renderer/`）
+ —— 单源就是这个常量，别在此再抄一份清单。
+ ⚠️ `renderer/` 是 **2026-10-20 补进来的**（缺口 `G-16` 的第 ⑥ 处）：此前本判定自述"**代码文件**必须被
+ 架构文档提到"，而扫描面只有前三项 —— 往 `renderer/` 放一个新文件、什么都不登记，**8 条廉价门禁全绿、
+ 连一行都没点名它**（实测形状与读数见 `.review/20261020-门禁B/README.md` 变体 F）。
+ 那批因为"不许写 `docs/**`"没法补登记，只能把判据临时落在 `scripts/collateral-check.js` 的
+ `ARTIFACT_BATCH` 里兜住、并在那里写明"正确的家是本判定"；本批把家搬回来了：`renderer/` 进
+ `COVERED_DIRS`、§2.1 补齐存量登记、`ARTIFACT_BATCH` 的那条兜底**连同欠账册一起删掉**（一处判定只留一份实现）。
  * 为什么必须递归（实测缺口，2026-10-16 T5 批）：非递归时 `scripts/smoke/` 里绝大多数文件
  * 从未登记，而它们**根本没进过扫描面** ⇒ "豁免"不是一条声明，只是"非递归"这个**副作用**：
  * 谁把 `scripts/mutate-gates.js` 挪进 `scripts/tools/`（或谁把这里改成递归），豁免就**无声消失**。
@@ -333,7 +340,8 @@ function checkHandoverPointers(root) {
 const COVERED_DIRS = [
   { dir: 'src', what: '共享核心模块' },
   { dir: 'cli/commands', what: 'CLI 命令层' },
-  { dir: 'scripts', what: '脚本层' }
+  { dir: 'scripts', what: '脚本层' },
+  { dir: 'renderer', what: '渲染层模块' }
 ];
 
 /** **子目录豁免的显式声明 —— 本判定的唯一豁免判据**。`{ dir, why }`，`dir` 按前缀口径（结尾斜杠）。
@@ -390,9 +398,9 @@ function checkModuleCoverage(root) {
         msg: what + '里的这个文件没有被 `docs/ARCHITECTURE.md` 提到 —— '
           + '新接手的 AI 靠 §2 认识代码结构，新增文件要同批登记（'
           + (inSubdir
-            ? '子目录文件按**完整相对路径**登记进 §2.6 表；若整个目录规则确实相同，'
-              + '把它加进 `EXEMPT_DIRS` 并在 §2.6 补一行前缀行'
-            : '§2.3 / §2.6 表')
+            ? '子目录文件按**完整相对路径**登记进它所属层的那张表（渲染层 §2.1 / 共享核心 §2.3 / 脚本层 §2.6）；'
+              + '若整个目录规则确实相同，把它加进 `EXEMPT_DIRS` 并在 §2.6 补一行前缀行'
+            : '§2.1 / §2.3 / §2.6 表')
           + '）' });
     });
   });
@@ -1375,7 +1383,9 @@ function main() {
   console.log('✓ 登记表无悬挂条目（' + reg.exact.size + ' 份声明的文档都存在）');
   console.log('✓ 归档族与主文件无重复版本段（docs/changelog/ vs CHANGELOG.md）');
   console.log('✓ 交接面「在飞 / 未收口」的证据指针都解析得出真实路径 + 状态列都在固定词表内（docs/ROADMAP.md）');
-  console.log('✓ 代码文件都在架构文档里登记过（src/ · cli/commands/ · scripts/）');
+  // 通过读数里的目录清单**从 `COVERED_DIRS` 现场取**，不写死 —— 写死过一次：加 `renderer/` 时
+  // 这句仍是 "src/ · cli/commands/ · scripts/"，于是"扫了哪几个目录"当场就成了第二种说法。
+  console.log('✓ 代码文件都在架构文档里登记过（' + COVERED_DIRS.map((d) => d.dir + '/').join(' · ') + '）');
   console.log('✓ 归档文档都带「历史」横幅（docs/archive/）');
   console.log('✓ 工作目录都声明了死活（.review/*/README.md）');
   console.log('✓ 受管文档都能从 SKILL.md 导航找到（第一屏可达）');

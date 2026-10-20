@@ -105,7 +105,8 @@ const COLLATERAL = [
     places: [
       { at: 'docs/ARCHITECTURE.md §2.3 模块表', role: 'gate', gate: 'G8',
         anchor: 'scripts/docs-registry-check.js#checkModuleCoverage',
-        note: '复用 G8 第 ⑦ 条：代码文件必须被架构文档提到（来源目录 = src/ / cli/commands/ / scripts/）' },
+        note: '复用 G8 第 ⑦ 条：代码文件必须被架构文档提到（来源目录 = G8 的 `COVERED_DIRS`，'
+          + '本表不抄那份清单 —— 2026-10-20 起含 `renderer/`）' },
       { at: '依赖方向（只能朝下：renderer → main/scripts → cli → src）', role: 'gate', gate: 'S1',
         anchor: 'scripts/dep-direction-check.js#findReverseEdges',
         note: '复用 S1：新模块的 require 边立刻参与方向判定' },
@@ -197,17 +198,21 @@ const COLLATERAL = [
         note: '残差：若是门禁，没挂链就等于没有 —— 同样由 `tests/verify-budget.test.js` 的双向用例守' }
     ]
   },
-  /* ---- ⑦ 的两行：把「新增产物要同批处理的连带面」里**还没有人守**的那两处补上 ---- */
+  /* ---- ⑦ 的两行：⑥ `renderer/` 入档已于 2026-10-20（门禁B2）收口 ----
+   * 那一批实测出「新增产物要同批处理的连带面」里第 ⑥ 处（`renderer/*.js` 进 §2.1）**没有任何门禁**，
+   * 因为当时的许改范围不许写 `docs/**`，只能由本门禁**临时兜住**（自建断言 + 封闭欠账册）。
+   * 现在 `renderer` 已进 G8 ⑦ 的 `COVERED_DIRS`、§2.1 存量也补齐了 ⇒ 这里**改回"指过去复用"**
+   * （与下面 `script-or-gate` 那一行同形）：兜底与欠账册一起删掉，只留一行"谁在守"。
+   * ⚠️ 别再把这条断言写回本文件 —— 同一件事两份实现，改了一边另一边不会动。 */
   {
     id: 'renderer-module',
     when: '新增一个 renderer/*.js 模块',
     places: [
-      { at: 'docs/ARCHITECTURE.md §2.1 渲染层模块表', role: 'self', check: 'ARTIFACT_BATCH',
-        note: '★实测缺口：G8 第 ⑦ 条的自述是"**代码文件**必须被架构文档提到"，但它的扫描面'
-          + '（`COVERED_DIRS`）只有 `src` / `cli/commands` / `scripts` —— **漏了 `renderer/`**。'
-          + '本批用变体 F（往 `renderer/` 放一个新文件、什么都不登记）实测：**没有任何门禁变红、'
-          + '连一行都没点名它**。⇒ 由本判据直接断言（存量 2 件在册，见 `ARTIFACT_BATCH_DEBT`）。'
-          + '⚠️ 正确的家仍是 G8（把 `renderer` 加进 `COVERED_DIRS`）；那不在本批许改范围，故先在这里兜住' }
+      { at: 'docs/ARCHITECTURE.md §2.1 渲染层模块表', role: 'gate', gate: 'G8',
+        anchor: 'scripts/docs-registry-check.js#checkModuleCoverage',
+        note: '复用 G8 第 ⑦ 条：`renderer` 已在 `COVERED_DIRS` 里 ⇒ 放一个新文件不登记，G8 直接判红并点名它'
+          + '（两方向读数见 `.review/20261020-门禁B2/proof-g8-renderer.js`）。'
+          + '⚠️ 这一处曾经没有守卫（G8 的扫描面漏了 `renderer`），本门禁临时兜过一批；现已收口' }
     ]
   },
   {
@@ -381,10 +386,9 @@ function analyze(opts) {
   noteResidue.problems.forEach((p) => problems.push(p));
   noteResidue.notes.forEach((n) => notes.push(n));
 
-  // (g) ⑦ 产物连带闭包（ARTIFACT_BATCH）—— 「新增产物要同批处理的那几处」里**还没人守**的两处
-  //    `artifactRoot` 只给**判别力证明**用（把判据指向夹具 ⇒ 真仓一个字节不动，H3）；
-  //    给了它就不核"实现锚"那一半（夹具里没有门禁脚本，核它只会造自己的假红）。
-  const artifact = analyzeArtifactBatch(o.artifactRoot || ROOT, { skipAnchors: !!o.artifactRoot });
+  // (g) ⑦ 产物连带闭包（ARTIFACT_BATCH）—— 只剩「指过去复用」的**实现锚**那一半
+  //    （`renderer` 入档断言已搬回 G8 ⑦：一处判定只留一份实现，见上面的收口说明）。
+  const artifact = analyzeArtifactBatch(ROOT, COLLATERAL);
   artifact.problems.forEach((p) => problems.push(p));
   artifact.notes.forEach((n) => notes.push(n));
 
@@ -393,126 +397,49 @@ function analyze(opts) {
 }
 
 /* ===============================================================
- * ⑦ 产物连带闭包（ARTIFACT_BATCH）—— 「新增产物要同批处理的那几处」里**没有人守**的那两处
+ * ⑦ 产物连带闭包（ARTIFACT_BATCH）—— 本表里"指过去复用"的**实现锚**
  * ---------------------------------------------------------------
  * 为什么需要（与 `G-16` 同一个缺口，先读清楚再动手）：
  *   R5「改动即连带」讲的是"某功能**如何被使用**变了 ⇒ 同批列出受影响面逐个核对"。
  *   它里面**可以机械化的那一半**是："**新增/改动一件产物**时，那几处登记面必须同批跟着动"。
- *   本批把这 6 处**逐处量过**（做法与读数见 `.review/20261020-门禁B/README.md`：镜像副本上
+ *   那一批把这 6 处**逐处量过**（做法与读数见 `.review/20261020-门禁B/README.md`：镜像副本上
  *   逐个注入"只加文件、什么都不登记"，看哪条门禁变红），结论是 **4 处已有人守、2 处没有**：
  *     ① 架构登记面（`§2.1/§2.3/§2.6` 代码文件 / `§5` 受管文档）→ G8 ⑦⑬ ✓
  *     ② 生成物重生成（`docs/CLI.md` / `docs/VERIFY.md` / `§5` 表）→ G7 / G8 ⑬ ✓
  *     ③ 第一屏导航（`SKILL.md`）→ G8 ⑩ ✓
  *     ④ 真值计数（`docs/VERIFY.md`）→ G6 ✓
  *     ⑤ 断言注册面索引 / 门禁声明↔挂链 → S2 的 `SMOKE_INDEX` / G3 的 `verify-budget` 双向 ✓
- *     ⑥ **`renderer/` 模块入档** → **实测没有任何门禁**（变体 F：往 `renderer/` 放一个新文件、
+ *     ⑥ **`renderer/` 模块入档** → 实测当时**没有任何门禁**（变体 F：往 `renderer/` 放一个新文件、
  *        什么都不登记 ⇒ 8 条廉价门禁**全绿、连一行都没点名它**）✗
+ *   ⇒ **第 ⑥ 处已经收口（2026-10-20，门禁B2）**：`renderer` 已进 G8 ⑦ 的 `COVERED_DIRS`，
+ *   §2.1 的存量 2 件（`app-bindings.js` / `app-md.js`）已登记 —— 本门禁当时那条**临时兜底**
+ *   （自建的 `renderer` 登记断言 + 封闭欠账册）**连同欠账册一起删掉**，连带表里那一行改成
+ *   `role:'gate'` **指过去复用 G8 ⑦**（与 `script-or-gate` 那一行同形）。为什么必须删：
+ *   同一件事两份实现时，G8 那份改了名/收了口径，这里那份不会跟着动 —— 那就是"两个答案"。
+ *   接住没接住的**两方向读数**：`.review/20261020-门禁B2/proof-g8-renderer.js`
+ *   （不登记 ⇒ G8 红且点名 / 登记 ⇒ 绿，都带 exit code）。
  *   另外发现一处**形态更隐蔽**的缺口：本表里 `role: 'gate'` 的那些"指过去复用"，原先只校验
  *   "**那个门禁挂在链上**"—— 而**那条判定**可以被人删掉/改名，表却还在说"有人守"（空头承诺，
  *   与 `CHECKS` 那半边已经修过的 `self` 角色是**同一个病**）。⇒ 本判定要求每一处都写
  *   `anchor = '<脚本>#<标识符>'`，并核那个标识符真的在被指门禁的源码里。
  *
- * 判定（`--list` 现场取逐条读数）：
- *   ① `renderer/*.js` 每一个都必须被 `docs/ARCHITECTURE.md` 提到（口径与 G8 ⑦ 同形：文件名整串
- *      或去掉 `.js` 的名字出现即算登记）；存量 2 件在册（封闭欠账册，三条机械判定见下），
- *      **修好忘销账**或**册上文件已不存在**都判红；
- *   ② 本表里每一处 `role:'gate'` 必须带 `anchor`，且锚的文件存在、标识符在文件里出现。
+ * 判定（`--list` 现场取逐条读数）：本表里每一处 `role:'gate'` 必须带 `anchor`，
+ *   且锚的文件存在、那个标识符在文件里出现（**这是本判据现在唯一的断言**）。
  *
  * 边界（诚实标注）：
- *   · 它核的是"**登记面有没有提到它**"，核不了"提到得对不对"（§2.1 那行写的是什么，是人的判断）；
- *   · 锚只证明"那个标识符还在"，**证明不了那条判定还成立**（判定的语义正确性仍靠 G8 自己的单测）；
+ *   · 锚只证明"那个标识符还在"，**证明不了那条判定还成立**（判定的语义正确性仍靠各门禁自己的单测）；
  *   · **CHANGELOG 那一处仍是残差**：全仓没有任何门禁要求新增产物写一行变更记录（`R2` 是铁律，
  *     不是门禁）。本判定不碰它，如实留在表里当 `residual`。
  * =============================================================== */
-/** 欠账册：本判据上线那一刻的存量（封闭，只减不增；每条 why / close）。键 = `目录/文件名`。 */
-const ARTIFACT_BATCH_DEBT = [
-  { rel: 'renderer/app-bindings.js',
-    why: '渲染层的绑定模块，从上线起就没进过 `docs/ARCHITECTURE.md` §2.1 —— 而 G8 ⑦ 的扫描面只有 '
-      + '`src` / `cli/commands` / `scripts`，所以从来没有门禁发现它',
-    close: '在 §2.1 渲染层模块表补一行（职责 + 依赖方向）；本批不许写 `docs/**`，故在册' },
-  { rel: 'renderer/app-md.js',
-    why: '同类：渲染层模块未登记，且落在 G8 ⑦ 的扫描面之外',
-    close: '在 §2.1 渲染层模块表补一行；本批不许写 `docs/**`，故在册' }
-];
-
-/** 本判据直接断言的目录（**只列 G8 ⑦ 扫不到的那些** —— 已机制化的指过去复用，不重做） */
-const ARTIFACT_BATCH_DIRS = [{ dir: 'renderer', what: '渲染层模块' }];
-
-/** `docs/ARCHITECTURE.md` 里有没有提到这个文件？
- *  口径 = **整串文件名**，或**去掉 `.js` 的名字带词边界**（允许散文里只写 "`app-view`"）。
- *  ⚠️ 为什么必须带词边界：裸 `includes(base)` 会把 `app-z` 判成"已登记"，因为它出现在
- *  `app-z2.js` 里 —— 那是**假绿**（实测：单测里把注入点挪一个字符，判据照样绿）。
- *  边界字符集 = `[A-Za-z0-9_-]`（文件名字母表），两侧都不许接这些字符。 */
-function archMentionsModule(arch, fileName) {
-  const text = String(arch);
-  if (text.indexOf(fileName) >= 0) return true;
-  const base = fileName.replace(/\.js$/i, '');
-  const esc = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp('(^|[^A-Za-z0-9_\\-])' + esc + '([^A-Za-z0-9_\\-]|$)').test(text);
-}
-
-function analyzeArtifactBatch(rootDir, opts) {
-  const o = opts || {};
+/** ⑦ 的判定本体：本表里每一处「指过去复用」都要有可核的实现锚。
+ *  ① `renderer` 入档断言已**搬回 G8**（见上面的收口说明）—— 本函数不再自己扫登记面，
+ *  免得同一件事留两份实现（`§5`「同一份事实只写一处」的同一条）。
+ *  @param {string} [rootDir] 工程根（锚里的脚本路径按它解析）
+ *  @param {Array} [table] 连带表（默认真表 `COLLATERAL`；单测可喂假表把判定单独打红） */
+function analyzeArtifactBatch(rootDir, table) {
   const root = path.resolve(rootDir || ROOT);
-  const problems = [];
-  const notes = [];
-  const debt = o.debt || ARTIFACT_BATCH_DEBT;
-  const dirs = o.dirs || ARTIFACT_BATCH_DIRS;
-
-  /* ---- ① 产物 → 登记面（只补 G8 ⑦ 的扫描面覆盖不到的目录） ---- */
-  const archAbs = path.join(root, 'docs', 'ARCHITECTURE.md');
-  let arch = null;
-  if (!fs.existsSync(archAbs)) {
-    // 采不到真值 = 红（`A5`）：不许把"读不到架构文档"读成"没有未登记的产物"
-    problems.push({ kind: 'artifact', msg: '读不到 `docs/ARCHITECTURE.md`（扫描根：' + root
-      + '）⇒ 采不到真值 = 红（`A5`）—— 本判据不能自称已校验' });
-  } else {
-    arch = fs.readFileSync(archAbs, 'utf8');
-  }
-  const seen = [];
-  if (arch !== null) {
-    dirs.forEach(({ dir, what }) => {
-      const abs = path.join(root, dir);
-      if (!fs.existsSync(abs)) return;
-      const files = fs.readdirSync(abs).filter((f) => /\.js$/i.test(f)).sort();
-      files.forEach((f) => {
-        const rel = dir + '/' + f;
-        const inBook = debt.some((d) => d.rel === rel);
-        const registered = archMentionsModule(arch, f);
-        seen.push(rel);
-        if (registered) {
-          if (inBook) {
-            problems.push({ kind: 'artifact-debt', msg: '`' + rel + '` 已经在 `docs/ARCHITECTURE.md` 里登记了，'
-              + '但欠账册上还留着它 —— **修好忘销账**（`ARTIFACT_BATCH_DEBT` 只减不增，销账要和修好同批）' });
-          }
-          return;
-        }
-        if (inBook) return;                          // 在册欠账：放过（输出里可见）
-        problems.push({ kind: 'artifact', msg: '`' + rel + '` 没有被 `docs/ARCHITECTURE.md` 提到 —— '
-          + what + '里的这个文件，新接手的 AI 靠 §2 认识代码结构；新增产物要**同批**登记（§2.1 表）。'
-          + '⚠️ 这一处正是 G8 ⑦ 扫描面的缺口（`COVERED_DIRS` 不含 `renderer`）' });
-      });
-    });
-    debt.forEach((d) => {
-      if (!fs.existsSync(path.join(root, d.rel))) {
-        problems.push({ kind: 'artifact-debt', msg: '欠账册上的 `' + d.rel
-          + '` 已不存在（悬挂登记）—— 删/改文件名时请同批销账' });
-      }
-    });
-    const inBookNow = debt.filter((d) => seen.indexOf(d.rel) >= 0 && !arch.includes(path.posix.basename(d.rel)));
-    notes.push('产物连带 · 登记面：`' + dirs.map((d) => d.dir).join('` / `') + '` 下 ' + seen.length
-      + ' 个文件中有 ' + (debt.length ? inBookNow.length : 0) + ' 件未登记（在册欠账 ' + debt.length + '）'
-      + '；其余目录已由 G8 ⑦ 守着（指过去复用，不重做）');
-  }
-
-  /* ---- ② 「指过去复用」不许是空头承诺：每一处 gate 都要带实现锚 ---- */
-  if (!o.skipAnchors) {
-    const anchorRes = checkGateAnchors(root, COLLATERAL);
-    anchorRes.problems.forEach((p) => problems.push(p));
-    notes.push(anchorRes.note);
-  }
-
-  return { problems, notes, debt: debt, dirs: dirs, seen: seen };
+  const anchorRes = checkGateAnchors(root, table || COLLATERAL);
+  return { problems: anchorRes.problems.slice(), notes: [anchorRes.note] };
 }
 
 /**
@@ -2271,13 +2198,12 @@ function main() {
   // `--note-root=<dir>`：**只影响判定 ⑥ 的扫描根**（把同一份判据指向夹具 / `%TEMP%` 副本用 ⇒ 真仓一个字节不动；
   // 不加这个开关时输出与从前逐字节相同 —— H3：新能力走 opt-in 开关，不给默认路径加成本）。
   const noteRootArg = (process.argv.slice(2).find((a) => a.startsWith('--note-root=')) || '').slice(12);
-  // `--art-root=<dir>`：**只影响判定 ⑦ 的扫描根**（判别力证明把"新增一个渲染层模块"注入夹具用 ⇒
-  // 真仓一个字节不动）。给了它就不核"实现锚"那一半（夹具里没有门禁脚本）。
-  const artRootArg = (process.argv.slice(2).find((a) => a.startsWith('--art-root=')) || '').slice(11);
+  // ⚠️ 判定 ⑦ 的 `--art-root=<dir>` 已随它那一半断言（`renderer` 入档）**一起删掉**（2026-10-20，门禁B2）：
+  // 那个开关的全部用途是"把'新增一个渲染层模块'注入夹具"，而那条断言已搬回 G8。
+  // 留着一个只能"关掉判定"的开关，比没有更坏。
   const opts = {};
   if (rootArg) opts.writeOutletRoot = path.resolve(rootArg);
   if (noteRootArg) opts.noteResidueRoot = path.resolve(noteRootArg);
-  if (artRootArg) opts.artifactRoot = path.resolve(artRootArg);
   const r = analyze(opts);
 
   if (list) {
@@ -2377,20 +2303,14 @@ function main() {
     });
     console.log('');
     console.log('== ⑦ 产物连带闭包（ARTIFACT_BATCH）==');
-    console.log('  断言① 登记面：');
-    r.artifact.dirs.forEach((d) => console.log('    · ' + d.dir + '/（' + d.what + '）—— '
-      + 'G8 ⑦ 的扫描面**不含**这个目录 ⇒ 由本判据直接断言'));
-    console.log('  断言② 实现锚（每一处「指过去复用」的 `<脚本>#<标识符>`）：');
+    console.log('  判定：本表每一处「指过去复用」的实现锚（`<脚本>#<标识符>`）都要核得到 ——');
     COLLATERAL.forEach((row) => row.places.forEach((p) => {
       if (p.role !== 'gate') return;
       console.log('    · [' + row.id + '] ' + p.at + ' → ' + p.gate + '  anchor=' + (p.anchor || '**缺**'));
     }));
-    console.log('  欠账册（封闭，只减不增）：' + r.artifact.debt.length + ' 条');
-    r.artifact.debt.forEach((e) => {
-      console.log('  · ' + e.rel);
-      console.log('      why  ：' + e.why);
-      console.log('      close：' + e.close);
-    });
+    // 原来这里还有"断言① 登记面 / 欠账册"两段输出。**已删**：`renderer` 入档断言搬回 G8 ⑦，
+    // 连带表里那一行改成 `role:'gate'` 指过去复用（收口说明见文件上部 ⑦ 的头注）。
+    // 输出也是契约（D1）：删掉一整类读数要写在这里，别让后来者以为"漏了"。
     return;
   }
 
@@ -2429,12 +2349,11 @@ module.exports = {
   // 第 6 条规则（`tag-in-code`）：判据本体 + 它认的两组标签表（单测直接喂字符串）
   scanEmphasisInCode, noteBlankComments, NOTE_CODE_TAGS, NOTE_EMPHASIS_TAGS, NOTE_OTHER_INLINE_TAGS,
   makeExemptMatcher,
-  // ⑦ 产物连带闭包（ARTIFACT_BATCH）：登记面欠账册 + 目录面 + 判定本体（别在别处再写一份）
-  ARTIFACT_BATCH_DEBT, ARTIFACT_BATCH_DIRS, analyzeArtifactBatch,
-  // ⑦ 断言② 的判定本体（吃一份表 + 一个根目录 ⇒ 单测能直接喂假表打红它）
-  checkGateAnchors,
-  // ⑦ 断言① 的登记口径（整串文件名 / 带词边界的基础名 —— 裸 `includes` 会造假绿）
-  archMentionsModule
+  // ⑦ 产物连带闭包（ARTIFACT_BATCH）：判定本体（吃一个根 + 一份表 ⇒ 单测能直接喂假表打红它）。
+  // ⚠️ 登记面那半边（欠账册 / 目录面 / `archMentionsModule`）已随断言①搬回 G8 而**删掉**（2026-10-20，门禁B2）
+  analyzeArtifactBatch,
+  // ⑦ 的判定本体（吃一份表 + 一个根目录 ⇒ 单测能直接喂假表打红它）
+  checkGateAnchors
 };
 
 if (require.main === module) main();
