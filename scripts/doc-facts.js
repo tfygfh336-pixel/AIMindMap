@@ -11,6 +11,8 @@
  *   node scripts/doc-facts.js          打印权威事实（人/文档引用）
  *   node scripts/doc-facts.js --check  扫描全部 .md，与真值比对；不一致则 exit 1
  *   node scripts/doc-facts.js --write  生成 docs/VERIFY.md（验证基线单源）
+ *   node scripts/doc-facts.js --vocab  门禁 S4：`docs/TAGS.md` 的适用范围 ↔ 真实 projects 的标签
+ *                                     （判据本体在 `tags --vocab`，本脚本定扫描面并翻成 exit code）
  *
  * --check 已接入 `npm run verify` 末端：任何未来的文档数字漂移会在 verify 阶段
  * 直接变红，而不是靠人自觉维护。
@@ -927,8 +929,322 @@ function checkGeneratedDocs(v, fail) {
   });
 }
 
+/* ================================================================================
+ * 第八类：**标签词表契约**（门禁 `S4`）—— `docs/TAGS.md` 的适用范围 ↔ 真实 `projects/`
+ * --------------------------------------------------------------------------------
+ * 它守的那件事（两处真实缺口，都是 `W5` 批留给下一个人的）：
+ *   ① **`docs/TAGS.md` 曾有"范围"却不可机械读**：标题写「7 本书共用词表」，正文没有一句说
+ *      "其它项目不受约束" ⇒ 任何"扫全库"的判据都会把 `comnet` 的 12 个自有标签
+ *      （`协议` / `机制` / `概念` / …）读成"不在词表内"。而它们**不是越界**，是**另一份词表**。
+ *   ② **词表体检脚本住在 `.review/` 里**（`…/tools/check-vocab.js --real`）⇒ 不进链、不会被跑，
+ *      与"没建"等价（`testing-for-ai` D1：声明了却没人核 = 腐坏源）。
+ *
+ * 判据 = `docs/TAGS.md` 里那三条**已有的**（本文件不新造口径，逐字照 §8 判据①与 §4 的闭集）：
+ *   ⓐ **闭集**：出现的标签必须都在 §4 的标签表里；
+ *   ⓑ **落点下限**：≥5 个节点，或 ≥3 且 §4 该行写明「门面特性」；
+ *   ⓒ **词表空转**：§4 有、扫描面 0 落点。
+ * 三条的**实现只有一处** —— `cli/commands/project.js` 的 `tags --vocab`（它读 `cli/core.js` 的
+ * `readTagVocabulary` / `TAG_FLOOR` / `TAG_FLOOR_FACADE`）。本门禁**不重写判定**：
+ * 它做的是**定扫描面**（按 `docs/TAGS.md` 的「适用范围」节，见下）+ **把结论翻成 exit code**。
+ * 为什么这样分工（而不是在这里重数一遍标签）：同一件事两处实现必然漂，而"哪些标签合法、下限是几"
+ * 是**契约**，不是本门禁的判断 —— `W5` 批把判据落在命令面上，这一批只给它装牙齿。
+ *
+ * ## 扫描面的唯一来源 = `docs/TAGS.md` 的「适用范围」节（`SCOPE_*`）
+ * **只判清单里的项目**；清单之外的（`comnet` / `卖点讨论` / `学习链路-7书` …）**一律不判** ——
+ * 这一条不是宽容，是**判据正确性**：把两套词表混在一起判，得到的是一个既不属于甲也不属于乙的结论。
+ *
+ * ## 三档（`B8`：档数不得少于它要区分的状态数；放行理由必须打印）
+ *   ① **判红**：闭集 / 落点下限 / 词表空转 任一条不成立；清单点名的项目在盘上不存在（悬挂）；
+ *      「适用范围」节被删掉或表里一行都没有（**删掉它等于静默关掉本门禁** ⇒ 按红处理，与
+ *      `RE_STEP_CLAIM` 的"字样缺失也判红"同一条纪律）；`tags --vocab --json` 取不到可解析的真值；
+ *      标题的计数声明与清单条数不符。
+ *   ② **只报告**（打印、不判红）：标题里读不到「N 本书共用」这个计数声明 ⇒ 清单条数与标题**未对账**。
+ *      为什么不判红：标题是散文，合法改写不该制造假红；但"没对账"必须看得见，不能当已核对。
+ *   ③ **跳过**：**本门禁没有这一档**，且刻意不留 —— 留了就等于"把清单删空 / 写坏即可关掉门禁"，
+ *      而那正是"跳过伪装成通过"（`A5`）。
+ *
+ * ## 能力边界（诚实标注）
+ *   它**判不了**"标签打得对不对"：一个节点打了语义上错的、但**在 §4 里**的标签，它照样绿
+ *   （那要读内容，属人工判定）；也**判不了**清单之外的任何项目（按定义，它们不受约束）；
+ *   也**判不了** §4 的标签名好不好、命中词是否合理（那是 `docs/TAGS.md` §8 判据②③④的事，
+ *   实现仍在 `.review/20261020-阶段2标签词表/tools/check-vocab.js`，**不在链上**）。
+ * ================================================================================ */
+
+/** 「适用范围」节的标题行。改这个字样 = 改契约（本节唯一权威），必须同批改本文件的解析。 */
+const SCOPE_HEADING_RE = /^##\s*适用范围/;
+/** 表格行第一列是反引号包起来的项目名（**目录名**，逐字）。与 `readTagVocabulary` 同一种读法。 */
+const SCOPE_ROW_RE = /^\|\s*`([^`]+)`\s*\|/;
+/** 标题里的条数声明（`7 本书共用`）。读不到 ⇒ **只报告不判红**（见上面 ②）。 */
+const SCOPE_COUNT_CLAIM_RE = /(\d+)\s*本书共用/;
+/** 两句话必须还在：删掉任一句，这份声明就退化成"约束不明"。字样是判据，改措辞请同批改这里。 */
+const SCOPE_REQUIRED_MARKERS = [
+  { key: '未列出的项目不受约束', why: '删掉这句 ⇒ 读者会以为词表约束全库（正是本门禁要防的那条误读）' },
+  { key: '必须同批复核', why: '删掉这句 ⇒"加项目"看起来只是登记，而它其实是**契约变更**' }
+];
+
+/**
+ * 解析 `docs/TAGS.md` 的「适用范围」节（**纯函数**：字符串进、结构出，零 IO ⇒ 可单测）。
+ * @param {string} md 文档全文
+ * @returns {{ok:true, projects:string[], countClaim:number|null, missingMarkers:string[]}
+ *          |{ok:false, message:string}}
+ */
+function parseTagScope(md) {
+  const lines = String(md || '').split(/\r?\n/);
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (SCOPE_HEADING_RE.test(lines[i])) { start = i; break; }
+  }
+  if (start < 0) {
+    return { ok: false, message: '`docs/TAGS.md` 里找不到「## 适用范围」这一节 —— 本门禁的**扫描面**'
+      + '只有这一个来源，删掉它不等于"词表不再需要判"，而是**静默关掉了一个门禁** ⇒ 按红处理。'
+      + '请把那一节（含清单表与两句声明）写回去。' };
+  }
+  // 节体 = 到下一个 `#` / `##` 标题为止（`###` 与 `####` 属于本节内部，不截断）
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^#{1,2}\s/.test(lines[i])) { end = i; break; }
+  }
+  const body = lines.slice(start + 1, end);
+  const bodyText = body.join('\n');
+  const projects = [];
+  body.forEach((l) => {
+    const m = SCOPE_ROW_RE.exec(l);
+    if (!m) return;
+    const name = m[1].trim();
+    if (name && projects.indexOf(name) < 0) projects.push(name);
+  });
+  if (!projects.length) {
+    return { ok: false, message: '「适用范围」节里解析不出项目清单（表格第一列写成 `` `项目目录名` ``）—— '
+      + '清单为空 = 本门禁**一个项目都不判** ⇒ 那是"关掉"而不是"通过" ⇒ 按红处理。' };
+  }
+  const missingMarkers = SCOPE_REQUIRED_MARKERS
+    .filter((m) => bodyText.indexOf(m.key) < 0)
+    .map((m) => m.key + '（' + m.why + '）');
+  const cm = SCOPE_COUNT_CLAIM_RE.exec(String(md || ''));
+  return {
+    ok: true,
+    projects: projects,
+    countClaim: cm ? Number(cm[1]) : null,
+    missingMarkers: missingMarkers
+  };
+}
+
+/**
+ * 把 `tags --vocab --json` 的结论翻成门禁判定（**纯函数**：输入全是值，零 IO ⇒ 可单测、
+ * 可注入坏输入做判别力证明 —— 与 `decideG5Tier` 同一分工）。
+ * @param {{scopeProjects:string[], countClaim:number|null, missingMarkers:string[],
+ *          payload:object|null, payloadError:string|null,
+ *          existingProjects:(string[]|null), vocabCount:(number|null)}} input
+ * @returns {{ok:boolean, reds:Array<{code:string,msg:string}>, reports:string[],
+ *            outOfVocab:Array<{tag:string,nodes:number}>, belowFloor:Array<object>, unused:string[]}}
+ */
+function judgeVocabContract(input) {
+  const o = input || {};
+  const reds = [];
+  const reports = [];
+  const scope = (o.scopeProjects || []).slice();
+  const red = (code, msg) => reds.push({ code: code, msg: msg });
+  const outOfVocab = [];
+  const belowFloor = [];
+  const unused = [];
+
+  // ---- 0. 清单自己的两句话（删掉 ⇒ 声明退化成"范围不明"）----
+  (o.missingMarkers || []).forEach((m) => { red('scope-marker', '「适用范围」节少了这句声明：' + m); });
+
+  // ---- 1. 标题的计数声明 ↔ 清单条数（读不到 ⇒ 只报告）----
+  if (o.countClaim === null || o.countClaim === undefined) {
+    reports.push('标题里读不到「N 本书共用」这个计数声明 ⇒ 清单条数（' + scope.length
+      + ' 个）与标题**未对账**（不判红：标题是散文；但"没对账"不等于"已核对"）');
+  } else if (o.countClaim !== scope.length) {
+    red('scope-count', '标题声明「' + o.countClaim + ' 本书共用」，而「适用范围」清单里有 '
+      + scope.length + ' 个项目 —— 两者必须一致（删/加一行都要同批改标题）');
+  }
+
+  // ---- 2. 清单点名的项目必须在盘上真实存在（悬挂登记 = 项目改名/删了，清单没跟）----
+  if (o.existingProjects === null || o.existingProjects === undefined) {
+    red('no-truth', '取不到 `projects/` 的项目清单 ⇒ 无法核对「适用范围」里的名字（采不到真值不能当通过）');
+  } else {
+    const missing = scope.filter((n) => o.existingProjects.indexOf(n) < 0);
+    if (missing.length) {
+      red('scope-dangling', '「适用范围」点名的项目在 `projects/` 下不存在：' + missing.join(' / ')
+        + ' · 现有 ' + o.existingProjects.length + ' 个：' + o.existingProjects.join(' / ')
+        + ' ⇒ 名字必须是**目录名**、逐字一致；改名了就要同批改清单');
+    }
+  }
+
+  // ---- 3. 命令面的真值（拿不到就必须红，不许静默当"0 个问题"）----
+  const p = o.payload;
+  if (o.payloadError) {
+    red('no-truth', '取不到词表判据的真值（`tags --vocab --json` 跑不通或输出不是 JSON）：' + o.payloadError);
+  } else if (!p || typeof p !== 'object') {
+    red('no-truth', '取不到词表判据的真值（输出里没有可解析的 JSON 对象）');
+  } else {
+    if (p.ok !== true) red('no-truth', '`tags --vocab` 自己没有成功（`ok` 不是 true）—— 它的报文见上面');
+    if (p.mode !== 'named') {
+      red('no-truth', '`tags --vocab` 的扫描模式是 ' + JSON.stringify(p.mode)
+        + '，不是 `named`（点名项目）—— 判据本来只对点名的那几个项目成立，模式不对 ⇒ 结论不可用');
+    }
+    const got = Array.isArray(p.projects) ? p.projects.slice().sort() : null;
+    const want = scope.slice().sort();
+    if (!got) {
+      red('no-truth', '`tags --vocab` 的输出里没有 `projects` 数组 ⇒ 无法确认它到底扫了哪些项目');
+    } else if (got.join('|') !== want.join('|')) {
+      red('scope-mismatch', '实际扫描面与「适用范围」清单不一致：清单 [' + want.join(' / ')
+        + ']，实扫 [' + got.join(' / ') + '] ⇒ 门禁不能替调用方认定适用范围');
+    }
+    // `--vocab` 的读数：缺了这个对象 = 命令面退化（判据没跑），不是"0 个问题"
+    const v = p.vocab;
+    if (!v || typeof v !== 'object') {
+      red('no-truth', '`tags --vocab` 的输出里没有 `vocab` 判据读数 ⇒ 命令面退化了（判据没跑 ≠ 没有问题）');
+    } else {
+      if (o.vocabCount !== null && o.vocabCount !== undefined && v.count !== o.vocabCount) {
+        red('no-truth', '`tags --vocab` 读到的词表条数（' + v.count + '）与 `cli/core.js` 的 '
+          + '`readTagVocabulary()`（' + o.vocabCount + ' 条）不一致 ⇒ 两份读的不是同一份 §4');
+      }
+      unused.push.apply(unused, Array.isArray(v.unused) ? v.unused.slice() : []);
+      if (Array.isArray(v.belowFloor)) belowFloor.push.apply(belowFloor, v.belowFloor.slice());
+    }
+    // 逐标签的闭集位（`inVocab` 只在 `--vocab` 档出现；缺了 ⇒ 判据没生效）
+    const tags = Array.isArray(p.tags) ? p.tags : [];
+    const missingFlag = tags.filter((t) => !t || t.inVocab === undefined);
+    if (tags.length && missingFlag.length) {
+      red('no-truth', '有 ' + missingFlag.length + ' 个标签缺少 `inVocab` 位 ⇒ `--vocab` 的闭集判据'
+        + '没有生效（不能把"没判"读成"不在册的越界"）');
+    }
+    tags.filter((t) => t && t.inVocab === false)
+      .forEach((t) => outOfVocab.push({ tag: t.tag, nodes: t.nodes }));
+  }
+
+  // ---- 4. 三条判据的收口（读数来自命令面，本处只翻成红/绿）----
+  if (outOfVocab.length) {
+    red('closed-set', '出现了不在 §4 词表内的标签 ' + outOfVocab.length + ' 个：'
+      + outOfVocab.map((t) => t.tag + '(' + t.nodes + ')').join(' / ')
+      + ' ⇒ 要么改用 §4 里的词，要么按 `docs/TAGS.md` §2 第 6 条走新增流程（改词表，不是改数据）');
+  }
+  if (belowFloor.length) {
+    red('floor', '有标签的落点低于下限 ' + belowFloor.length + ' 个：'
+      + belowFloor.map((b) => b.tag + '（' + b.nodes + ' < ' + b.floor + '）').join(' / ')
+      + ' ⇒ 下限 ≥5；§4 该行写明「门面特性」的 ≥3（见 `docs/TAGS.md` §8 ①）');
+  }
+  if (unused.length) {
+    red('unused', '§4 里有 ' + unused.length + ' 个标签在扫描面上 0 落点：' + unused.join(' / ')
+      + ' ⇒ 词表在空转（要么数据没打到，要么该从 §4 删掉）');
+  }
+  return {
+    ok: reds.length === 0, reds: reds, reports: reports,
+    outOfVocab: outOfVocab, belowFloor: belowFloor, unused: unused
+  };
+}
+
+/** 真值出口的默认实现（**惰性 require**：不给 `--vocab` 时一个字节都不加载 CLI；理由见文件头）。 */
+function defaultVocabInvoke(argv) {
+  return require(path.join(ROOT, 'cli', 'main.js')).invokeSync(argv);
+}
+function defaultProjectsDir() {
+  return require(path.join(ROOT, 'cli', 'core.js')).PROJECTS_DIR;
+}
+function defaultVocabCount() {
+  const v = require(path.join(ROOT, 'cli', 'core.js')).readTagVocabulary();
+  return v && v.ok ? v.items.length : null;
+}
+
+/**
+ * 跑一遍门禁（I/O 只在这里，判定在 `judgeVocabContract`）。打印 + 返回是否通过。
+ * @param {{readText?:Function, invoke?:Function, projectsDir?:string, listProjects?:Function,
+ *          vocabCount?:number|null, mdText?:string}} [opts] 全部可注入 ⇒ 判别力证明与单测都不碰真仓
+ */
+function runVocabGate(opts) {
+  const o = opts || {};
+  const readText = o.readText || ((abs) => fs.readFileSync(abs, 'utf8'));
+  const invoke = o.invoke || defaultVocabInvoke;
+  const projectsDir = o.projectsDir || defaultProjectsDir();
+  const listProjects = o.listProjects || ((dir) => fs.readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && !String(e.name).startsWith('.'))
+    .map((e) => e.name).sort());
+
+  console.log('== 词表契约（S4）== `docs/TAGS.md` 的适用范围 ↔ 真实 `projects/`');
+  let md = o.mdText;
+  if (md === undefined) {
+    try { md = readText(path.join(ROOT, 'docs', 'TAGS.md')); }
+    catch (e) {
+      console.error('✗ 读不到 `docs/TAGS.md`（' + ((e && e.message) || e) + '）—— '
+        + '适用范围与 §4 闭集都以它为准，没有它就不给结论');
+      return false;
+    }
+  }
+  const scope = parseTagScope(md);
+  if (!scope.ok) {
+    console.error('✗ ' + scope.message);
+    return false;
+  }
+  let existingProjects = null;
+  try { existingProjects = listProjects(projectsDir); }
+  catch (e) { existingProjects = null; }
+
+  let payload = null;
+  let payloadError = null;
+  const argv = ['tags'].concat(scope.projects, ['--vocab', '--json']);
+  try {
+    const r = invoke(argv);
+    if (r && r.code !== 0) {
+      payloadError = '`tags --vocab --json` exit ' + r.code + '：'
+        + String((r.stdout || '') + (r.stderr || '')).trim().split('\n').slice(0, 2).join(' / ');
+    } else {
+      try { payload = JSON.parse(String(r && r.stdout || '')); }
+      catch (e) { payloadError = '输出不是 JSON（' + ((e && e.message) || e) + '）：'
+        + String(r && r.stdout || '').slice(0, 160); }
+    }
+  } catch (e) { payloadError = '进程内调用失败：' + ((e && e.message) || e); }
+
+  let vocabCount = null;
+  if (o.vocabCount !== undefined) vocabCount = o.vocabCount;
+  else { try { vocabCount = defaultVocabCount(); } catch (e) { vocabCount = null; } }
+
+  console.log('  扫描面（唯一来源 = `docs/TAGS.md` 的「适用范围」节）：' + scope.projects.length
+    + ' 个项目 —— ' + scope.projects.join(' / '));
+  const outside = (existingProjects || []).filter((n) => scope.projects.indexOf(n) < 0);
+  console.log('  **不判**的项目（范围之外，按定义不受约束）：'
+    + (outside.length ? outside.length + ' 个 —— ' + outside.join(' / ') : '（没有其它项目）'));
+
+  const v = judgeVocabContract({
+    scopeProjects: scope.projects, countClaim: scope.countClaim,
+    missingMarkers: scope.missingMarkers, payload: payload, payloadError: payloadError,
+    existingProjects: existingProjects, vocabCount: vocabCount
+  });
+
+  // 读数：通过时也要打印，否则"判了几件事"看不出（只报结论的话，读者分不出"过"与"没判"）
+  console.log('  闭合集：§4 的 ' + (payload && payload.vocab ? payload.vocab.count : '?')
+    + ' 个标签 · 越界 ' + v.outOfVocab.length + ' 个');
+  console.log('  落点下限：低于下限 ' + v.belowFloor.length + ' 个');
+  console.log('  词表空转：§4 有、0 落点 ' + v.unused.length + ' 个');
+  v.reports.forEach((m) => console.log('  ⚠️ 只报告（不判红）：' + m));
+  console.log('  （跳过：本门禁**没有**这一档 —— 清单删空/节被删都按红处理，'
+    + '否则"删掉声明"就能关掉门禁）');
+
+  if (!v.ok) {
+    console.error('✗ 词表契约不成立（' + v.reds.length + ' 条）：');
+    v.reds.forEach((r) => console.error('   · [' + r.code + '] ' + r.msg));
+    console.error('   出路：① 标签超出闭集 ⇒ 改用 §4 的词，或按 §2 第 6 条改词表（改词表要同批改数据）；'
+      + '② 落点不足 ⇒ 并回父标签，或按 §8 ① 的放宽口径在 §4 该行写明「门面特性」；'
+      + '③ 项目在清单里但盘上没有 ⇒ 改清单或改目录名（逐字一致）。'
+      + '④ 判据本身的来源是 `node cli/mm-cli.js tags <项目…> --vocab`。');
+    return false;
+  }
+  console.log('✓ 词表契约成立：适用范围里的 ' + scope.projects.length + ' 个项目的标签全部落在 §4，'
+    + '且 §4 的每个标签都有落点');
+  return true;
+}
+
 function main() {
   const args = process.argv.slice(2);
+  /* `--vocab`（门禁 `S4`）：必须放在 `facts()` **之前** —— `facts()` 会真跑一遍 vitest（几十秒），
+   * 而词表判据只要 40ms 量级（实测：7 本书的 `tags --vocab` 进程内 43ms）。
+   * 与 `--check` 分开（不并进去）的理由：两者的**扫描面**不同 —— `--check` 扫全部 markdown 里的
+   * 数字，`--vocab` 扫**清单里的项目**的标签；并成一个 exit code 就没法单独说明是哪一半红。 */
+  if (args.includes('--vocab')) {
+    if (!runVocabGate()) process.exitCode = 1;
+    return;
+  }
   // `--fact-list`：打印「真值出口」事实表与封闭欠账册（**只看不判**，恒 exit 0 —— 打印档不是判据，
   // 见 `R1c`）。与 `--check` 分开是为了让"这条判据到底认哪些事实"永远可当场取到，而不是去读源码。
   if (args.includes('--fact-list')) {
@@ -1386,5 +1702,7 @@ module.exports = {
   // 第七类：验证链「总预算」的手写数字（真值 = `verifyChain.TOTAL_BUDGET_MS`；纯函数单独导出便于单测）
   budgetReadingsInLine, budgetVerdict, scanBudgetText, scanBudgetClaims, BUDGET_ANCHOR,
   // 报告型读数（**不判红**）：`%TEMP%/mm-*` 残留 —— 谁造的判不了，故只有打印（`--temp-report`）
-  tempResidueReport, printTempResidue, TEMP_REPORT_PREFIX, TEMP_REPORT_OLD_MS
+  tempResidueReport, printTempResidue, TEMP_REPORT_PREFIX, TEMP_REPORT_OLD_MS,
+  // 第八类（门禁 `S4`）：标签词表契约 —— 解析「适用范围」与判定**分开**，两半都可注入做判别力证明
+  SCOPE_HEADING_RE, SCOPE_REQUIRED_MARKERS, parseTagScope, judgeVocabContract, runVocabGate
 };

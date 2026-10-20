@@ -16,7 +16,7 @@
  *      记着这个坑。inherit 还顺带让子步骤的输出**实时**可见（而不是跑完才吐）。
  *   ② 预算 = **止涨线**，不是性能目标。⚠️ 它**不是"实测的 2–3 倍"** —— 本文件原先这么写，
  *      实测不成立（本批订正）：倍数**按两类来源定，且每步都不一样**：
- *        · **廉价门禁**（G1/G6/G8/G9/V1/V2/S1/S2/S3/G2）取整档 10 / 15 / 20 s，而实测只有 0.1–3 s
+ *        · **廉价门禁**（G1/G6/G8/G9/V1/V2/S1/S2/S3/S4/G2）取整档 10 / 15 / 20 s，而实测只有 0.1–3 s
  *          ⇒ 实际远大于 2 倍（这类步骤的预算是"廉价档"的取整，不是对实测乘一个倍数）；
  *        · **昂贵步骤**（G3 / G4 / G5）由 `tests/verify-budget.test.js` 的余量守卫定：
  *          **预算 ≥ 1.25 × 窗口（最近 10 次）的 median** ⇒ 实际倍数只有 **1.25–1.43**。
@@ -51,7 +51,7 @@ const ROOT = path.resolve(__dirname, '..');
  *   （`node scripts/determinism-check.js --list`）。**判定**：标注缺了、或标注没点名产物，都会判红。
  * ================================================================ */
 
-/** 第 4 步额外产出的用例数（供第 6 步取用，省掉它重跑一次 vitest）。
+/** G3 额外产出的用例数（供 G6 取用，省掉它重跑一次 vitest）。
  *  落在 `.review/` —— 工程既定的**工作产物区**（已 gitignore，G8 豁免）。 */
 const TEST_RESULTS = '.review/verify-tests.json';
 
@@ -591,8 +591,29 @@ const STEPS = [
     budgetMs: 10000
   },
   {
-    step: 9, gate: 'G3', label: '单元测试',
-    // 与 `npm test` 等价，**外加** JSON reporter：把用例数交给第 10 步（doc-facts），
+    /* 【2026-10-20 词表门禁批新增】为什么它必须**在链上**而不是留在 `.review/`：
+     * `W5` 批交付 `tags --vocab` 时只给了**命令面出口**（只读命令不该判红），于是
+     * 「§4 的标签是闭集、多一个都不许」这句话过去**只有口头承诺** —— 体检脚本住在
+     * `.review/20261020-阶段2标签词表/tools/check-vocab.js`，不进链、不会被跑，与"没建"等价。
+     * 判据本身**不在这里**：闭集 / 落点下限 / 词表空转三条的唯一实现在 `tags --vocab`
+     * （它读 `cli/core.js` 的 `readTagVocabulary` / `TAG_FLOOR` / `TAG_FLOOR_FACADE`）；
+     * 本步（`scripts/doc-facts.js --vocab`）只做两件事：**按 `docs/TAGS.md` 的「适用范围」节定扫描面**
+     * （只判清单里的项目 ⇒ `comnet` 那套自有标签**不算越界**）+ **把结论翻成 exit code**。
+     * 位置：与 S1/S2/S3 同档（纯读文本 + 读 7 份项目 JSON，实测 40ms 量级）⇒ 排在昂贵步骤之前，
+     * 红了就能立刻回头改，而不是付完二十几分钟冒烟才看到。 */
+    step: 9, gate: 'S4', label: '标签词表契约',
+    cmd: 'node scripts/doc-facts.js --vocab', shown: '`node scripts/doc-facts.js --vocab`',
+    covers: '**标签词表契约**：`docs/TAGS.md` 的「适用范围」清单（**扫描面的唯一来源**）↔ 真实 `projects/` —— '
+      + '三条判据照 `docs/TAGS.md` §8 ① 与 §4，**不新造**：**闭集**（出现的标签必须都在 §4 的词表里）· '
+      + '**落点下限**（≥5 个节点，或 ≥3 且 §4 该行写明「门面特性」）· **词表空转**（§4 有、扫描面 0 落点）。'
+      + '**范围之外的项目一律不判**（实测：`comnet` 用的那套标签 —— `协议`/`机制`/`概念`… —— 是**另一份词表**，'
+      + '不是越界）⇒ 这是本步与"扫全库"判据的**全部区别**。它**判不了**"标签打得对不对"',
+    // 纯读：`docs/TAGS.md` 解析 + 进一次 `tags --vocab --json`（进程内，实测 43ms / 7 本书）⇒ 10 s 档
+    budgetMs: 10000
+  },
+  {
+    step: 10, gate: 'G3', label: '单元测试',
+    // 与 `npm test` 等价，**外加** JSON reporter：把用例数交给 G6（doc-facts），
     // 于是整条链只需要跑**一次** vitest（以前 doc-facts 会再跑一次：慢约 5 s，
     // 而且正是那一次在负载高时偶发取不到真值、把 G6 判红）。
     // `--reporter=default` 保留人看的输出，故这一步的观感与 `npm test` 一致。
@@ -627,22 +648,22 @@ const STEPS = [
     resultsFile: TEST_RESULTS
   },
   {
-    step: 10, gate: 'G6', label: '文档数字与版本一致',
+    step: 11, gate: 'G6', label: '文档数字与版本一致',
     cmd: 'node scripts/doc-facts.js --check', shown: '`node scripts/doc-facts.js --check`',
     covers: '文档数字与真值一致（含**第一屏 `SKILL.md` 自报的验证链步骤数** == `STEPS.length`）、版本号四处一致',
     // 20 s：正常情况（采用链上用例数）约 0.7 s；**交接失效退化为自跑 vitest 时约 9.2 s**
     // 仍容得下，但更严重的退化会被抓住。
     budgetMs: 20000,
-    useUnitTests: true // 由第 9 步（G3）传入用例数，省掉这里的 vitest 重跑
+    useUnitTests: true // 由 G3 传入用例数，省掉这里的 vitest 重跑
   },
   {
-    step: 11, gate: 'G7', label: '生成物未过期',
+    step: 12, gate: 'G7', label: '生成物未过期',
     cmd: null, shown: '同上（重算比对）',
     covers: '生成物是否过期（`docs/CLI.md` 与 registry 一致）',
     budgetMs: 0 // 与 G6 同一次调用，单独不占预算
   },
   {
-    step: 12, gate: 'G4', label: 'CLI 集成断言',
+    step: 13, gate: 'G4', label: 'CLI 集成断言',
     cmd: 'node scripts/cli-integration.js', shown: '`node scripts/cli-integration.js`',
     covers: '全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理）',
     // 预算调整史（每次都带实测依据 ✓）：
@@ -658,13 +679,13 @@ const STEPS = [
     budgetMs: 60000
   },
   {
-    step: 13, gate: 'G2', label: '数据校验',
+    step: 14, gate: 'G2', label: '数据校验',
     cmd: 'node cli/mm-cli.js validate-all', shown: '`node cli/mm-cli.js validate-all`',
     covers: '全部项目结构 + 悬挂链接 + 环',
     budgetMs: 15000
   },
   {
-    step: 14, gate: 'G5', label: '冒烟（Electron 无头）',
+    step: 15, gate: 'G5', label: '冒烟（Electron 无头）',
     cmd: 'npm run smoke', shown: '`npm run smoke`',
     covers: '渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**；'
       + '**分两档**（定档 = `scripts/verify.js` 的 `decideG5Tier`；名单与域数/断言数的**现算值** = '
@@ -1024,7 +1045,7 @@ function printOverBudget(chk, opts) {
 function main() {
   const results = [];
   let failed = null;
-  let unitTestsFromChain = null; // 第 4 步产出、交给第 6 步（省一次 vitest 重跑）
+  let unitTestsFromChain = null; // G3 产出、交给 G6（省一次 vitest 重跑）
 
   console.log('== 验证链（npm run verify）==');
   // 交接面留痕（读）：新接手的 AI 最想知道的一件事是"上一次全链到底绿没绿"
@@ -1311,8 +1332,8 @@ function main() {
     if (resFile) {
       unitTestsFromChain = readUnitTests(resFile);
       console.log(unitTestsFromChain === null
-        ? '   （未能读到用例数 —— 第 6 步会自己再跑一次 vitest，属可接受的降级）'
-        : '   （用例数 ' + unitTestsFromChain + '，已交给步骤 5（G6），省去重跑一次 vitest）');
+        ? '   （未能读到用例数 —— G6 会自己再跑一次 vitest，属可接受的降级）'
+        : '   （用例数 ' + unitTestsFromChain + '，已交给 G6（doc-facts），省去重跑一次 vitest）');
     }
     console.log('');
     if (code !== 0) { failed = { step: s, code }; break; } // 与原 `&&` 链一致：首败即停
