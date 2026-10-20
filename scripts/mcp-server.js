@@ -275,6 +275,38 @@ const TOOLS = [
   }, ['project']),
   // ---- 缺口补齐结束 ----
 
+  /* ---- 【W21】`ask_apply`：`ask-apply` 的 MCP 透传（台账 `W21` 的"工具面"那半）----
+   * 为什么必须有它：`ask-apply` 是界面「写入本节点详情 / 新建子节点」两个按钮的**唯一写盘出口**，
+   * 而它此前**只在 CLI 有**（本批之前 MCP 的 51 个工具里没有它）⇒ 走 MCP 的 AI（侧栏 / 外部 agent）
+   * 只能看到"问出了答案"，没办法把答案**落进节点**。
+   * 它的 "apply" 是**写盘**不是渲染（一次 `ctx.mutate`：`qa` 记录 + `detail` 末尾 + 可选子节点，
+   * 见 `cli/commands/qa.js`）⇒ 本工具挂在 `DRY_RUN_TOOL_CMD` 里（`dry_run:true` 先审再写）。
+   * 判定一条都不复制：空回答的响亮拒绝、幂等、子节点 id 冲突、`--at` 语义全在 CLI 那一处
+   * ⇒ 所以 `required` 只写 `project` / `id`，**不写 answer**（空答案由 CLI 判成业务失败，
+   * 而不是被这里判成"参数缺了"那种协议错误；`answer_file` 那条路也不会被 required 挡住）。
+   */
+  T('ask_apply', '把一次 AI 问答**落进节点**（透传 CLI `ask-apply`）—— 一次原子写完成三件事：'
+    + '① 追加问答记录 `qa`（`{q,a,at,model?}`，**追加不覆盖**；完全相同的条目幂等不重复追加）；'
+    + '② 把带来源标记与时间的问答追加到 `detail` 末尾（存储是 HTML）；'
+    + '③ `as_child:true` 时再建一个子节点（标题取回答首行截断、详情放全文）。'
+    + '**空回答会被响亮拒绝**（不许落一条空记录 —— 落空记录比报错危险得多）。'
+    + '⚠️ **幂等的口径只有 `qa` 这一半**：完全相同的问答再落一次 ⇒ `duplicate:true`、`qa` 条数不变，'
+    + '而 `detail` 是**流水**（`src/qa.js` 的既定语义：「重复写入必然堆叠而不互相覆盖」）⇒ 会**再叠一段**。'
+    + '所以：疑似重复时**先看幂等键再决定要不要重试**，别拿"再落一次"当幂等重试（那会在正文里留两段同样的问答）。'
+    + '⚠️ 这是**写类**工具：`dry_run:true` 只报告"这次会改动哪些对象"、一个字节都不写。'
+    + '`at` 由调用方给（界面显示的时间 = 落盘时间）；长回答用 `answer_file` 避开命令行长度限制', {
+    project: s('项目名或 JSON 文件路径'),
+    id: s('节点 id（对应 CLI 的位置参数 `<id>`）：问答记在这个节点上'),
+    answer: s('AI 的回答正文 —— 对应 CLI 的 --answer（与 answer_file 二选一，至少给一个非空的）'),
+    answer_file: s('从文件读回答（长回答用，避开命令行长度与引号问题）—— 对应 CLI 的 --answer-file'),
+    question: s('当时提的问题 —— 对应 CLI 的 --question（只记进 qa 记录与详情里那段来源标记）'),
+    model: s('产出这个回答的模型名 —— 对应 CLI 的 --model（可选）'),
+    at: s('这条问答的时间戳（ISO）—— 对应 CLI 的 --at；**给了它就以它为准**'
+      + '（界面显示的时间 = 落盘时间），缺省取当前时间'),
+    as_child: b('同时把回答**建成一个子节点** —— 对应 CLI 的 --as-child'
+      + '（标题取回答首行并截断、详情放全文）'),
+    child_id: s('配合 as_child：指定子节点 id —— 对应 CLI 的 --child-id（不给就由回答首行生成）')
+  }, ['project', 'id']),
 
   /* ---- 条目层（v3）：六条写原语 + 按条目取回（契约 docs/ITEM-MODEL.md §4）----
    * 每条都是某条 CLI 命令的**透传**（不复制任何判定：去重、回放前置校验、悬挂引用检查都在 CLI 侧），
@@ -381,7 +413,10 @@ const DRY_RUN_TOOL_CMD = {
   import_markdown: 'import-md', import_project: 'import-project', import_dir: 'import-dir',
   item_add: 'item-add', item_edit: 'item-edit', item_remove: 'item-remove', item_move: 'item-move',
   item_order: 'item-order', render_detail: 'render-detail',
-  ask: 'ask'
+  ask: 'ask',
+  /* 【W21】`ask_apply` 是**写类**（一次 `ctx.mutate` 落 `qa` + `detail` + 可选子节点）⇒ 必须挂
+   * `dry_run`（否则走 MCP 的 AI 拿不到"先审再写"这条出路，与 `--no-heat` 那次同一条理由）。 */
+  ask_apply: 'ask-apply'
 };
 /** `dry_run` 参数的一句话说明（**一处** —— schema 注入的每个工具都印同一句，别各写一份） */
 const DRY_RUN_DESC = '**只预览、不写盘**（对应 CLI 的 --dry-run）：报告"这次写盘会改动哪些对象'
@@ -754,6 +789,23 @@ function callTool(name, args) {
       return runCli(c);
     }
     /* ---- 补齐结束 ---- */
+
+    /* ---- 【W21】`ask_apply` → CLI `ask-apply`（一层透传；判定全在 CLI 侧）----
+     * 一律带 `--json`：调用方（模型）要拿到 `{qaIndex, qaCount, duplicate, child}` 这种结构化回执，
+     * 而不是一句中文（"重复写一条"与"新写了一条"必须能分辨）。
+     * `dry_run` 由上面那个**唯一转发点**统一加 `--dry-run`（本 case 里不再自己加，免得两个同义开关）。 */
+    case 'ask_apply': {
+      const c = ['ask-apply', argOf('project'), argOf('id')];
+      if (a.answer !== undefined) c.push('--answer', argOf('answer'));
+      if (a.answer_file !== undefined) c.push('--answer-file', argOf('answer_file'));
+      if (a.question !== undefined) c.push('--question', argOf('question'));
+      if (a.model !== undefined) c.push('--model', argOf('model'));
+      if (a.at !== undefined) c.push('--at', argOf('at'));
+      if (a.as_child === true) c.push('--as-child');
+      if (a.child_id !== undefined) c.push('--child-id', argOf('child_id'));
+      c.push('--json');
+      return runCli(c);
+    }
 
     /* ---- 条目层（v3）：六条写原语（契约 docs/ITEM-MODEL.md §4）----
      * 一律 `runCli(...)` 拼参数转发；判定（去重 / 回放前置校验 / 悬挂引用检查 / 重渲染）全在 CLI 侧。

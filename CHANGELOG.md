@@ -1873,6 +1873,116 @@ learn-path book-linux-src-fun --dry-run   exit 0
   · `encoding-check` **exit 0** · `find-bare-angle` **exit 0（0 节点 · 0 片段）**。
 - **⚠️ 本批不跑 `npm run verify`**（`R7`）。证据与逐条读数：`.review/20261020-W5-tag-relations/报告.md`。
 
+### 【台账 `W7`】检索延迟基准：首次给出检索的 median 读数（起一次 CLI 进程 ≈500ms · 检索自身 2–115ms · ≈12.5 ms/千节点、线性度 0.88），并**决定不做门禁**（2026-10-20）
+
+> 本段是**预写稿**（`.review/20261020-W7-latency/CHANGELOG-section.md`）—— 本批边界不让碰 `CHANGELOG.md`，由父代理粘进 `[Unreleased]`。
+
+- **台账原话**：`W7`｜检索延迟基准（补上"**效率**"的实测 ✗）—— 全工程唯一一处能给"快不快"给出读数的任务。
+- **先查了现状（没有另造已有东西）**：工程里已经有两类耗时测量，但**都不测检索**：① `scripts/verify.js` 的**步骤级**墙钟 + `STEPS[].budgetMs`（判据在 `tests/verify-budget.test.js`，口径 `budget ≥ 1.25 × 最近 10 次 median`）；② `.review/20261014-导图交互重构/probe-r2f-timing.js` 量的**写路径**（一次重挂的整树写盘 / 回读 / 重建）。而 `search` / `search-all` / `tags` / `contents` / `list` —— **零条读数**。唯一沾边的 `src/item-index.js:73` 的 `SCAN_MAX_MS = 3000`（`search-all` 的生产硬上限）只用**注入时钟**验过语义（`scripts/cli-integration.js:4630-4649`，注释写明"不靠真的跑慢"）⇒ **真实余量此前无人知道**。另实测：`src/query.js` / `src/palette-rank.js` / `src/item-src.js` 均 **0 处**时钟调用，`src/item-index.js` 的唯一命中是注释里那句"本函数**不读时钟**"（纯函数纪律）⇒ 计时天然只能落在命令层。
+- **建的东西（只落在 `.review/`）**：`.review/20261020-W7-latency/bench.js` —— 一条命令跑完、可重复、可 `--compare` 与上一次读数比对的**报告型**基准；产物 `results.json` + `results.md`（每次覆盖）+ `results-run1.json`（第一次跑的快照，供比对）。**没改** `src/**` / `cli/**` / `scripts/**` / `tests/**` —— 见下面「改了哪些文件」。
+- **口径（六条，写进脚本文件头，不靠散文）**：①**子进程**（`spawnSync node cli/mm-cli.js …`，含 Node 启动 + 全模块装配）与**进程内**（`cli/main.js` 的 `invokeSync`，只含命令自身）**分开量**；②冷/热各有定义，**真冷盘（清 OS 文件缓存）未测**（Windows 无可用 drop_caches，且清缓存会干扰并行批次）；③统计量 **median**（`G5` 的教训：`max` 被尖峰抬走、`P90` 次之）；④样本量 子进程 7 / 进程内 11 / 地板 9（奇数 ⇒ median 是真实读数）；⑤**只读 + `MM_HEAT_SENSOR=off`**，`projects/` 用文件清单 + 字节数的 sha256 前后比对；⑥计时用 `process.hrtime.bigint()` 夹在调用两侧，**不是** `Measure-Command`（那个把 pwsh 启动也算进去）。
+- **读数（快照 2026-10-20 · 两次独立跑 · 22 个 cell）**：
+  - **进程内热 median（检索算法自身）**：`list --json` 2.0 / 5.7 / 11.3 ms、`search --json` 2.1 / 6.1 / 11.5、`search --json --full` 3.6 / 10.6 / 23.2、`tags --json` 28.9 / 30.8 / 37.7、`contents --json` 6.8 / 23.7 / **114.7**（三段依次是 `book-linux-proc-mem` 126 节点 / `卖点讨论` 293 / `comnet` 889）。
+  - **全库档**：`search-all --json` **76.1 ms**、默认文本 77.1、`--json --full` 92.4；`--scope` 7 本书 32.9（以上为进程内热 median）。
+  - **子进程墙钟**：全库 22 个 cell 落在 **491–607 ms**；而地板 =**纯 Node 启动 419–424 ms**、**CLI 启动+全模块装配 495–513 ms** ⇒ **启动占 75–104%**。
+  - **标度律**：`ms ≈ 0.84 + 0.0125 × 节点数`（**≈12.5 ms / 千节点**，`R² = 0.9634`）；**线性度**（只用 n ≥ 100 的语料）从 117 节点到 889 节点：耗时 ×6.7、节点 ×7.6 ⇒ **「耗时比 ÷ 节点比」= 0.88**（第 1 次跑 0.82）⇒ **近似线性，无隐藏超线性**。
+  - **既有硬上限余量**：全库 `search-all --json` 实测 **566 ms** vs `SCAN_MAX_MS` **3000 ms** ⇒ 用掉 **18.9%**，还能再用 **5.3 倍**。这是 `G5` 先例的形状（只判"实际 vs **既有**预算"的比例，不新造阈值）。
+  - **复跑一致性**：两次独立跑，同格**进程内 |Δ| 中位数 4.7%**（最大 34.6%，出现在 2.05→2.76 ms 这种亚毫秒格上）、**子进程 |Δ| 中位数 1.6%**；同格 CV 中位数 7.7%（最大 22.5%）。
+- **⚠️ 一条意外但关键的读数**：本机 **起一次 Node 进程 ≈420 ms**（`node -e ""` 419–424ms、`node --version` 393ms），而 **`cmd.exe /c exit` 只要 27 ms** ⇒ 这是 **Node 本体在这台机器上的启动成本**，不是进程创建、也不是本工程的成本（成因未深究，如实记为环境事实）。**后果**：一个 AI 经 CLI 搜一次书，**先付 ≈500 ms**，检索本身只要 2–115 ms ⇒ 想让它"快"，**先减调用次数**（MCP 常驻 / 一次 `read` 拿全），不是先优化检索。
+- **判据选择：只做报告型，不做门禁**（这是本批的难点，理由全部带读数）：①**门禁会量到 Node 启动**——子进程口径地板占 75–104%，任何绝对 ms 阈值实际判的是"这台机器 Node 起得多快"，换 Node 版本/装扫毒就会红（`docs/RULES.md` §3 `M1`：误报率高的门禁比没有更坏）；②**阈值必须随语料变，而语料是每天改的真数据**（同一 `contents`：126 节点 6.8ms → 889 节点 114.7ms）⇒ 绑真书一涨就假红（**§7.4 已判过"不绑真书"**，时间侧没有相反理由），绑夹具则变成"守夹具不守真书"；③**噪声与"变慢"量级重叠**（同格 CV 中位数 7.7%、两次跑 |Δ| 中位数 4.7%）⇒ 阈值收 10% 天天红、放到 25% 要真慢 1/4 才叫，那时人早该读表看见了；④**这条线两端已有真门禁**（`verify` 步骤预算 + `SCAN_MAX_MS` 生产硬上限），再插一条是第三份预算且说不清守哪段；⑤**真正该守的性质已用读数守住**（线性度 0.88：真变超线性会跳到 >2，读一次表就可见）——做成门禁的收益是"省一次读表"，成本是一条会假红的线，**判断：不值**。⇒ 判据 = **读数 + 人读**；"有没有变慢"的需求由 `bench.js --compare <上一次 results.json>` 满足（**不影响退出码**）。
+- **把读数写进文档**：`docs/ARCHITECTURE.md` **末尾追加 §9「检索延迟量级（`W7`）」** —— **本批那一处是纯追加：新增 130 行 / 删除 0 行**（`.review/20261020-W7-latency/probe-diff-scope.js` 逐 hunk 落到行号上可复算：本批的 hunk 是 `+844 … 新增 130 删除 0`；该文件当前另有两个 hunk 落在第 127 / 199 行的 §2 表项，是**另一个批**改 `cli/commands/ui.js` / `src/control.js` 时同步更新的，**不是本批**）。**没写进 `docs/VERIFY.md`** —— 它是 `node scripts/doc-facts.js --write` 的**生成物**（文件头自述），手改会被 G7 判过期；本批也不许跑 `doc-facts --write`。§9 里刻意**不抄**基准脚本的阈值、只留形状与快照读数 + 复算命令（同 §7 的纪律）。
+- **改了哪些文件（完整清单）**：①新增 `.review/20261020-W7-latency/`（`README.md` 第一个落盘 · `survey.md` 现状清单 · `bench.js` · `results.json` / `results.md` / `results-run1.json` · `CHANGELOG-section.md` · 若干 `probe-*.js` 探针与 `vitest-run.json`）；②`docs/ARCHITECTURE.md` 末尾追加 §9。**没有**改 `src/**` / `cli/**` / `scripts/**` / `tests/**` / `projects/**` / `CHANGELOG.md` / `docs/VERIFY.md` / `docs/CLI.md` / `docs/RULES.md` / `docs/TAGS.md` / `renderer/**` / `main.js`。
+- **连带面（R5）**：GUI 交互 **无影响**（不碰 `renderer/` / `main*.js`）；CLI / MCP **命令表零改动**（没加命令、没加参数、没加工具）；数据格式 **无新字段**；冒烟与集成断言 **零改动**；`projects/` **一个字节没写**（52 个文件的清单 + 字节数 sha256 前后一致，跑两次都一致）。
+- **判据（只认 exit code）**：`node .review/20261020-W7-latency/bench.js` ⇒ **exit 0**（22 个 cell 全 0 退出、`projects/` 指纹一致、地板漂移在 ±25% 内）；`node scripts/encoding-check.js` ⇒ **exit 0**；`node scripts/docs-registry-check.js` ⇒ **exit 0**；`node .review/20261020-S2-tag-in-code/find-bare-angle.js` ⇒ **exit 0、0 节点 · 0 片段**；`node node_modules/vitest/vitest.mjs run --pool=threads` ⇒ 见下「如实偏差」。
+- **如实偏差（四条，逐条说清）**：
+  - ① **本批不跑 `npm run verify`**（铁律 `R7`：全链必须独占跑，由父代理最后跑）；**不跑 `doc-facts --check/--write`**（另一个批在用）。
+  - ② **`vitest` 本批收尾时不是 exit 0，且这个数在变动**（收尾窗口内另一个批在同一棵树上边写边修；我逐次复跑记录 `9 → 6 → 2 → 18` 条红）。**数量在动本身就是归因证据**：不是固定回归。**归因按文件，不按数量** —— 红的落点是：①`tests/control-point.test.js`（另一个批**新建**的测试，`git status` 里是 `??` 未跟踪）；②同一件事引出的「`src/control-plan.js` 未入档」（`git status` 同为 `??` 未跟踪，报错原文点名 `[代码未入档] src/control-plan.js`）；③`tests/cli-options.test.js`（`point → --json`：`cli/registry.js` 的 `usage` 写了 `--json` 而 `options` 只登记 `['mode']`）与 `tests/cli-sync-invariant.test.js`（`cli/commands/ui.js` 的 `point` 用了异步 API）。**这三处本批一个字节没动，修法在他们那边**（登 §2 表 / 补 `options` / 去异步），本批边界明令不碰 `cli/**` / `src/**`。本批**自己造成的唯一一条红**（`tests/fact-outlet.test.js` 判 `docs/ARCHITECTURE.md` 里 889 那处节点读数缺口径锚）**已在本批修好并复验绿**（单跑该文件 ⇒ exit 0、16/16）⇒ **本批贡献的部分恒绿**。
+  - ③ **本批跑 vitest 时机器上确实有另一个批在改代码**（`git status` 有 20 项未提交改动、2 个未跟踪测试文件）。基准读数是在**没有 vitest 在跑**时取的（跑前逐次确认 `vitest` 真命中 = 0；并发快照把探针自己的命令行排除了 —— 否则会像第一版那样把自己数成"另一个批"，实测踩到过：自报 vitest=2，真值 0），但**机器上有一个别的批留下的空闲 `electron.exe` 壳**（无命令行、0 CPU），如实记录。
+  - ④ **真冷盘延迟、并发下的延迟、界面路径（`src/palette-rank.js` 那条）都没量**，§9.6 已把这三块标成"判不了"。
+- **证据**：`.review/20261020-W7-latency/README.md`（索引 + 结论 + 判据选择）· `survey.md`（现状清单，带 `文件:行`）· `bench.js`（基准，可重跑）· `results.md`（读数表）· `results-run1.json`（第一次跑，`--compare` 基准）· `probe-spawn-cost.js`（`cmd.exe` 27ms vs `node -e ""` 430ms 的那条对照）· `vitest-run.json`（失败归属的机器侧证据）。
+
+### 【台账 `W21`】MCP 补上 `ask_apply`（第 52 个工具）+ 新命令 `point`（`AP` 指给你看：让 AI 指挥界面做**只读视图动作**）（2026-10-20）
+
+> **本段是预写稿**：本批不许碰 `CHANGELOG.md`，请由父代理把它插进 `[Unreleased]` 段首。
+> 证据与逐条读数在 `.review/20261020-W21-ask-apply/`（`00-定题.md` / `01-验收读数.md`）。
+
+#### 一句话
+
+台账 `W21` 的两个半边都落地：**工具面**补上 `ask_apply`（`ask-apply` 的 MCP 透传 ——
+"apply" 是**写盘**不是渲染，所以它是写类工具并挂了 `dry_run`）；**界面面**新增 `point`，
+经既有的文件式控制通道让**正在运行的界面**做两件**只读视图动作**（打开某篇笔记 / 打开关联视图），
+两个动作都调**既有的唯一实现**（`MM.jumpToNode` / `MM.showRelated`）⇒ **渲染层零改动、零写盘**。
+
+#### 为什么这么做（三条判断，都带实测依据）
+
+| 判断 | 依据 |
+|---|---|
+| `ask-apply` 的 "apply" 是**写盘** ⇒ MCP 版必须是写类工具并挂 `dry_run` | `cli/commands/qa.js:66` 的 `ctx.mutate`（`qa` 记录 + `detail` + 可选子节点一次原子写）；`cli/core.js` 的 `WRITE_COMMANDS` 与 `DRY_RUN_COMMANDS` 里都有它 |
+| 三条候选动作里只做两条 | 「打开关联视图」「打开笔记」在渲染层**已有唯一实现**（`renderer/app-related.js:245` 的 `showRelated`、`renderer/app-actions.js:318/1261` 的 `jumpToNode`）；「高亮 AI 点名的一组节点」**没有** —— 高亮的 hit/dim 在 `app-related.js` 与 `app-tag-view.js` 各有一份、各自绑视图，要加得先在 `renderer/` 抽单源，而 `renderer/**` 是那一批的禁区 ⇒ **不做**，理由与下一批的落地条件写在定题 §3.3 |
+| 通道的「认得出哪些 cmd」必须提成一张**可测**的表 | 那张判定以前只活在 `main.js` 的 if 链里，而 `main.js` 要 Electron 才能加载 ⇒ **从来没有自动判据**。现在 `src/control.js` 的 `KNOWN_CMDS` 是唯一一处，`isKnownCmd` / `unknownCmdReceipt` 是纯函数 |
+
+#### 交付物
+
+| 面 | 落点 |
+|---|---|
+| MCP 工具 `ask_apply` | `scripts/mcp-server.js`（TOOLS / `callTool` case / `DRY_RUN_TOOL_CMD`）。`required` 只有 `project`·`id` —— **答案是否为空由 CLI 判**（写进 required 会把它变成协议错误，还挡住 `answer_file` 那条路） |
+| CLI 命令 `point <项目> <节点id> [--mode note\|related] [--json]` | `cli/commands/ui.js` + `cli/registry.js`（`docs/CLI.md` 由 `docs-gen` 重生成） |
+| 通道 cmd `point` + **cmd 白名单** | `src/control.js`（`KNOWN_CMDS` 6 条 / `isKnownCmd` / `unknownCmdReceipt` / `POINT_MODES`） |
+| 视图动作规划器（含**注入面**） | `src/control-plan.js`（`planPointAction`：项目名与节点 id 一律 `JSON.stringify` 转义；**故意不在 `control.js` 里** —— 那个文件在 CLI 的 require 闭包里，而规划出的 JS 含 `.then(`，会把 `cli-sync-invariant` 判红） |
+| 界面侧派发 | `main.js` 的 `startControlChannel`：`handle` 开头一道白名单闸 + `point` 分支（取 plan → `executeJavaScript` → 回执） |
+
+#### 判据与读数（只认 exit code）
+
+| # | 判据 | 读数 |
+|---|---|---|
+| 1 | 全量单测 | `node node_modules/vitest/vitest.mjs run --pool=threads` ⇒ **exit 0**，`Test Files 131 passed` · `Tests 3022 passed | 1 skipped (3023)`（基线 2983 ⇒ +40） |
+| 2 | 数据闸门 | `node cli/mm-cli.js validate-all` ⇒ **exit 0**（10 个项目） |
+| 3 | 生成物 | `node scripts/doc-facts.js --write` 后 `--check` ⇒ **exit 0**（76 命令 / **52 工具** / 3023 用例 / 611 集成断言） |
+| 4 | 文档登记（G8） | `node scripts/docs-registry-check.js` ⇒ **exit 0**（新文件 `src/control-plan.js` 已登记 §2.3；稳定性表覆盖 88 条） |
+| 5 | 规则自洽 / 编码 / 连带 / 裸尖括号 | `rules-consistency` · `encoding-check` · `collateral-check` · `find-bare-angle` 全部 **exit 0**，末者 **0 节点 · 0 片段** |
+| 6 | **未知 cmd 被判红** | 真写一条 `{cmd:'no-such-cmd'}` 进临时通道、照 `main.js` 那段闸处理 ⇒ 回执 `{"ok":false,"err":"界面不认识这条命令: no-such-cmd（这个版本只认：dsh-prefill / dsh-status / dsh-only / dsh-sidebar / draft-map / point）"}`，调用方 ⇒ **exit 1** |
+| 7 | 白名单**判别力** | 6 条已知全 `true`；`no-such-cmd` / `point-bogus` / `''` / `POINT` / `point ` 全 `false` |
+| 8 | `point` 的命令面 | 缺参数 / `--mode highlight` / `--mode` 裸开关 ⇒ 各自 **exit 1** 且 `error:` 开头（第三条还点名"高亮还不存在"及其出路） |
+| 9 | **零写盘** | 假界面回执那一拍跑前/跑后：项目目录**逐字节不变**（sha256 对拍）、`.visits/` 里**无事件文件** |
+
+`point` **不在** `WRITE_COMMANDS` / `DRY_RUN_COMMANDS` 里（那两个清单的语义是"会改盘"，进去就是假声明）——
+这条由集成断言 `W21·D` 与 `tests/control-point.test.js` 双向钉住。
+
+#### 连带面（R5）
+
+- **GUI 交互**：**零改动** —— 不新增按钮/菜单/快捷键；`point` 只是**另一个调用者**去调已有的两个渲染层函数。
+- **MCP**：工具数 51 → 52；4 处写死的工具数同步更新（`tests/recheck` / `tests/w8-dry-run` /
+  `tests/search-all` / `scripts/cli-integration.js` 的 `W1_TOOLS`）。
+- **CLI 命令数** 75 → 76；`docs/EXTENSIONS.md` §1.2 稳定性表加 `point`（G8 第 ⑮ 条判据守着）。
+- **冒烟**：零改动（通道在 `--smoke` 下不启动 ⇒ 天然不受影响）。
+- **数据格式**：**零新字段**，不升 `formatVersion`。
+- **`docs/EXTENSIONS.md` 里 4 处"仍是 51 个"**：改成"工具数不变"（去掉易腐数字，而不是改成 52 ——
+  那 4 句说的是各自那一批的结论，改数字就成了篡改历史）。
+
+#### 如实偏差（六条）
+
+1. **踩红 2 条门禁，都改实现不改门禁**：`cli-sync-invariant`（规划器搬出 CLI 闭包 ⇒ 新文件
+   `src/control-plan.js`，并加 F4 钉边界）· `cli-options`（`point` 的 `options` 补 `json`）。
+2. **第 3 个动作（高亮任意节点集）不做**，理由见上表；通道形状已就位（加一个 `POINT_MODES` 取值 +
+   一个规划分支 + 渲染层那一个单源函数即可）。
+3. **`point` 不**做 MCP 工具：与 `draft-map` 同一取舍（界面动作的 AI 入口是 CLI）；台账 `W21`
+   的两半分别是"工具面补齐"与"界面通道"，再 MCP 化会把工具数推到 53+ 而收益为零。
+4. **`--smoke` 覆盖不到**：控制通道在 `--smoke` 下不启动 ⇒ "界面真的选中了 / 真画了关联线"这一半
+   **没有自动判据**（人看步骤写在定题 §5.3）。这是本批最大的验证空洞，如实写在这里。
+5. **`ask-apply` 的幂等只覆盖 `qa[]`**：同一条问答落两次 ⇒ `duplicate:true`、`qa` 仍 1 条，
+   但 `detail` **会再叠一段**（实测 130 → 251 字符）、变更日志多一条 —— 那是 `src/qa.js`
+   写明的语义（"重复写入必然堆叠"），**不改契约**，改为在 MCP 工具描述里写明"别拿再落一次当幂等重试"。
+6. **`projects/.visits/` 空目录**不是本命令建的：实测 `read`/`list`/`stats`/`search` 四条只读命令
+   （项目都不存在）全都会建它 ⇒ store 层既有副作用；"零写盘"判据因此写成两条（项目目录逐字节 +
+   `.visits/` 无事件文件）。
+
+#### 待父代理补的两处门面（本批不在许改面内）
+
+- `README.md`：建议在产品特性表里给 `AP` 补一句（"**指给你看**：AI 说'看第 3 章那篇'，
+  界面直接选中 + 展开 + 显示详情；`--mode related` 打开关联视图。**零写盘**"）。
+- `docs/ROADMAP.md`：`W21` 从"在飞/未收口"摘掉或改状态，并把证据指针指到
+  `.review/20261020-W21-ask-apply/01-验收读数.md`。
+
 ## [v0.19.0] - 2026-10-19
 
 ### 预算统计量 `1.25×P90` → `1.25×median`：n=10 的 P90 = **第二大** ⇒ 只容忍一条尖峰；今天已两次被尖峰抬线（1300→1468、1300→1350），换 median 并把多付的 50s 还回去（G5 1350s→1300s）

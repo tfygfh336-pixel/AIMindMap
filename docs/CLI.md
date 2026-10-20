@@ -75,6 +75,7 @@
 | `dsh-status` | dsh-status [--json] |
 | `dsh-prefill` | dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json] |
 | `draft-map` | draft-map --file <树.json> [--source 说明] [--json] |
+| `point` | point <项目> <节点id> [--mode note|related] [--json] |
 | `link` | link <项目> <id> --to 目标项目 --id 目标id [--item 目标条目id] [--caption 说明] [--dry-run] |
 | `unlink` | unlink <项目> <id> --to 目标项目 --id 目标id [--dry-run] |
 | `links` | links <项目> [--json] |
@@ -522,6 +523,14 @@ node cli/mm-cli.js dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json]
 
 ```
 node cli/mm-cli.js draft-map --file <树.json> [--source 说明] [--json]
+```
+
+### point
+
+**指给你看**（`AP`）：让正在运行的界面做一件**只读视图动作** —— `--mode note`（默认）= 打开那篇笔记（选中 + 展开祖先链 + 详情框显示它）；`--mode related` = 打开它的关联视图（高亮本节点与关联节点、其余虚化、视口缩放到框住）。⚠️ 只作用于界面**当前打开的那个项目**：项目不符会被界面**拒绝并点名两个项目名**（本命令不切项目：切项目会丢界面上未保存的编辑）；**无回执即报错**（界面没在跑就非 0 退出）；**零写盘**（不读 projects/**、不调 mutate/write，界面侧调的是不写盘的两个渲染层函数）
+
+```
+node cli/mm-cli.js point <项目> <节点id> [--mode note|related] [--json]
 ```
 
 ### link

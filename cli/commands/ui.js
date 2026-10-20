@@ -222,6 +222,90 @@ module.exports = {
       + '本命令对主图零写入 —— 并入之前 `projects/` 一个字节都没变。');
   },
 
+  /**
+   * **指给你看**（功能代号 `AP` · 台账 `W21`）：让 AI 命令**正在运行的界面**做一件**只读视图动作**。
+   *
+   * 为什么要它：界面控制通道此前只会"开关侧栏 / 读状态 / 喂输入框 / 送一棵草稿树"——
+   * 全是"换界面状态"或"装新数据"，**没有一条能指挥界面去指一个已经存在的节点**。
+   * 于是 AI 说"看第 3 章那篇"时，只能打印一行 id 让人自己去树上找（用户原话就是
+   * 「让 AI **指给你看**」，代号 `AP` 因此得名）。
+   *
+   * 两个动作、一条命令（`--mode` 是**封闭取值表**，取值表在 `src/control.js` 的 `POINT_MODES`
+   * —— CLI 与界面**共用同一份**，于是不可能出现"CLI 发得出、界面不认"）：
+   *   · `note`（默认）  打开那篇笔记：选中 + 展开祖先链 + 详情框显示它（= 渲染层 `MM.jumpToNode`）
+   *   · `related`       打开它的关联视图：高亮本节点与关联节点、其余虚化、缩放到框住
+   *                     （= 渲染层 `MM.showRelated`；这条**不是**新实现，是人点那个圆钮走的同一条）
+   *
+   * 三条硬口径（与 `sidebar-only` / `draft-map` 同一族）：
+   *   · **没有回执 = 没生效**：界面没在跑就报错退出（非 0），绝不打印"已指给你看"就算完；
+   *   · **零写盘**：本命令不读 `projects/**`、不调 `ctx.mutate`/`ctx.write`，界面侧调的也是两个
+   *     **不写盘**的渲染层函数 ⇒ 它**不在** `WRITE_COMMANDS` / `DRY_RUN_COMMANDS` 里
+   *     （那两个清单的语义是"会改盘"，进去就是假声明）；
+   *   · **不切项目**：界面当前打开的项目与点名的那个不一致时，界面会**响亮拒绝并点名两个项目名**
+   *     （切项目会丢界面上未保存的编辑 —— 那是人的动作，不是 AI 的）。
+   *
+   * ⚠️ 与 `--smoke` 的关系（如实写）：控制通道在 `--smoke` 下**不启动**（`main.js` 的
+   *   `if (!isSmoke …)`）⇒ 本命令的"界面真的照做了"那一半**没有冒烟断言**，
+   *   机械判据只在"规划"这一层（`src/control.js` 的 `planPointAction`，用假渲染层真跑）+ 通道协议这一层。
+   */
+  point(ctx) {
+    const project = String((ctx.args._ && ctx.args._[0]) || '').trim();
+    const node = String((ctx.args._ && ctx.args._[1]) || '').trim();
+    if (!project || !node) {
+      ctx.error('用法：point <项目> <节点id> [--mode note|related] [--json]'
+        + '   —— note = 打开那篇笔记（选中 + 展开祖先链 + 详情）；'
+        + 'related = 打开它的关联视图（高亮 + 虚化 + 缩放到框住）。'
+        + '⚠️ 只作用于**界面当前打开的那个项目**：项目不符会被界面拒绝（本命令不切项目）');
+    }
+    // `--mode` 不给值（`--mode` 裸写会被解析成 true）与给了不认识的值都必须**响亮拒绝**：
+    // 静默退化成默认档会让调用方以为"related 打开了"，而画面还停在笔记上（假绿）。
+    if (ctx.args.mode === true) {
+      ctx.error('--mode 需要一个取值：' + control.POINT_MODES.join(' / ') + '（收到的是裸开关）');
+    }
+    const mode = ctx.args.mode === undefined ? 'note' : String(ctx.args.mode);
+    if (control.POINT_MODES.indexOf(mode) < 0) {
+      ctx.error('--mode 只认 ' + control.POINT_MODES.join(' / ') + '（收到 "' + mode + '"）。'
+        + '⚠️ 「高亮 AI 点名的一组节点」还不存在 —— 渲染层没有接受任意 id 集的实现，'
+        + '加它要先去 renderer/ 抽一个单源函数（理由见 .review/20261020-W21-ask-apply/00-定题.md §3.3）');
+    }
+    const dir = userDataDir();
+    const token = control.newToken('point');
+    control.writeCommand(dir, {
+      cmd: 'point', project: project, node: node, mode: mode,
+      token: token, at: new Date().toISOString(), by: 'cli'
+    });
+    const res = waitForResult(dir, token, UI_ACK_MS);
+    if (!res) {
+      ctx.error('主界面没有响应（' + dir + '）：请确认 AI MindMap 正在运行、且导图页没被关掉'
+        + '（`sidebar-only on` 之后主窗口只剩占位页，这条命令要的正是导图页）。'
+        + '本命令只驱动**正在运行的**界面，不会自己去启动它');
+    }
+    // 「界面拒绝了」与「界面没响应」必须分清（前者要照实转述原因：项目不符 / 节点不在视图 / 没加载导图页）
+    if (!res.ok) ctx.error('界面没有照做：' + (res.err || '未知原因'));
+    const r = res.result || {};
+    if (ctx.args.json) {
+      ctx.outJson({ ok: true, cmd: 'point', mode: mode, project: project, node: node, token: token, result: r });
+      return;
+    }
+    const who = '「' + (r.topic || node) + '」';
+    if (mode === 'related') {
+      const n = Number(r.members) || 0;
+      if (r.empty || !n) {
+        ctx.out('已进入关联视图：这个节点**还没有本图内的关联节点**（关联笔记 ' + (r.assocCount || 0) + ' 篇）'
+          + '—— 已高亮它自己、并在下面打开了关联编辑条');
+      } else {
+        ctx.out('已打开关联视图' + who + '：' + n + ' 个关联节点高亮、其余虚化、视口缩放到框住'
+          + '（关系线 ' + (r.drawn || 0) + ' 条'
+          + (r.crossProject ? '；另有 ' + r.crossProject + ' 个跨项目节点不在本图' : '')
+          + (r.unrendered ? '；' + r.unrendered + ' 个展开后仍未显示' : '') + '）');
+      }
+    } else {
+      ctx.out('已指给你看' + who + '（' + project + ' / ' + node + '）：界面已选中它、展开祖先链、详情框显示它'
+        + (r.selected === false ? ' —— ⚠️ 但选中态没确认上（界面可能刚重画：再跑一次）' : ''));
+    }
+    ctx.out('本命令**零写盘**：不碰 projects/**、不写变更日志（它只指挥界面做视图动作）。');
+  },
+
   /** 反方向：保留主界面（思维导图），独立关/开侧栏 DSH。
    *  off 会把 DSH 服务一起停掉、并**销毁**侧栏那个视图 ⇒ 所以"只改 DSH 那一侧"时不用重启整个应用 ✓ */
   'dsh-sidebar'(ctx) {

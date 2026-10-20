@@ -33,7 +33,7 @@
 | 级别 | 含义 | 命令 |
 |------|------|------|
 | **稳定** | 名称、参数、JSON 字段结构不会在非大版本中变更 | 数据读写类：`read`/`list`/`get`/`search`/`add`/`edit`/`move`/`remove`/`validate`/`validate-all`/`projects`/`stats`/`assets`/`files`/`init` |
-| **演进中** | 可用，但字段可能增补（不影响既有字段） | 树与资源：`backlinks`/`related`/`source-chain`（**经验来源链 `SC`**，台账 `W17`：**只沿** `links[].caption` 以「出自：」开头的边多跳溯源，`--reverse` 反查"谁把我当出处"；**成环响亮拒绝并逐条点名环上的边**、撞上限**响亮报错**、**零写盘**（不记热度 ⇒ `--json` 两跑逐字节相同）；`--json` 的 `chains`/`otherPrefixes`/`nearMiss` 字段可能增补）/`orphans`/`mentions`/`contents`（**概念目录 `CC`**：把树聚合成**按书内出现顺序**排的概念清单，同名合并、每条带落点 id；`--apply` 才写，生成/就地更新「概念索引」分支且**幂等**；「概念」的判据 = 标题去章节号前缀 + 承载体（纯分组容器不算）+ `count` = 落点数 + 正文提及数，而"提及"与 `mentions` **同一个** `findMentions`；`--json` 的 `items[]` 字段可能增补）/`clone`/`add-root`/`expand-depth`/`theme-layout`/`link`/`unlink`/`links`/`links-prune`/`add-image`/`remove-image`/`add-file`/`remove-file`<br>导入导出：`import-md`/`import-project`/`import-dir`/`bind-sync`（绑定工作区文件夹：`--bind`/`--pause`/`--resume`/`--unbind`/`--list`/`--watch-dirs` 与"同步一次"，R4）/`merge-project`（把若干个**已有项目**整棵并进一个已有项目；每个源成为一个分组节点 `merge-<源项目名>`，除源根外的 id 逐字带走、`origin` 原样带走；跨项目边默认 `--links keep` 不改、`repoint` 才逐条核验改指）/`learn-path`（**学习链路 `LP`**：若干本已入库的书 ⇒ **一条有序链路**，落成**一个新项目**；步骤顺序 = `children` 顺序、每步 `links[]` 指回原书节点、`detail` 里写"为什么排在这"；**输入只读**，生成前后对输入逐字节对拍，任一字节不同即响亮失败；**零 AI 调用**，AI 只留接口位；`--json` 的 `steps[]`/`gaps`/`ai`/`determinism` 字段可能增补）/`export-md`/`export-json`/`export-html`/`import-json`<br>事务（操作清单一次生效）：`apply`<br>条目层写原语（契约 `docs/ITEM-MODEL.md` §3）：`item-add`/`item-edit`/`item-remove`/`item-move`/`item-order`/`render-detail`、`migrate`（`migrate items` 子命令：v2→v3 条目层迁移）<br>条目层复校与体检：`recheck`/`health`<br>关联笔记：`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`<br>AI 问答：`ask`/`ask-apply`<br>界面协作：`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`/`draft-map`（**草稿图 `DM`**：把一棵树（`{topic, detail?, children?}`）送进一个**临时**小窗（置顶、按内容定窗口大小、**不落 `projects/`**、关窗即弃），人在窗口里决定「并入主导图（选落点）」或「丢弃」；并入 = `apply` 一次原子写 + 回读，同指纹**幂等**拒绝。⚠️ 它**只新增窗口**，对主图零写入 —— 与 `sidebar-only` 那族"驱动已有界面"的方向相反；`--json` 的 `result` 字段可能增补）<br>历史：`changes`/`changelog`<br>访问热度：`visit`/`heat`<br>跨项目检索：`search-all`（一次扫全库，每条命中带 `project`；`--scope` 收窄范围）<br>标签清单：`tags`（**只读**：有哪些标签 / 各多少个节点 / 分布在哪几个项目 —— 不给项目名 = 全库，点名项目 = 只扫这些。`--vocab` 追加三条**契约判据**：闭集核对（是否都在 `docs/TAGS.md` §4）/ 落点下限（§2 第 6 条 · §8 判据①：≥5，§4 写明「门面特性」的行 ≥3）/ "词表空转"（§4 有但 0 落点）。⚠️ `--vocab` **必须点名项目**：那份词表的标题是「7 本书共用」，而"哪几个项目适用"盘上没有机器可读的声明（`comnet` 有自己的标签，不受它约束）⇒ 全库只给清单、不给合规判断；`--json` 的字段可能增补） |
+| **演进中** | 可用，但字段可能增补（不影响既有字段） | 树与资源：`backlinks`/`related`/`source-chain`（**经验来源链 `SC`**，台账 `W17`：**只沿** `links[].caption` 以「出自：」开头的边多跳溯源，`--reverse` 反查"谁把我当出处"；**成环响亮拒绝并逐条点名环上的边**、撞上限**响亮报错**、**零写盘**（不记热度 ⇒ `--json` 两跑逐字节相同）；`--json` 的 `chains`/`otherPrefixes`/`nearMiss` 字段可能增补）/`orphans`/`mentions`/`contents`（**概念目录 `CC`**：把树聚合成**按书内出现顺序**排的概念清单，同名合并、每条带落点 id；`--apply` 才写，生成/就地更新「概念索引」分支且**幂等**；「概念」的判据 = 标题去章节号前缀 + 承载体（纯分组容器不算）+ `count` = 落点数 + 正文提及数，而"提及"与 `mentions` **同一个** `findMentions`；`--json` 的 `items[]` 字段可能增补）/`clone`/`add-root`/`expand-depth`/`theme-layout`/`link`/`unlink`/`links`/`links-prune`/`add-image`/`remove-image`/`add-file`/`remove-file`<br>导入导出：`import-md`/`import-project`/`import-dir`/`bind-sync`（绑定工作区文件夹：`--bind`/`--pause`/`--resume`/`--unbind`/`--list`/`--watch-dirs` 与"同步一次"，R4）/`merge-project`（把若干个**已有项目**整棵并进一个已有项目；每个源成为一个分组节点 `merge-<源项目名>`，除源根外的 id 逐字带走、`origin` 原样带走；跨项目边默认 `--links keep` 不改、`repoint` 才逐条核验改指）/`learn-path`（**学习链路 `LP`**：若干本已入库的书 ⇒ **一条有序链路**，落成**一个新项目**；步骤顺序 = `children` 顺序、每步 `links[]` 指回原书节点、`detail` 里写"为什么排在这"；**输入只读**，生成前后对输入逐字节对拍，任一字节不同即响亮失败；**零 AI 调用**，AI 只留接口位；`--json` 的 `steps[]`/`gaps`/`ai`/`determinism` 字段可能增补）/`export-md`/`export-json`/`export-html`/`import-json`<br>事务（操作清单一次生效）：`apply`<br>条目层写原语（契约 `docs/ITEM-MODEL.md` §3）：`item-add`/`item-edit`/`item-remove`/`item-move`/`item-order`/`render-detail`、`migrate`（`migrate items` 子命令：v2→v3 条目层迁移）<br>条目层复校与体检：`recheck`/`health`<br>关联笔记：`assoc-list`/`assoc-add`/`assoc-edit`/`assoc-remove`/`assoc-prune`<br>AI 问答：`ask`/`ask-apply`<br>界面协作：`ui-state`/`sidebar-only`/`dsh-sidebar`/`dsh-status`/`dsh-prefill`/`dsh-caps`/`draft-map`（**草稿图 `DM`**：把一棵树（`{topic, detail?, children?}`）送进一个**临时**小窗（置顶、按内容定窗口大小、**不落 `projects/`**、关窗即弃），人在窗口里决定「并入主导图（选落点）」或「丢弃」；并入 = `apply` 一次原子写 + 回读，同指纹**幂等**拒绝。⚠️ 它**只新增窗口**，对主图零写入 —— 与 `sidebar-only` 那族"驱动已有界面"的方向相反；`--json` 的 `result` 字段可能增补）/`point`（**指给你看 `AP`**，台账 `W21`：让**正在运行的界面**做一件**只读视图动作** —— `--mode note`（默认）= 打开那篇笔记（选中 + 展开祖先链 + 详情框），`--mode related` = 打开它的关联视图（高亮 + 虚化 + 缩放到框住）。三个硬口径：**只作用于界面当前打开的那个项目**（不符就拒绝并点名两个项目名 —— 本命令不切项目，切项目会丢未保存编辑）· **无回执即报错**（与 `sidebar-only` 同族）· **零写盘**（不读 `projects/**`、不调 mutate/write；界面侧调的是两个不写盘的既有渲染层函数）⇒ 它**不在** `WRITE_COMMANDS`/`DRY_RUN_COMMANDS` 里。`--mode highlight`（高亮 AI 点名的一组节点）**未做**：高亮的 hit/dim 在 `renderer/app-related.js` 与 `renderer/app-tag-view.js` 各有一份，要加得先在 `renderer/` 抽成单源；`--json` 的 `result` 字段可能增补）<br>历史：`changes`/`changelog`<br>访问热度：`visit`/`heat`<br>跨项目检索：`search-all`（一次扫全库，每条命中带 `project`；`--scope` 收窄范围）<br>标签清单：`tags`（**只读**：有哪些标签 / 各多少个节点 / 分布在哪几个项目 —— 不给项目名 = 全库，点名项目 = 只扫这些。`--vocab` 追加三条**契约判据**：闭集核对（是否都在 `docs/TAGS.md` §4）/ 落点下限（§2 第 6 条 · §8 判据①：≥5，§4 写明「门面特性」的行 ≥3）/ "词表空转"（§4 有但 0 落点）。⚠️ `--vocab` **必须点名项目**：那份词表的标题是「7 本书共用」，而"哪几个项目适用"盘上没有机器可读的声明（`comnet` 有自己的标签，不受它约束）⇒ 全库只给清单、不给合规判断；`--json` 的字段可能增补） |
 | **内部** | 工程维护用，不保证兼容 | `docs-gen`/`release` |
 
 > **`clone` 的条目级边口径（v3，2026-10）**：仍列「**演进中**」—— 名称、既有参数与既有 JSON 面未变，
@@ -100,7 +100,7 @@
 > `src/item-index.js` 的 `searchItems` ⇒ 过滤/命中形状/预算口径/热度排序都只有那一份实现
 > （排序唯一实现处仍是 `orderByHeat`；跨项目**不做重排**，理由写在 `cli/commands/project.js` 的 `scanAll`）。
 > 两条硬上限（命中总数 / 扫描耗时）与它们的报文在 `src/item-index.js` 的 `scanGate`（唯一一处）；
-> MCP 侧**不新增工具**（仍是 51 个）：`search_nodes` 少给 `project` 即走全库档、`scope` 收窄。
+> MCP 侧**不新增工具**（工具数不变）：`search_nodes` 少给 `project` 即走全库档、`scope` 收窄。
 >
 > **写入类命令的 `--dry-run`（W8，2026-10-13）**：**数据面写命令统一支持**这个开关 ——
 > 先报告"这次写盘会改动哪些对象"（**个数 + 对象键清单 + 按类型的计数**），而**一个字节都不写盘**
@@ -115,7 +115,7 @@
 > 命令层判定统一读 `ctx.dryRun`（不许各读 `ctx.args.dryRun`），打印与短路在 `ctx.write` / `ctx.mutate`
 > 两个写出口各一处（`planWrite`）。**唯一不支持的是 `import-json`**（它建新项目、资源解包又不走写管道
 > ⇒ 给了这个开关只会得到假报告），带它会被**响亮拒绝**并说明原因与出路（`DRY_RUN_UNSUPPORTED`）。
-> MCP 侧**不新增工具**（仍是 51 个）：29 个写类工具多一个 `dry_run` 参数（`import_json` 故意没有）。
+> MCP 侧**不新增工具**（工具数不变）：29 个写类工具多一个 `dry_run` 参数（`import_json` 故意没有）。
 > 判据：`tests/w8-dry-run.test.js`（①零字节 ②报告可解析 ③报告⇄日志逐字一致 ④注入证明 + "一处实现"静态把守）。
 >
 > **检索的命中与排序口径（W6，2026-10-13）**：`search` / `search-all` 仍列「**稳定**」—— 名称、参数、
@@ -164,7 +164,7 @@
 > 它是路由表里 `installed:false` 的一行，权重收下但**不产生名次**，`--explain` 会**逐路点名**
 > （"少了一路"必须看得见，不许静默）；同理，某一路因为**没有那一维的数据**而恒空时
 > （例如命中的条目一条都没有 `at`），`--explain` 也照实说，读者不会把它误读成"这一维没有问题"。
-> MCP 侧**不新增工具**（仍是 51 个）：`search_nodes` 多三个参数 `mode` / `weights` / `explain`
+> MCP 侧**不新增工具**（工具数不变）：`search_nodes` 多三个参数 `mode` / `weights` / `explain`
 > （一层透传，取值一律由 CLI 决定）。
 > 判据：`tests/search-hybrid.test.js`（默认档逐字节不变 + `--explain` 逐路可见 + 改权重的前后对比
 > 走黄金集 `tests/fixtures/hybrid-golden.json` + 参数写错响亮 + 结构断言 + 注入证明 + 端到端沙箱）。
@@ -195,7 +195,7 @@
 >    新命中的逐条读数里 `text` 那一路名次是 `null`（"它不是字面命中"看得见）。
 >    ⚠️ **如实标注的一处差异**：`--explain` 的**读数面只增**了这一栏（含"扩召回没启用"时的说明）——
 >    它**不改命中集、不改顺序**；**默认档（不给 `--explain`）逐字节不变**，跨版本文档对照见交付说明。
-> MCP 侧**不新增工具**（仍是 51 个）：`search_nodes` 多一个参数 `recall`（一层透传，取值由 CLI 决定）。
+> MCP 侧**不新增工具**（工具数不变）：`search_nodes` 多一个参数 `recall`（一层透传，取值由 CLI 决定）。
 > 判据：`tests/search-recall.test.js`（默认档逐字节不变 + 只增不许变差 + 上界取自路由表 + 硬过滤正交 +
 > `--explain` 逐路点名 + 黄金集里"非字面命中"那一类的读前/读后读数 + 注入证明 + 结构断言 + 端到端沙箱），
 > 契约与逐键在 `docs/ITEM-MODEL.md` §3.4 与 `tests/item-index.test.js`（**键仍 12**）。
@@ -206,6 +206,21 @@
 **每个 MCP 工具都是某个 CLI 命令的透传**，不包含独立业务逻辑 ——
 所以「CLI 能做的，MCP 都能做；MCP 没暴露的，直接用 CLI」。工具清单见 `docs/VERIFY.md` 与
 `scripts/mcp-server.js` 的 `TOOLS`（已导出，可 `require` 读取）。
+
+> **「CLI 有、MCP 没有」是被允许的边界，不是缺陷**：现役 MCP 派发到的命令数少于 CLI 命令数
+> （差额每个版本都变 ⇒ 本段**不写那个数**；实时读数 = `cli/registry.js` 的 `list().length`
+> 与 `scripts/collateral-check.js` 那条注记，它会报"多少条 CLI 命令未做 MCP 工具 —— 那是人的判断"）。
+> 门禁只管**反方向**（MCP 派发到的每条命令**必须存在**，改名/删命令时最容易漏）。
+> 台账 `W21` 补的那一条正是这个边界的减法：`ask-apply` 此前只在 CLI 有 ⇒ 走 MCP 的 AI 只能
+> "问出答案"、没法把它**落进节点**。
+>
+> **`ask_apply`（`W21` 新增的第 52 个工具）**：CLI `ask-apply` 的透传，一次原子写做三件事
+> （`qa` 记录 / `detail` 末尾 / 可选子节点）。两条要记住的口径：
+> ① 它是**写类** ⇒ 挂在 `DRY_RUN_TOOL_CMD` 上、schema 里有 `dry_run`（不挂就等于把"先审再写"从
+> MCP 侧抽掉）；② **幂等只覆盖 `qa` 那一半** —— `duplicate:true` 时 `qa` 条数不变，而 `detail` 是流水、
+> 会**再叠一段**（`src/qa.js` 的既定语义「重复写入必然堆叠」）⇒ 别拿"再落一次"当幂等重试。
+> 界面通道那半（`point`）**故意不做 MCP 工具**：与 `draft-map` 同一取舍（界面动作的 AI 入口是 CLI）。
+
 
 ---
 

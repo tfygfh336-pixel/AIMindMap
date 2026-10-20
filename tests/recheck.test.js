@@ -878,11 +878,12 @@ describe('S4-F MCP：条目层扩参 + 六个新工具（只透传，参数名 �
       .forEach((c) => expect(cmds).toContain(c));
   });
 
-  it('工具数：45 → 51（+ 六个条目层工具；改参数不计入工具数）', () => {
+  it('工具数：45 → 51 → 52（+ 六个条目层工具；+ W21 的 `ask_apply`；改参数不计入工具数）', () => {
     // 写死一个数字是**故意**的：它是交付里"工具数 N→M"的判据（docs/VERIFY.md 由整合流跑
-    // `doc-facts --write` 同步；这里钉住"确实是 +6"，而不是"没变"）
-    expect(mcp.TOOLS.length).toBe(51);
-    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(51);   // 名字不重
+    // `doc-facts --write` 同步；这里钉住"确实是 +6 / +1"，而不是"没变"）。
+    // 2026-10-20（W21）：51 → 52 —— 补上 `ask_apply`（`ask-apply` 的 MCP 透传，本批的唯一新工具）。
+    expect(mcp.TOOLS.length).toBe(52);
+    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(52);   // 名字不重
   });
 
   it('不复制业务逻辑：MCP 侧只有 `runCli([...])` 的拼参数，没有第二条判定路径', () => {

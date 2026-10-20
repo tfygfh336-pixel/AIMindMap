@@ -284,10 +284,76 @@ function waitForResult(baseDir, token, timeoutMs, sleep) {
   return null;
 }
 
+/* ============================================================================
+ * 命令名白名单 + 「视图动作」的规划函数（功能代号 `AP` · 台账 `W21`）
+ * ----------------------------------------------------------------------------
+ * ## 为什么要有这张表
+ *   本通道原先"认得出哪些 cmd"这件事**只存在于** `main.js` 的 if 链里：末尾有一条兜底拒绝
+ *   （`界面不认识这条命令: X`，响亮、不让调用方白等满窗口 ✓），但**没有可读的清单**，
+ *   而 `main.js` 需要 Electron 才能加载 ⇒ 那条判定**从来没被单测覆盖过**，只能靠人读代码。
+ *   加第 6 条 cmd（`point`）时把"认得出什么"提成**一张表 + 一个谓词**：
+ *     · CLI 侧与界面侧**共用同一份** ⇒ 不可能出现"CLI 发得出的 cmd、界面却不认"
+ *       （那种表现是调用方白等满窗口、拿到"界面没响应"这种**假原因**）；
+ *     · 谓词是纯函数 ⇒ "未知 cmd 被判红"可以机械验证（`tests/control-point.test.js`）；
+ *     · `main.js` 仍是**唯一执行处**，这里只判"认不认得"。
+ *
+ * ⚠️ **这张表是封闭的**：新增一条 cmd 必须同时改三处 —— 本表、`main.js` 的分支、
+ *   `cli/commands/ui.js` 的发命令处。三条防漂移判据钉在 `tests/control-point.test.js`：
+ *   ① `main.js` 里所有 `cmd.cmd === 'X'` 字面量 ⊆ 本表；
+ *   ② `cli/commands/ui.js` 里所有 `cmd: 'X'` ⊆ 本表；
+ *   ③ 本表里每一条在 `main.js` 里都有分支（F1 的双向比较就钉这一条）。
+ * ⚠️ **本文件只判"认不认得"**：`point` 那条"要在渲染层跑什么"的规划在 `src/control-plan.js`
+ *   （**故意不在这里**：那段代码里有 `.then(`，而本文件在 `cli/commands/ui.js` 的 require
+ *    闭包里 ⇒ 会把 `tests/cli-sync-invariant.test.js` 判红。理由写在新文件顶部）。
+ */
+const KNOWN_CMDS = Object.freeze([
+  // W11 之前的四条：两半对称的开关 + 只读诊断 + 喂输入框
+  'dsh-prefill', 'dsh-status', 'dsh-only', 'dsh-sidebar',
+  // W11 的第 5 条：把一棵树送进**临时小窗**（只新增窗口，对主图零写入）
+  'draft-map',
+  // W21（本批）：**只读视图动作** —— 指给你看（打开某篇笔记 / 打开关联视图）
+  'point'
+]);
+
+/**
+ * `point` 认的视图取值（**封闭表**；CLI 与界面共用这一份）。
+ *
+ * 为什么默认是 `note`：AI 说"指给你看"时最常见的动作就是**打开那一篇**；
+ *   `related` 是它的邻域视图（高亮 + 虚化 + 缩放到框住），要显式要。
+ *
+ * ⚠️ 想加 `highlight`（高亮 AI 点名的一组节点）**不能只加这里**：渲染层当前没有
+ *   "接受任意 id 集"的实现（高亮的 hit/dim 在 `renderer/app-related.js` 与
+ *   `renderer/app-tag-view.js` 各有一份、各自绑定自己的视图）⇒ 得先在 `renderer/` 抽一个
+ *   单源函数，再来这里加一个取值 + `src/control-plan.js` 加一个分支。理由全文见
+ *   `.review/20261020-W21-ask-apply/00-定题.md` §3.3。
+ */
+const POINT_MODES = Object.freeze(['note', 'related']);
+
+/** 这条通道认不认得 `name`（纯函数；**判据唯一一处**） */
+function isKnownCmd(name) {
+  return KNOWN_CMDS.indexOf(String(name == null ? '' : name)) >= 0;
+}
+
+/**
+ * 未知 cmd 的**回执**（不是异常：必须当场回，否则调用方白等满窗口、拿到"界面没响应"这种假原因）。
+ * 报文文本只有这一处 ⇒ 单测能逐字钉住它（"响亮"= 名字 + 这个版本认哪些，都要在里面）。
+ */
+function unknownCmdReceipt(name) {
+  const got = String(name == null ? '' : name);
+  return {
+    cmd: got, ok: false,
+    err: '界面不认识这条命令: ' + got + '（这个版本只认：' + KNOWN_CMDS.join(' / ') + '）'
+  };
+}
+
 return {
   CMD_FILE: DIR, RESULT_FILE: DIR,      // 兼容旧字段名（都指向同一个通道目录；不再有"单文件"语义）
   DIR, ORPHAN_MS, MAX_PENDING,
   paths, newToken, writeCommand, readPending, listPending, claim, writeResult, readResult, clear, sweep,
-  waitForResult
+  waitForResult,
+  // 命令名白名单（W21 / `AP`）："认得出哪些 cmd" + "未知 cmd 的响亮回执"。
+  // ⚠️ "`point` 要在渲染层跑什么"**不在这里** —— 那个规划器在 `src/control-plan.js`
+  //   （本文件在 CLI 的 require 闭包里，而那段代码含 `.then(` ⇒ 会撞 cli-sync-invariant，见那边顶部）。
+  KNOWN_CMDS, POINT_MODES, isKnownCmd, unknownCmdReceipt
 };
 });

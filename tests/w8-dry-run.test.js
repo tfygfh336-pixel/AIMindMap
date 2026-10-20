@@ -672,11 +672,13 @@ describe('W8-F 与既有机制的关系', () => {
     expect(after.version).toBe(before.version);
   });
 
-  it('F3 MCP 面：工具数仍 51、`dry_run` 只挂在写类工具上（29 个）且 `import_json` 没有它', () => {
-    expect(mcp.TOOLS.length).toBe(51);
-    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(51);
+  it('F3 MCP 面：工具数 52、`dry_run` 只挂在写类工具上（30 个）且 `import_json` 没有它', () => {
+    // 2026-10-20（W21）：51 → 52 是 `ask_apply`（`ask-apply` 的透传），29 → 30 是它挂上了 `dry_run`
+    // —— 它**是写类**（一次 `ctx.mutate`），不挂就等于把"先审再写"那条出路从 MCP 侧抽掉。
+    expect(mcp.TOOLS.length).toBe(52);
+    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(52);
     const withFlag = mcp.TOOLS.filter((t) => t.inputSchema.properties && t.inputSchema.properties.dry_run);
-    expect(withFlag.length).toBe(29);
+    expect(withFlag.length).toBe(30);
     const importJson = mcp.TOOLS.filter((t) => t.name === 'import_json')[0];
     expect(importJson.inputSchema.properties.dry_run).toBe(undefined);
     // 每个带 dry_run 的工具都必须在 CLI 侧**真的**认这个开关（映射不许漂移：schema ⇄ 转发 ⇄ CLI 三处同源）

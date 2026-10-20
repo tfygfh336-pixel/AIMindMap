@@ -417,10 +417,10 @@ describe('⑤ MCP `search_nodes`：不给 project ⇒ 全库档（一层透传�
     expect(j.hits.some((h) => h.project !== undefined)).toBe(false);   // 单项目档不加那个字段
   });
 
-  it('5.4 工具数是**真的没变**：仍 51 个、名字唯一、没有第二个"全库"工具', () => {
-    expect(mcp.TOOLS).toHaveLength(51);
+  it('5.4 工具数是**真的没变**：本件不新增工具（真值 = 52，W21 的 `ask_apply` 之后）、名字唯一、没有第二个"全库"工具', () => {
+    expect(mcp.TOOLS).toHaveLength(52);
     const names = mcp.TOOLS.map((t) => t.name);
-    expect(new Set(names).size).toBe(51);
+    expect(new Set(names).size).toBe(52);
     expect(names.filter((n) => n === 'search_nodes')).toHaveLength(1);
     // 全库档是**既有工具的一个模式**：schema 里给的是参数，不是新工具
     const tool = mcp.TOOLS.filter((t) => t.name === 'search_nodes')[0];

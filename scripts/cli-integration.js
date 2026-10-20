@@ -4528,8 +4528,10 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   const W1_MCP_SRV = path.join(ROOT, 'scripts', 'mcp-server.js');
   /** MCP 工具数：**写死值**（本件落地的当天 `docs/VERIFY.md` 的「MCP 工具数」= 51；"工具数不变"是本件的判据）
    *  —— 刻意不写成 `require(...).TOOLS.length` 那种自指式（那样谁把工具数改大了，断言会跟着一起变 ⇒ 没有判别力；
-   *  与 `tests/recheck.test.js` 里 `expect(mcp.TOOLS.length).toBe(51)` 同一用意）。贴上之后若它变了，G6 会先红。 */
-  const W1_TOOLS = 51;
+   *  与 `tests/recheck.test.js` 里 `expect(mcp.TOOLS.length).toBe(52)` 同一用意）。贴上之后若它变了，G6 会先红。
+   *  【2026-10-20 台账 `W21`】51 → **52**：`ask_apply`（`ask-apply` 的 MCP 透传）是那一批唯一新增的工具。
+   *  本段的判据仍是"**全库档没有新增工具**"（52 是现值的写死真值，不是"W1 当时那一版的工具数"）。 */
+  const W1_TOOLS = 52;
   const W1TAG = Date.now().toString(36);
   const W1A = 'it-probe-w1-a-' + W1TAG;
   const W1B = 'it-probe-w1-b-' + W1TAG;
@@ -7912,6 +7914,58 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
       check('W5·收尾 两个探针项目清干净（残留 ' + left.length + ' 个 —— 现算）',
         left.length === 0, left.join(',') || '无残留');
     }
+  }
+
+  /* ---------------- 8.9 `point`（产品代号 `AP`「指给你看」，台账 `W21`）：界面通道的命令面 ----------------
+   * 为什么这一段**只断言"不碰盘"的那几条**：`point` 要一个**正在运行的界面**（`src/control.js` 的
+   * 通道），而本脚本跑在 `--smoke` 之外、也没有界面可开；更要紧的是本段的边界**不许往真实
+   * `projects/` 里写东西**。于是集成层守的是"命令面本身"（注册/用法/三条响亮拒绝/零写盘的登记口径），
+   * 而"真落盘 / 真通道 / 假界面回执"那几条在**沙箱单测**里：
+   *   `tests/control-point.test.js`（假界面子进程走完 CLI 半边 + 项目根逐字节不变）
+   *   `tests/mcp-ask-apply.test.js`（`ask_apply` 真写盘 / 幂等口径 / dry-run 零改动）
+   * ⚠️ 五条断言**一条都不许真跑成功路径**（那会等 2.5s 的界面回执、还会往真实 userData 写通道文件）。 */
+  {
+    const w21core = require(path.join(ROOT, 'cli', 'core.js'));
+    const w21reg = require(path.join(ROOT, 'cli', 'registry.js'));
+    const w21mcp = require(path.join(ROOT, 'scripts', 'mcp-server.js'));
+
+    const rHelp = run(['point', '--help']);
+    check('W21·A `point --help` ⇒ exit 0，用法里有 `--mode note|related` 与"只作用于当前打开的项目"那句',
+      rHelp.code === 0 && rHelp.out.indexOf('--mode') >= 0 && rHelp.out.indexOf('related') >= 0,
+      'exit=' + rHelp.code);
+
+    const rNoArgs = run(['point']);
+    const rBadMode = run(['point', 'some-proj', 'n-a', '--mode', 'highlight']);
+    const rBareMode = run(['point', 'some-proj', 'n-a', '--mode']);
+    check('W21·B 三条**响亮拒绝**（都在到通道之前）：缺参数 / 不认识的 mode（并点名 note·related）/ '
+      + '`--mode` 裸开关 ⇒ 各自 exit 1 且都以 `error:` 开头 —— **不许**静默退化成默认档',
+      rNoArgs.code === 1 && /^error:/m.test(rNoArgs.out)
+        && rBadMode.code === 1 && /^error:/m.test(rBadMode.out)
+        && rBadMode.out.indexOf('highlight') >= 0 && rBadMode.out.indexOf('related') >= 0
+        && rBareMode.code === 1 && /^error:/m.test(rBareMode.out),
+      'exit=' + rNoArgs.code + '/' + rBadMode.code + '/' + rBareMode.code);
+
+    const rBadOpt = run(['point', 'some-proj', 'n-a', '--nope']);
+    check('W21·C 未知选项 ⇒ exit 1，且报文里列出它**认识**哪些选项（`options` 是唯一声明处）',
+      rBadOpt.code === 1 && /^error:/m.test(rBadOpt.out) && rBadOpt.out.indexOf('--mode') >= 0,
+      'exit=' + rBadOpt.code);
+
+    const w21point = w21reg.list().filter((c) => c.name === 'point')[0];
+    check('W21·D `point` 是**只读**命令：`WRITE_COMMANDS` / `DRY_RUN_COMMANDS` 里都没有它'
+      + '（那两个清单的语义是"会改盘"，进去就是假声明）',
+      !!w21point && w21core.WRITE_COMMANDS.indexOf('point') < 0
+        && w21core.DRY_RUN_COMMANDS.indexOf('point') < 0
+        && JSON.stringify(w21reg.allowedOptions('point')) === JSON.stringify(['mode']),
+      w21point ? 'options=' + JSON.stringify(w21reg.allowedOptions('point')) : '没注册');
+
+    const w21ask = w21mcp.TOOLS.filter((t) => t.name === 'ask_apply')[0];
+    check('W21·E MCP 侧：工具数 = 52（写死真值）+ `ask_apply` 存在、必填只有 project·id、挂了 dry_run'
+      + '（它是**写类**，不挂就等于把"先审再写"从 MCP 侧抽掉）',
+      w21mcp.TOOLS.length === 52 && !!w21ask
+        && JSON.stringify(w21ask.inputSchema.required) === JSON.stringify(['project', 'id'])
+        && !!w21ask.inputSchema.properties.dry_run
+        && w21mcp.DRY_RUN_TOOL_CMD.ask_apply === 'ask-apply',
+      '工具数=' + w21mcp.TOOLS.length + ' ｜ ask_apply=' + (!!w21ask));
   }
 
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。

@@ -4215,6 +4215,10 @@ async function runExportWindow(win, { out }) {
  */
 function startControlChannel() {
   const control = require('./src/control.js');
+  // `point` 那条"要在渲染层跑什么"的规划器：**故意不在 control.js 里**（那个文件在 CLI 的
+  // require 闭包里，而规划出来的 JS 含 `.then(` ⇒ 会撞 `tests/cli-sync-invariant.test.js`）。
+  // 理由全文见 `src/control-plan.js` 顶部。
+  const controlPlan = require('./src/control-plan.js');
   const { createControlPoller } = require('./src/control-poll.js');
   let dir;
   try { dir = app.getPath('userData'); } catch (err) { return; }
@@ -4223,7 +4227,16 @@ function startControlChannel() {
    *  但那样调用方拿到的是"命令执行异常"而不是这条命令**自己**的原因） */
   const handle = (claim, reply) => {
     const cmd = claim;
-    // 五个命令（前两个是"各关一半"的对称能力，第三个是**只读**诊断）：
+    /* ★ 白名单闸（W21 / `AP`）：**认不认这条 cmd，只有 `src/control.js` 的 `KNOWN_CMDS` 一处说了算**。
+     * 为什么提到最前面（此前只有末尾那条"不是 dsh-sidebar 就当未知"的兜底）：
+     *   · 那张表是**可读、可单测**的（`main.js` 要 Electron 才能加载 ⇒ 这里的判定以前没有任何自动判据），
+     *     CLI 侧发命令时也照同一份表自检 ⇒ 不可能出现"CLI 发得出、界面却不认"（那的表现是
+     *     调用方白等满窗口、拿到"界面没响应"这种**假原因**）；
+     *   · **未知 cmd 必须当场回执**（响亮：名字 + 这个版本认哪些），绝不让调用方等一个不会来的东西。
+     * ⚠️ 加新 cmd 要**同批**改三处：这张表、下面的分支、`cli/commands/ui.js` 的发命令处
+     *   （防漂移判据在 `tests/control-point.test.js`）。 */
+    if (!control.isKnownCmd(cmd.cmd)) { reply(control.unknownCmdReceipt(cmd.cmd)); return; }
+    // 六条命令（前两个是"各关一半"的对称能力，第三个是**只读**诊断）：
     //   dsh-only    —— 关左边思维导图页（**真卸载这一页**：主窗口改为占位页）、只留侧栏
     //                  （改主界面代码时用；重开 = 重新加载 ⇒ sidebar-only on/off 成对）
     //   dsh-sidebar —— 保留主界面、关掉侧栏 DSH（改 DSH 那一侧时用；把服务一起停 + 销毁侧栏视图）
@@ -4278,6 +4291,34 @@ function startControlChannel() {
       reply({ cmd: 'draft-map', ok: !!r.ok, result: r, err: r.reason || null });
       return;
     }
+    /* point —— 指给你看（功能代号 `AP` · 台账 `W21`）：**只读视图动作**。
+     * 与上面几条的分工（`docs/FEATURES.md` 的 `AP` 行是权威副本）：
+     *   · `draft-map` 装**还不存在的数据**（一棵草稿树进临时小窗，人再决定并入不并入）；
+     *   · `point` **指挥已有数据**做视图动作（打开某篇笔记 / 打开关联视图）——
+     *     数据一个字节都不动，连保存都不触发。
+     * 执行什么**不在这里拼**：`controlPlan.planPointAction(cmd)` 把"要跑的那段 JS"规划出来（纯函数，
+     * 在 `tests/control-point.test.js` 里用假渲染层真跑过，含注入面判据）；本处只做三件事 ——
+     * 取窗口、`executeJavaScript`、把渲染层返回的结构化结果原样当回执。
+     * ⚠️ 渲染层的两个函数（`MM.jumpToNode` / `MM.showRelated`）都是**既有唯一实现**，本批零改动。 */
+    if (cmd.cmd === 'point') {
+      const plan = controlPlan.planPointAction(cmd);
+      if (!plan.ok) {
+        reply({ cmd: 'point', ok: false, err: plan.reason });
+        return;
+      }
+      const w = DRAFT.mainWin;
+      if (!w || w.isDestroyed()) {
+        reply({ cmd: 'point', ok: false, err: '主窗口不在（' + plan.mode + '）：这条命令只指挥**正在运行的**界面' });
+        return;
+      }
+      return w.webContents.executeJavaScript(plan.js).then((r) => {
+        const ok = !!(r && r.ok);
+        reply({ cmd: 'point', ok: ok, result: r || null, err: ok ? null : ((r && r.reason) || '界面没有返回结果') });
+      }).catch((err) => {
+        // 页面被卸载 / 执行超时 / 渲染层抛错都落这里 —— 必须回执（否则调用方白等满窗口）
+        reply({ cmd: 'point', ok: false, err: '界面执行失败：' + ((err && err.message) || err) });
+      });
+    }
     // dsh-only：**关导图页 = 真卸载这一页**（v0.19；旧语义只是给它加个类名、页面还在内存里 ✗）
     //   `confirmed:false` ⇒ 主进程自己查一次渲染层的脏标记：脏就**如实拒绝**（AI 这条路上
     //   不弹模态框 —— 没人保证有人在看，弹窗会把调用方挂死 ✗）。
@@ -4298,8 +4339,13 @@ function startControlChannel() {
       return;
     }
     if (cmd.cmd !== 'dsh-sidebar') {
-      // 未知命令：当场给回执（否则调用方会白等满窗口，拿到的是"界面没响应"这种**假原因**）
-      reply({ cmd: cmd.cmd, ok: false, err: '界面不认识这条命令: ' + String(cmd.cmd) });
+      /* 走到这里说明**白名单与实际分支漂移了**（`KNOWN_CMDS` 里有这条、上面却没有分支）——
+       * 这与"未知命令"是**两件不同的事**，报文必须分开：
+       *   · 未知命令 ⇒ 调用方写错了 cmd 名（`unknownCmdReceipt` 已经在上面的白名单闸里回答过）；
+       *   · 这条 ⇒ 本进程的**代码不一致**（加表忘加分支），要按内部错误报，别让人以为是自己的错。
+       * 两种都**当场回执**（否则调用方会白等满窗口，拿到的是"界面没响应"这种**假原因**）。 */
+      reply({ cmd: cmd.cmd, ok: false,
+        err: '界面内部不一致：白名单里有 `' + String(cmd.cmd) + '` 但没有对应分支（加表忘加分支）' });
       return;
     }
     let ok = false;
