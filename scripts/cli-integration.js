@@ -4627,8 +4627,10 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
    *  —— 刻意不写成 `require(...).TOOLS.length` 那种自指式（那样谁把工具数改大了，断言会跟着一起变 ⇒ 没有判别力；
    *  与 `tests/recheck.test.js` 里 `expect(mcp.TOOLS.length).toBe(52)` 同一用意）。贴上之后若它变了，G6 会先红。
    *  【2026-10-20 台账 `W21`】51 → **52**：`ask_apply`（`ask-apply` 的 MCP 透传）是那一批唯一新增的工具。
-   *  本段的判据仍是"**全库档没有新增工具**"（52 是现值的写死真值，不是"W1 当时那一版的工具数"）。 */
-  const W1_TOOLS = 52;
+   *  【2026-10-20 任务 `I-1`】52 → **53**：`features`（产品名册查询，只读）—— `S2` 的 `mcp-gap`
+   *  **反向**断言第一次跑就点到它，而同一天 `W18` 量出"CLI 有而 MCP 无"是 25 条真缺口 ⇒ 补工具而不是加进缺口册。
+   *  本段的判据仍是"**全库档没有新增工具**"（53 是现值的写死真值，不是"W1 当时那一版的工具数"）。 */
+  const W1_TOOLS = 53;
   const W1TAG = Date.now().toString(36);
   const W1A = 'it-probe-w1-a-' + W1TAG;
   const W1B = 'it-probe-w1-b-' + W1TAG;
@@ -8061,13 +8063,96 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
      * 选项登记的判据归 `tests/cli-options.test.js`（那是它的唯一职责），不在这里重复。 */
 
     const w21ask = w21mcp.TOOLS.filter((t) => t.name === 'ask_apply')[0];
-    check('W21·E MCP 侧：工具数 = 52（写死真值）+ `ask_apply` 存在、必填只有 project·id、挂了 dry_run'
+    check('W21·E MCP 侧：工具数 = 53（写死真值；`I-1` 的 `features` 之后）+ `ask_apply` 存在、必填只有 project·id、挂了 dry_run'
       + '（它是**写类**，不挂就等于把"先审再写"从 MCP 侧抽掉）',
-      w21mcp.TOOLS.length === 52 && !!w21ask
+      w21mcp.TOOLS.length === 53 && !!w21ask
         && JSON.stringify(w21ask.inputSchema.required) === JSON.stringify(['project', 'id'])
         && !!w21ask.inputSchema.properties.dry_run
         && w21mcp.DRY_RUN_TOOL_CMD.ask_apply === 'ask-apply',
       '工具数=' + w21mcp.TOOLS.length + ' ｜ ask_apply=' + (!!w21ask));
+  }
+
+  /* ---------------- 8.10 `features`（任务 `I-1`，`W18` §四）：三套名字的三向互查 ----------------
+   * 这一组的判据分四档，**每一档都必须能单独红**（否则就是"跑过了但没判什么"）：
+   *   (a) 无参 / `--code` / `--grep` 三条路的**可观测输出**（不是"没报错"）；
+   *   (b) **三向互查的判别力** —— 同一个功能的命令名与中文名**都**要命中同一行
+   *       （`GAP-4` 的实测形状：`changelog --grep source-chain` 0 命中而 `--grep 来源链` 1 命中）；
+   *   (c) 0 命中 / 不存在的代号 / 两个筛选条件同时给 ⇒ **各自不同的**退出码与报文
+   *       （检索 0 命中 = exit 0 但把"搜过哪三处"喊出来；精确取一行取不到 = exit 1）；
+   *   (d) 只读 + 确定性：不在写命令清单里，`--json` 两跑**逐字节相同**。
+   * ⚠️ 判据只认"输出里有那个答案"或退出码，不认"命令没崩"。
+   * ⚠️ 本段不引入圈号枚举（那个形状是 G9 的判定标记，重复即判红）。 */
+  {
+    const fCore = require(path.join(ROOT, 'cli', 'core.js'));
+    const fMcp = require(path.join(ROOT, 'scripts', 'mcp-server.js'));
+
+    // (a) 无参：出口是"整张名册 + 两个差集的读数"，缺任何一块都算没答上来
+    const fAll = run(['features']);
+    check('I-1 无参：列出名册（**16 行** + 代号/中文名/状态/台账/承载命令）+ 两个差集的读数都在',
+      fAll.code === 0 && fAll.out.indexOf('产品功能名册') >= 0
+        && fAll.out.indexOf('差集①') >= 0 && fAll.out.indexOf('差集②') >= 0
+        && /\n\s{2}CT\s+持续跟踪\s+已实现/.test(fAll.out)
+        && fAll.out.indexOf('SC    来源链') >= 0,
+      'exit=' + fAll.code + ' ｜ 行数=' + (fAll.out.match(/\n\s{2}[A-Z]{2}\s/g) || []).length);
+
+    // (b) 三向互查的判别力：命令名与中文名**两处都命中同一行**，且 JSON 的 matchedIn 指认是哪一处
+    const fByCmd = JSON.parse(run(['features', '--grep', 'source-chain', '--json']).out);
+    const fByName = JSON.parse(run(['features', '--grep', '来源链', '--json']).out);
+    check('I-1 三向互查：`--grep source-chain` 与 `--grep 来源链` **都命中 `SC`**（今天之前前者 0 命中）',
+      fByCmd.hitCount === 1 && fByCmd.hits[0].code === 'SC'
+        && fByName.hitCount === 1 && fByName.hits[0].code === 'SC'
+        && JSON.stringify(fByCmd.hits[0].matchedIn) === JSON.stringify(['commands'])
+        && JSON.stringify(fByName.hits[0].matchedIn) === JSON.stringify(['name']),
+      '--grep 命令名 ⇒ ' + fByCmd.hits.map((h) => h.code) + '/命中处 ' + fByCmd.hits[0].matchedIn
+        + ' ｜ --grep 中文名 ⇒ ' + fByName.hits.map((h) => h.code) + '/命中处 ' + fByName.hits[0].matchedIn);
+
+    // (c) `--code` 精确取一行：给的代号原样回，命令名一起给（Q1「什么状态」/ Q7「代号指什么」）
+    const fCode = run(['features', '--code', 'DM']);
+    check('I-1 `--code DM` ⇒ 草稿图那一行 + 它的命令名（`draft-map` / `apply`）',
+      fCode.code === 0 && fCode.out.indexOf('代号: DM') >= 0
+        && fCode.out.indexOf('中文名: 草稿图') >= 0
+        && fCode.out.indexOf('实现状态: 未实现（部分）') >= 0
+        && fCode.out.indexOf('draft-map') >= 0 && fCode.out.indexOf('W11') >= 0,
+      'exit=' + fCode.code + ' ｜ ' + fCode.out.split('\n')[0]);
+
+    // (c) 检索 0 命中：exit 0（与 `changelog --grep` 同口径）但**必须响亮列出搜过的三处**
+    const fZero = run(['features', '--grep', 'zzzz-not-exist']);
+    check('I-1 `--grep` 0 命中 ⇒ exit 0 **且**把"搜过哪三处"喊出来（代号/中文名/命令名）+ 给出下一步',
+      fZero.code === 0 && fZero.out.indexOf('命中 0') >= 0
+        && fZero.out.indexOf('代号') >= 0 && fZero.out.indexOf('中文名') >= 0
+        && fZero.out.indexOf('CLI 命令名') >= 0 && fZero.out.indexOf('docs/CLI.md') >= 0,
+      'exit=' + fZero.code);
+
+    // (c) 精确取一行取不到：exit 1 + `error:`（"答不了"要响亮，与 `--grep` 的 0 命中是**两种**语义）
+    const fBadCode = run(['features', '--code', 'ZZ']);
+    check('I-1 `--code ZZ`（在册没有）⇒ exit 1 + 以 `error:` 开头 + 点名在册代号',
+      fBadCode.code === 1 && /^error:/.test(fBadCode.out.trim()) && fBadCode.out.indexOf('DM') >= 0,
+      'exit=' + fBadCode.code);
+
+    // (c) 两个筛选条件同时给：没有确定语义 ⇒ 拒绝（不猜、不静默取其一）
+    const fBoth = run(['features', '--grep', '草稿图', '--code', 'DM']);
+    check('I-1 `--grep` 与 `--code` 同时给 ⇒ exit 1 并说明两者互斥（不静默挑一个）',
+      fBoth.code === 1 && /互斥/.test(fBoth.out), 'exit=' + fBoth.code);
+
+    // (d) 确定性：同一份真源两跑**逐字节相同**（键序固定、不读时钟、排序码点序）
+    const fJson1 = run(['features', '--grep', '草稿图', '--json']).out;
+    const fJson2 = run(['features', '--grep', '草稿图', '--json']).out;
+    check('I-1 `--json` 两跑逐字节相同（键序固定 / 无时间戳 / 排序码点序）且 hits[0] 是 DM',
+      fJson1 === fJson2 && JSON.parse(fJson1).hits[0].code === 'DM',
+      '两跑长度 ' + fJson1.length + ' / ' + fJson2.length);
+
+    // (d) 只读：写命令清单里都没有它（进去就是假声明）
+    check('I-1 `features` 是**只读**：`WRITE_COMMANDS` / `DRY_RUN_COMMANDS` 里都没有它',
+      fCore.WRITE_COMMANDS.indexOf('features') < 0 && fCore.DRY_RUN_COMMANDS.indexOf('features') < 0,
+      '在册；WRITE 命中=' + (fCore.WRITE_COMMANDS.indexOf('features') >= 0)
+        + ' / DRY_RUN 命中=' + (fCore.DRY_RUN_COMMANDS.indexOf('features') >= 0));
+
+    // (d) MCP 侧：只读名册也有透传（`S2` 的 `mcp-gap` 是**双向**判据 —— CLI 有而 MCP 无会判红）
+    const fTool = fMcp.TOOLS.filter((t) => t.name === 'features')[0];
+    check('I-1 MCP 侧：`features` 工具在册、必填为空（只读名册）、有 grep/code 两个参数',
+      !!fTool && JSON.stringify(fTool.inputSchema.required) === JSON.stringify([])
+        && !!fTool.inputSchema.properties.grep && !!fTool.inputSchema.properties.code,
+      fTool ? '在册；参数=' + Object.keys(fTool.inputSchema.properties).join(',') : '没注册');
   }
 
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。

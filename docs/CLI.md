@@ -98,6 +98,7 @@
 | `docs-gen` | docs-gen |
 | `release` | release [版本号] [--major|--minor|--patch] |
 | `changelog` | changelog [--grep 关键词] [--full] [--limit n] [--json] |
+| `features` | features [--grep <词>] [--code <代号>] [--json] |
 | `dsh-caps` | dsh-caps [--json] [--grep 关键词] [--unmounted] |
 
 ## 详细用法
@@ -708,6 +709,14 @@ CHANGELOG 窄查询（只读）：段/条目索引（行号+行数+字节）或�
 
 ```
 node cli/mm-cli.js changelog [--grep 关键词] [--full] [--limit n] [--json]
+```
+
+### features
+
+产品功能名册（只读）：从 `docs/FEATURES.md` §3 的**唯一权威表**现算「代号 ↔ 中文名 ↔ 承载命令」—— 答「这个功能现在什么状态」与「这个代号指什么」，不必读整节名册（`W18` 量过它的阅读成本）。`--grep` 在**三处联合搜**（代号 / 中文名 / 该行提到的 CLI 命令名 —— 即 `GAP-4` 的三向互查）；**0 命中会响亮列出搜过的三处**并不静默返回空（exit 0，与 `changelog --grep` / `dsh-caps --grep` 同口径）。`--code` 精确取一行（取不到 exit 1 —— 检索与精确取行是两种语义）。另给**两个差集**（本命令最有价值的输出）：名册按"命令调用形态"提到而 `registry` 里没有的命令 / `registry` 有而名册任何一行都没提的命令（后者 = "一条命令回不到任何功能代号"）。零写盘（不记热度、不进 `WRITE_COMMANDS`），`--json` 两跑逐字节相同（键序固定、排序码点序、不读时钟）
+
+```
+node cli/mm-cli.js features [--grep <词>] [--code <代号>] [--json]
 ```
 
 ### dsh-caps

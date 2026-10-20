@@ -77,6 +77,148 @@ describe('S2 取事实：MCP 派发命令 / 冒烟域索引', () => {
   });
 });
 
+/* ============================================================
+ * ①-2 MCP 缺口册（`MCP_GAP_DEBT`）—— **CLI→MCP 的反方向**
+ * ------------------------------------------------------------
+ * 为什么要有这一组（缺口 `GAP-2`）：门禁原先只守 `MCP → CLI`（派发到的命令必须存在），
+ * 反方向只有一行注记「那是人的判断，不是缺陷」⇒ **注记等于没有**（`source-chain` 就这样无声落进来）。
+ * 这一组锁三件事：
+ *   甲 **册与事实双向镜像**（真仓库上两个差集都空 —— 这才是"只减不增"的机械保证）；
+ *   乙 **三方向判别力**（纯函数喂输入：没登记 / 已做了 / 已不是命令，各打一次红）+ 上界；
+ *   丙 **真文件上的方向证明**（在内存里改 `mcp-server.js` 的**文本** ⇒ 不动真仓一个字节）。
+ * ============================================================ */
+describe('S2 ①-2 MCP 缺口册：册与事实双向镜像（真仓库）', () => {
+  const registry = require(path.join(ROOT, 'cli', 'registry.js')).list().map((c) => c.name);
+  const dispatched = gate.extractMcpCommands(mcpSrc).map((d) => d.cmd);
+
+  it('真仓库：`registry \\ MCP 工具面` == 册上命令集（两个差集都空）', () => {
+    const gap = registry.filter((n) => !dispatched.includes(n)).sort();
+    const book = gate.MCP_GAP_DEBT.map((e) => e.cmd).sort();
+    expect(gap.filter((n) => !book.includes(n))).toEqual([]);   // 缺口没登记 ⇒ 这本册就是注记
+    expect(book.filter((n) => !gap.includes(n))).toEqual([]);   // 册上是已做 / 已无 ⇒ 册永不缩
+    expect(gap.length).toBeGreaterThan(0);                      // 全做完了就该把册一起删掉
+    expect(gate.MCP_GAP_DEBT.length).toBe(gap.length);
+  });
+
+  it('条数 == 上界，且上界是**字面量**（不是 `MCP_GAP_DEBT.length` —— 后者会跟着册一起涨）', () => {
+    expect(gate.MCP_GAP_DEBT.length).toBeLessThanOrEqual(gate.MCP_GAP_DEBT_MAX);
+    expect(gate.MCP_GAP_DEBT_MAX).toBe(gate.MCP_GAP_DEBT.length);
+    expect(gateSrc).toMatch(/const MCP_GAP_DEBT_MAX = \d+;/);
+  });
+
+  it('每条都有 `why`（一句"为什么不做 MCP"）· 命令名不重复 · 都是真命令', () => {
+    gate.MCP_GAP_DEBT.forEach((e) => {
+      expect(typeof e.cmd, JSON.stringify(e)).toBe('string');
+      expect(String(e.why || '').length, e.cmd).toBeGreaterThan(8);
+    });
+    expect(new Set(gate.MCP_GAP_DEBT.map((e) => e.cmd)).size).toBe(gate.MCP_GAP_DEBT.length);
+    gate.MCP_GAP_DEBT.forEach((e) => expect(registry, e.cmd).toContain(e.cmd));
+  });
+
+  it('`CHECKS` 里有 `MCP_GAP`，且连带表有一处 `role: self` 指向它（声明↔实现双向闭包）', () => {
+    expect(gate.CHECKS).toContain('MCP_GAP');
+    const decl = gate.declaredChecks(gate.COLLATERAL).filter((d) => d.key === 'MCP_GAP');
+    expect(decl.length).toBeGreaterThan(0);
+  });
+});
+
+describe('S2 ①-2 MCP 缺口册：三方向 + 上界（纯函数，喂输入就能打红它）', () => {
+  const registry = ['read', 'tagged-cmd', 'half-done'];
+  const base = { registry: registry, dispatched: ['read'] };
+
+  it('方向①（`GAP-2` 的正题）：registry 里有、MCP 没有、册上也没有 ⇒ 红并**点名**', () => {
+    const v = gate.judgeMcpGap(Object.assign({}, base, { ledger: [] }));
+    expect(v.problems.length).toBe(2);                       // tagged-cmd + half-done
+    expect(v.uncovered.sort()).toEqual(['half-done', 'tagged-cmd']);
+    expect(v.problems.map((p) => p.msg).join('\n')).toContain('`tagged-cmd`');
+    expect(v.problems[0].msg).toContain('MCP_GAP_DEBT');     // 报文给出两条出路
+  });
+
+  it('方向②：册上那条**已经有 MCP 工具** ⇒ 红（"只减不增"的机械保证）', () => {
+    const v = gate.judgeMcpGap(Object.assign({}, base, {
+      ledger: [{ cmd: 'read', why: '假装这条还没做' }, { cmd: 'tagged-cmd', why: 'x' }, { cmd: 'half-done', why: 'y' }]
+    }));
+    expect(v.alreadyDone).toEqual(['read']);
+    expect(v.problems.map((p) => p.msg).join('\n')).toContain('已经有 MCP 工具');
+    expect(v.problems.map((p) => p.msg).join('\n')).toContain('MCP_GAP_DEBT_MAX');   // 销账要同批调小上限
+  });
+
+  it('方向② 的另一半：册上钉住**已不是命令**的名字 ⇒ 也红（改名 / 删命令后册会永远对不上）', () => {
+    const v = gate.judgeMcpGap(Object.assign({}, base, {
+      ledger: [{ cmd: 'renamed-away', why: '这条命令已经改名了' }]
+    }));
+    expect(v.dangling).toEqual(['renamed-away']);
+    expect(v.problems.map((p) => p.msg).join('\n')).toContain('不是 registry 里的命令');
+  });
+
+  it('**方向① 反过来读（"从册上删一条、那条确实还没做"）⇒ 一定被点名** —— 这一向判得到', () => {
+    const ledger = gate.MCP_GAP_DEBT.filter((e) => e.cmd !== 'source-chain');
+    const realRegistry = require(path.join(ROOT, 'cli', 'registry.js')).list().map((c) => c.name);
+    const realDispatched = gate.extractMcpCommands(mcpSrc).map((d) => d.cmd);
+    const v = gate.judgeMcpGap({ registry: realRegistry, dispatched: realDispatched, ledger: ledger });
+    /* ⚠️ 判据写成**相对基线**而不是"恰好等于 ['source-chain']"：真仓此刻可能还有**别的在飞批**
+     * 刚落的命令没登记（那正是本门禁要抓的形状）—— 那不该让"删一条 ⇒ 点一条"这条逻辑判成坏的。
+     * 所以比的是：比基线**多一条**，且多的那条**就是**被删掉的那条。 */
+    const base = gate.judgeMcpGap({ registry: realRegistry, dispatched: realDispatched });
+    expect(v.uncovered.length).toBe(base.uncovered.length + 1);
+    expect(v.uncovered).toContain('source-chain');
+    expect(v.problems.map((p) => p.msg).join('\n')).toContain('`source-chain`');
+  });
+
+  it('上界：条数超 `MCP_GAP_DEBT_MAX` ⇒ 红（报文形状照 `WRITE_OUTLET_SITE_CAP`）', () => {
+    const ledger = [{ cmd: 'tagged-cmd', why: 'x' }, { cmd: 'half-done', why: 'y' }];
+    const v = gate.judgeMcpGap(Object.assign({}, base, { ledger: ledger, max: 1 }));
+    expect(v.readings.onBook).toBe(2);
+    expect(v.readings.max).toBe(1);
+    const msg = v.problems.map((p) => p.msg).join('\n');
+    expect(msg).toContain('缺口册涨了');
+    expect(msg).toContain('只减不增');
+  });
+
+  it('条目本身：缺 `why` / 同名重复 ⇒ 各红一条（没名字的判断 = 注记）', () => {
+    const v = gate.judgeMcpGap(Object.assign({}, base, {
+      ledger: [{ cmd: 'tagged-cmd' }, { cmd: 'half-done', why: 'y' }, { cmd: 'half-done', why: 'y' }]
+    }));
+    const msg = v.problems.map((p) => p.msg).join('\n');
+    expect(msg).toContain('缺 `why`');
+    expect(msg).toContain('出现了两次');
+  });
+
+  it('负对照：事实与册完全一致 ⇒ **零问题**（判据不是恒红）', () => {
+    const v = gate.judgeMcpGap(Object.assign({}, base, {
+      ledger: [{ cmd: 'tagged-cmd', why: 'x' }, { cmd: 'half-done', why: 'y' }]
+    }));
+    expect(v.problems).toEqual([]);
+    expect(v.readings.uncovered).toBe(0);
+    expect(v.readings.gap).toBe(2);
+  });
+});
+
+describe('S2 ①-2 MCP 缺口册：真文件上的方向证明（**内存注入文本**，真仓一字节不动）', () => {
+  const registry = require(path.join(ROOT, 'cli', 'registry.js')).list().map((c) => c.name);
+
+  it('给册上一条命令**真加派发**（`runCli([\'source-chain\'…])`）⇒ 必报"已经有 MCP 工具了"', () => {
+    const injected = mcpSrc.replace("case 'projects': return runCli(['projects', '--json']);",
+      "case 'projects': return runCli(['projects', '--json']);\n"
+      + "    case 'source_chain': return runCli(['source-chain', argOf('project'), argOf('id'), '--json']);");
+    expect(injected).not.toBe(mcpSrc);                        // 注入点真的命中了（防"注入打空"）
+    const v = gate.judgeMcpGap({
+      registry: registry, dispatched: gate.extractMcpCommands(injected).map((d) => d.cmd)
+    });
+    expect(v.alreadyDone).toEqual(['source-chain']);
+  });
+
+  it('把一条派发**抽掉** ⇒ 方向① 必红并点名它（这条命令此前不在册，正是"新命令无声落进来"）', () => {
+    const injected = mcpSrc.replace("case 'projects': return runCli(['projects', '--json']);", '');
+    expect(injected).not.toBe(mcpSrc);
+    const v = gate.judgeMcpGap({
+      registry: registry, dispatched: gate.extractMcpCommands(injected).map((d) => d.cmd)
+    });
+    expect(v.uncovered).toContain('projects');               // 相对基线：真仓别的缺口不干扰这一条
+    expect(v.problems.map((p) => p.msg).join('\n')).toContain('`projects`');
+  });
+});
+
 describe('S2 表自身：每一处连带都有身份（有守卫 / 是本门禁 / 显式残差）', () => {
   it('每一处的 `role` 只有四种取值，且与它的字段自洽（gate / check 不许缺）', () => {
     const roles = ['body', 'gate', 'self', 'residual'];

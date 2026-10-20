@@ -40,6 +40,11 @@
  *   node scripts/collateral-check.js               判红/判绿（挂 `npm run verify` 的 S2 步）
  *   node scripts/collateral-check.js --list        打印「改动类型 → 连带处」全表 + 判定 ⑤ 的逐条读数
  *   node scripts/collateral-check.js --root=<dir>  只把**判定 ⑤ 的扫描根**指向别处（判别力证明用）
+ *   node scripts/collateral-check.js --note-root=<dir>  只把**判定 ⑥ 的扫描根**指向别处（判别力证明用）
+ *   node scripts/collateral-check.js --mcp-src=<file>   只把**判定 ① / ①-2 的 MCP 工具面**指向别处（同上）
+ *   node scripts/collateral-check.js --registry=<file>  只把**registry**换成另一份模块（同上：
+ *                                                      喂一份"多一条假命令"的包装 ⇒ 证明新命令会被点名）
+ *   ⚠️ 后四个都是**证明口**（opt-in）：不给就是真仓，输出与从前逐字节相同；给了会在首行自报"证明模式"。
  * ============================================================ */
 'use strict';
 
@@ -67,6 +72,11 @@ const COLLATERAL = [
         note: '命令名与选项声明的唯一权威（改这里本身就是"发生这类改动"）' },
       { at: 'scripts/mcp-server.js（MCP 透传）', role: 'self', check: 'MCP',
         note: 'MCP 只转发 CLI：它派发到的每条命令都必须存在（改名/删命令时最容易漏这一处）' },
+      { at: '`MCP_GAP_DEBT`（MCP 缺口册：CLI 有、MCP 没有的那些命令）', role: 'self', check: 'MCP_GAP',
+        note: '**反方向**（缺口 `GAP-2`）：新命令落在"MCP 没有"的缺口里，以前只有一行'
+          + '"那是人的判断，不是缺陷"的**注记** ⇒ 等于没有（实测 `source-chain` 就是这么无声进来的）。'
+          + '现在缺口是**在册清单 + 条数上界**：没登记 ⇒ 红并点名；册上已经做了 ⇒ 也红'
+          + '（双向镜像才是"只减不增"的机械保证）' },
       { at: 'docs/EXTENSIONS.md §1.2 稳定性表', role: 'gate', gate: 'G8',
         anchor: 'scripts/docs-registry-check.js#checkStabilityCoverage',
         note: '复用 G8 第 ⑮ 条：每条命令至少要落在稳定性的一级里（"能不能依赖它"的契约）' },
@@ -229,7 +239,7 @@ const COLLATERAL = [
 /* ===============================================================
  * 本门禁自己实现的那几处断言（键 = 表里 `gate: 'S2'` 引用的名字）
  * =============================================================== */
-const CHECKS = ['MCP', 'SMOKE_INDEX', 'WRITE_OUTLET', 'NOTE_RESIDUE', 'ARTIFACT_BATCH'];
+const CHECKS = ['MCP', 'MCP_GAP', 'SMOKE_INDEX', 'WRITE_OUTLET', 'NOTE_RESIDUE', 'ARTIFACT_BATCH'];
 
 /* ===============================================================
  * ① 从源码里取"MCP 派发到的 CLI 命令"（纯函数）
@@ -253,6 +263,193 @@ function mcpCallSites(src) {
   const sites = (text.match(/runCli\(/g) || []).length;
   const defs = (text.match(/function runCli\(/g) || []).length;
   return { sites, defs };
+}
+
+/* ===============================================================
+ * ①-2 MCP 缺口册（`MCP_GAP_DEBT`）—— CLI→MCP 方向的**反向断言**
+ * ---------------------------------------------------------------
+ * 它守的那件事（缺口 `GAP-2`；`W18` 与 `W21` 两批**独立**发现同一件事）：
+ *   本门禁原来只守**一个方向**（上面 `(a)`：MCP 派发到的命令必须存在于 registry），
+ *   反方向"CLI 有、MCP 没有"全仓只有**一行注记**：
+ *     「N 条 CLI 命令未做 MCP 工具 —— **那是人的判断，不是缺陷**」。
+ *   ⇒ **注记等于没有**。代价是当天的现场：新加的 `source-chain` 命令落在这个缺口里、**无一声响**
+ *     （实测缺口 24 条，它就是这天新掉进来的那一条）。
+ *
+ * 形态（照本文件 "⑤" 的两道 cap 与 G8 的 `README_STATUS_DEBT`，**不新造形状**）：
+ *   · **每条命令一个条目** + 一句 `why`（"为什么不做 MCP"是人的判断，但**判断必须写下来** ——
+ *     写不下来的判断，下一个人只能重新猜一遍，于是又变回注记）；
+ *   · `MCP_GAP_DEBT_MAX` **只减不增**：加一条缺口 = 放宽判定，必须同批抬上限并写明它为什么短期做不成；
+ *   · 册与事实**双向精确镜像**（这是"只减不增"的**机械保证** —— 少了任何一向，册子都不会缩）：
+ *       ① `registry \ MCP 工具面 ⊆ 册` —— 新命令落进缺口 ⇒ **红并点名**（`GAP-2` 的正题）；
+ *       ② `册 ⊆ registry \ MCP 工具面` —— 册上**已经做了**、或册上**已不是命令** ⇒ **红**。
+ *
+ * "MCP 工具面"的**唯一定义** = `extractMcpCommands()` 取到的**真派发**（`runCli(['cmd', …])` 那种）。
+ *   ⚠️ 故意**不**认"命令名在 `mcp-server.js` 里出现过"：实测 `init` / `apply` / `point` / `heat` / `tags`
+ *   这 5 条的名字是别的词的**子串**或 schema 属性名（`'tags'` 在 `search_nodes` 的参数描述里出现一次），
+ *   按"出现过"判就会把它们读成"已经做了" ⇒ 缺口被**假绿**盖掉（正是本批要堵的那个方向）。
+ * 能力边界（如实标注，别以为它包住一切）：
+ *   · 只在**派发点**上判：动态拼 argv（`runCli(c)` 而 `c` 来自运行时）扫不到 ⇒ 册上那条会一直挂着。
+ *     方向是安全的（**报红不报绿**）：宁可多报一条缺口，也不放过一条；
+ *   · 判**有没有做**，判不了"这条命令值不值得做 MCP 工具"（那是人在册上写 `why` 时做的判断）。
+ * =============================================================== */
+
+/** 缺口册条数上界：**只减不增**。
+ *  写成字面量而**不是** `MCP_GAP_DEBT.length`：后者会跟着册一起涨，于是"抬上限"就等于改一行数组、
+ *  没有任何痕迹 —— 与 `README_STATUS_DEBT_MAX` / `WRITE_OUTLET_SITE_CAP` 同一个理由。 */
+const MCP_GAP_DEBT_MAX = 24;
+
+/** 在册的 MCP 缺口（每条：`{ cmd, why }`）。
+ *  `why` = 一句话的**人判断**（"为什么这条不做 MCP 工具"）；它不校验真假，只保证"判断被写下来了"。
+ *  销账动作：做了工具 ⇒ 把这条删掉并同批把 `MCP_GAP_DEBT_MAX` 调小（`(3)` 那一向会盯着这件事）。 */
+const MCP_GAP_DEBT = [
+  { cmd: 'tags',
+    why: '给人核对词表用的只读清单（`--vocab` 的判据锚在 `docs/TAGS.md`）；AI 检索侧已有 `search --tag`，'
+      + '这份清单不是它的前置 ⇒ 不做工具（这是判断，不是做不到）' },
+  { cmd: 'init',
+    why: '建**空壳**项目（只有 root）；MCP 侧建项目走 `import_project` / `import_dir`（带内容地建），'
+      + '空壳入口是人的整理动作' },
+  { cmd: 'source-chain',
+    why: '**本批点名的就是它**：`W17` 当天新落的命令，落地时没同批做工具 ⇒ 缺口以前不会有人喊。'
+      + '补工具 = `TOOLS` 一行 + 一处 `runCli([\'source-chain\', …])`，属下一批的活（这句就是它在册的理由）' },
+  { cmd: 'apply',
+    why: '载荷是**盘上的** `--ops-file ops.json`（一次事务）；MCP 的入参是内存 JSON ⇒ 要工具化得先给 CLI 加'
+      + '一条"内联 ops"通道（改契约，不在本批）' },
+  { cmd: 'recheck',
+    why: '条目复校：写回要 `--write-verified --how "怎么核的"` —— 那句"怎么核的"只能由**核过的人**给 ⇒ 人工动作' },
+  { cmd: 'health',
+    why: '条目层体检（**真值出口**，给人判断"要不要迁移"）；AI 侧同类判据已有 `validate` / `stats` 两个工具，'
+      + '不重复开口' },
+  { cmd: 'migrate',
+    why: 'v2→v3 的**一次性**形态迁移（写盘前强制 export 备份、没有跳过开关）⇒ 一次性动作不该常驻在工具面上' },
+  { cmd: 'merge-project',
+    why: '跨项目整树搬家（每个源项目成为目标里的一个分组节点）；一次误调的改写面是**整棵树**，'
+      + '判据里还含"全库根 id 都是 `root`"这类现状 ⇒ 留给人显式跑' },
+  { cmd: 'bind-sync',
+    why: '形态是**绑定 + 守护**（主进程 `fs.watch`），单次同步只是其中一档；工具化要么截断语义（只做单次）、'
+      + '要么把守护开关交给 AI ⇒ 都不划算' },
+  { cmd: 'learn-path',
+    why: '生成一个**新项目**的有序链路（备课式整理，判据靠书内章序 / 显式前置）；MCP 侧建项目已有 '
+      + '`import_project` / `import_dir` ⇒ 先不开这个口子' },
+  { cmd: 'sidebar-only',
+    why: '关掉导图页 / 重新加载它 —— 驱动**正在运行的界面**（`src/control.js` 的信箱 + 回执）；'
+      + 'MCP 服务常在没人开界面的机器上跑 ⇒ 工具化只会把"界面没在跑"变成工具失败' },
+  { cmd: 'dsh-sidebar',
+    why: '开 / 关侧栏 DSH（连服务一起停）—— 与 `sidebar-only` 同一条理由：界面动作，AI 的入口仍是 CLI' },
+  { cmd: 'dsh-status',
+    why: '只读诊断**界面实况**（可见性 / 占总宽 / 是否横向溢出）；没有界面在跑时它没有答案 ⇒ 不是 MCP 工具该承担的事' },
+  { cmd: 'dsh-prefill',
+    why: '往**人的输入框**里塞文本（不代替发送）—— 写的是人的草稿 ⇒ 不经远端 AI 的手' },
+  { cmd: 'draft-map',
+    why: '开一个**临时小窗**并等人决策（并入 / 丢弃）—— 需要人在屏幕前；这条取舍已写在 '
+      + '`docs/EXTENSIONS.md` §1.3（"界面动作的 AI 入口是 CLI"）' },
+  { cmd: 'point',
+    why: '让界面打开 / 高亮那篇笔记（`AP`，只读视图动作）—— 同 `draft-map`：界面动作，'
+      + '`docs/EXTENSIONS.md` §1.3 已写明这条取舍' },
+  { cmd: 'contents',
+    why: '概念目录：可 `--apply` 一键补成「概念索引」分支 —— "概念名 = 标题"这条判据要人先看一遍再应用 ⇒ 结构整理动作' },
+  { cmd: 'timeline',
+    why: '只读"哪些笔记最近被改过"；与已有工具 `changes` 读的是同一条变更日志 ⇒ 不重复开口，AI 用 `changes` 就够' },
+  { cmd: 'visit',
+    why: '旁路日志（`.visits.jsonl`）的**写**命令，通道与权重表在 `src/heat.js` 一处定义；热度该在真实使用里长出来，'
+      + '"自报一次访问"最容易把榜灌成假的 ⇒ 不做工具' },
+  { cmd: 'heat',
+    why: '访问热度榜（人 / AI 两条，窗口 30 天、名次十档）；`search` 已默认带热度重排 ⇒ 单开一条榜对 AI 的增量有限' },
+  { cmd: 'docs-gen',
+    why: '从 registry 重生成 `docs/CLI.md` —— 这是**改代码**那一步的生成动作，跑在仓库上、跑错就改文档 ⇒ 留在命令行' },
+  { cmd: 'release',
+    why: '发版：CHANGELOG 分段 + 四处版本号同步 + README 版本锁（拒绝版本倒退）—— 仓库自身的发布动作，与笔记数据无关' },
+  { cmd: 'changelog',
+    why: 'CHANGELOG 窄查询（段 / 条目索引 / 关键词）—— 读的是**仓库的版本史**，不是笔记数据 ⇒ 不进 MCP 面' },
+  { cmd: 'dsh-caps',
+    why: 'DSH 能力边界（从 `vendor/dsh` 的装配清单机械读取）—— 查的是**本机运行包挂了什么**，属环境诊断 ⇒ 留在命令行' }
+];
+
+/**
+ * 判据本体（纯函数：吃 registry / 已派发的命令 / 册 / 上限 ⇒ 问题清单）。
+ *
+ * 为什么做成纯函数（`B4`）：三条判据的判别力在**内存里**就能证明，不必去改真仓。
+ * `@param` `{registry, dispatched, ledger, max, mcpRel}` —— 后两个缺省取本文件的册与上界。
+ * `@returns` `{problems, notes, readings, uncovered, alreadyDone, dangling}`
+ */
+function judgeMcpGap(input) {
+  const o = input || {};
+  const registry = Array.isArray(o.registry) ? o.registry.slice() : [];
+  const dispatched = Array.isArray(o.dispatched) ? o.dispatched.slice() : [];
+  const ledger = Array.isArray(o.ledger) ? o.ledger : MCP_GAP_DEBT;
+  const max = Number.isFinite(o.max) ? o.max : MCP_GAP_DEBT_MAX;
+  const mcpRel = o.mcpRel || 'scripts/mcp-server.js';
+  const problems = [];
+  const notes = [];
+  const doneSet = new Set(dispatched);
+  const regSet = new Set(registry);
+  const onBook = new Map();
+  const howTo = '两条出路（`B4`：不许装作没看见）：① 给它做一个 MCP 工具（`TOOLS` 里一条 + '
+    + '一处 `runCli([\'<命令>\', …])`）；② 同批登记进 `MCP_GAP_DEBT`（每条带一句"为什么不做 MCP"），'
+    + '并**同批抬 `MCP_GAP_DEBT_MAX`**';
+
+  // (1) 条目本身要读得出来：有名字 / 有 why / 不许重复（重复会把条数读数灌水 = 偷额度）
+  ledger.forEach((e) => {
+    const cmd = e && typeof e.cmd === 'string' ? e.cmd : '';
+    if (!cmd) {
+      problems.push({ kind: 'mcp-gap',
+        msg: '`MCP_GAP_DEBT` 有一条没写 `cmd` —— 没名字的条目既点不了名、也销不了账' });
+      return;
+    }
+    if (onBook.has(cmd)) {
+      problems.push({ kind: 'mcp-gap', msg: '`MCP_GAP_DEBT` 里 `' + cmd + '` 出现了两次 —— '
+        + '重复登记会把条数读数灌水，而上限只减不增 ⇒ 灌水就等于偷额度' });
+    } else {
+      onBook.set(cmd, e);
+    }
+    if (!e.why) {
+      problems.push({ kind: 'mcp-gap', msg: '`MCP_GAP_DEBT` 的 `' + cmd + '` 缺 `why`（"为什么不做 MCP"'
+        + '必须写下来：一句话即可 —— 没有它，这本册就退化成第二份"注记等于没有"' });
+    }
+  });
+
+  // (2) 方向一（`GAP-2` 的正题）：registry 里有、MCP 工具面没有、册上也没有 ⇒ 红并**点名**
+  const uncovered = registry.filter((n) => !doneSet.has(n) && !onBook.has(n));
+  uncovered.forEach((cmd) => {
+    problems.push({ kind: 'mcp-gap', msg: '新命令落在 MCP 缺口里无声响：`' + cmd + '` 是 registry 里的命令，'
+      + '但 `' + mcpRel + '` 里没有派发它、`MCP_GAP_DEBT` 里也没有它的条目 —— ' + howTo });
+  });
+
+  // (3) 方向二：册上那条**已经做了**（或已不是命令）⇒ 红 —— 这一向就是"只减不增"的机械保证
+  const alreadyDone = [];
+  const dangling = [];
+  ledger.forEach((e) => {
+    const cmd = e && typeof e.cmd === 'string' ? e.cmd : '';
+    if (!cmd) return;
+    if (doneSet.has(cmd)) {
+      alreadyDone.push(cmd);
+      problems.push({ kind: 'mcp-gap', msg: '`MCP_GAP_DEBT` 里的 `' + cmd + '` **已经有 MCP 工具了**（`'
+        + mcpRel + '` 里派发到它）—— 请把它从册上删掉，并**同批把 `MCP_GAP_DEBT_MAX` 调小**：'
+        + '册子只减不增，不销账它就永远不会缩' });
+    } else if (!regSet.has(cmd)) {
+      dangling.push(cmd);
+      problems.push({ kind: 'mcp-gap', msg: '`MCP_GAP_DEBT` 里的 `' + cmd + '` **不是 registry 里的命令**'
+        + '（改名 / 删掉了？）—— 册子钉住了一个不存在的名字，缺口判定会永远"对不上"' });
+    }
+  });
+
+  // (4) 条数上界（报文形状照 `WRITE_OUTLET_SITE_CAP`：分子 / 上限 + 一句"只减不增"的理由）
+  if (ledger.length > max) {
+    problems.push({ kind: 'mcp-gap', msg: '缺口册涨了：现有 ' + ledger.length + ' 条 > 上限 ' + max
+      + '（`MCP_GAP_DEBT_MAX` 只减不增 —— 加一条缺口就是放宽判定：要么同批抬上限并写明'
+      + '这一条为什么短期做不成 MCP 工具，要么先还掉一条旧的）' });
+  }
+
+  const gap = registry.filter((n) => !doneSet.has(n)).length;
+  const readings = {
+    registry: registry.length, dispatched: dispatched.length, gap: gap,
+    onBook: ledger.length, max: max,
+    uncovered: uncovered.length, alreadyDone: alreadyDone.length, dangling: dangling.length
+  };
+  notes.push('MCP 缺口（CLI→MCP 的反方向）：' + gap + ' 条 CLI 命令没有 MCP 工具 —— '
+    + '在册 `MCP_GAP_DEBT` ' + ledger.length + ' 条 / 上限 ' + max
+    + '（册与事实**双向镜像**：未登记 ' + readings.uncovered + ' · 册上已做 ' + readings.alreadyDone
+    + ' · 册上已无此命令 ' + readings.dangling + '）；新命令落进缺口**判红**');
+  return { problems, notes, readings, uncovered, alreadyDone, dangling };
 }
 
 /* ===============================================================
@@ -303,10 +500,17 @@ function analyze(opts) {
   const notes = [];
 
   // (a) MCP 派发到的命令必须存在（↔ 表 cli-command · MCP 透传）
+  //    `mcpSrc` / `registry` 是两个**只给判别力证明用**的证明口（把同一个判据指向 `%TEMP%` 副本、
+  //    或指向一份"注入了假命令"的 registry 包装 ⇒ 真仓一个字节不动）；不给就是真仓，
+  //    输出与从前逐字节相同（H3：新能力走 opt-in 开关，不给默认路径加成本）。
   const mcpRel = 'scripts/mcp-server.js';
-  const mcpSrc = fs.readFileSync(path.join(ROOT, mcpRel), 'utf8');
+  const mcpPath = o.mcpSrc ? path.resolve(o.mcpSrc) : path.join(ROOT, mcpRel);
+  const mcpSrc = fs.readFileSync(mcpPath, 'utf8');
   const dispatched = extractMcpCommands(mcpSrc);
-  const registry = require(path.join(ROOT, 'cli', 'registry.js')).list().map((c) => c.name);
+  const registryModule = o.registry
+    ? require(path.resolve(o.registry))
+    : require(path.join(ROOT, 'cli', 'registry.js'));
+  const registry = registryModule.list().map((c) => c.name);
   const sites = mcpCallSites(mcpSrc);
   dispatched.forEach((d) => {
     if (!registry.includes(d.cmd)) {
@@ -317,8 +521,17 @@ function analyze(opts) {
       });
     }
   });
-  notes.push('MCP 透传：' + dispatched.length + ' 条派发命令（调用点 ' + sites.sites + ' 处，'
-    + (registry.length - dispatched.length) + ' 条 CLI 命令未做 MCP 工具 —— 那是人的判断，不是缺陷）');
+  notes.push('MCP 透传：' + dispatched.length + ' 条派发命令（调用点 ' + sites.sites + ' 处）');
+
+  // (a-2) 反方向：CLI 有、MCP 没有 —— 缺口册（判定本体在 ①-2 那一节，这里只接线）
+  //    这一行以前是一句注记「那是人的判断，不是缺陷」⇒ 新命令落进缺口**无一声响**（`GAP-2`）。
+  const mcpGap = judgeMcpGap({
+    registry: registry, dispatched: dispatched.map((d) => d.cmd),
+    ledger: MCP_GAP_DEBT, max: MCP_GAP_DEBT_MAX,
+    mcpRel: o.mcpSrc ? path.resolve(o.mcpSrc) : mcpRel
+  });
+  mcpGap.problems.forEach((p) => problems.push(p));
+  mcpGap.notes.forEach((n) => notes.push(n));
 
   // (b) 冒烟域必须在入口索引里（↔ 表 smoke-domain · 断言注册面）
   const entryRel = 'scripts/smoke-assertions.js';
@@ -393,6 +606,7 @@ function analyze(opts) {
   artifact.notes.forEach((n) => notes.push(n));
 
   return { problems, notes, dispatched, domains, mounted, checks: CHECKS.slice(),
+    mcpGap: mcpGap,
     writeOutlet: writeOutlet, noteResidue: noteResidue, artifact: artifact };
 }
 
@@ -2198,13 +2412,28 @@ function main() {
   // `--note-root=<dir>`：**只影响判定 ⑥ 的扫描根**（把同一份判据指向夹具 / `%TEMP%` 副本用 ⇒ 真仓一个字节不动；
   // 不加这个开关时输出与从前逐字节相同 —— H3：新能力走 opt-in 开关，不给默认路径加成本）。
   const noteRootArg = (process.argv.slice(2).find((a) => a.startsWith('--note-root=')) || '').slice(12);
+  // `--mcp-src=<file>` / `--registry=<file>`：**只影响判定 ① 与 ①-2 的取数**（判别力证明用 ——
+  // 把 MCP 工具面指向 `%TEMP%` 副本、或把 registry 指向一份"多一条假命令"的包装模块 ⇒ 真仓一个字节不动）。
+  // 不加这两个开关时两条判定读的都是真仓，输出与从前逐字节相同（H3）。
+  const mcpSrcArg = (process.argv.slice(2).find((a) => a.startsWith('--mcp-src=')) || '').slice(10);
+  const registryArg = (process.argv.slice(2).find((a) => a.startsWith('--registry=')) || '').slice(11);
   // ⚠️ 判定 ⑦ 的 `--art-root=<dir>` 已随它那一半断言（`renderer` 入档）**一起删掉**（2026-10-20，门禁B2）：
   // 那个开关的全部用途是"把'新增一个渲染层模块'注入夹具"，而那条断言已搬回 G8。
   // 留着一个只能"关掉判定"的开关，比没有更坏。
   const opts = {};
   if (rootArg) opts.writeOutletRoot = path.resolve(rootArg);
   if (noteRootArg) opts.noteResidueRoot = path.resolve(noteRootArg);
+  if (mcpSrcArg) opts.mcpSrc = path.resolve(mcpSrcArg);
+  if (registryArg) opts.registry = path.resolve(registryArg);
   const r = analyze(opts);
+  if (opts.mcpSrc || opts.registry) {
+    // 证明模式必须在输出里**自报**：否则读者分不出这一行读数是真仓的还是夹具的（`A5`：跳过/换源必须可见）
+    console.log('⚠️ 判别力证明模式：' + (opts.mcpSrc ? 'MCP 工具面读的是 `' + opts.mcpSrc + '`' : '')
+      + (opts.mcpSrc && opts.registry ? ' · ' : '')
+      + (opts.registry ? 'registry 读的是 `' + opts.registry + '`' : '')
+      + '（**真仓一个字节不动**）');
+    console.log('');
+  }
 
   if (list) {
     console.log('== 改动类型 → 连带处（**唯一权威 = 本文件 COLLATERAL**）==');
@@ -2225,6 +2454,14 @@ function main() {
     console.log('== 现场事实 ==');
     r.notes.forEach((n) => console.log('  · ' + n));
     console.log('  · 本门禁自己实现的断言：' + CHECKS.join(' / '));
+    console.log('');
+    console.log('== ①-2 MCP 缺口册（CLI→MCP 的反方向；在册 ' + MCP_GAP_DEBT.length + ' 条 / 上限 '
+      + MCP_GAP_DEBT_MAX + '，只减不增）==');
+    if (!MCP_GAP_DEBT.length) console.log('  （空册：每条 CLI 命令都有 MCP 工具 —— 手册归零就该把它删掉）');
+    MCP_GAP_DEBT.forEach((e) => console.log('  · ' + e.cmd + '\n      why：' + e.why));
+    console.log('  读数：缺口 ' + r.mcpGap.readings.gap + ' 条（registry ' + r.mcpGap.readings.registry
+      + ' · 已做 MCP 工具 ' + r.mcpGap.readings.dispatched + '）· 未登记 ' + r.mcpGap.readings.uncovered
+      + ' · 册上已做 ' + r.mcpGap.readings.alreadyDone + ' · 册上已无此命令 ' + r.mcpGap.readings.dangling);
     console.log('');
     console.log('== ⑤ 判定 ③：出口本体 ' + WO_OUTLET_FILE + ' 的 `' + WO_OUTLET_FN + '` 三条腿 ==');
     const a = r.writeOutlet.atomic;
@@ -2332,6 +2569,8 @@ function main() {
 module.exports = {
   COLLATERAL, CHECKS, extractMcpCommands, mcpCallSites, smokeDomains,
   missingFromIndex, declaredChecks, referencedGates, mountedGates, analyze,
+  // ①-2 MCP 缺口册（CLI→MCP 的反方向）：册 / 上界 / 判据本体（纯函数，单测能直接喂输入打红它）
+  MCP_GAP_DEBT, MCP_GAP_DEBT_MAX, judgeMcpGap,
   // ⑤ 写盘出口（判定与读数都在这里，别在别处再写一份）
   WRITE_OUTLET_CAP, WRITE_OUTLET_SITE_CAP, WRITE_OUTLET_DEBT, WO_OUTLET_FILE, WO_WRITE_NAMES, findWriteCalls,
   woManagedFamily, evalPathExpr, normSig,

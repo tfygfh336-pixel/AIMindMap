@@ -6,7 +6,8 @@
  *
  *   ① **它存在、且形状对**：`TOOLS` 里有 `ask_apply`、必填只有 `project`/`id`（**不写 answer** ——
  *      空答案由 CLI 判成业务失败，不当成"参数缺了"那种协议错误；`answer_file` 那条路也不会被挡），
- *      名字唯一，工具数 = 52（写死值是**故意**的：它是交付里"N→M"的判据，与 `docs/VERIFY.md` 同源）。
+ *      名字唯一，工具数 = 53（写死值是**故意**的：它是交付里"N→M"的判据，与 `docs/VERIFY.md` 同源；
+ *      `I-1` 之后 53 —— 新增的那条是只读的 `features`）。
  *
  *   ② **它真的是写类**：`ask-apply` 在 `cli/core.js` 的 `WRITE_COMMANDS` 与 `DRY_RUN_COMMANDS` 里，
  *      而本工具挂在 `DRY_RUN_TOOL_CMD` 上、schema 里也挂了 `dry_run` —— 三处同源（映射不许漂移）。
@@ -78,9 +79,10 @@ const tool = (name) => mcp.TOOLS.filter((t) => t.name === name)[0];
  * 一、工具面：存在 / 形状 / 三处同源
  * ========================================================================== */
 describe('W21-M1 工具存在且形状对（必填只有 project/id：答案是否为空由 CLI 判）', () => {
-  it('M1.1 工具数 52、名字唯一、`ask_apply` 在里面（写死值是交付判据，见文件头）', () => {
-    expect(mcp.TOOLS.length).toBe(52);
-    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(52);
+  it('M1.1 工具数 53、名字唯一、`ask_apply` 在里面（写死值是交付判据，见文件头）', () => {
+    // 2026-10-20（`I-1`）：52 → 53 —— 新增 `features`（`features` 的只读 MCP 透传）。
+    expect(mcp.TOOLS.length).toBe(53);
+    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(53);
     expect(tool('ask_apply')).toBeTruthy();
   });
 
