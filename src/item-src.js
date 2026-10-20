@@ -40,16 +40,47 @@
  *     （`createCache()` 里按绝对路径 memo），这是"文件级指纹做廉价前置"的落地形态。
  *   · 本模块是 **Node-only**（要读盘），与 `src/item-index.js` 那种 UMD 双端模块不同
  *     （同 `src/doc-import.js` 的先例）。
+ *     ⚠️ 2026-10-20 更正：**"Node-only" 指的是能力，不是"加载方式"**。本文件修复前没有 UMD 头，
+ *     浏览器端**加载即抛** `require is not defined` —— 那违反 `src/` 的双端契约（§2.1/§8.4）。
+ *     现在它按 UMD 包装：浏览器端**能加载**，解析/判定那些纯函数可用（`itemIndex` 由 `window.MMItemIndex`
+ *     注入），而**读盘 / 取 `process` 的那些函数调用即抛"需要 Node 环境"**（见下方 UMD 头里的守卫）。
  * ============================================================ */
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+/* ---------- UMD 头（形态照 `docs/ARCHITECTURE.md` §2.3；对照模块 `src/palette-rank.js`）----------
+ * 修复前（2026-10-20 实测）：`fs` / `path` / `crypto` / `./item-index.js` 四条 `require` 写在模块顶层，
+ * 且**没有 UMD 头**、末尾直接 `module.exports` ⇒ 浏览器端加载抛 `require is not defined`。
+ * 本模块**真的**要用 Node 内建（读盘取证 + `process.cwd()`）⇒ 合规做法是显式守卫：
+ * 函数都在，调到就抛一句明确的话（见 nodeTrap / nodeGlobal）。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('fs'), require('path'), require('crypto'), require('./item-index.js'), process);
+  } else {
+    root.MMItemSrc = factory(nodeTrap('fs'), nodeTrap('path'), nodeTrap('crypto'), root.MMItemIndex, nodeGlobal('process'));
+  }
+  /* 浏览器端的 Node 替身。`nodeTrap`：取属性得一个**调用即抛**的函数；`nodeGlobal`：取属性即抛
+   * （`process.pid` / `process.cwd` 不是"调用一次就完事"的值，返回假函数会被拼进字符串静默算出垃圾）。 */
+  function nodeTrap(name) {
+    const no = (prop) => function () {
+      throw new Error('src/item-src.js 的 ' + name + '.' + prop + ' 需要 Node 环境（浏览器端没有 ' + name
+        + '；出处复校要读盘，请走 CLI / IPC）');
+    };
+    return new Proxy({}, { get: (_t, prop) => (typeof prop === 'symbol' ? undefined : no(String(prop))) });
+  }
+  function nodeGlobal(name) {
+    return new Proxy({}, {
+      get: (_t, prop) => {
+        if (typeof prop === 'symbol') return undefined;
+        throw new Error('src/item-src.js 需要 Node 环境（浏览器端没有 ' + name + '.' + String(prop) + '；请走 CLI / IPC）');
+      }
+    });
+  }
+})(typeof self !== 'undefined' ? self : this, function (fs, path, crypto, itemIndex, process) {
+
 /* 归一化的**唯一实现**在条目索引那一份（本文件只做薄适配）—— 方向与理由见 `normalizeSrc`：
  * 同层（`scripts/dep-direction-check.js` 的 LAYERS 里两文件都是 rank 1、同 rank 互不判方向），
  * 且 `src/item-index.js` **零依赖本文件** ⇒ 这条边不成环（S1 门禁实跑证明）。 */
-const itemIndex = require('./item-index.js');
 
 /* ============================================================================
  * 一、取值表（封闭；判定与报错文案共用一处 ⇒ 不许在命令里另写一份）
@@ -508,7 +539,7 @@ function judge(item, root, opts) {
   return inspect(item, root, opts).verdict;
 }
 
-module.exports = {
+return {
   // 取值表（封闭）
   VERDICTS: VERDICTS, KINDS: KINDS, REASONS: REASONS, QUOTE_SEP: QUOTE_SEP,
   // 归一化 / 解析（纯函数）
@@ -521,3 +552,4 @@ module.exports = {
   judgeRef: judgeRef, isStale: isStale, verifiedAtOf: verifiedAtOf,
   inspect: inspect, judge: judge
 };
+});

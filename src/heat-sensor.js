@@ -39,8 +39,19 @@
  * ============================================================ */
 'use strict';
 
-const heat = require('./heat.js');
-const schema = require('./schema.js');
+/* ---------- UMD 头（形态照 `docs/ARCHITECTURE.md` §2.3；对照模块 `src/palette-rank.js`）----------
+ * 修复前（2026-10-20 实测）：两条 `require` 裸露在模块顶层、末尾直接 `module.exports` ⇒
+ * 浏览器端加载抛 `ReferenceError: require is not defined`。
+ * 本模块的两个依赖（`heat.js` / `schema.js`）**本来就是双端模块** ⇒ 浏览器分支按 `window.MM.*`
+ * 注入即可真正可用（纯 (b) 类：头写错，不是缺能力）。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./heat.js'), require('./schema.js'));
+  } else {
+    root.MMHeatSensor = factory(root.MMHeat, root.MMSchema);
+  }
+})(typeof self !== 'undefined' ? self : this, function (heat, schema) {
 
 /**
  * **每条通道、每次调用最多记几行**（全工程唯一一处口径）。
@@ -68,7 +79,9 @@ function idOk(id) {
 /** 埋点总开关（见文件头；生产代码不许碰它，只有测试在模块顶部显式关掉） */
 let enabled = true;
 function isEnabled() {
-  if (process.env.MM_HEAT_SENSOR === 'off') return false;
+  // `process` 是 Node 全局 —— 浏览器端它根本不存在，直接取会抛 `process is not defined`（加载时不炸，
+  // 但"顺手记一笔"的旁路不该把调用方掐死）⇒ 先探存在性。Node 侧行为不变（那里恒为真、取值逐字节相同）。
+  if (typeof process !== 'undefined' && process.env && process.env.MM_HEAT_SENSOR === 'off') return false;
   return enabled;
 }
 /** **只给测试用**：关掉/打开埋点。返回被换掉的那个值，便于还原。 */
@@ -153,6 +166,5 @@ function recordVisit(file, channel, nodeIds, opts) {
   return report;
 }
 
-module.exports = {
-  LOG_MAX_PER_CALL, LOG_MAX_IDS, recordVisit, isEnabled, __setEnabledForTest
-};
+  return { LOG_MAX_PER_CALL, LOG_MAX_IDS, recordVisit, isEnabled, __setEnabledForTest };
+});

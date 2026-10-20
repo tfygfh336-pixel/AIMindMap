@@ -13,6 +13,18 @@
  * ============================================================ */
 'use strict';
 
+/* ---------- UMD 头（形态照 `docs/ARCHITECTURE.md` §2.3；对照模块 `src/palette-rank.js`）----------
+ * 修复前（2026-10-20 实测）：本文件**没有 UMD 头**，末尾直接 `module.exports = {...}` ⇒ 浏览器端
+ * 加载抛 `ReferenceError: module is not defined`；且 `searchArchives` 里那两行惰性
+ * `require('fs')` / `require('path')` 在没有 require 的环境里也只会抛 `require is not defined`
+ * （看不出"这是 Node 专属能力"）⇒ 本批把它改成**显式守卫**（函数在、调用即抛明确报错）。
+ * 其余部分是纯逻辑（无 IO、无时钟）⇒ 浏览器分支是真能用的那一半。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('fs'), require('path'));
+  else root.MMChangelog = factory(null, null);
+})(typeof self !== 'undefined' ? self : this, function (fs, pathMod) {
+
 /** 空 [Unreleased] 段的占位说明（唯一真源，release 与校验都用它） */
 const PLACEHOLDER = '（新变更先记在这里，发版时移入下方版本段）';
 
@@ -274,10 +286,14 @@ function renderArchiveFile(entry, keepCount) {
  * @returns {{files:Array<{file,version,date,path,hits:Array<{line,text,heading}>}>, totalHits:number}}
  */
 function searchArchives(dir, keyword, perFile) {
-  // 惰性引入 fs/path：本模块其余部分是**纯逻辑**（无 IO），
-  // 顶层 require 会让它在没有 require 的环境（浏览器）里加载失败 —— 只有这个函数需要读盘。
-  const fs = require('fs');
-  const pathMod = require('path');
+  // 本模块其余部分是**纯逻辑**（无 IO）；只有这个函数要读盘。
+  // 修复前它在这里写 `const fs = require('fs')`（"惰性引入"）—— 在没有 require 的环境（浏览器）里
+  // 那两行照样抛 `require is not defined`，只是把崩溃挪到了调用时、且报错说不出"这是 Node 专属"。
+  // 现在由 UMD 工厂注入：Node 侧拿到的是**同一个** `require('fs')` 对象（行为逐字节不变），
+  // 浏览器侧拿到 null ⇒ 这里抛一句明确的话（不是 ReferenceError，也不是 null 属性访问那种漏形状）。
+  if (!fs || !pathMod) {
+    throw new Error('src/changelog.js 的 searchArchives 需要 Node 环境（它要读归档目录；浏览器端请走 CLI / IPC）');
+  }
   const out = { files: [], totalHits: 0 };
   const kw = (keyword === undefined || keyword === null) ? '' : String(keyword).trim();
   if (!kw || !fs.existsSync(dir)) return out;
@@ -441,7 +457,7 @@ function checkChangelogStructure(text) {
   return { ok: problems.length === 0, problems: problems };
 }
 
-module.exports = {
+return {
   releaseChangelog,
   indexChangelog,
   parseReleasedSections,
@@ -452,3 +468,4 @@ module.exports = {
   PLACEHOLDER,
   KEEP_RELEASED_SECTIONS
 };
+});

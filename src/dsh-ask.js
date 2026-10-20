@@ -17,11 +17,40 @@
  * ============================================================ */
 'use strict';
 
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
-const { spawnSync } = require('child_process');
-const dshPackage = require('./dsh-package.js');
+/* ---------- UMD 头（形态照 `docs/ARCHITECTURE.md` §2.3；对照模块 `src/palette-rank.js`）----------
+ * 修复前（2026-10-20 实测）：`path` / `fs` / `os` / `{ spawnSync } = require('child_process')` 四条
+ * 在模块顶层 ⇒ 浏览器端加载抛 `ReferenceError: require is not defined`。
+ * 本模块要起 `dsh` 子进程、写临时 yml ⇒ 浏览器端本来就不该可用；合规做法是显式守卫。
+ * `process` / `__dirname` 也由工厂注入：它们同样是 Node 全局，浏览器端直接取会抛
+ * `process is not defined` / `__dirname is not defined`（比"需要 Node 环境"难读得多）。
+ * ⚠️ `child_process` 在**加载时**就被解构 ⇒ 替身必须是"取属性得一个调用即抛的函数"。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('path'), require('fs'), require('os'), require('child_process'),
+      require('./dsh-package.js'), process, __dirname);
+  } else {
+    root.MMDshAsk = factory(nodeTrap('path'), nodeTrap('fs'), nodeTrap('os'), nodeTrap('child_process'),
+      root.MMDshPackage, nodeGlobal('process'), nodeGlobal('__dirname'));
+  }
+  function nodeTrap(name) {
+    const no = (prop) => function () {
+      throw new Error('src/dsh-ask.js 的 ' + name + '.' + prop + ' 需要 Node 环境（浏览器端没有 ' + name
+        + '；问 AI 要起 dsh 子进程，请走 CLI / IPC）');
+    };
+    return new Proxy({}, { get: (_t, prop) => (typeof prop === 'symbol' ? undefined : no(String(prop))) });
+  }
+  function nodeGlobal(name) {
+    return new Proxy({}, {
+      get: (_t, prop) => {
+        if (typeof prop === 'symbol') return undefined;
+        throw new Error('src/dsh-ask.js 需要 Node 环境（浏览器端没有 ' + name + '.' + String(prop) + '；请走 CLI / IPC）');
+      }
+    });
+  }
+})(typeof self !== 'undefined' ? self : this, function (path, fs, os, childProcess, dshPackage, process, __dirname) {
+
+const { spawnSync } = childProcess;
 
 /** 一次性问答的超时上限（默认）。实测极小提示词 4.4 s；留足模型思考与吐字的时间 */
 const DEFAULT_TIMEOUT_MS = 120000;
@@ -255,8 +284,9 @@ function askOnce(opts) {
  * 一次解释要 20+ 秒，主进程不能用 spawnSync 把界面卡住，但 CLI 侧保持同步 ✓。
  * 实测教训：第一版把 `askOnceAsync` 写进了本文件 ⇒ 直接被这条不变量判红 ✗（现在它不存在）。 */
 
-module.exports = {
+return {
   DEFAULT_TIMEOUT_MS, KINDS,
   EFFORTS, DEFAULT_EFFORT, parseAgentModel, buildEffortPatch,
   buildContextBlock, buildAskPrompt, buildAskArgs, buildAskEnv, resolveAskRuntime, askOnce
 };
+});

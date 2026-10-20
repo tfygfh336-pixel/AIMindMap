@@ -11,9 +11,14 @@
  *   ① 浏览器端（无 `module` / 无 `require`，只有 `self`）能**加载**这两个文件，并拿到全局名；
  *   ② 浏览器端**纯核心能用**：喂对象 / 字符串就出结果，一次盘的读写都不该发生；
  *   ③ 浏览器端**IO 壳响亮抛错**（不是 `Cannot read properties of null` 那种漏形状）。
- * ⚠️ 这里**不**要求 item-src / doc-import 能在浏览器加载 —— 它们本来就是 Node-only
- *    （HEAD 版亦然，实测：`require is not defined`）。本文件把那条事实也钉住，
- *    免得将来有人把它读成"下沉弄坏了双端"。
+ * ⚠️ ⑤⑥ 是 2026-10-20「双端加载」批**翻面**过的断言。翻面前的原文钉着这样一条事实：
+ *   `src/item-src.js` / `src/doc-import.js` 在浏览器端**加载即抛** `ReferenceError: require is not defined`
+ *   （HEAD 版同样如此，不是 G-15 下沉造成的）—— 那时把它们当"Node-only，如实登记"钉住，
+ *   免得将来有人把它读成"下沉弄坏了双端"。
+ *   而 `src/` 的契约是 UMD 双端（`docs/ARCHITECTURE.md` §2.1/§8.4）⇒ 那不是"合规的 Node-only"，
+ *   是**两个不合规的文件一直没人测**。翻面后这两条钉的是**修好之后**的状态：
+ *   能加载、全局名在、Node 专属能力**函数在但调用即抛"需要 Node 环境"**（不是 ReferenceError，
+ *   也不是 `Cannot read properties of null` 那种漏形状）。
  * ============================================================ */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -75,15 +80,28 @@ describe('G-15 · UMD 双端：下沉出来的纯核心在浏览器端也能用'
     expect(sb.MMSchema.validateProject(pack, 'D:/no-such-root', 'P').ok).toBe(true);
   });
 
-  it('⑤ 边界如实：item-src / doc-import 本来就是 Node-only（HEAD 亦然），下沉**没有**改变这一点', () => {
-    // 这条是"如实登记"而不是"要求它们能加载" —— 若哪天它们被改成 UMD，本断言会红，
-    // 那时应当**更新这句话**（而不是删掉它）
-    ['item-src.js', 'doc-import.js'].forEach((f) => {
-      const sandbox = { console: console };
-      sandbox.self = sandbox;
-      vm.createContext(sandbox);
-      expect(() => vm.runInContext(fs.readFileSync(srcPath(f), 'utf8'), sandbox), f)
-        .toThrow(/require is not defined/);
-    });
+  it('⑤ 边界如实：item-src / doc-import 在浏览器端**能加载**（修复前：两者加载即抛 require is not defined）', () => {
+    // 【修复前的读数，留档】本条断言在 2026-10-20「双端加载」批之前是**反着写的**：
+    //   ['item-src.js', 'doc-import.js'].forEach((f) => {
+    //     expect(() => vm.runInContext(fs.readFileSync(srcPath(f), 'utf8'), sandbox), f)
+    //       .toThrow(/require is not defined/);
+    //   });
+    // 即"钉住它们加载不了"这条现状。修的正是这件事 ⇒ 现在钉：① 能加载；② 全局名在。
+    const sb = browserSandbox(['item-src.js', 'doc-import.js']);
+    expect(sb.MMItemSrc, 'MMItemSrc 全局名不见了（UMD 头又坏了？）').toBeTruthy();
+    expect(sb.MMDocImport, 'MMDocImport 全局名不见了（UMD 头又坏了？）').toBeTruthy();
+    // 纯的那一半在浏览器端**真能用**（这两条不碰盘）
+    expect(JSON.stringify(sb.MMItemSrc.VERDICTS)).toBe('["ok","needs-recheck","src-gone"]');
+    expect(typeof sb.MMDocImport.textToOutline).toBe('function');
+    expect(sb.MMDocImport.MAX_SOURCE_MB).toBe(64);
+  });
+
+  it('⑥ 浏览器端调 Node 专属能力 ⇒ 抛「需要 Node 环境」（不是 require is not defined、也不是 null 属性访问）', () => {
+    // 与 ③ 同一条口径，只是对象换成"整份文件都要读盘"的那两个模块：
+    // 它们在浏览器端**本来就该不可用**，合规做法是**显式守卫** —— 函数都在，调到就喊清楚。
+    const sb = browserSandbox(['item-src.js', 'doc-import.js']);
+    expect(() => sb.MMItemSrc.loadFile('/x')).toThrow(/需要 Node 环境/);
+    expect(() => sb.MMItemSrc.resolveFile({ file: 'a.md' })).toThrow(/需要 Node 环境/);
+    expect(() => sb.MMDocImport.docToOutline('D:/x.md')).toThrow(/需要 Node 环境/);
   });
 });

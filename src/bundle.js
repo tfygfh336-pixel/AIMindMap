@@ -13,8 +13,27 @@
  * ============================================================ */
 'use strict';
 
-const path = require('path');
-const tree = require('./tree-utils.js');
+/* ---------- UMD 头（形态照 `docs/ARCHITECTURE.md` §2.3；对照模块 `src/palette-rank.js`）----------
+ * 修复前（2026-10-20 实测）：`require('path')` / `require('./tree-utils.js')` 直接写在模块顶层
+ * ⇒ 浏览器端加载抛 `ReferenceError: require is not defined`。
+ * 本模块有一处真读 Node 内建（`path.resolve` / `path.sep` ⇒ `isSafeRelPath` 的路径穿越防御），
+ * 浏览器端**本来就不该**有它 ⇒ 合规做法是**显式守卫**：函数都在，调到就抛一句明确的话。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('path'), require('./tree-utils.js'));
+  } else {
+    root.MMBundle = factory(nodeTrap('path'), root.MMTree);
+  }
+  /* 浏览器端的 Node 内建替身：属性一取就得到一个**调用即抛**的函数 —— 模块能加载（双端契约成立），
+   * 误用时抛一句明确的话（而不是 `require is not defined` / `Cannot read properties of null`）。 */
+  function nodeTrap(name) {
+    const no = (prop) => function () {
+      throw new Error('src/bundle.js 的 ' + name + '.' + prop + ' 需要 Node 环境（浏览器端没有 ' + name + '，打包读写盘请走 CLI）');
+    };
+    return new Proxy({}, { get: (_t, prop) => (typeof prop === 'symbol' ? undefined : no(String(prop))) });
+  }
+})(typeof self !== 'undefined' ? self : this, function (path, tree) {
 
 const AIMAP_VERSION = 1;
 
@@ -103,6 +122,7 @@ function resourceUsageCount(root) {
   return counts;
 }
 
-module.exports = {
+return {
   AIMAP_VERSION, collectResourceRefs, buildBundle, parseBundle, isSafeRelPath, resourceUsageCount
 };
+});

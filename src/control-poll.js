@@ -23,7 +23,19 @@
  */
 'use strict';
 
-const control = require('./control.js');
+/* ---------- UMD 头（形态照 `docs/ARCHITECTURE.md` §2.3；对照模块 `src/palette-rank.js`）----------
+ * 修复前（2026-10-20 实测）：`require('./control.js')` 裸露在模块顶层、末尾直接 `module.exports`
+ * ⇒ 浏览器端加载抛 `ReferenceError: require is not defined`（纯 (b) 类：只是头写错）。
+ * 依赖 `control.js` 本身要读写盘 ⇒ 浏览器分支拿到的是它那份**已加守卫**的导出（函数在、
+ * 调用即抛"需要 Node 环境"）⇒ 本模块能加载，误用时借它的报错说话。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./control.js'));
+  } else {
+    root.MMControlPoll = factory(root.MMControl);
+  }
+})(typeof self !== 'undefined' ? self : this, function (control) {
 
 /**
  * @param {{dir:string, handle:Function, log?:Function, now?:()=>number, sweepEveryMs?:number}} opts
@@ -117,4 +129,5 @@ function createControlPoller(opts) {
   return { pollOnce, maybeSweep, start, stop, dispatched, dir: dir };
 }
 
-module.exports = { createControlPoller };
+return { createControlPoller };
+});

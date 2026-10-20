@@ -593,6 +593,258 @@ function scanFactOutlets(rootDir, opts) {
   return { problems, notes, facts: result };
 }
 
+/* ---------------- 第七类扫描：验证链「总预算」的手写数字 ----------------
+ * 为什么需要（实测，`.review/20261020-声明对齐/`）：`SKILL.md` 曾写「总预算 700s」，
+ * 而真值 `verifyChain.TOTAL_BUDGET_MS` = 1770000 ⇒ **1770s** —— **差 2.5 倍、涨了四轮没人发现**；
+ * 同一批还发现 `docs/ARCHITECTURE.md` 的同一句也写着 700s（上一批只改了第一屏，漏了这一处）。
+ * 它是「易腐数字」里**唯一没有判据**的那一类：命令数 / 工具数 / 用例数 / 断言数 / 体量 / 未来版本号 /
+ * 步骤数都已各有判定，**预算数字什么门禁都没有**。⇒ 补的正是这半张网。
+ *
+ * 判据（照第二类 `findSizeClaim` 的形状：纯函数 + 逐行命中 + 历史锚；**不是**新写一套口径）：
+ *   · 扫描面 = `trackedFiles()`（与 `scan()` / `scanSizeClaims()` 同一条口径：`CHANGELOG.md` /
+ *     `docs/archive/` / `docs/changelog/` 是历史区，不参与"当前事实"的判定）；
+ *   · 命中形状 = **数字与「总预算 / 合计预算」相距 ≤ 8 字**，单位认 `s / 秒 / ms / 毫秒 / min / 分钟`，
+ *     **两个方向都认**（「总预算 1770s」与「1770 秒总预算」人类都会写）；归一化成秒后比；
+ *   · **判红** = 值 ≠ 真值、且该行**没有历史锚**。⚠️ **带指针也判红** —— "指向对了但数字还留着"
+ *     本身就是自相矛盾，而且这一档**最会腐**（读者看见"既然指过去了应该没问题"就不会去核）。
+ *     这一条与 `FACT_OUTLET`（第六类）**刻意不同**：那一类的真值**算不出来**，只能要求"只留一处手抄"；
+ *     本类的真值**现算得出**（`TOTAL_BUDGET_MS`），所以按"比值"判 —— 与 `scan()` 对命令数/工具数同一条纪律；
+ *   · **放行**：① 值 == 真值；② 同行有历史锚（`当时` / `快照` / `原记` / `曾` / `vX.Y.Z`）——
+ *     那是"当时是多少"，不是对现状的声明（实测例子：`SKILL.md` 记"这里曾写「总预算 700s」"）。
+ *
+ * 刻意**不做**（边界，如实标注；别把"没查"读成"查过了没问题"）：
+ *   · **只认「总预算 / 合计预算」**，不认**单项**预算 —— `docs/VERIFY.md` 表里 G5 那一格的 `1300s`
+ *     是 `STEPS` 里那一步的**止涨线**，与 `TOTAL_BUDGET_MS` 不是同一件事，混扫就是**假红**；
+ *     （单项预算的真值同样是 `scripts/verify.js` 的 `STEPS[].budgetMs`，但它要能把"这一行在说哪一步"
+ *     认出来 —— 那是语义判断，本类不做。）
+ *   · 认不出"这句话里的预算是不是指验证链"：`docs/AI-GUIDE.md` 的「重试预算太小」这类**别的**预算
+ *     只要不写数字就不会命中；真写了数字又没锚，会被判红 —— 那时要么加锚要么改写（见报文指路）。
+ *   · 它判不了"`TOTAL_BUDGET_MS` 这个真值本身该不该改"—— 那是 `docs/RULES.md` §3 `R6`（先量成本）。
+ */
+const RE_BUDGET_SEC = [
+  // 「总预算 1770s」/「合计预算 1770 秒」
+  new RegExp(NB2 + '(?:总|合计)预算[^\\d\\n]{0,8}(\\d+(?:\\.\\d+)?)\\s*(ms|毫秒|min|分钟|s|秒)', 'g'),
+  // 「1770s 总预算」（反向写法）
+  new RegExp(NB2 + '(\\d+(?:\\.\\d+)?)\\s*(ms|毫秒|min|分钟|s|秒)[^\\n]{0,4}(?:总|合计)预算', 'g')
+];
+
+/** 「这一行已经明确标成历史」的锚 —— 与 `SIZE_ANCHOR` 同一套词（`当时`/`快照`/`原记`/`曾`/`vX.Y.Z`），
+ *  另加 `docs/RULES.md` §4「真值出口唯一」行里点名的历史标记口径。**不许为变绿放宽**（`B5`）。 */
+const BUDGET_ANCHOR = /(当时|快照|原记|曾|v\d+\.\d+\.\d+)/;
+
+/** 把「数字 + 单位」归一化成**秒**（纯函数） */
+function budgetSecs(num, unit) {
+  const n = Number(num);
+  if (!Number.isFinite(n)) return null;
+  if (unit === 'ms' || unit === '毫秒') return n / 1000;
+  if (unit === 'min' || unit === '分钟') return n * 60;
+  return n;
+}
+
+/** 从**一行**里取「总预算」读数的秒数（纯函数，导出给单测；一行可能有多处，全取） */
+function budgetReadingsInLine(line) {
+  const s = String(line === undefined || line === null ? '' : line);
+  const out = [];
+  RE_BUDGET_SEC.forEach((re) => {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(s))) {
+      const v = budgetSecs(m[1], m[2]);
+      if (v !== null) out.push(v);
+    }
+  });
+  return out;
+}
+
+/** 判一行的三态：`history`（历史锚，放行）/ `pass`（值就是真值）/ `red`（值不对且无锚）。
+ *  纯函数，`wantSec` = `verifyChain.TOTAL_BUDGET_MS / 1000`。 */
+function budgetVerdict(secs, historical, wantSec) {
+  if (historical) return 'history';
+  const want = Number(wantSec);
+  if (!Number.isFinite(want)) return 'red';
+  return secs.every((v) => Math.abs(v - want) < 1e-9) ? 'pass' : 'red';
+}
+
+/** 扫描**一段文本**里的「总预算」手写数字（**纯函数**：不读盘、不打印 —— 便于单测与判别力证明）。
+ *  @param {string} text 待扫文本
+ *  @param {number} [wantSec] 真值秒数（默认 `verifyChain.TOTAL_BUDGET_MS / 1000`）
+ *  @param {string} [rel] 报告里显示的文件名
+ *  @returns {{rel:string, line:number, secs:number[], verdict:string, text:string}[]}
+ *  标题行与非「总预算」行直接跳过（与 `parseClaims` / `scanSizeClaims` 同口径）。
+ */
+function scanBudgetText(text, wantSec, rel) {
+  const want = Number(wantSec === undefined || wantSec === null ? verifyChain.TOTAL_BUDGET_MS / 1000 : wantSec);
+  const out = [];
+  String(text === undefined || text === null ? '' : text).split(/\r?\n/).forEach((line, i) => {
+    if (/^\s*#{1,6}\s/.test(line)) return;              // 标题行：章节号不是预算声明
+    const secs = budgetReadingsInLine(line);
+    if (!secs.length) return;
+    out.push({
+      rel: rel || '(文本)', line: i + 1, secs,
+      verdict: budgetVerdict(secs, BUDGET_ANCHOR.test(line), want),
+      text: line.trim()
+    });
+  });
+  return out;
+}
+
+/** 在**全部受管文档**上跑第七类，返回 `{wantSec, hits, reds, history}`。 */
+function scanBudgetClaims(wantSec) {
+  const want = Number(wantSec === undefined || wantSec === null ? verifyChain.TOTAL_BUDGET_MS / 1000 : wantSec);
+  const hits = [];
+  for (const file of trackedFiles()) {
+    const rel = path.relative(ROOT, file).replace(/\\/g, '/');
+    hits.push(...scanBudgetText(fs.readFileSync(file, 'utf8'), want, rel));
+  }
+  return {
+    wantSec: want, hits,
+    reds: hits.filter((h) => h.verdict === 'red'),
+    history: hits.filter((h) => h.verdict === 'history')
+  };
+}
+
+/* ---------------- 报告型读数：`%TEMP%/mm-*` 残留（**恒 exit 0，不判红**） ----------------
+ * 为什么要它（实测，`.review/20261020-声明对齐/`）：`%TEMP%/mm-*` 积到 **141 个 / 190.9 MB**，
+ * 最老的来自**一个月前**；分类后 **168.7 MB 是 `.review/` 里的**一次性探针脚本**造的
+ * （`scripts/cli-integration.js` 有自己的 `sweepOwnTempRoots`，那部分确实清了）。
+ * ⇒ 「`.review/` 可整目录删除」这条规矩**清不掉工作区外的副作用**（`docs/RULES.md` §4 因此单列一行）。
+ *
+ * ⚠️ **为什么只报告、不做判红**（M1：误报率高的门禁比没有更坏 —— 假红的结局是被无视）：
+ *   ① **主人判不了**：从进程外看，`mm-*` 目录里没有任何"谁造的"标记（没有落盘的所有者信息）；
+ *   ② **"此刻在用"和"该清的残留"在文件系统上长得一模一样**：并行的会话 / 正在跑的测试这一刻就有一个
+ *      `mm-*` 目录，它的 mtime 与"刚泄漏"没有区别 ⇒ 任何按数量/体量判红的阈值都会在"正好在跑测试"时误红
+ *      （本工程已定过 R7：全链必须独占跑，正因为"有没有别人在用"从文件内容里看不见）；
+ *   ③ **前缀没有强制力**：`mm-` 只是 `tests/_tmp-cleanup.js` 的**约定**，别的工具/别的 checkout 也能叫这个名字；
+ *   ④ **阈值说不出道理**：跑一次全量单测就会瞬时造出几十个 `mm-*`，"超过 N 个就红"的 N 没有可辩护的来源。
+ *   ⇒ 只做**报告**（数量 / 体量 / 最老年龄 / 最老与最大的若干条 / 按前缀分组），**恒 exit 0**；
+ *      清理的唯一可靠办法仍是**源头**：脚本自己在 `finally` 里删（`tests/_tmp-cleanup.js` 的 `makeTmp`/`cleanupAll`）。
+ *      报告型读数照 `R1c`：**打印档不是判据**，别把它当门禁。
+ */
+const TEMP_REPORT_PREFIX = 'mm-';
+const TEMP_REPORT_OLD_MS = 24 * 60 * 60 * 1000;    // 超过 24 小时 ⇒ 几乎不可能是"此刻在跑"
+const TEMP_REPORT_ENTRY_CAP = 5000;                // 单目录最多数这么多条目（防病态目录把读数卡死）
+
+/** 递归算一个目录的体量（**有上限**：条目数超 `TEMP_REPORT_ENTRY_CAP` 就停，返回值里标 truncated） */
+function dirFootprint(abs, cap) {
+  const limit = cap || TEMP_REPORT_ENTRY_CAP;
+  let bytes = 0;
+  let files = 0;
+  let seen = 0;
+  let truncated = false;
+  (function walk(dir) {
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of ents) {
+      if (seen >= limit) { truncated = true; return; }
+      seen += 1;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else {
+        files += 1;
+        try { bytes += fs.statSync(p).size; } catch (err) { /* 读不到就算 0，报告型不追求精确 */ }
+      }
+    }
+  })(abs);
+  return { bytes, files, truncated };
+}
+
+/** 扫 `%TEMP%` 下形如 `mm-*` 的目录，返回读数（**纯报告**：不删、不判红、不抛）。
+ *  @param {{root?:string, now?:number, prefix?:string, cap?:number}} [opts] 仅单测用
+ */
+function tempResidueReport(opts) {
+  const o = opts || {};
+  const os = require('os');
+  const root = o.root || os.tmpdir();
+  const prefix = o.prefix === undefined ? TEMP_REPORT_PREFIX : o.prefix;
+  const cap = o.cap || TEMP_REPORT_ENTRY_CAP;
+  const now = typeof o.now === 'number' ? o.now : Date.now();
+  const entries = [];
+  let names = [];
+  try { names = fs.readdirSync(root, { withFileTypes: true }); } catch (e) {
+    return { root, error: (e && e.message) || String(e), entries, totalCount: 0, totalBytes: 0,
+      oldCount: 0, oldBytes: 0, byPrefix: [] };
+  }
+  for (const e of names) {
+    if (!e.name.startsWith(prefix)) continue;
+    const abs = path.join(root, e.name);
+    let st = null;
+    try { st = fs.statSync(abs); } catch (err) { continue; }
+    const fp = e.isDirectory() ? dirFootprint(abs, cap) : { bytes: st.size, files: 1, truncated: false };
+    // 家族 = 前缀到第二个 `-` 为止（`mm-control-test-xxx` ⇒ `mm-control-test-`），用于"按 prefix 分组"
+    const seg = e.name.split('-');
+    const family = seg.length >= 2 ? seg.slice(0, 2).join('-') + '-' : prefix;
+    entries.push({ name: e.name, path: abs, isDir: e.isDirectory(), mtimeMs: st.mtimeMs,
+      ageMs: now - st.mtimeMs, bytes: fp.bytes, files: fp.files, truncated: fp.truncated, family });
+  }
+  const byFamily = new Map();
+  for (const it of entries) {
+    const r = byFamily.get(it.family) || { family: it.family, count: 0, bytes: 0 };
+    r.count += 1;
+    r.bytes += it.bytes;
+    byFamily.set(it.family, r);
+  }
+  const old = entries.filter((it) => it.ageMs >= TEMP_REPORT_OLD_MS);
+  return {
+    root, error: null, entries,
+    totalCount: entries.length,
+    totalBytes: entries.reduce((a, it) => a + it.bytes, 0),
+    oldCount: old.length,
+    oldBytes: old.reduce((a, it) => a + it.bytes, 0),
+    byPrefix: Array.from(byFamily.values()).sort((a, b) => b.bytes - a.bytes)
+  };
+}
+
+/** 人类可读的体量 */
+function fmtBytes(n) {
+  const mb = Number(n) / (1024 * 1024);
+  return mb >= 1 ? mb.toFixed(1) + ' MB' : (Number(n) / 1024).toFixed(1) + ' KB';
+}
+
+/** 打印 `%TEMP%/mm-*` 读数（**只打印**，不判红、不改退出码） */
+function printTempResidue(r) {
+  console.log('== `%TEMP%/mm-*` 残留读数（**报告型，恒 exit 0** —— 谁造的从进程外判不了，故不判红）==');
+  if (r.error) {
+    console.log('  读不到临时目录 ' + r.root + '：' + r.error + '（这不影响任何门禁结论）');
+    return;
+  }
+  console.log('  扫描根：' + r.root + '   前缀：`' + TEMP_REPORT_PREFIX + '*`（约定，不是强制命名空间）');
+  if (!r.totalCount) {
+    console.log('  ✓ 0 个 —— 当前没有任何 `' + TEMP_REPORT_PREFIX + '*` 残留');
+    return;
+  }
+  console.log('  合计 ' + r.totalCount + ' 个 · ' + fmtBytes(r.totalBytes)
+    + ' ｜ 超过 24 小时的 ' + r.oldCount + ' 个 · ' + fmtBytes(r.oldBytes));
+  // 目录 vs 单一文件**分开打印**：实测（2026-10-20 两次读数）累计下来的是**自由命名的文件**
+  // （`mm-*.md` / `.diff` / `.tar` / `.json`）而不是 mkdtemp 出来的目录 —— 目录那部分
+  // 由 `tests/_tmp-cleanup.js` 与 `cli-integration.js` 的 `sweepOwnTempRoots` 收着。
+  // 这个拆分直接决定"要不要做门禁"：文件的主人**无从判定**（谁写的都没有标记），
+  // 而目录至少有"谁 mkdtemp 的"这条约定可依。
+  const dirs = r.entries.filter((it) => it.isDir);
+  const plain = r.entries.filter((it) => !it.isDir);
+  console.log('     其中目录 ' + dirs.length + ' 个 · ' + fmtBytes(dirs.reduce((a, it) => a + it.bytes, 0))
+    + ' ｜ 单一文件 ' + plain.length + ' 个 · ' + fmtBytes(plain.reduce((a, it) => a + it.bytes, 0))
+    + ' ｜ 超过 24 小时的目录 ' + dirs.filter((it) => it.ageMs >= TEMP_REPORT_OLD_MS).length + ' 个');
+  if (r.byPrefix.length) {
+    console.log('  按前缀分组（体量降序）：'
+      + r.byPrefix.slice(0, 8).map((g) => g.family + '*：' + g.count + ' 个 / ' + fmtBytes(g.bytes)).join(' · '));
+  }
+  const show = r.entries.slice().sort((a, b) => b.bytes - a.bytes).slice(0, 10);
+  console.log('  最大的 10 个：');
+  for (const it of show) {
+    console.log('    ' + fmtBytes(it.bytes) + '  ' + Math.round(it.ageMs / 3600000) + ' 小时前  '
+      + it.files + ' 个文件' + (it.truncated ? '（条目数到上限，体量是下限）' : '') + '  ' + it.name);
+  }
+  const oldest = r.entries.slice().sort((a, b) => b.ageMs - a.ageMs).slice(0, 5);
+  console.log('  最老的 5 个：');
+  for (const it of oldest) {
+    console.log('    ' + Math.round(it.ageMs / 3600000) + ' 小时前  ' + fmtBytes(it.bytes) + '  ' + it.name);
+  }
+  console.log('  → 处置：**别按名字删**（可能正在被别的会话/正在跑的测试使用）。'
+    + '可靠办法只有源头 —— 脚本自己在 `finally` 里删（`tests/_tmp-cleanup.js` 的 `makeTmp`/`cleanupAll`）。');
+  console.log('  → 边界：`mm-` 只是约定前缀；别的工具/别的 checkout 也可能造同名目录；'
+    + '本条因此**只报告**，不做判红（理由见 `doc-facts.js` 里 `TEMP_REPORT_PREFIX` 上方注释）。');
+}
+
 /* ---------------- 输出 ---------------- */
 function printFacts(v) {
   console.log('AI MindMap 文档事实基线（权威值，直接来自代码/测试）');
@@ -696,6 +948,13 @@ function main() {
     });
     return;
   }
+  // `--temp-report`：`%TEMP%/mm-*` 残留的**报告型**读数（**恒 exit 0** —— 打印档不是判据，见 `R1c`；
+  // 为什么只报告、不做判红：理由逐条写在 `TEMP_REPORT_PREFIX` 上方那段注释里，别在这里再写一遍）。
+  // 必须放在 `facts()` **之前**：`facts()` 会真跑一遍 vitest（几十秒），而看残留读数没有这个必要。
+  if (args.includes('--temp-report')) {
+    printTempResidue(tempResidueReport());
+    return;
+  }
   // `--fact-root=<dir>`：**只把第六类扫描（真值出口）的扫描根**指向别处（判别力证明 / 单测用）；
   // 不给就是真仓，`--check` 的其余五类读数与从前逐字节相同（H3：新能力走 opt-in）。
   const factRootArg = (args.find((a) => a.startsWith('--fact-root=')) || '').slice(12);
@@ -794,6 +1053,29 @@ function main() {
     bad = true;
   } else {
     console.log('✓ 真值出口唯一：每条被声明的事实都只有一个手抄副本以外的表述（其余是指针或历史锚）');
+  }
+
+  // 第七类：验证链「总预算」的手写数字（`TOTAL_BUDGET_MS` 是唯一真值）——
+  // 这一类的**判据与边界**见 `scanBudgetText()` 上方那一大段注释（含"带指针也判红"的理由）。
+  const bud = scanBudgetClaims();
+  if (bud.reds.length) {
+    console.log('✗ 验证链「总预算」的手写数字与 `scripts/verify.js` 的 `TOTAL_BUDGET_MS` 不符（'
+      + bud.reds.length + ' 处）：');
+    bud.reds.forEach((h) => console.log('   ' + h.rel + ':' + h.line + '  写的是 ' + h.secs.join(' / ') + ' s，应为 '
+      + bud.wantSec + ' s（差 ' + (Math.max(...h.secs) / bud.wantSec).toFixed(2) + ' 倍）'
+      + '\n      ' + h.text.slice(0, 110)));
+    console.log('   → 二选一：**别抄这个数**（写成「总预算以 `scripts/verify.js` 的 `TOTAL_BUDGET_MS` 为准」），'
+      + '或改成真值 ' + bud.wantSec + ' s。\n'
+      + '     ⚠️ 同一行**既有指针又有旧数字**也判红 —— 那是最会腐的一档（读者见"指过去了"就不去核）。');
+    bad = true;
+  } else {
+    console.log('✓ 验证链「总预算」：受管文档里 ' + bud.hits.length + ' 处提到总预算，'
+      + '其中手抄 ' + bud.hits.filter((h) => h.verdict === 'pass').length + ' 处（都等于真值 ' + bud.wantSec + ' s）'
+      + ' · 历史锚 ' + bud.history.length + ' 处（`当时`/`快照`/`曾`/`vX.Y.Z` —— 那是历史现场，不是现状声明）');
+    for (const h of bud.history) {
+      console.log('   · ' + h.rel + ':' + h.line + ' 历史锚放行（读到 ' + h.secs.join(' / ')
+        + ' s ≠ 真值 ' + bud.wantSec + ' s，但该行写明是"当时/曾"）');
+    }
   }
 
   // 交接面提示（**只提示不判红**）：[Unreleased] 太长说明该发版了 —— 它不受滚动窗口约束
@@ -1100,5 +1382,9 @@ module.exports = {
   // 第一屏（`SKILL.md`）步骤数 ↔ `STEPS.length`（纯函数那一半单独导出，便于单测）
   parseStepCountClaims, scanStepCount, stepCountProblem,
   // 第六类：真值出口唯一（`FACT_OUTLET` / 缺口 `G-09`）—— 事实表与欠账册**只有这里一份**
-  FACT_OUTLETS, FACT_OUTLET_DEBT, FACT_POINTER, factReadingsInLine, scanFactOutlets
+  FACT_OUTLETS, FACT_OUTLET_DEBT, FACT_POINTER, factReadingsInLine, scanFactOutlets,
+  // 第七类：验证链「总预算」的手写数字（真值 = `verifyChain.TOTAL_BUDGET_MS`；纯函数单独导出便于单测）
+  budgetReadingsInLine, budgetVerdict, scanBudgetText, scanBudgetClaims, BUDGET_ANCHOR,
+  // 报告型读数（**不判红**）：`%TEMP%/mm-*` 残留 —— 谁造的判不了，故只有打印（`--temp-report`）
+  tempResidueReport, printTempResidue, TEMP_REPORT_PREFIX, TEMP_REPORT_OLD_MS
 };

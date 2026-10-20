@@ -47,9 +47,40 @@
  * ============================================================ */
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+/* ---------- UMD 头（形态照 `docs/ARCHITECTURE.md` §2.3；对照模块 `src/palette-rank.js`）----------
+ * 修复前（2026-10-20 实测）：`fs` / `path` / `crypto` 三条 `require` 直接写在模块顶层 ⇒ 浏览器端
+ * 加载抛 `ReferenceError: require is not defined`（整份模块连加载都不成）。
+ * 本模块是**控制通道的文件协议**（要读写盘、要 `process.pid`）⇒ 浏览器端本来就不该能用；
+ * 合规做法是**显式守卫**：函数都在，调到就抛一句明确的话（见下面的 nodeTrap / nodeGlobal）。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('fs'), require('path'), require('crypto'), process);
+  } else {
+    root.MMControl = factory(nodeTrap('fs'), nodeTrap('path'), nodeTrap('crypto'), nodeGlobal('process'));
+  }
+  /* 浏览器端的 Node 替身。为什么是**两个**、而不是一个"取属性即抛"的：
+   *   · `nodeTrap(name)`：取属性得一个**调用即抛**的函数。有的模块在加载时就解构拿函数
+   *     （`const { spawnSync } = require('child_process')`）—— "取属性即抛"会让那种加载直接崩。
+   *   · `nodeGlobal(name)`：**取属性即抛**。`process.pid` / `process.env` 不是函数，
+   *     若也返回"调用才抛"的假函数，它会被拼进字符串**静默算出垃圾**（那种失败比崩还坏）。
+   */
+  function nodeTrap(name) {
+    const no = (prop) => function () {
+      throw new Error('src/control.js 的 ' + name + '.' + prop + ' 需要 Node 环境（浏览器端没有 ' + name
+        + '；控制通道读写盘请走 CLI / IPC）');
+    };
+    return new Proxy({}, { get: (_t, prop) => (typeof prop === 'symbol' ? undefined : no(String(prop))) });
+  }
+  function nodeGlobal(name) {
+    return new Proxy({}, {
+      get: (_t, prop) => {
+        if (typeof prop === 'symbol') return undefined;
+        throw new Error('src/control.js 需要 Node 环境（浏览器端没有 ' + name + '.' + String(prop) + '；请走 CLI / IPC）');
+      }
+    });
+  }
+})(typeof self !== 'undefined' ? self : this, function (fs, path, crypto, process) {
 
 const DIR = 'control';
 const PENDING = 'pending';
@@ -253,9 +284,10 @@ function waitForResult(baseDir, token, timeoutMs, sleep) {
   return null;
 }
 
-module.exports = {
+return {
   CMD_FILE: DIR, RESULT_FILE: DIR,      // 兼容旧字段名（都指向同一个通道目录；不再有"单文件"语义）
   DIR, ORPHAN_MS, MAX_PENDING,
   paths, newToken, writeCommand, readPending, listPending, claim, writeResult, readResult, clear, sweep,
   waitForResult
 };
+});

@@ -30,10 +30,40 @@
  * ============================================================ */
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const { spawnSync } = require('child_process');
-const C = require('./editor-candidates.js');
+/* ---------- UMD 头（形态照 `docs/ARCHITECTURE.md` §2.3；对照模块 `src/palette-rank.js`）----------
+ * 修复前（2026-10-20 实测）：`fs` / `path` / `{ spawnSync } = require('child_process')` 三条在模块顶层
+ * ⇒ 浏览器端加载抛 `ReferenceError: require is not defined`。
+ * 本模块要探本机装了什么编辑器（读注册表、跑 `where`）⇒ 浏览器端本来就不该可用；
+ * 合规做法是显式守卫：函数都在，调到就抛一句明确的话（见 nodeTrap / nodeGlobal）。
+ * ⚠️ `child_process` 在**加载时**就被解构（`const { spawnSync } = ...`）⇒ 替身必须是
+ * "取属性得一个调用即抛的函数"，不能是"取属性即抛"（后者会让模块加载直接崩）。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('fs'), require('path'), require('child_process'),
+      require('./editor-candidates.js'), process);
+  } else {
+    root.MMEditorProbe = factory(nodeTrap('fs'), nodeTrap('path'), nodeTrap('child_process'),
+      root.MMEditorCandidates, nodeGlobal('process'));
+  }
+  function nodeTrap(name) {
+    const no = (prop) => function () {
+      throw new Error('src/editor-probe.js 的 ' + name + '.' + prop + ' 需要 Node 环境（浏览器端没有 ' + name
+        + '；探编辑器要读盘 / 起子进程，请走 CLI / IPC）');
+    };
+    return new Proxy({}, { get: (_t, prop) => (typeof prop === 'symbol' ? undefined : no(String(prop))) });
+  }
+  function nodeGlobal(name) {
+    return new Proxy({}, {
+      get: (_t, prop) => {
+        if (typeof prop === 'symbol') return undefined;
+        throw new Error('src/editor-probe.js 需要 Node 环境（浏览器端没有 ' + name + '.' + String(prop) + '；请走 CLI / IPC）');
+      }
+    });
+  }
+})(typeof self !== 'undefined' ? self : this, function (fs, path, childProcess, C, process) {
+
+const { spawnSync } = childProcess;
 
 /** 关心关联危害的扩展名（第 3 件的输入面；`.js` 是本机实测会**执行**的那一个）。 */
 const EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts', '.md', '.markdown', '.json', '.txt', '.html'];
@@ -285,4 +315,5 @@ function probe(opts) {
 /** 清缓存（测试与"用户刚装了编辑器"时用）。 */
 function reset() { cache = null; }
 
-module.exports = { probe, probeWith, resolveCli, defaultIo, reset, EXTENSIONS, TTL_MS };
+return { probe, probeWith, resolveCli, defaultIo, reset, EXTENSIONS, TTL_MS };
+});

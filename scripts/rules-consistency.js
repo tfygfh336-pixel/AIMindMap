@@ -76,6 +76,24 @@ const SCAN_DOCS = [
   'docs/INCIDENTS.md'
 ];
 
+/** 「**必须**声明条数」的二级章节 —— **靠名字定位，不靠章节号**（编号会动，名字是这一节的唯一标志；
+ *  与 §7 的 `LEDGER_HEADING_RE`、⑨ 的 `IN_FLIGHT_HEADING_RE` 同一个纪律）。
+ *
+ *  为什么需要这张表（实测缺陷，`.review/20261020-声明对齐/`）：
+ *  判定 ① 只在**有人写了**「共 N 条」时才生效 —— 于是**把那句声明删掉、表格一行不动**，
+ *  就等于**静默关掉**这条判定。实测三个实验：§4 删一行 ⇒ exit 1（判定有效）；
+ *  补回 ⇒ exit 0；**删掉标题里的「共 16 条」（表仍 16 行）⇒ exit 0**（后门）。
+ *  ⇒ 所以「章节在、就必须写条数声明」这一条本身也得判。同一条纪律本工程已写过两遍：
+ *  `doc-facts.js` 第一屏步骤数（`stepCountProblem`：**字样缺失也判红**）、本文件判定 ⑨
+ *  （找不到标题 ⇒ 按红处理，照 skill `B8`：适用条件不得由被检查方自己决定）。
+ *
+ *  为什么只收 §4：§3 的条数在**别处**另有 ⑤（转述一致性）守，§7 另有 ⑦ / ⑧ 守它的复核面；
+ *  而 §4（约定与架构决策）原先**一条判定都没有** —— 删一行它不红，删整节也没人看得见。
+ *  这张表**只收"必须有声明"的章节**，不收条数（条数由表格现数，本文件不写第二份）。 */
+const COUNT_REQUIRED_SECTIONS = [
+  { id: 'section-4', name: '§4 约定与架构决策', re: /^##\s+\d+\.\s*.*约定与架构决策/ }
+];
+
 /** 解析出「共 N 条」这类条数声明。返回 {section, claimed, line}[]（只取真的声明了的）。 */
 function parseCountClaims(lines) {
   const out = [];
@@ -486,6 +504,21 @@ function analyze(rulesText, docTexts) {
     }
   }
 
+  // （承 ①）「必须声明条数」的章节：**章节在，就必须写「共 N 条」**。
+  //   否则把声明删掉就等于让判定 ① 静默失效（实测后门，见 `COUNT_REQUIRED_SECTIONS` 的注释）。
+  //   章节**不在**本文件里 ⇒ 此处**不判**（交给 main() 的真门禁：采不到真值 = 红）——
+  //   单测常只喂一段合成文本，在这里判红会把"喂片段"变成假红（与 ⑨ 的 `docTexts` 处理同一条纪律）。
+  const claimLines = new Set(parseCountClaims(lines).map((c) => c.line));
+  for (const sec of COUNT_REQUIRED_SECTIONS) {
+    const idx = lines.findIndex((l) => sec.re.test(l));
+    if (idx < 0) continue;
+    if (claimLines.has(idx + 1)) continue;
+    problems.push({ kind: 'count', rel: RULES + ':' + (idx + 1),
+      msg: sec.name + ' 的标题里**没有**「共 N 条」声明 —— 把声明删掉（表格一行不动）就等于**静默关掉**'
+        + '判定 ①，而这一节原本因此整节无人守（实测：删掉声明后本门禁 exit 0）。'
+        + '门禁不能允许被检查方自己关掉判定（照 skill `B8`）。收起：把「共 N 条」写回标题，N = 该节表格的数据行数' });
+  }
+
   // ② 表格结构：**按章节分组**后检查连续性
   //    不能拿"全部 ID 行"一起比相邻 —— §2 的 G 表、§3 的 R 表、§5 的 M 表本来就是三张
   //    不同的表，跨章节的间隔不是缺陷（第一版就是这么误报的，实测 2 处假红）。
@@ -758,6 +791,16 @@ function main() {
       msg: '读不到 ' + NEXT_STEP_REL + ' ⇒ 判定 ⑨ 无从判起。门禁不能自称"已校验下一步列"'
         + '（采不到真值 = 红，照 skill `G4`）。收起：恢复这份文件，或把文件名改动同步到 `SCAN_DOCS`' });
   }
+  // （承 ①）同上一条纪律：`COUNT_REQUIRED_SECTIONS` 里的章节在**真仓**里必须存在 ——
+  //   删掉/改掉该节标题的效果，同样是"判定静默消失"。`analyze()` 对"章节不在"记放行（单测喂片段），
+  //   **真门禁**在这里把它判红（采不到真值 = 红）。
+  for (const sec of COUNT_REQUIRED_SECTIONS) {
+    if (lines.some((l) => sec.re.test(l))) continue;
+    problems.push({ kind: 'count', rel: RULES,
+      msg: '找不到标题形如「## N. …' + sec.name.replace(/^§\d+\s*/, '') + '」的小节 —— 删掉或改名这一节'
+        + '就能让判定 ① 对整节静默失效，故按红处理（照 skill `B8`）。'
+        + '收起：把这一节的标题改回来（名字含「约定与架构决策」即可，章节号随它）' });
+  }
   console.log('== 规则文件自洽门禁（G9）==');
   console.log('   ' + RULES + '：门禁 ' + gates.length + ' 个 / 铁律 ' + rules.length
     + ' 条 / 元规则 ' + metas.length + ' 条');
@@ -822,6 +865,7 @@ function main() {
 module.exports = {
   parseCountClaims, firstTableAfter, findIdRows, splitBlocks, sectionOf,
   collectReferences, collectImplScripts, analyze, RULES, SCAN_DOCS,
+  COUNT_REQUIRED_SECTIONS,
   collectJudgmentMarkers, DECLARED_COUNT_RE, JUDGMENT_MARKER_RE, listJudgments,
   scanLedger, collectTickedTokens, parseCells, looksLikeRepoPath,
   LEDGER_NON_REPO_PATHS, LEDGER_NON_REPO_CAP, LEDGER_HEADING_RE,

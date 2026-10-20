@@ -14,6 +14,16 @@
  * ============================================================ */
 'use strict';
 
+/* ---------- UMD 头（形态照 `docs/ARCHITECTURE.md` §2.3；对照模块 `src/palette-rank.js`）----------
+ * 修复前（2026-10-20 实测）：本文件**没有 UMD 头**，末尾直接 `module.exports = {...}` ⇒
+ * 浏览器端加载抛 `ReferenceError: module is not defined`（整份纯函数一个都用不上）。
+ * 本模块零 require、零 IO ⇒ 浏览器分支拿到的是**同一份可用代码**（不是抛错的空壳）。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.MMDropTarget = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+
 /**
  * 把一个"窗口内坐标的矩形"换算成"屏幕坐标的矩形"。
  * @param {{x:number,y:number,width:number,height:number}} rect  窗口内矩形（可为 null）
@@ -72,4 +82,5 @@ function shouldDropByDwell(pt, winBounds, viewBounds, overSinceMs, nowMs, thresh
   return (nowMs - overSinceMs) >= Number(thresholdMs || 0);
 }
 
-module.exports = { isPointInSidebar, isPointInRect, toScreenRect, shouldDropByDwell };
+return { isPointInSidebar, isPointInRect, toScreenRect, shouldDropByDwell };
+});

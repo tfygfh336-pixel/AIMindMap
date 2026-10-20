@@ -15,25 +15,62 @@
  * ============================================================ */
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const zlib = require('zlib');
-const crypto = require('crypto');
+/* ---------- UMD 头（形态照 `docs/ARCHITECTURE.md` §2.3；对照模块 `src/palette-rank.js`）----------
+ * 修复前（2026-10-20 实测）：`fs` / `path` / `zlib` / `crypto` / `./markdown.js` / `./convert.js` /
+ * `./schema.js` 全部写在模块顶层，且**没有 UMD 头**、末尾直接 `module.exports` ⇒ 浏览器端加载抛
+ * `ReferenceError: require is not defined`（违反 `src/` 的双端契约 §2.1/§8.4）。
+ * 本模块是**导入前端**（读文件、解 zip、起 PDF 子进程）⇒ 那半边能力在浏览器里本就不该有；
+ * 合规做法是显式守卫：导出函数都在，调到就抛一句明确的话（见 nodeTrap / nodeGlobal）。
+ * `process` / `__dirname` 同样由工厂注入 —— 浏览器端直接取它们会抛
+ * `process is not defined` / `__dirname is not defined`（比"需要 Node 环境"难读得多）。
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('fs'), require('path'), require('zlib'), require('crypto'),
+      require('child_process'), require('./markdown.js'), require('./convert.js'), require('./schema.js'),
+      process, __dirname);
+  } else {
+    root.MMDocImport = factory(nodeTrap('fs'), nodeTrap('path'), nodeTrap('zlib'), nodeTrap('crypto'),
+      nodeTrap('child_process'), root.MMMarkdown, root.MMConvert, root.MMSchema || {},
+      nodeGlobal('process'), nodeGlobal('__dirname'));
+  }
+  function nodeTrap(name) {
+    const no = (prop) => function () {
+      throw new Error('src/doc-import.js 的 ' + name + '.' + prop + ' 需要 Node 环境（浏览器端没有 ' + name
+        + '；导入文档要读盘 / 解 zip / 起子进程，请走 CLI）');
+    };
+    return new Proxy({}, { get: (_t, prop) => (typeof prop === 'symbol' ? undefined : no(String(prop))) });
+  }
+  function nodeGlobal(name) {
+    return new Proxy({}, {
+      get: (_t, prop) => {
+        if (typeof prop === 'symbol') return undefined;
+        throw new Error('src/doc-import.js 需要 Node 环境（浏览器端没有 ' + name + '.' + String(prop) + '；请走 CLI）');
+      }
+    });
+  }
+})(typeof self !== 'undefined' ? self : this,
+function (fs, path, zlib, crypto, childProcess, markdown, convert, schemaSpec, process, __dirname) {
+
 // 整库导入（`import-dir`）要"文件 → 提纲 → 子树"，而**建树只有一处实现**（`markdown.js`）——
 // 本文件只做目录走查与容器拼装，绝不另写一套解析/建树 ✗（依赖方向 src → src，无环 ✓）
-const markdown = require('./markdown.js');
-const convert = require('./convert.js');
 // 绑定（R4）的**取值表与身份判据**只从 `src/schema.js` 取（那是唯一的校验处）——
 // 本文件不许再写一份 'propose-only' / 800 这类字面量（第二份必然与校验漂移 ✗）。
-const schemaSpec = require('./schema.js');
+
+/* 浏览器端 `schema.js` 必须**先加载**（`window.MMSchema`）。万一没加载到，工厂也给它一个空对象 ——
+ * 下面五个是取值表的**引用**（不是判据本身），空对象只会让它们变成 `undefined`，而真正会用到它们的
+ * 地方全都要读盘/起子进程，早被 Node 守卫挡在前面；**整份文件的加载**因此不会崩。
+ * Node 侧 `schemaSpec` 恒为真的 `./schema.js` ⇒ 取值逐字节不变。 */
 const BINDING_MODES = schemaSpec.BINDING_MODES;
 const BINDING_MODE_DEFAULT = schemaSpec.BINDING_MODE_DEFAULT;
 const BINDING_DELETIONS = schemaSpec.BINDING_DELETIONS;
 const BINDING_DEBOUNCE_DEFAULT = schemaSpec.BINDING_DEBOUNCE_DEFAULT;
 const BINDING_IGNORE_DEFAULT = schemaSpec.BINDING_IGNORE_DEFAULT;
 
-/** 工程根（`src/` 的上一层）。origin.src 记的是**相对它**的路径 ⇒ 与 cwd 无关、可复现 ✓ */
-const REPO_ROOT = path.resolve(__dirname, '..');
+/** 工程根（`src/` 的上一层）。origin.src 记的是**相对它**的路径 ⇒ 与 cwd 无关、可复现 ✓
+ *  ⚠️ 浏览器端没有 `__dirname` ⇒ 先探存在性（`typeof` 对未声明的标识符是安全的），
+ *  那边取到 `null`；所有真正会用到它的函数都已被 Node 守卫挡在前面。 */
+const REPO_ROOT = typeof __dirname === 'string' ? path.resolve(__dirname, '..') : null;
 
 /* ================= ⓪ 导入源闸门：把"为什么读不了"说准，并**每条都给出去路** =================
  * 缺陷取证（实测 2026-10-10）：`import-project <项目> <目录>` 与 `import-md <项目> <目录>` 都露出
@@ -546,7 +583,7 @@ function pdfOutlineViaHelper(filePath) {
   //    那是最难查的一类报文：使用者会以为"这份 PDF 坏了"，于是反复重试、换文件，方向全错 ✗。
   //    这里把"超限"独立成分支说清 + 给出去路（同一件事还有第二种表现：子进程自己先抛了错）。
   const MAXBUF_MB = 32;   // 与下面的 32 * 1024 * 1024 同一份口径（改一处必须改两处：这里只有一份常量 ✓）
-  const r = require('child_process').spawnSync(process.execPath, [helper, filePath],
+  const r = childProcess.spawnSync(process.execPath, [helper, filePath],
     { encoding: 'utf8', maxBuffer: MAXBUF_MB * 1024 * 1024 });
   const out = String(r.stdout || '').trim();
   const errText = String((r.error && r.error.message) || '') + ' ' + String(r.stderr || '').trim();
@@ -2472,7 +2509,7 @@ function parseBindingSnapshot(text) {
   return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : null;
 }
 
-module.exports = {
+return {
   detectFormat, textToOutline, looksLikeHeading, headingLevelOf,
   zipFindEntry, docxParagraphs, docxToOutline, docToOutline, finishOutline,
   // 导入源闸门（把"为什么读不了"说准 + 给出路）与来源指纹 origin（幂等的前提，唯一实现）
@@ -2497,3 +2534,4 @@ module.exports = {
   planBindingSync, bindingPlanChangesTree, applyBindingPlan, snapshotAfterBindingPlan,
   bindingStatusOf, serializeBindingSnapshot, parseBindingSnapshot
 };
+});
