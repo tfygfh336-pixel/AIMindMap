@@ -871,7 +871,7 @@ function clampWidth(w) {
  *   contextIsolation:true / nodeIntegration:false / sandbox:true（与 ensureView 逐字相同），
  *   外加**独立 session partition**（与 DSH 页面零共享 cookie/localStorage/缓存）与外链交系统浏览器。
  * ⚠️ 判据**不许**用 capturePage()：主页面截图里没有原生视图（本工程两次事故：
- *   CHANGELOG.md:4434-4437、:4488；scripts/vision/window-shot.js:4）⇒ 本面板的判据一律
+ *   `scripts/vision/window-shot.js:4`（原文：「侧栏是原生 `WebContentsView`，`capturePage()` 只截**页面** ⇒ 截图里永远没有侧栏」；⚠️ 原先此处指 `CHANGELOG.md` 的行号，2026-10-20 实测那些行号已指向无关内容，**行号型证据指针会漂，别再写**））⇒ 本面板的判据一律
  *   getBounds() 对拍页面让位读数（`scripts/smoke/22-sidebar-gap.js` 的第 2 条断言）。
  *   ⚠️ 订正（2026-10-18，第 2 批）：这里原先指向 `scripts/smoke/54-dock-panel-geometry.js`，
  *      而那个文件**在底座批收口时就没有了**（那条判据并进了域 22，理由见域 22 的注释）——

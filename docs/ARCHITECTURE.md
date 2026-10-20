@@ -246,7 +246,7 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
   - **第 4 个原生面板（停靠面板 · 2026-10-18 底座批）= 第四个 `WebContentsView`**，停在**右侧让位带的内缘**（`[页面][面板][控制栏][DSH 侧栏]`）。本批**只造底座**：能开能关、几何正确、判据齐备的空面板 + 一个 `data:` 占位页，**没有任何业务内容**（浏览器 / 改动清单属下一批 `a76bab32`）。
     · **唯一改几何出口**：`setGeometry({width?, dockWidth?, dockOpen?})` → `relayout()` → `computeGeometry()` → 三条 `setBounds()`；`setWidth()` 只是 `setGeometry({width})` 的薄壳（A1：不新造第二套几何设置函数）。结构断言钉住"只有一处"：`main-dsh-sidebar.js` 代码里 `computeGeometry(` 恰 1 次、`setBounds(` 只出现在 `relayout()` 内（`tests/panel-geometry.test.js`）。
     · **开/关/回退**：`openDockPanel()` 把**开之前那份几何快照**记进 `state.dock.prev`；`closeDockPanel()` 重算几何并留`lastRestore = {opened, before, after, same}`（"关回原样"的比对基准是**开之前**，不是"关那一刻" —— 后者必然不同，那条读数会永远 false，实测踩到过）。关闭默认**只摘不销毁**（面板是将来业务内容的容器，开关一次不该丢它的状态）；要回收内存走 `destroyPanel()` / `closeDockPanel({destroy:true})`；应用退出时 `destroy()` 里销毁。
-    · **安全面（照抄既有侧栏 view 的取值，不自己发明）**：`contextIsolation:true` / `nodeIntegration:false` / `sandbox:true` + **独立 session partition** `persist:mm-dock-panel`（与 DSH 页面零共享 cookie/localStorage）+ 外链交系统浏览器。⚠️ 判据**不许**用 `capturePage()`（主页面截图里没有原生视图：`CHANGELOG.md:4434-4437`、`:4488`）⇒ 全是 `getBounds()` 对拍页面让位读数（`scripts/smoke/22-sidebar-gap.js` 那条追加断言）。
+    · **安全面（照抄既有侧栏 view 的取值，不自己发明）**：`contextIsolation:true` / `nodeIntegration:false` / `sandbox:true` + **独立 session partition** `persist:mm-dock-panel`（与 DSH 页面零共享 cookie/localStorage）+ 外链交系统浏览器。⚠️ 判据**不许**用 `capturePage()`（主页面截图里没有原生视图 —— 这条有**语义可自证**的来源：`scripts/vision/window-shot.js:4`「侧栏是原生 `WebContentsView`，`capturePage()` 只截**页面** ⇒ 截图里永远没有侧栏」；⚠️ 原先此处指 `CHANGELOG.md` 行号，2026-10-20 实测那些行号已指向无关内容，**行号型证据指针会漂，别再写**）⇒ 全是 `getBounds()` 对拍页面让位读数（`scripts/smoke/22-sidebar-gap.js` 那条追加断言）。
     · **让位读数（一处发射）**：`notifyRenderer()` 发的 `width` = `occupiedWidth()` = 控制栏 + 侧栏 + 面板；另带 `sidebarWidth`（侧栏那条带自己的宽）—— 渲染层用它算**拖宽热区**的左缘（用总量会把热区推到面板左缘，表现为"在面板边上拖动却改了侧栏宽度"）。改动前 `width` 恒等于"侧栏可见时的占宽"，改动后**面板关着时逐项相同**。
 - `preload.js`：contextBridge 暴露 `window.desktop`（projects/project.save/**project.peek**（只读探视：
   取盘上内容与两份版本，**不推进**闸门记录）/asset.import/
@@ -676,4 +676,80 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 > ① 加写盘路径 → 复用 `src/data-store.js` 的 `writeFileAtomic`（禁止裸 `writeFileSync`）；
 > ② 加版本号引用 → 读 `src/config.js` 的 `APP_VERSION`（禁止硬编码字面量）；
 > ③ 加全局监听 / 观察者 → 放进带幂等守卫的 `bind*` 函数（**禁止内联在 `renderMind`**，会随每次重建累积）。
+
+## 7. 高频读取入口的字节量级（`G-14`）
+
+> **为什么这一节住在这里，而不是 `docs/RULES.md`**：`RULES.md` 写的是"**必须遵守什么 + 怎么强制**"；
+> 而"`read --json` 对 889 个节点大概多大"是**设计事实** —— 它跟着 `cli/commands/project.js` +
+> `src/query.js` 的读取形状走，属于架构。**规则里放数字没人守，架构里放形状可以复算。**
+> 门禁（`tests/read-size.test.js`）只守这个量级的**上界**，**不复制**这里的读数：读数随数据变，
+> 上界不随数据变（见 §7.4 的"为什么不绑真书"）。
+> 相关：`docs/CLI.md`（生成物：命令用法）· `docs/AI-GUIDE.md`（该用哪一档）· `docs/RULES.md` §3 `R3`（分层测试）。
+
+### 7.1 哪些入口算"高频读取"（口径：三条同时满足）
+
+① **不改笔记数据**（旁路埋点不算改数据，且可用 `MM_HEAT_SENSOR=off` 关掉）—— 高频调用的前提是"随时可调"；
+② **是"决定下一步做什么"的入口** —— 即 `SKILL.md` 动作现场里"读"的那几条：`list` / `read` / `get` / `search`；
+③ **一次会话里可能被调一次以上**（不是一次性命令）。
+
+| 入口 | 增长形状 | 上界的写法（**量级**，不是读数） | 谁守 |
+|------|---------|------------------------------|------|
+| `list --json` | O(节点数) | `≈ 节点数 × 200 B` | `tests/read-size.test.js` |
+| `read --json` | O(节点数)，常数由**详情密度**决定 | `≈ 节点数 × 2000 B` | 同上 |
+| `read --json --brief` | 同上，砍掉详情与资源清单 | `≈ 节点数 × 600 B` | 同上 |
+| `read --json --brief --compact` | 同 `--brief`，再去掉缩进 | `≈ 节点数 × 450 B` | 同上 |
+| `get --json` | **O(1)**（与节点数无关） | `≤ 2048 B / 次` | 同上 |
+| `search --json` | 由 `--max-bytes` **自己声明** | `≤ 声明的 maxBytes + 信封（约 4096 B）` | 同上 |
+
+**不在这一节的三类**（各有理由，不是漏了）：
+
+- **`export-json`**：产出是**文件**（不进上下文），体积由**内嵌资源**（base64 图片 / 附件）驱动。
+  当时测得：`comnet` 项目 JSON 1.24 MB → 导出文件 ≈ 9.2 MB，7.4 倍**全部来自 assets**，而节点数一个没变。
+  ⇒ 它不是"节点数 × K"的形状，套那个上界只会得到假判据（`tests/read-size.test.js` §C 把这条理由变成了读数）。
+- **`validate` / `stats` / `orphans` / `backlinks` / `mentions`**：不在"读来决策"的主链上（要么只给计数，要么只给关系），
+  且目前没有大输出的实测，**不凭空给它定上界**。
+- **一次性导出 / 迁移命令**（`export-md` / `export-html` / `import-*` / `migrate`）：同上，且体积由"内容 + 资源"决定。
+
+### 7.2 当次实测读数（**快照**：2026-10-20 · 样本量 = 3 个项目各调 1 次）
+
+**口径三条，读的时候别换**：① 量的是**字节数**（不是字符数 —— 中文 1 字 ≈ 3 字节，拿字符数会把体积算小约 3 倍）；
+② 量的是 **stdout 原始字节**；③ 跑时设 `MM_HEAT_SENSOR=off` ⇒ 埋点零写入，`projects/` 的文件清单与字节数**前后指纹一致**
+（52 个文件 → 52 个，是一项**测出来的**事实，不是"我看着没写"）。
+机器产物：`.review/20261020-测试补全/read-size-readings.json`；复算整张表的命令：
+`node .review/20261020-测试补全/probe-read-size.js`。
+
+| 项目（节点数） | `list` | `read` | `read --brief` | `--brief --compact` | `get`（单节点） | `search --limit 20` |
+|---|---|---|---|---|---|---|
+| `卖点讨论`（293） | 当时 ≈ 53 KB | 当时 ≈ 498 KB | 当时 ≈ 142 KB | 当时 ≈ 98 KB | 当时 152 B | 当时 ≈ 2.5 KB |
+| `comnet`（889） | 当时 ≈ 132 KB | 当时 ≈ 1.17 MB | 当时 ≈ 301 KB | 当时 ≈ 185 KB | 当时 289 B | 当时 ≈ 8.3 KB |
+| `book-linux-proc-mem`（126） | 当时 ≈ 20.5 KB | 当时 ≈ 163 KB | 当时 ≈ 57 KB | 当时 ≈ 37 KB | 当时 245 B | 当时 961 B |
+
+⇒ **长期有效的那一句是形状，不是上面那些读数**（当时那次跑出来的复算区间）：
+`list ≈ 节点数 × 150–190 B` · `read ≈ 节点数 × 1.3–1.8 KB`（详情贡献 862–1246 B/节点，**这就是"详情占比决定省多少"的量化版**）·
+`--brief ≈ 节点数 × 350–500 B` · `--brief --compact ≈ 节点数 × 210–340 B` · `get` 与节点数**无关**（0.15–0.3 KB/次）。
+
+### 7.3 拿它做决策（上下文预算怎么花）
+
+- **先问"我要的是结构还是内容"**：同样 889 个节点，`list` 是 ≈ 132 KB 而 `read` 是 ≈ 1.17 MB —— 当时测得差 **8.8 倍**。
+  只知道"有哪些节点"就别读全文。
+- **定位到分支后再定点**：`read --subtree <id>` 只把某个分支当根建视图（口径见 `src/query.js` 的 `buildReadView`），
+  `get --json` 则是 **O(1)** 的单节点实况（≈ 0.3 KB，**不带 `detail`** —— 这是铁律，也有机器判据）。
+- **要正文就明说**：`get` 不带 `detail`；取正文走 `read --json` 的对应节点、`read --items` 或 `get --item`。
+- **检索自带预算**：`search --json` 的命中数组按 `--max-bytes` 卡（默认值与上下界是 `src/item-index.js` 的常量，
+  **本页不抄那个数**），截断时 payload 里 `truncated: true` 并给 `budget.resume` —— 别把"截断"读成"只有这么多"。
+
+### 7.4 门禁与它的边界
+
+- **门禁**：`tests/read-size.test.js`（单测层，**不在** `npm run verify` 的门禁表里）。
+  判据 = `对固定夹具，输出字节数 < 上界 × 2`，其中 `上界 = 节点数 × MAG[入口]`（`get` 是常数上界，
+  `search` 用**它自己声明的** `budget.maxBytes`，不另抄一份预算常量）。
+- **能被打红**：`MAG` 是"量级上界"而不是读数（实测 152–185 B/节点 vs `MAG` 200），
+  所以入口**多带一个字段**、**少做一次裁剪**都会按节点数成比例越界；另有两条直接的判别力用例 ——
+  边界（上界×2 减 1 绿 / 等于即红）与"`get` 若哪天带出 15360 B 正文 ⇒ 必红"。
+- **⚠️ 边界（不绑真书，这是有意的）**：真项目数据每天在改，把门禁绑到"当前三本书的读数"上，
+  它会**因为数据变了**而翻红 —— 那是假红，而假红的下场是这条门禁被人关掉（`docs/RULES.md` §3 的同型教训）。
+  ⇒ 真书只用来**定标**（写进本节，带样本量），门禁跑在**固定夹具**上：夹具不变 ⇒ 读数可复现。
+- **这条门禁判不了什么**：① **`detail` 的"该不该这么大"** —— 它只判"有没有超出量级"，判不了"这本书的详情是不是写太长了"；
+  ② **资源体积**（图片 / 附件）—— 已被 §7.1 排除在 `export-json` 上界之外；
+  ③ **`search` 命中**的"该不该这么多" —— 那是 `--limit` / `--max-bytes` 的调用方选择，不是入口的形状问题。
 

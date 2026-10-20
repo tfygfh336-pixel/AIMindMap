@@ -8,8 +8,11 @@
  *   ② **判别力要留在测试里，而不只是写在交付说明里**：下面有一条用例直接把**真实仓库里那条合规断言**的
  *      `elementFromPoint` 抹掉（只在内存里抹，不落盘 ✗），断言门禁**必须红** —— 这就是"新门禁先证明它会红"
  *      那条纪律的可重复版本 ✓。
- *   ③ **防假红**：名字里不含可见性词的断言一律不触发（否则门禁会天天喊狼来了，下场是被关掉）；
- *      名字含词但体内只有文案判据（"写后重读可见"这类数据语义）也不判红 —— 只能提示。
+ *   ③ **防假红**：名字里不含可见性词的断言一律不触发（否则门禁会天天喊狼来了，下场是被关掉）。
+ *      ⚠️ 这里原先还写着"名字含词但体内只有文案判据（'写后重读可见'这类数据语义）也不判红 ——
+ *      只能提示"。**2026-10-20 起不成立**：那一档（`nonvisual`）已改成**判红**——
+ *      因为它同时是一条"把 rect 删干净就能静默关掉守卫"的缝。数据语义的可见改为
+ *      **在封闭册 `NONVISUAL_DEBT` 上登记**（在册只报告、不在册一律判红、修好忘销账判红）。
  * ============================================================ */
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
@@ -123,11 +126,18 @@ describe('判定②：声称可见 ⇒ 必须有真判据', () => {
     expect(r.debts).toEqual([]);
   });
 
-  it('名字含词、但体内只有文案判据 ⇒ 归"无可视判据"（多为数据/文案语义），不判红只提示', () => {
+  it('名字含词、但体内**既无真判据也无盲判据** ⇒ 判红（2026-10-20 修；修前"只报告、不判红"）', () => {
     const body = ['      const t = await ctx.exec("document.body.textContent");', '      return { ok: t.includes("x") };'];
     const r = gate.analyze(fixture('变更可见性：界面保存也记进日志', body), [], { minTriggered: 1 });
-    expect(r.problems).toEqual([]);
-    expect(r.nonVisual).toHaveLength(1);
+    expect(r.problems).toHaveLength(1);
+    expect(r.problems[0].verdict).toBe('nonvisual');
+    expect(r.ok).toBe(false);
+    // 在封闭册上 ⇒ 只报告（计数可见）、不判红；**口径不是"看到就算过"，是"必须在册"**
+    const reg = [{ rel: 'scripts/smoke/99-fixture.js', name: '变更可见性：界面保存也记进日志',
+      why: '单测夹具：名字里的"可见"是数据语义', todo: '单测夹具：改名销账' }];
+    const r2 = gate.analyze(fixture('变更可见性：界面保存也记进日志', body), [], { minTriggered: 1, nonVisualDebt: reg });
+    expect(r2.problems).toEqual([]);
+    expect(r2.nonVisual).toHaveLength(1);
   });
 });
 
@@ -190,12 +200,17 @@ describe('判定①⑤：触发面与防绕道下限', () => {
 });
 
 describe('判别力自检（`--selftest`，不碰任何文件）', () => {
-  it('自检通过：基线绿 ⇒ 注入①（抹真判据）必红 ⇒ 注入②（名字提判据、代码只有 rect）必红 ⇒ 撤销复绿', () => {
+  it('自检通过：基线绿 ⇒ 注入（抹真判据 / 名字提判据 / 空豁免标记 / 无盲判据）必红 ⇒ 撤销复绿', () => {
     const r = gate.selftest();
-    expect(r.steps.map((s) => s.ok)).toEqual([true, true, true, true, true]);
+    // 步数**不写死**：加一条注入就多一步，写死会让"补了一条判别力证明"反而判红。
+    expect(r.steps.length).toBeGreaterThanOrEqual(5);
+    expect(r.steps.filter((s) => !s.ok)).toEqual([]);
     expect(r.ok).toBe(true);
     // 自检必须点名"报红了哪一条"（否则它自己也是个空转的绿灯）
     expect(r.steps[2].detail).toMatch(/报红 \d+ 条/);
+    // 两条缝各自的注入证明必须在册（2026-10-20）—— 名字里带"缝 a" / "缝 b"
+    expect(r.steps.map((s) => s.name).join('\n')).toMatch(/缝 a/);
+    expect(r.steps.map((s) => s.name).join('\n')).toMatch(/缝 b/);
   });
 });
 

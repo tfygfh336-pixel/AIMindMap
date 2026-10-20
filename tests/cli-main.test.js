@@ -12,8 +12,10 @@
  *
  * 注意：这些断言**不起子进程** —— 受限环境（企业 EDR / 沙箱）下管道 stdio 会
  *       EPERM 假失败（见 docs/VERIFY.md「本机受限环境注意」）。跨进程的**逐字节等价**
- *       由两处覆盖：`scripts/cli-integration.js`（140 条，经 spawnSync 调新入口）
- *       与 `.review/20260925-cli进程内改造/equiv-check.js`（22 条只读路径字节比对）。
+ *       由两处覆盖：`scripts/cli-integration.js`（条数以 `docs/VERIFY.md` 的「CLI 集成断言」行为**唯一真值出口**
+ *       —— 本注释**不写具体数字**：这里原先写「140 条」，而真值早已是 567，漂了 4 倍且无人发现，
+ *       正是 `docs/RULES.md` 里「别在注释里写会腐的数字」那条的现场）
+ *       与 `.review/20260925-cli进程内改造/equiv-check.js`（22 条只读路径字节比对，历史档，数字封存）。
  * ============================================================ */
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';

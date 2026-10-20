@@ -355,12 +355,44 @@ describe('G9 对真实工程：docs/RULES.md 当前必须零问题', () => {
     expect(problems.map((p) => '[' + p.kind + '] ' + p.rel + ' ' + p.msg)).toEqual([]);
   });
 
-  it('真实 RULES.md 解析出 9 个门禁 / 11 条铁律 / 4 条元规则', () => {
+  /* ⚠️ 这里**不许硬编码 ID 清单**。
+   * 2026-10-20 的现场：本断言原写死 `['R1','R1a',…,'R7']`，同批新增 3 条铁律（R1d/R3b/R3c）
+   * ⇒ 它当场红，而**它是"铁律条数"的第三个副本**（§3 标题与 README §九 都有 G9 盯着，只有它没人管）。
+   * ⇒ 改成断言**结构不变量**：基号连续 + 后缀连续 + 顺序单调 + 无重复。
+   *    这样"新增一条"不用改测试，"删掉一条"或"跳号/乱序/重名"仍会被抓到 —— 判别力不丢。 */
+  const assertIdStructure = (ids, prefix) => {
+    expect(ids.length, prefix + ' 一个都没有').toBeGreaterThan(0);
+    expect(new Set(ids).size, prefix + ' 有重复 ID：' + ids.join(',')).toBe(ids.length);
+    const parsed = ids.map((id) => {
+      const m = new RegExp('^' + prefix + '(\\d+)([a-z]*)$').exec(id);
+      expect(m, prefix + ' 的 ID 形状不合法：' + id).toBeTruthy();
+      /* 规范形：基号不许有前导零 —— `R01` 与 `R1` 是**两个不同的 ID 字符串**，会绕过"无重复"检查 */
+      expect(id, prefix + ' 的基号不许有前导零：' + id).toBe(prefix + Number(m[1]) + m[2]);
+      return { id, base: Number(m[1]), suffix: m[2] };
+    });
+    /* 基号必须从 1 起连续 */
+    const bases = [...new Set(parsed.map((p) => p.base))].sort((a, b) => a - b);
+    expect(bases, prefix + ' 的基号必须从 1 起连续').toEqual(bases.map((_, i) => i + 1));
+    /* 每个基号下的后缀必须连续：'' → 'a' → 'b' → … */
+    for (const b of bases) {
+      const sfx = parsed.filter((p) => p.base === b).map((p) => p.suffix).sort();
+      const want = sfx.map((_, i) => (i === 0 ? '' : String.fromCharCode(96 + i)));
+      expect(sfx, prefix + b + ' 的后缀必须连续（不许跳 a 用 b）').toEqual(want);
+    }
+    /* 顺序单调：按 (基号, 后缀) 升序 */
+    const key = (p) => p.base * 1000 + (p.suffix ? p.suffix.charCodeAt(0) - 96 : 0);
+    const keys = parsed.map(key);
+    expect(keys, prefix + ' 的顺序必须单调（基号递增、同基号内后缀递增）').toEqual([...keys].sort((a, b) => a - b));
+    return bases.length;
+  };
+
+  it('真实 RULES.md 的门禁 / 铁律 / 元规则：基号连续 + 后缀连续 + 顺序单调 + 无重复（**不硬编码清单**）', () => {
     const lines = fs.readFileSync(path.join(ROOT, rc.RULES), 'utf8').split('\n');
     const ids = rc.findIdRows(lines).map((r) => r.id);
-    expect(ids.filter((i) => i[0] === 'G')).toEqual(['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9']);
-    expect(ids.filter((i) => i[0] === 'R')).toEqual(['R1', 'R1a', 'R1b', 'R1c', 'R2', 'R3', 'R3a', 'R4', 'R5', 'R6', 'R7']);
-    expect(ids.filter((i) => i[0] === 'M')).toEqual(['M1', 'M2', 'M3', 'M4']);
+    assertIdStructure(ids.filter((i) => i[0] === 'G'), 'G');
+    assertIdStructure(ids.filter((i) => i[0] === 'R'), 'R');
+    assertIdStructure(ids.filter((i) => i[0] === 'M'), 'M');
+    /* 条数本身不在这里断言 —— 由下一条用例（声明条数 == 表格行数）与 G9 一起管，避免第三份副本 */
   });
 
   it('真实 RULES.md 里声明的条数与表格行数一致（§3 曾写 5 条、表却有 6 行）', () => {

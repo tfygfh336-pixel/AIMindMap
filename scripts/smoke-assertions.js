@@ -398,7 +398,7 @@
  *                         ② **贴接**（panel.x+panel.w == rail.x）；③ **锚右**（view 右缘 == 窗口内容宽）；
  *                         ④ **逐项复原**（关掉后 rail/view 的 x/width 与打开前每个数字相同、面板宽回 0）。
  *                         两条读数（不是判据）：打开时**侧栏一个像素都没动**；侧栏收起时**面板仍独立**停在窗口右缘。
- *                         ⚠️ 判据**不用 `capturePage()`**（看不见原生视图，两次事故 CHANGELOG.md:4434-4437、:4488）；
+ *                         ⚠️ 判据**不用 `capturePage()`**（看不见原生视图 —— 语义可自证的来源：scripts/vision/window-shot.js:4「侧栏是原生 WebContentsView，capturePage() 只截**页面** ⇒ 截图里永远没有侧栏」；⚠️ 原先此处指 CHANGELOG.md 行号，2026-10-20 实测已指向无关内容，**行号型证据指针会漂，别再写**）；
  *                         "原生实际占宽"由三份 `getBounds()` 相加，**不读产品自己的 `occupiedWidth()`**（两侧同源 = 恒等假绿）。
  *                         判别力：注入"让位 +1px" ⇒ ①红；去掉 `closeDockPanel` 的那次重算 ⇒ ④红（见 `.review/20261018-第4面板底座/`）。
  *                         ⚠️ 落点：本来单独建了域 54，但 G3 的 `tests/changed-plan.test.js` 要求每个域都归到某个改动面下，
@@ -497,6 +497,100 @@ module.exports.parseStrictEnv = function parseStrictEnv(raw) {
   if (raw === false || raw === '0' || raw === 'false') return { ok: true, strict: false, reason: '' };
   return { ok: false, strict: false,
     reason: '只能是 1 / true / 空串（裸写=开）或 0 / false（关），收到 ' + JSON.stringify(String(raw)) };
+};
+
+/* ================= 环境准入（G5 之前"拒绝跑"的判据；纯函数，零副作用 ⇒ 可被单测引入 ✓） =================
+ * **它补的是 `R1d` 缺的那一半**：`R1d` 管"失败必须响亮"，本条管"**有些失败不该以'跑出来的红'
+ * 的形态出现，而该以'拒绝跑'的形态出现**" —— 环境不够时跑出来的红是**假红**，而假红的
+ * 下场是连真红也不看（`docs/RULES.md` §2 的旁注有全文；那里的裁决与这里的实现必须一致）。
+ *
+ * 为什么以前没有：`buildVerifyHistory` 只把 `freeMemMB` **记进** `.review/verify-history.jsonl`
+ * （`scripts/verify.js` 那句注释写的是"这三点是同一份代码、结果不同时最先要排除的变量"）——
+ * 也就是说内存从来只是一条**旁证**，没有任何判据读它。实测它确实会变：390 条历史记录的
+ * `freeMemMB` 从 4345 MB 到 19380 MB（2026-10-20 现算）⇒ "这次的内存和上次不一样"是常态，
+ * 但"环境差到**根本不该跑**"这件事一直没有出口，只能眼睁睁看它跑出假红。
+ *
+ * ## 三档（没实装的档不许写成已实装 —— 照 `docs/RULES.md` §2 那条口径）
+ *   ① **准入拒绝**（本函数 `admitted:false`）：可用内存 < 门槛 ⇒ 调用方**一条断言都不跑**、
+ *      **不算通过**、**exit 非 0**（响亮，`R1d` ①）。
+ *   ② **降级继续**（**不在本函数里**）：`scripts/smoke/real-write-guard.js` 的"另一个活着的
+ *      界面实例正在写真实目录"属于这一档 —— 它是本机最普通的情形，**不许**升级成准入拒绝
+ *      （那会把门禁变成长期红而被关掉，`M1`）。本函数只管 ①，别把两件事混在一起。
+ *   ③ **采不到真值 = 拒绝**（`ok:false`）：可用内存取不到（非有限正数）⇒ 按红处理，
+ *      不许当成"环境没问题"放行 —— 与 `docs/RULES.md` §2「采不到真值 = 红」同源。
+ *
+ * ## 门槛为什么是这个数（如实标注它的证据强度，别当它是标定过的）
+ *   默认门槛写在 `ENV_ADMISSION.minFreeMemMB`，**`docs/RULES.md` 不抄这个数**（抄一份就会漂；
+ *   门禁每次运行都把"门槛 + 现读数 + 放行/拒绝"打印出来）。选它的依据只有两条，都有据可查：
+ *     · 390 条验证历史里 `freeMemMB` 的**最小值是 4345 MB** ⇒ 默认门槛远低于它，
+ *       不会在"这台机器一向的运行状态"下误拒（误拒的代价 = 把愿意跑验证的人挡在门外）；
+ *     · `main.js` 里记过的真实事故：反复跑把整机提交内存推到 80%，连带把同机其它界面拖卡/拖崩
+ *       ⇒ 内存确实会到"跑出来的红不算数"的程度。
+ *   ⚠️ 它是**护栏，不是标定值**：没有人在"内存刚好不够"那一刻测到过阈值（也没有那个读数），
+ *   所以不许拿它去做更细的判断（例如"这次慢了是因为内存"）。要动它 = 动 `ENV_ADMISSION`，
+ *   并在 `CHANGELOG.md` 留一笔。
+ */
+const ENV_ADMISSION = Object.freeze({
+  /** G5（唯一真起 Electron 的步骤）的可用内存门槛（MB）。**本文件是它的唯一权威** */
+  minFreeMemMB: 1024,
+  /** 覆盖门槛的开关名（值必须是正整数；非法 ⇒ 当场红，不许静默落回默认值） */
+  minVar: 'MM_MIN_FREE_MEM_MB',
+  /** 拒绝时的退出码（**与产品红的 1 区分开**："没跑"与"跑了但失败"不是一件事） */
+  refusedExitCode: 3
+});
+
+module.exports.ENV_ADMISSION = ENV_ADMISSION;
+
+/**
+ * 判"这一轮的环境准不准跑 G5"。
+ *
+ * **纯函数**：`os.freemem()` 与 `process.env` 一律由调用方现取后传进来（本函数不碰它们 ⇒
+ * 可以用固定输入做单测与判别力证明，也不会在 require 时就结账）。
+ *
+ * @param {{freeMB:number, rawMin?:string|number|null}} input
+ *   `freeMB` = 当前可用物理内存（MB）；`rawMin` = 覆盖门槛的原始值（未设传 `undefined`/`null`）
+ * @returns {{ok:boolean, admitted:boolean, freeMB:number|null, minMB:number, reason:string, override:boolean}}
+ *   `ok:false` ⇒ **判据本身没成立**（采不到可用内存 / 开关值非法）⇒ 调用方必须**红**，
+ *     不许把它当"放行"或"跳过"（`ok:false` 时 `admitted` 恒为 false）；
+ *   `ok:true, admitted:false` ⇒ **准入拒绝**（环境不够，跑出来只会是假红）；
+ *   `ok:true, admitted:true` ⇒ 放行，且**调用方必须打印** `freeMB` 与 `minMB`（门槛被改小过要看得见）。
+ */
+module.exports.checkEnvAdmission = function checkEnvAdmission(input) {
+  const inp = input || {};
+  const rawMin = inp.rawMin;
+  let minMB = ENV_ADMISSION.minFreeMemMB;
+  let override = false;
+  const ret = (ok, admitted, freeMB, reason) => ({
+    ok: ok, admitted: !!ok && admitted, freeMB: freeMB === undefined ? null : freeMB,
+    minMB: minMB, reason: reason || '', override: override
+  });
+
+  // ① 开关值：**只有**"未设"或"正整数"两种合法形状。写错的值不许静默落回默认门槛
+  //    （照 `parseStrictEnv` 的先例：开关写错的后果是"你以为门槛生效了，其实没有"）。
+  if (rawMin !== undefined && rawMin !== null && String(rawMin).trim() !== '') {
+    const n = Number(String(rawMin).trim());
+    if (!isFinite(n) || !Number.isInteger(n) || n <= 0) {
+      return ret(false, false, inp.freeMB,
+        ENV_ADMISSION.minVar + ' 必须是正整数（MB），收到 ' + JSON.stringify(String(rawMin)));
+    }
+    minMB = n;
+    override = true;
+  }
+
+  // ② 可用内存取不到 ⇒ **采不到真值 = 拒绝**（不许当成"环境没问题"）
+  const freeMB = Number(inp.freeMB);
+  if (!isFinite(freeMB) || freeMB <= 0) {
+    return ret(false, false, null,
+      '取不到可用物理内存（os.freemem() 返回 ' + JSON.stringify(inp.freeMB) + '）⇒ 采不到真值 = 拒绝放行');
+  }
+
+  // ③ 判据
+  if (freeMB < minMB) {
+    return ret(true, false, Math.round(freeMB),
+      '可用内存 ' + Math.round(freeMB) + ' MB < 门槛 ' + minMB + ' MB'
+        + (override ? '（门槛由 ' + ENV_ADMISSION.minVar + ' 覆盖）' : '（默认门槛）'));
+  }
+  return ret(true, true, Math.round(freeMB), '');
 };
 
 /* ================= 冒烟结果的**三态计数**（纯函数，零副作用 ⇒ 可被单测引入 ✓） =================

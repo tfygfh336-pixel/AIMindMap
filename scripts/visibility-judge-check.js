@@ -15,8 +15,34 @@
  *     · `document.elementFromPoint(x, y)` 命中自身（浏览器自己回答"这一点上是哪个元素"⇒ 抓得住遮挡）；
  *     · 真帧像素判据（`scanRegion` / `isAccentBlue` / `vision/frame-stats`，数像素 ⇒ 抓得住裁切）；
  *     · 或者一条**显式豁免** `判据-豁免: <原因>` —— 只留给"确实只需 rect"的少数情形。
- *   判定清单见 `analyze()` 里的 ①…⑤ 标记（此处刻意不写死条数：写死过一次就会漂，
+ *   判定清单见 `analyze()` 里的 ①…⑦ 标记（此处刻意不写死条数：写死过一次就会漂，
  *   而"条数声明"的权威副本是 `docs/RULES.md` §2 的门禁行）。
+ *
+ * ## 2026-10-20：两条"能把守卫**静默关掉**"的缝已收口（`G-19` 那一批只钉未修，本批修）
+ *   两条缝的取证与修前/修后读数在 `.review/20261020-门禁A/`（`probe-v1-seams.js` 的 JSON 读数）。
+ *
+ *   **缝 (a) — 空豁免标记仍生效，而且会吞掉下一行代码当原因。**
+ *     修前：`EXEMPT_RE = /判据-豁免\s*[:：]\s*(\S[^\n]*)/` —— 那两处 `\s*` **能跨行**，
+ *     于是 `// 判据-豁免:` 后面不写字时，正则把**下一行代码**（实测是
+ *     `const r = await ctx.exec('…getBoundingClientRect()…');`）当成"豁免原因"捕获，
+ *     verdict 直接变 `exempt` ⇒ 一条只有 rect 的可见性断言被放行、**exit 0**。
+ *     对照（`V2` `scripts/smoke-state-check.js` 的 `findExemptions`）：它**按行**喂正则，
+ *     所以 `\s*` 跨不过去 ⇒ 冒号后必须**同行**有非空白字符才算豁免。
+ *     修后：`EXEMPT_RE` 里的 `\s*` **全部**收成 `[ \t]*`（不许跨行），口径与 `V2` 一致：
+ *     **豁免原因不能为空**；写空的标记**不算豁免**，该断言按它自己的判据照常受判
+ *     （只有盲判据 ⇒ 判红；连判据都没有 ⇒ 见缝 (b) ⇒ 也判红）。
+ *     另加 `EMPTY_EXEMPT_RE` 专门认"写空的标记本身"，好让报文**明说**"原因不能为空"，
+ *     而不是让人对着一句"体内只有 getBoundingClientRect"猜自己做错了什么（`R1d` 响亮）。
+ *
+ *   **缝 (b) — `nonvisual` 档只报告、不判红。**
+ *     修前：`analyze()` 的 `ok` 表达式是
+ *     `problems.length === 0 && staleDebt.length === 0 && scansOk && floorOk` —— **不含 nonVisual**；
+ *     而 `'nonvisual'` 分支只 `nonVisual.push(row)` 就 `continue`。⇒ 把一条合规断言体内的
+ *     **盲判据一起删干净**（rect/类名/行内样式全删、名字里的"可见"保留），它就从
+ *     `'blind'`（判红）滑进 `'nonvisual'`（只报告）⇒ **守卫被静默降级成一条提示**。
+ *     修后：**名字宣称可见、体内既无真判据也无盲判据 ⇒ 判红**（这比"用了盲判据"更可疑：
+ *     连假装都没装 ✓）。既有 6 条已在 `NONVISUAL_DEBT`（封闭在册，逐条写明为什么是
+ *     "数据/文案语义的可见"，欠账只减不增、修好忘销账照样判红）。
  *
  * 边界（诚实标注，别以为它能包住一切）：
  *   · 它查的是**判据的来源**（有没有真判据 / 有没有声明豁免），查不了**判据用得对不对**
@@ -61,7 +87,10 @@ const REAL_JUDGES = [
 /* ---------------------------------------------------------------
  * ③ 盲判据：这些**单独用**判不出"用户看不看得见"（对裁切/遮挡是盲的）。
  *    它们出现在断言体里 ⇒ 这条断言确实在判"在不在 / 什么样"，也就落进了事故那一类。
- *    （反过来说：体内连盲判据都没有的，多半是"数据/文案语义"的可见 ⇒ 见 ④，不判红。）
+ *    ⚠️ 2026-10-20 改：**体内连盲判据都没有的，不再"多半是数据语义"就放过** ——
+ *    "名字宣称可见但既无真判据也无盲判据"落到 `'nonvisual'` 档，**现在判红**
+ *    （详见文件头「缝 (b)」与 ⑥ `NONVISUAL_DEBT`）。修前它只报告 ⇒ 把 rect 删干净
+ *    就能把守卫从红降级成提示，那是**可静默关掉**的路 ✗。
  * --------------------------------------------------------------- */
 const BLIND_JUDGES = [
   { token: 'getBoundingClientRect', kind: '几何' },
@@ -79,8 +108,18 @@ const BLIND_JUDGES = [
   { token: 'getComputedStyle', kind: '计算样式' }
 ];
 
-/** 显式豁免标记：`判据-豁免: 原因`（注释或字符串里都认 —— 它本来就是给人看的） */
-const EXEMPT_RE = /判据-豁免\s*[:：]\s*(\S[^\n]*)/;
+/** 显式豁免标记：`判据-豁免: 原因`（注释或字符串里都认 —— 它本来就是给人看的）。
+ *
+ *  ⚠️ **原因不许为空，且必须与冒号同一行**（2026-10-20 修；与 `V2` 的 `收尾-豁免:` 口径一致）：
+ *    修前正则里的 `\s*` **能跨行**，`// 判据-豁免:` 后面不写字时会把**下一行代码**当原因吞掉
+ *    ⇒ 一条只有 rect 的可见性断言被放行（实测读数见 `.review/20261020-门禁A/probe-v1-seams.json`）。
+ *    现在冒号后只吃 `[ \t]*`（不许换行），再要求一个非空白字符 ⇒ 空原因 = **不算豁免**。
+ *    `(?!\*\/)` 是给块注释收尾用的：`/* 判据-豁免: *\/` 里的 `*\/` 不算"原因"。 */
+const EXEMPT_RE = /判据-豁免[ \t]*[:：][ \t]*(?!\*\/)(\S[^\n]*)/;
+
+/** 认"写空的豁免标记**本身**"——**不判它豁免**，只用来在报红时说清"原因不能为空"（`R1d`）。
+ *  含 `*\/` 收尾的形态（`/* 判据-豁免: *\/`）也算空。 */
+const EMPTY_EXEMPT_RE = /判据-豁免[ \t]*[:：][ \t]*(?:\*\/)?[ \t]*(?=[\r\n]|$)/;
 
 /** 断言对象：`name: '…'` 后面紧跟 `run:` 才是断言（避免把注入代码串里的 `name:` 当成断言） */
 const NAME_RE = /name:\s*'((?:[^'\\]|\\.)*)'/g;
@@ -121,6 +160,70 @@ const DEBT = [
    *
    *  ⚠️ 新增条目**仍是禁区**：清单只能靠"修好 + 删条目"缩小；加条目必须同时给出
    *  "为什么它只能这么判"（否则就是放宽判定 ✗，见下面 ④ 的设计说明）。 */
+];
+
+/* ---------------------------------------------------------------
+ * ⑥ "无判据"欠账册（`NONVISUAL_DEBT`）—— **缝 (b) 的收口**
+ *    为什么要这张册子，而不是直接把 `'nonvisual'` 全判红：
+ *      · 名字里的"可见"有三个**同词不同义**：① 用户看得见（像素/遮挡）；② 数据/文案语义的
+ *        "可见"（"写后重读可见" "变更可见性"）；③ 存在性（"真在 DOM 里"）。②③ 的判据天生
+ *        不是像素，全判红会制造**假红** —— 而假红的门禁下场是被关掉 ✗（下面 ④ 同理）；
+ *      · 但"名字宣称可见、体内**既无真判据也无盲判据**"**不能只报告**：把一条合规断言里的
+ *        rect 删干净、名字保留"可见"，它就从判红滑进只报告 ⇒ **守卫可被静默关掉** ✗。
+ *    所以口径与 `DEBT` **完全一致**（封闭册）：
+ *      · 在册 ⇒ 进 `nonVisual`（打印、计数可见，不判红）；
+ *      · **不在册 ⇒ 判红**（新代码不许再写"连假装都没装"的可见性断言）；
+ *      · 册上有、但那条断言**已经有判据 / 名字里没词了 / 被删了** ⇒ **判红**，逼人销账。
+ *    本批 6 条全部逐条裁决过（`why` 写清为什么是数据语义，`todo` 写清怎么销账），
+ *    其中 `52-详情渲染.js` 那条**如实记成"待裁决欠账"**（它的名字是界面宣称、判据却只有存在性）。
+ *    ⚠️ 加条目必须在 `why` 里说明"为什么它是数据/文案语义"，抄一句"历史原因"不算说明。
+ * --------------------------------------------------------------- */
+const NONVISUAL_DEBT = [
+  {
+    rel: 'scripts/smoke/08-audit-palette.js',
+    name: '命令面板：空查询时**只列命令**（节点不混入；命令必须在截断前可见 ✓）',
+    why: '名字里的"可见"指**没有被 slice(0,50) 截断**（旧实现里 131 个节点占满前 50 名、命令全被截掉），'
+      + '判据是 `#palette .palette-item` 的**项数与前 N 项的类别**（全是 DOM/数据读数）⇒ 数据语义，不是像素可见。',
+    todo: '若哪天要判"命令真的在屏幕上、没被浮层盖住"，另加一条 elementFromPoint/scanRegion 的断言，'
+      + '而不是把这条改成像素判据（它是"不被截断"的回归断言，换个判据就测不到那件事）。'
+  },
+  {
+    rel: 'scripts/smoke/09-save-persistence.js',
+    name: '保存：工具栏按钮存在且能把内存改动落盘（写后重读可见）',
+    why: '名字里的"写后重读可见"指**重新读盘 / 重开项目还能看到那个改动**，判据是落盘后的数据比对'
+      + '（`isDirty()` 归零 + 重读节点），与"屏幕上看得见"无关 ⇒ 数据语义。',
+    todo: '无需迁判据；名字里的"可见"换成"可重读"会更不容易被误读，但那要改 `scripts/smoke/**.js`（本批禁区）。'
+  },
+  {
+    rel: 'scripts/smoke/15-write-conflict.js',
+    name: '变更可见性：界面保存也会记进变更日志（GUI 那条写路径与 CLI 共用同一份记账）',
+    why: '名字里的"变更可见性"是**变更日志这个功能的名字**（`changes` 命令的台账），判据是'
+      + '`log.changes` 最后一条的 `writer` / `changed` 字段 ⇒ 数据语义，不是界面可见。',
+    todo: '同名歧义已在域 12 处理过一次（改名消歧）；这条同样可以改名，但要动 `scripts/smoke/**.js`。'
+  },
+  {
+    rel: 'scripts/smoke/26-ai-ask.js',
+    name: 'AI 问答：「问问AI」⇒ 输入行可用；问一句 ⇒ 流水里有"我的问题"与回答（桩标记可见）',
+    why: '名字里的"桩标记可见"指**问答流水里那两段文本存在**（问题与回答都进了 DOM / 文本），'
+      + '判据是 `.ask-input` 与流水文本的字符串包含 ⇒ 文本语义；浮层会不会被盖住由域 34/37 的命中测试覆盖。',
+    todo: '若这条还要判"用户真看得见那个浮窗"，得另加一条像素 / 命中测试断言。'
+  },
+  {
+    rel: 'scripts/smoke/38-ai-落盘.js',
+    name: 'AI 落盘①：点「写入本节点详情」⇒ **盘上真的多了 qa 记录与详情**（不是只弹了个提示），来源标记可见',
+    why: '名字里的"来源标记可见"指**盘上与状态条里出现了 `🤖 AI 问答` 这个标记**（区分'
+      + '"真的落盘了"与"只弹了个提示"），判据是 detail 文本 + 状态条文案 ⇒ 数据语义。',
+    todo: '同上：界面可见性不在这条的职责里。'
+  },
+  {
+    rel: 'scripts/smoke/52-详情渲染.js',
+    name: 'smoke-52 隔离判据（bug①：可见占位必须真的到用户眼前）：detail 里**只有一张被拦图**、',
+    why: '⚠️ **这一条最可疑，如实记在册上**：名字写"可见占位必须真的到用户眼前"，而判据只有'
+      + '"`.fd-img-blocked` 真在 DOM 里 + 文本含拦下" ⇒ 严格说是**界面宣称 + 存在性判据**。'
+      + '它在册而不是判红，是因为本批**不许改** `scripts/smoke/**.js`（改名 / 加判据都要动那个文件）。',
+    todo: '待裁决（下一批）：要么把名字收成"占位真进 DOM"（名字与判据对齐），要么给这条补 '
+      + 'elementFromPoint / scanRegion 的像素判据。**在那之前它是欠账，不是合规**。'
+  }
 ];
 
 /* ---------------------------------------------------------------
@@ -282,12 +385,17 @@ function backwardRegionStart(src, nameIdx) {
 }
 
 /**
- * 判一条断言：返回 {judges, real, exempt, blind, verdict}
- * verdict ∈ 'ok'（有真判据）| 'exempt'（显式豁免）| 'blind'（只有盲判据 ⇒ 违规候选）| 'nonvisual'（体内没有可视判据）
+ * 判一条断言：返回 {judges, real, exempt, blind, emptyMark, verdict}
+ * verdict ∈ 'ok'（有真判据）| 'exempt'（显式豁免，原因非空）| 'blind'（只有盲判据 ⇒ 违规候选）
+ *         | 'nonvisual'（体内既无真判据也无盲判据 ⇒ 名字在宣称可见、**连假装都没装**）
  *
  * 两个视图分开看，是这道门禁能不能真判出东西的关键：
  *   · `code` —— 去注释 + 去名字串 + 展开同文件 JS 片段常量 ⇒ 判"有没有真判据 / 有没有盲判据"；
  *   · `raw`  —— 原样（含注释）⇒ 只用来认 `判据-豁免:` 标记（它本来就是写给人看的一句话 ✓）。
+ *
+ * ⑦ **写空的豁免标记不算豁免**（与 `V2` 的 `收尾-豁免:` 口径一致；口径由 `EXEMPT_RE` 的
+ *   `[ \t]*` 保证 —— 它跨不过换行）。`emptyMark` 只为报文服务：让人看到"你写了标记但没写原因"，
+ *   而不是对着一句"体内只有 getBoundingClientRect"猜自己做错了什么。
  */
 function judgeAssertion(rawRegion, srcRaw) {
   const code = expandSnippets(judgeView(rawRegion), judgeView(srcRaw));
@@ -295,24 +403,36 @@ function judgeAssertion(rawRegion, srcRaw) {
   const blind = BLIND_JUDGES.filter((j) => code.indexOf(j.token) >= 0);
   const ex = EXEMPT_RE.exec(rawRegion);
   const exempt = ex ? ex[1].trim() : null;
-  if (judges.length) return { judges, real: judges, exempt, blind, verdict: 'ok' };
-  if (exempt) return { judges, real: [], exempt, blind, verdict: 'exempt' };
-  if (blind.length) return { judges, real: [], exempt: null, blind, verdict: 'blind' };
-  return { judges, real: [], exempt: null, blind, verdict: 'nonvisual' };
+  const emptyMark = !exempt && EMPTY_EXEMPT_RE.test(rawRegion);
+  if (judges.length) return { judges, real: judges, exempt, blind, emptyMark, verdict: 'ok' };
+  if (exempt) return { judges, real: [], exempt, blind, emptyMark, verdict: 'exempt' };
+  if (blind.length) return { judges, real: [], exempt: null, blind, emptyMark, verdict: 'blind' };
+  return { judges, real: [], exempt: null, blind, emptyMark, verdict: 'nonvisual' };
 }
 
-/** 判定①…⑤ 的纯函数形态：吃 `[{rel, src}]`，吐清单（不打印、不退出 ⇒ 可被单测 require）
- *  `opts.minTriggered` 只给单测改（小样例凑不满下限；生产路径一律用 MIN_TRIGGERED ✗） */
+/** 判定①…⑦ 的纯函数形态：吃 `[{rel, src}]`，吐清单（不打印、不退出 ⇒ 可被单测 require）
+ *
+ *  **册子怎么选**（这条约定必须写清，否则夹具会被生产册判成"悬挂欠账"）：
+ *    · `debt` 传 `null`/不传 ⇒ 走生产册（`DEBT` + `NONVISUAL_DEBT`）—— 生产路径只走这一条；
+ *    · `debt` **显式传数组**（含 `[]`）⇒ 视为"夹具驱动"，两本册都置空，
+ *      要测在册行为请用 `opts.nonVisualDebt` / `debt` 自己给一份；
+ *    · `opts.minTriggered` / `opts.nonVisualDebt` 只给单测改（小样例凑不满下限、也碰不到生产册；
+ *      生产路径一律用 `MIN_TRIGGERED` 与 `NONVISUAL_DEBT` ✗）。 */
 function analyze(files, debt, opts) {
+  const fixtureDriven = debt != null;                 // 显式给了 debt ⇒ 这是夹具，不套生产册
   const debtIn = debt || DEBT;
   const minTriggered = (opts && typeof opts.minTriggered === 'number') ? opts.minTriggered : MIN_TRIGGERED;
+  const nonVisualDebtIn = (opts && Array.isArray(opts.nonVisualDebt)) ? opts.nonVisualDebt
+    : (fixtureDriven ? [] : NONVISUAL_DEBT);
   const judged = [];      // 有真判据（或显式豁免）
-  const debts = [];       // 在册欠账（还违规）
-  const problems = [];    // 不在册的违规 ⇒ 判红
-  const nonVisual = [];   // 名字含词、体内没有任何可视判据（多为数据/文案语义）⇒ 只提示
+  const debts = [];       // 在册欠账（`DEBT`，只有盲判据）
+  const problems = [];    // 不在册的违规 ⇒ 判红（`blind` 与 `nonvisual` 两类都进这里）
+  const nonVisual = [];   // 在册的"无判据"欠账（`NONVISUAL_DEBT`）：计数可见、不判红
+  const emptyMarks = [];  // 写了 `判据-豁免:` 却没写原因的断言（不算豁免，只用来点名）
   let assertions = 0, triggered = 0;
 
   const used = new Set();
+  const usedNv = new Set();
 
   for (const f of files) {
     for (const a of findAssertions(f.src)) {
@@ -327,10 +447,26 @@ function analyze(files, debt, opts) {
         via: (j.real.length ? j.real : []).map((x) => x.token),
         viaKind: (j.real.length ? j.real : []).map((x) => x.kind + '：' + x.why),
         exempt: j.exempt,
+        emptyMark: !!j.emptyMark,
         blind: j.blind.map((x) => x.token + '（' + x.kind + '）')
       };
+      if (row.emptyMark) emptyMarks.push(row);
       if (j.verdict === 'ok' || j.verdict === 'exempt') { judged.push(row); continue; }
-      if (j.verdict === 'nonvisual') { nonVisual.push(row); continue; }
+      /* ⚠️ 缝 (b) 的收口点（2026-10-20）：`'nonvisual'` **不再**"只报告就放过"。
+       *   修前这一档的动作只有两件：把这一行推进 `nonVisual` 数组、然后 `continue` ——
+       *   那个数组**不参与 `ok` 判定** ⇒ 把一条合规断言里的盲判据删干净、名字保留"可见"，
+       *   就从判红滑进只报告。**原文不在此处抄一遍**：`tests/visibility-judge.test.js`
+       *   有一条用例断言那段原文"不在了"，抄进来会让它自己判红（实测踩到过一次）。
+       *   现在：在封闭册上 ⇒ 进 `nonVisual`（打印 + 计数，欠账可见）；
+       *         不在册 ⇒ 进 `problems` ⇒ **判红**（连假装都没装的可见性宣称）。 */
+      if (j.verdict === 'nonvisual') {
+        const nvHit = nonVisualDebtIn.find((d) => d.rel === f.rel && d.name === a.name);
+        if (nvHit) {
+          usedNv.add(nvHit);
+          nonVisual.push(Object.assign({ why: nvHit.why, fix: nvHit.todo }, row));
+        } else problems.push(row);
+        continue;
+      }
       // 'blind' ⇒ 违规候选：看它在不在既有欠账册里
       const hit = debtIn.find((d) => d.rel === f.rel && d.name === a.name);
       if (hit) { used.add(hit); debts.push(Object.assign({ why: hit.why, fix: hit.fix }, row)); }
@@ -338,16 +474,22 @@ function analyze(files, debt, opts) {
     }
   }
 
-  // 欠账册的封闭性：册上有、但**已经不是违规**（修好了 / 名字没了）⇒ 判红，逼人销账
+  // 两本册的封闭性：册上有、但**已经不是那个违规**（修好了 / 名字没了）⇒ 判红，逼人销账
   const staleDebt = debtIn.filter((d) => !used.has(d))
-    .map((d) => ({ rel: d.rel, name: d.name, why: d.why, fix: d.fix }));
+    .map((d) => ({ rel: d.rel, name: d.name, why: d.why, fix: d.fix, book: 'DEBT' }))
+    .concat(nonVisualDebtIn.filter((d) => !usedNv.has(d))
+      .map((d) => ({ rel: d.rel, name: d.name, why: d.why, fix: d.todo, book: 'NONVISUAL_DEBT' })));
 
   const scansOk = files.length > 0 && assertions > 0;
   const floorOk = triggered >= minTriggered;
   return {
+    /* ⚠️ 这条 `ok` 表达式是**判定②③的最终口径**：`problems` 里现在**同时**装着
+     * `blind`（只有盲判据）与 `nonvisual`（连判据都没有）两类 ⇒ `nonVisual` 不再能绕过它。
+     * 修前 `'nonvisual'` 只进一个不参与 `ok` 的数组 ⇒ **守卫可被静默关掉**（缝 (b)）。 */
     ok: problems.length === 0 && staleDebt.length === 0 && scansOk && floorOk,
     files: files.length, assertions, triggered, minTriggered,
-    scansOk, floorOk, judged, debts, problems, nonVisual, staleDebt
+    scansOk, floorOk, judged, debts, problems, nonVisual, emptyMarks, staleDebt,
+    nonVisualDebtCount: nonVisualDebtIn.length
   };
 }
 
@@ -426,6 +568,44 @@ function selftest() {
   step('撤销：用原始字节重算 ⇒ 必须复绿（注入只在内存里，真输入没被改过 ✗）',
     analyze(real).problems.length === 0, '真输入仍然 0 违规 ✓');
 
+  /* ---- 2026-10-20：两条"可静默关掉守卫"的缝，各给一条注入证明（每次跑 `--selftest` 都重放）----
+   * 为什么要专门加这两步：这两条缝的**共同特征**是"改了源码但门禁照样 exit 0" ——
+   * 只靠"现在仓库是绿的"证明不了它们已经收口，必须有"注入 ⇒ 必红"的读数。 */
+  step('注入 3（缝 a）：`判据-豁免:` 后**不写原因**、断言只有 rect ⇒ 必须判红（不算豁免）', (function () {
+    const src = [
+      'module.exports = [',
+      '  {',
+      "    name: '圆钮可见',",
+      '    run: async (ctx) => {',
+      '      // 判据-豁免: ',
+      "      const r = await ctx.exec('el.getBoundingClientRect()');",
+      '      return { ok: r.width > 8 };',
+      '    }',
+      '  }',
+      '];',
+      ''
+    ].join('\n');
+    const r3 = analyze([{ rel: 'scripts/smoke/99-selftest-probe.js', src }], [], { minTriggered: 1 });
+    return r3.problems.length === 1 && r3.judged.length === 0;
+  })(), '修前：那个空标记会吞掉下一行代码当原因 ⇒ verdict=exempt ⇒ 照样绿 ✗（与 V2 的 `收尾-豁免:` 口径不一致）');
+
+  step('注入 4（缝 b）：抹掉真判据 **且体内连盲判据都没有** ⇒ 必须判红（不再降级成"只报告"）', (function () {
+    const src = [
+      'module.exports = [',
+      '  {',
+      "    name: '圆钮可见',",
+      '    run: async (ctx) => {',
+      "      const hit = await ctx.exec('document.elementFromPoint(cx, cy).id');",
+      '      return { ok: hit === "n1" };',
+      '    }',
+      '  }',
+      '];',
+      ''
+    ].join('\n');
+    const r4 = analyze([{ rel: 'scripts/smoke/99-selftest-probe.js', src: zeroRealJudges(src) }], [], { minTriggered: 1 });
+    return r4.problems.length === 1 && r4.problems[0].verdict === 'nonvisual';
+  })(), '修前：它落进 `nonvisual`（只报告）而 `ok` 表达式看不见那个数组 ⇒ 把 rect 删干净就能静默关掉守卫 ✗');
+
   return out;
 }
 
@@ -444,19 +624,26 @@ function main() {
   const r = analyze(loadSmokeFiles());
 
   if (debtMode) {
-    console.log('== 既有欠账清单（第二步迁移用；只减不增）==');
-    if (!r.debts.length && !r.staleDebt.length) console.log('  （空 —— 已全部迁完 ✓）');
+    console.log('== 欠账清单（两本封闭册：`DEBT` 盲判据欠账 / `NONVISUAL_DEBT` 无判据欠账；只减不增）==');
+    if (!r.debts.length && !r.nonVisual.length && !r.staleDebt.length) console.log('  （空 —— 已全部迁完 ✓）');
     for (const d of r.debts) {
-      console.log('  · ' + d.rel + ':' + d.line + '　' + d.name);
+      console.log('  · [DEBT] ' + d.rel + ':' + d.line + '　' + d.name);
       console.log('      现在用的判据：' + d.blind.join('、'));
       console.log('      为什么是欠账：' + d.why);
       console.log('      怎么迁：' + d.fix);
     }
+    for (const d of r.nonVisual) {
+      console.log('  · [NONVISUAL_DEBT] ' + d.rel + ':' + d.line + '　' + d.name);
+      console.log('      体内**既无真判据也无盲判据**（名字在宣称可见，连假装都没装）');
+      console.log('      为什么仍算数据语义：' + d.why);
+      console.log('      怎么销账：' + d.fix);
+    }
     for (const d of r.staleDebt) {
-      console.log('  ⚠ 已在册但**已不构成违规**（销账未清 ⇒ 判红）：' + d.rel + '　' + d.name);
+      console.log('  ⚠ 已在册但**已不构成违规**（销账未清 ⇒ 判红）：[' + d.book + '] ' + d.rel + '　' + d.name);
     }
     console.log('');
-    console.log('  在册 ' + r.debts.length + ' 条；触发 ' + r.triggered + ' 条；'
+    console.log('  在册 ' + (r.debts.length + r.nonVisual.length) + ' 条（DEBT ' + r.debts.length
+      + ' + NONVISUAL_DEBT ' + r.nonVisual.length + '）；触发 ' + r.triggered + ' 条；'
       + '有真判据 ' + r.judged.length + ' 条');
     process.exitCode = r.staleDebt.length ? 1 : 0;
     return;
@@ -466,10 +653,21 @@ function main() {
   console.log('  扫描 ' + r.files + ' 个冒烟域文件、' + r.assertions + ' 条断言；'
     + '名字声称可见性的 ' + r.triggered + ' 条（下限 ' + r.minTriggered + '）');
   console.log('    · 有真判据（命中测试 / 真帧像素）：' + r.judged.filter((x) => x.verdict === 'ok').length + ' 条');
-  console.log('    · 显式豁免（`判据-豁免:`）：' + r.judged.filter((x) => x.verdict === 'exempt').length + ' 条');
+  console.log('    · 显式豁免（`判据-豁免:`，原因非空才算）：' + r.judged.filter((x) => x.verdict === 'exempt').length + ' 条');
   console.log('    · 既有欠账（在册，只减不增）：' + r.debts.length + ' 条');
-  console.log('    · 新违规：' + r.problems.length + ' 条');
-  console.log('    · 名字含词但体内没有可视判据（多为数据/文案语义）：' + r.nonVisual.length + ' 条');
+  console.log('    · 新违规：' + r.problems.length + ' 条'
+    + (r.problems.length ? '（只有盲判据 ' + r.problems.filter((p) => p.verdict === 'blind').length
+      + ' / 连判据都没有 ' + r.problems.filter((p) => p.verdict !== 'blind').length + '）' : ''));
+  console.log('    · 名字含词、体内**既无真判据也无盲判据**：' + r.nonVisual.length + ' 条在册（只报告，只减不增；'
+    + '册上 ' + r.nonVisualDebtCount + ' 条 —— 不在册的**判红**，见 2026-10-20 的缝 (b)）');
+  if (r.emptyMarks.length) {
+    /* 空标记**逐个点名**：它可能落在任何一档（有真判据 / 有豁免 / 已判红 / 在册），
+     * 只说"N 条"而不说是哪几条，读者就得自己去猜 —— 那正好是这条缝当初能藏住的原因 ✗。 */
+    console.log('    · 写空的豁免标记（`判据-豁免:` 后无原因 ⇒ **不算豁免**，口径同 V2 的 `收尾-豁免:`）：'
+      + r.emptyMarks.length + ' 条');
+    r.emptyMarks.forEach((m) => console.log('        ⚠ ' + m.rel + ':' + m.line + '　' + m.name
+      + '（按它自己的判据判定：' + m.verdict + '）'));
+  }
 
   if (listMode) {
     console.log('');
@@ -485,7 +683,7 @@ function main() {
     show('[豁免]  ', r.judged.filter((x) => x.verdict === 'exempt'));
     show('[欠账]  ', r.debts);
     show('[违规]  ', r.problems);
-    show('[无判据]', r.nonVisual);
+    show('[无判据·在册]', r.nonVisual);
   }
 
   let bad = false;
@@ -500,26 +698,53 @@ function main() {
       + '要么是本门禁的输入被绕过了（把名字里的词删掉就能让它闭嘴 ✗），要么是真的清理过：'
       + '请复核后同批下调 MIN_TRIGGERED 并在 CHANGELOG 说明');
   }
-  if (r.problems.length) {
+  /* ⚠️ 两类违规的报文分开写（`R1d`：拒绝要响亮、要点名**这一条为什么错**）：
+   *   · `blind`      —— 有判据，但对裁切与遮挡是盲的（事故那一类）；
+   *   · `nonvisual`  —— **连判据都没有**，比上一类更可疑：名字在宣称可见，什么都没装。
+   *   修前 `nonvisual` 落在"只报告"档 ⇒ 删干净盲判据就能把守卫静默关掉（缝 (b)）。 */
+  const blindProblems = r.problems.filter((p) => p.verdict === 'blind');
+  const noJudgeProblems = r.problems.filter((p) => p.verdict !== 'blind');
+  const emptyMarkNote = (p) => {
+    if (!p.emptyMark) return '';
+    return '\n      ⚠ 它上面那行 `判据-豁免:` **后面没有写原因** ⇒ 不算豁免（豁免原因不能为空；'
+      + '口径与 V2 的 `收尾-豁免:` 一致：原因必须与冒号同行、非空白）';
+  };
+  if (blindProblems.length) {
     bad = true;
-    console.error('✗ 有 ' + r.problems.length + ' 条断言在名字里声称"可见/看不见"，判据却是对裁切与遮挡是盲的：');
-    for (const p of r.problems) {
+    console.error('✗ 有 ' + blindProblems.length + ' 条断言在名字里声称"可见/看不见"，判据却是对裁切与遮挡是盲的：');
+    for (const p of blindProblems) {
       console.error('  ✗ ' + p.rel + ':' + p.line + '　' + p.name);
       console.error('      原因：体内只有 ' + (p.blind.join('、') || '（无）')
-        + ' —— 这些读不出"用户看不看得见"（实测：被父元素 overflow:hidden 裁掉时 rect 读数与正常显示**完全相同**）');
+        + ' —— 这些读不出"用户看不看得见"（实测：被父元素 overflow:hidden 裁掉时 rect 读数与正常显示**完全相同**）'
+        + emptyMarkNote(p));
       console.error('      修法：二选一 —— ① 加真判据：对元素中心做 `document.elementFromPoint` 断言命中自身'
         + '（抓遮挡），或对它的矩形做 `scanRegion` 数像素并给阈值（抓裁切，见 scripts/vision/frame-stats.js）；'
-        + '② 若这条确实只需 rect，在断言上方写一行 `判据-豁免: <原因>`。');
+        + '② 若这条确实只需 rect，在断言上方写一行 `判据-豁免: <原因>`（**原因不能为空**）。');
       console.error('      （"可点"那半可以用真输入 `ctx.input.*` 单独判 —— 但它不判可见，可见那半仍需像素或命中测试）');
+    }
+  }
+  if (noJudgeProblems.length) {
+    bad = true;
+    console.error('✗ 有 ' + noJudgeProblems.length + ' 条断言在名字里声称"可见/看不见"，体内却'
+      + '**既没有真判据、也没有盲判据** —— 这比"只用了 rect"更可疑：连假装都没装：');
+    for (const p of noJudgeProblems) {
+      console.error('  ✗ ' + p.rel + ':' + p.line + '　' + p.name);
+      console.error('      原因：体内找不到任何可视判据（`判据-豁免:` 不算判据，写空的标记也不算）'
+        + emptyMarkNote(p));
+      console.error('      修法：三选一 —— ① 加真判据（`elementFromPoint` 命中自身 / `scanRegion` 数真帧像素）；'
+        + '② 名字里**别声称可见**（若它判的是数据/文案语义，改名就是正确答案 —— 名字是本门禁的输入）；'
+        + '③ 确属数据语义、又暂时不能改名 ⇒ 在 `scripts/visibility-judge-check.js` 的 `NONVISUAL_DEBT` 里'
+        + '登记（逐条写 `why` + `todo`，**只减不增**，并在 CHANGELOG 留一笔）。'
+        + '⚠️ 不许把守卫"关掉"：这一档以前是只报告、不判红，2026-10-20 起判红 ✗');
     }
   }
   if (r.staleDebt.length) {
     bad = true;
-    console.error('✗ 既有欠账册里有 ' + r.staleDebt.length + ' 条**已经不是违规**了（销账未清 ⇒ 判红，欠账只减不增）：');
+    console.error('✗ 欠账册里有 ' + r.staleDebt.length + ' 条**已经不是那个违规**了（销账未清 ⇒ 判红，欠账只减不增）：');
     for (const d of r.staleDebt) {
-      console.error('  ✗ ' + d.rel + '　' + d.name);
-      console.error('      修法：删掉 ' + 'scripts/visibility-judge-check.js' + ' 里 DEBT 的这条（它已经修好了，'
-        + '或者那条断言的名字/位置变了 ⇒ 请把册上的名字改成现状）');
+      console.error('  ✗ [' + d.book + '] ' + d.rel + '　' + d.name);
+      console.error('      修法：删掉 scripts/visibility-judge-check.js 里 ' + d.book + ' 的这条（它已经修好了 / '
+        + '名字变了 / 断言被删了 ⇒ 请把册上的名字改成现状，或直接销账）');
     }
   }
 
@@ -528,12 +753,13 @@ function main() {
     console.error('欠账与修法一览：`node scripts/visibility-judge-check.js --debt`');
     process.exit(1);
   }
-  console.log('  ✓ 声称可见性的断言都给了真判据（或有显式豁免）；在册欠账 ' + r.debts.length + ' 条（未新增）');
+  console.log('  ✓ 声称可见性的断言都给了真判据（或有显式豁免、或在封闭欠账册上）；'
+    + '在册欠账 ' + r.debts.length + ' + ' + r.nonVisual.length + ' 条（未新增）');
   console.log('\nvisibility-judge-check 通过');
 }
 
 module.exports = {
-  VIS_WORDS, REAL_JUDGES, BLIND_JUDGES, EXEMPT_RE, DEBT, MIN_TRIGGERED,
+  VIS_WORDS, REAL_JUDGES, BLIND_JUDGES, EXEMPT_RE, EMPTY_EXEMPT_RE, DEBT, NONVISUAL_DEBT, MIN_TRIGGERED,
   SMOKE_REL, SMOKE_ABS,
   sliceStatement, constSource, expandSnippets, visibilityWordsIn,
   stripComments, judgeView,

@@ -390,6 +390,205 @@ function stepCountProblem(claims, want) {
     + ' —— 第一屏是手写的、没有生成器守着它，改 `STEPS` 必须同批改这一句 ✗';
 }
 
+/* ---------------- 第六类扫描：真值出口唯一（`FACT_OUTLET` / 缺口 `G-09`） ----------------
+ * 它补的是本文件**前面五类扫描都没有覆盖的那一半**（先读清楚再动手，别造第二份）：
+ *   · 前五类管的是「**生成物 vs 源**」与「**值对不对**」——命令数 / 工具数 / 用例数 / 断言数 /
+ *     版本号 / 步骤数，它们的真值都能从代码现算，所以任何副本写错都能被比出来；
+ *   · 它管的是「**两份手写文档各写一个数**」——当这个事实的真值**算不出来**时（受管文档份数之外的
+ *     那些、随数据变化的读数），`scan()` 无从比对，**两份副本各写一个数谁都不会红**。
+ *     ★实测（本批清点）：`docs/VERIFY.md` 里由生成器守护的十来个事实中，只有 4 类进了 `scan()`；
+ *     其余（受管文档份数 / 归档族份数 / 单测**文件**数 / 标签词表条数）**只有 VERIFY.md 那一份，
+ *     别处一旦手抄就没有任何守卫**。
+ *
+ * 判定（**同一事实只准有一个手抄副本** —— 与 `B1`「易腐数字由脚本生成、其它文档只引用」同一条）：
+ *   ① 出口文件**自己**不算副本（它就是权威）；
+ *   ② 别处命中时，**同一行**必须带「指针」——把真值推给出口（行内有出口路径 / `doc-facts` /
+ *      「现场取」「现算」），或已标成历史（`当时` / `快照` / `原记` / `曾` / `vX.Y.Z`）；
+ *   ③ 同一事实的**手抄副本若出现两个不同的值** ⇒ 红，并把两个数逐处点名 ——
+ *      这正是台账上那句话「**避免一句话里两个数**」的机械形态；
+ *   ④ 出口文件**不存在** ⇒ 红（采不到真值 = 红，`A5`；不许把"没找到出口"读成"没有副本"）。
+ *
+ * 边界（诚实标注，别以为它包住一切）：
+ *   · 事实表是**显式常量**（`FACT_OUTLETS`），因为"哪些数字算同一件事"是人的判断（与
+ *     `SCHEMA_FIELDS` / `COLLATERAL` 同一个设计取舍）。**没进表的事实它一无所知** ✓；
+ *   · 它判的是"**有没有第二份手抄**"，判不了"这一份写得对不对"（那是 `scan()` 的事）；
+ *   · **口径类**事实（例：`comnet` 节点数，`list --json` 含根 = 889 / 不含根 = 888）走
+ *     `needQualifier`：命中行必须带口径或历史标记。这是它能做到的那一半 ——
+ *     "**该用哪个口径**"仍是人的判断（已写进 `docs/RULES.md` 的 `G-09` 边界栏）。
+ */
+const NB2 = '(?<![\\d.])';
+const FACT_OUTLETS = [
+  { id: 'managed-docs', label: '受管文档份数', outlet: 'docs/VERIFY.md',
+    res: [new RegExp(NB2 + '(\\d+)\\s*份\\s*受管文档', 'g'),
+      new RegExp('受管文档[^\\d\\n|]{0,10}' + NB2 + '(\\d+)\\s*份', 'g')],
+    why: '§5 登记表的登记数（生成物现场算）—— 抄一份就等于给"文档体系有多少份"造第二个答案' },
+  { id: 'archive-count', label: '归档族份数', outlet: 'docs/VERIFY.md',
+    res: [new RegExp('docs/(?:archive|changelog)/?[^\\n|]{0,14}' + NB2 + '(\\d+)\\s*份', 'g'),
+      new RegExp('归档族[^\\n|]{0,24}' + NB2 + '(\\d+)\\s*份', 'g')],
+    why: '归档族份数由磁盘现场统计；手抄一份就会在"又归档了一段"之后静默变错' },
+  { id: 'unit-files', label: '单测用例 / 文件（`docs/VERIFY.md` 那一行的形状）', outlet: 'docs/VERIFY.md',
+    res: [new RegExp(NB2 + '(\\d+)\\s*用例\\s*[/／]\\s*' + NB2 + '(\\d+)\\s*文件', 'g')],
+    why: '用例数已由 scan() 守；但**文件数**（新增一个 tests/*.test.js 就会变）没人守' },
+  { id: 'tag-count', label: '标签词表条数', outlet: 'docs/TAGS.md',
+    res: [new RegExp(NB2 + '(\\d+)\\s*个标签', 'g')],
+    why: '`docs/TAGS.md` 自述是词表的唯一权威；别处再写一遍条数就是第二份会漂的口径' },
+  { id: 'node-readings', label: '随数据变化的节点读数（口径类）', outlet: '现场取（`list --json` / `read --json`）',
+    needQualifier: true,
+    res: [new RegExp(NB2 + '(\\d{2,5})\\s*个节点', 'g')],
+    key: (line) => /comnet|--json|`list`|`read`/.test(line),
+    why: '★台账原话的现场：同一个项目两个数（含根 / 不含根）—— 读数随数据变，**必须带口径或历史锚**' }
+];
+
+/** 指针标记：这一行把真值推给唯一出口，或已明确标成历史/口径 ⇒ 不算"手抄"。
+ *  ⚠️ **不许**为了让它变绿而放宽这里（`B5`）：每加一个词都会让一整类手抄副本免检。 */
+const FACT_POINTER = new RegExp([
+  'docs/VERIFY\\.md', 'docs/TAGS\\.md', 'docs/RULES\\.md',
+  'doc-facts', '现场取', '现算',
+  '当时', '快照', '原记', '曾', 'v\\d+\\.\\d+\\.\\d+',
+  '含根', '不含根', '以[^。\\n]{0,20}为准'
+].join('|'));
+
+/* 封闭欠账册：判据上线那一刻的存量副本（只减不增；每条 why / close）。
+ * 机器侧三条判定（与 `NOTE_RESIDUE` / `WRITE_OUTLET` 同一口径）：
+ *   在册 ⇒ 放过并计入"在册欠账"；**册上那条已不再命中 ⇒ 红**（修好忘销账）；
+ *   **册上那处文件已不存在 ⇒ 红**（悬挂登记）。
+ * 键 = `文件::值`（**不按行号**：行号一漂就全册假红，本工程真吃过这个亏）。 */
+const FACT_OUTLET_DEBT = [
+  { rel: 'docs/ARCHITECTURE.md', fact: 'node-readings', value: 889,
+    why: '§7 的两句散文（"`read --json` 对 889 个节点""同样 889 个节点"）把 comnet 的读数写成了现状，'
+      + '没写口径（含根 / 不含根）也没有历史锚 —— 正是台账里"同一个项目两个数"那一处的现场',
+    close: '把这两句改成指针（"读数见 §7.2 那张快照表"），或补「含根」/「当时」；本批不许写 `docs/**`，故在册' }
+];
+
+/** 从一行文本里取该事实命中的**全部**读数（纯函数；`key` 存在时先过一遍行级前置条件） */
+function factReadingsInLine(fact, line) {
+  if (fact.key && !fact.key(line)) return [];
+  const out = [];
+  fact.res.forEach((re) => {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(line))) {
+      // 正则里可能有多个捕获组：取**第一个非空**的那个（顺序即优先）
+      const val = [m[1], m[2]].map((x) => (x === undefined ? NaN : Number(x))).find((x) => !Number.isNaN(x));
+      if (!Number.isNaN(val)) out.push(val);
+    }
+  });
+  return out;
+}
+
+/**
+ * 扫描「同一事实的手抄副本」。**纯函数 + 可注入扫描根**（`B6`：`require` 零副作用、判定可单测）。
+ * @param {string} [rootDir] 扫描根（默认仓库根）—— 单测 / 判别力证明指向夹具用
+ * @param {{outlets?:Array, debt?:Array, files?:string[]}} [opts]
+ *   `files` = 直接给文件清单（相对 rootDir 的 posix 路径）；不给就递归扫 `*.md`
+ * @returns {{problems:Array, notes:Array, facts:Array}}
+ */
+function scanFactOutlets(rootDir, opts) {
+  const o = opts || {};
+  const root = path.resolve(rootDir || ROOT);
+  const facts = o.outlets || FACT_OUTLETS;
+  /* 欠账册只对**真仓**有意义（它声明的是真仓的存量）。
+   * 扫描根被换成夹具时，拿真仓那本册去核必然判"悬挂登记" ⇒ 那是**证明过程自己造假红**
+   * （与 `analyzeNoteResidue` 同一条处置）。夹具侧要核册请显式传 `debt`。 */
+  const sameRoot = path.resolve(rootDir || ROOT) === path.resolve(ROOT);
+  const debt = o.debt !== undefined ? o.debt : (sameRoot ? FACT_OUTLET_DEBT : []);
+  const problems = [];
+  const notes = [];
+
+  const files = Array.isArray(o.files)
+    ? o.files.slice()
+    : (function walkMd(base) {
+      const out = [];
+      // 与 `markdownFiles()` 同一个 SKIP 面（依赖 / 构建产物 / 数据 / 工作产物区）
+      const SKIP = new Set(['node_modules', '.git', 'dist', 'dist-portable', 'build', 'backups',
+        '.tmp-img', '.tmp-svg', 'projects', 'vendor', '.review']);
+      (function rec(dir) {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (SKIP.has(e.name)) continue;
+          const p = path.join(dir, e.name);
+          if (e.isDirectory()) rec(p);
+          else if (e.name.endsWith('.md')) out.push(path.relative(base, p).replace(/\\/g, '/'));
+        }
+      })(base);
+      // 与 `trackedFiles()` **同一条口径**（历史记录里出现旧数值是正常的，不是第二份副本）：
+      // `CHANGELOG.md` / `docs/archive/` / `docs/changelog/` 都不参与"当前事实"的判定。
+      // ⚠️ 不许为了变绿去放宽扫描面（`B5`）—— 这里排除的是**历史区**，不是"难判的那一类"。
+      return out.filter((rel) => rel !== 'CHANGELOG.md'
+        && !rel.startsWith('docs/archive/') && !rel.startsWith('docs/changelog/')).sort();
+    })(root);
+
+  const result = [];
+  facts.forEach((f) => {
+    // ④ 出口文件必须真的在（采不到真值 = 红）
+    if (f.outlet && /\.md$/.test(f.outlet) && files.indexOf(f.outlet) < 0
+      && !fs.existsSync(path.join(root, f.outlet))) {
+      problems.push({ kind: 'fact-outlet',
+        msg: '事实「' + f.label + '」的出口 `' + f.outlet + '` 不存在 —— 采不到真值（`A5`）：'
+          + '不能把"没找到出口"读成"没有副本"' });
+    }
+    const hits = [];
+    files.forEach((rel) => {
+      if (rel === f.outlet) return;                     // ① 出口自己不算副本
+      const abs = path.join(root, rel);
+      if (!fs.existsSync(abs)) return;
+      fs.readFileSync(abs, 'utf8').split(/\r?\n/).forEach((line, i) => {
+        if (/^\s*#{1,6}\s/.test(line)) return;           // 标题行：章节号不是声明（与 parseClaims 同口径）
+        factReadingsInLine(f, line).forEach((value) => {
+          hits.push({ rel, line: i + 1, value, pointer: FACT_POINTER.test(line),
+            text: line.trim().slice(0, 160), fact: f.id });
+        });
+      });
+    });
+    const copies = hits.filter((h) => !h.pointer);
+    // ③ 同一事实两个数（"一句话里两个数"的机械形态）
+    const distinct = [...new Set(copies.map((h) => h.value))];
+    if (distinct.length > 1) {
+      problems.push({ kind: 'fact-two-values',
+        msg: '事实「' + f.label + '」的手抄副本出现 **' + distinct.length + ' 个不同的数**：'
+          + copies.map((h) => h.value + ' @ ' + h.rel + ':' + h.line).join(' / ')
+          + ' —— 同一件事只准有一个答案（其余写成指针，以 `' + f.outlet + '` 为准）' });
+    }
+    // ② 每一处手抄副本：在册 ⇒ 放过；否则判红
+    copies.forEach((h) => {
+      const inBook = debt.some((d) => d.fact === f.id && d.rel === h.rel && Number(d.value) === h.value);
+      if (inBook) { h.state = 'debt'; return; }
+      problems.push({ kind: 'fact-copy',
+        msg: '事实「' + f.label + '」在 `' + h.rel + ':' + h.line + '` 又写了一份（值 ' + h.value
+          + '）：' + f.why + ' —— 改成指针（行内写 `' + f.outlet + '`）或标成历史（`当时` / `vX.Y.Z`）' });
+    });
+    result.push({ fact: f.id, label: f.label, outlet: f.outlet, hits, copies,
+      distinct, debt: copies.filter((h) => h.state === 'debt').length });
+    notes.push('真值出口 · ' + f.label + '（出口 `' + f.outlet + '`）：出口之外命中 ' + hits.length
+      + ' 处 → 指针 ' + (hits.length - copies.length) + ' · 手抄 ' + copies.length
+      + '（其中在册欠账 ' + (copies.length - copies.filter((h) => h.state !== 'debt').length) + ' 条）');
+  });
+
+  // 欠账册的三条机械判定
+  debt.forEach((d) => {
+    const f = facts.find((x) => x.id === d.fact);
+    if (!f) {
+      problems.push({ kind: 'fact-debt', msg: '欠账册上那条指着一个**不存在的事实** `' + d.fact
+        + '`（悬挂登记）—— 事实被改名/删掉时请同批改册' });
+      return;
+    }
+    if (!fs.existsSync(path.join(root, d.rel))) {
+      problems.push({ kind: 'fact-debt', msg: '欠账册上那条的文件 `' + d.rel
+        + '` 已不存在（悬挂登记）—— 册上对象消失时必须同批销账' });
+      return;
+    }
+    const still = result.find((r) => r.fact === d.fact);
+    const hit = still && still.copies.some((h) => h.rel === d.rel && Number(h.value) === Number(d.value));
+    if (!hit) {
+      problems.push({ kind: 'fact-debt', msg: '欠账册上那条已不再命中：`' + d.rel + '` 里的 `'
+        + d.fact + '` 读数 ' + d.value + ' 找不到了 —— 要么已经修好（请同批销账），'
+        + '要么数值变了（请重看那处的口径并更新册）' });
+    }
+  });
+  notes.push('真值出口：在册欠账 ' + debt.length + ' 条（封闭，只减不增；`--fact-list` 现场取逐条 why / close）');
+
+  return { problems, notes, facts: result };
+}
+
 /* ---------------- 输出 ---------------- */
 function printFacts(v) {
   console.log('AI MindMap 文档事实基线（权威值，直接来自代码/测试）');
@@ -474,6 +673,28 @@ function checkGeneratedDocs(v, fail) {
 
 function main() {
   const args = process.argv.slice(2);
+  // `--fact-list`：打印「真值出口」事实表与封闭欠账册（**只看不判**，恒 exit 0 —— 打印档不是判据，
+  // 见 `R1c`）。与 `--check` 分开是为了让"这条判据到底认哪些事实"永远可当场取到，而不是去读源码。
+  if (args.includes('--fact-list')) {
+    console.log('== 真值出口（FACT_OUTLET）事实表 —— 唯一权威 = scripts/doc-facts.js 的 FACT_OUTLETS ==');
+    FACT_OUTLETS.forEach((f) => {
+      console.log('  · ' + f.id + '（' + f.label + '）出口 = ' + f.outlet
+        + (f.needQualifier ? '  [口径类：命中必须带口径或历史锚]' : ''));
+      console.log('      why：' + f.why);
+    });
+    console.log('');
+    console.log('== 封闭欠账册（' + FACT_OUTLET_DEBT.length + ' 条；只减不增）==');
+    if (!FACT_OUTLET_DEBT.length) console.log('  （空册）');
+    FACT_OUTLET_DEBT.forEach((d) => {
+      console.log('  · ' + d.rel + ' · ' + d.fact + ' = ' + d.value);
+      console.log('      why  ：' + d.why);
+      console.log('      close：' + d.close);
+    });
+    return;
+  }
+  // `--fact-root=<dir>`：**只把第六类扫描（真值出口）的扫描根**指向别处（判别力证明 / 单测用）；
+  // 不给就是真仓，`--check` 的其余五类读数与从前逐字节相同（H3：新能力走 opt-in）。
+  const factRootArg = (args.find((a) => a.startsWith('--fact-root=')) || '').slice(12);
   // ---- `--write` 是整文件重写受管生成物 ⇒ **先把"我读到的是哪一版"带走**，再干那件几十秒的活 ----
   // 顺序本身就是判据：句柄必须在 `facts()` **之前**读。反过来说，"写前才读一下、紧接着写"是
   // **假闸门**（恒等放行，比没有更坏：它看起来在守）—— 理由逐字写在 `readVerifyDocHandle` 上。
@@ -555,6 +776,20 @@ function main() {
     bad = true;
   } else {
     console.log('✓ 第一屏 `SKILL.md` 自报的步骤数与 `STEPS` 一致（' + stepScan.want + ' 步）');
+  }
+
+  // 第六类：真值出口唯一（`FACT_OUTLET`，缺口 `G-09`）—— 补的是前五类都不管的另一半：
+  // 前五类比"值对不对"，这一类比"**同一事实有没有第二个手抄副本**"。
+  const outlet = scanFactOutlets(factRootArg ? path.resolve(factRootArg) : ROOT);
+  outlet.notes.forEach((n) => console.log(n));
+  if (outlet.problems.length) {
+    console.log('✗ 真值出口不唯一（' + outlet.problems.length + ' 处）：');
+    outlet.problems.forEach((p) => console.log('   ' + p.msg));
+    console.log('   → 事实表与在册欠账册：`node scripts/doc-facts.js --fact-list`；'
+      + '规则边界见 `docs/RULES.md` §3 `R5` 与 §4「真值出口」那两行。');
+    bad = true;
+  } else {
+    console.log('✓ 真值出口唯一：每条被声明的事实都只有一个手抄副本以外的表述（其余是指针或历史锚）');
   }
 
   // 交接面提示（**只提示不判红**）：[Unreleased] 太长说明该发版了 —— 它不受滚动窗口约束
@@ -859,5 +1094,7 @@ module.exports = {
   //   `readVerifyDocHandle` = 读 + 带回版本；`writeVerifyDoc` = 渲染 + 过闸门写回（**必须**收到前者）
   verifyDocPath, readVerifyDocHandle, writeVerifyDoc,
   // 第一屏（`SKILL.md`）步骤数 ↔ `STEPS.length`（纯函数那一半单独导出，便于单测）
-  parseStepCountClaims, scanStepCount, stepCountProblem
+  parseStepCountClaims, scanStepCount, stepCountProblem,
+  // 第六类：真值出口唯一（`FACT_OUTLET` / 缺口 `G-09`）—— 事实表与欠账册**只有这里一份**
+  FACT_OUTLETS, FACT_OUTLET_DEBT, FACT_POINTER, factReadingsInLine, scanFactOutlets
 };

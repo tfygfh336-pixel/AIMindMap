@@ -104,10 +104,15 @@ const VERIFY_HISTORY = '.review/verify-history.jsonl';
 function buildVerifyHistory(run, results, envIn) {
   const env = envIn || { node: process.version, host: os.hostname(), freeMemMB: Math.round(os.freemem() / 1048576) };
   const g5 = (results || []).filter((x) => x && x.gate === 'G5')[0] || null;
+  /* **环境准入拒绝**（2026-10-20）：从实跑行现取，不另存一份 —— 免得"记录说拒绝了、行上却没这回事"。
+   * 为什么必须落盘：`ok:false` + `failedGate:'G5'` 与"产品真红"长得一模一样，而这两件事的
+   * 下一步完全不同（前者去清环境，后者去查代码）⇒ 不给标记就会把人引到错的方向 ✗。 */
+  const refused = (results || []).filter((x) => x && x.envRefused === true)[0] || null;
   return {
     at: run.finishedAt,                       // ISO 时间（与 last-verify.json 同一个时刻，便于两份记录对齐）
     ok: run.ok,
     failedGate: run.failedGate === undefined ? null : run.failedGate,
+    envRefused: refused ? refused.gate : undefined,   // = "这一轮被环境准入拒绝的步骤"（不是产品红）
     totalMs: run.totalMs,
     // `--changed` 的部分验证要标出来：它**不能**当耗时基线（只跑了几步，比出来是假信号 ✗）
     partial: run.partial === true,
@@ -144,6 +149,47 @@ function writeVerifyHistory(run, results) {
     console.warn('⚠️ 验证历史写入失败（不影响本次验证结论）：'
       + VERIFY_HISTORY + ' —— ' + (e.message || e));
   }
+}
+
+/* ---------------- 环境准入的**三件纯函数**（2026-10-20） ----------------
+ * 为什么把"放行/拒绝 ⇒ 打印什么、记哪一行"拆出来：门禁里最容易腐的一半是**报文**
+ * （`R1d` 要求它响亮、还要教会下一个人"怎么办"），而报文在真跑里几乎没法反复验
+ * （得造一次低内存才触发）⇒ 拆成纯函数后 `tests/env-admission.test.js` 能逐条钉住它们。
+ * ⚠️ **判定本体不在这里**：唯一实现是 `scripts/smoke-assertions.js` 的 `checkEnvAdmission`
+ * （纯函数、有单测、门槛常量也在那边）。这里只消费它的返回值。 */
+
+/** 放行时那一行读数——**必须带门槛**：把 `MM_MIN_FREE_MEM_MB` 改小过这件事要看得见。 */
+function envAdmittedLine(admission, minVar) {
+  return '   环境准入 ✓ 可用内存 ' + admission.freeMB + ' MB ≥ 门槛 ' + admission.minMB + ' MB'
+    + (admission.override
+      ? '（门槛由 `' + minVar + '` 覆盖 —— 改小过这件事在这里看得见 ✓）'
+      : '（默认门槛）');
+}
+
+/** 拒绝时的报文（逐行）。三条下限：说清**不是产品红** / 说清**为什么拒绝而不是硬跑** / 给出**怎么办**。 */
+function envRefusalLines(admission, refusedCode, minVar) {
+  return [
+    '   ✗ 环境准入拒绝（**不是产品红**）：' + admission.reason,
+    '      ⇒ G5（Electron 无头冒烟）本轮**没有执行**：一条断言都没跑，绝不算通过'
+      + '（exit ' + refusedCode + '，与产品红的 exit 1 区分）。',
+    '      为什么拒绝而不是硬跑：内存不够时冒烟会跑出**假红 / 超时**'
+      + '（实测：反复跑把整机提交内存推到 80%，连带把同机其它界面拖卡 / 拖崩）—— 而假红的下场是连真红也不看。',
+    '      怎么办（三选一）：',
+    '        ① 关掉正在跑的界面 / 其它重负载进程，然后重跑 `npm run verify`；',
+    '        ② 若确认本机就该在更低内存下跑：显式设 `' + minVar + '=<正整数 MB>`'
+      + '（门槛每次运行都会打印 ⇒ "把它改小过"这件事看得见）；',
+    '        ③ 只要廉价的局部读数：`npm run verify -- --changed`（同一条前置仍会拦 G5）。',
+    '      记录位：`.review/verify-history.jsonl` 的这一条会带 `envRefused: "G5"`；'
+      + '`last-verify.json` 的 `failedGate` 同样是 G5（**读记录时先看 envRefused**）。'
+  ];
+}
+
+/** 拒绝时那一行结果（耗时 0、退出码 = 拒绝码、`envRefused:true`）——形状固定，故单独一处生成。 */
+function envRefusedRow(step, code, tier) {
+  return {
+    step: step.step, gate: step.gate, label: step.label,
+    ms: 0, code: code, budgetMs: 0, envRefused: true, tier: tier
+  };
 }
 
 /* ---------------- 度量列：这次比上次快了多少（2026-10-08 加） ----------------
@@ -1216,6 +1262,31 @@ function main() {
     if (s.gate === 'G5' && g5SmokeOnly && g5SmokeOnly.length) {
       opts.env = Object.assign({}, opts.env || process.env, { SMOKE_ONLY: g5SmokeOnly.join(',') });
     }
+    /* ── 环境准入（**判据**，2026-10-20）───────────────────────────────────────────
+     * 口径与三档在 `docs/RULES.md` §2 的「环境准入（`R1d` 的子项）」旁注；实现：
+     * `scripts/smoke-assertions.js` 的 `checkEnvAdmission`（纯函数、有单测），
+     * 本处只做"拒绝 ⇒ 响亮打印 + 记一行 + 收口"，判定本身不在这里重写。
+     * 为什么要有它：`freeMemMB` 以前只**记录**在验证历史里（`buildVerifyHistory`），
+     * 没有任何判据读它 ⇒ 内存濒临耗尽时 G5 跑出来的红是**假红**（假红的下场是连真红也不看）。
+     * 口径：放行 ⇒ 打印一行读数（**门槛被改小过也要看得见**）；拒绝 ⇒ 一条断言都不跑、
+     * 不算通过、以 `ENV_ADMISSION.refusedExitCode`（≠ 产品红的 1）收口；
+     * 采不到可用内存 / 开关值非法 ⇒ **红**（"采不到真值 = 红"，不许当放行）。
+     * 只挂 G5：它是唯一真起 Electron 的步骤，也是唯一会被内存拖成"假红 / 超时"的那一步。 */
+    if (s.gate === 'G5') {
+      const smokeLib = require('./smoke-assertions.js');
+      const admission = smokeLib.checkEnvAdmission({
+        freeMB: os.freemem() / 1048576,
+        rawMin: process.env.MM_MIN_FREE_MEM_MB
+      });
+      const refusedCode = smokeLib.ENV_ADMISSION.refusedExitCode;
+      if (!admission.ok || !admission.admitted) {
+        envRefusalLines(admission, refusedCode, smokeLib.ENV_ADMISSION.minVar).forEach((l) => console.error(l));
+        results.push(envRefusedRow(s, refusedCode, g5RunTier));
+        failed = { step: s, code: refusedCode, envRefused: true };
+        break;
+      }
+      console.log(envAdmittedLine(admission, smokeLib.ENV_ADMISSION.minVar));
+    }
     const r = spawnSync(s.cmd, opts);
     const ms = Date.now() - t0;
     const code = r.status === null ? 1 : r.status;
@@ -1301,8 +1372,18 @@ function main() {
 
   const partial = !!(plan && !plan.full);
   if (failed) {
-    console.error((partial ? '部分验证失败（' + (planLabel || '--changed') + '）' : '验证失败')
-      + '：步骤 ' + failed.step.step + '（' + failed.step.gate + '）退出码 ' + failed.code);
+    /* **环境准入拒绝**与"产品真红"必须当场分开说：两者的下一步完全相反
+     * （前者去清环境、后者去查代码），而它们在 `ok:false / failedGate:'G5'` 上长得一模一样 ✗。 */
+    const refusedRow = results.filter((r) => r && r.envRefused === true)[0] || null;
+    if (refusedRow) {
+      console.error((partial ? '部分验证' : '验证') + '**被环境准入拒绝**（不是产品红）：步骤 '
+        + failed.step.step + '（' + failed.step.gate + '）**没有执行**，退出码 ' + failed.code
+        + '。这一轮**一条断言都没跑** ⇒ 绝不能当通过；它也**不代表**产品有问题 —— '
+        + '先按上面那三条"怎么办"清环境再重跑。');
+    } else {
+      console.error((partial ? '部分验证失败（' + (planLabel || '--changed') + '）' : '验证失败')
+        + '：步骤 ' + failed.step.step + '（' + failed.step.gate + '）退出码 ' + failed.code);
+    }
     /* 批 J 的账（批 G 实测）：这里原先紧接着就走记录与 return ⇒ **失败步骤抢先返回，预算判定
      * 整段不执行** ✗ —— 而"失败"与"变慢"常常同源（跑到被守卫掐 / 超时 / 真挂死），
      * 最需要看读数的那一次反而只有一句"退出码 1"。现在**失败也把预算读数打出来**；
@@ -1316,6 +1397,8 @@ function main() {
     }
     const run = {
       finishedAt: new Date().toISOString(), ok: false, failedGate: failed.step.gate,
+      // 环境准入拒绝（不是产品红）—— 读记录的人第一眼要能分辨这两件事（见上面那段注释）
+      envRefused: refusedRow ? refusedRow.gate : undefined,
       totalMs: chk.totalMs, version: pkgVersion(), partial, g5Tier: g5RunTier,
       steps: results.map((r) => ({ gate: r.gate, ms: r.ms, code: r.code }))
     };
@@ -1324,7 +1407,9 @@ function main() {
     if (partial) writeLastVerifyChanged(run); else writeLastVerify(run);
     writeVerifyHistory(run, results);   // 历史：追加一条（可疑的偶发 / 变慢，事后靠它判）
     backupHint();
-    process.exitCode = 1;
+    /* 退出码：**环境准入拒绝用自己的码**（`ENV_ADMISSION.refusedExitCode`），其余失败仍是 1。
+     * 为什么必须分开：两者的下一步相反（清环境 vs 查代码），而它们在"非 0"上长得一样 ✗。 */
+    process.exitCode = failed.envRefused ? failed.code : 1;
     return;
   }
 
@@ -1411,6 +1496,8 @@ module.exports = {
   parseTierArgs, decideG5Tier, readLastFullG5, fmtHours,
   // 验证历史（追加入口 + 组记录那一半是纯函数，便于单测）
   VERIFY_HISTORY, buildVerifyHistory, writeVerifyHistory,
+  // 环境准入（2026-10-20）：三件纯函数（报文 / 结果行形状）+ 判据在 smoke-assertions.js
+  envAdmittedLine, envRefusalLines, envRefusedRow,
   // 度量列：与上一次**成功**的验证比较（纯函数 + 一个读取口，便于单测）
   pickHistoryBaseline, readHistoryBaseline, historyDelta, fmtDelta,
   // `--changed`：取改动清单、部分验证的独立记录位

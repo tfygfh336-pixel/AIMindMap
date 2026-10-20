@@ -64,7 +64,7 @@ async function measure(ctx, label) {
 
 /* ================= 第 4 个原生面板（停靠面板）的几何取样（2026-10-18 底座批） =================
  * 判据为什么只能靠几何：面板是原生 WebContentsView ⇒ 主页面的 capturePage() 里**根本没有它**
- * （本工程两次事故：CHANGELOG.md:4434-4437、:4488；scripts/vision/window-shot.js:4）。
+ * （本工程两次事故：`scripts/vision/window-shot.js:4`（原文：「侧栏是原生 `WebContentsView`，`capturePage()` 只截**页面** ⇒ 截图里永远没有侧栏」；⚠️ 原先此处指 `CHANGELOG.md` 的行号，2026-10-20 实测那些行号已指向无关内容，**行号型证据指针会漂，别再写**））。
  * 所以这里一条像素判据都没有，全是：窗口内容宽 / 页面预留（CSS 变量）/ 原生实际占宽（getBounds 相加）/ 缝。 */
 
 /** 一次取样：**页面侧**（预留 + 类 + 最后收到的布局）与**主进程侧**（原生 bounds）各取一份。 */
