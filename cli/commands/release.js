@@ -311,9 +311,9 @@ function sha256Of(text) {
 /**
  * **纯函数**（无 IO ⇒ 可单测）：两份文本的**第一处差异**。
  *
- * 口径与 `G6` 的 `scripts/doc-facts.js::checkGeneratedDocs` **同一条**（按 `\n` 切分、逐行比、
- * 第一个不相等处即差异行）⇒ `docs-gen --check` 与 `doc-facts --check` 报出来的"第几行"是
- * **同一个数**，不会互相打脸（两份实现各算一套行号，是最容易悄悄分叉的那种"看起来一致"）。
+ * 口径是**唯一一处实现**（就是本函数）：`G6` 的 `scripts/doc-facts.js::checkGeneratedDocs` 也调它
+ * ⇒ `docs-gen --check` 与 `doc-facts --check` 报出来的"第几行"是**同一个数**，不可能互相打脸
+ * （这两个数字曾经**各由一份实现**算 —— "看起来一致"正是最容易悄悄分叉的形态，2026-10-20 已合并）。
  *
  * @returns {{fresh:boolean, firstDiffLine:number, diskLine:(string|null), wantLine:(string|null)}}
  *   `firstDiffLine` 是 **1 起**行号，`0` = 逐字相同；差异处一方已结束 ⇒ 该侧为 `null`（报"文件结束"）。

@@ -916,14 +916,12 @@ function checkGeneratedDocs(v, fail) {
       console.log('✓ 生成物与源一致：' + t.file);
       return;
     }
-    // 给出第一处差异的位置，便于直接定位
-    const gl = got.split('\n');
-    const wl = want.split('\n');
-    let at = 0;
-    while (at < gl.length && at < wl.length && gl[at] === wl[at]) at++;
-    console.error('✗ 生成物已过期：' + t.file + '（第 ' + (at + 1) + ' 行起不一致）');
-    console.error('    磁盘: ' + String(gl[at] === undefined ? '(文件结束)' : gl[at]).slice(0, 100));
-    console.error('    应为: ' + String(wl[at] === undefined ? '(文件结束)' : wl[at]).slice(0, 100));
+    /* 差异行号的口径只有一处实现：`cli/commands/release.js` 的 `compareText()`（`docs-gen --check` 也用它；`scripts → cli` 是 `S1` 允许的朝下方向，反过来 `cli/` 不许 require `scripts/`）—— 本文件不再留第二份。 */
+    const { compareText } = require('../cli/commands/release.js');
+    const cmp = compareText(got, want);
+    console.error('✗ 生成物已过期：' + t.file + '（第 ' + cmp.firstDiffLine + ' 行起不一致）');
+    console.error('    磁盘: ' + String(cmp.diskLine === null ? '(文件结束)' : cmp.diskLine).slice(0, 100));
+    console.error('    应为: ' + String(cmp.wantLine === null ? '(文件结束)' : cmp.wantLine).slice(0, 100));
     console.error('    → 运行 `' + t.fix + '` 重生成');
     fail();
   });

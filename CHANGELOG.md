@@ -2249,6 +2249,40 @@ node cli/mm-cli.js timeline [<项目>] [--since <ISO|Nd|Nh|Nm|Nw>] [--now <ISO>]
   · ④ **踩到 `S2` 的豁免面上限（本批发现的真事）**：第一版把镜像注入写成裸 `fs.writeFileSync` ⇒ 被在册豁免覆盖的写调用点 **82 → 84 > 上限 82**，`collateral-check` **exit 1**。改法不是抬上限（册子只减不增），而是**走唯一写盘出口**（`src/data-store.js` 的 `writeManagedText`，`docs/RULES.md` §1 本来就要求这样）⇒ 回到 82、exit 0。**值得记住**：`scripts/cli-integration.js` 是**整文件豁免**，在里面添裸写会直接顶高豁免面。
 - **证据**：`.review/20261020-I5-docsgen-check/README.md`（判据与偏差全表）· `probe-discriminate.js`（判别力 + 零写盘，6/6）· `probe-json-repro.js`（`--json` 原始 stdout 指纹，4/4）· `probe-mirror.js`（镜像可行性实验）。
 
+### 【去重】「差异行号」从两份实现收成一份：`doc-facts --check` 改调 `cli/commands/release.js` 的 `compareText()`（2026-10-20）
+
+**删掉的是什么（上一批 `I-5` 如实留的重复）**：「两份文本的第一处差异行号」在本仓曾有两份实现 ——
+`cli/commands/release.js:321` 的 `compareText()`（`docs-gen --check` 用）与 `scripts/doc-facts.js` 的
+`checkGeneratedDocs()` 里内联的那 4 行逐行比（+ 4 行报文；`G6`/`G7` 判 `docs/CLI.md` / `docs/VERIFY.md` 用）。当时没删，是因为
+`cli/` **不许 `require` `scripts/`**（`S1` 单向依赖），而那一批的边界又禁止改 `doc-facts.js`。
+本批走**唯一合法的方向**：让 `scripts/doc-facts.js` 调 `cli/commands/release.js` 的 `compareText`
+（`scripts → cli` 是朝 rank 小的方向，`S1` 允许）。
+
+- **先证"两份是同一个口径"，再删**：`.review/20261020-去重-compareText/compare-impls.js` 把两侧**从真实源码里抽出的原文**各自装进函数、喂同一组语料 ⇒ **7 条口径核对全过**（只按 `\n` 切、同一个 `while`（两侧未到尾 + 严格相等）、行号 1 起 = 首个不等下标 + 1、一方提前结束 ⇒ 该侧「(文件结束)」、两侧都到尾 ⇒ `fresh`、报文截断 100 字），**19 条可达语料逐字节相同**（含第 1 行 / 最后一行 / 两侧提前结束 / CRLF / 空行 / 整行是 `null`·`undefined` 字面量 / 1000 行里第 999 行）。
+  ⚠️ **如实登记一处不可达差异**：旧内联在**等值输入**上会算出 `len + 1`（无意义的行号），`compareText` 给 `fresh / 0`；而差异块上方两版都有 `if (got === want) { ✓ ; return; }` ⇒ 等值输入**到不了**那里，故不构成两个口径（读数是该脚本 ④ 节）。
+- **报错文案逐字不变 + 行号不变**：`%TEMP%` **全量镜像**（`mirror-proof.js`）上 18 个用例 before/after **逐字节相同**（exit / 差异行号 / stdout / stderr 全比），其中 `docs/CLI.md` 第 5 行注入 ⇒
+  `✗ 生成物已过期：docs/CLI.md（第 5 行起不一致）` + 「磁盘 / 应为 / fix」三行照旧（`docs/VERIFY.md` 与本文引过这条文案）。
+- **判别力（本批最重要的验收）**：同一套镜像里注入**一个字符**（**真仓生成物一个字节都没动**）：
+
+  | 注入位置 | 文件 | exit | 报出的行号 | 改回（逐字节还原） |
+  |---|---|---|---|---|
+  | 第 1 行 | `docs/CLI.md` | 1 | **第 1 行** | exit 0 |
+  | 第 5 行 | `docs/CLI.md` | 1 | **第 5 行** | exit 0 |
+  | 最后一行（第 729 行） | `docs/CLI.md` | 1 | **第 729 行** | exit 0 |
+  | 尾部多出一行 | `docs/CLI.md` | 1 | **第 731 行** | exit 0 |
+  | 第 1 行 | `docs/VERIFY.md` | 1 | **第 1 行** | exit 0 |
+  | 第 5 行 | `docs/VERIFY.md` | 1 | **第 5 行** | exit 0 |
+  | 最后一行（第 116 行） | `docs/VERIFY.md` | 1 | **第 116 行** | exit 0 |
+  | 尾部多出一行 | `docs/VERIFY.md` | 1 | **第 118 行** | exit 0 |
+
+- **净删除**：`git diff --numstat -- scripts/doc-facts.js` = **`6 8`**（净 **-2** 行）；`cli/commands/release.js` **只改 3 行注释**（原文说"两份实现各算一套行号"，合并后已不成立；`compareText` 本来就已导出）—— **行为零改动**。两处合计 **9 添加 / 11 删除**。
+- **`--check` 行为逐字节不变**：真仓 `node scripts/doc-facts.js --check` 改前 / 改后的 stdout+stderr **sha256 相同**（`7027ddd0…`），两次 exit 都是 **0**。
+- **判据（全部当场跑，只认 exit code）**：`doc-facts --check` **0** · `vitest run --pool=threads` **0**（**3107 passed | 1 skipped = 3108**，不比改前少）· `cli-integration.js` **0**（**631/631**）· `docs-registry-check.js` **0** · `dep-direction-check.js` **0**（`S1`：本批新增的那条边 `scripts/doc-facts.js:920 → cli/commands/release.js [scripts → cli]` 是**被判过方向**的，不是按 dynamic 跳过）· `encoding-check.js` **0** · `find-bare-angle.js` **0 节点 · 0 片段** · `docs-gen --check` **0** · `collateral-check.js` **0**。
+- **连带面（R5）**：GUI 交互 **无影响**（不碰 `renderer/` / `main*.js`）；CLI / MCP 命令表 **零改动**；数据格式 **无新字段**；`docs/CLI.md` 与 `docs/VERIFY.md` **都仍是新鲜的**（`--check` 对两份都 ✓）。
+- **⚠️ 本批不跑 `npm run verify`**（`R7`），也**不跑** `doc-facts --write`（父代理统一收口）。
+- **如实偏差（两条）**：① 本批**没有**把这条判别力做成 `cli-integration.js` 的**常驻断言** —— 加一条 `check()` 会让 `cliAssertions` 从 639 变 640，而 `docs/VERIFY.md` 记的是 639 ⇒ 同批 `doc-facts --check` 会因生成物过期而**红**（本批边界又不许改 `VERIFY.md`）。可复现的证明与"常驻断言"补丁草案都在 `.review/20261020-去重-compareText/README.md`，父代理收口时可与 `--write` 同批加上。② 任务书里写的 `cli-integration` 现值是 **631**，而 `doc-facts` 从源码正则数出的 `cliAssertions` 是 **639**（两个口径本来就不同，改前改后都是这个差；本批没有动它）。
+- **证据**：`.review/20261020-去重-compareText/`（`README.md` 收敛记录 · `compare-impls.js` 逐行/差分 · `mirror-proof.js` + `compare-runs.js` 18 用例 · `mirror.before.json` / `mirror.after.json` · `doc-facts-check.before/after/final.txt`）。
+
 ## [v0.19.0] - 2026-10-19
 
 ### 预算统计量 `1.25×P90` → `1.25×median`：n=10 的 P90 = **第二大** ⇒ 只容忍一条尖峰；今天已两次被尖峰抬线（1300→1468、1300→1350），换 median 并把多付的 50s 还回去（G5 1350s→1300s）
