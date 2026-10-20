@@ -8,6 +8,13 @@
  *     --depth N = N 跳邻域（任意正整数；2 = 间接关联的知识簇，对应 Obsidian 的局部图）；
  *     防环（每节点只以最短跳数入表一次）+ 结果上限（超限响亮报错，见 related 的注释）；
  *     刻意**不做全量图谱**（已在 docs/ROADMAP.md 否决）
+ *   source-chain <项目> <id> [--json] [--depth N] [--reverse]
+ *     出处链（产品代号 `SC`，台账 `W17`）：**只沿** `links[].caption` 以「出自：」开头的边多跳，
+ *     逐跳给出节点与那一跳的出处原文；`--reverse` 反查（谁把我当出处）。
+ *     与 `related` 的区别：那个是**无类型区分**的双向邻域（浏览相关），这个是**有向 + 有类型**的溯源。
+ *     成环 ⇒ 响亮拒绝并逐条点名环上的边（不丢边凑合）；撞上限 ⇒ 响亮报错（不静默截断）。只读。
+ *     ⚠️ `出自：` 是 `docs/TAGS.md` §11 那**一个**写法；真实数据里另有 560 条 `来源：`
+ *     （`learn-path` 生成）本命令**有意不认**，但会如实报进 `otherPrefixes`（见 src/source-chain.js 文件头）。
  *   orphans <项目> [--json] [--content-only] [--limit n]
  *     关系审计：找出「无任何引用关系」的节点，并把其中**含实质内容**的挑出来
  *     —— 那才是真正该处理的部分（纯结构型叶子节点无内容是正常的，不算问题）。
@@ -28,6 +35,11 @@ const fs = require('fs');
 const path = require('path');
 const relations = require('../../src/relations.js');
 const mentions = require('../../src/mentions.js');
+/** 「经验来源链（`SC`）」的判据唯一实现处（UMD 纯逻辑：方向、分流、环检测、上限都在那里） */
+const sourceChainMod = require('../../src/source-chain.js');
+
+/** `source-chain` 的**缺省深度**（命令层的取值，只此一处；上限在 `src/source-chain.js` 的 `MAX_DEPTH`） */
+const SOURCE_DEPTH_DEFAULT = 10;
 /** 「这次别写盘」的哨兵（`cli/core.js` 的唯一实现）：`contents --apply` 发现"已经是最新的"时用它
  *  ⇒ `ctx.mutate` 一次盘都不写、`.changes.jsonl` 也不多一条（幂等的判据见命令体）。 */
 const { SKIP_WRITE } = require('../core.js');
@@ -151,6 +163,135 @@ module.exports = {
     if (depth === 1 && r.items.some((x) => x.depth === 1)) {
       ctx.out('');
       ctx.out('  提示：加 --depth 2 看两跳邻域（间接关联的知识簇），再往上可给更大整数（深度越深越容易撞结果上限）。');
+    }
+  },
+
+  /**
+   * 出处链（产品代号 `SC`，台账 `W17`）：沿 `links[].caption` 以「出自：」开头的边**多跳**追溯。
+   *
+   * ## 它回答的问题（既有命令都答不了的那一半）
+   *   · `backlinks` / `related` —— 只看**无类型区分**的边，且 `related` 把出边入边混在一起 ⇒
+   *     判不出"哪一条边是出处"，也走不出"只沿出处"的那条链。
+   *   · `origin` —— 只到**文件**为止（`origin.src` 是路径），结构上不可能多跳。
+   *   ⇒ 本命令是「出处链」这条语义的**唯一实现**，计算全在 `src/source-chain.js`（UMD 纯逻辑）。
+   *
+   * ## 方向（**唯一答案**，与 `docs/TAGS.md:347` 给 `前置：` 立的那句同构）
+   *   `出自：` 写在**下游**节点上、目标 = **上游（来源）**。⇒ 默认沿出边 = 溯源；
+   *   `--reverse` 沿入边 = 反查（谁把我当出处）。两个方向共用同一份环检测。
+   *
+   * ## 三条硬口径
+   *   ① **只读**：一次盘都不写（不进 `WRITE_COMMANDS`、不碰 `.changes.jsonl`、**不记热度** ——
+   *      `related` 记 `ai-related-hop` 是因为它是"浏览"，溯源是一次查询；记了还会让 `--json` 两跑不可比）；
+   *   ② **成环响亮拒绝并逐条点名**（`src/source-chain.js` 的 `cycleMessage`），不丢边凑合；
+   *   ③ **撞上限响亮报错**，绝不静默截断（照 `related` 撞 `MAX_ITEMS` 的既有口径）。
+   */
+  sourceChain(ctx) {
+    const id = ctx.args._[1];
+    if (!id) ctx.error('用法: source-chain <项目> <节点id> [--json] [--depth N] [--reverse]');
+    const depth = ctx.intOption('depth', { min: 1, max: sourceChainMod.MAX_DEPTH, def: SOURCE_DEPTH_DEFAULT });
+    const reverse = !!ctx.args.reverse;
+    const { data } = ctx.read();
+    const self = ctx.tree.find(data.data, id);
+    if (!self) ctx.error('节点不存在: ' + id);
+
+    // 跨项目索引：项目**按名排序**后再建 ⇒ 输出与 readdir 的返回顺序无关（`--json` 可复现的一部分）
+    const all = loadAllProjects(ctx.PROJECTS_DIR).slice()
+      .sort((a, b) => (a.name < b.name ? -1 : (a.name > b.name ? 1 : 0)));
+    const nIdx = relations.nodeIndex(all);
+
+    const topicAt = (p, nid) => {
+      const box = nIdx[p];
+      const n = box && box[nid];
+      return n ? n.topic : null;            // null = 目标节点解析不到（悬挂/项目没了），如实标
+    };
+
+    // 正向：该节点的**全部**出边（`src/source-chain.js` 自己按 caption 分流）
+    const outEdges = (p, nid) => {
+      const box = nIdx[p];
+      const n = box && box[nid];
+      if (!n) return [];
+      return (Array.isArray(n.links) ? n.links : [])
+        .filter((l) => l && typeof l.project === 'string' && typeof l.id === 'string')
+        .map((l) => ({ project: l.project, id: l.id, topic: topicAt(l.project, l.id), caption: l.caption }));
+    };
+
+    // 反向：入边索引（**全部**入边，不只出处边 —— 这样 `otherPrefixes` 在两个方向上是同一个读数）
+    let inEdges = null;
+    if (reverse) {
+      const inIdx = Object.create(null);
+      all.forEach((p) => {
+        relations.flatten(p.data.data).forEach((n) => {
+          (Array.isArray(n.links) ? n.links : []).forEach((l) => {
+            if (!l || typeof l.project !== 'string' || typeof l.id !== 'string') return;
+            const k = sourceChainMod.nodeKey(l.project, l.id);
+            if (!inIdx[k]) inIdx[k] = [];
+            inIdx[k].push({ project: p.name, id: n.id, topic: n.topic, caption: l.caption });
+          });
+        });
+      });
+      inEdges = (p, nid) => inIdx[sourceChainMod.nodeKey(p, nid)] || [];
+    }
+
+    const r = sourceChainMod.walk({
+      start: { project: ctx.projectName, id, topic: self.topic },
+      edgesOf: reverse ? inEdges : outEdges,
+      maxDepth: depth
+    });
+    if (r.ok === false && r.code === 'cycle') ctx.error(sourceChainMod.cycleMessage(r.cycles));
+    if (r.ok === false && r.code === 'too-many') ctx.error(sourceChainMod.tooManyMessage(r));
+
+    // ⚠️ 键序固定（`G-11` 先例）：无时间戳、无随机、无 `rev`/`version` ⇒ 两跑 sha256 相同
+    const out = {
+      ok: true,
+      project: ctx.projectName,
+      target: { id: id, topic: self.topic },
+      direction: reverse ? 'down' : 'up',
+      depth: depth,
+      chains: r.chains,
+      hopCount: r.hopCount,
+      otherPrefixes: r.otherPrefixes,
+      nearMiss: r.nearMiss,
+      truncated: r.truncated
+    };
+    if (ctx.args.json) { ctx.outJson(out); return; }
+
+    ctx.out('「' + self.topic + '」的出处链（'
+      + (reverse ? '反查：谁把我当出处（越来越下游）' : '溯源：沿「出自：」向来源走')
+      + '，最多 ' + depth + ' 跳）：');
+    const real = r.chains.filter((c) => c.length > 1);
+    if (!real.length) {
+      ctx.out('  （0 跳）这个节点没有「出自：」' + (reverse ? '入边' : '出边')
+        + ' —— 它的' + (reverse ? '下游引用' : '来源') + '还没有被记录下来。');
+      if (!reverse) {
+        ctx.out('  写法：node cli/mm-cli.js link ' + ctx.projectName + ' ' + id
+          + ' --to <来源项目> --id <来源节点> --caption "出自：<哪本书 / 哪一节 / 哪个 URL>"');
+      }
+    }
+    real.forEach((chain, ci) => {
+      ctx.out('');
+      ctx.out('  链 ' + (ci + 1) + '（' + (chain.length - 1) + ' 跳）：');
+      chain.forEach((h, hi) => {
+        const topic = (h.topic === null) ? '（目标节点不存在）' : h.topic;
+        ctx.out('    [' + hi + '] ' + h.project + ':' + h.id + '  ' + topic);
+        if (h.caption) ctx.out('         ' + h.caption);
+      });
+    });
+    const pk = Object.keys(r.otherPrefixes);
+    if (pk.length) {
+      ctx.out('');
+      ctx.out('  没跟的边（caption 不是「出自：」开头，按前缀计数）：'
+        + pk.map((k) => k + ' ' + r.otherPrefixes[k]).join(' · '));
+    }
+    if (r.nearMiss.length) {
+      ctx.out('');
+      ctx.out('  ⚠ 近失写法 ' + r.nearMiss.length + ' 条（以「出自」开头但不是「出自：」⇒ 不算出处边；'
+        + '这种写法会让一条出处声明**静默失效**，所以报出来）：');
+      r.nearMiss.forEach((x) => ctx.out('    ' + x.node + '  ' + x.caption));
+    }
+    if (r.truncated) {
+      ctx.out('');
+      ctx.out('  ⚠ 有链走到 --depth ' + depth + ' 的界、后面还有出处边没走 —— '
+        + '要看全就调大 --depth（上限 ' + sourceChainMod.MAX_DEPTH + '）');
     }
   },
 

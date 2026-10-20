@@ -27,8 +27,10 @@
  *
  * 加新函数的判据（别把这层做成万能转发）：
  *   同一个公共 API 在调用点出现 ≥2 次，**或**它的语义值得起个名字时才加。
- *   当前 12 个函数**全部有真实调用者**，没有"备用/将来可能用到"的函数 ——
+ *   当前 13 个函数**全部有真实调用者**，没有"备用/将来可能用到"的函数 ——
  *   没有调用者的转发函数是**没有断言覆盖的路径**，加了只会漂移。
+ *   （`resize` 是 2026-10-20 第 13 个，唯一的调用者是 `renderer/draft-map.js`，
+ *     加它的理由写在那个函数头上 —— 不是"顺手补个方法"。）
  *
  * API → 函数对照（左列是 jsMind 0.9.1 的**公开方法名**，方法名只允许出现在本文件里）：
  *   get_node            → getNode         get_selected_node → getSelected
@@ -37,6 +39,7 @@
  *   remove_node         → removeNode      expand_node       → expandNode
  *   collapse_node       → collapseNode    expand_all        → expandAll
  *   get_root            → getRoot         show(mind)        → loadTree
+ *   resize              → resize          （按容器尺寸重排；理由见 resize 的注释）
  *   另：available —— 不是库 API，是"这个对象像不像一个可用的导图实例"的能力探针。
  *
  * ⚠️ 已知缺陷（**本次纯重构按原样保留**，没有顺手修）：
@@ -96,11 +99,23 @@
   /** 载入一整棵树（库的 show）—— 重建导图的唯一入口，app-core.js 的 renderMind 用。 */
   function loadTree(jm, data) { return jm.show(data); }
 
+  /** 按**容器当前尺寸**重排一次（库的 resize）。
+   *  ⚠️ 为什么必须有它（`DM` 草稿图批新增，真实观测到的一次错位）：本库的 `view.expand_size()`
+   *  会把内容尺寸取成 `max(容器, 内容最小尺寸)` ⇒ **布局坐标是跟着窗口走的**。
+   *  草稿窗的做法是"先开窗、量出内容、再按内容改窗口大小"，改完如果不重排，
+   *  节点还停在**旧窗口尺寸**下算出的坐标上 ⇒ 实测一张 360×240 的小窗里，根节点落在 (372,267)
+   *  —— **在视口外**（窗口变小了，内容没跟着回中间）。这就是本函数存在的唯一理由（唯一调用点：
+   *  `renderer/draft-map.js` 的 `reportFit`）。
+   *  它是**纯转发的公共 API**（库的 `jm.resize()`），与上面 12 个同一条纪律。 */
+  function resize(jm) { return jm.resize(); }
+
   MM.adapter = {
     // 读
     getNode, getRoot, getSelected, available,
     // 写
     selectNode, addNode, updateNode, removeNode,
-    expandNode, collapseNode, expandAll, loadTree
+    expandNode, collapseNode, expandAll, loadTree,
+    // 视图
+    resize
   };
 })();

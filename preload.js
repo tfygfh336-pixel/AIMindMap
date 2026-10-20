@@ -232,5 +232,32 @@ contextBridge.exposeInMainWorld('desktop', {
     /* 页面 boot 时问一次"我该打开哪个项目"：只有"重开"会武装它 ⇒
      * 正常启动返回 null（仍按原样打开 projects[0]，启动行为不变 ✓） */
     bootProject: () => ipcRenderer.invoke('dsh-sidebar:boot-project')
+  },
+  /* 草稿图窗口（功能代号 `DM` · 台账 `W11`）：**只给草稿页用**的一小套接口。
+   * 三条边界：
+   *   ① 草稿树的权威副本在**主进程内存**里（关窗即弃）；这里只能"取一份用于显示"，
+   *      没有任何"保存草稿"的方法 —— 那个方向根本不该存在（台账硬要求：不落盘）；
+   *   ② `merge` 的落点**必须由人给**（`parent` 由页面里的下拉框选出），
+   *      本接口不接受"让 AI 自己挑落点"；
+   *   ③ 全部返回 `{ok, reason?}` 形状 —— 失败带原因，不许出现"点了没反应"。 */
+  draft: {
+    /** 取本窗的草稿（`{ok, id, fp, source, tree, stats, dropped}`） */
+    get: () => ipcRenderer.invoke('draft:get'),
+    /** 按内容报尺寸：`{w,h}` ⇒ 主进程钳制到屏幕工作区后 setContentSize，回 `{ok,w,h,clamped}` */
+    fit: (size) => ipcRenderer.invoke('draft:fit', size),
+    /** 落点候选（主图里可选的父节点；`{ok, project, items:[{id,topic,depth}]}`） */
+    candidates: () => ipcRenderer.invoke('draft:candidates'),
+    /** 并入：`{parent}` ⇒ 经 CLI `apply` 一次原子写 + 回读；重复并入被幂等拒绝并指名 */
+    merge: (opts) => ipcRenderer.invoke('draft:merge', opts),
+    /** 导出：`'md' | 'json'` ⇒ 弹保存对话框后写盘（复用 `src/draft-map.js` 的序列化） */
+    exportAs: (kind) => ipcRenderer.invoke('draft:export', kind),
+    /** 丢弃 / 关窗（草稿随窗口一起没了） */
+    close: () => ipcRenderer.invoke('draft:close'),
+    /** 同一张窗被"更新到"（a–e 的 d）时主进程推一次新内容 */
+    onUpdate: (cb) => {
+      const wrap = (_e, payload) => cb(payload);
+      ipcRenderer.on('draft:updated', wrap);
+      return () => ipcRenderer.removeListener('draft:updated', wrap);
+    }
   }
 });

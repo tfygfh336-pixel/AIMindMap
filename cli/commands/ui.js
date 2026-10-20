@@ -147,6 +147,81 @@ module.exports = {
     });
   },
 
+  /**
+   * 草稿图（功能代号 `DM` · 台账 `W11`）：把**一棵树**送进一个**临时小窗**给人看。
+   *
+   * 为什么是这条命令、而不是一个 MCP 工具：MCP 那层只是把调用转发给 CLI（`scripts/mcp-server.js`
+   * 的每个工具 = 一次 mm-cli 调用），而本批不碰那个文件 ⇒ 先给 AI 一条**CLI 工具面**，
+   * 内置 DSH 侧栏那边要让 AI 用上它，只需在它的 skill/工具描述里指过来（不需要新代码）。
+   *
+   * 硬口径（与 `sidebar-only` / `dsh-prefill` 同一族）：
+   *   · **没有回执 = 没生效**：主界面没在跑就报错退出（退出码非 0），绝不打印"已打开"就算完；
+   *   · **对主图零写入**：这条命令只让界面**新增一个窗口**，决定"要不要进主图"的是人 ——
+   *     所以它**不在** `DRY_RUN_COMMANDS` 里（它本来就不写盘），也不需要 `--dry-run`。
+   *
+   * 用法：
+   *   draft-map --file <树.json>        （也接受**内联 JSON 文本**，以 `{` 开头即视为文本）
+   *   draft-map --file t.json --source "周报提纲"  [--json]
+   *
+   * 树的形状：`{topic, detail?, children?}` —— **只带这三样**（`detail` 是 HTML 片段）。
+   * 其余字段（images/files/tags/links/items/localPath…）会被丢弃并在 `--json` 的 `dropped` 里点名：
+   * 图片/附件要落 `assets/`、`attachments/`（草稿不落盘 ⇒ 带了就是断链）；
+   * 标签/链接/条目是与**家项目**相关的语义（草稿没有家项目 ⇒ 带了就是在草稿里编造关系）。
+   */
+  'draft-map'(ctx) {
+    const raw = ctx.args.file;
+    if (raw === undefined || raw === true || raw === '') {
+      ctx.error('用法：draft-map --file <树.json> [--source 说明] [--json]'
+        + '（也接受内联 JSON 文本；树的形状 {topic, detail?, children?}）');
+    }
+    const text0 = String(raw).trim();
+    const inline = text0.charAt(0) === '{' || text0.charAt(0) === '[';
+    let text = text0;
+    if (!inline) {
+      let file = text0;
+      try { file = path.resolve(text0); } catch (e) { file = text0; }
+      if (!fs.existsSync(file)) {
+        ctx.error('--file 指向的文件不存在: ' + file + '（相对路径按**当前工作目录**解析；也可以直接内联 JSON 文本）');
+      }
+      try { text = fs.readFileSync(file, 'utf8'); }
+      catch (e) { ctx.error('--file 读不了: ' + file + '（' + ((e && e.message) || e) + '）'); }
+    }
+    let tree;
+    try { tree = JSON.parse(text.replace(/^\uFEFF/, '')); }
+    catch (e) { ctx.error('这棵树不是合法 JSON：' + ((e && e.message) || e)); }
+    if (!tree || typeof tree !== 'object' || Array.isArray(tree)) {
+      ctx.error('树的顶层必须是一个对象（形如 {"topic":"根","children":[…]}），收到 '
+        + (Array.isArray(tree) ? '数组' : typeof tree));
+    }
+    if (tree.topic === undefined || tree.topic === null || !String(tree.topic).trim()) {
+      ctx.error('这棵树没有 topic（草稿的根节点必须有标题 —— 窗口标题与并入后的新节点都靠它）');
+    }
+    const dir = userDataDir();
+    const token = control.newToken('draft-map');
+    control.writeCommand(dir, {
+      cmd: 'draft-map', tree: tree,
+      source: ctx.args.source ? String(ctx.args.source) : 'CLI',
+      token: token, at: new Date().toISOString(), by: 'cli'
+    });
+    const res = waitForResult(dir, token, UI_ACK_MS);
+    if (!res) {
+      ctx.error('主界面没有响应（' + dir + '）：请确认 AI MindMap 正在运行；'
+        + '本命令只驱动**正在运行的**界面，不会自己去启动它。'
+        + '（⚠️ 草稿窗是**内存里**的临时对象 ⇒ 界面没在跑时它无处可去，这是设计而非缺陷）');
+    }
+    if (!res.ok) {
+      // 界面**拒绝了**（形状不合规 / 超上限）⇒ 照实转述它给的原因（它必须点名，别吞成一句"失败"）
+      ctx.error('界面没有打开草稿窗：' + (res.err || '未知原因'));
+    }
+    const r = res.result || {};
+    if (ctx.args.json) { ctx.outJson({ ok: true, token: token, result: r }); return; }
+    ctx.out((r.updated ? '已把**同一份内容**更新到原来那张草稿窗（a–e 的 d：不新开窗）'
+      : '已打开草稿窗（临时 · 不落盘 · 关窗即弃）')
+      + '：指纹 ' + (r.fp || '?') + '，现在共 ' + (r.count || 1) + ' 张');
+    ctx.out('下一步由**人**决定：在草稿窗里点「并入主导图」（会问落点）或「丢弃」。'
+      + '本命令对主图零写入 —— 并入之前 `projects/` 一个字节都没变。');
+  },
+
   /** 反方向：保留主界面（思维导图），独立关/开侧栏 DSH。
    *  off 会把 DSH 服务一起停掉、并**销毁**侧栏那个视图 ⇒ 所以"只改 DSH 那一侧"时不用重启整个应用 ✓ */
   'dsh-sidebar'(ctx) {

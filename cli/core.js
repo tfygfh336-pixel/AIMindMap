@@ -145,6 +145,10 @@ function parseArgs(argv) {
     if (a === '--content-only') { out.contentOnly = true; continue; }
     if (a === '--include-structural') { out.includeStructural = true; continue; }
     if (a === '--cross') { out.cross = true; continue; }
+    // 【W17 / `SC`】`source-chain --reverse`：**纯布尔** ⇒ 必须在这里登记。
+    // 不登记的实测形状与 `--cross` / `--deep` 同一种病：`source-chain --reverse 项目 id` 会被通用分支
+    // 按"--key value"吞成 `reverse='项目'`、位置参数少一个 ⇒ 用户看到的是「节点不存在: <id>」这种看不懂的话。
+    if (a === '--reverse') { out.reverse = true; continue; }
     if (a === '--clear-note') { out.clearNote = true; continue; }
     if (a === '--clear-anchors') { out.clearAnchors = true; continue; }
     if (a === '--dry-run') { out.dryRun = true; continue; }

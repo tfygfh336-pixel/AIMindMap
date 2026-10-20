@@ -874,6 +874,303 @@ function createWindow(opts) {
   return win;
 }
 
+/* ============================================================
+ * 草稿图（临时导图窗口）· 功能代号 `DM` · 台账 `W11`
+ * ------------------------------------------------------------
+ * 用户 2026-10-10 的设计（台账 `bl-3-3-8` + 它的 a–e 决议 `bl-3-3-8-1`）：
+ *   AI 生成的导图先进一个**独立小窗**给人看；人看完再决定「并入主导图（选落点）」或「丢弃」。
+ * 五条硬要求各自落在哪一行（不是"写在注释里就算"）：
+ *   ① **不落 projects/**：草稿树只存在下面的 `DRAFT.byFp` 里（主进程内存）⇒ 关窗即弃；
+ *   ② **不参与检索/校验/统计**：本段从不把草稿交给 `store` / CLI / 任何索引路径 —— 它不是项目、也不是字段；
+ *   ③ **合并前主图零变化**：并入之前本段一次都没调用过 CLI 写命令；
+ *   ④ **并入 = 一次原子写 + 回读**：走 CLI `apply --ops-file`（一份 ops = 一个事务，预检不过就整份拒绝）
+ *      ⇒ **不新开写盘路径**（本工程铁律：写盘出口唯一）；
+ *   ⑤ **幂等**：同指纹重复并入 ⇒ 本进程当场拒绝并**指名**；重启后失效的那一层由 `--idem` +
+ *      `toOps` 的**决定性 id** 兜住（重跑同一份 ops 会撞"新增的 id 已被占用"⇒ 整份拒绝、盘上零改动）。
+ * a–e 五条的落点：`alwaysOnTop: true`（a 置顶）· **不传 `parent`**（a：主窗最小化不影响它 ——
+ * child window 会随父窗一起隐藏，所以"不是 child"就是这条的结构前提）· 主窗 `closed` 时
+ * `closeAllDrafts()`（a：主窗关则连带关）· **不写任何位置/尺寸偏好**，尺寸由页面上报的内容 bbox 决定
+ * （a：不记忆位置大小、按内容定）· `DRAFT.byFp` 按指纹查表（d：同内容更新到原窗，不新开）。
+ * ⚠️ b「允许完整编辑」本批**不做**（定题 §7 偏差 1：本工程编辑一棵树的唯一实现在 `renderer/editor.js`，
+ *    它绑死主窗口的 DOM 与状态机；搬进草稿页要么搬整套 DOM、要么写第二份编辑器 —— 后者破"一份实现"铁律）。
+ * ============================================================ */
+const draftMap = require('./src/draft-map.js');
+
+/** 草稿图的进程内状态（**全部只在内存里**；进程一退就没了 —— 这正是"关窗即弃"的实现） */
+const DRAFT = {
+  /** 指纹 → { win, fp, payload, source, createdAt } */
+  byFp: new Map(),
+  /** 指纹 → { project, parent, at, added }：本进程已并入过的账（幂等第一层） */
+  merged: new Map(),
+  /** 主窗口引用（**草稿窗不是它的 child**，所以主窗句柄得自己记着 —— 见文件头 a 那一条） */
+  mainWin: null
+};
+
+/** 内容指纹：`src/draft-map.js` 的 `canonical()` 做规范化，hash 只用在这里（模块本身不引 node 内置） */
+function draftFingerprint(tree) {
+  return require('crypto').createHash('sha256').update(draftMap.canonical(tree), 'utf8').digest('hex').slice(0, 16);
+}
+
+/** 给页面 / 调用方的**只读**载荷（不含任何可写句柄） */
+function draftPayloadOf(ent) {
+  return {
+    id: ent.fp, fp: ent.fp, source: ent.source,
+    tree: ent.payload.tree, stats: ent.payload.stats, dropped: ent.payload.dropped
+  };
+}
+
+/**
+ * 打开（或"更新到"）一个草稿窗。
+ * @param {*} input 草稿树（形状 `{topic, detail?, children?}`；其余字段会被丢弃并记账）
+ * @param {{source?:string}} [opts] `source` 只用于显示（"来自 菜单/CLI"），不参与指纹
+ * @returns {{ok:boolean, fp?:string, updated?:boolean, count?:number, reason?:string, errors?:string[], dropped?:string[]}}
+ */
+function openDraftMap(input, opts) {
+  const o = opts || {};
+  const norm = draftMap.normalize(input);
+  if (!norm.ok) {
+    // 越界/形状不合规 ⇒ **响亮拒绝并点名**（绝不静默截断一棵树再让人以为 AI 少给了内容）
+    return { ok: false, reason: '草稿形状不合规：' + norm.errors.join('；'), errors: norm.errors };
+  }
+  const fp = draftFingerprint(norm.tree);
+  const source = o.source ? String(o.source) : '未知来源';
+
+  const exist = DRAFT.byFp.get(fp);
+  if (exist && exist.win && !exist.win.isDestroyed()) {
+    // ★ a–e 的 `d`：同一份内容 = **更新到原来那张**，不新开窗
+    exist.payload = { tree: norm.tree, stats: norm.stats, dropped: norm.dropped };
+    exist.source = source;
+    try { exist.win.webContents.send('draft:updated', draftPayloadOf(exist)); } catch (e) { /* 页面还没加载完 ⇒ 它自己会 get() */ }
+    if (!isSmoke) { try { exist.win.show(); exist.win.focus(); } catch (e2) { /* 已销毁就忽略 */ } }
+    return { ok: true, fp: fp, updated: true, count: DRAFT.byFp.size };
+  }
+
+  const win = new BrowserWindow({
+    width: 760, height: 560,            // 页面加载后由内容 bbox 决定（见 draft:fit）
+    minWidth: 320, minHeight: 220,
+    show: !isSmoke,                     // 冒烟里离屏：不弹桌面、不抢焦点（与主窗口同一条 headless 约定）
+    skipTaskbar: isSmoke,
+    title: '草稿图 · AI MindMap',
+    // ★ a 置顶
+    alwaysOnTop: true,
+    // ⚠️ **故意不传 `parent`**：child window 会随父窗口最小化一起隐藏 ⇒ 那会直接破坏
+    //    "主窗口最小化不影响它"（a）。代价是主窗关闭时它不会自动关 ⇒ 由 closeAllDrafts() 显式关。
+    webPreferences: {
+      preload: path.join(ROOT, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      backgroundThrottling: !isSmoke,   // 隐藏窗口不被后台节流（否则 rAF 暂停、内容量不出几何）
+      paintWhenInitiallyHidden: true
+    }
+  });
+  try { win.setMenu(null); } catch (e) { /* 某些平台没有菜单栏 */ }
+  win.loadFile(path.join(ROOT, 'renderer', 'draft-map.html'));
+
+  const ent = {
+    win: win, fp: fp, source: source, createdAt: Date.now(),
+    payload: { tree: norm.tree, stats: norm.stats, dropped: norm.dropped }
+  };
+  DRAFT.byFp.set(fp, ent);
+  win.on('closed', () => {
+    // 关窗即弃：草稿随窗口一起从内存里消失（`merged` 那本账**不**清 —— 它是"并入过"的事实，
+    // 清掉会让"关窗再开同一份内容"能再写一遍盘 ✗）
+    if (DRAFT.byFp.get(fp) === ent) DRAFT.byFp.delete(fp);
+  });
+  console.log('[draft] 已开草稿窗 fp=' + fp + ' source=' + source
+    + ' 节点=' + norm.stats.nodes + ' 深度=' + norm.stats.depth
+    + ' 丢弃字段=' + (norm.dropped.join(',') || '无'));
+  return { ok: true, fp: fp, updated: false, count: DRAFT.byFp.size };
+}
+
+/** 主窗关闭时连带关掉所有草稿窗（a 的最后一条） */
+function closeAllDrafts() {
+  const n = DRAFT.byFp.size;
+  for (const ent of Array.from(DRAFT.byFp.values())) {
+    try { if (ent.win && !ent.win.isDestroyed()) ent.win.destroy(); } catch (e) { /* 已销毁 */ }
+  }
+  DRAFT.byFp.clear();
+  if (n) console.log('[draft] 主窗口关闭 ⇒ 连带关掉 ' + n + ' 个草稿窗（a–e 的 a）');
+  return n;
+}
+
+/** 按 webContents 找草稿条目（IPC 里**只认**这张表 —— 别的窗口调这些接口一律拒绝） */
+function draftEntryOf(wc) {
+  for (const ent of DRAFT.byFp.values()) {
+    if (ent.win && !ent.win.isDestroyed() && ent.win.webContents === wc) return ent;
+  }
+  return null;
+}
+
+/** 问主窗口要「当前项目 + 落点候选 + 当前选中」。草稿窗**不持有**主图数据 ⇒ 每次现问。 */
+function readMainMapContext() {
+  const w = DRAFT.mainWin;
+  if (!w || w.isDestroyed()) {
+    return Promise.resolve({ ok: false, reason: '主窗口不在了（草稿窗本该随主窗口一起关闭）' });
+  }
+  const js = `(function () {
+    var st = (window.MMApp && window.MMApp.getState) ? window.MMApp.getState() : null;
+    if (!st || !st.project || !st.jm) return JSON.stringify({ ok: false, reason: '主图没有打开项目（并入必须指明落到哪个项目）' });
+    var ad = window.MM && window.MM.adapter;
+    var root = ad && ad.getRoot ? ad.getRoot(st.jm) : null;
+    if (!root) return JSON.stringify({ ok: false, reason: '主图拿不到树根（还没渲染完）' });
+    var sel = ad && ad.getSelected ? ad.getSelected(st.jm) : null;
+    var selId = sel && sel.id ? String(sel.id) : '';
+    var items = [], seen = {};
+    if (selId && selId !== 'root') { items.push({ id: selId, topic: String(sel.topic || selId), depth: 1 }); seen[selId] = 1; }
+    (function walk(n, d) {
+      if (!n || items.length >= 200) return;
+      var id = String(n.id);
+      if (id !== 'root' && !seen[id]) { seen[id] = 1; items.push({ id: id, topic: String(n.topic || id), depth: d }); }
+      if (d < 2) (n.children || []).forEach(function (c) { walk(c, d + 1); });
+    })(root, 1);
+    return JSON.stringify({
+      ok: true, project: String(st.project.name),
+      current: selId ? { id: selId, topic: String(sel.topic || selId) } : null,
+      items: items
+    });
+  })()`;
+  return w.webContents.executeJavaScript(js).then((txt) => {
+    try { return JSON.parse(txt); } catch (e) { return { ok: false, reason: '主窗口回的读数读不懂：' + String(txt).slice(0, 120) }; }
+  }, (e) => ({ ok: false, reason: '问主窗口失败：' + ((e && e.message) || e) }));
+}
+
+/** 在盘上的子树里找一个 id（回读判据用；**不调产品自己的查找函数**，自己走一遍） */
+function treeHasId(node, id) {
+  if (!node || typeof node !== 'object') return false;
+  if (String(node.id) === String(id)) return true;
+  const kids = Array.isArray(node.children) ? node.children : [];
+  for (const c of kids) if (treeHasId(c, id)) return true;
+  return false;
+}
+
+/**
+ * 并入：草稿树 ⇒ `apply --ops-file`（一次原子写）⇒ `read` 回读。
+ * @param {object} ent DRAFT 条目
+ * @param {string} parent 落点（`'root'` = 作为新顶层主题）
+ */
+async function draftMergeInto(ent, parent) {
+  const fp = ent.fp;
+  const prev = DRAFT.merged.get(fp);
+  if (prev) {
+    // ★ a–e 的 `d` 之后的另一半（台账验收 ③「重复并入 ⇒ 幂等拒绝并指名」）
+    return {
+      ok: false,
+      reason: '同一份草稿（指纹 ' + fp + '）已经并入过「' + prev.project + '」的 ' + prev.parent
+        + '（' + prev.at + '，新增 ' + prev.added + ' 个节点）—— 不重复写盘'
+    };
+  }
+  const ctxInfo = await readMainMapContext();
+  if (!ctxInfo.ok) return { ok: false, reason: ctxInfo.reason };
+  const target = parent === undefined || parent === null || parent === '' ? '' : String(parent);
+  if (!target) return { ok: false, reason: '没有给落点：并入必须由人指定父节点，或选「作为新顶层主题」' };
+  const allowed = target === 'root' || (ctxInfo.items || []).some((it) => String(it.id) === target);
+  if (!allowed) {
+    return { ok: false, reason: '落点 ' + target + ' 不在当前候选里（候选 = 当前选中 + 顶层两层，共 '
+      + (ctxInfo.items || []).length + ' 个）—— 可能是主图的项目刚被切走了' };
+  }
+  const ops = draftMap.toOps(ent.payload.tree, { parent: target, idPrefix: 'dm' + fp.slice(0, 8) });
+  if (!ops.length) return { ok: false, reason: '草稿是空的，没有可并入的节点' };
+
+  /* ops 走**临时文件**而不是内联 argv：Windows 的命令行长度上限约 32k 字符，
+   * 500 个节点带正文很快就会超（超了的表现是"命令跑不起来"，一个很难查的失败）。
+   * 落在系统临时目录、跑完即删 —— 它**不是**草稿的持久化（草稿仍然只在内存里）。
+   * ⚠️ 写它走 `writeFileAtomic`（本文件唯一的原子写出口，见 `src/data-store.js`）而不是裸
+   *   `fs.writeFileSync`：① 半截文件会让 CLI 读到坏 JSON；② 裸写会被门禁 S2 的写盘出口判定
+   *   当成"目标判不了的裸写"（实测：加两条裸写立刻让 `collateral-check` 与两条单测变红）。 */
+  const opsFile = path.join(app.getPath('temp'), 'mm-draft-ops-' + fp + '.json');
+  let applied = '';
+  try {
+    writeFileAtomic(opsFile, JSON.stringify({ version: 1, ops: ops }, null, 0));
+    applied = await runCliAsync(['apply', ctxInfo.project, '--ops-file', opsFile, '--idem', 'draft-' + fp]);
+  } catch (err) {
+    return { ok: false, reason: 'CLI apply 拒绝了这次并入（盘上零改动）：' + ((err && err.message) || err) };
+  } finally {
+    try { fs.unlinkSync(opsFile); } catch (e) { /* 删不掉不影响结论 */ }
+  }
+  if (!applied || applied.code !== 0 || /^error:/.test(String(applied.out || ''))) {
+    return { ok: false, reason: 'CLI apply 失败（盘上零改动）：' + String((applied && (applied.err || applied.out)) || '无输出').slice(0, 400) };
+  }
+
+  // ---- 写后回读：盘上真的多出那棵子树（不读界面的自报，读盘） ----
+  /* ⚠️ `read --json --subtree <id>` 的返回形状与 `read --json` **不同**（实测）：
+   *   `{meta, nodeCount, nodes:[{id, topic, depth, …}], images}` —— `nodes` 是**扁平清单**，
+   *   不是一棵树。所以回读按 id 在扁平清单里找（第一次写成 `data.children` 的树遍历，
+   *   结果"apply 说成功、回读说没找到"—— 那是**判据写错了**，不是产品没写）。
+   *   `nodeCount` 也顺带报出去，调用方可以核"这棵子树到底有几个节点"。 */
+  let readback = false;
+  let readErr = '';
+  let readNodes = -1;
+  try {
+    const txt = await runCliAsync(['read', ctxInfo.project, '--json', '--subtree', target]);
+    if (txt && txt.code === 0) {
+      const j = JSON.parse(String(txt.out || '{}'));
+      const flat = Array.isArray(j.nodes) ? j.nodes : [];
+      readNodes = flat.length;
+      const hit = flat.filter((n) => String(n.id) === String(ops[0].id))[0] || null;
+      readback = !!(hit && String(hit.topic) === String(ops[0].topic));
+    } else readErr = String((txt && (txt.err || txt.out)) || '').slice(0, 200);
+  } catch (e) { readErr = String((e && e.message) || e); }
+
+  DRAFT.merged.set(fp, { project: ctxInfo.project, parent: target, at: new Date().toISOString(), added: ops.length });
+  // 主图刷新（草稿窗与主图是两个窗口 ⇒ 必须显式通知，否则人看到的是旧的）
+  const mw = DRAFT.mainWin;
+  if (mw && !mw.isDestroyed()) {
+    try {
+      mw.webContents.send('menu:project-changed');
+      mw.webContents.send('menu:open-project', ctxInfo.project);
+    } catch (e) { /* 渲染层不在也不影响"盘上已经写好了"这个事实 */ }
+  }
+  console.log('[draft] 并入完成 fp=' + fp + ' 项目=' + ctxInfo.project + ' 落点=' + target
+    + ' 新增=' + ops.length + ' 回读=' + readback + (readErr ? ' 回读错误=' + readErr : ''));
+  return {
+    ok: true, fp: fp, project: ctxInfo.project, parent: target,
+    added: ops.length, readback: readback, readError: readErr || null, readNodes: readNodes
+  };
+}
+
+/** 导出的**内容**（序列化只有这一处；对话框那一步在下面） */
+function draftExportContent(ent, kind) {
+  const k = kind === 'json' ? 'json' : 'md';
+  const tree = ent.payload.tree;
+  const content = k === 'json' ? (JSON.stringify(tree, null, 2) + '\n') : draftMap.toMarkdown(tree);
+  const base = String((tree && tree.topic) || '草稿图').replace(/[\\/:*?"<>|\r\n]/g, '_').slice(0, 60) || '草稿图';
+  return { kind: k, content: content, name: base + (k === 'json' ? '.json' : '.md') };
+}
+
+/** 把导出内容写到指定路径（**不弹对话框**）—— 冒烟走这条路（headless 里没人应答对话框会挂死）。
+ *  写盘走 `writeFileAtomic`（唯一原子写出口）：导出到一半被打断不会留下半截 md/json。 */
+function draftWriteExport(ent, kind, outPath) {
+  const out = draftExportContent(ent, kind);
+  if (!outPath) return { ok: false, reason: '没有给导出路径' };
+  writeFileAtomic(outPath, out.content);
+  return { ok: true, kind: out.kind, path: outPath, bytes: Buffer.byteLength(out.content, 'utf8') };
+}
+
+/** 人那半的入口：把主图**当前选中的那棵子树**做成一份草稿（a–e 的 `e`：人手动新建草稿） */
+async function newDraftFromSelection(win) {
+  const js = `(function () {
+    var st = (window.MMApp && window.MMApp.getState) ? window.MMApp.getState() : null;
+    if (!st || !st.project) return JSON.stringify({ ok: false, reason: '还没有打开项目' });
+    var ad = window.MM && window.MM.adapter;
+    var sel = (ad && ad.getSelected) ? ad.getSelected(st.jm) : null;
+    if (!sel || !sel.id) return JSON.stringify({ ok: false, reason: '先选一个节点：草稿是从**选中的那棵子树**建的' });
+    if (sel.id === 'root') return JSON.stringify({ ok: false, reason: '整张图就是根节点 —— 请选一个分支再建草稿' });
+    function conv(n) {
+      var out = { topic: String(n.topic || ''), children: [] };
+      if (n.data && n.data.detail) out.detail = String(n.data.detail);
+      (n.children || []).forEach(function (c) { out.children.push(conv(c)); });
+      return out;
+    }
+    return JSON.stringify({ ok: true, project: String(st.project.name), tree: conv(sel) });
+  })()`;
+  let r;
+  try { r = JSON.parse(await win.webContents.executeJavaScript(js)); }
+  catch (e) { return { ok: false, reason: '取选中子树失败：' + ((e && e.message) || e) }; }
+  if (!r.ok) return r;
+  return openDraftMap(r.tree, { source: '菜单（选中节点：' + (r.tree.topic || '?') + '）' });
+}
+
 /* ---------------- 工具：取当前项目名 / 发提示 ---------------- */
 function getCurrentProjectName(win) {
   return win.webContents.executeJavaScript(
@@ -1100,6 +1397,19 @@ function buildMenu(win) {
       { role: 'reload' },
       { role: 'toggleDevTools' },
       { role: 'togglefullscreen' },
+      { type: 'separator' },
+      /* 草稿图（功能代号 `DM` · 台账 `W11`）：**人手动新建草稿的唯一正门**（a–e 的 `e`：
+       * "AI 与人都可以"）。只从**当前选中的那棵子树**建 —— 菜单里不凭空造一棵空树
+       * （空草稿并入毫无意义，而"空窗体"会让人以为功能坏了）。 */
+      { id: 'menu-new-draft', label: '新建草稿图（从选中节点）', accelerator: 'CmdOrCtrl+Shift+M',
+        click: () => {
+          newDraftFromSelection(win).then((r) => {
+            if (!r.ok) { win.webContents.send('app:toast', '没有建草稿：' + (r.reason || '未知原因')); return; }
+            win.webContents.send('app:toast', (r.updated
+              ? '同一份内容已更新到原来那张草稿窗（a–e 的 d）'
+              : '已开草稿窗（临时 · 不落盘 · 关窗即弃）') + '；看完决定「并入主导图」或「丢弃」');
+          }, (e) => win.webContents.send('app:toast', '没有建草稿：' + ((e && e.message) || e)));
+        } },
       { type: 'separator' },
       // DSH 侧边栏：孵化独立实例（vendor 运行包 + 独立 DSH_HOME），与全局 3080 实例互不可见
       { label: '切换 DSH 侧边栏', accelerator: 'CmdOrCtrl+B', click: () => dshSidebar.toggle() },
@@ -2816,6 +3126,67 @@ function registerIpc() {
     catch (err) { return '0.0.0'; }
   });
 
+  /* ---- 草稿图（功能代号 `DM` · 台账 `W11`）：**只给草稿窗**用的一组 IPC ----
+   * 每一条都先用 `draftEntryOf(e.sender)` 认窗：**不是草稿窗发来的一律拒绝** ——
+   * 草稿的读面与并入面不该对任意窗口开放（主图页面没有理由调它们）。 */
+  ipcMain.handle('draft:get', (e) => {
+    const ent = draftEntryOf(e.sender);
+    if (!ent) return { ok: false, reason: '这个窗口不是草稿窗（或那份草稿已经关了）' };
+    return Object.assign({ ok: true }, draftPayloadOf(ent));
+  });
+  /* 按内容定窗口大小（a–e 的 a）：页面量出内容 bbox 报上来，这里**钳制到屏幕工作区**再设。
+   * 钳制取的是**该窗口所在显示器**的工作区（不是主显示器）—— 多屏时这才对。
+   * `clamped:true` 是**如实上报**：内容比屏幕还大这件事必须让页面说出来（照 `W9` 的口径，不硬撑假的"刚好"）。 */
+  ipcMain.handle('draft:fit', (e, size) => {
+    const ent = draftEntryOf(e.sender);
+    if (!ent) return { ok: false, reason: '这个窗口不是草稿窗' };
+    const s = size || {};
+    const wantW = Math.round(Number(s.w) || 0);
+    const wantH = Math.round(Number(s.h) || 0);
+    if (!(wantW > 0) || !(wantH > 0)) return { ok: false, reason: '尺寸读数不合法：' + JSON.stringify(size) };
+    let wa = { width: 1280, height: 800 };
+    try { wa = screen.getDisplayMatching(ent.win.getBounds()).workAreaSize; } catch (err) { /* 取不到就用兜底 */ }
+    const maxW = Math.max(360, wa.width - 40);
+    const maxH = Math.max(240, wa.height - 60);
+    const w = Math.min(Math.max(wantW, 360), maxW);
+    const h = Math.min(Math.max(wantH, 240), maxH);
+    const clamped = (w < wantW || h < wantH);
+    try { ent.win.setContentSize(w, h); }
+    catch (err) { return { ok: false, reason: 'setContentSize 失败：' + ((err && err.message) || err) }; }
+    return { ok: true, w: w, h: h, want: { w: wantW, h: wantH }, clamped: clamped };
+  });
+  ipcMain.handle('draft:candidates', (e) => {
+    if (!draftEntryOf(e.sender)) return { ok: false, reason: '这个窗口不是草稿窗' };
+    return readMainMapContext();
+  });
+  ipcMain.handle('draft:merge', (e, opts) => {
+    const ent = draftEntryOf(e.sender);
+    if (!ent) return { ok: false, reason: '这个窗口不是草稿窗' };
+    return draftMergeInto(ent, opts && opts.parent);
+  });
+  ipcMain.handle('draft:export', async (e, kind) => {
+    const ent = draftEntryOf(e.sender);
+    if (!ent) return { ok: false, reason: '这个窗口不是草稿窗' };
+    const out = draftExportContent(ent, kind);
+    let r = null;
+    try {
+      r = await dialog.showSaveDialog(ent.win, {
+        title: '导出草稿（' + out.kind + '）',
+        defaultPath: path.join(app.getPath('documents'), out.name),
+        filters: out.kind === 'json'
+          ? [{ name: 'JSON', extensions: ['json'] }]
+          : [{ name: 'Markdown', extensions: ['md'] }]
+      });
+    } catch (err) { return { ok: false, reason: '保存对话框失败：' + ((err && err.message) || err) }; }
+    if (!r || r.canceled || !r.filePath) return { ok: false, reason: '已取消保存' };
+    return draftWriteExport(ent, out.kind, r.filePath);
+  });
+  ipcMain.handle('draft:close', (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    if (w && !w.isDestroyed()) w.close();
+    return { ok: true };
+  });
+
   /* DSH 侧边栏状态（渲染层只拿状态与几何，绝不拿 token/url） */
   ipcMain.handle('dsh-sidebar:status', () => dshSidebar.getStatus());
   ipcMain.handle('dsh-sidebar:prefill', (_e, text) => prefillAfterEnsureOpen(text));
@@ -3153,6 +3524,38 @@ async function runSmoke(win) {
    * 断言用"点之前/点之后各读一次"来判"这一跳有没有走唯一出口、走的是哪条绝对路径"。 */
   ctx.openFileLog = () => SMOKE_OPEN_FILE_LOG.map((x) => Object.assign({}, x));
   ctx.openFileLogClear = () => { const n = SMOKE_OPEN_FILE_LOG.length; SMOKE_OPEN_FILE_LOG.length = 0; return n; };
+  /* 草稿图（功能代号 `DM` · 台账 `W11`）：主进程内的读数 + 两条冒烟专用入口。
+   * 为什么必须有：草稿窗是**另一个 BrowserWindow**，而 `ctx.exec` 只驱动主窗口 ⇒
+   * 断言没有别的路能看见它。四条都在主进程内 ⇒ **不需要新开 IPC 通道**（同 ctx.changeLog 的先例）。
+   *   `list()`           —— 现在有几张草稿窗、各自指纹/来源/置顶/有无父窗/内容尺寸（读数）
+   *   `exec(fp, js)`     —— 在**那张草稿窗**里跑一段只读 JS（真判据 `elementFromPoint` 在它自己的页面里跑）
+   *   `exportTo(fp,k,p)` —— 走**同一条**序列化 + 写盘路径，只跳过原生保存对话框
+   *                        （headless 里没人应答对话框 ⇒ 点按钮会挂死；**对话框那一步只能人看**，如实标注）
+   *   `closeAll()`       —— 域末收尾（草稿窗不是模态，V2 的收尾检查看不见它 ⇒ 归本域自己收）
+   * ⚠️ 这里**刻意不提供 merge**：并入必须从草稿页的按钮走（真 UI 路径），
+   *    给一条测试专用的合并入口等于绕开被测行为。 */
+  ctx.draft = {
+    list: () => Array.from(DRAFT.byFp.values()).map((ent) => ({
+      fp: ent.fp, source: ent.source, nodes: ent.payload.stats.nodes,
+      depth: ent.payload.stats.depth,
+      alwaysOnTop: (() => { try { return ent.win.isAlwaysOnTop(); } catch (e) { return null; } })(),
+      parentWindow: (() => { try { return !!ent.win.getParentWindow(); } catch (e) { return null; } })(),
+      contentSize: (() => { try { return ent.win.getContentSize(); } catch (e) { return null; } })(),
+      loaded: (() => { try { return !ent.win.webContents.isLoading(); } catch (e) { return false; } })()
+    })),
+    exec: (fp, js) => {
+      const ent = DRAFT.byFp.get(fp);
+      if (!ent || !ent.win || ent.win.isDestroyed()) return Promise.reject(new Error('没有这个草稿窗: ' + fp));
+      return ent.win.webContents.executeJavaScript(js);
+    },
+    exportTo: (fp, kind, outPath) => {
+      const ent = DRAFT.byFp.get(fp);
+      if (!ent) return { ok: false, reason: '没有这个草稿窗: ' + fp };
+      return draftWriteExport(ent, kind, outPath);
+    },
+    merged: () => Array.from(DRAFT.merged.entries()).map(([k, v]) => Object.assign({ fp: k }, v)),
+    closeAll: () => closeAllDrafts()
+  };
   /* 真输入 + 截图证据（`scripts/smoke-input.js` 是唯一实现）：
    * `sendInputEvent` / `capturePage` 都是**主进程** API，而冒烟断言就跑在主进程里
    * （`ctx.exec` 只是主→渲染的桥）⇒ 直接挂在 ctx 上即可，**不需要 IPC 通道**
@@ -3859,6 +4262,22 @@ function startControlChannel() {
       reply({ cmd: 'dsh-status', ok: !!st, status: st, err: detail });
       return;
     }
+    /* draft-map —— 把一棵树放进一个**临时**小窗（功能代号 `DM` · 台账 `W11`）。
+     * 与上面四条的**分工边界**（`docs/FEATURES.md` 的 `DM` 与 `AP` 两行是同一句话的权威副本）：
+     *   那四条驱动**已有的界面与数据**（开/关侧栏、读状态、喂输入框）；
+     *   这一条**只新增一个窗口装新内容**，对主图的数据**一个字节都不动** ——
+     *   "要不要进主图"由人在窗口里决定，不由这条命令决定。
+     * 回执里给指纹与窗口数：调用方要能分辨"新开了一张"还是"更新到原来那张"（a–e 的 d）。 */
+    if (cmd.cmd === 'draft-map') {
+      let r;
+      try {
+        r = openDraftMap(cmd.tree, { source: cmd.source || ('CLI' + (cmd.by ? ':' + cmd.by : '')) });
+      } catch (err) {
+        r = { ok: false, reason: String((err && err.message) || err) };
+      }
+      reply({ cmd: 'draft-map', ok: !!r.ok, result: r, err: r.reason || null });
+      return;
+    }
     // dsh-only：**关导图页 = 真卸载这一页**（v0.19；旧语义只是给它加个类名、页面还在内存里 ✗）
     //   `confirmed:false` ⇒ 主进程自己查一次渲染层的脏标记：脏就**如实拒绝**（AI 这条路上
     //   不弹模态框 —— 没人保证有人在看，弹窗会把调用方挂死 ✗）。
@@ -3932,6 +4351,7 @@ app.whenReady().then(() => {
       ? { show: false, width: SMOKE_VIEW.width, height: SMOKE_VIEW.height }
       : undefined);
     console.log('[main] window created');
+    DRAFT.mainWin = win;        // 草稿窗要问主窗口"当前项目 / 落点候选"（它不是主窗的 child，见 DRAFT 注释）
     buildMenu(win);
     console.log('[main] menu ok');
     // DSH 侧边栏：默认打开 + 偏好恢复 + 驻留服务接管（--smoke / --export-image 不孵化）
@@ -3957,6 +4377,10 @@ app.whenReady().then(() => {
     // DSH 服务按驻留语义处理：退出**不收割已就绪的服务** ⇒ 下次打开对话还在。
     win.on('closed', () => { /* 窗口已关；服务驻留 */ });
     win.on('closed', () => { /* 窗口关闭；DSH 服务独立驻留（见 will-quit） */ });
+    /* 草稿图（a–e 的 a 最后一条）：**主窗口关闭 ⇒ 连带关闭所有草稿窗**。
+     * 为什么必须显式写：草稿窗刻意不是主窗口的 child（child 会随父窗最小化一起隐藏，
+     * 那会破坏"主窗口最小化不影响它"）⇒ 主窗关闭时它不会自动跟着关。 */
+    win.on('closed', () => { closeAllDrafts(); DRAFT.mainWin = null; });
     app.on('window-all-closed', () => app.quit());
     app.on('will-quit', () => dshSidebar.destroy());
   } catch (err) {

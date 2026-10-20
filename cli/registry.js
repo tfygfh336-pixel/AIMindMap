@@ -248,6 +248,7 @@ function init() {
   register({ name: 'init', usage: 'init <项目> [--title 标题] [--dry-run]', options: ['title'], desc: '创建空项目（meta + root 节点）', fn: loadFile('project').init });
   register({ name: 'backlinks', usage: 'backlinks <项目> <id> [--json]', options: ['json'], desc: '查看节点反向链接（谁引用了我，跨项目）', fn: loadFile('relations').backlinks });
   register({ name: 'related', usage: 'related <项目> <id> [--json] [--depth N]', options: ['json', 'depth'], desc: '查看节点相关知识点（我引用谁 + 谁引用我，双向合并去重；--depth N 扩到 N 跳邻域，N 任意正整数，防环 + 结果上限 500 条，超限响亮报错）', fn: loadFile('relations').related });
+  register({ name: 'source-chain', usage: 'source-chain <项目> <id> [--json] [--depth N] [--reverse]', options: ['json', 'depth', 'reverse'], desc: '**经验来源链（产品代号 `SC`，台账 `W17`）**：**只沿** `links[].caption` 以「出自：」开头的边多跳溯源，逐跳给出节点与那一跳的出处原文；`--reverse` 反查"谁把我当出处"（同一张图的入边方向，不需要第二套语义）。**与 `related` 的分工**：那个是**无类型区分**的双向邻域（浏览相关），这个是**有向 + 有类型**的溯源 ⇒ 判据只有一处（`src/source-chain.js`）。**三条硬口径**：① **只读**（不进写命令、不碰 `.changes.jsonl`、**不记热度** ⇒ `--json` 两跑逐字节相同：键序固定、无时间戳、无随机、排序一律码点序）；② **成环响亮拒绝并逐条点名环上的边**（含每条的 caption 与路径，**一条边都不丢**、也不替你挑一条断掉）；③ **撞上限响亮报错**（`--depth` 1–`MAX_DEPTH`、链条数/边条数各一档），绝不静默截断。`otherPrefixes` 如实报"这些边我没跟"（caption 前缀计数）——真实数据里 `来源：` 560 条由 `learn-path` 生成，**本命令有意不认**（词表唯一权威是 `docs/TAGS.md` §11，不越权替它认第 6 种写法）；`nearMiss` 报"以「出自」开头但不是「出自：」"的写法（`出自:` 这类会让一条出处声明**静默失效**）', fn: loadFile('relations').sourceChain });
 
   // 内置 AI（功能 1 的后端通道：一次性问答；--dry-run 只打印提示词、不调模型）
   register({ name: 'ask', usage: 'ask <项目> [<节点id>] [--nodes a,b,c] [--question "..."] [--kind explain|ask] [--effort low|medium|high|xhigh] [--json] [--timeout 秒] [--dry-run]', options: ['json', 'question', 'kind', 'effort', 'timeout', 'nodes'], desc: '向内嵌 DSH 提一个问题（走 `dsh headless` 一次性通道，stdout 即为答案）；**节点可选** —— 不给节点就是项目级提问，--nodes 可一次问多个节点（情境逐个列出）；**思考强度可调**（解释默认 low、问答默认 medium，经 `--patch` 覆盖 `agent-default-model`，取值由模型自己声明）；自动补齐情境；--dry-run 只打印提示词/思考强度 patch/命令行、**不调用模型**', fn: loadFile('dsh-ask').ask });
@@ -457,6 +458,19 @@ function init() {
     options: ['file', 'json'],
     desc: '把一段文本送进 DSH 侧栏的输入框（**不代替你发送** ✗ —— 侧栏按了发送才进它的会话历史）；等主进程**回执**才报成功 ✓；失败会给出原因（侧栏没开/服务没跑/找不到输入框）',
     fn: loadFile('ui')['dsh-prefill']
+  });
+  /* 【W11 / 功能代号 `DM`「草稿图」】AI 产出先进一个**临时**小窗给人看，人再决定并入/丢弃。
+   * 与上面四条的分工：那四条驱动**已有界面**；这一条只**新增一个窗口装新内容**，对主图零写入。
+   * 判据面：草稿窗是主进程内存里的对象（不落盘）⇒ 断言在 `scripts/smoke/55-草稿图.js`。 */
+  register({
+    name: 'draft-map',
+    usage: 'draft-map --file <树.json> [--source 说明] [--json]',
+    options: ['file', 'source', 'json'],
+    desc: '把一棵树（`{topic, detail?, children?}`，也接受内联 JSON 文本）送进一个**临时导图小窗**：'
+      + '置顶、按内容定窗口大小、**不落 projects/**、关窗即弃；人在窗口里决定「并入主导图（选落点）」'
+      + '或「丢弃」。并入 = CLI `apply` 一次原子写 + 回读，且同指纹**幂等**拒绝'
+      + '（⚠️ 与 `sidebar-only` 同一族：**无回执即报错**，界面没在跑就非 0 退出）',
+    fn: loadFile('ui')['draft-map']
   });
 
   // 跨项目链接

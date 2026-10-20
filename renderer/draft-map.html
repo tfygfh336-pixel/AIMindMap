@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<!-- ============================================================
+     草稿图窗口（临时导图窗口 · AI 输出的暂存区）· 功能代号 `DM` · 台账 `W11`
+     ------------------------------------------------------------
+     为什么是**另一个页面 / 另一个窗口**（而不是主图里的一个视图）：
+       台账 `W11` 的硬要求是「临时图**不落 projects/**、**关窗即弃**、**合并前主图零变化**」。
+       一个独立窗口是这个语义最直白的实现：窗口没了，草稿就没了（数据只在主进程内存里），
+       而"主图零变化"不需要任何额外保证 —— 并入之前主进程根本没碰过盘。
+       这也是台账点名的做法：「复用 map-closed.html 那种独立小页面做法，渲染同一套 jsMind 只读视图」。
+     a–e 决议里与本页相关的三条：
+       a 置顶 / 按内容决定显示范围与窗口大小（本页把内容 bbox 报给主进程，由它钳制后 setContentSize）
+       c 导出 md / json
+       e 人与 AI 都能生成（本页只负责"看与裁决"，入口在主进程的菜单与控制通道）
+     ⚠️ b「允许完整编辑」**本批不做**（理由见 .review/20261020-W11-temp-map/00-定题.md §7 偏差 1）：
+       本页是**只读**的 —— 但"只读"不等于"不能动"：缩放 / 平移 / 导出 / 并入 / 丢弃都在。
+     渲染库调用一律经 `MM.adapter.*`（renderer/mindmap-adapter.js 是唯一出口）。
+     ============================================================ -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data:; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: https:; script-src 'self' file:">
+<title>草稿图 · AI MindMap</title>
+<link rel="stylesheet" href="vendor/jsmind.css">
+<style>
+  /* 独立的极简样式：**不引用 style.css**（那是**主图那张**样式表，里面全是主图的布局前提，
+     草稿页引用它只会得到"看起来像主图、行为不是主图"的错觉） */
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-size: 13px; color: #1d2129; background: #f7f8fa;
+    overflow: hidden;
+  }
+  #bar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; background: #fff; border-bottom: 1px solid #e5e6eb;
+    white-space: nowrap; overflow: hidden;
+  }
+  #bar #title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+  #bar #src { font-weight: 400; color: #4e5969; }
+  #bar #stat { color: #4e5969; }
+  #bar #note { color: #d25f00; font-size: 12px; }
+  #bar .spacer { flex: 1 1 auto; }
+  #bar button {
+    padding: 4px 10px; font-size: 12px; cursor: pointer;
+    border: 1px solid #d5d9e0; border-radius: 5px; background: #fff; color: #1664ff;
+  }
+  #bar button:hover:not(:disabled) { border-color: #1664ff; background: #f2f7ff; }
+  #bar button:disabled { color: #86909c; cursor: default; }
+  #bar button.danger { color: #d93026; }
+  #pick {
+    flex: 0 0 auto; display: none; align-items: center; gap: 8px;
+    padding: 6px 10px; background: #fff7e8; border-bottom: 1px solid #ffd591;
+  }
+  #pick.on { display: flex; }
+  #pick select { max-width: 60ch; font-size: 12px; padding: 2px 4px; }
+  #stage { flex: 1 1 auto; position: relative; overflow: hidden; background: #f7f8fa; }
+  #jsmind_container { position: absolute; inset: 0; overflow: auto; }
+  #status {
+    flex: 0 0 auto; padding: 4px 10px; background: #fff; border-top: 1px solid #e5e6eb;
+    color: #4e5969; font-size: 12px; min-height: 18px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #status.err { color: #d93026; }
+  /* 只读视觉提示：节点不可编辑（双击不会进编辑态 —— 本页没有那套编辑器） */
+  jmnode { cursor: default; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span id="title">草稿图</span>
+    <span id="src"></span>
+    <span id="stat"></span>
+    <span id="note">临时 · 不落盘 · 关窗即弃</span>
+    <span class="spacer"></span>
+    <button id="btn-merge" title="并入主导图（会问落点）">并入主导图</button>
+    <button id="btn-md" title="导出 Markdown">导出 md</button>
+    <button id="btn-json" title="导出 JSON">导出 json</button>
+    <button id="btn-discard" class="danger" title="丢弃这份草稿并关窗">丢弃</button>
+  </div>
+  <div id="pick">
+    <span>并入到：</span>
+    <select id="pick-parent"></select>
+    <button id="pick-ok">确认并入</button>
+    <button id="pick-cancel">取消</button>
+  </div>
+  <div id="stage"><div id="jsmind_container"></div></div>
+  <div id="status"></div>
+
+  <script src="vendor/jsmind.js"></script>
+  <script src="../src/convert.js"></script>
+  <script src="../src/draft-map.js"></script>
+  <script src="mindmap-adapter.js"></script>
+  <script src="draft-map.js"></script>
+</body>
+</html>

@@ -33,6 +33,7 @@
 | `init` | init <项目> [--title 标题] [--dry-run] |
 | `backlinks` | backlinks <项目> <id> [--json] |
 | `related` | related <项目> <id> [--json] [--depth N] |
+| `source-chain` | source-chain <项目> <id> [--json] [--depth N] [--reverse] |
 | `ask` | ask <项目> [<节点id>] [--nodes a,b,c] [--question "..."] [--kind explain|ask] [--effort low|medium|high|xhigh] [--json] [--timeout 秒] [--dry-run] |
 | `theme-layout` | theme-layout <项目> [--left a,b] [--right c,d] [--clear] [--dry-run] |
 | `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] [--dry-run] |
@@ -73,6 +74,7 @@
 | `dsh-sidebar` | dsh-sidebar <on|off> [--json] |
 | `dsh-status` | dsh-status [--json] |
 | `dsh-prefill` | dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json] |
+| `draft-map` | draft-map --file <树.json> [--source 说明] [--json] |
 | `link` | link <项目> <id> --to 目标项目 --id 目标id [--item 目标条目id] [--caption 说明] [--dry-run] |
 | `unlink` | unlink <项目> <id> --to 目标项目 --id 目标id [--dry-run] |
 | `links` | links <项目> [--json] |
@@ -184,6 +186,14 @@ node cli/mm-cli.js backlinks <项目> <id> [--json]
 
 ```
 node cli/mm-cli.js related <项目> <id> [--json] [--depth N]
+```
+
+### source-chain
+
+**经验来源链（产品代号 `SC`，台账 `W17`）**：**只沿** `links[].caption` 以「出自：」开头的边多跳溯源，逐跳给出节点与那一跳的出处原文；`--reverse` 反查"谁把我当出处"（同一张图的入边方向，不需要第二套语义）。**与 `related` 的分工**：那个是**无类型区分**的双向邻域（浏览相关），这个是**有向 + 有类型**的溯源 ⇒ 判据只有一处（`src/source-chain.js`）。**三条硬口径**：① **只读**（不进写命令、不碰 `.changes.jsonl`、**不记热度** ⇒ `--json` 两跑逐字节相同：键序固定、无时间戳、无随机、排序一律码点序）；② **成环响亮拒绝并逐条点名环上的边**（含每条的 caption 与路径，**一条边都不丢**、也不替你挑一条断掉）；③ **撞上限响亮报错**（`--depth` 1–`MAX_DEPTH`、链条数/边条数各一档），绝不静默截断。`otherPrefixes` 如实报"这些边我没跟"（caption 前缀计数）——真实数据里 `来源：` 560 条由 `learn-path` 生成，**本命令有意不认**（词表唯一权威是 `docs/TAGS.md` §11，不越权替它认第 6 种写法）；`nearMiss` 报"以「出自」开头但不是「出自：」"的写法（`出自:` 这类会让一条出处声明**静默失效**）
+
+```
+node cli/mm-cli.js source-chain <项目> <id> [--json] [--depth N] [--reverse]
 ```
 
 ### ask
@@ -504,6 +514,14 @@ node cli/mm-cli.js dsh-status [--json]
 
 ```
 node cli/mm-cli.js dsh-prefill "<文本>" | dsh-prefill --file <路径> [--json]
+```
+
+### draft-map
+
+把一棵树（`{topic, detail?, children?}`，也接受内联 JSON 文本）送进一个**临时导图小窗**：置顶、按内容定窗口大小、**不落 projects/**、关窗即弃；人在窗口里决定「并入主导图（选落点）」或「丢弃」。并入 = CLI `apply` 一次原子写 + 回读，且同指纹**幂等**拒绝（⚠️ 与 `sidebar-only` 同一族：**无回执即报错**，界面没在跑就非 0 退出）
+
+```
+node cli/mm-cli.js draft-map --file <树.json> [--source 说明] [--json]
 ```
 
 ### link

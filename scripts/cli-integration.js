@@ -886,6 +886,96 @@ try { fs.rmSync(path.join(ROOT, 'projects', BIG), { recursive: true, force: true
 check('大邻域探针项目已删除（不给后续 validate-all / 项目计数留垃圾）',
   !fs.existsSync(path.join(ROOT, 'projects', BIG)));
 
+/* ---------------- 8.6d `source-chain`（产品代号 `SC`，台账 `W17`）：经验来源链 ----------------
+ * 四件必须钉住的事（这几条正是它与既有命令的分界；**不用圈号枚举** —— 本文件的圈号是
+ * 门禁 G8 的「判定标记」，重复即判红，改条目请写文字而不是再加一个圈号）：
+ *   · **只沿 `出自：` 走** —— `前置：` / `来源：` / 半角 `出自:` 都不进链（`related` 是**无类型**的）；
+ *   · `--reverse` 走的是**同一张图**的入边方向（不需要第二套语义）；
+ *   · **成环响亮拒绝 + 逐条点名**（不是丢掉一条凑合给结果，也不是 `related` 那种遍历去重）；
+ *   · **只读**：跑完 `.changes.jsonl` 一个字节都不许多（不记热度、不进 `WRITE_COMMANDS`）。
+ * 夹具自建自删（不给后续断言留状态），且每条结论前先断言"前提真的成立了"。 */
+{
+  const SC_IDS = ['sc-1', 'sc-2', 'sc-3', 'sc-4', 'sc-5'];
+  SC_IDS.forEach((id) => run(['add', PROJ, 'root', '--topic', '出处探针 ' + id, '--id', id]));
+  const scBuilt = [
+    run(['link', PROJ, 'sc-1', '--to', PROJ, '--id', 'sc-2', '--caption', '出自：B 是 A 的出处']),
+    run(['link', PROJ, 'sc-2', '--to', PROJ, '--id', 'sc-3', '--caption', '出自：C 是 B 的出处']),
+    run(['link', PROJ, 'sc-1', '--to', PROJ, '--id', 'sc-4', '--caption', '前置：不是出处']),
+    run(['link', PROJ, 'sc-1', '--to', PROJ, '--id', 'sc-5', '--caption', '出自:半角冒号 = 近失写法'])
+  ];
+  check('source-chain 前置条件：4 条边真的建成（先证前提再断言结论）',
+    scBuilt.every((x) => ok(x.out) && /已添加链接/.test(x.out)),
+    scBuilt.map((x) => x.out.trim().slice(0, 16)).join(' | '));
+
+  const scJ = (() => { try { return JSON.parse(run(['source-chain', PROJ, 'sc-1', '--json']).out); } catch (e) { return null; } })();
+  check('source-chain 只沿「出自：」走：链是 sc-1 → sc-2 → sc-3（两跳）',
+    !!(scJ && scJ.ok && scJ.chains.length === 1
+      && scJ.chains[0].map((h) => h.id).join('>') === 'sc-1>sc-2>sc-3'),
+    scJ && scJ.chains.map((c) => c.map((h) => h.id).join('>')).join(' | '));
+  check('source-chain：`前置：` 与半角 `出自:` 都不进链，但如实进 otherPrefixes / nearMiss',
+    !!(scJ && scJ.hopCount === 2 && scJ.otherPrefixes['前置：'] === 1
+      && scJ.otherPrefixes['出自:'] === 1 && scJ.nearMiss.length === 1),
+    scJ && JSON.stringify({ hop: scJ.hopCount, other: scJ.otherPrefixes, near: scJ.nearMiss.length }));
+  check('source-chain：每跳带那一跳的出处原文（起点为 null，不冒充有出处）',
+    !!(scJ && scJ.chains[0][0].caption === null && /^出自：B/.test(scJ.chains[0][1].caption)
+      && /^出自：C/.test(scJ.chains[0][2].caption)));
+  check('source-chain：direction=up / depth 缺省 10 / truncated=false / JSON 首键是 ok（键序固定）',
+    !!(scJ && scJ.direction === 'up' && scJ.depth === 10 && scJ.truncated === false
+      && Object.keys(scJ)[0] === 'ok'),
+    scJ && Object.keys(scJ).join(','));
+
+  const scRev = (() => { try { return JSON.parse(run(['source-chain', PROJ, 'sc-3', '--reverse', '--json']).out); } catch (e) { return null; } })();
+  check('source-chain --reverse：反查 sc-3 ⇒ sc-3 ← sc-2 ← sc-1（同一张图的入边方向）',
+    !!(scRev && scRev.ok && scRev.direction === 'down'
+      && scRev.chains[0].map((h) => h.id).join('<') === 'sc-3<sc-2<sc-1'),
+    scRev && scRev.chains[0].map((h) => h.id).join('<'));
+
+  check('source-chain --depth 1：按用户的界截止，且 truncated=true（不冒充"这就是全部的链"）',
+    (() => {
+      try {
+        const j = JSON.parse(run(['source-chain', PROJ, 'sc-1', '--json', '--depth', '1']).out);
+        return j.chains[0].length === 2 && j.truncated === true;
+      } catch (e) { return false; }
+    })());
+  check('source-chain --depth 非法（0 / 文字）⇒ 非 0 退出并说清范围（不静默退化）',
+    ['0', 'abc'].every((d) => {
+      const x = run(['source-chain', PROJ, 'sc-1', '--depth', d]);
+      return x.code !== 0 && /--depth 必须是/.test(x.out);
+    }), run(['source-chain', PROJ, 'sc-1', '--depth', '0']).out.trim().slice(0, 120));
+  check('source-chain 节点不存在 ⇒ 非 0 退出并点名',
+    (() => { const x = run(['source-chain', PROJ, 'sc-nope']); return x.code !== 0 && /节点不存在/.test(x.out); })());
+
+  // 成环：sc-3 → sc-1 ⇒ A→B→C→A
+  const scCycLink = run(['link', PROJ, 'sc-3', '--to', PROJ, '--id', 'sc-1', '--caption', '出自：A 是 C 的出处']);
+  check('source-chain 环的前置条件：sc-3 → sc-1 建成（sc-1→sc-2→sc-3→sc-1）',
+    ok(scCycLink.out) && /已添加链接/.test(scCycLink.out), scCycLink.out.trim().slice(0, 40));
+  const scCyc = run(['source-chain', PROJ, 'sc-1', '--json']);
+  check('source-chain 遇环 ⇒ 非 0 退出 + 逐条点名环上的边 + 明说"一条边都没有被丢掉" + 给出路',
+    scCyc.code !== 0 && /出处链成环/.test(scCyc.out) && /共 1 条/.test(scCyc.out)
+    && /sc-3\s+--出自:-->\s+\S*:?sc-1/.test(scCyc.out)
+    && /路径：\S*sc-1\s+→\s+\S*sc-2\s+→\s+\S*sc-3\s+→\s+\S*sc-1/.test(scCyc.out)
+    && /一条边都没有被丢掉/.test(scCyc.out) && /出路/.test(scCyc.out),
+    scCyc.out.trim().slice(0, 220));
+  check('source-chain 遇环时**没有**输出半个 JSON（失败就是失败，不给"看着像完整结果"的东西）',
+    !/"chains"/.test(scCyc.out));
+
+  // 只读：`.changes.jsonl` 一个字节都不许多
+  const scChangeLog = path.join(ROOT, 'projects', PROJ, '.changes.jsonl');
+  const scSizeBefore = fs.existsSync(scChangeLog) ? fs.statSync(scChangeLog).size : -1;
+  run(['source-chain', PROJ, 'sc-1', '--json']);     // 这一跑是红的（成环）
+  run(['source-chain', PROJ, 'sc-2', '--json']);     // 这一跑是绿的
+  const scSizeAfter = fs.existsSync(scChangeLog) ? fs.statSync(scChangeLog).size : -1;
+  check('source-chain 是只读命令：`.changes.jsonl` 一个字节都不多（不记热度、不进写命令）',
+    scSizeBefore === scSizeAfter, scSizeBefore + ' → ' + scSizeAfter);
+
+  // 清理：先拆环与全部出处边，再逐节点删（被链接指向的节点默认拒删）
+  [['sc-3', 'sc-1'], ['sc-1', 'sc-2'], ['sc-2', 'sc-3'], ['sc-1', 'sc-4'], ['sc-1', 'sc-5']]
+    .forEach((pair) => run(['unlink', PROJ, pair[0], '--to', PROJ, '--id', pair[1]]));
+  SC_IDS.forEach((id) => run(['remove', PROJ, id]));
+  check('source-chain 夹具已清理干净（五个探针节点都不在树里了）',
+    SC_IDS.every((id) => !ok(run(['get', PROJ, id]).out)));
+}
+
 /* ---------------- 8.8 内置 AI 通道（功能 1 后端）：ask（**只测 dry-run**） ----------------
  * 为什么只测 dry-run：真跑一次要**烧真实额度 + 依赖网络**（实测一次解释 ~24s）——
  * 那类验证属于"人工/可选"的层级（本工程的分层纪律：门禁里不做重活 ✗），
