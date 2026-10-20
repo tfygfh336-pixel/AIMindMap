@@ -604,7 +604,12 @@ function init() {
       + '热度一律按全量排名算',
     fn: loadFile('heat').heat
   });
-  register({ name: 'docs-gen', usage: 'docs-gen', options: [], desc: '从 registry 重生成 docs/CLI.md', fn: loadFile('release').docsGen });
+  /* 【I-5】`docs-gen --check`：把「生成物过期了没」的判定变成**廉价、可随手跑**的一件事。
+   * 之前要判同一件事只能跑整条 `G6`（`scripts/doc-facts.js --check`），而它的真值要**现跑一遍
+   * vitest**；`--check` 走的是**同一个渲染函数**（`renderCliDoc`）⇒ 判定口径不变、代价只剩几十毫秒。
+   * ⚠️ 承重条件：`--check` 与写盘档**共用同一张产物表**（`cli/commands/release.js` 的 `genProducts()`，
+   * 表里存的是**函数引用**）—— 否则"比对用的生成器"与"写盘用的生成器"会各自漂移，那就是第二份真值。 */
+  register({ name: 'docs-gen', usage: 'docs-gen [--check] [--json]', options: ['check', 'json'], desc: '从 registry 重生成 docs/CLI.md。`--check`：**只比对、绝不写盘** —— 一致 ⇒ exit 0，不一致 ⇒ exit 1 并点名**哪一份生成物、第几行起**不一致（报错形状同 `G6`，含"磁盘这一行 / 应为这一行"与 fix 命令）。`--json`：固定键序的结构化报告（`{ok,mismatchCount,products[]}`，无时间戳 ⇒ 同一状态两跑逐字节相同）。**写盘档与比对档共用同一个渲染函数**（`renderCliDoc`）⇒ 两个方向不可能各自漂移。⚠️ **能力边界**：本命令只负责**它自己产的那一份**（`docs/CLI.md`）；`docs/VERIFY.md` 与 `ARCHITECTURE.md` §5 登记表由 `scripts/` 侧生成，而 `cli/` 不许 require `scripts/`（`S1`）⇒ 那两份的新鲜度归 `G7` / `G8` 第 ⑬ 条，本命令**不假装覆盖**（否则报错里的 fix 指针会骗人）', fn: loadFile('release').docsGen });
   register({ name: 'release', usage: 'release [版本号] [--major|--minor|--patch]', options: ['major', 'minor', 'patch'], desc: '发版：CHANGELOG 段落版 → [Unreleased] 重建 + 四处版本号同步 + README 版本锁（拒绝版本倒退）', fn: loadFile('release').release });
   register({ name: 'changelog', usage: 'changelog [--grep 关键词] [--full] [--limit n] [--json]', options: ['grep', 'full', 'limit', 'json'], desc: 'CHANGELOG 窄查询（只读）：段/条目索引（行号+行数+字节）或按关键词检索正文 —— 回答「上轮改了什么」不必通读全文（体量随迭代增长，要当前值就跑 `node scripts/doc-facts.js`，别在文档里写死）', fn: loadFile('release').changelog });
   register({ name: 'features', usage: 'features [--grep <词>] [--code <代号>] [--json]', options: ['grep', 'code', 'json'], desc: '产品功能名册（只读）：从 `docs/FEATURES.md` §3 的**唯一权威表**现算「代号 ↔ 中文名 ↔ 承载命令」—— 答「这个功能现在什么状态」与「这个代号指什么」，不必读整节名册（`W18` 量过它的阅读成本）。`--grep` 在**三处联合搜**（代号 / 中文名 / 该行提到的 CLI 命令名 —— 即 `GAP-4` 的三向互查）；**0 命中会响亮列出搜过的三处**并不静默返回空（exit 0，与 `changelog --grep` / `dsh-caps --grep` 同口径）。`--code` 精确取一行（取不到 exit 1 —— 检索与精确取行是两种语义）。另给**两个差集**（本命令最有价值的输出）：名册按"命令调用形态"提到而 `registry` 里没有的命令 / `registry` 有而名册任何一行都没提的命令（后者 = "一条命令回不到任何功能代号"）。零写盘（不记热度、不进 `WRITE_COMMANDS`），`--json` 两跑逐字节相同（键序固定、排序码点序、不读时钟）', fn: loadFile('features').features });

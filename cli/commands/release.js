@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const version = require('../../src/version.js');
 const changelogLib = require('../../src/changelog.js');
 const dshCaps = require('../../src/dsh-capabilities.js');
@@ -236,6 +237,10 @@ function renderCliDoc() {
   lines.push('- `--json`：以 JSON 输出（供 AI / MCP 解析）');
   lines.push('- **失败：退出码非 0**（首选判据；脚本/CI 看这个），同时 stdout 输出 `error: <原因>`（文本辅助判据）');
   lines.push('- `validate` / `validate-all` 例外：输出结构化报告（`FAIL <项目>: …` 或 `--json` 的 `{ok,errors}`），同样以非 0 退出码表达失败');
+  // 【I-5】`docs-gen --check --json` 也是这一档：结构化失败 + 非 0 退出码，stdout 仍是一份可解析 JSON。
+  // 写进生成物的理由：它是**对调用方的承诺**（怎么读失败），不该只活在源码注释里。
+  lines.push('- `docs-gen --check` 同这一档：**只比对、绝不写盘**；`--json` 给 `{ok,mismatchCount,products[]}`（键序固定、'
+    + '无时间戳 ⇒ 同一状态两跑逐字节相同），失败也以**非 0 退出码**表达，stdout 仍是**一份**可解析 JSON');
   lines.push('- 项目名 = `projects/<name>/<name>.json` 的目录名');
   lines.push('');
   lines.push('## 命令一览');
@@ -261,21 +266,216 @@ function renderCliDoc() {
   return lines.join('\n');
 }
 
+/* ================================================================================
+ * `docs-gen` 的**产物表** —— 「写盘用的生成器」与「比对用的生成器」之间**唯一**的连接点
+ * --------------------------------------------------------------------------------
+ * 本批（任务 `I-5`）的承重条件就在这张表上，不在别处：
+ *   写盘档（`docs-gen`）与比对档（`docs-gen --check`）**都只遍历这张表、只调 `p.render()`**，
+ *   而且 `render` 存的是**函数引用**（`renderCliDoc`），不是"同名的第二个实现"、也不是
+ *   "两段代码碰巧输出一样" ⇒ 两个方向**不可能各自漂移**。
+ *   漂移的后果不是风格问题：那等于"比对用的生成器"与"写盘用的生成器"各是一份真值，
+ *   而 `G6`/`G7` 的整个存在理由就是"一份事实只写一处"。
+ *   这条性质由 `tests/docs-gen-check.test.js` 直接钉住（`genProducts()[0].render === renderCliDoc`）。
+ *
+ * ## 为什么今天表里**只有一份**（实测，不是遗漏）
+ * 本仓被当真值比、且由生成器产出的产物共 **3** 份（声明面 = `docs/ARCHITECTURE.md` §5.2，
+ * 实现面 = `scripts/determinism-check.js` 的 `ARTIFACTS`）。逐个查过 `docs-gen` 的写盘点，
+ * **只有 1 份**属于它：
+ *   · `docs/CLI.md`（`cli-md`）       生成器 `renderCliDoc()`                     ← 本表
+ *   · `docs/VERIFY.md`（`verify-md`） 生成器 `scripts/doc-facts.js --write`
+ *     （它要现算 facts，**其中包含一次 vitest** ⇒ 放进来就不可能做到"廉价"）
+ *   · `docs/ARCHITECTURE.md` 的 §5 登记表（`registry-table`）生成器 `scripts/docs-registry-check.js --write`
+ * 后两份还各有**架构上的硬约束**：`cli/` **不许** require `scripts/`（`S1` 单向依赖：
+ * `scripts` rank 3 > `cli`）⇒ 那两份的渲染函数本来就搬不进本命令。
+ * ⇒ 那两份的新鲜度归 `G7`（`VERIFY.md`）与 `G8` 第 ⑬ 条（§5 表）；**本命令不假装覆盖它们** ——
+ *   否则报错里的 fix 指针会骗人（"`docs-gen` 修不了它"）。
+ *   将来加第二份产物时**只改这张表**：两个方向同时获得它，两边都不用改。
+ * ================================================================================ */
+function genProducts() {
+  return [{
+    file: 'docs/CLI.md',
+    /** ⚠️ **函数引用**（不是同名的第二个实现）：写盘档与比对档都走它 —— 本表的承重条件 */
+    render: renderCliDoc,
+    /** 生成物过期时给调用方的那条命令（报错里原样打印：报错即教程） */
+    fix: 'node cli/mm-cli.js docs-gen',
+    /** 回显里"生成了几条"—— 从 registry **现取**，不在这里写死数字 */
+    note: function () { return require('../registry.js').list().length + ' 条命令'; }
+  }];
+}
+
+/** 一份文本的 sha256（报告里的**指纹**：同一状态两跑必须相同；不含路径、不含时间）。 */
+function sha256Of(text) {
+  return crypto.createHash('sha256').update(String(text), 'utf8').digest('hex');
+}
+
+/**
+ * **纯函数**（无 IO ⇒ 可单测）：两份文本的**第一处差异**。
+ *
+ * 口径与 `G6` 的 `scripts/doc-facts.js::checkGeneratedDocs` **同一条**（按 `\n` 切分、逐行比、
+ * 第一个不相等处即差异行）⇒ `docs-gen --check` 与 `doc-facts --check` 报出来的"第几行"是
+ * **同一个数**，不会互相打脸（两份实现各算一套行号，是最容易悄悄分叉的那种"看起来一致"）。
+ *
+ * @returns {{fresh:boolean, firstDiffLine:number, diskLine:(string|null), wantLine:(string|null)}}
+ *   `firstDiffLine` 是 **1 起**行号，`0` = 逐字相同；差异处一方已结束 ⇒ 该侧为 `null`（报"文件结束"）。
+ */
+function compareText(diskText, wantText) {
+  const got = String(diskText === undefined || diskText === null ? '' : diskText).split('\n');
+  const want = String(wantText === undefined || wantText === null ? '' : wantText).split('\n');
+  let at = 0;
+  while (at < got.length && at < want.length && got[at] === want[at]) at++;
+  if (at === got.length && at === want.length) {
+    return { fresh: true, firstDiffLine: 0, diskLine: null, wantLine: null };
+  }
+  return {
+    fresh: false,
+    firstDiffLine: at + 1,
+    diskLine: got[at] === undefined ? null : got[at],
+    wantLine: want[at] === undefined ? null : want[at]
+  };
+}
+
+/**
+ * **纯函数**（文本由调用方给 ⇒ 单测可用夹具，不必去改真仓）：一份产物的读数。
+ *
+ * 三档 `status`（`B8`：档数不得少于它要区分的状态数）：
+ *   `fresh`（逐字相同）/ `stale`（有差异）/ `missing`（盘上没有这份产物）。
+ * `firstDiffLine` 只在 `stale` 档是 1 起行号，其余为 `0`（0 = 没有行级差异可比，别读成"第 0 行"）。
+ *
+ * ⚠️ **键序是契约**（`--json` 两跑逐字节相同靠它）：新增字段请**追加在末尾**，别插在中间。
+ * @param {{file:string, fix:string}} p 产物表里的一项
+ * @param {string|null} diskText 盘上的文本（`null` = 文件不存在，与 `readManagedText` 的 `optional` 同口径）
+ * @param {string} wantText 重算出来的全文
+ */
+function evaluateProduct(p, diskText, wantText) {
+  const want = String(wantText);
+  const row = {
+    file: p.file,
+    status: 'missing',
+    firstDiffLine: 0,
+    diskLines: 0,
+    diskBytes: 0,
+    diskSha256: null,
+    wantLines: want.split('\n').length,
+    wantBytes: Buffer.byteLength(want, 'utf8'),
+    wantSha256: sha256Of(want),
+    diskLine: null,
+    wantLine: null,
+    fix: p.fix
+  };
+  if (diskText === null || diskText === undefined) return row;
+  const disk = String(diskText);
+  const cmp = compareText(disk, want);
+  row.status = cmp.fresh ? 'fresh' : 'stale';
+  row.firstDiffLine = cmp.firstDiffLine;
+  row.diskLines = disk.split('\n').length;
+  row.diskBytes = Buffer.byteLength(disk, 'utf8');
+  row.diskSha256 = sha256Of(disk);
+  // 差异处的两侧整行（截 100 字，与 G6 的报错同一上限）：给人看的定位线索，也是 `--json` 的取证面
+  row.diskLine = cmp.diskLine === null ? null : cmp.diskLine.slice(0, 100);
+  row.wantLine = cmp.wantLine === null ? null : cmp.wantLine.slice(0, 100);
+  return row;
+}
+
+/** `--json` 的报告（**键序固定**：字面量顺序即输出顺序；无时间戳、无绝对路径）。 */
+function buildReport(mode, rows) {
+  const bad = rows.filter((r) => r.status !== 'fresh').length;
+  return {
+    command: 'docs-gen',
+    mode: mode,                 // 'check'（只比对）/ 'write'（已重生成）
+    ok: bad === 0,
+    wrote: mode === 'write',
+    productCount: rows.length,
+    mismatchCount: bad,
+    products: rows
+  };
+}
+
+/** 一份"不一致"的产物 → 报错形状**照 `G6`**（点名文件 + 第几行起 + 两侧整行 + fix 命令）。
+ *  为什么照抄这个形状：两份入口（`G6` 与 `docs-gen --check`）报同一件事时，读的人不必学两套。 */
+function staleMessage(row) {
+  if (row.status === 'missing') {
+    return '生成物缺失：' + row.file + '（请运行 `' + row.fix + '`）';
+  }
+  return '生成物已过期：' + row.file + '（第 ' + row.firstDiffLine + ' 行起不一致）'
+    + '\n    磁盘: ' + String(row.diskLine === null ? '(文件结束)' : row.diskLine)
+    + '\n    应为: ' + String(row.wantLine === null ? '(文件结束)' : row.wantLine)
+    + '\n    → 运行 `' + row.fix + '` 重生成';
+}
+
 module.exports = {
   // 纯函数（无 I/O 的那部分）导出给单测：`tests/dsh-caps-preset-plane.test.js` 直接用
   // 真实 `vendor/dsh` 与**独立磁盘扫描**两条读数钉住 preset 平面的层数（照 `B6`：判据要可被单测引入）。
   discoverPresetLayers,
   presetPlaneProblem,
   findRemounts,
+  // `docs-gen` 的产物表与比对判定（**纯函数/表**）：`tests/docs-gen-check.test.js` 用它钉住
+  // 「写盘档与比对档共用**同一个**渲染函数」这条承重性质，以及"差异行号"的口径。
+  genProducts,
+  compareText,
+  evaluateProduct,
   docsGen(ctx) {
-    const registry = require('../registry.js');
-    const content = renderCliDoc();
-    fs.mkdirSync(path.join(ROOT, 'docs'), { recursive: true });
-    // 生成物也是受管资产 ⇒ 同样过闸门。读一次只为拿到"我读到的是哪一版"：
-    // 生成与写回之间若有人手改过 docs/CLI.md，宁可拒绝并报出两侧指纹，也不静默抹掉。
-    // `optional:true`：首次生成时文件还不存在（version=null ⇒ 闸门放行，与从前一致）。
-    write(read('docs/CLI.md', { optional: true }), content);
-    ctx.out('已重生成 docs/CLI.md（' + registry.list().length + ' 条命令）');
+    const products = genProducts();
+    const rawCheck = ctx.args.check;
+    /* `--check` 是**纯开关**（不带值）：`--check=false` 这类两态写法一律**响亮拒绝** ——
+     * 与 `--dry-run` / `--apply` 同一条纪律。理由在两种猜法上都成立：猜"开"会把一次
+     * **想写盘**的调用悄悄变成只比对（文档没更新，而调用方以为更新了）；猜"关"会把只比对
+     * 变成写盘（本批最不该发生的事）。⇒ 唯一的正解是**不猜**。 */
+    if (rawCheck !== undefined && rawCheck !== true) {
+      ctx.error('--check 是**纯开关**（不带值）：写法 `docs-gen --check`。'
+        + '要写盘就把这个开关去掉（`--check=false` 这类两态写法本工程一律**响亮拒绝**，'
+        + '理由与 `--dry-run=false` 同一条：猜"开"会让一次想写盘的调用变成只比对，'
+        + '猜"关"会让只比对变成写盘）。收到 ' + JSON.stringify(rawCheck));
+    }
+    const check = rawCheck === true;
+
+    // ---- 比对档（`--check`）：**只读盘 + 重算，一个字节都不写** ----------------------------
+    if (check) {
+      const rows = products.map((p) => evaluateProduct(p, read(p.file, { optional: true }).text, p.render()));
+      if (ctx.args.json) {
+        ctx.outJson(buildReport('check', rows));
+        // 与 `validate --json` **同一档**：结构化失败 + 非 0 退出码（stdout 仍是一份可解析 JSON）。
+        if (rows.some((r) => r.status !== 'fresh')) process.exitCode = 1;
+        return;
+      }
+      const bad = rows.filter((r) => r.status !== 'fresh');
+      // 一致的那几份照样点名（"比过了"要看得见，别让"没报错"当唯一证据）
+      rows.filter((r) => r.status === 'fresh').forEach((r) => {
+        ctx.out('✓ 生成物与源一致：' + r.file + '（' + r.diskLines + ' 行 / ' + r.diskBytes + ' B）');
+      });
+      if (!bad.length) {
+        ctx.out('✓ ' + rows.length + ' 份生成物全部一致 —— 本档**只比对、未写盘**'
+          + '（要重生成请运行 `docs-gen`）');
+        return;
+      }
+      // 不一致 ⇒ 全部点名（"逐个比"不是"报第一份就收工"），报错形状照 G6，exit 1
+      ctx.error(bad.map(staleMessage).join('\n'));
+    }
+
+    // ---- 写盘档（默认）：同一张表、同一个渲染函数 -----------------------------------------
+    // 先把 **all** 内容算出来再写：中途 render 抛出时盘上仍是完整一致的一份，不会留半更新状态。
+    const rendered = products.map((p) => ({ p: p, want: p.render() }));
+    rendered.forEach((it) => {
+      fs.mkdirSync(path.dirname(path.join(ROOT, it.p.file)), { recursive: true });
+      // 生成物也是受管资产 ⇒ 同样过闸门。读一次只为拿到"我读到的是哪一版"：
+      // 生成与写回之间若有人手改过它，宁可拒绝并报出两侧指纹，也不静默抹掉。
+      // `optional:true`：首次生成时文件还不存在（version=null ⇒ 闸门放行，与从前一致）。
+      write(read(it.p.file, { optional: true }), it.want);
+    });
+    // 写后自检：写下去的内容必须与重算逐字相同（不同 = 写没生效或被别处改掉 ⇒ 响亮失败，
+    // 而不是打印一句"已重生成"就完事 —— 那句回显必须是**量出来的**）。
+    const rows = rendered.map((it) => evaluateProduct(it.p, read(it.p.file, { optional: true }).text, it.want));
+    const bad = rows.filter((r) => r.status !== 'fresh');
+    if (bad.length) ctx.error('写盘后自检失败（内容与重算不一致）：\n' + bad.map(staleMessage).join('\n'));
+
+    if (ctx.args.json) {
+      ctx.outJson(buildReport('write', rows));
+      return;
+    }
+    rows.forEach((r, i) => {
+      const p = rendered[i].p;
+      ctx.out('已重生成 ' + r.file + '（' + r.diskLines + ' 行 / ' + r.diskBytes + ' B'
+        + (typeof p.note === 'function' ? ' · ' + p.note() : '') + '）');
+    });
   },
 
   // 供 scripts/doc-facts.js 做「生成物是否过期」检查（非命令）

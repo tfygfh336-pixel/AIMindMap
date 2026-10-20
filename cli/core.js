@@ -134,6 +134,11 @@ function parseArgs(argv) {
     // 【W4】`search` / `search-all` 的 `--explain`：也是**纯布尔** ⇒ 同样登记
     //   （不登记就会被通用分支按"--key value"吞掉后面的关键词 —— 与 `--no-heat` 同一种病）。
     if (a === '--explain') { out.explain = true; continue; }
+    // 【I-5】`docs-gen --check`：**纯布尔** ⇒ 同样登记。
+    //   今天 `docs-gen` 没有位置参数，不登记也"碰巧"解析成 true；但那种巧合不是契约 ——
+    //   登记之后它与 `--deep` / `--apply` 同待遇：选项写在任何位置都不会把后面的东西吞成它的值。
+    //   带 `=` 的两态写法（`--check=false`）由命令侧**响亮拒绝**（与 `--apply` / `--dry-run` 同一条口径）。
+    if (a === '--check') { out.check = true; continue; }
     // 【W5】`tags --vocab` 的词表核对开关：**纯布尔** ⇒ 必须在这里登记，否则会被通用分支
     // 按"--key value"处理、把后面点名的项目（`tags book-a --vocab book-b`）吞成它的值 ——
     // 与 `--deep` / `--apply` / `--no-heat` 同一种病（位置参数少一个 ⇒ 报错指向别处）。

@@ -2222,6 +2222,33 @@ node cli/mm-cli.js timeline [<项目>] [--since <ISO|Nd|Nh|Nm|Nw>] [--now <ISO>]
 - **如实偏差（五条）**：① `W18` 的 `I-1` 判据②原本写"`--grep` 不存在的词 ⇒ exit 1"，本批**改判为 exit 0**（响亮报文），理由：`--grep` 家族在 0 命中上一律 exit 0（`changelog` / `dsh-caps` 实测），且"答不了"的那件事由 `--code` 用 exit 1 承担 —— 检索与精确取行是两种语义；② `features` **没有**在 `docs/FEATURES.md` §3 加行：该册 §2 第 3 条要求新行**先经用户点头**、§5 明写不收录"内部模块与字段 / 横切口径"，且 `changelog` / `dsh-caps` / `docs-gen` 三条既有命令同样没有功能行（先例一致）⇒ 它诚实地出现在自己的**差集②**里（"不是产品功能"的机械体现）；③ `docs/VERIFY.md` 的集成断言是**静态计数**（`check(` 出现次数）630，实跑 622 —— 这 **8 条的差**在本批之前就有，本批两边同加 9、差值未变（登记在此，不当作本批引入）；④ `src/features-roster.js` 是 `cli/` 之外的新模块 ⇒ 多改了 `docs/ARCHITECTURE.md` §2.2/§2.3 两行（`W18` 估的"3 个文件"没算架构登记、测试与生成物）；⑤ 4 条测试与 2 处集成断言把 `TOOLS.length` **写死在 52**（本工程刻意的"交付判据"），本批同批改成 53 —— 改它们**必须与 `doc-facts --write` 同时**，否则读 `docs/VERIFY.md` 的另 4 条测试会一边红。
 - **证据**：`.review/20261020-I1-features/`（`README.md` · `报告.md` · `probe/01-shape.js` · `probe/02-criterion.js` · `probe/03-readings.js` + 其 `03-readings.txt` 读数）。
 
+### 【任务】`I-5`：`docs-gen --check` —— 生成物新鲜度的判定从 **39.5 s** 降到 **<1 s**（2026-10-20）
+
+- **要修的问题（`W18` 的实测，本批只复核不重挖）**：`node cli/mm-cli.js docs-gen --check` 原先 ⇒ `exit 1` 且报「未知选项 --check」。而全仓唯一能判「生成物过期了没」的是 `G6`/`G7`，其中 `G6`（无参 `doc-facts`）要**现跑一遍 vitest** —— 本批复核 **39,454 ms**（`W18` 独立测得 41,620 ms）。反直觉的是：问「权威值是多少」的**命令比文档贵 4 个数量级**（`docs/VERIFY.md` §权威值 只有 12 行），于是「查数读生成物，命令只在**怀疑漂移**时用」成为常态 —— 而"怀疑漂移"这件事此前没有任何廉价入口。
+- **落地**：`node cli/mm-cli.js docs-gen [--check] [--json]`。
+  · `--check`：**只比对、绝不写盘**。一致 ⇒ `exit 0`；不一致 ⇒ `exit 1` 并**点名哪一份生成物、第几行起**不一致，附「磁盘这一行 / 应为这一行 / → 该跑哪条命令」（报错形状**逐字照 `G6`**，读的人不必学两套）。
+  · 产物缺失 ⇒ `exit 1` 并点名（不把"没找到"读成"没问题"）。
+  · `--json`：固定键序的结构化报告（`{command,mode,ok,wrote,productCount,mismatchCount,products[]}`），无时间戳、无绝对路径 ⇒ **同一状态两跑逐字节相同**（工程 `G-11` 先例）；失败也以**非 0 退出码**表达，stdout 仍是**一份**可解析 JSON（与 `validate --json` 同一档）。
+- **承重条件（本批最容易做错的地方，正面回答）**：`--check` 与写盘档**共用同一个生成函数**。落法不是"两段代码碰巧输出一样"，而是 `cli/commands/release.js` 里只有**一张产物表** `genProducts()`（`:294`），表里 `render:` 存的是**函数引用** `renderCliDoc`（`:298`，本体在 `:212`）；`--check` 档在 `:433` 调 `p.render()`，写盘档在 `:456` 调同一个 `p.render()` ⇒ 两者是**同一个函数对象**，「比对用的生成器」与「写盘用的生成器」不可能各自漂移（否则就是第二份真值，而 `G6`/`G7` 的整个存在理由就是"一份事实只写一处"）。第三处调用者 `scripts/doc-facts.js:889` 走的也是同一个 `renderCliDoc`。
+  机械证据两处：`tests/docs-gen-check.test.js:48` 的 `expect(entry.render).toBe(releaseCmd.renderCliDoc)`（`===` 比函数对象）+ `scripts/cli-integration.js:8182` 的 `p.render === dgRelease.renderCliDoc`（实跑读数 `函数引用相等=true`）。
+- **先查清「`docs-gen` 到底生成哪些文件」**：**1 份**（`docs/CLI.md`）。全仓"被当真值比"的生成物共 3 份（`docs/ARCHITECTURE.md` §5.2 的 `cli-md` / `verify-md` / `registry-table`），另两份的生成器都在 `scripts/`（`doc-facts --write` / `docs-registry-check --write`），而 `cli/` **不许** require `scripts/`（`S1` 单向依赖：`scripts` rank 3 > `cli`）⇒ 架构上就搬不进这个命令。故 `--check` **只比它自己产的那一份**、**不假装覆盖**后两份（否则报错里的 fix 指针会骗人：`docs-gen` 修不了它们），那两份的新鲜度仍归 `G7` 与 `G8` 第 ⑬ 条。这条**能力边界**写进了三处：`docs-gen --help`（= `registry` 的 `desc`）、生成物 `docs/CLI.md`、`docs/ARCHITECTURE.md` §2.2 的 `commands/release.js` 行。加第二份产物**只改这张表**（两个方向同时获得它）。
+- **判据（全部当场跑，只认 exit code）**：
+  · `node cli/mm-cli.js docs-gen --check` ⇒ **exit 0 / 481·505·542 ms**（三次读数）；改动前同一件事 39,454 ms ⇒ **≈73×–78×**。
+  · **判别力**：临时注入一个字符 ⇒ **exit 1**，输出首行 `error: 生成物已过期：docs/CLI.md（第 5 行起不一致）` + 「磁盘 / 应为 / fix」三行；逐字节改回 ⇒ **exit 0**（探针 6/6 组成立，`exit 0`）。
+  · **零写盘**：`--check` 跑前跑后 `docs/CLI.md` 的 sha256 **相同**（`1EA5D1BB…C893C`）；集成里另有两条常驻断言（零写盘 + "本段全程未动真仓生成物"）。
+  · **`--json` 复现**：两跑**原始 stdout** 的 sha256 **相同**（`6E3737D9…52C1`，602 B；写盘档 `--json` 两跑亦相同）。⚠️ 指纹取自**子进程 stdout 的 Buffer**，不用 `pwsh >` 落文件再算 —— `>` 落 UTF-16LE，算出来的是"转写后的字节"（本批第一次测就踩了，故补了 `probe-json-repro.js`）。
+  · `node scripts/cli-integration.js` ⇒ **exit 0 / 631 条**（改动前 622；本批 +9：共用生成函数 / 干净树 0 / 零写盘 / `--json` 两跑相同 / `--json` 自洽 / 镜像干净 0 / 镜像注入 1 且点名第 5 行 / 镜像改回 0 / 全程未动真仓）。
+  · `node node_modules/vitest/vitest.mjs run --pool=threads` ⇒ **exit 0 / 3108 用例 · 134 文件**（3107 passed + 1 skipped；改动前 3092 · 133；本批 +16 条单测、+1 文件）。
+  · `node scripts/doc-facts.js --check` ⇒ **exit 0 / 39,819 ms**（`docs/CLI.md` 与 `docs/VERIFY.md` 均"与源一致"）；`docs-registry-check` **0** · `encoding-check` **0** · `find-bare-angle` **0**（**0 节点 · 0 片段**）；顺手跑了 `dep-direction-check`（S1）**0** · `collateral-check`（S2）**0** · `determinism-check`（S3）**0** · `rules-consistency` **0**。
+- **连带面（R5，逐面核过）**：GUI **无影响**（零 `renderer/**`、零 `main.js` 改动）· 数据格式 **无影响**（不读写 `projects/**`）· CLI 命令表 **命令数不变**（78；只给 `docs-gen` 加了两个选项，`usage` ↔ `options` 自洽由 `tests/cli-options.test.js` 把守）· MCP 工具表 **不变**（`docs-gen` 本就在 `MCP_GAP_DEBT`）· 冒烟断言 **零改动**。
+- **⚠️ 本批不跑 `npm run verify`**（`R7`：全链由父代理独占时跑）。`docs/VERIFY.md` 的 `--write` 跑了**一次**（父代理确认"没人在写它、没有全链在跑"）：**3108 用例 / 134 文件**、**集成断言 639**。
+- **如实偏差（四条）**：
+  · ①「新鲜度 41.6 s → <1 s」**精确地说只覆盖 `docs/CLI.md` 那一份**；`docs/VERIFY.md` 的新鲜度仍要现跑 vitest，`§5` 登记表仍归 `G8` 第 ⑬ 条（理由见上「先查清」）。
+  · ② **差异行号的算法有两份实现**（`scripts/doc-facts.js` 的 `checkGeneratedDocs` 与 `cli/commands/release.js:321` 的 `compareText`）。两处口径逐字相同但不是同一个函数：`cli/` 不许 require `scripts/`（`S1`），而本批边界**禁止改** `scripts/doc-facts.js`。下一批的正当修法是让 `doc-facts.js` 调 `release.compareText`（`scripts → cli` 方向合法，且是**删掉**一份实现）。注：这不构成"第二份真值"—— 真值（期望内容）只有一个来源 `renderCliDoc`，`compareText` 只是**报告差异位置**的助手。
+  · ③ **铁律 2 只做了一半**：`README.md` 不在本批「许改」清单里 ⇒ 未改（本批加的是**选项**不是新命令，README 里没有会腐的表述）；`CHANGELOG.md` 按规矩只预写本节，由父代理合并。
+  · ④ **踩到 `S2` 的豁免面上限（本批发现的真事）**：第一版把镜像注入写成裸 `fs.writeFileSync` ⇒ 被在册豁免覆盖的写调用点 **82 → 84 > 上限 82**，`collateral-check` **exit 1**。改法不是抬上限（册子只减不增），而是**走唯一写盘出口**（`src/data-store.js` 的 `writeManagedText`，`docs/RULES.md` §1 本来就要求这样）⇒ 回到 82、exit 0。**值得记住**：`scripts/cli-integration.js` 是**整文件豁免**，在里面添裸写会直接顶高豁免面。
+- **证据**：`.review/20261020-I5-docsgen-check/README.md`（判据与偏差全表）· `probe-discriminate.js`（判别力 + 零写盘，6/6）· `probe-json-repro.js`（`--json` 原始 stdout 指纹，4/4）· `probe-mirror.js`（镜像可行性实验）。
+
 ## [v0.19.0] - 2026-10-19
 
 ### 预算统计量 `1.25×P90` → `1.25×median`：n=10 的 P90 = **第二大** ⇒ 只容忍一条尖峰；今天已两次被尖峰抬线（1300→1468、1300→1350），换 median 并把多付的 50s 还回去（G5 1350s→1300s）

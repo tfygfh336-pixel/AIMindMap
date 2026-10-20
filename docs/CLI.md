@@ -16,6 +16,7 @@
 - `--json`：以 JSON 输出（供 AI / MCP 解析）
 - **失败：退出码非 0**（首选判据；脚本/CI 看这个），同时 stdout 输出 `error: <原因>`（文本辅助判据）
 - `validate` / `validate-all` 例外：输出结构化报告（`FAIL <项目>: …` 或 `--json` 的 `{ok,errors}`），同样以非 0 退出码表达失败
+- `docs-gen --check` 同这一档：**只比对、绝不写盘**；`--json` 给 `{ok,mismatchCount,products[]}`（键序固定、无时间戳 ⇒ 同一状态两跑逐字节相同），失败也以**非 0 退出码**表达，stdout 仍是**一份**可解析 JSON
 - 项目名 = `projects/<name>/<name>.json` 的目录名
 
 ## 命令一览
@@ -95,7 +96,7 @@
 | `timeline` | timeline [<项目>] [--since <ISO|Nd|Nh|Nm|Nw>] [--now <ISO>] [--limit n] [--json] |
 | `visit` | visit <项目> <节点id> --channel <通道> [--json] |
 | `heat` | heat <项目> [--json] [--limit <n>] [--node <id>] [--derived <summary|keys>] |
-| `docs-gen` | docs-gen |
+| `docs-gen` | docs-gen [--check] [--json] |
 | `release` | release [版本号] [--major|--minor|--patch] |
 | `changelog` | changelog [--grep 关键词] [--full] [--limit n] [--json] |
 | `features` | features [--grep <词>] [--code <代号>] [--json] |
@@ -689,10 +690,10 @@ node cli/mm-cli.js heat <项目> [--json] [--limit <n>] [--node <id>] [--derived
 
 ### docs-gen
 
-从 registry 重生成 docs/CLI.md
+从 registry 重生成 docs/CLI.md。`--check`：**只比对、绝不写盘** —— 一致 ⇒ exit 0，不一致 ⇒ exit 1 并点名**哪一份生成物、第几行起**不一致（报错形状同 `G6`，含"磁盘这一行 / 应为这一行"与 fix 命令）。`--json`：固定键序的结构化报告（`{ok,mismatchCount,products[]}`，无时间戳 ⇒ 同一状态两跑逐字节相同）。**写盘档与比对档共用同一个渲染函数**（`renderCliDoc`）⇒ 两个方向不可能各自漂移。⚠️ **能力边界**：本命令只负责**它自己产的那一份**（`docs/CLI.md`）；`docs/VERIFY.md` 与 `ARCHITECTURE.md` §5 登记表由 `scripts/` 侧生成，而 `cli/` 不许 require `scripts/`（`S1`）⇒ 那两份的新鲜度归 `G7` / `G8` 第 ⑬ 条，本命令**不假装覆盖**（否则报错里的 fix 指针会骗人）
 
 ```
-node cli/mm-cli.js docs-gen
+node cli/mm-cli.js docs-gen [--check] [--json]
 ```
 
 ### release

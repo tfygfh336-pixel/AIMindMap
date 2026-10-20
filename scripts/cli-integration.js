@@ -8155,6 +8155,124 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
       fTool ? '在册；参数=' + Object.keys(fTool.inputSchema.properties).join(',') : '没注册');
   }
 
+  /* ---------------- 8.11 `docs-gen --check`（任务 `I-5`）：生成物新鲜度的**廉价**判定 ----------------
+   * 它守的那件事：今天要判"生成物过期了没"只能跑整条 `G6`（`scripts/doc-facts.js --check`），
+   * 而 `G6` 的真值要**现跑一遍 vitest**（实测数十秒）。`--check` 走**同一个渲染函数**
+   * （`cli/commands/release.js` 的 `renderCliDoc`）⇒ 口径不变、代价只剩几百毫秒，
+   * 于是"随手跑一下看生成物新不新鲜"才可能成为习惯。
+   *
+   * 四档判据，**每一档都必须能单独红**：
+   *   (a) 干净树 ⇒ exit 0，且**报出**"只比对、未写盘"（只判"没报错"等于没判）；
+   *   (b) **零写盘**：跑前跑后 `docs/CLI.md` 的 sha256 相同 —— "未写盘"唯一可机械证的形态；
+   *   (c) **判别力**：注入一个字符 ⇒ exit 1 且**点名第几行**，改回 ⇒ exit 0。
+   *       ⚠️ 这一档在 `%TEMP%` 的**最小镜像**里做（`cli` / `src` / `docs/CLI.md` / `package.json`），
+   *       **绝不改真仓的生成物**：并发跑的另一份链会在注入窗口里看到一份"突然过期"的生成物，
+   *       而假红比不测更坏（`M1`）。镜像可行性由本段自己证明（干净副本必须 exit 0）。
+   *   (d) 可复现 + 一处实现：`--json` 两跑逐字节相同；产物表里的 `render` **就是** `renderCliDoc`
+   *       （函数引用相等 —— 写盘档与比对档不可能各自漂移）。
+   * ⚠️ 本段不引入圈号枚举（那是 G9 的判定标记，重复即判红）。 */
+  {
+    const dgCrypto = require('crypto');
+    const dgRelease = require(path.join(ROOT, 'cli', 'commands', 'release.js'));
+    const dgMd = path.join(ROOT, 'docs', 'CLI.md');
+    const dgSha = () => dgCrypto.createHash('sha256').update(fs.readFileSync(dgMd)).digest('hex');
+
+    // (d) 承重条件：写盘档与比对档共用**同一个函数对象**
+    const dgProducts = dgRelease.genProducts();
+    const dgShared = dgProducts.length > 0 && dgProducts.every((p) => p.render === dgRelease.renderCliDoc);
+    check('I-5 写盘档与比对档共用**同一个**渲染函数（`genProducts()[*].render === renderCliDoc`，'
+      + '比的是函数引用，不是"两段代码碰巧输出一样"）',
+      dgShared,
+      '产物 ' + dgProducts.map((p) => p.file).join(' / ') + ' ｜ 函数引用相等=' + dgShared);
+
+    // (a) 干净树 ⇒ exit 0 + 报出"未写盘"
+    const dgShaBefore = dgSha();
+    const dgClean = run(['docs-gen', '--check']);
+    // (b) 零写盘：**内容指纹**不变（这是"一个字节都没写"的判据面）
+    const dgShaAfter = dgSha();
+    check('I-5 干净树 `docs-gen --check` ⇒ exit 0，并报出"只比对、未写盘"且点名生成物',
+      dgClean.code === 0 && dgClean.out.indexOf('生成物与源一致') >= 0
+        && dgClean.out.indexOf('未写盘') >= 0 && dgClean.out.indexOf('docs/CLI.md') >= 0,
+      'exit=' + dgClean.code + ' ｜ ' + dgClean.out.split('\n')[0]);
+    check('I-5 零写盘：`--check` 前后 `docs/CLI.md` 的 sha256 相同',
+      dgShaBefore === dgShaAfter, dgShaBefore.slice(0, 16) + ' → ' + dgShaAfter.slice(0, 16));
+
+    // (d) `--json` 两跑逐字节相同 + 报告自洽
+    const dgJson1 = run(['docs-gen', '--check', '--json']);
+    const dgJson2 = run(['docs-gen', '--check', '--json']);
+    let dgReport = null;
+    try { dgReport = JSON.parse(dgJson1.out); } catch (e) { dgReport = null; }
+    check('I-5 `--json` 两跑逐字节相同（键序固定 / 无时间戳 / 无绝对路径）且 ok===true、wrote===false',
+      dgJson1.out === dgJson2.out && !!dgReport && dgReport.ok === true
+        && dgReport.mode === 'check' && dgReport.wrote === false
+        && dgJson1.out.indexOf(ROOT.replace(/\\/g, '\\\\')) < 0,
+      '两跑长度 ' + dgJson1.out.length + ' / ' + dgJson2.out.length + ' ｜ exit=' + dgJson1.code);
+    check('I-5 `--json` 点名产物并给出两侧指纹（`diskSha256` === `wantSha256` = 逐字相同）',
+      !!dgReport && dgReport.products.length === dgReport.productCount
+        && dgReport.products[0].file === 'docs/CLI.md' && dgReport.products[0].status === 'fresh'
+        && dgReport.products[0].diskSha256 === dgReport.products[0].wantSha256
+        && dgReport.mismatchCount === 0,
+      dgReport ? 'productCount=' + dgReport.productCount + ' ／ status=' + dgReport.products[0].status : 'JSON 不可解析');
+
+    /* (c) 判别力：只在**镜像**里注入（真仓生成物一个字节都不动）。
+     * 镜像的最小面 = `cli` + `src` + `docs/CLI.md` + `package.json`（`docs-gen` 的全部依赖）。
+     * 镜像**跑不起来**（缺依赖）时这一档会以"干净副本不 exit 0"的形状响亮失败，不会静默放过。 */
+    const dgHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-i5-mirror-'));
+    try {
+      const dgMirror = path.join(dgHome, 'repo');
+      ['cli', 'src'].forEach((d) => fs.cpSync(path.join(ROOT, d), path.join(dgMirror, d), { recursive: true }));
+      fs.mkdirSync(path.join(dgMirror, 'docs'), { recursive: true });
+      fs.copyFileSync(path.join(ROOT, 'docs', 'CLI.md'), path.join(dgMirror, 'docs', 'CLI.md'));
+      fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(dgMirror, 'package.json'));
+      const dgMirrorMd = path.join(dgMirror, 'docs', 'CLI.md');
+      /* 改镜像里的生成物时**走唯一写盘出口**（`src/data-store.js` 的 `writeManagedText`：原子写 + 版本闸门），
+       * 不用裸 `fs.writeFileSync`。两条理由，都不是风格问题：
+       *   ① `docs/RULES.md` §1 原话「新增写盘路径一律复用 `writeFileAtomic` / `writeManagedText`，禁止裸
+       *      `writeFileSync`」—— 本段是一条**新开的写路径**，照规矩办；
+       *   ② `S2` 的 `WRITE_OUTLET_SITE_CAP` 是**豁免面只减不增**的封闭册，而本文件是整文件豁免
+       *      ⇒ 添两处裸写会把豁免面从 82 顶到 84、当场判红（本批实测踩到：裸写那一版 S2 exit 1）。
+       *      走出口不在 `WO_WRITE_NAMES` 里 ⇒ 不新增调用点，也不绕过任何判定（出口自己才是被审的对象）。 */
+      const dgStore = require(path.join(ROOT, 'src', 'data-store.js'));
+      const dgWriteMirror = (text) => dgStore.writeManagedText(dgStore.readManagedText(dgMirrorMd), text);
+      const dgRunMirror = () => {
+        const r = spawnSync(process.execPath, [path.join(dgMirror, 'cli', 'mm-cli.js'), 'docs-gen', '--check'],
+          { cwd: dgMirror, encoding: 'utf8' });
+        return { code: r.status, out: ((r.stdout || '') + (r.stderr || '')).trim() };
+      };
+      const dgMirrorText = fs.readFileSync(dgMirrorMd, 'utf8');
+      const dgMirrorClean = dgRunMirror();
+      check('I-5 判别力（镜像）干净副本 ⇒ exit 0（证明镜像可用 + 判据不是"恒红"）',
+        dgMirrorClean.code === 0 && dgMirrorClean.out.indexOf('一致') >= 0,
+        'exit=' + dgMirrorClean.code + ' ｜ ' + dgMirrorClean.out.split('\n')[0]);
+
+      const dgLineNo = 5;                          // 1 起：注入点固定，断言的期望值就不含糊
+      const dgLines = dgMirrorText.split('\n');
+      const dgWas = dgLines[dgLineNo - 1];
+      dgLines[dgLineNo - 1] = dgWas + 'X';
+      dgWriteMirror(dgLines.join('\n'));
+      const dgDirty = dgRunMirror();
+      check('I-5 判别力（镜像）注入一个字符 ⇒ exit 1 且**点名第 ' + dgLineNo + ' 行**，'
+        + '并给出「磁盘 / 应为 / fix」三行（报错形状照 G6）',
+        dgDirty.code === 1 && dgDirty.out.indexOf('第 ' + dgLineNo + ' 行起不一致') >= 0
+          && dgDirty.out.indexOf('磁盘:') >= 0 && dgDirty.out.indexOf('应为:') >= 0
+          && dgDirty.out.indexOf('node cli/mm-cli.js docs-gen') >= 0
+          && dgDirty.out.startsWith('error: '),
+        'exit=' + dgDirty.code + ' ｜ ' + dgDirty.out.split('\n')[0]);
+
+      dgWriteMirror(dgMirrorText);
+      const dgBack = dgRunMirror();
+      check('I-5 判别力（镜像）逐字节改回 ⇒ exit 0（判据跟内容走，不是跟"跑过一次"走）',
+        dgBack.code === 0 && dgBack.out.indexOf('一致') >= 0,
+        'exit=' + dgBack.code + ' ｜ ' + dgBack.out.split('\n')[0]);
+    } finally {
+      try { fs.rmSync(dgHome, { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+    }
+
+    // 真仓的生成物在本段全程**未被改过**（注入只发生在镜像里）—— 与 (b) 同一条判据，再确认一次
+    check('I-5 本段全程未动真仓生成物（镜像注入前后 sha256 仍相同）',
+      dgSha() === dgShaBefore, dgShaBefore.slice(0, 16) + ' → ' + dgSha().slice(0, 16));
+  }
+
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。
      位置：必须是跑体的**最后一句** —— 崩在半路时它不会被设上，收尾才敢用宽口径。 */
   bodyCompleted = true;
