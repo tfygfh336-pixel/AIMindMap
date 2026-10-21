@@ -837,6 +837,20 @@ UMD 包装让同一份代码在 Node（CLI/测试）与浏览器（renderer scri
 | `src/doc-import.js` | `describeSourceShape(shape, p)` / `describeDirShape(shape, p)` | —（形状即入参） | `describeImportSourceProblem` / `describeImportDirProblem` |
 | `src/item-src.js` | `fingerprintOf(text, bytes, mtimeMs)` | —（文本即入参） | `fingerprint(abs, cache)` |
 
+**2026-10-22 追加两处**（`G-15` 第二批：清点重做为 **`src/` 52 文件 / 736 导出 / 45 个需盘**，逐条「现在怎么测的」见
+`.review/20261022-G08G15/g15-inventory.md`。**判定四档**：已下沉 5 · 本批下沉 2 · **不该下沉**（`control` / `data-store` /
+`dsh-package` 单动作 / `heat` 读写 / `editor-probe` —— 主体就是 I/O）· **值得但不做**（`doc-import.scanImportDir`：
+`skipped[]` 的**顺序本身就是既有断言的判据**，要拆必须先有顺序等价性证明））：
+
+| 模块 | 纯核心（喂对象/字符串就够） | 注入点 | IO 壳 |
+|---|---|---|---|
+| `src/markdown.js` | `uniqueResourcePathBy(taken, dir, ext, newName)` | `(p) => fs.existsSync(p)` | `uniqueResourcePath(dir, ext, newName)` |
+| `src/changelog.js` | `searchArchiveTexts(archives, kw, perFile)` | 读目录那三句 | `searchArchives(kw, perFile)` |
+
+⇒ **「既有断言一条没改」的机械证据**：`tests/import-refs.test.js` **0 行改动**（45 条原样绿）·
+`tests/g15-umd-dual.test.js` **+20 −0** · `tests/changelog.test.js` **+75 −1**，而那唯一 `−1` 是 **import 语句那一行**。
+⇒ ⚠️ **`uniqueResourcePathBy` 在 `path` 为 `null` 时抛「需要 path」**，改前是 `TypeError` —— **这条不是"加了就没变"**，如实记。
+
 **收益的诚实口径（别夸）**：本机实测 `mkdtemp+rm = 3.223 ms/次`，155 处调用点 ≈ **0.5–1.8 s**，
 相对全链数百秒是**噪声** ⇒ **不要用"更快"当这条的理由**。真实收益是：
 ① 去掉 `%TEMP%` 泄漏与清理竞态这一类失败模式；② 让"加一条断言"不必先想"我要在哪造个目录"。
