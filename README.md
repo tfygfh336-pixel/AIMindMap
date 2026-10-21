@@ -23,7 +23,7 @@
 ```bash
 npm install          # 安装依赖（electron / jsmind / vitest / electron-builder）
 npm start            # 启动桌面界面
-npm run verify       # 全部门禁 G1–G9 与 V1/V2（编码/文档登记/规则自洽/单测/CLI集成/冒烟/数据/文档基线），全绿才算可发版
+npm run verify       # 全部**门禁**（清单以 `docs/RULES.md` §2 为唯一真源），全绿才算可发版
 npm run check:encoding  # 仅编码完整性门禁（BOM / 乱码）
 npm run check:docs   # 仅文档登记门禁（表外文档 / 散落文档 / 悬挂登记）
 npm run check:rules  # 仅规则文件自洽门禁（RULES.md 的条数/表格结构/编号引用/实现列）
