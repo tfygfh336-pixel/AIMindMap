@@ -63,12 +63,16 @@ describe('A 名册表的解析（形状与结构性判定）', () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it('A2 真实文档：`DM` 这一行读到的是「草稿图 / 未实现（部分） / W11」（代号↔中文名↔台账三者对得上）', () => {
+  /* ⚠️ 这条钉的是**真实文档**那一行，所以状态一改就得同批改这里 —— 它的价值就在"不让名册状态悄悄漂"。
+   * 2026-10-20：`W11 a–e` 的 `b「允许完整编辑」`兑现（`renderer/editor.js` 重构成两窗共用的模块，
+   * 草稿页真能改标题/正文/加/删/移）⇒ `DM` 的状态从「未实现（部分）」改成「已实现」。
+   * 同批把 `docs/FEATURES.md` 那一行、冒烟域 56、`tests/editor-reuse.test.js` 一起落地。 */
+  it('A2 真实文档：`DM` 这一行读到的是「草稿图 / 已实现 / W11」（代号↔中文名↔台账三者对得上）', () => {
     const p = roster.parseRoster(REAL_MD);
     const dm = p.rows.filter((r) => r.code === 'DM')[0];
     expect(dm).toBeTruthy();
     expect(dm.name).toBe('草稿图');
-    expect(dm.status).toBe('未实现（部分）');
+    expect(dm.status).toBe('已实现');
     expect(dm.ledger).toBe('W11');
     expect(dm.line).toBeGreaterThan(p.headerLine);
   });

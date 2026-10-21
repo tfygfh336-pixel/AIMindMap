@@ -723,17 +723,22 @@ function printExplain(ctx, ex) {
       + ' —— 这是**能力 / 数据边界**，不等于"这一维没有问题"（口径见 docs/EXTENSIONS.md §1.2 的 W4 一段）');
   }
   /* 【W4b】扩召回读数（**逐路点名**）：没给 `--recall` 时也要说清"这几路能扩召回、这次没点名它们"；
-   * 给了就要报"这一路接回来几条、接回来的命中报什么 `matchIn`、上界几跳"。
-   * 一条都没接回来时必须说**为什么**（没有那份数据 / 这一批不需要扩）—— 少一个开关 / 少一路都要看得见。 */
+   * 给了就要报"这一路接回来几条、接回来的命中报什么 `matchIn`、门槛是多少"。
+   * 一条都没接回来时必须说**为什么**（没有那份数据 / 这一批不需要扩）—— 少一个开关 / 少一路都要看得见。
+   * 【W3-do】门槛的人话**只有一处**（`src/palette-rank.js` 的 `boundText`）：`graph` 是"上界 2 跳"、
+   * `expand` 是"最短公共片段 ≥ 2 字" —— 在这里各拼一份就会渲染成"上界 undefined 跳"。
+   * 读的是 `explain.recall.routes[].boundText`（`recallReport` 已把那一份带出来）。 */
   const rec = ex.recall;
   if (rec) {
     const asked = rec.routes.filter((r) => r.asked);
+    const meter = (r) => (r.boundText !== undefined ? r.boundText
+      : (Number(r.bound) > 0 ? '上界 ' + r.bound + ' 跳' : ''));
     ctx.out(rec.on
       ? '  · 扩召回（--recall ' + rec.asked.join(',') + '）：'
         + asked.map((r) => '路 `' + r.id + '` 接回 ' + r.added + ' 条新候选'
-          + '（它们报 matchIn=' + r.hitValue + '，上界 ' + r.bound + ' 跳 = 路由表那一行的 bound）').join('；')
+          + '（它们报 matchIn=' + r.hitValue + '，' + meter(r) + ' = 路由表那一行声明的门槛）').join('；')
       : '  · 扩召回：**未启用**（不给 --recall 时它不参与，候选集与从前逐字节相同）；能扩召回的路：'
-        + rec.routes.map((r) => r.id + '（报 ' + r.hitValue + '，上界 ' + r.bound + ' 跳）').join(' / '));
+        + rec.routes.map((r) => r.id + '（报 ' + r.hitValue + '，' + meter(r) + '）').join(' / '));
     asked.forEach((r) => { if (r.note) ctx.out('    ⚠ 路 `' + r.id + '` 一条都没接回来：' + r.note); });
   }
   ex.hits.forEach((h, i) => {

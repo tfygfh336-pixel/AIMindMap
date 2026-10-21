@@ -6997,6 +6997,170 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   }
 
 /* ============================================================
+ * W3do-集成断言原文 —— 【W3-do】**候选生成**（`--recall expand`）+ `matchIn` 取值表开到第 10 个值
+ * ------------------------------------------------------------
+ * 判据出处：`.review/20261020-W3-semantic-do/`（`00-定题.md` 逐条摸清封闭表 / `10-方案.md` 方案 /
+ *          `20-验收.md` 读数）。`W3` 批判死"语义检索"的唯一原因是**契约**：`semantic` 按契约只能重排，
+ *          而 18 条真实漏检里 17 条**连候选都没有** ⇒ 重排器修不了任何一条。本段钉的就是那个例外：
+ *          **没有字面命中也可以有候选**（候选来源 = 查询与标题的最长公共片段），新命中报 `matchIn=expand`。
+ * 单测侧（进程内、临时沙箱）：`tests/search-recall.test.js` 的 M 组（没有头名 / 片段门槛 / 名次 /
+ *          12 键 / 默认档不受影响 / 一处实现），契约那一半在 `tests/item-index.test.js`。
+ * 本段**不重复**那些用例，只把"必须在**真实工程 + 真实 projects/ 根**上跑一遍才作数"的几条接上链。
+ *
+ * 这一节守什么
+ *   · **默认档一个字节都不变**：不给 `--recall` 时输出与"只开字面那一路"的权重档**逐字节相同**；
+ *   · **候选生成本身**：同一条查询上 `graph` 接回 0 条（它从头名出发 ⇒ 没有头名就没有邻域）、
+ *     `expand` 接回候选，且**名次 = 公共片段长度降序**（两条候选的顺序就是判据）；
+ *   · **门槛来自路由表**（`minShared`）：1 字的公共片段**不许**进来（现取的 `EXPAND_MIN_SHARED`）；
+ *   · **命中仍是 12 键**（开的是取值表，不是加键），`matchIn` = 路由表现取的那一个；
+ *   · **生成候选只由它自己那一路给名次**（`--explain.hits[].parts` 里有名次的只有 expand）；
+ *   · **一处实现**：候选来源的实现只在 `src/item-index.js`（扫描面 = src/ 与 cli/，needle 用拼接构造）。
+ *
+ * 段内**不写**"行内斜杠紧跟圈号"的样子（G9 会把那当判定标记计数，见本文件文件头）。
+ * ============================================================ */
+{
+  const W3D_TAG = Date.now().toString(36);
+  /** 探针前缀表（唯一一处；`it-probe-` 开头 ⇒ 被 sweepStaleProbes 的既有前缀表兜底） */
+  const W3D_PROBES = ['it-probe-w3do-' + W3D_TAG];
+  const W3DP = W3D_PROBES[0];
+  /* 查询与四条标题的关系**写在夹具注释里**（这是本段唯一的"真值定义"）：
+   * 查询 `下半部中断` 不是任何一条标题的**非连续子序列** ⇒ 默认档 0 命中（= W3 说的"没有头名"）；
+   *   ex-long 公共片段 `下半部`（3 字）⇒ 该排第一；ex-two 公共片段 `中断`（2 字）⇒ 第二；
+   *   ex-one 只有 1 字（`断`）⇒ 门槛之外，不许进来；ex-none 一个共同字符都没有 ⇒ 不许进来。 */
+  const W3D_KW = '下半部中断';
+  const w3dCore = require(path.join(ROOT, 'cli', 'core.js'));
+  const w3dRank = require(path.join(ROOT, 'src', 'palette-rank.js'));
+  const w3dItems = require(path.join(ROOT, 'src', 'item-index.js'));
+  const w3dDir = (name) => path.join(w3dCore.PROJECTS_DIR, name);
+  /* 夹具**走唯一写盘出口**（`src/data-store.js` 的 `write`：先校验、再 tmp+fsync+rename），
+   * 不自己 `fs.writeFileSync` —— 这个文件有**整文件豁免**（`S2` 的 `WRITE_OUTLET_DEBT`，原因见那里：
+   * 它要造"读不出来的项目/坏 JSON"这类夹具，只能裸写），但**豁免面有只减不增的上限**
+   * （`WRITE_OUTLET_SITE_CAP`）⇒ 本批的夹具是**合法数据**，没有理由占用那个额度。 */
+  const w3dStore = require(path.join(ROOT, 'src', 'data-store.js')).createStore(w3dCore.PROJECTS_DIR);
+  const w3dLog = (name) => require(path.join(ROOT, 'src', 'data-store.js'))
+    .createStore(w3dCore.PROJECTS_DIR, () => {}).visitLogFile(name);
+  const w3dJ = (r) => { try { return JSON.parse(String(r.out).trim()); } catch (e) { return null; } };
+  const w3dSearch = (kw, extra) => w3dJ(run(['search', W3DP, kw, '--no-heat', '--json'].concat(extra || [])));
+  const w3dRow = w3dRank.ROUTES.filter((r) => r.recallSource === 'expand')[0] || {};
+  const w3dRid = w3dRow.id;                       // 路由 id（现取）
+  const w3dValue = w3dRow.recallHit;              // 新取值名（现取）
+  const w3dFloor = w3dRow.minShared;              // 门槛（现取 —— 本段不写死 2 这个数）
+  const w3dGraph = w3dRank.ROUTES.filter((r) => r.recallSource === 'graph')[0] || {};
+  const w3dArgs = ['--mode', w3dRank.DEFAULT_MODE, '--recall', w3dRid];
+  const w3dKeys = ['id', 'topic', 'nodeId', 'nodeTopic', 'itemId', 'type', 'itemized', 'matchIn',
+    'snippet', 'src', 'verified', 'score'];
+  const w3dOnlyText = w3dRank.ROUTE_IDS.map((id) => id + '=' + (id === 'text' ? 1 : 0)).join(',');
+  const w3dClean = () => W3D_PROBES.forEach((name) => {
+    try { fs.rmSync(w3dDir(name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+    try { fs.rmSync(w3dLog(name), { force: true }); } catch (e) { /* 同上 */ }
+  });
+
+  try {
+    w3dStore.write(W3DP, {
+      meta: { name: W3DP, author: '', version: '0.18.0', formatVersion: 3 },
+      format: 'node_tree',
+      data: { id: 'root', topic: 'root', expanded: true, children: [
+        { id: 'ex-long', topic: '中断下半部与 tasklet' },
+        { id: 'ex-two', topic: '硬中断、软中断与 NAPI' },
+        { id: 'ex-one', topic: '断点调试' },
+        { id: 'ex-none', topic: '完全无关的调度器' }
+      ] }
+    });
+
+    /* ---- 默认档：不给 `--recall` 时 == "只开字面那一路"（逐字节相同）---- */
+    {
+      const plain = run(['search', W3DP, W3D_KW, '--no-heat', '--json']);
+      const explicit = run(['search', W3DP, W3D_KW, '--no-heat', '--json', '--weights', w3dOnlyText]);
+      const j = w3dJ(plain);
+      check('W3-do·默认档 不给 `--recall` 时：①输出与"只开字面那一路"的权重档**逐字节相同**；'
+        + '②这一批**零命中**（查询不是任何标题的非连续子序列 ⇒ 没有头名，正是 W3 判死"只能重排"的那一类）'
+        + ' ⇒ 候选生成这一路没有偷偷进候选集',
+        plain.code === 0 && explicit.code === 0 && plain.out === explicit.out
+          && !!j && j.hitCount === 0,
+        'exit=' + plain.code + '/' + explicit.code + ' ｜ hitCount=' + (j ? j.hitCount : '?')
+          + ' ｜ 字节数 ' + plain.out.length + '/' + explicit.out.length);
+    }
+
+    /* ---- 候选生成：同一条查询上 graph 接回 0、expand 接回候选；名次 = 片段长降序 ---- */
+    {
+      const onRaw = run(['search', W3DP, W3D_KW, '--no-heat', '--json'].concat(w3dArgs, ['--explain']));
+      const gRaw = run(['search', W3DP, W3D_KW, '--no-heat', '--json',
+        '--mode', w3dRank.DEFAULT_MODE, '--recall', w3dGraph.id, '--explain']);
+      const on = w3dJ(onRaw);
+      const g = w3dJ(gRaw);
+      const hits = (on || {}).hits || [];
+      const got = hits.filter((h) => h.matchIn === w3dValue).map((h) => h.nodeId);
+      const badKeys = hits.reduce((acc, h) => acc.concat(Object.keys(h).filter((k) => w3dKeys.indexOf(k) < 0)), []);
+      const gRow = ((g || {}).explain ? g.explain.recall.routes : []).filter((r) => r.id === w3dGraph.id)[0] || {};
+      const eRow = ((on || {}).explain ? on.explain.recall.routes : []).filter((r) => r.id === w3dRid)[0] || {};
+      check('W3-do·候选生成 同一条**零字面命中**的查询上：①`graph` 接回 0 条（它从头名出发，没有头名就没有邻域，'
+        + '原因要写在 note 里）；②`expand` 接回候选，且**名次 = 公共片段长度降序**（' + String(w3dFloor)
+        + ' 字的 `ex-long` 在 2 字的 `ex-two` 之前）；③门槛之外的两条（1 字 / 0 字）一条都不进来；'
+        + '④命中对象的键都在契约 12 键内（**开取值表 ≠ 加键**）',
+        onRaw.code === 0 && gRaw.code === 0 && String(gRow.added) === '0'
+          && String(gRow.note || '').indexOf('头名') >= 0
+          && JSON.stringify(got) === JSON.stringify(['ex-long', 'ex-two'])
+          && badKeys.length === 0 && eRow.added === 2 && eRow.hitValue === w3dValue,
+        'exit=' + gRaw.code + '/' + onRaw.code + ' ｜ graph.added=' + gRow.added
+          + ' ｜ graph.note=' + String(gRow.note || '').slice(0, 60)
+          + ' ｜ expand 命中顺序=' + JSON.stringify(got) + ' ｜ 契约外键=' + JSON.stringify(badKeys)
+          + ' ｜ expand.added=' + eRow.added + ' ｜ expand.hitValue=' + eRow.hitValue);
+    }
+
+    /* ---- `--explain`：门槛的人话逐路对，生成候选只由它自己那一路给名次 ---- */
+    {
+      const on = w3dSearch(W3D_KW, w3dArgs.concat(['--explain']));
+      const ex = (on || {}).explain || {};
+      const rows = ((ex.recall || {}).routes || []);
+      const asked = rows.filter((r) => r.asked);
+      const gen = (ex.hits || []).filter((h) => {
+        const row = ((on || {}).hits || []).filter((x) => x.nodeId === h.nodeId)[0] || {};
+        return row.matchIn === w3dValue;
+      });
+      const onlyExpand = gen.every((h) => JSON.stringify((h.parts || [])
+        .filter((p) => p.rank !== null).map((p) => p.route)) === JSON.stringify([w3dRid]));
+      check('W3-do·`--explain` ①`recall.routes` 逐路都在（含没点名的），点名的就是这一路；'
+        + '②每一路都报**自己的门槛**且人话里没有 undefined（`graph` 是跳数、`expand` 是最短片段）；'
+        + '③生成候选的逐路读数里**只有 `expand` 那一路有名次**（不靠 trust / time 的"资历"凑分）',
+        ex.enabled === true && asked.length === 1 && asked[0].id === w3dRid
+          && rows.every((r) => typeof r.boundText === 'string' && r.boundText.indexOf('undefined') < 0)
+          && gen.length === 2 && onlyExpand,
+        'asked=' + JSON.stringify(asked.map((r) => r.id))
+          + ' ｜ 门槛人话=' + JSON.stringify(rows.map((r) => r.id + ':' + r.boundText))
+          + ' ｜ 生成候选条数=' + gen.length + ' ｜ 只有一路给名次=' + onlyExpand);
+    }
+
+    /* ---- 一处实现：候选来源只在 item-index 出现一次（扫描面 = src/ 与 cli/；needle 拼接构造）---- */
+    {
+      const needle = 'function ' + 'expandCandidatesOf(';
+      const files = [];
+      ['src', 'cli'].forEach((dir) => {
+        const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).forEach((e) => {
+          const abs = path.join(d, e.name);
+          if (e.isDirectory()) { if (e.name !== 'vendor') walk(abs); return; }
+          if (!/\.js$/.test(e.name)) return;
+          if (fs.readFileSync(abs, 'utf8').indexOf(needle) >= 0) {
+            files.push(path.relative(ROOT, abs).split(path.sep).join('/'));
+          }
+        });
+        walk(path.join(ROOT, dir));
+      });
+      check('W3-do·一处实现 候选来源（' + needle + '）**只有一个定义处**：扫描面 = 仓库 src/ 与 cli/'
+        + '（不扫 scripts/、tests/、.review/ ⇒ 本文件不在面内），不剥注释/字符串',
+        JSON.stringify(files.sort()) === JSON.stringify(['src/item-index.js']), JSON.stringify(files.sort()));
+    }
+  } finally {
+    w3dClean();
+    W3D_PROBES.forEach((name) => {
+      if (fs.existsSync(w3dDir(name))) {
+        check('W3-do·收尾 探针「' + name + '」没能清掉（下次跑链会被 sweepStaleProbes 兜底，但这里必须当场红）',
+          false, '目录仍在=' + w3dDir(name));
+      }
+    });
+  }
+}
+
+/* ============================================================
  * W14-集成断言原文.js —— 「前导正文的落点规则」的**集成断言原文**
  * （放行窗口由整合流贴进 `scripts/cli-integration.js`；本文件**不是**可执行脚本，只是那段源码的存放处）
  * ------------------------------------------------------------

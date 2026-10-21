@@ -891,8 +891,11 @@ function createWindow(opts) {
  * child window 会随父窗一起隐藏，所以"不是 child"就是这条的结构前提）· 主窗 `closed` 时
  * `closeAllDrafts()`（a：主窗关则连带关）· **不写任何位置/尺寸偏好**，尺寸由页面上报的内容 bbox 决定
  * （a：不记忆位置大小、按内容定）· `DRAFT.byFp` 按指纹查表（d：同内容更新到原窗，不新开）。
- * ⚠️ b「允许完整编辑」本批**不做**（定题 §7 偏差 1：本工程编辑一棵树的唯一实现在 `renderer/editor.js`，
- *    它绑死主窗口的 DOM 与状态机；搬进草稿页要么搬整套 DOM、要么写第二份编辑器 —— 后者破"一份实现"铁律）。
+ * ⚠️ b「允许完整编辑」**已兑现**（2026-10-20，见 `.review/20261020-editor-复用/00-定题.md`）：
+ *    `renderer/editor.js` 被重构成**宿主注入的模块**（`MM.Editor.create(host)`），主窗与草稿窗
+ *    调的是**同一份实现**；草稿页编辑之后经 IPC `draft:update` 把树交回本进程那份权威副本
+ *    （仍然**不写盘** —— 并入才写，走 CLI `apply --ops-file`）。`W11` 批"要么搬整套 DOM、
+ *    要么写第二份编辑器"的判断只对了一半：绑死主窗的不是编辑器，是它的**项目语义**。
  * ============================================================ */
 const draftMap = require('./src/draft-map.js');
 
@@ -975,7 +978,12 @@ function openDraftMap(input, opts) {
   win.on('closed', () => {
     // 关窗即弃：草稿随窗口一起从内存里消失（`merged` 那本账**不**清 —— 它是"并入过"的事实，
     // 清掉会让"关窗再开同一份内容"能再写一遍盘 ✗）
-    if (DRAFT.byFp.get(fp) === ent) DRAFT.byFp.delete(fp);
+    /* ⚠️ 按**对象身份**摘，不按创建时那个指纹字符串：`draft:update` 会在内容变化后
+     * **重挂键**（指纹就是键）⇒ 捕获旧 `fp` 的写法会留下一条指向已销毁窗口的僵尸记录
+     * （后果：`ctx.draft.list()` 数出"窗口还在"，而它其实早关了）。 */
+    for (const [k, v] of Array.from(DRAFT.byFp.entries())) {
+      if (v === ent) DRAFT.byFp.delete(k);
+    }
   });
   console.log('[draft] 已开草稿窗 fp=' + fp + ' source=' + source
     + ' 节点=' + norm.stats.nodes + ' 深度=' + norm.stats.depth
@@ -3181,6 +3189,42 @@ function registerIpc() {
     if (!r || r.canceled || !r.filePath) return { ok: false, reason: '已取消保存' };
     return draftWriteExport(ent, out.kind, r.filePath);
   });
+  /* 【`W11 a–e` 的 `b`：允许完整编辑】草稿页改了树之后，把整棵树交回来。
+   * 为什么必须有这条：页面上编辑的是**页面自己那份显示副本**（文件头那条"页面不持有数据的唯一副本"
+   * 的纪律没变）；而「并入」与「导出」读的是**主进程内存里那份权威副本** —— 不同步就是
+   * "界面改得挺欢、并入进去的还是旧树"，那是本工程最重的损害类别（静默说谎）。
+   *
+   * 三条判据都在这一处：
+   *   ① **只认草稿窗**（`draftEntryOf`）⇒ 别的窗口调不动；
+   *   ② 改后的树要能过 `normalize`（形状/上限）—— 过不了就**原样拒绝并点名**，
+   *      主进程那份**一个字节都不动**（页面负责回滚，回滚失败也不会污染权威副本）；
+   *   ③ 内容变了 ⇒ 指纹跟着变 ⇒ `DRAFT.byFp` 的**键要重挂**（指纹就是键）：
+   *      不重挂的话 `draftEntryOf`/`closeAllDrafts` 照旧能按对象找到它，但"同一份内容更新到原窗"
+   *      （a–e 的 d）与"并入幂等"（按指纹查账）都会认错内容。**不写盘、不动 projects/**。 */
+  ipcMain.handle('draft:update', (e, tree) => {
+    const ent = draftEntryOf(e.sender);
+    if (!ent) return { ok: false, reason: '这个窗口不是草稿窗' };
+    const norm = draftMap.normalize(tree);
+    if (!norm.ok) {
+      return { ok: false, reason: '改后的草稿形状不合规：' + norm.errors.join('；'), errors: norm.errors };
+    }
+    const fp = draftFingerprint(norm.tree);
+    const oldFp = ent.fp;
+    ent.payload = { tree: norm.tree, stats: norm.stats, dropped: norm.dropped };
+    if (fp !== oldFp) {
+      DRAFT.byFp.delete(oldFp);
+      ent.fp = fp;
+      DRAFT.byFp.set(fp, ent);
+      console.log('[draft] 编辑后内容变了 ⇒ 指纹重挂 ' + oldFp + ' → ' + fp
+        + '（节点=' + norm.stats.nodes + ' 深度=' + norm.stats.depth + '）');
+    }
+    /* ⚠️ **不回推** `draft:updated`：那是"同一份内容更新到这张窗"用的，会触发页面重画，
+     *    而此刻页面正是编辑现场（重画会打断编辑、丢选中）。页面自己按回复更新读数。 */
+    return {
+      ok: true, fp: fp, oldFp: oldFp, changed: fp !== oldFp,
+      stats: norm.stats, dropped: norm.dropped
+    };
+  });
   ipcMain.handle('draft:close', (e) => {
     const w = BrowserWindow.fromWebContents(e.sender);
     if (w && !w.isDestroyed()) w.close();
@@ -3538,6 +3582,8 @@ async function runSmoke(win) {
     list: () => Array.from(DRAFT.byFp.values()).map((ent) => ({
       fp: ent.fp, source: ent.source, nodes: ent.payload.stats.nodes,
       depth: ent.payload.stats.depth,
+      /** 主进程内存里那份**权威副本**的根标题（与页面自报的读数是两个来源 ⇒ 可以对拍） */
+      rootTopic: ent.payload.tree ? String(ent.payload.tree.topic || '') : '',
       alwaysOnTop: (() => { try { return ent.win.isAlwaysOnTop(); } catch (e) { return null; } })(),
       parentWindow: (() => { try { return !!ent.win.getParentWindow(); } catch (e) { return null; } })(),
       contentSize: (() => { try { return ent.win.getContentSize(); } catch (e) { return null; } })(),

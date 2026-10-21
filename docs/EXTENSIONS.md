@@ -199,6 +199,27 @@
 > 判据：`tests/search-recall.test.js`（默认档逐字节不变 + 只增不许变差 + 上界取自路由表 + 硬过滤正交 +
 > `--explain` 逐路点名 + 黄金集里"非字面命中"那一类的读前/读后读数 + 注入证明 + 结构断言 + 端到端沙箱），
 > 契约与逐键在 `docs/ITEM-MODEL.md` §3.4 与 `tests/item-index.test.js`（**键仍 12**）。
+>
+> **候选生成与 `matchIn` 再开一格（W3-do，2026-10-20/21）**：`--recall` 多一路 **`expand`**，
+> 取值表 **9 → 10**（多一个 `expand`，**键仍然 12 个**）。它补的是 `W4b` 补不了的那一半：
+> `graph` 从**头名**出发，而"没有字面命中"就没有头名 ⇒ 18 条真实漏检里 17 条 `hitCount=0` 一条都接不回
+> （实测 `--recall graph` **0/18**）。`expand` **不需要头名**：候选 = 查询与节点**标题**的最长公共片段
+> ≥ `minShared` 字（零词表、零模型、零依赖，纯字符串）。四条口径：
+>
+> ① **默认关**：不给 `--recall` 时输出**逐字节相同**（它不点名就不生成候选；`--explain` 里 `ranked: 0`）；
+> ② **它是词法片段，不是向量**：这一路**没有模型**、不读任何词表 ⇒ `--json` 两跑逐字节相同由构造保证
+>    （不需要"缓存 + 缓存键"那一档）。`semantic` 那一行仍是 `installed:false`（**向量**那一半没做）；
+> ③ **名次只来自它自己**：`expand` 接回来的候选**不进** `graph` / `trust` / `time` 三路 ——
+>    否则一条只靠 2 字片段进来的候选会靠"已核 / 时间新"凑分压过真命中（实测：T1 前 10 率 10/10 → 8/10）。
+>    ⚠️ `near` **不在**这条规则里（`W4b` 的既有口径，黄金集钉着它，本件一个字没动）；
+> ④ **门槛与取值都在路由表**：`ROUTES` 那一行的 `minShared` / `recallHit` / `recallSource`；
+>    `--explain` 的 `recall.routes[]` 因此多了 `minShared` / `boundText` 两个读数键
+>    （**门槛的人话只有一处**：`src/palette-rank.js` 的 `boundText` —— 两处渲染各拼一份就会印出
+>    "上界 undefined 跳"）。
+> MCP 侧**不新增工具、不新增参数**（`recall` 本来就收路由名，新路由自动可选）。
+> 判据：`tests/search-recall.test.js` 的 M 组（没有头名也能接回 / 门槛是参数 / 名次只来自这一路 /
+> 12 键 / 默认档不受影响 / 一处实现）+ `scripts/cli-integration.js` 的 `W3-do` 段（真 CLI + 真项目根）；
+> 读数与逐条偏差见 `.review/20261020-W3-semantic-do/20-验收.md`。
 
 ### 1.3 MCP 工具（面向支持 MCP 的 agent）
 

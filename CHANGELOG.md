@@ -2283,6 +2283,192 @@ node cli/mm-cli.js timeline [<项目>] [--since <ISO|Nd|Nh|Nm|Nw>] [--now <ISO>]
 - **如实偏差（两条）**：① 本批**没有**把这条判别力做成 `cli-integration.js` 的**常驻断言** —— 加一条 `check()` 会让 `cliAssertions` 从 639 变 640，而 `docs/VERIFY.md` 记的是 639 ⇒ 同批 `doc-facts --check` 会因生成物过期而**红**（本批边界又不许改 `VERIFY.md`）。可复现的证明与"常驻断言"补丁草案都在 `.review/20261020-去重-compareText/README.md`，父代理收口时可与 `--write` 同批加上。② 任务书里写的 `cli-integration` 现值是 **631**，而 `doc-facts` 从源码正则数出的 `cliAssertions` 是 **639**（两个口径本来就不同，改前改后都是这个差；本批没有动它）。
 - **证据**：`.review/20261020-去重-compareText/`（`README.md` 收敛记录 · `compare-impls.js` 逐行/差分 · `mirror-proof.js` + `compare-runs.js` 18 用例 · `mirror.before.json` / `mirror.after.json` · `doc-facts-check.before/after/final.txt`）。
 
+### CHANGELOG 段落（预写，待父批并入 `CHANGELOG.md` 的 `[Unreleased]`）
+
+> 本文件是**预写稿**：`CHANGELOG.md` 在本批的禁改边界内，由父批并入。
+
+### 新增 · 异地备份（`W22`）
+
+- **`scripts/backup-offsite.js`**（新）：把「异地备份」从"能不能 push 到 GitHub"里解出来。
+  `W22` 台账那句「推送到 GitHub（异地备份）」里 `push` 是**手段**、`异地备份` 是**目的** ——
+  手段被策略拦（`CONNECT tunnel failed, response 403`）不改变目的仍可满足。
+  工具按**内容寻址**做幂等增量备份：每个文件按 sha256 落到 `blobs/<前2位>/<sha256>`，
+  快照只写清单不复制字节 ⇒ 源没变时第二次跑**新增 0 字节**（实测 `22.67 MB → 0.00 MB`）。
+- **备份三档**：`notes` = `projects/`（**`.gitignore` 明写它不入库 ⇒ 没有历史、git 回滚不了，这才是重点**）·
+  `code` = 整仓打成**一个 `git bundle` 单文件**（实测 13.20 MB / 273 提交，`git clone` 可离线还原）·
+  `review` = `.review/`（可 `--no-review` 关）。
+- **可复算的验证**：`--verify` 把整份快照的块读回来重算 sha256 与清单对拍（`Y:` 上实测 **3216 个块全一致**）；
+  `--restore` **先验后写**，块坏了拒绝冒充恢复成功（实测恢复 3223 个文件全部成功，
+  恢复出来的 `projects/` **38/38 逐字节一致**、过产品 schema 10/10、节点数 2320 对得上）。
+- **笔记版本化的正面处理**（`W22` 的真正价值点）：每份快照额外落 `nodes.json`
+  （项目 → {节点 id: {标题, 父 id}}）+ 与上一份对拍的 `DIFF.md` ⇒ 能说出
+  「**哪个项目的哪个节点**」新增 / 删除 / 改标题。实测撞到真实变化一例：
+  `卖点讨论` 的 `bl-3-5`、`bl-3-5-1` 改标题，逐条给出旧值 → 新值。
+  **没有改 `.gitignore`**（那是用户 2026-10-19 的裁定）：笔记版本化走快照序列，不走 git。
+- **`tests/backup-offsite.test.js`**（新，10 条）：钉住差异判定的四类情形（新增/删除/改标题/无变化）、
+  树根是 `data` 而不是 `nodes`（首版读数 0 而不报错）、`verifyManifest` 的判据是**字节**而不是"文件存在"，
+  外加一条**源码级接线检查**禁止再出现自造的 `tmp+rename` / 裸写。
+- **`docs/ARCHITECTURE.md` §2.6**：登记 `backup-offsite.js`（`G8` 第 ⑦ 条要求脚本层表第一列可见）。
+
+### 修复
+
+- `scripts/backup-offsite.js` 的运行时信号排除正则**没锚定**（`/[\\/]projects[\\/]\.visits[\\/]/`
+  对相对路径 `.visits/x.jsonl` **永不匹配**）⇒ `projects/.visits/` 与 `projects/.writers/` 的 10 个文件
+  会被备进快照，而读数只说"排除了 4 个"。**由恢复演练的 sha256 对拍抓出**
+  （报「逐字节一致 46 / 48」并点名两个文件），改成 `(^|[\\/])` 锚定后 `notes` 48 → **38**、排除数 4 → **14**。
+- 同一形状的坑还出现在一处枚举探针里（`includes('/.')` 对**顶层**点目录是盲的）：
+  第一次枚举报 14 个点文件，正确读数是 **24 个**。
+- 首版用 `fs.writeFileSync(tmp)` + `fs.renameSync()` **自造了第二份原子写**，被门禁 `S2`
+  （`collateral-check.js` 的「自造第二份原子写」）当场抓红 ⇒ 全部改走 `src/data-store.js` 的
+  `writeFileAtomic`（`W11` / `I-5` 之后的第三次同型）。修完 `S2` 里本文件零命中。
+
+### 说明（不改行为，但接手者必须知道）
+
+- **工程既有的「兜底备份」`D:/backup/ai-mind-map` 与工作区在同一块物理盘**上
+  （实测 `C:` = `Disk #0 Partition #1`、`D:` = `Disk #0 Partition #2`；`E:` 才是 `Disk #1`）。
+  ⇒ 那块盘坏掉时工程与"兜底备份"**一起没**。这不是异地备份，是同一块盘上的第二个目录。
+  本批的 `E:` / `Y:` / `Z:` 三处落点补上了这个缺口。
+- **`scripts/backup-offsite.js` 不挂在 `verify` 链上**：落点是环境相关的外部盘，
+  单次可达十分钟；挂上去等于让验证链依赖一台网络盘的存在。
+
+### 【`W11 a–e` 的 `b`】草稿图**允许完整编辑**：`renderer/editor.js` 重构成**宿主注入的模块**，主窗与草稿窗调同一份实现（2026-10-21）
+
+#### 为什么现在做 / 为什么以前没做
+
+`W11` 批判定 `b「允许完整编辑」`不做，理由是"编辑一棵树的唯一实现在 `renderer/editor.js`，它绑死主窗口 DOM 与状态机，搬进草稿页要么搬整套 DOM、要么写第二份编辑器"。本批**推翻了这个判断的前半句**，并给出第三条路。实测（定题 §1–§2 有逐条行号）：
+
+- **`editor.js` 只有 291 行 / 13,214 字节**，是**交互层**（三个对话框 + 快捷键 + MD 导入导出的文件选择）。它绑死的是 **18 个固定 id + 14 个 `MMApp` 方法 + 5 条 IPC**；
+- 真正改树结构的四个操作（`addNode` / `addSiblingNode` / `addTopic` / `deleteNode`）与 `recordHistory` / `undo` / `redo` / `save` **全在 `renderer/app-actions.js`** ⇒ 「唯一实现」这个前提本来就写错了对象。
+
+⇒ 重构的分界线不是"搬 DOM"，而是 **「人怎么表达一次编辑」留在模块，「这次编辑落到哪里」由宿主注入**。
+
+#### 做了什么（一份实现，两个窗口）
+
+- **`renderer/editor.js` → `MM.Editor.create(host)`**：造实例。宿主给 `adapter` / `getJm` / `setStatus` / `capabilities` / `onCommit` / `history` / `onSave` / `beforeDelete` / `moveBackend` / `overlays` / `applyTopicMarkup`；模块给对话框字段与校验、快捷键 → 意图的路由、**造 id 的唯一实现**、根节点守卫、`addChild`/`addSibling`/`deleteNode`/`moveNode`、能力拒绝的报文。**主窗与草稿窗调的是同一份代码**（`tests/editor-reuse.test.js` 22 条结构锁；注入证明见验收读数 §四 偏差 12）。
+- **能力分层显式化**（`CAPS` 白名单 + `CAP_NOTES` 理由，**默认全 false**）：草稿窗**不能**写盘、没有撤销栈、契约不带标签与展开状态（`normalize` 会丢）、没有图片附件（不落盘 ⇒ 断链）、没有跨项目链接与 MD 导入导出、没有灯箱/详情框。被拒绝时**点名理由**（`Ctrl+S` ⇒ "草稿不落盘"；`Ctrl+Z` ⇒ "草稿没有撤销栈"），不是把按钮藏起来就算。
+- **对话框骨架 adopt-or-create**：主窗沿用 `index.html` 的静态骨架（**一个字节都不改**，`dialogOpen.html` 的 `outerHTML` 在基线里 2,378 字节两侧相同）；草稿页现造同一套 id。
+- **`app-actions.js` 只留主窗才有的那半**：撤销栈（`recordHistory`）、**删除的项目级预检**（抠成 `deletePrecheck`，关联成员/入边链接/CLI 剪枝整段原样搬过去）、顶层主题模式；`addNode`/`addSiblingNode`/`addTopic`/`editNode`/`deleteNode` **改为转发**到模块。新增 `MM.mainEditorHost()`（宿主接口的唯一实现处）。
+- **草稿窗真能编辑**：一排 7 个按钮（`编辑节点`/`＋子节点`/`＋同级`/`删除`/`↑`/`↓`/`移到…`）+ 双击节点开编辑框。改动落定后经**新 IPC `draft:update`** 把整棵树交回主进程那份**权威副本**（仍然**不落盘**；`merge`/`export` 用的就是改后那份），**串行化**避免"先发后到把新内容盖回旧内容"，失败**回滚 + 响亮**。
+- **`draft:update` 重挂指纹键**（`DRAFT.byFp` 的键就是内容指纹）；连带修 `win.on('closed')` 按创建时指纹摘表留下的**僵尸条目**（改成按对象身份摘）。
+- **库的一个坑**：`editable:false` 时 jsMind 的 `update_node`/`add_node`/`remove_node` **静默拒写**（症状：改标题不生效、改正文生效 = 半套编辑）。草稿窗改 `editable:true` + `default_event_handle.enable_dblclick_handle:false`（**公开选项**，挡掉库自带的 inline 编辑器，编辑入口只有一个）。
+
+#### 判据（每条都当场跑，只认 exit code）
+
+| 判据 | 命令 | 读数 |
+|---|---|---|
+| 主窗行为**逐字节不变** | 临时基线探针（同一串操作序列：开框 → 改标题/正文/标签/折叠 → 保存 → 加子 → 加同级 → 删 → 保存 → 还原）+ `compare-baseline.js` | **18/19 个键逐字节相同**；唯一"按构造不同"的键（含自动生成 id 的原始 sha256）已用归一化文本的 sha256 正面证明等价 ⇒ **exit 0** |
+| 草稿窗五项编辑 | `electron . --smoke "--smoke-only=56" --disable-gpu --in-process-gpu` | **7/7 通过**：改标题（页面 = 主进程权威副本，指纹 `a8716398→271eab2e`）/ 改正文（主进程导出 json 里有这段）/ 加子（页面 3→4 且主进程 3→4，新节点 `elementFromPoint` 命中自身）/ 删（4→3）**移动**（同级 `["甲","乙"]→["乙","甲"]`、改挂父后导出树里「乙」下有「甲」且根下没有）⇒ **exit 0** |
+| 既有编辑域不受影响 | `--smoke-only="02,03,10,16,27"`（6 域 38 条）· `--smoke-only=55`（15 条） | **38/38** · **15/15**，各 **exit 0**（含 `03` 的右键→编辑框、`10` 的删节点先确认再剪枝） |
+| 可见性判据（`V1`） | `node scripts/visibility-judge-check.js` | 55 域 / 346 条；新违规 **0** ⇒ **exit 0** |
+| 文档登记（`G8`） | `node scripts/docs-registry-check.js` | 585 份文档有家；`renderer/` 三个文件已按新职责改写 §2.1 ⇒ **exit 0** |
+| 单测 | `node node_modules/vitest/vitest.mjs run --pool=threads` | **3147 用例 / 3141 通过 / 1 跳过 / 5 红** ⇒ **exit 1**（5 条红全在 `tests/collateral-check.test.js`，根因是**别的批次**的两处 S2 欠账：写盘豁免面 83>82、`projects/卖点讨论` 的 `bl-3-5-1` 正文残留 —— 本批没写 `projects/**`、也没加写调用点） |
+| 编码（`G1`） | `node scripts/encoding-check.js` | 3,080 个文本文件无 BOM / 无替换字符 / 无乱码 ⇒ **exit 0** |
+| `S2` 裸尖括号 | `node .review/20261020-S2-tag-in-code/find-bare-angle.js` | **0 节点 · 0 片段** ⇒ **exit 0** |
+
+#### 连带面（`R5`，逐条核对"人怎么用它"变了没有）
+
+- **主窗交互：无变化**（逐字节基线守着：对话框 `outerHTML`、序列化树 6 个阶段、盘上字节、状态栏文案全同）。
+  `addNode` 仍**顺手打开编辑框**（`11/12/13/15/16/27/38/39` 这些域依赖它）；`F2`/`Delete`/`Ctrl+Z/Y/N/S` 语义不变。
+- **对话框外观**：主窗走 adopt（`index.html` 一个字节没改、`style.css` 没改）；草稿页用 `mm-ed-*` 那层皮（页面自己写，**不引用** `style.css`）。
+- **草稿窗**：从只读变成可编辑 —— 这是**用户可见的交互变更**，也是本批的目的；「并入」与「导出」现在用的是**改后**的树（这正是 `draft:update` 存在的理由）。
+- **CLI / MCP**：零改动。**数据格式**：无新字段（草稿契约仍是 `topic`/`detail`/`children`）。
+- **文档**：`docs/ARCHITECTURE.md` §2.1 三行（`editor.js` / `draft-map.html` / `draft-map.js`）+ 那段"editor.js 的 DOM 交互不进入测试路径"补了修正；`docs/FEATURES.md` 的 `DM` 行状态 `未实现（部分）` → `已实现`（`tests/features-roster.test.js` 同批跟改 —— 那条钉的就是这一行的状态词）。
+- **既有缺陷（**按原样保留**，另开一次改动修）**：`已删除：undefined` —— jsMind `remove_node` 之后节点字段失效，而改前的代码是**先删再拼状态栏**。本批是纯重构，**刻意不动**（基线里两侧都是 `已删除：undefined`，这本身就是一致性证据）；建议同批补一条"状态栏文案"断言，否则它还会活很久。
+
+#### ⚠️ 本批不跑 `npm run verify`（`R7`）· 不跑 `doc-facts --check/--write`
+
+新增 7 条冒烟断言（域 56）+ 22 条单测（`tests/editor-reuse.test.js`）⇒ `docs/VERIFY.md` 的数字**必然过期**，请在收口时统一 `node scripts/doc-facts.js --write`。
+
+#### 证据
+
+`.review/20261020-editor-复用/`：`00-定题.md`（绑定清单 / 分界线 / 差异清单 / 接口草案 / 风险域）·
+`01-验收读数.md`（九条验收逐条命令与 exit code + 五项编辑读数 + 12 条如实偏差）·
+`02-逐字节比对-readings.txt`（基线比对原文）· `compare-baseline.js` · `prove-test-teeth.js`（结构锁的判别力证明）。
+
+### 【W3-do】开 `matchIn` 封闭取值表：**候选生成**（`--recall expand`）把"零字面命中的查询"接回结果 —— 18 条真实漏检 **0/18 → 16/18**；`SM` 的**向量**那一半仍不做（2026-10-20/21）
+
+> 预写段（本批不碰 `CHANGELOG.md`：父代理收口时整段贴进 `[Unreleased]`）。
+
+#### 为什么这件事以前被判"不做"，这次为什么能做了
+
+`W3` 批判死「向量 / 语义近似检索」（`SM`）的**唯一**原因是**契约**，不是模型：`semantic` 按契约**只能重排**
+（候选集由字面命中定义，`src/palette-rank.js:190`–`:192`），而 18 条真实漏检里 **17 条 `hitCount=0`**、
+1 条有 10 个候选但正确答案**不在其中** ⇒ **重排器能修 0 条**。能修漏检的那一半（**生成候选**）
+要动 `matchIn` 的封闭取值表（`docs/ITEM-MODEL.md` §3.4）—— 那当时是禁区。本批动的就是那个契约。
+
+#### ① 契约：`matchIn` 9 → 10 个值（**键仍然 12 个**）
+
+- 新增取值 **`expand`**：**不是字面命中**，但也不是"按跳数接回来的近邻"—— 它由**候选生成**那一路
+  按「查询与节点**标题**的最长公共片段 ≥ 2 字」接回来。`docs/ITEM-MODEL.md` §3.4 同批更新（取值表 + `--recall` 行 + 那一段"开过两次口子"的来历）。
+- 命中形状**一个键都没加**（`tests/item-index.test.js` 逐键数着，集成断言也数着）。
+- **取值名不写死在实现里**：由 `src/palette-rank.js` 的 `ROUTES[].recallHit` 声明，`src/item-index.js` 现取。
+
+#### ② 候选来源从一个变成两个（`--recall` 的老机制原样复用）
+
+- `graph`（`W4b`）：**从头名出发**的跳数表 ⇒ **没有字面命中就没有头名** ⇒ 结构性地接不回"零命中"的查询
+  （本批复现：`node .review/20261020-W3-semantic/probe-recall.js` ⇒ **0/18**）。
+- **`expand`（本批新增）**：**不需要头名** —— 输入只有 (关键词, 候选池)，所以"一条字面命中都没有"时它是**唯一**能给出候选的那一路。
+  它的片段谓词 `longestSharedFragment` 与门槛 `EXPAND_MIN_SHARED`（2 字）只有 `src/palette-rank.js` 一处。
+- 候选来源现在由路由表的 `recallSource` **声明**（认不出来 ⇒ `--explain` 里**响亮**记一条，不静默跳过）。
+- **门槛的人话只有一处**（`boundText`）：`graph` 是"上界 2 跳"、`expand` 是"最短公共片段 ≥ 2 字" ——
+  两处渲染（`--help` 的 desc 与 `--explain` 的文本档）都从它现取，否则会印出"上界 undefined 跳"。
+
+#### ③ 实测：18 条真实漏检 **0/18 → 16/18**（T1 不回归、T2/T3 不掉）
+
+| 档 | 条数 | 默认档 接回/前10 | `--mode balanced --recall expand` 接回/前10 |
+|---|---|---|---|
+| T1 字面 | 10 | 10/10 | **10/8** |
+| T2 换说法 | 16 | 2/2 | **14/8** |
+| T3 问句 | 4 | 0/0 | **4/1** |
+
+- **T1 接回率仍 100%**（10/10），**项目内名次逐条不变**（`check-t1-project.js` ⇒ exit 0：10 条全是 1–2 名）。
+  ⚠️ 跨项目的"前 10"是 8/10 —— **不是排序回归**：`search-all` **不做跨项目重排**（既有契约），
+  而候选生成会让"本来 0 命中的项目"也产出一片候选，后续项目的命中整体下移；`--recall graph` 有完全相同的效应。
+- **没接回的 2 条**（如实）：`MMU`（缩写 ↔ 中文名，一个共同片段都没有）、`父子进程共享内存`（换说法，答案叫"写时复制"）——
+  这两条正是**词表 / 向量**那一半的事，`expand` 按定义做不到。
+- 三条硬约束逐条裁决（`S1` / 离线门禁 / `--json` 两跑相同）：**零模型 ⇒ 三条都成立**，
+  不需要"缓存到盘 + 缓存键"那一档（确定性由构造保证：纯字符串比较，不读时钟、无随机、无网络）。
+
+#### ④ 判据（全部当场跑，只认 exit code）
+
+`node node_modules/vitest/vitest.mjs run --pool=threads` ⇒ **exit 0**（`136 files passed` · **3146 passed**
+/ 1 skipped · 3147 例；基线 3108 ⇒ +39，其中本批 +7）·
+`node cli/mm-cli.js validate-all` ⇒ **exit 0**（10 个项目）·
+`node scripts/cli-integration.js` ⇒ `634/635`（唯一的红是并发批改了 `DM` 行状态、与本批无关）·
+`node scripts/docs-registry-check.js` ⇒ **exit 0** · `node scripts/dep-direction-check.js` ⇒ **exit 0** ·
+`node scripts/encoding-check.js` ⇒ **exit 0** · `node .review/20261020-S2-tag-in-code/find-bare-angle.js` ⇒ **exit 0 / 0 节点 · 0 片段** ·
+`node cli/mm-cli.js docs-gen` ⇒ exit 0（`docs/CLI.md` 重生成）。
+
+#### ⑤ 连带面（`R5`：哪些"使用者看得见的面"被改到了）
+
+| 面 | 结论 |
+|---|---|
+| **默认档**（不给 `--mode` / `--weights` / `--recall`） | **逐字节不变**（新路由不点名就不生成候选；`tests/search-hybrid.test.js` 的 A 组与 `tests/search-recall.test.js` 的 A 组继续绿） |
+| CLI 选项面 | **只增**：`--recall` 多一个可选路由名 `expand`；没有新开关（"候选来源"与"匹配方式"本来就是两根轴，`--recall` 已经在表达第一根） |
+| `--explain` | 只多读数：`routes[]` 多一行 `expand`、`recall.routes[]` 多 `minShared` / `boundText` 两个键；**命中对象不加键** |
+| MCP | **零改动**（工具数不变、参数不变：`recall` 本来就收路由名 ⇒ 新路由自动可选） |
+| GUI / 渲染层 | **零改动**（本批没碰 `renderer/**` 与 `main.js`） |
+| 数据格式 | **零改动**（没有新字段、没有新产物、没有缓存） |
+
+#### ⑥ 这一批**没有**做的事（如实登记）
+
+1. **`SM` 的向量那一半仍不做**：`ROUTES` 里 `semantic` 仍 `installed:false`，`--weights semantic=…` 仍"收下但不产生名次"。
+   理由逐条在 `.review/20261020-W3-semantic-do/10-方案.md` §2（要新增一条必需依赖 + 一份随数据重建的向量产物，
+   而实测剩下的 2/18 条才轮到它）。
+2. **查询别名表不做**：`W3` 实测它 18/18 最好，但要手写 18 行"用户词 → 库里词"，而 `W17` 已经就
+   「代码里认一个词表」判过死刑（词表的第二份真相）。它的家应是 `docs/TAGS.md`，那是本批禁区。
+3. **标签路不接**：用 `docs/TAGS.md` §4/§5 的既有词表做候选生成，实测 **9/18**（只比 `expand` 多救 `T2-08` 一条），
+   代价是**检索要读一份受管文档**（`src/item-index.js` 是 UMD 纯逻辑、不 I/O）⇒ 不值，留给词表批。
+
+#### ⑦ 证据与偏差
+
+- 工作目录：`.review/20261020-W3-semantic-do/`（`00-定题.md` 摸清封闭表 · `10-方案.md` 三条路逐条评估与裁决 ·
+  `20-验收.md` 读数与偏差 · `proto-expand.js` 离线原型 · `probe-expand.js` / `check-tiers.js` / `check-t1-project.js` /
+  `check-determinism.js` 四支探针）。
+- **一处已知的措辞瑕疵（如实）**：`scripts/mcp-server.js` 的 `recall` 参数说明里有一句模板是
+  `'（上界 ' + r.bound + ' 跳）'`（该文件是别的批的禁区）⇒ 它对新路由会渲染成"上界 undefined 跳"。
+  CLI 侧两个渲染点已改成从 `boundText` 现取；MCP 侧那句等文件解禁后一并改（改法：取 `boundText`）。
+
 ## [v0.19.0] - 2026-10-19
 
 ### 预算统计量 `1.25×P90` → `1.25×median`：n=10 的 P90 = **第二大** ⇒ 只容忍一条尖峰；今天已两次被尖峰抬线（1300→1468、1300→1350），换 median 并把多付的 50s 还回去（G5 1350s→1300s）

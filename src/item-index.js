@@ -94,11 +94,14 @@
    * 【W4b】**表开了新值 `near`**（扩召回接回来的近邻）—— 这是**开取值表**、不是**加键**：
    * 命中的键仍然是 12 个（`tests/item-index.test.js` 逐键数过，`docs/ITEM-MODEL.md` §3.4 也是 12）。
    * `near` 只在**显式**给了 `--recall` 时才会出现（默认档一个字节都不变）。
+   * 【W3-do】**再开一个值 `expand`**（候选生成那一路接回来的）—— 同样是开表、不是加键：
+   * 它与 `near` 的**来源不同**：`near` 是图邻域（跳数，从头名出发），`expand` 是**片段落**
+   * （查询与标题的最长公共片段 ≥ 2 字，**不需要头名** ⇒ 零字面命中的查询也能接回候选）。
    * ⚠️ 取值名本身不在这里定死归属：它由 `src/palette-rank.js` 的 `ROUTES` 里那一行 `recallHit` 声明，
    * 本表必须含它 —— 两边不许漂（`tests/item-index.test.js` 有一条断言把"表 ⇄ 路由表"钉在一起）。
    */
   const MATCH_IN = Object.freeze(['topic', 'item', 'item-tag', 'node-tag', 'caption', 'tag', 'link', 'detail',
-    'near']);
+    'near', 'expand']);
 
   /** `type` 的取值表（封闭，契约 §1）：别的值判红。 */
   const TYPES = Object.freeze(['text', 'rich', 'qa']);
@@ -699,6 +702,50 @@
   }
 
   /**
+   * 【W3-do】**候选生成**（`--recall expand` 那一路的候选来源）：查询与节点**标题**的
+   * 最长公共片段 ≥ `minShared` 字的节点，按"片段越长越前、同长按 DFS 序"排序。
+   *
+   * 为什么它必须存在（这不是"再加一路排序信号"，`W3` 的实测把理由钉死了）：
+   * 按 `W4b` 的契约，能接回"非字面命中"的只有 `graph`，而它**从头名出发**
+   * （`graphHopsFrom(leaderId, …)`）⇒ **没有字面命中就没有头名、没有邻域** ⇒
+   * 18 条真实漏检里 17 条 `hitCount=0`，`--recall graph` 结构性接回 **0/18**（本批复现过）。
+   * 所以这一路**不收 `leaderId`** —— 它的输入只有 (关键词, 候选池)。
+   *
+   * 三条口径（判据靠它们，`tests/search-recall.test.js` 的 M 组钉着）：
+   *   · **只看标题**（`entry.node.topic`）：`W3` 实测 `--full` 把 T1 前 10 率从 100% 打到 80%
+   *     （`BGP` 1→131，445 条命中大半来自 detail）⇒ 候选生成只在标题这一面做，
+   *     免得"多接回来的候选"把"确实该排第一的那条"挤下去；
+   *   · **零词表、零模型、零 I/O**：片段谓词是 `paletteRank.longestSharedFragment`（唯一实现），
+   *     门槛是路由表那一行的 `minShared`（`paletteRank.EXPAND_MIN_SHARED`）——
+   *     本函数不写死任何一个数；
+   *   · **纯函数**：同一批 (关键词, 池) 两次调用给出**逐条相同**的 Map（不读时钟、无随机、
+   *     不依赖 `Array.prototype.sort` 的稳定性：同长时显式按池内先后）。
+   *
+   * @param {string} kw 关键词（空 ⇒ 返回空表）
+   * @param {Array} pool 候选池（已过标签闸门的 entry；**硬过滤是正交的，这里不重判**）
+   * @param {number} minShared 最短公共片段（字；由路由表现取）
+   * @returns {Map<string, number>} 节点 id → 公共片段长度，**按名次顺序**插入（Map 保插入序）
+   */
+  function expandCandidatesOf(kw, pool, minShared) {
+    const out = new Map();
+    const q = (kw === undefined || kw === null) ? '' : String(kw);
+    const floor = Number(minShared);
+    if (!q || !(floor > 0)) return out;
+    const rows = [];
+    (Array.isArray(pool) ? pool : []).forEach((entry, i) => {
+      if (!entry || !entry.node) return;
+      const id = String(entry.node.id);
+      if (out.has(id)) return;                          // 同一个节点只算一次（池里重复不影响名次）
+      const shared = paletteRank.longestSharedFragment(q, entry.node.topic);
+      if (!(shared >= floor)) return;
+      rows.push({ id: id, shared: shared, i: i });
+    });
+    rows.sort((a, b) => (b.shared - a.shared) || (a.i - b.i));   // 片段长降序，同长按池内先后
+    rows.forEach((r) => out.set(r.id, r.shared));
+    return out;
+  }
+
+  /**
    * **来源可信度**的档位（W4 的 `trust` 路；**判据只有这一处**）：数越大越先看。
    *   3 = 命中带 `verified`（**已核**：`src/item-model.js` §1 的 `{at,by,how}` 三件套）
    *   2 = 人写的（节点上没有 `origin`）
@@ -1089,9 +1136,16 @@
      * 不需要扩）—— 不说清，读的人会把它误读成"扩召回没生效"。 */
     const recallAdded = {};                        // routeId → 接回来的节点 id（**进候选集的顺序**）
     const recallNote = {};                         // routeId → "一条都没接回来"的原因（读数逐路点名用）
+    /* 【W3-do】逐路接回来的命中在 `raw` 里的下标（**按那一路自己的名次顺序**）。
+     * 用途只有一个：给"候选生成"那一路一份 `orderings` —— 它只给自己生成的那批候选定名次，
+     * **不给字面命中定序**（`W3` 的诊断：缺的是候选集，不是重排器；重排器修不了任何一条漏检）。 */
+    const recallOrder = {};
     if (recall.on) {
       const haveNode = new Set();
       raw.forEach((h) => { if (h.nodeId !== undefined && h.nodeId !== null) haveNode.add(String(h.nodeId)); });
+      /* 节点 id → 池里的 entry（"按名次顺序遍历"要用它；池内顺序本身是 DFS 序） */
+      const poolById = new Map();
+      recallPool.forEach((entry) => { if (entry && entry.node) poolById.set(String(entry.node.id), entry); });
       recall.routes.forEach((rid) => {
         const row = paletteRank.ROUTES.filter((r) => r.id === rid)[0];
         const hitValue = row ? row.recallHit : '';
@@ -1104,21 +1158,50 @@
           return;
         }
         if (!kw) { recallNote[rid] = '没有关键词（纯 --tag 检索）⇒ 没有头名可扩'; return; }
-        if (!leaderId) { recallNote[rid] = '本批没有字面命中（没有头名）⇒ 这一路无从扩起'; return; }
-        const map = hopsOf(rid);
+        /* 【W3-do】候选来源**由路由表声明**（`recallSource`），本模块只做分派 —— 认不出就响亮记一条
+         * （不静默跳过：读的人必须能看见"这一路这次为什么一条都没接回"）。 */
+        const source = row ? row.recallSource : '';
+        let map;
+        let order = null;                          // null = 沿用池内顺序（graph 与 W4b 逐条相同）
+        if (source === 'expand') {
+          const floor = Number(row.minShared);
+          if (!(floor > 0)) {                      // 声明了片段候选、却没给门槛 ⇒ 不猜一个默认值
+            recallNote[rid] = '这一路的候选来源是「片段」，却没有在路由表里声明 `minShared` 门槛 ⇒ 一条都不接回';
+            return;
+          }
+          map = expandCandidatesOf(kw, recallPool, floor);
+          order = Array.from(map.keys());          // Map 保插入序 = 这一路自己的名次（片段长降序）
+        } else if (source === 'graph') {
+          if (!leaderId) { recallNote[rid] = '本批没有字面命中（没有头名）⇒ 这一路无从扩起'; return; }
+          map = hopsOf(rid);
+        } else {
+          recallNote[rid] = '这一路在路由表里声明的候选来源 `' + (source || '（空）')
+            + '` 本模块不认识 ⇒ 一条都不接回（认得的只有 graph / expand）';
+          return;
+        }
+        const seq = order ? order.map((id) => poolById.get(id)) : recallPool;
         const added = [];
-        recallPool.forEach((entry) => {
+        const indexes = [];
+        seq.forEach((entry) => {
+          if (!entry || !entry.node) return;
           const nodeId = String(entry.node.id);
-          if (!map.has(nodeId) || haveNode.has(nodeId)) return;   // 不在有界邻域里 / 已经在命中里
+          if (!map.has(nodeId) || haveNode.has(nodeId)) return;   // 不在候选集里 / 已经在命中里
           haveNode.add(nodeId);                                   // 同一节点只接一次（跨路去重）
           addHit(hitOf(entry, null, hitValue, {}), '', factOf(entry.node, null));
           added.push(nodeId);
+          indexes.push(raw.length - 1);
         });
         recallAdded[rid] = added;
+        recallOrder[rid] = indexes;
         if (!added.length) {
-          recallNote[rid] = (map.size <= 1)
-            ? '头名在 links / assoc 上没有可用的本项目邻居（或本项目没给 selfProject ⇒ 一条边都不敢认）'
-            : '头名的有界邻居**都已经在命中里**（这一批不需要扩召回）';
+          if (source === 'expand') {
+            recallNote[rid] = '没有任何节点的**标题**与关键词有 ≥ ' + Number(row.minShared)
+              + ' 字的公共片段（或它们都已经在命中里）';
+          } else {
+            recallNote[rid] = (map.size <= 1)
+              ? '头名在 links / assoc 上没有可用的本项目邻居（或本项目没给 selfProject ⇒ 一条边都不敢认）'
+              : '头名的有界邻居**都已经在命中里**（这一批不需要扩召回）';
+          }
         }
       });
       /* ⚠️ `idxOfHit` 是在扩召回**之前**建好的（文本名次要用它），新候选得补进去 ——
@@ -1130,17 +1213,36 @@
     if (hybrid.enabled && raw.length) {
       const allIdx = raw.map((h, i) => i);
       const orderings = {};
+      /* 【W3-do】**生成候选的分数只来自"它凭什么是候选"的那一份证据**：`expand` 接回来的候选
+       * 只有 `expand` 那一路给它名次，**不进** graph / trust / time 三路。
+       *
+       * 为什么它必须这样（判据是"结构上不可能"，不是"实测更好看"）：三路都按全量下标定名次 ⇒
+       * 一条只靠 2 字片段进来的候选会同时拿到"已核（trust 第 1）""时间新（time 第 1）"
+       * "是头名邻居（graph 第 1）"三份贡献 —— 而这三份**都与"这条查询问的是什么"无关**，
+       * 凑起来就能压过真命中。本批的评价集实测**没有**出现这种凑分（T1 名次排除前后逐条相同），
+       * 所以这条规则**不是**为了修某个已发生的坏读数，而是把那一类坏读数变成不可能。
+       * ⚠️ `--recall graph` 的 `near` 候选**不在**这条规则里（它的证据本来就是图邻域，且 W4b 的
+       * 黄金集钉着它现在的顺序 —— 本批一个字都不动它）。不对称是**证据来源不同**，记在契约 §3.4。
+       * ⚠️ T1 在 `search-all` 里的"跨项目前 10"下移**与这条规则无关**（它在排除前后一样）——
+       * 原因是 `search-all` 不做跨项目重排（见 `.review/20261020-W3-semantic-do/20-验收.md` §3）。 */
+      const generated = new Set(recallOrder.expand || []);
+      const literalIdx = allIdx.filter((i) => !generated.has(i));
       if (kw) orderings.text = textOrder;           // 纯 --tag：没有可打分的东西 ⇒ 这一路不给名次
       /* 图距离：以**文本那一路的头名**为心（无关键词 ⇒ 没有心 ⇒ 这一路恒空，如实记 ranked:0）。
        * 深度上界从路由表现取（`bound`），本模块不写这个数字。
        * 【W4b】这张表就是扩召回用的那一张（`hopsOf` 缓存）—— 两处不可能算出两个答案。 */
       const hops = hopsOf('graph');
-      orderings.graph = routeOrder(allIdx.filter((i) => hops.has(facts[i].nodeId)),
+      orderings.graph = routeOrder(literalIdx.filter((i) => hops.has(facts[i].nodeId)),
         (i) => hops.get(facts[i].nodeId), textRankOf);
+      /* 【W3-do】候选生成那一档：**只给它自己接回来的那批候选**定名次（片段长降序 = 接进来的顺序）。
+       * 为什么不给字面命中定序：那就变成一个重排器 —— `W3` 的实测判死了这条（18 条漏检里 17 条
+       * 连候选都没有，重排器修不了任何一条）。也不重算片段长度：名次顺序就是扩召回那段**接进来的
+       * 顺序**（同一份数据，不算第二遍 ⇒ 两处不可能给出两个顺序）。 */
+      if (recallOrder.expand && recallOrder.expand.length) orderings.expand = recallOrder.expand;
       // 来源可信度：档位高者先（档位判定只有 trustBucket 一处）
-      orderings.trust = routeOrder(allIdx, (i) => -trustBucket(facts[i]), textRankOf);
+      orderings.trust = routeOrder(literalIdx, (i) => -trustBucket(facts[i]), textRankOf);
       // 时效：有时间真值者按新→旧；**没有的整条不参与这一路**（后面在 --explain 里说明）
-      orderings.time = routeOrder(allIdx.filter((i) => Number.isFinite(facts[i].time)),
+      orderings.time = routeOrder(literalIdx.filter((i) => Number.isFinite(facts[i].time)),
         (i) => -facts[i].time, textRankOf);
       fused = paletteRank.fuse(orderings, hybrid.weights, raw.length);
     }
@@ -1160,7 +1262,10 @@
    * 【W4b】`--explain` 里的**扩召回读数**（唯一一处）：逐路回答"这一路这次接回来几条、为什么是 0"。
    *
    * 形状（判据靠它，别改）：
-   *   `{on, asked:[路由id…], routes:[{id, hitValue, bound, asked, added, note}]}`
+   *   `{on, asked:[路由id…], routes:[{id, hitValue, bound, minShared, boundText, asked, added, note}]}`
+   * 【W3-do】多出的 `minShared` / `boundText`：第二路（`expand`）的门槛是"最短公共片段"而不是跳数，
+   * 两处渲染（`cli/registry.js` 的 desc、`cli/commands/project.js` 的文本档）都要能逐路说对，
+   * 而**门槛的人话只有一处**（`src/palette-rank.js` 的 `boundText`）—— 这里只是把它带出来。
    * 三条口径：
    *   · `routes` 列**路由表里所有能扩召回的路由**（不是"只列这次点名的") —— 没点名的那几行也要
    *     在（`asked:false` + 说明"只定序、不扩召回"）：**少一路必须看得见**（同 W4 的 EMPTY_ROUTE_NOTE）；
@@ -1178,7 +1283,8 @@
         const isAsked = asked.indexOf(rid) >= 0;
         const added = (isAsked && addedOf && addedOf[rid]) ? addedOf[rid].length : 0;
         return {
-          id: rid, hitValue: row.recallHit, bound: row.bound, asked: isAsked, added: added,
+          id: rid, hitValue: row.recallHit, bound: row.bound, minShared: row.minShared,
+          boundText: paletteRank.boundText(row), asked: isAsked, added: added,
           note: isAsked ? (added ? null : ((noteOf && noteOf[rid]) || '这一路没有接回任何候选'))
             : '本次没点名它（--recall 没给 / 没列它）⇒ 只定序、不扩召回'
         };
@@ -1195,9 +1301,11 @@
   const EMPTY_ROUTE_NOTE = Object.freeze({
     text: '这一路没参与：没有关键词（纯 --tag 检索没有可打分的东西）',
     graph: '这一路恒空：没有文本头名（无关键词）或本项目没有任何 links / assoc 边可用',
+    expand: '这一路恒空：本次没点名它（`--recall` 没给 expand）⇒ 它不生成候选；'
+      + '它只给自己生成的那批候选定名次（不给字面命中定序 —— 那是重排器，W3 已判死）',
     trust: '这一路恒空：候选一条都没有（不可能出现，出现即数据有问题）',
     time: '这一路恒空：本批命中里没有一条带时间信息（取值只认 item.at / qa.at）',
-    semantic: '这一路没装（W3 未落地）'
+    semantic: '这一路没装（W3 的**向量**那一半仍未落地；"生成候选"那一半在 `expand` 那一路）'
   });
 
   /**
@@ -1370,6 +1478,9 @@
      * 它们在 `src/palette-rank.js` 一处）。导出这三件是为了让"每路怎么出名次"能被**直接钉住**
      * （端到端只看得见合成后的顺序，看不见"某一路恒空"这类事实）。 */
     graphHopsFrom: graphHopsFrom, trustBucket: trustBucket, itemTimeOf: itemTimeOf,
+    /* 【W3-do】候选生成的**候选来源**唯一实现（`--recall expand` 那一路；不收头名 —— 与 `graphHopsFrom`
+     * 的关键区别就是这个）。导出它，好让"片段候选怎么来"能被**直接钉住**（端到端只看得到几条命中）。 */
+    expandCandidatesOf: expandCandidatesOf,
     explainPayload: explainPayload,
     /* 【W4b】扩召回的 `--explain` 读数（唯一一处）：`{on,asked,routes[{id,hitValue,bound,asked,added,note}]}`。
      * 导出它，是为了让"没接回来时必须逐路说明原因"这条口径能被**直接钉住**（端到端只看得到 `added`）。 */

@@ -100,6 +100,50 @@
     return m === null ? null : m.score;
   }
 
+  /**
+   * 【W3-do】**最短公共片段**的门槛（字；唯一一处）。
+   * 为什么是 2：中文一个字的公共片段没有信息量（"的""内""机"这类到处都是）。
+   * **实测**（`.review/20261020-W3-semantic-do/proto-expand.js`，同一批 18 条漏检）：
+   * 2 字 ⇒ 接回 **16/18**；3 字 ⇒ 只剩 **6/18**；4 字 ⇒ 3/18。
+   * ⚠️ 它不是"调出来的阈值"，是这一路**功能定义**的一部分（改它 = 改这一路能接回什么）。
+   */
+  const EXPAND_MIN_SHARED = 2;
+
+  /**
+   * 【W3-do】两段文本的**最长公共连续片段**长度（大小写折叠；纯字符串、零词表、零依赖、不读时钟）。
+   *
+   * 它是"候选生成"那一路（`--recall expand`）的**唯一片段谓词** —— `src/item-index.js`
+   * 只拿它的返回值与门槛比较，**不写第二套**"什么算片段"的判定（病根同 `fuzzyMatch` 的两份打分）。
+   *
+   * 为什么是**连续**片段、而不是 `fuzzyMatch` 那种**非连续子序列**：
+   * 候选生成要回答的是"用户说的这个词，标题里有没有**连着**的一段"；而"字是不是都出现过"
+   * 已经是 `FH` 模糊命中（`fuzzyMatch`）的口径 —— 在这儿再用一次它，等于第二套命中判定。
+   *
+   * @returns {number} 公共片段的最大长度（0 = 一个共同字符都没有）
+   */
+  function longestSharedFragment(a, b) {
+    const s = String(a === undefined || a === null ? '' : a).toLowerCase();
+    const t = String(b === undefined || b === null ? '' : b).toLowerCase();
+    if (!s || !t) return 0;
+    let best = 0;
+    let prev = new Array(t.length + 1);            // DP 只需要上一行
+    for (let j = 0; j <= t.length; j++) prev[j] = 0;
+    for (let i = 1; i <= s.length; i++) {
+      const cur = new Array(t.length + 1);
+      cur[0] = 0;
+      for (let j = 1; j <= t.length; j++) {
+        if (s.charCodeAt(i - 1) === t.charCodeAt(j - 1)) {
+          cur[j] = prev[j - 1] + 1;
+          if (cur[j] > best) best = cur[j];
+        } else {
+          cur[j] = 0;
+        }
+      }
+      prev = cur;
+    }
+    return best;
+  }
+
   /** 命令优先于节点（空查询与同分两种情况都用它） */
   function kindRank(entry) {
     return entry && entry.kind === 'cmd' ? 0 : 1;
@@ -190,7 +234,25 @@
        * 为什么只有它：另外几路（trust / time / semantic）都只对**已经进来的候选**打分，它们
        * 手上没有"一条新候选"这个概念；而这一路手上有那张跳数表（`graphHopsFrom`），
        * 表里的近邻本来就已经排好了顺序 —— 扩召回只是把"从前被丢掉的那半张表"接回来。 */
-      recall: true, recallHit: 'near' }),
+      recall: true, recallHit: 'near',
+      /* 【W3-do】候选来源的名字（`src/item-index.js` 按它分派实现；认不出就**响亮报错**，不静默跳过）。
+       * `graph` = **跳数表**（从头名出发）—— 没有字面命中就没有候选（`W3` 实测 18 条漏检 0/18）。 */
+      recallSource: 'graph' }),
+    Object.freeze({ id: 'expand', label: '候选生成',
+      /* ⚠️ 这一路**不是"语义"、不是向量、也没有模型**：它比的是查询与标题的**最长公共片段**
+       * （≥ EXPAND_MIN_SHARED 字，纯字符串比较）。名字如实叫"候选生成"（`W3-do` 的裁决：
+       * 这一半是"把候选都没有的查询接回结果"，不是"按意思找"）；向量那一半仍在下一行
+       * `semantic` 里 `installed: false`（没有落地）。 */
+      source: '查询与**节点标题**的最长公共片段（≥ ' + EXPAND_MIN_SHARED + ' 字；纯字符串、零词表、零向量）',
+      installed: true,
+      /* 这一路没有"跳数"上界；它的门槛是**最短公共片段**（唯一一处：`EXPAND_MIN_SHARED`）。
+       * 字段名与 `bound` 分开，是因为 `bound` 在契约里就是"跳数上界"——
+       * 把字数塞进 `bound` 会让 `--explain` / MCP 的说明读成"上界 2 跳"。 */
+      minShared: EXPAND_MIN_SHARED,
+      minSharedWhy: '中文一个字的公共片段没有信息量 ⇒ 2 字起（实测 2 字接回 16/18、3 字只剩 6/18）',
+      /* ⭐ 与 `graph` 的**关键区别**：它**不需要头名**（`W3` 判死"扩召回"的唯一原因就是"没有头名就没有邻域"）
+       * ⇒ 关键词一条字面命中都没有时，它仍然是唯一能给出候选的那一路。 */
+      recall: true, recallHit: 'expand', recallSource: 'expand' }),
     Object.freeze({ id: 'trust', label: '来源可信度',
       source: 'item.verified（已核）/ node.origin（导入而来，见 src/schema.js）', installed: true,
       recall: false }),
@@ -203,9 +265,11 @@
       installed: true,
       recall: false }),
     Object.freeze({ id: 'semantic', label: '语义近似',
-      source: 'W3（向量 / 语义）——**未安装**，权重收下但不产生名次',
+      source: 'W3（向量 / 语义）——**未安装**；它的"生成候选"那一半已由 `expand` 那一路落地（词法片段，不是向量）',
       installed: false, recall: false,
-      why: 'W3 未落地：本工程零必需运行时依赖，语义那一路是可选组件（清单 W3 一节）' })
+      why: 'W3 的**向量**那一半仍未落地：它要引入模型与运行库（新增一条必需依赖 + 一份随数据重建的产物）'
+        + '—— 那一半的账写在 `.review/20261020-W3-semantic-do/10-方案.md` §2；'
+        + '能接回漏检的"生成候选"那一半已由 `expand` 落地' })
   ]);
   const ROUTE_IDS = Object.freeze(ROUTES.map((r) => r.id));
 
@@ -215,6 +279,23 @@
    * 别处再写一份"哪几路能扩召回"就会漏（病根同 `ROUTES` 本身）。
    */
   const RECALL_ROUTE_IDS = Object.freeze(ROUTES.filter((r) => r.recall).map((r) => r.id));
+
+  /**
+   * 【W3-do】某一路"门槛"的人话（**唯一一处**）。
+   *
+   * 为什么要有它：`--recall` 的说明（`cli/registry.js` 的 desc，会进 `docs/CLI.md`）与
+   * `--explain` 的文本档（`cli/commands/project.js`）是**两个**渲染点 —— 各写一份就会漂；
+   * 而 `bound`（跳数上界）对 `expand` 那一路**不存在**（它的门槛是"最短公共片段"），
+   * 两处硬写"上界 N 跳"就会渲染成"上界 undefined 跳"。
+   *
+   * @returns {string} 例：`上界 2 跳` / `最短公共片段 ≥ 2 字`
+   */
+  function boundText(row) {
+    const r = row || {};
+    if (Number(r.minShared) > 0) return '最短公共片段 ≥ ' + Number(r.minShared) + ' 字';
+    if (Number(r.bound) > 0) return '上界 ' + Number(r.bound) + ' 跳';
+    return '这一路没有声明门槛';
+  }
 
   /**
    * RRF 的平滑常数 `k`（唯一一处）。取值 **60**：照 RRF 原论文（Cormack 等，2009）的默认。
@@ -250,13 +331,20 @@
    */
   const MODES = Object.freeze({
     /** 均衡档（默认）：字面匹配当基准 = 1；图距离给一半（"就近的相关知识点"补一半相关性）；
-     *  可信度与时效各 0.2 —— 它们是**微调**，抢不走字面匹配的位子。 */
-    balanced: Object.freeze({ text: 1, graph: 0.5, trust: 0.2, time: 0.2, semantic: 0 }),
-    /** 近期档：时间与字面同权（"最近发生的"与"最相关的"并列），图距离压到 0.2。 */
-    recent: Object.freeze({ text: 1, graph: 0.2, trust: 0.1, time: 1, semantic: 0 }),
+     *  可信度与时效各 0.2 —— 它们是**微调**，抢不走字面匹配的位子。
+     *  【W3-do】`expand`（候选生成）给 **0.5**，与 `graph` 同档：两者都是"字面之外的相近"，
+     *  都只补一半相关性。**它 ≤ text 是一条硬口径**（见下面那句量级提醒）：`≤ 1` 保证
+     *  "字面前 ~k+2s 名永远在片段候选之前" ⇒ T1 的前 10 不会被补进来的候选挤掉。 */
+    balanced: Object.freeze({ text: 1, graph: 0.5, expand: 0.5, trust: 0.2, time: 0.2, semantic: 0 }),
+    /** 近期档：时间与字面同权（"最近发生的"与"最相关的"并列），图距离压到 0.2。
+     *  `expand` 也 0.2：近期档只关心新旧与字面，候选生成是**微调**。 */
+    recent: Object.freeze({ text: 1, graph: 0.2, expand: 0.2, trust: 0.1, time: 1, semantic: 0 }),
     /** 概念档：图距离 > 字面（"换个说法找同一个概念"），字面降为 0.5；时间关掉
-     *  （概念相似与新旧无关，留着它只会把新条目顶上来）。 */
-    conceptual: Object.freeze({ text: 0.5, graph: 1, trust: 0.2, time: 0, semantic: 0 })
+     *  （概念相似与新旧无关，留着它只会把新条目顶上来）。
+     *  【W3-do】`expand` 取 **0.5 = 与 text 相等**（不是 1）：概念档允许"片段候选"追平字面，
+     *  **不许压过**它 —— 实测 w=1 时片段候选会排在字面第 1 名之前（`1/(k+1) > 0.5/(k+1)`），
+     *  那会直接打坏 T1 的前 10 率。 */
+    conceptual: Object.freeze({ text: 0.5, graph: 1, expand: 0.5, trust: 0.2, time: 0, semantic: 0 })
   });
   const DEFAULT_MODE = 'balanced';
 
@@ -499,6 +587,11 @@
     parseMode: parseMode, parseWeights: parseWeights, hybridSpecOf: hybridSpecOf,
     // 【W4b】**扩召回**：能扩召回的路由（`ROUTES` 里标了 `recall` 的那几行，唯一一处）与它的解析
     RECALL_ROUTE_IDS: RECALL_ROUTE_IDS, parseRecall: parseRecall,
+    // 【W3-do】**候选生成**（`--recall expand`）的片段谓词与门槛：全工程只此一处
+    // （`src/item-index.js` 拿它与门槛比较，不写第二套"什么算片段"）
+    EXPAND_MIN_SHARED: EXPAND_MIN_SHARED, longestSharedFragment: longestSharedFragment,
+    // 某一路"门槛"的人话（唯一一处；`--recall` 的 desc 与 `--explain` 的文本档都从它现取）
+    boundText: boundText,
     fuse: fuse, contributionsOf: contributionsOf,
     // 只给测试：k 的注入口（照 `src/heat.js` 里那个"只给测试换数值"的先例：判据可重复执行，
     // 不必手改源码跑一次）。生产代码永不调它；名字与那个先例也不同 —— 免得撞红

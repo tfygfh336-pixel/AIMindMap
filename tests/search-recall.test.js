@@ -80,10 +80,12 @@ const REAL_PROJECTS = path.join(ROOT, 'projects');
 const PREFIX = 'w4b-';
 const PROBES = [
   { name: PREFIX + 'gold', why: '黄金集语料（A/B/C/D/F/G 组：非字面命中那一类 + 上界那条链）' },
-  { name: PREFIX + 'filter', why: '硬过滤那几条（E 组：标签 / 条目级过滤 × 扩召回）' }
+  { name: PREFIX + 'filter', why: '硬过滤那几条（E 组：标签 / 条目级过滤 × 扩召回）' },
+  { name: PREFIX + 'expand', why: '【W3-do】候选生成那几条（M 组：没有头名 / 片段门槛 / 名次）' }
 ];
 const GOLD = PROBES[0].name;
 const FILTER = PROBES[1].name;
+const EXPAND = PROBES[2].name;
 /** 清理的唯一入口（`afterAll` 与用例内的 `try/finally` 都走它）——别处不许各写一遍 rmSync。 */
 function cleanup(only) {
   const names = only || PROBES.map((p) => p.name);
@@ -178,6 +180,37 @@ function mkFilter() {
 }
 const RE_KW = '闸门';
 const RE_ARGS = ['--mode', paletteRank.DEFAULT_MODE, '--recall', firstRecall];
+
+/* ---------------- 【W3-do】候选生成的语料（M 组） ----------------
+ * 为什么要一个**专门**的语料：M 组的判据是"**一条字面命中都没有**时也能给出候选"，
+ * 而 `fuzzyMatch` 是**非连续子序列**（很宽）—— 随手挑的查询都会命中。这四条标题是照着
+ * "子序列不成立、但公共片段成立"设计的（每个字都写在注释里，便于以后改）：
+ *   · `ex-long`  与查询 `下半部中断` 的公共片段 = `下半部`（3 字）⇒ 该排第一
+ *   · `ex-two`   与查询的公共片段 = `中断`（2 字）⇒ 该排第二
+ *   · `ex-one`   公共片段只有 `断`（1 字 < 门槛）⇒ **不许进来**
+ *   · `ex-none`  一个共同字符都没有 ⇒ **不许进来**
+ * 而且这四条**都不是**查询的非连续子序列（`ex-long` 里 `中` 在 `部` 之前，
+ * `ex-two` 里没有 `下`）⇒ 默认档 `hitCount = 0`，即 `W3` 说的"没有头名"。 */
+const EXPAND_Q = '下半部中断';
+function mkExpand() {
+  const dir = projDir(EXPAND);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(projFile(EXPAND), JSON.stringify({
+    meta: { name: EXPAND, author: '', version: '0.18.0', formatVersion: 3 },
+    format: 'node_tree',
+    data: { id: 'root', topic: 'root', expanded: true, children: [
+      { id: 'ex-long', topic: '中断下半部与 tasklet', children: [] },
+      { id: 'ex-two', topic: '硬中断、软中断与 NAPI', children: [] },
+      { id: 'ex-one', topic: '断点调试', children: [] },
+      { id: 'ex-none', topic: '完全无关的调度器', children: [] }
+    ] }
+  }, null, 2), 'utf8');
+  return EXPAND;
+}
+/** 生成候选那一路的 `matchIn` 取值名（从路由表现取，不写死） */
+const expandValue = paletteRank.ROUTES.filter((r) => r.recallSource === 'expand')
+  .map((r) => r.recallHit)[0];
+const expandRoute = paletteRank.ROUTES.filter((r) => r.recallSource === 'expand')[0] || {};
 
 /* ============================================================================
  * A. 判据：**默认档逐字节不变**（本件的承重性质）
@@ -447,7 +480,14 @@ describe('F. 判据①的形态：`--explain` 逐路点名"新取值是哪一路
     expect(rec.routes.map((r) => r.id)).toEqual(RECALL_IDS);
     rec.routes.forEach((r) => {
       expect(typeof r.hitValue, r.id + ' 要报它接回来的命中报哪个取值').toBe('string');
-      expect(typeof r.bound, r.id + ' 要报上界').toBe('number');
+      /* 【W3-do】每一路都要报**它自己的门槛**，但门槛**不是同一个量**：
+       * `graph` 是跳数上界（`bound`）、`expand` 是最短公共片段（`minShared`）——
+       * 硬要求"都有 `bound`"就是把两种门槛当成一种（本批第一版正是这么红的）。 */
+      const meter = Number(r.bound) > 0 ? Number(r.bound) : Number(r.minShared);
+      expect(meter, r.id + ' 要报它自己的门槛（bound 跳数 / minShared 片段字数）').toBeGreaterThan(0);
+      expect(typeof r.boundText, r.id + ' 门槛的人话要从唯一那一处带出来（src/palette-rank.js 的 boundText）')
+        .toBe('string');
+      expect(r.boundText, '人话里不能出现 undefined').not.toContain('undefined');
       expect(typeof r.asked).toBe('boolean');
       expect(typeof r.added).toBe('number');
       if (r.asked && r.added === 0) expect(typeof r.note, '接回来 0 条就必须说明原因').toBe('string');
@@ -759,6 +799,134 @@ describe('K. 端到端沙箱不变量', () => {
     const visits = path.join(SANDBOX, '.visits');
     expect(fs.existsSync(visits) ? fs.readdirSync(visits).length : 0,
       'projects/.visits 里的文件数必须是 0').toBe(0);
+  });
+});
+
+/* ============================================================================
+ * M. 【W3-do】**候选生成**（`--recall expand`）：零字面命中也能接回候选
+ * ----------------------------------------------------------------------------
+ * 判据出处：`.review/20261020-W3-semantic-do/10-方案.md`（`W3` 判死"语义检索"的唯一原因是
+ * 「按契约只能重排，而 18 条漏检里 17 条连候选都没有」；本组钉的正是"没有头名也能给候选"）。
+ * 三条承重性质：① **不需要头名**（与 `graph` 的根本区别）；② 名次 = 公共片段长度降序；
+ * ③ 门槛来自路由表（`minShared`），且生成候选**只由这一路给名次**（不靠 trust/time 凑分）。
+ * ========================================================================== */
+describe('M. 【W3-do】候选生成 `--recall expand`：没有字面命中也能接回候选', () => {
+  it('M1 一条字面命中都没有时：`expand` 接回候选、`graph` 一条都接不回（区别看得见）', () => {
+    mkExpand();
+    // 前提自证：默认档真的 0 命中（"没有头名"这件事是被测出来的，不是假设）
+    const plain = search(EXPAND, EXPAND_Q, []);
+    expect(plain.hitCount, '默认档必须 0 命中 —— 否则这条断言测的不是"没有头名"').toBe(0);
+
+    const on = search(EXPAND, EXPAND_Q, ['--mode', paletteRank.DEFAULT_MODE,
+      '--recall', expandRoute.id, '--explain']);
+    expect(on.hitCount, '给了 --recall expand ⇒ 候选集真的变大').toBeGreaterThan(0);
+    const got = on.hits.filter((h) => h.matchIn === expandValue).map((h) => h.nodeId);
+    expect(got, '名次 = 公共片段长度降序：`下半部`(3 字) 在 `中断`(2 字) 之前').toEqual(['ex-long', 'ex-two']);
+    expect(got, '1 字的公共片段（`ex-one`）不许进来').not.toContain('ex-one');
+    expect(got, '没有公共片段（`ex-none`）不许进来').not.toContain('ex-none');
+
+    // 同一条查询点名 graph：接回 0 条，且 `--explain` 里写明"没有头名"
+    const g = search(EXPAND, EXPAND_Q, ['--mode', paletteRank.DEFAULT_MODE,
+      '--recall', firstRecall, '--explain']);
+    expect(g.hitCount, 'graph 那一路是"从头名出发"的 ⇒ 没有头名就一条都接不回（W3 的实测结论）').toBe(0);
+    const gRow = g.explain.recall.routes.filter((r) => r.id === firstRecall)[0];
+    expect(gRow.added).toBe(0);
+    expect(gRow.note, '一条都没接回来必须说明原因').toContain('头名');
+  });
+
+  it('M2 门槛来自路由表（`minShared`）：门槛抬到 3 ⇒ 只有 3 字那条进来（判别力）', () => {
+    mkExpand();
+    const store = require('../src/data-store.js').createStore(SANDBOX);
+    /* `store.read()` 给的是**项目文件**（`{meta, format, data}`）⇒ 树根是 `.data.data`
+     * （命令层也是这么取的；这里直接拿树根去建索引，走的是与 `searchItems` 同一个 `buildIndexes`） */
+    const data = store.read(EXPAND).data.data;
+    const pool = itemIndex.buildIndexes(data).entries;
+    const floor = paletteRank.EXPAND_MIN_SHARED;
+    expect(expandRoute.minShared, '路由表那一行必须用同一个门槛（唯一一处）').toBe(floor);
+    const atFloor = Array.from(itemIndex.expandCandidatesOf(EXPAND_Q, pool, floor).keys());
+    expect(atFloor, '门槛 = 2 ⇒ 两条都在').toEqual(['ex-long', 'ex-two']);
+    const raised = Array.from(itemIndex.expandCandidatesOf(EXPAND_Q, pool, floor + 1).keys());
+    expect(raised, '门槛抬 1 ⇒ 2 字那条掉出去（证明门槛真的是参数、不是写死的）').toEqual(['ex-long']);
+    const lowered = Array.from(itemIndex.expandCandidatesOf(EXPAND_Q, pool, 1).keys());
+    expect(lowered, '门槛降到 1 ⇒ 1 字那条也进来（证明 2 字那条不是巧合）').toContain('ex-one');
+  });
+
+  it('M3 生成候选**只由这一路给名次**（不靠 trust/time 凑分 ⇒ 字面命中永远是字面命中）', () => {
+    mkExpand();
+    const on = search(EXPAND, EXPAND_Q, ['--mode', paletteRank.DEFAULT_MODE,
+      '--recall', expandRoute.id, '--explain']);
+    const rows = on.explain.hits.filter((h) => (on.hits.filter((x) => x.nodeId === h.nodeId)[0] || {}).matchIn === expandValue);
+    expect(rows.length).toBeGreaterThan(0);
+    rows.forEach((h) => {
+      const ranked = h.parts.filter((p) => p.rank !== null);
+      expect(ranked.map((p) => p.route), '生成候选的名次只来自它自己那一路')
+        .toEqual([expandRoute.id]);
+    });
+  });
+
+  it('M4 命中形状仍是契约的 12 键（开的是取值表，不是加键）', () => {
+    mkExpand();
+    const on = search(EXPAND, EXPAND_Q, ['--mode', paletteRank.DEFAULT_MODE, '--recall', expandRoute.id]);
+    const h = on.hits.filter((x) => x.matchIn === expandValue)[0];
+    expect(h).toBeTruthy();
+    const CONTRACT = ['id', 'topic', 'nodeId', 'nodeTopic', 'itemId', 'type', 'itemized', 'matchIn',
+      'snippet', 'src', 'verified', 'score'];
+    Object.keys(h).forEach((k) => expect(CONTRACT, '契约外的键：' + k).toContain(k));
+    expect(h.itemId).toBe(null);
+    expect(h.type).toBe(null);
+    expect(h.itemized).toBe(false);
+    expect(h.score).toBe(1);
+    expect(itemIndex.MATCH_IN, '取值必须在封闭表里').toContain(h.matchIn);
+    /* ⚠️ 生成候选**没有命中面原文** ⇒ 不产生 `snippet`（与 `near` 同一条口径）；也不带 `src`。 */
+    expect(Object.keys(h)).not.toContain('snippet');
+    expect(Object.keys(h)).not.toContain('src');
+  });
+
+  it('M5 默认档不受影响：不给 --recall 时 `expand` 那一路 `ranked = 0`（权重再大也不产生名次）', () => {
+    mkExpand();
+    const off = search(EXPAND, '断点', ['--mode', paletteRank.DEFAULT_MODE, '--explain']);
+    const row = off.explain.routes.filter((r) => r.id === expandRoute.id)[0];
+    expect(row.installed, '这一路是**装了**的（与未安装的 semantic 分开）').toBe(true);
+    expect(Number(row.weight), '预设里它有权重（balanced 那档）').toBeGreaterThan(0);
+    expect(row.ranked, '不点名它 ⇒ 它不生成候选 ⇒ 名次 0').toBe(0);
+    expect(row.note, '没点名要说得出来').toContain('--recall');
+  });
+
+  it('M6 片段谓词本身：最长**连续**公共片段（大小写折叠 / 空值 / 无公共字符 / 不是子序列）', () => {
+    const F = paletteRank.longestSharedFragment;
+    expect(F('下半部中断', '中断下半部与 tasklet'), '连续片段 `下半部` = 3').toBe(3);
+    expect(F('中断下半部', '硬中断、软中断与 NAPI'), '只有 `中断` = 2').toBe(2);
+    expect(F('MMU', '页表与地址翻译'), '一个共同字符都没有 ⇒ 0').toBe(0);
+    expect(F('', '任何标题'), '空查询 ⇒ 0').toBe(0);
+    expect(F('任何查询', ''), '空标题 ⇒ 0').toBe(0);
+    expect(F('NAPI', 'napi 收包路径'), '大小写折叠 ⇒ 4').toBe(4);
+    /* ⭐ 与 `fuzzyMatch` 的分界：非连续子序列**是**模糊命中的口径，**不是**片段的 ——
+     * 这里 `闸门` 在 `闸 与 门` 里是非连续子序列（fuzzyMatch 命中），但公共片段只有 1 字。 */
+    expect(paletteRank.fuzzyMatch('闸门', '闸 与 门'), '模糊命中：非连续子序列').not.toBe(null);
+    expect(F('闸门', '闸 与 门'), '公共片段只有 1 字 ⇒ 低于门槛').toBe(1);
+  });
+
+  it('M7 一处实现：候选来源的实现在 item-index 只一份，取值名的字面量只在两处', () => {
+    const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    /* 扫描面声明（照"门禁不许把自己数成第二处实现"那条教训）：只扫仓库的 `src/` 与 `cli/`
+     * —— **不扫** `scripts/`、`tests/`、`.review/`（集成断言与单测本来就要点名夹具与路由，
+     * 它们不是"实现处"；W4b 的 I3 同理只点名 registry 与 mcp-server 两个渲染点）。 */
+    const files = ['src', 'cli'].reduce((acc, dir) => {
+      const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).forEach((e) => {
+        const abs = path.join(d, e.name);
+        if (e.isDirectory()) { if (e.name !== 'vendor' && e.name !== 'node_modules') walk(abs); return; }
+        if (/\.(js|mjs)$/.test(e.name)) acc.push(path.relative(ROOT, abs).split(path.sep).join('/'));
+      });
+      walk(path.join(ROOT, dir));
+      return acc;
+    }, []);
+    const has = (needle) => files.filter((f) => read(f).indexOf(needle) >= 0).sort();
+    expect(has('function expandCandidatesOf('), '候选来源只能有一处实现').toEqual(['src/item-index.js']);
+    paletteRank.RECALL_ROUTE_IDS.forEach((rid) => {
+      const v = paletteRank.ROUTES.filter((r) => r.id === rid)[0].recallHit;
+      expect(has("'" + v + "'"), '取值名 `' + v + '` 的字面量只许在路由表与封闭取值表')
+        .toEqual(['src/item-index.js', 'src/palette-rank.js']);
+    });
   });
 });
 

@@ -53,14 +53,17 @@ function modeLine(id) {
 }
 
 /**
- * 【W4b】把**能扩召回的路由**渲染成 `graph(matchIn=near，上界 2 跳)`（**只回显，不判断**）。
- * 路由名 / 新取值名 / 跳数上界三件全部从 `src/palette-rank.js` 的 ROUTES **现取** ——
+ * 【W4b】把**能扩召回的路由**渲染成 `graph(matchIn=near，上界 2 跳)` /
+ * `expand(matchIn=expand，最短公共片段 ≥ 2 字)`（**只回显，不判断**）。
+ * 路由名 / 新取值名 / 门槛三件全部从 `src/palette-rank.js` 的 ROUTES **现取** ——
  * 抄一份进 desc 就等于第二份副本，而漂移的方向恰好是"AI 照着文档给的取值跟实际报的不一样"。
+ * 【W3-do】门槛的**人话**不在这里拼：`expand` 的门槛是"最短公共片段"、`graph` 是"跳数上界"，
+ * 两处各拼一遍就会渲染出"上界 undefined 跳" ⇒ 走 `paletteSpec.boundText`（唯一一处）。
  */
 function recallLine() {
   return paletteSpec.RECALL_ROUTE_IDS.map((id) => {
     const r = paletteSpec.ROUTES.filter((x) => x.id === id)[0];
-    return id + '(matchIn=' + r.recallHit + '，上界 ' + r.bound + ' 跳)';
+    return id + '(matchIn=' + r.recallHit + '，' + paletteSpec.boundText(r) + ')';
   }).join(' / ');
 }
 
@@ -201,7 +204,8 @@ function init() {
       + '（预设表与理由的唯一一处：src/palette-rank.js 的 MODES）。'
       + '`--weights text=1,graph=.5,…` 自己定权重：它是**完整名单**，没提到的路由权重按 0'
       + '（写在明面上，不做"在预设上偷偷覆盖"那套）；可选路由 ' + paletteSpec.ROUTE_IDS.join(' / ')
-      + '—— 语义那一档 W3 未落地 ⇒ **未安装**（权重收下但不产生名次，`--explain` 里逐路点名，不静默少一路）。'
+      + '—— 语义（`semantic`）那一档的**向量**那一半仍未落地 ⇒ **未安装**（权重收下但不产生名次，'
+      + '`--explain` 里逐路点名，不静默少一路）；"生成候选"那一半已由 `expand` 落地（见下，**它是词法不是向量**）。'
       + '`--mode` 与 `--weights` **不能同给**（预设 vs 完整名单，两种口径不混）。'
       + '融合是 **RRF**：总分 = Σ 权重/(k + 名次)，k = ' + paletteSpec.RRF_K
       + '（只吃名次 ⇒ 不含量纲、不需要归一化；k 与理由只有 src/palette-rank.js 一处）。'
@@ -211,7 +215,9 @@ function init() {
       /* 【W4b】扩召回：**何时用** + "不给就逐字节不变" + 新取值从 `src/palette-rank.js` **现取** */
       + '扩召回（**W4b**）：`--recall <路由>` —— **不给它时输出与从前逐字节相同**（候选集、`hitCount`、'
       + '`matchIn` 取值集合都不变，与 W4 那条"默认关"同一条纪律）。给了才**真的扩召回**：把'
-      + '"非字面命中"（头名在有界邻域里的近邻 —— 上界就是路由表那一行的 `bound`）也接进结果 ⇒ '
+      + '"非字面命中"也接进结果 —— 候选来源逐路由表：`graph` = 头名在有界邻域里的近邻（门槛 = 那一行的 `bound`）；'
+      + '【W3-do】`expand` = **候选生成**（查询与**标题**的最长公共片段 ≥ 2 字，**不需要头名** ⇒ '
+      + '零字面命中的查询也能接回候选；**它是词法片段，不是向量、没有模型**）⇒ '
       + '`hitCount` 与 `hits` **会因此变多**，新命中的 `matchIn` = 该路声明的取值（' + recallLine() + '）。'
       + '能扩召回的只有路由表里标了 `recall` 的那几路（' + paletteSpec.RECALL_ROUTE_IDS.join(' / ') + '）；'
       + '它必须与 `--mode` / `--weights` **同给**（它改变的是**候选集**，而"这批候选怎么排"是融合那一层的事 —— '
@@ -238,7 +244,7 @@ function init() {
       /* 【W4b】扩召回：与 `search` 同名同义、逐项目各算各的；`explain.recall[].added` 同样给合计 + 分账 */
       + '。扩召回（**W4b**）：`--recall <路由>` = `search` 的同名开关（同一处解析；能扩召回的是 '
       + paletteSpec.RECALL_ROUTE_IDS.join(' / ') + '，报 `matchIn` = ' + recallHitNames() + '）；'
-      + '**不给它时输出与从前逐字节相同**；给了也**逐项目各算各的**（邻域是项目内的 ⇒ 每个项目的'
+      + '**不给它时输出与从前逐字节相同**；给了也**逐项目各算各的**（候选来源与名次都是项目内的 ⇒ 每个项目的'
       + '命中与 `search <该项目> --recall …` 逐条相同）。`--explain` 的 `recall.routes[].added` '
       + '同样是**跨项目合计 + 逐项目分账**；命中形状仍是 **12 键**（开的是 `matchIn` 取值表，不是加键）',
     fn: loadFile('project').searchAll });

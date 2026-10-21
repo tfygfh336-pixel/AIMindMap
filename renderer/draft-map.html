@@ -7,13 +7,20 @@
        一个独立窗口是这个语义最直白的实现：窗口没了，草稿就没了（数据只在主进程内存里），
        而"主图零变化"不需要任何额外保证 —— 并入之前主进程根本没碰过盘。
        这也是台账点名的做法：「复用 map-closed.html 那种独立小页面做法，渲染同一套 jsMind 只读视图」。
-     a–e 决议里与本页相关的三条：
+     a–e 决议里与本页相关的四条：
        a 置顶 / 按内容决定显示范围与窗口大小（本页把内容 bbox 报给主进程，由它钳制后 setContentSize）
+       b **允许完整编辑**（2026-10-20 兑现 —— 见 `.review/20261020-editor-复用/00-定题.md`）：
+         本页的编辑**不是**本页写的：它调 `renderer/editor.js` 的 `MM.Editor.create(host)`，
+         与**主窗同一份实现**。本页只给"宿主该给的东西"（树在哪 / 状态栏 / 能力位 / 改动怎么收口），
+         并把改后的树经 IPC `draft:update` 交回主进程那份权威副本（**仍然不落盘**）。
+         草稿窗**不能**做的那几件事（写盘 / 撤销栈 / 标签 / 展开状态 / 图片附件 / 跨项目链接 /
+         MD 导入导出 / 灯箱详情框）**写在能力位上**，理由文案在 `editor.js` 的 `CAP_NOTES` 一处。
        c 导出 md / json
-       e 人与 AI 都能生成（本页只负责"看与裁决"，入口在主进程的菜单与控制通道）
-     ⚠️ b「允许完整编辑」**本批不做**（理由见 .review/20261020-W11-temp-map/00-定题.md §7 偏差 1）：
-       本页是**只读**的 —— 但"只读"不等于"不能动"：缩放 / 平移 / 导出 / 并入 / 丢弃都在。
+       e 人与 AI 都能生成（本页只负责"看、改、裁决"，入口在主进程的菜单与控制通道）
      渲染库调用一律经 `MM.adapter.*`（renderer/mindmap-adapter.js 是唯一出口）。
+     样式**不引用 `style.css`**（那是**主图那张**表，里面全是主图的布局前提）。
+     编辑对话框的骨架由 `editor.js` 现造（本页没有静态骨架 ⇒ 它走 create 那一支），
+     所以下面那一段 `.mm-ed-*` 是本页给**共用对话框**写的样式（主窗用的是 `style.css` 里的 `.overlay`）。
      ============================================================ -->
 <html lang="zh-CN">
 <head>
@@ -22,8 +29,6 @@
 <title>草稿图 · AI MindMap</title>
 <link rel="stylesheet" href="vendor/jsmind.css">
 <style>
-  /* 独立的极简样式：**不引用 style.css**（那是**主图那张**样式表，里面全是主图的布局前提，
-     草稿页引用它只会得到"看起来像主图、行为不是主图"的错觉） */
   html, body { height: 100%; margin: 0; }
   body {
     display: flex; flex-direction: column;
@@ -31,29 +36,32 @@
     font-size: 13px; color: #1d2129; background: #f7f8fa;
     overflow: hidden;
   }
-  #bar {
+  #bar, #editbar {
     flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
     padding: 6px 10px; background: #fff; border-bottom: 1px solid #e5e6eb;
     white-space: nowrap; overflow: hidden;
   }
+  #editbar { background: #fafbfc; padding-top: 4px; padding-bottom: 4px; }
   #bar #title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
   #bar #src { font-weight: 400; color: #4e5969; }
   #bar #stat { color: #4e5969; }
+  #bar #dropped { color: #d25f00; font-size: 12px; }
   #bar #note { color: #d25f00; font-size: 12px; }
-  #bar .spacer { flex: 1 1 auto; }
-  #bar button {
+  #editbar #sel { color: #1664ff; font-size: 12px; min-width: 12ch; }
+  #bar .spacer, #editbar .spacer { flex: 1 1 auto; }
+  #bar button, #editbar button, #pick button, #move button {
     padding: 4px 10px; font-size: 12px; cursor: pointer;
     border: 1px solid #d5d9e0; border-radius: 5px; background: #fff; color: #1664ff;
   }
-  #bar button:hover:not(:disabled) { border-color: #1664ff; background: #f2f7ff; }
-  #bar button:disabled { color: #86909c; cursor: default; }
+  #bar button:hover:not(:disabled), #editbar button:hover:not(:disabled) { border-color: #1664ff; background: #f2f7ff; }
+  #bar button:disabled, #editbar button:disabled { color: #86909c; cursor: default; }
   #bar button.danger { color: #d93026; }
-  #pick {
+  #pick, #move {
     flex: 0 0 auto; display: none; align-items: center; gap: 8px;
     padding: 6px 10px; background: #fff7e8; border-bottom: 1px solid #ffd591;
   }
-  #pick.on { display: flex; }
-  #pick select { max-width: 60ch; font-size: 12px; padding: 2px 4px; }
+  #pick.on, #move.on { display: flex; }
+  #pick select, #move select { max-width: 60ch; font-size: 12px; padding: 2px 4px; }
   #stage { flex: 1 1 auto; position: relative; overflow: hidden; background: #f7f8fa; }
   #jsmind_container { position: absolute; inset: 0; overflow: auto; }
   #status {
@@ -62,8 +70,38 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   #status.err { color: #d93026; }
-  /* 只读视觉提示：节点不可编辑（双击不会进编辑态 —— 本页没有那套编辑器） */
-  jmnode { cursor: default; }
+  /* 节点不可 inline 编辑（编辑走共用编辑器的对话框）；双击会开那个框 */
+  jmnode { cursor: pointer; }
+
+  /* ===== 共用编辑器（renderer/editor.js）在本页里的外观 =====
+     为什么这些规则在这里而不在 `style.css`：主窗用的是 `style.css` 的 `.overlay`/`.dialog-box`
+     （**一个字节都没改**），草稿页不引用那张表 ⇒ 由本页给它写一份 `mm-ed-*` 的皮。
+     ⚠️ 这不是"第二份实现"：**行为、字段、校验、能力拒绝全在 editor.js 一处**，这里只有颜色与间距。 */
+  .mm-ed-overlay {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, .35);
+  }
+  .mm-ed-box {
+    background: #fff; border-radius: 8px; padding: 16px 18px;
+    width: min(640px, 92vw); max-height: 88vh; overflow: auto;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .22);
+  }
+  .mm-ed-box h3 { margin: 0 0 12px; font-size: 15px; }
+  .mm-ed-row { display: block; margin-bottom: 10px; font-size: 12px; color: #4e5969; }
+  .mm-ed-row input[type="text"], .mm-ed-row textarea {
+    display: block; width: 100%; margin-top: 4px; box-sizing: border-box;
+    padding: 6px 8px; font-size: 13px; color: #1d2129;
+    border: 1px solid #d5d9e0; border-radius: 5px; font-family: inherit;
+  }
+  .mm-ed-row textarea { resize: vertical; }
+  .mm-ed-chk { display: flex; align-items: center; gap: 6px; }
+  .mm-ed-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  .mm-ed-actions button {
+    padding: 6px 14px; font-size: 13px; cursor: pointer;
+    border: 1px solid #d5d9e0; border-radius: 5px; background: #fff; color: #1d2129;
+  }
+  .mm-ed-actions button.mm-ed-primary { background: #1664ff; border-color: #1664ff; color: #fff; }
 </style>
 </head>
 <body>
@@ -71,18 +109,37 @@
     <span id="title">草稿图</span>
     <span id="src"></span>
     <span id="stat"></span>
-    <span id="note">临时 · 不落盘 · 关窗即弃</span>
+    <span id="dropped"></span>
     <span class="spacer"></span>
     <button id="btn-merge" title="并入主导图（会问落点）">并入主导图</button>
     <button id="btn-md" title="导出 Markdown">导出 md</button>
     <button id="btn-json" title="导出 JSON">导出 json</button>
     <button id="btn-discard" class="danger" title="丢弃这份草稿并关窗">丢弃</button>
   </div>
+  <!-- 编辑那一排：**每个按钮只做"取选中 + 调共用编辑器"**（实现全在 renderer/editor.js） -->
+  <div id="editbar">
+    <span id="sel">选中：—</span>
+    <button id="btn-edit" title="编辑选中节点的标题/正文（也可双击节点）">编辑节点</button>
+    <button id="btn-add-child" title="在选中节点下加一个子节点">＋子节点</button>
+    <button id="btn-add-sibling" title="在选中节点的同级末尾加一个节点">＋同级</button>
+    <button id="btn-del" class="danger" title="删除选中节点（含整棵子树）">删除</button>
+    <button id="btn-up" title="与上一个同级节点交换位置">↑</button>
+    <button id="btn-down" title="与下一个同级节点交换位置">↓</button>
+    <button id="btn-move" title="改挂到另一个节点下（落点由你选）">移到…</button>
+    <span class="spacer"></span>
+    <span id="note">临时 · 不落盘 · 关窗即弃</span>
+  </div>
   <div id="pick">
     <span>并入到：</span>
     <select id="pick-parent"></select>
     <button id="pick-ok">确认并入</button>
     <button id="pick-cancel">取消</button>
+  </div>
+  <div id="move">
+    <span>移到谁的下面：</span>
+    <select id="move-parent"></select>
+    <button id="move-ok">确认移动</button>
+    <button id="move-cancel">取消</button>
   </div>
   <div id="stage"><div id="jsmind_container"></div></div>
   <div id="status"></div>
@@ -91,6 +148,8 @@
   <script src="../src/convert.js"></script>
   <script src="../src/draft-map.js"></script>
   <script src="mindmap-adapter.js"></script>
+  <!-- ★ 共用编辑器：主窗 `index.html` 也加载**同一份**（本页没有静态对话框骨架 ⇒ 它走 create 那一支） -->
+  <script src="editor.js"></script>
   <script src="draft-map.js"></script>
 </body>
 </html>

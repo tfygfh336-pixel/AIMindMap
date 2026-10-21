@@ -591,39 +591,39 @@
     }
   }
 
-  /* ================= 编辑操作（供 editor.js / 菜单调用） ================= */
-  function addNode(parentId) {
-    const jm = state.jm;
-    const parent = parentId ? MM.adapter.getNode(jm, parentId) : MM.adapter.getSelected(jm);
-    if (!parent) { setStatus('请先选中一个节点作为父节点'); return; }
-    const id = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    MM.adapter.addNode(jm, parent.id, id, '新节点', { detail: '' });
-    recordHistory(); // 修改后压入快照（撤销时恢复修改前状态）
-    MM.adapter.selectNode(jm, id);
-    window.MMEditor && window.MMEditor.editNode(id);
+  /* ================= 编辑操作（供 editor.js / 菜单调用） =================
+   * ⚠️ 本段的四个"结构操作"（加子 / 加同级 / 删 / 改）**实现在 `renderer/editor.js`**，
+   *    它们是**主窗与草稿图窗（`DM`）共用的同一份代码**（台账 `W11 a–e` 的 `b`）；
+   *    本文件只保留**主窗才有的那部分**：撤销栈（`recordHistory`）、项目级删除预检
+   *    （关联成员 / 入边链接 / CLI 剪枝）、顶层主题模式切换。两者之间的接线在文件末尾的
+   *    `mainEditorHost()`（**宿主接口**：模块问"这次编辑落到哪里"，本文件回答）。
+   *    定题见 `.review/20261020-editor-复用/00-定题.md`。 */
+
+  /** 取编辑器实例（**唯一入口**）：没有就**响亮**说，不静默什么都不做。 */
+  function editor() {
+    const e = window.MMEditor;
+    if (!e) { setStatus('编辑器模块还没就绪（window.MMEditor 不存在）—— 请重开界面', true); return null; }
+    return e;
   }
 
+  /** 在 `parentId` 下加一个子节点（不给 = 当前选中）。实现见 `renderer/editor.js` 的 `addChild`。 */
+  function addNode(parentId) {
+    const e = editor();
+    if (!e) return null;
+    return e.addChild(parentId);
+  }
+
+  /** 加同级。实现见 `renderer/editor.js` 的 `addSibling`（那里记着"落点插不进去"的已知缺陷）。 */
   function addSiblingNode(id) {
-    const jm = state.jm;
-    const sel = id ? MM.adapter.getNode(jm, id) : MM.adapter.getSelected(jm);
-    if (!sel) { setStatus('请先选中要插入的节点'); return; }
-    if (sel.id === 'root') { setStatus('根节点无法新增同级'); return; }
-    const newId = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    // ⚠️ 已知缺陷（**本次纯重构按原样保留**，没有顺手"修"）：jsMind 0.9.1 的公开
-    // `add_node(parent, id, topic, data, direction)` **只有 5 个形参、没有 index** ——
-    // 这里多传的 `sel.index + 1`（本意"插到所选节点之后"）**一直被静默丢弃**，新节点
-    // 实际追加在**父节点末尾**。取证：`.review/20261009-jsMind事件派发探针/` 与
-    // `renderer/mindmap-adapter.js` 头部。适配层的 addNode 形参也只到 direction 为止 ⇒
-    // 那个第 7 个实参同样不会被用到，留着只为让"这里曾想插到所选节点之后"在代码里看得见。
-    // 要改它是**行为变更**（换了新节点落点），应另开一次改动并补一条"落点"断言。
-    MM.adapter.addNode(jm, sel.parent.id, newId, '新节点', { detail: '' }, undefined, sel.index + 1);
-    recordHistory();
-    MM.adapter.selectNode(jm, newId);
-    window.MMEditor && window.MMEditor.editNode(newId);
+    const e = editor();
+    if (!e) return null;
+    return e.addSibling(id);
   }
 
   /** 新增顶层主题：「凭空」加一个不选父节点的节点，直接挂在根节点下。
-   *  同时开启主题模式 —— 于是它与其它顶层主题互相独立（容器根隐藏、连线跳过）。 */
+   *  同时开启主题模式 —— 于是它与其它顶层主题互相独立（容器根隐藏、连线跳过）。
+   *  ⚠️ 主题模式这一跳是**主窗特有**的（草稿窗没有结构轴）⇒ 留在本文件；
+   *     节点本身仍然由 `editor.js` 的 `addChild` 造（同一个实现、同一套顺序）。 */
   function addTopic() {
     const jm = state.jm;
     const root = jm && MM.adapter.getNode(jm, 'root');
@@ -632,18 +632,15 @@
       state.rootMode = 'themes'; // 顶层主题 = 独立主题
       applyRootModeVisual(jm, true);
     }
-    const id = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    MM.adapter.addNode(jm, 'root', id, '新主题', { detail: '' });
-    recordHistory();
-    MM.adapter.selectNode(jm, id);
-    window.MMEditor && window.MMEditor.editNode(id);
+    const e = editor();
+    if (!e) return;
+    e.addChild('root', { topic: '新主题' });
   }
 
   function editNode(id) {
-    const jm = state.jm;
-    const node = id ? MM.adapter.getNode(jm, id) : MM.adapter.getSelected(jm);
-    if (!node) { setStatus('请先选中要编辑的节点'); return; }
-    window.MMEditor && window.MMEditor.editNode(node.id);
+    const e = editor();
+    if (!e) return;
+    return e.editNode(id);
   }
 
   /** 收集一棵 jsMind 子树里的全部节点 id（删除时要用它找出被引用的关联成员/链接目标） */
@@ -668,88 +665,99 @@
     return out;
   }
 
-  function deleteNode(id) {
-    const jm = state.jm;
-    const node = id ? MM.adapter.getNode(jm, id) : MM.adapter.getSelected(jm);
-    if (!node) { setStatus('请先选中要删除的节点'); return; }
-    if (node.id === 'root') { setStatus('根节点不可删除'); return; }
-
-    const finish = () => {
-      MM.adapter.removeNode(jm, node.id);
-      recordHistory(); // 修改后压入快照
-      setStatus('已删除：' + node.topic);
-    };
-
-    // 关联笔记：被删（子）树可能是关联成员。若照原样保存，落盘数据就带"悬挂成员"，
-    // 而 project:save 是**校验闸门**（写盘前跑 CLI validate）→ 保存会被拒；
-    // 界面又没有改成员的入口，等于把用户卡死。所以先问一句。
-    //
-    // 关键：清理必须**在磁盘上**做（走 IPC → CLI assoc-prune），不能在内存里剪完
-    // 指望保存一起写回 —— `project:save` 在载荷里没有 assoc 时会从磁盘取回
-    // （那是为了防止 AI 刚写的笔记被界面保存抹掉），于是内存里剪掉的成员会**原地复活**，
-    // 悬挂成员依旧存在、保存照样被拒（实测）。assoc 的作者是 CLI，写就只经 CLI。
-    const proj = state.project && state.project.name;
-    if (!proj || !(window.desktop.app && window.desktop.app.assoc && window.desktop.app.assocPrune)) {
-      finish();
-      return;
-    }
-
-    window.desktop.app.assoc(proj).then((r) => {
-      const list = (r && r.raw) || [];
-      state.assoc = list;                    // 顺带与磁盘对齐（assoc 的真值在磁盘）
-      const ids = subtreeIds(node);
-      const affected = list.filter((a) => (a.members || []).some((m) => m && m.project === proj && ids.indexOf(m.id) >= 0));
-      const inLinks = inboundLinks(ids, proj);
-      if (!affected.length && !inLinks.length) { finish(); return; }
-
-      const lines = ['「' + node.topic + '」被别处引用：'];
-      if (affected.length) lines.push('· ' + affected.length + ' 篇关联笔记：' + affected.map((a) => a.title || a.id).join('、'));
-      if (inLinks.length) lines.push('· ' + inLinks.length + ' 条指向它的链接：' + inLinks.map((x) => x.node).join('、'));
-      lines.push('');
-      lines.push('删除节点会留下悬空引用（保存会被校验闸门拒绝），故需一并清理'
-        + (affected.length ? '（清到只剩一个成员的关联会整篇删除）' : '') + '。');
-      lines.push('要一起清理吗？点「取消」则先不删。');
-      // 同一处实现（见 `confirmFn` 那一段）：这里**也不许**直接调 `window.confirm` 本体
-      if (!confirmFn(lines.join('\n'))) {
-        setStatus('已取消删除：「' + node.topic + '」被 ' + (affected.length + inLinks.length) + ' 处引用');
+  /**
+   * 删节点**之前**的项目级预检 —— 这是**主窗独有**的那一半（草稿窗没有项目、契约上也不可能带引用），
+   * 模块（`renderer/editor.js`）通过 `host.beforeDelete(node)` 问它。契约（与模块里的 `deleteNode` 成对）：
+   *   `{allow:true, statusText}`         ⇒ 可以删（`statusText` 是删完要显示的那句）
+   *   `{allow:false, statusText, isErr}` ⇒ 不许删（模块负责显示这句，且**不删**）
+   * 每一步顺序都不能动：先读盘上的 assoc / 入边 → 有引用就**问一句** → CLI 在**磁盘上**剪 →
+   * 再同步**内存树**里的入边链接 → 最后才允许删节点。剪失败就不删（绝不留下"保存不了"的中间状态）。
+   *
+   * 关联笔记：被删（子）树可能是关联成员。若照原样保存，落盘数据就带"悬挂成员"，
+   * 而 project:save 是**校验闸门**（写盘前跑 CLI validate）→ 保存会被拒；
+   * 界面又没有改成员的入口，等于把用户卡死。所以先问一句。
+   *
+   * 关键：清理必须**在磁盘上**做（走 IPC → CLI assoc-prune），不能在内存里剪完
+   * 指望保存一起写回 —— `project:save` 在载荷里没有 assoc 时会从磁盘取回
+   * （那是为了防止 AI 刚写的笔记被界面保存抹掉），于是内存里剪掉的成员会**原地复活**，
+   * 悬挂成员依旧存在、保存照样被拒（实测）。assoc 的作者是 CLI，写就只经 CLI。
+   */
+  function deletePrecheck(node) {
+    return new Promise((resolve) => {
+      const proj = state.project && state.project.name;
+      if (!proj || !(window.desktop.app && window.desktop.app.assoc && window.desktop.app.assocPrune)) {
+        resolve({ allow: true });
         return;
       }
 
-      // 先清理磁盘，成功后再删节点。清理失败就不删 —— 否则会留下保存不了的坏状态。
-      window.desktop.app.assocPrune(proj, ids).then((p) => {
-        if (!p || !p.ok) {
-          setStatus('引用清理失败，已取消删除：' + ((p && p.text) || '未知错误')
-            + '（也可在命令行执行 assoc-prune / links-prune ' + proj + ' --nodes ' + ids.join(',') + '）', true);
+      window.desktop.app.assoc(proj).then((r) => {
+        const list = (r && r.raw) || [];
+        state.assoc = list;                    // 顺带与磁盘对齐（assoc 的真值在磁盘）
+        const ids = subtreeIds(node);
+        const affected = list.filter((a) => (a.members || []).some((m) => m && m.project === proj && ids.indexOf(m.id) >= 0));
+        const inLinks = inboundLinks(ids, proj);
+        if (!affected.length && !inLinks.length) { resolve({ allow: true }); return; }
+
+        const lines = ['「' + node.topic + '」被别处引用：'];
+        if (affected.length) lines.push('· ' + affected.length + ' 篇关联笔记：' + affected.map((a) => a.title || a.id).join('、'));
+        if (inLinks.length) lines.push('· ' + inLinks.length + ' 条指向它的链接：' + inLinks.map((x) => x.node).join('、'));
+        lines.push('');
+        lines.push('删除节点会留下悬空引用（保存会被校验闸门拒绝），故需一并清理'
+          + (affected.length ? '（清到只剩一个成员的关联会整篇删除）' : '') + '。');
+        lines.push('要一起清理吗？点「取消」则先不删。');
+        // 同一处实现（见 `confirmFn` 那一段）：这里**也不许**直接调 `window.confirm` 本体
+        if (!confirmFn(lines.join('\n'))) {
+          resolve({ allow: false,
+            statusText: '已取消删除：「' + node.topic + '」被 ' + (affected.length + inLinks.length) + ' 处引用' });
           return;
         }
-        if (Array.isArray(p.raw)) state.assoc = p.raw;   // 用磁盘结果同步内存
-        // 同步**内存树**里的链接（与 app-audit.js 补链后的同步是同一个道理，方向相反）：
-        // 节点树由渲染层拥有，磁盘上刚被 CLI 剪掉的链接若不从内存里也剪掉，
-        // 下一次 `save()`（serializeTree 写内存树）会把悬挂链接原样写回磁盘 ——
-        // 保存又被校验闸门拒绝（实测）。只删内存里指向被删节点的链接，不碰其他。
-        const dead = new Set(ids);
-        const stripInbound = (n) => {
-          if (!n) return;
-          if (Array.isArray(n.data && n.data.links) && n.data.links.length) {
-            const kept = n.data.links.filter((l) => !(l && l.project === proj && dead.has(l.id)));
-            if (kept.length !== n.data.links.length) {
-              if (kept.length) n.data.links = kept; else delete n.data.links;
-            }
+
+        // 先清理磁盘，成功后再删节点。清理失败就不删 —— 否则会留下保存不了的坏状态。
+        window.desktop.app.assocPrune(proj, ids).then((p) => {
+          if (!p || !p.ok) {
+            resolve({ allow: false, isErr: true,
+              statusText: '引用清理失败，已取消删除：' + ((p && p.text) || '未知错误')
+                + '（也可在命令行执行 assoc-prune / links-prune ' + proj + ' --nodes ' + ids.join(',') + '）' });
+            return;
           }
-          (n.children || []).forEach(stripInbound);
-        };
-        stripInbound(MM.adapter.getRoot(state.jm));
-        finish();
-        setStatus('已删除：' + node.topic + '（并清理 ' + affected.length + ' 篇关联 / '
-          + inLinks.length + ' 条链接的引用）');
+          if (Array.isArray(p.raw)) state.assoc = p.raw;   // 用磁盘结果同步内存
+          // 同步**内存树**里的链接（与 app-audit.js 补链后的同步是同一个道理，方向相反）：
+          // 节点树由渲染层拥有，磁盘上刚被 CLI 剪掉的链接若不从内存里也剪掉，
+          // 下一次 `save()`（serializeTree 写内存树）会把悬挂链接原样写回磁盘 ——
+          // 保存又被校验闸门拒绝（实测）。只删内存里指向被删节点的链接，不碰其他。
+          const dead = new Set(ids);
+          const stripInbound = (n) => {
+            if (!n) return;
+            if (Array.isArray(n.data && n.data.links) && n.data.links.length) {
+              const kept = n.data.links.filter((l) => !(l && l.project === proj && dead.has(l.id)));
+              if (kept.length !== n.data.links.length) {
+                if (kept.length) n.data.links = kept; else delete n.data.links;
+              }
+            }
+            (n.children || []).forEach(stripInbound);
+          };
+          stripInbound(MM.adapter.getRoot(state.jm));
+          /* 只把"清理了多少"交回去，**文案由模块在 removeNode 之后拼** —— 那样才与改前逐字节一致
+           * （改前是先 removeNode 再拼 '已删除：' + node.topic，见 `renderer/editor.js` 的注释）。 */
+          resolve({ allow: true, cleanup: { affected: affected.length, inLinks: inLinks.length } });
+        }).catch((err) => {
+          resolve({ allow: false, isErr: true, statusText: '引用清理失败，已取消删除：' + ((err && err.message) || err) });
+        });
       }).catch((err) => {
-        setStatus('引用清理失败，已取消删除：' + ((err && err.message) || err), true);
+        // 关联读不出来就不敢删：磁盘上可能有引用，删了会留下保存不了的坏状态
+        resolve({ allow: false, isErr: true,
+          statusText: '关联笔记读取失败，已取消删除：' + ((err && err.message) || err)
+            + '（若确认无引用，可用 remove ' + proj + ' ' + node.id + ' --clean-assoc --clean-links）' });
       });
-    }).catch((err) => {
-      // 关联读不出来就不敢删：磁盘上可能有引用，删了会留下保存不了的坏状态
-      setStatus('关联笔记读取失败，已取消删除：' + ((err && err.message) || err)
-        + '（若确认无引用，可用 remove ' + proj + ' ' + node.id + ' --clean-assoc --clean-links）', true);
     });
+  }
+
+  /** 删节点：根节点守卫与"真的删"在 `renderer/editor.js`（两窗同一份实现），
+   *  项目级预检在本文件（`deletePrecheck`）—— 模块删之前会**先问它**。 */
+  function deleteNode(id) {
+    const e = editor();
+    if (!e) return null;
+    return e.deleteNode(id);
   }
 
   /* ================= 项目加载 ================= */
@@ -1275,6 +1283,41 @@
   MM.addTopic = addTopic;
   MM.editNode = editNode;
   MM.deleteNode = deleteNode;
+  MM.deletePrecheck = deletePrecheck;   // 删前预检（关联成员 / 入边链接 / CLI 剪枝）—— 模块的 beforeDelete 钩子
+  /* ================= 编辑器的**宿主接口**（`renderer/editor.js` 的 `create(host)`） =================
+   * 为什么这段在本文件：**只有本文件的闭包里有主窗的项目语义** —— `recordHistory`（撤销栈）、
+   * `deletePrecheck`（关联/链接剪枝）、`state.project`/`state.jm`。`renderer/editor.js` 从
+   * `W11 a–e` 的 `b` 起是**主窗与草稿图窗共用的一份实现**，它不再直接够 `MMApp`；
+   * 谁想知道"这次编辑落到哪里"，就由谁在这里回答（定题 `.review/20261020-editor-复用/00-定题.md`）。
+   * 能力位全 true：主窗**能**做全部这些事（与改前"编辑器只有主窗有"等价）。
+   * ⚠️ `onCommit` 只对 `add`/`delete`/`move` 记撤销栈 —— **改标题/正文不进栈**、
+   *    导入图片/附件也不进栈，这是改前的语义（三条都有逐字节基线取证，别顺手"修"）。 */
+  MM.mainEditorHost = function mainEditorHost() {
+    return {
+      adapter: MM.adapter,
+      getJm: () => state.jm,
+      setStatus: (text, isErr) => setStatus(text, isErr),
+      getProject: () => state.project,
+      showDetail: (node) => MM.showDetail(node),
+      reloadProject: (name) => openProject(name),
+      capabilities: {
+        editTopic: true, editDetail: true, editTags: true, editExpanded: true,
+        addChild: true, addSibling: true, deleteNode: true, moveNode: false,
+        undoRedo: true, save: true, assets: true, markdown: true, crossProject: true, overlays: true
+      },
+      history: { undo: () => undo(), redo: () => redo() },
+      onSave: () => save(),
+      onCommit: (kind) => { if (kind === 'add' || kind === 'delete' || kind === 'move') recordHistory(); },
+      beforeDelete: (node) => deletePrecheck(node),
+      overlays: {
+        closeLightbox: () => MM.closeLightbox(),
+        closeFilePreview: () => MM.closeFilePreview(),
+        hideFloatDetail: () => MM.hideFloatDetail(),
+        paletteIsOpen: () => MM.paletteIsOpen()
+      },
+      applyTopicMarkup: (jm) => MM.applyTopicMarkup(jm)
+    };
+  };
   MM.reorderNodeChild = reorderNodeChild;   // 【R2 期 3 · e】同级重排的**唯一写口**（→ IPC → CLI move）
   MM.reorderNodeChildRaw = reorderNodeChildRaw;   // 同上但**绕过 clamp**，只给域 48 的"越界必红"取证
   MM.reparentNode = reparentNode;           // 【R2 期 4 · f】重挂父的**唯一写口**（预览→确认→IPC→CLI→回读重建）
