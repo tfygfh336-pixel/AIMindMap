@@ -121,24 +121,24 @@ const ATTR_FILE = '.gitattributes';
  *  ②的后一条防的是"先把额度开好、下一批再拆细往里塞"，前一条防"拆细了不抬上限" ——
  *  「把一条欠账拆成两条换额度」是这个上限唯一防得住的姿势。销账 = 删条目 + **同批**把上限调小。 */
 const WORKTREE_CR_DEBT = [
-  { path: 'main-dsh-sidebar.js', cr: 2450, why: 'core.autocrlf=true 签出的 CRLF 副本（blob 纯 LF ⇒ git 判 clean；R1a 的 w/crlf 之一）' },
-  { path: 'renderer/app-ask.js', cr: 1041, why: '同上（签出产物，R1a 的 w/crlf 之一）' },
-  { path: 'renderer/app-core.js', cr: 542, why: '同上（签出产物，R1a 的 w/crlf 之一）' },
-  { path: 'renderer/app-palette.js', cr: 229, why: '同上（签出产物，R1a 的 w/crlf 之一）' },
-  { path: 'renderer/app-view.js', cr: 2084, why: '同上（签出产物，R1a 的 w/crlf 之一）' },
-  { path: 'scripts/smoke/09-save-persistence.js', cr: 2, why: '**工作树残留**（blob 纯 LF、CR 0；工作树里多出 CR ⇒ 仅此一例 w/mixed，R1a 口径里的「+1」）' },
-  { path: 'scripts/smoke/13-ui-state.js', cr: 103, why: '同上（签出产物，R1a 的 w/crlf 之一）' },
-  { path: 'scripts/smoke/26-ai-ask.js', cr: 416, why: '同上（签出产物，R1a 的 w/crlf 之一）' },
-  { path: 'scripts/smoke/29-multiselect.js', cr: 518, why: '同上（签出产物，R1a 的 w/crlf 之一）' },
-  { path: 'src/drop-target.js', cr: 86, why: '同上（签出产物，R1a 的 w/crlf 之一）' },
-  { path: 'tests/fixtures/dsh-composed-tree-web.txt', cr: 1261, why: '同上（签出产物，R1a 的 w/crlf 之一；该夹具的消费方会跟着当前行尾生成期望值）' },
+  { path: 'scripts/smoke/29-multiselect.js', cr: 518, why: '**签出产物**（blob 纯 LF）—— 而该文件此刻是**别人未提交的改动**（+275/−168）⇒ **不能刷新它**（刷新 = 销毁那批活）⇒ 保留在册，等那个会话提交或放弃后再销账（届时 2 → 1）' },
   { path: '启动AI MindMap.vbs', cr: 9, why: 'Windows 脚本宿主按 CRLF 存（与跳过档同一语义；留在册里是为了让"在册条数"与 R1a 的 11+1 **一一对拍**）' }
 ];
+
+/* 2026-10-22 销账记录（12 → 2）：原册有 12 条，其中 **10 条已用 blob 的原始字节刷成 LF**
+ * （`refresh-cr.js`：`git checkout --` 对它们无效 —— `core.autocrlf=true` 下「LF blob ↔ CRLF 工作树」
+ * 被 git 判 clean，checkout 是 no-op；而 `pwsh >` 会写 UTF-16LE，违 `R1b`）。
+ * ⇒ 那 10 条**不是欠账了**，删条目 + 上限同批 12 → 2（销账 = 删条目 + 同批调小上限）。
+ * ⇒ 剩的 2 条各有硬理由：一个动不得、一个是脚本宿主。
+ * ⚠️ `.gitattributes` **尚未落地**：提案文件在 `.review/20261022-gitattributes-定题/gitattributes.proposed`。
+ *   **它不能现在落地** —— 一旦有 catch-all，⑤ 就升到终态，而终态上限 = 在册里"脚本宿主扩展名"的条数
+ *   （`judgeWorktreeEol` 的 `cap` 是**现算**的，不是常量）⇒ `.js` 那条留着就是"超额"、删了就是"未在册的含 CR"
+ *   ⇒ **在 `29-multiselect.js` 还带 CR 且脏的时候，终态没有任何合法态**。等它落定，2 → 1，再上 `.gitattributes`。 */
 
 /** 在册条数上界（**只减不增**；改成更大的数 = 放宽判定，必须同批写理由）。
  *  ⚠️ 写成字面量而**不是** `WORKTREE_CR_DEBT.length`：后者会跟着册一起涨，于是"抬上限"就等于
  *  改一行数组、没有任何痕迹 —— 与 `WRITE_OUTLET_CAP` / `MCP_GAP_DEBT_MAX` 同一个理由。 */
-const WORKTREE_CR_DEBT_MAX = 12;
+const WORKTREE_CR_DEBT_MAX = 2;
 
 /** 经典乱码特征。命名清楚是为了报错时能直接告诉人「这是怎么坏的」。
  *
