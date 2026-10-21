@@ -9,9 +9,11 @@
  *
  * 本文件锁四件事：
  *   ① 三条编码判据（BOM / U+FFFD / 经典乱码）各能被**单独的**违规打红 —— 而不是"有一条红就都红"；
- *   ② **行尾判据只判 index，不判工作树**。这条是本批（2026-10-18）订正的核心：
- *      `core.autocrlf=true`（system 级）+ 仓内无 `.gitattributes` ⇒ 工作树必然是混合的，
- *      拿工作树行尾当判据就是在判一个**由 git 配置决定的东西**。故有专门的反向用例锁住它。
+ *   ② **行尾是两条判定，方向相反**：④ 只判 **index（提交面）**，⑤ 判 **工作树（签出面）的方向**。
+ *      2026-10-18 的订正（"只判 index"）在 2026-10-21 被**扩成两条**：只守 ④ 时，"今天全链全绿"
+ *      与"新克隆必红"能同时成立（新克隆里 400+ 个文本全是 CRLF，而 index 一个 CR 都没有）。
+ *      ⇒ ④ 的用例保持"工作树 CRLF 不算 ④ 违规"不变；**⑤ 的三档**（判红 / 只报告 / 跳过）
+ *      与本册上界在下面同一批用例里钉住（**不新增 `it()`**：用例计数被 G6 的真值钉着）。
  *   ③ **扫描面不得静默**：白名单外还有文本文件时，"未扫描"那行必须把它**点名**；
  *      "若纳入会红几个"必须由判据本身（`scanText`）算，不许另立一套口径。
  *   ④ **本批的决定要用测试钉住**：`.log` 不许进白名单 —— 它不是"漏了"，
@@ -67,7 +69,7 @@ describe('G1 编码判据（逐条注入 ⇒ 必须各自命中）', () => {
   });
 });
 
-describe('G1 行尾判据：只判 index，不判工作树', () => {
+describe('G1 行尾：④ 只判 index（提交面）；⑤ 判工作树的**方向**（在册的只报告）', () => {
   it('i/lf + w/lf ⇒ 无违规', () => {
     const r = ec.parseEolListing(listing(rec('lf', 'lf', 'src/a.js')));
     expect(r.bad).toEqual([]);
@@ -75,15 +77,75 @@ describe('G1 行尾判据：只判 index，不判工作树', () => {
     expect(r.binary).toEqual([]);
   });
 
-  it('★★ i/lf + w/crlf ⇒ **无违规**（工作树 CRLF 是 core.autocrlf 的产物，不是缺陷）', () => {
+  it('★★ i/lf + w/crlf ⇒ **④ 无违规**；⑤ 里在册 ⇒ 只报告、不在册 ⇒ 判红', () => {
     const r = ec.parseEolListing(listing(rec('lf', 'crlf', 'renderer/app-ask.js')));
     expect(r.bad).toEqual([]);
     expect(r.text).toEqual(['renderer/app-ask.js']);
+    // ⑤：同一条 CR 读数，**在册**时是"只报告档"（red 空、debt 一条，理由原样交出去）
+    const rows = [{ rel: 'renderer/app-ask.js', cr: 1041 }];
+    const onBook = ec.judgeWorktreeEol(rows, {
+      debt: [{ path: 'renderer/app-ask.js', why: '签出产物', cr: 1041 }],
+      max: 1, mode: 'transition', known: new Set(['renderer/app-ask.js'])
+    });
+    expect(onBook.red).toEqual([]);
+    expect(onBook.debt.length).toBe(1);
+    expect(onBook.debt[0].why).toBe('签出产物');
+    // ⑤：**从册上拿掉**就判红（这是"只报告"与"没能力判"的分界 —— 不红的那一档必须能变红）
+    const offBook = ec.judgeWorktreeEol(rows, {
+      debt: [], max: 0, mode: 'transition', known: new Set(['renderer/app-ask.js'])
+    });
+    expect(offBook.red).toEqual([{ rel: 'renderer/app-ask.js', cr: 1041, ext: '.js' }]);
+
+    // ⑤ 的**在册册**：形状（path / why / cr，照 `WRITE_OUTLET_DEBT`）+ 上限**只减不增**。
+    // 「把一条欠账拆成两条换额度」是这个上限唯一防得住的姿势 ⇒ 多一条必须**自己报超额**。
+    for (const e of ec.WORKTREE_CR_DEBT) {
+      expect(typeof e.path).toBe('string');
+      expect(e.path.length).toBeGreaterThan(0);
+      expect(typeof e.why).toBe('string');
+      expect(e.why.length).toBeGreaterThan(0);
+      expect(typeof e.cr).toBe('number');
+      expect(e.cr).toBeGreaterThan(0);
+    }
+    // 上界写成字面量（不是 `.length`）：今天正好用满 ⇒ 再多一条就没有额度
+    expect(ec.WORKTREE_CR_DEBT.length).toBe(ec.WORKTREE_CR_DEBT_MAX);
+    const bookRows = ec.WORKTREE_CR_DEBT.map((e) => ({ rel: e.path, cr: e.cr }));
+    const book = new Set(ec.WORKTREE_CR_DEBT.map((e) => e.path));
+    const base = { max: ec.WORKTREE_CR_DEBT_MAX, mode: 'transition', known: book };
+    const ok = ec.judgeWorktreeEol(bookRows, Object.assign({ debt: ec.WORKTREE_CR_DEBT }, base));
+    expect(ok.red).toEqual([]);
+    expect(ok.debt.length).toBe(12);            // 12 条在册且都含 CR ⇒ 全在"只报告"档
+    expect(ok.capMismatch).toBe(null);          // 唯一合法状态：上限 == 在册条数
+    // ① 册涨到 13 条而不抬上限 ⇒ **超额**（拆细换额度当场被抓）
+    const split = ec.WORKTREE_CR_DEBT.concat([{ path: 'renderer/app-view.js', why: '拆细换额度试算', cr: 1 }]);
+    const over = ec.judgeWorktreeEol(bookRows, Object.assign({ debt: split }, base));
+    expect(over.capMismatch).not.toBe(null);
+    expect(over.capMismatch.kind).toBe('over');
+    expect(over.capMismatch.debtCount).toBe(13);
+    expect(over.capMismatch.cap).toBe(12);
+    expect(over.red).toEqual([]);               // 这条红**只**来自额度（不是靠"未在册的 CR"顺带红）
+    // 同批把上界抬到 13 ⇒ 复绿（抬上界 = 一次显式提交，不是顺手改个数字）
+    expect(ec.judgeWorktreeEol(bookRows, Object.assign({ debt: split }, base, { max: 13 })).capMismatch).toBe(null);
+    // ② 只抬上界、册不动 ⇒ **富余额度**（先把口子开好、下一批再往里塞，同样判红）
+    const slack = ec.judgeWorktreeEol(bookRows, Object.assign({ debt: ec.WORKTREE_CR_DEBT }, base, { max: 13 }));
+    expect(slack.capMismatch).not.toBe(null);
+    expect(slack.capMismatch.kind).toBe('slack');
+    expect(slack.capMismatch.debtCount).toBe(12);
+    expect(slack.capMismatch.cap).toBe(13);
+    // 终态（有 catch-all 的 eol=lf）：签出方向已定死 ⇒ 上界压到只剩脚本宿主那几条 ⇒ 那 11 条必须销账
+    const term = ec.judgeWorktreeEol(bookRows, Object.assign({ debt: ec.WORKTREE_CR_DEBT }, base, { mode: 'terminal' }));
+    expect(term.capMismatch).not.toBe(null);
+    expect(term.capMismatch.kind).toBe('over');
+    expect(term.capMismatch.cap).toBe(1);       // 只有"启动AI MindMap.vbs"这一类允许留
+    expect(term.capMismatch.mustDelist.length).toBe(11);
   });
 
-  it('★ i/lf + w/mixed ⇒ **无违规**（同上：工作树混合也不判）', () => {
+  it('★ i/lf + w/mixed ⇒ **④ 无违规**；⑤ 里它一样按"有没有 CR"判（不在册即红）', () => {
     const r = ec.parseEolListing(listing(rec('lf', 'mixed', 'scripts/smoke/09-save-persistence.js')));
     expect(r.bad).toEqual([]);
+    const wt = ec.judgeWorktreeEol([{ rel: 'scripts/smoke/09-save-persistence.js', cr: 2 }], {
+      debt: [], max: 0, mode: 'transition', known: new Set(['scripts/smoke/09-save-persistence.js'])
+    });
+    expect(wt.red.length).toBe(1);              // 孤立 CR 也算（判据只看 cr > 0，不看它是怎么来的）
   });
 
   it('★★ i/crlf ⇒ 违规（提交进仓库的文本必须是 LF）', () => {
@@ -96,23 +158,45 @@ describe('G1 行尾判据：只判 index，不判工作树', () => {
     expect(r.bad.length).toBe(1);
   });
 
-  it('i/-text（git 判为二进制）⇒ 不进文本面、也不算违规', () => {
+  it('i/-text（git 判为二进制）⇒ 不进文本面、也不算违规；⑤ 里进**跳过档**', () => {
     const r = ec.parseEolListing(listing(rec('-text', '-text', 'renderer/logo.png')));
     expect(r.bad).toEqual([]);
     expect(r.text).toEqual([]);
     expect(r.binary).toEqual(['renderer/logo.png']);
+    const wt = ec.judgeWorktreeEol([], { debt: [], max: 0, mode: 'transition', binary: ['renderer/logo.png'] });
+    expect(wt.skipBinary).toEqual(['renderer/logo.png']);   // 跳过档：打印对象，但既不判红也不判绿
+    expect(wt.red).toEqual([]);
   });
 
   it('非 ASCII 路径必须原样解析（实测坑：默认输出会 C-quote 成 "\\345\\220..."，故实现用 -z）', () => {
     const r = ec.parseEolListing(listing(rec('lf', 'crlf', '启动AI MindMap.vbs')));
     expect(r.text).toEqual(['启动AI MindMap.vbs']);
     expect(r.bad).toEqual([]);
+    // ⑤：`.vbs` 在册 ⇒ 只报告（册上那条的 why 说清它是脚本宿主）；**不在册**的 `.vbs` ⇒ 跳过档
+    const registered = ec.judgeWorktreeEol([{ rel: '启动AI MindMap.vbs', cr: 9 }], {
+      debt: [{ path: '启动AI MindMap.vbs', why: '脚本宿主按 CRLF 存', cr: 9 }],
+      max: 1, mode: 'transition', known: new Set(['启动AI MindMap.vbs'])
+    });
+    expect(registered.red).toEqual([]);
+    expect(registered.debt.length).toBe(1);
+    const unregistered = ec.judgeWorktreeEol([{ rel: '新脚本.vbs', cr: 3 }], {
+      debt: [], max: 0, mode: 'transition', known: new Set(['新脚本.vbs'])
+    });
+    expect(unregistered.red).toEqual([]);
+    expect(unregistered.skipScript.map((x) => x.rel)).toEqual(['新脚本.vbs']);
   });
 
-  it('空输出 / 末尾多余 NUL / 缺 tab 的坏行都不许抛，也不许造出假条目', () => {
+  it('空输出 / 末尾多余 NUL / 缺 tab 的坏行都不许抛，也不许造出假条目；⑤ 的属性文件解析同样不猜', () => {
     expect(ec.parseEolListing('').bad).toEqual([]);
     expect(ec.parseEolListing('\0\0').files.size).toBe(0);
     expect(ec.parseEolListing('i/lf w/lf attr/ 没有制表符').files.size).toBe(0);
+    // ⑤ 的形态判据：没有文件 / 有文件但**没有 catch-all 的 eol=lf** ⇒ 都算过渡态（不猜终态）
+    expect(ec.parseAttrMode(null).mode).toBe('transition');
+    expect(ec.parseAttrMode(null).reason).toBe('no-file');
+    expect(ec.parseAttrMode('*.md text eol=lf\n*.js text eol=lf\n').mode).toBe('transition');
+    expect(ec.parseAttrMode('*.md text eol=lf\n').reason).toBe('no-catch-all');
+    // 只有 catch-all 那一行同时给了 text 与 eol=lf 才算终态（它才推得出"工作树必须全 LF"）
+    expect(ec.parseAttrMode('# 注释\n* text=auto eol=lf\n*.vbs text eol=crlf\n').mode).toBe('terminal');
   });
 });
 
@@ -171,5 +255,9 @@ describe('G1 扫描面的决定：.log 不许进白名单（本批的决定，�
   it('受管文本不看扩展名：既然按 git 判，白名单里就不该再靠"补一个扩展名"来补覆盖', () => {
     // .vbs 是真实受管资产（用户启动器），但它由"git 判为文本的跟踪文件"这一条覆盖，不在白名单里
     expect(ec.TEXT_EXT).not.toContain('.vbs');
+    // ⑤ 的**跳过档**是**语义**名单（Windows 脚本宿主按 CRLF 存），不是"白名单"的补丁
+    expect(ec.WORKTREE_EOL_SKIP_EXT).toContain('.vbs');
+    expect(ec.WORKTREE_EOL_SKIP_EXT).toContain('.bat');
+    expect(ec.WORKTREE_EOL_SKIP_EXT).toContain('.cmd');
   });
 });
