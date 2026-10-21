@@ -37,8 +37,16 @@
 源码原因：`platformPackager.js:367` 传给 `computeNodeModuleFileSets` 的是**另一个** matcher（`getNodeModuleFileMatcher()`），它**只收 `!` 开头的排除项**（注释原文 "grab only excludes"）⇒ 全白名单的 `files:` 让它为空 ⇒ `NodeModuleCopyHelper` 得 `filter=null` ⇒ 判空那行**永不成立**。
 ⇒ **`files:` 白名单管"应用自己的文件"，不管"生产依赖"；两趟独立收集。**
 
-**而真正会卡死用户的是另一条**：`src/doc-import.js:605` 的 `spawnSync(process.execPath, …)` **没传 `ELECTRON_RUN_AS_NODE`**。开发机 `process.execPath` 是 `node.exe` 所以一直正常；**打包后**是 `AI MindMap.exe` ⇒ 那个"子进程"其实在**启动整个应用**（实测 45,038 ms 才被掐，stdout 是 `[main] registerIpc ok / window created`）。加上那一个环境变量后 **480 ms 返回 `{"ok":true,"source":"text"}` 33,205 B**（30 页真样本）。
-⚠️ **而它没有 `timeout` ⇒ 真实表现不是报错，是界面/CLI 无期限卡死。**
+**而真正会卡死用户的是另一条**：`src/doc-import.js` 的 `spawnSync(process.execPath, …)` **自己没传 `ELECTRON_RUN_AS_NODE`**。开发机 `process.execPath` 是 `node.exe` 所以一直正常；**打包后**是 `AI MindMap.exe` ⇒ 不看 env 时，那个"子进程"其实在**启动整个应用**（隔离实测 45,038 ms 才被掐，stdout 是 `[main] registerIpc ok / window created`）。加上那一个环境变量后 **480–721 ms 返回 `{"ok":true,"source":"text"}` 33,205 B**（30 页真样本，`1 个顶层主题 / 76 个节点`）。
+⚠️ **而它没有 `timeout` ⇒ 这条路上"一旦 env 丢了"没有任何止损。**
+
+**⚠️ 但要说准它是"潜伏"而不是"现网已崩"**（这条订正很重要）：
+- Electron 的 **node 模式不会把 `ELECTRON_RUN_AS_NODE` 从 `process.env` 抹掉**（同 exe node 模式父进程 → 子进程仍看到 `1`）
+- 而 `main.js` 的 `runCli` **早就显式传给 CLI** ⇒ **眼下 GUI 那条链本来是通的**
+- ⇒ 所以上面那个 45,038 ms 测的是「**这段代码在父进程 env 没有这个变量时的行为**」，不是"用户今天点导入 PDF 就会卡死"
+- **修复的意义是把正确性收回本函数**，不再寄在「隔两代的祖先恰好设了它」上 —— **任一环掉了就变成永久卡死且零提示**，而那种卡死**没有任何读数会告诉你原因**
+
+**同一形态扫了全仓**：`spawnSync(process.execPath` **命中 25 处 / 需修 1 处 / 已修 1 处**。`main.js:691` **本来就正确**（已自带同一个合并 env）；其余全是开发期脚本（`scripts/` 13 处 + `tests/` 6 处，**都不打包**）；`cli/` `renderer/` `preload.js` `main-dsh-sidebar.js` = **0 处**。
 
 **附带**：`pdfjs-dist` 声明 `optionalDependencies: {"@napi-rs/canvas":"^1.0.10"}` ⇒ 一个 38.3 MB 原生包**已被连带打进并自动解包**到 `app.asar.unpacked`（**没加任何 `asarUnpack`**）⇒ 先前"只在 `render()` 不可用时才加 37.9 MB"的前提**已不成立**。
 

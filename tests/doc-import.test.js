@@ -243,6 +243,58 @@ describe('读不了就说读不了（绝不给一个空树冒充成功）', () =
       try { fsx.unlinkSync(badp); } catch (e) { /* ignore */ }
     }
   });
+  it('★ 打包后（process.execPath = AI MindMap.exe）读 PDF 的子进程必须带 `ELECTRON_RUN_AS_NODE`（否则 Electron 把 helper 当整个应用启动、永不返回）', () => {
+    const { buildUnlabeledChinesePdf } = require('./pdf-fixture.js');
+    const os = require('os'), path = require('path'), fsx = require('fs'), cp = require('child_process');
+    const p = path.join(os.tmpdir(), 'mm-di-spawnenv-' + Date.now() + '.pdf');
+    fsx.writeFileSync(p, buildUnlabeledChinesePdf());
+    // 判据是**这一次 spawn 实际收到的参数** ⇒ 在测试这一侧把 spawnSync 包一层（不替身、真跑，只记录）
+    const real = cp.spawnSync;
+    let seen = null;
+    cp.spawnSync = function (cmd, args, opts) { seen = { cmd: cmd, args: args, opts: opts }; return real(cmd, args, opts); };
+    try {
+      di.docToOutline(p);                      // 真走一次 PDF 链路（子进程照常起，读到的也是真提纲）
+    } finally {
+      cp.spawnSync = real;
+      try { fsx.unlinkSync(p); } catch (e) { /* 清理失败不影响判定 */ }
+    }
+    expect(seen).not.toBe(null);
+    // ① **功能修复**：打包后 execPath 是应用自身，只有这个变量能让它以 Node 模式跑 helper
+    //    （缺它实测：45038 ms 才被 SIGTERM 收掉，stdout 是 `[main] window created` —— 见 .review/20261027-打包前置）
+    expect(seen.opts.env.ELECTRON_RUN_AS_NODE).toBe('1');
+    // ② 必须是**合并** process.env：写成 `env:{ELECTRON_RUN_AS_NODE:'1'}` 会把 PATH / 代理 / 区域设置整份丢掉
+    expect(Object.keys(process.env).filter((k) => !(k in seen.opts.env))).toEqual([]);
+    // ③ **止损**：有界的时间预算，且调用点用的就是那个导出的常量（不许在这里另写一个数字）
+    expect(seen.opts.timeout).toBe(di.PDF_HELPER_TIMEOUT_MS);
+    expect(di.PDF_HELPER_TIMEOUT_MS).toBeGreaterThan(1000);      // 真样本 0.48–1.0 s ⇒ 预算不能比它更小
+    expect(di.PDF_HELPER_TIMEOUT_MS).toBeLessThanOrEqual(120000); // 也不能大到"对使用者等于卡住"
+  });
+
+  it('★ 子进程**超时** ⇒ 响亮失败（点名"超时 + 秒"并给出路）：绝不卡死、绝不返回半截 JSON', () => {
+    const { buildUnlabeledChinesePdf } = require('./pdf-fixture.js');
+    const os = require('os'), path = require('path'), fsx = require('fs'), cp = require('child_process');
+    const p = path.join(os.tmpdir(), 'mm-di-spawnto-' + Date.now() + '.pdf');
+    fsx.writeFileSync(p, buildUnlabeledChinesePdf());
+    // 人为把这一处的时间预算压到 1 ms（只改 timeout，其余参数原样透传）⇒ 必然走到超时分支。
+    // ⚠️ 这条同时是"不卡死"的判据：真没有 timeout 时它会等到 vitest 自己的默认 5 s 超时（红）。
+    const real = cp.spawnSync;
+    cp.spawnSync = function (cmd, args, opts) { return real(cmd, args, Object.assign({}, opts, { timeout: 1 })); };
+    let err = null;
+    let ret = null;
+    try {
+      try { ret = di.docToOutline(p); } catch (e) { err = e; }
+    } finally {
+      cp.spawnSync = real;
+      try { fsx.unlinkSync(p); } catch (e) { /* 清理失败不影响判定 */ }
+    }
+    expect(ret).toBe(null);                    // 不许"返回半棵树"当成功
+    expect(err).not.toBe(null);
+    expect(err.message).toMatch(/超时/);        // 说准原因（不是含糊的"没有给出结果"）
+    expect(err.message).toMatch(/秒/);          // 带数字（预算是多少秒）
+    expect(err.message).toMatch(/出路/);        // 给出去路（同一风格：三条）
+    expect(err.message).toMatch(/这不是.这份 PDF 坏了/); // 别让使用者误以为文件坏了
+    expect(err.message).not.toMatch(/没有给出结果（被信号/); // 不许落回那条**不含"超时"**的旧报文
+  });
   it('★ 带 BOM 的 md/txt 必须容忍：BOM 会让首行 `#` 匹配不上，把第一个标题吃成正文（实测踩到）', () => {
     const withBom = '\uFEFF# 第一本书\n\n## 第 1 章\n正文\n\n# 第二本书\n';
     const r = di.docToOutline('bom.md', { buf: Buffer.from(withBom, 'utf8') });

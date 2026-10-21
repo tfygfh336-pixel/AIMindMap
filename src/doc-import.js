@@ -206,6 +206,31 @@ const MAX_SOURCE_BYTES = MAX_SOURCE_MB * 1024 * 1024;
  * ⚠️ 超限报文（下面 `pdfOutlineViaHelper` 里那条）引用的就是**这一个常量**，不另写数字 ⇒ 改这里报文跟着变。 */
 const MAX_OUTLINE_BUF_MB = 32;
 
+/* ---------------- ⓪″b 子进程的**时间预算**（第三个维度：不是"能吃多大"，是"等多久算卡死"） ----------------
+ * 为什么必须有这个数（实测缺陷，2026-10-29）：打包后 `process.execPath` 是 `AI MindMap.exe`，
+ *   那次 `spawnSync` 若不带 `ELECTRON_RUN_AS_NODE`，Electron 会把 helper 当**整个应用**启动 ——
+ *   于是子进程**不返回**（实测 45038 ms 才被外部 SIGTERM 收掉，期间界面/CLI 一直卡着、一句提示都没有）。
+ *   环境变量是**功能修复**（见 `pdfOutlineViaHelper`），这个数只是**止损**：任何一条"子进程不回来"的路
+ *   都必须有边，否则使用者看到的是"没反应"而不是错误 ✗。
+ *
+ * 取值依据（**本机实测**；0.48 s 与 1 s 差一倍是运行方式不同，不是矛盾）：
+ *   · 真样本 `projects/comnet/attachments/mumuhe9jafs5.pdf`（622 KB / 30 页）：
+ *     打包后 node 口径 **480 ms**（`.review/20261027-打包前置/out-packaged-helper.txt` 的 B 口径）；
+ *     本机 node 口径 947 ms，同目录 `mumuhmbscjfs.pdf`（520 KB）905 ms
+ *     （读数：`.review/20261029-spawn死锁/out-timing.txt`）。
+ *   · 合成长文档（`tests/pdf-fixture.js` 的 `buildTextPdf`）扫页数：
+ *     30 页 761 ms / 150 页 812 ms / 600 页 1009 ms / **1500 页 1447 ms**
+ *     ⇒ 固定成本≈0.7 s（pdf.js 装载），边际≈0.5 ms/页。**页数不是这个旋钮的瓶颈**：
+ *       真正的上限是上面的 `MAX_OUTLINE_BUF_MB`（32 MB 提纲 ≈ 516 KB/1500 页 ⇒ 约 9 万页）。
+ *       读数：`.review/20261029-spawn死锁/out-scaling.txt`。
+ *   ⇒ 取 **60 s**：真样本（1 s 级）的约 60 倍、1500 页合成件的约 40 倍（慢机器 / 冷启动 / 杀毒扫描的余量足够），
+ *     同时把"永久卡死"变成"最多等一分钟就拿到一条说清原因的错误"。
+ *     更小（如 5 s）会在慢机器上**误杀真样本**；更大（如 5 min）对使用者已等于"卡住"，止损失效 ✗。
+ * ⚠️ 超时**不是**"PDF 坏了"的判据：报文必须点名"超时 + 多少毫秒"并给出路（见 `pdfOutlineViaHelper`）✗ 不许静默。
+ * ⚠️ 它与 `MAX_SOURCE_MB` / `MAX_OUTLINE_BUF_MB` **同样不是同一个旋钮**（时间 vs 源文件体量 vs 子进程输出体量）。
+ */
+const PDF_HELPER_TIMEOUT_MS = 60 * 1000;
+
 /** 超限时的报文：**说准原因 + 给出路**（与 ⓪ 的目录报文同一风格）。
  *  `{ code:'too-big', message, sizeMB }`；没超限/取不到大小（stat 失败由 ⓪ 负责报）⇒ null。 */
 function describeOversizeSource(filePath) {
@@ -602,14 +627,35 @@ function pdfOutlineViaHelper(filePath) {
   //    这里把"超限"独立成分支说清 + 给出去路（同一件事还有第二种表现：子进程自己先抛了错）。
   //    ⚠️ 上限常量**已经不在这个函数体里**了：它提到了文件顶部的常量区（`MAX_OUTLINE_BUF_MB`，
   //    与 `MAX_SOURCE_MB` 挨着放，那里写清了"两个维度不是一件事"）⇒ 本函数与报文共用那一份，别再在本地写一个数字。
+  //
+  // ⚠️⚠️ `env` 里那个 `ELECTRON_RUN_AS_NODE` 是**功能修复，不是止损**（`timeout` 才是止损）。缺它的实测后果：
+  //    打包后 `process.execPath` = `AI MindMap.exe` ⇒ Electron 把 helper 当成**整个应用**来启动，
+  //    子进程去 `[main] registerIpc ok / window created`、永不按 node 语义跑脚本：45038 ms 才被外部 SIGTERM 收掉，
+  //    stdout 里连一行 JSON 都没有（读数：`.review/20261027-打包前置/out-packaged-helper.txt` A 口径）。
+  //    同一个 exe 带上它 ⇒ 480 ms 返回 `{"ok":true,…}` 33205 字节（同文件 B 口径）⇒ 依赖进包 / asar 内 ESM /
+  //    pdfjs 从 asar 里跑**全都是通的**，唯一缺的就是这一个环境变量。
+  // ⚠️ 必须**合并** `process.env`：写成 `env: { ELECTRON_RUN_AS_NODE: '1' }` 会把 PATH / 代理 / 区域设置
+  //    整份丢掉（本工程已有一次同类教训：子进程找不到命令、中文路径突然坏掉，而报错完全不提环境变量）。
   const r = childProcess.spawnSync(process.execPath, [helper, filePath],
-    { encoding: 'utf8', maxBuffer: MAX_OUTLINE_BUF_MB * 1024 * 1024 });
+    { encoding: 'utf8', maxBuffer: MAX_OUTLINE_BUF_MB * 1024 * 1024, timeout: PDF_HELPER_TIMEOUT_MS,
+      env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' }) });
   const out = String(r.stdout || '').trim();
   const errText = String((r.error && r.error.message) || '') + ' ' + String(r.stderr || '').trim();
+  // ① **超时**：判在解析**之前** —— 超时就是失败，哪怕 stdout 恰好拼出了一行完整 JSON
+  //    （那也不是"子进程跑完了"，是它被杀之前吐了一口气）。这一条是"停止等"的判据，不许静默 ✗。
+  if ((r.error && r.error.code === 'ETIMEDOUT') || /ETIMEDOUT/.test(errText)) {
+    throw new Error('读 PDF 的子进程**超时**了：' + Math.round(PDF_HELPER_TIMEOUT_MS / 1000) + ' 秒内没有返回结果，已被强制结束。'
+      + '这不是"这份 PDF 坏了"的判据（它只是没跑完），所以别急着重试或换文件。出路（三选一）：'
+      + '① 先用其它工具把这份 PDF 拆成几册再逐册导入；'
+      + '② 只要书签：用别的 PDF 工具导出书签为 .md/.txt 再 `import-md`；'
+      + '③ 只想读其中几页：把需要的那几页另存为一个新 PDF 再导入。'
+      + '（若跑的是自己打包的版本：先用命令行确认同一个 helper 能被正常调用 —— 子进程不按 Node 模式起来时，'
+      + '表现正是"一直不返回"，而不是任何一条错误。）');
+  }
   let parsed = null;
   try { parsed = JSON.parse(out.split('\n').pop()); } catch (e) { parsed = null; }
   if (!parsed) {
-    // ① 明确是**输出超限**（不是 PDF 读不了）：原因准确 + 出路
+    // ② 明确是**输出超限**（不是 PDF 读不了）：原因准确 + 出路
     if ((r.error && r.error.code === 'ENOBUFS') || /maxBuffer/i.test(errText)) {
       throw new Error('这份 PDF 的提纲文本超过了读取上限（子进程输出上限 ' + MAX_OUTLINE_BUF_MB + ' MB），'
         + '所以**没有拿到结果**（这不是"PDF 坏了"）。出路（三选一）：'
@@ -617,7 +663,7 @@ function pdfOutlineViaHelper(filePath) {
         + '② 只要书签：用别的 PDF 工具导出书签为 .md/.txt 再 `import-md`；'
         + '③ 只要其中正文：把需要的那几页另存为一个新 PDF 再导入。');
     }
-    // ② 子进程被信号/异常收掉（例如它自己先崩了）—— 把**信号**也报出来，别只说 exit
+    // ③ 子进程被信号/异常收掉（例如它自己先崩了）—— 把**信号**也报出来，别只说 exit
     const how = r.signal ? ('被信号 ' + r.signal + ' 结束') : ('exit=' + r.status);
     throw new Error('读 PDF 的子进程没有给出结果（' + how + '）：'
       + (out || errText || '（子进程没有任何输出）').slice(0, 200));
@@ -2547,6 +2593,8 @@ return {
   MAX_SOURCE_MB, MAX_SOURCE_BYTES, describeOversizeSource, describeOversizeBuffer, describeOversizeSize,
   // 子进程输出上限（⓪″）：**与上面那个不是同一个维度**（源文件体量 vs 子进程 stdout），导出是为了让判据能读它
   MAX_OUTLINE_BUF_MB,
+  // 子进程时间预算（⓪″b）：第三个维度，导出同上（判据要能核对"调用点用的就是这一份"）
+  PDF_HELPER_TIMEOUT_MS,
   normalizeOutline, outlineSha256, sourceRef, makeOrigin, originMatches, describeOrigin,
   // ⓪⁵ 绑定工作区文件夹（R4）：盯哪些文件 / 比 / 建计划 / 套 / 快照（**转换一律走上一条链**，本段不解析格式）
   BINDING_STATE_VERSION, BINDING_STATE_FILE, BINDING_EXT_DEFAULT, BINDING_IGNORE_DEFAULTS,
