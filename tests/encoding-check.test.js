@@ -113,30 +113,30 @@ describe('G1 行尾：④ 只判 index（提交面）；⑤ 判工作树的**方
     const base = { max: ec.WORKTREE_CR_DEBT_MAX, mode: 'transition', known: book };
     const ok = ec.judgeWorktreeEol(bookRows, Object.assign({ debt: ec.WORKTREE_CR_DEBT }, base));
     expect(ok.red).toEqual([]);
-    expect(ok.debt.length).toBe(12);            // 12 条在册且都含 CR ⇒ 全在"只报告"档
+    expect(ok.debt.length).toBe(2);             // 2 条在册且都含 CR ⇒ 全在"只报告"档
     expect(ok.capMismatch).toBe(null);          // 唯一合法状态：上限 == 在册条数
-    // ① 册涨到 13 条而不抬上限 ⇒ **超额**（拆细换额度当场被抓）
+    // ① 册涨到 3 条而不抬上限 ⇒ **超额**（拆细换额度当场被抓）
     const split = ec.WORKTREE_CR_DEBT.concat([{ path: 'renderer/app-view.js', why: '拆细换额度试算', cr: 1 }]);
     const over = ec.judgeWorktreeEol(bookRows, Object.assign({ debt: split }, base));
     expect(over.capMismatch).not.toBe(null);
     expect(over.capMismatch.kind).toBe('over');
-    expect(over.capMismatch.debtCount).toBe(13);
-    expect(over.capMismatch.cap).toBe(12);
+    expect(over.capMismatch.debtCount).toBe(3);
+    expect(over.capMismatch.cap).toBe(2);
     expect(over.red).toEqual([]);               // 这条红**只**来自额度（不是靠"未在册的 CR"顺带红）
-    // 同批把上界抬到 13 ⇒ 复绿（抬上界 = 一次显式提交，不是顺手改个数字）
-    expect(ec.judgeWorktreeEol(bookRows, Object.assign({ debt: split }, base, { max: 13 })).capMismatch).toBe(null);
+    // 同批把上界抬到 3 ⇒ 复绿（抬上界 = 一次显式提交，不是顺手改个数字）
+    expect(ec.judgeWorktreeEol(bookRows, Object.assign({ debt: split }, base, { max: 3 })).capMismatch).toBe(null);
     // ② 只抬上界、册不动 ⇒ **富余额度**（先把口子开好、下一批再往里塞，同样判红）
-    const slack = ec.judgeWorktreeEol(bookRows, Object.assign({ debt: ec.WORKTREE_CR_DEBT }, base, { max: 13 }));
+    const slack = ec.judgeWorktreeEol(bookRows, Object.assign({ debt: ec.WORKTREE_CR_DEBT }, base, { max: 3 }));
     expect(slack.capMismatch).not.toBe(null);
     expect(slack.capMismatch.kind).toBe('slack');
-    expect(slack.capMismatch.debtCount).toBe(12);
-    expect(slack.capMismatch.cap).toBe(13);
-    // 终态（有 catch-all 的 eol=lf）：签出方向已定死 ⇒ 上界压到只剩脚本宿主那几条 ⇒ 那 11 条必须销账
+    expect(slack.capMismatch.debtCount).toBe(2);
+    expect(slack.capMismatch.cap).toBe(3);
+    // 终态（有 catch-all 的 eol=lf）：签出方向已定死 ⇒ 上界压到只剩脚本宿主那几条 ⇒ 那 1 条必须销账
     const term = ec.judgeWorktreeEol(bookRows, Object.assign({ debt: ec.WORKTREE_CR_DEBT }, base, { mode: 'terminal' }));
     expect(term.capMismatch).not.toBe(null);
     expect(term.capMismatch.kind).toBe('over');
     expect(term.capMismatch.cap).toBe(1);       // 只有"启动AI MindMap.vbs"这一类允许留
-    expect(term.capMismatch.mustDelist.length).toBe(11);
+    expect(term.capMismatch.mustDelist.length).toBe(1);
   });
 
   it('★ i/lf + w/mixed ⇒ **④ 无违规**；⑤ 里它一样按"有没有 CR"判（不在册即红）', () => {

@@ -172,9 +172,25 @@
    *  ⚠️ `dir` 由调用方**算一次**再传进来（不在这里重复调 `dirFn()`）：那个函数内部会 `mkdirSync`
    *  （目录布局的单源在 `src/data-store.js`），重摇时不该反复建目录。
    */
-  function uniqueResourcePath(dir, ext) {
-    let dest = path.join(dir, newResourceName(ext));
-    for (let retries = 0; fs.existsSync(dest); retries++) {
+  /* 【G-15 下沉 · 2026-10-22】撞名重摇的**逻辑主体**搬进 `uniqueResourcePathBy`，
+   * `fs` 只剩在 `uniqueResourcePath` 这一行薄壳里回答一个问题："这个名字现在有人在用吗"。
+   * 为什么值得切：判据（重摇几次、上界到了抛什么）是**纯计算**，而盘上只要有一个占位文件
+   * 就能把它逼成"必须先造文件系统"的测试（`tests/import-refs.test.js` 【批9】T1/T3 就是那个形状：
+   * 造源目录 + 造 dest 目录 + 写占位文件 + 钉 `Date.now`/`Math.random`）。
+   * 切完：`uniqueResourcePathBy(taken, dir, ext, newName)` 喂两个函数就够（新增用例见
+   * `tests/markdown-resource-path.test.js`）—— **既有断言一条都没改**，产品行为逐字节不变
+   * （正常路径返回的就是 `path.join(dir, newName(ext))` 那一个值；上界与报文一个字都没动）。 */
+  function uniqueResourcePathBy(taken, dir, ext, newName) {
+    /* 浏览器分支的 `path` 是 null（见文件头）：先喊清楚"这是 Node 专属能力"，
+     * 而不是让 `path.join` 抛出 `Cannot read properties of null` 那种漏形状
+     * （与 `tests/g15-umd-dual.test.js` ⑥ 的口径同一条）。Node 侧 `path` 恒在 ⇒ 这条守卫不触发。 */
+    if (!path || typeof path.join !== 'function') {
+      throw new Error('src/markdown.js 的 uniqueResourcePathBy 需要 path（资源落地属 Node 侧；浏览器端请走 CLI / IPC）');
+    }
+    const nameOf = typeof newName === 'function' ? newName : newResourceName;
+    const isTaken = typeof taken === 'function' ? taken : () => false;
+    let dest = path.join(dir, nameOf(ext));
+    for (let retries = 0; isTaken(dest); retries++) {
       if (retries >= RESOURCE_NAME_MAX_TRIES) {
         throw new Error('资源新名字连续 ' + (retries + 1) + ' 次都撞上盘上已存在的文件（' + path.basename(dest)
           + '）：这个命名函数已经不随机了（同毫秒 + 4 位随机后缀 = 1/36⁴，不该连撞这么多次）。'
@@ -182,9 +198,16 @@
           + '（全工程只有这一处命名规则：import-md / import-project / import-dir 与 cli/commands/assets.js'
           + ' 的 copyAsset/copyAttachment 都调它；它若被打桩或不再随机，这里就会先炸）。');
       }
-      dest = path.join(dir, newResourceName(ext));
+      dest = path.join(dir, nameOf(ext));
     }
     return dest;
+  }
+
+  /** IO 薄壳（**签名与行为都不变**）：`fs.existsSync` 是这里唯一与盘有关的一句。
+   *  产品侧所有调用点（`resolveImportRefs` / `cli/commands/assets.js` 的 copyAsset·copyAttachment）
+   *  都还调它 ⇒ 下游零改动 ✓ */
+  function uniqueResourcePath(dir, ext) {
+    return uniqueResourcePathBy((p) => fs.existsSync(p), dir, ext, newResourceName);
   }
   /** 非本地引用（URL scheme）。**≥2 个字符才算 scheme** —— Windows 的盘符只有一个字母，
    *  写成 `c:` 若也当协议，绝对路径 `C:\a\x.png` 会被误判成远程引用（那种误判会让文件永远不被复制）。
@@ -612,6 +635,9 @@
      * 漏了这三项的话：`require` 进来是 `undefined`、`node --check` 照样绿，只有
      * **行为判据**（顶层 require 了这两个函数的模块，调用时必须走到这一处）才抓得住 ——
      * 见 `tests/import-refs.test.js` 的【批10】T7/T8。 */
-    newResourceName, uniqueResourcePath, RESOURCE_NAME_MAX_TRIES
+    newResourceName, uniqueResourcePath, RESOURCE_NAME_MAX_TRIES,
+    /* 【G-15 下沉】纯核心（`taken` / `newName` 全由调用方注入，函数体里没有 `fs`）——
+     * 浏览器端也能加载，判据可喂两个函数就测（`tests/markdown-resource-path.test.js`）。 */
+    uniqueResourcePathBy
   };
 });

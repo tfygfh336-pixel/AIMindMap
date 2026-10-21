@@ -297,13 +297,46 @@ function searchArchives(dir, keyword, perFile) {
   const out = { files: [], totalHits: 0 };
   const kw = (keyword === undefined || keyword === null) ? '' : String(keyword).trim();
   if (!kw || !fs.existsSync(dir)) return out;
-  const cap = Number.isInteger(perFile) && perFile > 0 ? perFile : 20;
-  const kwLc = kw.toLowerCase();
-
+  /* 【G-15 下沉 · 2026-10-22】读盘只剩这三句：列出 `*.md` → 排序 → 逐个读出正文。
+   * 命中判定与结果形状搬进纯核心 `searchArchiveTexts`（喂 `[{file, text, path}]` 就够，
+   * 新增用例见 `tests/changelog.test.js` 的「G-15 下沉」组）。读不出来的文件**不进清单**
+   * （与修前 `return` 那一跳同一语义 —— 坏文件不参与命中，也不产生半条结果）。 */
+  const archives = [];
   fs.readdirSync(dir).filter((f) => /\.md$/i.test(f)).sort().forEach((f) => {
     const p = pathMod.join(dir, f);
     let text = '';
     try { text = fs.readFileSync(p, 'utf8'); } catch (e) { return; }
+    archives.push({ file: f, text: text, path: p });
+  });
+  return searchArchiveTexts(archives, keyword, perFile);
+}
+
+/**
+ * 归档检索的**纯核心**（【G-15 下沉】）：入参是"已经读出来的归档正文"，不是目录。
+ *
+ * 为什么切：命中判据（行号 / 所属 `###` 标题 / 每文件上限 / 版本与日期解析）全是纯计算，
+ * 而修前要测它就得先 `mkdtemp` + 写若干 `.md` 文件（`tests/changelog.test.js` 的
+ * `tmpArchives()` 正是那个形状）⇒ 判据被"怎么造盘"连累。切完：喂数组即可。
+ *
+ * @param {Array<{file:string, text:string, path?:string}>} archives 归档文件（`file` = 文件名，含 `.md`）
+ * @param {string} keyword 关键词（大小写不敏感）；空/未给 ⇒ `{ files: [], totalHits: 0 }`
+ * @param {number} [perFile] 每个文件最多报几条命中（默认 20，防输出爆炸）
+ * @returns {{files:Array<{file,version,date,path,hits:Array<{line,text,heading}>}>, totalHits:number}}
+ *   —— 与 `searchArchives` 的返回**同一个形状**（薄壳只是把"读出来的文本"塞进来）。
+ */
+function searchArchiveTexts(archives, keyword, perFile) {
+  const out = { files: [], totalHits: 0 };
+  const kw = (keyword === undefined || keyword === null) ? '' : String(keyword).trim();
+  if (!kw) return out;
+  const cap = Number.isInteger(perFile) && perFile > 0 ? perFile : 20;
+  const kwLc = kw.toLowerCase();
+
+  (archives || []).forEach((a) => {
+    if (!a || typeof a.file !== 'string') return;
+    const f = a.file;
+    if (!/\.md$/i.test(f)) return;
+    const text = typeof a.text === 'string' ? a.text : '';
+    const p = a.path === undefined ? null : a.path;
     const lines = text.split(/\r?\n/);
     const version = f.replace(/\.md$/i, '');
     const head = lines.find((l) => /^## \[/.test(l)) || '';
@@ -464,6 +497,9 @@ return {
   splitChangelog,
   renderArchiveFile,
   searchArchives,
+  /* 【G-15 下沉】归档检索的纯核心（喂 `[{file, text, path?}]`）—— 与 `searchArchives`
+   * 共用同一份命中判据；导出面只加这一项，`searchArchives` 的签名与行为不变 ✓ */
+  searchArchiveTexts,
   checkChangelogStructure,
   PLACEHOLDER,
   KEEP_RELEASED_SECTIONS

@@ -12,7 +12,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   releaseChangelog, indexChangelog, splitChangelog, renderArchiveFile, searchArchives, PLACEHOLDER,
-  checkChangelogStructure
+  checkChangelogStructure,
+  /* 【G-15 下沉 · 2026-10-22】归档检索的**纯核心**：喂"已读出来的归档正文"而不是目录 */
+  searchArchiveTexts
 } from '../src/changelog.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -511,5 +513,78 @@ describe('checkChangelogStructure（CHANGELOG.md 文件自身结构完整性）'
     const r = checkChangelogStructure(broken);
     expect(r.ok).toBe(true);                              // ← 边界：判据看不见内容变化
     expect(r.problems).toEqual([]);
+  });
+});
+
+/* ============================================================
+ * G-15 下沉（2026-10-22）：归档检索的**纯核心** `searchArchiveTexts`
+ * ------------------------------------------------------------
+ * 为什么加这一组：上面「changelog 归档检索」那组测的是**同一个命中判据**，但它的入口是
+ * `searchArchives(dir, …)` ⇒ 每条用例都得先 `mkdtemp` + 写 `.md` 文件（`tmpArchives()`）。
+ * 判据（行号 / 所属 `###` 标题 / 每文件上限 / 版本与日期）本身与盘无关 —— 下沉后喂数组即可。
+ * 本组 4 条里 **3 条零 `mkdtemp`**；第 2 条故意用一次盘，为的是证明"薄壳与纯核心是**同一份判据**"
+ * （那一半本来就是盘，绕开它就是自欺）—— 条数可现场核。
+ *
+ * ⚠️ 上面那组**一条断言都没改**：它是端到端真值（含"行号指回原文那一行"那条），
+ * 本组只补"薄壳与纯核心是同一份判据"以及纯核心自己的边界 —— 不是替代，也不重复判。
+ * ============================================================ */
+describe('G-15 下沉：`searchArchiveTexts`（喂文本就够，不必先造文件系统）', () => {
+  const V012 = 'v0.12.0.md';
+  const BODY = '# CHANGELOG 归档 · v0.12.0（2026-09-14）\n\n> 说明行\n\n## [v0.12.0] - 2026-09-14\n\n'
+    + '### 架构与发版\n\n- **history.js 下沉**：撤销栈移到 src/history.js\n';
+
+  it('★ 命中行号 / 所属条目标题 / 版本 / 日期：**喂一段文本**就给全（修前要先造目录再读回来）', () => {
+    const r = searchArchiveTexts([{ file: V012, text: BODY, path: 'D:/docs/changelog/v0.12.0.md' }],
+      'history.js 下沉');
+    expect(r.totalHits).toBe(1);
+    expect(r.files[0].file).toBe(V012);
+    expect(r.files[0].version).toBe('v0.12.0');
+    expect(r.files[0].date).toBe('2026-09-14');
+    expect(r.files[0].hits[0].line).toBe(9);
+    expect(r.files[0].hits[0].heading).toBe('架构与发版');
+    // 行号**指回喂进来的那段文本**那一行（不是偏移量算错却看着像对）
+    expect(BODY.split('\n')[r.files[0].hits[0].line - 1]).toContain('history.js 下沉');
+    expect(r.files[0].path, '薄壳给的绝对路径原样带出（纯核心不自己拼路径）')
+      .toBe('D:/docs/changelog/v0.12.0.md');
+  });
+
+  it('★ 与薄壳**同一份判据**：同一份内容，`searchArchives`（读盘）与纯核心的结果逐字段相同', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-g15-cl-'));
+    try {
+      fs.writeFileSync(path.join(dir, V012), BODY, 'utf8');
+      const viaDisk = searchArchives(dir, 'history.js 下沉');
+      const viaText = searchArchiveTexts([{ file: V012, text: BODY }], 'history.js 下沉');
+      // path 一项只有薄壳能给出（它知道目录）；其余字段必须逐字段相同
+      expect(JSON.stringify(viaText.files.map((f) => ({ ...f, path: null }))))
+        .toBe(JSON.stringify(viaDisk.files.map((f) => ({ ...f, path: null }))));
+      expect(viaText.totalHits).toBe(viaDisk.totalHits);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('大小写不敏感；每文件上限生效（防输出爆炸）；无命中不留半条结果', () => {
+    const many = Array.from({ length: 30 }, (_, i) => '- 命中关键词 第' + i + '行').join('\n');
+    const body = '## [v0.1.0] - 2026-09-11\n\n### 多\n\n' + many + '\n';
+    expect(searchArchiveTexts([{ file: 'v0.1.0.md', text: '## [v0.1.0]\n\n- 门禁 Gate\n' }], 'GATE')
+      .totalHits).toBe(1);
+    expect(searchArchiveTexts([{ file: 'v0.1.0.md', text: body }], '命中关键词', 5).files[0].hits.length)
+      .toBe(5);
+    expect(searchArchiveTexts([{ file: 'v0.1.0.md', text: body }], '命中关键词').files[0].hits.length)
+      .toBe(20);
+    expect(searchArchiveTexts([{ file: 'v0.1.0.md', text: body }], 'zzz-没有这个').files).toEqual([]);
+  });
+
+  it('空关键词 / 非 `.md` / 坏条目 ⇒ 都返回空结构且不抛（边界不许静默造出假命中）', () => {
+    const one = [{ file: 'v0.1.0.md', text: '## [v0.1.0]\n\n- x\n' }];
+    expect(searchArchiveTexts(one, '').totalHits).toBe(0);
+    expect(searchArchiveTexts(one, null).totalHits).toBe(0);
+    expect(searchArchiveTexts(one, '   ').totalHits).toBe(0);
+    expect(searchArchiveTexts([], 'x').totalHits).toBe(0);
+    expect(searchArchiveTexts(null, 'x').totalHits).toBe(0);
+    expect(searchArchiveTexts([{ file: 'notes.txt', text: '- x\n' }], 'x').totalHits).toBe(0);
+    expect(searchArchiveTexts([null, { text: '- x\n' }], 'x').totalHits).toBe(0);
+    // 正文缺失按空串处理（不抛、也不当成命中）
+    expect(searchArchiveTexts([{ file: 'v0.1.0.md' }], 'x').totalHits).toBe(0);
   });
 });

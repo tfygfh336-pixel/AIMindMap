@@ -104,4 +104,24 @@ describe('G-15 · UMD 双端：下沉出来的纯核心在浏览器端也能用'
     expect(() => sb.MMItemSrc.resolveFile({ file: 'a.md' })).toThrow(/需要 Node 环境/);
     expect(() => sb.MMDocImport.docToOutline('D:/x.md')).toThrow(/需要 Node 环境/);
   });
+
+  /* 【G-15 下沉 · 2026-10-22】本批新增的两个纯核心也要过同一条口径（新导出**默认**没被测过）：
+   *   · `searchArchiveTexts`（`src/changelog.js`）—— **完全不碰 fs/path** ⇒ 浏览器端能算出真实结果；
+   *   · `uniqueResourcePathBy`（`src/markdown.js`）—— 逻辑主体无 `fs`，但它要 `path`
+   *     （浏览器分支 `path = null`，见该文件头）⇒ 按 ⑥ 的同一条口径：**函数在、调用即抛明确的话**，
+   *     不是 `Cannot read properties of null` 那种漏形状。 */
+  it('⑦ 本批新增的两个纯核心：一个在浏览器端真能用，另一个响亮喊"Node 侧"', () => {
+    const sb = browserSandbox(['convert.js', 'markdown.js', 'changelog.js']);
+    expect(sb.MMChangelog, 'MMChangelog 全局名不见了（UMD 分支坏了）').toBeTruthy();
+    expect(sb.MMMarkdown, 'MMMarkdown 全局名不见了（UMD 分支坏了）').toBeTruthy();
+    // ① 归档检索的纯核心：喂文本就够 ⇒ 浏览器端给出与 Node 侧同一份结果
+    const r = sb.MMChangelog.searchArchiveTexts(
+      [{ file: 'v0.1.0.md', text: '## [v0.1.0] - 2026-09-11\n\n### 甲\n\n- 命中我\n' }], '命中我');
+    expect(r.totalHits).toBe(1);
+    expect(r.files[0].hits[0].heading).toBe('甲');
+    // ② 资源命名闸的纯核心：函数在，调到就喊清楚"需要 path"
+    expect(typeof sb.MMMarkdown.uniqueResourcePathBy).toBe('function');
+    expect(() => sb.MMMarkdown.uniqueResourcePathBy(() => false, '/a', '.png', () => 'x.png'))
+      .toThrow(/需要 path/);
+  });
 });
