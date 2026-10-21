@@ -56,17 +56,34 @@ module.exports = [
   {
     name: '导入：扩展名判据 —— .pdf 已**受支持**（P8 切片：限有书签 ✓），.doc/.epub/.png 仍**响亮说明**',
     run: async (ctx) => {
-      const res = await execJson(ctx, `(function () {
+      /* ⚠️ **必须 await 真 Promise，且不许用 sleep 当判据**（2026-10-25 修；现场见
+       * `.review/20261025-busy泄漏/README.md`）：
+       * 提交 `33a2282`（`r26`）把「判目录」排到「判扩展名」**之前** —— 方向对（目录不该先被说
+       * "格式不支持"），但那一步要问主进程（`pathKindOf`）⇒ `handleFiles` 由 `async` 化，
+       * 「暂不支持 …」这句 hint 就从**同步说完**变成**微任务之后才说完**。
+       * 而本条原先**同步**读 `#status-text` ⇒ 读到的是上一句（实测 `已加载：comnet`）而恒红。
+       * 判据本体（下面那个 `ok` 公式）**一字未动**：改的只是"等产品自己说完再读"。
+       * ⚠️ 反面写法：固定 `setTimeout(…, 30)` —— 那会把一条必然成立的判据换成一个新的时间竞态
+       * （本工程已有一条 31803 ms 撞 30 s 超时的假红先例）。等的是**这次调用的 Promise** ✓ */
+      const res = await execJson(ctx, `(async function () {
         var MM = window.MM;
         var okList = ['.md', '.markdown', '.txt', '.text', '.docx', '.pdf'].map(function (e) { return MM.importExtOk('书' + e); });
         var badList = ['.doc', '.epub', '.png'].map(function (e) { return MM.importExtOk('书' + e); });
+        var before = (document.querySelector('#status-text') || {}).textContent || '';
         // 喂一个**仍不支持**的 File 形状对象：应当只提示、不发起导入
-        MM.importHandleFiles([{ name: '某本书.epub' }]);
+        // 诊断（**不改判据**）：这条调用是被拒还是走完了；「喂之前」留着，下次红时能一眼看出读的是不是旧值
+        var settled = 'fulfilled';
+        try {
+          await Promise.resolve(MM.importHandleFiles([{ name: '某本书.epub' }]))
+            .catch(function (e) { settled = 'rejected:' + ((e && e.message) || e); });
+        } catch (e) { settled = 'threw:' + ((e && e.message) || e); }
         var status = (document.querySelector('#status-text') || {}).textContent || '';
         return JSON.stringify({
           ok: okList.every(Boolean) && badList.every(function (b) { return !b; }) && status.indexOf('暂不支持') >= 0,
           text: '支持的都认=' + okList.every(Boolean) + '（含 .pdf ✓）不支持的都拒=' + badList.every(function (b) { return !b; })
             + ' 状态栏=' + JSON.stringify(status.slice(0, 60))
+            + ' ｜ 喂之前=' + JSON.stringify(before.slice(0, 40))
+            + ' ｜ importHandleFiles=' + settled
         });
       })()`);
       return { ok: !!res.ok, text: res.text };
