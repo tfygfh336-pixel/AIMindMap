@@ -219,7 +219,7 @@ describe('读不了就说读不了（绝不给一个空树冒充成功）', () =
       expect(r.md).not.toContain('AI MindMap 文字层夹具');  // 页眉没混进来 ✓
       expect(Array.isArray(r.notes) && r.notes.join(' ')).toContain('剔除');   // 如实报告了剔除的页眉页脚 ✓
     } finally { try { fsx.unlinkSync(p); } catch (e) { /* ignore */ } }
-  }, 30000);
+  });
 
   it('PDF：无书签且文字层也用不上（每页才 13 个字符）⇒ **响亮拒绝**，理由里带数字与出路', () => {
     const { buildPdf } = require('./pdf-fixture.js');
@@ -242,7 +242,7 @@ describe('读不了就说读不了（绝不给一个空树冒充成功）', () =
       try { fsx.unlinkSync(no); } catch (e) { /* ignore */ }
       try { fsx.unlinkSync(badp); } catch (e) { /* ignore */ }
     }
-  }, 30000);
+  });
   it('★ 带 BOM 的 md/txt 必须容忍：BOM 会让首行 `#` 匹配不上，把第一个标题吃成正文（实测踩到）', () => {
     const withBom = '\uFEFF# 第一本书\n\n## 第 1 章\n正文\n\n# 第二本书\n';
     const r = di.docToOutline('bom.md', { buf: Buffer.from(withBom, 'utf8') });

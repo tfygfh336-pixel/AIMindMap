@@ -24,6 +24,8 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+// Node 侧的同名模块：**体量上限的唯一真源**（⑤ 要判的是"双端是同一个值"，见那里）
+import docImport from '../src/doc-import.js';
 
 const srcPath = (f) => fileURLToPath(new URL('../src/' + f, import.meta.url));
 
@@ -93,7 +95,17 @@ describe('G-15 · UMD 双端：下沉出来的纯核心在浏览器端也能用'
     // 纯的那一半在浏览器端**真能用**（这两条不碰盘）
     expect(JSON.stringify(sb.MMItemSrc.VERDICTS)).toBe('["ok","needs-recheck","src-gone"]');
     expect(typeof sb.MMDocImport.textToOutline).toBe('function');
-    expect(sb.MMDocImport.MAX_SOURCE_MB).toBe(64);
+    /* 体量上限**只判"双端是同一个值"**，不判那个值是多少（本条要验的是 UMD 双端一致，与"上限定在几"无关）。
+     * 这里曾经写死那个上限的**字面量**（`toBe(<一个数字>)`）—— 那是**全仓唯一一份数字副本**：
+     * 把上限改掉（一次纯粹的约定变更）会让这条**假红**，而真源一直是 `src/doc-import.js` 的 `MAX_SOURCE_MB`。
+     * 上限"该落在什么窗口里"只有一处判据：`tests/doc-import.test.js` 的 `>= 16`（正常文档要过得去）——
+     * 别在本文件再抄一份窗口，那是同一份判定的第二处表达。 */
+    const nodeSide = docImport;
+    expect(sb.MMDocImport.MAX_SOURCE_MB).toBe(nodeSide.MAX_SOURCE_MB);
+    // 派生的字节数同样双端一致（`MAX_SOURCE_MB * 1024 * 1024` 是派生值，不手写）
+    expect(sb.MMDocImport.MAX_SOURCE_BYTES).toBe(nodeSide.MAX_SOURCE_BYTES);
+    // ⓪″ 那条子进程输出上限也是双端同名同值（**与上面那个不是同一个维度**，见该常量的注释）
+    expect(sb.MMDocImport.MAX_OUTLINE_BUF_MB).toBe(nodeSide.MAX_OUTLINE_BUF_MB);
   });
 
   it('⑥ 浏览器端调 Node 专属能力 ⇒ 抛「需要 Node 环境」（不是 require is not defined、也不是 null 属性访问）', () => {

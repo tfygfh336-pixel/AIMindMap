@@ -190,6 +190,22 @@ function describeImportSourceProblem(filePath) {
 const MAX_SOURCE_MB = 64;
 const MAX_SOURCE_BYTES = MAX_SOURCE_MB * 1024 * 1024;
 
+/* ---------------- ⓪″ 子进程输出上限（**与上面的源文件体量不是同一件事**） ----------------
+ * ⚠️ 这两个常量长得像、常常被当成一个旋钮，**它们是两个维度**，没有换算关系：
+ *   · `MAX_SOURCE_MB`（⓪′ 上面那一行）= **喂进来的源文件**能有多大（在 `statSync` / Buffer 长度上判，不读内容）；
+ *   · `MAX_OUTLINE_BUF_MB`（本行）= **收上来的子进程 stdout** 能有多大（`spawnSync` 内存管道的 `maxBuffer`）。
+ * 本子进程（`scripts/pdf-outline-helper.mjs`）回的是**一份提纲文本**（只有标题行），不是正文 ⇒
+ * 「源文件多大」与「提纲文本多大」之间没有比例关系，**不构成上下游**：
+ * 源文件可以几百页而提纲只有几千行。所以**改其中一个不等于另一个该改**，更不许把它们合成一个常量
+ * （合成之后就变成"改 PDF 提纲上限顺手改了导入闸门"，那正是最难查的一类耦合 ✗）。
+ *
+ * 取值理由（同 `MAX_SOURCE_MB` 的口径：**人为约定，不是测量结论**）：远大于任何真实提纲
+ * （提纲只有标题行、不含正文），又小到不会把宿主进程的内存吃掉。⚠️ 全仓另有几处**别的** `maxBuffer`
+ * （GUI→CLI 的 stdout、MCP 子进程、探针…）也是**第三个维度**（别的子进程、别的量级口径），
+ * 它们与本常量同样没有换算关系 —— 别把它们与本常量当成一个旋钮。
+ * ⚠️ 超限报文（下面 `pdfOutlineViaHelper` 里那条）引用的就是**这一个常量**，不另写数字 ⇒ 改这里报文跟着变。 */
+const MAX_OUTLINE_BUF_MB = 32;
+
 /** 超限时的报文：**说准原因 + 给出路**（与 ⓪ 的目录报文同一风格）。
  *  `{ code:'too-big', message, sizeMB }`；没超限/取不到大小（stat 失败由 ⓪ 负责报）⇒ null。 */
 function describeOversizeSource(filePath) {
@@ -584,9 +600,10 @@ function pdfOutlineViaHelper(filePath) {
   //    length exceeded" —— 而旧报文只说"读 PDF 的子进程没有给出结果"，**没说是被上限掐掉的**。
   //    那是最难查的一类报文：使用者会以为"这份 PDF 坏了"，于是反复重试、换文件，方向全错 ✗。
   //    这里把"超限"独立成分支说清 + 给出去路（同一件事还有第二种表现：子进程自己先抛了错）。
-  const MAXBUF_MB = 32;   // 与下面的 32 * 1024 * 1024 同一份口径（改一处必须改两处：这里只有一份常量 ✓）
+  //    ⚠️ 上限常量**已经不在这个函数体里**了：它提到了文件顶部的常量区（`MAX_OUTLINE_BUF_MB`，
+  //    与 `MAX_SOURCE_MB` 挨着放，那里写清了"两个维度不是一件事"）⇒ 本函数与报文共用那一份，别再在本地写一个数字。
   const r = childProcess.spawnSync(process.execPath, [helper, filePath],
-    { encoding: 'utf8', maxBuffer: MAXBUF_MB * 1024 * 1024 });
+    { encoding: 'utf8', maxBuffer: MAX_OUTLINE_BUF_MB * 1024 * 1024 });
   const out = String(r.stdout || '').trim();
   const errText = String((r.error && r.error.message) || '') + ' ' + String(r.stderr || '').trim();
   let parsed = null;
@@ -594,7 +611,7 @@ function pdfOutlineViaHelper(filePath) {
   if (!parsed) {
     // ① 明确是**输出超限**（不是 PDF 读不了）：原因准确 + 出路
     if ((r.error && r.error.code === 'ENOBUFS') || /maxBuffer/i.test(errText)) {
-      throw new Error('这份 PDF 的提纲文本超过了读取上限（子进程输出上限 ' + MAXBUF_MB + ' MB），'
+      throw new Error('这份 PDF 的提纲文本超过了读取上限（子进程输出上限 ' + MAX_OUTLINE_BUF_MB + ' MB），'
         + '所以**没有拿到结果**（这不是"PDF 坏了"）。出路（三选一）：'
         + '① 先用其它工具把这份 PDF 拆成几册再逐册导入；'
         + '② 只要书签：用别的 PDF 工具导出书签为 .md/.txt 再 `import-md`；'
@@ -2528,6 +2545,8 @@ return {
   parseFrontmatter, fieldList, dedupe, convertWikiSyntax, parseWikiInner, isVaultDir, applyVault,
   // 体量闸门（⓪′）：上限常量只有这一份，两条导入路共用同一个判据
   MAX_SOURCE_MB, MAX_SOURCE_BYTES, describeOversizeSource, describeOversizeBuffer, describeOversizeSize,
+  // 子进程输出上限（⓪″）：**与上面那个不是同一个维度**（源文件体量 vs 子进程 stdout），导出是为了让判据能读它
+  MAX_OUTLINE_BUF_MB,
   normalizeOutline, outlineSha256, sourceRef, makeOrigin, originMatches, describeOrigin,
   // ⓪⁵ 绑定工作区文件夹（R4）：盯哪些文件 / 比 / 建计划 / 套 / 快照（**转换一律走上一条链**，本段不解析格式）
   BINDING_STATE_VERSION, BINDING_STATE_FILE, BINDING_EXT_DEFAULT, BINDING_IGNORE_DEFAULTS,
