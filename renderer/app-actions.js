@@ -737,8 +737,10 @@
             (n.children || []).forEach(stripInbound);
           };
           stripInbound(MM.adapter.getRoot(state.jm));
-          /* 只把"清理了多少"交回去，**文案由模块在 removeNode 之后拼** —— 那样才与改前逐字节一致
-           * （改前是先 removeNode 再拼 '已删除：' + node.topic，见 `renderer/editor.js` 的注释）。 */
+          /* 只把"清理了多少"交回去，**文案由模块自己拼** —— 这样"删前要先取好标题"这件事
+           * 只有一个责任点（`renderer/editor.js` 的 `deleteNode`：它把 `topic` 在 removeNode
+           * **之前**取好，见那里的注释）。改前这里写着"那样才与改前逐字节一致"，而改前那一版
+           * 正是先删再拼、拼出 `已删除：undefined` 的版本（2026-10-22 修掉并补了冒烟断言）。 */
           resolve({ allow: true, cleanup: { affected: affected.length, inLinks: inLinks.length } });
         }).catch((err) => {
           resolve({ allow: false, isErr: true, statusText: '引用清理失败，已取消删除：' + ((err && err.message) || err) });

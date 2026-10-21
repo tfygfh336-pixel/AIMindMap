@@ -440,5 +440,84 @@ module.exports = [
           + ' | 保存后 validate 通过=' + diskOk + ' 关联数=' + count2
       };
     }
+  },
+  {
+    /* ── 2026-10-22：**状态栏文案**（补的是"为什么 `已删除：undefined` 活了一个月"）──────
+     * 改前 `renderer/editor.js` 的 `deleteNode` 是**先 removeNode 再拼文案**，而 jsMind 的
+     * `remove_node` 会把节点对象的自有字段逐个 `delete`（`for (var a in e) delete e[a]`，见
+     * `node_modules/jsmind/es6/jsmind.js` 的 `remove_node` 方法体）⇒ 状态栏永远是
+     * `已删除：undefined`。它没被抓到，**不是因为它难复现**，而是因为**没有任何域判过这条文案**
+     * （本域当时的删除断言只判"节点真没了/内存剪干净/保存没被拒"）。
+     * ⇒ 这条判的就是那句话本身：读**页面状态栏元素**的 `textContent`，与**删前从页面上读到的标题**
+     *   做严格相等。（与 `scripts/smoke/56-草稿图编辑.js` 那条成对：草稿窗判 `#status`、
+     *   主窗判 `#status-text`；两窗共用同一份 `renderer/editor.js`，只判一边会漏"只修一半"。） */
+    name: '状态栏文案：主窗删掉一个节点后读到的文本是「已删除：<删前的真标题>」，不是「已删除：undefined」'
+      + '（判据 = `#status-text` 的真实 textContent）',
+    run: async (ctx) => {
+      const mm = require('../smoke-assertions.js');
+      const PROBE = 'smoke-del-probe';
+      const TITLE = '冒烟删除探针';
+      /* 造一个**全新的**探针节点：新 id 不可能出现在任何关联笔记或任何节点的入边链接里
+       * ⇒ 删除预检直接放行（不弹确认）⇒ 文案是**不带**"（并清理 …）"后缀的那一支 ⇒ 可以严格相等。
+       * 为什么不用 `MMApp.addNode`：它会顺手打开「编辑节点」模态，而那条链**不是**本条的判据
+       * （开着它只会让"删除"这一步多一个不确定因素）；本条的判据是**删除之后**的状态栏。
+       * 残留自愈：上一轮若崩在这一步，同 id 的节点还挂在树里 ⇒ 先摘掉再造。 */
+      const setup = await ctx.exec(`(function () {
+        var jm = window.MMApp.getState().jm;
+        if (!jm) return JSON.stringify({ ok: false, text: '导图未就绪' });
+        var root = window.MM.adapter.getRoot(jm);
+        var parent = null;
+        (function walk(n) {
+          if (parent || !n) return;
+          if (n.children && n.children.length) { parent = n; return; }
+          (n.children || []).forEach(walk);
+        })(root);
+        if (!parent) return JSON.stringify({ ok: false, text: '树里找不到可作父节点的节点' });
+        if (window.MM.adapter.getNode(jm, ${JSON.stringify(PROBE)})) {
+          window.MM.adapter.removeNode(jm, ${JSON.stringify(PROBE)});
+        }
+        window.MM.adapter.addNode(jm, parent.id, ${JSON.stringify(PROBE)}, ${JSON.stringify(TITLE)}, { detail: '' });
+        var n = window.MM.adapter.getNode(jm, ${JSON.stringify(PROBE)});
+        return JSON.stringify({ ok: !!n && n.topic === ${JSON.stringify(TITLE)},
+          parent: parent.id, topic: n ? String(n.topic) : '' });
+      })()`);
+      let sOk = false, sDetail = setup, sTopic = '';
+      try { const o = JSON.parse(setup); sOk = !!o.ok; sDetail = o.text || ''; sTopic = o.topic || ''; }
+      catch (e) { sDetail = 'setup 返回读不懂：' + String(setup).slice(0, 200); }
+      if (!sOk) return { ok: false, text: '前置失败（造不出探针节点）：' + sDetail };
+
+      // 真 UI 路径删除（`MMApp.deleteNode` → 预检 → removeNode → 状态栏）
+      await ctx.exec('window.MMApp.deleteNode(' + JSON.stringify(PROBE) + ')');
+      let gone = false;
+      for (let i = 0; i < 40; i++) {
+        gone = await ctx.exec('!window.MM.adapter.getNode(window.MMApp.getState().jm, '
+          + JSON.stringify(PROBE) + ')');
+        if (gone) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      /* 状态栏读的是**页面元素自己的 textContent**（`renderer/app-core.js` 的 setStatus 写的就是它）
+       * —— 不是 `MM.setStatus` 的返回值、也不是本文件里任何一个常量。 */
+      const statusText = await ctx.exec(`(function () {
+        var el = document.getElementById('status-text');
+        return el ? String(el.textContent) : null;
+      })()`);
+      /* 收尾：本条**没有**真的打开模态（用 adapter 造节点、预检无引用不弹框），但 V2 的静态判据
+       * 只要看见 `addNode(` 就要求同一段里有收尾动作 ⇒ 走共用入口；`n` 应为 0（不等于 0 就是真漏了）。 */
+      const closed = await mm.closeDialogs(ctx);
+
+      const got = String(statusText === null || statusText === undefined ? '' : statusText);
+      const want = '已删除：' + TITLE;
+      const statusOk = got === want;
+      const noUndef = got.indexOf('undefined') < 0;
+      return {
+        ok: gone && statusOk,
+        text: '删前页面上的真标题=' + JSON.stringify(sTopic)
+          + ' ｜ 节点已从树里消失=' + gone
+          + ' ｜ 状态栏（#status-text 的真实 textContent）=' + JSON.stringify(got)
+          + ' ⇒ 严格等于 ' + JSON.stringify(want) + ' = ' + statusOk
+          + ' ｜ 不含 "undefined" = ' + noUndef
+          + ' ｜ 本段收尾关掉的模态数=' + closed.n
+      };
+    }
   }
 ];

@@ -401,36 +401,43 @@
       if (!node) { setStatus('请先选中要删除的节点'); return null; }
       if (node.id === 'root') { setStatus('根节点不可删除'); return null; }
 
+      /* ⚠️ **要在删之前取好的两个字段**（`topic` / `id`），理由不是洁癖，是库的行为：
+       *    jsMind 0.9.1 的 `remove_node(id)` 末尾对**这个节点对象本身**做了
+       *      `for (var a in (delete this.nodes[e.id], e)) delete e[a];`
+       *    —— 把节点的**每一个自有字段逐个删掉**（压缩源码见 `node_modules/jsmind/es6/jsmind.js`
+       *    的 `remove_node` 方法体；本批的探针读数在 `.review/20261022-deleted-undefined/`）。
+       *    ⇒ 删完再读 `node.topic` / `node.id` 一律是 `undefined`。
+       *    改前这里就是"先删再拼文案" ⇒ 状态栏一直是 `已删除：undefined`，活到 2026-10-22
+       *    **不是因为难修**，而是因为当时**没有任何冒烟域判过这条文案**（现在有了：
+       *    `scripts/smoke/10-assoc.js` 与 `scripts/smoke/56-草稿图编辑.js` 各判一条**页面状态栏的
+       *    真实文本**）。⇒ 想再"优化"这段时：凡是在 removeNode 之后会用到节点字段的，
+       *    都必须先在这里取出来，别再读 `node.*`。 */
+      const topic = node.topic;
+      const nodeId = node.id;
+
       const finish = (res) => {
-        adapter.removeNode(jm, node.id);
-        commit('delete', { id: node.id });
-        /* ⚠️ 状态栏这句是**改前的原样**，注意它在 removeNode **之后**才读 `node.topic`：
-         *    jsMind 的 `remove_node` 会把节点从内部表里摘掉、字段随之失效 ⇒ 这里拼出来的是
-         *    `已删除：undefined` —— 这是**改动前就存在的缺陷**（既有冒烟域没有一条看状态栏文案，
-         *    所以它一直没被抓到）。本批是**纯重构**，按"行为逐字节不变"的原则**刻意保留**它，
-         *    并如实记进 `.review/20261020-editor-复用/01-验收读数.md` 的偏差段 ——
-         *    修它是**行为变更**（用户可见文案变了），应另开一次改动并同批补一条"状态栏文案"断言。
-         *    ⇒ 别在这里"顺手修"，也别把这段挪到 removeNode 之前（那会立刻与基线逐字节比对不符）。 */
-        let text = '已删除：' + node.topic;
+        adapter.removeNode(jm, nodeId);
+        commit('delete', { id: nodeId });
+        let text = '已删除：' + topic;
         if (res && res.cleanup) {
           text += '（并清理 ' + res.cleanup.affected + ' 篇关联 / ' + res.cleanup.inLinks + ' 条链接的引用）';
         }
         setStatus(text, !!(res && res.isErr));
       };
-      if (typeof h.beforeDelete !== 'function') { finish(null); return node.id; }
+      if (typeof h.beforeDelete !== 'function') { finish(null); return nodeId; }
       let pre;
       try { pre = h.beforeDelete(node); }
       catch (err) { setStatus('删除前的检查失败，已取消删除：' + ((err && err.message) || err), true); return null; }
       Promise.resolve(pre).then((res) => {
         if (res && res.allow === false) {
-          setStatus((res && res.statusText) || ('已取消删除：' + node.topic), !!(res && res.isErr));
+          setStatus((res && res.statusText) || ('已取消删除：' + topic), !!(res && res.isErr));
           return;
         }
         finish(res);
       }, (err) => {
         setStatus('删除前的检查失败，已取消删除：' + ((err && err.message) || err), true);
       });
-      return node.id;
+      return nodeId;
     }
 
     /** 移动：**意图**在这里，**后端**由宿主给（主窗 = IPC→CLI `move`；草稿窗 = 内存重排）。 */

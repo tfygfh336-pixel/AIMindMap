@@ -7,7 +7,9 @@
  *      顺带判 **能力的显式分层**在 DOM 上真的发生了（草稿窗的编辑框里**没有**标签/展开两格）；
  *   2) **能改正文**：改 detail ⇒ 主进程那条**导出路径**写出的 json 里有这段正文（不读页面自报）；
  *   3) **能加节点**：点「＋子节点」⇒ 页面节点数 +1、主进程 `nodes` +1（两个来源都变）；
- *   4) **能删节点**：点「删除」⇒ 两边的节点数都回到加之前；
+ *   4) **能删节点**：点「删除」⇒ 两边的节点数都回到加之前，**并且状态栏文案是
+ *      「已删除：<删前的真标题>」**（读页面状态栏元素的 `textContent`；2026-10-22 之前这里
+ *      写着"本条不判文案：那是既存缺陷 `已删除：undefined`、按原样保留"—— 那正是它活下来的原因）；
  *   5) **能移动**：① 同级 ↓ 交换顺序（页面读数与主进程导出 json 的顺序都变）
  *      ② 「移到…」改挂父（导出 json 里父子关系真的变了，且根下面不再有它）；
  *   6) **草稿仍然不落盘**：整段编辑期间项目 JSON 的 sha256 与项目目录文件清单**一个字节都没变**，
@@ -406,18 +408,21 @@ const assertions = [
     }
   },
   {
-    name: '草稿窗能删节点：选中刚加的节点 ⇒ 点「删除」⇒ 页面与主进程的节点数都回到加之前',
+    name: '草稿窗能删节点：点「删除」⇒ 两边节点数回到加之前，且**状态栏文案**是「已删除：<删前的真标题>」（不是「已删除：undefined」）',
     run: async (ctx) => {
       if (!FP) return { ok: false, text: '上一条没开出草稿窗（顺序依赖）' };
       await closeDialogs(ctx);
       const before = authoritative(ctx);
       const pb = await pageRead(ctx);
       const pageBefore = pb.r.pageNodes;
+      /* 期望值的来源：**点击之前**从页面上读到的真标题（不是代码里的常量，也不是本文件写死的字符串）。
+       * 这样"把标题写死成某个字面量"与"标题读错对象"两种错法都判得出来。 */
       const del = await draftJson(ctx, `(function () {
         var els = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]'));
         var target = null;
         for (var i = 0; i < els.length; i++) { if (els[i].textContent === '新节点') { target = els[i]; break; } }
         if (!target) return JSON.stringify({ ok: false, text: '找不到刚加的那个节点' });
+        var title = String(target.textContent);
         target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
         var id = target.getAttribute('nodeid');
         var btn = document.getElementById('btn-del');
@@ -425,7 +430,7 @@ const assertions = [
         var at = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
         var pointOk = !!(at && at.closest && at.closest('button') === btn);
         btn.click();
-        return JSON.stringify({ ok: pointOk, pointOk: pointOk, id: id });
+        return JSON.stringify({ ok: pointOk, pointOk: pointOk, id: id, title: title });
       })()`);
       if (!del.ok) return { ok: false, text: '「删除」按钮没点在它自己身上 / 找不到目标：' + JSON.stringify(del).slice(0, 200) };
       const gone = await waitDraft(ctx, `(function () {
@@ -437,15 +442,27 @@ const assertions = [
       })()`, 60);
       const after = authoritative(ctx);
       const nodesOk = after.nodes === before.nodes - 1;
-      /* ⚠️ 状态栏那句 `已删除：undefined` 是**既存缺陷**（本批是纯重构 ⇒ 刻意按原样保留，
-       *    见 `.review/20261020-editor-复用/01-验收读数.md` 的偏差段）。本条**不判文案**：
-       *    判它会把一个已知的、不属于本批的缺陷变成红灯。 */
-      const status = await draftJson(ctx, '(function () { return JSON.stringify({ ok: true, text: window.MM.draftPageState().status }); })()');
+      /* ★ 本条**真的判文案**（本批之前这里写着"本条不判文案：那是既存缺陷、按原样保留"）：
+       *   `MM.draftPageState().status` 读的是草稿页状态栏元素自己的 `textContent`
+       *   （`renderer/draft-map.js` 的 `draftPageState` → `$('status').textContent`），
+       *   即**页面上的真实文本**，不是代码里的常量。
+       *   判据是**严格相等**：`已删除：<点击前从页面上读到的那串标题>`。
+       *   为什么要它：`renderer/editor.js` 的 `deleteNode` 曾经在 `removeNode` **之后**才读
+       *   `node.topic`，而 jsMind 的 `remove_node` 会把节点对象的自有字段逐个 `delete`
+       *   ⇒ 文案是 `已删除：undefined`，而这个域**当时只把它打印出来、不判** ⇒ 它一直没人管
+       *   （它比 `W26` 那次重构更早；`W26` 只是把它记进台账、刻意没修）。
+       *   ⚠️ 草稿窗没有项目 ⇒ 没有预检 ⇒ 文案永远**不带**"（并清理 …）"后缀 ⇒ 这里可以用严格相等。 */
+      const status = await draftJson(ctx, '(function () { var s = window.MM.draftPageState(); return JSON.stringify({ ok: true, text: s && s.status }); })()');
+      const statusText = String(status.text === undefined ? '' : status.text);
+      const wantStatus = '已删除：' + String(del.title === undefined ? '' : del.title);
+      const statusOk = statusText === wantStatus;
       return {
-        ok: gone.ok && nodesOk,
+        ok: gone.ok && nodesOk && statusOk,
         text: '删节点：页面节点 ' + pageBefore + '→' + gone.pageNodes + '（被删的 id 还在 DOM 里=' + gone.still + '）⇒ ' + gone.ok
           + ' ｜ 主进程 nodes ' + before.nodes + '→' + after.nodes + ' ⇒ ' + nodesOk
-          + ' ｜ 状态栏=' + JSON.stringify(String(status.text).slice(0, 48))
+          + ' ｜ 状态栏=' + JSON.stringify(statusText)
+          + '（期望 ' + JSON.stringify(wantStatus) + ' ⇒ ' + statusOk
+          + '；不含 undefined=' + (statusText.indexOf('undefined') < 0) + '）'
       };
     }
   },
