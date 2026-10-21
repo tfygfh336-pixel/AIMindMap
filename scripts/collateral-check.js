@@ -225,13 +225,57 @@ const COLLATERAL = [
           + '⚠️ 这一处曾经没有守卫（G8 的扫描面漏了 `renderer`），本门禁临时兜过一批；现已收口' }
     ]
   },
+  /* ---- 本批新增的一类改动（缺口 `G-16` 的第 ⑦ 处 / `W26`-b 撞到的那个形状）----
+   * 为什么以前没有这一行：`docs/FEATURES.md` 是**产品功能名册**（名字的唯一权威），
+   * "加一行功能"看起来是纯文档动作 —— 但它有三处机器可核的连带面，而三处都不在这张表里：
+   *   ① 名册行本身（7 列，列错位会让"状态"静默读到别的列）；
+   *   ② `tests/features-roster.test.js` 的 **A1 行数字面量**（名册变长必须是一次可见的动作 ——
+   *      `W26`-b 就是先撞红在 vitest，才有人知道有这一处）；
+   *   ③ 同一文件的 **D4**（承载列里写的命令必须真在 registry 里）。
+   * ② 现在还有一条**机械判据**兜着：`CAPPED_LITERALS` 的 `roster-rows` 条目会把
+   * "写死的数"与"`docs/FEATURES.md` 现算的行数"直接对上 —— 名册长了一行，
+   * `node scripts/collateral-check.js` 当场点名该改成几，不必等 vitest 给一个难读的红。 */
+  {
+    id: 'feature-row',
+    when: '新增一条产品功能（`docs/FEATURES.md` 名册的一行）',
+    places: [
+      { at: '`docs/FEATURES.md` §3 名册的那一行（代号 / 中文名 / 一句话 / 承载 / 实现状态 / 为什么这么叫 / 备注）',
+        role: 'body',
+        note: '产品功能名的**唯一权威**（7 列；列错位会让"实现状态"静默读到承载列的后半截，'
+          + '所以多一格/少一格同样判红）' },
+      { at: '`tests/features-roster.test.js` 的 **A1 写死行数**', role: 'gate', gate: 'G3',
+        anchor: 'tests/features-roster.test.js#A1 真实文档',
+        note: '复用 G3（`npm test`）：那处行数是**有意写死**的（名册变长必须是一次可见的动作，'
+          + '与 `G-11` 的 GOLDEN 字面量同一条纪律）—— 名册加一行它必红。'
+          + '★本批又给它配了一条更早、更好读的判据：`CAPPED_LITERALS` 的 `roster-rows`' },
+      { at: '`tests/features-roster.test.js` 的 **D4 承载命令差集**', role: 'gate', gate: 'G3',
+        anchor: 'tests/features-roster.test.js#D4 真实文档',
+        note: '复用 G3：承载列里写的「命令 + 选项/占位」必须真在 registry 里（`docOnly` 必须为空）—— '
+          + '否则名册会把一条**不存在的命令**当成该功能的承载' },
+      { at: '名册那一行的**写死行数**（`tests/features-roster.test.js` A1 的那个数）',
+        role: 'self', check: 'ARTIFACT_BATCH',
+        note: '本门禁直接断言（`CAPPED_LITERALS` 的 `roster-rows`）：那个数必须等于'
+          + '`parseRoster(docs/FEATURES.md).rows.length` 的**现算真值** —— '
+          + '名册长了一行，`node scripts/collateral-check.js` 当场点名该改成几，'
+          + '不必等 vitest 给一个难读的红' },
+      { at: '名册那一行的**措辞**（一句话讲不讲得清、为什么这么叫、备注该写什么）', role: 'residual',
+        note: '残差：名字好不好、一句话准不准是人的判断 —— 未机械化，别假装有守卫' }
+    ]
+  },
   {
     id: 'collateral-table',
     when: '改这张连带表本身（加 / 改一处「连带处」）',
     places: [
       { at: '本表里每一处 `role: \'gate\'` 的**实现锚**（`<脚本>#<标识符>`）', role: 'self', check: 'ARTIFACT_BATCH',
         note: '★"指过去复用"不许是空头承诺：只校验"那个门禁挂在链上"是不够的 —— 那条**判定**'
-          + '可以被人删掉/改名，而表还在说"有人守"。锚必须在被指门禁的源码里找得到，否则红' }
+          + '可以被人删掉/改名，而表还在说"有人守"。锚必须在被指门禁的源码里找得到，否则红' },
+      { at: '`ARTIFACT_BATCH`（「新增一件产物」→ 那几处登记面）的每一行', role: 'self', check: 'ARTIFACT_BATCH',
+        note: '**双向闭包**：`ARTIFACT_BATCH` 每一处登记面都要在**本表**里点到同一行、且那一行里要有'
+          + '同一条判定（门禁号 / 断言键）—— 两处各说一套就红。'
+          + '另加：每一处的 `guard` 必须挂链、`anchor` 必须找得到、没人守的那几处必须写 why 且不许变多' },
+      { at: '`CAPPED_LITERALS`（在册上界 / 写死的易腐字面量）的每一条', role: 'self', check: 'ARTIFACT_BATCH',
+        note: '改上限 / 改名册行数 ⇒ 同批改册上那一行（`pin` 档要求仍是字面量且等于册上的数；'
+          + '`truth` 档要求等于现算真值；`text` 档要求那段跨文件文本还在）' }
     ]
   }
 ];
@@ -240,6 +284,137 @@ const COLLATERAL = [
  * 本门禁自己实现的那几处断言（键 = 表里 `gate: 'S2'` 引用的名字）
  * =============================================================== */
 const CHECKS = ['MCP', 'MCP_GAP', 'SMOKE_INDEX', 'WRITE_OUTLET', 'NOTE_RESIDUE', 'ARTIFACT_BATCH'];
+
+/* ===============================================================
+ * ⑦-A 「新增一件产物 → 必须**同批**处理的那几处登记面」（`ARTIFACT_BATCH`）
+ * ---------------------------------------------------------------
+ * 它守的是 `docs/RULES.md` 的 `R5`「改动即连带」里**可以机械化**的那一半（缺口 `G-16`）：
+ *   "新增 / 改动一件产物时，那几处登记面必须**同批**跟着动"。
+ *
+ * ⚠️ 这张表**以前只活在注释里**（原话："4 处已有人守、2 处没有"）。注释不是判据 —— 注释里的
+ *   "某某处在守"可以被人删掉/改名，或者某一处根本没进连带表，而**没有任何东西会红**。
+ *   本批把它变成**数据**，并给每一处四条机械判定（判定本体 = `checkArtifactFaces`）：
+ *     (1) `guard` 必须**挂在 verify 链上**（`S2` = 本门禁自己）；
+ *     (2) `anchor`（`<脚本>#<标识符>`）必须在被指门禁的源码里**找得到**；
+ *     (3) **双向闭包**：`rows` 点名的每一行连带表里必须真有，且那一行里必须有**同一条判定**
+ *         （`gate` 写门禁号 / `check` 写本门禁的断言键）—— 不许"这处说一套、连带表里写另一套"；
+ *     (4) 无人守的那几处必须写 `why`，且条数 ≤ `ARTIFACT_BATCH_UNGUARDED_MAX`（**只减不增**）。
+ *
+ * 「6 处」的口径（先读这一段再改数）：
+ *   台账原话是 **6 处**；`docs/RULES.md` 的 `R5` 曾写成"5 处"（漏了 ⑥，本批已同批对齐）。
+ *     ① 架构登记面（`§2.1`/`§2.3`/`§2.6` 代码文件、`§5` 受管文档）→ G8
+ *     ② 生成物重生成（`docs/CLI.md` / `docs/VERIFY.md` / `§5` 表）→ G7
+ *     ③ 第一屏导航（`SKILL.md` 能不能找到它）→ G8
+ *     ④ 真值计数（`docs/VERIFY.md`）→ G6
+ *     ⑤ 断言注册面索引 / 门禁声明↔挂链 → 本门禁的 `SMOKE_INDEX`（+ G3 的 `verify-budget` 双向用例）
+ *     ⑥ `renderer/` 模块入档 → 2026-10-20 已并入 ①（G8 的 `COVERED_DIRS` 收了 `renderer`）；
+ *        这里**保留那一行**，让"它曾经是缺口、现在并入谁"留在数据里，而不是留在人的记忆里。
+ *   **本批新登记第 ⑦ 处**：在册上界 / 写死的易腐字面量（下面 `CAPPED_LITERALS`）——
+ *   它正是今天三批各自撞到的**第三个形状**（`W25`/`W15` 抬 `MCP_GAP_DEBT_MAX` · `W26`-b 撞
+ *   `features-roster.test.js` 写死的行数 · 多批撞写盘出口豁免面），以前**只能靠"撞一次红一次"**
+ *   教会后来人。
+ * =============================================================== */
+const ARTIFACT_BATCH = [
+  { id: 'arch-registry',
+    face: '架构登记面（`docs/ARCHITECTURE.md` 的 `§2.1`/`§2.3`/`§2.6` 代码文件、`§5` 受管文档）',
+    guard: 'G8', anchor: 'scripts/docs-registry-check.js#checkModuleCoverage',
+    rows: ['src-module', 'script-or-gate', 'renderer-module'],
+    note: '新模块/新脚本/新渲染层文件不登记 ⇒ G8 第 ⑦ 条连**一行都不点名它**（这一处收口前实测过）' },
+  { id: 'generated-docs',
+    face: '生成物重生成（`docs/CLI.md` / `docs/VERIFY.md` / `§5` 登记表）',
+    guard: 'G7', anchor: 'scripts/doc-facts.js#checkGeneratedDocs',
+    rows: ['cli-command', 'doc'],
+    note: '生成物过期由 G7 用"同一渲染函数重算 + 逐字比对"抓，不靠人记得跑 `docs-gen`' },
+  { id: 'first-screen-nav',
+    face: '第一屏导航（`SKILL.md` 里找得到这份产物）',
+    guard: 'G8', anchor: 'scripts/docs-registry-check.js#checkNavCoverage',
+    rows: ['doc'],
+    note: '受管文档从第一屏找不到 = 等于没有这份文档（G8 第 ⑩ 条）' },
+  { id: 'truth-counts',
+    face: '真值计数（`docs/VERIFY.md` 的命令数 / 用例数 / 断言数）',
+    guard: 'G6', anchor: 'scripts/doc-facts.js#parseClaims',
+    rows: ['cli-command', 'smoke-domain'],
+    note: '真值由 registry / vitest / 冒烟注册面**现算**，不同步就红（不写死任何数字）' },
+  { id: 'assert-registry',
+    face: '断言注册面索引（新冒烟域进 `scripts/smoke-assertions.js`）与"门禁声明↔挂链"',
+    guard: 'S2', check: 'SMOKE_INDEX', anchor: 'scripts/collateral-check.js#missingFromIndex',
+    rows: ['smoke-domain'],
+    note: '域是自动发现的（不会漏跑），但索引里没有它 ⇒ 接手者不知道它存在；'
+      + '"门禁声明了却没挂链"由 `tests/verify-budget.test.js` 的**双向**用例守（G3 那一跳）' },
+  { id: 'renderer-archived',
+    face: '`renderer/` 模块入档（✅ 2026-10-20 已并入第 ① 处：G8 的 `COVERED_DIRS` 收了 `renderer`）',
+    guard: 'G8', anchor: 'scripts/docs-registry-check.js#checkModuleCoverage',
+    rows: ['renderer-module'],
+    note: '保留这一行是**有意的**：它曾经是 6 处里唯一没人守的那一处，'
+      + '留成数据后"缺口曾经在哪、并进了谁"可被读出来（两方向读数：`.review/20261020-门禁B2/proof-g8-renderer.js`）' },
+  { id: 'capped-literal',
+    face: '在册上界 / 写死的易腐字面量（`MCP_GAP_DEBT_MAX` · 写盘出口两道 cap · '
+      + '`NOTE_RESIDUE_*` · `docs/FEATURES.md` 的行数）',
+    guard: 'S2', check: 'ARTIFACT_BATCH', anchor: 'scripts/collateral-check.js#CAPPED_LITERALS',
+    rows: ['feature-row', 'collateral-table'],
+    note: '★本批新登记：**改上限/改写死的数 ⇒ 必须同批改在册的那一行**。'
+      + '它判不了"这次该不该抬"（那是 `R3c` 的人判断），但能保证"抬了/改了不会没人看见"' }
+];
+
+/** 无人守的登记面上限（**只减不增**）。要新增一处"暂时没人守"的登记面，
+ *  先来这里把数改大并同批写明为什么 —— 否则它与"忘了登记"分不开。 */
+const ARTIFACT_BATCH_UNGUARDED_MAX = 0;
+
+/* ---------------------------------------------------------------
+ * ⑦-B 在册上界 / 写死的易腐字面量（`CAPPED_LITERALS`）
+ * ---------------------------------------------------------------
+ * 为什么需要（今天三批各自撞过一次，形状完全一样："把一个数字改了、但另一处没跟着改"）：
+ *   · `MCP_GAP_DEBT_MAX` —— 加一条 CLI 命令 ⇒ 缺口册多一条 ⇒ 上限必须同批抬；
+ *   · `tests/features-roster.test.js` 的 `p.rows.length` —— 名册加一行 ⇒ 那个字面量必须同批改；
+ *   · 写盘出口的两道 cap —— 新增/收窄豁免面 ⇒ 上限与册必须同批对齐。
+ * 三档 `kind`（**判定档要说清，不然"没判"会被读成"过了"**）：
+ *   · `pin`   —— `const <symbol> = <数字>;` 必须**仍是字面量**且**等于册上记的那个数**。
+ *     改上限 ⇒ 同批改册上这一行（会出现在 diff 里 = 一次**有意的可见动作**）。
+ *     ⚠️ 它**判不了**"这次抬上限该不该" —— 那是 `R3c` 的人判断；它只保证"抬了不会没人看见"。
+ *   · `truth` —— 写死的数必须等于**现算的真值**。真值走 `src/features-roster.js` 的
+ *     `parseRoster`（**不在这里另写一份解析**：同一件事两份实现，改了一边另一边不会动）。
+ *   · `text`  —— 某一段**跨文件**文本必须还在（例：`G-11` 的 GOLDEN 内容契约那条）。
+ *     跨文件才用它：同一文件里做"文本针"会自己证明自己（针本身就在那个文件里）⇒ 恒绿。
+ * =============================================================== */
+const CAPPED_LITERALS = [
+  { id: 'mcp-gap-max', kind: 'pin', file: 'scripts/collateral-check.js',
+    symbol: 'MCP_GAP_DEBT_MAX', expect: 26,
+    why: 'MCP 缺口册的条数上界。**只减不增是纪律**：加一条缺口等于放宽判定（`W25`/`W15` 撞的就是这里）',
+    close: '做掉一条 MCP 工具 ⇒ 从 `MCP_GAP_DEBT` 删掉那条并把这个数调小；要加缺口 ⇒ 同批改这里并写明为什么短期做不成' },
+  { id: 'write-outlet-cap', kind: 'pin', file: 'scripts/collateral-check.js',
+    symbol: 'WRITE_OUTLET_CAP', expect: 8,
+    why: '写盘出口欠账册的**条数**上限（例外单元数）—— 只减不增',
+    close: '还清一条 ⇒ 从 `WRITE_OUTLET_DEBT` 删掉并调小这个数；不许把"整文件豁免"拆成 N 条换额度' },
+  { id: 'write-outlet-site-cap', kind: 'pin', file: 'scripts/collateral-check.js',
+    symbol: 'WRITE_OUTLET_SITE_CAP', expect: 82,
+    why: '写盘出口豁免**面**（被覆盖的写调用点处数）上限 —— 防"把整文件豁免拆成逐点豁免换额度"',
+    close: '收窄一处豁免面 ⇒ 同批调小；新增一处受管资产裸写 ⇒ 走册（`WRITE_OUTLET_DEBT`），不许抬这条' },
+  { id: 'note-residue-cap', kind: 'pin', file: 'scripts/collateral-check.js',
+    symbol: 'NOTE_RESIDUE_CAP', expect: 0,
+    why: '笔记正文残留欠账册的条数上限（已归零：全库清零之后不许再涨）',
+    close: '真需要留一条 ⇒ 同批改这里并写明为什么这条改不掉（`R3c`：收紧/放宽都要带读数）' },
+  { id: 'note-residue-hit-cap', kind: 'pin', file: 'scripts/collateral-check.js',
+    symbol: 'NOTE_RESIDUE_HIT_CAP', expect: 0,
+    why: '笔记正文残留豁免**面**（命中处数）上限 —— 与条数上限同形，防"拆条目换额度"',
+    close: '同 `note-residue-cap`：这两个数必须一起看，它们量的是"条"与"面"两件事' },
+  { id: 'roster-rows', kind: 'truth', file: 'tests/features-roster.test.js',
+    pattern: 'expect\\(p\\.rows\\.length\\)\\.toBe\\((\\d+)\\)',
+    where: '`tests/features-roster.test.js` 的 A1 用例（名册行数**有意写死**：名册变长必须是一次可见的动作）',
+    truth: function (root) {
+      const roster = require(path.join(root, 'src', 'features-roster.js'));
+      const md = fs.readFileSync(path.join(root, 'docs', 'FEATURES.md'), 'utf8');
+      const p = roster.parseRoster(md);
+      if (!p || !p.ok) return null;                 // 采不到真值 = 红（不许静默当绿）
+      return p.rows.length;
+    },
+    why: '`docs/FEATURES.md` 加一行产品功能 ⇒ `tests/features-roster.test.js` 那个写死的行数必须同批改'
+      + '（`W26`-b 撞的就是这里：先撞红在 vitest，才有人知道有这一处）',
+    close: '同批把那个字面量改成现算值（本门禁会**直接告诉你**该改成几）；名册行数不再是"必须写死"时，删掉这一条并写明理由' },
+  { id: 'g11-golden', kind: 'text', file: 'tests/cli-output-default.test.js',
+    needle: 'const GOLDEN_JSON_TEXT = JSON.stringify(GOLDEN_JSON, null, 2)',
+    why: '`G-11` 的内容契约（默认输出必须**恰好等于** GOLDEN）—— 这条针在，那条契约才在',
+    close: '有意改默认输出 ⇒ 同批改 GOLDEN 与 `docs/CLI.md`；这条针被删 ⇒ 说明那条契约没了，先问为什么' }
+];
 
 /* ===============================================================
  * ① 从源码里取"MCP 派发到的 CLI 命令"（纯函数）
@@ -663,10 +838,16 @@ function analyze(opts) {
  *  免得同一件事留两份实现（`§5`「同一份事实只写一处」的同一条）。
  *  @param {string} [rootDir] 工程根（锚里的脚本路径按它解析）
  *  @param {Array} [table] 连带表（默认真表 `COLLATERAL`；单测可喂假表把判定单独打红） */
-function analyzeArtifactBatch(rootDir, table) {
+function analyzeArtifactBatch(rootDir, table, faces) {
   const root = path.resolve(rootDir || ROOT);
   const anchorRes = checkGateAnchors(root, table || COLLATERAL);
-  return { problems: anchorRes.problems.slice(), notes: [anchorRes.note] };
+  const facesRes = checkArtifactFaces(root, table || COLLATERAL, faces || ARTIFACT_BATCH);
+  const cappedRes = checkCappedLiterals(root, CAPPED_LITERALS);
+  return {
+    problems: anchorRes.problems.slice().concat(facesRes.problems, cappedRes.problems),
+    notes: [anchorRes.note, facesRes.note, cappedRes.note],
+    faces: facesRes, capped: cappedRes
+  };
 }
 
 /**
@@ -684,37 +865,239 @@ function checkGateAnchors(root, table) {
   rows.forEach((row) => row.places.forEach((p) => {
     if (p.role !== 'gate') return;
     total++;
-    if (!p.anchor) {
-      problems.push({ kind: 'gate-anchor', msg: '连带表把 `' + p.at + '` 指给门禁 **' + p.gate
-        + '**，却没写 `anchor`（实现锚 `<脚本>#<标识符>`）—— "指过去复用"必须能核到**那条判定**还在，'
-        + '只核"门禁挂在链上"是空头承诺' });
-      return;
-    }
-    const hi = String(p.anchor).indexOf('#');
-    const file = hi < 0 ? '' : p.anchor.slice(0, hi).trim();
-    const needle = hi < 0 ? '' : p.anchor.slice(hi + 1).trim();
-    if (!file || !needle) {
-      problems.push({ kind: 'gate-anchor', msg: '`' + p.at + '` 的 anchor 格式不对：`' + p.anchor
-        + '`（要写 `<脚本>#<标识符>`）' });
-      return;
-    }
-    const abs = path.join(root, file);
-    if (!fs.existsSync(abs)) {
-      problems.push({ kind: 'gate-anchor', msg: '`' + p.at + '` 的实现锚指向一个**不存在的脚本**：`'
-        + file + '`（改了文件名要同批改锚）' });
-      return;
-    }
-    if (fs.readFileSync(abs, 'utf8').indexOf(needle) < 0) {
-      problems.push({ kind: 'gate-anchor', msg: '`' + p.at + '` 的实现锚在 `' + file
-        + '` 里**找不到** `' + needle + '` —— 那条判定可能被删掉/改名了，而连带表还在说"门禁 ' + p.gate
-        + ' 在守它"。要么恢复那条判定，要么改锚并重看这一处该由谁守' });
-      return;
-    }
+    /* 与 ⑦-A 的锚检查**共用同一份实现**（`judgeAnchor`）：两处写两份的话，
+     * 改了一边另一边不会动 —— 那正是本门禁要防的那种病。`kind` 保持原来的 'gate-anchor'。 */
+    const bad = judgeAnchor(root, p.at, p.anchor, p.gate, 'gate-anchor',
+      '（改动类型：' + row.id + '）');
+    if (bad) { problems.push(bad); return; }
     ok++;
   }));
   return { problems, total, ok,
     note: '产物连带 · 实现锚：' + total + ' 处「指过去复用」，其中 ' + ok
       + ' 处锚在被指门禁的源码里找得到（`--list` 现场取逐条）' };
+}
+
+/**
+ * ⑦-A 的判定本体：`ARTIFACT_BATCH` 每一处登记面四条判定（纯函数，吃根 + 连带表 + 面表）。
+ * 为什么是纯函数：单测要能**单独把这一条打红**（喂一份假面表），不必改真仓的表（`B6`）。
+ * @param {string} root 仓库根（锚里的脚本路径按它解析）
+ * @param {Array} table 连带表（默认真表 `COLLATERAL`）
+ * @param {Array} faces 产物连带面表（默认真表 `ARTIFACT_BATCH`）
+ */
+function checkArtifactFaces(root, table, faces) {
+  const problems = [];
+  const rows = table || COLLATERAL;
+  const list = faces || ARTIFACT_BATCH;
+  const mounted = mountedGates();
+  if (!mounted) {
+    problems.push({ kind: 'artifact-guard',
+      msg: '读不到 `scripts/verify.js` 的 STEPS ⇒ 核不了"' + list.length
+        + ' 处登记面到底谁在守" —— 采不到真值 = 红' });
+  }
+  let guarded = 0;
+  let unguarded = 0;
+  let okCount = 0;
+  const readings = [];
+  list.forEach((f) => {
+    const who = f.guard ? f.guard : '（无守卫）';
+    /* (4) 无人守的那几处：必须如实写 why，且总数有上限 */
+    if (!f.guard) {
+      unguarded++;
+      readings.push({ id: f.id, who: who, ok: false, note: f.note || '' });
+      if (!f.why) {
+        problems.push({ kind: 'artifact-guard',
+          msg: '`ARTIFACT_BATCH` 的 `' + f.id + '`（' + f.face + '）没有 `guard`，也没写 `why` —— '
+            + '"暂时没人守"可以，但**必须写下来**：没理由的空白与"忘了登记"分不开' });
+      }
+      return;
+    }
+    guarded++;
+    let bad = false;
+    /* (1) 那条守卫必须真的挂在 verify 链上（`S2` = 本门禁自己） */
+    if (f.guard !== 'S2' && mounted && mounted.indexOf(f.guard) < 0) {
+      bad = true;
+      problems.push({ kind: 'artifact-guard',
+        msg: '`ARTIFACT_BATCH` 的 `' + f.id + '`（' + f.face + '）说自己由门禁 **' + f.guard
+          + '** 守着，但那个门禁**没有挂在 verify 链上** —— 那处登记面今天其实没人守' });
+    }
+    /* (2) 实现锚必须找得到（只核"门禁挂在链上"不够：那条判定可以被删掉/改名而门禁还在） */
+    const anchorProblem = judgeAnchor(root, f.at || f.face, f.anchor, f.guard,
+      'artifact-anchor', '（登记面：' + f.id + '）');
+    if (anchorProblem) { bad = true; problems.push(anchorProblem); }
+    /* (3) 双向闭包：这处登记面必须由**连带表里真有的那一行**持有同一条判定 */
+    const rs = Array.isArray(f.rows) ? f.rows : [];
+    if (!rs.length) {
+      bad = true;
+      problems.push({ kind: 'artifact-face',
+        msg: '`ARTIFACT_BATCH` 的 `' + f.id + '`（' + f.face + '）没写 `rows` —— 它由连带表的哪一类改动覆盖？'
+          + '没有这一格，"这处登记面"与"那条连带规则"就是两件互不相干的东西' });
+    }
+    rs.forEach((rid) => {
+      const row = rows.filter((x) => x.id === rid)[0];
+      if (!row) {
+        bad = true;
+        problems.push({ kind: 'artifact-face',
+          msg: '`ARTIFACT_BATCH` 的 `' + f.id + '` 把连带处指给行 `' + rid + '`，但**连带表里没有这一行** —— '
+            + '要么补那一行，要么改 `rows`（指过去复用的前提是那边真有这一处）' });
+        return;
+      }
+      const has = row.places.some((p) => (f.check
+        ? (p.role === 'self' && p.check === f.check)
+        : (p.role === 'gate' && p.gate === f.guard)));
+      if (!has) {
+        bad = true;
+        problems.push({ kind: 'artifact-face',
+          msg: '`ARTIFACT_BATCH` 的 `' + f.id + '` 说它由 ' + (f.check ? '本门禁的 `' + f.check + '`' : '门禁 ' + f.guard)
+            + ' 守，但连带表那一行（`' + row.when + '`）里**没有这一条判定** —— '
+            + '两处各说一套：这处说明里写的是 A，连带表里写的是 B' });
+      }
+    });
+    if (!bad) okCount++;
+    readings.push({ id: f.id, who: who, ok: !bad, note: f.note || '' });
+  });
+  if (unguarded > ARTIFACT_BATCH_UNGUARDED_MAX) {
+    problems.push({ kind: 'artifact-guard',
+      msg: '`ARTIFACT_BATCH` 里有 ' + unguarded + ' 处「没人守」的登记面，超过上限 '
+        + ARTIFACT_BATCH_UNGUARDED_MAX + '（`ARTIFACT_BATCH_UNGUARDED_MAX` **只减不增** —— '
+        + '新增一处没人守的登记面 = 放宽判定：要么补门禁，要么同批把上限改大并写明为什么' });
+  }
+  return { problems, readings, total: list.length, guarded: guarded, unguarded: unguarded, ok: okCount,
+    note: '产物连带 · 登记面：' + list.length + ' 处（有人守 ' + guarded + ' · 没人守 ' + unguarded
+      + ' / 上限 ' + ARTIFACT_BATCH_UNGUARDED_MAX + '），其中 ' + okCount
+      + ' 处四条判定全过（`--list` 现场取逐条）' };
+}
+
+/** 单条实现锚的判定（`<脚本>#<标识符>`）—— ⑦-A 与 ⑦ 的锚检查共用这一份实现
+ *  @param {string} [kind] 问题码（默认 'artifact-anchor'；连带表那半边用 'gate-anchor'）
+ *  @param {string} [suffix] 追加在报文尾部的定位串（例：`（改动类型：feature-row）`）——
+ *   判据红了却指不到"该改哪一处"，等于让人再找一遍（`D1`：输出也是契约）
+ *  @returns {null|{kind:string,msg:string}} null = 锚成立 */
+function judgeAnchor(root, at, anchor, gate, kind, suffix) {
+  const bad = judgeAnchorRaw(root, at, anchor, gate, kind || 'artifact-anchor');
+  if (bad && suffix) bad.msg += ' ' + suffix;
+  return bad;
+}
+
+function judgeAnchorRaw(root, at, anchor, gate, k) {
+  if (!anchor) {
+    return { kind: k, msg: '`' + at + '` 指给门禁 **' + gate + '**，却没写 `anchor`'
+      + '（实现锚 `<脚本>#<标识符>`）—— "指过去复用"必须能核到**那条判定**还在，只核"门禁挂在链上"是空头承诺' };
+  }
+  const hi = String(anchor).indexOf('#');
+  const file = hi < 0 ? '' : String(anchor).slice(0, hi).trim();
+  const needle = hi < 0 ? '' : String(anchor).slice(hi + 1).trim();
+  if (!file || !needle) {
+    return { kind: k, msg: '`' + at + '` 的 anchor 格式不对：`' + anchor
+      + '`（要写 `<脚本>#<标识符>`）' };
+  }
+  const abs = path.join(root, file);
+  if (!fs.existsSync(abs)) {
+    return { kind: k, msg: '`' + at + '` 的实现锚指向一个**不存在的脚本**：`' + file
+      + '`（改了文件名要同批改锚）' };
+  }
+  if (fs.readFileSync(abs, 'utf8').indexOf(needle) < 0) {
+    return { kind: k, msg: '`' + at + '` 的实现锚在 `' + file + '` 里**找不到** `' + needle
+      + '` —— 那条判定可能被删掉/改名了，而这里还在说"门禁 ' + gate + ' 在守它"。'
+      + '要么恢复那条判定，要么改锚并重看这一处该由谁守' };
+  }
+  return null;
+}
+
+/**
+ * ⑦-B 的判定本体：在册上界 / 写死的易腐字面量（纯函数，吃根 + 册）。
+ * 三档见 `CAPPED_LITERALS` 的头注：`pin`（字面量必须仍等于册上的数）· `truth`（写死的数必须等于现算真值）·
+ * `text`（跨文件的一段文本必须还在）。**判不了**"这次抬上限该不该" —— 那是 `R3c` 的人判断。
+ * @param {string} root 仓库根
+ * @param {Array} ledger 册（默认 `CAPPED_LITERALS`；单测可以喂假册把判定单独打红）
+ */
+function checkCappedLiterals(root, ledger) {
+  const problems = [];
+  const book = ledger || CAPPED_LITERALS;
+  const readings = [];
+  let okCount = 0;
+  book.forEach((e) => {
+    const abs = path.join(root, e.file);
+    if (!fs.existsSync(abs)) {
+      problems.push({ kind: 'capped-literal', msg: '在册的「' + e.id + '」指向一个**不存在的文件**：`'
+        + e.file + '` —— 文件改名/删了就要同批改册（否则这条钉永远核不到）' });
+      readings.push({ id: e.id, ok: false, where: e.file, reading: '（文件不存在）' });
+      return;
+    }
+    const text = fs.readFileSync(abs, 'utf8');
+    if (e.kind === 'text') {
+      const found = text.indexOf(e.needle) >= 0;
+      if (!found) {
+        problems.push({ kind: 'capped-literal', msg: '在册的「' + e.id + '」那段文本在 `' + e.file
+          + '` 里**找不到了**：`' + e.needle + '` —— ' + e.why + '。'
+          + '要么恢复它，要么删掉册上这一条并写明为什么那条契约不要了' });
+      } else okCount++;
+      readings.push({ id: e.id, ok: found, where: e.file,
+        reading: found ? '在' : '**不在**' });
+      return;
+    }
+    if (e.kind === 'pin') {
+      /* 从符号名**动态**造正则：册里不许出现 `const X = N;` 的字面形态，
+       * 否则册自己就满足了这条判定（自己证明自己 ⇒ 恒绿）。 */
+      const re = new RegExp('const\\s+' + e.symbol + '\\s*=\\s*(\\d+)\\s*;');
+      const m = re.exec(text);
+      if (!m) {
+        problems.push({ kind: 'capped-literal', msg: '在册的「' + e.id + '」（`' + e.symbol
+          + '`）在 `' + e.file + '` 里**不再是数字字面量**了 —— 改成派生值（例如 `' + e.symbol
+          + '.length`）会让这条 cap 跟着册一起涨，"只减不增"就失效了' });
+        readings.push({ id: e.id, ok: false, where: e.file, reading: '（不是字面量）' });
+        return;
+      }
+      const v = Number(m[1]);
+      if (v !== e.expect) {
+        problems.push({ kind: 'capped-literal', msg: '在册的「' + e.id + '」（`' + e.symbol + '`）从 '
+          + e.expect + ' 变成了 **' + v + '** —— 改上限就是一次**该被看见**的动作：'
+          + '同批把 `CAPPED_LITERALS` 里这一条的 `expect` 改成 ' + v + '，并写明为什么这次要改'
+          + '（`' + e.close + '`）' });
+        readings.push({ id: e.id, ok: false, where: e.file + '（' + e.symbol + '）',
+          reading: v + ' ≠ 册上的 ' + e.expect });
+        return;
+      }
+      okCount++;
+      readings.push({ id: e.id, ok: true, where: e.file + '（' + e.symbol + '）', reading: String(v) });
+      return;
+    }
+    if (e.kind === 'truth') {
+      const re = new RegExp(e.pattern);
+      const m = re.exec(text);
+      if (!m) {
+        problems.push({ kind: 'capped-literal', msg: '在册的「' + e.id + '」在 `' + e.file
+          + '` 里找不到那个写死的数字（口径可能被改成派生值了）—— ' + e.why
+          + '。若它已不需要写死，删掉册上这一条并写明理由' });
+        readings.push({ id: e.id, ok: false, where: e.file, reading: '（找不到那个字面量）' });
+        return;
+      }
+      const v = Number(m[1]);
+      let truth = null;
+      try { truth = e.truth ? e.truth(root) : null; } catch (err) { truth = null; }
+      if (truth === null || !Number.isFinite(truth)) {
+        problems.push({ kind: 'capped-literal', msg: '在册的「' + e.id + '」**采不到真值**'
+          + '（现算那一路抛错或返回空）—— 采不到真值 = 红，不许静默当绿（`A5`）' });
+        readings.push({ id: e.id, ok: false, where: e.file, reading: '（真值采不到）' });
+        return;
+      }
+      if (v !== truth) {
+        problems.push({ kind: 'capped-literal', msg: '在册的「' + e.id + '」写死的数是 **' + v
+          + '**，而现算真值是 **' + truth + '** —— ' + e.why + '。'
+          + '同批把那处改成 ' + truth + '（`' + e.close + '`）' });
+        readings.push({ id: e.id, ok: false, where: e.where || e.file, reading: v + ' ≠ 真值 ' + truth });
+        return;
+      }
+      okCount++;
+      readings.push({ id: e.id, ok: true, where: e.where || e.file, reading: String(v) + ' = 真值' });
+      return;
+    }
+    problems.push({ kind: 'capped-literal', msg: '在册的「' + e.id + '」`kind` 不在三档内（`' + e.kind
+      + '`）—— 判定档说不清就等于没判' });
+    readings.push({ id: e.id, ok: false, where: e.file, reading: '（kind 非法）' });
+  });
+  return { problems, readings, total: book.length, ok: okCount,
+    note: '产物连带 · 在册上界/写死字面量：' + book.length + ' 条，其中 ' + okCount
+      + ' 条与现值/真值对得上（`--list` 现场取逐条）' };
 }
 
 /* ===============================================================
@@ -2552,12 +2935,28 @@ function main() {
       console.log('      close：' + e.close);
     });
     console.log('');
-    console.log('== ⑦ 产物连带闭包（ARTIFACT_BATCH）==');
-    console.log('  判定：本表每一处「指过去复用」的实现锚（`<脚本>#<标识符>`）都要核得到 ——');
+    console.log('== ⑦ 产物连带闭包（ARTIFACT_BATCH）—— 连带表每一处「指过去复用」的实现锚 ==');
     COLLATERAL.forEach((row) => row.places.forEach((p) => {
       if (p.role !== 'gate') return;
       console.log('    · [' + row.id + '] ' + p.at + ' → ' + p.gate + '  anchor=' + (p.anchor || '**缺**'));
     }));
+    console.log('');
+    console.log('== ⑦-A 「新增一件产物」→ 必须同批处理的登记面（' + r.artifact.faces.total + ' 处；'
+      + '没人守 ' + r.artifact.faces.unguarded + ' 处 / 上限 ' + ARTIFACT_BATCH_UNGUARDED_MAX + '）==');
+    ARTIFACT_BATCH.forEach((f) => {
+      const rd = r.artifact.faces.readings.filter((x) => x.id === f.id)[0] || { ok: false, who: '?' };
+      console.log('  ' + (rd.ok ? '✓' : '✗') + ' [' + f.id + '] ' + f.face);
+      console.log('      守卫：' + rd.who + '   覆盖的连带表行：' + (f.rows || []).join(' / '));
+      if (f.note) console.log('      ' + f.note);
+    });
+    console.log('');
+    console.log('== ⑦-B 在册上界 / 写死的易腐字面量（' + r.artifact.capped.total + ' 条）==');
+    CAPPED_LITERALS.forEach((e) => {
+      const rd = r.artifact.capped.readings.filter((x) => x.id === e.id)[0] || { ok: false, reading: '?' };
+      console.log('  ' + (rd.ok ? '✓' : '✗') + ' [' + e.id + '] ' + rd.where + '  → ' + rd.reading);
+      console.log('      why  ：' + e.why);
+      console.log('      close：' + e.close);
+    });
     // 原来这里还有"断言① 登记面 / 欠账册"两段输出。**已删**：`renderer` 入档断言搬回 G8 ⑦，
     // 连带表里那一行改成 `role:'gate'` 指过去复用（收口说明见文件上部 ⑦ 的头注）。
     // 输出也是契约（D1）：删掉一整类读数要写在这里，别让后来者以为"漏了"。
@@ -2594,7 +2993,7 @@ module.exports = {
   hasSelfAtomicSignature, analyzeWriteOutlet,
   // 判定 ③：出口本体的原子写不许降级（判据本体是纯函数，可单独喂源码）
   WO_OUTLET_FN, WO_ATOMIC_LEG_TEXT, outletAtomicVerdict, describeAtomicVerdict,
-  // ⑥ 笔记正文残留（`detail` 里不许留 Markdown 定界符，判定与三档都在这里，别在别处再写一份）
+  // （承 ⑥）笔记正文残留（`detail` 里不许留 Markdown 定界符，判定与三档都在这里，别在别处再写一份）
   NOTE_RESIDUE_ROOT, NOTE_RESIDUE_RULES, NOTE_RESIDUE_TIERS, NOTE_RESIDUE_CAP, NOTE_RESIDUE_HIT_CAP,
   NOTE_RESIDUE_DEBT, NOTE_RESIDUE_MASKERS, noteResidueMask, scanDetailResidue, noteResidueProjects,
   noteResidueKey, analyzeNoteResidue,
@@ -2604,8 +3003,12 @@ module.exports = {
   // ⑦ 产物连带闭包（ARTIFACT_BATCH）：判定本体（吃一个根 + 一份表 ⇒ 单测能直接喂假表打红它）。
   // ⚠️ 登记面那半边（欠账册 / 目录面 / `archMentionsModule`）已随断言①搬回 G8 而**删掉**（2026-10-20，门禁B2）
   analyzeArtifactBatch,
-  // ⑦ 的判定本体（吃一份表 + 一个根目录 ⇒ 单测能直接喂假表打红它）
-  checkGateAnchors
+  // （承 ⑦）的判定本体（吃一份表 + 一个根目录 ⇒ 单测能直接喂假表打红它）
+  checkGateAnchors,
+  // 本批新登记：「新增一件产物 → 那几处登记面」——**表 + 判定本体 + 无人守的面上限**（纯函数，单测直接喂假面表）
+  ARTIFACT_BATCH, ARTIFACT_BATCH_UNGUARDED_MAX, checkArtifactFaces, judgeAnchor,
+  // 本批新登记：在册上界 / 写死的易腐字面量 ——**册 + 判定本体**（`pin` / `truth` / `text` 三档）
+  CAPPED_LITERALS, checkCappedLiterals
 };
 
 if (require.main === module) main();

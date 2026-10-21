@@ -258,6 +258,77 @@ describe('S2 表自身：每一处连带都有身份（有守卫 / 是本门禁 
   it('真仓库整体：**上线就是绿的**（甲档：存量已补齐；挂链后这条应全绿）', () => {
     const r = gate.analyze();
     expect(r.problems).toEqual([]);
+
+    /* ⚠️ 下面这一大段是**同一条用例的追加断言**，不是新用例：本批**不许新增 `it()`**
+     * （新增用例会让 `docs/VERIFY.md` 的用例数当场过期，而那份文档本批不许改）。
+     * 追加在这里的理由：它验的正是"真仓整体上线是绿的"这件事的 ⑦ 那一半。 */
+
+    /* (1) 台账那 6 处**必须都在**数据表里（第 6 处 `renderer-archived` 已并入第 1 处，但行要留着），
+     *     再加本批新登记的第 7 处。这里**不写死条数**（写死就会漂），只核"这 7 个 id 一个不少"。 */
+    const ids = gate.ARTIFACT_BATCH.map((f) => f.id);
+    ['arch-registry', 'generated-docs', 'first-screen-nav', 'truth-counts', 'assert-registry',
+      'renderer-archived', 'capped-literal'].forEach((id) => expect(ids, '产物连带面').toContain(id));
+    /* (2) 每一处都必须有守卫（今天没有"没人守"的那一处：上限是 0，只减不增） */
+    expect(gate.ARTIFACT_BATCH_UNGUARDED_MAX).toBe(0);
+    expect(gate.ARTIFACT_BATCH.filter((f) => !f.guard)).toEqual([]);
+    /* (3) 真仓：四条判定（挂链 / 锚找得到 / 与连带表双向闭包 / 无人守的面不许变多）全过 */
+    const faces = gate.checkArtifactFaces(ROOT, gate.COLLATERAL, gate.ARTIFACT_BATCH);
+    expect(faces.problems).toEqual([]);
+    expect(faces.ok).toBe(faces.total);
+    expect(faces.unguarded).toBeLessThanOrEqual(gate.ARTIFACT_BATCH_UNGUARDED_MAX);
+    /* (4) 真仓：在册上界 / 写死的易腐字面量全部与现值（或现算真值）对得上 */
+    const capped = gate.checkCappedLiterals(ROOT, gate.CAPPED_LITERALS);
+    expect(capped.problems).toEqual([]);
+    expect(capped.ok).toBe(capped.total);
+    /* (5) 名册那条钉：写死的行数必须等于现算真值（这条要是红了，跑 vitest 之前就知道该改哪儿） */
+    const rosterPin = gate.CAPPED_LITERALS.filter((e) => e.id === 'roster-rows')[0];
+    expect(rosterPin).toBeTruthy();
+    expect(typeof rosterPin.truth).toBe('function');
+    expect(rosterPin.truth(ROOT)).toBeGreaterThan(0);
+
+    /* ---- 判别力（内存注入：喂假表 ⇒ 必须逐条点名；真仓一个字节不动） ---- */
+    const baseFace = { id: 'fake', face: '假登记面', guard: 'G8',
+      anchor: 'scripts/docs-registry-check.js#checkModuleCoverage', rows: ['src-module'] };
+    const faceProblems = (patch) => gate.checkArtifactFaces(ROOT, gate.COLLATERAL,
+      [Object.assign({}, baseFace, patch)]).problems;
+    // ① 基线：这一份假面表本身是**成立**的（否则下面几条读的是别的红）
+    expect(faceProblems({})).toEqual([]);
+    // ② 那条判定被删掉/改名 ⇒ 锚找不到 ⇒ 红
+    expect(faceProblems({ anchor: 'scripts/docs-registry-check.js#没有这个函数' })
+      .map((p) => p.kind)).toContain('artifact-anchor');
+    // ③ 指给一个不存在的脚本 ⇒ 红
+    expect(faceProblems({ anchor: 'scripts/nope.js#x' }).map((p) => p.kind)).toContain('artifact-anchor');
+    // ④ 门禁没挂链 ⇒ 红（"指过去复用"指向链外的东西）
+    expect(faceProblems({ guard: 'G99' }).map((p) => p.kind)).toContain('artifact-guard');
+    // ⑤ `rows` 点名的行不存在 ⇒ 红
+    expect(faceProblems({ rows: ['no-such-row'] }).map((p) => p.kind)).toContain('artifact-face');
+    // ⑥ 行存在、但那一行里**没有同一条判定** ⇒ 红（两处各说一套）
+    expect(faceProblems({ rows: ['src-module'], guard: 'G6', anchor: 'scripts/doc-facts.js#parseClaims' })
+      .map((p) => p.kind)).toContain('artifact-face');
+    // ⑦ 没人守又没写 why ⇒ 红；而且"没人守"的面超过上限（0）⇒ 也红
+    const noGuard = gate.checkArtifactFaces(ROOT, gate.COLLATERAL,
+      [Object.assign({}, baseFace, { guard: null })]);
+    expect(noGuard.problems.map((p) => p.kind)).toContain('artifact-guard');
+    expect(noGuard.unguarded).toBe(1);
+
+    const ledgerProblems = (patch) => gate.checkCappedLiterals(ROOT,
+      [Object.assign({ id: 'fake', kind: 'pin', file: 'scripts/collateral-check.js',
+        symbol: 'MCP_GAP_DEBT_MAX', expect: 26, why: 'w', close: 'c' }, patch)]).problems;
+    // ⑧ 基线：真值对上 ⇒ 绿
+    expect(ledgerProblems({})).toEqual([]);
+    // ⑨ 上界被改了而册没跟上 ⇒ 红（"改上限必须同批改册"）
+    expect(ledgerProblems({ expect: 27 }).length).toBe(1);
+    // ⑩ 上界被改成**派生值**（不再是数字字面量）⇒ 红（否则 cap 会跟着册一起涨）
+    expect(ledgerProblems({ symbol: 'CHECKS' }).length).toBe(1);
+    // ⑪ `truth` 档：写死的数与现算真值不符 ⇒ 红
+    const truthRow = gate.CAPPED_LITERALS.filter((e) => e.id === 'roster-rows')[0];
+    expect(gate.checkCappedLiterals(ROOT,
+      [Object.assign({}, truthRow, { truth: () => 999 })]).problems.length).toBe(1);
+    // ⑫ `truth` 档采不到真值（返回 null）⇒ 红（采不到真值 = 红，不许静默当绿）
+    expect(gate.checkCappedLiterals(ROOT,
+      [Object.assign({}, truthRow, { truth: () => null })]).problems.length).toBe(1);
+    // ⑬ `text` 档：那段文本不在了 ⇒ 红
+    expect(ledgerProblems({ kind: 'text', needle: '这段文本在工程里不存在' }).length).toBe(1);
   });
 });
 
