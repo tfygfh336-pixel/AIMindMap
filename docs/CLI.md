@@ -45,6 +45,7 @@
 | `remove` | remove <项目> <id> [--clean-assoc] [--clean-links] [--dry-run] |
 | `clone` | clone <项目> <源id> <新父id> [--deep] [--repoint-items] [--json] [--dry-run] |
 | `apply` | apply <项目> --ops-file ops.json [--dry-run] |
+| `batch` | batch --calls-file calls.json [--json] |
 | `item-add` | item-add <项目> <节点id> --md "Markdown" | --html "HTML" [--src 出处] [--tags a,b] [--type text|rich] [--after itemId | --before itemId] [--force] [--dry-run] |
 | `item-edit` | item-edit <项目> <节点id> <itemId> [--md "Markdown" | --html "HTML"] [--src 出处 | --clear-src] [--tags a,b | --clear-tags] [--type text|rich] [--verified --how "怎么核的" | --clear-verified] [--dry-run] |
 | `item-remove` | item-remove <项目> <节点id> <itemId> [--clean-links] [--clean-assoc] [--dry-run] |
@@ -65,6 +66,7 @@
 | `export-json` | export-json <项目> <输出.json> |
 | `export-html` | export-html <项目> <输出目录> |
 | `import-json` | import-json <aimap.json> [--name 项目名] |
+| `import-grade` | import-grade [<项目>] [--project 项目名] [--all] [--only 子串] [--limit n] [--include-probe] [--json] |
 | `add-image` | add-image <项目> <id> --file 图片 --caption 备注 [--source 出处] [--tags a,b] [--dry-run] |
 | `remove-image` | remove-image <项目> <id> <相对路径 assets/x.png> [--dry-run] |
 | `assets` | assets <项目> [--json] |
@@ -280,6 +282,14 @@ node cli/mm-cli.js clone <项目> <源id> <新父id> [--deep] [--repoint-items] 
 node cli/mm-cli.js apply <项目> --ops-file ops.json [--dry-run]
 ```
 
+### batch
+
+**一次进程跑多条命令**（W25 实测：一次典型任务 5777 ms → 950 ms，−83.6%）。payload 形如 `{"version":1,"calls":[["search","项目","词","--json"],["get","项目","id","--json"]]}`，也可只给裸数组；`--calls-file` 接受**文件路径或内联 JSON 文本**。语义：**逐条独立生效、失败不回滚** —— 第 3 条失败时前 2 条已在盘上（每条各自的写入仍是各自的一次原子写），回执逐条给 `code` 与 `stdout`/`stderr` ⇒ 调用方**只重试失败那几条**；要"全成或全不动"请用 `apply`。`dryRun` / `continueOnError` 写在 **payload 里**（`"dryRun":true` 只对认这个开关的命令注入 `--dry-run`）—— 命令行上**没有**这两个开关，理由见 `cli/commands/batch.js` 文件头。子调用走与单独执行**同一个入口**（`invokeSync`）⇒ 未知选项 / 别名 / 幂等守门照旧生效，批量化不是后门
+
+```
+node cli/mm-cli.js batch --calls-file calls.json [--json]
+```
+
 ### item-add
 
 新增**一条**条目（改一条不必重写整块 detail）。未条目化的节点会**自动条目化**（先把旧 detail 解析成条目，**且必须能逐字节回放**才动它）。--md 转 Markdown、--html 原样存（表格/代码块要用 --html）；同 type 同正文默认拒绝并点名，--force 放行
@@ -438,6 +448,14 @@ node cli/mm-cli.js export-html <项目> <输出目录>
 
 ```
 node cli/mm-cli.js import-json <aimap.json> [--name 项目名]
+```
+
+### import-grade
+
+【IG】导入分档读数（只读、零写盘）：每份 `origin` 源文件判 `clean`（与重放导入逐条全等）/`rewritten`（有节点在源文里找不到，逐条点名）/`grown`（导入后长过节点 ⇒ **不出分**：那时"本次导入的产物"没有边界）/`src-gone`/`unreadable`/`unknown-tool`，并给**可复算**的 precision / recall（**零模型**：对照组就是它自己）。**默认排除探针项目**（`it-probe-*` / `imp-probe-*` / `it-s<N>-`，并打印排除了几个），`--include-probe` 放回；`--only` / `--project` 锁扫描面；`--json` 带 `scope`（这份读数覆盖了谁）。**它是读数不是门禁**：退出码恒 0（除非命令自己出错），红/绿由别的判据管（与 `health` 同一档口径）。
+
+```
+node cli/mm-cli.js import-grade [<项目>] [--project 项目名] [--all] [--only 子串] [--limit n] [--include-probe] [--json]
 ```
 
 ### add-image

@@ -295,8 +295,10 @@ function mcpCallSites(src) {
 
 /** 缺口册条数上界：**只减不增**。
  *  写成字面量而**不是** `MCP_GAP_DEBT.length`：后者会跟着册一起涨，于是"抬上限"就等于改一行数组、
- *  没有任何痕迹 —— 与 `README_STATUS_DEBT_MAX` / `WRITE_OUTLET_SITE_CAP` 同一个理由。 */
-const MCP_GAP_DEBT_MAX = 24;
+ *  没有任何痕迹 —— 与 `README_STATUS_DEBT_MAX` / `WRITE_OUTLET_SITE_CAP` 同一个理由。
+ *  2026-10-21 抬到 26（`W15`）：新增 `import-grade`（只读读数命令，判断见它那条 `why`）。
+ *  ⚠️ 抬上限=放宽判定，所以那一批必须**同时**写下"为什么它短期不做 MCP"，否则这条就会被当成"改个数就过了"。 */
+const MCP_GAP_DEBT_MAX = 26;
 
 /** 在册的 MCP 缺口（每条：`{ cmd, why }`）。
  *  `why` = 一句话的**人判断**（"为什么这条不做 MCP 工具"）；它不校验真假，只保证"判断被写下来了"。
@@ -361,7 +363,18 @@ const MCP_GAP_DEBT = [
   { cmd: 'changelog',
     why: 'CHANGELOG 窄查询（段 / 条目索引 / 关键词）—— 读的是**仓库的版本史**，不是笔记数据 ⇒ 不进 MCP 面' },
   { cmd: 'dsh-caps',
-    why: 'DSH 能力边界（从 `vendor/dsh` 的装配清单机械读取）—— 查的是**本机运行包挂了什么**，属环境诊断 ⇒ 留在命令行' }
+    why: 'DSH 能力边界（从 `vendor/dsh` 的装配清单机械读取）—— 查的是**本机运行包挂了什么**，属环境诊断 ⇒ 留在命令行' },
+  { cmd: 'batch',
+    why: '**一次进程跑多条命令**（`W25`：8 次调用 5777 ms → 950 ms 那一项）。不在 MCP 面开工具的理由是'
+      + '**成本主体不在这一层**：MCP 现在每次工具调用都走 `runCli()` 的 `spawnSync`（实测 690 ms vs 进程内 43 ms），'
+      + '在这儿加一个 run_batch 只是把 N 次 spawn 包进一次工具调用 ⇒ 治不了根。'
+      + 'MCP 侧的下一步是**先**把 `runCli` 换成 `invokeSync`（那是另一个决定，不混进 W25）；'
+      + '在那之前，MCP 消费者逐条调现有工具与调用 CLI 的 `batch` 是同一份成本，没有额外收益' },
+  { cmd: 'import-grade',
+    why: '**导入分档读数**（`W15` / 代号 `IG`）：只读、零写盘，答"每份 `origin` 源文件保不保真、precision / recall 多少"。'
+      + '不做工具是**判断**（同 `health` 那一档）：它是给人/AI **判断"要不要复核"**的真值出口，不是动作；'
+      + 'MCP 侧真正要动手的两件事已有工具（`import_project` / `import_dir` 建内容、`validate` / `stats` 查结构），'
+      + '再多一个"读数工具"不改变任何可做的事。真要开，代价 = `TOOLS` 一行 + 一处 `runCli([\'import-grade\', …])`（属下一批）' }
 ];
 
 /**

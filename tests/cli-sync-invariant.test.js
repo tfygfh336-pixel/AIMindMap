@@ -44,6 +44,7 @@ function collectFiles(entries) {
   while (queue.length) {
     const abs = queue.shift();
     if (seen.has(abs) || !fs.existsSync(abs)) continue;
+    if (EXCLUDED.has(abs)) continue;
     seen.add(abs);
     const src = fs.readFileSync(abs, 'utf8');
     for (const m of src.matchAll(/require\(['"](\.[^'"]+)['"]\)/g)) {
@@ -55,6 +56,21 @@ function collectFiles(entries) {
   }
   return [...seen];
 }
+
+/**
+ * 闭包里**唯一**被排除的文件：`cli/main.js`。
+ *
+ * 为什么排除（2026-10-21，`W25` 加 `batch` 时实测）：`batch` 必须调**进程内入口** `invokeSync`
+ * —— 它是**命令的调用者**，不是命令体的一部分。而 `main.js` 里有两处会被本判据抓到
+ * （本判据剥注释、但**刻意不剥字符串字面量**，见文件头「边界」）：
+ *   1. `invoke()` 里的 `await p` —— 那是**异步**入口，`invokeSync` 恰恰不走它；
+ *   2. `invokeSync` 报错**文案字符串**里的「去掉该 await」—— 那是文字，不是 API 调用。
+ * 两者都与"命令体同步完成"这条不变量无关 ⇒ 排除。**排除的是这一个文件，不是某个目录**：
+ * 命令层与 `src/` 的扫描面一个字节没少（下面有断言钉住这一点）。
+ *
+ * 为什么钉成集合且只许 1 项：名单会悄悄长成"哪里红了排除哪里"。加一项必须在**这里**说明理由。
+ */
+const EXCLUDED = new Set([path.join(ROOT, 'cli', 'main.js')]);
 
 const ENTRIES = [
   ...fs.readdirSync(path.join(ROOT, 'cli', 'commands')).map((f) => path.join(ROOT, 'cli', 'commands', f)),
@@ -79,6 +95,17 @@ describe('CLI 同步不变量（invokeSync 的前提）', () => {
     expect(files.length).toBeGreaterThan(5);
     expect(files.some((f) => f.endsWith(path.join('cli', 'commands', 'project.js')))).toBe(true);
     expect(files.some((f) => f.endsWith(path.join('src', 'data-store.js')))).toBe(true);
+  });
+
+  it('排除名单只有一项，且它确实是"调用者"不是"命令体"（名单许悄悄长）', () => {
+    // 这条钉的是**判据的边界**而不是被测代码：`EXCLUDED` 一旦悄悄长成"哪里红了排除哪里"，
+    // 上面那条"无违规"会变得毫无成本。所以：只许 1 项、且必须是 `cli/main.js`。
+    expect([...EXCLUDED]).toEqual([path.join(ROOT, 'cli', 'main.js')]);
+    // 并且它真的**曾经**在闭包里 —— 否则这条排除是无意义的历史包袱（`batch` 惰性 require 它是承重设计）
+    expect(fs.readFileSync(path.join(ROOT, 'cli', 'commands', 'batch.js'), 'utf8').indexOf("require('../main.js')") >= 0).toBe(true);
+    // 命令层一个文件都没少：`batch` 自己**仍然被扫**（它是命令体，不是调用者）
+    expect(files.some((f) => f.endsWith(path.join('cli', 'commands', 'batch.js')))).toBe(true);
+    expect(files.some((f) => f.endsWith(path.join('cli', 'main.js')))).toBe(false);
   });
 
   it('命令体与其依赖闭包内不含任何异步 API', () => {

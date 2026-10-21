@@ -290,6 +290,18 @@ function init() {
   });
   // 事务：操作清单一次生效（S7 实现，整合流按 `docs/ITEM-MODEL.md` §3 契约收编登记）
   register({ name: 'apply', usage: 'apply <项目> --ops-file ops.json [--dry-run]', options: ['opsFile'], desc: '按操作清单**一次事务**生效：一批改动在同一个 rev / 一次原子写 / 一条变更日志里完成 ⇒ 全成或全不动；逐条回执（应用/跳过/失败）。**只允许数据面操作**（需要外部副作用的动作必须留在事务外）。支持 `--idem <键>` 重试安全', fn: loadFile('edit').apply });
+  /* 【W25】批量执行：**一次进程跑多条命令**。与上面 `apply` 是**一对、不是同一个东西**，
+   * 这个区别必须写在登记处（最容易误读的地方）：
+   *   · `apply` = **一个**项目、**一次**原子写、**全成或全不动**（事务）
+   *   · `batch` = **任意**命令（含多个项目、含只读）、**逐条独立生效**、**失败不回滚**（批处理）
+   * 为什么不做成"整批原子"：`apply` 已经是原子原语，再实现一套就是同一语义两处实现；
+   * 而且 `batch` 能跑 `search`/`get` 这类只读命令，对读操作"回滚"没有意义。
+   * 收益口径（`W25` 实测）：一次典型任务 8 次调用 = **5777 ms**（其中 94.7% 是 Node 启动），
+   * 而"多跑一条命令"的增量≈0（同一条 op 跑 1/2/3/5 条 = 165.0/157.9/158.9/136.6 ms）
+   * ⇒ 把 8 次塞进一个进程 = **950 ms（−83.6%）**。读数与脚本见 `.review/20261020-W25-perf/`。
+   * ⚠️ 它**故意不给** `--dry-run` / `--idem` / `--continue` 三个开关：那两个归属问题写在命令文件头
+   * （批次级幂等键是假承诺：幂等作用域是"项目 × 命令"，一批可含多项目）。 */
+  register({ name: 'batch', usage: 'batch --calls-file calls.json [--json]', options: ['callsFile', 'json'], desc: '**一次进程跑多条命令**（W25 实测：一次典型任务 5777 ms → 950 ms，−83.6%）。payload 形如 `{"version":1,"calls":[["search","项目","词","--json"],["get","项目","id","--json"]]}`，也可只给裸数组；`--calls-file` 接受**文件路径或内联 JSON 文本**。语义：**逐条独立生效、失败不回滚** —— 第 3 条失败时前 2 条已在盘上（每条各自的写入仍是各自的一次原子写），回执逐条给 `code` 与 `stdout`/`stderr` ⇒ 调用方**只重试失败那几条**；要"全成或全不动"请用 `apply`。`dryRun` / `continueOnError` 写在 **payload 里**（`"dryRun":true` 只对认这个开关的命令注入 `--dry-run`）—— 命令行上**没有**这两个开关，理由见 `cli/commands/batch.js` 文件头。子调用走与单独执行**同一个入口**（`invokeSync`）⇒ 未知选项 / 别名 / 幂等守门照旧生效，批量化不是后门', fn: loadFile('batch').batch });
   // 条目层写原语（S2 实现，整合流按 `docs/ITEM-MODEL.md` §3 契约收编登记）
   register({ name: 'item-add', usage: 'item-add <项目> <节点id> --md "Markdown" | --html "HTML" [--src 出处] [--tags a,b] [--type text|rich] [--after itemId | --before itemId] [--force] [--dry-run]', options: ['md', 'html', 'src', 'tags', 'type', 'after', 'before', 'force'], compatOptions: ['noDedup'], desc: '新增**一条**条目（改一条不必重写整块 detail）。未条目化的节点会**自动条目化**（先把旧 detail 解析成条目，**且必须能逐字节回放**才动它）。--md 转 Markdown、--html 原样存（表格/代码块要用 --html）；同 type 同正文默认拒绝并点名，--force 放行', fn: loadFile('item').itemAdd });
   register({ name: 'item-edit', usage: 'item-edit <项目> <节点id> <itemId> [--md "Markdown" | --html "HTML"] [--src 出处 | --clear-src] [--tags a,b | --clear-tags] [--type text|rich] [--verified --how "怎么核的" | --clear-verified] [--dry-run]', options: ['md', 'html', 'src', 'clearSrc', 'tags', 'clearTags', 'type', 'verified', 'how', 'clearVerified'], desc: '改写**一条**条目（只动指定字段，回显**真的变了的字段名**）。--verified 必须同时给 --how（核验是三字段全必填的记录：at/by/how）', fn: loadFile('item').itemEdit });
@@ -429,6 +441,22 @@ function init() {
   register({ name: 'export-json', usage: 'export-json <项目> <输出.json>', options: [], desc: '导出为 aimap 单文件（图片 base64 内嵌，可移植）', fn: loadFile('project').exportJson });
   register({ name: 'export-html', usage: 'export-html <项目> <输出目录>', options: [], desc: '导出为静态站点（index.html + assets/，可分享部署；相关知识点已内联为可跳转链接）', fn: loadFile('project').exportHtml });
   register({ name: 'import-json', usage: 'import-json <aimap.json> [--name 项目名]', options: ['name'], desc: '从 aimap 单文件导入为新项目（解包图片）', fn: loadFile('project').importJson });
+  /* 【W15】`import-grade` —— **导入分档（`IG`）**：每份带 `origin` 的导入，判它的产物**是不是源文的确定性函数**。
+   * 判据全在 `src/import-grade.js`（把源文**重放**一遍导入器 → 与盘上子树按标题序列做多重集对齐）；
+   * 本命令只做"定扫描面 → 读盘 → 调它 → 排输出"，**一行判据都不重写**。
+   * **零写盘** ⇒ 不进 `WRITE_COMMANDS` / `DRY_RUN_COMMANDS`（两张手写清单都不用碰，`cli/core.js` 零改动）；
+   * **零时钟零随机 + 显式排序** ⇒ `--json` 两跑逐字节相同。
+   * 扫描面必须显式：**默认排除探针项目**（并打印排除了几个）、`--only` / `--project` 锁死、`--json` 带 `scope` ——
+   * 否则别人的 `cli-integration` 在 `projects/` 下瞬时造的 `it-probe-*` / `imp-probe-*` 会让读数在两跑之间变化
+   * （`W3` / `W7` 都撞过同一件事；本命令的探针前缀表**有意与 `scripts/cli-integration.js` 的 `PROBE_PREFIX` 同源**，
+   *  由 `tests/import-grade.test.js` 读那个源文件逐条对齐 —— `cli/` 不许 require `scripts/`（S1 单向依赖））。 */
+  register({ name: 'import-grade',
+    usage: 'import-grade [<项目>] [--project 项目名] [--all] [--only 子串] [--limit n] [--include-probe] [--json]',
+    options: ['project', 'all', 'only', 'limit', 'includeProbe', 'json'],
+    desc: '【IG】导入分档读数（只读、零写盘）：每份 `origin` 源文件判 `clean`（与重放导入逐条全等）/`rewritten`（有节点在源文里找不到，逐条点名）/`grown`（导入后长过节点 ⇒ **不出分**：那时"本次导入的产物"没有边界）/`src-gone`/`unreadable`/`unknown-tool`，并给**可复算**的 precision / recall（**零模型**：对照组就是它自己）。'
+      + '**默认排除探针项目**（`it-probe-*` / `imp-probe-*` / `it-s<N>-`，并打印排除了几个），`--include-probe` 放回；`--only` / `--project` 锁扫描面；`--json` 带 `scope`（这份读数覆盖了谁）。'
+      + '**它是读数不是门禁**：退出码恒 0（除非命令自己出错），红/绿由别的判据管（与 `health` 同一档口径）。',
+    fn: loadFile('import-grade').importGrade });
 
   // 图片与附件
   register({ name: 'add-image', usage: 'add-image <项目> <id> --file 图片 --caption 备注 [--source 出处] [--tags a,b] [--dry-run]', options: ['file', 'caption', 'source', 'tags'], desc: '给节点添加图片（复制进 assets/）', fn: loadFile('assets').addImage });

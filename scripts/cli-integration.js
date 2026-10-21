@@ -4116,6 +4116,194 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   void os;
 }
 
+/* ---------------- 57. 【W25】`batch`：一次进程跑多条命令 ----------------
+ * 判据（对本批任务书的验收逐条落成 check，**语义那条最承重**）：
+ *   ① **失败语义**：第 3 条失败时前 2 条**保留**（逐条独立生效、不整体回滚）—— 盘上事实判，
+ *      不看回执话术；默认遇错即停，`continueOnError:true` 才跑完（两者对照，证明开关**真的**起作用）；
+ *   ② **同一条路**：批里那一条的 stdout 与单独跑**逐字节相同**（成功档与失败档各一条）；
+ *   ③ **不是后门**：单独执行会被拒的（未知选项），批里照样被拒，且报错点名该选项；
+ *   ④ `--json` 两跑逐字节相同；payload 形状错 ⇒ **在跑第一条之前**就拒（盘上零改动）；
+ *   ⑤ 归属守门：`batch` 自己**不收** `--dry-run` / `--idem`；干跑写在 payload 里，
+ *      且 `"dryRun":true` **只**注入给认这个开关的命令（写命令注入、`search` 不注入）。
+ * 探针一律 `it-w25-` 前缀（与别的流共用真实 `projects/`，前缀是唯一能避免互踩的手段）。
+ * 注意：本段**不用圈号**（`G8` 拿它当判定标记，重复即红）。
+ *
+ * ⚠️ 本段走 `--calls-file` 的**内联 JSON 文本**档，**不落任何临时文件**。两个理由：
+ *   · 内联是本命令的**公开契约之一**（与 `apply --ops-file` 同一口径），值得有端到端断言；
+ *   · 本文件被 `collateral-check.js` 的「⑤ 写盘出口」按 `kind: file` **整文件豁免**，
+ *     但豁免面有个**只减不增**的上界（`WRITE_OUTLET_SITE_CAP`）。在这里多一处 `fs.writeFileSync`
+ *     会让那一面 +1 —— 那是本可以避免的判定放宽，不如改用内联。
+ *     （**文件路径那一档**由 `tests/batch.test.js` 覆盖：那里是沙箱临时目录，写它不涨这个面。）
+ */
+{
+  const P25 = 'it-w25-batch-' + Date.now().toString(36);
+  const proj25 = path.join(ROOT, 'projects', P25, P25 + '.json');
+  const bytes25 = (p) => fs.readFileSync(p);
+  /** payload ⇒ `--calls-file` 的值：**内联 JSON 文本**（本命令认这一档，从此不落临时文件） */
+  const calls25 = (payload) => (typeof payload === 'string' ? payload : JSON.stringify(payload));
+  /** 盘上真值：取某节点的 tags（"批里前两条到底生效没有"只认这个） */
+  const tags25 = (id) => {
+    const d = JSON.parse(fs.readFileSync(proj25, 'utf8').replace(/^\uFEFF/, ''));
+    const n = (function walk(x) {
+      if (!x) return null;
+      if (x.id === id) return x;
+      for (const c of (x.children || [])) { const r = walk(c); if (r) return r; }
+      return null;
+    })(d.data);
+    return (n && n.tags) || [];
+  };
+  /** 跑一批 --json：返回 {code, raw(原始 stdout), j(解析结果)} */
+  const batch25 = (payload, extra) => {
+    const r = invokeSync(['batch', '--calls-file', calls25(payload)].concat(extra || []));
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch (e) { j = null; }
+    return { code: r.code, raw: r.stdout, j: j, out: r.stdout + r.stderr };
+  };
+
+  run(['init', P25, '--title', 'W25 batch 探针']);
+  ['w1', 'w2', 'w3', 'w4'].forEach((id) => run(['add', P25, 'root', '--topic', id, '--id', id]));
+
+  // 57.1 全成功 ⇒ 退出码 0，逐条回执都在
+  const b1 = batch25({ version: 1, calls: [
+    ['edit', P25, 'w1', '--tags', 'w25-i1'],
+    ['get', P25, 'w1', '--json']
+  ] }, ['--json']);
+  check('W25 batch：全成功 ⇒ exit 0，逐条回执（total/ok/failed/stoppedAtIndex）齐全',
+    b1.code === 0 && b1.j && b1.j.results.length === 2 && b1.j.summary.total === 2
+      && b1.j.summary.ok === 2 && b1.j.summary.failed === 0 && b1.j.summary.stoppedAtIndex === null,
+    'exit=' + b1.code + ' summary=' + JSON.stringify(b1.j && b1.j.summary));
+
+  // 57.2 ★ 失败语义：第 3 条失败 ⇒ 前 2 条**保留**（判据是盘面上的 tags，不是回执话术）
+  const b2 = batch25({ version: 1, calls: [
+    ['edit', P25, 'w1', '--tags', 'w25-keep-1'],
+    ['edit', P25, 'w2', '--tags', 'w25-keep-2'],
+    ['edit', P25, 'w25-no-such-node', '--tags', 'w25-keep-3']
+  ] }, ['--json']);
+  check('W25 batch 语义：第 3 条失败 ⇒ 前 2 条**保留在盘上**（逐条独立生效、不整体回滚）',
+    b2.code === 1 && b2.j && b2.j.results.length === 3
+      && b2.j.results[0].code === 0 && b2.j.results[1].code === 0 && b2.j.results[2].code === 1
+      && tags25('w1').indexOf('w25-keep-1') >= 0 && tags25('w2').indexOf('w25-keep-2') >= 0,
+    'exit=' + b2.code + ' w1=' + JSON.stringify(tags25('w1')) + ' w2=' + JSON.stringify(tags25('w2')));
+  check('W25 batch 语义：失败那条的原因被原样带回（调用方据此修，不必去猜）',
+    b2.j && b2.j.results[2].stdout.indexOf('节点不存在') >= 0,
+    b2.j ? b2.j.results[2].stdout.trim().slice(0, 70) : '(无 JSON)');
+
+  // 57.3 默认遇错即停 vs continueOnError:true —— 两者**对照**才证明开关真的起作用
+  const b3 = batch25({ version: 1, calls: [
+    ['edit', P25, 'w3', '--tags', 'w25-stop-ok'],
+    ['edit', P25, 'w25-nope', '--tags', 'x'],
+    ['edit', P25, 'w4', '--tags', 'w25-stop-never']
+  ] }, ['--json']);
+  check('W25 batch：默认**遇错即停**（results 只有 2 条，且第 3 条真的没执行）',
+    b3.code === 1 && b3.j && b3.j.results.length === 2
+      && tags25('w4').indexOf('w25-stop-never') < 0,
+    'results=' + (b3.j ? b3.j.results.length : '?') + ' w4=' + JSON.stringify(tags25('w4')));
+  const b4 = batch25({ version: 1, continueOnError: true, calls: [
+    ['edit', P25, 'w3', '--tags', 'w25-cont-ok'],
+    ['edit', P25, 'w25-nope', '--tags', 'x'],
+    ['edit', P25, 'w4', '--tags', 'w25-cont-3']
+  ] }, ['--json']);
+  check('W25 batch：continueOnError:true ⇒ 后面的照跑（第 3 条生效），退出码**仍是 1**（跑完 != 成功）',
+    b4.code === 1 && b4.j && b4.j.results.length === 3 && b4.j.summary.failed === 1
+      && tags25('w4').indexOf('w25-cont-3') >= 0,
+    'exit=' + b4.code + ' results=' + (b4.j ? b4.j.results.length : '?') + ' w4=' + JSON.stringify(tags25('w4')));
+
+  // 57.4 ★ 同一条路：批里那一条的 stdout 与单独跑**逐字节相同**（成功档 + 失败档）
+  const soloOk = invokeSync(['get', P25, 'w1', '--json']);
+  const batchOk = batch25({ version: 1, calls: [['get', P25, 'w1', '--json']] }, ['--json']);
+  check('W25 batch 同一条路：成功档 —— 批内 stdout 与单独跑**逐字节相同**',
+    soloOk.code === 0 && batchOk.j && batchOk.j.results[0].stdout === soloOk.stdout,
+    '单跑 ' + soloOk.stdout.length + ' 字 / 批内 ' + (batchOk.j ? batchOk.j.results[0].stdout.length : '?') + ' 字');
+  const soloBad = invokeSync(['edit', P25, 'w25-nope', '--tags', 'x']);
+  const batchBad = batch25({ version: 1, calls: [['edit', P25, 'w25-nope', '--tags', 'x']] }, ['--json']);
+  check('W25 batch 同一条路：失败档 —— 退出码与 stdout 也与单独跑一致（错误文本不被改写）',
+    soloBad.code === 1 && batchBad.j && batchBad.j.results[0].code === soloBad.code
+      && batchBad.j.results[0].stdout === soloBad.stdout,
+    '单跑 exit=' + soloBad.code + ' / 批内 exit=' + (batchBad.j ? batchBad.j.results[0].code : '?'));
+  // 反面对照：别名照旧可用（证明"走同一条路"没被做成"只认正式名"）
+  const aliasOk = batch25({ version: 1, calls: [['tree', P25, '--json']] }, ['--json']);
+  check('W25 batch 同一条路：别名（`tree` = `list`）在批里照旧可用',
+    aliasOk.code === 0 && aliasOk.j && aliasOk.j.results[0].code === 0,
+    'exit=' + aliasOk.code);
+
+  // 57.5 不是后门：单独被拒的，批里照样被拒，且报错点名
+  const b5 = batch25({ version: 1, calls: [['list', P25, '--nope-option-25']] }, ['--json']);
+  check('W25 batch 不是后门：批里的**未知选项**照旧被拒，并点名该选项与支持集',
+    b5.code === 1 && b5.j && b5.j.results[0].code === 1
+      && b5.j.results[0].stdout.indexOf('未知选项') >= 0
+      && b5.j.results[0].stdout.indexOf('--nope-option-25') >= 0
+      && b5.j.results[0].stdout.indexOf('支持的选项') >= 0,
+    b5.j ? b5.j.results[0].stdout.trim().slice(0, 80) : '(无 JSON)');
+
+  // 57.6 --json 两跑逐字节相同（同状态；故意带一条失败，失败档也必须确定）
+  const DET = { version: 1, calls: [
+    ['get', P25, 'w1', '--json'],
+    ['search', P25, 'w', '--json', '--no-heat'],
+    ['edit', P25, 'w25-nope', '--tags', 'x']
+  ] };
+  const det1 = batch25(DET, ['--json']);
+  const det2 = batch25(DET, ['--json']);
+  check('W25 batch：`--json` 两跑**逐字节相同**（无时间戳、无耗时字段）',
+    det1.code === det2.code && det1.raw === det2.raw && det1.raw.length > 200,
+    '两次 ' + det1.raw.length + ' / ' + det2.raw.length + ' 字');
+
+  // 57.7 payload 形状错 ⇒ 在跑第一条之前就拒，盘上零改动
+  const before25 = bytes25(proj25);
+  const badShapes = [
+    ['calls 不是数组', { version: 1, calls: 'nope' }],
+    ['calls 为空', { version: 1, calls: [] }],
+    ['某条不是数组', { version: 1, calls: [['get', P25, 'w1'], 'nope'] }],
+    ['某条里有非字符串', { version: 1, calls: [['get', P25, 5]] }],
+    ['批里套批', { version: 1, calls: [['batch', '--calls-file', '{}']] }]
+  ];
+  const badResults = badShapes.map((item) => {
+    const r = batch25(item[1]);
+    return r.code === 1 && /^error:/.test(r.out.trim());
+  });
+  check('W25 batch payload 校验：形状错一律**响亮拒绝**（文本档首行 error:）且**盘上逐字节不变**',
+    badResults.every(Boolean) && bytes25(proj25).equals(before25),
+    '五种形状 ' + JSON.stringify(badResults) + ' 盘不变=' + bytes25(proj25).equals(before25));
+
+  // 57.8 归属守门：batch 自己**不收** --dry-run / --idem
+  const guardPayload = calls25({ version: 1, calls: [['get', P25, 'w1']] });
+  const gIdem = run(['batch', '--calls-file', guardPayload, '--idem', 'k25']);
+  const gDry = run(['batch', '--calls-file', guardPayload, '--dry-run']);
+  check('W25 batch 归属守门：带 --idem / --dry-run 一律**响亮拒绝**（干跑与幂等键都写在 payload 里）',
+    gIdem.code !== 0 && gIdem.out.indexOf('--idem') >= 0
+      && gDry.code !== 0 && gDry.out.indexOf('--dry-run') >= 0,
+    gIdem.out.trim().slice(0, 50) + ' ｜ ' + gDry.out.trim().slice(0, 50));
+
+  // 57.9 payload 里 dryRun:true ⇒ 写命令不写盘，且**只**注入给认这个开关的命令
+  const beforeDry = bytes25(proj25);
+  const bDry = batch25({ version: 1, dryRun: true, calls: [
+    ['edit', P25, 'w1', '--tags', 'w25-dry-must-not-land'],
+    ['search', P25, 'w', '--json', '--no-heat']
+  ] }, ['--json']);
+  check('W25 batch 干跑：payload `"dryRun":true` ⇒ 写命令**不写盘**、只读命令**不被注入** --dry-run',
+    bDry.code === 0 && bDry.j && bytes25(proj25).equals(beforeDry)
+      && tags25('w1').indexOf('w25-dry-must-not-land') < 0
+      && bDry.j.results[0].argv.indexOf('--dry-run') >= 0
+      && bDry.j.results[1].argv.indexOf('--dry-run') < 0
+      && bDry.j.results[1].code === 0,
+    '盘不变=' + bytes25(proj25).equals(beforeDry)
+      + ' 写命令 argv 含 dry-run=' + (bDry.j && bDry.j.results[0].argv.indexOf('--dry-run') >= 0)
+      + ' 只读 argv 含 dry-run=' + (bDry.j && bDry.j.results[1].argv.indexOf('--dry-run') >= 0));
+
+  // 57.10 文本档失败契约：首行 error:，并且说清"前 N 条已生效"
+  const rText = run(['batch', '--calls-file', calls25({ version: 1, calls: [
+    ['edit', P25, 'w2', '--tags', 'w25-text-ok'],
+    ['edit', P25, 'w25-nope', '--tags', 'x']
+  ] })]);
+  check('W25 batch 文本档失败契约：首行 `error:` + 说清"前 N 条已生效" + 逐条回执行都在',
+    rText.code !== 0 && /^error:/.test(rText.out.trim())
+      && rText.out.indexOf('已经生效') >= 0
+      && rText.out.indexOf('[1/2] ok') >= 0 && rText.out.indexOf('[2/2] FAIL') >= 0,
+    rText.out.trim().split('\n')[0].slice(0, 90));
+
+  // ---- 自收尾（探针自己删干净；集成脚本末尾那一段也会兜底一次）----
+  try { fs.rmSync(path.join(ROOT, 'projects', P25), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
+}
+
 /* ---------------- 48. 条目级写原语（S2）：改一条不用重写整块 detail ----------------
  * 判据（对应 S2 任务书的九条验收，**逐条一个 `check`**）：
  *   （S2 之一）`item-add` 在**未条目化**节点上会**自动条目化**（成功 + 回显点名 `i-…` 形式的 itemId）；
@@ -8275,7 +8463,10 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
     check('I-1 `--code DM` ⇒ 草稿图那一行 + 它的命令名（`draft-map` / `apply`）',
       fCode.code === 0 && fCode.out.indexOf('代号: DM') >= 0
         && fCode.out.indexOf('中文名: 草稿图') >= 0
-        && fCode.out.indexOf('实现状态: 未实现（部分）') >= 0
+        // 状态值**不在这里钉死**：`docs/FEATURES.md` 是状态列的**唯一权威**（§0 表：已实现 / 未实现（部分）/ 未实现），
+        // 那三个值随实现进展变。本行钉的是「这一列存在且取值合法」，不是「今天是哪一个」——
+        // 实测（2026-10-21）：`DM` 已被另一个批改成「已实现」，而这里还写着「未实现（部分）」⇒ 全链首跑即红。
+        && /实现状态: (已实现|未实现（部分）|未实现)/.test(fCode.out)
         && fCode.out.indexOf('draft-map') >= 0 && fCode.out.indexOf('W11') >= 0,
       'exit=' + fCode.code + ' ｜ ' + fCode.out.split('\n')[0]);
 
@@ -8435,6 +8626,62 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
     // 真仓的生成物在本段全程**未被改过**（注入只发生在镜像里）—— 与 (b) 同一条判据，再确认一次
     check('I-5 本段全程未动真仓生成物（镜像注入前后 sha256 仍相同）',
       dgSha() === dgShaBefore, dgShaBefore.slice(0, 16) + ' → ' + dgSha().slice(0, 16));
+  }
+
+  /* ---------------- 8.11 `import-grade`（产品代号 `IG`「导入分档」，台账 `W15`）：读数命令的四条 ----------------
+   * 它答的是"**这一次导入，产物是不是源文的确定性函数**"——所以断言必须落在**读数**上，
+   * 而不是"命令没报错"：
+   *   (a) **真库的干净项目 ⇒ 每一份导入都保真、precision = recall = 1**（判据在真数据上给的是满分，
+   *       说明它真的在比"重放 vs 盘上"，不是恒绿）；
+   *   (b) **同一状态两跑 `--json` 逐字节相同**（零时钟零随机 + 显式排序）；
+   *   (c) 全库模式下 `scope.projects` 与 `scope.excludedProbeProjects` **无交集** ——
+   *       探针项目（`it-probe-*` / `imp-probe-*` / `it-s<N>-`）一个都不许混进读数；
+   *   (d) `--only` 匹配不上 ⇒ **响亮拒绝**；`--limit` **只影响打印、不改 totals**。
+   * ⚠️ **本组一个探针项目都不造**（只读真库）。这不是偷懒：造一个就要多一条"删项目"的写调用，
+   *   而 `S2` ⑤ 的 `WRITE_OUTLET_SITE_CAP` **只减不增**（实测：加一条 `fs.rmSync(path.join(ROOT,'projects',…))`
+   *   ⇒ 豁免面 82→83，`collateral-check` 4 条断言当场红）。探针排除那一条的**判别力**由
+   *   `tests/import-grade.test.js`（前缀表与 `scripts/cli-integration.js` 的 `PROBE_PREFIX` 逐条对齐 + 行为面）
+   *   与 `.review/20261020-W15-import/verify-grade.js`（沙箱里真造一个 `it-probe-x` 再排除它）负责。
+   * ⚠️ 本段不引入圈号枚举（那个形状是 G9 的判定标记，重复即判红）。 */
+  {
+    const gJson = (r) => { try { return JSON.parse(r.out); } catch (e) { return null; } };
+    const gProj = 'comnet';   // 真库里 origin 最密的一个项目（14 份源文件，实测全部保真）
+
+    const g1 = run(['import-grade', '--project', gProj, '--json']);
+    const gj1 = gJson(g1);
+    check('[W15·甲1] 真库干净项目 ⇒ 每份导入都保真、precision = recall = 1',
+      g1.code === 0 && gj1 && gj1.scope.mode === 'project' && gj1.totals.sources > 0
+        && gj1.totals.clean === gj1.totals.sources && gj1.precision === 1 && gj1.recall === 1,
+      gj1 ? ('mode=' + gj1.scope.mode + ' sources=' + gj1.totals.sources + ' clean=' + gj1.totals.clean
+        + ' p=' + gj1.precision + ' r=' + gj1.recall) : g1.out.slice(0, 200));
+
+    const g2 = run(['import-grade', '--project', gProj, '--json']);
+    check('[W15·甲2] 同一状态两跑 `--json` **逐字节相同**',
+      gj1 && g2.out === g1.out, 'len ' + g1.out.length + ' vs ' + g2.out.length);
+
+    const gLib = run(['import-grade', '--json']);
+    const gjLib = gJson(gLib);
+    const gOverlap = gjLib
+      ? gjLib.scope.projects.filter((n) => gjLib.scope.excludedProbeProjects.indexOf(n) >= 0)
+      : ['(JSON 解析失败)'];
+    check('[W15·甲3] 全库读数：`scope.projects` 与 `excludedProbeProjects` **零交集**（探针项目不许混进来）',
+      gLib.code === 0 && gjLib && gjLib.scope.mode === 'library' && gOverlap.length === 0
+        && gjLib.scope.projects.indexOf(gProj) >= 0,
+      gjLib ? ('projects=' + gjLib.scope.projects.length + ' ｜ excluded=' + gjLib.scope.excludedProbeProjects.length
+        + ' ｜ 交集=' + JSON.stringify(gOverlap)) : gLib.out.slice(0, 200));
+
+    const gBad = run(['import-grade', '--only', 'zzz-绝不可能匹配的子串-zzz', '--json']);
+    check('[W15·甲4] `--only` 一份都匹配不上 ⇒ 非 0 退出 + 说清扫过多少行',
+      gBad.code !== 0 && /一份源文件都没匹配上/.test(gBad.out),
+      'exit=' + gBad.code + ' ｜ ' + gBad.out.split('\n')[0]);
+
+    const gLim = run(['import-grade', '--project', gProj, '--json', '--limit', '0']);
+    const gjLim = gJson(gLim);
+    check('[W15·甲5] `--limit 0`（不限）只影响打印：`totals` 与 `--limit` 无关',
+      gjLim && gj1 && gjLim.totals.sources === gj1.totals.sources
+        && gjLim.totals.clean === gj1.totals.clean && gjLim.rowsShown === gjLim.rowsTotal,
+      gjLim ? ('sources=' + gjLim.totals.sources + ' rowsShown=' + gjLim.rowsShown + ' rowsTotal=' + gjLim.rowsTotal)
+        : gLim.out.slice(0, 200));
   }
 
   /* 跑体**真的走完了** ⇒ `finally` 里的收尾用"只按名单收"的窄口径（见下面那段说明）。

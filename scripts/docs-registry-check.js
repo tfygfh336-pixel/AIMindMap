@@ -82,6 +82,10 @@ const ARCHIVE_PREFIXES = ['docs/archive/', 'docs/changelog/'];
 /** 工程根允许出现的文件（其余任何文件一律视为乱放；Windows 大小写不敏感 → 统一小写比较） */
 const ROOT_FILES = [
   '.gitignore', 'CHANGELOG.md', 'README.md', 'SKILL.md',
+  /* ⚠️ `.git` 在**普通仓里是目录**，在 `git worktree` 里是**一个文件**（gitlink，内容一行 `gitdir: …`）。
+   * 所以它必须同时在 `TOP_DIRS`（目录形态）和这里（文件形态）—— 否则在 worktree 里会被判「乱放」。
+   * 2026-10-21 实测：验证沙箱（`.review/20261021-验证沙箱/`）里 G8 报 `[乱放] .git`，而它是合法 git 产物。 */
+  '.git',
   'electron-builder.yml', 'main.js', 'main-dsh-sidebar.js', 'preload.js',
   'package.json', 'package-lock.json',
   // 测试发现范围（存在理由：`.review/` 会被 vitest 默认收集，放个备份进去就让 npm test 变红）
@@ -170,10 +174,23 @@ function checkRootLayout(root) {
   const rootFiles = new Set(ROOT_FILES.map((f) => f.toLowerCase()));
   const topDirs = new Set(TOP_DIRS.map((d) => d.toLowerCase()));
 
+  /* ⚠️ **必须跟随联结**（2026-10-21 修）。
+   * `Dirent.isDirectory()` 对 **junction / symlink 返回 false**（返回 true 的是 `isSymbolicLink()`），
+   * 于是"指向目录的链接"会被下面当成**文件**判成「乱放」—— 这是**假红**。
+   * 实测现场：`git worktree` 建的验证沙箱里，`node_modules` / `vendor` / `.review` 三个 junction
+   * 全部被报 `[乱放] xxx —— 工程根不允许出现这个文件`，而它们都是目录。
+   * 同一个 API 陷阱今天已咬过一次（`W26` 批的探针把 junction 读成"没装好"）。
+   * 判据：`stat`（会跟随链接）说是目录就算目录；`lstat` 拿不到时才退回 Dirent。 */
+  const isDirLike = (dir, e) => {
+    if (e.isDirectory()) return true;
+    if (!e.isSymbolicLink()) return false;
+    try { return fs.statSync(path.join(dir, e.name)).isDirectory(); } catch { return false; }
+  };
+
   for (const e of fs.readdirSync(root, { withFileTypes: true })) {
     const name = e.name;
     const lower = name.toLowerCase();
-    if (e.isDirectory()) {
+    if (isDirLike(root, e)) {
       if (!topDirs.has(lower)) {
         problems.push({ kind: 'junk', rel: name + '/',
           msg: '顶层目录不在白名单内 —— 工作产物请放 ' + WORK_DIR + '/，成品登记进 docs/，其余移出工程' });

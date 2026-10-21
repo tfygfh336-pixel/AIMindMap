@@ -50,11 +50,14 @@ function mkRow(code, name, carrier, status, note) {
 }
 
 describe('A 名册表的解析（形状与结构性判定）', () => {
-  it('A1 真实文档：§3 有 7 列、16 行，代号与中文名两两不重复', () => {
+  /* ⚠️ 行数在这里写死是**有意的**：新增一行功能就是一次**可见的动作**，必须同批改这里
+   * （与 `G-11` 的 GOLDEN 字面量同一条纪律：让"名册变长"不能悄悄发生）。
+   * 2026-10-21：`W15` 落了 `IG`（导入分档，`import-grade`）⇒ 16 → 17。 */
+  it('A1 真实文档：§3 有 7 列、17 行，代号与中文名两两不重复', () => {
     const p = roster.parseRoster(REAL_MD);
     expect(p.ok).toBe(true);
     expect(p.columns.length).toBe(7);
-    expect(p.rows.length).toBe(16);
+    expect(p.rows.length).toBe(17);
     expect(p.columns[0]).toBe('代号');
     expect(p.columns[4]).toBe('实现状态');
     const codes = p.rows.map((r) => r.code);

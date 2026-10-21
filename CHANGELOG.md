@@ -2469,6 +2469,82 @@ node cli/mm-cli.js timeline [<项目>] [--since <ISO|Nd|Nh|Nm|Nw>] [--now <ISO>]
   `'（上界 ' + r.bound + ' 跳）'`（该文件是别的批的禁区）⇒ 它对新路由会渲染成"上界 undefined 跳"。
   CLI 侧两个渲染点已改成从 `boundText` 现取；MCP 侧那句等文件解禁后一并改（改法：取 `boundText`）。
 
+### 【台账 `W25`】`batch`：一次进程跑多条命令 —— 一次典型任务 4805 ms → 726 ms（2026-10-21）
+
+**要解决的那句话**：「AI 用 CLI 检索慢」。`W7` 已经量出慢的不是检索（进程内 2–115 ms），是**起进程**；本批把「一次**真实使用**」的总耗时量出来，并按读数决定做哪一项。
+
+- **读数（本批全部实测，脚本与原件在 `.review/20261020-W25-perf/`）**：
+  - 一次典型任务（查 3 个词 + 读 2 个节点 + 改 1 处 + `ui-state` + `validate` = **8 次 CLI 调用**）：
+    **改前 4805 ms**（8 个 node 进程）→ **改后 726 ms**（1 条 `batch`），**−84.9%**；同轮地板 `node -e ""` = 522 ms
+    ⇒ 726 ms 里 **72%** 仍是那唯一一次启动。
+  - **启动成本拆账**：`require('cli/main.js')` = 101.5 ms，其中 **`cli/registry.js` 占 100.2 ms（98.6%）** —— 它一次性 require 全部 20 个命令文件；而 `node -e ""` 地板里 **92.5%**（411 ms）是 node.exe 加载 + spawn，**懒加载碰不到**。
+  - **批量的边际成本 ≈ 0**（`apply --ops-file` 同一 op 跑 1/2/3/5 条 = 165.0 / 157.9 / 158.9 / 136.6 ms）⇒ 这是 `batch` 的全部依据。
+  - **真实用量**（`projects/.visits/*.jsonl` 按 >150 ms 间隔还原调用）：9 天 **627 次**（下界），单日最高 **404 次**（≈ 3.5 分钟纯启动）。
+- **新命令 `batch --calls-file calls.json [--json]`**（命令体 `cli/commands/batch.js`）。payload = `{version:1, calls:[argv…], dryRun?, continueOnError?}`，也接受裸数组；`--calls-file` 接受**文件路径或内联 JSON 文本**（与 `apply --ops-file` 同一口径）。
+- **语义（本批最承重的一条，先定再写代码）**：**逐条独立生效，失败不回滚**。第 3 条失败时前 2 条**已在盘上**，回执逐条给 `code`/`stdout`/`stderr` ⇒ 调用方**只重试失败那几条**。不做"整批原子"的三条理由：① `apply --ops-file` 已经是原子事务原语，再实现一套 = 同一语义两处实现；② `batch` 能跑 `search`/`get` 这类只读命令，对读操作"回滚"没有意义；③ 回滚只能靠快照 `projects/**` 再恢复，而本机**同时有界面与别的 agent 在写** ⇒ 恢复会**覆盖别人的写**（那是正确性风险，不是性能特性）。
+- **子调用走与单独执行**同一条路**：** 一律 `cli/main.js` 的 `invokeSync`（`scripts/cli-integration.js` 那 649 条断言用的同一个入口）⇒ 未知选项 / 别名归一 / `--dry-run` 归属 / `S7` 幂等守门 / `<命令> --help` 对每条子调用照旧生效，**批量化不是后门**。判据：批内那条的 `stdout` 与单独跑**逐字节相同**（成功档 + 失败档各一条断言）。
+- **命令行上故意没有 `--dry-run` / `--idem` / `--continue`**：干跑与"遇错是否继续"写在 **payload** 里（`"dryRun"` / `"continueOnError"`）；**批次级幂等键是假承诺**（幂等作用域是"项目 × 命令"，一批可含多项目）⇒ 要重试安全就在**子 argv** 里各自带 `--idem`。副作用是 **`cli/core.js` 一个字节都不用动**（不把调度器塞进 `DRY_RUN_COMMANDS` —— 那张表的语义是"会改盘的命令"，塞调度器就是改契约）。
+- **`"dryRun":true` 只注入给认这个开关的命令**：判据是 `core.DRY_RUN_COMMANDS`（唯一一处）。在 `search` 这类只读命令上注入 `--dry-run` 会被守门拒掉，那样整批会因为"干跑"而失败 —— 而那个失败与被测的改动毫无关系。
+- **输出契约**：`--json` 给 `{command,version,dryRun,continueOnError,results:[{i,argv,code,stdout,stderr}],summary:{total,ok,failed,stoppedAtIndex}}`，**无时间戳、无耗时字段** ⇒ 同一状态两跑**逐字节相同**（有断言）。文本档失败时**首行必须是 `error:`**（本工程对文本消费者的失败契约）并在同一句里说清"前 N 条**已经生效**"。
+- **连带面（R5）**：GUI **无影响**（不碰 `main.js`/`renderer/**`；它只是把 CLI 再跑一遍）· 数据格式 **无影响**（零新字段、不升 `formatVersion`）· 冒烟 **零改动** · 既有命令的输出**一个字节没动**（加法型）。
+- **契约面**：`cli/registry.js` 登记（**78 → 79 条命令**）· `docs/CLI.md` 由 `docs-gen` 重生成 · `docs/EXTENSIONS.md` §1.2 把它放进「**演进中**」并挨着 `apply` 写（G8 第 ⑮ 条要求覆盖；两行并排才不会被读串）· `docs/ARCHITECTURE.md` §2 新增 `commands/batch.js` 一行。
+- **MCP 面：不开工具，如实登记缺口**（`MCP_GAP_DEBT` 24 → 25 条，`MCP_GAP_DEBT_MAX` 同批 24 → 25）。理由写在册子上：MCP 现在**每次工具调用都走 `runCli()` 的 `spawnSync`**（实测 690 ms vs 进程内 43 ms）⇒ 在那儿加 `run_batch` 只是"把 N 次 spawn 包进一次工具调用"，**治不了根**；MCP 侧的下一步是先修 `runCli`（另一个决定，不混进本批）。
+- **测试（分层）**：`tests/batch.test.js` **34 例**（失败语义 5 条 / 单跑 vs 批内逐字节 3 条 / 守门 5 条 / `--json` 复现 1 条 / payload 校验 12 条 / 归属守门与 dryRun 注入 3 条 / 文本档失败契约 2 条 / 其它）+ `scripts/cli-integration.js` 的 **14 条端到端断言**（判据只认盘面与退出码）。
+- **⚠️ 本批顺带修了一条别人留下的化石断言**：`I-1 --code DM` 里钉着 `实现状态: 未实现（部分）`，而 `docs/FEATURES.md` 第 84 行的状态列已是「已实现」（另一个批改的，**已提交**）⇒ 全链首跑 648/649。改法**只改判据形态**：`docs/FEATURES.md` §0 把状态列定义成三个合法值，于是那行改成三值正则（钉"这一列存在且取值合法"，不钉"今天是哪一个"）—— **不替那个批表态，也不动它守的数据**。
+- **判据（全部当场跑，只认 exit code）**：`vitest run --pool=threads`（见下方实跑读数）· `scripts/cli-integration.js` **exit 0（649/649，其中 W25 段 14 条）**· `validate-all` **exit 0** · `dep-direction-check` **exit 0** · `scripts/collateral-check.js` **exit 0** · `docs-gen --check` **exit 0** · `encoding-check` **exit 0** · `find-bare-angle` **exit 0（0 节点 · 0 片段）** · `batch --json` 两跑逐字节相同。
+- **⚠️ 本批不跑 `npm run verify`**（`R7`），也不跑 `doc-facts --check/--write`。`docs-registry-check` 收尾时红，红的**两条都是 `import-grade.js`**（另一个批的新文件、尚未登记 §2）—— 与本批无关，逐条归因见 `.review/20261020-W25-perf/README.md` §6。
+
+### CHANGELOG 段（待并入 `CHANGELOG.md` 的 `[Unreleased]`）
+
+> `CHANGELOG.md` 本批**不碰**（父代理预写）。下面是**可直接粘贴**的两段，收口时并入。
+> 第一段 = 功能本体；第二段 = 本批连带动的四处登记/清单（**必须一起记** ——
+> 只看第一段会以为"只是加了个命令"，而实际上动了三张册与一条门禁上限）。
+
+### 新增 — 导入分档 `import-grade`（产品代号 `IG` · 台账 `W15`）（2026-10-21）
+
+「**这一次导入，产物是不是源文的确定性函数**」—— 一条**只读、零写盘、零模型**的读数命令。
+判据：把源文件**重放**一遍导入器（`docToOutline` → `markdownToTree`，与真导入同一条路）得到"本该长成的标题序列" Y，
+与盘上 `origin` 子树里实际长成的 X 按**多重集**对齐，给出可复算的 `precision = |交|/|A|` 与 `recall = |交|/|E|`。
+
+- **六档**：`clean`（逐条全等）/ `rewritten`（有节点在源文里找不到，**逐条点名** `+多出来 / -没落成`）/
+  `grown`（导入后又长了节点 ⇒ **不出分**：那时"本次导入的产物"没有边界）/ `src-gone` / `unreadable` / `unknown-tool`。
+- **真库读数（2026-10-21）**：38 份源文件 ⇒ **29 保真 / 8 有改写 / 1 长过了**；可判 37 份 ⇒ **precision = recall = 0.9712**
+  （E=A=660、交=641）。8 份改写的形态高度一致：**在源文标题后追加章节区间或一句说明**（`真书核对` 那几批的事，逐条可复核）。
+- **为什么不用"程序化 vs AI 辅助"分档**：导入链的**模型调用次数实测 = 0**（静态扫导入链 7 个文件，模型/网络命中 0）
+  ⇒ 那条轴对 6 条导入命令给的是**同一个值、没有分布**；有分布且机械可判的是**保真度**这一轴。
+  两条判据各自有读数、各自可判，**不合成一个标签**（判决与全部实测见 `.review/20261020-W15-import/00-定题.md` §2）。
+- **与"语义相似度"的区别**：相似度要一个阈值，而阈值**没有判据**（写 0.8 与 0.6 一样随意）；"标题是不是源文里的那一条"有唯一答案。
+- **判据单一实现**：分级与打分全在 `src/import-grade.js`（UMD 纯逻辑：**零 I/O、零时钟、零随机**）；
+  `cli/commands/import-grade.js` 只做"定扫描面 → 读盘 → 调它 → 排输出"，**一行判据都不重写**。
+- **扫描面必须显式**（实测的环境事实）：别的批跑 `scripts/cli-integration.js` 会在 `projects/` 下**瞬时**造
+  `it-probe-*` / `imp-probe-*` 并可能残留 `.visits/*.jsonl` ⇒ 任何"全库统计"的读数会**在两跑之间变化**（`W3` / `W7` 都撞过）。
+  ⇒ 本命令**默认排除探针项目并打印排除了几个**、`--only` / `--project` 锁死扫描面、`--json` 带 `scope` 记录"这份读数覆盖了谁"。
+- **确定性**：`--json` 两跑逐字节相同（零时钟、零随机、`(项目名, src)` 升序、计数键按固定数组出；
+  逐条点名超上限时置 `namesTruncated`，不静默截断）。**前提**：扫描面本身没被别人改。
+- **它是读数不是门禁**：退出码恒 0（除非命令自己出错），与 `health` 同一档口径。
+- **验证**：`tests/import-grade.test.js`（26 例：UMD 双端 / 围栏感知 / 占位剔除 / 保重 / 六档 / `includeSelf` 按 `origin.tool` /
+  `grown` 不出分 / 微平均 / **探针前缀表与 `scripts/cli-integration.js` 的 `PROBE_PREFIX` 逐条对齐** / 确定性静态把守）；
+  `scripts/cli-integration.js` 的 `[W15·甲1]`–`[W15·甲5]` 5 条；`.review/20261020-W15-import/verify-grade.js`（`%TEMP%` 沙箱 26 条断言）。
+- **踩到的两个坑（写给下一个人，别再撞）**：
+  1. `ctx.store.read(name).data` 给的是**整份文档**（`{meta, format, data:<根>}`）而**不是树根** ——
+     直接拿它当树走，`origin` 一个都找不到，**读数是全 0 而不报错**（第一版 24 条断言红了 12 条，全是这一条）。
+  2. **相对路径的 `origin.src` 依赖"工程根"**（`docs/DATA-FORMAT.md` §2.8）：在别处（`%TEMP%` 沙箱、换了 cwd 的脚本）跑
+     会解析不到 ⇒ 判 `src-gone`、`grown` 凭空消失。**要按真实布局摆好相对源文件**，沙箱才是真库的忠实副本。
+
+### 变更 — 本批连带动的四处登记 / 清单（**与上一条同批，别分开看**）
+
+- **`docs/EXTENSIONS.md` §1.2「演进中」** 加入 `import-grade`（只读命令的自动化入口保持"字段可能增补"这一级）。
+- **`docs/ARCHITECTURE.md` §2.2 / §2.3** 各加一行（`commands/import-grade.js` / `src/import-grade.js`）——
+  **这两行是 `G8`「代码未入档」2 条红的唯一修法**；不落它们，新文件一进仓门禁就红。
+- **`docs/FEATURES.md` §3** 加 `IG` 行（**第 17 行**，状态 `已实现`）。
+- **`scripts/collateral-check.js` 的 MCP 缺口册**：加 `import-grade`（`why`：与 `health` 同档的读数出口，不做工具是**判断**），
+  并把 `MCP_GAP_DEBT_MAX` **25 → 26**。⚠️ 该上限**只减不增**：抬一次就是放宽一次判定，所以那一条 `why` 必须写下来。
+- **`tests/features-roster.test.js`** 的 A1 把名册行数 **16 → 17**（`IG` 是第 17 行）。
+  那条行数是**有意写死**的（与 `G-11` 的 GOLDEN 字面量同一条纪律：名册变长不能悄悄发生）。
+- ⚠️ **`scripts/cli-integration.js` 新增的 8.11 段故意"一个探针项目都不造"**：造一个就多一条"删项目"的写调用，
+  而 `S2` ⑤ 的 `WRITE_OUTLET_SITE_CAP` **只减不增**（实测 82→83 ⇒ `collateral-check` 4 条断言当场红）。
+  探针排除的判别力放在单测与 `%TEMP%` 沙箱里（那里造项目不进 `S2` 的扫描面）。
+
 ## [v0.19.0] - 2026-10-19
 
 ### 预算统计量 `1.25×P90` → `1.25×median`：n=10 的 P90 = **第二大** ⇒ 只容忍一条尖峰；今天已两次被尖峰抬线（1300→1468、1300→1350），换 median 并把多付的 50s 还回去（G5 1350s→1300s）
