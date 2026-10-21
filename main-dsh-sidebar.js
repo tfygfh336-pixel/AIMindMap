@@ -165,6 +165,14 @@ const state = {
   panelView: null,          // 面板的 WebContentsView（惰性创建；关闭只摘不销毁，见 destroyPanel）
   lastDestroyedPanelId: null,
   geometry: null,           // **最近一次应用的几何**（computeGeometry 的产物；读数/断言的单一事实）
+  // ── 加载失败判定（r12 收口批 · 见 createStatusPageLoadTracker 那一节）──────────────────
+  //   statusPageLoad       —— 判定器实例（懒建；判据读数从这里出，日志里不再有良性的 `-3`）
+  //   statusPageSettleTimer—— `-3` 挂起后的结算定时器（一个就够，每次挂起重置）
+  statusPageLoad: null,
+  statusPageSettleTimer: null,
+  // 测试接缝：让结算读到的"视图事实"可注入（见 setStatusPageSettleFactsForTest 的注释）。
+  // 产品路径永远是 null ⇒ 读真实 state。
+  statusPageSettleFactsForTest: null,
   shuttingDown: false
 };
 
@@ -613,9 +621,339 @@ function errorPageHtml(msg) {
     + '</div><button onclick="console.log(\'[dsh-retry]\')">重试启动</button></body></html>');
 }
 
+/* ============================================================
+ * 加载失败判定（r12 收口批 · 2026-10-24）
+ * ------------------------------------------------------------
+ * 由来：`.review/20261024-未核实项/00-定题.md` §3（`r12`）—— 旧实现是这一句**无条件**的日志：
+ *   `showStatusPage()` 里 `loadURL(html).catch(e => log('状态页加载失败: ' + e.message))`。
+ *   而 `show()` 每次重刷状态页都会把**上一次还没加载完**的那次顶掉，被顶掉的报
+ *   `ERR_ABORTED (-3)`（Chromium 的「请求被取消」）。留档的 36 份日志里那一行**全是** `-3`
+ *   （能区分：真销毁是 `-2`，定题用 `show:false` 的探针实测过两种机制），机制是「顶上去的那一次自己成功了」
+ *   ⇒ 良性噪声。问题不在"它是不是良性"，而在**旧写法让"良性"只能靠人记得**。
+ *
+ * 现在（定题 §3.5 的「做法甲」）：判定只挂 `did-fail-load`（带 `isMainFrame` + `errorCode`），
+ *   按**错误码**分流 —— "这条该不该响"由构造决定，不由注释决定：
+ *
+ *   ① `errorCode !== -3`（`-2` 加载途中被销毁 · `-102` 连不上 · `-105` 名字解析不了 · 认不出的码）
+ *      ⇒ **立刻报错并点名**（描述 + 码 + URL）。这是真失败，一条都不能少。
+ *   ② `errorCode === -3` ⇒ **不立刻报**：它对不对取决于"顶上去的那一次成没成" ⇒ **挂起**，等三种收束：
+ *        · 同一 webContents 随后 `did-finish-load` ⇒ 那次无关紧要 ⇒ **不报错**（只在
+ *          `getStatus().statusPageLoad` 里留计数与"最近一次被吸收的 -3"—— 观测面没删，只是不吵）；
+ *        · 视图被销毁 / 侧栏不可见 ⇒ **只报告**（用户自己关的，不是加载失败）；
+ *        · 到点仍**没有任何一次成功加载**且侧栏**仍可见** ⇒ **报错**：侧栏可能停在空白/错误页
+ *          —— 这一档是"良性"的反证，必须红（定题 §3.5 那四条「该判红的形态」的第 2 条）。
+ *   ③ `isMainFrame === false`（子框架）⇒ 不算这个视图的加载失败（只计数）。
+ *   ④ 同一次失败既走 `did-fail-load` 也走 `loadURL()` 的 rejection ⇒ 后者**去重**（不重复刷两条）；
+ *      **认不出的码照样报**（报文写「未知码」）—— 宁可吵，不许静默吞掉一个没见过的失败。
+ *
+ * ⚠️ **这不是"把日志关掉"**：非 `-3` 一条不少，而且比旧写法更可用（旧写法只有 `e.message`，
+ *   连码都不一定有；现在描述、码、URL 都在）。四条判据（该红 / 该绿 / 边界 / 照样响亮）在
+ *   `tests/dsh-sidebar-load.test.js`；真事件载荷由 `.review/20261024-r12-收口/probe-status-load.js` 取。
+ * ============================================================ */
+
+/** Chromium `net::ERR_ABORTED`：请求被取消。在本视图里它的**唯一常见成因**是"被后一次导航顶掉"。 */
+const ERR_ABORTED = -3;
+/** `-3` 挂起后多久结算（ms）。被顶掉的背后**总有**另一次导航已经发出，本机数据页/本机服务的
+ *  成功加载是几十毫秒级 ⇒ 3s 只用来兜"另一次永远不回来"那种（那不是良性）。 */
+const STATUS_PAGE_ABORT_SETTLE_MS = 3000;
+/** 挂起期间若那次导航**还在加载**（大页面首载可能要几秒），最多再等这么久才判"它也没成"。
+ *  没有这一档 ⇒ 3s 一到就把"其实还在加载"误判成失败（假红）；只有这一档 ⇒ 挂死的页面永远不判红。 */
+const STATUS_PAGE_ABORT_MAX_WAIT_MS = 15000;
+
+/** 报文里 URL 的截断长度：`data:` 页把整页 HTML 塞在 URL 里，原样打一行能上千字符，
+ *  而"是哪个页面"看前 160 字符就够（码与描述在它前面，永远看得见）。 */
+const FAILURE_URL_MAX = 160;
+
+/** 归一一个失败事件 → `{ code, desc, url, isMainFrame }`。
+ *  两个来源共用它：`did-fail-load` 的参数（`errorCode`/`errorDescription`/`validatedURL`）与
+ *  `loadURL()` 的 rejection（`errno`/`code`/`message`，报文形如 `ERR_ABORTED (-3) loading 'data:…'`）。
+ *  **认不出码时 `code` 是 null** —— 调用方必须按错误报（不许因为"不认识"就当没发生）。 */
+function normalizeLoadFailure(ev) {
+  const e = ev || {};
+  let code = null;
+  let desc = null;
+  if (typeof e.errorCode === 'number') code = e.errorCode;
+  else if (typeof e.errno === 'number') code = e.errno;
+  if (typeof e.errorDescription === 'string' && e.errorDescription) desc = e.errorDescription;
+  else if (typeof e.code === 'string' && /^ERR_/.test(e.code)) desc = e.code;
+  if (code === null) {
+    const m = /(ERR_[A-Z0-9_]+)[ \t]*\([ \t]*(-?\d+)[ \t]*\)/.exec(String(e.message || ''));
+    if (m) { if (!desc) desc = m[1]; code = Number(m[2]); }
+  }
+  let url = '';
+  if (typeof e.validatedURL === 'string' && e.validatedURL) url = e.validatedURL;
+  else if (typeof e.url === 'string' && e.url) url = e.url;
+  else {
+    const m2 = /loading '([^']*)'/.exec(String(e.message || ''));
+    if (m2) url = m2[1];
+  }
+  const isMainFrame = e.isMainFrame === undefined ? true : e.isMainFrame !== false;
+  return { code: code, desc: desc, url: url, isMainFrame: isMainFrame };
+}
+
+/** 失败报文的**唯一格式**：前缀 + 描述 + 码 + URL。
+ *  前缀按 URL 分流：`data:` 就是状态页（历史日志里那个前缀），http(s) 是 DSH 页面本体。 */
+function failureLine(f, extra) {
+  const statusPage = /^data:/i.test(String((f && f.url) || ''));
+  const name = (f && f.desc) ? f.desc + ' ' : '';
+  const code = (f && f.code !== null && f.code !== undefined) ? f.code : '未知码';
+  let url = (f && f.url) ? String(f.url) : '';
+  if (url.length > FAILURE_URL_MAX) url = url.slice(0, FAILURE_URL_MAX) + '…';
+  return (statusPage ? '状态页加载失败: ' : '侧栏页面加载失败: ')
+    + name + '(' + code + ')' + (url ? ' ' + url : '') + (extra ? ' —— ' + extra : '');
+}
+
+/** 判定器：**纯状态机**（零 Electron、零定时器；时间与"可见 / 在不在 / 还在不加载"都由调用方喂进来）。
+ *  为什么必须是纯的：这套分流的四条判据要逐条打（`tests/dsh-sidebar-load.test.js`），
+ *  而真 Electron 只在探针里跑一次 —— 判据不能只活在那一次里。 */
+function createStatusPageLoadTracker(opts) {
+  const o = opts || {};
+  const clock = typeof o.now === 'function' ? o.now : Date.now;
+  const dedupeMs = typeof o.dedupeMs === 'number' ? o.dedupeMs : 1000;
+  const maxWaitMs = typeof o.maxWaitMs === 'number' ? o.maxWaitMs : STATUS_PAGE_ABORT_MAX_WAIT_MS;
+
+  const counts = { navigations: 0, finished: 0, aborted: 0, reported: 0,
+    absorbed: 0, dropped: 0, subframeIgnored: 0, deduped: 0 };
+  const pending = [];      // 挂起中的 -3（等"随后成功 / 视图不在 / 到点"三者之一来收束）
+  /* **只**记 `did-fail-load` 那一路的事件，专供 rejection 去重（尾部留 20 条）。
+   * ⚠️ 为什么不记 rejection：同一次 burst 里会有 **4 条一模一样的 `-3` rejection**
+   *   （`show()` 连刷 5 次、前 4 次被顶掉，定题 §3.4 实测 4 == 5-1）。若 rejection 之间也去重，
+   *   这 4 条会被并成 1 条 —— 日志确实更安静，但**读数就假了**（`aborted` 永远是 1，
+   *   "4 == 5-1" 这条对账从此做不出来）。所以去重只做**跨来源**那一半：同一次物理失败
+   *   会先到 `did-fail-load`、再到 rejection，后者才是重复的那一条。 */
+  const seen = [];
+  let lastFailure = null;  // 最近一次**判红**的失败（诊断出口）
+  let lastAbort = null;    // 最近一次 -3 的收束（absorbed / dropped / red —— "它发生过"必须有出口）
+
+  function remember(rec) { seen.push(rec); while (seen.length > 20) seen.shift(); }
+
+  /** 发起一次导航（`showStatusPage` / `loadCurrentUrl` 的唯一入口都调它）。 */
+  function navigate() { counts.navigations++; return counts.navigations; }
+
+  function deferAbort(f) {
+    counts.aborted++;
+    const at = clock();
+    pending.push({ at: at, code: f.code, desc: f.desc, url: f.url });
+    lastAbort = { code: f.code, desc: f.desc, url: f.url, at: at, count: 1, outcome: 'pending', settledAt: null };
+    return { action: 'deferred' };
+  }
+
+  function report(f) {
+    counts.reported++;
+    lastFailure = { code: f.code, desc: f.desc, url: f.url, at: clock() };
+    return { action: 'error', message: failureLine(f) };
+  }
+
+  /** 收束挂起中的 -3（`absorbed` = 随后成功 / `dropped` = 视图不在或已报过同一事故）。 */
+  function absorb(outcome, why) {
+    const n = pending.length;
+    if (!n) return { action: 'report', reason: why, absorbed: 0 };
+    const tail = pending[n - 1];
+    counts[outcome === 'dropped' ? 'dropped' : 'absorbed'] += n;
+    lastAbort = { code: tail.code, desc: tail.desc, url: tail.url, at: pending[0].at,
+      count: n, outcome: outcome, settledAt: clock() };
+    pending.length = 0;
+    return { action: 'report', reason: why, absorbed: n };
+  }
+
+  /** `did-fail-load` 的判定（**唯一判定入口**）。 */
+  function onFailLoad(raw) {
+    const f = normalizeLoadFailure(raw);
+    remember({ source: 'did-fail-load', code: f.code, url: f.url, at: clock() });
+    if (!f.isMainFrame) { counts.subframeIgnored++; return { action: 'ignored' }; }
+    if (f.code === ERR_ABORTED) return deferAbort(f);
+    return report(f);
+  }
+
+  /** `loadURL()` 的 rejection —— **兜底**：真失败正常路径上 `did-fail-load` 已经先一步报过同一次，
+   *  这里靠 `码 + URL + 时间窗` 与**那一路**的记录去重（否则每次真失败会刷两条一模一样的行）。
+   *  ⚠️ 与**别的 rejection** 之间**不去重**（理由见 `seen` 的注释：那会把 4 条真 `-3` 并成 1 条）。 */
+  function onLoadRejected(raw) {
+    const f = normalizeLoadFailure(raw);
+    const t = clock();
+    const dup = seen.some((s) => s.code === f.code && t - s.at <= dedupeMs
+      && (!s.url || !f.url || s.url === f.url));
+    if (dup) { counts.deduped++; return { action: 'deduped' }; }
+    if (!f.isMainFrame) { counts.subframeIgnored++; return { action: 'ignored' }; }
+    if (f.code === ERR_ABORTED) return deferAbort(f);
+    return report(f);
+  }
+
+  /** 同一 webContents 加载成功 ⇒ 挂起中的 -3 全部被吸收。**这就是"良性"的机械定义**：
+   *  不是"我们相信它是良性的"，而是"它后面确实跟着一次成功"。 */
+  function onFinishLoad() {
+    counts.finished++;
+    if (!pending.length) return { absorbed: 0 };
+    return absorb('absorbed', '随后加载成功 ⇒ 被顶掉的那次无关紧要');
+  }
+
+  /** 视图销毁（用户真关）⇒ 挂起的 -3 只报告。 */
+  function onViewDestroyed() {
+    if (!pending.length) return { absorbed: 0 };
+    return absorb('dropped', '视图已销毁（用户真关，不是加载失败）');
+  }
+
+  /** 结算挂起中的 -3（到点由定时器调；探针/单测也显式调它，走**同一份**判定）。 */
+  function settle(input) {
+    const i = input || {};
+    if (!pending.length) return { action: 'none' };
+    if (i.hasView === false) return absorb('dropped', '视图已销毁（用户真关，不是加载失败）');
+    if (i.visible === false) return absorb('dropped', '侧栏不可见（不算加载失败）');
+    const waited = typeof i.waitedMs === 'number' ? i.waitedMs : (clock() - pending[0].at);
+    const limit = typeof i.maxWaitMs === 'number' ? i.maxWaitMs : maxWaitMs;
+    // 那次导航**还在加载** ⇒ 判决还没下来（3s 到点 ≠ 失败）；但给了 maxWait 这一档才敢判死
+    if (i.stillLoading && waited < limit) return { action: 'pending', waitedMs: waited };
+    // 顶上去的那一次**自己已经按非 -3 的码报过**了 ⇒ 同一次事故只留一条响亮的话，不重复刷
+    if (lastFailure && lastFailure.at >= pending[0].at) {
+      return absorb('dropped', '同一次失败已按非 -3 的码报过');
+    }
+    const n = pending.length;
+    const tail = pending[n - 1];
+    const f = { code: tail.code, desc: tail.desc, url: tail.url };
+    counts.reported++;
+    lastFailure = { code: f.code, desc: f.desc, url: f.url, at: clock() };
+    lastAbort = { code: tail.code, desc: tail.desc, url: tail.url, at: pending[0].at,
+      count: n, outcome: 'red', settledAt: clock() };
+    pending.length = 0;
+    return { action: 'error', count: n, message: failureLine(f,
+      '被顶掉后再没有一次成功的加载（' + n + ' 次，已等 ' + Math.round(waited) + 'ms），侧栏仍可见'
+      + ' —— 可能停在空白/错误页') };
+  }
+
+  /** 诊断读数（进 `getStatus()`；日志里不再有良性的 -3，但"它发生过"必须有出口）。 */
+  function snapshot() {
+    const c = counts;
+    return {
+      navigations: c.navigations, finished: c.finished, aborted: c.aborted,
+      reported: c.reported, absorbed: c.absorbed, dropped: c.dropped,
+      subframeIgnored: c.subframeIgnored, deduped: c.deduped,
+      pending: pending.length, pendingSince: pending.length ? pending[0].at : null,
+      lastFailure: lastFailure, lastAbort: lastAbort,
+      settleMs: STATUS_PAGE_ABORT_SETTLE_MS, maxWaitMs: maxWaitMs
+    };
+  }
+
+  return { navigate: navigate, onFailLoad: onFailLoad, onLoadRejected: onLoadRejected,
+    onFinishLoad: onFinishLoad, onViewDestroyed: onViewDestroyed, settle: settle, snapshot: snapshot };
+}
+
+/** 进程内唯一的判定器（视图重建**不重置**计数：跨视图的"出现过几次 / 吸收过几次 / 报过几次"
+ *  才是诊断读数）。懒建 ⇒ `require()` 本文件没有额外副作用（单测与探针都能直接要实例）。 */
+function statusPageLoadTracker() {
+  if (!state.statusPageLoad) state.statusPageLoad = createStatusPageLoadTracker();
+  return state.statusPageLoad;
+}
+
+/** 把「加载失败判定」挂到一个 webContents 上 —— **唯一挂载处**（`ensureView()` 调它）。
+ *  导出是给 headless Electron 探针用的：纯状态机的单测证明不了"真事件真的带 isMainFrame / errorCode"，
+ *  只有真 webContents 能证明（`.review/20261024-r12-收口/probe-status-load.js`）。
+ *  @param {object} webContents 真 webContents，或任何有 `.on` 的对象（单测用 EventEmitter 打它） */
+function attachLoadDiagnostics(webContents, opts) {
+  const o = opts || {};
+  const tracker = o.tracker || statusPageLoadTracker();
+  const emit = o.log || log;
+  const onDeferred = o.onDeferred || function () { scheduleStatusPageSettle(); };
+  webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    const r = tracker.onFailLoad({ errorCode: errorCode, errorDescription: errorDescription,
+      validatedURL: validatedURL, isMainFrame: isMainFrame });
+    if (r.action === 'error') emit(r.message);
+    else if (r.action === 'deferred') onDeferred();
+  });
+  webContents.on('did-finish-load', () => { tracker.onFinishLoad(); });
+  return tracker;
+}
+
+/** 结算定时器（**一个就够**：每次挂起就重置它 ⇒ 从最后一次尝试算 settleMs）。 */
+function scheduleStatusPageSettle(ms) {
+  if (state.statusPageSettleTimer) {
+    clearTimeout(state.statusPageSettleTimer);
+    state.statusPageSettleTimer = null;
+  }
+  const wait = typeof ms === 'number' ? ms : STATUS_PAGE_ABORT_SETTLE_MS;
+  const t = setTimeout(() => {
+    state.statusPageSettleTimer = null;
+    const r = settleStatusPageLoad();
+    // 那次导航还在加载 ⇒ 再等一轮（上限由 tracker 的 maxWaitMs 兜住，不会无限等）
+    if (r && r.action === 'pending') scheduleStatusPageSettle();
+  }, wait);
+  if (t && typeof t.unref === 'function') t.unref();   // 别为一个诊断定时器拖住进程退出
+  state.statusPageSettleTimer = t;
+}
+
+/** 结算挂起中的 -3 —— **唯一结算处、也是唯一打印处**（导出给探针/单测显式驱动，走同一份判定）。
+ *  入参全是**现取的事实**（可见不可见 / 视图在不在 / 那次导航还在不在加载），不是猜的。 */
+function settleStatusPageLoad(deps) {
+  const d = deps || {};
+  const tracker = d.tracker || statusPageLoadTracker();
+  const snap = tracker.snapshot();
+  const nowMs = typeof d.now === 'function' ? d.now() : Date.now();
+  // 事实来源的优先级：调用方显式给 > 测试接缝（探针没有产品那个 view）> 产品真实 state
+  const facts = (typeof state.statusPageSettleFactsForTest === 'function')
+    ? (state.statusPageSettleFactsForTest() || {}) : null;
+  let stillLoading = false;
+  if (d.stillLoading !== undefined) stillLoading = !!d.stillLoading;
+  else if (facts && facts.stillLoading !== undefined) stillLoading = !!facts.stillLoading;
+  else if (state.view && state.view.webContents) {
+    try { stillLoading = !!state.view.webContents.isLoading(); } catch (e) { stillLoading = false; }
+  }
+  const visible = d.visible === undefined
+    ? (facts && facts.visible !== undefined ? !!facts.visible : !!state.visible)
+    : !!d.visible;
+  const hasView = d.hasView === undefined
+    ? (facts && facts.hasView !== undefined ? !!facts.hasView : !!state.view)
+    : !!d.hasView;
+  const r = tracker.settle({
+    visible: visible,
+    hasView: hasView,
+    stillLoading: stillLoading,
+    // 等过多久：默认按**真墙钟**算（产品路径就是这样）；探针/单测可以显式喂，免得真睡 15s
+    waitedMs: typeof d.waitedMs === 'number' ? d.waitedMs
+      : (snap.pendingSince ? nowMs - snap.pendingSince : 0)
+  });
+  if (r.action === 'error') (d.log || log)(r.message);
+  return r;
+}
+
+/* ---------------- 加载失败判定的**测试接缝**（与 `__setMeasureProbeForTest` 同一档） ----------------
+ * 为什么必须留这两根线：结算要判的三件事（可见 / 视图在不在 / 那次导航还在不在加载）都取自
+ * **产品真实视图**；而 headless Electron 探针不孵化主界面 ⇒ 没有那个视图。不接线的话，
+ * 定题 §3.5 表里「-3 之后一直没有成功且仍可见 ⇒ 该红」这一条**在探针里永远判不出来**
+ * —— 那正是"判据在空转"（本工程明令禁止）。产品路径**绝不**设置它们（名字带 `__`，默认 null/false）。 */
+
+/** 让结算读到的"视图事实"可注入：`() => ({visible, hasView, stillLoading})`；传 null 恢复真实 state */
+function setStatusPageSettleFactsForTest(fn) {
+  state.statusPageSettleFactsForTest = typeof fn === 'function' ? fn : null;
+  return true;
+}
+
+/** 把判定器与结算定时器重置（单测要一个干净实例；产品路径不用） */
+function resetStatusPageLoadTrackerForTest() {
+  if (state.statusPageSettleTimer) {
+    clearTimeout(state.statusPageSettleTimer);
+    state.statusPageSettleTimer = null;
+  }
+  state.statusPageLoad = null;
+  return true;
+}
+
+/** `loadURL()` 的**唯一调用包装**：导航计数 + 失败交给判定器（不再各写一句 `.catch(log)`）。
+ *  返回的 promise **不 reject**（调用方都是 fire-and-forget；失败已在判定器里记过账）。 */
+function loadUrlTracked(webContents, url) {
+  const tracker = statusPageLoadTracker();
+  tracker.navigate();
+  let p;
+  try { p = webContents.loadURL(url); } catch (e) { p = Promise.reject(e); }  // 同步抛也算失败，照样报
+  return Promise.resolve(p).catch((e) => {
+    const r = tracker.onLoadRejected(e);
+    if (r.action === 'error') log(r.message);
+    else if (r.action === 'deferred') scheduleStatusPageSettle();
+    return null;
+  });
+}
+
 function showStatusPage(html) {
   if (!state.view) return;
-  state.view.webContents.loadURL(html).catch((e) => log('状态页加载失败: ' + e.message));
+  loadUrlTracked(state.view.webContents, html);
 }
 
 /* ---------------- WebContentsView ---------------- */
@@ -654,6 +992,10 @@ function ensureView() {
       releaseRightbarRoom();
     }
   });
+  /* 加载失败的判定**只挂这一处**（r12 收口批）：`did-fail-load` 才带 `isMainFrame` + `errorCode`，
+   * 按码分流（`-3` 挂起结算、其余立刻点名）见 createStatusPageLoadTracker 那一节。
+   * 旧写法挂在 `loadURL().catch()` 上 ⇒ 良性的 `-3` 与真失败**长得一模一样**，只能靠人记得。 */
+  attachLoadDiagnostics(view.webContents);
   // DSH 页面每次加载完成后重新注入窄宽适配（insertCSS 不跨导航保留）
   view.webContents.on('did-finish-load', () => {
     if (state.visible) scheduleNarrowAdaptation();
@@ -694,6 +1036,13 @@ function destroyView(reason) {
   state.narrow = null;
   state.narrowSkip = '视图已销毁（重开侧栏会重建并重新加载页面）';
   if (state.rightbarWatcher) state.rightbarWatcher = null;
+  // 挂起中的 `-3` 随视图一起失效（定题 §3.5：视图真关 ⇒ 只报告，不判红）；
+  // 结算定时器也一并撤掉，免得它对着一个已经不存在的视图结算。
+  if (state.statusPageLoad) state.statusPageLoad.onViewDestroyed();
+  if (state.statusPageSettleTimer) {
+    clearTimeout(state.statusPageSettleTimer);
+    state.statusPageSettleTimer = null;
+  }
   log('DSH 页面视图已销毁（' + reason + '，webContents id=' + id
     + '）—— 内存里不再留这个页面；重开=重新加载（比"挂回来"慢 ✓）');
   return true;
@@ -707,9 +1056,8 @@ function loadCurrentUrl() {
   let cur = '';
   try { cur = state.view.webContents.getURL(); } catch (e) { cur = ''; }
   if (cur === state.url) return;
-  state.view.webContents.loadURL(state.url).catch((e) => {
-    log('loadURL 失败: ' + e.message);
-  });
+  // 失败走**同一套**判定（r12 收口批）：真实 DSH 页面加载失败同样要响亮，良性的 `-3` 同样不吵。
+  loadUrlTracked(state.view.webContents, state.url);
 }
 
 /* ---------------- 拖宽分隔条（类似 Windows 窗口边框的拖拽体验） ----------------
@@ -1866,6 +2214,11 @@ function getStatus() {
     rightbarWatcher: state.rightbarWatcher || null,
     // ⑩ 最近一次"把对话预填进侧栏"的结果（4b：失败也要看得见原因 ✓ 不阻断 ✗）
     lastPrefill: state.lastPrefill || null,
+    // 状态页/侧栏页**加载失败**的判定读数（r12 收口批）：`aborted` 出现过几次 `-3`、
+    //   `absorbed` 其中几次被"随后加载成功"证明无害、`reported` 报过几条真失败、`lastFailure` 是哪一条。
+    //   为什么必须进状态出口：日志里不再有良性的 `-3`，但"它发生过"这件事**不能没有出口**
+    //   （否则等于把观测面删掉 —— 那正是本批最反对的方向）。
+    statusPageLoad: statusPageLoadTracker().snapshot(),
     // **视图在不在**（判据字段：侧栏 ✕ 是"真关"⇒ 这里必须变成 false，断言不必去猜 ✓）
     hasView: !!state.view,
     viewId: viewIdOf(state.view),                 // 当前 view 的 webContents id（没有 = null）
@@ -2444,6 +2797,20 @@ module.exports = {
   __setMeasureProbeForTest: setMeasureProbeForTest,
   // ⑩ 把对话预填进侧栏输入框（不代替用户发送）
   prefillComposer, COMPOSER_PREFILL_JS,
+  // 加载失败判定（r12 收口批）—— 三样都是**产品路径本体**，导出只为让门禁与探针走同一份实现
+  //   （不另写一条"测试用的判定"，那种第二份实现正是本工程反复治过的病）：
+  //   · attachLoadDiagnostics —— `ensureView()` 用的**唯一挂载处**（单测拿 EventEmitter 打它、
+  //     探针拿真 webContents 打它 —— 两条路验的是同一个函数）；
+  //   · settleStatusPageLoad  —— 唯一的结算/打印处（`-3` 到点结算走它）；
+  //   · loadUrlTracked        —— 唯一的 `loadURL()` 调用包装（导航计数 + 失败交给判定器）。
+  //   另有 `__` 开头的测试接缝与常量（干净实例 / 可注入的视图事实 / 重置 / 两个时限）：
+  //   单测要逐条打分档，探针要没有产品视图也能验"到点判红"，靠的就是它们（产品路径不用）。
+  attachLoadDiagnostics, settleStatusPageLoad, loadUrlTracked,
+  __createStatusPageLoadTracker: createStatusPageLoadTracker,
+  __setStatusPageSettleFactsForTest: setStatusPageSettleFactsForTest,
+  __resetStatusPageLoadTrackerForTest: resetStatusPageLoadTrackerForTest,
+  __STATUS_PAGE_ABORT_SETTLE_MS: STATUS_PAGE_ABORT_SETTLE_MS,
+  __STATUS_PAGE_ABORT_MAX_WAIT_MS: STATUS_PAGE_ABORT_MAX_WAIT_MS,
   // 测试专用（见函数注释）：桩服务接上 / 交出视图。产品路径不要用这两个。
   __injectStubServiceForTest: injectStubServiceForTest, __viewForTest: viewForTest,
   SIDEBAR_WIDTH, MIN_WIDTH, MAX_WIDTH
