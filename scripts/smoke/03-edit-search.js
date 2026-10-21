@@ -262,6 +262,47 @@ async function r1DoubleClick(ctx, pt) {
   ], 90);
 }
 
+/* ================= `r9`：编辑框「开没开」的**唯一读法** + 上界窗口（判据，不是措辞） =================
+ * 要治的形状（定题 §3.3 实测）：这条断言原来是**否定式 + 只读一拍** ——
+ *   ① 上界读数（t0 与 t+400ms **都** false）证明"今天不是假通过"；
+ *   ② 但把开框挪到 `setTimeout(…, 0)` 之后，产品原判据**仍判绿**而框真的开着 ⇒ **形状已复现**；
+ *   ③ 根因是**代码结构**（`renderer/contextmenu.js` 的 `onDblClick` 根本没有开框路径，
+ *      `renderer/editor.js` 的 `openEditDialog` 全同步）⇒ "真没弹"是结构顺便保证的，**不是断言证明的**。
+ * ⇒ 判据必须自己证明三件事：**读是活的**（反向注入自检）、**读到确定的上界**（三拍）、
+ *   **场景保真**（真双击，不是只发一个 `dblclick`）。
+ *
+ * ⚠️ 三处**共用同一个读表达式**（`R9_READ_EDIT_DIALOG`）：一处实现、三处使用。
+ *   把任何一处改成恒 `false` 都会让另外两处同时哑掉 —— 这正是判别力证明（恒 false ⇒ A 与 B 同红）
+ *   能成立的原因。**不许**在别处再手写一份 `style.display === 'flex'` 的判断。
+ *
+ * 上界为什么是 **300 ms**：**不新造数字** —— 本工程对"双击的单击副作用"用的就是这条判别窗口
+ *   （`renderer/app-detail-content.js` 的 `DBL_WINDOW_MS = 300`，原文"两击间隔实测 ~90ms ⇒ 300ms 有 3 倍余量"）。
+ *   三拍取 0 / 150 / 300，覆盖整个窗口；任何一拍读到 `flex` 都算红，并在报文里点名是哪一拍。 */
+const R9_READ_EDIT_DIALOG = `(function () {
+  var d = document.getElementById('edit-dialog');
+  return { dlg: d ? d.style.display === 'flex' : null,
+    at: (window.performance && performance.now) ? Math.round(performance.now()) : 0 };
+})()`;
+const R9_UPPER_MS = 300;
+const R9_STEP_MS = 150;
+
+/** 读一拍（读表达式**只有一份**，见上面注释）；读不到结构就返回 `{dlg:null, err}` ⇒ 调用方判红 */
+async function r9ReadDialog(ctx) {
+  const r = await ctx.exec(R9_READ_EDIT_DIALOG);
+  const o = (r && typeof r === 'object') ? r : null;
+  if (!o || !('dlg' in o)) return { dlg: null, at: 0, err: '读不到 #edit-dialog 的显示态：' + String(r).slice(0, 160) };
+  return o;
+}
+
+/** 某节点当前的展开态（`true` / `false` / `null` = 节点没了） */
+async function r9ExpandedOf(ctx, id) {
+  return await ctx.exec(`(function () {
+    var jm = window.MMApp.getState().jm;
+    var n = jm ? jm.get_node(${JSON.stringify(id)}) : null;
+    return n ? (n.expanded !== false) : null;
+  })()`);
+}
+
 /** 点击事件探针：证明"真双击"真的产生了浏览器自己的 `click(1) → click(2) → dblclick`
  *  （否则我们可能只发了两次单击 ⇒ 判据看着红/绿都不算数 ✗）。捕获阶段，记类型+detail，
  *  并单独记**每个事件的命中目标**（`tag/nodeid`）—— 出红时报文能直接回答"双击到底打在了谁身上" ✓ */
@@ -455,39 +496,135 @@ const assertions = [
     }
   },
   {
-    name: '双击节点 = **展开 / 收起**（用户定 ✓ 不再弹编辑框 ✗）；编辑在右键菜单里',
+    name: '双击节点 = **展开 / 收起**（用户定 ✓ 不再弹编辑框 ✗）；编辑在右键菜单里（判定依据：`#edit-dialog` 显示态四拍 t_sync / t+0 / t+150 / t+300 **都**必须 false + **反向注入自检**先证明同一读法能读到 true + `ctx.input` 真双击再复核三拍；上界 300ms 取自 `renderer/app-detail-content.js` 的 `DBL_WINDOW_MS`，不新造数字）',
     run: async (ctx) => {
-      const chk = await ctx.exec(
-        `(function () {
-          try {
-            var app = window.MMApp;
-            var jm = app.getState().jm;
-            // 自建前置（✓ 不写死 id）：挑一个**真的有子节点**的节点 —— 实测 tcp-handshake 是叶子 ✗
-            var id = null;
-            var all = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]'));
-            for (var i = 0; i < all.length; i++) {
-              var cand = all[i].getAttribute('nodeid');
-              var nn = jm.get_node(cand);
-              if (nn && !nn.isroot && nn.children && nn.children.length) { id = cand; break; }
-            }
-            if (!id) return { ok: false, text: '找不到有子节点的可见节点' };
-            var n = jm.get_node(id);
-            var before = !!n.expanded;
-            var nodeEl = document.querySelector('jmnode[nodeid="' + id + '"]');
-            if (!nodeEl) return { ok: false, text: 'no jmnode el' };
-            nodeEl.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 320, clientY: 260 }));
-            var after = !!jm.get_node(id).expanded;
-            var dlg = document.getElementById('edit-dialog').style.display === 'flex';
-            if (dlg) document.getElementById('edit-cancel').click();
-            // 还原：不给后续断言留一个被改动过的展开态 ✓
-            if (after !== before) { if (before) jm.expand_node(id); else jm.collapse_node(id); }
-            var editApi = typeof app.editNode === 'function';
-            return { ok: (after !== before) && !dlg && editApi,
-              text: '展开态 ' + before + ' → ' + after + ' ｜ 弹出编辑框=' + dlg + '（必须 false ✓）｜ 编辑入口仍在=' + editApi };
-          } catch (e) { return { ok: false, text: 'err:' + e.message }; }
-        })()`
-      );
-      return chk;
+      const mm = require('../smoke-assertions.js');
+      /* ---------- ⓪ 自建前置：挑一个**真的有子节点**的可见节点（✓ 不写死 id）---------- */
+      const pick = await ctx.exec(`(function () {
+        var jm = window.MMApp.getState().jm;
+        if (!jm) return { ok: false, text: '没有打开的导图（jm 缺失）' };
+        var all = Array.prototype.slice.call(document.querySelectorAll('jmnode[nodeid]'));
+        for (var i = 0; i < all.length; i++) {
+          var cand = all[i].getAttribute('nodeid');
+          var nn = jm.get_node(cand);
+          if (nn && !nn.isroot && nn.children && nn.children.length) {
+            return { ok: true, id: cand, expanded: nn.expanded !== false };
+          }
+        }
+        return { ok: false, text: '找不到有子节点的可见节点（采不到候选 ⇒ 判红，不许静默跳过 ✗）' };
+      })()`);
+      if (!pick || pick.ok !== true) {
+        return { ok: false, text: '挑候选失败：' + ((pick && pick.text) || '没有读数') };
+      }
+      const id = pick.id;
+      const editApi = await ctx.exec('(function () { return typeof window.MMApp.editNode === "function"; })()');
+
+      /* ---------- ① B：反向注入自检 —— **先证明"读"是活的** ----------
+       * 用产品自己的入口 `MM.editNode`（`renderer/app-actions.js` 的 `MM.editNode = editNode`）开一次框，
+       * 再用**同一个读表达式**读：读不到 `flex` ⇒ 这条断言对"开没开"是**盲的** ⇒ **判红**。
+       * ⚠️ 不许静默跳过、也不许报成"未验证"（同工程既有口径：采不到真值 ⇒ 判红）。 */
+      const opened = await ctx.exec(`(function () {
+        var ok = false, err = '';
+        try { ok = !!window.MM.editNode(${JSON.stringify(id)}); } catch (e) { err = (e && e.message) || String(e); }
+        return { opened: ok, err: err };
+      })()`);
+      const readOpened = await r9ReadDialog(ctx);
+      await ctx.exec(`(function () { var c = document.getElementById('edit-cancel'); if (c) c.click(); return 1; })()`);
+      const readClosed = await r9ReadDialog(ctx);
+      /* B 的判据（**不早退**：早退会让"A 与 B 同时红"这条判别力证明看不出来）。
+       * 三项都成立才算"读是活的"：产品入口真的开了框 + 同一读法读到 flex + 关掉后读到 false。 */
+      const bOk = !!(opened && opened.opened === true)
+        && readOpened.dlg === true
+        && readClosed.dlg === false;
+      const bText = 'editNode 开了=' + (opened && opened.opened)
+        + ' ⇒ 同一读法读到 flex=' + readOpened.dlg + '；点取消后读到 ' + JSON.stringify(readClosed.dlg)
+        + (bOk ? '' : ' ⇒ **读是死的**（这条断言对"开没开"是盲的 ⇒ 判红，不静默跳过 ✗）');
+
+      /* ---------- ② A：上界读数（t_sync / t+0 / t+150 / t+300 **都**必须 false）----------
+       * `dlgSync` = 旧判据那个"同一拍同步读一眼"的位置（保留它，免得把原有的判别力丢掉）。
+       * 为什么要跨拍：由 `setTimeout(…, 0)` / Promise / IPC 往返 / 动画帧开出来的框，在**同一拍**
+       * 读到的是"还没弹" ⇒ 旧判据恒绿（定题 §3.3 的 ④ 已实测复现这个形状）。 */
+      const fire = await ctx.exec(`(function () {
+        var jm = window.MMApp.getState().jm;
+        var n = jm.get_node(${JSON.stringify(id)});
+        if (!n) return { ok: false, text: '目标节点没了' };
+        var before = n.expanded !== false;
+        var el = document.querySelector(${JSON.stringify('jmnode[nodeid="' + id + '"]')});
+        if (!el) return { ok: false, text: 'no jmnode el' };
+        el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 320, clientY: 260 }));
+        var d = document.getElementById('edit-dialog');
+        return { ok: true, before: before, after: (jm.get_node(${JSON.stringify(id)}).expanded !== false),
+          dlgSync: d ? d.style.display === 'flex' : null };
+      })()`);
+      if (!fire || fire.ok !== true) return { ok: false, text: '发 dblclick 失败：' + ((fire && fire.text) || '没有读数') };
+      const a0 = await r9ReadDialog(ctx);
+      await sleep(R9_STEP_MS);
+      const a1 = await r9ReadDialog(ctx);
+      await sleep(R9_STEP_MS);
+      const a2 = await r9ReadDialog(ctx);
+      const upperClean = fire.dlgSync === false && a0.dlg === false && a1.dlg === false && a2.dlg === false;
+      const upperText = 'sync=' + fire.dlgSync + '/t+0=' + a0.dlg + '/t+150=' + a1.dlg + '/t+300=' + a2.dlg;
+      /* A **以 B 为前提**：读没被证明是活的，A 的三拍读数就说明不了任何事 ⇒ A 也判红。
+       * 这不是"读不到就跳过"，而是"证明不了就不许报绿"（判别力证明要的正是"A 与 B 同时红"）。 */
+      const aOk = bOk === true && upperClean === true && fire.after !== fire.before;
+      // 还原展开态：不给后续断言留一个被改动过的状态 ✓
+      await ctx.exec(`(function () {
+        var jm = window.MMApp.getState().jm;
+        var n = jm.get_node(${JSON.stringify(id)});
+        var before = ${JSON.stringify(fire.before)};
+        if (n && (n.expanded !== false) !== before) { if (before) jm.expand_node(${JSON.stringify(id)}); else jm.collapse_node(${JSON.stringify(id)}); }
+        return 1;
+      })()`);
+
+      /* ---------- ③ C：真双击（`ctx.input`；click(1) → click(2) → dblclick 三拍）----------
+       * 为什么还要这一条：只发一个 `dblclick` 事件对"**第一击**就开框"这种回归是**结构上盲**的
+       * （真双击是三条事件，见本文件头）。前置照 `:120-131` 记的那个坑：目标必须先在面板里**点得中**，
+       * 否则会以"rect 全 0 / 找不到候选"的错形状红掉（那是判据坏了，不是它通过）。 */
+      if (!ctx.input) {
+        return { ok: false, text: r1NoInput().text + '（C 那一半一条都没被验过 ⇒ 判红）' };
+      }
+      const prep = await r1Prep(ctx, 'with-kids');
+      if (!prep.ok) return { ok: false, text: 'C 前置铺场失败：' + prep.text };
+      const picked = await r1PickHittable(ctx, 'with-kids');
+      if (!picked.ok) return { ok: false, text: 'C 挑"点得中"的候选失败：' + (picked.text || '') };
+      const cid = picked.node.id;
+      await r1Hover(ctx, picked.node.pt);
+      const cBefore = await r9ExpandedOf(ctx, cid);
+      await r1DoubleClick(ctx, picked.node.pt);
+      const c0 = await r9ReadDialog(ctx);
+      await sleep(R9_STEP_MS);
+      const c1 = await r9ReadDialog(ctx);
+      await sleep(R9_STEP_MS);
+      const c2 = await r9ReadDialog(ctx);
+      const cAfter = await r9ExpandedOf(ctx, cid);
+      const cUpperClean = c0.dlg === false && c1.dlg === false && c2.dlg === false;
+      const cUpperText = 't+0=' + c0.dlg + '/t+150=' + c1.dlg + '/t+300=' + c2.dlg;
+      /* C 同样**以 B 为前提**（同一个读法；读死了它的"没弹"也一样说明不了任何事） */
+      const cOk = bOk === true && cUpperClean === true && cAfter !== cBefore;
+      if (cAfter !== cBefore) {
+        await ctx.exec(`(function () {
+          var jm = window.MMApp.getState().jm;
+          var id = ${JSON.stringify(cid)};
+          if (${JSON.stringify(cBefore)}) jm.expand_node(id); else jm.collapse_node(id);
+          return 1;
+        })()`);
+      }
+      await mm.closeDialogs(ctx);
+
+      return {
+        ok: bOk === true && aOk === true && cOk === true && editApi === true,
+        text: '节点=' + id
+          + ' ｜ ⓑ 读活自检（' + (bOk ? '成立' : '**不成立**') + '）：' + bText
+          + ' ｜ ⓐ 上界四拍 ' + upperText + '（都必须 false ✓ ⇒ ' + (upperClean ? '成立' : '**不成立**') + '）'
+          + '，展开态 ' + fire.before + ' → ' + fire.after
+          + '（A 合计=' + (aOk ? '绿' : '**红**') + '，它以 B 为前提）'
+          + ' ｜ ⓒ 真双击：节点=' + cid + ' 三拍 ' + cUpperText
+          + '（都必须 false ✓ ⇒ ' + (cUpperClean ? '成立' : '**不成立**') + '）'
+          + '，展开态 ' + cBefore + ' → ' + cAfter
+          + '（C 合计=' + (cOk ? '绿' : '**红**') + '）'
+          + ' ｜ 编辑入口仍在=' + editApi
+          + '（上界窗口 ' + R9_UPPER_MS + 'ms = `app-detail-content.js` 的 `DBL_WINDOW_MS`，不新造数字）'
+      };
     }
   },
   {

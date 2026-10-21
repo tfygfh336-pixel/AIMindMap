@@ -42,19 +42,98 @@
     return m ? m[0] : '';
   }
 
-  function handleFiles(files) {
+  /* ================= `r26`：拖目录 ≠ 不认识的格式（判据是**文件系统事实**，不是文件名） =================
+   * 修前实测：`extOf()` 的输入只有文件名字符串 ⇒ 目录算出的 ext 是空串 ⇒ 走进「暂不支持 这种 格式」；
+   * 而**无扩展名的文件**（`README`）得到**一字不差**的答复 ⇒ 两件事被混成了一件 ✗。
+   * 判据只有两个来源，按顺序取：
+   *   ① **首选**：`DataTransferItem.webkitGetAsEntry().isDirectory === true`（Chromium 自带的判据）。
+   *      ⚠️ **必须在 `drop` 监听里同步取** —— `DataTransferItemList` 在事件返回后失效，挪到 `await`
+   *      之后取恒为 `null` ⇒ 修了等于没修，而且**不会有任何报错**（本工程把这叫"失败伪装成没发生"）；
+   *   ② **fallback**：问主进程要真判据（`desktop.app.pathKind` → IPC `app:path-kind` →
+   *      `fs.statSync().isDirectory()`）。**只有 `ok === true && kind === 'dir'` 才算目录**，
+   *      任何失败 / 通道不存在 ⇒ 当文件（与 ① "取不到就当文件"同一条口径）。
+   * 三条否定式（防的就是"改了个措辞"）：
+   *   ⓐ **禁止** `!ext ⇒ 目录` —— `README` 是实测反例（无扩展名的**文件**）；
+   *   ⓑ **禁止** `f.size === 0 ⇒ 目录` —— 空 `README` / 空 `.md` 同样是 0 字节；
+   *   ⓒ **禁止** 只改文案不改判据 —— 那样 `README` 也会被告知"这是目录"。
+   * 判别力由 `tests/import-drop-dir.test.js` 钉住（3 条注入：退回 `!ext` / 删分支 / 把判据挪到
+   * `await` 之后 —— 每条都必须红）。 */
+  function itemIsDirectory(item) {
+    if (!item || typeof item.webkitGetAsEntry !== 'function') return false;
+    try {
+      const e = item.webkitGetAsEntry();
+      return !!(e && e.isDirectory === true);        // 只认 === true（`!!e` 会把文件也读成目录 ✗）
+    } catch (err) { return false; }
+  }
+
+  /** ② fallback：问主进程要真判据。返回 `'dir'` / `'file'` / `''`（取不到一律 `''` ⇒ 当文件）。 */
+  function pathKindOf(api, p) {
+    if (!api || typeof api.pathKind !== 'function' || !p) return Promise.resolve('');
+    return Promise.resolve()
+      .then(() => api.pathKind(p))
+      .then((r) => ((r && r.ok === true) ? String(r.kind || '') : ''))
+      .catch(() => '');
+  }
+
+  /* ---------------- 目录这一档要说的话（**措辞不在渲染层**） ----------------
+   * 能拿到真实路径时，把这件事交给产品**既有**的那一条通道
+   * （`importDocFile` → `app:import-doc` → CLI `import-project`），由 `src/doc-import.js` 的
+   * `directoryMessage()` 说出「这是一个**目录**，不是文件 … 用**整库导入** `import-dir` ✓」，
+   * 本文件**原样转述** ⇒ "这是目录"这句判据只有一处实现（本文件里**没有**那句原话，
+   * `tests/import-drop-dir.test.js` 会对源码做这一条断言）。
+   * ⚠️ 通道拿不到路径时（例如冒烟桩喂的假 `File`）退化成一句**只报告事实 + 指向界面入口**的话，
+   * 并**如实说明**取不到 Node 侧原话 —— 不许把那句判据在这里手写一遍 ✗。 */
+  const DIR_UI_EXIT = '（界面入口：文件 → 导入文件夹成新项目…（整库，先看预览））';
+  const DIR_FACT_ONLY = '拖进来的这一项是**目录**（判据 = 文件系统事实，不是扩展名）：拖拽入口只导入单个文件；';
+
+  function sayDirectory(p) {
+    if (!p) {
+      hint(DIR_FACT_ONLY + DIR_UI_EXIT
+        + '。⚠️ 拿不到这个目录的真实路径 ⇒ 取不到 Node 侧那条判据的原话（`directoryMessage`）', 'err');
+      return;
+    }
+    let pr;
+    try { pr = importDocFile(p); } catch (err) { pr = Promise.reject(err); }
+    pr.then((r) => {
+      const said = String((r && r.error) || '').trim();
+      if (r && r.ok) {
+        /* 正常不该发生（目录进不来）。真发生了就必须说出来，而不是假装导成功了 ✓ */
+        hint(DIR_FACT_ONLY + '而它被当成文件导入了（不该发生）⇒ 请上报这一条。' + DIR_UI_EXIT, 'err');
+        return;
+      }
+      hint((said ? said + ' ' : DIR_FACT_ONLY) + DIR_UI_EXIT, 'err');
+    }).catch((err) => {
+      hint(DIR_FACT_ONLY + DIR_UI_EXIT + '（取 Node 侧原话失败：' + ((err && err.message) || err) + '）', 'err');
+    });
+  }
+
+  async function handleFiles(files, opts) {
     const list = Array.prototype.slice.call(files || []);
     if (!list.length) return;
     if (busy) { hint('正在导入上一个文件，请稍候…', 'err'); return; }
+    const api = window.desktop && window.desktop.app;
     const f = list[0];
     const name = f.name || '';
+    const p0 = (api && api.pathForFile) ? String(api.pathForFile(f) || '') : '';
+
+    /* ① 目录 ≠ 不认识的格式：**排在 ext 判据之前**（否则目录永远先撞上"暂不支持" ✗）。
+     *    `opts.dirItem` 由 `drop` 监听**同步**算好传进来（那一步没有 await）；没有它才去问主进程。
+     *    这一支走的是**同步**路径（`sayDirectory` 只发一次 hint，不 await）⇒ 拖拽当场就能说话 ✓ */
+    if (opts && opts.dirItem) {
+      const di = (typeof opts.dirIndex === 'number' && opts.dirIndex >= 0) ? opts.dirIndex : 0;
+      const df = list[di] || f;
+      sayDirectory((api && api.pathForFile) ? String(api.pathForFile(df) || '') : '');
+      return;
+    }
+    if ((await pathKindOf(api, p0)) === 'dir') { sayDirectory(p0); return; }
+
+    /* ② 以下原样不动 */
     const ext = extOf(name);
     if (OK_EXT.indexOf(ext) < 0) {
       hint('暂不支持 ' + (ext || '这种') + ' 格式：目前能导入 .md / .txt / .docx / 带书签的 .pdf'
         + '（无书签的 PDF 与"一个文件多本书"的自动判定是 5b 尚未批准的部分）', 'err');
       return;
     }
-    const api = window.desktop && window.desktop.app;
     if (!api || !api.importDoc) { hint('导入通道没接上（preload 缺少 desktop.app.importDoc）', 'err'); return; }
     const p = api.pathForFile ? api.pathForFile(f) : '';
     if (!p) { hint('拿不到这个文件的真实路径（Electron 需要 webUtils.getPathForFile）', 'err'); return; }
@@ -93,7 +172,22 @@
       if (!dt) return;
       e.preventDefault();
       hideOverlay();
-      handleFiles(dt.files);
+      /* ⚠️ 目录判据**必须在这一拍（同步）算出来**：`DataTransferItemList` 在事件返回后失效
+       *   ⇒ 把它交给 `handleFiles` 里"`await` 之后再取"就等于恒 `false`（修了等于没修，还不报错）。
+       *   `dt.files` 不受这个失效影响 ⇒ 路径照旧从 `File` 取（`pathForFile`）✓。
+       *   `dirIndex` 与 `dt.files` 逐项对齐（Chromium 的 `items` / `files` 两个列表同序）⇒
+       *   混投（文件 + 目录）时也能点名**那一个目录**，而不是把第一个文件说成目录 ✗。 */
+      let dirItem = null;
+      let dirIndex = -1;
+      if (dt.items) {
+        const items = Array.prototype.slice.call(dt.items);
+        for (let i = 0; i < items.length; i += 1) {
+          if (itemIsDirectory(items[i])) { dirItem = items[i]; dirIndex = i; break; }
+        }
+      }
+      /* `handleFiles` 现在是 async（fallback 那一路要问主进程）⇒ 拒绝必须**说出来**，不许静默 ✗ */
+      handleFiles(dt.files, { dirItem: dirItem, dirIndex: dirIndex })
+        .catch((err) => { hint('拖拽导入失败：' + ((err && err.message) || err), 'err'); });
     });
     // 导入成功后主进程要"打开新项目"：事件在这里接（openProject 是既有能力 ✓）
     // ⚠️ 失败必须**说出来**：`openProject` 是 async，被拒（例如当前项目有未保存改动时的确认被拒）
@@ -581,6 +675,10 @@
 
   MM.importDocFile = importDocFile;
   MM.importHandleFiles = handleFiles;      // 冒烟可直接喂 File 列表
+  /* 单测（`tests/import-drop-dir.test.js`）直接验判据本体 —— 它是 `drop` 监听里用的**同一份**实现
+   * （导出的是函数引用，不是第二份判断 ⇒ 不构成"两处表达"）✓ */
+  MM.importItemIsDirectory = itemIsDirectory;
+  MM.importPathKindOf = pathKindOf;
   MM.importExtOk = (n) => OK_EXT.indexOf(extOf(n)) >= 0;
   MM.showDropHint = showOverlay;
   MM.hideDropHint = hideOverlay;

@@ -2,7 +2,7 @@
  * scripts/smoke/43-import-entry.js —— 【W13】界面侧导入入口（选文件 / 选目录 → 预览 → 真导入 → 播报）
  * ------------------------------------------------------------
  * 用户原话（待做清单 W13）：「现在只能走 CLI，界面里点不进来」—— 想导整库的人第一反应就是拖目录 / 翻菜单。
- * 本域钉的是**界面那一半**（`renderer/app-import.js` + 主进程那三条入口），六条判据：
+ * 本域钉的是**界面那一半**（`renderer/app-import.js` + 主进程那三条入口），八条判据：
  *
  *   甲 入口与预览：原生菜单两条都在（导图页在 ⇒ 启用）+ **真鼠标**走命令面板那一行 ⇒ 预览层出现；
  *      三个数（新增 / 更新 / 未转换）与逐条点名**全部来自 CLI 既有的 `--dry-run` 读数**，
@@ -21,6 +21,12 @@
  *      桩说"取消" ⇒ 守卫按取消处理（留在原项目、改动还在）；桩说"确定" ⇒ 按确定处理（真的切过去）；
  *      桩复位 ⇒ 守卫仍落到 `window.confirm` 本体（真机路径未变）。三步都必须**取得到读数**——
  *      之前这条守卫直接用 `window.confirm` 本体，无头跑里"界面脏 + 切项目"会把渲染层 JS 线程整个卡住 ✗。
+ *   辛 【`r26`】拖目录 ≠ 不认识的格式：同一入口喂一个**目录**项 ⇒ 状态栏说「目录」+「导入文件夹」且
+ *      **不含**「暂不支持」；喂**无扩展名的文件** `README` ⇒ 仍回「暂不支持 这种 格式」（这一行是
+ *      "任何按扩展名猜 / 按有没有点猜的实现都会把两件事混成一件"的反例）；喂 `a.xyz` ⇒ 仍回
+ *      「暂不支持 .xyz 格式」。判据 = **文件系统事实**（`webkitGetAsEntry().isDirectory === true`），
+ *      不是名字启发式；并且"这是目录"那句措辞由 `src/doc-import.js` 的 `directoryMessage()` 说
+ *      （渲染层只转述 —— 拿不到真实路径时如实降级并说明取不到 Node 侧原话）。
  *
  * 判据纪律（与 36/37/42 同）：可见性一律 `document.elementFromPoint`（`rect` 只用来定位）；
  * 动作一律**真鼠标**（`ctx.input.click` 走 Chromium 命中测试），不是 dispatchEvent 合成事件；
@@ -748,6 +754,57 @@ const assertions = [
           + ' ｜ 收尾：撤探针并保存=' + R.savedClean + ' 脏=' + R.dirtyEnd + ' 现在开着=「' + R.curEnd + '」'
           + ' ｜ 三步总耗时=' + ms + 'ms' + (raced.timeout ? '（**超时 ⇒ 按红计**：渲染层没有回来）' : '')
           + ' ｜ 收干净的产品模态=' + cleaned.n + ' 个'
+      };
+    }
+  },
+
+  /* 辛 【`r26`】拖目录那半：判据是**文件系统事实**，不是"名字里有没有点"。
+   * 三条读数都取自**同一入口**（`MM.importHandleFiles`，域头注释说它就是拖拽入口的实现）；判据本体
+   * （`MM.importItemIsDirectory`）也一并验一次 —— 它是 `drop` 监听里用的**同一份**函数引用。 */
+  {
+    name: '辛 拖目录 ≠ 不认识的格式（`r26`）：喂一个**目录**项 ⇒ 状态栏说「目录」+「导入文件夹」且**不含**「暂不支持」；喂**无扩展名的文件** `README` ⇒ 仍回「暂不支持 这种 格式」；喂 `a.xyz` ⇒ 仍回「暂不支持 .xyz 格式」（判定依据：状态栏原文三条 + 判据本体 `isDirectory === true` 的取值；判据是文件系统事实，不是名字启发式）',
+    run: async (ctx) => {
+      const out = await ctx.exec(`(async function () {
+        function statusText() {
+          var s = document.getElementById('status-text');
+          return s ? String(s.textContent || '') : '(没有 #status-text)';
+        }
+        function clearStatus() { try { if (window.MM && window.MM.setStatus) window.MM.setStatus('', false); } catch (e) {} }
+        var r = {};
+        // ① 目录：dirItem 由 drop 监听**同步**算好传下来，这里直接喂等价形状（判据本体同一份）
+        clearStatus();
+        await window.MM.importHandleFiles([{ name: '我的书库' }], { dirItem: {}, dirIndex: 0 });
+        r.dir = statusText();
+        // ② 无扩展名的**文件**：不许被说成目录（这一行是"按 !ext 猜"的反例）
+        clearStatus();
+        await window.MM.importHandleFiles([{ name: 'README' }]);
+        r.readme = statusText();
+        // ③ 有扩展名但不在白名单：文案必须仍然点出 .xyz
+        clearStatus();
+        await window.MM.importHandleFiles([{ name: 'a.xyz' }]);
+        r.xyz = statusText();
+        // ④ 判据本体：只认 isDirectory === true
+        var f = window.MM.importItemIsDirectory;
+        r.hasApi = typeof f === 'function';
+        r.itemIsDir = r.hasApi ? f({ webkitGetAsEntry: function () { return { isDirectory: true }; } }) : null;
+        r.itemIsFile = r.hasApi ? f({ webkitGetAsEntry: function () { return { isDirectory: false }; } }) : null;
+        r.itemNoEntry = r.hasApi ? f({ webkitGetAsEntry: function () { return null; } }) : null;
+        return JSON.stringify(r);
+      })()`);
+      const R = (function () { try { return JSON.parse(out); } catch (e) { return { parseError: String(out).slice(0, 300) }; } })();
+      const dir = String(R.dir || ''), readme = String(R.readme || ''), xyz = String(R.xyz || '');
+      return {
+        ok: R.parseError === undefined
+          && R.hasApi === true && R.itemIsDir === true && R.itemIsFile === false && R.itemNoEntry === false
+          && dir.indexOf('目录') >= 0 && dir.indexOf('导入文件夹') >= 0 && dir.indexOf('暂不支持') < 0
+          && readme.indexOf('暂不支持') >= 0 && readme.indexOf('目录') < 0
+          && xyz.indexOf('暂不支持 .xyz 格式') >= 0,
+        text: '① 目录 ⇒「' + dir.slice(0, 150) + '」'
+          + ' · ② README（无扩展名的文件）⇒「' + readme.slice(0, 80) + '」'
+          + ' · ③ a.xyz ⇒「' + xyz.slice(0, 80) + '」'
+          + ' · ④ 判据本体：有 API=' + R.hasApi + ' isDirectory:true⇒' + R.itemIsDir
+          + ' / isDirectory:false⇒' + R.itemIsFile + ' / 条目为 null⇒' + R.itemNoEntry
+          + (R.parseError === undefined ? '' : ' · 读数解析失败：' + R.parseError)
       };
     }
   },

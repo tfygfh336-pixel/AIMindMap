@@ -11,6 +11,9 @@
  *   ② `unverified`  —— 有**不是本次写的**正证据 ⇒ **"本次没验"**：响亮打印、不参与计数、不阻断、
  *                      也**不当产品缺陷**（skill §G 第 4 条"环境给不出 ≠ 我们没做到"）；
  *   ③ `error`       —— 真值采不到（探针/复核自己失败）⇒ **判红**（采不到真值不能自称已校验 ✗）。
+ *   ④ `logs`        —— **只报告档**（`r6` §2.5(a) 增补）：变化只出现在 `.visits/`（访问日志）里 ⇒
+ *                      **逐条打印、给出条数、但不判红**，也不动 `counts.ours` 的口径。
+ *                      它确实变了、也确实被看见了，只是它**不是笔记数据**（判据在 `REPORT_ONLY_DIRS` 的注释里）。
  *
  * 「不是本次写的」四条正证据（每条都能独立成立，逐文件判定；**判据写在这一处**）：
  *   ⓐ **写入者 pid**：文件里记着写入者的 pid（`.ui-state.json` 的 `uiPid` 就是这种形态）且
@@ -39,10 +42,36 @@
 /** 档位的中文名（打印与报告都用这一份，不在别处再写一遍） */
 const VERDICTS = {
   ok: '通过（真实目录逐字节一致）',
+  logs: '通过（真实数据逐字节一致；`.visits/` 访问日志有追加 —— **只报告**）',
   leak: '判红（有本次写入的证据）',
   unverified: '本次没验（环境有他人写入）',
   error: '判红（真值采不到）'
 };
+
+/** 「只报告」档的路径前缀（**不是真实数据**：读命令的埋点日志）。
+ *
+ * 为什么必须有这一档（`r6` §2.5(a) 的实测缺陷）：裸 `mm-cli` 的**读**命令会追加
+ * `.visits/<项目>.jsonl`（`get` +81 B · `search` +91 B · `read` +178 B），它**既没有 `writerPid`、
+ * 也不进 `.writers/` 登记** ⇒ 在下面那四条"别人写的"正证据一条都不成立 ⇒ 落进 `else` 按本次算 ⇒ 判红。
+ * **判红的理由是对的，错的是集合** —— 把"访问日志的追加"和"笔记数据的改动"放进同一个
+ * `真实数据` 集合，于是"任何并发/旁路的 CLI 读"都让 G5 变红（`2026-10-21T07:05:08Z` 那一轮就是它）。
+ *
+ * 口径（**不是放宽**，逐条都能机械判）：
+ *   · `.visits/` 下的改动**只报告**：逐条打印、给出 `counts.logs`，但**不参与** `leak` 判定；
+ *   · `counts.ours` / `counts.foreign` 的口径**一个字节不动**（日志不进这两个计数）；
+ *   · 只要有一处**真实数据**（`.visits/` 之外）的改动没有"别人写的"证据 ⇒ 照旧 `leak` ✓；
+ *   · 真值采不到 ⇒ 照旧 `error` ✓。
+ * 反例已钉在 `tests/real-write-guard.test.js`：改 `projects/<项目>/<项目>.json` **仍然 `leak`**。 */
+const REPORT_ONLY_DIRS = ['.visits'];
+
+/** 这个仓库相对路径是否属于「只报告」档（`.visits/` 自身与它下面的一切） */
+function isReportOnlyLog(rel) {
+  const r = String(rel || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  for (const d of REPORT_ONLY_DIRS) {
+    if (r === d || r.indexOf(d + '/') === 0) return true;
+  }
+  return false;
+}
 
 /** 批登记目录（真实 projects 根下；门禁侧的豁免台账 ⇒ 不算项目数据、不进指纹、gitignore ✗） */
 const WRITERS_DIR = '.writers';
@@ -150,13 +179,27 @@ function classifyRealWrites(changes, env) {
   const reg = e.registeredBatches || [];
   const usedReg = {};
   const items = [];
-  const counts = { changed: 0, added: 0, removed: 0, foreign: 0, ours: 0, unknown: 0, inRegistry: 0 };
+  const counts = { changed: 0, added: 0, removed: 0, foreign: 0, ours: 0, unknown: 0, inRegistry: 0, logs: 0 };
   if (e.probeError) {
     return { verdict: 'error', items: [], counts, registryIds: [],
       reason: '复核本身取不到真值：' + e.probeError + ' ⇒ 不能自称已校验（采不到真值 = 红 ✗）' };
   }
-  for (const c of changes || []) {
+  /* 「只报告」档先摘出去（判据在 `REPORT_ONLY_DIRS` 的注释里）：它们**不参与** leak 判定 */
+  const allChanges = changes || [];
+  const logChanges = allChanges.filter((c) => isReportOnlyLog(c.rel));
+  const dataChanges = allChanges.filter((c) => !isReportOnlyLog(c.rel));
+  for (const c of allChanges) {
     if (c.kind === 'changed' || c.kind === 'added' || c.kind === 'removed') counts[c.kind] += 1;
+  }
+  counts.logs = logChanges.length;
+  for (const c of logChanges) {
+    const stamp = (c.stampMs === undefined || c.stampMs === null) ? c.mtimeMs : c.stampMs;
+    items.push({ rel: c.rel, kind: c.kind, verdict: 'log',
+      why: '`.visits/` 访问日志追加 —— **只报告**：它是读命令的埋点（读一次就追加一行），不是笔记数据；'
+        + '不计入"冒烟必须零写入"判据（判据见 `REPORT_ONLY_DIRS` 的注释）',
+      writerPid: c.writerPid || null, stampMs: typeof stamp === 'number' ? stamp : null });
+  }
+  for (const c of dataChanges) {
     const stamp = (c.stampMs === undefined || c.stampMs === null) ? c.mtimeMs : c.stampMs;
     // 在册批归因（ⓓ）：t 采得到 ⇒ 窗口盖住 t；t 采不到（removed 文件没有 mtime）⇒ 退到与运行窗口重叠。
     // 两个候选都命中时**本进程的登记优先**（"自己写 ⇒ 仍红"是保守方向 ✗ 不许被别人的登记洗掉）。
@@ -197,26 +240,47 @@ function classifyRealWrites(changes, env) {
     return { verdict: 'ok', items, counts, registryIds, reason: '真实目录一个字节都没变（也没有新增/删除）' };
   }
   const leak = items.filter((i) => i.verdict === 'leak');
-  const foreign = items.filter((i) => i.verdict !== 'leak');
+  const foreign = items.filter((i) => i.verdict === 'unverified');
+  /* 日志那一档的说明：**理由必须打在门禁输出里**（`r6` 要求"三档而不是跳过"） */
+  const logNote = logChanges.length
+    ? '；另有 ' + logChanges.length + ' 处属 `.visits/` 访问日志追加 —— **只报告**、不计入零写入判据'
+    : '';
   if (leak.length) {
     return { verdict: 'leak', items, counts, registryIds,
       reason: '有 ' + leak.length + ' 处改动**没有"别人写的"证据** ⇒ 按本次算（冒烟必须零写入 ✗）'
-        + (foreign.length ? '；另有 ' + foreign.length + ' 处属他人写入（已单独标注）' : '') };
+        + (foreign.length ? '；另有 ' + foreign.length + ' 处属他人写入（已单独标注）' : '') + logNote };
+  }
+  if (!foreign.length) {
+    /* 只有 `.visits/` 追加（或只有日志类改动）⇒ **通过**，但日志必须被看见：它不是"没发生" */
+    return { verdict: 'logs', items, counts, registryIds,
+      reason: '真实数据一个字节都没变；`' + REPORT_ONLY_DIRS.join('` / `') + '/` 下有 '
+        + logChanges.length + ' 处**访问日志追加** ⇒ **只报告**。'
+        + '为什么它不是"真实数据"：裸 CLI 的**读**命令（`get` / `search` / `read`）读一次就追加一行，'
+        + '它既没有 `writerPid`、也不进 `.writers/` 登记 ⇒ 早先按"真实数据"算时，任何并发/旁路的 CLI 读'
+        + '都会把 G5 判红（`2026-10-21T07:05:08Z` 那一轮）。判红的理由没错，错的是集合 ✓' };
   }
   return { verdict: 'unverified', items, counts, registryIds,
     reason: '这 ' + foreign.length + ' 处改动都有"不是本次写的"正证据 ⇒ **本次没验**（不计产品缺陷，也不当通过）'
-      + '；重跑前提：先关掉同机正在使用本应用的实例（它会一直写自己的 `.ui-state.json`）✓' };
+      + '；重跑前提：先关掉同机正在使用本应用的实例（它会一直写自己的 `.ui-state.json`）✓' + logNote };
 }
 
-/** 汇总行（**三态都要可见**：通过 / 未验证 / 真缺陷，只报"通过"会把没验读成过了 ✗） */
+/** 汇总行（**四态都要可见**：通过 / 通过但日志有追加 / 未验证 / 真缺陷，
+ *  只报"通过"会把没验读成过了、"只报告"会把日志读成没发生 ✗） */
 function summaryLines(result, opts) {
   const o = opts || {};
   const c = result.counts || {};
   const lines = [];
   lines.push('真实数据零写入：' + (VERDICTS[result.verdict] || result.verdict)
     + '（改=' + (c.changed || 0) + ' 新增=' + (c.added || 0) + ' 删除=' + (c.removed || 0)
-    + ' ⇒ 本次证据 ' + (c.ours || 0) + ' · 他人证据 ' + (c.foreign || 0) + '）');
+    + ' ⇒ 本次证据 ' + (c.ours || 0) + ' · 他人证据 ' + (c.foreign || 0)
+    + ' · 只报告（`' + REPORT_ONLY_DIRS.join('/') + '/`）' + (c.logs || 0) + '）');
   lines.push('理由：' + result.reason);
+  if (c.logs) {
+    /* 门禁输出里必须有**这一档的理由**（"三档而不是跳过"）：它确实变了，但它是日志 */
+    lines.push('  ⓘ 「只报告」档（`' + REPORT_ONLY_DIRS.join('/') + '/`）' + c.logs
+      + ' 处：**确实变了、也确实逐条打出来了**，但它是**读命令的埋点日志**（读一次追加一行），'
+      + '不是笔记数据 ⇒ 不计入"冒烟必须零写入"，也**不动** `counts.ours` 的口径 ✓');
+  }
   for (const i of result.items || []) {
     lines.push('  · ' + i.kind + ' ' + i.rel + ' —— ' + i.why);
   }
@@ -255,4 +319,5 @@ function summaryLines(result, opts) {
   return lines;
 }
 
-module.exports = { classifyRealWrites, parseWriterRegistry, probeForeignWriters, summaryLines, defaultAlive, VERDICTS, WRITERS_DIR, MAX_WINDOW_MS };
+module.exports = { classifyRealWrites, parseWriterRegistry, probeForeignWriters, summaryLines, defaultAlive,
+  isReportOnlyLog, VERDICTS, REPORT_ONLY_DIRS, WRITERS_DIR, MAX_WINDOW_MS };

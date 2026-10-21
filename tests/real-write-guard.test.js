@@ -415,3 +415,99 @@ describe('判别力证明：旧实现（一律判红）vs 新实现（三档）'
     });
   }
 });
+
+/* ============================================================
+ * 「只报告」档：`.visits/`（访问日志）不再是"真实数据"（`r6` §2.5(a)）
+ * ------------------------------------------------------------
+ * 要治的损害（实测，不是推理）：裸 `mm-cli` 的**读**命令会追加 `.visits/<项目>.jsonl`
+ * （`get` +81 B · `search` +91 B · `read` +178 B），它**既没有 `writerPid`、也不进 `.writers/` 登记**
+ * ⇒ 四条"别人写的"正证据一条都不成立 ⇒ 落进 `else` 按本次算 ⇒ **G5 判红**。
+ * **判红的理由是对的，错的是集合**（把日志追加与笔记数据改动放进同一个"真实数据"集合）。
+ *
+ * 三条判据（缺一条这一档就不算修好）：
+ *   ① **真的改 `projects/<项目>/<项目>.json` ⇒ 仍然 `leak`** —— 不许被"放宽"洗掉；
+ *   ② 只往 `.visits/` 追加 ⇒ **不再 `leak`**，但报文里**仍打印追加条数**（"只报告"不是"跳过"）；
+ *   ③ `counts.ours` / `counts.foreign` 的口径**一个字节不动**（日志不进这两个计数）。
+ * ============================================================ */
+describe('「只报告」档：`.visits/` 访问日志（`r6` §2.5a）', () => {
+  const LOG = '.visits/卖点讨论.jsonl';
+
+  it('① 真的改 `projects/<项目>/<项目>.json` ⇒ **仍然 leak**（守卫没有被整体放宽）', () => {
+    const r = guard.classifyRealWrites([
+      { rel: '卖点讨论/卖点讨论.json', kind: 'changed', mtimeMs: MID },
+      { rel: LOG, kind: 'changed', mtimeMs: MID }
+    ], env());
+    expect(r.verdict).toBe('leak');
+    expect(r.counts.ours).toBe(1);                    // 笔记数据那一处照旧算"本次"
+    expect(r.items.filter((i) => i.verdict === 'leak').map((i) => i.rel)).toEqual(['卖点讨论/卖点讨论.json']);
+    // 日志那一处**不许**被算成"本次证据"，但也不许消失（它确实变了）
+    expect(r.items.filter((i) => i.verdict === 'log').map((i) => i.rel)).toEqual([LOG]);
+    expect(r.reason).toContain('`.visits/` 访问日志追加');
+  });
+
+  it('② 只往 `.visits/` 追加一行 ⇒ **不再 leak**，但报文**仍打印追加条数**', () => {
+    const r = guard.classifyRealWrites([{ rel: LOG, kind: 'changed', mtimeMs: MID }], env());
+    expect(r.verdict).not.toBe('leak');
+    expect(r.verdict).toBe('logs');
+    expect(r.counts.logs).toBe(1);
+    expect(r.counts.changed).toBe(1);                 // 变化本身仍然被数出来（"只报告"≠"没发生"）
+    const text = guard.summaryLines(r).join('\n');
+    expect(text).toContain('`.visits/` 访问日志有追加');
+    expect(text).toContain('只报告（`.visits/`）1');   // 条数进汇总行
+    expect(text).toContain('访问日志追加 —— **只报告**');
+    expect(text).toContain('确实变了、也确实逐条打出来了');
+    expect(text).toContain('不动');
+    // 反例：这条读数不许被读成"没验"
+    expect(text).not.toContain('本次没验');
+  });
+
+  it('②′ `.visits/` 的**惰性创建**（新增一个空日志文件）同样只报告', () => {
+    const r = guard.classifyRealWrites([{ rel: '.visits/comnet.jsonl', kind: 'added', mtimeMs: MID }], env());
+    expect(r.verdict).toBe('logs');
+    expect(r.counts.added).toBe(1);
+  });
+
+  it('③ `counts.ours` / `counts.foreign` 口径不动：日志既不算本次也不算他人', () => {
+    const only = guard.classifyRealWrites([{ rel: LOG, kind: 'changed', mtimeMs: MID }], env());
+    expect(only.counts.ours).toBe(0);
+    expect(only.counts.foreign).toBe(0);
+    expect(only.counts.logs).toBe(1);
+    // 他人写入那一处照旧进 foreign；日志仍然只报告
+    const mixed = guard.classifyRealWrites([
+      { rel: 'comnet/comnet.json', kind: 'changed', mtimeMs: T0 - 3600000 },
+      { rel: LOG, kind: 'changed', mtimeMs: MID }
+    ], env());
+    expect(mixed.verdict).toBe('unverified');
+    expect(mixed.counts.foreign).toBe(1);
+    expect(mixed.counts.ours).toBe(0);
+    expect(mixed.counts.logs).toBe(1);
+    expect(mixed.reason).toContain('只报告');
+  });
+
+  it('路径判据只认同名的 `.visits` 那一段（`.visitsx/` / 项目内同名目录都不算日志）', () => {
+    expect(guard.isReportOnlyLog('.visits/a.jsonl')).toBe(true);
+    expect(guard.isReportOnlyLog('.visits/sub/a.jsonl')).toBe(true);
+    expect(guard.isReportOnlyLog('.visitsx/a.jsonl')).toBe(false);
+    expect(guard.isReportOnlyLog('comnet/.visits/a.jsonl')).toBe(false);
+    expect(guard.isReportOnlyLog('comnet/comnet.json')).toBe(false);
+    // 项目里真的有个叫 .visits 的目录 ⇒ 它是**项目数据**，不许被放过
+    const r = guard.classifyRealWrites([{ rel: 'comnet/.visits/a.jsonl', kind: 'changed', mtimeMs: MID }], env());
+    expect(r.verdict).toBe('leak');
+  });
+
+  it('判别力：旧实现（差异即红）在同一夹具上**必红** —— 这条降档确实改变了读数', () => {
+    const oldImpl = (changes) => (changes.length ? 'leak' : 'ok');
+    const changes = [{ rel: LOG, kind: 'changed', mtimeMs: MID }];
+    expect(oldImpl(changes), '旧实现就该红（否则这组夹具判别不出东西）').toBe('leak');
+    expect(guard.classifyRealWrites(changes, env()).verdict).toBe('logs');
+    // 但"真改数据"这一族在新实现下**仍然红** ✓
+    expect(guard.classifyRealWrites([{ rel: '卖点讨论/卖点讨论.json', kind: 'changed', mtimeMs: MID }],
+      env()).verdict).toBe('leak');
+  });
+
+  it('真值采不到时，日志这一档也救不了 ⇒ 仍然 error（不许用"只报告"绕开 error）', () => {
+    const r = guard.classifyRealWrites([{ rel: LOG, kind: 'changed', mtimeMs: MID }],
+      env({ probeError: 'readdir 失败' }));
+    expect(r.verdict).toBe('error');
+  });
+});

@@ -139,6 +139,12 @@
  *                         【账①】切项目守卫（`confirmDiscardIfDirty`）走**同一个打桩口**
  *                         （`MM.setConfirmStub`）：桩说取消/确定各自按语义处理，桩复位则仍落到
  *                         `window.confirm` 本体 —— 无头跑里"界面脏 + 切项目"**不再卡死渲染层**。
+ *                         【`r26`】拖目录那半：判据换成**文件系统事实**（`webkitGetAsEntry().isDirectory
+ *                         === true`，在 `drop` 监听里**同步**取 —— 挪到 `await` 之后恒 false；取不到
+ *                         就问主进程 `app:path-kind`，再取不到 ⇒ **当文件**，绝不 `!ext ⇒ 目录`）⇒
+ *                         拖目录不再回「暂不支持 这种 格式」；而"这是目录"那句措辞仍**只由**
+ *                         `src/doc-import.js` 的 `directoryMessage()` 说（渲染层只转述）。
+ *                         同一条里钉住反例：无扩展名的**文件** `README` 必须仍回「暂不支持 这种 格式」。
  *
  *   44-obsidian-vault.js 【W12】Obsidian 库直进（vault 目录 → 树 + wiki 链接接成关联）：
  *                         沙箱里造一个带 `.obsidian/` 的库（子目录 / frontmatter / `[[页]]`、`[[页|别名]]`、
