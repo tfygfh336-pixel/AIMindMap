@@ -677,7 +677,15 @@ const assertions = [
         const s = truthNow.node.sample || {};
         const okSample = domNow.hostText.indexOf(String(s.nodes)) >= 0
           && domNow.hostText.indexOf(String(s.events)) >= 0;
-        const okText = truthNow.node.human.listed ? h.text.indexOf(String(truthNow.node.human.visits)) >= 0 : true;
+        /* ⚠️ `(h.text || '')` 不是防御性写法，是**判据修正**（2026-10-25 实测）：
+         *   原来写 `h.text.indexOf(...)`，而 `h = domNow.rows.human || {}` ——
+         *   当界面**根本没画人那一行**时 `h` 是空对象 ⇒ `h.text` 是 `undefined` ⇒ **抛异常**。
+         *   抛异常在 `tally()` 里会被记成 `THREW:`，它不是"判红"，是"这次没判"。
+         *   而"CLI 说人侧已列、界面却没画那一行"**本身就是要抓的形态** ⇒
+         *   **必须判红并打印两侧读数，而不是崩掉。**
+         *   触发条件：`.visits/` 访问日志被写（今天放开了那一档）⇒ `human.listed` 翻 true，
+         *   而 DOM 那一行还没画出来 ⇒ 竞态。**根因不在这一行**（见文件头的沙箱欠账）。 */
+        const okText = truthNow.node.human.listed ? ((h.text || '').indexOf(String(truthNow.node.human.visits)) >= 0) : true;
         return { ok: okHuman && okAi && okSample && okText, okHuman: okHuman, okAi: okAi,
           okSample: okSample, okText: okText, dom: domNow, truth: truthNow, h: h, a: a };
       };
