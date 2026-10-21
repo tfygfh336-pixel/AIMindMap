@@ -474,28 +474,218 @@ function checkModuleCoverage(root) {
  *   - 校验型（true）：必须出现在 `src/schema.js`，否则说明 schema 改了名/删了它而清单没跟上；
  *   - 仅契约型（false）：**不应**出现在 schema（如 `meta.rootMode` / `meta.author` / `meta.version`
  *     是"写进契约但当前不校验"的字段）—— 若某天 schema 开始校验它，这条会提醒把分类改过来。
- * 两类都必须在 `docs/DATA-FORMAT.md` 里出现。 */
+ * 两类都必须在 `docs/DATA-FORMAT.md` 里出现。
+ *
+ * ⚠️ 2026-10-25 订正（旧判据在空转，实测）：原先"必须在契约里"判的是
+ *   `new RegExp('\\b' + leaf + '\\b').test(整份 DATA-FORMAT.md)` —— 即「**这个词**在文档里出现过」，
+ *   而报文说的是「**契约缺字段**」。两者不是一回事：实测把契约表里 `| meta.author |` 或
+ *   `| background |` 的**整行删掉**，本门禁仍 exit 0（因为这两个词还在 JSON 示例里出现）。
+ *   这与下面 `inSchema` 注释里那句「词出现过 ≠ 被校验」是同一个坑 —— 本判定当年自己踩了它，
+ *   而那句警告就写在同一份代码里。
+ *   ⇒ 修法是**让每条字段声明它该去哪找**（第三列 `where`），不是把正则收紧：收紧会让
+ *     `items` / `detailMode` 立刻变红，而它们的权威契约确实不在 DATA-FORMAT 的契约表里。 */
+/* 第三列 `where` = 这条字段的权威契约**在哪一处**（**封闭三档**，别自由发挥 —— 想加第四档时先回答
+ * "那一处为什么不可判"，否则它就是给判据开的例外口子）：
+ *   'DATA-FORMAT'        ⇒ 在 `docs/DATA-FORMAT.md` 的**契约表行**里找（`|` 切行、取第一列、
+ *                          去掉反引号/空白/列表后缀 `[]` 后，与**完整字段名或叶子名逐字相等**）。
+ *                          **不是**"这个词在整份文档里出现过" —— 两者不是一回事，见下面判据本体上方的
+ *                          2026-10-25 订正说明。
+ *   'ITEM-MODEL#<行号>'  ⇒ 在 `docs/ITEM-MODEL.md` 的**表行**里找（同上口径）。`#<行号>` 只作
+ *                          **人类定位用**（"去那份文档第 N 行附近那张表看"），判据**按表行扫、不按行号硬编码** ——
+ *                          行号会随编辑漂移，钉死它等于让判据变成化石。
+ *   'DATA-FORMAT:prose'  ⇒ 该字段**只以散文承载**（那份文档里没有它的表行，是被审过的合法情况）：
+ *                          不判表行，改判「该词在 `docs/DATA-FORMAT.md` 出现 ≥1 次」+ **在册豁免**
+ *                          （`PROSE_EXEMPT`；上界 `PROSE_EXEMPT_MAX` 只减不增 —— 弱判据不能想加就加，
+ *                          否则"把它标成 prose"就成了绕过表行判据的后门）。
+ *
+ * 为什么必须有第三列（而不是把正则收紧）：收紧正则会立刻让 `items` / `detailMode` 变红，而它们的权威契约
+ * 确实不在 DATA-FORMAT 的契约表里（前者在 `ITEM-MODEL.md` §7 的"终态定位 / 冻结点"表，后者只以散文承载）——
+ * 那时"让门禁变绿"的唯一办法就是去改那两份文档，而"文档跟着判据改"正是本门禁要防的事。 */
 const SCHEMA_FIELDS = [
-  ['meta.name', true], ['meta.formatVersion', true], ['meta.layout', true],
-  ['meta.rootMode', false], ['meta.author', false], ['meta.version', false],
-  ['format', true], ['data', true], ['assoc', true],
-  ['id', true], ['topic', true], ['children', true], ['detail', true],
-  ['images', true], ['files', true], ['links', true], ['tags', true],
-  ['localPath', true], ['qa', true], ['origin', true], ['background', false],
-  // 条目层（v3）：`items` 与 `detailMode` 都是契约字段（docs/ITEM-MODEL.md §1/§2；DATA-FORMAT 亦已写）
-  ['items', true],
-  ['detailMode', true],
+  ['meta.name', true, 'DATA-FORMAT'], ['meta.formatVersion', true, 'DATA-FORMAT'],
+  ['meta.layout', true, 'DATA-FORMAT'], ['meta.rootMode', false, 'DATA-FORMAT'],
+  ['meta.author', false, 'DATA-FORMAT'], ['meta.version', false, 'DATA-FORMAT'],
+  ['format', true, 'DATA-FORMAT'], ['data', true, 'DATA-FORMAT'], ['assoc', true, 'DATA-FORMAT'],
+  ['id', true, 'DATA-FORMAT'], ['topic', true, 'DATA-FORMAT'], ['children', true, 'DATA-FORMAT'],
+  ['detail', true, 'DATA-FORMAT'], ['images', true, 'DATA-FORMAT'], ['files', true, 'DATA-FORMAT'],
+  ['links', true, 'DATA-FORMAT'], ['tags', true, 'DATA-FORMAT'], ['localPath', true, 'DATA-FORMAT'],
+  ['qa', true, 'DATA-FORMAT'], ['origin', true, 'DATA-FORMAT'], ['background', false, 'DATA-FORMAT'],
+  // 条目层（v3）：`items` 与 `detailMode` 都是契约字段，但**权威契约不在 DATA-FORMAT 的契约表里**：
+  //   `items` 在 `docs/ITEM-MODEL.md` §7「终态定位 / 冻结点」那张表里有 `items[]` 行（DATA-FORMAT 只有散文指针）；
+  //   `detailMode` 全文件只有散文（"显式二选一"），没有表行 —— 故标 prose 并在册，不拿它去撞表行判据。
+  ['items', true, 'ITEM-MODEL#346'],
+  ['detailMode', true, 'DATA-FORMAT:prose'],
 ];
 
-function checkContractCoverage(root) {
+/** 第三列的**封闭取值**（判据只认这三种；别的值一律判红，不许静默当绿 —— 拼错一个字母就等于没判）。 */
+const CONTRACT_WHERE_KINDS = ['DATA-FORMAT', 'ITEM-MODEL', 'DATA-FORMAT:prose'];
+
+/** prose 承载的**在册豁免**：只登记"这一处确实没有表行、且证据是散文"的个案，上界 = 当前条数（只减不增）。
+ *  加一条之前先问：它真的**没有**可判的表行吗？（有表行却标 prose = 把强判据换成弱判据 ⇒ 应当直接补表行）
+ *  复审时机：每次改动本判定的口径时；审：改本文件的人。 */
+const PROSE_EXEMPT = ['detailMode'];
+const PROSE_EXEMPT_MAX = 1;
+
+/** 把表格一列的内容规范化成"字段名"：去反引号、去空白、去掉列表后缀 `[]`。
+ *  为什么要去 `[]`：`docs/ITEM-MODEL.md` §7 那张表的第一列写的是 `items[]`（字段本体叫 `items`）。
+ *  而 `| images[] / files[] |` 这种合并行规范化后仍是 `images[]/files[]`（中间那段不等于任何单字段名），
+ *  ⇒ 不会被误认成单字段 —— 否则删掉 `items[]` 那一行时，别的行还能替它变绿。 */
+function normContractCell(cell) {
+  return String(cell).replace(/`/g, '').replace(/\s+/g, '').replace(/\[\]$/, '');
+}
+
+/** 抽出一份文档里的**表行第一列**（判"这个字段有没有契约表行"只用这个，不用全文子串）。
+ *  复用 `tableDataRows`：表头行与分隔行由它**结构性地**排除 —— 不再另写一份"什么算表格行"。
+ *  为什么特别强调复用：本条判定当年就是被"第二份更宽的判法"（全文正则）骗过去的。 */
+function contractTableCells(text) {
+  const out = [];
+  for (const [line, idxs] of tableDataRows(text)) {
+    const cells = String(line).trim().split('|').map((c) => c.trim());
+    if (cells.length < 3) continue;                 // 只剩单列的行不算契约表
+    const first = normContractCell(cells[1]);
+    if (!first) continue;
+    (idxs || []).forEach((n) => out.push({ line: n, cell: first }));
+  }
+  return out;
+}
+
+/**
+ * 契约覆盖的**判据本体**（纯函数：吃字段清单 + 两份文档文本 + 豁免册 ⇒ 单测能直接喂假输入，两侧都打一遍）。
+ *
+ * 判据按第三列 `where`（封闭取值见 `CONTRACT_WHERE_KINDS`）分档：
+ *   · 表行档：**第一列逐字相等**（完整字段名或叶子名），不是"词在全文出现过"；
+ *   · prose 档：至少出现 ≥1 次 **且**在册 —— 弱判据不能想加就加，否则"标成 prose"就绕过表行判定了。
+ *
+ * @param {object} o
+ * @param {Array} o.fields `SCHEMA_FIELDS`（三列；单测可喂假清单）
+ * @param {string} o.dfText `docs/DATA-FORMAT.md` 全文
+ * @param {string} [o.itemText] `docs/ITEM-MODEL.md` 全文（缺 ⇒ 采不到真值＝红）
+ * @param {string[]} [o.proseExempt] prose 豁免册（默认模块里的 `PROSE_EXEMPT`）
+ * @param {number} [o.proseMax] 豁免册上界（默认 `PROSE_EXEMPT_MAX`）
+ * @returns {{problems: Array, stats: {fields:number, byWhere:object, prose:string[],
+ *   proseDangling:string[], proseMax:number, proseExcess:number}}}
+ */
+function judgeContractCoverage(o) {
+  const opt = o || {};
+  const fields = Array.isArray(opt.fields) ? opt.fields : SCHEMA_FIELDS;
+  const dfText = String(opt.dfText == null ? '' : opt.dfText);
+  const itemText = String(opt.itemText == null ? '' : opt.itemText);
+  const proseExempt = Array.isArray(opt.proseExempt) ? opt.proseExempt : PROSE_EXEMPT;
+  const proseMax = Number.isFinite(opt.proseMax) ? opt.proseMax : PROSE_EXEMPT_MAX;
+  const dfCells = contractTableCells(dfText);
+  const itemCells = contractTableCells(itemText);
+  const problems = [];
+  const stats = {
+    fields: fields.length,
+    byWhere: { 'DATA-FORMAT': 0, 'ITEM-MODEL': 0, 'DATA-FORMAT:prose': 0 },
+    prose: [], proseDangling: [], proseMax, proseExcess: 0
+  };
+  const push = (kind, rel, msg) => problems.push({ kind, rel, msg });
+  const tableHit = (cells, f, leaf) => cells.some((c) => c.cell === f || c.cell === leaf);
+
+  fields.forEach((row) => {
+    const f = String(row[0]);
+    const validated = row[1] === true;
+    const where = typeof row[2] === 'string' ? row[2] : '';
+    const leaf = f.split('.').pop();
+    const why = validated ? '`src/schema.js` 校验它，' : '它是契约声明的字段，';
+
+    if (!where) {
+      push('contract-stale', 'scripts/docs-registry-check.js',
+        '字段 `' + f + '` 的第三列（`where`）缺失 —— 这条字段**该去哪一处找**没有声明，'
+          + '判据就无从判定（不声明 ≠ 放过）。取值为封闭三档：' + CONTRACT_WHERE_KINDS.join(' / ')
+          + '，另收 `ITEM-MODEL#<行号>` 这种带人类定位的写法');
+      return;
+    }
+
+    if (where === 'DATA-FORMAT') {
+      if (tableHit(dfCells, f, leaf)) { stats.byWhere['DATA-FORMAT']++; return; }
+      push('contract', 'docs/DATA-FORMAT.md',
+        '数据契约缺字段 `' + f + '`：' + why + '但 `docs/DATA-FORMAT.md` 的**契约表**里没有它的行 —— '
+          + '本判据按**表行第一列逐字比对**，不是"这个词在文档里出现过"（`' + leaf
+          + '` 可能只出现在 JSON 示例或散文里，那不算契约）。处置：在 §1/§2 那张字段表的对应位置补一行；'
+          + '若它的权威契约确实不在这份文档，把第三列改成它真正所在的那一处');
+      return;
+    }
+
+    if (where.indexOf('ITEM-MODEL') === 0) {
+      // `#<行号>` 只作**人类定位用**：判据按表行扫，**刻意不用**那个行号（行号会随编辑漂移）。
+      const lineHint = where.includes('#') ? where.slice(where.indexOf('#') + 1) : '';
+      if (!itemCells.length) {
+        push('unreadable', 'docs/ITEM-MODEL.md',
+          '字段 `' + f + '` 声明契约在 `docs/ITEM-MODEL.md`'
+            + (lineHint ? '（约 :' + lineHint + '）' : '') + ' 的表里，但那份文档读不到、或里面没有表 —— '
+            + '**采不到真值＝红**（不许静默当绿）');
+        return;
+      }
+      if (tableHit(itemCells, f, leaf)) { stats.byWhere['ITEM-MODEL']++; return; }
+      push('contract', 'docs/ITEM-MODEL.md',
+        '数据契约缺字段 `' + f + '`：' + why + '但 `docs/ITEM-MODEL.md` **那张表**里没有它的行'
+          + (lineHint ? '（`where` 给的人类定位是约 :' + lineHint + '；判据按表行扫，不认行号）' : '')
+          + ' —— 补回那一行，或把第三列改成它真正所在的那一处');
+      return;
+    }
+
+    if (where === 'DATA-FORMAT:prose') {
+      stats.prose.push(f);
+      if (!new RegExp('\\b' + leaf + '\\b').test(dfText)) {
+        push('contract', 'docs/DATA-FORMAT.md',
+          '数据契约缺字段 `' + f + '`：它标为「只以散文承载」（第三列 `DATA-FORMAT:prose`），'
+            + '但 `docs/DATA-FORMAT.md` 里连这个词都没有 —— prose 档的最低要求是**出现 ≥1 次**');
+        return;
+      }
+      if (proseExempt.indexOf(f) < 0) {
+        push('contract-stale', 'scripts/docs-registry-check.js',
+          '字段 `' + f + '` 标成「只以散文承载」，但**不在** `PROSE_EXEMPT` 册上 —— prose 是弱判据'
+            + '（"词出现过"），不登记就等于给契约表判定开后门。两条路：① 它有表行 ⇒ 第三列改回 '
+            + '`DATA-FORMAT` 并补表行；② 确实只以散文承载 ⇒ 同批把它登记进 `PROSE_EXEMPT` 并抬 '
+            + '`PROSE_EXEMPT_MAX`（会留在 diff 里 = 一次可见的动作）');
+        return;
+      }
+      stats.byWhere['DATA-FORMAT:prose']++;
+      return;
+    }
+
+    push('contract-stale', 'scripts/docs-registry-check.js',
+      '字段 `' + f + '` 的第三列（`where`）`' + where + '` 不在封闭取值内：'
+        + CONTRACT_WHERE_KINDS.join(' / ') + '（或 `ITEM-MODEL#<行号>`）—— '
+        + '值不在表内是**配置错误**：拼错一个字母就等于这条字段没人判，而且它会静默绿');
+  });
+
+  // prose 豁免册的两个方向：**超上界**判红（弱判据不许悄悄扩张）；**册上已结清**只报告
+  // （把登记删掉本身就是合法结清方式，不判红 —— 与 `README_STATUS_DEBT` 的悬挂条同一档）。
+  if (proseExempt.length > proseMax) {
+    stats.proseExcess = proseExempt.length - proseMax;
+    push('contract-stale', 'scripts/docs-registry-check.js',
+      'prose 豁免册超上界：现有 ' + proseExempt.length + ' 条 > `PROSE_EXEMPT_MAX` = ' + proseMax
+        + ' —— 弱判据的豁免**只减不增**（多一条 = 多一个"不判表行"的字段）');
+  }
+  stats.proseDangling = proseExempt.filter((n) => stats.prose.indexOf(n) < 0);
+  return { problems, stats };
+}
+
+/** 判定入口：读文件 → 先在"清单 ↔ schema"上自查，再把"契约位置"交给 `judgeContractCoverage`。
+ *  @param {string} root 工程根
+ *  @param {object} [statsOut] 可选：把读数（每个 `where` 各判了几条 / prose 那几条是谁）回填给它，
+ *    让 `main()` 的通过读数能带上分母与 prose 名单 —— 只报一个 ✓ 会把"没判"读成"判过了"。
+ *  @returns {Array} problems */
+function checkContractCoverage(root, statsOut) {
   const problems = [];
   const schemaPath = path.join(root, 'src', 'schema.js');
   const dfPath = path.join(root, 'docs', 'DATA-FORMAT.md');
   if (!fs.existsSync(schemaPath) || !fs.existsSync(dfPath)) return problems;
   const schema = fs.readFileSync(schemaPath, 'utf8');
   const df = fs.readFileSync(dfPath, 'utf8');
-  /* 节点级字段名单从 `src/schema.js` 取（**唯一一份**：那张契约字段表就在那里）——
-   * 不在本文件再抄一份字段名。非节点级（`meta.*` / `format` / `data` / `assoc`）不在那份表里。 */
+  const itemPath = path.join(root, 'docs', 'ITEM-MODEL.md');
+  // 读不到就算空文本：声明了 `ITEM-MODEL…` 的字段会在判据里判红（采不到真值＝红），不静默跳过。
+  const itemText = fs.existsSync(itemPath) ? fs.readFileSync(itemPath, 'utf8') : '';
+  /* 节点级字段名单从 `src/schema.js` 取（**唯一一份**：`NODE_FIELD_NAMES` 只列**节点上**的字段）——
+   * 不在本文件再抄一份字段名。
+   * ⚠️ 2026-10-25 订正一处**错注释**：原文写「非节点级（`meta.*` / `format` / `data` / `assoc`）
+   * **不在那份表里**」，读起来像"它们没有契约表行" —— 与实际不符：`docs/DATA-FORMAT.md` §1 的
+   * **项目级契约表**里 `meta.*` 六个 + `format` / `data` / `assoc` **都有表行**（本判定现在正是按
+   * 表行判的，这 9 条全绿）。正解分两句说：它们**不在 `NODE_FIELD_NAMES` 里**（不是节点字段），
+   * 但**各有自己的契约表行**。两件事混成一句，下一个人就会照着写出第二个"只在散文里找"的漏判。 */
   let nodeFields = new Set();
   try { nodeFields = new Set(require(path.join(root, 'src', 'schema.js')).NODE_FIELD_NAMES || []); }
   catch (e) { nodeFields = new Set(); }
@@ -523,12 +713,9 @@ function checkContractCoverage(root) {
           + '请把 SCHEMA_FIELDS 里该条的第二项改成 true（分类要与实现一致）' });
       return;
     }
-    if (!new RegExp('\\b' + leaf + '\\b').test(df)) {
-      problems.push({ kind: 'contract', rel: 'docs/DATA-FORMAT.md',
-        msg: '数据契约缺字段 `' + f + '`：' + (validated ? '`src/schema.js` 校验它，' : '它是契约声明的字段，')
-          + '但 `docs/DATA-FORMAT.md` 没写 —— 契约自述"只读本文档就能写出正确解析器"，'
-          + '缺字段会让接手者漏掉它（`meta.layout` 就是这么漏掉的）' });
-    }
+    // 契约位置的判定**不在这里**：它要按每条声明的第三列去"那一处"找，见 `judgeContractCoverage`。
+    // 这里原先做的是 `new RegExp('\\b' + leaf + '\\b').test(df)`（"这个词在整份文档里出现过"），
+    // 于是删掉契约表的整行仍绿 —— 订正说明见本判定头注的 2026-10-25 那一段。
   });
 
   /* ---- 反向：schema 里出现过的字段必须都在清单里 ----
@@ -549,6 +736,15 @@ function checkContractCoverage(root) {
         + '请把它加进 `SCHEMA_FIELDS`（第二项标 true/false 表示 schema 是否校验它），'
         + '并确认 `docs/DATA-FORMAT.md` 也写了它' });
   });
+
+  /* ---- 契约位置：按每条自己声明的第三列 `where` 去那一处找 ----
+   * 这一步是 2026-10-25 换掉的判法：旧实现是"这个词在整份 DATA-FORMAT 里出现过"，
+   * 于是**删掉契约表整行仍绿**（实测 `| meta.author |` / `| background |` 各一次）。
+   * 新判法只看**表行第一列**（或 prose 档的在册散文），见 `judgeContractCoverage`。 */
+  const judged = judgeContractCoverage({ fields: SCHEMA_FIELDS, dfText: df, itemText: itemText,
+    proseExempt: PROSE_EXEMPT, proseMax: PROSE_EXEMPT_MAX });
+  judged.problems.forEach((p) => problems.push(p));
+  if (statsOut && typeof statsOut === 'object') Object.assign(statsOut, judged.stats);
   return problems;
 }
 
@@ -1247,7 +1443,10 @@ function checkRegistry(root, registryMd) {
   checkNavCoverage(root, reg).forEach((p) => problems.push(p));
 
   // ⑪ 数据契约必须覆盖 schema 校验的字段（契约缺字段 = 接手者照着契约改就漏）
-  checkContractCoverage(root).forEach((p) => problems.push(p));
+  //    `contractStats` 只用于通过读数（分母 + prose 名单）：读数里看不见"判了几条/哪几条走弱判据"，
+  //    就等于让人把"没判"读成"判过了"。
+  const contractStats = {};
+  checkContractCoverage(root, contractStats).forEach((p) => problems.push(p));
 
   // ⑫ 受管文档的章节编号必须连续（断号 = 有人删/挪过章节而没人复查）
   checkSectionNumbering(root).forEach((p) => problems.push(p));
@@ -1268,7 +1467,7 @@ function checkRegistry(root, registryMd) {
   const dupRes = checkDuplicateRows(root, docs);
   dupRes.problems.forEach((p) => problems.push(p));
 
-  return { problems, reg, docs, dupStats: dupRes.stats, workdirStats };
+  return { problems, reg, docs, dupStats: dupRes.stats, workdirStats, contractStats };
 }
 
 /** ⑭ 层取值表：`层` 必须在 `LAYER_ORDER` 内（权威在 `SKILL.md` B3）。
@@ -1570,7 +1769,7 @@ function main() {
     return;
   }
   const registryMd = fs.readFileSync(regPath, 'utf8');
-  const { problems, reg, docs, dupStats, workdirStats } = checkRegistry(ROOT, registryMd);
+  const { problems, reg, docs, dupStats, workdirStats, contractStats } = checkRegistry(ROOT, registryMd);
 
   // `--judgments`：把本门禁的判定清单**现场列出来**（从 `checkRegistry()` 的圈号标记与标题提取）。
   // 为什么需要：`docs/RULES.md` §2 不再逐条复制这份清单（复制过，结果"声明 13 条、只列 12 项"）——
@@ -1666,7 +1865,22 @@ function main() {
     }
   }
   console.log('✓ 受管文档都能从 SKILL.md 导航找到（第一屏可达）');
-  console.log('✓ 数据契约覆盖了 schema 校验的字段（docs/DATA-FORMAT.md）');
+  // 通过读数**必须带分母与弱判据名单**：只说"契约覆盖了"会把"按哪一处判的"藏起来，
+  // 而 prose 档是弱判据（"词出现过"）—— 是谁在走它，读数里得点名（`skill B8` / `A5`）。
+  if (contractStats && contractStats.byWhere) {
+    console.log('✓ 数据契约覆盖了 schema 校验的字段（按每条自己声明的第三列判：DATA-FORMAT 表行 '
+      + contractStats.byWhere['DATA-FORMAT'] + ' 条 · ITEM-MODEL 表行 '
+      + contractStats.byWhere['ITEM-MODEL'] + ' 条 · prose 承载 '
+      + contractStats.byWhere['DATA-FORMAT:prose'] + ' 条'
+      + (contractStats.prose.length ? '：' + contractStats.prose.join('、') : '')
+      + ' · 在册 ' + contractStats.prose.length + '/' + contractStats.proseMax + '）');
+    if (contractStats.proseDangling && contractStats.proseDangling.length) {
+      console.log('ℹ️ `PROSE_EXEMPT` 册上这几条已不再声明 prose（等于已结清）：'
+        + contractStats.proseDangling.join('、') + ' —— 请把它们从册上删掉（册子只减不增）。');
+    }
+  } else {
+    console.log('✓ 数据契约覆盖了 schema 校验的字段（docs/DATA-FORMAT.md）');
+  }
   console.log('✓ 受管文档的章节编号连续（无断号）');
   console.log('✓ §5 登记表与各文档头部元信息一致（表是生成的，勿手改）');
   console.log('✓ 受管文档的 `层` 都在取值表内（' + LAYER_ORDER.join(' / ') + '）');
@@ -1740,6 +1954,9 @@ module.exports = {
   WORKDIR_STATUS_VOCAB, readmeStatusWords, README_STATUS_DEBT, README_STATUS_DEBT_MAX,
   README_STATUS_DEBT_CLOSE, WORK_DIR_EXEMPT,
   checkContractCoverage, checkSectionNumbering, handoverNotice, recentlyChanged,
+  // 契约位置的判定与纯函数（导出给单测：`judgeContractCoverage` 吃文本，两侧方向都能直接打）
+  judgeContractCoverage, contractTableCells, normContractCell,
+  CONTRACT_WHERE_KINDS, PROSE_EXEMPT, PROSE_EXEMPT_MAX,
   parseHeaderBlock, parseDocHeader, collectDocHeaders, renderRegistryTable, checkRegistryTable,
   writeRegistryTable, headerProblemLine, checkLayerValues,
   // 稳定性表覆盖的判定与纯函数（标记在 checkRegistry 里；`parseStabilityTable` 导出给单测）
