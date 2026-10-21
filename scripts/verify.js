@@ -612,7 +612,19 @@ const STEPS = [
     budgetMs: 10000
   },
   {
-    step: 10, gate: 'G3', label: '单元测试',
+    step: 10, gate: 'S5', label: '单测超时口径单源',
+    cmd: 'node scripts/vitest-timeout-check.js', shown: '`node scripts/vitest-timeout-check.js`',
+    covers: '**单测超时口径单源**：`vitest.config.mjs:67-68` 是 `testTimeout` / `hookTimeout` 的**唯一真源**，'
+      + '`tests/` 里不许再各写一份 per-test 超时（实测清掉了 `doc-import.test.js:222`/`:245` 两处 `}, 30000);`）。'
+      + '**判据不是 grep，是真 tokenizer**（注释 / 字符串 / 模板 / 正则 / 括号配平），只认 `it`/`test` 的**第三位置参数**、'
+      + '`{ timeout }` 选项、`vi.setConfig({ testTimeout })`。**三档** = 判红 / 只报告（子进程 `timeout:` —— '
+      + '那是「**子进程最多活多久**」，与「vitest 等多久」是两个维度、**没有换算关系**，宽泛匹配会 6 处假红）/ '
+      + '在册 `PER_TEST_DEBT`（**上限 2，只减不增**）。它**判不了**「某个用例是不是该拆」',
+    // 纯静态：读 tests/ 树 + vitest.config.mjs（实测 0.88–1.90 s / 4 次读数）⇒ 10 s 档
+    budgetMs: 10000
+  },
+  {
+    step: 11, gate: 'G3', label: '单元测试',
     // 与 `npm test` 等价，**外加** JSON reporter：把用例数交给 G6（doc-facts），
     // 于是整条链只需要跑**一次** vitest（以前 doc-facts 会再跑一次：慢约 5 s，
     // 而且正是那一次在负载高时偶发取不到真值、把 G6 判红）。
@@ -648,7 +660,7 @@ const STEPS = [
     resultsFile: TEST_RESULTS
   },
   {
-    step: 11, gate: 'G6', label: '文档数字与版本一致',
+    step: 12, gate: 'G6', label: '文档数字与版本一致',
     cmd: 'node scripts/doc-facts.js --check', shown: '`node scripts/doc-facts.js --check`',
     covers: '文档数字与真值一致（含**第一屏 `SKILL.md` 自报的验证链步骤数** == `STEPS.length`）、版本号四处一致',
     // 20 s：正常情况（采用链上用例数）约 0.7 s；**交接失效退化为自跑 vitest 时约 9.2 s**
@@ -657,13 +669,13 @@ const STEPS = [
     useUnitTests: true // 由 G3 传入用例数，省掉这里的 vitest 重跑
   },
   {
-    step: 12, gate: 'G7', label: '生成物未过期',
+    step: 13, gate: 'G7', label: '生成物未过期',
     cmd: null, shown: '同上（重算比对）',
     covers: '生成物是否过期（`docs/CLI.md` 与 registry 一致）',
     budgetMs: 0 // 与 G6 同一次调用，单独不占预算
   },
   {
-    step: 13, gate: 'G4', label: 'CLI 集成断言',
+    step: 14, gate: 'G4', label: 'CLI 集成断言',
     cmd: 'node scripts/cli-integration.js', shown: '`node scripts/cli-integration.js`',
     covers: '全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理）',
     // 预算调整史（每次都带实测依据 ✓）：
@@ -679,13 +691,13 @@ const STEPS = [
     budgetMs: 60000
   },
   {
-    step: 14, gate: 'G2', label: '数据校验',
+    step: 15, gate: 'G2', label: '数据校验',
     cmd: 'node cli/mm-cli.js validate-all', shown: '`node cli/mm-cli.js validate-all`',
     covers: '全部项目结构 + 悬挂链接 + 环',
     budgetMs: 15000
   },
   {
-    step: 15, gate: 'G5', label: '冒烟（Electron 无头）',
+    step: 16, gate: 'G5', label: '冒烟（Electron 无头）',
     cmd: 'npm run smoke', shown: '`npm run smoke`',
     covers: '渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**；'
       + '**分两档**（定档 = `scripts/verify.js` 的 `decideG5Tier`；名单与域数/断言数的**现算值** = '
