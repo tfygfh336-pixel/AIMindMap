@@ -48,7 +48,11 @@ const OUT_JSON = path.join(TMP, 'out.aimap.json');
  * **读不到**，而末尾的清理段必须能**点名**删掉本次造出来的探针项目 ⇒ 这些名字在这里声明（`let`），
  * 跑体里只赋值、不再声明。名单 = 清理段真的会删的那些；其余各段的探针由各段自己的 `finally` /
  * 块末尾自删，崩溃路径再由下面的**探针前缀**兜底（见开头那段 `PROBE_PREFIX`）。 */
-let PROJ2, PROJ3, PROJ4, PROJ5, PROJ6, PROJ7, K8A, K8B, BROKEN_PROJ, XP_DIR;
+let PROJ2, PROJ3, PROJ4, PROJ5, PROJ6, PROJ7, K8A, K8B, XP_DIR;
+/** 坏 JSON 沙箱的 %TEMP% 根（§19 里 mkdtemp、清理段按名字删）。
+ *  ⚠️ 它**不在** `projects/` 里 —— 这正是本批的修法：坏 JSON 探针再也不进真实数据目录。
+ *  同时它被 `OWN_TEMP_PREFIXES`（`mm-itbad-`）覆盖 ⇒ 崩在半路也不会在 %TEMP% 里堆垃圾。 */
+let BADJSON_SB;
 /** 跑体是否**真的走完**（`finally` 用它选收尾口径：只有崩在半路才允许按前缀宽口径清，见清理段） */
 let bodyCompleted = false;
 
@@ -57,7 +61,15 @@ let bodyCompleted = false;
  * ② 崩溃路径的收尾（按前缀兜底清）；③ `<项目根>/.visits/` 里的**访问日志**过滤。
  * ⚠️ `imp-probe-` 也在这张表里：本脚本在真实 `projects/` 下造 `imp-probe-a` / `imp-probe-b` /
  * `imp-probe-pdf*`（§9.1 的导入类探针），它们的访问日志同样落在 `.visits/` 里
- * （实测：崩过一次之后留下 `imp-probe-*.jsonl`，删项目目录删不掉它）。 */
+ * （实测：崩过一次之后留下 `imp-probe-*.jsonl`，删项目目录删不掉它）。
+ * ⚠️ `it-w25-` **故意不进这张表**（本批试过"进去更省事"，但它撞了一条硬边界）：
+ *   W25 段的探针项目 `it-w25-batch-*` 一读就会在 `.visits/` 留一份 `it-w25-batch-*.jsonl`，
+ *   这张表从前没有这个前缀 ⇒ **每跑一轮漏一份**（实测：一轮本脚本跑完，`projects/` 的全量
+ *   sha256 必然变，多出来的就是它；盘上曾积了 8 份历史残留）。
+ *   可把前缀加进本表，会让 `src/import-grade.js` 的 `PROBE_PREFIX_LIST`（**有意的第二份**，
+ *   `tests/import-grade.test.js` 的 I 条逐条对齐）当场判红 —— 而 `src/**` 是别的批的地盘。
+ *   ⇒ 改走**段内自收尾**：W25 段自己删掉它那条访问日志（见段末注释），效果一样（跑完新增
+ *   0 个文件），两张表继续对齐。既有历史残留由本批一次性清掉，不再产生新的。 */
 const PROBE_PREFIX = /^(it-probe-|it-broken-|it-k8-|it-w14-|it-w19-|it-w20-|it-s[1-9]-|imp-probe-)/;
 
 /** `projects/` 下**当前**已存在的探针目录名（快照 / 崩溃路径兜底清都用这一处实现） */
@@ -88,6 +100,9 @@ function visitLogDir() {
  * ⚠️ 本分支必须在**任何会写盘 / 造探针的代码之前**就 return 掉
  *   （顶层 `return` 在 CJS 里合法；`runSandboxWorker` 是函数声明，提升可用）。 */
 if (process.argv[2] === '--sandbox-worker') { runSandboxWorker(); return; }
+/* 坏 JSON 沙箱 worker（见下面 `runBadJsonWorker`）：两种 phase，都是"项目根 = %TEMP%"的子进程。
+ * ⚠️ 同样必须在**任何会写盘 / 造探针的代码之前** return 掉（否则父进程那套自愈与报名都会跑一遍）。 */
+if (process.argv[2] === '--badjson-worker') { runBadJsonWorker(); return; }
 
 /* ---------------- 开工前**自愈**：扫己方前缀的残留探针 ----------------
  * 本脚本在**真实** projects/ 下造探针项目（store 与 CLI 同源，不另设根），
@@ -100,6 +115,15 @@ if (process.argv[2] === '--sandbox-worker') { runSandboxWorker(); return; }
  *   2026-10-19 又一次：`it-broken-mve2g4ps` 等 10 个 `it-*` 让 `ae07a226` 开工第一件事
  *   就是先证明"这不是我改坏的"）。
  *   故两类前缀都清 —— 自己的残留要自己收干净，否则下一个跑链的人会以为工程坏了。
+ *
+ * ⭐⭐ **2026-10-21（本批）：坏 JSON 探针**不再**造在真实 `projects/` 里了** —— 见下面
+ *   「坏 JSON 只许造在 %TEMP% 沙箱」那段与 `--badjson-worker`。
+ *   收尾能清掉**残留**，但清不掉"**别人此刻正在读**"：坏 JSON 在盘上活着的每一秒，
+ *   任何**并发**的 `validate-all`（G2）都必然红。实测（本批，改前）：`it-broken-*` 在真实
+ *   `projects/` 里活了 **21.5 s**，同一窗口另起一条 `validate-all` ⇒ exit 1 +
+ *   `Expected property name or '}' in JSON at position 2`；`W10-retag` 批也独立撞到同一句。
+ *   ⇒ 「必须造坏 JSON」与「不许污染共享数据目录」不冲突：**换根**即可（探针照造，只是造在 %TEMP%）。
+ *   这张前缀表**继续保留 `it-broken-`**：新版本不再造它，但**旧版本崩在盘上的残留**还得有人清。
  *
  * ⭐ **旧口径（"只清超过 10 分钟没动过的"）为什么不够** —— 本批实测的机制，不是猜：
  *   全链里 **步骤 12 = G4（本脚本）· 步骤 13 = G2（validate-all）**（`scripts/verify.js` 的 `STEPS`），
@@ -126,9 +150,9 @@ const LIVE_DIR = path.join(os.tmpdir(), 'mm-live-runs');
 const RUN_CLAIM = path.join(LIVE_DIR, 'run-' + process.pid + '-' + STARTED_AT.toString(36) + '-' + Math.random().toString(36).slice(2, 8));   // 空目录：内容全在名字里
 const MAX_RUN_MS = 30 * 60 * 1000;      // 僵尸登记封顶（本脚本一轮 < 2 分钟）
 const SWEEP_GRACE_MS = 10 * 60 * 1000;  // 保守年龄线：projects/ 只在"确实有另一份在跑"时用；%TEMP% 一律用
-/** 本脚本自己 mkdtemp 出来的 %TEMP% 根（前缀逐字来自 6 处 `mkdtempSync`：mm-it- / mm-imp- /
- *  mm-impdir- / mm-lib- / mm-sb- / mm-w19-）。**只认这几个前缀**：%TEMP% 里别人的 mm-* 一个都不碰。 */
-const OWN_TEMP_PREFIXES = ['mm-it-', 'mm-imp-', 'mm-impdir-', 'mm-lib-', 'mm-sb-', 'mm-w19-'];
+/** 本脚本自己 mkdtemp 出来的 %TEMP% 根（前缀逐字来自 7 处 `mkdtempSync`：mm-it- / mm-imp- /
+ *  mm-impdir- / mm-lib- / mm-sb- / mm-w19- / mm-itbad-）。**只认这几个前缀**：%TEMP% 里别人的 mm-* 一个都不碰。 */
+const OWN_TEMP_PREFIXES = ['mm-it-', 'mm-imp-', 'mm-impdir-', 'mm-lib-', 'mm-sb-', 'mm-w19-', 'mm-itbad-'];
 
 /** 登记"我在跑"（供**别的实例**的开跑自愈判断"要不要保守"）—— **建一个空目录**，内容全在名字里 */
 function writeRunClaim() {
@@ -479,6 +503,30 @@ function runSandboxWorker() {
     out.libEmptyDir = go(['import-dir', 'lib6', path.join(LIB, '空目录')]);
     out.libProjectsAfterErrors = projectNames();
     out.dirImportProjectNow = go(['import-project', 'imp-dir2', LIB]);        // 单文件命令拿到目录
+    /* ── G.【20261022】导入三缺陷的端到端夹具（判定在父进程里判，这里只如实回报读数）──
+     * 为什么放在**最末尾**：上面 `projectsAfterMissing` 那条断言比的是**写死的项目名列表**，
+     * 在它之前建项目会把它打红（那不是它要守的事，是断言写死的代价）。
+     *
+     * 甲：一份带围栏代码块的小文档 —— `# 不是标题` 那两行在围栏里。
+     *     期望：标题 4 / 节点 4 / 顶层主题 2 / 1 级 2 / 2 级 2。**朴素正则会把标题读成 6**（修前形状）。
+     * 乙：`import-dir --idem k --dry-run`（修前 exit 1：「import-dir 不写盘」）。
+     * 丙：`import-md --json` 两跑 + `import-json --json` 两跑（这两条从前**根本没有** `--json`）。 */
+    const fFence = wf('fence-count.md', [
+      '# 甲', '## 甲-1', '```sh', '# 不是标题', '# 也不是', '```', '# 乙', '## 乙-1', ''
+    ].join('\n'));
+    out.fenceDry = J(go(['import-project', 'imp-fence', fFence, '--dry-run', '--json']));
+    const fJson = wf('json-shape.md', '# 甲主题\n\n## 甲-1\n\n正文\n');
+    out.mdJson1 = go(['import-md', 'legacy', fJson, '--json']);
+    out.mdJson2 = go(['import-md', 'legacy', fJson, '--force', '--json']);
+    const aimap = path.join(WORK, 'pack.aimap.json');
+    out.expAimap = go(['export-json', 'imp-a', aimap]);
+    out.impJson1 = go(['import-json', aimap, '--name', 'imp-json-a', '--json']);
+    out.impJson2 = go(['import-json', aimap, '--name', 'imp-json-b', '--json']);
+    // 乙：`--idem` 的 dry-run 前后**各自**取一次项目名快照（严丝合缝包住这一条命令，
+    //     不借用别处更早的那份 —— 中间我自己还建了 imp-json-a/b 两个项目，拿旧快照比会假红）
+    out.libProjectsBeforeIdemDry = projectNames();
+    out.libIdemDry = go(['import-dir', 'lib8', LIB, '--idem', 'k-acc', '--dry-run']);
+    out.libProjectsAfterIdemDry = projectNames();
     out.ok = true;
   } catch (e) {
     out.ok = false;
@@ -486,6 +534,103 @@ function runSandboxWorker() {
   }
   // ⚠️ 只在这里吐一次 JSON：上面的 `invokeSync` 自己会捕获 stdout ⇒ 不会污染这一行。
   //    父进程按"最后一行 JSON"解析，坏掉就让断言**红**（绝不静默空转 ✗）。
+  process.stdout.write('\n' + JSON.stringify(out) + '\n');
+}
+
+/* ---------------- 坏 JSON 沙箱 worker：**全文件唯一**允许造"故意写坏的 JSON"的地方 ----------------
+ * ## 它存在的理由（本批修的缺陷，不是重构癖）
+ * 本文件有两条判据**天生需要一份坏 JSON** 才验得出来：
+ *   （甲）`assoc-prune` 在"成员所在项目**读不出来**"时**不许猜**成悬空（§19，唯一消费处是
+ *         `cli/commands/assoc.js` 的 `nodeExistsIn` + "采不到真值 = 红"那条规矩）；
+ *   （乙）`search-all` 遇到读不动的项目 ⇒ **跳过它但在 `skipped` / 文本档里逐个点名**（W1 段）。
+ * 从前的做法：把坏 JSON 造在**真实** `projects/` 里（`it-broken-*` / `it-probe-w1-broken-*`）。
+ * 于是「必须造坏 JSON」与「不许污染共享数据目录」正面相撞 —— `try/finally` 能清掉**残留**，
+ * 却清不掉「**别人此刻正在读**」：坏 JSON 在盘上活着的每一秒，任何**并发**的 `validate-all`（G2）
+ * 都必然红。实测（2026-10-21，改前）：`it-broken-*` 活了 21.5 s，同一窗口另起一条 `validate-all`
+ * ⇒ exit 1 + `Expected property name or '}' in JSON at position 2 (line 1 column 3)`；
+ * `W10-retag` 批独立撞到同一句（"同一分钟内重跑即绿"）。
+ * ## 换根怎么做（只有这一条路）
+ * `cli/core.js` 的 `PROJECTS_DIR` 在**模块加载时**定值（读 `AI_MINDMAP_PROJECTS_DIR`）⇒ 父进程
+ * 改不了自己已经加载好的那份 ⇒ 由父进程 `mkdtempSync` 一个 %TEMP% 根、把 env 传给**子进程**，
+ * 本 worker 在"项目根 = 沙箱"的进程里把两条判据连同坏 JSON 一起做完（§9.2 的 `--sandbox-worker`
+ * 早就是这么做的，这里照同一条路走，不另立第二套）。
+ * ## 分工
+ * 判定留在父进程（PASS/FAIL 计数、`check(` 计数、报文都在一处）；本 worker 只**如实回报读数**，
+ * 一个结论都不下（"沙箱里绿了"不等于"判据有牙齿"，牙齿由父进程对着读数逐条判）。
+ * ## 用法
+ *   node scripts/cli-integration.js --badjson-worker prune   |   … --badjson-worker scanall
+ * 输出：最后一行一个 JSON（父进程按"最后一行"解析；解析不出来就让断言**红**，绝不静默空转）。
+ */
+function runBadJsonWorker() {
+  const phase = String(process.argv[3] || '');
+  const SBDIR = process.env.AI_MINDMAP_PROJECTS_DIR;
+  const tag = Date.now().toString(36);
+  const out = { phase: phase, root: SBDIR || null };
+  const go = (args) => { const r = invokeSync(args); return { code: r.code, out: (r.stdout + r.stderr).trim() }; };
+  const J = (r) => { try { return JSON.parse(r.out); } catch (e) { return null; } };
+  const dirOf = (name) => path.join(SBDIR || path.join(os.tmpdir(), '__no_sandbox__'), name);
+  const fileOf = (name) => path.join(dirOf(name), name + '.json');
+  /** 把某个探针项目**改成故意写坏的 JSON** —— 本 worker **唯一一处裸写**，目标恒在 %TEMP% 沙箱里
+   *  （S2 的 WRITE_OUTLET 只数"面"，本批先把 §19 与 W1 段的三处裸写合成这一处 ⇒ 面不增只减）。 */
+  const mkBroken = (name) => {
+    fs.mkdirSync(dirOf(name), { recursive: true });
+    fs.writeFileSync(fileOf(name), '{ 这不是合法 JSON', 'utf8');
+  };
+  try {
+    if (!SBDIR) throw new Error('缺 AI_MINDMAP_PROJECTS_DIR：坏 JSON 探针绝不许落在真实 projects/ 里');
+    if (phase === 'prune') {
+      /* （甲）"采不到真值 = 红"：成员所在项目读不出来 ⇒ 只警告，**不**当作悬空清理。
+       * 手法：先让目标项目**合法**存在（这样才能用 CLI 建一条指向它的跨项目成员，不必手写成员数组），
+       * 再把它写成坏 JSON ⇒ 同一份数据上依次验：绿（对照）→ 注入 → 红 → `assoc-prune` 只警告
+       * → 撤销 → 复绿。**"注入必红"就是这条判据的牙齿**：把它拿掉，`assoc-prune` 会把
+       * "读不出来"猜成"不存在"并剪掉成员（那样 validate 也会变绿，坏数据被静默抹平）。 */
+      const HOST = 'it-badjson-host-' + tag;
+      const BADP = 'it-broken-' + tag;              // 名字沿用旧口径，便于与历史报文对照
+      out.hostName = HOST;
+      out.brokenName = BADP;
+      out.initHost = go(['init', HOST, '--title', '坏 JSON 宿主']);
+      go(['add', HOST, 'root', '--topic', '甲', '--id', 'a']);
+      go(['add', HOST, 'root', '--topic', '乙', '--id', 'b']);
+      out.initBad = go(['init', BADP, '--title', '坏 JSON 目标']);
+      out.assocAdd = go(['assoc-add', HOST, '--members', 'a,b,' + BADP + '/root',
+        '--id', 'as-badjson', '--title', '两元']);
+      out.validateBefore = go(['validate-all']);            // 对照档：必须绿（否则后面的"红"没有意义）
+      mkBroken(BADP);                                       // 注入（只在沙箱里）
+      out.validateBroken = go(['validate-all']);            // 注入档：必须红
+      out.prune = go(['assoc-prune', HOST, '--dry-run']);   // 同一份坏 JSON 上：只警告、不猜
+      out.memberRetained = (() => {                          // 成员仍在（"不猜"的可观测后果）
+        try {
+          const d = JSON.parse(fs.readFileSync(fileOf(HOST), 'utf8'));
+          return (d.assoc || []).some((x) => (x.members || []).some((m) => m.project === BADP));
+        } catch (e) { return null; }
+      })();
+      fs.rmSync(dirOf(BADP), { recursive: true, force: true });   // 撤销坏 JSON
+      out.reinitBad = go(['init', BADP, '--title', '坏 JSON 目标（复原）']);  // 复原成合法项目（成员才有落点）
+      out.validateAfter = go(['validate-all']);             // 撤销档：必须复绿
+      out.ok = true;
+    } else if (phase === 'scanall') {
+      /* （乙）`search-all` 的"不许静默少扫"：一个读不动的项目 ⇒ skipped 点名 + scanned 不含它 +
+       * 汇总行写"另有 N 个项目没扫成"。沙箱里只有"一条好的 + 一条坏的"⇒ 数目确定，**仍然现算**。 */
+      const KW = 'W1沙箱检索词' + tag;
+      const GOOD = 'it-probe-w1-a-' + tag;
+      const BADP = 'it-probe-w1-broken-' + tag;
+      out.goodName = GOOD;
+      out.brokenName = BADP;
+      out.kw = KW;
+      out.initGood = go(['init', GOOD, '--title', '扫描探针']);
+      go(['add', GOOD, 'root', '--topic', KW + ' 甲', '--id', 'nd-1']);
+      go(['add', GOOD, 'root', '--topic', KW + ' 乙', '--id', 'nd-2']);
+      mkBroken(BADP);                                       // 注入（只在沙箱里）
+      out.scanText = go(['search-all', KW, '--no-heat']);
+      out.scanJson = J(go(['search-all', KW, '--no-heat', '--json']));
+      out.ok = true;
+    } else {
+      throw new Error('未知 phase（只认 prune / scanall）: ' + phase);
+    }
+  } catch (e) {
+    out.ok = false;
+    out.error = String((e && e.stack) || e);
+  }
   process.stdout.write('\n' + JSON.stringify(out) + '\n');
 }
 
@@ -1327,6 +1472,82 @@ check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已�
     has(SBJ.mdStatsAfterForce) ? ('节点 ' + SBJ.mdStatsAfterRefuse.nodes + '→' + SBJ.mdStatsAfterForce.nodes
       + ' 来源数 ' + SBJ.mdStatsAfterRefuse.originSources + '→' + SBJ.mdStatsAfterForce.originSources) : sbFailDetail);
 
+  /* ── ④‴ 【20261022】导入三缺陷的三条判据（读数式：不靠"读了代码觉得对"）──
+   * 甲 「这一行算不算标题」只有**一处**判据（围栏感知）⇒ `--dry-run` 报的标题数 == 它自己算出来的节点数，
+   *    且"1 级标题数"必须等于"顶层主题数"（修前实测 152 vs 8 —— 144 条围栏里的 `#` 被算成 1 级标题）。
+   * 乙 `import-dir` 是写命令 ⇒ 在 `WRITE_COMMANDS` 里，带 `--idem k` 的 dry-run 才放行（且一个字节都不写）。
+   * 丙 `import-md --json` / `import-json --json`：可解析、键序固定、无绝对路径、**两跑逐字节相同**。
+   * ⚠️ `import-json` 仍**不在** `DRY_RUN_COMMANDS`（它单列在 `DRY_RUN_UNSUPPORTED`）—— 那是别人的决定，
+   *    本批一个字都不许顺手改；下面乙1 那条断言把它钉住。 */
+  {
+    const coreSpec = require(path.join(ROOT, 'cli', 'core.js'));
+    const jOf = (r) => { try { return JSON.parse((r || {}).out); } catch (e) { return null; } };
+    /* 无绝对路径 / 无时间戳：盘符那条要**限定在引号或行首**，否则 `https://…` 里的 `s:/` 会假命中 */
+    const noAbs = (text, work) => !!(text && text.indexOf(work) < 0
+      && !/(^|["\s])[A-Za-z]:[\\/]/m.test(text)
+      && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text));
+
+    const fd = SBJ && SBJ.fenceDry;
+    check('[20261022-甲] 围栏感知只有一处判据：`--dry-run` 的"标题数" == 它自己报的"节点数"，'
+      + '且 1 级标题数 == 顶层主题数（围栏里的 `# 不是标题` 两行不算 —— 朴素正则会读成 6 个标题）',
+      has(fd && fd.dryRun === true && fd.stats && fd.stats.headings === 4 && fd.nodes === 4
+        && fd.themes === 2 && fd.stats.levelCounts['1'] === 2 && fd.stats.levelCounts['2'] === 2),
+      fd ? ('标题=' + fd.stats.headings + ' 节点=' + fd.nodes + ' 顶层=' + fd.themes
+        + ' 层级=' + JSON.stringify(fd.stats.levelCounts)) : sbFailDetail);
+
+    check('[20261022-乙1] 清单归属：`import-dir` 在 `WRITE_COMMANDS` 里（且仍在 `DRY_RUN_COMMANDS`）；'
+      + '`import-json` **不在** `DRY_RUN_COMMANDS`、仍单列在 `DRY_RUN_UNSUPPORTED`（别人的决定不动）',
+      coreSpec.WRITE_COMMANDS.indexOf('import-dir') >= 0
+        && coreSpec.DRY_RUN_COMMANDS.indexOf('import-dir') >= 0
+        && coreSpec.DRY_RUN_COMMANDS.indexOf('import-json') < 0
+        && Object.keys(coreSpec.DRY_RUN_UNSUPPORTED).join(',') === 'import-json',
+      'WRITE 命中=' + (coreSpec.WRITE_COMMANDS.indexOf('import-dir') >= 0)
+        + ' DRY 命中=' + (coreSpec.DRY_RUN_COMMANDS.indexOf('import-dir') >= 0)
+        + ' import-json 在 DRY=' + (coreSpec.DRY_RUN_COMMANDS.indexOf('import-json') >= 0)
+        + ' UNSUPPORTED=' + Object.keys(coreSpec.DRY_RUN_UNSUPPORTED).join(','));
+
+    check('[20261022-乙2] `import-dir … --idem k --dry-run` ⇒ **exit 0**（修前 exit 1「import-dir 不写盘」）'
+      + ' 且**零写盘**：项目列表不变、目标项目没被建出来',
+      has(SBJ.libIdemDry && SBJ.libIdemDry.code === 0
+        && !/只对\*\*写命令\*\*有意义/.test(SBJ.libIdemDry.out)
+        && /没有写盘/.test(SBJ.libIdemDry.out)
+        && Array.isArray(SBJ.libProjectsAfterIdemDry) && Array.isArray(SBJ.libProjectsBeforeIdemDry)
+        && SBJ.libProjectsAfterIdemDry.join(',') === SBJ.libProjectsBeforeIdemDry.join(',')
+        && SBJ.libProjectsAfterIdemDry.indexOf('lib8') < 0),
+      has(SBJ.libIdemDry) ? ('code=' + SBJ.libIdemDry.code
+        + ' ｜ 项目数 ' + (SBJ.libProjectsBeforeIdemDry || []).length + '→' + (SBJ.libProjectsAfterIdemDry || []).length
+        + ' ｜ ' + String(SBJ.libIdemDry.out).split('\n')[0]) : sbFailDetail);
+
+    const mj1 = jOf(SBJ.mdJson1);
+    const mj2 = jOf(SBJ.mdJson2);
+    check('[20261022-丙1] `import-md --json`：可解析 + 键序固定 + 无绝对路径 + **两跑逐字节相同**'
+      + '（修前这条命令只有文本回档）',
+      has(SBJ.mdJson1 && SBJ.mdJson2 && SBJ.mdJson1.code === 0 && SBJ.mdJson2.code === 0 && mj1 && mj2
+        && Object.keys(mj1).join(',') === 'ok,command,project,parent,nodes,themes,preamble,source,resourceRefs'
+        && mj1.command === 'import-md' && mj1.source.name === 'json-shape.md'
+        && noAbs(SBJ.mdJson1.out, SBJ.work)
+        && SBJ.mdJson1.out === SBJ.mdJson2.out),
+      mj1 ? ('keys=' + Object.keys(mj1).join(',') + ' nodes=' + mj1.nodes
+        + ' 两跑相同=' + (SBJ.mdJson1.out === SBJ.mdJson2.out)) : sbFailDetail);
+
+    const ijKeys = Object.keys(jOf(SBJ.impJson1) || {}).join(',');
+    const ijA = jOf(SBJ.impJson1);
+    const ijB = jOf(SBJ.impJson2);
+    const sameExceptProject = (() => {
+      if (!ijA || !ijB) return false;
+      delete ijA.project;
+      delete ijB.project;
+      return JSON.stringify(ijA) === JSON.stringify(ijB);
+    })();
+    check('[20261022-丙2] `import-json --json`：可解析 + 键序固定 + 无绝对路径 + 两跑**除 project 外**逐字节相同',
+      has(SBJ.impJson1 && SBJ.impJson2 && SBJ.impJson1.code === 0 && SBJ.impJson2.code === 0
+        && sameExceptProject
+        && ijKeys === 'ok,command,project,nodes,images,files,assets,assoc,source'
+        && noAbs(SBJ.impJson1.out, SBJ.work)),
+      has(SBJ.impJson1) ? ('code=' + SBJ.impJson1.code + ' keys=' + ijKeys
+        + ' 除 project 外相同=' + sameExceptProject) : sbFailDetail);
+  }
+
   /* ── ④′ 带 BOM 的 md：**两个标题都要在**（本轮修的静默数据丢失）──
    * 判据刻意三样一起看：① 退出码 0；② 树里真的有 **两个**顶层标题；③ 新增节点数 = 2。
    * 为什么不能只看"退出码 0"：缺陷的形态正是**退出码 0 + 少一棵子树**（静默）✗。
@@ -1922,20 +2143,44 @@ check('assoc-prune 自动清理悬挂成员并恢复校验绿',
   ok(r.out) && /发现悬挂成员/.test(r.out) && /已清理/.test(r.out) && ok(run(['validate', PROJ4]).out),
   r.out.trim().replace(/\n/g, ' | '));
 
-// "采不到真值 = 红"：成员所在项目**读不出来**时不许猜成"不存在"而去清理
-BROKEN_PROJ = 'it-broken-' + Date.now().toString(36);   // 名在文件顶部声明（清理段要用）
-fs.mkdirSync(path.join(ROOT, 'projects', BROKEN_PROJ), { recursive: true });
-fs.writeFileSync(path.join(ROOT, 'projects', BROKEN_PROJ, BROKEN_PROJ + '.json'), '{ 这不是合法 JSON', 'utf8');
-(() => {
-  const d = readProj(PROJ4);
-  d.assoc[0].members.push({ project: BROKEN_PROJ, id: 'x' });
-  fs.writeFileSync(projJson(PROJ4), JSON.stringify(d, null, 2));
-})();
-r = run(['assoc-prune', PROJ4, '--dry-run']);
-check('项目读不出来时不当作悬空清理，而是明确警告（不猜真值）',
-  ok(r.out) && /读不出来/.test(r.out) && /没有悬挂成员/.test(r.out)
-  && readProj(PROJ4).assoc[0].members.some((m) => m.project === BROKEN_PROJ),
-  r.out.trim().replace(/\n/g, ' | '));
+/* ---------------- "采不到真值 = 红"：成员所在项目**读不出来**时不许猜成"不存在"而去清理 ----------------
+ * ⚠️ 这条判据**天生要一份坏 JSON**，而它**不许落在真实 projects/ 里**（本批修的并发缺陷）：
+ *   坏 JSON 在盘上活着的每一秒，任何并发的 `validate-all`（全链里 G2 紧跟在本脚本之后）都必然红。
+ *   实测（本批，改前）：`it-broken-*` 活了 21.5 s，同一窗口另起一条 validate-all ⇒ exit 1 +
+ *   `Expected property name or '}' in JSON at position 2 (line 1 column 3)`（W10-retag 批独立撞到同一句）。
+ * ⇒ 探针项目 + 坏 JSON 全在 %TEMP% 沙箱根里造（`--badjson-worker prune`，见文件上部那段说明）。
+ *   于是**同一台沙箱同时钉两件事**（它们共用那份坏 JSON，合成一条 check 是为了不动 `check(` 计数）：
+ *     （甲）**判据有牙齿**：注入坏 JSON ⇒ `validate-all` 必红；撤销 ⇒ 复绿（没有这条，"不猜"无从验起）；
+ *     （乙）同一份坏 JSON 上 `assoc-prune` 只警告"读不出来"、**不**把它当悬空剪掉（不猜真值）。
+ *   真实 projects/ 全程**零接触** —— 这是本批的判据②（运行期间 projects/ 逐字节不变）。 */
+BADJSON_SB = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-itbad-'));
+{
+  const sp = spawnSync(process.execPath, [__filename, '--badjson-worker', 'prune'], {
+    cwd: ROOT, encoding: 'utf8',
+    env: Object.assign({}, process.env, { AI_MINDMAP_PROJECTS_DIR: BADJSON_SB })
+  });
+  const BJ = (() => { try { return JSON.parse(String(sp.stdout || '').trim().split('\n').pop()); } catch (e) { return null; } })();
+  const bjDetail = 'exit=' + sp.status + ' worker=' + (BJ ? JSON.stringify({ ok: BJ.ok, error: BJ.error || null }) : '没有 JSON 输出')
+    + ' stderr=' + String(sp.stderr || '').trim().slice(0, 160);
+  const bjHas = (k) => !!(BJ && BJ.ok === true && BJ[k] && typeof BJ[k].code === 'number');
+  const bjCode = (k) => (bjHas(k) ? BJ[k].code : 'null');
+  const bjOut = (k) => (bjHas(k) ? String(BJ[k].out) : '');
+  check('坏 JSON 判据（%TEMP% 沙箱根，真实 projects/ 零接触）：'
+    + '（甲）**有牙齿** —— 注入一份坏 JSON ⇒ `validate-all` 必红、撤销 ⇒ 复绿；'
+    + '（乙）同一份坏 JSON 上 `assoc-prune` 只警告"读不出来"、**不**当作悬空清理（不猜真值，成员一条不动）',
+    !!bjHas('validateBefore') && bjCode('validateBefore') === 0
+      && bjHas('validateBroken') && bjCode('validateBroken') !== 0 && /Expected|JSON/.test(bjOut('validateBroken'))
+      && bjHas('validateAfter') && bjCode('validateAfter') === 0
+      && bjHas('prune') && bjCode('prune') === 0
+      && /读不出来/.test(bjOut('prune')) && /没有悬挂成员/.test(bjOut('prune'))
+      && BJ.memberRetained === true,
+    bjHas('prune')
+      ? ('对照(干净)=' + bjCode('validateBefore') + ' ｜ 注入坏 JSON=' + bjCode('validateBroken')
+        + '（' + bjOut('validateBroken').trim().split('\n')[0].slice(0, 70) + '）｜ 撤销后=' + bjCode('validateAfter')
+        + ' ｜ prune=exit ' + bjCode('prune') + ' 警告=' + /读不出来/.test(bjOut('prune'))
+        + ' 不猜=' + /没有悬挂成员/.test(bjOut('prune')) + ' 成员仍在=' + BJ.memberRetained)
+      : bjDetail);
+}
 
 // ② 备份恢复：删除项目后导入它自己的备份必须成功（同项目链接/关联按**待写数据**判）
 run(['init', PROJ5, '--title', '恢复探针']);
@@ -4300,7 +4545,13 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
       && rText.out.indexOf('[1/2] ok') >= 0 && rText.out.indexOf('[2/2] FAIL') >= 0,
     rText.out.trim().split('\n')[0].slice(0, 90));
 
-  // ---- 自收尾（探针自己删干净；集成脚本末尾那一段也会兜底一次）----
+  /* ---- 自收尾（探针自己删干净；集成脚本末尾那一段也会兜底一次）----
+   * ⚠️ **连访问日志一起删**：W25 段里有 `get`（`ai-get` 埋点）⇒ 一轮跑下来必留一份
+   *   `projects/.visits/it-w25-batch-*.jsonl`，而它**不在**文件顶部 `PROBE_PREFIX` 里
+   *   （那张表与 `src/import-grade.js` 的 `PROBE_PREFIX_LIST` 有条单测逐条对齐，本批不许动 src/**）
+   *   ⇒ 从前**每跑一轮**就让 `projects/` 多一个文件（实测：连跑几轮积了 8 份残留）。
+   *   在这里按"路径的唯一推导处"（`data-store.js` 的 `visitLogFile`）删掉它，跑完就真的"新增 0 个文件"。 */
+  try { fs.rmSync(visitLogStore().visitLogFile(P25), { force: true }); } catch (e) { /* 收尾失败不判红 */ }
   try { fs.rmSync(path.join(ROOT, 'projects', P25), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
 }
 
@@ -4822,7 +5073,6 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
   const W1TAG = Date.now().toString(36);
   const W1A = 'it-probe-w1-a-' + W1TAG;
   const W1B = 'it-probe-w1-b-' + W1TAG;
-  const W1BAD = 'it-probe-w1-broken-' + W1TAG;
   const W1BIG = 'it-probe-w1-cap-' + W1TAG;
   const W1KW = 'W1跨项目检索词' + W1TAG;
   const w1dir = (name) => path.join(w1core.PROJECTS_DIR, name);
@@ -5011,29 +5261,52 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
     }
 
     /* ---- 不许静默少扫：读不动的项目 ⇒ **跳过但逐个点名**（skipped + 文本档 ⚠ 行 + 汇总行） ----
-     * ⚠️ 跳过**个数**同样**现算，不写死**：整脚本跑时盘上还有常驻探针（如第 20 节的 `it-broken-*`，
-     *   它到脚本末尾才删）⇒ 真个数 = `j.skipped.length`。放行窗口实测：写死"另有 1 个"而真值 2 ⇒ 假红。 */
+     * ⚠️ 这条判据**天生要一份坏 JSON**（"读不动的项目"只能靠坏 JSON 造出来），而它**不许**落在真实
+     *   `projects/` 里 —— 与 §19 同一条纪律、同一个 worker（`--badjson-worker scanall`，见文件上部）。
+     *   从前的写法是在真实根里造 `it-probe-w1-broken-*`：窗口只有约 0.1 s，但**正好撞上并发的
+     *   `validate-all`** 就是一条假红（本批改前的实测：采样抓到了它）。沙箱里还顺带消掉了
+     *   "个数要跟别人的残留凑"的老毛病（从前那行注释写着"盘上还有常驻的 it-broken-*，故个数现算"）。
+     * ⚠️ 个数**仍然现算，不写死**（`j.skipped.length`）：沙箱里现在是 1，判据不依赖这个 1。 */
     {
-      w1mk(W1BAD, [W1KW + ' 坏']);
-      fs.writeFileSync(path.join(w1dir(W1BAD), W1BAD + '.json'), '{这不是合法 JSON', 'utf8');
-      const r = run(['search-all', W1KW, '--no-heat']);
-      const j = w1all();
-      const w1n = (j && j.skipped) ? j.skipped.length : 0;          // 现算：本次真的跳过了几个
-      check('W1·不许静默少扫 某个项目的 JSON 读不出来 ⇒ **跳过它但看得见**：`skipped` 逐个点名 + 文本档 '
-        + '`⚠ 跳过项目「…」` + 汇总行"另有 ' + w1n + ' 个项目没扫成"（个数**现算**；exit 0 —— '
-        + '别人项目的坏数据不该让整库检索不可用）',
-        r.code === 0 && r.out.indexOf('⚠ 跳过项目「' + W1BAD + '」') >= 0
-          && r.out.indexOf('validate ' + W1BAD) >= 0 && r.out.indexOf('--scope') >= 0
-          && r.out.indexOf('另有 ' + w1n + ' 个项目没扫成') >= 0     // ← 报出的个数 == 真个数（少报/多报都红）
-          && !!j && j.skipped.map((s) => s.project).indexOf(W1BAD) >= 0
-          && j.scanned.indexOf(W1BAD) < 0,
-        'exit=' + r.code + ' ｜ skipped(' + w1n + ')=' + (j ? j.skipped.map((s) => s.project).join(',') : 'null')
-          + ' ｜ 汇总行含"另有 ' + w1n + ' 个项目没扫成"=' + (r.out.indexOf('另有 ' + w1n + ' 个项目没扫成') >= 0)
-          + ' ｜ 点名 W1BAD=' + (r.out.indexOf(W1BAD) >= 0));
+      const SB = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-itbad-'));
+      try {
+        const sp = spawnSync(process.execPath, [__filename, '--badjson-worker', 'scanall'], {
+          cwd: ROOT, encoding: 'utf8',
+          env: Object.assign({}, process.env, { AI_MINDMAP_PROJECTS_DIR: SB })
+        });
+        const BJ = (() => { try { return JSON.parse(String(sp.stdout || '').trim().split('\n').pop()); } catch (e) { return null; } })();
+        const bjDetail = 'exit=' + sp.status + ' worker='
+          + (BJ ? JSON.stringify({ ok: BJ.ok, error: BJ.error || null }) : '没有 JSON 输出')
+          + ' stderr=' + String(sp.stderr || '').trim().slice(0, 160);
+        const r = (BJ && BJ.scanText) || { code: null, out: '' };
+        const j = (BJ && BJ.scanJson) || null;
+        const w1n = (j && j.skipped) ? j.skipped.length : 0;          // 现算：本次真的跳过了几个
+        const bjBad = BJ ? String(BJ.brokenName || '') : '';
+        const bjGood = BJ ? String(BJ.goodName || '') : '';
+        const bjOk = !!(BJ && BJ.ok === true);
+        check('W1·不许静默少扫 某个项目的 JSON 读不出来 ⇒ **跳过它但看得见**：`skipped` 逐个点名 + 文本档 '
+          + '`⚠ 跳过项目「…」` + 汇总行"另有 ' + w1n + ' 个项目没扫成"（个数**现算**；exit 0 —— '
+          + '别人项目的坏数据不该让整库检索不可用；⚠️ 坏 JSON 造在 %TEMP% 沙箱根里，真实 projects/ 零接触）',
+          bjOk && r.code === 0 && r.out.indexOf('⚠ 跳过项目「' + bjBad + '」') >= 0
+            && r.out.indexOf('validate ' + bjBad) >= 0 && r.out.indexOf('--scope') >= 0
+            && r.out.indexOf('另有 ' + w1n + ' 个项目没扫成') >= 0   // ← 报出的个数 == 真个数（少报/多报都红）
+            && !!j && j.skipped.map((s) => s.project).indexOf(bjBad) >= 0
+            && j.scanned.indexOf(bjBad) < 0
+            && j.scanned.indexOf(bjGood) >= 0,                      // 对照：好的那个**必须**真被扫到（不是"全跳过"）
+          bjOk
+            ? ('exit=' + r.code + ' ｜ skipped(' + w1n + ')=' + (j ? j.skipped.map((s) => s.project).join(',') : 'null')
+              + ' ｜ scanned=' + (j ? j.scanned.join(',') : 'null')
+              + ' ｜ 汇总行含"另有 ' + w1n + ' 个项目没扫成"=' + (r.out.indexOf('另有 ' + w1n + ' 个项目没扫成') >= 0)
+              + ' ｜ 点名=' + (r.out.indexOf('⚠ 跳过项目「' + bjBad + '」') >= 0))
+            : bjDetail);
+      } finally {
+        fs.rmSync(SB, { recursive: true, force: true });              // 沙箱自删（不在 projects/ 里）
+      }
     }
   } finally {
-    /* 自收尾：探针项目 + 它们的访问日志（日志在项目目录之外，删目录删不掉它 ⇒ 一并删） */
-    [W1A, W1B, W1BAD, W1BIG].forEach((name) => {
+    /* 自收尾：探针项目 + 它们的访问日志（日志在项目目录之外，删目录删不掉它 ⇒ 一并删）。
+     * ⚠️ 这里**没有** `it-probe-w1-broken-*` 了：那份坏 JSON 现在造在 `%TEMP%` 沙箱里（见上一条判据）。 */
+    [W1A, W1B, W1BIG].forEach((name) => {
       try { fs.rmSync(w1dir(name), { recursive: true, force: true }); } catch (e) { /* 收尾失败不判红 */ }
       try { fs.rmSync(w1log(name), { force: true }); } catch (e) { /* 同上 */ }
     });
@@ -8706,7 +8979,9 @@ try { fs.rmSync(path.join(ROOT, 'projects', PROJ7), { recursive: true, force: tr
 try { fs.rmSync(path.join(ROOT, 'projects', K8A), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(path.join(ROOT, 'projects', K8B), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ4), { recursive: true, force: true }); } catch (e) {}
-try { fs.rmSync(path.join(ROOT, 'projects', BROKEN_PROJ), { recursive: true, force: true }); } catch (e) {}
+/* 坏 JSON 沙箱（`%TEMP%/mm-itbad-*`）：**不在 projects/ 里**，这里删的是那个临时根 ——
+ * 跑体内的 §19 已经自己删过一次，这一行是"崩在半路"的兜底（`OWN_TEMP_PREFIXES` 再兜一层）。 */
+if (BADJSON_SB) { try { fs.rmSync(BADJSON_SB, { recursive: true, force: true }); } catch (e) {} }
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ5), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ5 + '-bad'), { recursive: true, force: true }); } catch (e) {}
 try { fs.rmSync(path.join(ROOT, 'projects', PROJ3), { recursive: true, force: true }); } catch (e) {}
