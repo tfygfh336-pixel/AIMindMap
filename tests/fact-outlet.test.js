@@ -30,12 +30,16 @@ afterAll(() => { fs.rmSync(HOME, { recursive: true, force: true }); });
 
 let seq = 0;
 /** 造一个扫描根：`files` = { 相对路径: 文本 }
- *  ⚠️ 默认补上**全部出口文件**（`docs/VERIFY.md` / `docs/TAGS.md`）：少了任何一个，
- *  判定会如实报"出口不存在 ⇒ 采不到真值，红"（`A5`）—— 那不是要测的东西，别让它污染读数。 */
+ *  ⚠️ 默认补上**全部 `.md` 出口文件**（`docs/VERIFY.md` / `docs/TAGS.md` / `docs/ARCHITECTURE.md`）：
+ *  少了任何一个，判定会如实报"出口不存在 ⇒ 采不到真值，红"（`A5`）—— 那不是要测的东西，别让它污染读数。
+ *  （`docs/ARCHITECTURE.md` 是 2026-10-25 登记第 6 条事实族 `needs-disk` 之后才成为出口的；
+ *   三个占位文件的内容**都不带数字**，免得给别的族造命中。） */
 function fixture(files, opts) {
   const dir = path.join(HOME, 'f' + (++seq));
   const omit = (opts && opts.omit) || [];
-  const all = Object.assign({ 'docs/VERIFY.md': OUTLET_VERIFY, 'docs/TAGS.md': '# 标签词表\n' }, files);
+  const all = Object.assign({
+    'docs/VERIFY.md': OUTLET_VERIFY, 'docs/TAGS.md': '# 标签词表\n', 'docs/ARCHITECTURE.md': '# 架构\n'
+  }, files);
   Object.entries(all).forEach(([rel, text]) => {
     if (omit.indexOf(rel) >= 0) return;
     const p = path.join(dir, rel);

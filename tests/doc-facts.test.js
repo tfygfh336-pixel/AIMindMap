@@ -102,6 +102,62 @@ describe('require.main 守卫：可被单测引入，且不跑主流程', () => 
     // 非法用例数一律拒写（不静默写 0 / null —— 那会让快档"有个数"但那个数是假的）
     expect(df.writeUnitCache(0, 'x', f, ROOT).ok).toBe(false);
     expect(df.writeUnitCache(null, 'x', f, ROOT).ok).toBe(false);
+
+    /* ============================================================
+     * 【补】`FACT_POINTER` 锚表：提交哈希是历史锚（缺口 `GAP-1`，2026-10-25）
+     * ------------------------------------------------------------
+     * **为什么这一段也塞在既有 `it()` 里**：与上面第 41–47 行同一条理由 ——
+     *   新开一个 `it()` 会把单测用例数推高，而 `docs/VERIFY.md` 那一行「N 用例」只在
+     *   `doc-facts --write` 时才会跟上；本批边界**禁跑 `--write`** ⇒ 新开用例会让
+     *   `node scripts/doc-facts.js --check` **红在"生成物过期"**，那与要证明的缺陷无关，
+     *   还会把"真值出口"那条判据的可读性搞坏。⇒ 计数中性的加法是本批唯一自洽的形状。
+     *   （要把它拆成三个独立 `it()`，请在能跑 `--write` 的那一批里做，一行不用改逻辑。）
+     *
+     * 三条用例逐条对应 `.review/20261024-真值出口/00-定题.md` §2.5 的判别力表：
+     *   ① 哈希算锚（正向）
+     *   ② 纯数字日期**不**算锚（反向 —— 第一版 `\b[0-9a-f]{7,40}\b` 的假阳性就在这一档）
+     *   ③ 无锚仍计入（端到端；顺带证明 ①② 在**判定里**真起作用，不是正则装饰）
+     * ============================================================ */
+    // ① 哈希算锚：与 `当时` / `快照` / `vX.Y.Z` 同档（历史事实钉住了"那一刻的读数"）
+    expect(df.FACT_POINTER.test('（`5888f90`，174 文件），工程**从此有了本地回滚能力**')).toBe(true);
+    expect(df.FACT_POINTER.test('`a1b056c`（真机 bug：注入撞页面加载时 `executeJavaScript` 永不返回）')).toBe(true);
+    expect(df.FACT_POINTER.test('deadbeef')).toBe(true);          // 纯字母也一样（7 位以上、含 a–f）
+
+    // ② 纯数字日期不算锚 —— **这一档就是那条 ⚠️ 的判别力**
+    expect(df.FACT_POINTER.test('（`20261020`，174 文件）')).toBe(false);
+    expect(df.FACT_POINTER.test('2026-10-22 追加两处（`G-15` 第二批）')).toBe(false);
+    expect(df.FACT_POINTER.test('20261020')).toBe(false);
+    // 两侧接字母数字的不算：否则 `xxdeadbeefyy` 这类单词里也能取到"半截哈希"
+    expect(df.FACT_POINTER.test('xxdeadbeefyy')).toBe(false);
+    // 长度不足 7 位不算（提交短哈希的下限）
+    expect(df.FACT_POINTER.test('`a1b056`')).toBe(false);
+
+    // ③ 无锚仍计入（端到端跑第六类扫描：**真判**一遍，不是"读代码觉得它该拦"）
+    const factFixture = (files) => {
+      const dir = makeTmp('mm-docfacts-fact-');
+      const all = Object.assign({
+        // 三个 `.md` 出口都要在：少一个，判定会如实报"出口不存在 ⇒ 采不到真值，红"（`A5`），
+        // 那是夹具的错，不是要测的东西。内容里**不留数字**，免得给别的族造命中。
+        'docs/VERIFY.md': '# 验证基线\n', 'docs/TAGS.md': '# 标签词表\n',
+        'docs/ARCHITECTURE.md': '# 架构\n'
+      }, files);
+      for (const rel of Object.keys(all)) {
+        const abs = path.join(dir, rel);
+        require('node:fs').mkdirSync(path.dirname(abs), { recursive: true });
+        require('node:fs').writeFileSync(abs, all[rel], 'utf8');
+      }
+      return dir;
+    };
+    const COPY_LINE = '受管文档 16 份。';
+    // 无锚 ⇒ 计入"手抄"并**点名行号**
+    const rBare = df.scanFactOutlets(factFixture({ 'README.md': COPY_LINE }));
+    expect(rBare.problems.some((p) => p.kind === 'fact-copy' && /README\.md:1/.test(p.msg)),
+      JSON.stringify(rBare.problems)).toBe(true);
+    // 同一行带上提交哈希 ⇒ 算指针，不判红（①在判定里生效）
+    expect(df.scanFactOutlets(factFixture({ 'README.md': '（`5888f90`）' + COPY_LINE })).problems).toEqual([]);
+    // 同一行只有纯数字日期 ⇒ **仍然**判红（②在判定里生效；日期不是历史锚）
+    expect(df.scanFactOutlets(factFixture({ 'README.md': '（`20261020`）' + COPY_LINE }))
+      .problems.some((p) => p.kind === 'fact-copy' && /README\.md:1/.test(p.msg))).toBe(true);
   });
 });
 
