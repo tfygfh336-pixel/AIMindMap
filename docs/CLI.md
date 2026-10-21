@@ -56,7 +56,7 @@
 | `health` | health [<项目>] [--project 项目名] [--all] [--root 目录] [--json] |
 | `migrate` | migrate items <项目> [--dry-run] [--json] |
 | `ask-apply` | ask-apply <项目> <id> --answer "回答" [--question "提问"] [--model 模型] [--at ISO时间] [--answer-file 路径] [--as-child] [--child-id id] [--json] [--dry-run] |
-| `import-md` | import-md <项目> <md文件> [--parent id] [--force] [--dry-run] |
+| `import-md` | import-md <项目> <md文件> [--parent id] [--force] [--dry-run] [--json] |
 | `import-project` | import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--title 标题] [--dry-run] [--json] [--force] |
 | `import-dir` | import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--vault|--no-vault] [--dry-run] [--json] [--force] |
 | `merge-project` | merge-project <目标项目> <源项目> [<源项目…>] [--parent <id>] [--links keep|repoint] [--group-id <id>] [--dry-run] [--json] |
@@ -65,7 +65,7 @@
 | `learn-path` | learn-path <项目…> [--out <新项目名>] [--order 项目,…] [--limit n] [--title 标题] [--force] [--json] [--dry-run] |
 | `export-json` | export-json <项目> <输出.json> |
 | `export-html` | export-html <项目> <输出目录> |
-| `import-json` | import-json <aimap.json> [--name 项目名] |
+| `import-json` | import-json <aimap.json> [--name 项目名] [--json] |
 | `import-grade` | import-grade [<项目>] [--project 项目名] [--all] [--only 子串] [--limit n] [--include-probe] [--json] |
 | `add-image` | add-image <项目> <id> --file 图片 --caption 备注 [--source 出处] [--tags a,b] [--dry-run] |
 | `remove-image` | remove-image <项目> <id> <相对路径 assets/x.png> [--dry-run] |
@@ -372,10 +372,10 @@ node cli/mm-cli.js ask-apply <项目> <id> --answer "回答" [--question "提问
 
 ### import-md
 
-从 Markdown 导入节点（追加到 parent）。**第一个标题之前的正文（前导正文）不会丢**，落点由父节点决定：父节点**没有 `items`** ⇒ 前置进它的 `detail`（`前导 + \n + 原 detail`，原有内容一个字节都不覆盖）；父节点**有 `items`**（已条目化）⇒ 作为**首条条目**插进 `items[0]`，`detail` 随之按 `renderDetail(items)` 重建（条目化节点上 `detail` 是派生缓存，真源是 `items`）。父节点已是**坏数据**（`detail` 与 `renderDetail(items)` 不一致）或 `items` 不是数组时**响亮拒绝并给出两条真出路**（换父节点 / 先 `item-add` 再导），盘上零改动 —— 规则全文见 docs/ITEM-MODEL.md §2.1。**同一份来源默认只导一次**：本命令会给导入的子树的根写上 `origin`（来源路径 + 内容指纹，见 docs/DATA-FORMAT.md §2.8），再次导入同一 `src`+`sha256` 会**被拒并指名**上一次导到哪去了 —— 真的想要第二份就加 `--force`（那是有意的重复，不是手滑）。`--dry-run` 与真跑**同一份判据**（写盘前校验也一起跑：预览说能成 ⇒ 真跑必能成，真跑必失败 ⇒ 预览也必失败）
+从 Markdown 导入节点（追加到 parent）。**第一个标题之前的正文（前导正文）不会丢**，落点由父节点决定：父节点**没有 `items`** ⇒ 前置进它的 `detail`（`前导 + \n + 原 detail`，原有内容一个字节都不覆盖）；父节点**有 `items`**（已条目化）⇒ 作为**首条条目**插进 `items[0]`，`detail` 随之按 `renderDetail(items)` 重建（条目化节点上 `detail` 是派生缓存，真源是 `items`）。父节点已是**坏数据**（`detail` 与 `renderDetail(items)` 不一致）或 `items` 不是数组时**响亮拒绝并给出两条真出路**（换父节点 / 先 `item-add` 再导），盘上零改动 —— 规则全文见 docs/ITEM-MODEL.md §2.1。**同一份来源默认只导一次**：本命令会给导入的子树的根写上 `origin`（来源路径 + 内容指纹，见 docs/DATA-FORMAT.md §2.8），再次导入同一 `src`+`sha256` 会**被拒并指名**上一次导到哪去了 —— 真的想要第二份就加 `--force`（那是有意的重复，不是手滑）。`--dry-run` 与真跑**同一份判据**（写盘前校验也一起跑：预览说能成 ⇒ 真跑必能成，真跑必失败 ⇒ 预览也必失败）。`--json`：机器可判的一份（`{ok,command,project,parent,nodes,themes,preamble,source,resourceRefs}`），与文本回档**同一份读数**；**两跑逐字节相同**（键序固定、无时间戳、无耗时、无绝对路径 —— 节点 id / 资源新文件名 / 试过的候选路径**不进**，它们的完整内容仍在文本回档里）
 
 ```
-node cli/mm-cli.js import-md <项目> <md文件> [--parent id] [--force] [--dry-run]
+node cli/mm-cli.js import-md <项目> <md文件> [--parent id] [--force] [--dry-run] [--json]
 ```
 
 ### import-project
@@ -444,10 +444,10 @@ node cli/mm-cli.js export-html <项目> <输出目录>
 
 ### import-json
 
-从 aimap 单文件导入为新项目（解包图片）
+从 aimap 单文件导入为新项目（解包图片）。`--json`：机器可判的一份（`{ok,command,project,nodes,images,files,assets,assoc,source}`，与文本回档**同一份读数**；`source` 只给文件名 + 内容指纹 ⇒ **不含绝对路径**）；**两跑逐字节相同**（键序固定、无时间戳、无耗时）。⚠️ 本命令**没有** `--dry-run`：它按设计走裸 `store.write`（见 docs/ARCHITECTURE.md §4b 的"接线边界"），中央短路拦不住 ⇒ 给那个开关只会得到一份"说没写、其实写了"的假报告；要看它会建成什么样，把 `AI_MINDMAP_PROJECTS_DIR` 指到临时目录先真导一次
 
 ```
-node cli/mm-cli.js import-json <aimap.json> [--name 项目名]
+node cli/mm-cli.js import-json <aimap.json> [--name 项目名] [--json]
 ```
 
 ### import-grade

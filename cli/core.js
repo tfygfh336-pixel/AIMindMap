@@ -376,6 +376,12 @@ const WRITE_COMMANDS = Object.freeze([
   'add-image', 'remove-image', 'add-file', 'remove-file',
   // 导入与项目级写入（cli/commands/project.js / qa.js / merge.js）
   'import-md', 'import-project', 'import-json', 'ask-apply',
+  /* 【20261022】`import-dir`（整库导入）**也会写盘**：它建一个新项目 + 一整棵与文件夹同构的树
+   * （`ctx.write` 一次原子写，见 cli/commands/project.js 的 importDir）。它早已登记在
+   * `DRY_RUN_COMMANDS`（认 `--dry-run`），却漏在这张清单里 ⇒ 被当成**只读命令**：
+   * `import-dir … --idem k --dry-run` 当场被拒（"import-dir 不写盘"）而**去掉 --idem 就 exit 0**。
+   * 这正是本清单注释反复警告的那种漏登记 —— 判据是 `--idem` 的归属守门（`replayCheck` 第 ① 条）。 */
+  'import-dir',
   // `merge-project`（把若干个已有项目整棵并进一个已有项目）**也写盘**：走 `ctx.mutate` ⇒
   // 与别的写命令同一条闸门。不写这一行，它带 `--idem` 会被当成"只读命令"响亮拒绝。
   'merge-project',

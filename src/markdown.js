@@ -360,6 +360,73 @@
   }
 
   /**
+   * 提纲文本 → **逐行的围栏状态**（`markdownToTree` 与"数标题"共用**这唯一一份**围栏判定）。
+   *
+   * 为什么单独抽出来：围栏代码块里的 `# x` 是**代码注释**，不是标题。这条判定从前只活在
+   * `markdownToTree` 的循环里，而别处（`src/doc-import.js` 的 `finishOutline`、`import-project`
+   * 的 dry-run 预览）各自拿朴素正则 `/^(#{1,6})\s+\S/` 又数了一遍 ⇒ 同一件事两处口径、必然漂移：
+   * 一份带 shell/python 代码的经验笔记，`--dry-run` 自报 **216** 个标题而真建 **72** 个节点
+   * （差 144 = 围栏里的 `#`）。修法不是"把正则改聪明"，而是**只留一处判据**：
+   * 谁要问"哪几行是标题"，都从这里过。
+   *
+   * 边界（与 `markdownToTree` 逐字一致，别在这里"顺手改进"）：
+   *   · 围栏标记 = 去掉首尾空白后**以 ``` 开头**的行（四空格缩进的代码块**不**在此列，与既有行为一致）；
+   *   · 开围栏与收围栏的那两行都算 `isFence`；`inFence` 表示**这一行处于围栏内部**
+   *     （开围栏那行为 `false`、收围栏那行为 `true`）—— 消费方据此分辨"这是开还是收"；
+   *   · 未闭合的围栏 ⇒ 其后所有行都算围栏内（与建树时"整段原样收集"同一结论）；
+   *   · `line` 已剥掉行尾空白（`markdownToTree` 一直这么用），`raw` 是原样。
+   *
+   * @param {string} md 提纲文本
+   * @returns {Generator<{raw:string, line:string, trimmed:string, isFence:boolean, inFence:boolean}>}
+   */
+  function* outlineLines(md) {
+    let inFence = false;
+    for (const raw of String(md == null ? '' : md).split(/\r?\n/)) {
+      const line = raw.replace(/\s+$/, '');
+      const trimmed = line.trim();
+      const isFence = /^```/.test(trimmed);
+      const inside = inFence;              // 这一行的**解读语境**（在围栏内 ⇒ 什么都不解读）
+      if (isFence) inFence = !inFence;
+      yield { raw: raw, line: line, trimmed: trimmed, isFence: isFence, inFence: inside };
+    }
+  }
+
+  /**
+   * 提纲文本 → **标题行清单**（`[{level, topic, line}]`，顺序 = 出现顺序）。判据全在 `outlineLines`。
+   *
+   * 与 `markdownToTree` 的建节点条件**逐条对齐**（否则"数出来的"与"建出来的"又会分叉）：
+   *   · 只看 `heading` 形态的 `#`（列表形态的 `- 标题` 不算标题，它们由 `L_RE` 那条路处理）；
+   *   · `H_RE` 要求 `#` 后至少一个空白，`topic` 为**去空白后非空**才建节点
+   *     （`# ` 这种空标题建不出节点 ⇒ 这里也不数，否则就是虚高）。
+   * ⇒ 同一份提纲：`outlineHeadingLines(md).length` **等于** `markdownToTree` 建出来的节点数
+   *   （唯一的已知差：缺层时 `markdownToTree` 会补"（层级N）"**占位节点**，那不是标题 ——
+   *   所以"标题数"与"节点数"若有差，差多少必须由调用方如实报出，不许把差值藏进口径里）。
+   */
+  function outlineHeadingLines(md) {
+    const out = [];
+    for (const it of outlineLines(md)) {
+      if (it.inFence || it.isFence) continue;       // 围栏行与围栏内：一律不是标题
+      const m = H_RE.exec(it.line);
+      if (!m) continue;
+      const topic = m[2].trim();
+      if (!topic) continue;                          // 空标题：建不出节点 ⇒ 不数（与 openNode 同一判据）
+      out.push({ level: m[1].length, topic: topic, line: it.line });
+    }
+    return out;
+  }
+
+  /**
+   * 提纲文本 → `{headings, levelCounts}`（`--dry-run` 的"N 个标题"与 `stats.levelCounts` 的唯一来源）。
+   * 纯派生：判据在 `outlineHeadingLines`（⇒ 在 `outlineLines`），本函数**不含任何第二份正则**。
+   */
+  function countOutlineHeadings(md) {
+    const lines = outlineHeadingLines(md);
+    const levelCounts = {};
+    lines.forEach((h) => { levelCounts[h.level] = (levelCounts[h.level] || 0) + 1; });
+    return { headings: lines.length, levelCounts: levelCounts };
+  }
+
+  /**
    * Markdown 大纲 → 追加到 parent 下的节点树
    * @returns {{data, addedCount}} data 为新子树（根），addedCount 为新增节点数
    */
@@ -421,7 +488,14 @@
       addedCount++;
     }
 
-    /* ⚠️ 围栏代码块必须**整段原样**收集，这里用 `inFence` 显式隔绝三件事：
+    /* ⚠️ 围栏代码块必须**整段原样**收集 —— 围栏状态本身**只有一处实现**（`outlineLines`）：
+     *   · 本循环消费它（下面这几支）；
+     *   · 统计"提纲里有多少个 `#` 标题"（`outlineHeadingLines` / `countOutlineHeadings`）也消费它。
+     *   ⇒ "这一行算不算标题"**只有一个判据**。从前统计用的是朴素正则 `/^(#{1,6})\s+\S/`，
+     *   于是同一份带围栏的经验笔记：`--dry-run` 自报 **216** 个标题、真建 **72** 个节点（差 144，
+     *   全是围栏里的 `#`）—— 那是 `A1`「同一件事只有一处实现」的违例形状，已按单源修掉。
+     *
+     * 围栏要隔绝三件事：
      *   ① 空行不得触发 flushSeg（否则跨空行的围栏被切成多段、各段独立转 HTML ⇒ 代码碎成 <p>/<li>）；
      *   ② 围栏内的 `# 标题` / `- 列表` / 图片附件语法**一律不解读**（C 的 `#include`、shell 的 `# 注释`
      *      都是代码，不是结构）；
@@ -429,20 +503,16 @@
      * 实测代价（本次导入 day3/day4 案例程序时才发现）：Makefile 源 7 行 → detail 只剩 1 行；
      * netlink_user.c 143 行 → 6 行 —— 属"静默损坏"类，比报错危险得多。
      * 收尾标记也要收进段里，`markdownToHtml` 才能把它渲染成 `<pre><code>`。 */
-    let inFence = false;
-    for (const raw of rawLines) {
-      const line = raw.replace(/\s+$/, '');
-      const trimmed = line.trim();
-      const isFence = /^```/.test(trimmed);
-      if (inFence) {
+    for (const it of outlineLines(md)) {
+      const line = it.line;
+      if (it.inFence) {
         seg.lines.push(line);
-        if (isFence) { inFence = false; flushSeg(); }   // 收尾 ⇒ 整段立刻定格
+        if (it.isFence) { flushSeg(); }                  // 收尾 ⇒ 整段立刻定格
         continue;
       }
-      if (isFence) {                                     // 开围栏
+      if (it.isFence) {                                  // 开围栏
         flushSeg();
         seg = { kind: 'text', lines: [line] };
-        inFence = true;
         continue;
       }
       if (mode === 'heading') {
@@ -529,6 +599,10 @@
 
   return {
     markdownToTree, treeToMarkdown, idGen,
+    /* 提纲的**逐行围栏状态**与"数标题"：`src/doc-import.js` 的 `finishOutline`（`--dry-run` 报的
+     * "N 个标题"）与 `cli/commands/project.js` 的 dry-run 预览（`topHeadings`）都调这两项 ——
+     * 三处问"这一行算不算标题"共用同一个判据，不许各自拿正则再数一遍（A1：同一件事只有一处实现）。 */
+    outlineLines, outlineHeadingLines, countOutlineHeadings,
     // 【W19】导入资源的引用解析与落地（两条 import 命令 + 将来的 import-dir / W12 都调这里）
     resolveImportRefs, collectResourceRefs, resourceLine,
     RESOURCE_DIR, IMAGE_EXT_RE, IMAGE_EXT_TEXT, KIND_LABEL,

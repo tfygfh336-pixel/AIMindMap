@@ -37,6 +37,7 @@ const require = createRequire(import.meta.url);
 const REPO = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const grade = require('../src/import-grade.js');
 const markdown = require('../src/markdown.js');
+const mentions = require('../src/mentions.js');
 
 /** 造一个"浏览器端"沙箱：只有 `self`，没有 `module` / `exports` / `require`（形态照 tests/g15-umd-dual.test.js） */
 function browserSandbox(files) {
@@ -338,5 +339,104 @@ describe('J · 确定性：判据自己不许引入时变源', () => {
     const t1 = markdown.markdownToTree(md, '__x__');
     const t2 = markdown.markdownToTree(md, '__x__');
     expect(t1.data.children[0].id).not.toBe(t2.data.children[0].id);
+  });
+});
+
+describe('K · 概念覆盖率（台账 E5-4：contents 的输出进 W15 的指标）', () => {
+  /* 判据（本组钉的就是它）：**源文里的概念，有多少在盘上的树里有对应落点节点**。
+   * 为什么需要这一维：`precision / recall` 比的是**标题序列**，概念覆盖率比的是**概念序列** ——
+   * 标题被改写成更长的形式时前者掉分、后者不掉分（反过来，真的丢了一章时两者都掉）。 */
+  const tree = {
+    id: 'root', topic: 'R',
+    children: [
+      { id: 'a', topic: '1.2 收包路径', detail: '正文' },
+      { id: 'b', topic: '进程调度', detail: '正文' }
+    ]
+  };
+
+  it('概念名：去章节号、同名合并、保留第一次出现的显示名、排序确定', () => {
+    const names = grade.conceptNamesOf(['1.2 收包路径', '收包路径', '第3章 进程调度', 'Socket API']);
+    expect(names.map((x) => x.key)).toEqual(['socket api', '收包路径', '进程调度']);
+    expect(names.map((x) => x.name)).toEqual(['Socket API', '收包路径', '进程调度']);
+    expect(JSON.stringify(grade.conceptNamesOf(['a', 'b']))).toBe(JSON.stringify(grade.conceptNamesOf(['b', 'a'])));
+  });
+
+  it('分母 = 源文概念数、分子 = 其中落成节点的；**没落成的逐条点名**（不给百分比了事）', () => {
+    const cov = grade.conceptCoverage(tree, [grade.conceptNamesOf(['收包路径', '没落成的概念'])]);
+    expect(cov.conceptsInSources).toBe(2);
+    expect(cov.matched).toBe(1);
+    expect(cov.coverage).toBe(0.5);
+    expect(cov.missingCount).toBe(1);
+    expect(cov.missing).toEqual(['没落成的概念']);
+  });
+
+  it('判别力（正对照）：同一棵树，源文换成两份**都落成**的 ⇒ coverage = 1', () => {
+    const cov = grade.conceptCoverage(tree, [
+      grade.conceptNamesOf(['1.2 收包路径']),
+      grade.conceptNamesOf(['进程调度'])
+    ]);
+    expect(cov.conceptsInSources).toBe(2);      // 两份源文取并集，不重复计
+    expect(cov.matched).toBe(2);
+    expect(cov.coverage).toBe(1);
+    expect(cov.missing).toEqual([]);
+  });
+
+  it('它答的是 precision/recall 答不了的那一问（标题对不上、概念落成了）', () => {
+    // 标题层面：源文写「1.1 收包路径」、树上写成「收包路径」⇒ 多重集交 = 0 ⇒ recall = 0
+    const row = grade.gradeOne({
+      project: 'p', src: 'a.md', tool: 'import-md',
+      replayTopics: ['1.1 收包路径'], actualTopics: ['收包路径']
+    });
+    expect(row.recall).toBe(0);
+    // 概念层面：两条标题折叠成同一个概念 ⇒ 100% 落成
+    expect(grade.conceptCoverage(tree, [grade.conceptNamesOf(['1.1 收包路径'])]).coverage).toBe(1);
+  });
+
+  it('没得判时是 null，不是 0（源文概念 0 个 ≠ 一个都没落成）', () => {
+    const cov = grade.conceptCoverage(tree, []);
+    expect(cov.conceptsInSources).toBe(0);
+    expect(cov.coverage).toBe(null);
+    expect(cov.missing).toEqual([]);
+  });
+
+  it('「什么算一个概念」共用一处实现：盘上那一侧逐字来自 mentions.conceptCatalog', () => {
+    const direct = mentions.conceptCatalog(tree, { selfProject: '' });
+    const cov = grade.conceptCoverage(tree, [], { selfProject: '' });
+    expect(cov.concepts).toBe(direct.concepts);
+    expect(cov.scanned).toBe(direct.scanned);
+    expect(cov.carriers).toBe(direct.carriers);
+    expect(cov.mentions).toBe(direct.mentions);
+    expect(cov.duplicates).toBe(direct.duplicates);
+  });
+
+  it('汇总走微平均（概念数相加），没得判时 null', () => {
+    const s = grade.summarizeConceptCoverage([
+      { conceptsInSources: 10, matched: 10, concepts: 20, mentions: 3 },
+      { conceptsInSources: 10, matched: 5, concepts: 8, mentions: 1 }
+    ]);
+    expect(s.conceptsInSources).toBe(20);
+    expect(s.matched).toBe(15);
+    expect(s.coverage).toBe(0.75);          // 0.75 而不是 (1 + 0.5) / 2 = 0.75 恰好相同，故另给一条分母不等的
+    const s2 = grade.summarizeConceptCoverage([
+      { conceptsInSources: 1, matched: 1, concepts: 1, mentions: 0 },
+      { conceptsInSources: 99, matched: 0, concepts: 9, mentions: 0 }
+    ]);
+    expect(s2.coverage).toBe(0.01);         // 各行平均会是 0.5 ⇒ 微平均确实不是"平均"
+    expect(grade.summarizeConceptCoverage([]).coverage).toBe(null);
+  });
+
+  it('浏览器端没加载 src/mentions.js ⇒ 概念相关函数**响亮报**，纯算术那半照旧（不静默返回空）', () => {
+    const sb = browserSandbox(['convert.js', 'markdown.js', 'import-grade.js']);   // 刻意不加载 mentions.js
+    expect(typeof sb.MMImportGrade.conceptCoverage).toBe('function');
+    expect(() => sb.MMImportGrade.conceptCoverage(tree, [])).toThrow(/需要 src\/mentions\.js/);
+    expect(() => sb.MMImportGrade.conceptNamesOf(['a'])).toThrow(/需要 src\/mentions\.js/);
+    // 对照：加载了 mentions.js 的沙箱里同一调用能用（否则上面那条只是"永远抛"，不分辨）
+    const sb2 = browserSandbox(['convert.js', 'markdown.js', 'mentions.js', 'import-grade.js']);
+    expect(sb2.MMImportGrade.conceptNamesOf(['1.2 收包路径'])[0].key).toBe('收包路径');
+  });
+
+  it('确定性：同一入参两次 → 逐字节相同（本模块不许引入时变源）', () => {
+    const one = () => JSON.stringify(grade.conceptCoverage(tree, [grade.conceptNamesOf(['收包路径', 'X', 'Y'])]));
+    expect(one()).toBe(one());
   });
 });

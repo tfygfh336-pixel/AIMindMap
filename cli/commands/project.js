@@ -325,6 +325,28 @@ function refReportJson(rep) {
   };
 }
 
+/**
+ * `--json` 的**确定性**版资源报告（`import-md --json` 用；`import-json` 没有资源引用这一列）。
+ *
+ * 为什么另给一份而不是直接复用 `refReportJson`：那一份是给**人**看的预览（`--dry-run --json`），
+ * 里面有三个**逐跑会变或带本机路径**的字段 —— 而 `import-md --json` 的承诺是"两跑逐字节相同"：
+ *   · `node`（节点 id）：新节点 id 由 `src/markdown.js` 的 `idGen` 现摇（时间 36 进制 + 随机后缀）；
+ *   · `dest`（真导时生成的资源文件名）：命名规则同样含时间戳（`add-image` 那一条）；
+ *   · `tried`（试过的候选路径）：是**解析后的绝对路径**。
+ * ⇒ 这三个字段不进 `--json`（它们的完整内容仍在文本回档里，`--json` 不是"更少的信息"，是
+ * "只给确定性字段"）。计数一列**不重算**：直接取 `refReportJson` 的同一份结果（否则就是第二份口径）。
+ */
+function refReportStable(rep) {
+  const j = refReportJson(rep);
+  if (!j) return null;
+  return {
+    total: j.total, copy: j.copy, inProject: j.inProject, remote: j.remote,
+    missing: j.missing, badExt: j.badExt,
+    // 逐条仍然点名（写盘后要能对回"哪条引用落成了什么"），只去掉会变的三列
+    refs: (rep.refs || []).map((r) => ({ topic: r.nodeTopic, kind: r.kind, ref: r.raw, status: r.status }))
+  };
+}
+
 /* ---------------- 【批6】整库导入的资源报告与回显（按**文件**分组，逐条点名） ----------------
  * 为什么另给一份而不是复用上面两个：那两个是"**一份**文档"的视图（总数 + 一张清单）。
  * 整库导入是 N 份文档 ⇒ 每条都必须回答"**这是哪个文件里的引用**"，否则报告指不回源文件 ✗。
@@ -1395,7 +1417,10 @@ module.exports = {
     const refBlocked = !!(refPlan && !refPlan.ok);
 
     if (ctx.dryRun) {
-      const heads = conv.md.split('\n').filter((l) => /^#{1,6}\s+\S/.test(l)).slice(0, 8);
+      // 「哪几行是标题」只有**一处**判据（`src/markdown.js` 的 `outlineHeadingLines`，
+      // 围栏感知、与建树同源）。从前这里又写了一遍朴素正则 `/^#{1,6}\s+\S/` ⇒ 围栏里的 `#`
+      // 会被当成"前几个顶层主题"列出来（同一件事的第三份口径，本批一并收掉）。
+      const heads = markdown.outlineHeadingLines(conv.md).slice(0, 8).map((h) => h.line);
       const out = {
         ok: true, dryRun: true, project: name, file: file, format: conv.format,
         pdfSource: conv.source || null,
@@ -1408,7 +1433,7 @@ module.exports = {
         duplicate: dup ? { project: dup.project, id: dup.node.id, topic: dup.node.topic } : null,
         wouldRefuse: refused || refBlocked,
         forced: !!ctx.args.force,
-        topHeadings: heads.map((l) => l.replace(/^(#+)\s+/, (m, g) => '#'.repeat(g.length) + ' '))
+        topHeadings: heads
       };
       if (ctx.args.json) { ctx.outJson(out); return; }
       ctx.out('（--dry-run：只预览，**没有写盘** ✓）');
@@ -1856,6 +1881,29 @@ module.exports = {
       parentNode.children = (parentNode.children || []).concat(added);
       return cur;
     });
+    /* 【20261022】`--json`：**机器可判的一份**（与上面的文本回档**同一份读数**，不另算一遍）。
+     * 三条硬口径（照本工程既有先例：`tags --json` / `health --json` / `docs-gen --json`）：
+     *   · **确定性**：键序固定、**无时间戳**（`origin.at` 不进）、**无耗时**、**无绝对路径**
+     *     （`source` 只给 `name` + `sha256`，不给 `origin.src` —— 跨盘时它是绝对路径）；
+     *   · **不出现会逐跑变的东西**：节点 id（`idGen` 含时间+随机）、资源新文件名（命名含时间戳）、
+     *     试过的候选路径（绝对路径）⇒ 资源报告走 `refReportStable`（只给计数 + 逐条 ref 状态）；
+     *   · `--dry-run` 时由中央短路（`cli/core.js` 的 `outJson`）追加 `dryRun:true` + `plan`，**本命令不重复报**。
+     * 两跑逐字节相同是判据（`.review/20261022-import-fixes/` 的 probe-accept.js 在 %TEMP% 副本上量）。 */
+    if (ctx.args.json) {
+      ctx.outJson({
+        ok: true,
+        command: 'import-md',
+        project: ctx.projectName,
+        parent: parent,
+        nodes: r.addedCount,
+        themes: added.length,
+        preamble: { landed: preambleLanded, chars: r.preamble ? r.preamble.length : 0 },
+        // 来源指纹：`name` 是文件名（不含目录 ⇒ 不含绝对路径），`sha256` 是**规范化后的提纲**内容指纹
+        source: { name: path.basename(String(file)), sha256: origin.sha256, tool: origin.tool },
+        resourceRefs: refReportStable(refs)
+      });
+      return;
+    }
     ctx.out('导入完成，新增 ' + r.addedCount + ' 个节点（父节点 ' + parent + '）'
       + (ctx.args.force && dup ? '（--force：这是同一个来源的第 2 份）' : ''));
     // 落点如实报告（前导正文去哪了）—— 静默落盘与静默丢弃一样不可查。
@@ -2571,7 +2619,9 @@ module.exports = {
     if (!file) ctx.error('缺少 aimap JSON 文件路径');
     if (!fs.existsSync(file)) ctx.error('文件不存在: ' + file);
     // 结构解析（含 BOM 剥离）已下沉到 src/bundle.js，规则可被单测锁住
-    const parsed = bundle.parseBundle(fs.readFileSync(file, 'utf8'));
+    // `rawText` 留着给 `--json` 的内容指纹用（同一份读入，不读第二遍盘）
+    const rawText = fs.readFileSync(file, 'utf8');
+    const parsed = bundle.parseBundle(rawText);
     if (!parsed.ok) ctx.error(parsed.error);
     const pack = parsed.bundle;
     const name = String(ctx.args.name || pack.meta.name).trim();
@@ -2616,6 +2666,25 @@ module.exports = {
       imgs += (n.images || []).length;
       files += (n.files || []).length;
     });
+    /* 【20261022】`--json`：与上一行文本**同一份读数**（同一批 `nodes/imgs/files/assets` 计数，
+     * 不另算一遍）。三条硬口径同 `import-md --json`：键序固定、无时间戳、无耗时、无绝对路径
+     * （`source` 只给文件名 `name` + 内容指纹 `sha256`，不给入参路径 —— 它可能是绝对路径）。
+     * 指纹走 `docImport.outlineSha256`：与 `origin.sha256` **同一处实现**（同一份 CRLF/BOM 规范化），
+     * 不在这里另 require 一个 hash 库、也不另写一遍规范化。 */
+    if (ctx.args.json) {
+      ctx.outJson({
+        ok: true,
+        command: 'import-json',
+        project: name,
+        nodes: nodes,
+        images: imgs,
+        files: files,
+        assets: pack.assets ? Object.keys(pack.assets).length : 0,
+        assoc: Array.isArray(pack.assoc) ? pack.assoc.length : 0,
+        source: { name: path.basename(String(file)), sha256: docImport.outlineSha256(rawText) }
+      });
+      return;
+    }
     ctx.out('已导入: ' + name + '（' + nodes + ' 节点，' + imgs + ' 个图片引用，' + files + ' 个附件引用，'
       + (pack.assets ? Object.keys(pack.assets).length : 0) + ' 个资源解包）');
   },

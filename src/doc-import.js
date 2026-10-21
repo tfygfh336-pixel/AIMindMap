@@ -547,16 +547,18 @@ function docToOutline(filePath, opts) {
   return finishOutline(format, md, pdfPages, pdfInfo);
 }
 
-/** 提纲收口（md → {format, md, stats}）：两条入口（同步 / 异步）共用同一套统计口径 ✓ */
+/** 提纲收口（md → {format, md, stats}）：两条入口（同步 / 异步）共用同一套统计口径 ✓
+ *
+ * ⚠️ **"这一行算不算标题"只有一处实现**：`src/markdown.js` 的 `outlineHeadingLines`
+ *   （围栏状态机 `outlineLines` 的唯一消费方之一，另一个就是建树 `markdownToTree`）。
+ *   改前这里是朴素正则 `/^(#{1,6})\s+\S/`，于是同一份带围栏代码块的经验笔记：
+ *   `--dry-run` 自报 **216** 个标题、真建 **72** 个节点（差 144，全是围栏里的 `#` 注释）
+ *   —— 预览在说谎，而调用方（AI）会照着它做决定。现已按 A1 收成单源：
+ *   本函数**不含任何正则**，只做"把唯一判据的结果装进 stats"。 */
 function finishOutline(format, md, pages, extra) {
   const lines = md.split('\n');
-  const levelCounts = {};
-  let headings = 0;
-  for (const l of lines) {
-    const m = l.match(/^(#{1,6})\s+\S/);
-    if (m) { headings++; levelCounts[m[1].length] = (levelCounts[m[1].length] || 0) + 1; }
-  }
-  const out = { format: format, md: md, stats: { chars: md.length, lines: lines.length, headings: headings, levelCounts: levelCounts } };
+  const counted = markdown.countOutlineHeadings(md);   // ← 唯一判据（围栏感知，与建树同源）
+  const out = { format: format, md: md, stats: { chars: md.length, lines: lines.length, headings: counted.headings, levelCounts: counted.levelCounts } };
   if (Array.isArray(pages)) out.pages = pages;
   // PDF 专有：来源（书签 / 文字层）与如实报告，交给命令层打印（不静默 ✗）
   if (extra && extra.source) for (const k of Object.keys(extra)) out[k] = extra[k];

@@ -12,6 +12,15 @@
  * 分级与打分**全部**在 `src/import-grade.js`（`grade.replayTopics` / `gradeOne` / `summarize`）。
  * 本文件只做四件事：**定扫描面 → 读盘 → 调它 → 排输出**。一行判据都不在这里重写。
  *
+ * ## 概念覆盖率（台账 `E5`-4，是 `contents` 的输出进 `W15` 指标的那一栏）
+ * `--json` 里多一份 `conceptCoverage`：`{projects:[…], totals:{…}}`，逐项目给
+ * `源文概念数 / 落成数 / coverage / missing[](没落成的概念名，逐条点名)`，外加
+ * `concepts`（树里共几个概念）、`carriers`、`mentions`、`duplicates` —— 后四个**逐字来自**
+ * `src/mentions.js` 的 `conceptCatalog`（与 `contents` 同一份实现，本命令不复制口径）。
+ * 判据本体在 `src/import-grade.js` 的 `conceptCoverage`；本文件只按项目分组后交给它。
+ * ⚠️ 边界：「被正文提及却**没有自己页面**的概念」在单棵树内算不出来（概念名只可能来自树里的标题），
+ * 要量那一半，得先给"概念名"找一个树外来源 —— 见 `src/import-grade.js` §7 的边界段。
+ *
  * ## 判据的形状（为什么是"重放"，见 `src/import-grade.js` 的模块头）
  *     Y = 把源文重新跑一遍导入器（`docToOutline` → `markdownToTree`）得到的"本该长成的标题序列"
  *     X = 盘上 `origin` 子树里实际长成的那棵树的标题序列
@@ -159,6 +168,10 @@ function gradeGroup(g, memo) {
     actualTopics: actualTopics,
     placeholders: placeholders + replay.placeholders
   });
+  // 【E5-4】这一份源文的**概念名**（`conceptNamesOf` 走 `src/mentions.js` 的 `conceptNameOf`，
+  // 与 `contents` / `conceptCatalog` 同一份口径）。它不进 `--json` 的行（输出是显式映射的），
+  // 只用于后面的「概念覆盖率」聚合。
+  row.srcConceptKeys = grade.conceptNamesOf(replay.topics);
   // 混合工具：`gradeOne` 只会给 `unknown-tool` + 空 reason；"混了哪几种"只有这里知道 ⇒ 补上
   if (mixed && row.klass === 'unknown-tool') row.reason = 'mixed-tools: ' + g.tools.join(' + ');
   return row;
@@ -208,6 +221,7 @@ module.exports = {
 
     // ---- 读盘 + 判定 ----
     const memo = new Map();          // 同一份源文只读一次（多个项目引用同一文件时复用）
+    const roots = new Map();         // 【E5-4】项目名 → 树根（概念覆盖率的作用域根；只留扫到的项目）
     const rows = [];
     const projectErrors = [];
     const readOne = (name) => {
@@ -217,6 +231,7 @@ module.exports = {
         projectErrors.push({ project: name, error: (e && e.message) || String(e) });
         return;
       }
+      roots.set(name, rootOf(data));
       groupsOf(name, data).forEach((g) => rows.push(gradeGroup(g, memo)));
     };
     names.forEach(readOne);
@@ -235,6 +250,26 @@ module.exports = {
     // 排序：项目名升序 → src 升序（**唯一全序** ⇒ 同输入两跑顺序相同）
     kept = kept.slice().sort((a, b) => (a.project < b.project ? -1 : a.project > b.project ? 1
       : (a.src < b.src ? -1 : a.src > b.src ? 1 : 0)));
+
+    /* ---- 【E5-4】概念覆盖率：**按项目**聚合 ----
+     * · 用 `kept`（`--only` 之后）而不是 `shown`（`--limit` 之后）：`--limit` 只该影响打印，
+     *   与 `totals` 同一条纪律；
+     * · 按项目而不是按源文：判据问的是「**这本书**的概念有多少被落成了节点」；
+     * · 判据本体（含"什么算一个概念"）全部在 `src/import-grade.js` 的 `conceptCoverage`，
+     *   它直接调 `src/mentions.js` 的 `conceptCatalog` / `conceptNameOf` ⇒ 与 `contents` 同一份实现。 */
+    const covLists = new Map();
+    kept.forEach((r) => {
+      if (!covLists.has(r.project)) covLists.set(r.project, []);
+      covLists.get(r.project).push(r.srcConceptKeys || []);
+    });
+    const covProjects = [];
+    Array.from(covLists.keys()).sort().forEach((name) => {
+      const root = roots.get(name);
+      if (!root) return;                 // 读不动的项目已在 projectErrors 里点名，这里不编一份读数
+      covProjects.push(Object.assign({ project: name },
+        grade.conceptCoverage(root, covLists.get(name), { selfProject: name })));
+    });
+    const covTotals = grade.summarizeConceptCoverage(covProjects);
 
     const sum = grade.summarize(kept);
     const shown = limit > 0 ? kept.slice(0, limit) : kept;
@@ -259,6 +294,7 @@ module.exports = {
         totals: sum.totals,
         precision: sum.precision,
         recall: sum.recall,
+        conceptCoverage: { projects: covProjects, totals: covTotals },
         rowsShown: shown.length,
         rowsTotal: kept.length,
         truncated: truncated,
@@ -303,6 +339,20 @@ module.exports = {
     }
     if (t.placeholders) {
       ctx.out('占位节点「（层级N）」剔除 ' + t.placeholders + ' 个（层级跳跃处由建树器插入，不算标题）');
+    }
+    if (covProjects.length) {
+      ctx.out('概念覆盖率（E5-4 · 与 contents 共用 src/mentions.js 的 conceptCatalog）：源文概念 '
+        + covTotals.conceptsInSources + ' 个 → 落成 ' + covTotals.matched + ' 个（'
+        + (covTotals.coverage === null ? '—' : (covTotals.coverage * 100).toFixed(1) + '%')
+        + '）· 树里共 ' + covTotals.concepts + ' 个概念 / 正文提及 ' + covTotals.mentions + ' 处');
+      covProjects.forEach((p) => {
+        ctx.out('  · ' + p.project + '：源文概念 ' + p.conceptsInSources + ' · 落成 ' + p.matched
+          + ' · 覆盖 ' + (p.coverage === null ? '—' : (p.coverage * 100).toFixed(1) + '%')
+          + ' · 树里 ' + p.concepts + ' 个概念'
+          + (p.missingCount ? ' · 没落成 ' + p.missingCount + ' 个' : ''));
+        p.missing.slice(0, 3).forEach((x) => ctx.out('      - 源文有、树上没落成：「' + x + '」'));
+        if (p.namesTruncated) ctx.out('      …点名已截断（每项目最多 ' + grade.MAX_NAMES + ' 条，完整清单加 --json）');
+      });
     }
     if (!t.sources) {
       ctx.out('（这个扫描面里**一份导入都没有**：没有节点带 `origin`。要么没导过，要么是 `import-json`/老数据。）');

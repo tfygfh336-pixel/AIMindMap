@@ -21,10 +21,14 @@
  * 有唯一答案。本工程 2026-10-19 已用同一条理由否掉过"多久算旧"那类假硬门禁（`docs/ROADMAP.md` §在飞 的开头）。
  *
  * ## 为什么判据必须是"重放"，不是"自己数标题"
- * 建树那条路（`src/markdown.js` 的 `markdownToTree`）是**围栏感知**的：``` 里的 `#` 不是标题；
- * 而 `src/doc-import.js` 的 `finishOutline` 统计 `stats.headings` 用的是**朴素正则**（不看围栏）。
- * 实测：同一批 38 份源文件，用朴素分母算 recall **0.7957**，用围栏感知算 **0.9712** ——
- * 差的不是数据，是判据写错了。所以本模块**只吃重放结果**，一个标题正则都不写。
+ * 建树那条路（`src/markdown.js` 的 `markdownToTree`）是**围栏感知**的：``` 里的 `#` 不是标题。
+ * ⚠️ **2026-10-22 订正**：本段原写「`src/doc-import.js` 的 `finishOutline` 统计 `stats.headings`
+ * 用的是**朴素正则**（不看围栏）」—— **那次修复之后这句不再是现状**：围栏状态现在**只有一份实现**
+ * （`src/markdown.js` 的 `outlineLines()`），`markdownToTree` / `outlineHeadingLines` /
+ * `countOutlineHeadings` / 以及 dry-run 的"前几个顶层主题"**全部消费它**。
+ * 而下面那组读数（同一批 38 份源文件，朴素分母 recall **0.7957**、围栏感知 **0.9712**）是
+ * **当时的实测**，作为"判据写错会差多少"的**历史证据**保留 —— 它正是本模块坚持只吃重放结果的理由。
+ * 所以本模块**只吃重放结果**，一个标题正则都不写。
  *
  * ## 精度口径（与 `docs/FEATURES.md` 的 `IG` 行同一份）
  *     E = 重放得到的标题序列（保序、**保重**、围栏感知）
@@ -35,11 +39,11 @@
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./markdown.js'));
+    module.exports = factory(require('./markdown.js'), require('./mentions.js'));
   } else {
-    root.MMImportGrade = factory(root.MMMarkdown || null);
+    root.MMImportGrade = factory(root.MMMarkdown || null, root.MMMentions || null);
   }
-})(typeof self !== 'undefined' ? self : this, function (markdown) {
+})(typeof self !== 'undefined' ? self : this, function (markdown, mentions) {
   'use strict';
 
   /* ==========================================================================
@@ -349,7 +353,138 @@
   }
 
   /* ==========================================================================
-   * 6. 导出（键序固定：`--json` 的对象字面量顺序就是输出顺序）
+   * 7. 概念覆盖率（台账 `E5`-4：`contents` 的输出进 `W15` 的指标）
+   * --------------------------------------------------------------------------
+   * 它回答的那一句人话：**这本书（源文）讲了哪些概念、其中多少个真的落成了节点**。
+   *
+   * ## 为什么这一段不是"第二份判据"
+   * 「什么算一个概念」的唯一实现是 `src/mentions.js` 的 `conceptNameOf`（`contents` 的
+   * `conceptCatalog` 内部用的就是它）。本段**一行口径都不另写**：
+   *   · 盘上那一侧：直接调 `mentions.conceptCatalog()`，拿它的 `items[].key`（= 概念名小写）；
+   *   · 源文那一侧：只调 `mentions.conceptNameOf()` 把标题折成同一个键；
+   *   · 本段自己只做**集合交并**与计数 —— 没有第三处"什么算概念"。
+   *
+   * ## 判据（可复算）
+   *     源文概念    = 该项目的每份源文"重放标题序列"经 `conceptNameOf` 折叠后**去重**的集合（并集）
+   *     落成         = 上述概念里，在盘上的树里**有落点节点**的那些（同一份 `conceptCatalog` 认的落点）
+   *     coverage     = |落成| / |源文概念|（源文概念 0 个 ⇒ `null`，**不写 0**：0 是"一个没落成"，null 是"没得判"）
+   *     missing[]    = **逐条点名**哪个概念没落成（点不了名的百分比没有依据）
+   *
+   * ## 边界（如实说，别把这条读成"概念健康度全貌"）
+   *   · 「被正文提及却**没有自己页面**的概念」在单棵树内**算不出来**：概念名只可能来自树里的标题
+   *     ⇒ 每个概念天生有落点（`src/mentions.js` 模块头那条边界，同一句话）。
+   *     要把那一半也量出来，**得先动**：给"概念名"找一个树外来源（跨项目的 `mentions --cross`、
+   *     或一份外部术语表），并先定"哪些名字算这本书的概念"—— 那是新契约，不是新指标。
+   *   · 分母是**源文概念**（有 `origin` 的导入），不是"这本书里所有概念"：没导过的节点不参与。
+   * ======================================================================== */
+
+  /** 概念名 → 比对键。折叠口径**只有一处**：`mentions.conceptNameOf`（本函数只做大小写折叠，
+   *  与 `conceptCatalog` 内部的 `key` 完全一致）。取不到 `mentions` 时**响亮报**，不静默返回空。 */
+  function conceptKeyOf(topic) {
+    const m = needMentions();
+    const name = m.conceptNameOf(topic);
+    return name ? String(name).toLowerCase() : '';
+  }
+
+  /**
+   * 一组标题 → `[{key, name}]`（按 key 码点升序 ⇒ 确定性）。
+   * `name` 是**第一次出现的显示名**（原样大小写），`key` 是比对键（小写折叠后的概念名）——
+   * 只返回 key 会让点名丢掉大小写（`Socket API` 变成 `socket api`），而"点不了名"的读数没法复核。
+   */
+  function conceptNamesOf(topics) {
+    const list = Array.isArray(topics) ? topics : [];
+    const byKey = new Map();
+    for (let i = 0; i < list.length; i++) {
+      const k = conceptKeyOf(list[i]);
+      if (!k || byKey.has(k)) continue;
+      byKey.set(k, needMentions().conceptNameOf(list[i]));
+    }
+    return Array.from(byKey.keys()).sort().map((k) => ({ key: k, name: byKey.get(k) }));
+  }
+
+  /** `mentions` 的懒守卫（浏览器端没加载它时，只有**调用概念相关的那几个函数**才抛）。 */
+  function needMentions() {
+    if (!mentions || typeof mentions.conceptCatalog !== 'function' || typeof mentions.conceptNameOf !== 'function') {
+      throw new Error('概念覆盖率需要 src/mentions.js（浏览器端请先加载它；'
+        + '「什么算一个概念」的判据只在那一个文件里，本模块不复制第二份）');
+    }
+    return mentions;
+  }
+
+  /**
+   * 概念覆盖率：**源文里的概念，有多少在盘上的树里有对应落点节点**。
+   *
+   * @param {object} root 项目树根（`{id, topic, children}`；`conceptCatalog` 的作用域根）
+   * @param {Array<Array<{key:string,name:string}|string>>} sourceNameLists 每份源文的
+   *        `conceptNamesOf(replayTopics)` —— **逐份传**，本函数取并集（同一概念在多份源文里
+   *        出现只算一次；源文之间本来就不该重复计）。退化入参（纯字符串）也认（当 key 用）。
+   * @param {{selfProject?:string}} [opts] `selfProject` 原样透传给 `conceptCatalog`（判"已建链接"用）
+   * @returns {object} 键序固定 ⇒ `--json` 两跑逐字节相同
+   */
+  function conceptCoverage(root, sourceNameLists, opts) {
+    const m = needMentions();
+    const o = opts || {};
+    const catalog = m.conceptCatalog(root, { selfProject: o.selfProject === undefined ? '' : String(o.selfProject) });
+    const landed = new Set();
+    const items = Array.isArray(catalog.items) ? catalog.items : [];
+    for (let i = 0; i < items.length; i++) {
+      const k = items[i] && items[i].key ? String(items[i].key) : '';
+      if (k) landed.add(k);
+    }
+    const srcName = new Map();          // key → 显示名（第一次出现的那一份）
+    const lists = Array.isArray(sourceNameLists) ? sourceNameLists : [];
+    for (let i = 0; i < lists.length; i++) {
+      const one = Array.isArray(lists[i]) ? lists[i] : [];
+      for (let j = 0; j < one.length; j++) {
+        const it = one[j];
+        const k = it && typeof it === 'object' ? String(it.key || '') : String(it || '');
+        if (!k || srcName.has(k)) continue;
+        srcName.set(k, it && typeof it === 'object' && it.name ? String(it.name) : k);
+      }
+    }
+    const srcKeys = Array.from(srcName.keys()).sort();
+    let matched = 0;
+    const missing = [];                 // ⚠️ 这里是**显示名**（不是 key）：点名要能被人认出来
+    for (let i = 0; i < srcKeys.length; i++) {
+      if (landed.has(srcKeys[i])) matched++;
+      else missing.push(srcName.get(srcKeys[i]));
+    }
+    return {
+      scanned: catalog.scanned,
+      carriers: catalog.carriers,
+      concepts: catalog.concepts,
+      mentions: catalog.mentions,
+      withMentions: catalog.withMentions,
+      duplicates: catalog.duplicates,
+      conceptsInSources: srcKeys.length,
+      matched: matched,
+      coverage: srcKeys.length ? round4(matched / srcKeys.length) : null,
+      missingCount: missing.length,
+      missing: missing.length > MAX_NAMES ? missing.slice(0, MAX_NAMES) : missing,
+      namesTruncated: missing.length > MAX_NAMES
+    };
+  }
+
+  /**
+   * 把若干项目的 `conceptCoverage` 汇总成一行（**微平均**：概念数相加，不是"各项目平均"——
+   * 与 `summarize()` 对 precision / recall 的口径同一条）。
+   */
+  function summarizeConceptCoverage(list) {
+    const rows = Array.isArray(list) ? list : [];
+    const out = { projects: rows.length, conceptsInSources: 0, matched: 0, concepts: 0, mentions: 0, coverage: null };
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i] || {};
+      out.conceptsInSources += Number(r.conceptsInSources) || 0;
+      out.matched += Number(r.matched) || 0;
+      out.concepts += Number(r.concepts) || 0;
+      out.mentions += Number(r.mentions) || 0;
+    }
+    out.coverage = out.conceptsInSources ? round4(out.matched / out.conceptsInSources) : null;
+    return out;
+  }
+
+  /* ==========================================================================
+   * 8. 导出（键序固定：`--json` 的对象字面量顺序就是输出顺序）
    * ======================================================================== */
 
   return {
@@ -368,6 +503,10 @@
     originNodeCountsAsProduct: originNodeCountsAsProduct,
     topicsOfOrigin: topicsOfOrigin,
     gradeOne: gradeOne,
-    summarize: summarize
+    summarize: summarize,
+    conceptKeyOf: conceptKeyOf,
+    conceptNamesOf: conceptNamesOf,
+    conceptCoverage: conceptCoverage,
+    summarizeConceptCoverage: summarizeConceptCoverage
   };
 });
