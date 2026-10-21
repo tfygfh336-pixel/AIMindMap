@@ -11,6 +11,10 @@
  *   node scripts/doc-facts.js          打印权威事实（人/文档引用）
  *   node scripts/doc-facts.js --check  扫描全部 .md，与真值比对；不一致则 exit 1
  *   node scripts/doc-facts.js --write  生成 docs/VERIFY.md（验证基线单源）
+ *   node scripts/doc-facts.js --check --no-vitest
+ *                                      快档：用例数取缓存（**不重跑 vitest**）；缓存与 `tests/`
+ *                                      指纹不一致 ⇒ 报 stale 并 exit 1。走这一档时输出会**响亮标注
+ *                                      "这个数是缓存的、不是现算的"**（静默拿缓存当现算是最坏的假绿）
  *   node scripts/doc-facts.js --vocab  门禁 S4：`docs/TAGS.md` 的适用范围 ↔ 真实 projects 的标签
  *                                     （判据本体在 `tags --vocab`，本脚本定扫描面并翻成 exit code）
  *
@@ -31,10 +35,199 @@ const verifyChain = require(path.join(__dirname, 'verify.js'));
 // 那正是别人可能改这份生成物的窗口。原先"读全文 → 改 → 写全文"中间**没有指纹比对**，
 // 后写者会整份覆盖先写者的改动，**没有任何东西能检出**（这正是 2026-10 那次 `docs/ARCHITECTURE.md`
 // 三行被两批各改一次冲掉的机器侧根因）。⇒ 只调 `data-store` 那一对函数，本文件**不写第二份比较逻辑**。
-const { readManagedText, writeManagedText } = require(path.join(__dirname, '..', 'src', 'data-store.js'));
+const { readManagedText, writeManagedText, writeFileAtomic } = require(path.join(__dirname, '..', 'src', 'data-store.js'));
+
+/* ---------------- 快档：`--no-vitest`（用缓存的用例数，不重跑 vitest） ----------------
+ * 为什么要有它（实测 2026-10-22，读数见 `.review/20261022-docfacts-fast/measure-out.json`）：
+ *   单独跑一次 `node scripts/doc-facts.js --check` = **45 643.8 ms**（median，3 轮），
+ *   其中 **44 810 ms = 98.2%** 全花在"为了取一个用例数而**现跑一遍 vitest**"上；
+ *   同一命令行只切既有交接口（`AI_MINDMAP_UNIT_TESTS`）= **833.4 ms**（median，5 轮）。
+ *   ⇒ 不是"某一段慢"，是**一个数字吃掉整个门禁**。而 `verify.js` 的 G3 每轮都已经跑过一次 vitest
+ *   并把数交给 G6 —— 那条路（`STEPS[].useUnitTests`）**早就存在**，缺的只是"单独调本脚本"时的那条。
+ *
+ * 三条硬要求（照本工程既有先例，别在这里自创口径）：
+ *   ① **响亮说明"这个数是缓存的、不是现算的"**（`V2` 的"跳过档可见性"先例）：静默拿缓存当现算
+ *      是**最坏的假绿** ⇒ 只要真走了缓存档：开头打一块 ⚠️ 横幅、`printFacts` 的来源栏写明、
+ *      末尾那句"校验通过"再带一句"用例数来自缓存"。
+ *   ② **缓存过期 ⇒ 报 stale 并 fail**（判据同 `W10` 批给判词缓存设计的"源文 sha256 变 ⇒ 报 stale"，
+ *      这里用**更严的形状**：逐份记 `tests/` 下每个文件的 `size + mtimeMs`，逐份比）：
+ *      新增 / 删除 / 改动**任何**一份测试文件或夹具 ⇒ 缓存作废。拿不准就不认。
+ *   ③ **默认档一个字节都不改**：不加 `--no-vitest` 时仍然现跑 vitest（别人依赖默认档是真值）。
+ *
+ * 缓存落在 `.review/docfacts-unit-tests.json`（工作产物区：已 gitignore、可随时整目录删）——
+ * 与 `verify.js` 的 `.review/verify-tests.json` / `last-verify.json` 同一个家，不新开目录。
+ *
+ * ⚠️ **一条设计不变量**：写缓存只发生在"这次**真的现算**过"的两条路径上 ——
+ *   ① 本进程现跑 vitest；② 验证链 G3 交接。**缓存档自己绝不写缓存** ——
+ *   否则一条 stale 记录可以被自己"续命"成 fresh，闸门就成了摆设（这是这类缓存的经典失效形态）。
+ */
+const UNIT_CACHE_REL = '.review/docfacts-unit-tests.json';
+const UNIT_CACHE_VERSION = 1;
+/** 指纹扫描面：`tests/` **整棵树**（声明式常量，**不许在判定里临时拼** —— `B4b` 结构断言那一条）。
+ *  为什么是整棵树而不是只 `*.test.js`：用例数由"测试文件 + 它们载入的夹具/helper"共同决定，
+ *  `tests/fixtures/` 里改一行 golden 也可能改变用例数（例如表格驱动用例的行数）。
+ *  当前 `tests/fixtures/` 的三个样本都是**只读冻结样本**（实测 grep：没有任何测试写它），
+ *  所以不会出现"跑一次测试就把缓存跑成 stale"的假红。 */
+const UNIT_FINGERPRINT_ROOT = 'tests';
+
+/** 递归取 `tests/` 的指纹（`rel` / `size` / `mtimeMs`），按 rel 排序。**只 IO，不做判断。** */
+function unitFingerprint(rootDir) {
+  const root = path.resolve(rootDir || ROOT);
+  const base = path.join(root, UNIT_FINGERPRINT_ROOT);
+  const out = [];
+  (function walk(dir) {
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      let st;
+      try { st = fs.statSync(p); } catch (err) { continue; }
+      out.push({ rel: path.relative(root, p).replace(/\\/g, '/'), size: st.size, mtimeMs: st.mtimeMs });
+    }
+  })(base);
+  return out.sort((a, b) => (a.rel < b.rel ? -1 : (a.rel > b.rel ? 1 : 0)));
+}
+
+/**
+ * **纯判定**：缓存指纹 vs 磁盘指纹（不读盘、不打印 ⇒ 可被单测直接打红，`B6`）。
+ * 三档各自成套：新增 / 删除 / 变动。**任一处不为空即 stale** —— 缓存代表的是"那一刻的 tests/ 树"。
+ * @returns {{ok:boolean, added:string[], removed:string[], changed:string[],
+ *            cachedCount:number, diskCount:number}}
+ */
+function judgeUnitCache(cachedFiles, diskFiles) {
+  const c = Array.isArray(cachedFiles) ? cachedFiles : [];
+  const d = Array.isArray(diskFiles) ? diskFiles : [];
+  const cm = new Map();
+  const dm = new Map();
+  c.forEach((f) => { if (f && f.rel) cm.set(f.rel, f); });
+  d.forEach((f) => { if (f && f.rel) dm.set(f.rel, f); });
+  const added = [];
+  const removed = [];
+  const changed = [];
+  dm.forEach((f, rel) => { if (!cm.has(rel)) added.push(rel); });
+  cm.forEach((f, rel) => {
+    const g = dm.get(rel);
+    if (!g) { removed.push(rel); return; }
+    // size 或 mtimeMs 任一不同 ⇒ 这份文件在缓存之后被动过（mtimeMs 是亚毫秒的，够分辨）
+    if (Number(f.size) !== Number(g.size) || Number(f.mtimeMs) !== Number(g.mtimeMs)) changed.push(rel);
+  });
+  return {
+    ok: !added.length && !removed.length && !changed.length,
+    added: added.sort(), removed: removed.sort(), changed: changed.sort(),
+    cachedCount: cm.size, diskCount: dm.size
+  };
+}
+
+/** 缓存的绝对路径（**只在这里算一次**） */
+function unitCachePath(rootDir) {
+  return path.join(path.resolve(rootDir || ROOT), UNIT_CACHE_REL);
+}
+
+/**
+ * 读缓存。**读不到不是异常**，是"没有缓存"（三档：`ok` / `missing` / `invalid`）。
+ * 结构不认识的缓存一律 `invalid` —— **不猜**（猜错就是静默假绿）。
+ */
+function readUnitCache(file, rootDir) {
+  const abs = file || unitCachePath(rootDir);
+  let txt;
+  try { txt = fs.readFileSync(abs, 'utf8'); }
+  catch (e) { return { status: 'missing', file: abs, error: (e && e.message) || String(e) }; }
+  let j;
+  try { j = JSON.parse(txt); }
+  catch (e) { return { status: 'invalid', file: abs, error: '缓存不是合法 JSON：' + ((e && e.message) || e) }; }
+  if (!j || j.version !== UNIT_CACHE_VERSION) {
+    return { status: 'invalid', file: abs, error: '缓存结构版本不是 ' + UNIT_CACHE_VERSION + '（结构改过就作废，不猜）' };
+  }
+  if (!Number.isInteger(j.count) || j.count <= 0) {
+    return { status: 'invalid', file: abs, error: '缓存里的 `count` 不是正整数' };
+  }
+  if (!Array.isArray(j.files) || !j.files.length) {
+    return { status: 'invalid', file: abs, error: '缓存里没有测试文件指纹（无指纹就无法判过期）' };
+  }
+  return { status: 'ok', file: abs, count: j.count, at: j.at || null, by: j.by || null, files: j.files };
+}
+
+/**
+ * 写缓存（**只在"这次真的现算过"的路径上调用**）。best-effort：写不进去只警告，
+ * **不改变任何判定**（照 `verify.js` 写 `last-verify.json` / 历史那两条的先例）。
+ *
+ * ⚠️ **必须走唯一写盘出口** `src/data-store.js` 的 `writeFileAtomic`（tmp → fsync → rename）。
+ * 本文件**不许**自己拼一份 tmp + rename —— `S2` / `collateral-check` 的 `WRITE_OUTLET` 判定会当场判红，
+ * 门禁原话就是"这是**第二份原子写实现**；写盘出口只有一个函数"。本批第一版正是在这里自己写了
+ * `fs.writeFileSync(tmp)` + `fs.renameSync`，被那道门禁抓住（今天第 5 次同形）⇒ 改成走出口。
+ * 顺带两条：它带 `fsync`（断电后不留半截文件）与 **rename 有界重试**（Windows 上并发写会 EPERM），
+ * 这两样自己写一份很难写对。
+ */
+function writeUnitCache(count, by, file, rootDir) {
+  const abs = file || unitCachePath(rootDir);
+  if (!Number.isInteger(count) || count <= 0) {
+    return { ok: false, file: abs, error: '拒绝写入非法用例数：' + count };
+  }
+  const rec = { version: UNIT_CACHE_VERSION, count: count, by: by || 'unknown',
+    at: new Date().toISOString(), root: path.resolve(rootDir || ROOT), files: unitFingerprint(rootDir) };
+  try {
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    writeFileAtomic(abs, JSON.stringify(rec) + '\n');
+    return { ok: true, file: abs, files: rec.files.length };
+  } catch (e) {
+    return { ok: false, file: abs, error: (e && e.message) || String(e) };
+  }
+}
+
+/** 组装 stale 报文（**纯函数**，报错即教程：说清差在哪、以及怎么办） */
+function unitCacheStaleMessage(judge, cache) {
+  const CAP = 4;
+  const list = (arr) => (arr.length <= CAP ? arr.join('、')
+    : arr.slice(0, CAP).join('、') + ' …（共 ' + arr.length + ' 份）');
+  const parts = [];
+  if (judge.added.length) parts.push('磁盘上新增 ' + judge.added.length + ' 份：' + list(judge.added));
+  if (judge.removed.length) parts.push('磁盘上少了 ' + judge.removed.length + ' 份：' + list(judge.removed));
+  if (judge.changed.length) parts.push('size/mtime 变过 ' + judge.changed.length + ' 份：' + list(judge.changed));
+  return '缓存写于 ' + ((cache && cache.at) || '（无时间戳）') + '、当时算得 ' + ((cache && cache.count))
+    + ' 例；但它记的 ' + judge.cachedCount + ' 份测试文件指纹与磁盘的 ' + judge.diskCount
+    + ' 份**逐份比对不一致** ⇒ ' + parts.join('；')
+    + '。拿不准就不认：**去掉 `--no-vitest` 现跑一次**（默认档会顺手把缓存刷新）';
+}
+
+/** 快档横幅（**只要真走了缓存档就打印**；走验证链交接时不打印 —— 那个数是本次链现算的）。 */
+function printNoVitestBanner(v) {
+  const c = v.unitTestsCache;
+  if (!c) return;
+  console.log('');
+  console.log('⚠️⚠️ 快档 `--no-vitest`：**单测用例数不是这次现算的** ⚠️⚠️');
+  console.log('   缓存文件：' + c.file);
+  const fresh = c.status === 'ok' && c.judge && c.judge.ok && v.unitTests !== null;
+  const stale = c.status === 'ok' && c.judge && !c.judge.ok;
+  if (fresh) {
+    console.log('   读到的值：' + c.count + ' 例（缓存写于 ' + (c.at || '（无时间戳）')
+      + '，由 ' + (c.by || '未知') + ' 写入）');
+    console.log('   新鲜度  ：`' + UNIT_FINGERPRINT_ROOT + '/` 下 ' + c.judge.diskCount
+      + ' 份文件的 size+mtimeMs 与缓存时**逐份一致** ⇒ 期间没有测试文件/夹具变动');
+    console.log('   ⚠️  它**不等于**"刚刚跑过一遍 vitest"：本档**没有执行任何用例**。'
+      + '要现算就去掉 `--no-vitest`（默认档仍现跑）。');
+  } else if (stale) {
+    console.log('   ✗ 缓存**已过期（stale）**⇒ 本档拒绝使用它（详见下面的 ✗ 行）');
+  } else if (c.status === 'ok') {
+    // 缓存结构正常、指纹也一致，但值本身被拒（例：例数 < 测试文件数）—— 那份理由在下面的 ✗ 行里
+    console.log('   ✗ 缓存的值被拒绝（详见下面的 ✗ 行）');
+  } else {
+    console.log('   ✗ 没有可用缓存（' + c.status + '）：' + (c.error || ''));
+    console.log('   → 先跑一次默认档（`node scripts/doc-facts.js --check`）或 `npm run verify`'
+      + '（G3 会写缓存），再来用这一档');
+  }
+  console.log('');
+}
 
 /* ---------------- 事实采集 ---------------- */
-function facts() {
+/**
+ * @param {{noVitest?:boolean}} [opts] `noVitest:true` = 快档（`--no-vitest`）：**不跑 vitest**，
+ *   用 `.review/docfacts-unit-tests.json` 里上一次**真的现算过**的用例数；缓存与磁盘指纹不一致就判红。
+ *   不传（= 默认档）时，本函数的行为与本批之前**逐字节相同**。
+ */
+function facts(opts) {
+  const o = opts || {};
+  const noVitest = o.noVitest === true;
   const registry = require(path.join(ROOT, 'cli', 'registry.js'));
   const mcp = require(path.join(ROOT, 'scripts', 'mcp-server.js'));
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
@@ -54,6 +247,9 @@ function facts() {
   let unitTests = null;
   let unitTestsError = null;
   let unitTestsSource = '本进程现跑 vitest';
+  // 快档（`--no-vitest`）的现场读数：**只在真走了缓存档**时非 null ⇒ 横幅只在必要时出现
+  // （走验证链交接时这个数是本次链现算的、不是缓存，不该被标成缓存）。
+  let unitTestsCache = null;
   // ---- 优先采用验证链第 4 步（npm test）传来的用例数：整条链只跑一次 vitest ----
   // 为什么可以信它：`scripts/verify.js` 会**先删掉上一次的结果文件**再跑 `npm test`，
   // 跑完立刻读回并通过环境变量交给本步 —— 所以这个值只可能是**本次**链产生的，
@@ -67,6 +263,35 @@ function facts() {
   if (fromChain !== null && (unitFiles === null || fromChain >= unitFiles)) {
     unitTests = fromChain;
     unitTestsSource = '验证链本次 npm test（verify.js 传入，已省去重跑 vitest）';
+    // 这次链上**真的跑过一遍 vitest**（`verify.js` 的 G3 现跑，且它会先删结果文件）
+    // ⇒ 顺手刷新缓存，让"跑完 verify 之后单独用 --no-vitest"也拿得到新鲜值。
+    // best-effort：写不进去只警告，**不改任何判定**。
+    writeUnitCache(unitTests, 'verify-chain-handoff');
+  } else if (noVitest) {
+    // ---- 快档：**不跑 vitest**，用上一次真的现算过的数（缓存） ----
+    const cache = readUnitCache();
+    unitTestsCache = cache;
+    if (cache.status !== 'ok') {
+      unitTestsError = '快档 `--no-vitest` 没有可用缓存（' + cache.status + '）：' + (cache.error || '')
+        + ' —— 本档**不许**在"没有可核对的数"时给出结论（采不到真值 = 红）。'
+        + '先去跑一次默认档（`node scripts/doc-facts.js --check`）或 `npm run verify`（G3 会写缓存）';
+    } else {
+      const judge = judgeUnitCache(cache.files, unitFingerprint(ROOT));
+      cache.judge = judge;
+      if (!judge.ok) {
+        cache.staleMessage = unitCacheStaleMessage(judge, cache);
+        unitTestsError = '快档 `--no-vitest` 的缓存**已过期（stale）**：' + cache.staleMessage;
+      } else if (unitFiles !== null && cache.count < unitFiles) {
+        // 与交接口同一条防呆：数量不得少于测试文件数 —— 明显不合理的值一律不采信
+        unitTestsError = '快档 `--no-vitest` 缓存里的 ' + cache.count + ' 例 < 测试文件数 ' + unitFiles
+          + '（明显不合理）—— 拒绝采信，去掉 `--no-vitest` 现跑一次';
+      } else {
+        unitTests = cache.count;
+        unitTestsSource = '**缓存（`--no-vitest`：没有现跑 vitest）**：`' + UNIT_CACHE_REL + '` 写于 '
+          + (cache.at || '（无时间戳）') + '，`' + UNIT_FINGERPRINT_ROOT + '/` 下 ' + judge.diskCount
+          + ' 份文件的 size+mtimeMs 逐份一致';
+      }
+    }
   } else {
     const runVitest = () => execFileSync(process.execPath, [
       path.join(ROOT, 'node_modules', 'vitest', 'vitest.mjs'), 'run', '--pool=threads'
@@ -93,6 +318,8 @@ function facts() {
           + '（见 docs/VERIFY.md「本机受限环境注意」）：确认没有别的会话在写文件后重跑一次';
       }
     }
+    // 现算成功 ⇒ 刷新缓存（否则快档**永远**没有可用的东西 —— 缓存只能由真算产生）
+    if (unitTests !== null) writeUnitCache(unitTests, 'vitest-run');
   }
 
   // 用例数解析见文件顶部的 `parseVitestCount` —— **它取总数，不取 passed**（有失败用例时两者不同）
@@ -132,6 +359,7 @@ function facts() {
     unitTestsError: unitTestsError,
     unitFiles: unitFiles,
     unitTestsSource: unitTestsSource,
+    unitTestsCache: unitTestsCache,
     version: pkg.version,
     configVersion: (cfgSrc.match(/APP_VERSION:\s*'([^']*)'/) || [])[1] || null,
     lockVersion: lock.version,
@@ -1235,6 +1463,10 @@ function runVocabGate(opts) {
 
 function main() {
   const args = process.argv.slice(2);
+  /* 快档开关：**只是"取用例数的方式"不同，判定口径一条都不改**（见 `UNIT_CACHE_REL` 上方那段）。
+   * 为什么做成显式 opt-in 而不是"发现没 vitest 就自动用缓存"：默认档必须仍是真值 ——
+   * 否则会把"这一轮到底现算没现算"变成环境决定的隐性状态（最坏的静默）。 */
+  const noVitest = args.includes('--no-vitest');
   /* `--vocab`（门禁 `S4`）：必须放在 `facts()` **之前** —— `facts()` 会真跑一遍 vitest（几十秒），
    * 而词表判据只要 40ms 量级（实测：7 本书的 `tags --vocab` 进程内 43ms）。
    * 与 `--check` 分开（不并进去）的理由：两者的**扫描面**不同 —— `--check` 扫全部 markdown 里的
@@ -1276,9 +1508,27 @@ function main() {
   // 顺序本身就是判据：句柄必须在 `facts()` **之前**读。反过来说，"写前才读一下、紧接着写"是
   // **假闸门**（恒等放行，比没有更坏：它看起来在守）—— 理由逐字写在 `readVerifyDocHandle` 上。
   const writeHandle = args.includes('--write') ? readVerifyDocHandle() : null;
-  const v = facts();
+  // ⚠️ 这一行**必须同时保留无参的 `facts()` 写法**：`tests/doc-write-gate.test.js` 的 ⑪ 是**结构断言**
+  //    ——它按源码形状钉"先读句柄、后跑 facts()"这个顺序（句柄若在 facts() 之后才读，读与写之间几乎没有
+  //    间隔 ⇒ 那是**恒等放行的假闸门**）。本批给 facts() 加了可选参数，但**默认档仍走无参调用**，
+  //    于是那条结构断言一个字都不用改就继续成立 —— 门禁的测试不该为了新档位而放松。
+  const v = noVitest ? facts({ noVitest: true }) : facts();
+
+  // 快档横幅：**只在真走了缓存档**时打印（走验证链交接时那个数是本次链现算的，不该标成缓存）。
+  // 位置在判定之前 —— 读者先知道"这个数是怎么来的"，再看结论。
+  if (noVitest) printNoVitestBanner(v);
 
   if (writeHandle) {
+    /* `--write` 与 `--no-vitest` **不许同时用**：`docs/VERIFY.md` 是**权威基线**，
+     * 往里写一个"缓存的"用例数，等于把"这次没现算"永久固化进真值 —— 那是本工程最坏的假绿形态
+     * （比 `--check` 用缓存更坏：它不可撤销地覆盖了正确的那份）。 */
+    if (noVitest) {
+      console.error('✗ `--write` 不能与 `--no-vitest` 同用：`docs/VERIFY.md` 是权威基线，'
+        + '往里写**缓存的**用例数等于把"这次没现算"固化进真值。'
+        + '\n   → 要重新生成基线：去掉 `--no-vitest`（默认档会现跑 vitest 并顺手刷新缓存）。');
+      process.exitCode = 1;
+      return;
+    }
     // 用 `exitCode` 而不是 `process.exit()`：退出码一样，但不会在 stdout 还有未落盘的缓冲时把输出截断
     // （本工程在"提前关闭管道"上踩过一次，见 docs/VERIFY.md「本机受限环境注意」）。
     if (!writeVerifyDoc(v, writeHandle)) process.exitCode = 1;
@@ -1406,7 +1656,10 @@ function main() {
   } catch (e) { /* 提示失败不影响门禁结论 */ }
 
   if (bad) { console.error('\ndoc-facts 校验失败'); process.exit(1); }
-  console.log('\ndoc-facts 校验通过');
+  // 通过行的措辞也要看得见"这个数是缓存的" —— 读者最可能只看最后那一行（`V2` 跳过档可见性同一口径）
+  console.log(noVitest
+    ? '\ndoc-facts 校验通过（⚠️ 单测用例数来自缓存 `--no-vitest`，**不是现算的** —— 见开头那块横幅）'
+    : '\ndoc-facts 校验通过');
 }
 
 /** `docs/VERIFY.md` 的绝对路径（**只在这里算一次** —— 别的函数不许自己拼这条路） */
@@ -1687,6 +1940,9 @@ function parseVitestCount(text) {
 
 module.exports = {
   parseClaims, scan, trackedFiles, markdownFiles,
+  // 现场真值本体（**诊断 / 判别力证明用**：`facts({noVitest:true})` 走缓存、快；
+  // 不传参数会**真跑一遍 vitest** —— 所以单测里别调它，单测要的是下面那些纯函数）
+  facts,
   findSizeClaim, scanSizeClaims, SIZE_ANCHOR,
   findFutureVersion, scanFutureVersions, docSystemSnapshot, renderVerifyDoc,
   parseVitestCount,
@@ -1702,5 +1958,9 @@ module.exports = {
   // 报告型读数（**不判红**）：`%TEMP%/mm-*` 残留 —— 谁造的判不了，故只有打印（`--temp-report`）
   tempResidueReport, printTempResidue, TEMP_REPORT_PREFIX, TEMP_REPORT_OLD_MS,
   // 第八类（门禁 `S4`）：标签词表契约 —— 解析「适用范围」与判定**分开**，两半都可注入做判别力证明
-  SCOPE_HEADING_RE, SCOPE_REQUIRED_MARKERS, parseTagScope, judgeVocabContract, runVocabGate
+  SCOPE_HEADING_RE, SCOPE_REQUIRED_MARKERS, parseTagScope, judgeVocabContract, runVocabGate,
+  // 快档（`--no-vitest`）：缓存的**三件纯函数**（指纹 / 判定 / 读）+ 写（只给"真算过"的两条路径用）
+  UNIT_CACHE_REL, UNIT_CACHE_VERSION, UNIT_FINGERPRINT_ROOT,
+  unitFingerprint, judgeUnitCache, readUnitCache, writeUnitCache, unitCacheStaleMessage,
+  unitCachePath, printNoVitestBanner
 };

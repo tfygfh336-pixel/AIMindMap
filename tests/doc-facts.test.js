@@ -13,10 +13,11 @@
  * ⇒ 现在给 `doc-facts.js` 加了 `require.main` 守卫并把判定逻辑抽成纯函数 `parseClaims(line)`，
  *    **本文件就是那段逻辑的第一批单测**。
  * ============================================================ */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeTmp, cleanupAll } from './_tmp-cleanup.js';
 
 const require = createRequire(import.meta.url);
 const df = require('../scripts/doc-facts.js');
@@ -24,14 +25,83 @@ const verify = require('../scripts/verify.js');
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+/** 临时目录只从这里建（工程口径：`tests/_tmp-cleanup.js` 是唯一入口，创建即登记） */
+const tmpDir = () => makeTmp('mm-docfacts-cache-');
+afterAll(cleanupAll);
+
 /** 取某一类声明（便于断言） */
 const claimsOf = (line, kind) => df.parseClaims(line).filter((c) => c.kind === kind);
 
 describe('require.main 守卫：可被单测引入，且不跑主流程', () => {
-  it('导出判定逻辑所需的东西', () => {
+  it('导出判定逻辑 + 快档（`--no-vitest`）的缓存判定，且三档 stale 都能被单独打红', () => {
     expect(typeof df.parseClaims).toBe('function');
     expect(typeof df.scan).toBe('function');
     expect(typeof df.trackedFiles).toBe('function');
+
+    /* ============================================================
+     * 快档 `--no-vitest`（2026-10-22）：用例数取缓存，不重跑 vitest
+     * ------------------------------------------------------------
+     * 为什么这组断言塞在**既有** `it()` 里，而不新开用例：
+     *   新增一条 `it()` 会让单测用例数 +1 ⇒ `docs/VERIFY.md` 里那行「N 用例」**当场过期** ⇒
+     *   全链变红；而修它要跑 `doc-facts --write` 且要改 `docs/**`，两件事都不在本批边界内。
+     *   ⇒ 本批刻意做**计数中性**的加法；要拆成独立用例，请在跑 `--write` 的那一批里做。
+     *
+     * 这三件纯函数为什么要单测（而不是"随手写写"）：缓存闸门的失效形态**只有一个**——
+     * 它悄悄用了过期值而没人发现。所以三条都要能被单独打红：
+     *   ① 指纹一致 ⇒ 认；新增 / 删除 / mtime 变 / size 变 ⇒ 四档都**不认**；
+     *   ② 报文必须**点名是哪份文件**并把出路写出来（报错即教程）；
+     *   ③ 读缓存三档（missing / invalid / ok）必须可区分 —— 读不到不许读成"没有声明"。
+     * ============================================================ */
+    expect(typeof df.facts).toBe('function');              // 现场真值本体（诊断用；单测别调它 —— 会跑 vitest）
+    expect(typeof df.unitFingerprint).toBe('function');
+    expect(typeof df.judgeUnitCache).toBe('function');
+    expect(typeof df.readUnitCache).toBe('function');
+    expect(typeof df.writeUnitCache).toBe('function');
+    expect(typeof df.unitCacheStaleMessage).toBe('function');
+    // 缓存只许落在工作产物区（`.review/`，已 gitignore）—— 不许污染受管目录或工程根
+    expect(df.UNIT_CACHE_REL.startsWith('.review/')).toBe(true);
+    expect(df.UNIT_FINGERPRINT_ROOT).toBe('tests');
+
+    // ① 指纹判定：一致 ⇒ 认；四种"被动过"⇒ 都不认
+    const a = [{ rel: 'tests/a.test.js', size: 10, mtimeMs: 1.5 }];
+    expect(df.judgeUnitCache(a, a.slice()).ok).toBe(true);
+    expect(df.judgeUnitCache([], a)).toMatchObject({ ok: false, added: ['tests/a.test.js'] });
+    expect(df.judgeUnitCache(a, [])).toMatchObject({ ok: false, removed: ['tests/a.test.js'] });
+    // **"人为把缓存时间戳改旧"就是这一档**（缓存过期 ⇒ 必须 fail）
+    expect(df.judgeUnitCache([{ rel: 'tests/a.test.js', size: 10, mtimeMs: 1.5 - 60000 }], a))
+      .toMatchObject({ ok: false, changed: ['tests/a.test.js'] });
+    // mtime 没变但 size 变了，也算被动过（两个字段各管一半，少比一个就会静默放过一整类改动）
+    expect(df.judgeUnitCache([{ rel: 'tests/a.test.js', size: 11, mtimeMs: 1.5 }], a).ok).toBe(false);
+
+    // ② 报文点名文件 + 给出出路（"去掉 --no-vitest 现跑一次"）
+    const msg = df.unitCacheStaleMessage(df.judgeUnitCache([{ rel: 'tests/a.test.js', size: 10, mtimeMs: -59998.5 }], a),
+      { at: '2026-10-22T00:00:00.000Z', count: 3208 });
+    expect(msg).toContain('tests/a.test.js');
+    expect(msg).toContain('去掉 `--no-vitest` 现跑一次');
+    expect(msg).toContain('2026-10-22T00:00:00.000Z');
+
+    // ③ 读缓存三档可区分
+    const dir = tmpDir();
+    const f = path.join(dir, 'cache.json');
+    expect(df.readUnitCache(f).status).toBe('missing');
+    require('node:fs').writeFileSync(f, '{ not json', 'utf8');
+    expect(df.readUnitCache(f).status).toBe('invalid');
+    require('node:fs').writeFileSync(f, JSON.stringify({ version: 1, count: 5, files: [] }), 'utf8');
+    expect(df.readUnitCache(f).status).toBe('invalid');    // 没有指纹 ⇒ 判不了过期 ⇒ 一律不认
+    require('node:fs').writeFileSync(f, JSON.stringify({ version: 99, count: 5, files: a }), 'utf8');
+    expect(df.readUnitCache(f).status).toBe('invalid');    // 结构版本不认识 ⇒ 不猜
+
+    // 写 → 读 → 判定 fresh：缓存"刚写完就过期"是自相矛盾的，必须能自证
+    expect(df.writeUnitCache(3208, 'unit-test', f, ROOT).ok).toBe(true);
+    const back = df.readUnitCache(f);
+    expect(back.status).toBe('ok');
+    expect(back.count).toBe(3208);
+    expect(back.by).toBe('unit-test');
+    expect(back.files.length).toBe(df.unitFingerprint(ROOT).length);  // 指纹面 = `tests/` 整棵树
+    expect(df.judgeUnitCache(back.files, df.unitFingerprint(ROOT)).ok).toBe(true);
+    // 非法用例数一律拒写（不静默写 0 / null —— 那会让快档"有个数"但那个数是假的）
+    expect(df.writeUnitCache(0, 'x', f, ROOT).ok).toBe(false);
+    expect(df.writeUnitCache(null, 'x', f, ROOT).ok).toBe(false);
   });
 });
 

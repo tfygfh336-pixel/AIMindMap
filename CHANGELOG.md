@@ -2560,6 +2560,63 @@ node cli/mm-cli.js timeline [<项目>] [--since <ISO|Nd|Nh|Nm|Nw>] [--now <ISO>]
 - **如实偏差（6 条，逐条见附录 §7）**：① 动了 **1 格命中词**（`漫游与移动性` 的 `链路切换`）—— 不改它只能到 exact 361，达不到 362；而"加进它自己的「不含」"会造出 `§4 启动与引导`/`§6 引导` 行已点名过的病（同一个字面同时在两列 ⇒ 命中词永久失效）；② 过程失误一次：早期用 PowerShell `Out-File -Encoding utf8` 落了个带 BOM 的 `.review/…/facts-out.txt`，被 `encoding-check` 当场判红，已删并复跑 exit 0；③ `§6` 那 4 条"只登记"是真的进不了「不含」（会误杀 1–11 槽）；④ 读数是在被调参的同一批 432 节点上算的（上界口径）；⑤ 没加锁测试（把某行的词抄进单测 = 第二份会漂的副本；锁它的是 `simulate-after.js` 的逐格 diff）；⑥ `sendmsg` 删命中词实测 **修 1 / 误杀 0**，属 `W10` 判死的 `V2`，本批只备案不落盘。
 - **证据**：`.review/20261021-TAGS-P1P2a/` —— `README.md`（状态页 + 读数）· `00-出处与判据.md`（15 字面逐个裁定 + 10 行出处）· `simulate-after.js`（改后读数 + 逐格 diff + 基线复算，exit 0）· `facts.js`（26 槽 + 15 字面分布 + 逐条归因）· `probe-bare.js`（裸字面的误杀代价表）· `TAGS.before.md`（开跑前逐字节快照，sha256 `537cc923…40b7`）。
 
+### 【台账 · doc-facts 快档】`doc-facts --check` 45.6 s → 0.8 s：**98.2% 的时间花在"为了一个数字现跑一遍 vitest"**（2026-10-22）
+
+**要解决的那句话**：`node scripts/doc-facts.js --check` 单独跑要等 **39.5 s+**，而 `verify.js` 的 G6 **每轮都跑它**。
+
+- **先量（`process.hrtime.bigint()`，探针与原始读数在 `.review/20261022-docfacts-fast/`）**：默认档 **median 45 643.8 ms**（3 轮），
+  同一命令行只切**既有**交接口 `AI_MINDMAP_UNIT_TESTS`（= 不跑 vitest）⇒ **833.4 ms**（5 轮）
+  ⇒ **vitest 净成本 44 810 ms = 默认档的 98.2%**（vitest 单独跑一次 44 833 ms）。
+  非 vitest 各段合计只有 **367 ms**：模块加载 29 · `tests/*.test.js` 枚举 5 · 主扫描（读+解析 15 份 md）21 ·
+  另四遍 md 扫描 127 · `facts()` 其余采集（registry/ mcp/ pkg/ config/ lock/ cli-integration/ smoke-assertions/ roi）184 ·
+  `renderCliDoc` 0.3；未细分 467 ms（进程启动 / `printFacts` / `VERIFY.md` 渲染等，`node -e 0` 地板同轮 527 ms）。
+  ⇒ **不是"某一段慢"，是一个数字吃掉整个门禁。**
+- **新档 `--no-vitest`**：用**上一次真的现算过**的用例数，不重跑 vitest。**实测 median 794 ms**（真仓，5 轮）/
+  **1 161 ms**（冻结快照，5 轮，机器更忙）⇒ 对默认档 **60.1× / 62.2×**（省 **98.3% / 98.4%**）。
+- **三条硬要求（照既有先例，不自创口径）**：
+  1. **响亮说明"这个数是缓存的、不是现算的"**（`V2` 跳过档可见性先例）：走缓存档时**开头一块 ⚠️ 横幅**
+     （缓存文件 / 写入时间 / 由谁写 / 指纹逐份一致）+ **`printFacts` 的来源栏**写明 + **末尾那句"校验通过"带标注**。
+     判据：输出里**不许**出现"本进程现跑 vitest"（那才是把缓存伪装成现算）。
+  2. **缓存过期 ⇒ 报 stale 并 exit 1**（判据同 `W10` 给判词缓存设计的"源文 sha256 变 ⇒ stale"，这里更严：
+     逐份记 `tests/` 下每个文件的 `size + mtimeMs`，**新增 / 删除 / 变动任一份即作废**）⇒ 报文点名是哪份、差在哪、
+     并给出唯一出路（去掉 `--no-vitest` 现跑一次）。
+  3. **默认档一个字节都不改**：不加 flag 仍现跑 vitest。
+- **缓存落 `.review/docfacts-unit-tests.json`**（工作产物区：已 gitignore、可随时整目录删；与 `verify-tests.json` / `last-verify.json` 同一个家）。
+  ⚠️ **一条设计不变量**：写缓存**只发生在这轮真的现算过的两条路径**上 —— ① 本进程现跑 vitest；② 验证链 G3 交接
+  （`verify.js` 早就有 `STEPS[].useUnitTests` + `AI_MINDMAP_UNIT_TESTS`，本批只是顺手把那份数也写成缓存）——
+  **缓存档自己绝不写缓存**：否则一条 stale 记录可以被自己"续命"成 fresh，闸门就成了摆设。
+- **⚠️ 本批自己踩了一次 `S2`（写盘出口），并已改走唯一出口**：第一版 `writeUnitCache` 自己写了 `tmp` + `rename`
+  ⇒ `collateral-check` 的 `WRITE_OUTLET` 判定当场判红（门禁原话「这是**第二份原子写实现**；写盘出口只有一个函数」，
+  今天第 5 次同形）。改法：走 `src/data-store.js` 的 **`writeFileAtomic`**（tmp → fsync → rename，且 rename 有界重试
+  吸收 Windows 上的 `EPERM`）⇒ `collateral-check` **exit 0**（自造 tmp+rename 只剩 `scripts/smoke/40-heat-bars.js` /
+  `src/control.js` 两处在册项）。没有抬 `WRITE_OUTLET_SITE_CAP`，也没有登记欠账册。
+- **⚠️ 另一处门禁自己抓出来的形状**：`tests/doc-write-gate.test.js` 的 ⑪ 是**结构断言**，按源码形状钉"先读句柄、
+  后跑 `facts()`"（句柄在 `facts()` 之后读 = 读与写之间几乎没有间隔 = **恒等放行的假闸门**）。本批给 `facts()` 加了
+  可选参数，但**默认档仍写成无参的 `facts()`**（`noVitest ? facts({noVitest:true}) : facts()`）⇒ 那条断言**一个字都不用改**
+  就继续成立。门禁的测试不该为了新档位而放松。`tests/doc-write-gate.test.js` **2/2 通过（45 例整文件通过）**。
+- **`--write` 与 `--no-vitest` 不许同用**（exit 1 + 指路）：`docs/VERIFY.md` 是**权威基线**，往里写一个"缓存的"用例数
+  等于把"这次没现算"永久固化进真值，比 `--check` 用缓存更坏。**默认档的 `--write` 行为一字未动。**
+- **`scripts/verify.js` 一字节未动**（`sha256 eefa2d71…` 改前改后相同）：G3→G6 的交接口**本来就存在**，
+  正常路径上从没重跑过 vitest；缺的只是"单独调本脚本"时的这一档。改它反而会让 `docs/VERIFY.md` 的链路表过期。
+- **既有判定输出逐字节不变（证据，最终版代码上重取）**：在**冻结快照**（`git archive HEAD` + 本批改动，`node_modules` 走 junction）上
+  背靠背跑 **HEAD 原码 vs 最终版** ——
+  `--check` 交接档两侧 `sha256 8f778c7d4ee52078…`、`--check` 默认档两侧 `sha256 1132d1e7a1ffb10f…`、
+  **`--vocab`（门禁 `S4`）两侧 `sha256 8482886d26b5ec54…`（exit 0 / exit 0）**，三对**逐字节相同**。
+  （`doc-facts.js` 自身 `sha256 adec5996…` → `c2511d3f…`，diff **+261 / −6**，减掉的 4 行全是"函数签名 / 调用点 / 通过行 / exports"那四处改写。）
+- **判别力（四次读数，只认 exit code）**：默认档 注入 `docs/VERIFY.md` 的用例数（3208→9999）⇒ **exit 1**（红里含
+  「写的是 9999，应为 …」）· 撤销 ⇒ **exit 0**；快档 同样注入 ⇒ **exit 1** · 撤销 ⇒ **exit 0**。
+  注入后 `docs/VERIFY.md` **逐字节还原**（比 sha256）。
+- **测试**：`tests/doc-facts.test.js` 里给三件纯函数（指纹 / 判定 / 读缓存）补了断言 —— **刻意不新增 `it()`**
+  （计数中性）：新增一条用例会让用例数 +1 ⇒ `docs/VERIFY.md` 那行当场过期 ⇒ 全链假红，而修它要跑 `--write`/改 `docs/**`，
+  两件都不在本批边界内。要拆成独立用例，请在跑 `--write` 的那一批里做。
+- **判据（全部当场跑，只认 exit code）**：`encoding-check` **exit 0** · `find-bare-angle` **exit 0（0 节点 · 0 片段）** ·
+  `tests/doc-facts.test.js` 单跑 **exit 0（34/34）** · 默认档 `--check` / 快档 `--check` 的读数见上。
+- ⚠️ **本批不跑 `npm run verify`**（`R7`）· **不跑 `doc-facts --write`** · 不碰 `docs/**` / `CHANGELOG.md` / `cli/**` / `src/**` / `renderer/**` / `main.js` / `projects/**`。
+- ⚠️ **如实登记两条环境偏差**（详见 `.review/20261022-docfacts-fast/README.md` §7）：
+  ① 开工期间**别的批一直在写**（用例数 3208 → 3224 → 3241 → **3250**、用例文件 138 → **140**、冒烟断言 346 → 347，
+  `src/import-grade.js` 一度半写）⇒ 真仓此刻 `docs/VERIFY.md` 已被写旧（**与本批无关**，重生成要父代理跑 `--write`）；
+  ② 因此"逐字节不变"改在**冻结快照**上取证（并另有真仓干净窗口的读数），而不是在漂移中的真仓上取。
+
 ## [v0.19.0] - 2026-10-19
 
 ### 预算统计量 `1.25×P90` → `1.25×median`：n=10 的 P90 = **第二大** ⇒ 只容忍一条尖峰；今天已两次被尖峰抬线（1300→1468、1300→1350），换 median 并把多付的 50s 还回去（G5 1350s→1300s）
