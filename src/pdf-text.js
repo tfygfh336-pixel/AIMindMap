@@ -42,9 +42,15 @@
  * 边界（如实写明，别当已实现）：
  *   · 只做"文字层 → 提纲"：**目录页 → 页码树**、**页码 ↔ 物理页偏移**（P2）、**多书自动判定**（P3）、
  *     **OCR**（P4）都不在本文件（分阶段见计划 §5）。
- *   · 页眉页脚只做**最小一条**（每页首尾各 2 行的"逐字相同"与"页号形态"，出现 > 半数十页才认）：
- *     P1 的正式做法（固定前缀 + 变化数字等三种计数）没做。不做这条的实测后果是真样本每页的
- *     9pt 页眉与 `1 / 30` 页脚会混进每个节点正文，且页脚会命中 `^\d+…` 编号正则 ✗。
+ *   · 页眉页脚做**两档计数 + 字号守卫**（每页首尾各 2 行）：①"逐字相同"（同一**字号簇**内才算，
+ *     见 `SIZE_GUARD_TOL`）②页号形态，两者都要求出现 > 半数十页才认。
+ *     **P1 的第三档（固定前缀 + 变化数字）没做** —— 实测后果：页眉若逐章变号（`第N章 xxx 27`），
+ *     现有两档一条都剔不掉，它会以"第X章"形态进 headings（读数 `.review/20261028-P1a/out-前置.txt` ③）。
+ *     另：不做上面这两档的后果是真样本每页的 9pt 页眉与 `1 / 30` 页脚会混进每个节点正文，
+ *     且页脚会命中 `^\d+…` 编号正则 ✗。
+ *   · 目录条目（点线 + 页码）在这一层**只做"不是标题"的排除**（`RE_TOC_LEADER`），
+ *     **不抽 `{标题, 页码}` 结构**（那是 P1-b）：
+ *     点线允许单个 `…` 与点间空白，且行尾必须是页码数字 ⇒ 正文省略号不会命中。
  *   · 旋转页（rotation ≠ 0）不做"居中"判据（实测样本与 Chromium/Skia 产出都是 0）。
  *   · 段只在本页内合并，**跨页的段不做合并**（P1）。
  *   · 目录页守卫是**最小**的：整行恰为"目录/目次/Contents"才认，且只把该行**及其后**的行排除出标题
@@ -100,7 +106,20 @@
   const RE_CN_NUM = /^[一二三四五六七八九十]{1,3}\s*[、.．]/;                      // 一、背景
   // 反例形态
   const RE_PAGE_NUMBER = /^\s*\d{1,4}\s*[/／]\s*\d{1,4}\s*$/;                     // 1 / 30（页脚形态）
-  const RE_TOC_LEADER = /[.·․…]{2,}\s*\d{1,4}\s*$/;                              // 目录条目：点线 + 页码（计划 §2）
+  /** 目录条目：**点线 + 页码**（计划 §2；F3 修的就是这一处）。三件事必须一起说清：
+   *   ① 点线可以是一串 ASCII 点 / 中间点 / 一字节点，**也可以是一个 U+2026 `…`**
+   *      —— `…` 这个字形**本身就是三个点**，旧写法 `[.·․…]{2,}` 却要求"至少两个字符"⇒ 排版上的
+   *      单个省略号**不命中**（实测 `.review/20261026-PDF-P1P4方案/out-toc-fixture.txt:45`：
+   *      4 条目录行只命中 3 条）；
+   *   ② 点与点之间**允许空白**：真实 PDF 的点线常常是"每个点一个 `TextItem`"，`itemsToLines` 会在
+   *      它们之间补空格 ⇒ 同一个符形会变成 `. . . . .`；允许空白后 `. . .` 才算命中
+   *      （实测读数见 `.review/20261028-P1a/out-前置.txt` 的 ②：改前 `…` 与 `. . .` 两种都漏）。
+   *      ⚠️ 不写成 `[\s.·․…]{2,}` —— 那会把"纯空白"当点线，`2.1 顺序存储结构 35` 这种
+   *      **只有间距、没有点线**的行会假命中 ✗（SPEC §1.1 ③ 点名过这个坑）；
+   *   ③ **正文里的省略号不命中**：这一档永远要求"行尾就是页码数字" ⇒ `他说来话长……`、
+   *      `…… 个` 都不成立；只有"省略号 + 纯数字结尾"才进这一档。
+   */
+  const RE_TOC_LEADER = /(?:(?:[.·․]\s*){2,}|(?:…\s*)+)\d{1,4}\s*$/;
   const RE_SENT_END = /[。；！？!?]$/;                                             // 句末标点 ⇒ 正文（逗号不算）
   const RE_LIST_OR_URL = /^(?:[-*+•·]\s|https?:\/\/|\|)/;                         // 列表 / 网址 / 表格行
   const RE_TOC_MARKER = /^(目\s*录|目\s*次|contents|table\s+of\s+contents)$/i;     // 目录页标记
@@ -192,48 +211,95 @@
     return lines;
   }
 
-  /* ================= ② 页眉页脚（最小一条） =================
+  /** 字号守卫的容差（相对）：文本相同的两行，只有**字号彼此接近**时才允许被算成同一条重复行。
+   *  依据（F2 现场，`.review/20261026-PDF-P1P4方案/out-toc-fixture.txt:41,48,50`）：
+   *    "书名 = 封面 **21pt** 居中大标题 + 每页 **9pt** 页眉同文"时，两行文本逐字相同而字号差 133%
+   *    ⇒ 旧实现把它们算成一类，**封面标题被当页眉剔掉、21pt 那一级整个消失**。
+   *  为什么 0.10 够：真样本的页眉恒为 9pt（零抖动），而"书名做页眉"的典型比是 21/9 ≈ 2.3 倍
+   *    ⇒ 0.10 与 2.3 之间有三个数量级余量，阈值不敏感（若换语料发现误杀，调到 0.05 即可，不影响结构）。
+   *  ⚠️ 守卫是**两侧**的：它只挡"字号差得远的那个簇"，覆盖过半页的那个簇**照旧剔除**——
+   *    只做"不剔"那一侧，页眉页脚就会重新混进正文（那是同一个 bug 的反面）。
+   */
+  const SIZE_GUARD_TOL = 0.10;
+
+  /* ================= ② 页眉页脚（两档计数 + 字号守卫） =================
    * 只扫**每页首尾各 2 行**，两类计数都要求"出现次数 > 半数十页"：
    *   ① 去空白后逐字相同 ② 页号形态（`1 / 30`）
    * 为什么必须做：真样本 30 页每页都有 9pt 页眉（逐字相同 ✓）与 `1 / 30` 页脚（页号形态 ✓）。
    * 页数 < 2 判不出来（Calibre 同此边界 ⇒ 如实返回 0，不硬猜）。
+   *
+   * ① 的计数按 **字号簇** 分组（见 `SIZE_GUARD_TOL`）：同一段文本在首尾行里出现的字号先按
+   * 相对差 ≤ SIZE_GUARD_TOL 聚成簇，**只有覆盖率过半页的那一簇**才是页眉/页脚；
+   * 同一段文本的另一簇（典型：封面 21pt 书名）**原样保留**并计入 `sizeGuard.rejected`。
+   * 标记也要**按簇**做（不是按文本做）：否则"9pt 页眉命中"会把同文本的 21pt 那一行一起标掉 ✗。
    */
   function markRepeatedLines(lines, pageCount) {
     const n = Number(pageCount) || 0;
-    if (n < 2) return { marked: 0, texts: [] };
+    if (n < 2) return { marked: 0, texts: [], pageNumber: false, sizeGuard: { rejected: 0, minRatio: null } };
     const byPage = new Map();
     for (const l of lines) {
       if (!byPage.has(l.page)) byPage.set(l.page, []);
       byPage.get(l.page).push(l);
     }
-    const counts = new Map();       // 逐字相同的文本 → 出现页数
+    /** 两个字号是否"同一簇"（相对差 ≤ 容差；0 字号按"互不相干"处理，安全方向是**不剔**） */
+    const sameSize = (a, b) => {
+      const hi = Math.max(a, b);
+      return hi > 0 && Math.abs(a - b) <= SIZE_GUARD_TOL * hi;
+    };
+    // ① 候选面（每页首尾各 EDGE_LINES 行）→ 文本 → 字号簇 → 簇里记"哪几页出现过"
+    const byText = new Map();       // text -> [{ size, pages:Set<page> }]
     let numPages = 0;               // 出现"页号形态"的页数（各页文字不同，只能按形态计数 ✓）
     for (const arr of byPage.values()) {
       const edge = arr.slice(0, EDGE_LINES).concat(arr.slice(Math.max(EDGE_LINES, arr.length - EDGE_LINES)));
-      const seen = new Set();       // 同一页里同一句只算一票
       let hasNum = false;
       for (const l of edge) {
         const t = normSpace(l.text);
         if (!t) continue;
         if (RE_PAGE_NUMBER.test(t)) hasNum = true;
-        if (seen.has(t)) continue;
-        seen.add(t);
-        counts.set(t, (counts.get(t) || 0) + 1);
+        const size = Number(l.size) || 0;
+        let clusters = byText.get(t);
+        if (!clusters) { clusters = []; byText.set(t, clusters); }
+        let c = null;
+        for (const x of clusters) if (sameSize(x.size, size)) { c = x; break; }
+        if (!c) { c = { size: size, pages: new Set() }; clusters.push(c); }
+        c.pages.add(l.page);        // 同一页里同一句只算一票（Set 天然去重 ✓）
       }
       if (hasNum) numPages++;
     }
-    const hit = new Set();
+    // ② 逐簇判"过半页"：过了半数的簇才是页眉/页脚。`texts` 仍按**文本**报（人话是"这一句"),
+    //    但标记阶段只在**命中簇**上标 ⇒ 未命中的簇一个字都不动 ✓
+    const hit = new Map();          // text -> [命中的簇字号]
+    const texts = [];
+    for (const [t, clusters] of byText) {
+      const sizes = clusters.filter((c) => c.pages.size > n / 2).map((c) => c.size);
+      if (!sizes.length) continue;
+      hit.set(t, sizes);
+      texts.push(t);
+    }
     const pageNumHit = numPages > n / 2;
-    for (const [t, c] of counts) if (c > n / 2) hit.add(t);
+    const sizeGuard = { rejected: 0, minRatio: null };
     let marked = 0;
     for (const arr of byPage.values()) {
       arr.forEach((l, idx) => {
         if (idx >= EDGE_LINES && idx < arr.length - EDGE_LINES) return;   // 只看首尾 2 行
         const t = normSpace(l.text);
-        if (hit.has(t) || (pageNumHit && RE_PAGE_NUMBER.test(t))) { l.repeated = true; marked++; }
+        if (!t) return;
+        const hitSizes = hit.get(t);
+        if (hitSizes) {
+          const size = Number(l.size) || 0;
+          if (hitSizes.some((s) => sameSize(s, size))) { l.repeated = true; marked++; return; }
+          // ★ 同一句文本、但字号对不上命中的那一簇 ⇒ **保留**（这就是封面大标题那一行）
+          sizeGuard.rejected++;
+          let near = hitSizes[0];
+          for (const s of hitSizes) if (Math.abs(s - size) < Math.abs(near - size)) near = s;
+          const ratio = round2(Math.min(size, near) / Math.max(size, near));
+          if (sizeGuard.minRatio === null || ratio < sizeGuard.minRatio) sizeGuard.minRatio = ratio;
+          return;
+        }
+        if (pageNumHit && RE_PAGE_NUMBER.test(t)) { l.repeated = true; marked++; }
       });
     }
-    return { marked: marked, texts: [...hit], pageNumber: pageNumHit };
+    return { marked: marked, texts: texts, pageNumber: pageNumHit, sizeGuard: sizeGuard };
   }
 
   /* ================= ③ 行距判据：孤立（标题常有一条上空白）=================
@@ -517,6 +583,12 @@
       notes.push('剔除了页眉/页脚 ' + rep.marked + ' 行：' + rep.texts.map((t) => '"' + t + '"').join('、')
         + (rep.pageNumber ? '（含页号形态的行）' : ''));
     }
+    // 字号守卫**必须出声**：被它保下来的行原本会被当成页眉剔掉（典型：与页眉同文的封面大标题）。
+    // 静默保留会让人以为"页眉页脚本来就长这样"，而这一档恰恰是本批修的那个 bug 的两侧之一。
+    if (rep.sizeGuard && rep.sizeGuard.rejected) {
+      notes.push('字号守卫：有 ' + rep.sizeGuard.rejected + ' 行与页眉/页脚同文但字号不同（与命中那一簇的'
+        + '最小字号比 ' + rep.sizeGuard.minRatio + '）⇒ 已保留、未当页眉剔除');
+    }
     // ③ 行距布局（孤立 / 页首）—— 位置判据与"编号要孤立"都靠它
     markLayout(lines);
     const base = bodyFontSize(allParts);
@@ -616,7 +688,7 @@
     LINE_FACTOR: LINE_FACTOR, PARA_FACTOR: PARA_FACTOR, CENTER_MARGIN_TOL: CENTER_MARGIN_TOL,
     MAX_CENTER_WIDTH: MAX_CENTER_WIDTH, POS_HEADING_CHARS: POS_HEADING_CHARS, TOP_LINES: TOP_LINES,
     MIN_TITLE_FACTOR: MIN_TITLE_FACTOR, MAX_HEADING_CHARS: MAX_HEADING_CHARS, MAX_DEPTH: MAX_DEPTH,
-    MIN_PAGE_CHARS: MIN_PAGE_CHARS, EDGE_LINES: EDGE_LINES,
+    MIN_PAGE_CHARS: MIN_PAGE_CHARS, EDGE_LINES: EDGE_LINES, SIZE_GUARD_TOL: SIZE_GUARD_TOL,
     // 纯函数
     itemsToLines: itemsToLines, markRepeatedLines: markRepeatedLines, markLayout: markLayout,
     linesToParagraphs: linesToParagraphs, bodyFontSize: bodyFontSize, numbering: numbering,

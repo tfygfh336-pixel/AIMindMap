@@ -212,7 +212,40 @@ describe('标题候选：三条判据', () => {
   });
 });
 
-describe('页眉页脚（最小一条）', () => {
+/* ============================================================
+ * 目录条目（点线 + 页码）的判据（F3）—— **两侧**
+ *   现场：`.review/20261026-PDF-P1P4方案/out-toc-fixture.txt:43-46`
+ *     `"2.1 顺序存储结构 … 35"  leader=false` —— 单个 U+2026 不命中 `[.·․…]{2,}`
+ *     （`…` 这个字形本身就是三个点 ⇒ "至少两个字符"的门槛是错的）；
+ *     另一条更少被提到但同样错：`. . .` 也不命中（真实 PDF 的点线常是"每个点一个 TextItem"，
+ *     行重建会在点之间补空格）。改前读数见 `.review/20261028-P1a/out-前置.txt` 的 ②。
+ *   另一侧同样重要：**正文里的省略号不是目录行** —— 否则整段正文会被排除出标题候选。
+ * ============================================================ */
+describe('目录条目判据（F3）：四种点线写法都命中，正文省略号不命中', () => {
+  it('★ 单个 … / ... / . . . / ···· 四种都算点线（判别力：量词退回 {2,} ⇒ 第 1、3 条红）', () => {
+    const leaders = [
+      '2.1 顺序存储结构 … 35',          // 单个 U+2026（字形本身就是三个点）
+      '第三章 栈与队列 ... 58',          // 三个 ASCII 点
+      '附录A 术语表 . . . . . 99',       // 点与点之间被行重建插了空格
+      '第四章 树 ···· 77'                // 四个中间点（U+00B7）
+    ];
+    // 四条都是"目录条目" ⇒ 不是标题形状
+    expect(leaders.map((t) => pt.headingShape(t))).toEqual([false, false, false, false]);
+  });
+
+  it('★ 正文里的省略号**不**算目录行（少了"行尾纯数字页码"就不是点线+页码）', () => {
+    const bodyTexts = [
+      '这段话说来话长……',                // 省略号在行尾、后面没有页码
+      '他数了数……',
+      '一共有十二个…… 个',               // 省略号后面是量词，不是页码
+      '……详见 3.5 节',
+      '2.1 顺序存储结构 35'               // **只有间距、没有点线**：不许因为"数字结尾"就命中
+    ];
+    expect(bodyTexts.map((t) => pt.headingShape(t))).toEqual([true, true, true, true, true]);
+  });
+});
+
+describe('页眉页脚：两档计数', () => {
   /** n 页，每页都有 9pt 页眉 + 页号页脚；第 mid 页额外多一行"有时出现"的句子 */
   function pagesWithEdges(n, opts) {
     const o = opts || {};
@@ -247,9 +280,99 @@ describe('页眉页脚（最小一条）', () => {
 
   it('页数 < 2 判不出页眉页脚（如实返回 0，不硬猜）', () => {
     const lines = pt.itemsToLines(pagesWithEdges(1)[0].items, { page: 1, pageWidth: fx.PAGE_W });
-    expect(pt.markRepeatedLines(lines, 1)).toEqual({ marked: 0, texts: [] });
+    const rep = pt.markRepeatedLines(lines, 1);
+    // 形状：`marked/texts` 之外还有 `pageNumber` 与 `sizeGuard`（只增字段不删字段 ⇒ 调用方不用改）
+    expect(rep.marked).toBe(0);
+    expect(rep.texts).toEqual([]);
+    expect(rep.pageNumber).toBe(false);          // 页数 < 2 ⇒ 页号形态也判不出来
+    expect(rep.sizeGuard).toEqual({ rejected: 0, minRatio: null });   // 守卫没参与（不是"判了但没剔"）
+    expect(lines.every((l) => !l.repeated)).toBe(true);              // 一行都没被标
   });
 });
+
+/* ============================================================
+ * 字号守卫（F2）—— 两侧，缺一条就会把"剔太多"换成"不剔"（两者在 21pt 那张读数上看不出区别）
+ *   现场：`.review/20261026-PDF-P1P4方案/out-toc-fixture.txt:48/50/51`
+ *     "书名 = 封面 21pt 大标题 + 每页 9pt 页眉同文" ⇒ 旧实现只看文本相同 ⇒ 封面标题被当页眉剔掉，
+ *     标题桶只剩 15.75（21pt 那一级整个消失）。
+ *   本批读数：`.review/20261028-P1a/out-改动后.txt` 的 ①（改前对照：`out-前置.txt` 的 ①）
+ * ============================================================ */
+describe('字号守卫（F2）：同文不同字号的大标题不许当页眉剔掉', () => {
+  const COVER = '数据结构笔记';
+  /** 3 页：封面 21pt 书名 + **每页 9pt 页眉同文** + `N / 100` 页脚 + 章标题 + 正文（正文各行都唯一） */
+  function coverFixture() {
+    return [
+      page([
+        item(COVER, 21, 234.5, 760),                                  // 居中（宽 126，页宽 595）
+        item('第一页的正文第一行，长度足够让基准字号按字符数胜出。', 10.5, 60, 700),
+        item('第一页的正文第二行，紧跟上一行，属于同一段。', 10.5, 60, 683.5)
+      ], 1),
+      page([
+        item(COVER, 9, 269, 810),                                     // ← 与书名逐字相同的页眉
+        item('第一章 概述', 15.75, 60, 720),
+        item('第二页的正文第一行，同一段里的续行，长度足够。', 10.5, 60, 690),
+        item('第二页的正文第二行，仍然落在首尾候选面里。', 10.5, 60, 673.5),
+        item('13 / 100', 9, 285, 24)
+      ], 2),
+      page([
+        item(COVER, 9, 269, 810),
+        item('第二章 方法', 15.75, 60, 720),
+        item('第三页的正文第一行，同样长一点，让 10.5 占优。', 10.5, 60, 690),
+        item('第三页的正文第二行，仍然落在首尾候选面里。', 10.5, 60, 673.5),
+        item('14 / 100', 9, 285, 24)
+      ], 3)
+    ];
+  }
+
+  it('★ 判据①：21pt 那一级**在**（sizeBuckets[0] 与 headings 都有它）', () => {
+    const r = outline(coverFixture());
+    expect(r.baseFontSize).toBe(10.5);
+    expect(r.sizeBuckets).toEqual([{ level: 1, size: 21, count: 1 }, { level: 2, size: 15.75, count: 2 }]);
+    expect(hs(r)).toEqual(['# 数据结构笔记', '## 第一章 概述', '## 第二章 方法']);
+    // 守卫**必须出声**：静默保留会让人以为"页眉页脚本来就这样"
+    expect(r.notes.join(' ')).toContain('字号守卫');
+    expect(r.notes.join(' ')).toContain('0.43');       // 9/21 = 0.43（诊断读数）
+  });
+
+  it('★ 判据②：9pt 页眉**仍被剔**（这是本批唯一的防线：只做①就成了"什么都不剔"）', () => {
+    const r = outline(coverFixture());
+    // 2 条 9pt 页眉 + 2 条页脚（各页文字不同 ⇒ 按形态剔）
+    expect(r.stats.repeatedLines).toBe(4);
+    const cover = r.lines.find((l) => l.size === 21 && l.text === COVER);
+    expect(cover.repeated).toBe(false);                                  // 大标题没被标
+    const headers = r.lines.filter((l) => l.size === 9 && l.text === COVER);
+    expect(headers.length).toBe(2);
+    expect(headers.every((l) => l.repeated)).toBe(true);                 // 9pt 页眉一条不剩地被标
+    expect(r.paragraphs.some((p) => p.text === COVER)).toBe(false);       // 页眉没混进正文段
+  });
+
+  it('直接看 markRepeatedLines 的读数：命中簇照旧剔，被拒的那一行进 sizeGuard.rejected', () => {
+    const lines = [];
+    coverFixture().forEach((p) => lines.push(...pt.itemsToLines(p.items, { page: p.page, pageWidth: p.pageWidth })));
+    const rep = pt.markRepeatedLines(lines, 3);
+    expect(rep.texts).toEqual([COVER]);                   // 这一句**确实**是页眉/页脚那一类
+    expect(rep.pageNumber).toBe(true);
+    expect(rep.marked).toBe(4);                           // 2 页眉 + 2 页脚
+    expect(rep.sizeGuard).toEqual({ rejected: 1, minRatio: 0.43 });   // 21pt 那一行被拒 1 次
+  });
+
+  it('★ 守卫不是"大字号永不剔"：同一段文本在过半页的首尾出现时，21pt 也照旧剔', () => {
+    const pages = [];
+    for (let i = 1; i <= 4; i++) {
+      pages.push(page([
+        item('大字号页眉', 21, 60, 800),
+        item('第' + i + '页的正文，长度足够让基准字号按字符数胜出。', 10.5, 60, 700),
+        item('第' + i + '页的正文第二行，文本唯一。', 10.5, 60, 683.5)
+      ], i));
+    }
+    const lines = [];
+    pages.forEach((p) => lines.push(...pt.itemsToLines(p.items, { page: p.page, pageWidth: p.pageWidth })));
+    const rep = pt.markRepeatedLines(lines, 4);
+    expect(rep.marked).toBe(4);                            // 4 页 × 1 条大字号页眉，全部剔掉
+    expect(rep.sizeGuard.rejected).toBe(0);                // 一条都没被"字号不同"挡下来
+  });
+});
+
 
 describe('目录页守卫', () => {
   it('目录标记之后、同字号、带编号的连续行 = 目录条目（不成标题）；遇到更大字号的行即结束目录块', () => {
