@@ -16,9 +16,14 @@
  *   ② **目录层**（毫秒级 + 一次 `--judgments` 子进程）：在册门禁都在册、每个都有 真变异 + 无害对照 + 负对照；
  *      G8 另有一条**判定级**覆盖用例（15 条判定各有注入，判定清单从门禁自己的 `--judgments` 现场取）。
  *      少了任何一类 ⇒ 判红（防止"覆盖被悄悄删掉"这种静默失效）。
+ *      另有一组**产品级**（`F3` `pdf-thresholds`）的结构断言：4 条真变异各改一个不同阈值、1 条负对照、
+ *      ≥1 条无害对照、**不许是常量值断言**、必须有 `exec` + `fingerprint`。
  *   ③ **集成层**（**约 7 s**，真起子进程跑一次体检）：这是唯一能证明"它真的按事实判"的一层。
  *      刻意只跑 `--only=dep-direction` 这一个门禁：全量体检比它贵一个数量级（G8 那一条自己的判定级变体就占掉一大截），
  *      会把 `npm test` 的成本推高一截，而"工具会不会乱报"这一条与"跑了几个门禁"无关 ✗。
+ *      **产品级那一条也刻意不在这里跑**：`pdf-thresholds` 一次要跑 7 遍 vitest（≈12–15 s），
+ *      塞进 `npm test` 会把 `scripts/verify.js` 的 G3 预算（整链最紧的一段，值以 `STEPS` 为准）顶穿
+ *      ⇒ 那是给全链造一个新红源。它的正确性由 ② 的结构断言 + 单跑读数（`--only=pdf-thresholds`）保证。
  *      （全量体检仍是一条命令：`node scripts/mutate-gates.js`，见 `.review/20261013-门禁变异测试/README.md` 与
  *       `.review/20261016-T4-G8判别力/README.md`。）
  * ============================================================ */
@@ -130,7 +135,7 @@ describe('② 变体目录：在册门禁一个不少，每个都带"真变异 +
   it('每个在册门禁都在 GATES 里（清单是**枚举**，不是计数 —— 加门禁时这里必须跟着加），且都写明了"注在哪一层"', () => {
     const ids = mg.GATES.map((g) => g.id).sort();
     expect(ids).toEqual(['collateral-check', 'dep-direction', 'doc-facts', 'docs-registry',
-      'rules-consistency', 'smoke-state', 'visibility-judge']);
+      'pdf-thresholds', 'rules-consistency', 'smoke-state', 'visibility-judge']);
     mg.GATES.forEach((g) => {
       expect(g.seam, g.id + ' 缺 seam（必须写清：变异注在输入文本 / 程序集 / 门禁实现的哪一层）').toBeTruthy();
       expect(g.code, g.id + ' 没写门禁编号').toBeTruthy();
@@ -172,6 +177,67 @@ describe('② 变体目录：在册门禁一个不少，每个都带"真变异 +
         if (v.expect !== 'unchanged') expect(v.reason instanceof RegExp, g.id + '/' + v.id + ' 没写期望原因').toBe(true);
       });
     });
+  });
+
+  /* ---- 产品级那条（`F3` `pdf-thresholds`）：结构断言，便宜且能防"变体被悄悄删" ----
+   * ⚠️ 这里**刻意不做集成跑**（不在 ③ 里加 `--only=pdf-thresholds`）：
+   *   它一次要跑 7 遍 vitest（基线 + 6 条变体，实测 ≈12–15 s），而 `scripts/verify.js` 的 G3
+   *   （`npm test`）那一步是整链预算最紧的一段（预算值以 `STEPS` 为准，本批现读 69 s）——
+   *   塞进 `npm test` 就是给全链造一个新红源 ✗。单跑：`node scripts/mutate-gates.js --only=pdf-thresholds`。 */
+  const F3 = () => {
+    const g = mg.GATES.find((x) => x.id === 'pdf-thresholds');
+    expect(g, 'GATES 里没有 pdf-thresholds（产品级靶子被删了？）').toBeTruthy();
+    return g;
+  };
+
+  it('产品级：4 个阈值各一条真变异（`caught` 恰好 4 条），每条都写明是哪个阈值、且 reason 是 RegExp', () => {
+    // 阈值名单**只有一处**（`scripts/mutate-gates.js` 的 `PDF_THRESHOLDS`）⇒ 这里不抄第二份
+    const names = mg.PDF_THRESHOLDS;
+    expect(Array.isArray(names) && names.length === 4, 'PDF_THRESHOLDS 必须是 4 个阈值').toBe(true);
+    const mutants = F3().variants.filter((v) => v.expect === 'caught');
+    expect(mutants.length, '产品级真变异必须恰好 4 条（4 个阈值各一条）').toBe(4);
+    const hit = mutants.map((v) => names.filter((n) => String(v.name).includes(n)));
+    mutants.forEach((v, i) => {
+      expect(v.reason instanceof RegExp, v.id + ' 的 reason 必须是 RegExp（classify 拿它做 reason.test）').toBe(true);
+      expect(hit[i].length, v.id + ' 的 name 里没写明改的是哪个阈值：' + v.name).toBe(1);
+    });
+    // 4 条各改**不同**的阈值（防"四条都改同一个"凑数）
+    expect(new Set(hit.map((h) => h[0])).size, '4 条真变异里有重复的阈值：' + hit.map((h) => h[0]).join('、')).toBe(4);
+  });
+
+  it('产品级：负对照恰好 1 条、无害对照 ≥1 条（两侧都在 —— 会红、且不把"没变"读成红）', () => {
+    const g = F3();
+    expect(g.variants.filter((v) => v.expect === 'escape').length, '产品级缺负对照（没有它就没法证明"工具会报没拦下"）').toBe(1);
+    expect(g.variants.filter((v) => v.expect === 'unchanged').length, '产品级缺无害对照').toBeGreaterThanOrEqual(1);
+  });
+
+  it('产品级变体**不许是常量值断言**（假修法：往测试里加 `expect(CONSTANTS.X).toBe(1.15)` 也能"变红"）', () => {
+    F3().variants.forEach((v) => {
+      // 判据只看**变体本身的代码形态**：它要是去断言"那个数字等于那个数字"，
+      // 证明的是常量没被改名，**不是**"改阈值会让行为错" ⇒ 判红。
+      const src = String(v.apply) + '\n' + String(v.reason || '');
+      expect(src, v.id + ' 里出现了 `CONSTANTS`（常量值断言的形态）').not.toMatch(/CONSTANTS/);
+      expect(src, v.id + ' 里出现了 `.toBe(<数字>)`（直接断言那个数字的形态）').not.toMatch(/\.toBe\(\s*\d/);
+    });
+  });
+
+  it('产品级必须有 `exec` 与 `fingerprint`（缺任一条 ⇒ 它那条"红"不是从单测来的）', () => {
+    const g = F3();
+    expect(g.exec, '没有 exec ⇒ 它没在跑产品单测，那条"红"可能来自别处').toBeTruthy();
+    expect(typeof g.exec.file, 'exec.file 必须是可执行文件（node）').toBe('string');
+    // ⚠️ Windows 上直接 spawn 一个 `.mjs` 是 **EFTYPE**（2026-10-22 实测）⇒ 形状只能是
+    //   `node <真仓>/node_modules/vitest/vitest.mjs run …`：file = node，脚本路径在 args[0]。
+    expect(g.exec.file, 'exec.file 必须是 node（直接 spawn vitest.mjs 在 Windows 上 EFTYPE）').toBe(process.execPath);
+    expect(Array.isArray(g.exec.args), 'exec.args 必须是数组').toBe(true);
+    expect(String(g.exec.args[0]).replace(/\\/g, '/'), 'exec.args[0] 必须指向真仓的 vitest.mjs：' + g.exec.args[0])
+      .toMatch(/node_modules\/vitest\/vitest\.mjs$/);
+    expect(fs.existsSync(g.exec.args[0]), 'exec.args[0] 不存在（真仓的 vitest 被搬走了？）：' + g.exec.args[0]).toBe(true);
+    expect(typeof g.fingerprint, '没有 fingerprint ⇒ 读数不可比（无害对照拿不到"不含耗时"的稳定文本）').toBe('function');
+    // 报告必须落在**副本**里：落真仓根会多一个陌生顶层目录 ⇒ G8 判红（`--reporter=json` 不带 outputFile 时
+    // 会落到 `<cwd>/.vitest/json/output.json`）
+    expect(g.exec.args.join(' '), 'exec.args 里没有 --outputFile=<mirror>… ⇒ 报告会落到 <cwd>/.vitest/').toMatch(/--outputFile=<mirror>/);
+    // 它自己的判据文件也要进 `repoUnchanged`（负对照会同时改它）
+    expect(g.watch || [], 'watch 里必须有它的判据文件：' + mg.PDF_TEST).toContain(mg.PDF_TEST);
   });
 });
 

@@ -38,7 +38,14 @@
  *     `node scripts/docs-registry-check.js --judgments` 现场取 —— 本文件不抄那份清单）。
  *     "门禁 × 有没有证明"的汇总表不在这里：住在
  *     `.review/20261016-T4-G8判别力/tools/coverage-table.js`（现算，欠账册与之一致性互校）。
- *   · 它测的是**门禁**，不是产品：产品行为仍靠 G3/G4/G5。
+ *   · 它测的是**门禁**（外加**一条产品级**，见下条），**不是产品整体行为**：产品行为仍靠 G3/G4/G5。
+ *   · **产品级只有一条**（`F3` `pdf-thresholds`，2026-10-22 加）：改 `src/pdf-text.js` 的 4 个阈值 ⇒
+ *     `tests/pdf-text.test.js` 的**行为断言**必须红。口径如实：它**只覆盖这一份单测 + 这 4 个阈值**，
+ *     **不代表产品整体行为**，也不是"产品已经被变异测试过了"。
+ *     它**不在门禁之列**（`code` 是功能号 `F3`，不是 `G*`/`S*`/`V*`），一次要跑 7 遍 vitest
+ *     （基线 + 6 条变体，实测 ≈12–15 s）⇒ **故意不进 `npm test`**：`scripts/verify.js` 的 G3 那一步
+ *     是整链预算最紧的一段（预算值以 `STEPS` 为准），塞进去就是给全链造一个新红源 ✗。
+ *     单跑：`node scripts/mutate-gates.js --only=pdf-thresholds`。
  *   · 门禁若**不支持指向外部输入**，就只能测"能测的那一半"——每个门禁的 `seam` 字段写明
  *     本工具注在哪一层（输入文本 / 一份程序集 / 门禁实现），没测到的部分记"未测"。
  *   · 它**不改任何门禁的判定**：钝化只发生在副本里，真仓的门禁逐字节不变（`--json` 里带
@@ -178,6 +185,49 @@ function makeMirrorApi(root) {
  * =============================================================== */
 function runGate(mirrorRoot, cfg, env) {
   const t = Date.now();
+
+  /* ---- 外挂 runner（产品级靶子专用）：`cfg.exec` 存在时跑**真仓**的那个程序 ---- *
+   * 为什么需要它：产品级靶子要跑 `tests/pdf-text.test.js`，而那要用 vitest —— 副本里**没有
+   * node_modules**，且 ESM 的**裸包名解析不认 `NODE_PATH`**（实测 `ERR_MODULE_NOT_FOUND`
+   * ⇒ `gateEnv()` 里那条 NODE_PATH 对 ESM 无效）。⇒ 只能跑**真仓**那份 vitest
+   * （`node <真仓>/node_modules/vitest/vitest.mjs …`；⚠️ 直接 spawn 那个 `.mjs` 在 Windows 上是 **EFTYPE**）；
+   * `cwd` 仍钉在**副本**里 ⇒ 被测文件与变异都来自副本。
+   * 机制与读数：`.review/20261022-r2F变异/probe-mirror.js`（副本里补一条 node_modules 联接 ⇒ 38/38 全绿）。
+   * ⚠️ `args` 里的 `<mirror>` 由这里替换成副本根：结构化报告必须落在**副本**里 ——
+   *   `--reporter=json` **不带** `--outputFile` 会落到 `<cwd>/.vitest/json/output.json`，
+   *   而 cwd 若是真仓就是"真仓多一个陌生顶层目录"⇒ G8 判红（实测踩过）。
+   * ⚠️ 默认通路（下面那段 `process.execPath + 副本脚本`）**一个字节都没动**：它是现有 7 条门禁的路径。 */
+  const ex = cfg.exec || null;
+  if (ex) {
+    const args = ex.args.map((a) => String(a).split('<mirror>').join(mirrorRoot));
+    const io = args.findIndex((a) => a.startsWith('--outputFile='));
+    const outFile = io >= 0 ? args[io].slice('--outputFile='.length) : null;
+    // 上一条变体的报告可能还在 ⇒ 先删：否则"这一条根本没写出报告"会读到**旧读数**（把红读成绿）。
+    if (outFile) { try { fs.rmSync(outFile, { force: true }); } catch (e) { /* 删不掉下面会读不到 ⇒ 响亮 */ } }
+    const r = spawnSync(ex.file, args, {
+      cwd: mirrorRoot, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 300000
+    });
+    let raw = null;
+    let readError = null;
+    if (!outFile) readError = '`cfg.exec.args` 里没有 --outputFile=（拿不到结构化读数）';
+    else {
+      try { raw = JSON.parse(fs.readFileSync(outFile, 'utf8')); }
+      catch (e) { readError = '读不到结构化报告 ' + outFile + '（' + ((e && e.message) || e) + '）'; }
+    }
+    const fingerprintOk = raw && typeof cfg.fingerprint === 'function';
+    if (raw && !fingerprintOk) readError = '`cfg.exec` 有报告但本门禁没写 `fingerprint()` ⇒ 归不了因';
+    const plain = String(r.stdout || '') + (r.stderr ? '\n' + r.stderr : '');
+    const out = fingerprintOk
+      ? cfg.fingerprint(raw, r.status)
+      : 'EXIT ' + String(r.status) + '\nREPORT-MISSING ' + readError + '\n' + plain.slice(-4000);
+    return {
+      exit: r.status === null ? null : r.status,
+      out, ms: Date.now() - t,
+      spawnError: r.error ? String(r.error.message || r.error)
+        : (fingerprintOk ? null : '采不到结构化读数（' + readError + '）')
+    };
+  }
+
   const r = spawnSync(process.execPath, [path.join(mirrorRoot, cfg.script)].concat(cfg.args || []), {
     cwd: mirrorRoot, env, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 120000
   });
@@ -321,6 +371,63 @@ const V2_EXEMPT_PROBE = [
   V2_OPEN_PROBE
 ].join('\n');
 
+
+/* ===============================================================
+ * F3 的注入器（**产品级**：改的是**产品源文件**，判据是**产品单测**）
+ * ---------------------------------------------------------------
+ * 与上面 7 条的区别（两者的失效方式不同，别混）：
+ *   门禁级：改**门禁的输入** ⇒ 门禁必须红（红的是"这道检查还在不在"）；
+ *   产品级：改**产品的阈值** ⇒ 产品的**行为断言**必须红（红的是"行为还对不对"）。
+ * ⚠️ 本批最容易被做假的地方（照 `SPEC.md` §3.4 F-3 的自证要求）：往测试里加一条
+ *   `expect(...CONSTANTS.MIN_TITLE_FACTOR).toBe(1.15)` 也能让它"变红"，但那只证明
+ *   "那个数字就是那个数字"，**不证明"改阈值会让行为错"** ⇒ 下面四条真变异的 `reason`
+ *   一律指向**行为断言的全名**（`FAIL: <fullName>`），且 `tests/mutate-gates.test.js`
+ *   有一条结构断言专门禁掉"常量值断言"这个形态。
+ * =============================================================== */
+/** 产品靶子（改的就是它；同时进 `repoHashesBefore/After` ⇒ `repoUnchanged` 覆盖它）。 */
+const PDF_SRC = 'src/pdf-text.js';
+/** `tests/pdf-text.test.js` 一起进哈希面：变异体 `F3-neg` 会**同时**改它（`describe.skip`）。 */
+const PDF_TEST = 'tests/pdf-text.test.js';
+/** 本批的 4 个阈值。**只写名字，不写值** —— 值由 `discover()` 从副本源码现读（手抄就会漂）。 */
+const PDF_THRESHOLDS = ['MIN_TITLE_FACTOR', 'PARA_FACTOR', 'EDGE_LINES', 'SIZE_GUARD_TOL'];
+
+/** vitest 的 JSON 报告 → **不含耗时**的稳定文本（`classify()` 拿它做 reason 匹配与逐字比较）。
+ *  ⚠️ 去掉耗时不是洁癖：无害对照的判据是"读数**逐字**不变"（`classify()` 的 ①），
+ *    任何带 duration 的报告都会因为毫秒抖动让**每一条对照**都变成假红。
+ *  ⚠️ 只收 `status === 'failed'`：写成 `status !== 'passed'` 会把 **skipped** 也算成失败 ——
+ *    本批的负对照正是 `describe.skip` 那一组 ⇒ 那样写会把"没拦下"读成"拦下了"（实测踩过）。
+ *  ⚠️ 计数取报告自己的 `numTotalTests` / `numPassedTests` / `numFailedTests`（对方是权威），
+ *    只在字段缺失时才从 `assertionResults` 现数。 */
+function vitestFingerprint(raw, exit) {
+  const tests = ((raw && raw.testResults) || []).flatMap((f) => (f.assertionResults || []).map((a) => ({
+    name: a.fullName || a.title || '(无名断言)', status: a.status
+  })));
+  const failed = tests.filter((t) => t.status === 'failed').map((t) => t.name).sort();
+  const pick = (v, alt) => (typeof v === 'number' ? v : alt);
+  const lines = [
+    'EXIT ' + String(exit),
+    'TOTAL ' + pick(raw && raw.numTotalTests, tests.length)
+      + ' PASSED ' + pick(raw && raw.numPassedTests, tests.filter((t) => t.status === 'passed').length)
+      + ' FAILED ' + pick(raw && raw.numFailedTests, failed.length)
+  ];
+  failed.forEach((n) => lines.push('FAIL: ' + n));
+  return lines.join('\n');
+}
+
+/** 把副本里的一个阈值常量改成变异值。
+ *  `from` 来自 `discover()`（从副本源码读出来的**字面量原文**，例如 `0.10`）——
+ *  这样 `String(0.1) !== '0.10'` 这类格式化差异不会变成"靶点没找对"。
+ *  找不到靶点 ⇒ 抛（上游记"未测"），**不静默跳过**（照 R1d：没做不能看不出没做）。 */
+function mutateThreshold(M, c, name, to) {
+  const from = c && c.values ? c.values[name] : null;
+  if (!from) throw new Error('副本里没探到阈值 ' + name + '（discover 没找到靶点）');
+  const oldText = 'const ' + name + ' = ' + from + ';';
+  const newText = 'const ' + name + ' = ' + to + ';';
+  return M.edit(PDF_SRC, (s) => {
+    if (s.indexOf(oldText) < 0) throw new Error('靶点没找对：' + PDF_SRC + ' 里没有 `' + oldText + '`');
+    return s.split(oldText).join(newText);
+  });
+}
 
 /* ===============================================================
  * 变体目录（四个门禁 · 手工挑）
@@ -914,7 +1021,13 @@ const GATES = [
       lines.slice(start, end).forEach((l) => {
         for (const m of l.matchAll(/`(\.review\/[^`\s]+)`/g)) {
           const ref = m[1].replace(/[\\/]+$/, '');
-          if (/[<>*]/.test(ref) || seen.has(ref)) continue;   // 占位写法不是真指针（与门禁同口径）
+          /* 占位写法不是真指针（与门禁同口径）。**含 `:` / `@` 的串也不是**：
+           * 门禁自己的 `isRepoPathPointer()` 对 `[:@]` 直接判 false（那是 `host:port` /
+           * **带行号的散文形态**，例：`.review/20260926-静默闭环2-5/README.md:5`）⇒ 副本不该为它造桩。
+           * 2026-10-22 实测（本条是**先于本批就存在的缺陷**，打的是 G8 前置）：不跳过时
+           * `fs.mkdirSync('…\\README.md:5')` 在 Windows 上因路径非法字符 `:` 直接 **ENOENT** ⇒
+           * 整份体检在 G8 前置就 abort（exit 2；那次读数存于 `.review/20261022-r2F变异/out-mutate-all.before.json`）。 */
+          if (/[<>*]/.test(ref) || /[:@]/.test(ref) || seen.has(ref)) continue;
           seen.add(ref);
           // 指针可能指向**目录**，也可能指向目录里的**一份文件**（实测两种都有）——
           // 两种都要让 `fs.existsSync(ref)` 成立，但只有"目录"那种要自带 README。
@@ -1245,12 +1358,155 @@ const GATES = [
         }
       }
     ]
+  },
+
+  /* ---------------------------- F3（**产品级**，不在门禁之列） ----------------------------
+   * 来源：`SPEC.md` §3.4 的 F-3 第一增量 —— 把 `src/pdf-text.js` 的 4 个阈值做成产品级变异体。
+   * 判据两侧（缺一条这批就不算数）：**该红的** 4 个阈值各改一格 ⇒ `tests/pdf-text.test.js`
+   * 必须变红、且红的是**行为断言**；**该绿的** 不改 / 只改注释 ⇒ 全绿；**不是恒真** 负对照
+   * （改阈值 + 把这组断言整体 `describe.skip`）⇒ 必须如实报"没拦下"。
+   *
+   * 边界（如实标注，别把它读成"产品都被测过了"）：
+   *   · **产品级只覆盖 `tests/pdf-text.test.js` 这一份 / `src/pdf-text.js` 的这 4 个阈值**；
+   *     不代表产品整体行为（那仍靠 G3/G4/G5）。
+   *   · 它**不是门禁**：`code` 用 `F3`（功能号），不是 `G*`/`S*`/`V*` 那套门禁编号。
+   *   · 一次要跑 7 遍 vitest（基线 + 6 条变体，实测 ≈12–15 s）⇒ **故意不进 `npm test`**：
+   *     `scripts/verify.js` 的 G3 那一步是整链预算最紧的一段（预算值以 `STEPS` 为准，本批现读 69 s），
+   *     把它塞进 `npm test` 就是给全链造一个新红源 ✗。单跑：`node scripts/mutate-gates.js --only=pdf-thresholds`。
+   * ------------------------------------------------------------ */
+  {
+    id: 'pdf-thresholds', code: 'F3',
+    title: 'PDF 纯函数阈值（产品级：改阈值 ⇒ 单测必须红）',
+    script: PDF_SRC,
+    watch: [PDF_TEST],
+    args: [],
+    /* 外挂 runner：跑**真仓**那份 vitest（副本里没有 node_modules），cwd = 副本，报告落在副本里。
+     * ⚠️ 形状是 `node <真仓>/node_modules/vitest/vitest.mjs run …`，**不是**直接 spawn 那个 `.mjs`：
+     *  2026-10-22 实测 Windows 上 `spawnSync(<...>/vitest.mjs, …)` 返回 **EFTYPE**
+     *  （CreateProcess 不认这个文件类型）⇒ `exec.file` 只能是 node，脚本路径放 `args[0]`。
+     *  与两份设计验证脚本（`.review/20261022-r2F变异/probe-mirror.js`）的实测写法一致。 */
+    exec: {
+      file: process.execPath,
+      args: [path.join(REPO, 'node_modules', 'vitest', 'vitest.mjs'),
+        'run', PDF_TEST, '--reporter=json', '--outputFile=<mirror>/.vitest-out.json']
+    },
+    seam: '**产品级，不是门禁**：靶子 = `tests/pdf-text.test.js` 这一份单测；变异注在**副本**的 '
+      + '`src/pdf-text.js` 上（4 个阈值常量），由真仓的 vitest（外挂 runner、cwd = 副本）跑那份单测 ⇒ '
+      + '判据是"改阈值 ⇒ 行为断言必须红"，不是"常量值被改了"。只覆盖这 4 个阈值 + 这一份测试文件，'
+      + '**不代表产品整体行为**（产品行为仍靠 G3/G4/G5）。',
+    /** 副本前置（在**取基线之前**跑）：给副本补一条指向真仓 `node_modules` 的**目录联接（junction）**。
+     *  ⚠️ 为什么非要它：ESM 的**裸包名解析不认 `NODE_PATH`** —— 副本没有 `node_modules` 时
+     *  vitest / `pdfjs-dist` 直接 `ERR_MODULE_NOT_FOUND`（实测；见 `.review/20261022-r2F变异/probe-mirror.js`
+     *  与 `probe-mutants.js`：补上联接后基线 **38/38 全绿、1776 ms**）。Windows 建 junction 不需要管理员。
+     *  ⚠️ 收尾必须**先 unlink 这条联接**再删副本目录（`rmSync(recursive)` 跨 junction 的行为依平台/实现而异，
+     *  万一跟进去就是在删真仓的 `node_modules`）—— 清理与哨兵核对在 `buildReport()` 的 `finally` 里。
+     *  用裸 `fs`、**不走 `M.write()`**：它属于**副本构造**，必须活过每一次 `restore()`。 */
+    prepareMirror(M) {
+      const link = path.join(M.root, 'node_modules');
+      if (fs.existsSync(link)) return [];
+      fs.symlinkSync(path.join(REPO, 'node_modules'), link, 'junction');
+      return [link + ' → ' + path.join(REPO, 'node_modules') + '（目录联接；收尾先 unlink 再删副本）'];
+    },
+    fingerprint: vitestFingerprint,
+    /** 靶点 = 4 个阈值在副本源码里的**字面量原文**（现读；本文件不抄 `1.15` / `0.10` 这类会漂的值）。 */
+    discover(M) {
+      const src = M.read(PDF_SRC);
+      const values = {};
+      PDF_THRESHOLDS.forEach((name) => {
+        const m = new RegExp('^\\s*const ' + name + ' = ([0-9.]+);', 'm').exec(src);
+        if (!m) throw new Error('副本的 ' + PDF_SRC + ' 里找不到阈值 ' + name + '（靶点没找对）');
+        values[name] = m[1];
+      });
+      return { values };
+    },
+    variants: [
+      {
+        id: 'F3-1', kind: '改产品阈值', expect: 'caught',
+        reason: /FAIL: .*与正文\*\*同字号\*\*的 `2\.1 xxx` 靠编号成立/,
+        name: 'MIN_TITLE_FACTOR → 1.0（"字号显著大于基准"的门槛塌掉 ⇒ 与正文同字号的编号行也被当标题；'
+          + '期望红的是"同字号的 2.1 靠编号成立"那条**行为**断言）',
+        apply: (M, c) => mutateThreshold(M, c, 'MIN_TITLE_FACTOR', '1.0')
+      },
+      {
+        id: 'F3-2', kind: '改产品阈值', expect: 'caught',
+        reason: /FAIL: .*行距 ≤ 1\.8× 并成一段/,
+        name: 'PARA_FACTOR → 1.0（"段中断"判据塌掉 ⇒ 该并的段不再并；期望红的是"行距 ≤ 1.8× 并成一段"）',
+        apply: (M, c) => mutateThreshold(M, c, 'PARA_FACTOR', '1.0')
+      },
+      {
+        id: 'F3-3', kind: '改产品阈值', expect: 'caught',
+        reason: /FAIL: .*半数十页以上重复的行被剔/,
+        name: 'EDGE_LINES → 0（首尾候选面空掉 ⇒ 页眉页脚不再被剔；期望红的是"半数十页以上重复的行被剔"）',
+        apply: (M, c) => mutateThreshold(M, c, 'EDGE_LINES', '0')
+      },
+      {
+        id: 'F3-4', kind: '改产品阈值', expect: 'caught',
+        reason: /FAIL: .*★ 判据①：21pt 那一级\*\*在\*\*/,
+        name: 'SIZE_GUARD_TOL → 10（字号簇容差大到把 21pt 与 9pt 归成一簇 ⇒ 封面大标题被当页眉；'
+          + '期望红的是"判据①：21pt 那一级在"这条**行为**断言）',
+        apply: (M, c) => mutateThreshold(M, c, 'SIZE_GUARD_TOL', '10')
+      },
+      {
+        id: 'F3-h', kind: '无害对照', expect: 'unchanged',
+        name: '只改 `src/pdf-text.js` 里 `LINE_FACTOR` 那句**注释**（一个值都不动）⇒ 读数必须逐字不变',
+        apply(M) {
+          const from = '（Calibre 的 LINE_FACTOR：抄方法 ✓ 没抄代码 ✗） */';
+          const to = '（Calibre 的 LINE_FACTOR：抄方法 ✓ 没抄代码 ✗；变异对照：只改这句注释、一个值都没动） */';
+          return M.edit(PDF_SRC, (s) => {
+            if (s.indexOf(from) < 0) throw new Error('靶点没找对：找不到 LINE_FACTOR 那句注释');
+            return s.replace(from, to);
+          });
+        }
+      },
+      {
+        id: 'F3-neg', kind: '负对照', expect: 'escape', reason: /FAIL: .*★ 判据①：21pt 那一级\*\*在\*\*/,
+        name: '先把守护 `SIZE_GUARD_TOL` 的那一组断言**整体** `describe.skip`，再改这个阈值 ⇒ 必须报"没拦下"'
+          + '（⚠️ 不许只 skip 一半：本批实测同类变异 `PARA_FACTOR`→1.0 有 **4 条失败用例、分散在 4 个 describe**'
+          + '（段 / 标题候选 / 端到端 / 夹具自检）⇒ 只 skip 一组仍会红，那会把"工具没在瞎报"这件事测错）',
+        apply(M, c) {
+          mutateThreshold(M, c, 'SIZE_GUARD_TOL', '10');
+          const from = "describe('字号守卫（F2）";
+          const to = "describe.skip('字号守卫（F2）";
+          return M.edit(PDF_TEST, (s) => {
+            if (s.indexOf(from) < 0) throw new Error('靶点没找对：' + PDF_TEST + ' 里找不到 ' + from);
+            return s.replace(from, to);
+          });
+        }
+      }
+    ]
   }
 ];
 
 /** 真仓的门禁模块（`require` 零副作用 —— 每份门禁都带 `require.main === module` 守卫，
  *  所以本工具能借它们的**导出**在现场找靶点，而不是另抄一份口径）。 */
 function realModule(rel) { return require(path.join(REPO, rel)); }
+
+/* ===============================================================
+ * 副本收尾：拆 `node_modules` 目录联接 + 核对真仓哨兵
+ * =============================================================== */
+/** 真仓 `node_modules` 的**哨兵**（两份都必须在；读数进报告的 `mirror.junction.sentinel*`）。
+ *  为什么挑这两个：产品级靶子同时要用 vitest（runner）与 `pdfjs-dist`（`tests/pdf-text.test.js`
+ *  最后一条用例真的解析一份 PDF）—— 若"跨 junction 删除"发生，最先消失的就是它们。 */
+const NODE_MODULES_SENTINELS = ['node_modules/vitest/package.json', 'node_modules/pdfjs-dist/package.json'];
+
+/** 拆掉副本里那条 `node_modules` 联接，并给出"真仓没被删"的取证读数。
+ *  ⚠️ 只在**副本**上动手：`lstat` 判"是不是联接"，不是联接就**不删**（并把原因如实记下来）。
+ *  ⚠️ 拆前/拆后各核一次哨兵 —— 两次都 true 才说明跨 junction 删除没有发生。 */
+function removeMirrorJunction(mirrorRoot) {
+  const link = path.join(mirrorRoot, 'node_modules');
+  const sentinel = () => NODE_MODULES_SENTINELS.map((rel) => ({ rel, ok: fs.existsSync(path.join(REPO, rel)) }));
+  const rec = { link, existed: false, unlinked: false, sentinelBefore: sentinel(), sentinelAfter: null, note: null };
+  try {
+    const st = fs.lstatSync(link);
+    rec.existed = true;
+    if (st.isSymbolicLink()) { fs.unlinkSync(link); rec.unlinked = true; }
+    else rec.note = '副本里的 node_modules 不是联接（意外：本工具的 prepareMirror 只会造联接）⇒ 不删';
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') rec.note = '拆联接失败：' + ((e && e.message) || e);
+  }
+  rec.sentinelAfter = sentinel();
+  return rec;
+}
 
 /* ===============================================================
  * 主流程
@@ -1294,7 +1550,7 @@ function buildReport() {
     repo: REPO,
     mode: { only: opt.only || '(全部)', strict: !!opt.strict, keep: !!opt.keep },
     envError: null,
-    mirror: { dir: '(已自清)', copiedFiles: 0, ms: 0 },
+    mirror: { dir: '(已自清)', copiedFiles: 0, ms: 0, junction: null },
     unitTestsPin: null,
     repoHashesBefore: null, repoHashesAfter: null, repoUnchanged: null,
     gates: [], summary: null, selfCheck: null,
@@ -1303,16 +1559,35 @@ function buildReport() {
       // 那种自述会先于代码腐坏（判分口径的权威副本是上面的 GATES 数组 + 运行时那行"被判的门禁："）
       '在册门禁 = `GATES` 里那几条：G9 / S1 / S2 / G6+G7 / V1 / V2 / G8；'
         + '其余（G1·G2·G3·G4·G5·S3）未测（要起 Electron 或跑全链）',
+      '此外有 **1 条产品级**条目（`F3` `pdf-thresholds`，**不是门禁**）：它改的是产品源文件的阈值、判据是产品单测。'
+        + '⚠️ 口径如实：**产品级只覆盖 `tests/pdf-text.test.js` 这一份 / `src/pdf-text.js` 的 4 个阈值**，'
+        + '**不代表产品整体行为**（产品行为仍靠 G3/G4/G5）',
       '变体是**手工挑的**（每个门禁 ≥2 条真变异 + 1 无害对照 + 1 负对照；G8 例外：每条判定各一条）：'
         + '能回答"这几类破坏拦不拦"，除 G8 外回答不了覆盖率'
         + '（**这里刻意不写"几条"**：那个数会随加变体而漂，现成读数看上面的"变异体 N"汇总行）',
-      '测的是门禁，不是产品行为（产品靠 G3/G4/G5）'
+      '产品级那一条的副作用（实测，不猜）：副本里的 `node_modules` 是**指向真仓的目录联接** ⇒ vitest 会往'
+        + '真仓 `node_modules/.vite` 写依赖缓存（本批读数：该目录**已存在**；在真仓直接跑 `npm test` 也会建它）。'
+        + '它不是受管文件、不在 `repoHashes` 面内、也不被 git 跟踪。'
+        + '报告里 `mirror.junction` 记着拆联接前后的真仓哨兵核对读数'
     ]
   };
 
   if (!selected.length) { report.envError = '--only 没有选中任何门禁'; return report; }
 
-  report.repoHashesBefore = GATES.map((g) => g.script).concat(['docs/RULES.md'])
+  /** 哈希面 = 每个条目的 `script` + `watch`（产品靶子有 `watch`）+ `docs/RULES.md`。
+   *  ⚠️ 用 `GATES`（全部条目）而不是 `selected`：`repoUnchanged` 问的是"**真仓**有没有被这次体检碰过"，
+   *  与"这次只跑哪几条"无关（`--only` 下漏掉别的文件就答不了这一问）。 */
+  function hashedRelPaths() {
+    const rels = [];
+    GATES.forEach((g) => {
+      rels.push(g.script);
+      (g.watch || []).forEach((w) => rels.push(w));
+    });
+    rels.push('docs/RULES.md');
+    return [...new Set(rels)];
+  }
+
+  report.repoHashesBefore = hashedRelPaths()
     .map((rel) => ({ rel, sha: sha256(path.join(REPO, rel)) }));
 
   let mirror = null;
@@ -1428,14 +1703,25 @@ function buildReport() {
     report.envError = '体检中途失败：' + ((e && e.stack) || e);
   } finally {
     if (mirror && !opt.keep) {
+      /* ⚠️ **先拆联接、再删副本**（顺序不可换）：`removeMirrorJunction()` 里 unlink 掉副本的
+       * `node_modules` junction，并在拆前/拆后各核一次真仓哨兵 —— 两条读数进 `mirror.junction`。
+       * 然后再 `rmSync(home)`：这时副本里已经没有指向真仓的联接了，跨 junction 删除的风险归零。 */
+      report.mirror.junction = removeMirrorJunction(mirror.root);
       try { fs.rmSync(mirror.home, { recursive: true, force: true }); }
       catch (e) { process.stderr.write('⚠ 副本自清失败（请手工删）：' + mirror.home + '\n'); }
     } else if (mirror) {
       report.mirror.dir = mirror.root;
+      /* `--keep` 不删副本 ⇒ 联接也留着（排查用）。**必须显式写出来**：它是一条指向真仓
+       * `node_modules` 的联接，手工删这个目录前要先 unlink 它，否则可能连真仓一起删。 */
+      report.mirror.junction = {
+        link: path.join(mirror.root, 'node_modules'),
+        kept: true, unlinked: false,
+        note: '--keep：副本与联接都留着。手工删副本前**先** `fs.unlinkSync(<副本>/node_modules)` 再删目录'
+      };
     }
   }
 
-  report.repoHashesAfter = GATES.map((g) => g.script).concat(['docs/RULES.md'])
+  report.repoHashesAfter = hashedRelPaths()
     .map((rel) => ({ rel, sha: sha256(path.join(REPO, rel)) }));
   report.repoUnchanged = JSON.stringify(report.repoHashesBefore) === JSON.stringify(report.repoHashesAfter);
 
@@ -1485,8 +1771,18 @@ function printHuman(report) {
   }
   console.log('');
   console.log('  真仓未改：' + (report.repoUnchanged
-    ? '✓ ' + new Set(GATES.map((g) => g.script)).size + ' 份门禁脚本 + docs/RULES.md 的 sha256 前后一致'
+    ? '✓ ' + (report.repoHashesBefore || []).length
+      + ' 份文件（门禁脚本 + 产品靶子与其单测 + docs/RULES.md）的 sha256 前后一致'
     : '✗ 有文件被改动（这不该发生）'));
+  const jn = report.mirror && report.mirror.junction;
+  if (jn) {
+    const ok = (list) => (list || []).every((s) => s.ok);
+    console.log('  副本联接收尾：' + (jn.kept
+      ? '⚠ 保留（--keep）：' + (jn.note || '')
+      : (jn.unlinked ? '✓ 已先 unlink 再删副本' : '（本次没有建联接）')
+        + ' ｜ 真仓哨兵 拆前 ' + (ok(jn.sentinelBefore) ? '✓' : '✗') + ' / 拆后 ' + (ok(jn.sentinelAfter) ? '✓' : '✗')
+        + '（' + NODE_MODULES_SENTINELS.join(' · ') + '）' + (jn.note ? ' ｜ ' + jn.note : '')));
+  }
   console.log('  未测/边界：');
   report.knownGaps.forEach((g) => console.log('    · ' + g));
   console.log('');
@@ -1518,6 +1814,8 @@ function main() {
 module.exports = {
   GATES, VERDICT, classify, exitCodeFor, summarize, normalize, firstLine,
   makeMirror, makeMirrorApi, unitTestsPin, realModule, exitMain: main,
+  runGate, vitestFingerprint, removeMirrorJunction, NODE_MODULES_SENTINELS,
+  PDF_THRESHOLDS, PDF_SRC, PDF_TEST,
   MIRROR_PREFIX
 };
 
