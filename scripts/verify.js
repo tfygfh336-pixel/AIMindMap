@@ -1476,7 +1476,15 @@ function main() {
     return;
   }
 
-  console.log((partial ? '部分验证通过' : '验证通过') + '（' + (partial ? '计划内 ' : '') + chk.ranCount + ' 步 / ' + fmt(chk.totalMs)
+  /* ⚠️ 这里有两个**都成立**的数，必须一起打印（2026-10-26 订正）：
+   *   · `STEPS.length` = **声明了几步**（16）
+   *   · `chk.ranCount` = **真的执行了几条命令**（15 —— 因为 `G7` 与 `G6` 共用同一次调用，没有自己的命令）
+   * 原来只打印后者，于是表里 16 行、下面说「15 步」⇒ 读者会以为少跑了一步（父代理当场就这么误判了）。
+   * ⇒ 只在两者不等时才补那句说明，正常情况（全都有独立命令）不多一个字。 */
+  const stepNote = STEPS.length === chk.ranCount
+    ? ''
+    : '，共 ' + STEPS.length + ' 条（' + (STEPS.length - chk.ranCount) + ' 条与上一步共用同一次调用）';
+  console.log((partial ? '部分验证通过' : '验证通过') + '（' + (partial ? '计划内 ' : '') + chk.ranCount + ' 步' + stepNote + ' / ' + fmt(chk.totalMs)
     + '，预算内）' + (partial ? ' —— **不是全量真值**；发版/交付前请跑 `npm run verify`' : '')
     /* ⚠️ 快档的"通过"必须当场降调：不写这一句，读者会把"core 域绿了"读成"全部域绿了"
      * （本工程最重的损害类别：没做，却看不出没做）。 */
