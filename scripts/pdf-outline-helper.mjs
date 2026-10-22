@@ -15,7 +15,7 @@
  *
  * 用法：node scripts/pdf-outline-helper.mjs <pdf 路径>
  * 输出：stdout 一行 JSON ——
- *   成功 {ok:true, source:'outline'|'text', md, pages, notes?, stats?}
+ *   成功 {ok:true, source:'outline'|'text', md, pages, notes?, stats?, toc?}
  *   失败 {ok:false, error}
  *   （**任何失败都必须是 ok:false + 一句能读懂的原因** ✗ 不许静默 ✓；退出码：成功 0 / 失败 1）
  * 依赖：pdfjs-dist（Apache-2.0，已进 package.json ✓）+ src/pdf-text.js（工程内纯函数 ✓）。
@@ -112,7 +112,12 @@ else {
               // 每个标题在第几页（与书签那条路的 `pages` 同一口径：1 起）—— P2 做页偏移时会用上
               pages: r.headings.map((h) => h.page),
               notes: r.notes,
-              stats: r.stats
+              stats: r.stats,
+              // P1-b：目录块的结构化读数 `{entries:[{title,printedPage,page,hasLeader,raw}], pages, tocPages,
+              // stats:{lines,withLeader,withoutLeader}, stops}` —— 只**加字段**，既有字段一个都不动。
+              // ⚠️ 消费者 `src/doc-import.js` 只读 `{md, pages, source, notes}`（未知字段忽略）⇒ 不用改它。
+              // ⚠️ 真书未验：两份真实 PDF 全书「点线+页码」行数 = 0 ⇒ 这份 `toc` 在真语料上是空条目。
+              toc: r.toc
             }, 0);
           }
         }

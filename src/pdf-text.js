@@ -40,17 +40,19 @@
  * 失败一律**响亮**：`buildOutline` 给 `{ok:false, reason}`（reason 带数字），**绝不返回半棵树** ✗。
  *
  * 边界（如实写明，别当已实现）：
- *   · 只做"文字层 → 提纲"：**目录页 → 页码树**、**页码 ↔ 物理页偏移**（P2）、**多书自动判定**（P3）、
- *     **OCR**（P4）都不在本文件（分阶段见计划 §5）。
+ *   · 只做"文字层 → 提纲"：**页码 ↔ 物理页偏移**（P2）、**多书自动判定**（P3）、**OCR**（P4）
+ *     都不在本文件（分阶段见计划 §5）；**目录页 → `{title, printedPage}`** 已在 ⑤b 做（P1-b ✓）。
  *   · 页眉页脚做**两档计数 + 字号守卫**（每页首尾各 2 行）：①"逐字相同"（同一**字号簇**内才算，
  *     见 `SIZE_GUARD_TOL`）②页号形态，两者都要求出现 > 半数十页才认。
  *     **P1 的第三档（固定前缀 + 变化数字）没做** —— 实测后果：页眉若逐章变号（`第N章 xxx 27`），
  *     现有两档一条都剔不掉，它会以"第X章"形态进 headings（读数 `.review/20261028-P1a/out-前置.txt` ③）。
  *     另：不做上面这两档的后果是真样本每页的 9pt 页眉与 `1 / 30` 页脚会混进每个节点正文，
  *     且页脚会命中 `^\d+…` 编号正则 ✗。
- *   · 目录条目（点线 + 页码）在这一层**只做"不是标题"的排除**（`RE_TOC_LEADER`），
- *     **不抽 `{标题, 页码}` 结构**（那是 P1-b）：
- *     点线允许单个 `…` 与点间空白，且行尾必须是页码数字 ⇒ 正文省略号不会命中。
+ *   · 目录条目（点线 + 页码）：**P1-b 已做**（`tocLeader` / `extractTocEntries`，见 ⑤b）—— 既做
+ *     "不是标题"的排除，也抽出 `{title, printedPage}`。点线允许单个 `…` 与点间空白，
+ *     且行尾必须是页码数字 ⇒ 正文省略号不会命中。
+ *     ⚠️ **真书未验**：两份真实 PDF 的全书「点线 + 页码」行数 = **0**（读数见 ⑤b 的注释）⇒
+ *     这一档只有**合成夹具**的判据，**不许**把它说成"能用于真实 PDF"。
  *   · 旋转页（rotation ≠ 0）不做"居中"判据（实测样本与 Chromium/Skia 产出都是 0）。
  *   · 段只在本页内合并，**跨页的段不做合并**（P1）。
  *   · 目录页守卫是**最小**的：整行恰为"目录/目次/Contents"才认，且只把该行**及其后**的行排除出标题
@@ -118,8 +120,13 @@
    *      **只有间距、没有点线**的行会假命中 ✗（SPEC §1.1 ③ 点名过这个坑）；
    *   ③ **正文里的省略号不命中**：这一档永远要求"行尾就是页码数字" ⇒ `他说来话长……`、
    *      `…… 个` 都不成立；只有"省略号 + 纯数字结尾"才进这一档。
+   *   ④ **页码捕获组只有一个**：`(\d{1,4})` 是本工程里"目录行尾的页码"的**唯一**取法 ——
+   *      `tocLeader()`（⑤b）就靠它取值，别在别处再写一份 `/(\d+)\s*$/`（两份就会漂）。
+   *   ⑤ **尾部允许"点线接着点线"**（`(?:[.·․…]\s*)*`）：真实排版会把 `…` 与 `.` 连用
+   *      （本批夹具 `1.3 索引….7` 就是这个形态）—— 只认"整段同一个符形"会在这种混排上整条漏掉。
+   *      这一档只放宽"点线的符形",**没有**放宽"行尾必须是纯数字"（那条是 ③ 的防线）。
    */
-  const RE_TOC_LEADER = /(?:(?:[.·․]\s*){2,}|(?:…\s*)+)\d{1,4}\s*$/;
+  const RE_TOC_LEADER = /(?:(?:[.·․]\s*){2,}|(?:…\s*)+)(?:[.·․…]\s*)*(\d{1,4})\s*$/;
   const RE_SENT_END = /[。；！？!?]$/;                                             // 句末标点 ⇒ 正文（逗号不算）
   const RE_LIST_OR_URL = /^(?:[-*+•·]\s|https?:\/\/|\|)/;                         // 列表 / 网址 / 表格行
   const RE_TOC_MARKER = /^(目\s*录|目\s*次|contents|table\s+of\s+contents)$/i;     // 目录页标记
@@ -378,7 +385,7 @@
     if (RE_SENT_END.test(t)) return false;      // 句末标点 ⇒ 正文句子
     if (RE_LIST_OR_URL.test(t)) return false;
     if (RE_PAGE_NUMBER.test(t)) return false;   // 页脚形态（`1 / 30` 会命中 `^\d+…` 编号正则 ✗）
-    if (RE_TOC_LEADER.test(t)) return false;    // 目录条目：点线 + 页码
+    if (tocLeader(t) !== null) return false;    // 目录条目：点线 + 页码（判据在 ⑤b 的 tocLeader 里，只有一份）
     return true;
   }
 
@@ -447,6 +454,105 @@
       c.level = clamp(lv, 1, MAX_DEPTH);
     }
     return buckets.map((b, i) => ({ level: i + 1, size: round2(b.size), count: b.count }));
+  }
+
+  /* ================= ⑤b 目录块（点线 + 打印页码）=================
+   * 它是什么：把**原先内联在 `buildOutline` 里**的"目录页启发式"抽成可单测的纯函数，并**新抽**
+   *   `{title, printedPage}` 结构（改前只做"这些行不是标题"的排除，一个页码都不抽）。
+   *
+   * ⚠️ 一条必须先承认的事实（别把它读成"已经能用于真实 PDF"）：**真实语料上零命中** ——
+   *   两份真实 PDF（30 页 / 25 页）全书命中「点线 + 页码」的行数 **= 0**
+   *   （读数原文 `全书命中「点线+页码」的行数 = 0`，见 `.review/20261026-PDF-P1P4方案/` 的
+   *   `out-mumuhe9jafs5.txt` 与 `out-mumuhmbscjfs.txt`）；它们的目录实际是 `1.任务背景` 这种
+   *   **无页码、无点线**的形态。⇒ 这一档的判据**只能靠合成夹具**（纯代码造 TextItem，不造真 PDF），
+   *   而合成夹具**验不出**这套启发式在真书上灵不灵 ⇒ **不许声称它"能用于真实 PDF"**。
+   *
+   * 为什么抽出来（而不是继续内联）：内联时它只能被"整份 buildOutline"间接验 —— 要断言
+   *   "第 3 条的 printedPage 是 35"就得造一整本书的 pages；抽成纯函数后一行文本就能测。
+   *
+   * 判据的单源（别在别处再写第二份）：
+   *   · 「行尾是不是点线 + 页码」= 只有 `RE_TOC_LEADER` 这一条正则（`tocLeader` 是它唯一的解析入口，
+   *     `headingShape` 也走它）；
+   *   · 「哪些行算目录条目」= **调用方给的 `opts.isEntry`**（`buildOutline` 传"编号成立 + 字号没超过
+   *     基准×1.05"）—— 本模块**不自己发明第二套**条目判据（两处定义 = 两处漂移）。
+   *   · 块的**起点**仍由 `RE_TOC_MARKER`（`目录/目次/Contents` 整行）定义 —— 与改前同一判据；
+   *     没有标记行 ⇒ **空结果**（不猜块起点：猜出来的"目录"会把正文编号行整片吞掉 ✗）。
+   */
+
+  /** 行尾是「点线 + 页码」⇒ 返回那个**打印页码（整数）**；否则 `null`。
+   *  ⚠️ 三件"看起来像但不是"的形态全在这里挡住（判据只在 `RE_TOC_LEADER` 里，别另写一份）：
+   *    ① 正文省略号（`他说来话长……` / `…… 个`）—— 行尾不是纯数字；
+   *    ② 只有间距没有点线的行（`2.1 顺序存储结构 35`）—— 写成 `[\s.·․…]{2,}` 才会假命中；
+   *    ③ 页码不在行尾（`……详见 3.5 节`）。
+   *  返回 `null` 而不是 `0` / `-1` 是**有意**的：`null` 才把"没有页码"与"页码是 0"分开。
+   *  编一个哨兵值会让下游把"没抽到"读成"页码 0"—— 这正是本档最容易做假的那一处。
+   */
+  function tocLeader(text) {
+    const m = RE_TOC_LEADER.exec(String(text == null ? '' : text));
+    if (!m) return null;
+    const n = parseInt(m[1], 10);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /** 一行文本 → 去掉「点线 + 页码」之后的标题文本（**保留行首编号**，例：`1.1 顺序存储结构`）。
+   *  没有点线/页码 ⇒ 整行（规范化后）。 */
+  function tocTitle(text) {
+    const t = normSpace(text);
+    const m = RE_TOC_LEADER.exec(t);
+    return normSpace(m ? t.slice(0, m.index) : t);
+  }
+
+  /** 一组行（通常 = 同一页的行，y 降序）→ 目录块的结构化读数。
+   *  @param {Array<{page?:number,text:string,size?:number,repeated?:boolean}>} lines
+   *  @param {{isEntry:function, baseFontSize?:number|null}} opts
+   *    `isEntry(line, ctx)` **必填** —— 条目判据由调用方给；`ctx.baseFontSize` 是**转达**给它的
+   *    基准字号（本函数自己不拿它下判断，只把它递过去，省得调用方为了一个数去闭包）。
+   *  @returns {{entries:Array<{title:string, printedPage:number|null, page:number|null,
+   *    hasLeader:boolean, raw:string}>, pages:Array, stats:{lines:number, withLeader:number,
+   *    withoutLeader:number}, stops:Array<{page:number|null, index:number, text:string}>}}
+   *  · `stats.withLeader + stats.withoutLeader === entries.length` 恒成立；
+   *  · `stats.lines` = 目录块**扫过**的行数（含被 `repeated` 跳过的页眉页脚行、含**把块结束掉的那一行**）
+   *    ⇒ `stats.lines - entries.length` 就是"扫过却没成条目"的行数（= 判据"块在哪结束"的读数）。
+   *  ⚠️ 顺手把 `line.tocEntry` 写回行上（与同文件 `linesToParagraphs` 写回 `line.paraIndex` 是
+   *    **同一形态**）—— 这样 `buildOutline` 里"哪一行是目录条目"仍是同一批行对象上的同一个字段，
+   *    抽函数前后**逐条等价**（`tests/pdf-text.test.js` 的「目录页守卫」钉着这件事）。
+   */
+  function extractTocEntries(lines, opts) {
+    const o = opts || {};
+    if (typeof o.isEntry !== 'function') {
+      // 响亮拒绝：不给判据就**不猜**（猜出来的条目判据与调用方各写一套 = 两处定义）
+      throw new Error('extractTocEntries 缺 opts.isEntry：目录条目的判据必须由调用方给（本模块不自己发明第二套）');
+    }
+    const arr = lines || [];
+    const entries = [];
+    const pages = [];
+    const stops = [];
+    const stats = { lines: 0, withLeader: 0, withoutLeader: 0 };
+    const ctx = { baseFontSize: (o.baseFontSize == null ? null : o.baseFontSize) };
+    const tocAt = arr.findIndex((l) => RE_TOC_MARKER.test(normSpace(l && l.text)));
+    if (tocAt < 0) return { entries: entries, pages: pages, stats: stats, stops: stops };
+    const marker = arr[tocAt];
+    pages.push(marker && marker.page != null ? marker.page : null);   // 这一页是目录页（页号可能为 null）
+    for (let i = tocAt + 1; i < arr.length; i++) {
+      const l = arr[i];
+      stats.lines++;
+      // 页眉页脚：不算条目，也**不结束**目录块（与改前的 `continue` 逐条等价）
+      if (l && l.repeated) continue;
+      if (!o.isEntry(l, ctx)) {
+        // 目录块到此为止 —— 这一行**不进** entries，但要记下"在哪结束"（判据要的就是这个读数）
+        stops.push({ page: (l && l.page != null) ? l.page : null, index: i, text: normSpace(l && l.text) });
+        break;
+      }
+      const printedPage = tocLeader(l.text);
+      const page = (l && l.page != null) ? l.page : (marker && marker.page != null ? marker.page : null);
+      entries.push({
+        title: tocTitle(l.text), printedPage: printedPage, page: page,
+        hasLeader: printedPage !== null, raw: normSpace(l && l.text)
+      });
+      stats[printedPage === null ? 'withoutLeader' : 'withLeader']++;
+      if (l) l.tocEntry = true;
+    }
+    return { entries: entries, pages: pages, stats: stats, stops: stops };
   }
 
   /* ================= ⑥ 行 → 段 =================
@@ -547,7 +653,7 @@
    * @param {Array<{page?:number,width?:number,height?:number,rotation?:number,items:Array}>} pages
    * @returns {{ok:boolean, reason:string, md:string, baseFontSize:number|null, sizeBuckets:Array,
    *            headings:Array, paragraphs:Array, lines:Array, blocks:Array,
-   *            textLayer:object, stats:object, notes:string[]}}
+   *            textLayer:object, stats:object, notes:string[], toc:object}}
    */
   function buildOutline(pages) {
     const list = (pages || []).map((p, i) => ({
@@ -562,7 +668,7 @@
     if (!textLayer.ok) {
       return { ok: false, reason: textLayer.reason, md: '', baseFontSize: null, sizeBuckets: [],
         headings: [], paragraphs: [], lines: [], blocks: [],
-        textLayer: textLayer, stats: emptyStats(textLayer), notes: notes };
+        textLayer: textLayer, stats: emptyStats(textLayer), notes: notes, toc: emptyToc() };
     }
     if (textLayer.suspectPages.length) notes.push(textLayer.reason);
 
@@ -597,35 +703,50 @@
     //    实测样本第 1 页是"大标题 + 目录 + 第 1 章标题"同页 ⇒ **不能整页排除**（那样会白丢第 1 章 ✗），
     //    只排除**目录标记之后、带编号且字号不超过正文×1.05 的连续行**（= 目录条目）；
     //    一旦遇到不符合的行（如 15.75pt 的 `1.任务背景`）就结束目录块 ⇒ 真标题照常参与 ✓。
+    //    ⚠️ 判据本体已抽到 ⑤b 的 `extractTocEntries`（这里只**给判据**、**读结果**）：
+    //    标记语义仍是同一批行对象上的同一个 `line.tocEntry` 字段（⑤b 顺手写回），
+    //    所以 `tocEntries` 计数、下面那条 notes、以及"遇到更大字号行即结束"与抽函数前逐条等价。
     const byPage = new Map();
     for (const l of lines) {
       if (!byPage.has(l.page)) byPage.set(l.page, []);
       byPage.get(l.page).push(l);
     }
     const cands = [];
-    let tocPages = 0, tocEntries = 0;
+    const toc = {
+      entries: [], pages: [], tocPages: 0,
+      stats: { lines: 0, withLeader: 0, withoutLeader: 0 }, stops: []
+    };
+    /** 目录条目的判据（**由调用方给** —— 模块不自己发明第二套）：编号成立，且字号没超过正文×1.05。
+     *  超过就说明它是"真标题"而不是目录条目（实测样本 p1 那个 15.75pt 的 `第一章 概述` 就是被这条挡住的）。 */
+    const isTocEntryLine = (l) => {
+      const num = numbering(l.text);
+      return !!num && !(base && l.size > base * 1.05);
+    };
     for (const p of list) {
       const arr = byPage.get(p.page) || [];
-      const tocAt = arr.findIndex((l) => RE_TOC_MARKER.test(l.text));
-      if (tocAt >= 0) {
-        tocPages++;
-        for (let i = tocAt + 1; i < arr.length; i++) {
-          const l = arr[i];
-          if (l.repeated) continue;
-          const num = numbering(l.text);
-          if (!num || (base && l.size > base * 1.05)) break;   // 目录块到此为止
-          l.tocEntry = true;
-          tocEntries++;
-        }
-      }
+      const one = extractTocEntries(arr, { baseFontSize: base, isEntry: isTocEntryLine });
+      toc.tocPages += one.pages.length;
+      one.pages.forEach((pg) => toc.pages.push(pg));
+      one.entries.forEach((e) => toc.entries.push(e));
+      one.stops.forEach((s) => toc.stops.push(s));
+      toc.stats.lines += one.stats.lines;
+      toc.stats.withLeader += one.stats.withLeader;
+      toc.stats.withoutLeader += one.stats.withoutLeader;
       arr.forEach((l) => {
         if (l.repeated || l.tocEntry) return;
         const hit = headingHit(l, base);
         if (hit) { l.heading = hit; cands.push(l); }
       });
     }
-    if (tocPages) notes.push('认出 ' + tocPages + ' 个目录页 / ' + tocEntries
-      + ' 行目录条目：条目不计入标题，逐行作为正文保留在「目录」节点下 ✓');
+    const tocEntries = toc.entries.length;
+    if (toc.tocPages) {
+      notes.push('认出 ' + toc.tocPages + ' 个目录页 / ' + tocEntries
+        + ' 行目录条目：条目不计入标题，逐行作为正文保留在「目录」节点下 ✓');
+      // P1-b 的如实读数：抽到几条带页码的？—— "没抽到"与"没有"是两件事，不许静默（SPEC P1-G1）
+      notes.push('目录页码抽取：' + toc.stats.withLeader + ' 行带「点线 + 页码」（能抽出 printedPage）、'
+        + toc.stats.withoutLeader + ' 行只有编号没有点线（printedPage = null，不猜）'
+        + (toc.stops.length ? '；目录块在 ' + toc.stops.length + ' 处遇到非条目行即结束' : ''));
+    }
     const sizeBuckets = assignLevels(cands, base);
 
     // ⑤ 段（必须在标题定级之后：标题行不算正文段）+ 按**文档序**拼 blocks
@@ -661,12 +782,12 @@
     if (!headings.length) {
       return { ok: false, reason: noHeadingReason(textLayer), md: '', baseFontSize: base, sizeBuckets: sizeBuckets,
         headings: [], paragraphs: paragraphs, lines: lines, blocks: blocks,
-        textLayer: textLayer, stats: stats, notes: notes };
+        textLayer: textLayer, stats: stats, notes: notes, toc: toc };
     }
     return {
       ok: true, reason: '', md: toMarkdown(blocks), baseFontSize: base, sizeBuckets: sizeBuckets,
       headings: headings, paragraphs: paragraphs, lines: lines, blocks: blocks,
-      textLayer: textLayer, stats: stats, notes: notes
+      textLayer: textLayer, stats: stats, notes: notes, toc: toc
     };
   }
 
@@ -683,6 +804,13 @@
       levelCounts: {}, suspectPages: textLayer.suspectPages.map((s) => s.page), repeatedLines: 0 };
   }
 
+  /** 文字层都不可用时 `buildOutline` 的 `toc`：**结构齐全、条目为空** ——
+   *  返回形状不许随失败路径变（否则调用方要按 ok 分支去猜有没有这个键 ✗）。 */
+  function emptyToc() {
+    return { entries: [], pages: [], tocPages: 0,
+      stats: { lines: 0, withLeader: 0, withoutLeader: 0 }, stops: [] };
+  }
+
   return {
     // 常量（单测与文档引用同一个值，别在别处再抄一份）
     LINE_FACTOR: LINE_FACTOR, PARA_FACTOR: PARA_FACTOR, CENTER_MARGIN_TOL: CENTER_MARGIN_TOL,
@@ -693,6 +821,9 @@
     itemsToLines: itemsToLines, markRepeatedLines: markRepeatedLines, markLayout: markLayout,
     linesToParagraphs: linesToParagraphs, bodyFontSize: bodyFontSize, numbering: numbering,
     headingShape: headingShape, headingHit: headingHit, assignLevels: assignLevels,
+    // ⑤b 目录块（P1-b）：`tocLeader` 是「点线 + 页码」的唯一解析入口（正则在 `RE_TOC_LEADER` 里只有一份）；
+    // `extractTocEntries` 的条目判据**由调用方给**（见它的注释：模块不自己发明第二套）
+    tocLeader: tocLeader, extractTocEntries: extractTocEntries,
     assessTextLayer: assessTextLayer, joinWrapped: joinWrapped, splitPreamble: splitPreamble,
     toMarkdown: toMarkdown, buildOutline: buildOutline
   };
