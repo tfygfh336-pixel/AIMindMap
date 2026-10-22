@@ -14,6 +14,32 @@
 
 ## [Unreleased]
 
+### 新增 · 开发侧离屏模式 `--headless-control`（`main.js`）
+- 窗口离屏（`show:false`，与 `--smoke` / `--export-image` 同一条 headless 口径），但**控制通道与侧栏照常活着**、**不自动退出**（由外部探针 kill）⇒ 那四条界面控制命令（`sidebar-only` / `dsh-sidebar` / `dsh-status` / `dsh-prefill`）的**成功分支**第一次有了可自动跑的入口。
+- **刻意不并入 `headlessMode`**（即**保留单实例锁**）：用户已经开着界面时，本次启动照常打印「已有实例在运行」并退出 ⇒ 探针判「环境不适用」，而不去劫持用户正在用的那个窗口。
+- ⚠️ **而这条判断的代价，是它自己没写下来的那一半**：探针活着的那几十秒里，**用户的双击启动会被静默挡掉**（看到的是"启动一下即退"）。⇒ 已补三态判据：`verdict` 分 `pass` / `fail` / **`env-not-applicable`**；跑前查用户会话 ⇒ 判环境不适用并 exit 0；跑中每 2 s 扫进程 + 扫「收到第二次启动请求」⇒ **发现即收手，只 kill 自己那棵进程树、不 kill 别人**。
+- **契约不变**：没有窗口时四条命令仍**全部非 0** 并打印「主界面没有响应」（同批复跑 4/4）。
+- 对使用者**无可见变化**（不带该旗标时行为逐字节不变）。
+
+### 新增 · PDF 目录块抽取 `{title, printedPage}`（P1-b，`src/pdf-text.js`）
+- 原来内联的"目录块启发式"抽成纯函数并导出：`tocLeader(text)` / `extractTocEntries(lines, opts)`；`buildOutline()` 的返回值新增 `toc`（每条的 `printedPage` 是**印张页码**，没有点线页码时为 `null`，**不编造**）；`scripts/pdf-outline-helper.mjs` 把 `toc` 透传。
+- 判据 = **合成夹具**（`tests/pdf-toc.test.js`）：四种点线形态各一条 + 页码；无点线无页码的编号行算条目但 `printedPage: null`；正文省略号 / "只有间距没有点线" / 目录块遇到更大字号即结束，三条都不进条目。
+- ⚠️ **真书未验**：两份真实 PDF **全书点线行 = 0**，所以这套启发式在真书上灵不灵**没有读数**。**不要把它读成"能用于真实 PDF"。**
+- 既有行为逐条不变（`tests/pdf-text.test.js` 的 38 例全绿，含「目录页守卫」）。
+
+### 新增 · P4 Tier0：系统 OCR 随包（`@napi-rs/system-ocr@1.2.0`，3.1 MB）+ 质量口径改按实测
+- 随包分发（**不用**"点了才下载"）：`package.json` 依赖 +2 个包；**`electron-builder.yml` 不需要改**（生产依赖自动进包、原生包自动解包 —— 打包实测推翻了旧结论）。
+- 新增 `src/pdf-ocr.js`：`componentInfo` / `loadComponent` / `recognizeWith` / `joinLines` / `qualityReport` / `shouldSuggestOcr`。**三条失败路径都不抛**（没装 / 版本不符 / 组件无 `recognize`）⇒ 没装组件表现为"该功能不可用 + 理由"，而不是"这份 PDF 导入失败"。
+- **质量口径按实测改**：Windows 上 `confidence` **恒 1.0**（组件 `index.d.ts:22`）⇒ 报告里换成结构性量（每页字符数 / 行数 / CJK 与非 CJK 占比 / 空行数；整体空页数 / 平均每页字符数 / 与文字层字符数之比），**一个聚合置信度字段都没有**。
+- **单语言如实**：组件 Windows 只用第一个 `preferredLangs`（默认 `zh-cn`）⇒ 真图实测中文逐字正确，**英文串被认坏**（`proc_fops` ⇒ `p ro c_f0 p s`）。
+- **本批不接线**：界面上还看不到 OCR 按钮（接线属 P4 界面层，另批）。
+
+### 新增 · 变异体检接进**产品级**靶子（功能 4 批 3 · 第一增量）
+- `scripts/mutate-gates.js` 新增条目 `F3 pdf-thresholds`（**不是门禁**，`code` 用功能号）：把 `src/pdf-text.js` 的 4 个阈值各改一格 ⇒ `tests/pdf-text.test.js` 的**行为断言**必须红。现读：`MIN_TITLE_FACTOR` 3 条 / `PARA_FACTOR` 4 条 / `EDGE_LINES` 7 条 / `SIZE_GUARD_TOL` 3 条；无害对照（只改注释）读数逐字不变；**负对照**（改阈值 + 整组断言 `describe.skip`）**如实报「没拦下」**。
+- 机制要点（都有实测依据）：副本里补一条 `node_modules` **目录联接**（ESM 裸包名解析不认 `NODE_PATH`）；收尾**先拆联接再删副本**并给真仓哨兵核对；`--reporter=json` 必须带 `--outputFile` 落副本（否则会在真仓根留下 `.vitest/`，`G8` 判红）；指纹只收 `status === 'failed'`（skipped 不算失败）。
+- 同批修一条**先于本批就存在**的缺陷：`G8` 的镜像前置不剥"带行号锚点"的指针（`…/README.md:5` 这种）⇒ Windows 路径非法字符 `:` 让整份体检 **exit 2**。
+- 分母如实：**只覆盖这 4 个阈值 + 这一份单测**，不代表产品整体行为；原计划的 **175 个变异体规模仍未做**，且**故意不塞进 `npm test`**（`G3` 一步的预算按 `STEPS` 现读 **69 s**，塞进去是给全链造新红源）。
+
 ### 修一条**取证时刻**缺陷：域 08「关系审计面板可关闭」的真帧判据拿旧帧去比 ⇒ 全链每跑一次可能红一次（判据本身没放宽）（2026-10-26）
 
 **症状**（两次全链的原始报文，同一台机器、同一份逻辑）：
