@@ -247,6 +247,19 @@
   let fdSelDrag = null;          // P4：从"已选中的节点"上按下开始的拖拽（起点坐标 ✓）    // {x, y, ox, oy} 拖动起点（屏幕）与起始偏移（逻辑）
   let fdDragModePan = null;      // 兜底：无目标树时的画布平移（中键同款）
 
+  /* —— P7 跨视图投喂的**计数**（给冒烟断言用 ✓ 先例：MM.paintRawSelection 的注释就是这么写的）——
+   * 只读计数，不参与任何判定（不改变行为 ✓）。为什么必须存在：①-A 的验收判据是"进侧栏松手
+   * **恰好投 1 次** / 导图页松手 **0 次**"，没有计数就只能读状态栏文字猜 —— 那正是"看起来对"的假绿 ✗。
+   * `feeds` = 真的调了 sendNodesToSidebar 的次数（三条入口共用这一个出口 ⇒ 数得准）；
+   * `verdicts` = 向主进程要过几次落点回执（证明"乐观提前结束"那条路走到过 ✓）。 */
+  const fdSelDropCounts = { feeds: 0, verdicts: 0 };
+  function feedSelDrop(ids) {
+    fdSelDropCounts.feeds++;
+    if (MM.sendNodesToSidebar) return MM.sendNodesToSidebar(ids);
+    return null;
+  }
+  MM.selDropStats = () => ({ feeds: fdSelDropCounts.feeds, verdicts: fdSelDropCounts.verdicts });
+
   /* —— 框选节点（v0.16.3）——
    * 交互（用户最终语义）：
    *   · 主界面空白处**左键拖拽** = 框选（虚线橡皮筋实时跟随）；
@@ -665,6 +678,9 @@
   /** 清空树偏移（切换项目/撤销重做重建由 renderMind 调；还原视图也复位）。
    *  传 treeId ⇒ 只清那一棵（右键菜单"回到自动布局"用）；不传 ⇒ 全清。 */
   function clearTreeOffsets(treeId) {
+    /* 项目重建/切项目会走这里 ⇒ 顺带收掉**正在进行的直接拖**：否则主进程那边跟着一个永不结束的
+     * 拖拽，虚影要等 30s 兜底才收、而且渲染层的偏移快照指向一棵已经不存在的树 ✗ */
+    abortSelDrag('项目重建');
     if (treeId && treeOffsets[treeId]) delete treeOffsets[treeId];
     else if (!treeId) for (const k in treeOffsets) delete treeOffsets[k];
     applyTreeOffsets();
@@ -1141,6 +1157,222 @@
       drop: fdReparentDrop ? { parent: fdReparentDrop.parent } : null };
   }
 
+  /* —— 鼠标**直接拖**（2026-10-33 批3）——
+   * 用户要的：**不用先进右键菜单的拖动模式**，按住节点（或那个大虚线框）就能拖；
+   * 拖动中旁边有一块虚影（载体在主进程，见 main-dsh-sidebar.js 的"拖动虚影"整节）。
+   *
+   * 手势的**语义分工**（用户 2026-10-31 逐字规格，一个字都不许口头约定）：
+   *   · 单一节点 / 大虚线框 ⇒ 松在**导图页** = 移动位置（只写 `treeOffsets`，不动数据）；
+   *   · 单一节点 / 大虚线框 ⇒ 松在**DSh 侧栏** = **取消**（位置恢复，且不投喂）；
+   *   · 多选（>1）           ⇒ 松在**导图页** = 什么都不发生（不实时移动）；松在 DSH = 拖给 DSH。
+   * "移动位置"只做 **move**：`reorder`（改 children 顺序）/ `reparent`（改父子）**不混进这个手势**
+   *   —— 那两档改的是**数据**，风险面完全不同，它们仍留在右键菜单里（`setDragMode` 那套 API 一个字节没删 ✓）。
+   *
+   * 拖拽中**实时写 treeOffsets**（只改内存 + 重绘）；松手才让既有的保存路径去落盘
+   *   （偏移本来就在 `serializeTree` 的载荷里 ⇒ **不新开写盘口**）。取消/不生效必须把偏移
+   *   **恢复成拖拽前的值**（因为实时改过）⇒ 起势时先快照。 */
+
+  /** 用户 2026-10-31 明确规格：
+   *   单选 / 大虚线框 ⇒ 松在 DSH = **取消**（不修改位置）；只有多选才能拖给 DSH。
+   * 改这一行等于改用户拍板的规格 ⇒ 需要重新拍板，不许顺手改。 */
+  const SINGLE_SELECT_CAN_DROP_TO_DSH = false;
+  /** 只读读取口（给冒烟断言用；照 `MM.paintRawSelection` 的"给冒烟断言用"先例） */
+  MM.singleSelectCanDropToDsh = () => SINGLE_SELECT_CAN_DROP_TO_DSH;
+
+  /** 位移阈值：按下后移动超过它才算"真的在拖"。
+   *  为什么需要：没有它，**点一下**就会被当成"移动 0px"并走一次保存 ⇒ 用户只是想点开详情 ✗ */
+  const SEL_DRAG_THRESHOLD_PX = 4;
+
+  /** 这一次按下要拖的是"什么"（虚影文字与"能不能投给 DSH"都看它）。
+   *  · `nodeEl` 有值 ⇒ 按在节点上：多选（>1）里按其中任何一个 = 拖**那批**；
+   *                    否则 = 拖**这一个**（M1：**单个节点不在选区里也要能拖** ✓）；
+   *  · 按在**大虚线框矩形内**（非节点上）⇒ 拖"框内那批"（M4：复用 `selectionHitTest` 与
+   *    `dragSelection` 的同父组判定 —— 那个组跨树就不给拖，与右键"拖动所选"同一条纪律）；
+   *  · 其余 ⇒ null（不接管，行为与从前逐项相同）。
+   *  `offsetRoot` = 这一次拖要写哪个偏移桶：单一节点写**它自己**（键域已扩到任意子树根 ✓），
+   *  大虚线框写**那批所属的顶层树**（与 `dragSelection` 的"拖动单位是树"逐项相同 ✓）；
+   *  多选 ⇒ null（规格：多选不实时移动）。 */
+  function selDragSubjectAt(clientX, clientY, nodeEl) {
+    const raw = fdSelectionRaw;
+    if (nodeEl) {
+      const id = nodeEl.getAttribute('nodeid');
+      if (!id) return null;
+      if (raw.length > 1 && raw.indexOf(id) >= 0) {
+        return { kind: 'multi', count: raw.length, label: '', ids: raw.slice(), offsetRoot: null };
+      }
+      const jm = state.jm;
+      const n = jm && MM.adapter.getNode(jm, id);
+      return { kind: 'single', count: 1, label: n ? String(n.topic || '') : '', ids: [id], offsetRoot: id };
+    }
+    if (!selectionHitTest(clientX, clientY)) return null;
+    const groups = selectionByParent();
+    if (!groups.length) return null;
+    const g = groups[0];
+    const trees = Array.from(new Set(g.ids.map((id) => treeRootOf(id)).filter(Boolean)));
+    if (trees.length !== 1) return null;   // 跨树 ⇒ 与 dragSelection 同一条判据：不给拖（那条会说出来）
+    return { kind: 'outline', count: g.ids.length, label: '', ids: g.ids.slice(), offsetRoot: trees[0] };
+  }
+
+  /** 这一批能不能**投给 DSH** —— 全工程**唯一**判据（主进程只照它报的 `toDsh` 办，
+   *  见 main.js 的 `selDragFeed`；改规格只改这一处 + 上面那个常量）。 */
+  function canDropToDsh(subject) {
+    if (!subject) return false;
+    if (subject.kind === 'multi') return true;        // 多选 ⇒ 拖给 DSH（唯一允许的落点）
+    if (subject.kind === 'single') return SINGLE_SELECT_CAN_DROP_TO_DSH;
+    return false;                                     // 'outline' ⇒ 松在 DSH = 取消
+  }
+
+  /** 偏移变化后的一次性重绘（推着走 / 恢复 / 落定**共用**这一份 —— 三处各写一遍必漂）。
+   *  顺序照既有拖动模式那一段：先落 transform，再让虚线框与连线跟上。 */
+  function refreshAfterOffsetChange() {
+    applyTreeOffsets();
+    syncTreeOutline();
+    refreshSelectionOutline();
+    const jm = state.jm;
+    if (jm && jm.view && typeof jm.view.show_lines === 'function') {
+      try { jm.view.show_lines(); } catch (err) { /* 忽略重画异常 */ }
+    }
+    syncFdBoxes();
+  }
+
+  /** 把某个偏移根按**屏幕位移**推着走（拖动模式与"直接拖"共用这一份实现）。
+   *  `base` = 起势那一刻的偏移（拖动模式叫 fdTreeDragStart.ox/oy）。 */
+  function nudgeOffsetRoot(rootId, base, dxScreen, dyScreen) {
+    if (!rootId) return null;
+    const scale = fdView.s || 1;
+    const o = treeOffsets[rootId] || (treeOffsets[rootId] = { x: 0, y: 0 });
+    o.x = (base ? base.x : 0) + dxScreen / scale;
+    o.y = (base ? base.y : 0) + dyScreen / scale;
+    refreshAfterOffsetChange();
+    return o;
+  }
+
+  /** 恢复成拖拽前的偏移（取消 / 不生效时**必须**走它：拖拽中实时改过内存） */
+  function restoreSelDragOffset(d) {
+    const s = d && d.subject;
+    if (!s || !s.offsetRoot) return false;
+    const snap = d.snap || { had: false, x: 0, y: 0 };
+    if (snap.had) treeOffsets[s.offsetRoot] = { x: snap.x, y: snap.y };
+    else delete treeOffsets[s.offsetRoot];
+    refreshAfterOffsetChange();
+    return true;
+  }
+
+  /** 收掉一次进行中的直接拖（项目重建/切项目时用：否则主进程那边会跟着一个永不结束的拖拽，
+   *  虚影要等 30s 兜底才收 ✗）。这里**不投喂**：中止不是"送进侧栏"。 */
+  function abortSelDrag(why) {
+    const d = fdSelDrag;
+    fdSelDrag = null;
+    if (!d || !d.armed) return false;
+    try {
+      if (window.desktop && desktop.dsh && desktop.dsh.selDragEnd) desktop.dsh.selDragEnd({ x: d.x, y: d.y });
+    } catch (e) { /* 中止路径不额外弹错：主进程有 30s 兜底 ✓ */ }
+    if (MM.setStatus) MM.setStatus('拖动已中止（' + (why || '?') + '）', false);
+    return true;
+  }
+
+  /** 起势（**过了 4px 阈值**才调）：快照偏移 + 上报起点 + 提示一次。
+   *  为什么起点要等到这一刻才上报：主进程一见起点就起 40ms 轮询并**显示虚影** ——
+   *  一次点击不该长出虚影，也不该让主进程为一个点击等 30s 兜底。 */
+  function selDragArm(d, e) {
+    d.armed = true;
+    e.preventDefault();                 // 从这一刻起才是"真的在拖"：吞掉文本选择等默认动作（M2）
+    const s = d.subject;
+    if (!s) return;
+    // 快照：取消/不生效时必须逐项恢复（拖拽中实时改过内存里的 treeOffsets ✓）
+    if (s.offsetRoot) {
+      const cur = treeOffsets[s.offsetRoot];
+      d.snap = cur ? { had: true, x: cur.x, y: cur.y } : { had: false, x: 0, y: 0 };
+    }
+    /* 起点上报（M5）：第二个参数 = **拖的是什么**（虚影文字 + "能不能投给 DSH"都要它）。
+     * `toDsh` 由 `canDropToDsh`（唯一判据）算出来 —— 主进程只照它办，不自己再判一次"几个才算多选"。 */
+    try {
+      if (window.desktop && desktop.dsh && desktop.dsh.selDragStart) {
+        desktop.dsh.selDragStart(s.ids.slice(), {
+          kind: s.kind, count: s.count, label: s.label, toDsh: canDropToDsh(s)
+        });
+      }
+    } catch (err) {
+      if (MM.setStatus) MM.setStatus('侧栏拖放：起点上报失败（' + ((err && err.message) || err) + '）', true);
+    }
+  }
+
+  /** 一次直接拖的**落定**：只做播报与收尾（几何/偏移在 mousemove 与下面的分支里已处理完）。 */
+  function settleSelDrag(d, why) {
+    const s = d && d.subject;
+    if (!s) return why;
+    if (why === 'moved') {
+      const label = s.label || ('(' + s.count + ' 个节点)');
+      setStatus('已移动「' + label + '」（只改画布位置；保存时随 meta.themeOffsets / meta.nodeOffsets 落盘）');
+    } else if (why === 'multi-on-map') {
+      // 规格：多选松在导图页 = **什么都不发生**。这里只说一句"为什么不生效"，不动任何数据/布局。
+      setStatus('多选（' + s.count + ' 个）只能拖到右侧 DSH 侧栏：松在导图页不改任何位置', false);
+    } else if (why === 'cancel-on-dsh') {
+      setStatus('单一节点 / 大虚线框不能拖给 DSH（已取消这次拖动，位置未改）', false);
+    }
+    return why;
+  }
+
+  /** 松手（真的拖过阈值才走到这里）：报终点给主进程 → 按**判定表**落定。
+   *  判定表（用户 2026-10-31）：
+   *    单一 / 大虚线框 + 导图页 ⇒ 移动位置（偏移已经在内存里，什么都不用做）；
+   *    单一 / 大虚线框 + DSH    ⇒ 取消（**恢复偏移**、不投喂）；
+   *    多选         + 导图页 ⇒ 什么都不发生；
+   *    多选         + DSH    ⇒ 投喂（走同一条 sendNodesToSidebar ⇒ 文本只有一处实现 ✓）。
+   *  ⚠️ 「能不能投」只有一个判据：`canDropToDsh`（M6）—— 下面两处投喂口都先过它。 */
+  function selDragDrop(d, e) {
+    const s = d.subject;
+    const droppable = canDropToDsh(s);
+    const pnel = fdPanel();
+    const pr = pnel ? pnel.getBoundingClientRect() : null;
+    // 终点上报：主进程拿的是**屏幕坐标 + 原生侧栏真实几何**，比渲染层这份可信 ✓
+    let verdictP = null;
+    try {
+      if (MM.requestSelDropVerdict) {
+        fdSelDropCounts.verdicts++;
+        verdictP = MM.requestSelDropVerdict({ x: e.clientX, y: e.clientY });
+      }
+    } catch (err) {
+      if (MM.setStatus) MM.setStatus('侧栏拖放：终点判定失败（' + ((err && err.message) || err) + '）', true);
+    }
+    // ① 面板右缘 24px 兜底（既有手势，已验过 ✓ 保留）—— **只有可投的那批**才算投喂（M6）
+    if (pr && droppable && s && s.ids.length && e.clientX >= pr.right - 24) {
+      e.preventDefault();
+      e.stopPropagation();                                   // 吞掉这次点击 ⇒ 不再额外弹详情 ✓
+      feedSelDrop(s.ids);
+      settleSelDrag(d, 'edge');
+      return;
+    }
+    // ② 回执驱动（主进程是权威判定）
+    if (verdictP && s) {
+      Promise.resolve(verdictP).then((v) => {
+        const hit = !!(v && v.ok && v.hit);
+        if (hit) {
+          if (droppable) { feedSelDrop(s.ids); settleSelDrag(d, 'sidebar'); }
+          else { restoreSelDragOffset(d); settleSelDrag(d, 'cancel-on-dsh'); }   // 规格：取消 = 位置不变
+          return;
+        }
+        /* ⚠️ ①-A：`already-ended` = 主进程**已经**把这次拖拽结束了（侧栏页那条路先到并已投喂）
+         * ⇒ 这里**绝对不许再投**（否则同一次拖拽投两次 ✗）。它不属于"需要用户知道"的原因 ⇒ 静默。
+         * 但"不可投的那批"若中途已实时移动过，位置照样要恢复（主进程那边不会替我们恢复视图）。 */
+        if (v && v.reason === 'already-ended') {
+          if (!droppable) restoreSelDragOffset(d);
+          return;
+        }
+        if (droppable) settleSelDrag(d, 'multi-on-map');   // 多选 + 导图页 ⇒ 什么都不发生
+        else settleSelDrag(d, 'moved');                    // 单一/大虚线框 + 导图页 ⇒ 移动位置
+        // 只说**需要用户知道**的原因 ✓：point-not-over-sidebar = 在别处松手 ⇒ 正常操作，不该弹失败文案 ✗
+        //（实测：这条正是被 P4 ② 对照组抓出来才收窄的 ✓ —— 对照组存在的意义 ✓）
+        if (v && v.reason && v.reason !== 'point-not-over-sidebar' && v.reason !== 'no-active-drag') {
+          MM.setStatus('没送进侧栏：' + v.reason + (v.reason === 'sidebar-closed' ? ' —— 先打开侧栏再拖 ✓' : ''), true);
+        }
+      }).catch(() => { /* 失败已在上面的状态栏里说过 ✗ */ });
+      return;
+    }
+    // ③ 没有回执（纯浏览器里跑）⇒ 按"松在导图页"落定
+    settleSelDrag(d, droppable ? 'multi-on-map' : 'moved');
+  }
+
   /** 视口交互：滚轮缩放（指针锚点）+ 中键平移（无界）+ 拖动模式左键平移 +
    *  吸收残留滚动。全局只绑一次，每次操作都通过 state.jm / fdPanel() 取当前实例，
    *  避免重复建图时重复注册。 */
@@ -1162,10 +1394,13 @@
       positionFloatDetail();
     }, { capture: true, passive: false });
 
-    /* P4：框选后**直接**拖给侧栏（不进拖动模式 ✓）。三个捕获监听，**不阻断**其它行为 ✓：
-     *  · 只有"按在**当前选中的节点**上"才算这次拖拽的起点 ✓（按在别处/空白 ⇒ 与原来一模一样 ✓）
-     *  · 松手点必须落在**面板右缘 24px 内**才发送 ✓（否则什么都不做 ⇒ 普通点击照常弹详情 ✓）
-     *  · 发送的是**整批 raw 选区**（getSelectionRaw ✓ 未裁剪 ✓ —— 与 P5 的描边同源 ✓）
+    /* 鼠标**直接拖**（P4 起；2026-10-33 批3 扩成"任何节点都能拖 + 大虚线框也能拖 + 4px 阈值"）。
+     * 三个捕获监听，**不阻断**其它行为 ✓：
+     *  · 只有按下点落在**当前选区里的节点** / **任何一个节点** / **大虚线框矩形内** 才算起点 ✓
+     *    （按在别处/空白 ⇒ 与原来一模一样 ✓）；
+     *  · ⚠️ **mousedown 时绝不 preventDefault**（M2）：那会弄死 jsMind 自己的选中/点击
+     *    （用户点一下节点该弹详情 ⇒ 那条路必须留着）。过了 4px 阈值才算"真的在拖"，那时才吞默认动作；
+     *  · 松手点落在面板右缘 24px 内 ⇒ 投喂（**只有多选**才允许，见 canDropToDsh）；
      *  · 不搞拖动模式：那条路径是"移动树的位置"（fdDragMode）✓ 两者互不干扰 ✓ 用户明确要求分开 ✓ */
     document.addEventListener('mousedown', (e) => {
       if (e.button !== 0 || fdDragMode) return;
@@ -1174,52 +1409,50 @@
       if ((e.target.closest && (e.target.closest('.float-detail') || e.target.closest('#mm-node-toolbar')))
         || (MM.fdIsSatelliteTarget && MM.fdIsSatelliteTarget(e.target))) return;
       const nodeEl = e.target.closest && e.target.closest('jmnode[nodeid]');
-      if (!nodeEl) return;
-      const id = nodeEl.getAttribute('nodeid');
-      if (!fdSelectionRaw.length || fdSelectionRaw.indexOf(id) < 0) return;   // 只认"选中批"里的节点 ✓
-      // P7：把"起点"报给主进程（拖拽期间它用 40ms 轮询光标屏幕坐标 ✓ ——
-      // 指针飘到原生侧栏视图上时渲染层收不到 mouseup ✗ ⇒ 那条路由主进程判定，见 main.js）
-      try {
-        if (window.desktop && desktop.dsh && desktop.dsh.selDragStart) desktop.dsh.selDragStart(fdSelectionRaw.slice());
-      } catch (err) {
-        if (MM.setStatus) MM.setStatus('侧栏拖放：起点上报失败（' + ((err && err.message) || err) + '）', true);
-      }
-      fdSelDrag = { x: e.clientX, y: e.clientY };
+      // M1：多选里任一节点 / 单选（不在选区里也行）；M4：大虚线框内（非节点上）
+      const subject = selDragSubjectAt(e.clientX, e.clientY, nodeEl);
+      if (!subject) return;
+      /* 只记起点，**不 preventDefault、不上报起点**：是不是一次真的拖动，要等过了 4px 才知道
+       * （否则"点一下 = 移动 0px + 一次保存"✗，而且主进程会为一个点击起一条拖拽）。 */
+      fdSelDrag = {
+        x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY,
+        armed: false, subject: subject, snap: null, pendingClear: false
+      };
     }, true);
     document.addEventListener('mousemove', (e) => {
-      if (!fdSelDrag) return;
-      fdSelDrag.x = e.clientX; fdSelDrag.y = e.clientY;
+      const d = fdSelDrag;
+      if (!d) return;
+      d.x = e.clientX; d.y = e.clientY;
+      if (!d.armed) {
+        // M2：**过阈值才算真的在拖**（阈值以下既不动位置、也不起主进程拖拽 ⇒ 点击照常）
+        if (Math.abs(e.clientX - d.x0) < SEL_DRAG_THRESHOLD_PX
+          && Math.abs(e.clientY - d.y0) < SEL_DRAG_THRESHOLD_PX) return;
+        selDragArm(d, e);
+        return;                       // 这一拍只起势（位置从下一拍跟上，避免抖动）
+      }
+      e.preventDefault();             // 真的在拖了：吞掉文本选择等默认动作
+      const s = d.subject;
+      if (!s || s.kind === 'multi' || !s.offsetRoot) return;   // 多选：**不实时移动**（只显示虚影）
+      nudgeOffsetRoot(s.offsetRoot, { x: d.snap ? d.snap.x : 0, y: d.snap ? d.snap.y : 0 },
+        e.clientX - d.x0, e.clientY - d.y0);
     }, true);
     document.addEventListener('mouseup', (e) => {
-      if (!fdSelDrag) return;
+      const d = fdSelDrag;
+      if (!d) return;
       fdSelDrag = null;
-      const pnel = fdPanel();
-      const pr = pnel ? pnel.getBoundingClientRect() : null;
-      const ids = MM.getSelectionRaw ? MM.getSelectionRaw() : [];
-      // P7：把"终点"报给主进程 —— 它拿的是**屏幕坐标 + 原生侧栏真实几何**，比渲染层这份可信 ✓
-      //（命中 ⇒ 投喂；投喂仍走同一条 sendNodesToSidebar ⇒ 文本只有一处实现 ✓）
-      let verdictP = null;
-      try {
-        if (MM.requestSelDropVerdict) verdictP = MM.requestSelDropVerdict({ x: e.clientX, y: e.clientY });
-      } catch (err) {
-        if (MM.setStatus) MM.setStatus('侧栏拖放：终点判定失败（' + ((err && err.message) || err) + '）', true);
-      }
-      if (pr && ids.length && e.clientX >= pr.right - 24) {   // 面板右缘 24px 兜底（已验过 ✓ 保留）
-        e.preventDefault();
-        e.stopPropagation();                                   // 吞掉这次点击 ⇒ 不再额外弹详情 ✓
-        if (MM.sendNodesToSidebar) MM.sendNodesToSidebar(ids);
+      if (!d.armed) {
+        /* 没过阈值 = 一次普通点击 ⇒ 行为与从前逐项相同。
+         * M3：唯一差别 —— "点框外清选区"从 mousedown 挪到**这里**（那时还不知道是点击还是拖拽；
+         * 在 mousedown 就清会把"正要拖的那批"提前弄没 ✗）。
+         * ⚠️ 只认**落点就在按下点附近**的那一次松手：`!armed` 的松手若发生在远处，它不可能是
+         *    "这一按"的释放（迟到的 mouseup / 别的窗口传来的一次松手）⇒ 拿它清选区就是误伤。
+         *    本批实测的后果：按在大虚线框里那一格永远拖不动 —— 选区被清空、框当场消失 ✗。 */
+        const near = Math.abs(e.clientX - d.x0) <= SEL_DRAG_THRESHOLD_PX * 2
+          && Math.abs(e.clientY - d.y0) <= SEL_DRAG_THRESHOLD_PX * 2;
+        if (d.pendingClear && near) clearSelection();
         return;
       }
-      if (verdictP && ids.length) {
-        Promise.resolve(verdictP).then((v) => {
-          if (v && v.ok && v.hit && MM.sendNodesToSidebar) MM.sendNodesToSidebar(ids);
-          // 只说**需要用户知道**的原因 ✓：point-not-over-sidebar = 在别处松手 ⇒ 正常操作，不该弹失败文案 ✗
-          // （实测：这条正是被 P4 ② 对照组抓出来才收窄的 ✓ —— 对照组存在的意义 ✓）
-          else if (v && v.reason && v.reason !== 'point-not-over-sidebar') {
-            MM.setStatus('没送进侧栏：' + v.reason + (v.reason === 'sidebar-closed' ? ' —— 先打开侧栏再拖 ✓' : ''), true);
-          }
-        }).catch(() => { /* 失败已在上面的状态栏里说过 ✗ */ });
-      }
+      selDragDrop(d, e);
     }, true);
 
     /* ⑥ Ctrl/Cmd+点击节点 = 加选/减选。**必须在捕获阶段**：
@@ -1272,7 +1505,13 @@
           const n = document.querySelector('jmnode[nodeid="' + id + '"]');
           return n && n.contains(e.target);
         });
-        if (!inside) clearSelection();
+        /* M3：这一下**可能是个拖拽**（fdSelDrag 已挂 = 按在节点上或按在大虚线框里）⇒ 先别清。
+         * 在按下就清会把"正要拖的那批"提前弄没（从大虚线框边缘按下去就判成点框外 ✗）。
+         * 真是一次点击的话，mouseup 那边会补上清除（`pendingClear`）⇒ 行为与从前逐项相同 ✓ */
+        if (!inside) {
+          if (fdSelDrag) fdSelDrag.pendingClear = true;
+          else clearSelection();
+        }
       }
       // 拖动模式：左键按住 = 拖动目标树（有 fdDragTreeRoot 时）或平移画布（兜底）。
       // preventDefault+stopPropagation 阻止 jsMind select / 后续 click，
@@ -1335,18 +1574,9 @@
       }
       if (fdTreeDragStart) {
         e.preventDefault();
-        const s = fdView.s || 1;
-        const o = treeOffsets[fdDragTreeRoot] || (treeOffsets[fdDragTreeRoot] = { x: 0, y: 0 });
-        o.x = fdTreeDragStart.ox + (e.clientX - fdTreeDragStart.x) / s;
-        o.y = fdTreeDragStart.oy + (e.clientY - fdTreeDragStart.y) / s;
-        applyTreeOffsets();
-        syncTreeOutline(); // 虚线框 transform 跟随树偏移
-        refreshSelectionOutline(); // 框选虚线框同样跟随（节点含树偏移）
-        const jm = state.jm;
-        if (jm && jm.view && typeof jm.view.show_lines === 'function') {
-          try { jm.view.show_lines(); } catch (err) { /* 忽略重画异常 */ }
-        }
-        syncFdBoxes();
+        // 偏移推进的**唯一实现** = nudgeOffsetRoot（"直接拖"那条路用的是同一个 —— 两处各写一遍必漂）
+        nudgeOffsetRoot(fdDragTreeRoot, { x: fdTreeDragStart.ox, y: fdTreeDragStart.oy },
+          e.clientX - fdTreeDragStart.x, e.clientY - fdTreeDragStart.y);
         return;
       }
       if (fdReorderStart) {              // 【R2 期 3 · e】同级重排：副本跟指针 + 落位预览
@@ -2030,12 +2260,15 @@
   /* P7 跨视图兜底：主进程判出「光标停在原生侧栏视图上 ≥400ms ⇒ 就是在这儿松手」之后，
    * 把 ids 发回来 ⇒ 这里投喂（走同一条 sendNodesToSidebar ✓）并清掉那份可能一直挂着的拖拽状态 ✓。
    * 注册在 IIFE 顶层：只绑一次 ✓ 且与 fdSelDrag 同作用域 ✓。preload 老版本没这个 key 时退化为
-   * 「只有页面内松手才送」✓，并留一句日志（不静默 ✗）。 */
+   * 「只有页面内松手才送」✓，并留一句日志（不静默 ✗）。
+   * ⚠️ ①-A 起这条通道有**两个**上游：dwell 兜底 与 "侧栏页自己报的 mouseup"（后者是权威终点）。
+   *    上游是"只投一次"的闸所在（main.js 的 st.ended / st.fired）⇒ 这边收到就投，不再去重
+   *    （再叠一层去重会让"到底谁负责"变成两处判断 —— 那种"两处表达同一件事"正是本工程反复治的病）。 */
   if (window.desktop && window.desktop.dsh && window.desktop.dsh.onSelDrop) {
     try {
       window.desktop.dsh.onSelDrop((ids) => {
         fdSelDrag = null;
-        if (ids && ids.length && MM.sendNodesToSidebar) MM.sendNodesToSidebar(ids);
+        if (ids && ids.length) feedSelDrop(ids);
       });
     } catch (e) { console.log("P7 跨视图兜底接线失败：" + ((e && e.message) || e)); }
   }
@@ -2061,6 +2294,19 @@
   MM.hasSelection = () => fdSelectionRaw.length > 0;
   MM.selectionHitTest = selectionHitTest;
   MM.dragSelection = dragSelection;
+  /* 「直接拖」的现状读数（给冒烟断言用；只读，不参与任何判定 —— 先例：MM.selDropStats）。
+   * 为什么必须有：这一批的真缺陷是"按下去了却什么都没发生"，而那件事在 DOM 上完全看不出来
+   * （既没有异常、也没有状态栏）。没有这个读数就只能靠猜是哪一段没接上 ✗。 */
+  MM.selDragState = () => (fdSelDrag ? {
+    armed: !!fdSelDrag.armed,
+    from: { x: fdSelDrag.x0, y: fdSelDrag.y0 },
+    at: { x: fdSelDrag.x, y: fdSelDrag.y },
+    kind: fdSelDrag.subject ? fdSelDrag.subject.kind : null,
+    count: fdSelDrag.subject ? fdSelDrag.subject.count : 0,
+    offsetRoot: fdSelDrag.subject ? fdSelDrag.subject.offsetRoot : null,
+    toDsh: fdSelDrag.subject ? canDropToDsh(fdSelDrag.subject) : null,
+    snap: fdSelDrag.snap, pendingClear: !!fdSelDrag.pendingClear
+  } : null);
   MM.collapseSelection = collapseSelection;
   MM.expandSelection = expandSelection;
   MM.bindViewportControls = bindViewportControls;

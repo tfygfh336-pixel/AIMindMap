@@ -699,8 +699,10 @@ const assertions = [
       await centerNode(ctx, TARGET, 0.5, 0.5);
       await waitStableView(ctx);
       await ctx.input.settle(PAINT);
-      // 前置：菜单里对**第 4 层**节点确实有「拖动此子树」这一条（入口不受层约束）。
-      // 用**真右键**（走 Chromium 命中测试）拿菜单，读完条目立刻关掉。
+      // 前置：右键菜单里对**第 4 层**节点**已经没有**「拖动此子树」这一条（2026-10-33 批4 摘入口；
+      // 判据用**真右键**（走 Chromium 命中测试）拿菜单，读完条目立刻关掉）。
+      // ⚠️ 这条改写成"没有"而不是删掉：改前它判"入口不受层约束"，现在同一句话变成
+      //    "连同第 4 层在内都不再有入口了"（拖动本体仍由下面直接调 API 进，判据一条没少）。
       const hp0 = await hitPoint(ctx, TARGET);
       if (!hp0.ok) return { ok: false, text: '前置失败：目标节点取不到命中点 —— ' + hp0.text };
       await ctx.input.drag(hp0.pt, hp0.pt, undefined, { button: 'right', stepDelayMs: 0 });
@@ -709,7 +711,8 @@ const assertions = [
         + ' var items = m ? Array.prototype.map.call(m.querySelectorAll(".ctx-item"), function (x) { return x.textContent; }) : [];'
         + ' if (window.MMContextMenu) window.MMContextMenu.closeMenu();'
         + ' return items; })()');
-      const hasSubDrag = (menuItems || []).some((t) => t.indexOf('拖动此子树') >= 0);
+      const menuShown = Array.isArray(menuItems) && menuItems.length > 0;
+      const noSubDrag = menuShown && !menuItems.some((t) => t.indexOf('拖动此子树') >= 0);
       await ctx.input.settle(STEP);
       // —— 基线：先**保存一次**，让盘上那份进入"界面整树写回"的规范形态（否则后面那条
       //    "除偏移键外其余字节不变"会被保存本身带来的规范化 —— 如 meta.version 由夹具的
@@ -722,7 +725,7 @@ const assertions = [
       const h0 = sha256(baseDiskRaw);
       const diskHasOffsets = Object.keys(JSON.parse(baseDiskRaw).meta || {}).indexOf('nodeOffsets') >= 0;
 
-      // —— 进入拖动模式（菜单那一条入口的 action 就是它；右键菜单里确有这一条，见上面前置）——
+      // —— 进入拖动模式（2026-10-33 批4：菜单里那一条入口已摘 ⇒ 直接调 API；它才是"模式还在"的证据）——
       await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(TARGET) + '); 1');
       await ctx.input.settle(STEP);
       await waitStableView(ctx);
@@ -804,8 +807,8 @@ const assertions = [
       if (stripped.meta && stripped.meta.nodeOffsets) delete stripped.meta.nodeOffsets;
       const onlyOffsetKey = JSON.stringify(stripped) === JSON.stringify(JSON.parse(baseDiskRaw));
       const checks = [
-        ['前置：第 4 层节点的右键菜单里有「拖动此子树」这一条（入口不受层约束）',
-          hasSubDrag === true],
+        ['前置：第 4 层节点的右键菜单**确实弹出来了**且里面**没有**「拖动此子树」（入口 2026-10-33 批4 已摘、与层级无关）',
+          noSubDrag === true],
         ['前置：基线那次"规范化保存"成功（盘上是界面整树写回的那一形态）', normSaved === true],
         ['拖动模式锁定的就是那个**深层**子树根', entered.on === true && entered.root === TARGET],
         ['基线：夹具本来没有 nodeOffsets 键（条件写回的对照）', diskHasOffsets === false],
@@ -830,7 +833,7 @@ const assertions = [
       const fails = checks.filter((c) => !c[1]).map((c) => c[0]);
       return {
         ok: fails.length === 0,
-        text: '菜单项=' + hasSubDrag + ' · 锁定=' + JSON.stringify(entered) + ' · 位移=(' + plan.dx + ',' + plan.dy + ')'
+        text: '入口已摘=' + noSubDrag + '（菜单 ' + (menuItems || []).length + ' 项：' + JSON.stringify((menuItems || []).slice(-2)) + '）· 锁定=' + JSON.stringify(entered) + ' · 位移=(' + plan.dx + ',' + plan.dy + ')'
           + ' · moved=' + JSON.stringify(diff.moved) + ' · unchanged=' + diff.unchanged.length
           + '/' + Object.keys(radar0.rects).length + ' · gone=' + diff.gone.length
           + ' · data 逐字节不变=' + (afterData === baseData)

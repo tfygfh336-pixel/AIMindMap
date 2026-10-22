@@ -299,7 +299,7 @@ const assertions = [
 
   /* ================= 甲 f·真鼠标全链 ================= */
   {
-    name: '甲 f·重挂父（真鼠标）：入口在菜单里且进的是 reparent 档；拖动期间盘上零写入+序列化逐字节不变；落位预览（演练副本）跑过且取消零写入；确认 ⇒ 盘上父子关系 == 期望 + 被移子树内部逐字节不变 + payload 零损失 + assoc 逐字节不变 + 回读重建（界面 == 盘上）',
+    name: '甲 f·重挂父（真鼠标）：菜单里**没有**那一条入口（2026-10-33 批4 已摘）而直接调 API 进的是 reparent 档；拖动期间盘上零写入+序列化逐字节不变；落位预览（演练副本）跑过且取消零写入；确认 ⇒ 盘上父子关系 == 期望 + 被移子树内部逐字节不变 + payload 零损失 + assoc 逐字节不变 + 回读重建（界面 == 盘上）',
     run: async (ctx) => {
       writeFixture();
       // 条目化 a2 走既有 item-add（CLI 保持 items↔detail 一致 —— 本域不手写派生缓存）
@@ -320,12 +320,18 @@ const assertions = [
       const h0 = sha256(readRaw(P));
       // 拖动期间逐字节对照的基准：抓在 expand_all **之后**（否则 expand 自己的展开态变化会冒充"拖动写了"）
       const textBefore = await stepExec(ctx, '读序列化文本（展开后）', 'JSON.stringify(window.MMApp.serializeTree())');
-      // —— 右键入口：菜单里真有那一条、点得到、进的是 reparent 档 ——
+      // —— 右键入口：菜单里**必须已经没有**那一条（2026-10-33 批4 摘入口）⇒ 进档直接从 API 走 ——
       await centerNode(ctx, A);
       const entry = await menuItemOf(ctx, A, '挂到别的父节点下');
-      if (entry.miss) return { ok: false, text: '入口前置失败：' + entry.miss + (entry.items ? '；菜单=' + JSON.stringify(entry.items) : '') + ' ⇒ **未验证**' };
-      let clicked = false;
-      if (entry.self === true) { await ctx.input.click({ x: entry.x, y: entry.y }); clicked = true; }
+      /* `menuItemOf` 命中就回坐标、没命中就回 `{miss:'菜单里没有那一条', items:[...]}`。
+       * 改前这一跳是"找那一条 → 真鼠标点它"；现在**期望它 miss**（入口已摘），
+       * 而"菜单没弹出来 / 节点不在屏上"那两种 miss 仍算前置失败（不能把"没读到菜单"洗成"入口不在"）。 */
+      const entryGone = String(entry.miss || '').indexOf('菜单里没有那一条') >= 0;
+      if (!entryGone) {
+        return { ok: false, text: '入口前置失败：菜单里读不到（既没命中也没报"没有那一条"）'
+          + ' ⇒ **未验证**：' + JSON.stringify(entry).slice(0, 160) };
+      }
+      await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(A) + ', { mode: "reparent" }); 1');
       await ctx.input.settle(PAINT);
       const kind = await stepExec(ctx, '读拖动档位', 'window.MMApp.dragModeKind()');
       // —— 第一次拖放：桩返回 false（取消）—— 预览跑过（文案被捕获）但零写入 ——
@@ -379,8 +385,11 @@ const assertions = [
         + ' } return 1; })()');
       await centerNode(ctx, A);
       const entry2 = await menuItemOf(ctx, A, '挂到别的父节点下');
-      if (entry2.miss || entry2.self !== true) return { ok: false, text: '第二次入口失败：' + JSON.stringify(entry2).slice(0, 120) + ' ⇒ **未验证**' };
-      await ctx.input.click({ x: entry2.x, y: entry2.y });
+      /* 同 甲（2026-10-33 批4）：第一次拖放写盘会重建整棵树 ⇒ 界面回到普通态（"再拖一次"就得再进一次档）；
+       * 入口已摘 ⇒ 这一跳同样直接调 API，并且菜单里**必须仍然没有**那一条。 */
+      const entry2Gone = String(entry2.miss || '').indexOf('菜单里没有那一条') >= 0;
+      if (!entry2Gone) return { ok: false, text: '第二次入口失败（菜单里读不到）：' + JSON.stringify(entry2).slice(0, 120) + ' ⇒ **未验证**' };
+      await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(A) + ', { mode: "reparent" }); 1');
       await ctx.input.settle(PAINT);
       const ptA2 = await pointOf(ctx, A);
       const ptB2 = await pointOf(ctx, B);
@@ -439,8 +448,9 @@ const assertions = [
       const checks = [
         ['前置：夹具打开成功且条目化成功', opened === true && !!itemized],
         ['默认档检查：打开夹具不碰新入口 ⇒ serializeTree 的**数据树**与盘上同构（键序无关；展开态不比 —— serializeTree 的展开态与 CLI 落盘不同形：缺键=展开）', dataSameAtOpen],
-        ['菜单里真有「挂到别的父节点下」且真鼠标点得到', entry.self === true && clicked === true],
-        ['进入的是 reparent 档（不是 move/reorder）', kind === 'reparent'],
+        ['菜单里**没有**「挂到别的父节点下」（入口 2026-10-33 批4 已摘）且菜单确实弹出来了', entryGone],
+        ['第二次拖放前的"再进一次档"也读不到那一条（重建之后仍未回来的正面读数）', entry2Gone === true],
+        ['直接调 API 进入的是 reparent 档（不是 move/reorder）', kind === 'reparent'],
         ['拖动中副本在屏上、落点读数 = b（压着的节点）',
           !!ghostDuring && ghostDuring.reading.ghost === true && !!ghostDuring.reading.st
           && ghostDuring.reading.st.active === true && !!ghostDuring.reading.st.drop
@@ -482,7 +492,8 @@ const assertions = [
       const fails = checks.filter((c) => !c[1]).map((c) => c[0]);
       return {
         ok: fails.length === 0,
-        text: '入口=' + JSON.stringify({ label: entry.label, self: entry.self }) + ' · 档位=' + kind
+        text: '入口已摘=' + entryGone + ' 菜单末尾=' + JSON.stringify((entry.items || []).slice(-3))
+          + ' · 档位=' + kind
           + ' · 拖动中=' + JSON.stringify(ghostDuring.reading.st)
           + ' · 确认框文案=' + JSON.stringify((msgs[0] || '').slice(0, 90))
           + ' · 盘上 t1=' + JSON.stringify(t1Kids) + ' b=' + JSON.stringify(bKids)
@@ -584,8 +595,12 @@ const assertions = [
       await stubConfirm(ctx, false);                       // 这次取消
       await centerNode(ctx, A);
       const entry = await menuItemOf(ctx, A, '挂到别的父节点下');
-      if (entry.miss || entry.self !== true) return { ok: false, text: '入口前置失败：' + JSON.stringify(entry).slice(0, 120) + ' ⇒ **未验证**' };
-      await ctx.input.click({ x: entry.x, y: entry.y });
+      /* 同 甲：入口已摘 ⇒ 期望它 miss='菜单里没有那一条'（"菜单没弹出来"仍算前置失败） */
+      const entryGone = String(entry.miss || '').indexOf('菜单里没有那一条') >= 0;
+      if (!entryGone) {
+        return { ok: false, text: '入口前置失败：菜单里读不到 ⇒ **未验证**：' + JSON.stringify(entry).slice(0, 120) };
+      }
+      await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(A) + ', { mode: "reparent" }); 1');
       await ctx.input.settle(PAINT);
       const ptA = await pointOf(ctx, A);
       const ptB = await pointOf(ctx, B);
@@ -602,6 +617,7 @@ const assertions = [
       const parentsCancel = parentsOf(rawCancel);
       const checks = [
         ['夹具打开成功', opened === true],
+        ['菜单里**没有**「挂到别的父节点下」（与甲同一条判据，丙 这一档也点名）', entryGone === true],
         ['确认框文案说清**落点**（两个 id 都在文案里）',
           msgs.length === 1 && msgs[0].indexOf(A) >= 0 && msgs[0].indexOf(B) >= 0],
         ['确认框文案说清**规模**（含 N 个节点 —— 现算，不是写死）', msgs.length === 1 && /含\s*\d+\s*个节点/.test(msgs[0])],

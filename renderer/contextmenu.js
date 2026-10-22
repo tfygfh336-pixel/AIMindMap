@@ -118,85 +118,18 @@
   }
 
   /* ================= 菜单内容 ================= */
-  /** 拖动树菜单项：进入/退出拖动模式（文案随当前模式切换）。
-   *  进入时锁定 nodeId 所在**顶层主题树**（root 直接子节点）为拖动目标：
-   *  此后左键按住拖动 = 只移动该棵树，其他树不动（视图操作，偏移随保存持久化）。
-   *  仅节点菜单使用（右键树内任意节点都拖其所属整棵树）；root 无所属树，不显示。
-   *  ⚠️ 这一条是**既有语义**（v0.15 起，一字未改）—— 「移动单位 = 整棵顶层主题树」。
-   *  R2 期 1 新增的**更细**那一档在同文件的 `subtreeDragItem`（两者并列，不是替换）。 */
-  function dragModeItem(nodeId) {
-    const app = () => window.MMApp;
-    const active = !!(app().dragModeActive && app().dragModeActive());
-    if (active) {
-      return { label: '退出拖动模式（Esc）', action: () => app().setDragMode(false) };
-    }
-    const treeRoot = app().treeRootOf ? app().treeRootOf(nodeId) : null;
-    if (!treeRoot) return null;
-    const jm = app().getState().jm;
-    const topic = jm && MM.adapter.getNode(jm, treeRoot) ? MM.adapter.getNode(jm, treeRoot).topic : treeRoot;
-    return {
-      label: '拖动树：移动「' + topic + '」',
-      action: () => app().setDragMode(true, treeRoot)
-    };
-  }
-
-  /** 【R2 期 1 · b（位置可调）】拖动**这个子树**（nodeId 及其后代，不是整棵顶层主题树）。
-   *  只有**更深的节点**才显示：顶层主题那一档已由 `dragModeItem` 覆盖（同一个目标不必两条入口 ✗），
-   *  root 无所属子树（它是容器）。
-   *  拖动本身仍走既有那一套（`setDragMode(true, 任意节点id)` ⇒ treeOffsets 键域已扩到任意子树根），
-   *  本项只是**入口**。偏移随保存进 `meta.nodeOffsets`（契约见 docs/DATA-FORMAT.md §1）。 */
-  function subtreeDragItem(nodeId) {
-    const app = () => window.MMApp;
-    if (app().dragModeActive && app().dragModeActive()) return null;  // 已在拖动模式：只留"退出"那一条
-    const jm = app().getState().jm;
-    const n = jm && MM.adapter.getNode(jm, nodeId);
-    if (!n || n.isroot || !n.parent) return null;
-    if (n.parent.isroot) return null;                                  // 顶层主题：走 dragModeItem
-    return {
-      label: '拖动此子树：只移动「' + n.topic + '」及其子节点',
-      action: () => app().setDragMode(true, nodeId)
-    };
-  }
-
-  /** 【R2 期 3 · e】「拖动到同级第几位」——**同级重排**的入口。
-   *  与 `subtreeDragItem` 并列的**另一档拖动**：那一档改位置（写 `meta.nodeOffsets`），
-   *  这一档改**同级上下序**（写 `children` 顺序，走既有 CLI `move --index`）。
-   *  只有"有兄弟"的节点才显示（独子没有可换的位置，显示了也是骗人 ✗）；root 不显示。
-   *  ⚠️ 写回**不在渲染层**：松手时只调 `MMApp.reorderNodeChild` ⇒ IPC ⇒ CLI `move`
-   *  （校验闸门 + 原子写 + 回读重建）—— 这是不变式②要求的唯一形状。 */
-  function reorderDragItem(nodeId) {
-    const app = () => window.MMApp;
-    if (app().dragModeActive && app().dragModeActive()) return null;  // 已在拖动模式：只留"退出"那一条
-    const jm = app().getState().jm;
-    const n = jm && MM.adapter.getNode(jm, nodeId);
-    if (!n || n.isroot || !n.parent) return null;
-    const sib = (n.parent.children || []).filter((c) => c && c.id !== nodeId);
-    if (!sib.length) return null;                                     // 独子：没有同级可换
-    return {
-      label: '拖动到同级第几位：「' + n.topic + '」（' + (sib.length + 1) + ' 个同级）',
-      action: () => app().setDragMode(true, nodeId, { mode: 'reorder' })
-    };
-  }
-
-  /** 【R2 期 4 · f】「挂到别的父节点下」——**重挂父**的入口。
-   *  与前两档拖动并列的第三档：`subtreeDragItem` 改位置（写 `meta.nodeOffsets`）、
-   *  `reorderDragItem` 改同级上下序（写 `children` 顺序）、这一档改**父子关系**
-   *  （把 nodeId 连同子树挂到松手时压着的那个节点下）。
-   *  只要有父节点的都显示（root 是容器、没有父；顶层主题也可以重挂 —— 那是合法的重组）。
-   *  ⚠️ 写回**不在渲染层**：松手只调 `MMApp.reparentNode` ⇒ 三道闸（落位预览【演练副本】/
-   *  写前 `--dry-run` 预检 / 回读重建）⇒ CLI 的 move 语义（唯一实现 `tree.moveNode`，防环内建）。
-   *  成环**不在这里拦**：那条判据要的是 CLI 的具体理由 + 盘上零改动（预览会带原话回来）。 */
-  function reparentItem(nodeId) {
-    const app = () => window.MMApp;
-    if (app().dragModeActive && app().dragModeActive()) return null;  // 已在拖动模式：只留"退出"那一条
-    const jm = app().getState().jm;
-    const n = jm && MM.adapter.getNode(jm, nodeId);
-    if (!n || n.isroot || !n.parent) return null;
-    return {
-      label: '挂到别的父节点下：「' + n.topic + '」及其子节点',
-      action: () => app().setDragMode(true, nodeId, { mode: 'reparent' })
-    };
-  }
+  /* 【2026-10-33 批4 · 收敛拖动模式入口】用户 2026-10-31 说「移除拖动模式」。
+   * 第一期**只摘入口**：下面四条菜单项从这里整体删掉了（连同它们的构造函数）——
+   *   · 拖动树（`dragModeItem`，v0.15 起的「移动单位 = 整棵顶层主题树」）
+   *   · 拖动此子树（`subtreeDragItem`，R2 期 1 的节点级一档）
+   *   · 拖动到同级第几位（`reorderDragItem`，R2 期 3 的同级重排）
+   *   · 挂到别的父节点下（`reparentItem`，R2 期 4 的重挂父）
+   * 四条都是"进拖动模式"的**入口**（都只是调 `MMApp.setDragMode(...)`），不是那个 API 本身。
+   * ⚠️ `setDragMode` / `dragModeActive` / `dragModeKind` / `getDragTreeRoot` 那一族
+   *    **一个字节都没删**（`renderer/app-view.js` 的实现 + `renderer/app.js` 的四个转发都在）——
+   *    它们是 `scripts/smoke/` 多个域的前置夹具，且"摘入口 ≠ 摘 API"这件事本身有断言钉着。
+   * ⚠️ 右键**清除**拖动模式那一段（本文件 `onContextMenu` 里）也保留：模式本体还在，
+   *    只是不再有菜单入口。要恢复入口，从版本库里把上面四个函数取回来即可。 */
 
   /** 【R2 期 1】「把这个子树移回自动布局」：只清**这个节点自己**那一项偏移
    *  （拖动结果会保存 ⇒ 必须给一条清回去的路，否则用户拖远了只能靠改数据文件；
@@ -275,25 +208,13 @@
       items.push({ label: '📁 打开文件夹：' + leaf, action: () => app().openLocalPath(lp) });
     }
     if (!isRoot) items.push({ label: '删除节点', danger: true, action: () => app().deleteNode(nodeId) });
-    // 拖动树入口：root 无所属树（它是容器）→ 不显示；树内任意节点均拖其所属整棵树
-    const dragItem = dragModeItem(nodeId);
-    if (dragItem) {
-      items.push('---');
-      items.push(dragItem);
-    }
-    // R2 期 1：更细的一档（拖动此子树）+ 手工位置的"清回去" + 顶层主题的左右分侧
-    // R2 期 3：再加一档"同级重排"（改上下序，写 children 顺序 —— 与"动位置"是两件事）
-    // R2 期 4：再加一档"重挂父"（改父子关系，走既有 move 语义 + 三道闸 —— 与前两档也是两件事）
-    const subDrag = subtreeDragItem(nodeId);
-    const reorderDrag = reorderDragItem(nodeId);
-    const repDrag = reparentItem(nodeId);
+    // 手工位置的"清回去" + 顶层主题的左右分侧（这两条都不是拖动模式的入口 ✓）
+    // ⚠️ 2026-10-33 批4：四条**拖动模式入口**（拖动树 / 拖动此子树 / 拖动到同级第几位 /
+    //    挂到别的父节点下）已从这里摘除（见上面那段说明）；`setDragMode` 那套 API 一个字节没删。
     const clearOff = clearOffsetItem(nodeId);
     const sideItems = themeSideItems(nodeId);
-    if (subDrag || reorderDrag || repDrag || clearOff || sideItems.length) {
+    if (clearOff || sideItems.length) {
       items.push('---');
-      if (subDrag) items.push(subDrag);
-      if (reorderDrag) items.push(reorderDrag);
-      if (repDrag) items.push(repDrag);
       if (clearOff) items.push(clearOff);
       sideItems.forEach((it) => items.push(it));
     }
@@ -352,7 +273,7 @@
       { label: '展开全部', action: () => app().expandAll() },
       { label: '收起全部', action: () => app().collapseAll() }
       // 导入/导出 Markdown 仅保留「文件」菜单入口（v0.16 起工具栏与右键入口移除）
-      // 拖动树只在节点菜单（右键背景无"目标树"，画布平移已有中键）
+      // 拖动模式那四条入口 2026-10-33 批4 已从**节点菜单**摘除（右键背景本来就没有它们）
     ]);
   }
 

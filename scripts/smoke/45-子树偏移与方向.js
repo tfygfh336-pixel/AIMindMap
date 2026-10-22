@@ -4,21 +4,23 @@
  * 用户原话（R2 需求）：想拖**某一段子树**摆到别处，而不是"整棵顶层主题树一起走"；
  * 方向（左/右分侧）至今只能改数据文件才能设。
  * 本域钉的是**界面那一半 + 数据那一半**（`renderer/app-view.js` 的偏移键域 +
- * `renderer/app-core.js` 的两个条件写回键 + `renderer/contextmenu.js` 的三条入口 +
- * `src/schema.js` 的 `meta.nodeOffsets` 契约）。
+ * `renderer/app-core.js` 的两个条件写回键 + `renderer/contextmenu.js` 的**分侧入口**（拖动那四条
+ * 已于 2026-10-33 批4 摘除，只剩「摆到左/右侧」这一族菜单项）+ `src/schema.js` 的 `meta.nodeOffsets` 契约）。
  *
  *  甲 **默认档逐字节不变**（本期的头号判据）：一个**没有任何偏移**的项目，
  *     `serializeTree()` 里**一个偏移键都没有**；`save()` 把**恰好这份**序列化文本写到盘上
  *     （盘上 == 界面这一份，没有第三方多写一个键）。
- *  乙 **入口 + 拖动**：右键**深层节点** ⇒ 菜单里有「拖动此子树…」、**没有**左右分侧项
- *     （jsMind 只认 root 直接子节点，给深层节点设方向是骗人 ⇒ 不显示）；真鼠标拖它 ⇒
+ *  乙 **入口 + 拖动**：右键**深层节点** ⇒ 菜单里**四条拖动入口一条都没有**（2026-10-33 批4 已按用户
+ *     「移除拖动模式」摘掉入口；`setDragMode` 那套 API 一行没删 ⇒ 进模式直接从 API 走）、
+ *     **没有**左右分侧项（jsMind 只认 root 直接子节点，给深层节点设方向是骗人 ⇒ 不显示）；真鼠标拖它 ⇒
  *     **只有该子树移动**（其余节点屏幕矩形**逐项相同**）、**父子关系逐字节不变**、
  *     偏移只进 `meta.nodeOffsets`（`meta.themeOffsets` 一个键都不写）、**拖动期间盘上零写入**、
  *     `isDirty()` 由 false（打开后）到 true（拖动后）；移动后的子树每个节点在**新位置**上
  *     `elementFromPoint` 命中自己；`save()` ⇒ 盘上偏移 == 屏幕位移；**重开项目**后
  *     两桶读数、DOM transform、屏幕矩形**全部还原**。
- *  丙 **方向入口**（顶层主题级语义，**不新增方向能力**）：右键顶层主题 ⇒ 有「拖动树」与两条
- *     分侧项、**没有**「拖动此子树」（不重复同一目标）；点「摆到左侧」⇒ 该支屏幕 cx < 根 cx 且
+ *  丙 **方向入口**（顶层主题级语义，**不新增方向能力**）：右键顶层主题 ⇒ **四个拖动入口全不在**
+ *     （拖动树 / 拖动此子树 / 拖动到同级第几位 / 挂到别的父节点下，逐个点名）而两条分侧项**仍在**；
+ *     点「摆到左侧」⇒ 该支屏幕 cx < 根 cx 且
  *     盘上 `meta.layout.left` 现算包含它；点「摆到右侧」⇒ 反向成立、盘上换边；
  *     给**非顶层**节点调这个入口 ⇒ 响亮拒绝（`ok:false` + 原因，不静默）。
  *  丁 **结构断言**（设计稿 §2.3 要求）：除 `renderer/vendor/**` 外，`renderer/**.js`
@@ -372,12 +374,16 @@ const assertions = [
           + ' ｜ 面板=' + JSON.stringify(before.panel) + ' 矩形=' + JSON.stringify(before.rects) };
       }
       const dataBefore = await ctx.exec('JSON.stringify(window.MMApp.serializeTree().data)');
-      // ① 入口（真鼠标右键深层节点）：菜单里必须有「拖动此子树」，且**不许**出现分侧项
+      // ① 入口（真鼠标右键深层节点）：菜单里**四个拖动入口一条都没有**（2026-10-33 批4 已摘），
+      //    且**不许**出现分侧项；进模式直接从 API 走（`setDragMode` 那一族一行没删 ⇒ 拖动本体照旧判）。
       const deepMenu = await openNodeMenu(ctx, TARGET);
       const has = (list, s) => list.some((t) => t.indexOf(s) >= 0);
-      const entryOk = has(deepMenu.items, '拖动此子树')
+      const GONE = ['拖动树', '拖动此子树', '拖动到同级第几位', '挂到别的父节点下'];
+      const entryOk = GONE.every((k) => !has(deepMenu.items, k))
         && !has(deepMenu.items, '摆到左侧') && !has(deepMenu.items, '摆到右侧');
-      const clicked = await clickMenuItem(ctx, '拖动此子树');
+      await closeMenu(ctx);      // 读完就关：改前是点菜单项顺手关的，现在没人关它（会挡在画布上 ✗）
+      await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(TARGET) + '); 1');
+      await ctx.input.settle(PAINT);
       const entered = await ctx.exec('(function () { return { on: window.MMApp.dragModeActive(),'
         + ' root: window.MMApp.getDragTreeRoot() }; })()');
       /* ⚠️ 几何基线**必须取在"按下"之后**（本行以下用的都是 `base2`）—— 这是改前那条假红的真因：
@@ -462,8 +468,8 @@ const assertions = [
       const checks = [
         ['openProject 成功', opened === true],
         ['打开后 isDirty=false', dirtyAfterOpen === false],
-        ['菜单里有「拖动此子树」且无分侧项', entryOk],
-        ['点菜单真进了拖动模式且目标==目标节点', clicked.ok === true && entered.on === true && entered.root === TARGET],
+        ['菜单里四个拖动入口一条都没有、且无分侧项', entryOk],
+        ['直接调 API 进了拖动模式且目标==目标节点', entered.on === true && entered.root === TARGET],
         ['nodeOffsets 只有目标一项且 == 位移',
           Math.abs(Object.keys(bk.nodes).length - 1) === 0 && !!bk.nodes[TARGET]
           && Math.abs(bk.nodes[TARGET].x - planUse.dx) <= 1 && Math.abs(bk.nodes[TARGET].y - planUse.dy) <= 1],
@@ -517,14 +523,17 @@ const assertions = [
   },
 
   {
-    name: '丙 方向入口（顶层主题级）：右键顶层主题有「拖动树」与两条分侧项、无「拖动此子树」；摆到左侧 ⇒ 该支屏幕 cx < 根 cx 且盘上 meta.layout.left 含它；摆回右侧 ⇒ 反向成立且盘上换边；非顶层节点被响亮拒绝',
+    name: '丙 方向入口（顶层主题级）：右键顶层主题**四个拖动入口一个都不在**（逐个点名）而两条分侧项仍在；摆到左侧 ⇒ 该支屏幕 cx < 根 cx 且盘上 meta.layout.left 含它；摆回右侧 ⇒ 反向成立且盘上换边；非顶层节点被响亮拒绝',
     run: async (ctx) => {
       // 用当前状态（上一段已把 t1/na 展开在屏上），不重开项目 —— 方向入口只对顶层主题开放
       const lifted1 = await liftNode(ctx, TOP_THEME);
       const topMenu = await openNodeMenu(ctx, TOP_THEME);
       const has = (list, s) => list.some((t) => t.indexOf(s) >= 0);
-      const menuOk = has(topMenu.items, '拖动树') && has(topMenu.items, '摆到左侧') && has(topMenu.items, '摆到右侧')
-        && !has(topMenu.items, '拖动此子树');
+      /* 2026-10-33 批4：四条拖动入口已从菜单摘除 ⇒ 这条菜单文案断言**改写成新现实**（不是删掉）：
+       * 四个入口逐个点名都**不在**，而两条分侧项**仍在**（后者证明只摘了拖动那四条、没顺手掏空菜单）。 */
+      const GONE = ['拖动树', '拖动此子树', '拖动到同级第几位', '挂到别的父节点下'];
+      const menuOk = GONE.every((k) => !has(topMenu.items, k))
+        && has(topMenu.items, '摆到左侧') && has(topMenu.items, '摆到右侧');
       const cx = (id) => ctx.exec('(function () { var el = document.querySelector(\'jmnode[nodeid="' + id + '"]\');'
         + ' if (!el) return null; var r = el.getBoundingClientRect(); return Math.round(r.left + r.width / 2); })()');
       const clickedLeft = await clickMenuItem(ctx, '摆到左侧');
@@ -548,7 +557,7 @@ const assertions = [
       const layoutRight = ((JSON.parse(readRaw(P)).meta || {}).layout || {});
       const deepRefused = await ctx.exec('window.MMApp.setThemeSide("' + TARGET + '", "left")');
       const checks = [
-        ['顶层主题菜单：有拖动树 + 两条分侧、无「拖动此子树」', menuOk],
+        ['顶层主题菜单：四个拖动入口全不在（逐个点名）+ 两条分侧仍在', menuOk],
         ['点「摆到左侧」真触发（含命中测试）', clickedLeft.ok === true],
         ['左侧几何：该支 cx < 根 cx', typeof t1CxLeft === 'number' && typeof rootCx === 'number' && t1CxLeft < rootCx],
         ['内存读数 themeSideOf=left', sideLeft === 'left'],

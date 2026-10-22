@@ -243,10 +243,16 @@ const assertions = [
     }
   },
   {
-    name: '拖动树：右键顶层主题根 → 菜单含「拖动树」→ 点击进入并锁定目标树',
+    name: '拖动树：右键顶层主题根 ⇒ 菜单里**四个拖动入口一个都不在**（逐个点名）⇒ 直接用 MMApp.setDragMode(true,「wlan-book」) 进入并锁定目标树',
     run: async (ctx) => {
-      // v0.15：右键菜单「拖动树」锁定 nodeId 所在**顶层主题树**（comnet 中 wlan-book =
-      // 「802.11 无线网络」）为拖动目标；进入后左键拖动 = 只移动这棵树。
+      /* 用户 2026-10-31 说「移除拖动模式」。2026-10-33 批4 只摘**入口**：右键菜单里那四条
+       * （拖动树 / 拖动此子树 / 拖动到同级第几位 / 挂到别的父节点下）一条都不许再出现，
+       * 而 `setDragMode` 那套 API **一行没删**（本域后面几十行前置都靠它）。
+       * ⚠️ 这条断言**不是删掉再新写一条** —— 改前它判"菜单里有「拖动树」且真的点得到、
+       * 点了之后锁定目标树"；现在同一件事被拆成两半：
+       *   ① 菜单里**四个入口全不在**（改前只点名「拖动树」一个 ⇒ 现在逐个点名，判据更严）；
+       *   ② 锁定目标树那一跳**直接从 API 走**（它才是"拖动模式还能用"的证据）。
+       *   改前那半句"菜单文案必须含「移动「」"随入口一起消失（菜单里已经没有那条文案了）。 */
       const r = await ctx.exec(
         `(async function () {
            var app = window.MMApp;
@@ -262,16 +268,73 @@ const assertions = [
            await new Promise(function (res) { setTimeout(res, 120); });
            var menu = document.getElementById('ctx-menu');
            var labels = [].map.call(menu ? menu.querySelectorAll('.ctx-item') : [], function (x) { return x.textContent; });
-           var hit = labels.filter(function (t) { return t.indexOf('拖动树') >= 0; });
-           if (!hit.length) return { ok: false, text: '菜单无「拖动树」项: ' + JSON.stringify(labels) };
-           var item = [].filter.call(menu.querySelectorAll('.ctx-item'), function (x) { return x.textContent.indexOf('拖动树') >= 0; })[0];
-           item.click();
-           await new Promise(function (res) { setTimeout(res, 120); });
+           var GONE = ['拖动树', '拖动此子树', '拖动到同级第几位', '挂到别的父节点下'];
+           var still = GONE.filter(function (k) {
+             return labels.some(function (t) { return t.indexOf(k) >= 0; });
+           });
+           if (menu) menu.style.display = 'none';
+           app.setDragMode(true, 'wlan-book');      // 入口已摘 ⇒ 只能从 API 进（它还在这才叫"摘入口 ≠ 摘 API"）
            var active = app.dragModeActive();
            var root = app.getDragTreeRoot();
+           var kind = app.dragModeKind ? app.dragModeKind() : '(没有 dragModeKind)';
+           app.setDragMode(false);
            return {
-             ok: active && root === 'wlan-book' && /移动「/.test(hit[0]),
-             text: '菜单项=' + hit[0] + ' 已进入=' + active + ' 目标树=' + root
+             ok: still.length === 0 && active === true && root === 'wlan-book' && kind === 'move',
+             text: '菜单 ' + labels.length + ' 项，末尾=' + JSON.stringify(labels.slice(-3))
+               + ' ｜ 四个入口里**仍在**菜单中的=' + JSON.stringify(still) + '（应 []）'
+               + ' ｜ API 进入：active=' + active + ' 目标树=' + root + ' 档位=' + kind
+           };
+         })()`
+      );
+      return r;
+    }
+  },
+  {
+    /* 【2026-10-33 批4 新增】"摘入口 ≠ 摘 API" 的**唯一证据**（用户 2026-10-31「移除拖动模式」的第一期）。
+     * 上一条断言证明的是"菜单里没有那四条入口了"；这一条证明的是"模式下那套东西还在、还能用"。
+     * 两件事**必须分开判**：只有前者时，"把 setDragMode 一族删干净"也能让它绿 ⇒ 那是**过度删除**，
+     * 会把 `scripts/smoke/` 里 8 个文件 / 65 行前置一起打断（本期明令不删）。
+     * 判据三层（缺一不可）：
+     *   ① **四个转发都在**（`renderer/app.js:210-215`）：setDragMode / dragModeActive / dragModeKind /
+     *      getDragTreeRoot —— 其中 getDragTreeRoot 是派单时曾漏掉的那一条（域 46 在读它）；
+     *   ② **raw 命名空间（window.MM）上也都在**：转发丢一个，`MM.*` 那侧就是 undefined；
+     *   ③ **真能进 / 真能出**：setDragMode(true, 节点) ⇒ active=true 且 kind='move' 且 root=那个节点；
+     *      三档（move / reorder / reparent）逐个可读；setDragMode(false) ⇒ active=false、root=null、
+     *      kind 回 'move'。全链一句 setStatus / 一次重排都不改数据（这四条都不写盘）。 */
+    name: '拖动模式 API 仍在（摘入口 ≠ 摘 API）：MMApp 的 setDragMode / dragModeActive / dragModeKind / getDragTreeRoot 四个转发都在、window.MM 那侧也在，且 setDragMode 真能进三档、真能退出',
+    run: async (ctx) => {
+      const r = await ctx.exec(
+        `(function () {
+           var app = window.MMApp;
+           var MM = window.MM;
+           var NAMES = ['setDragMode', 'dragModeActive', 'dragModeKind', 'getDragTreeRoot'];
+           var missingApp = NAMES.filter(function (n) { return typeof app[n] !== 'function'; });
+           var missingMM = NAMES.filter(function (n) { return typeof MM[n] !== 'function'; });
+           var node = 'wlan-book';
+           if (app.dragModeActive()) app.setDragMode(false);
+           var seen = {};
+           app.setDragMode(true, node);
+           seen.move = { on: app.dragModeActive(), kind: app.dragModeKind(), root: app.getDragTreeRoot() };
+           app.setDragMode(true, node, { mode: 'reorder' });
+           seen.reorder = { on: app.dragModeActive(), kind: app.dragModeKind(), root: app.getDragTreeRoot() };
+           app.setDragMode(true, node, { mode: 'reparent' });
+           seen.reparent = { on: app.dragModeActive(), kind: app.dragModeKind(), root: app.getDragTreeRoot() };
+           app.setDragMode(false);
+           seen.off = { on: app.dragModeActive(), kind: app.dragModeKind(), root: app.getDragTreeRoot(),
+             bodyClass: document.body.className.indexOf('mm-dragmode') >= 0 };
+           var inOk = function (k) {
+             return seen[k].on === true && seen[k].kind === k && seen[k].root === node;
+           };
+           return {
+             ok: missingApp.length === 0 && missingMM.length === 0
+               && inOk('move') && inOk('reorder') && inOk('reparent')
+               && seen.off.on === false && seen.off.root === null && seen.off.kind === 'move'
+               && seen.off.bodyClass === false,
+             text: 'MMApp 缺的转发=' + JSON.stringify(missingApp) + '（应 []）'
+               + ' ｜ window.MM 缺的=' + JSON.stringify(missingMM) + '（应 []）'
+               + ' ｜ 三档=' + JSON.stringify(seen.move) + '/' + JSON.stringify(seen.reorder)
+               + '/' + JSON.stringify(seen.reparent)
+               + ' ｜ 退出=' + JSON.stringify(seen.off)
            };
          })()`
       );

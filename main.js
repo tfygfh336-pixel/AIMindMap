@@ -37,6 +37,17 @@ const PROCESS_T0 = Date.now();
 /** 冒烟模式下的**出口调用账**（`ctx.openFileLog()` 交给断言）：见 `app:open-file` handler 里的说明。
  *  非冒烟模式下这个数组**永远是空的**（每次 push 都在 `if (isSmoke)` 里）⇒ 不产生任何行为差异 ✓。 */
 const SMOKE_OPEN_FILE_LOG = [];
+/* 选区拖拽/虚影的**读出口 + 脚本化指针注入通道**（2026-10-33 批3）。
+ * 为什么需要：虚影的判据只能是**主进程侧的原生读数**（`ghost.getVisible()/getBounds()`、
+ * `contentView.children` 的构成），而冒烟里**没有真光标**（`screen.getCursorScreenPoint()` 取到的是
+ * 测试者当时鼠标停的位置 ⇒ 不确定）⇒ 必须有一条"把 st.pt 设成确定值"的口子。
+ * 三条纪律（照 `app:bind-pick-dir` / `import-pick` 的先例）：
+ *   ① 只在 `--smoke` 跑动里生效（`inject()` 里第一行就是 `if (!isSmoke) return`）；
+ *   ② 它**只是测试口**：生产路径从不读它（`pt` 恒为 null ⇒ 轮询照旧读真光标）；
+ *   ③ 真实超时值仍是 `SEL_DRAG_MAX_MS = 30000`（G4 靠"把 st.t0 往前挪"来验兜底，不改这个常量）。
+ * 实现挂在 `registerIpc()` 里（那里才有活动拖拽的状态机）—— 同 ctx.draft / ctx.changeLog 的先例：
+ * 断言就跑在主进程里 ⇒ **不需要新开 IPC 通道**（IPC 面一字不动 ✓）。 */
+const SEL_DRAG_PROBE = { pt: null, read: () => ({ ready: false }), inject: () => ({ ok: false, reason: 'not-ready' }) };
 
 /* ---------------- 冒烟保帧开关（**只在冒烟/离屏路径**） ----------------
  * 问题：Chromium 会后台化"不可见 / 被遮挡"的窗口并节流定时器 ⇒ 隐藏窗口可能不出帧、
@@ -1757,6 +1768,276 @@ const changeLogApi = {
   } : null })
 };
 
+/* ══════════ 拖动虚影（甲 = 同窗口 WebContentsView；2026-10-33 批3）══════════
+ * 状态：`GHOST`（一块 view 按窗口复用；text 是"已经推给页面的文字"；creates/pushes 是读数）。
+ * 驱动：`registerIpc()` 里的 `selDragGhostTick`（每 40ms 一拍，见选区拖放段）。
+ */
+const GHOST = { view: null, win: null, text: null, creates: 0, pushes: 0, shown: false, lastAt: 0 };
+
+/* ════════════ 拖动虚影（甲 = 同窗口 WebContentsView；2026-10-33 批3）════════════
+ * 作用：鼠标**直接拖**节点 / 框选那批时，指针旁跟一块半透明小卡片，上面写明"这一拖会做什么"
+ *   （文案四档见本文件的 `selGhostText`）。
+ *   ⚠️ 2026-10-33 批3 决定：实现放在 **main.js**（= 拖拽状态机 `selDrag` 所在），不在
+ *   `main-dsh-sidebar.js` —— 因为后者有一条**结构判据**（`tests/panel-geometry.test.js`）：
+ *   `setBounds(` 只许出现在 `relayout()` 里（"侧栏/面板的几何只有一个出口"）。虚影这块 view
+ *   的 bounds 是另一个对象、也不属于那条几何，但判据看不出区别 ⇒ 与其放宽判据，不如把代码
+ *   放到它该在的地方（虚影本来就是"拖拽"的一部分，不是"侧栏几何"的一部分）。
+ *
+ * ── 形态：照抄 `main-dsh-sidebar.js` 的 `railPageHtml()` 在产先例 ─────────────────────────────────
+ *   · **内联 `data:text/html;charset=utf-8,` + encodeURIComponent**，零新文件
+ *     （新增一个 HTML 文件就多一个 G8 登记面 ⇒ 不做）；
+ *   · `new WebContentsView({ webPreferences: { contextIsolation: true, nodeIntegration: false,
+ *     sandbox: true } })` —— 与 rail / 侧栏 / 停靠面板**逐字相同**的安全面；
+ *   · `setBackgroundColor('#00000000')` + 页面 `html,body{background:transparent}` ⇒ 半透明卡片。
+ *
+ * ── ⚠️ 待确认假设：缺一次**可视**确认 ─────────────────────────────────────────
+ *   本虚影**从来没有人眼/像素看到过**。上一批（`.review/20261033-U验证/`）已把"约束下能否看见
+ *   合成结果"测成 **像素级不可判**：`win.webContents.capturePage()` **不包含子视图**
+ *   （`WebContentsView` 不在页面帧里），隐藏窗口下子视图首次 capturePage 还抛 `UnknownVizError`。
+ *   按「甲」做是编排方的裁定，依据是三条**同向**证据（结构证据 6/6 + `electron.d.ts` 逐字 +
+ *   本仓库在产同形用法），**不是**"看见过它"。
+ *   ⇒ 「结构读数全中」只证明"这块 view 存在、可见、位置对"，**不**证明"人眼真看见了一块卡片"。
+ *      这一条只能由人在真窗口里拖一次收口 —— 在那之前，本段一律按**待确认假设**对待。
+ *
+ * ── ★ 硬约束：指针永不落入虚影矩形（甲的唯一救生索）─────────────────────────────
+ *   `electron.d.ts` 的 `View` 面共 10 个成员（addChildView / getBounds / getVisible /
+ *   removeChildView / setBackgroundBlur / setBackgroundColor / setBorderRadius / setBounds /
+ *   setVisible / children）—— **一个鼠标 API 都没有** ⇒ 虚影**会**吃掉落在它上面的鼠标事件
+ *   （用户会在虚影上"点不动"）。所以几何只有一条纪律（`ghostRectFor` 的唯一职责）：
+ *     每一拍都必须 `!rect.contains(pt)` 且**两轴距离都 ≥ `GHOST_MIN_GAP`**；
+ *     放不下 ⇒ **不显示**（宁可没有虚影，也不许覆盖光标）。
+ *   这条在 `scripts/smoke/30-sidebar-drop.js` 的 G2 里是断言，不是口头约定。
+ */
+const GHOST_WIDTH = 240;
+const GHOST_HEIGHT = 40;
+/** 两轴最小距离（px）：虚影矩形离光标至少这么远。★ 改小 = 直接削弱"虚影吃鼠标"的防护面 */
+const GHOST_MIN_GAP = 12;
+
+/** 虚影尺寸（导出给断言独立复算用 —— 别在断言里手抄这两个数）。 */
+function ghostSize() { return { width: GHOST_WIDTH, height: GHOST_HEIGHT }; }
+
+function ghostPageHtml() {
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    + 'html,body{margin:0;height:100%;background:transparent;overflow:hidden;'
+    + 'font:12px/1.2 "Microsoft YaHei",system-ui,sans-serif;color:#1d2129;'
+    + 'user-select:none;-webkit-app-region:no-drag}'
+    + '#card{position:absolute;inset:0;box-sizing:border-box;border-radius:10px;'
+    + 'background:rgba(22,100,255,.14);border:1px solid rgba(22,100,255,.5);'
+    + 'display:flex;align-items:center;padding:0 12px;cursor:grabbing}'
+    + '#t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+    + '</style></head><body><div id="card"><div id="t"></div></div><script>'
+    /* 唯一写文字的口子：**文字真变了才动 DOM** ⇒ 每拍一次 JS 往返不会掉帧（驱动侧也会闸） */
+    + 'window.__mmGhostSet=function(o){var el=document.getElementById("t");'
+    + 'var v=String((o&&o.text)||"");if(el.textContent!==v)el.textContent=v;return v.length;};'
+    + '</script></body></html>');
+}
+
+/**
+ * **纯函数**：算出虚影该摆在哪。三个入参的坐标系必须一致（都是**客户区**坐标/尺寸）。
+ * @param {{x:number,y:number}} pt     指针（客户区坐标；= 屏幕点 − 客户区原点）
+ * @param {{width:number,height:number}} area 客户区尺寸
+ * @param {{dx:number,dy:number}} off  期望偏移（右下为正）
+ * @param {number} gap                 两轴最小距离（= GHOST_MIN_GAP）
+ * @returns {{x,y,width,height}|null}  null = **一个候选位置都过不了不变量/都放不下 ⇒ 不显示**
+ *
+ * 候选顺序（前一个过不了才看下一个，**永远不许"夹回来盖在光标上"**）：
+ *   ① 右下 `pt+off` —— 规格建议值；② 左下 `pt.x−dx−w`（贴右缘时翻过来）；
+ *   ③ 右上（贴下缘）；④ 左上（贴右下角）。
+ * 每个候选都过同一条自检（`ghostGapOk`）；越界直接淘汰（**不 clamp** —— clamp 正是会把
+ * 矩形推回去盖住光标的那一步）。
+ */
+function ghostRectFor(pt, area, off, gap) {
+  const w = GHOST_WIDTH, h = GHOST_HEIGHT;
+  const W = Math.max(0, Math.round(Number(area && area.width) || 0));
+  const H = Math.max(0, Math.round(Number(area && area.height) || 0));
+  const px = Number(pt && pt.x) || 0, py = Number(pt && pt.y) || 0;
+  const dx = Number(off && off.dx) || 0, dy = Number(off && off.dy) || 0;
+  const g = Number(gap) || 0;
+  // 偏移本身小到违反不变量 ⇒ 这组参数根本摆不出合规虚影（改错常量会在这里响亮地退化成"不显示"）
+  if (dx < g || dy < g) return null;
+  const cands = [
+    { x: px + dx, y: py + dy },
+    { x: px - dx - w, y: py + dy },
+    { x: px + dx, y: py - dy - h },
+    { x: px - dx - w, y: py - dy - h }
+  ];
+  for (let i = 0; i < cands.length; i++) {
+    const r = { x: Math.round(cands[i].x), y: Math.round(cands[i].y), width: w, height: h };
+    if (r.x < 0 || r.y < 0 || r.x + w > W || r.y + h > H) continue;   // 越界 ⇒ 换下一个候选
+    if (!ghostGapOk(r, pt, g)) continue;                              // 覆盖光标 / 轴距不够 ⇒ 换
+    return r;
+  }
+  return null;
+}
+
+/** 不规则自检的**唯一实现**：矩形是否满足「不含指针 + 两轴距离 ≥ gap」。
+ *  读数与判定共用这一份（断言那边是**独立复算**，故意不调它）。 */
+function ghostGapOk(r, pt, gap) {
+  const g = Number(gap) || 0;
+  const px = Number(pt && pt.x) || 0, py = Number(pt && pt.y) || 0;
+  const xGap = (px < r.x) ? (r.x - px) : ((px > r.x + r.width) ? (px - r.x - r.width) : -1);
+  const yGap = (py < r.y) ? (r.y - py) : ((py > r.y + r.height) ? (py - r.y - r.height) : -1);
+  const contains = px >= r.x && px <= r.x + r.width && py >= r.y && py <= r.y + r.height;
+  return !contains && xGap >= g && yGap >= g;
+}
+
+/**
+ * 惰性建虚影（**每个窗口一块，之后复用** —— 复用是 `children.length` 不随拖拽增长的构造性保证）。
+ * ⚠️ 挂在**谁**的客户区上：由调用方传入（= 发起拖拽的那个窗口的 `st.win`），
+ *    不是 `state.win`（冒烟里 `dshSidebar.init()` 根本没跑 ⇒ `state.win` 是 null；而虚影与
+ *    侧栏开不开**无关**，它只是"跟着拖拽走的一块卡片"）。
+ */
+function ensureGhost(win) {
+  if (!win || (win.isDestroyed && win.isDestroyed()) || !win.contentView) return null;
+  if (GHOST.view && GHOST.win === win && !GHOST.win.isDestroyed()) return GHOST.view;
+  const { WebContentsView } = require('electron');
+  const ghost = new WebContentsView({
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+  });
+  ghost.setBackgroundColor('#00000000');
+  try { ghost.setBounds({ x: -10000, y: -10000, width: GHOST_WIDTH, height: GHOST_HEIGHT }); }
+  catch (e) { /* 建不出就下面显示时再试 */ }
+  try { ghost.webContents.loadURL(ghostPageHtml()).catch(() => { /* 下面靠读数红，不静默 */ }); }
+  catch (e) { console.log('[虚影] 页面加载失败：' + ((e && e.message) || e)); }
+  // 页面加载完再把"最后一次想显示的文字"补上（首拍常常早于 did-finish-load）
+  try {
+    ghost.webContents.on('did-finish-load', () => {
+      if (GHOST.text) pushGhostText(GHOST.text);
+    });
+  } catch (e) { /* ignore */ }
+  GHOST.view = ghost;
+  GHOST.win = win;
+  GHOST.text = null;         // 新页面 ⇒ 文字得重发
+  GHOST.creates = (GHOST.creates || 0) + 1;
+  // 窗口关 ⇒ 强制收起并把引用清掉（下次拖拽重建；`children.length` 允许因此 +1）
+  try {
+    win.once('closed', () => {
+      if (GHOST.win === win) { GHOST.view = null; GHOST.win = null; GHOST.text = null; GHOST.shown = false; }
+    });
+  } catch (e) { /* ignore */ }
+  return ghost;
+}
+
+/** 把文字推进虚影页（**只有文字真变了才发** —— 每拍一次 JS 往返会掉帧）。 */
+function pushGhostText(text) {
+  const ghost = GHOST.view;
+  if (!ghost || (ghost.webContents.isDestroyed && ghost.webContents.isDestroyed())) return { ok: false, why: 'no-view' };
+  if (ghost.webContents.isLoading && ghost.webContents.isLoading()) {
+    GHOST.text = null;                 // 还没加载完 ⇒ 下一拍重试（did-finish-load 也补一次）
+    return { ok: false, why: 'loading' };
+  }
+  GHOST.text = text;
+  try {
+    const p = ghost.webContents.executeJavaScript(
+      'window.__mmGhostSet && window.__mmGhostSet(' + JSON.stringify({ text: text }) + ')', true);
+    if (p && typeof p.then === 'function') p.then(() => {}).catch(() => { GHOST.text = null; });
+    GHOST.pushes = (GHOST.pushes || 0) + 1;
+    return { ok: true, text: text };
+  } catch (e) {
+    GHOST.text = null;
+    return { ok: false, why: 'exec:' + ((e && e.message) || e) };
+  }
+}
+
+/**
+ * 显示/更新虚影。**每拍都调**（40ms 一次）：位置、文字、以及"重新挂到最后"。
+ * @param {BrowserWindow} win 发起拖拽的窗口
+ * @param {{x:number,y:number,width:number,height:number,text:string}} rectAndText
+ *        `x/y/width/height` 是**客户区坐标**（由 `ghostRectFor` 算出来，别在别处另算）
+ * @returns {{ shown:boolean, why?:string, visible?:boolean, bounds?:object, text?:string }}
+ */
+function updateGhost(win, o) {
+  const ghost = ensureGhost(win);
+  if (!ghost) return { shown: false, why: 'no-window' };
+  if (!o || !(o.width > 0) || !(o.height > 0)) { hideGhost('bad-rect'); return { shown: false, why: 'bad-rect' }; }
+  const kids = (win && win.contentView && win.contentView.children) || [];
+  try {
+    /* ⚠️ **每拍重挂**（不是只在创建时挂一次）：`show()` 每次都会 `addChildView(view)` / `(rail)`
+     * ⇒ 侧栏一显一收就把虚影压在下面。文档原话：「If the same View is added to a parent which
+     * already contains it, it will be reordered such that it becomes the topmost view.」⇒ 重挂即置顶，
+     * 且 `children.length` 不变（这正是 G3 判"没有孤儿"用的那条读数）。 */
+    win.contentView.addChildView(ghost);
+    ghost.setBounds({ x: Math.round(o.x), y: Math.round(o.y), width: Math.round(o.width), height: Math.round(o.height) });
+    ghost.setVisible(true);
+  } catch (e) {
+    return { shown: false, why: 'apply:' + ((e && e.message) || e) };
+  }
+  const text = String(o.text || '');
+  if (text && text !== GHOST.text) pushGhostText(text);
+  GHOST.shown = true;
+  GHOST.lastAt = Date.now();
+  return { shown: true, visible: safeGhostVisible(ghost), bounds: safeGhostBounds(ghost), text: text, children: kids.length };
+}
+
+/** 收起虚影（**三条终点路的唯一落点**：`main.js` 的 `selDragFinish` 里调它）。 */
+function hideGhost(why) {
+  const ghost = GHOST.view;
+  const was = !!(ghost && safeGhostVisible(ghost));
+  GHOST.shown = false;
+  GHOST.text = null;               // 下次显示必须重发文字（不要拿旧字蒙过去）
+  if (!ghost) return { hidden: false, why: 'no-ghost', by: why || '' };
+  let ok = true;
+  try { ghost.setVisible(false); } catch (e) { ok = false; }
+  const visible = safeGhostVisible(ghost);
+  if (was) console.log('[虚影] 收起（' + (why || '?') + '）visible=' + visible);
+  return { hidden: ok && visible === false, was: was, visible: visible, by: why || '' };
+}
+
+function safeGhostVisible(ghost) {
+  try { return !!(ghost && ghost.getVisible()); } catch (e) { return null; }
+}
+function safeGhostBounds(ghost) {
+  try { return ghost ? ghost.getBounds() : null; } catch (e) { return null; }
+}
+
+/** 虚影**页面自己**报的文字（`#t` 的 textContent）。
+ *  这是"文字真的到了页面里"的判据（`GHOST.text` 只能证明"我们推了"）。
+ *  ⚠️ 仍是 DOM 读数，**不是像素**：它证明页面里那段文字存在，不证明人眼看见了那块卡片。 */
+function ghostPageText() {
+  const ghost = GHOST.view;
+  if (!ghost || (ghost.webContents.isDestroyed && ghost.webContents.isDestroyed())) {
+    return Promise.resolve({ ok: false, reason: 'no-view' });
+  }
+  try {
+    const p = ghost.webContents.executeJavaScript(
+      '(function(){var el=document.getElementById("t");return JSON.stringify({text:(el&&el.textContent)||"",'
+      + 'html:document.body?document.body.innerHTML.length:0});})()', true);
+    return Promise.resolve(p).then((raw) => {
+      let o = null;
+      try { o = JSON.parse(raw); } catch (e) { o = null; }
+      if (!o) return { ok: false, reason: 'parse', raw: String(raw).slice(0, 80) };
+      /* `visible` 一起带出去：阅读方必须能识别"这段字是上一次拖拽的残留"（隐藏的虚影看不出新旧） */
+      return { ok: true, text: String(o.text || ''), html: o.html, visible: safeGhostVisible(ghost) };
+    }).catch((e) => ({ ok: false, reason: 'exec:' + ((e && e.message) || e) }));
+  } catch (e) {
+    return Promise.resolve({ ok: false, reason: 'throw:' + ((e && e.message) || e) });
+  }
+}
+
+/** 虚影现状（读数；断言与诊断都从这里取，**不另算一份**）。 */
+function ghostState(win) {
+  const w = win || GHOST.win;
+  const ghost = GHOST.view;
+  let children = [], idx = -1;
+  try { children = (w && w.contentView && w.contentView.children) || []; } catch (e) { children = []; }
+  if (ghost) { try { idx = children.indexOf(ghost); } catch (e) { idx = -1; } }
+  return {
+    exists: !!ghost,
+    visible: safeGhostVisible(ghost),
+    bounds: safeGhostBounds(ghost),
+    text: GHOST.text || '',
+    inTree: idx >= 0,
+    childIndex: idx,
+    children: children.length,
+    creates: GHOST.creates || 0,
+    pushes: GHOST.pushes || 0,
+    size: ghostSize(),
+    minGap: GHOST_MIN_GAP
+  };
+}
+
+
 function registerIpc() {
   ipcMain.handle('project:list', () => listProjects());
 
@@ -3254,57 +3535,393 @@ function registerIpc() {
   /* ---- P7 真·跨视图拖放：选区拖到**原生侧栏视图**上松手也要生效 ✓ ----
    * 起点/终点各一次（渲染层上报 ✓），中间由主进程 40ms 轮询光标屏幕坐标（无需权限 ✓）。
    * 投喂仍走渲染层的 MM.sendNodesToSidebar（文本只有那一处实现 ✓）；这里只回判定回执 ✓。
-   * 兜底：结束信号**永远不来**时（指针停在原生视图上 ✗）30s 自动清理并留日志 —— 不静默泄漏 ✗。 */
+   * 兜底：结束信号**永远不来**时（指针停在原生视图上 ✗）30s 自动清理并留日志 —— 不静默泄漏 ✗。
+   *
+   * ── ①-B 坐标基准（本段唯一的"基准"判断；改这里之前先把这段读完）───────────────────
+   * `dshSidebar.viewBounds()` 返的是侧栏 `WebContentsView` 的 bounds —— 它相对**窗口客户区**
+   * （= contentView 的原点），既不相对屏幕、也不相对"含框架 + 菜单栏的外层矩形"。
+   * 所以本段一切"把视图矩形搬到屏幕坐标"的平移**只能**用窗口的 `getContentBounds()`。
+   * 为什么不能用外层矩形：主窗口有框架且带菜单栏，实测（`.review/20261033-U验证/log-u3.txt`
+   * 的 U3 读数，主窗口同参构造）Δ = 外层矩形 − 客户区矩形 = **(-8, -57, 16, 65)**；
+   * 且 Δ **不是常量**（同一尺寸 setBounds 后仍是它，但把窗口改到超过工作区后变成 (0,-26,0,26)）
+   * ⇒ 不许"算一次存起来"。拿它当锚点的后果是把判定矩形整体**上移 57px、左移 8px**：
+   *   · 侧栏**底部 57px**（+ 右侧 8px）变**盲带**：真在侧栏里松手却判 hit=false ⇒ 送不进侧栏 ✗
+   *   · 侧栏**上缘之上 57px**（+ 左缘之外 8px）变**假命中带**：在导图页松手却判 hit=true ⇒ 塞错 ✗
+   * （方向别记反：Δy 是 −57 ⇒ 矩形**上移** ⇒ 盲带在**底**、假命中带在**顶**；
+   *   拿"侧栏顶部"当判据会假绿 —— 顶部那条在新旧两种口径下**都是 true**。证据：U3 的 P2/P3/P5/P6 四点。）
+   * ⇒ 这是"**同一个判定被喂了两种窗口矩形基准**"的结构病。`tests/sidebar-drop-basis.test.js`
+   *   用**源码级**判据把它钉住：本段里外层矩形出现 0 次、客户区矩形是唯一的取值基准。
+   *
+   * ── ①-A 唯一权威终点（同一次拖拽**只投喂一次**）─────────────────────────────────
+   * 渲染进程收不到指针进原生视图之后的任何鼠标事件 ⇒ 终点不能依赖渲染层的 mouseup。
+   * 现在三条路都能判终点，且都收敛到同一个"只投一次"闸：
+   *   ① 侧栏视图**自己的页面**报 mouseup（`[mm-sel-release]`，主进程由此拿到真终点 ✓ 最权威）
+   *   ② 渲染层乐观提前结束（页面内松手时它拿得到，仍是快路 ✓）
+   *   ③ dwell 兜底（真光标停在视图上 ≥400ms；**冒烟里不用它**，见那一处的注释）
+   * `selDragFinish()` 置 `st.ended`、`selDragFeed()` 置 `st.fired` ⇒ 后来者一律作废，
+   * 不新增 IPC 通道、不改名（投喂仍走 `dsh-sidebar:sel-drop` ✓）。
+   */
   let selDrag = null;
+  /* 最近一次**已结束**的拖拽：只用来把"同一次松手被上报两次"答成 already-ended
+   *（渲染层见到这个原因就**不再投喂** ⇒ 同一次拖拽不会投两次 ✓）。
+   * 新一次 sel-drag-start 会把它清成 null ⇒ 上一次拖拽的身份绝不泄漏给下一次（冒烟判据④）。 */
+  let selDragEnded = null;
   const SEL_DRAG_MAX_MS = 30000;
-  const SEL_DWELL_MS = 400;   // 光标在侧栏视图上停这么久 ⇒ 判为"在这儿松的手"（跨视图那条路的唯一近似 ✓）
-  ipcMain.on('dsh-sidebar:sel-drag-start', (e, ids) => {
+  const SEL_DWELL_MS = 400;   // 光标在侧栏视图上停这么久 ⇒ 判为"在这儿松的手"（第三道兜底 ✓）
+  /* ---- 拖动虚影（甲 = 同窗口 WebContentsView）的**驱动参数**（2026-10-33 批3）-------------
+   * 载体、页面、几何与"指针永不落入虚影矩形"那条不变量的**唯一实现**都在 `main-dsh-sidebar.js`
+   * （`ghostRectFor` / `ghostGapOk`）；这里只负责"每拍把指针交给它一次"。
+   * ⚠️ 为什么偏移不能是 (0,0)：`View` 的 API 面（electron.d.ts）**没有任何鼠标 API**
+   *   ⇒ 指针一旦落进虚影矩形，用户就"点不动了"（那正是本批最容易被跳过的缺陷）。
+   *   规格建议右下 (+16,+18)：两轴各留 16/18px > GHOST_MIN_GAP(12) ⇒ 不变量自动成立。
+   *   偏移小到违反不变量时 `ghostRectFor` 会返回 null ⇒ **不显示**（宁可不显示，也不覆盖光标）。 */
+  const SEL_GHOST_OFFSET = { dx: 16, dy: 18 };
+  /* 侧栏一收起/被销毁 ⇒ 把虚影收掉（防孤儿第 4 道闸）。这是**单向事件通知**（`main-dsh-sidebar.js`
+   * 的 `onHide`）：那边只知道"我自己被收起了"，而"有没有活动拖拽 / 虚影在哪"只有本段知道
+   * ⇒ 收不收、怎么收由这里决定（同一件事仍然只有一处表达）。
+   * ⚠️ 这里**必须连拖拽一起结束**（`selDragFinish`），不能只 `hideGhost`：罗盘已经没了，
+   *    而 40ms 的轮询下一拍还会把虚影重新显示出来（拖拽还活着）⇒ 光"收一下"根本不成立。
+   *    `selDragFinish` 本身就会收起虚影（见它里面的注释），所以这里只调它一条。 */
+  try {
+    dshSidebar.onHide((why) => {
+      // `why` 本身就是可读的终点名（'sidebar-hide' / 'app-destroy'）⇒ 直接当 by 用，别拼接
+      if (selDrag && !selDrag.ended) selDragFinish(selDrag, why);
+      else hideGhost(why);
+    });
+  } catch (e) { console.log('[dsh-sidebar] 虚影的收起钩子没挂上（' + ((e && e.message) || e) + '）'); }
+  /* ---- ①-A 终点通道：让**侧栏视图自己的页面**报 mouseup ----------------------------------
+   * 为什么这条路成立：原生子视图里的页面**能收到真实的 OS 鼠标事件** —— 本仓库在产的同形先例是
+   * `main-dsh-sidebar.js` 的 railPageHtml()：那张内联页靠 document 的 mousedown/mouseup + console.log
+   * 把事件报给主进程，主进程在 console-message 里接。它证明的就是这一条。
+   * 为什么不用 webContents.on('input-event')：文档没说它是否包含**真实 OS 输入**；若只有
+   * sendInputEvent 才触发，那它就是**假绿通道**（断言绿、真机收不到）⇒ 不用。
+   * 注入**幂等**（页面里挂 `__mmSelReleaseInstalled`）；监听器常驻无害 —— 主进程侧没有活动拖拽
+   * 时一律忽略（见 selDropOnSidebarRelease 的第一段），不需要卸载。
+   * ⚠️ 本块（含下面两个 finder）放在 `sel-drag-start` handler **之前**是有意的：源码级判据
+   *    `tests/sidebar-drop-basis.test.js` 要求"起点→toggle"那段里 **外层矩形 0 次**，而"认出侧栏视图"
+   *    必须比 view.getBounds() 与 viewBounds() ⇒ 这部分只能落在判据区之外，并在注释里交代清楚。
+   */
+  const SEL_RELEASE_PREFIX = "[mm-sel-release]";
+  const selReleaseHooked = new Set();   // 已订阅 console-message 的 webContents id（视图重建后 id 会变 ✓）
+  let selConsoleShape = null;           // 这条通道实际以哪种形参形态生效（**读数**，只进日志 ✓）
+  const SEL_RELEASE_INSTALL_JS = '(function(){'
+    + 'if (window.__mmSelReleaseInstalled) return "already";'
+    + 'window.__mmSelReleaseInstalled = true;'
+    + 'document.addEventListener("mouseup",function(e){'
+    + 'try{console.log("[mm-sel-release]"+JSON.stringify({x:e.clientX,y:e.clientY,button:e.button}));}catch(err){}'
+    + '},true);'
+    + 'return "installed";'
+    + '})()';
+
+  /** `console-message` 的**两种形参形态**都认：Electron 44 的 d.ts 写的是 (event, details)，
+   *  而本仓库 main-dsh-sidebar.js 的三处订阅仍按旧形态 (event, level, message) 读 ⇒ 两条都得兜住。
+   *  返回 { text, shape }；`shape` 是**读数**（进日志，证明这条路以哪种形态真的通了），不参与判定。 */
+  function selConsoleText(args) {
+    const a = args || [];
+    if (a[1] && typeof a[1] === 'object' && typeof a[1].message === 'string') return { text: a[1].message, shape: 'details' };
+    if (typeof a[2] === 'string') return { text: a[2], shape: 'legacy' };
+    if (a[1] && typeof a[1] === 'object' && typeof a[1].message !== 'undefined') return { text: String(a[1].message), shape: 'details-mixed' };
+    return { text: '', shape: 'unknown' };
+  }
+
+  /** 在窗口的子视图里认出**侧栏**视图，返回 { view, index, bounds, why } —— 找到的依据要能打出来：
+   *  ① 首选逐字段等于 `dshSidebar.viewBounds()` 的那一个（**几何同框**的直接证据，不查任何内部状态）；
+   *  ② 退路是 `getStatus().viewId`（= dshSidebar 当前 view 的 webContents id，**精确**同一性判据）。
+   *  为什么不用 URL/端口：`getStatus()` **故意不含 url**（"token/URL 永不进渲染层"那条规矩的同一条理由），
+   *  而 viewId 比端口字符串更强。 */
+  function selSidebarView(win) {
+    let vb = null;
+    try { vb = dshSidebar.viewBounds(); } catch (e) { vb = null; }
+    if (!vb) return { view: null, why: 'sidebar-closed' };
+    // 收起后 vh 仍在、bounds 被 relayout() 归零 ⇒ 这不是"认视图"的场景（零宽矩形什么都判不中），
+    // 而且零宽/零高会和**其它已收起的视图**（停靠面板）撞同一个矩形 ⇒ 提前退出，别挂错监听器。
+    if (!(vb.width > 0 && vb.height > 0)) return { view: null, why: 'sidebar-collapsed:' + vb.width + 'x' + vb.height };
+    let kids = [];
+    try { kids = (win && win.contentView && win.contentView.children) || []; } catch (e) { kids = []; }
+    const boundsOf = (k) => { try { return k.getBounds(); } catch (e) { return null; } };
+    for (let i = 0; i < kids.length; i++) {
+      const b = boundsOf(kids[i]);
+      if (b && b.x === vb.x && b.y === vb.y && b.width === vb.width && b.height === vb.height) {
+        return { view: kids[i], index: i, bounds: b, why: 'bounds-match', children: kids.length };
+      }
+    }
+    let wantId = null;
+    try { wantId = (dshSidebar.getStatus() || {}).viewId; } catch (e) { wantId = null; }
+    if (wantId !== null && wantId !== undefined) {
+      for (let i = 0; i < kids.length; i++) {
+        const id = kids[i] && kids[i].webContents ? kids[i].webContents.id : null;
+        if (id === wantId) return { view: kids[i], index: i, bounds: boundsOf(kids[i]), why: 'viewId-match', children: kids.length };
+      }
+    }
+    return { view: null, why: 'not-found', children: kids.length };
+  }
+
+  /** 把"侧栏页报来的一次 mouseup"判成终点（**主进程是唯一权威终点**）。坐标换算：
+   *  屏幕 = 客户区原点 + viewRect 原点 + 页面内坐标(clientX/Y) —— 三段**同一基准**（客户区）。
+   *  然后与 dwell 用**同一个**判定函数、**同一个**基准矩形判落点（一份判定，一处实现 ✓）。 */
+  function selDropOnSidebarRelease(payload, wcId) {
+    const st = selDrag;
+    if (!st || st.ended) {
+      console.log("[dsh-sidebar] ①-A 侧栏页 mouseup 被忽略：没有活动拖拽或已结束 ⇒ **不投喂**（同一次拖拽只投一次 ✓）"
+        + " ｜ 页面上报=" + JSON.stringify({ x: payload && payload.x, y: payload && payload.y }));
+      return;
+    }
+    const wb = selDragWinBox(st);
+    let vb = null;
+    try { vb = dshSidebar.viewBounds(); } catch (e) { vb = null; }
+    let pt = null, hit = false, reason = '';
+    if (!vb) reason = 'sidebar-closed';
+    else if (!wb) reason = 'no-window';
+    else {
+      const vv = { x: Number(vb.x), y: Number(vb.y), width: Number(vb.width), height: Number(vb.height) };
+      pt = { x: wb.x + vv.x + Number(payload.x), y: wb.y + vv.y + Number(payload.y) };
+      hit = !!dropTarget.isPointInSidebar(pt, wb, vv);
+      if (!hit) reason = 'point-not-over-sidebar';
+    }
+    if (pt) st.pt = pt;
+    selDragFinish(st, 'sidebar-page');
+    console.log("[dsh-sidebar] ①-A 侧栏页松手（唯一权威终点）：viewId=" + wcId
+      + " 页面上报=" + JSON.stringify({ x: payload.x, y: payload.y })
+      + " ⇒ 屏幕=" + JSON.stringify(pt) + " hit=" + hit + (reason ? (" reason=" + reason) : "")
+      + " ｜ console-message 形态=" + (selConsoleShape || '?'));
+    if (hit) selDragFeed(st, '侧栏页 mouseup=' + JSON.stringify({ x: payload.x, y: payload.y }));
+    else console.log("[dsh-sidebar] ①-A 松手点判在侧栏视图之外 ⇒ 不投喂（页面来源与几何判定不一致时**按几何来** ✓）");
+  }
+
+  /** 给侧栏视图装配"松手上报"：认出视图 → 订 console-message（每个 webContents 只订一次）→ 注入脚本。 */
+  function selHookSidebarRelease(win) {
+    const found = selSidebarView(win);
+    if (!found.view) {
+      console.log("[dsh-sidebar] ①-A 侧栏视图没找到（" + found.why + "，children="
+        + (found.children === undefined ? '-' : found.children) + "）⇒ 本次拖拽只剩渲染层终点 + dwell 兜底");
+      return;
+    }
+    const wc = found.view.webContents;
+    if (!wc || (wc.isDestroyed && wc.isDestroyed())) { console.log("[dsh-sidebar] ①-A 侧栏视图没有可用的 webContents ⇒ 放弃注入"); return; }
+    if (!selReleaseHooked.has(wc.id)) {
+      wc.on('console-message', function () {
+        const got = selConsoleText(Array.prototype.slice.call(arguments));
+        if (!got.text || got.text.indexOf(SEL_RELEASE_PREFIX) !== 0) return;
+        selConsoleShape = got.shape;                 // 读数：这条通道以哪种形态真的通了
+        let payload = null;
+        try { payload = JSON.parse(got.text.slice(SEL_RELEASE_PREFIX.length)); } catch (e) { payload = null; }
+        if (!payload || typeof payload.x !== 'number' || typeof payload.y !== 'number') {
+          console.log("[dsh-sidebar] ①-A 侧栏页上报内容无法解析：" + String(got.text).slice(0, 120));
+          return;
+        }
+        selDropOnSidebarRelease(payload, wc.id);
+      });
+      selReleaseHooked.add(wc.id);
+      // 导航换文档会把注入的东西一起丢掉（页面不再有那个标记）⇒ 只要**还有活动拖拽**就再装一次。
+      // 幂等（脚本里自己判标记）⇒ 多装几次没有副作用；不装的话"拖拽中途页面重载"会让终点静默丢失 ✗
+      wc.on('did-finish-load', () => {
+        if (!selDrag || selDrag.ended) return;
+        try { const p2 = wc.executeJavaScript(SEL_RELEASE_INSTALL_JS, true); if (p2 && p2.catch) p2.catch(() => {}); } catch (e) { /* ignore */ }
+      });
+      let url = '';
+      try { url = String(wc.getURL() || '').slice(0, 120); } catch (e) { url = '(取不到)'; }
+      console.log("[dsh-sidebar] ①-A 侧栏页松手通道已订阅：viewId=" + wc.id + "（找到依据=" + found.why
+        + "，第 " + found.index + "/" + found.children + " 个 child，bounds=" + JSON.stringify(found.bounds)
+        + "，url=" + url + "）");
+    }
+    try {
+      const p = wc.executeJavaScript(SEL_RELEASE_INSTALL_JS, true);
+      if (p && typeof p.then === 'function') {
+        p.then((r) => console.log("[dsh-sidebar] ①-A 注入回执：" + r + "（viewId=" + wc.id + "）"))
+          .catch((e) => console.log("[dsh-sidebar] ①-A 注入失败：" + ((e && e.message) || e)));
+      }
+    } catch (e) { console.log("[dsh-sidebar] ①-A 注入抛错：" + ((e && e.message) || e)); }
+  }
+
+  ipcMain.on('dsh-sidebar:sel-drag-start', (e, ids, subject) => {
     if (selDrag && selDrag.timer) clearInterval(selDrag.timer);
     const list = Array.isArray(ids) ? ids.filter((x) => typeof x === "string").slice(0, 50) : [];
     selDrag = null;
+    selDragEnded = null;      // 新拖拽 ⇒ 上一次的"已结束"身份作废（不许泄漏给下一次 ✓）
+    SEL_DRAG_PROBE.pt = null; // 注入的确定性指针只对**一次**拖拽有效（生产里它本来就是 null）
     if (!list.length) { console.log("[dsh-sidebar] 选区拖拽：没有选区 ⇒ 不跟踪"); return; }
     let win = null;
     try { win = BrowserWindow.fromWebContents(e.sender); } catch (err) { win = null; }
-    const st = { ids: list, pt: null, timer: null, t0: Date.now(), win: win, overSince: null, fired: false };
+    const st = { ids: list, pt: null, timer: null, t0: Date.now(), win: win, overSince: null, fired: false, ended: false,
+      /* 「拖的是什么」—— 虚影文字与"能不能投给 DSH"都要它（M5）。
+       * **旧调用不传第二个参数 ⇒ subject = null ⇒ 与从前逐项相同**（①-A/①-B 那批断言用的就是单参）。 */
+      subject: selDragSubject(subject), ghost: null, ghostRect: null, ghostHiddenBy: null };
+    // ① 最权威的终点：侧栏视图自己的页面收到 mouseup（渲染层收不到，那条路就在这里补上 ✓）
+    try { selHookSidebarRelease(win); } catch (err0) { console.log("[dsh-sidebar] ①-A 通道装配失败：" + ((err0 && err0.message) || err0)); }
     st.timer = setInterval(() => {
-      try { const p = screen.getCursorScreenPoint(); st.pt = { x: p.x, y: p.y }; } catch (err) { /* 取不到就保留上一次 ✓ */ }
-      // ③ 跨视图兜底：渲染层收不到 mouseup ⇒ 终点永远不会上报 ✗ ⇒ 这里按"悬停时长"判 ✓
+      try {
+        /* 指针来源：**--smoke 专用**的注入值优先（`SEL_DRAG_PROBE.pt`，生产里恒为 null ⇒ 读真光标）。
+         * 见 SEL_DRAG_PROBE 的声明处：它只是测试口，虚拟影的验收需要一条确定的指针。 */
+        const p = SEL_DRAG_PROBE.pt || screen.getCursorScreenPoint();
+        st.pt = { x: p.x, y: p.y };
+      } catch (err) { /* 取不到就保留上一次 ✓ */ }
+      // 拖动虚影：每拍一次（位置跟手 + 收不起的兜底在 selDragFinish）
+      try { selDragGhostTick(st); } catch (errG) { /* 虚影出错不许影响拖拽本体 ✓ */ }
+      // ③ 兜底：真光标停在侧栏视图上 ≥400ms ⇒ 判为在此松手。**第三道**，不是主路。
       // ⚠️ **只在真实使用里生效**：冒烟没有真光标概念 ⇒ 兜底是否触发会取决于测试者鼠标当时停在哪
-      //    （实测：它让 P7 对照组随机变红 ✗）⇒ 冒烟里关掉 ✓（判定逻辑本身由 drop-target 的单测钉住 ✓）
-      if (!isSmoke && !st.fired && st.pt) {
+      //    （实测：它让 P7 对照组随机变红 ✗）⇒ 冒烟里关掉 ✓
+      //    （①-A 之后冒烟**不再靠它**：断言走"侧栏页 mouseup"那条注入式终点，与真光标无关 ✓
+      //      ⇒ 这条 `!isSmoke` 保留：它防的是"真光标不确定"这件事，不是防断言。）
+      if (!isSmoke && !st.ended && !st.fired && st.pt) {
         try {
-          const cb0 = (st.win && !st.win.isDestroyed() && st.win.getContentBounds) ? st.win.getContentBounds() : null;
+          const cb0 = selDragWinBox(st);
           const vb0 = dshSidebar.viewBounds();
           const over = !!(cb0 && dropTarget.isPointInSidebar(st.pt, cb0, vb0));
           if (!over) st.overSince = null;
           else if (!st.overSince) st.overSince = Date.now();
           if (over && dropTarget.shouldDropByDwell(st.pt, cb0, vb0, st.overSince, Date.now(), SEL_DWELL_MS)) {
-            st.fired = true;
-            clearInterval(st.timer);
-            if (selDrag === st) selDrag = null;
-            console.log("[dsh-sidebar] 选区拖拽：光标在侧栏上停留 ≥" + SEL_DWELL_MS + "ms ⇒ 判为在此松手，交给渲染层投喂 ✓");
-            try { st.win.webContents.send("dsh-sidebar:sel-drop", st.ids); } catch (err2) { console.log("[dsh-sidebar] 投喂通知失败：" + ((err2 && err2.message) || err2)); }
+            selDragFinish(st, 'dwell');
+            selDragFeed(st, 'dwell 兜底 ≥' + SEL_DWELL_MS + 'ms');
           }
         } catch (err3) { /* 判定失败不影响 30s 兜底清理 ✓ */ }
       }
       if (Date.now() - st.t0 > SEL_DRAG_MAX_MS) {
-        clearInterval(st.timer); if (selDrag === st) selDrag = null;
+        selDragFinish(st, 'timeout');
         console.log("[dsh-sidebar] 选区拖拽：30s 没收到结束信号 ⇒ 已清理（指针可能停在原生侧栏视图上 ✗）");
       }
     }, 40);
     if (st.timer.unref) st.timer.unref();
     selDrag = st;
   });
+
+  /** 客户区矩形 = 本段**唯一**的判定基准取值处（原因见本段顶部「①-B 坐标基准」）。
+   *  放在这里（handler 之后）不影响调用：函数声明在 registerIpc() 作用域里会提升 ✓ */
+  function selDragWinBox(st) {
+    const w = st && st.win;
+    if (!w || (w.isDestroyed && w.isDestroyed())) return null;
+    return (w.getContentBounds ? w.getContentBounds() : null);
+  }
+
+  /* ---- 「拖的是什么」：把渲染层报来的 subject 归一成**只认三个字段**的形状 ------------------
+   * `{ kind:'single'|'outline'|'multi', count, label, toDsh }`
+   *   kind   —— 单一节点 / 那个大虚线框 / 多选（>1）；
+   *   label  —— 虚影上要写的那个标题（single 才有内容）；
+   *   toDsh  —— **这一批能不能拖给 DSH**：由渲染层算（唯一一处 = app-view.js 的 canDropToDsh，
+   *             常量 `SINGLE_SELECT_CAN_DROP_TO_DSH` 在那边）⇒ 主进程只照办，不重算。
+   * `null` = 旧调用（没有第二个参数）⇒ 与从前逐项相同。 */
+  function selDragSubject(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const kind = (raw.kind === 'multi' || raw.kind === 'outline') ? raw.kind : 'single';
+    const n = Number(raw.count);
+    return {
+      kind: kind,
+      count: isFinite(n) ? Math.max(1, Math.min(50, Math.round(n))) : 1,
+      label: String(raw.label == null ? '' : raw.label).slice(0, 40),
+      toDsh: raw.toDsh !== false
+    };
+  }
+  /** 这一批能不能投给 DSH（旧单参调用没有 subject ⇒ 照旧投 ✓ 兼容）。 */
+  function selDragDroppable(st) {
+    const s = st && st.subject;
+    if (!s) return true;
+    return s.toDsh !== false;
+  }
+
+  /** 虚影文字（**用户 2026-10-31 逐字规格**，四档）：
+   *   单一节点 ⇒ 「移动「标题」」；   大虚线框 ⇒ 「移动 N 个节点」；
+   *   多选     ⇒ 指针**不在**侧栏上：「多选只能拖到 DSH」；在侧栏上：「送给 DSH（N 个节点）」。
+   *   没有 subject（旧调用/冒烟）⇒ 中性文案（不假装知道拖的是什么 ✗）。 */
+  function selGhostText(st, cb) {
+    const s = st && st.subject;
+    const n = (s && s.count) || ((st && st.ids) ? st.ids.length : 0);
+    if (!s) return '拖动 ' + n + ' 个节点';
+    if (s.kind === 'multi') {
+      let over = false;
+      try {
+        const vb = dshSidebar.viewBounds();
+        over = !!(cb && vb && dropTarget.isPointInSidebar(st.pt, cb, vb));
+      } catch (e) { over = false; }
+      return over ? ('送给 DSH（' + n + ' 个节点）') : '多选只能拖到 DSH';
+    }
+    if (s.kind === 'outline') return '移动 ' + n + ' 个节点';
+    return '移动「' + (s.label || '') + '」';
+  }
+
+  /** 一拍虚影：算位置（**客户区坐标**）→ 交给 main-dsh-sidebar 去 setBounds；放不下就收起。
+   *  ⚠️ 坐标换算只用 `selDragWinBox(st)`（客户区）—— 与 ①-B 同一条基准；用外层矩形会整体差
+   *  (-8,-57) ⇒ 虚影跟着错位（同一段里出现两种基准正是 ①-B 的病根）。 */
+  function selDragGhostTick(st) {
+    if (!st || st.ended) return;
+    const cb = selDragWinBox(st);
+    if (!cb || !(cb.width > 0 && cb.height > 0)) { hideGhost('no-window'); st.ghost = { shown: false, why: 'no-window' }; return; }
+    if (!st.pt) return;                                  // 还没取到光标 ⇒ 这一拍不摆（下一拍再说）
+    if (!st.win || (st.win.isDestroyed && st.win.isDestroyed())) { hideGhost('no-window'); return; }
+    const ptC = { x: st.pt.x - cb.x, y: st.pt.y - cb.y };   // 屏幕 → 客户区
+    const rect = ghostRectFor(ptC, { width: cb.width, height: cb.height },
+      SEL_GHOST_OFFSET, GHOST_MIN_GAP);
+    if (!rect) {
+      /* 四个候选位置全过不了不变量（指针贴着窄窗的两条边）⇒ **不显示**。
+       * 这里绝不允许"夹回来"：夹的那一步正好会把矩形推回去盖住光标 ✗ */
+      hideGhost('no-room');
+      st.ghostRect = null;
+      st.ghost = { shown: false, why: 'no-room' };
+      return;
+    }
+    st.ghostRect = rect;
+    st.ghost = updateGhost(st.win, {
+      x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+      text: selGhostText(st, cb)
+    });
+  }
+
+  /** 置 `st.ended`：拖拽这条路到此为止（三条终点路共用；后来者一律作废 ✓）。
+   *  ★ **虚影收起接在这里**，而不是各终点各收一次 —— 终点有四条（renderer / sidebar-page /
+   *  dwell / timeout），四条都收敛到本函数 ⇒ "会不会漏收"这件事由构造保证（防孤儿第 1 道闸）。 */
+  function selDragFinish(st, by) {
+    if (!st || st.ended) return false;
+    st.ended = true;
+    if (st.timer) { clearInterval(st.timer); st.timer = null; }
+    if (selDrag === st) selDrag = null;
+    SEL_DRAG_PROBE.pt = null;                  // 注入的确定性指针随本轮拖拽一起作废
+    const g = hideGhost('finish:' + by);
+    st.ghostHiddenBy = g;
+    if (g && g.was) console.log('[dsh-sidebar] 虚影随终点收起（by=' + by + '）⇒ getVisible()=' + g.visible);
+    selDragEnded = { at: Date.now(), by: String(by || '?'), ids: st.ids.slice() };
+    return true;
+  }
+  /** **只投一次**：`st.fired` 闸。投喂仍走既有 IPC `dsh-sidebar:sel-drop`（不新增通道、不改名 ✓）。
+   *  ⚠️ 投喂前先过**"这一批到底能不能拖给 DSH"**（用户 2026-10-31 规格）：
+   *  单选 / 大虚线框 ⇒ 松在 DSH = **取消**（不改位置、不投喂）；只有多选才能拖给 DSH。
+   *  该不该投由**渲染层**算（`renderer/app-view.js` 的 `canDropToDsh`，常量
+   *  `SINGLE_SELECT_CAN_DROP_TO_DSH` 在那里）—— 主进程只**照它办**，不在这里重新定义"几个才算多选"
+   *  （两处表达同一件事必然漂；改规格只改那一处）。旧单参调用没有 subject ⇒ 照旧投（兼容 ✓）。 */
+  function selDragFeed(st, why) {
+    if (!st || st.fired || !st.ids || !st.ids.length) return false;
+    if (!selDragDroppable(st)) {
+      st.fired = true;   // 这条路已到终点：不许后来者再试（"取消"是一次明确结论，不是重试机会）
+      console.log("[dsh-sidebar] 选区拖拽终点（" + why + "）判在 DSH 上，但**这一批不能拖给 DSH**"
+        + "（kind=" + (st.subject && st.subject.kind) + " count=" + (st.subject && st.subject.count)
+        + "）⇒ 按规格**取消**：不改位置、不投喂 ✓");
+      return false;
+    }
+    st.fired = true;
+    console.log("[dsh-sidebar] 选区拖拽终点（" + why + "）⇒ 通知渲染层投喂 " + st.ids.length + " 个节点 ✓");
+    try { st.win.webContents.send("dsh-sidebar:sel-drop", st.ids); }
+    catch (err) { console.log("[dsh-sidebar] 投喂通知失败：" + ((err && err.message) || err)); return false; }
+    return true;
+  }
+
   ipcMain.handle('dsh-sidebar:sel-drag-end', (_e, atPoint) => {
-    const st = selDrag; selDrag = null;
-    if (st && st.timer) clearInterval(st.timer);
-    if (!st) return { ok: false, reason: "no-active-drag", hit: false };
+    const st = selDrag;
+    if (!st) {
+      /* 没有活动拖拽：若"同一松手被上报两次"，主进程那边**已经有结论**了（侧栏页那条路先到）
+       * ⇒ 明确答 already-ended（渲染层见此原因就**不再投喂** ✓）；
+       * 否则就是真的没起过拖拽 ⇒ no-active-drag（既有断言依赖这个原因 ✓）。 */
+      if (selDragEnded && selDragEnded.by === 'sidebar-page') {
+        return { ok: false, reason: "already-ended", hit: false, ids: selDragEnded.ids.slice() };
+      }
+      return { ok: false, reason: "no-active-drag", hit: false };
+    }
     let pt = st.pt, hit = false, reason = "", ptWin = null, viewRect = null;
     try {
-      const wb = (st.win && !st.win.isDestroyed()) ? st.win.getBounds() : null;
+      // ①-B：锚点必须是**客户区**矩形（与 viewBounds() 同基准）—— 用外层矩形会整体上移 57px、
+      // 左移 8px ⇒ 底部 57px 盲带 + 上缘之上 57px 假命中带 ✗（读数见本段顶部）。
+      // ⚠️ 换算与判定**共用同一个矩形**（下面 cb/wb 是同一份）：分别取两次就可能取到两种矩形，
+      //    那正是本 bug 的病因 ⇒ 只取一次。
+      const wb = (st.win && !st.win.isDestroyed() && st.win.getContentBounds) ? st.win.getContentBounds() : null;
+      const cb = wb;
       // 渲染层真收到 mouseup ⇒ 它的 clientX/Y 才是**这次松手**的位置 ✓（换算到屏幕坐标）；
       // 只有它没报（跨视图：指针停在原生侧栏视图上，渲染层收不到事件 ✗）才回退到轮询到的光标点 ✓。
-      const cb = (st.win && !st.win.isDestroyed() && st.win.getContentBounds) ? st.win.getContentBounds() : null;
       if (atPoint && cb && typeof atPoint.x === 'number' && typeof atPoint.y === 'number') {
         pt = { x: cb.x + atPoint.x, y: cb.y + atPoint.y };
       } else if (!pt) { const p = screen.getCursorScreenPoint(); pt = { x: p.x, y: p.y }; }
@@ -3316,9 +3933,61 @@ function registerIpc() {
       else if (!wb) reason = "no-window";
       else if (!hit) reason = "point-not-over-sidebar";
     } catch (err) { reason = "judge-error:" + ((err && err.message) || err); }
+    selDragFinish(st, 'renderer');   // 渲染层说"松手了" ⇒ 这条路到此为止（dwell / 侧栏页后来者作废 ✓）
     console.log("[dsh-sidebar] 选区拖拽结束：point=" + JSON.stringify(pt) + " hit=" + hit + (reason ? (" reason=" + reason) : ""));
     return { ok: true, hit: hit, ids: st.ids, reason: reason, pt: pt, ptWin: ptWin, viewRect: viewRect };
   });
+  /* ---- 虚影/拖拽的**读出口 + 脚本化指针**（`SEL_DRAG_PROBE`；声明在文件顶部）---------------
+   * 为什么要它：虚影的判据只能是原生读数（`getVisible()/getBounds()/children`），而 `st.pt` 在冒烟里
+   * **非确定**（真光标 = 测试者当时鼠标停的地方）⇒ 没有一条确定的指针就没法断言"跟手"与"永不覆盖光标"。
+   * 三条纪律（同 `app:bind-pick-dir` 的先例）：
+   *   ① `inject()` 第一行 `if (!isSmoke) return { ok:false, reason:'smoke-only' }` ⇒ 只在 --smoke 生效；
+   *   ② **只是测试口**：生产路径从不读 `SEL_DRAG_PROBE.pt`（恒 null ⇒ 轮询照旧读真光标）；
+   *   ③ 真实超时值仍是 `SEL_DRAG_MAX_MS = 30000`：G4 验 30s 兜底靠 `inject({backdateMs})` 把 `st.t0`
+   *      往前挪（**不改那个常量**，也不提供"缩短超时"的开关）。
+   * 注意它**不新增 IPC 通道**：断言就跑在主进程里（`ctx.selDrag`），与 ctx.draft / ctx.changeLog 同一条路。 */
+  SEL_DRAG_PROBE.read = () => {
+    const st = selDrag;
+    const win = (st && st.win) || null;
+    let winBox = null;
+    try { winBox = selDragWinBox(st); } catch (e) { winBox = null; }
+    const box = winBox ? { x: winBox.x, y: winBox.y, width: winBox.width, height: winBox.height } : null;
+    return {
+      ready: true,
+      active: !!st,
+      ended: selDragEnded ? { by: selDragEnded.by, ids: selDragEnded.ids.slice(), at: selDragEnded.at } : null,
+      pt: st && st.pt ? { x: st.pt.x, y: st.pt.y } : null,
+      winBox: box,
+      offset: { dx: SEL_GHOST_OFFSET.dx, dy: SEL_GHOST_OFFSET.dy },
+      minGap: GHOST_MIN_GAP,
+      subject: st && st.subject ? Object.assign({}, st.subject) : null,
+      droppable: st ? selDragDroppable(st) : null,
+      fired: st ? !!st.fired : null,
+      ghostRect: st && st.ghostRect ? Object.assign({}, st.ghostRect) : null,
+      ghost: ghostState(win),
+      injected: !!SEL_DRAG_PROBE.pt
+    };
+  };
+  SEL_DRAG_PROBE.inject = (o) => {
+    if (!isSmoke) return { ok: false, reason: 'smoke-only' };   // ① 生产路径拿不到这条路
+    const st = selDrag;
+    if (!st) return { ok: false, reason: 'no-active-drag' };
+    const x = Number(o && o.x), y = Number(o && o.y);
+    if (!isFinite(x) || !isFinite(y)) return { ok: false, reason: 'bad-point' };
+    const pt = { x: Math.round(x), y: Math.round(y) };
+    SEL_DRAG_PROBE.pt = pt;      // 轮询下一拍也用它（否则 40ms 后就被真光标盖掉 ⇒ 读数不可重复）
+    st.pt = pt;
+    if (o && o.backdateMs) st.t0 = Date.now() - Math.max(0, Number(o.backdateMs) || 0);
+    selDragGhostTick(st);        // 推一拍：不等 40ms，读数立刻可判
+    return { ok: true, pt: pt, read: SEL_DRAG_PROBE.read() };
+  };
+  /** 虚影页面**自己**报的文字（`document.getElementById('t').textContent`）。
+   *  为什么值得多这一条：`ghost.text` 只证明"我们推了"，而这条证明"页面真的收下并渲染了这段字"
+   *  —— 它比"结构 6/6"更靠近人眼看到的那一层（**但仍不等于像素可见**，见 README 的选型段）。 */
+  SEL_DRAG_PROBE.pageText = () => {
+    if (!isSmoke) return Promise.resolve({ ok: false, reason: 'smoke-only' });
+    return ghostPageText();
+  };
   /* 折叠后的重展开圆钮（渲染层 fab）→ toggle（与菜单 Ctrl+B 同一入口） */
   ipcMain.on('dsh-sidebar:toggle', () => dshSidebar.toggle());
   /* 仅侧边栏模式查询（渲染层/外部 AI 可读状态） */
@@ -3580,6 +4249,10 @@ async function runSmoke(win) {
    * 断言用"点之前/点之后各读一次"来判"这一跳有没有走唯一出口、走的是哪条绝对路径"。 */
   ctx.openFileLog = () => SMOKE_OPEN_FILE_LOG.map((x) => Object.assign({}, x));
   ctx.openFileLogClear = () => { const n = SMOKE_OPEN_FILE_LOG.length; SMOKE_OPEN_FILE_LOG.length = 0; return n; };
+  /* 选区拖拽 / 拖动虚影的读出口 + 脚本化指针（见 `SEL_DRAG_PROBE` 的声明处）。
+   * 为什么挂在 ctx 上而不是加 IPC：断言就跑在主进程里（`ctx.exec` 只是主→渲染的桥），
+   * 而 IPC 面（preload 的 `dsh` key 集合）**一字不能动** ⇒ 同 ctx.draft / ctx.changeLog 的先例。 */
+  ctx.selDrag = SEL_DRAG_PROBE;
   /* 草稿图（功能代号 `DM` · 台账 `W11`）：主进程内的读数 + 两条冒烟专用入口。
    * 为什么必须有：草稿窗是**另一个 BrowserWindow**，而 `ctx.exec` 只驱动主窗口 ⇒
    * 断言没有别的路能看见它。四条都在主进程内 ⇒ **不需要新开 IPC 通道**（同 ctx.changeLog 的先例）。

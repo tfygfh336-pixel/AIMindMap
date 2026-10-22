@@ -164,6 +164,18 @@ const state = {
   },
   panelView: null,          // 面板的 WebContentsView（惰性创建；关闭只摘不销毁，见 destroyPanel）
   lastDestroyedPanelId: null,
+  // ── 拖动虚影（甲 = 同窗口 WebContentsView；2026-10-33 批3）──────────────────────────
+  //   ghost      —— 那块 view（**按窗口复用**：拖几次都只有一块 ⇒ children.length 不随拖拽增长）
+  //   ghostWin   —— 它挂在哪个窗口上（窗口关 ⇒ 引用作废、下次拖拽重建）
+  //   ghostText  —— 当前已经推给页面的文字（null = 页面里那份不可信，下拍重发）
+  //   其余三个是**读数**（钉住"建了几块 / 推了几次文字"，失败与重复都能看出来）
+  ghost: null,
+  ghostWin: null,
+  ghostText: null,
+  ghostCreates: 0,
+  ghostPushes: 0,
+  ghostShown: false,
+  ghostLastAt: 0,
   geometry: null,           // **最近一次应用的几何**（computeGeometry 的产物；读数/断言的单一事实）
   // ── 加载失败判定（r12 收口批 · 见 createStatusPageLoadTracker 那一节）──────────────────
   //   statusPageLoad       —— 判定器实例（懒建；判据读数从这里出，日志里不再有良性的 `-3`）
@@ -1201,6 +1213,23 @@ function clampWidth(w) {
   return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(w)));
 }
 
+/* 拖动虚影（甲 = 同窗口 WebContentsView，2026-10-33 批3）的实现**不在本文件**：
+ *  它在 `main.js` 的「拖动虚影」整节。理由只有一条、且是硬的：本文件有一条结构判据
+ *  （`tests/panel-geometry.test.js`）——`setBounds(` 只许出现在 `relayout()` 的函数体里
+ *  （"侧栏/面板的几何只有一个出口"）；虚影那块 view 的 bounds 不属于这条几何，但判据分不出
+ *  谁是谁 ⇒ 代码放它该在的地方（虚影属于拖拽，不属于侧栏几何）。
+ *   本文件只对"侧栏被收起/被销毁"这件事发一条通知（`onHide`），由 main.js 去把虚影收掉。 */
+
+/** 侧栏被收起/销毁时的**外部钩子**（虚影要跟着收起；main.js 注册一处）。
+ *  为什么是钩子而不是在这里直接调虚影函数：本文件只知道"我自己被收起了"，
+ *  "有没有活动拖拽 / 虚影在哪"只有 main.js 的 selDrag 段知道 ⇒ 一个方向的事件通知，
+ *  不构成第二份判断（同一件事仍然只有一个地方表达）。 */
+const hideHooks = [];
+function onHide(fn) { if (typeof fn === 'function') hideHooks.push(fn); }
+function fireHide(why) {
+  hideHooks.forEach((f) => { try { f(why); } catch (e) { /* 钩子自己炸不许影响收起 */ } });
+}
+
 /* ---------------- 第 4 个原生面板（停靠面板 · 2026-10-18 底座批） ----------------
  * 形态：右侧**二阶并列** —— [页面][面板][控制栏][DSH 侧栏]。
  *   · 几何算术的**唯一计算处** = src/panel-geometry.js（纯函数，零 Electron ⇒ 有 node 单测）；
@@ -2161,6 +2190,10 @@ async function clickButton(id) {
 
 function hide() {
   if (!state.win) return;
+  /* 虚影**不受"侧栏是否显示"支配**，但它挂在同一个窗口的客户区上 ⇒ 侧栏一显一收会重排子视图序、
+   * 也可能把虚影留在屏上（拖拽还没结束时的边界情形）。这里强制收一次 —— 下一拍若拖拽仍在，
+   * 驱动侧会把它重新挂到最上层（`updateGhost` 每拍都重挂）。防孤儿的第三道闸就落在这一处。 */
+  fireHide('sidebar-hide');
   if (state.view && state.win.contentView) {
     try { state.win.contentView.removeChildView(state.view); } catch (e) { /* ignore */ }
   }
@@ -2492,6 +2525,7 @@ function savePrefs() {
 function destroy() {
   state.shuttingDown = true;
   endWidthDrag();
+  fireHide('app-destroy');   // 防孤儿：应用退出前一定收掉（它挂在窗口客户区上，窗口没了就是残留引用）
   if (state.panelView) destroyPanel('应用退出');
   if (state.logTimer) { clearTimeout(state.logTimer); state.logTimer = null; }
   if (state.healthTimer) { clearInterval(state.healthTimer); state.healthTimer = null; }
@@ -2766,6 +2800,10 @@ module.exports = {
   // scripts/dsh-resident-host.js 使用：没有窗口时也要能驱动同一套服务生命周期。
   adoptOrStart,
   beginWidthDrag, endWidthDrag, setWidth,
+  // 拖动虚影（甲 · 同窗口 WebContentsView；2026-10-33 批3）的实现**在 main.js**（理由见本文件
+  // 里那句 `/* 拖动虚影…` 的指向注释）。这里只导出一条**单向事件通知**：
+  //   onHide(fn) —— 侧栏被收起/被销毁时通知外部（main.js 借它把虚影收掉）
+  onHide,
   setDshOnly, isDshOnly, hideWindowToBackground, hideToBackground, captureView, restoreWindow,
   // 只关一侧的两种能力（对外/给 AI 用；人类用界面上的两个 ✕）
   closeSidebar, buttonBounds, buttonProbe, clickButton, occupiedWidth,

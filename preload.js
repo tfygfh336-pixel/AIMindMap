@@ -209,8 +209,11 @@ contextBridge.exposeInMainWorld('desktop', {
     toggle: () => ipcRenderer.send('dsh-sidebar:toggle'),
     /* P7 真·跨视图拖放：选区拖拽的**起点/终点**上报 ✓（坐标跟踪与落点判定在主进程 ——
      * 侧栏是原生 WebContentsView，指针进它的矩形后渲染层收不到 mouseup ✗）。
-     * ⚠️ 与上面的 beginDrag/endDrag **不是一套**：那两个是"拖宽侧栏"用的 ✓ 别混用 ✗。 */
-    selDragStart: (ids) => ipcRenderer.send('dsh-sidebar:sel-drag-start', ids),
+     * ⚠️ 与上面的 beginDrag/endDrag **不是一套**：那两个是"拖宽侧栏"用的 ✓ 别混用 ✗。
+     * 【2026-10-33 批3】起点多带一个可选参数 `subject = {kind,count,label,toDsh}`（虚影文字与
+     * "这一批能不能投给 DSH"要它）。**它只是第二个实参**：key 集合一字未改（域 11 的逐字断言守着），
+     * 且旧的单参调用照旧能用（主进程侧 subject 为 null ⇒ 与从前逐项相同 ✓）。 */
+    selDragStart: (ids, subject) => ipcRenderer.send('dsh-sidebar:sel-drag-start', ids, subject),
     selDragEnd: (pt) => ipcRenderer.invoke('dsh-sidebar:sel-drag-end', pt),
     /* 跨视图兜底：主进程判出"光标停在侧栏上很久 ⇒ 就是在这儿松手"，把 ids 发回来 ⇒ 渲染层负责投喂 ✓ */
     onSelDrop: (cb) => {

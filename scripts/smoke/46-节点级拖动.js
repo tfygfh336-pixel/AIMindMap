@@ -25,9 +25,12 @@
  *     菜单**显示后再量**真实高度并上翻/夹进视口 ⇒ 每一项都能被 `document.elementFromPoint`
  *     命中（**含最后一项**），并且**真鼠标点最后一项真的生效**（「移回自动布局」把手工位置清掉、
  *     节点正好回到自动布局位置）。改前这一档实测是"最后 8 条 `elementFromPoint` 返回 null"。
- *     ⚠️ 每一项的**条数**在 R2 期 3 由 12 变成 **13**（多了一条「拖动到同级第几位」——
- *       同级重排的入口，见 `renderer/contextmenu.js` 的 reorderDragItem；判据一条没删，
- *       只是跟着菜单长了一条 ✓）。
+ *     ⚠️ 每一项的**条数** 2026-10-33 批4 由 14 变成 **10**（四条拖动入口已按用户「移除拖动模式」摘除；
+ *       判据一条没删，只是跟着菜单短了四条 ✓ —— 逐条点名那四条不在见本域的 **壬**）。
+ *  壬 **摘入口 ≠ 摘 API**（2026-10-33 批4）：深层节点与顶层主题的右键菜单里那四条拖动入口
+ *     （拖动树 / 拖动此子树 / 拖动到同级第几位 / 挂到别的父节点下）**逐条点名都不在**，
+ *     而 `MMApp` 的 `setDragMode / dragModeActive / dragModeKind / getDragTreeRoot` 四个转发
+ *     **都还在**、三档（move / reorder / reparent）真能进、`setDragMode(false)` 真能退出。
  *  丁 **干净基线下的"拖动不产生脏数据"（设计稿期 2 的判据 4）**：刚打开、还没展开过任何节点的项目
  *     （`isDirty() === false`）里拖一个**顶层主题子树**：拖出去再拖回**原地** ⇒ `isDirty()` 仍是
  *     **false**、序列化文本逐字节不变（零偏移 = 不进数据）；一旦有非零位移 ⇒ 唯一多出来的键是
@@ -573,9 +576,18 @@ const assertions = [
       const baseData = await ctx.exec('JSON.stringify(window.MMApp.serializeTree().data)');
       await centerNode(ctx, TARGET, 0.42, 0.45);            // 目标落到能往外拖的地方
       await waitStableView(ctx);
-      const menu = await openNodeMenu(ctx, TARGET);
+      const menu = await openNodeMenu(ctx, TARGET);       // 只为读一遍菜单（入口已摘 ⇒ 那一条必须不在）
       const has = (list, str) => list.some((t) => t.indexOf(str) >= 0);
-      const clicked = await clickMenuItem(ctx, '拖动此子树');
+      /* ⚠️ 读完菜单**必须关掉它**：`openNodeMenu` 只负责弹，改前是"点菜单项"顺手关掉的（openMenu 的
+       * click 处理器里有 closeMenu）。现在改成直接调 API ⇒ 没人关它了 ⇒ 菜单会一直挡在画布上，
+       * 于是后面"落到空地后 elementFromPoint 命中自身"那一档读到的是菜单那一层 DIV（实测踩到：
+       * `land` 的 hit=DIV 而 `up` 的 hit=JMNODE#n1a）。 */
+      await closeMenu(ctx);
+      /* 2026-10-33 批4：右键菜单里那四条拖动入口已按用户 2026-10-31「移除拖动模式」摘除
+       * ⇒ 进模式直接从 API 走（`setDragMode` 那一族**一行没删**）。这一跳与改前**等价**：
+       * 改前点的那条菜单项，它的 action 就只是 `MMApp.setDragMode(true, 目标节点)`。 */
+      await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(TARGET) + '); 1');
+      await ctx.input.settle(PAINT);
       const entered = await ctx.exec('(function () { return { on: window.MMApp.dragModeActive(), root: window.MMApp.getDragTreeRoot() }; })()');
       /* ⚠️ 几何基线取在**所有会改视图的交互之后**：右键选中节点会让 jsMind 重排一次，而本工程
        * 的「重排锚点保持」（app-view.js 的 wrapLayoutAnchor）会为了"被操作的节点原地不动"
@@ -638,8 +650,9 @@ const assertions = [
         ['不拖时序列化里没有偏移键（默认档逐字节不变那一档）',
           base.text.indexOf('"nodeOffsets"') < 0 && base.text.indexOf('"themeOffsets"') < 0],
         ['拖动前：展开深层节点这一步本身是未保存改动（既有语义，如实记）', base.dirty === true],
-        ['菜单里有「拖动此子树」', has(menu.items, '拖动此子树')],
-        ['点菜单真进拖动模式且目标 == 目标节点', clicked.ok === true && entered.on === true && entered.root === TARGET],
+        ['菜单里**没有**「拖动此子树」（入口 2026-10-33 批4 已摘；四个入口逐个点名见本域 壬）',
+          !has(menu.items, '拖动此子树')],
+        ['直接调 API 进了拖动模式且目标 == 目标节点', entered.on === true && entered.root === TARGET],
         ['按下就把抓取拿到手（body 有拖动态）', stDown.bodyDragging === true && stDown.dragRoot === TARGET],
         ['按下（还没移动）时偏移桶为空、transform 空、isDirty 与拖动前一样',
           Object.keys(stDown.nodeBucket).length === 0 && stDown.tf === '' && stDown.dirty === base.dirty],
@@ -845,8 +858,8 @@ const assertions = [
         ['目标被装上一项手工位置（菜单最后一项才有出现条件）', put === 1 && lowInfo.hasOwn === true],
         ['目标落在面板下部（菜单向下展开会越界的位置）',
           lowInfo.cy > lowInfo.vh / 2 && lowInfo.panelBottom - lowInfo.cy < 120],
-        ['菜单每一项都在（14 条：R2 期 3 加了「拖动到同级第几位」这一档 ⇒ 12→13；R2 期 4 再加「挂到别的父节点下」⇒ 13→14）',
-          (menu.items || []).length === 14],
+        ['菜单每一项都在（**10 条**：2026-10-33 批4 摘掉四条拖动入口 ⇒ 14→10；剩下的 9 条节点操作 + 这条"移回自动布局"）',
+          (menu.items || []).length === 10],
         ['最后一项是「移回自动布局」（本条的点击目标）', !!last && last.label.indexOf('移回自动布局') >= 0],
         ['每一项都被 elementFromPoint 命中（含最后一项）',
           hitCount === (menu.items || []).length && !!last && last.hit === true],
@@ -1182,6 +1195,95 @@ const assertions = [
           + ' · 判定 ' + JSON.stringify(lastMerge) + ' · mg-a=' + JSON.stringify(visMerge)
           + ' ｜ 经 CLI 写入：判定 ' + JSON.stringify(lastCli) + ' · ext-c=' + JSON.stringify(visCli)
           + ' · 收尾 isDirty=' + dirtyEnd
+          + (fails.length ? ' ✗ 不成立：' + fails.join(' / ') : ' · 判据全成立')
+      };
+    }
+  },
+
+  {
+    /* 【2026-10-33 批4 新增 · 壬】"摘入口 ≠ 摘 API" 的**唯一证据**。
+     * 用户 2026-10-31 说「移除拖动模式」；第一期只摘**右键菜单入口**，`setDragMode` 那一族一行不删
+     * —— 因为删了它等于同时改掉 `scripts/smoke/` 里 8 个文件 / 65 行断言的判定基础。
+     * 那两件事**必须各有判据**：只有"入口不在"时，把 API 删干净也能让它绿（过度删除）；
+     * 只有"API 还在"时，入口仍在菜单里也能让它绿（漏摘）。本域甲/丙 判前者的一半（深层节点），
+     * 这一条把两半**都逐条点名**，并且覆盖**两种节点**（深层节点 + 顶层主题）：
+     *   · 深层节点（na）：四个标签都不在（改前它同时有 拖动树/拖动此子树/同级重排/重挂父 四条）；
+     *   · 顶层主题（t1）：四个标签都不在，但两条**分侧项仍在** —— 证明只摘了拖动那四条，没顺手掏空菜单；
+     *   · 四个转发在两处命名空间上都在（`MMApp.*` 与 `MM.*`）；
+     *   · 三档真能进（move / reorder / reparent，`dragModeKind()` 逐个读得出）、`setDragMode(false)` 真能退。
+     * 这一条**自己不写盘、不落偏移**（四条调用都不改数据）⇒ 后续 戊 收尾看到的仍是干净桶。 */
+    name: '壬 摘入口 ≠ 摘 API（2026-10-33 批4）：深层节点与顶层主题的右键菜单里四条拖动入口**逐条点名都不在**（拖动树 / 拖动此子树 / 拖动到同级第几位 / 挂到别的父节点下），而 MMApp 的四个转发（setDragMode / dragModeActive / dragModeKind / getDragTreeRoot）都还在、三档真能进、也真能退出',
+    run: async (ctx) => {
+      const base = await openFixture(ctx, { expand: true, target: TARGET });
+      if (base.opened !== true) return { ok: false, text: '打不开夹具项目 ⇒ **未验证**：' + JSON.stringify(base) };
+      const GONE = ['拖动树', '拖动此子树', '拖动到同级第几位', '挂到别的父节点下'];
+      const has = (list, k) => (list || []).some((t) => String(t).indexOf(k) >= 0);
+      /* ⚠️ 每读一次菜单都要**先把它摆进面板中部**（右键菜单向下展开，节点贴边时菜单会翻出视口 ⇒
+       * 命中不到；域 46 丙、48、49 的同一族经验），读完**立刻关掉**（否则它挡在画布上，
+       * 后面任何 elementFromPoint 都会读到它那一层）。 */
+      await centerNode(ctx, TARGET, 0.5, 0.4);
+      await waitStableView(ctx);
+      const deepMenu = await openNodeMenu(ctx, TARGET);      // 深层节点（n1a）
+      await closeMenu(ctx);
+      await centerNode(ctx, TOP_THEME, 0.5, 0.4);
+      await waitStableView(ctx);
+      const topMenu = await openNodeMenu(ctx, TOP_THEME);    // 顶层主题（t1）
+      await closeMenu(ctx);
+      const deepStill = GONE.filter((k) => has(deepMenu.items, k));
+      const topStill = GONE.filter((k) => has(topMenu.items, k));
+      const sideKept = has(topMenu.items, '摆到左侧') && has(topMenu.items, '摆到右侧');
+      const api = await ctx.exec(`(function () {
+        var app = window.MMApp, MM = window.MM;
+        var NAMES = ['setDragMode', 'dragModeActive', 'dragModeKind', 'getDragTreeRoot'];
+        var missApp = NAMES.filter(function (n) { return typeof app[n] !== 'function'; });
+        var missMM = NAMES.filter(function (n) { return typeof MM[n] !== 'function'; });
+        if (app.dragModeActive()) app.setDragMode(false);
+        var seen = {};
+        app.setDragMode(true, ${JSON.stringify(TARGET)});
+        seen.move = { on: app.dragModeActive(), kind: app.dragModeKind(), root: app.getDragTreeRoot() };
+        app.setDragMode(true, ${JSON.stringify(TARGET)}, { mode: 'reorder' });
+        seen.reorder = { on: app.dragModeActive(), kind: app.dragModeKind() };
+        app.setDragMode(true, ${JSON.stringify(TARGET)}, { mode: 'reparent' });
+        seen.reparent = { on: app.dragModeActive(), kind: app.dragModeKind() };
+        app.setDragMode(false);
+        seen.off = { on: app.dragModeActive(), kind: app.dragModeKind(), root: app.getDragTreeRoot(),
+          bodyClass: document.body.className.indexOf('mm-dragmode') >= 0 };
+        return { missApp: missApp, missMM: missMM, seen: seen,
+          buckets: Object.keys(app.getTreeOffsets()).length + Object.keys(app.getNodeOffsets()).length };
+      })()`);
+      const checks = [
+        ['夹具打开成功', base.opened === true],
+        ['深层节点的菜单**真的弹出来了**（否则"四个都不在"是空转）',
+          (deepMenu.items || []).length >= 8],
+        ['深层节点菜单：四个拖动入口逐条点名都不在',
+          deepStill.length === 0],
+        ['顶层主题菜单**真的弹出来了**且两条分侧项仍在（只摘拖动那四条，没掏空菜单）',
+          (topMenu.items || []).length >= 8 && sideKept === true],
+        ['顶层主题菜单：四个拖动入口逐条点名都不在',
+          topStill.length === 0],
+        ['MMApp 四个转发都在（renderer/app.js:210-215）', (api.missApp || []).length === 0],
+        ['window.MM 那四个也在（转发丢一个这里就是 undefined）', (api.missMM || []).length === 0],
+        ['setDragMode(true, 节点) 真能进 move 档且锁定那个节点',
+          api.seen.move.on === true && api.seen.move.kind === 'move' && api.seen.move.root === TARGET],
+        ['reorder / reparent 两档也真能进（dragModeKind 读得出）',
+          api.seen.reorder.on === true && api.seen.reorder.kind === 'reorder'
+          && api.seen.reparent.on === true && api.seen.reparent.kind === 'reparent'],
+        ['setDragMode(false) 真能退出（active=false、root=null、kind 回 move、body 类清掉）',
+          api.seen.off.on === false && api.seen.off.root === null
+          && api.seen.off.kind === 'move' && api.seen.off.bodyClass === false],
+        ['这一条全程没往偏移两桶写东西（前置：后续判据的桶仍是干净的）', api.buckets === 0]
+      ];
+      const fails = checks.filter((c) => !c[1]).map((c) => c[0]);
+      return {
+        ok: fails.length === 0,
+        text: '深层节点菜单 ' + (deepMenu.items || []).length + ' 项，末尾=' + JSON.stringify((deepMenu.items || []).slice(-3))
+          + ' ｜ 顶层主题菜单 ' + (topMenu.items || []).length + ' 项，末尾=' + JSON.stringify((topMenu.items || []).slice(-3))
+          + ' ｜ 四个入口仍在菜单里的：深层=' + JSON.stringify(deepStill) + ' 顶层=' + JSON.stringify(topStill) + '（都应 []）'
+          + ' ｜ 分侧项仍在=' + sideKept
+          + ' ｜ 缺的转发 MMApp=' + JSON.stringify(api.missApp) + ' MM=' + JSON.stringify(api.missMM)
+          + ' ｜ 三档=' + JSON.stringify(api.seen.move) + '/' + JSON.stringify(api.seen.reorder)
+          + '/' + JSON.stringify(api.seen.reparent) + ' ｜ 退出=' + JSON.stringify(api.seen.off)
+          + ' ｜ 两桶键数=' + api.buckets
           + (fails.length ? ' ✗ 不成立：' + fails.join(' / ') : ' · 判据全成立')
       };
     }

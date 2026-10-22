@@ -559,16 +559,16 @@ const assertions = [
       const menu = await stepExec(ctx, '读右键菜单', '(function () { var m = document.getElementById("ctx-menu");'
         + ' if (!m || m.style.display === "none") return { items: [], why: "菜单没弹出来" };'
         + ' return { items: Array.prototype.slice.call(m.querySelectorAll(".ctx-item")).map(function (e) { return e.textContent; }) }; })()');
-      const hit = await stepExec(ctx, '量菜单项命中', '(function () { var m = document.getElementById("ctx-menu");'
-        + ' if (!m) return { miss: true, why: "菜单元素不存在（右键没弹出菜单？）" }; var t = null;'
-        + ' Array.prototype.slice.call(m.querySelectorAll(".ctx-item")).forEach(function (e) {'
-        + '   if (!t && e.textContent.indexOf("拖动到同级第几位") >= 0) t = e; });'
-        + ' if (!t) return { miss: true, why: "菜单里没有那一条" }; var b = t.getBoundingClientRect();'
-        + ' var x = Math.round(b.left + b.width / 2), y = Math.round(b.top + b.height / 2);'
-        + ' var top = document.elementFromPoint(x, y);'
-        + ' return { x: x, y: y, self: !!top && (top === t || t.contains(top)) }; })()');
-      let clicked = false;
-      if (hit && hit.self === true) { await ctx.input.click({ x: hit.x, y: hit.y }); clicked = true; }
+      const entryGone = !(menu.items || []).some((t) => t.indexOf('拖动到同级第几位') >= 0);
+      /* ⚠️ 读完菜单**必须关掉它**：改前是点击菜单项顺手关掉的（openMenu 的 click 处理器里有 closeMenu），
+       * 现在改成直接调 API ⇒ 没人关它了 ⇒ 菜单会一直挡在画布上（域 46 甲实测踩到同一件事）。 */
+      await stepExec(ctx, '关掉右键菜单', '(function () { if (window.MMContextMenu) window.MMContextMenu.closeMenu(); return 1; })()');
+      /* 2026-10-33 批4：右键菜单里那四条拖动入口已按用户 2026-10-31「移除拖动模式」摘除
+       * ⇒ 进重排档直接从 API 走（`setDragMode` 那一族**一行没删**）。改前那两跳是
+       * "量菜单项命中 + 真鼠标点它"；现在换成"读一遍菜单**证明那一条不在**（entryGone）+ 直接调 API"，
+       * 两者合起来比改前更强：改前只能证明"点得到"，证明不了"入口有没有别处还开着"。 */
+      await stepExec(ctx, '直接调 API 进重排档',
+        'window.MMApp.setDragMode(true, ' + JSON.stringify(MOVE_ID) + ', { mode: "reorder" }); 1');
       await ctx.input.settle(PAINT);
       // —— 拖动：从 n1 往列表外面拖（clamp 的两端各一次；落点见下面那段 ⚠️）——
       const ptN1 = await pointOf(ctx, MOVE_ID);
@@ -693,8 +693,8 @@ const assertions = [
           centered === true && !!hittable && JSON.parse(hittable).self === true],
         ['拖动前顺序 == 夹具原样（' + T1_KIDS.join(',') + '）',
           JSON.stringify(orderBefore) === JSON.stringify(T1_KIDS)],
-        ['菜单里真有「拖动到同级第几位」', (menu.items || []).some((t) => t.indexOf('拖动到同级第几位') >= 0)],
-        ['真鼠标点得到那一条并进了重排档', clicked === true && !!entered && entered.active === true
+        ['菜单里**没有**「拖动到同级第几位」（入口 2026-10-33 批4 已摘）', entryGone === true],
+        ['直接调 API 进了重排档（kind=reorder 且锁定目标节点）', !!entered && entered.active === true
           && entered.kind === 'reorder' && entered.id === MOVE_ID],
         ['拖动中算出了落位：k == 上界（拖到最下面那条之下 ⇒ 贴到最后）',
           !!dragState && !!dragState.drop && dragState.drop.index === SIB.length
@@ -734,7 +734,7 @@ const assertions = [
       const fails = checks.filter((c) => !c[1]).map((c) => c[0]);
       return {
         ok: fails.length === 0,
-        text: '菜单项=' + JSON.stringify((menu.items || []).slice(-3)) + ' · 点得到=' + JSON.stringify(hit)
+        text: '菜单项=' + JSON.stringify((menu.items || []).slice(-3)) + ' · 入口已摘=' + entryGone
           + ' · 进档读数=' + JSON.stringify(entered) + ' · 拖动中读数=' + JSON.stringify(dragState)
           + ' · 预览元素=' + JSON.stringify(ghostShown)
           + ' · 盘上顺序 前=' + JSON.stringify(orderBefore) + ' 后=' + JSON.stringify(orderAfter)
