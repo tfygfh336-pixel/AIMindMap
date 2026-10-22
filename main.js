@@ -609,6 +609,18 @@ const exportWindowArgs = (() => {
   return null;
 })();
 
+// --headless-control：**离屏窗口 + 控制通道活着**、且**不自动退出**（由外部探针 kill）。
+// 为什么需要它（现成的两个离屏模式都装不下"成功分支"）：
+//   · `--smoke` / `--export-image` 都**不启控制通道**（见 whenReady 里的分支）⇒ 那四条界面命令
+//     （sidebar-only / dsh-sidebar / dsh-status / dsh-prefill）的**成功分支**（要活着的界面回执）
+//     根本没有离屏入口，今天只验过"界面没在跑 ⇒ 非 0 退出"这一侧；
+//   · `--export-window` 虽然 `dshSidebar.init` 了，但它在 ~20s 内 `app.exit(0)` ⇒ 装不下
+//     `dsh-prefill` 的 14s 等待窗口；`--export-image` 则是离屏但**不启控制通道**。
+// ⚠️ 故意**不**并入下面的 `headlessMode`（即**保留单实例锁**）：用户已经开着界面时，本次启动
+//   会照常打印"已有实例在运行"并退出 ⇒ 探测方因此判"环境不适用"，而不是把用户正在用的那个
+//   窗口悄悄接管/挤掉（那是"用测试工具劫持用户会话"，比测不出来坏得多）。
+const headlessControl = process.argv.includes('--headless-control');
+
 // 截图导出模式禁用 GPU 硬件加速：规避偶发 UnknownVizError（合成器崩溃导致截图失败）。
 // 注意：仅 export-image 模式禁用——冒烟等其他模式保持默认（实测禁用后冒烟进程崩溃）。
 if (exportImageArgs) app.disableHardwareAcceleration();
@@ -4439,9 +4451,12 @@ app.whenReady().then(() => {
       win.webContents.once('did-finish-load', () => runExportWindow(win, exportWindowArgs));
       return;
     }
+    // `--headless-control`：离屏（与 smoke / export-image 同一条 headless 口径：show:false
+    // ⇒ 不弹桌面、不抢焦点、不进任务栏），但**照常**走下面 `!isSmoke && !exportImageArgs`
+    // 那条分支 ⇒ `dshSidebar.init(win)` + `startControlChannel()` 都活着，且**不自动退出**。
     const win = createWindow(isSmoke
       ? { show: false, width: SMOKE_VIEW.width, height: SMOKE_VIEW.height }
-      : undefined);
+      : (headlessControl ? { show: false, width: 1680, height: 1050 } : undefined));
     console.log('[main] window created');
     DRAFT.mainWin = win;        // 草稿窗要问主窗口"当前项目 / 落点候选"（它不是主窗的 child，见 DRAFT 注释）
     buildMenu(win);
