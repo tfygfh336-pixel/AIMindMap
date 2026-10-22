@@ -349,7 +349,7 @@ const ARTIFACT_BATCH = [
       + '留成数据后"缺口曾经在哪、并进了谁"可被读出来（两方向读数：`.review/20261020-门禁B2/proof-g8-renderer.js`）' },
   { id: 'capped-literal',
     face: '在册上界 / 写死的易腐字面量（`MCP_GAP_DEBT_MAX` · 写盘出口两道 cap · '
-      + '`NOTE_RESIDUE_*` · `docs/FEATURES.md` 的行数）',
+      + '`NOTE_RESIDUE_*` · 项目 JSON 的声明上限 `MAX_PROJECT_FILE_MB` · `docs/FEATURES.md` 的行数）',
     guard: 'S2', check: 'ARTIFACT_BATCH', anchor: 'scripts/collateral-check.js#CAPPED_LITERALS',
     rows: ['feature-row', 'collateral-table'],
     note: '★本批新登记：**改上限/改写死的数 ⇒ 必须同批改在册的那一行**。'
@@ -397,6 +397,16 @@ const CAPPED_LITERALS = [
     symbol: 'NOTE_RESIDUE_HIT_CAP', expect: 0,
     why: '笔记正文残留豁免**面**（命中处数）上限 —— 与条数上限同形，防"拆条目换额度"',
     close: '同 `note-residue-cap`：这两个数必须一起看，它们量的是"条"与"面"两件事' },
+  { id: 'project-file-cap', kind: 'pin', file: 'src/data-store.js',
+    symbol: 'MAX_PROJECT_FILE_MB', expect: 128,
+    why: '项目 JSON 的**声明上限**（写前超过它就响亮拒绝、一个字节都不写）。'
+      + '它必须**明显低于** `fs.readFileSync(…,\'utf8\')` 的物理天花板 —— 实测 500 MB 读得回来、'
+      + '540 MB 抛（`Cannot create a string longer than 0x1fffffe8 characters`，见 '
+      + '`.review/20261034-规模化阈值/logs/06-bigfile-guard.json`）；贴着的上限等于"再用一点点就掉下悬崖"，'
+      + '而越过之后旧文件会被**静默覆盖**（实测 540 MB → 215 字节）',
+    close: '要抬上限 ⇒ **先重测物理天花板有没有变**（重跑 `.review/20261034-规模化阈值/repro/21-bigfile-guard.js` 的二分），'
+      + '再同批改这里与 `src/data-store.js` 里那段理由（它引用的读数必须还成立）；要降 ⇒ 同样同批改。'
+      + '本册子只保证"改了会被看见"，判不了"这次该不该改"（那是 `R3c` 的人判断）' },
   { id: 'roster-rows', kind: 'truth', file: 'tests/features-roster.test.js',
     pattern: 'expect\\(p\\.rows\\.length\\)\\.toBe\\((\\d+)\\)',
     where: '`tests/features-roster.test.js` 的 A1 用例（名册行数**有意写死**：名册变长必须是一次可见的动作）',

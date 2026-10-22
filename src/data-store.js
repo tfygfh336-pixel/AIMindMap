@@ -6,6 +6,9 @@
  *   - 解析项目名 → projects/<name>/<name>.json 绝对路径
  *   - 读 / 写项目 JSON（写前过 schema.validateProject）
  *   - 全部写盘走原子写（临时文件 + fsync + rename，见 writeFileAtomic）
+ *   - **写前**：项目 JSON 有**声明出来的上限**（MAX_PROJECT_FILE_MB），超限**响亮失败且不写盘**
+ *   - **写后**：**回读核对**（字节长度 + 能否 parse），不一致**响亮失败**（见 verifyOnDisk）
+ *   - **盘上状态三档**（absent / unreadable / ok）：读不回来的文件**不许**被当成"不存在"（见 inspectOnDisk）
  *   - 落盘前的校验走 `store.validatePayload()`（**进程内、不落盘**；GUI 保存闸门的入口）
  *   - 解析时剥离 UTF-8 BOM
  *   - 列出全部项目
@@ -31,6 +34,57 @@
    */
   const VISIT_DIR_NAME = '.visits';
 
+  /**
+   * 项目 JSON 的**声明上限（MB）** —— "写之前就知道太大"那道闸的判据。
+   *
+   * 为什么必须有（缺陷是**实测**的，不是推测）：`fs.readFileSync(p,'utf8')` 要把整份文件变成一个
+   * 字符串，而 V8 的单字符串长度上限是 `0x1fffffe8` 字符 ⇒ 文件大到某个尺寸之后**根本读不回来**。
+   * 测量批（`9725bd51`）的二分读数：**500 MB 读得回来 / 540 MB 抛**
+   * `Cannot create a string longer than 0x1fffffe8 characters`
+   * （`.review/20261034-规模化阈值/logs/06-bigfile-guard.json`）⇒ 物理天花板 ≈ **512 MB**。
+   *
+   * 为什么是 128（≈ 512 的 1/4）而不是贴着 512：
+   *   · 贴着的上限等于"再用一点点就掉下悬崖"。越过物理天花板之后，`store.write` 的"读旧内容"
+   *     会失败、版本闸门看不见盘上那份文件，实测后果是 **540 MB 的笔记被静默覆盖成 215 字节**
+   *     （同上一份读数；变更日志还记着 `created:true`）。留 4× 余量，让"接近上限"变成一次
+   *     **可读的拒绝**，而不是一次**不可逆的销毁**。
+   *   · 第二条独立理由（同一批实测）：读一份项目 JSON 的峰值 RSS ≈ 文件大小 × **10.4**
+   *     （142.7 MB 文件 ⇒ 1,478 MB 峰值）。文件到 512 MB 时峰值 ≈ 5 GB —— 机器会先 swap/OOM，
+   *     根本轮不到"字符串上限"那一步。128 MB 时峰值 ≈ 1.3 GB，仍在可解释的范围内。
+   *   · 与本工程真实数据的关系（2026-10-22 现测）：`projects/` 下最大的项目 1.24 MB
+   *     ⇒ 上限是它的 **100 倍**，正常使用碰不到；碰到的人需要的是"拆分建议"，不是"更大的上限"。
+   *
+   * ⚠️ 改这个数就是**抬高判定门槛**，必须同批改 `scripts/collateral-check.js` 的
+   *    `CAPPED_LITERALS`（`kind:'pin'`，id `project-file-cap`）并写明为什么 ——
+   *    那个门禁会把这次改动变成一次**看得见**的动作（它只认数字字面量，见它的 `pin` 档）。
+   */
+  const MAX_PROJECT_FILE_MB = 128;
+
+  /** 1 MB 的字节数（**唯一一处**：上限换算与报文里的"≈ N MB"都从这里取，别各写一个 1024*1024）。 */
+  const MB_BYTES = 1024 * 1024;
+
+  /**
+   * 三条**写路径**错误码（与 `VERSION_CONFLICT` 同一约定：调用方只认 `err.code`，不解析文案）。
+   *   · `WRITE_TOO_LARGE`     —— 写前上限核对不通过（**一个字节都没写**）
+   *   · `WRITE_VERIFY_FAILED` —— 写后回读核对不通过（字节/parse 与刚写的那份不一致）
+   *   · `TARGET_UNREADABLE`   —— 盘上目标文件**存在但读不回来** ⇒ 无条件拒绝覆盖
+   */
+  const WRITE_TOO_LARGE = 'WRITE_TOO_LARGE';
+  const WRITE_VERIFY_FAILED = 'WRITE_VERIFY_FAILED';
+  const TARGET_UNREADABLE = 'TARGET_UNREADABLE';
+
+  /** 造一个带错误码的 Error（**唯一一处**：别处直接 `new Error` + 事后赋值会漏掉码）。 */
+  function codedError(code, message) {
+    const err = new Error(message);
+    err.code = code;
+    return err;
+  }
+
+  /** 把异常压成**一行**可读文本（报文里只留第一行：栈会淹掉判据）。 */
+  function shortErr(err) {
+    return String((err && err.message) || err).split('\n')[0];
+  }
+
   /** 解析项目 JSON：剥离 UTF-8 BOM（带 BOM 的文本 JSON.parse 会直接失败） */
   function parseProjectJson(text) {
     return JSON.parse(String(text).replace(/^\uFEFF/, ''));
@@ -54,6 +108,76 @@
   }
 
   /**
+   * 盘上那一份的**状态** —— 三档，少一档就会把"读不回来"说成"不存在"（实测踩过，见 `versionGate`）。
+   *
+   * 为什么不能再用 `versionOf()`（它只回 `string|null`）：那个 `null` 把**两件完全不同的事**
+   * 挤成同一个值 —— ① 文件真的不在了；② 文件在、但**读不回来**（超过 `readFileSync` 的字符串
+   * 上限 / 权限 / 另一个进程正拿着它）。第 ② 种盘上明明躺着数据，闸门却据此报「盘上 已不存在」，
+   * 而实测现场正是一份 540 MB 的项目文件。
+   *
+   * @param {string} file 绝对路径
+   * @returns {{state:'absent'|'unreadable'|'ok', text:(string|null), version:(string|null),
+   *            bytes:(number|null), reason:(string|null)}}
+   *   `bytes` = `stat` 看到的大小（unreadable 时也尽量给：报文要用它说"到底有多大"）
+   */
+  function inspectOnDisk(file) {
+    // 读两遍的必要性：`stat` 与 `readFileSync` 之间文件可能被别的写入者改掉（本工程的常态是
+    // **多路同时写**）⇒ 一次不一致不代表坏，稳定两次才是它此刻的样子。
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let st;
+      try {
+        st = fs.statSync(file);
+      } catch (err) {
+        const code = err && err.code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') {
+          return { state: 'absent', text: null, version: null, bytes: null, reason: null };
+        }
+        // 存在性都判不了（EPERM / EBUSY / EIO …）⇒ 按"存在但读不回来"处理：**不许**当不存在
+        return { state: 'unreadable', text: null, version: null, bytes: null, reason: shortErr(err) };
+      }
+      let text;
+      try {
+        text = fs.readFileSync(file, 'utf8');
+      } catch (err) {
+        return { state: 'unreadable', text: null, version: null, bytes: st.size, reason: shortErr(err) };
+      }
+      // 读回来了，但**字节数与 stat 对不上** ⇒ 解出来的字符串不是盘上那份字节
+      // （UTF-8 非法字节会被换成 U+FFFD，长度随之改变）⇒ 它的"版本指纹"不可信，仍算 unreadable。
+      const size = Buffer.byteLength(text, 'utf8');
+      let after = null;
+      try { after = fs.statSync(file); } catch (e) { after = null; }
+      if (after && after.size === st.size) {
+        if (size === st.size) {
+          return { state: 'ok', text: text, version: versionOfText(text), bytes: st.size, reason: null };
+        }
+        return { state: 'unreadable', text: null, version: null, bytes: st.size,
+          reason: '大小不符（stat 说 ' + st.size + ' 字节，按 UTF-8 解出 ' + size + ' 字节 —— 字节流不构成合法 UTF-8）' };
+      }
+      // stat 前后不一致 = 读的过程中被改了 ⇒ 再试一次；仍不一致则如实报"读不稳"
+    }
+    return { state: 'unreadable', text: null, version: null, bytes: null,
+      reason: '读的过程中文件一直在变（stat 前后不一致）' };
+  }
+
+  /**
+   * 把 `inspectOnDisk()` 的读数译成报文里那截括号（**唯一一处**：三种报错共用同一句话，
+   * 免得"大小"与"原因"在两处各写一套格式）。
+   * 形状 = `（大小 <N> 字节 ≈ <X> MB / 原因：<...>）`；采不到的那一截**明说采不到**，不省略。
+   */
+  function describeOnDisk(info) {
+    const i = info || {};
+    const parts = [];
+    if (typeof i.bytes === 'number' && isFinite(i.bytes)) {
+      parts.push('大小 ' + i.bytes + ' 字节'
+        + (i.bytes >= MB_BYTES ? ' ≈ ' + (i.bytes / MB_BYTES).toFixed(1) + ' MB' : ''));
+    } else {
+      parts.push('大小采不到');
+    }
+    if (i.reason) parts.push('原因：' + i.reason);
+    return '（' + parts.join(' / ') + '）';
+  }
+
+  /**
    * **并发版本闸门的唯一比较与报错实现**（`store.write` 与 `writeManagedText` 共用这一份）。
    *
    * 为什么必须是"一个函数"而不是各处各写一段 `if (actual !== expect) throw …`：
@@ -66,20 +190,50 @@
    * ⇒ 它对"整文件覆盖写"（本函数另一半用例）与"整树 JSON 写回"用的是同一把尺子。
    *
    * @param {{label:string, hint:string,
-   *          expectVersion:(string|null|undefined), actualVersion:(string|null)}} o
+   *          expectVersion:(string|null|undefined), actualVersion:(string|null),
+   *          actualState:('absent'|'unreadable'|'ok'|undefined),
+   *          actualBytes:(number|undefined), actualReason:(string|undefined)}} o
    *   `label` = 报错里"谁被改了"（例：`项目「comnet」` / `受管文件「CHANGELOG.md」`）；
-   *   `hint`  = 报错里的出路，**必须是被报的那一方真的做得到的那一句**（F1：死指针不算出路）。
+   *   `hint`  = 报错里的出路，**必须是被报的那一方真的做得到的那一句**（F1：死指针不算出路）；
+   *   `actualState` / `actualBytes` / `actualReason` = `inspectOnDisk()` 的读数。
+   *   ⚠️ **三档必须一起传**：只传 `actualVersion` 会把"存在但读不回来"压成"不存在"（见下）。
+   * @throws {Error} `code === 'TARGET_UNREADABLE'`（盘上文件存在但读不回来 ⇒ **无条件**拒绝）
    * @throws {Error} `code === 'VERSION_CONFLICT'`，并带**完整**指纹
    *   `expectVersion` / `actualVersion` / `label`（报文里为可读只印前 8 位，完整值在错误对象上）
    */
   function versionGate(o) {
     const g = o || {};
+    /* 「盘上那份到底是什么状态」——**三档**。
+     * 没传 `actualState` 的调用形态（老的直接调用）按老口径推断：`actualVersion` 为 null ⇒ absent。 */
+    const state = g.actualState
+      || (g.actualVersion === null || g.actualVersion === undefined ? 'absent' : 'ok');
+
+    /* ⚠️ **盘上文件存在但读不回来 ⇒ 无条件拒绝**，与调用方有没有声明 `expectVersion` 无关。
+     * 这是本批最要紧的一处，理由是**实测**而不是推论：老的 `versionOf()` 读失败就回 `null`，
+     * 于是"没声明版本"的写认为盘上没有东西 ⇒ 直接整份覆盖 —— 540 MB 的笔记就是这样被换成
+     * 215 字节、而变更日志记着 `created:true`（`.review/20261034-规模化阈值/logs/06-bigfile-guard.json`）。
+     * 口径：**读不回来 = 我们不知道盘上有什么** ⇒ 任何覆盖都可能是在销毁别人的数据。
+     * 它同时是报文订正的那一半：老文案在这里会说「盘上 已不存在」，而文件明明在。 */
+    if (state === 'unreadable') {
+      const err = codedError(TARGET_UNREADABLE,
+        '盘上文件存在但无法读取' + describeOnDisk({ bytes: g.actualBytes, reason: g.actualReason })
+        + '：' + g.label + ' 的那份文件在盘上，但读不回来 ⇒ 写入已中止（**一个字节都没动**）——'
+        + '读不回来就不知道盘上有什么，覆盖它可能是在销毁别人的数据。'
+        + '出路：先查明它为什么读不回来（项目文件大到超过 readFileSync 的字符串上限 / 权限 /'
+        + ' 另一个进程正拿着它），把它挪走或修好之后再写；' + g.hint + '。');
+      err.actualState = state;
+      err.actualBytes = g.actualBytes;
+      err.actualReason = g.actualReason;
+      err.label = g.label;
+      throw err;
+    }
+
     // 调用方没声明"我读到的是哪一版" ⇒ 不设闸门（行为与从前完全一致；新建文件也是这一档）
     if (g.expectVersion === undefined || g.expectVersion === null) return;
     if (g.actualVersion === g.expectVersion) return;
     const err = new Error('并发写入冲突：' + g.label + '在你读取之后已被其他写入者修改'
       + '（读到 ' + String(g.expectVersion).slice(0, 8) + '，盘上 '
-      + (g.actualVersion === null ? '已不存在' : String(g.actualVersion).slice(0, 8)) + '）。'
+      + (state === 'absent' ? '已不存在' : String(g.actualVersion).slice(0, 8)) + '）。'
       + '写入已中止，以免静默覆盖那次改动 —— ' + g.hint + '。');
     // 错误码：`src/concurrency.js` 的自动重放据此判断"这是可重放的版本冲突"。
     // 有码之后，调用方不必去解析上面这段文案（文案会改）。
@@ -91,12 +245,96 @@
   }
 
   /**
+   * **回读核对**：把"刚写下去的那份内容"从盘上读回来，逐字节比一遍，并要求它能 parse。
+   *
+   * 为什么必须有这一条（它是本批的**核心防线**，不是附加项）：
+   *   "写前声明上限"只挡得住**写之前就知道太大**的那一类。挡不住"写到一半出事" ——
+   *   磁盘满 / 进程被杀 / 只写了半截 / 文件系统或杀毒软件把字节改了，
+   *   而这些情形下 `fs.writeFileSync` **不一定会抛错**。少了回读，结局就是
+   *   "已知的静默销毁"换成"未知的静默销毁"。
+   *
+   * 判据两条，都必须是**盘上那份字节**算出来的，不是内存里那份算出来的：
+   *   ① **字节长度与内容**：`readFileSync` 回来的 Buffer 与期望的 Buffer **逐字节相等**
+   *      （只比长度不够：同长度的坏字节照样是坏数据）；
+   *   ② **能不能 parse**（`opts.parse !== false` 时）：按项目 JSON 的口径解一遍。
+   *
+   * 失败 ⇒ 抛 `WRITE_VERIFY_FAILED`，**且不清理任何东西**。
+   *   `opts.stage === 'tmp'`    = 换名**之前**核对 ⇒ 目标文件还没被替换，盘上仍是上一版（最好的结局）；
+   *   `opts.stage === 'target'` = 换名**之后**核对 ⇒ 盘上可能已经是坏的那份，此时**不许删**
+   *   `.changes.jsonl` / `backups/` 之类回滚材料（它们是把数据找回来的唯一线索）。
+   *
+   * @param {string} file 绝对路径
+   * @param {string|Buffer} expected 刚写下去的内容
+   * @param {{label?:string, parse?:boolean, stage?:('tmp'|'target')}} [opts]
+   * @returns {{bytes:number}} 回读到的字节数（= 期望的字节数）
+   * @throws {Error} `code === 'WRITE_VERIFY_FAILED'`
+   */
+  function verifyOnDisk(file, expected, opts) {
+    const o = opts || {};
+    const label = o.label || ('文件「' + file + '」');
+    const exp = Buffer.isBuffer(expected) ? expected : Buffer.from(String(expected), 'utf8');
+    const stage = o.stage === 'target' ? 'target' : 'tmp';
+    const tail = stage === 'target'
+      ? '⚠️ 目标文件**可能已经被换成了坏的那一份**：产出的结果是"写成功"但内容不可信。'
+        + '请立刻核对/恢复 —— **不要删** 该项目的 `.changes.jsonl` 与 `backups/`（它们是回滚材料），'
+        + '也不要删同目录下任何 `.tmp` 残留（那是本次写下去的原始字节）。'
+      : '目标文件**未被替换**（原子写的临时文件已在核对失败后清理）⇒ 盘上仍是上一次写成功的那一版，'
+        + '本次写入没有生效。';
+
+    let got;
+    try {
+      got = fs.readFileSync(file);
+    } catch (err) {
+      throw codedError(WRITE_VERIFY_FAILED,
+        '写后核对失败：' + label + ' 刚写下去就**读不回来**（' + shortErr(err) + '）——'
+        + '盘上那份内容的完整性无法确认。' + tail);
+    }
+    if (got.length !== exp.length) {
+      throw codedError(WRITE_VERIFY_FAILED,
+        '写后核对失败：' + label + ' 刚写下去的字节数是 ' + exp.length + '，回读到的却是 ' + got.length
+        + '（**大小不符**，差 ' + Math.abs(exp.length - got.length) + ' 字节）—— 这份写入不完整。' + tail);
+    }
+    if (Buffer.compare(got, exp) !== 0) {
+      let at = 0;
+      while (at < exp.length && got[at] === exp[at]) at += 1;
+      throw codedError(WRITE_VERIFY_FAILED,
+        '写后核对失败：' + label + ' 回读到的字节与刚写下去的那份**不一致**'
+        + '（大小都是 ' + exp.length + ' 字节，但第 ' + (at + 1) + ' 字节起就不同：'
+        + '期望 0x' + exp[at].toString(16) + '，盘上 0x' + got[at].toString(16) + '）—— 写入内容被改过。' + tail);
+    }
+    if (o.parse !== false) {
+      try {
+        parseProjectJson(got.toString('utf8'));
+      } catch (err) {
+        throw codedError(WRITE_VERIFY_FAILED,
+          '写后核对失败：' + label + ' 回读到的字节数对得上（' + got.length + ' 字节），但**解析失败**'
+          + '（' + shortErr(err) + '）—— 盘上那份不是合法的项目 JSON。' + tail);
+      }
+    }
+    return { bytes: got.length };
+  }
+
+  /**
    * 原子写文件：同目录临时文件 → fsync 落盘 → rename 覆盖。
    * 同目录 rename 在 NTFS / POSIX 上均为原子操作，因此进程中断或磁盘写满
    * 只会留下临时文件，**不会产生被截断的目标文件**（防整库损坏）。
    * 失败时清理临时文件并抛出（原文件保持不动）。
+   *
+   * ⚠️ **rename 的原子性只保证"要么旧的、要么新的"，不保证"新的那份内容是好的"**：
+   * `fs.writeFileSync` 在磁盘写满/被杀/只写半截时**不一定会抛**，那样 rename 就会把一份
+   * 半截文件堂而皇之地换上目标位。⇒ 传 `opts.verify` 时，**换名之前**先回读核对临时文件
+   * （见 `verifyOnDisk` 的注释），核对不过就**不换名**、清理临时文件、抛错 ⇒
+   * 目标文件连一瞬都没被动过。这是"写到一半出事"那一类风险的唯一防线。
+   *
+   * @param {string} file 目标绝对路径
+   * @param {string|Buffer} content 完整内容
+   * @param {{verify?:({label?:string, parse?:boolean}|boolean)}} [opts]
+   *   `opts.verify` 给了就做"换名前回读核对"（`true` = 用默认标签）。**默认不做**：
+   *   本函数还被 CHANGELOG / 生成物 / 二进制资源用，核对是每个调用方**按需**加的（本批只给
+   *   项目 JSON 那条路加上 —— 它是"被静默换成空壳"实测发生的那一条）。
    */
-  function writeFileAtomic(file, content) {
+  function writeFileAtomic(file, content, opts) {
+    const o = opts || {};
     const tmp = file + '.' + process.pid + '.' + Date.now() + '.tmp';
     let fd;
     try {
@@ -105,6 +343,10 @@
       fs.fsyncSync(fd);          // 关键：先落盘，再 rename
       fs.closeSync(fd);
       fd = undefined;
+      if (o.verify) {
+        const v = o.verify === true ? {} : o.verify;
+        verifyOnDisk(tmp, content, { label: v.label, parse: v.parse, stage: 'tmp' });
+      }
       renameWithRetry(tmp, file);
     } catch (err) {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch (e) { /* ignore */ } }
@@ -185,14 +427,17 @@
     const h = handle || {};
     const file = h.file;
     if (!file) throw new Error('writeManagedText 需要一个来自 readManagedText() 的句柄（缺 file）');
-    // 旧内容**只读一次**：唯一用途是与调用方声明的版本比对（原子写本身不需要它）
-    let oldText = null;
-    try { oldText = fs.readFileSync(file, 'utf8'); } catch (e) { oldText = null; }
+    // 旧内容**只读一次**：唯一用途是与调用方声明的版本比对（原子写本身不需要它）。
+    // 三档状态一起交给闸门 —— 只给 `version` 会把"存在但读不回来"说成"不存在"（见 `inspectOnDisk`）。
+    const onDisk = inspectOnDisk(file);
     versionGate({
       label: o.label || ('受管文件「' + file + '」'),
       hint: o.hint || '请重新读取该文件后再改',
       expectVersion: h.version,
-      actualVersion: oldText === null ? null : versionOfText(oldText)
+      actualVersion: onDisk.version,
+      actualState: onDisk.state,
+      actualBytes: onDisk.bytes,
+      actualReason: onDisk.reason
     });
     writeFileAtomic(file, content);
     return { file: file, version: versionOfText(content) };
@@ -231,6 +476,32 @@
       const v = schema.validateProject(data, projectsRoot, name);
       if (!v.ok) throw new Error('校验失败: ' + v.errors.join('; '));
     };
+  }
+
+  /**
+   * **写前上限核对**：payload 的字节数超过 `MAX_PROJECT_FILE_MB` ⇒ 抛 `WRITE_TOO_LARGE`。
+   *
+   * 位置纪律：它必须在**任何写盘动作之前**（本项目里就是 `writeFileAtomic` 之前）调用，
+   * 而且必须在**旧内容读取之前**——超限的写连"读旧内容"都不该发生。
+   * 报文三件套（缺一条就等于把人丢在半路）：① 当前多大；② 上限多大、依据是什么；③ 出路。
+   *
+   * @param {string} name 项目名（只用于报文）
+   * @param {number} bytes 序列化后的**字节数**（不是字符数：中文一个字 3 字节）
+   * @throws {Error} `code === 'WRITE_TOO_LARGE'`
+   */
+  function assertWithinCap(name, bytes) {
+    const cap = MAX_PROJECT_FILE_MB * MB_BYTES;
+    if (bytes <= cap) return;
+    const mb = (bytes / MB_BYTES).toFixed(1);
+    throw codedError(WRITE_TOO_LARGE,
+      '写入被拒：项目「' + name + '」这次要写 ' + mb + ' MB（' + bytes + ' 字节），'
+      + '超过声明上限 ' + MAX_PROJECT_FILE_MB + ' MB（= ' + cap + ' 字节）⇒ **一个字节都没写，盘上原文件没动**。'
+      + '上限的依据（实测）：读一份项目 JSON 要把它整份变成一个字符串，而 Node 的单字符串长度上限是'
+      + ' 0x1fffffe8 字符 —— 实测 500 MB 读得回来、540 MB 读不回来；越过那条线之后旧文件会被静默覆盖。'
+      + '故上限取它的四分之一。出路：① 把这个项目拆成几个（每个都在上限以内）；'
+      + '② 大块内容（PDF / 图片 / 附件）放项目的 attachments 目录，不要塞进节点详情；'
+      + '③ 确实需要更大的项目 ⇒ 那是改约定：同批改 src/data-store.js 的 MAX_PROJECT_FILE_MB 与'
+      + ' scripts/collateral-check.js 的 CAPPED_LITERALS，并写明为什么（改动会出现在 diff 里）。');
   }
 
   function createStore(rootDir, validate) {
@@ -391,10 +662,29 @@
 
       read(name) {
         const file = projectFile(name);
-        if (!fs.existsSync(file)) throw new Error('项目不存在: ' + name);
-        const text = fs.readFileSync(file, 'utf8');
+        /* 三档判据（**不许**再用 `existsSync` 当"在不在"）：`existsSync` 对"存在但读不回来"
+         * 的文件回 true，随后 `readFileSync` 抛的是 Node 原始报文（`Cannot create a string longer
+         * than 0x1fffffe8 characters`）—— 读的人只能看到一句与自己无关的实现细节，
+         * 看不出"我的笔记文件太大/坏了"。这里把它换成"存在但无法读取（多大 / 为什么）"。 */
+        const onDisk = inspectOnDisk(file);
+        if (onDisk.state === 'absent') throw new Error('项目不存在: ' + name);
+        if (onDisk.state === 'unreadable') {
+          throw codedError(TARGET_UNREADABLE, '项目「' + name + '」的文件**存在但无法读取**'
+            + describeOnDisk(onDisk) + ' —— 这份数据现在既读不出来、也不该被任何写入覆盖；'
+            + '先查明原因（文件过大超过 readFileSync 的字符串上限 / 权限 / 另一个进程正拿着它）。');
+        }
+        let data;
+        try {
+          data = parseProjectJson(onDisk.text);
+        } catch (err) {
+          // "字节读回来了但解析不了"是**另一种**不可用（区别于不存在，也区别于读不回来）
+          throw codedError(TARGET_UNREADABLE, '项目「' + name + '」的文件**存在但无法解析**'
+            + describeOnDisk({ bytes: onDisk.bytes, reason: '解析失败：' + shortErr(err) })
+            + ' —— 这份数据现在既解析不出来、也不该被任何写入覆盖；先查明它是什么时候、被什么写坏的'
+            + '（`changes` 命令有逐条写入记录）。');
+        }
         // version 一并返回：调用方（CLI 的 ctx / GUI 主进程）用它做写入前的并发闸门
-        return { file, data: parseProjectJson(text), version: versionOfText(text) };
+        return { file, data, version: onDisk.version };
       },
 
       write(name, data, opts) {
@@ -404,32 +694,46 @@
         if (validate) validate(data, name); // 写盘前校验（安全闸门）
         const file = projectFile(name);
 
-        // ---- 旧内容**只读一次** ----
+        /* ---- 写前 ①：**上限核对**（超限 ⇒ 响亮失败，且一个字节都不写）----
+         * 序列化**只此一处**：随后"落盘 / 上限核对 / 回读核对 / 算指纹"用的都是**同一个字符串**。
+         * 若各处各 `JSON.stringify` 一次，核对的那份与落盘的那份就可以不同 ⇒ 判据会自证清白。 */
+        const json = JSON.stringify(data, null, 2);
+        const payloadBytes = Buffer.byteLength(json, 'utf8');
+        assertWithinCap(name, payloadBytes);
+
+        // ---- 旧内容**只读一次**（三档状态：absent / unreadable / ok）----
         // 两个用途：① 并发版本闸门要比对它的指纹；② 变更日志要拿它算"改了什么"。
-        // 读失败按"盘上没有"处理（与原先的 `versionOf` 语义一致：读不到 → null）。
-        let oldText = null;
-        try { oldText = fs.readFileSync(file, 'utf8'); } catch (e) { oldText = null; }
-        const actualVersion = oldText === null ? null : versionOfText(oldText);
+        // ⚠️ 读不回来**不再等于**"盘上没有"—— 那正是 540 MB 笔记被静默换成空壳的成因。
+        const onDisk = inspectOnDisk(file);
 
         // ---- 并发版本闸门 ----
         // 调用方若声明了「我读到的是哪一版」（expectVersion），就要求盘上仍是那一版。
         // 不是 → 说明读与写之间**别处写入过**，此时写下去会把那次改动**静默抹掉**。
         // 实测两条真路径（见 main.js project:save 的注释）：内存里是子集时写回会删掉
         // 其他笔记；AI/CLI 在界面打开期间写的笔记会被界面的整树覆盖。
-        // 口径：**宁可失败，也不静默丢数据**。不传 expectVersion 时行为与从前完全一致。
+        // 口径：**宁可失败，也不静默丢数据**。不传 expectVersion 时版本比对不设闸门，
+        // 但"盘上文件存在却读不回来"**仍然**拒绝（那一档与 expectVersion 无关）。
         // ⚠️ 比较与报错的实现**只此一份**（`versionGate`）—— `writeManagedText`（整文件受管文档）
         //    走的是同一个函数；这里不许再出现一段 `if (actualVersion !== expectVersion)`。
         versionGate({
           label: '项目「' + name + '」',
           hint: '请重新读取该项目后再改',
           expectVersion: o.expectVersion,
-          actualVersion: actualVersion
+          actualVersion: onDisk.version,
+          actualState: onDisk.state,
+          actualBytes: onDisk.bytes,
+          actualReason: onDisk.reason
         });
 
         fs.mkdirSync(projectDir(name), { recursive: true });
-        // 原子写：临时文件 + fsync + rename（CLI 全部写命令经此出口）
-        const json = JSON.stringify(data, null, 2);
-        writeFileAtomic(file, json);
+        /* 原子写 + **换名前回读核对**（`verify: {…}`）：写坏的那一份永远换不进目标位。
+         * 只挡住"写之前就知道太大"是不够的 —— 磁盘满 / 被杀 / 只写半截时
+         * `fs.writeFileSync` 不一定抛错，那样 rename 会把半截文件换上目标位。 */
+        writeFileAtomic(file, json, { verify: { label: '项目「' + name + '」', parse: true } });
+        /* ---- 写后 ②：**目标文件回读核对**（换名之后再看一眼盘上那份字节）----
+         * 与上一步判据相同（字节 + parse），但对象是**最终可观测的那份产物**；
+         * 不一致 ⇒ 抛 `WRITE_VERIFY_FAILED` 并**保留全部回滚材料**（见 verifyOnDisk 的 stage 分支）。 */
+        verifyOnDisk(file, json, { label: '项目「' + name + '」', parse: true, stage: 'target' });
         // 一并回传"刚写下去的这一版"的指纹：调用方（ctx.write / 自动重放器）据此更新自己记的版本，
         // 免得同一条命令里紧接着再写一次时**误报**冲突。序列化只有这一处，不重复第二种写法。
         const version = versionOfText(json);
@@ -438,7 +742,7 @@
         // —— 数据安全优先；但也**绝不静默**：打到 stderr，让调用方看得见（F1）。
         try {
           recordChange(name, {
-            oldText: oldText, data: data, version: version, writer: o.writer,
+            oldText: onDisk.text, data: data, version: version, writer: o.writer,
             // 幂等键与首次回显：**只转交**（判定与回放都在 `cli/core.js` 的守卫里）。
             // 不走 `store.write` 的调用方（如 `import-json`）自然拿不到它们 ⇒ 字段缺席，行为与从前一致 ✓
             idem: o.idem, out: o.out
@@ -487,6 +791,10 @@
     createStore, writeFileAtomic, parseProjectJson, versionOf, versionOfText,
     createProjectValidator,
     // 并发版本闸门的**唯一**比较/报错实现 + 整文件受管文档的读写对（`cli/commands/release.js` 用）
-    versionGate, readManagedText, writeManagedText
+    versionGate, readManagedText, writeManagedText,
+    // 本批（数据安全）：声明上限 + 盘上状态三档 + 三个错误码。
+    // `MAX_PROJECT_FILE_MB` 导出是为了让**判据**读它而不是抄一份（抄一份就是同一事实的第二处表达）。
+    MAX_PROJECT_FILE_MB, inspectOnDisk, describeOnDisk, assertWithinCap, verifyOnDisk,
+    WRITE_TOO_LARGE, WRITE_VERIFY_FAILED, TARGET_UNREADABLE
   };
 });
