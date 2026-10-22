@@ -2544,15 +2544,27 @@ module.exports = {
     copyTree(path.join(ctx.PROJECTS_DIR, ctx.projectName, 'assets'), path.join(outDir, 'assets'));
     copyTree(path.join(ctx.PROJECTS_DIR, ctx.projectName, 'attachments'), path.join(outDir, 'attachments'));
     // 2) 生成 Markdown（相对路径链接图片与附件）
+    /* 口径（唯一定义在 `export-md` 的 registry desc + `src/markdown.js` 文件头那段注释）：
+     * `export-md` 是**读向**导出 —— 给编辑器/人/AI 读，**不保证** `import-md` 往返等价。
+     * 因此 v3 之后加上的四样**恒导出**、不受 `--with-detail` 控制：
+     *   items[]（→ 节点下的 `1.` 子列表，行尾括注 已核/未核 · 出处 · 条目标签）、tags、localPath，
+     *   以及条目上的 verified（未核也显示）。`--with-detail` 只决定 `detail` 导不导。
+     * 有 `items` 的节点**不导 detail**（它逐字节等于 `renderDetail(items)`，见 docs/ITEM-MODEL.md §2）。 */
+    const withDetail = !!ctx.args.withDetail;
     const md = markdown.treeToMarkdown(data.data, {
       format: ctx.args.format === 'list' ? 'list' : 'heading',
-      withDetail: !!ctx.args.withDetail,
+      withDetail: withDetail,
       withResources: true
     });
     const mdFile = path.join(outDir, ctx.projectName + '.md');
     fs.writeFileSync(mdFile, md, 'utf8');
     const nodes = tree.count(data.data);
     ctx.out('已导出文件夹: ' + outDir + '（' + ctx.projectName + '.md，' + nodes + ' 节点，含 assets/ 与 attachments/）');
+    /* 这一行是"不静默丢"的可见面：读者必须知道**这一档导了什么、没导什么**。
+     * 缺省档不导 `detail` 是既有语义（`--with-detail`），但条目化之后它会被误读成
+     * "v2 节点没内容"或"导出把正文丢了"，所以在这里说明。 */
+    ctx.out('  读向口径：items / tags / verified / localPath 恒导出（`--with-detail` 只管 detail）'
+      + (withDetail ? '' : '；本档**未导** detail（节点正文）'));
   },
 
   /**

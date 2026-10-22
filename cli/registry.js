@@ -377,7 +377,26 @@ function init() {
       + '撤销是一条既有命令：`remove <目标项目> <分组节点id>`。',
     fn: loadFile('merge').mergeProject
   });
-  register({ name: 'export-md', usage: 'export-md <项目> <输出目录> [--format heading|list] [--with-detail]', options: ['format', 'withDetail'], desc: '导出为文件夹：<项目>.md + assets/ + attachments/（v0.16 起）', fn: loadFile('project').exportMd });
+  register({
+    name: 'export-md',
+    usage: 'export-md <项目> <输出目录> [--format heading|list] [--with-detail]',
+    options: ['format', 'withDetail'],
+    desc: '导出为文件夹：<项目>.md + assets/ + attachments/（v0.16 起）。'
+      + '**读向导出**（给编辑器 / 人 / AI 读）—— 保证"读得懂、不静默丢"，**不保证** '
+      + 'export-md → import-md 往返等价（往返与跨机迁移是 export-json 的职责）；'
+      + '本命令**不**为往返发明标记语法（那会变成第二份数据格式）。'
+      + '导出的不只是标题树：① 条目层 items[] 展开成该节点下的 `1.` 有序子列表，'
+      + '行尾括注 = 核验状态 · 出处 · 条目标签（**未核也显示**：只写"已核"的话，'
+      + '读者分不清"这条未核"与"这行丢了标注"）；② 节点 tags 作为行内 `#标签`；'
+      + '③ localPath 作为行内**路径原文** + 失效说明（它按契约是本机绝对路径 ⇒ 恒不在导出目录内，'
+      + '写成链接只会得到一个"点了没反应"的链接，反而说不清为什么打不开）；'
+      + '④ 有 items 的节点**不导** detail（它逐字节等于 renderDetail(items)，'
+      + '导两遍会让读者不知道哪份是真源）。'
+      + '`--with-detail` **只管** detail，上面四样一律不受它控制（它们是结构与标注，不是正文长文）。'
+      + '不导出（读向不需要，要全的用 export-json）：节点/条目 id、at/by、supersededBy、'
+      + 'qa[] 原始结构、links[]、origin、expanded',
+    fn: loadFile('project').exportMd
+  });
   register({
     name: 'bind-sync',
     usage: 'bind-sync <项目> [--bind --dir <目录> --mode flat|mirror --include <模式,…> --ignore <模式,…> '

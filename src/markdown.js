@@ -14,7 +14,9 @@
  *         （【W19】：不走的调用方就会留下悬空引用，见下面那一整段）
  *       · 其余非标题行 → 也转成 detail（HTML），保证 detail 始终是 HTML
  *   - treeToMarkdown(tree, {format, withDetail, withResources})：节点树 → 大纲
- *     （CLI export-md 使用）
+ *     （CLI export-md 使用）。**读向**导出：v3 之后加上的四样（`items` / `tags` /
+ *     `verified` / `localPath`）**恒导出**、不受 `withDetail` 控制；有 `items` 的节点不导
+ *     `detail`（派生缓存）。口径与理由见函数上方那一大段注释 + `cli/registry.js` 的 desc。
  *   - resolveImportRefs(roots, opts)：把节点上挂的图片/附件引用**落到项目里**
  *     （复制 + 改写成项目内相对路径；【W19】，见下面那一整段）
  * 说明：导入是「追加为子树」，因此整份导出再导入会把顶层标题也变成一个节点
@@ -580,8 +582,168 @@
     return { data: stack[0], addedCount, preamble: preamble };
   }
 
+  /* ================= export-md 的「读向」标注（**唯一一处**语法；导入侧没有对应解析器） =================
+   * 定位（同一段话也写进 `cli/registry.js` 的 `export-md` desc ⇒ 进生成物 `docs/CLI.md`）：
+   *   `export-md` 是**读向**导出（给编辑器 / 人 / AI 读），**不是**可回灌的备份。
+   *   ① 保证：读得懂、**不静默丢**（不导的东西逐条点名）；
+   *   ② **不**保证 `export-md` → `import-md` 往返等价 —— 那是 `export-json` 的职责；
+   *   ③ **不许**为了"往返好看"发明一套私有标记语法（那会变成第二份数据格式）。
+   *
+   * 原先**静默丢掉**的是 v3 之后加上的四样（改前实测：`exportMd` 函数体里 `items` / `tags` /
+   * `verified` / `localPath` 的出现次数都是 0）：
+   *   · `items[]`   ⇒ 节点下的**有序子列表**（`1.` 起头）。条目是"挂在节点上的多段内容"，
+   *                   天然对应列表项；节点正文仍走 `>` 引用块 ⇒ 两者**结构上可分辨**
+   *                   （读者不会把"条目"读成"正文的一部分" —— 这是本段最要紧的一条：
+   *                   把 items 拼进 detail 后面，会让"有 items 的节点"与"detail 里恰好有
+   *                   类似文字的节点"在导出物里**无法区分**）。
+   *   · `tags`      ⇒ 行内 `#标签`（节点级挂在节点行尾、条目级挂在条目括注里），**不另起一节**。
+   *   · `verified`  ⇒ 条目括注里恒显「已核 / 未核」。**未核也显示**：只显示"已核"的话，
+   *                   读者分不清"这条未核"与"这一行丢了标注"；而**未核比例**正是这份导出
+   *                   最该让人看见的东西（与 `health` 的读数口径一致）。
+   *   · `localPath` ⇒ 行内**路径原文** + 一句失效说明（为什么不写成链接见 `nodeAnnotation`）。
+   *
+   * 三条**定死的取舍**（别在别处再解释一遍；口径与判据见 `tests/export-md-extras.test.js`）：
+   *   ① `--with-detail` **只管 `detail`**，上面四样一律**不受它控制**：它们是**结构与标注**，
+   *      不是"正文长文"。若把 items 也跟着关掉，条目化节点在缺省档下会变成"只有一个标题、
+   *      零内容"—— 那比不导出更坏（静默丢内容）。
+   *   ② 有 `items` 的节点**不导 `detail`**：按 `docs/ITEM-MODEL.md` §2，`detail` 逐字节等于
+   *      `renderDetail(items)` ⇒ 导两遍就是同一份内容写两次，且读者无法知道哪份是真源。
+   *   ③ 四样一个都没有 ⇒ 输出与**改动前逐字节相同**（下面每个标注点都以"有东西才写"为守卫）。
+   */
+  /** 说明行：只在**真有东西要解释**时出现（见上面 ③）。写成 HTML 注释 ⇒ 渲染视图里不占版面，
+   *  但读源文件的人/AI 一眼能看到"`1.` 是什么、括注是什么、这份文件为什么不能回灌"。 */
+  const EXPORT_LEGEND = '<!-- export-md（读向导出）：`#`/`-` 起头 = 节点；`>` 起头 = 节点正文（detail）；'
+    + '`1.` 起头 = 该节点的条目（items），行尾括注 = 核验状态 · 出处 · 条目标签；'
+    + '节点行 `｜` 之后 = 节点级标签与本机目录（localPath）。'
+    + '本文件**不可回灌**（往返/备份请用 export-json），也不为往返发明标记语法。 -->';
+
+  /** 压成**一行**（标注全都是行内的：换行会把一条标注劈成两行、被读成正文）。 */
+  function inlineText(v) {
+    return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+  }
+
+  /** 行内代码：能包就包。含反引号时**不包也不改写** —— 把用户的路径/标签改掉比少一对反引号更糟。 */
+  function codeSpan(v) {
+    const s = inlineText(v);
+    if (!s) return '';
+    return s.indexOf('`') < 0 ? '`' + s + '`' : s;
+  }
+
+  /** `tags` → `` `#a` `#b` ``；空数组 / 非数组 ⇒ 空串（**不产生标注** ⇒ 输出不多一个字节）。 */
+  function tagSpans(tags) {
+    if (!Array.isArray(tags)) return '';
+    const out = [];
+    tags.forEach((t) => {
+      if (typeof t !== 'string') return;
+      const s = inlineText(t);
+      if (s) out.push(codeSpan('#' + s));
+    });
+    return out.join(' ');
+  }
+
+  /** 节点行尾的标注（`｜` 之后）：节点级标签 + `localPath`。两样都没有 ⇒ `''`。
+   *
+   *  为什么 `localPath` **不写成 markdown 链接**（口径要求"说清为什么打不开"）：
+   *  它按 `docs/DATA-FORMAT.md` §2 是"**本机绝对路径**"（如 `E:\markdown\M1`），
+   *  天生**不可能**出现在导出目录里 ⇒ 任何相对链接都必然指不到；写成 `file:///…` 只在
+   *  "同一台机器 + 认这种链接的编辑器"里才可点，反而制造"别人点了没反应"的假象 ——
+   *  与"说清为什么打不开"直接冲突。⇒ 给**路径原文**（可复制、可粘到资源管理器）+ 一句失效说明。
+   */
+  function nodeAnnotation(node) {
+    const parts = [];
+    const tags = tagSpans(node && node.tags);
+    if (tags) parts.push(tags);
+    const lp = node && typeof node.localPath === 'string' ? inlineText(node.localPath) : '';
+    if (lp) {
+      parts.push('本机目录 ' + codeSpan(lp)
+        + '（本机绝对路径，不在导出目录内 —— 换机器/换盘即失效，别人打不开）');
+    }
+    return parts.length ? ' ｜ ' + parts.join(' ｜ ') : '';
+  }
+
+  /** `<li>…</li>`（**单条**外壳）剥掉。不剥的话 `htmlToMarkdown` 会再写一个列表标记，
+   *  条目行变成 `1. - 内容`（同一行两个列表标记，读者以为是嵌套列表）。 */
+  const LI_ONLY_RE = /^<li\b[^>]*>([\s\S]*)<\/li>\s*$/i;
+
+  function stripSingleLi(html) {
+    const s = String(html == null ? '' : html);
+    const m = LI_ONLY_RE.exec(s);
+    if (!m) return s;
+    if (/<\/?li\b/i.test(m[1])) return s;   // 里面还有 <li> ⇒ 不是"单条外壳"，原样交给转换器
+    return m[1];
+  }
+
+  /** 条目正文首行**不能**与序号挤在一行的情形（块级标记）：围栏 / 标题 / 引用 / 表格 / 列表项。
+   *  不是排版洁癖：`1. ```c` 会让整段代码不再是围栏（内容还在，但读起来是乱的）。 */
+  const BLOCK_HEAD_RE = /^(```|~~~|#{1,6}\s|>|\||[-*+]\s|\d+[.)]\s)/;
+
+  /** 一条条目的正文 → markdown 行（**不含**序号与缩进）。多段（rich 条目：表格/代码/引文）⇒ 多行。
+   *  ⚠️ 能力边界（如实登记）：续行只裁行尾空白，**保留行首缩进**（代码块的缩进是内容）；
+   *  但条目正文里**块内**的相对缩进不会在这里重排 —— 本函数不改写内容，只摆放位置。 */
+  function itemBodyLines(item) {
+    if (!item || typeof item !== 'object') return [];
+    if (item.type === 'qa') {
+      const qa = item.qa && typeof item.qa === 'object' ? item.qa : {};
+      const q = inlineText(qa.q);
+      const a = String(qa.a == null ? '' : qa.a).split(/\r?\n/)
+        .map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim());
+      if (!a.length) return q ? ['问：' + q] : [];
+      const head = (q ? '问：' + q + ' ｜ 答：' : '答：') + a[0].trim();
+      return [head].concat(a.slice(1));
+    }
+    return convert.htmlToMarkdown(stripSingleLi(item.html))
+      .split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim());
+  }
+
+  /** 条目行尾的括注：**核验状态（恒显）** · 出处 · 条目标签。 */
+  function itemAnnotation(item) {
+    const it = item && typeof item === 'object' ? item : {};
+    const parts = [];
+    const v = it.verified;
+    if (v && typeof v === 'object') {
+      const how = inlineText(v.how);
+      parts.push(how ? '已核：' + how : '已核');
+    } else {
+      parts.push('未核');                    // 契约：缺失 = 未核（`docs/ITEM-MODEL.md` §1）
+    }
+    const src = (Array.isArray(it.src) ? it.src : [it.src])
+      .filter((s) => typeof s === 'string').map((s) => inlineText(s)).filter(Boolean);
+    if (src.length) parts.push('出处：' + src.join('、'));
+    const tags = tagSpans(it.tags);
+    if (tags) parts.push(tags);
+    return '（' + parts.join(' · ') + '）';
+  }
+
+  /** 一个节点的条目块 → 行数组。
+   *  @param {Array} items 该节点的 `items`（数组顺序 = 呈现顺序）
+   *  @param {string} indent 节点行的缩进；条目再深一级（`1.` 前 +2 空格、块续行再 +2）
+   *  @returns {string[]}
+   */
+  function itemLines(items, indent) {
+    const out = [];
+    (Array.isArray(items) ? items : []).forEach((item, i) => {
+      const body = itemBodyLines(item);
+      const ann = itemAnnotation(item);
+      const seq = String(i + 1) + '.';
+      const base = indent + '  ';
+      if (!body.length) { out.push(base + seq + ' ' + ann); return; }
+      const head = body[0].trim();
+      if (body.length > 1 || BLOCK_HEAD_RE.test(head)) {
+        // 序号独占一行，块原样缩进（序号留在标注里 ⇒ 核验状态仍然看得见）
+        out.push(base + seq + ' ' + ann);
+        body.forEach((l) => out.push(base + '  ' + l));
+        return;
+      }
+      out.push(base + seq + ' ' + head + ann);
+    });
+    return out;
+  }
+
   /**
    * 节点树 → Markdown 大纲
+   *
+   * **读向**导出（见上面那一大段）：`items` / `tags` / `verified` / `localPath` **恒导出**，
+   * `--with-detail` 只管 `detail`；四样都没有的节点与改动前**逐字节相同**。
    * @param {object} root 根节点
    * @param {object} opts { format: 'heading'|'list', withDetail, withResources }
    * @returns {string}
@@ -590,7 +752,11 @@
     const o = opts || {};
     const fmt = o.format === 'list' ? 'list' : 'heading';
     const out = [];
+    let annotated = false;              // 有没有"需要解释的东西"（决定要不要加说明行，见 ③）
     const walk = (node, level) => {
+      const indent = fmt === 'list' ? '  '.repeat(Math.max(0, level - 1)) : '';
+      const ann = nodeAnnotation(node);
+      if (ann) annotated = true;
       if (fmt === 'heading') {
         // Markdown 只支持 1–6 级标题（H_RE 也只认 1–6）。
         // 超过 6 层若继续 `'#'.repeat(level)`，会生成 `#######` —— 导入时**认不出来**，
@@ -599,14 +765,20 @@
         // 使深层节点至少在视觉上可区分、且仍能被导入成节点。
         const lv = Math.min(6, Math.max(1, level));
         const extra = level > 6 ? '　'.repeat(level - 6) : '';
-        out.push('#'.repeat(lv) + ' ' + extra + node.topic);
+        out.push('#'.repeat(lv) + ' ' + extra + node.topic + ann);
       } else {
-        out.push('  '.repeat(Math.max(0, level - 1)) + '- ' + node.topic);
+        out.push(indent + '- ' + node.topic + ann);
       }
-      if (o.withDetail && node.detail) {
+      /* ③' 有 `items` ⇒ `detail` **不导**（见上面 ②）：它是 `renderDetail(items)` 的派生缓存，
+       * 导两遍就是同一份内容写两次。这一条不受 `--with-detail` 影响（那是"要不要正文"，
+       * 不是"要不要把同一份内容写两遍"）。 */
+      const hasItems = Array.isArray(node.items);
+      if (hasItems && node.items.length) annotated = true;
+      if (o.withDetail && node.detail && !hasItems) {
         const quote = convert.detailToMarkdown(node.detail);
         if (quote) out.push(quote);
       }
+      if (hasItems) itemLines(node.items, indent).forEach((l) => out.push(l));
       // withResources：把节点挂载的图片/附件写成相对路径链接
       // （配合 export-md 文件夹导出：md 与 assets/、attachments/ 同目录，链接可用）
       // ⚠️ 语法只有一处（`resourceLine`）：导入侧把"降级成正文"也复用它，导出/导入才成对
@@ -617,11 +789,17 @@
       (node.children || []).forEach((c) => walk(c, level + 1));
     };
     walk(root, 1);
+    /* 说明行**只在真有东西要解释时**出现。这一条是"不误伤"判据的一半：
+     * 四样一个都没有的树，下面这个 `if` 不成立 ⇒ 返回的就是改动前那句 `out.join('\n')`。 */
+    if (annotated) out.unshift(EXPORT_LEGEND);
     return out.join('\n');
   }
 
   return {
     markdownToTree, treeToMarkdown, idGen,
+    /* 说明行本身也给出去：判别力证明与"这份导出怎么读"的诊断要能引用**同一份**常量
+     * （不在测试里另抄一份字符串 —— 抄一份就等着漂移）。 */
+    EXPORT_LEGEND,
     /* 提纲的**逐行围栏状态**与"数标题"：`src/doc-import.js` 的 `finishOutline`（`--dry-run` 报的
      * "N 个标题"）与 `cli/commands/project.js` 的 dry-run 预览（`topHeadings`）都调这两项 ——
      * 三处问"这一行算不算标题"共用同一个判据，不许各自拿正则再数一遍（A1：同一件事只有一处实现）。 */
