@@ -245,6 +245,21 @@
   let fdReparentStart = null;    // { x, y } 按下时的屏幕坐标
   let fdReparentDrop = null;     // 松手要交给写通道的那一对：{ parent }（当前压着的节点 id）
   let fdSelDrag = null;          // P4：从"已选中的节点"上按下开始的拖拽（起点坐标 ✓）    // {x, y, ox, oy} 拖动起点（屏幕）与起始偏移（逻辑）
+  /* D4（用户 2026-10-38 真机：「松开会自动打开节点详情，这个是 bug」）：
+   * 拖拽本身**不产生 click**，但浏览器会**为同一次手势补发一次 click**（mousedown 与 mouseup 落在
+   * 同一个节点上时 target 就是那个节点）⇒ 而"点击 → 开详情"的唯一入口是
+   * `renderer/app-detail-content.js` 的容器 click 处理器 → `noteNodeClick` → 300ms 后 `MM.showDetail`。
+   * ⇒ 拖完一松手，详情框就自己弹出来。
+   * 这里只做一件事：**把这一次由拖拽手势补发出来的 click 吞掉**（且只吞**一次**）。
+   * 三条纪律（少了任何一条就会变成"用开关盖住症状"）：
+   *   ① 位置在**捕获阶段**、作用在**同一个 click 事件**上 ⇒ `noteNodeClick` 一次都不会被调到
+   *      （不是"开了详情再关掉"，那种做法会留下访问日志与状态抖动 ✗）；
+   *   ② **只在 `armed` 的拖拽松手那一拍才置位**（`selDragDrop` 是唯一置位点）⇒ 不拖动而单击
+   *      的那条路一个字节都不受影响（对照组判据守着）；
+   *   ③ 下一次 `mousedown` 无条件清零 ⇒ 它不可能吃掉后来的任何一次真实点击。
+   * `swallowed` 是只读读数（给断言判"这一次 click 真的被吞掉了"）—— 不参与任何判定。 */
+  let fdSelDragClickSwallow = 0; // >0 ⇒ 下一次 click 是拖拽手势的补发，吞掉
+  const fdSelDragClickCounts = { armed: 0, swallowed: 0 };
   let fdDragModePan = null;      // 兜底：无目标树时的画布平移（中键同款）
 
   /* —— P7 跨视图投喂的**计数**（给冒烟断言用 ✓ 先例：MM.paintRawSelection 的注释就是这么写的）——
@@ -1222,6 +1237,74 @@
     return false;                                     // 'outline' ⇒ 松在 DSH = 取消
   }
 
+  /* ================= 「拖的那个东西长什么样」（2026-10-38 用户真机反馈）=================
+   * 用户原话：「我要的效果是外观和节点一模一样，除了有虚化效果」。
+   * ⇒ 起势那一刻从 DOM **现读**一份外观，随起点一起报给主进程；主进程的虚影页
+   *   （`main.js` 的 `ghostPageHtml`）拿它逐项赋值 —— 那边是 `data:` URL（**opaque origin**），
+   *   引不进任何外部 CSS/字体，所以外观**只能**以 inline style 搬。
+   *
+   * ⚠️ 这份白名单必须与主进程 `main.js` 的 `GHOST_STYLE_KEYS` **逐项同源**：
+   *   这里多搬一个键、那边不收 = 白搬（而且"为什么虚影少一样东西"会查不出来）；
+   *   这里少搬一个键 = 虚影少一样外观。**两处一起改**（冒烟域 30 的 D2 判据会红）。
+   * ⚠️ 不搬 position/left/top/width/height：几何由主进程 setBounds 决定，搬进来会与它打架。 */
+  const SEL_LOOK_CSS_KEYS = [
+    'backgroundColor', 'color', 'borderColor', 'borderWidth', 'borderStyle', 'borderRadius',
+    'boxShadow', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing',
+    'textAlign', 'textShadow', 'padding', 'whiteSpace', 'wordBreak', 'boxSizing'
+  ];
+
+  /** 读一个元素的外观（尺寸 + 文字 + computed style 白名单）。null = 没有元素 / 读崩了。
+   *  ⚠️ 必须在**起势之后**读（`selDragArm`）：jsMind 在 mousedown 时会先给节点上 `.selected`，
+   *     而用户拖动时看到的就是选中样式 —— 早读会拿"没选中"的样式去比"选中"的虚影（D2 会误红）。 */
+  function selDragLook(el) {
+    if (!el || !el.getBoundingClientRect) return null;
+    try {
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) return null;
+      const cs = window.getComputedStyle(el);
+      const css = {};
+      SEL_LOOK_CSS_KEYS.forEach((k) => {
+        const v = cs[k];
+        if (v && typeof v === 'string') css[k] = v;
+      });
+      return { w: Math.round(r.width), h: Math.round(r.height), text: String(el.textContent || '').trim(), css: css };
+    } catch (err) { return null; }
+  }
+
+  /* 一次拖拽最多往虚影里放几张卡（与 `main.js` 的 `GHOST_MAX_CARDS` 同一个上限）。 */
+  const SEL_LOOK_MAX_CARDS = 8;
+
+  /** 这一拖的**整组外观**（用户 2026-10-38 第二轮真机：「多选的时候只显示其中之一的虚影，这不对，
+   *  要显示全部被选中节点的」）。
+   *  · 单选 ⇒ 1 张卡、view 尺寸 = 那个节点的矩形（与改前逐项相同）；
+   *  · 多选 / 大虚线框 ⇒ 每个被拖的节点各 1 张卡，**各自尺寸 + 纵向堆叠**，view 宽度取最宽那张。
+   *  ⚠️ 为什么不按它们在画布上的相对布局排：那会得到一个可能比面板还大的外接框 ⇒
+   *     主进程 `ghostRectFor` 找不到合规位置（它**不许盖住光标**）⇒ 虚影整个不显示
+   *     （比"只显示一个"更糟）。父级明确允许"或整齐排列"⇒ 取堆叠。
+   *  @returns {{w:number,h:number,cards:Array}|null} */
+  function selDragLooks(ids) {
+    const list = Array.isArray(ids) ? ids.slice(0, SEL_LOOK_MAX_CARDS) : [];
+    const cards = [];
+    list.forEach((id) => {
+      const el = document.querySelector('jmnode[nodeid="' + id + '"]');
+      const one = selDragLook(el);
+      if (one) cards.push(one);
+    });
+    if (!cards.length) return null;
+    if (cards.length === 1) {
+      return { w: cards[0].w, h: cards[0].h,
+        cards: [{ x: 0, y: 0, w: cards[0].w, h: cards[0].h, text: cards[0].text, css: cards[0].css }] };
+    }
+    const out = [];
+    let w = 0, y = 0;
+    cards.forEach((c) => {
+      out.push({ x: 0, y: y, w: c.w, h: c.h, text: c.text, css: c.css });
+      y += c.h + 4;
+      if (c.w > w) w = c.w;
+    });
+    return { w: w, h: Math.max(1, y - 4), cards: out };
+  }
+
   /** 偏移变化后的一次性重绘（推着走 / 恢复 / 落定**共用**这一份 —— 三处各写一遍必漂）。
    *  顺序照既有拖动模式那一段：先落 transform，再让虚线框与连线跟上。 */
   function refreshAfterOffsetChange() {
@@ -1284,12 +1367,20 @@
       const cur = treeOffsets[s.offsetRoot];
       d.snap = cur ? { had: true, x: cur.x, y: cur.y } : { had: false, x: 0, y: 0 };
     }
-    /* 起点上报（M5）：第二个参数 = **拖的是什么**（虚影文字 + "能不能投给 DSH"都要它）。
+    /* 「拖的那个东西长什么样」（2026-10-38）：**在起势这一拍现读**，随起点一起报给主进程。
+     * 为什么不在 mousedown 读：那一刻 jsMind 还没把 `.selected` 加上去，读到的是"没选中"的样式
+     * （用户拖动时看到的是选中样式）⇒ 虚影会比节点差一个底色，看起来就是"不像"。
+     * ⚠️ 读的是**整组**（`s.ids`）而不是只读第一个：用户 2026-10-38 第二轮真机
+     *   「多选的时候只显示其中之一的虚影，这不对，要显示全部被选中节点的」。 */
+    try {
+      s.look = selDragLooks(s.ids);
+    } catch (err) { s.look = null; }
+    /* 起点上报（M5）：第二个参数 = **拖的是什么**（虚影外观 + "能不能投给 DSH"都要它）。
      * `toDsh` 由 `canDropToDsh`（唯一判据）算出来 —— 主进程只照它办，不自己再判一次"几个才算多选"。 */
     try {
       if (window.desktop && desktop.dsh && desktop.dsh.selDragStart) {
         desktop.dsh.selDragStart(s.ids.slice(), {
-          kind: s.kind, count: s.count, label: s.label, toDsh: canDropToDsh(s)
+          kind: s.kind, count: s.count, label: s.label, toDsh: canDropToDsh(s), look: s.look
         });
       }
     } catch (err) {
@@ -1323,6 +1414,10 @@
   function selDragDrop(d, e) {
     const s = d.subject;
     const droppable = canDropToDsh(s);
+    /* ★ D4：这一次松手之后浏览器会为**同一次手势**补发一次 click ⇒ 武装"吞一次"的闸。
+     * 置位点只有这一处（= 只有 `armed` 的拖拽会置位）；清零点是下一次 mousedown 与吞掉那一次本身。 */
+    fdSelDragClickSwallow = 1;
+    fdSelDragClickCounts.armed++;
     const pnel = fdPanel();
     const pr = pnel ? pnel.getBoundingClientRect() : null;
     // 终点上报：主进程拿的是**屏幕坐标 + 原生侧栏真实几何**，比渲染层这份可信 ✓
@@ -1403,7 +1498,13 @@
      *  · 松手点落在面板右缘 24px 内 ⇒ 投喂（**只有多选**才允许，见 canDropToDsh）；
      *  · 不搞拖动模式：那条路径是"移动树的位置"（fdDragMode）✓ 两者互不干扰 ✓ 用户明确要求分开 ✓ */
     document.addEventListener('mousedown', (e) => {
-      if (e.button !== 0 || fdDragMode) return;
+      if (e.button !== 0 || fdDragMode) {
+        /* 别的键/拖动模式也要清一次：拖拽手势补发的那次 click 可能压根不会来（松在原生视图上），
+         * 不清就会把**下一次**真实点击吃掉（那是比 D4 更糟的缺陷）。 */
+        fdSelDragClickSwallow = 0;
+        return;
+      }
+      fdSelDragClickSwallow = 0;     // 任何一次新按下 ⇒ 上一次的"要吞"作废（一次性语义，见声明处③）
       const cont = document.getElementById('mindmap-container');
       if (!cont || !cont.contains(e.target)) return;
       if ((e.target.closest && (e.target.closest('.float-detail') || e.target.closest('#mm-node-toolbar')))
@@ -1453,6 +1554,27 @@
         return;
       }
       selDragDrop(d, e);
+    }, true);
+
+    /* ★ D4 闸：拖拽手势的**补发 click** 在这里被吞掉（捕获阶段 ⇒ 早于 `app-detail-content.js`
+     * 那条容器 click 处理器，于是 `noteNodeClick` 一次都不会被调到）。
+     * 为什么必须在这个阶段、这个位置：那条"点击 → 开详情"的处理器绑在 `#mindmap-container` 上，
+     * 冒泡阶段跑 ⇒ 在 `document` 的捕获阶段 stopPropagation 就已经把它挡在门外了。
+     * 吞的条件只有一条：上一次松手是 **armed 的拖拽**（`fdSelDragClickSwallow`，一次性）。
+     * ⇒ 不拖动而单击的那条路**一个字节都不受影响**（域 30 的 D4 对照组守着）。 */
+    document.addEventListener('click', (e) => {
+      if (!fdSelDragClickSwallow) return;   // 不是拖拽手势补发的 click ⇒ 一切照旧
+      fdSelDragClickSwallow = 0;      // 只吞一次（补发的 click 只有一次）
+      fdSelDragClickCounts.swallowed++;
+      e.preventDefault();
+      e.stopPropagation();
+      /* 不静默：这是**修法的证据**，也是"到底有没有人把它当点击"的现场读数。
+       * 只打一行，不带任何用户可见文案（用户不该看到这条）。 */
+      try {
+        console.log('[sel-drag] 吞掉拖拽手势补发的那一次 click（target='
+          + String((e.target && (e.target.tagName || e.target.nodeName)) || '?') + '）'
+          + ' ⇒ 详情框不会被这次松手打开');
+      } catch (err) { /* ignore */ }
     }, true);
 
     /* ⑥ Ctrl/Cmd+点击节点 = 加选/减选。**必须在捕获阶段**：
@@ -2257,18 +2379,29 @@
     return null;
   }
   MM.requestSelDropVerdict = requestSelDropVerdict;
-  /* P7 跨视图兜底：主进程判出「光标停在原生侧栏视图上 ≥400ms ⇒ 就是在这儿松手」之后，
-   * 把 ids 发回来 ⇒ 这里投喂（走同一条 sendNodesToSidebar ✓）并清掉那份可能一直挂着的拖拽状态 ✓。
+  /* 主进程 → 渲染层的**终点通知**（`dsh-sidebar:sel-drop`，通道与 key 一个都没新增）。
+   * 两种载荷，语义不同：
+   *   · `ids` 非空 ⇒ **投喂**（把这一批送进侧栏输入框，走同一条 sendNodesToSidebar ✓）；
+   *   · `ids` 为空 ⇒ **"这次拖拽结束了，但没有投喂"**（2026-10-38 加）：
+   *     松手发生在原生视图上（DSH 内容页 / 控制栏页）时渲染层收不到 mouseup，而拖动期间它**已经
+   *     实时改过**内存里的偏移 ⇒ 不还原的话，规格"松在内置 dsh 相当于不修改位置"就是假的
+   *     （节点会停在半路）。空载荷因此必须**先取走拖拽状态再还原偏移**。
    * 注册在 IIFE 顶层：只绑一次 ✓ 且与 fdSelDrag 同作用域 ✓。preload 老版本没这个 key 时退化为
    * 「只有页面内松手才送」✓，并留一句日志（不静默 ✗）。
-   * ⚠️ ①-A 起这条通道有**两个**上游：dwell 兜底 与 "侧栏页自己报的 mouseup"（后者是权威终点）。
+   * ⚠️ 上游**只有一个**了：侧栏带上那两张原生页报的 mouseup（2026-10-38 删掉了 dwell 那条"悬停当松手"）。
    *    上游是"只投一次"的闸所在（main.js 的 st.ended / st.fired）⇒ 这边收到就投，不再去重
    *    （再叠一层去重会让"到底谁负责"变成两处判断 —— 那种"两处表达同一件事"正是本工程反复治的病）。 */
   if (window.desktop && window.desktop.dsh && window.desktop.dsh.onSelDrop) {
     try {
       window.desktop.dsh.onSelDrop((ids) => {
+        const d = fdSelDrag;          // ★ 先取走：还原偏移要用它（含 snap）
         fdSelDrag = null;
-        if (ids && ids.length) feedSelDrop(ids);
+        if (ids && ids.length) { feedSelDrop(ids); return; }
+        /* 空 ids = 终点在原生视图上、没投喂 ⇒ 渲染层唯一责任：把实时改过的偏移还回去。 */
+        if (d && d.armed) {
+          const done = restoreSelDragOffset(d);
+          console.log('[sel-drag] 主进程报"结束但没投喂" ⇒ 还原偏移' + (done ? '已执行' : '（这一拖没有偏移根）'));
+        }
       });
     } catch (e) { console.log("P7 跨视图兜底接线失败：" + ((e && e.message) || e)); }
   }
@@ -2305,8 +2438,22 @@
     count: fdSelDrag.subject ? fdSelDrag.subject.count : 0,
     offsetRoot: fdSelDrag.subject ? fdSelDrag.subject.offsetRoot : null,
     toDsh: fdSelDrag.subject ? canDropToDsh(fdSelDrag.subject) : null,
+    /* 虚影外观有没有报上去 / 报的是什么（D2 的读数：证明"起势那一刻真的读了节点外观"） */
+    look: fdSelDrag.subject && fdSelDrag.subject.look ? {
+      w: fdSelDrag.subject.look.w, h: fdSelDrag.subject.look.h,
+      n: (fdSelDrag.subject.look.cards || []).length,
+      texts: (fdSelDrag.subject.look.cards || []).map((c) => c.text),
+      cssKeys: (fdSelDrag.subject.look.cards && fdSelDrag.subject.look.cards.length)
+        ? Object.keys(fdSelDrag.subject.look.cards[0].css || {}).length : 0
+    } : null,
     snap: fdSelDrag.snap, pendingClear: !!fdSelDrag.pendingClear
   } : null);
+  /* ★ D4 的读数（只读，不参与判定）：拖拽结束了几次、补发的那次 click 被吞掉几次。
+   * 为什么必须可读：D4 的判据是"详情面板开合不变"，而"没开"也可能只是"开了又关" ——
+   * 只有这个计数能分开"它压根没到那条处理器"与"它到了、被别人关掉了"。 */
+  MM.selDragClickState = () => ({
+    pending: fdSelDragClickSwallow, armed: fdSelDragClickCounts.armed, swallowed: fdSelDragClickCounts.swallowed
+  });
   MM.collapseSelection = collapseSelection;
   MM.expandSelection = expandSelection;
   MM.bindViewportControls = bindViewportControls;

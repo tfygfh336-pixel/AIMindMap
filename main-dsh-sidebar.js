@@ -2739,21 +2739,232 @@ function restoreWindow() {
 /** ⑩「在侧边栏打开」：把一段文本**预填**进侧栏的输入框（不代替用户发送 ✗ —— 谁按发送谁负责 ✓）。
  *  内核事实（易腐，复核命令见 docs/DSH-EMBEDDED.md 的注入一节）：DSH 页面的输入框是
  *  `textarea` 或 `[contenteditable]`，用**内容特征 + 弱选择器**定位（4a ✓），不绑会被改名的类名 ✓。
- *  ⚠️ 与 installRightbarWatcher 同一个坑：`executeJavaScript` 可能**永不返回** ⇒ 必须超时 + 如实报错 ✓ */
+ *  ⚠️ 与 installRightbarWatcher 同一个坑：`executeJavaScript` 可能**永不返回** ⇒ 必须超时 + 如实报错 ✓
+ *
+ *  ── 2026-10-38 第二轮真机反馈（逐字）：「不管是单选还是多选，都不能拖动到内置dsh的对话栏里，
+ *     内置dsh的显示信息没有任何变化」⇒ 逐环查下来，前四环（渲染层 mouseup / droppable 闸 /
+ *     24px 几何 / 主进程终点）都已被域 30 与域 33 的判据证明是通的，**断在第五、六环**（本函数）。
+ *     两处**都会让"页面上什么都没发生"**，而且都不会报错给别人看：
+ *       ① `offsetParent !== null` 这条"可见性"过滤是**错的**：`position:fixed` 的容器里
+ *          `offsetParent` 恒为 `null`，而那种元素在屏幕上是**看得见**的 ⇒ 候选被全滤掉
+ *          ⇒ 回「页面上找不到可见的输入框」。DSH 的对话栏正住在 fixed/absolute 的布局里。
+ *       ② `el.value = text` 对 **React 受控组件**无效：React 在元素实例上挂了 value tracker，
+ *          直接赋值会让它认定"值没变过"⇒ 随后的 `input` 事件被去重 ⇒ 组件状态没变
+ *          ⇒ 看着有字、一起手就丢（或干脆不显示）。必须走**原型上的原生 setter**再派发 input。
+ *     现在：可见性只认 `getBoundingClientRect()` + computed style（不认 offsetParent）；
+ *     写法走原生 setter + `beforeinput/input/change`；**并且回读**（`ok` 只在回读等于原文时为真）
+ *     + 回执里带**候选普查**（tag/尺寸），下次真机再出问题一行读数就能定位。
+ *
+ *  ── 2026-10-38 第三轮真机（用户给了**目标截图**）：「我说的是送进这个对话栏哦」───────
+ *     截图里的目标是 **DSH Web 的对话输入框**：占位文字「描述你想要构建的内容，/ 调用指令，
+ *     @ 文件或对话」，圆角浅灰大框，宽高比 ≈ 738:129 ≈ **5.7:1**，带「+」「全盘可写」与发送按钮。
+ *     **带 `/` 指令与 `@` 提及的输入框是富文本编辑器**（几乎必然是 `contenteditable`），
+ *     而我上一版"优先取面积最大的 textarea"抓到的**不是它**（普查里那个 584×120 的 TEXTAREA）。
+ *     ⇒ 现在**按特征认，不按 tag 猜**（打分制，阈值 40）：
+ *        · 必须**可见**（rect + computed style，不认 offsetParent）+ 必须是编辑面
+ *          （`contenteditable` / `textarea` / `role=textbox`）—— 这是门槛，不是加分项；
+ *        · `+60` 占位/`aria-label`/`data-placeholder`/`title` 里**同时**有 `/` 与 `@`（截图那一句就有）；
+ *        · `+25` 文案里含 描述/构建/指令/提及/输入/提问/ask/describe/message/prompt；
+ *        · `+20` 宽高比落在 3~12（"宽而扁"，截图 5.7）；
+ *        · `+20` 是 `contenteditable`（富文本 ⇒ `/` 指令与 `@` 提及的宿主）；
+ *        · `-25` 是 plain `textarea`（有富文本编辑器时让它让位）；`-20` 宽度 < 160；
+ *        · `-100` 不可见 / 不是编辑面。
+ *     写入**先 focus 再回读**，失败一律**分档**（`not-found` / `focus-failed` / `duplicated` /
+ *     `readback-mismatch` / `rejected`），每档一句**可直接复制的中文原话**（用户能把状态栏那句贴回来）。
+ *     **找不到目标就绝不退回去硬写别的框**（那正是上一版"送错了地方"的成因）。
+ *     判据：`scripts/smoke/30-sidebar-drop.js` 的 N3-⑤⑥ 三格（A 只有目标 ⇒ 绿；B 目标 + 无关 textarea
+ *     ⇒ 必须挑目标；C 只有无关 textarea ⇒ 必须 `not-found` 且一个字都不写进去）。
+ *
+ *  ── 2026-10-39 第四轮（**幂等**）：一次投喂恒等于一份 ─────────────────────────────
+ *     用户真机看到「同一段模板在输入框里出现了多次」。可能有两种来源：**拖了多次**（每次追加）
+ *     或**一次拖拽被写进多遍**。无论哪一种，产品这一侧能给出的最强保证是**替换语义**：
+ *       · 旧写法是 insertText **在光标处插入** —— 空框 = 1 份，已有内容 = 追加 ⇒ 天然不幂等；
+ *       · 现在写入前**先把选区铺满整个编辑器**（DOM Range，失败退 `execCommand('selectAll')`），
+ *         再 insertText ⇒ 不管框里原来有几份，**写完只剩 1 份**；
+ *       · 回读判据从"相等"再收紧成 **整段相等 且 份数 == 1**；多份单独一档 `duplicated`
+ *         （原因里点名份数，**不静默**）；
+ *       · 回执新增两个读数：`copies`（回读里有几份）、`selMode`（全选是 range / cmd / none 铺的）
+ *         —— 真机再出问题，一行读数就能分"写歪了"与"插了多份"。
+ *     判据：同文件的 N3-⑦（受控编辑器 + 框里已有同一段 ⇒ 写一次必须恰好剩 1 份）。 */
 const COMPOSER_PREFILL_JS = `(function (text) {
-  var cands = Array.prototype.slice.call(document.querySelectorAll('textarea, [contenteditable="true"]'))
-    .filter(function (el) { return el.offsetParent !== null && el.offsetWidth > 120 && el.offsetHeight > 16; });
-  if (!cands.length) return JSON.stringify({ ok: false, reason: '页面上找不到可见的输入框（textarea / contenteditable）' });
-  // 取面积最大的那个（主输入框最大 ✓ 弱选择器 ✓）
-  cands.sort(function (a, b) { return b.offsetWidth * b.offsetHeight - a.offsetWidth * a.offsetHeight; });
-  var el = cands[0];
-  el.focus();
-  if (el.tagName === 'TEXTAREA') el.value = text;
-  else el.textContent = text;
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-  el.dispatchEvent(new Event('change', { bubbles: true }));
-  return JSON.stringify({ ok: true, tag: el.tagName, w: el.offsetWidth, h: el.offsetHeight,
-    textLen: String(text || '').length });
+  var SEL = 'textarea, input, [contenteditable], [contenteditable=""], [contenteditable="true"],'
+    + ' [contenteditable="plaintext-only"], [role="textbox"]';
+  var all = [];
+  try { all = Array.prototype.slice.call(document.querySelectorAll(SEL)); } catch (e) { all = []; }
+  function txt(v) { return String(v == null ? '' : v); }
+  function rectOf(el) { try { var r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; } catch (e) { return { w: 0, h: 0 }; } }
+  function visible(el) {
+    var r = rectOf(el);
+    if (!(r.w > 40 && r.h > 16)) return false;
+    try {
+      var cs = getComputedStyle(el);
+      if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+      if (Number(cs.opacity) === 0) return false;
+    } catch (e) { /* 取不到样式就按可见处理（宁可试一次，也不静默放弃） */ }
+    return true;
+  }
+  function attr(el, k) { try { return el.getAttribute ? txt(el.getAttribute(k)) : ''; } catch (e) { return ''; } }
+  /** 占位/标签线索：**把所有可能的来源都读一遍**（富文本编辑器的 placeholder 常在 data-placeholder
+   *  或父元素的 data-placeholder 上，而空职的内层文字本身就是占位） */
+  function hintOf(el) {
+    var parts = [];
+    ['placeholder', 'aria-label', 'aria-placeholder', 'data-placeholder', 'title', 'name', 'id'].forEach(function (k) {
+      var v = attr(el, k); if (v) parts.push(v);
+    });
+    try { if (el.parentElement) { var pv = attr(el.parentElement, 'data-placeholder'); if (pv) parts.push(pv); } } catch (e) {}
+    try { var it = txt(el.innerText || el.textContent); if (it && it.length < 160) parts.push(it); } catch (e) {}
+    return parts.join(' ');
+  }
+  function isEditable(el) {
+    var ce = attr(el, 'contenteditable');
+    var rich = false;
+    try { rich = (el.isContentEditable === true); } catch (e) {}
+    if (!rich) rich = (ce === '' || ce === 'true' || ce === 'plaintext-only');
+    var role = attr(el, 'role');
+    var tag = txt(el.tagName);
+    var box = /^TEXTAREA$/i.test(tag) || /^INPUT$/i.test(tag) || /textbox/i.test(role);
+    return { rich: !!rich, box: !!box, role: role,
+      editorish: !!rich || !!box, isArea: /^TEXTAREA$/i.test(tag), isInput: /^INPUT$/i.test(tag) };
+  }
+  var census = [];
+  var scored = [];
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i];
+    var r = rectOf(el);
+    var vis = visible(el);
+    var ed = isEditable(el);
+    var hint = hintOf(el);
+    var ratio = r.h > 0 ? (r.w / r.h) : 0;
+    var s = 0;
+    if (!vis) s -= 100;
+    if (!ed.editorish) s -= 100;
+    var slash = hint.indexOf('/') >= 0, at = hint.indexOf('@') >= 0;
+    if (slash && at) s += 60;
+    else if (slash || at) s += 12;
+    if (/描述|构建|指令|提及|输入|提问|询问|对话|ask|describe|message|prompt/i.test(hint)) s += 25;
+    if (ratio >= 3 && ratio <= 12) s += 20;      // 宽而扁（截图 738:129 ≈ 5.7）
+    if (ed.rich) s += 20;                        // 富文本编辑器优先（/ 指令 + @ 提及几乎必然是它）
+    if (ed.isArea) s -= 25;                      // plain textarea 让位
+    if (r.w < 160) s -= 20;
+    census.push({ tag: txt(el.tagName), role: ed.role, rich: ed.rich, w: r.w, h: r.h,
+      ratio: Math.round(ratio * 10) / 10, visible: vis, score: s,
+      placeholder: attr(el, 'placeholder'), ariaLabel: attr(el, 'aria-label'),
+      fixed: (function () { try { return el.offsetParent === null; } catch (e) { return null; } })() });
+    if (vis && ed.editorish) scored.push({ el: el, s: s, r: r, ed: ed });
+  }
+  var THRESHOLD = 40;
+  scored.sort(function (a, b) {
+    if (b.s !== a.s) return b.s - a.s;
+    return (b.r.w * b.r.h) - (a.r.w * a.r.h);
+  });
+  var best = scored.length ? scored[0] : null;
+  var pick = (best && best.s >= THRESHOLD) ? best : null;
+  if (!pick) {
+    return JSON.stringify({ ok: false, bucket: 'not-found',
+      reason: '没找到对话输入框（普查 ' + all.length + ' 个候选，最高分 ' + (best ? best.s : 0)
+        + '，门槛 ' + THRESHOLD + '）—— 不退回、不硬写别的框',
+      census: census.slice(0, 10) });
+  }
+  var el = pick.el;
+  var focused = false;
+  try { el.focus(); } catch (e) {}
+  try { focused = (document.activeElement === el) || !!(el.contains && document.activeElement && el.contains(document.activeElement)); } catch (e) {}
+  if (!focused) {
+    return JSON.stringify({ ok: false, bucket: 'focus-failed',
+      reason: '找到对话输入框了（' + txt(el.tagName) + '）但焦点进不去',
+      tag: txt(el.tagName), score: pick.s, census: census.slice(0, 10) });
+  }
+  function readBack() {
+    try { return pick.ed.rich ? txt(el.innerText || el.textContent) : txt(el.value); } catch (e) { return ''; }
+  }
+  function norm(v) { return txt(v).replace(/[\\s\\u00a0]+$/, ''); }
+  function same(a, b) { return norm(a) === norm(b); }
+  /** 回读里这段文本出现了**几份**（幂等判据：一次投喂必须恰好 1 份）。
+   *  为什么要有这个读数：用户 2026-10-39 的真机现象就是"同一段出现了多次"，
+   *  而"回读 == 原文"只能说明**整段相等**，说不出"到底几份" ⇒ 把份数当成回执字段报出来，
+   *  下一次真机出问题，一行读数就能分辨"插了多份"与"写掉了/写歪了"✓。 */
+  function copiesOf(hay, needle) {
+    var h = txt(hay), n = txt(needle), c = 0, i = 0;
+    if (!n) return 0;
+    while ((i = h.indexOf(n, i)) >= 0) { c++; i = i + n.length; }
+    return c;
+  }
+  /** 把编辑面的选区**铺满整个编辑器内容**（替换语义的前提）。
+   *  为什么必须"先全选"：insertText 是**在光标处插入**，而光标位置由上一次编辑/焦点决定
+   *  ⇒ 同一个动作在"空框"上是 1 份、在"已有内容"上就变成**追加**（2 份、3 份……）。
+   *  用户要的"一次拖拽 = 两个节点链接"只有在**替换**语义下才恒成立 ✓（顺带也满足"同一次 drop 只许插一次"）。
+   *  ⚠️ 两种铺法都要试：DOM Range 是引擎无关的确定性做法；selectAll 命令是编辑器自己
+   *     （Slate/Lexical/ProseMirror）更认的做法 —— 谁让后面的 insertText 生效就用谁，回读说了算。 */
+  function selectAllIn() {
+    var sel = null;
+    try { sel = window.getSelection ? window.getSelection() : null; } catch (e0) { sel = null; }
+    try {
+      if (sel && document.createRange) {
+        var rg = document.createRange();
+        rg.selectNodeContents(el);
+        sel.removeAllRanges();
+        sel.addRange(rg);
+        return 'range';
+      }
+    } catch (e1) { /* 落到下面那条命令兜底 */ }
+    try { if (document.execCommand && document.execCommand('selectAll', false, null)) return 'cmd'; } catch (e2) { /* 都失败 ⇒ none */ }
+    return 'none';
+  }
+  var mode = 'none', selMode = 'none';
+  // ① 富文本编辑器：**全选 → insertText**（走它自己的输入管线：Slate/Lexical/ProseMirror 都吃这一口）
+  if (pick.ed.rich) {
+    selMode = selectAllIn();
+    try {
+      if (document.execCommand) { mode = 'replace:' + selMode; document.execCommand('insertText', false, text); }
+    } catch (e1) { mode = 'replace-threw:' + selMode; }
+  }
+  // ② 回读不是"恰好这段" ⇒ 换编辑器自己的 selectAll 再来一次（有的受控编辑器只认这条命令）
+  if (!same(readBack(), text)) {
+    try {
+      if (pick.ed.rich && document.execCommand && document.execCommand('selectAll', false, null)) {
+        selMode = selMode + '+cmd';
+        mode = mode + '+selectAll-cmd';
+        document.execCommand('insertText', false, text);
+      }
+    } catch (e9) { mode = mode + '+cmd-threw'; }
+  }
+  // ③ 仍不一致 ⇒ 退回"直接赋值 + 派发输入事件"（受控编辑器会吞掉赋值 ⇒ **回读说了算**）
+  if (!same(readBack(), text)) {
+    try {
+      if (pick.ed.rich) {
+        mode = (mode === 'none') ? 'input-event' : (mode + '+input-event');
+        el.textContent = text;
+        try { el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text })); } catch (e2) {}
+        try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })); }
+        catch (e3) { try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e4) {} }
+      } else {
+        mode = 'native-setter';
+        var proto = pick.ed.isArea ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (desc && desc.set) desc.set.call(el, text); else el.value = text;
+        try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })); }
+        catch (e5) { try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e6) {} }
+      }
+    } catch (e7) { mode = mode + '+threw'; }
+  }
+  try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e8) {}
+  var got = readBack();
+  var copies = copiesOf(got, text);
+  // 判据 = **整段相等**（等价于"恰好一份"）。copies 不等于 1 再钉一次：多份一定不算成功
+  // —— 这正是"同一次投喂只许插一次"的那条不变量（多份 ⇒ 红，且原因里点名份数 ✗ 不静默）✓。
+  var ok = same(got, text) && copies === 1;
+  var bucket = ok ? 'ok' : (copies > 1 ? 'duplicated' : (norm(got) ? 'readback-mismatch' : 'rejected'));
+  var reason = ok ? null
+    : (copies > 1
+      ? '输入框里出现了 ' + copies + ' 份（应恰好 1 份）—— 全选那一步没生效，这次写入变成了追加'
+      : (norm(got)
+        ? '写进去了但回读不一致（回读前 60 字：' + norm(got).slice(0, 60) + '）'
+        : '编辑器不接受 execCommand，且 InputEvent 也无效（读到空）'));
+  return JSON.stringify({ ok: ok, bucket: bucket, reason: reason, mode: mode, selMode: selMode,
+    copies: copies,
+    tag: txt(el.tagName), rich: pick.ed.rich, score: pick.s,
+    w: pick.r.w, h: pick.r.h, textLen: txt(text).length, readBack: norm(got).slice(0, 60),
+    census: census.slice(0, 10) });
 })`;
 
 function prefillComposer(text) {

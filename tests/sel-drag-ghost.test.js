@@ -78,20 +78,39 @@ describe('拖动虚影：几何不变量与"只有一处收起点"', () => {
     expect(fn).toContain('ghostGapOk');
   });
 
-  it('虚影收起只有一处落点：selDragFinish 里调 hideGhost（三条终点路共用）', () => {
+  it('虚影收起只有一处落点：selDragFinish 里调 hideGhost（四条终点路共用）', () => {
     const i = MAIN.indexOf('function selDragFinish(');
     expect(i, '找不到 selDragFinish').toBeGreaterThan(0);
-    const body = MAIN.slice(i, i + 900);
+    const body = MAIN.slice(i, i + 1100);
     expect(body, 'selDragFinish 必须收起虚影 —— 否则漏一条终点路就会把虚影留在屏上').toContain('hideGhost');
-    // 三条终点路确实都收敛到 selDragFinish（4 个 by 值都在本文件里出现过）
-    ['renderer', 'sidebar-page', 'dwell', 'timeout'].forEach((by) => {
+    /* 四条终点路确实都收敛到 selDragFinish。
+     * ⚠️ 2026-10-38 换了第三条：原先是 `dwell`（真光标在侧栏视图上悬 ≥400ms 就当成"松手"），
+     * 用户在真机上验出来的"拖到 DSH 失败 / 松手看不见虚影"就是它 —— 手还按着，拖拽已经被它结束了。
+     * ⇒ 现在第三条是 `sidebar-page`（侧栏带上那两张原生页**自己报的 mouseup**，见 main.js 的
+     *   `selHookSidebarRelease`），`dwell` 必须**彻底不在**（下面那条 it() 专门守这一点）。 */
+    ['renderer', 'sidebar-page', 'timeout'].forEach((by) => {
       expect(MAIN, '终点路少了 ' + by).toContain("selDragFinish(st, '" + by + "')");
     });
     // 判别力自检：把那一行删掉 ⇒ 上面那条必须能红
     const mutated = MAIN.replace(/const g = hideGhost\('finish:' \+ by\);/, 'const g = null;');
     expect(mutated).not.toBe(MAIN);
-    const mBody = mutated.slice(mutated.indexOf('function selDragFinish('), mutated.indexOf('function selDragFinish(') + 900);
+    const mBody = mutated.slice(mutated.indexOf('function selDragFinish('), mutated.indexOf('function selDragFinish(') + 1100);
     expect(mBody.includes('hideGhost'), '注入后判据必须能红').toBe(false);
+  });
+
+  it('★ 终点只能由"观测到的松手"决定：`dwell`（悬停当松手）必须彻底不存在', () => {
+    /* 用户 2026-10-38 真机报的「拖动到 dsh 失败」+「没有虚影显示在内置 dsh 上面」是同一个机制：
+     * dwell 在**手还按着**的时候把拖拽结束掉（虚影收起），于是真正松手那一拍被当成"没有活动拖拽"丢掉。
+     * ⇒ 这条是**反向判据**：谁把 dwell 加回来，这里必红（注释里提到它是允许的，代码里出现调用不行）。 */
+    const codeOnly = MAIN.split('\n')
+      .filter((l) => { const t = l.trim(); return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')); })
+      .join('\n');
+    expect(codeOnly, 'main.js 里又出现了 shouldDropByDwell 调用 ⇒ 悬停又被当成松手了').not.toContain('shouldDropByDwell');
+    expect(codeOnly, 'SEL_DWELL_MS 这个"悬停阈值"常量不许回来').not.toContain('SEL_DWELL_MS');
+    expect(codeOnly, '终点判定里不许再出现 dwell 这个 by 值').not.toContain("'dwell'");
+    // 判别力自检：把一行 dwell 调用注入回去 ⇒ 上面三条必须能红
+    const mutated = codeOnly + "\n  selDragFinish(st, 'dwell');\n  if (dropTarget.shouldDropByDwell(x)) {}\n";
+    expect(mutated.includes("'dwell'") && mutated.includes('shouldDropByDwell'), '注入后判据必须能红').toBe(true);
   });
 });
 
