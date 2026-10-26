@@ -515,6 +515,14 @@ const SCHEMA_FIELDS = [
    * 判据走 `\bgraph\b` 而不是 `\bnode\.graph\b`）。缺这一条时：`docs/DATA-FORMAT.md` 的契约表里
    * 写着 `| graph |`，而本门禁的表里没有它 ⇒ 契约覆盖判据【扫不到】它，删行/改名/漂移都不会红。 */
   ['graph', true, 'DATA-FORMAT'],
+  /* 工作区文件夹绑定（R4，`docs/DATA-FORMAT.md` §1.5）：与 `graph` **完全同型**的缺口 ——
+   * 同样是**项目级**可选对象（`src/schema.js` 的 `PROJECT_TOP_LEVEL_FIELDS` 有它、`NODE_FIELDS` 没有），
+   * 所以第二列是 true，判据走 `\bbindings\b` 而不是 `\bnode\.bindings\b`。
+   * 缺这一条时：`docs/DATA-FORMAT.md` 契约表里写着 `| bindings |`，而本门禁的表里没有它
+   * ⇒ 契约覆盖判据【扫不到】它，删行/改名/漂移都不会红（2026-10-33 补）。
+   * ⚠️ 这一条**必须**能靠"删掉表行"变红：`bindings` 这个词在整份文档里出现很多次
+   * （§1.5 整节、§2 示例、散文），若判据退化成"词出现过"，删表行仍会绿 —— 那正是本门禁要防的空转。 */
+  ['bindings', true, 'DATA-FORMAT'],
   // 条目层（v3）：`items` 与 `detailMode` 都是契约字段，但**权威契约不在 DATA-FORMAT 的契约表里**：
   //   `items` 在 `docs/ITEM-MODEL.md` §7「终态定位 / 冻结点」那张表里有 `items[]` 行（DATA-FORMAT 只有散文指针）；
   //   `detailMode` 全文件只有散文（"显式二选一"），没有表行 —— 故标 prose 并在册，不拿它去撞表行判据。

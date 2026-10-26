@@ -12,7 +12,7 @@
  *   2) **绿的方向**：只改同一行的**措辞**（字段名不动）⇒ 必须绿（防"改个文案就红"的误伤）；
  *   3) **★旧判据骗得过、新判据骗不过的那一种注入**：在 JSON 示例里再写一句含该字段的注释 ⇒ **仍绿；
  *      可一旦把表行删掉（同一次注入里两件事都做）⇒ 必须红** —— 这一条是本文件的核心；
- *   4) **真实工程回归**：真仓 24 条全绿且读数分母 = 24（22 表行 + 1 ITEM-MODEL 表行 + 1 prose），
+ *   4) **真实工程回归**：真仓 25 条全绿且读数分母 = 25（23 表行 + 1 ITEM-MODEL 表行 + 1 prose），
  *      并且**用真文档做内存内注入**（不写盘）验证红/绿两侧 —— 注入的对象是禁改文档，故只在内存里切。
  * ============================================================ */
 import { describe, it, expect } from 'vitest';
@@ -222,14 +222,14 @@ describe('G8 ⑪ · 真实文档回归（含内存注入；两份契约文档**�
   const dfReal = fs.readFileSync(dfPath, 'utf8');
   const itemReal = fs.readFileSync(itemPath, 'utf8');
 
-  it('真仓 24 条全绿，且读数分母 = 24（22 表行 + 1 ITEM-MODEL 表行 + 1 prose）', () => {
+  it('真仓 25 条全绿，且读数分母 = 25（23 表行 + 1 ITEM-MODEL 表行 + 1 prose）', () => {
     const stats = {};
     const problems = checkContractCoverage(ROOT, stats);
     expect(problems).toEqual([]);
-    expect(stats.fields).toBe(24);
+    expect(stats.fields).toBe(25);
     expect(stats.byWhere['DATA-FORMAT'] + stats.byWhere['ITEM-MODEL']
-      + stats.byWhere['DATA-FORMAT:prose']).toBe(24);
-    expect(stats.byWhere['DATA-FORMAT']).toBe(22);
+      + stats.byWhere['DATA-FORMAT:prose']).toBe(25);
+    expect(stats.byWhere['DATA-FORMAT']).toBe(23);
     expect(stats.byWhere['ITEM-MODEL']).toBe(1);
     expect(stats.prose).toEqual(['detailMode']);
     expect(stats.proseMax).toBe(PROSE_EXEMPT_MAX);
@@ -237,7 +237,7 @@ describe('G8 ⑪ · 真实文档回归（含内存注入；两份契约文档**�
   });
 
   it('清单形状：每条都是三列，且第三列在封闭取值内（`ITEM-MODEL#<行号>` 那种收）', () => {
-    expect(SCHEMA_FIELDS.length).toBe(24);
+    expect(SCHEMA_FIELDS.length).toBe(25);
     SCHEMA_FIELDS.forEach((row) => {
       expect(row.length).toBe(3);
       const where = row[2];
@@ -279,6 +279,21 @@ describe('G8 ⑪ · 真实文档回归（含内存注入；两份契约文档**�
     expect(r.problems.length).toBe(1);
     expect(r.problems[0].msg).toContain('items');
     expect(r.problems[0].msg).toContain('ITEM-MODEL');
+  });
+
+  it('真 DATA-FORMAT 里删掉 `| bindings |` 整行（**内存内**）⇒ 红，点名 bindings', () => {
+    // 缺口 ③（本批）：`bindings` 与 `graph` **完全同型** —— 写在 `docs/DATA-FORMAT.md` 的契约表里，
+    // 而门禁的 `SCHEMA_FIELDS` 曾经没有它 ⇒ 删掉那一行**不会红**（判据扫不到它）。
+    // 这条守的是"它现在真的被扫了"：`bindings` 这个词在真文档里出现**很多次**
+    // （§1.5 整节标题与正文、§2 的 JSON 示例、各处散文），所以下面 `expect(inject).toContain('bindings')`
+    // 同时证明了判据走的是**表行第一列**，不是"词在文档里出现过"（后者删行仍会绿 = 判据空转）。
+    const inject = dfReal.split('\n').filter((l) => !/^\|\s*`?bindings`?\s*\|/.test(l)).join('\n');
+    expect(inject.length).toBeLessThan(dfReal.length);        // 注入确实删到了东西
+    expect(inject).toContain('bindings');                     // 词还在（§1.5 正文/示例里都有）
+    const r = judgeContractCoverage({ fields: [['bindings', true, 'DATA-FORMAT']],
+      dfText: inject, itemText: itemReal });
+    expect(r.problems.length).toBe(1);
+    expect(r.problems[0].msg).toContain('bindings');
   });
 
   it('真 DATA-FORMAT 里给 `| background |` 行改措辞（字段名不动）⇒ 绿', () => {

@@ -795,26 +795,73 @@ const assertions = [
       const stBefore = await bindState(ctx);
 
       fs.writeFileSync(path.join(SRC_DIR, 'f.md'), F_MD, 'utf8');   // 文件**放回**（内容与原来一样）
-      const settled = await waitUntil(async () => {
-        const st = await bindState(ctx);
-        return !!(st && st.barAttrs && st.barAttrs.pending === '0');
-      }, 30000);
-      await sleep(300);
-      const st = await bindState(ctx);
-      const last = (st && st.lastSync) || {};
+      /* ---- 等/判的粒度：「**这一次动作的那条记录**」，不是「最后一条」----
+       * 为什么（本批实测，证据 `.review/20261058-域4042与bindings/probe-42-lastsync.json`）：
+       *   `lastSync` 在渲染层是**单槽**（`renderer/app-bindings.js` 的 `applyReadings`：每次"真同步"
+       *   都执行 `lastSync = synced`）⇒ 一次"把文件放回"若引出**两轮**真同步，
+       *   "最后一条"就是**后一轮**：实测那一轮是 `{added:0, modified:1, reconnected:0}`，
+       *   而"接回原节点 + 提议撤回"只写在**前一轮**（`{added:0, modified:1, reconnected:1, pending:0}`，
+       *   `reconnectedList=[{rel:'f.md', from:'pending', proposalWithdrawn:true}]`）。
+       *   后一轮为什么存在：`bindingFileDiff` 只比 `mtimeMs / size` ⇒ 同一个文件被**再写一次**
+       *   （内容不变、mtime 变）也算 `modified`，于是又跑一轮真同步 —— **它不是 no-op**。
+       * ⇒ **读最后一条**会把"接回过"读成"没接回"（实测读数 `reconnected=0 / modified=1` 就是这么来的）。
+       * 判据改成：窗口内连续取样，只认**点名了 f.md 的那一条**；它一出现就记下来
+       * （后面再被后来的轮次覆盖，也不影响这一次的判定）。
+       * ⚠️ 这**不是**"多等几次 / 加 sleep"：等的是"**这一条记录出现**"这个条件，判据本身没有放宽 ——
+       *   reconnected=1 / added=0 / from='pending' / 提议已撤回 / 节点 id 就是提议点名的那个，一条不少。 */
+      const t0 = Date.now();
+      const CAP_MS = 30000;
+      let hit = null;                 // 点名了 f.md 的那一条（= 这一次动作的记录）
+      let st = null;                  // 最近一次读数（barAttrs 与兜底用）
+      let pendingZero = false;        // 那条"待确认删"已经撤回（状态区 K 回 0）
+      const seen = [];                // 窗口内出现过的**不同**记录（取证：证明"最后一条"可能不是这一条）
+      for (;;) {
+        st = await bindState(ctx);
+        const rec = (st && st.lastSync) || null;
+        const sig = rec ? JSON.stringify({ a: rec.added, m: rec.modified, r: rec.reconnected,
+          p: rec.pending, rel: (rec.reconnectedList || []).map((x) => x && x.rel) }) : 'null';
+        if (!seen.length || seen[seen.length - 1].sig !== sig) seen.push({ t: Date.now() - t0, sig: sig });
+        const rcNow = rec
+          ? ((rec.reconnectedList || []).filter((x) => x && /f\.md$/.test(String(x.rel)))[0] || null)
+          : null;
+        /* 只认**这一次动作**的那一条：它必须同时带 `proposalWithdrawn:true`（= 那一轮真的撤回了这条提议）。
+         * 这样"上一轮就点过 f.md 的旧记录"不会被误当成这一次的那条（旧记录不可能带撤回标记）。 */
+        if (!hit && rcNow && rcNow.proposalWithdrawn === true) hit = { rec: rec, rc: rcNow, at: Date.now() - t0 };
+        pendingZero = !!(st && st.barAttrs && st.barAttrs.pending === '0');
+        if (hit && pendingZero) break;
+        if (Date.now() - t0 >= CAP_MS) break;
+        await sleep(120);
+      }
+      const settled = { ok: !!hit && pendingZero, ms: Date.now() - t0 };
+      const last = hit ? hit.rec : ((st && st.lastSync) || {});
+      const rc = hit ? hit.rc : null;
+      /* ---- 【补断言 · 判别力】把"后来的轮次覆盖掉最后一条"这件事**逼出来**，不靠满载碰运气 ----
+       * 再写一次同一个文件（**内容不变、新 mtime**）：`bindingFileDiff` 只比 `mtimeMs / size`
+       * ⇒ 又跑一轮真同步，它的记录是 `{reconnected:0, modified:1}`（= 任务书里那次红的读数，
+       * 本批实测一模一样）。这一步**不进 `ok`** —— 它验的不是产品行为，而是"**判据读的是
+       * 这一次动作的那条记录**"；它是**有牙的**：谁把判据改回"读最后一条"，在**无负载**下也会当场红
+       * （否则那条判据只能等满载才红 = 一直在睡觉）。
+       * 上限 4s：若哪天引擎改成"按内容判变化"（mtime-only 不再算 modified），这一步什么都不做、也不假红。 */
+      fs.writeFileSync(path.join(SRC_DIR, 'f.md'), F_MD, 'utf8');
+      const touched = await waitUntil(async () => {
+        const s2 = await bindState(ctx);
+        const r2 = (s2 && s2.lastSync) || null;
+        return !!(r2 && Number(r2.reconnected) === 0 && Number(r2.modified) >= 1);
+      }, 4000);
+      const lastAfterTouch = ((await bindState(ctx)) || {}).lastSync || {};
       const nodesAfter = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
       const allAfter = allNodes(P).length;
       const snapAfter = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
       const probe = JSON.parse(ctx.runCli(['bind-sync', P, '--dry-run', '--json']));
       const dup = {};
       nodesAfter.forEach((x) => { const t = x.split(':').slice(1).join(':'); dup[t] = (dup[t] || 0) + 1; });
-      const rc = (last.reconnectedList || []).filter((x) => x && /f\.md$/.test(String(x.rel)))[0] || null;
 
       return {
         ok: !!snapBefore.pendingDeletions.length && /f\.md$/.test(String(snapBefore.pendingDeletions[0].rel))
           && stBefore.barAttrs.pending === '1'
           && settled.ok === true && st.barAttrs.pending === '0'
-          /* 认得出它：那一条读数点名的就是"提议点过名的那个节点"，且没当新增 */
+          /* 认得出它：那一条读数点名的就是"提议点过名的那个节点"，且没当新增。
+           * ⚠️ `last` / `rc` 取的是**点名了 f.md 的那一条**（见上面取样循环），不是"最后一条"。 */
           && last.reconnected === 1 && last.added === 0
           && !!rc && rc.from === 'pending' && rc.proposalWithdrawn === true
           && !!rc.nodeId && rc.nodeId === snapBefore.pendingDeletions[0].nodeId
@@ -828,9 +875,22 @@ const assertions = [
           && srcBefore.every((f) => fs.readdirSync(SRC_DIR).indexOf(f) >= 0),
         text: '前置：快照里的提议=' + JSON.stringify(snapBefore.pendingDeletions.map((p) => [p.rel, p.nodeId]))
           + ' 状态区 K=' + stBefore.barAttrs.pending
-          + ' · 把 f.md 放回 ⇒ 等 K 回 0=' + settled.ok + '（' + settled.ms + 'ms）读数 K=' + st.barAttrs.pending
-          + ' · 本轮读数：' + JSON.stringify({ added: last.added, modified: last.modified, reconnected: last.reconnected })
+          + ' · 把 f.md 放回 ⇒ 窗口内等到"点名 f.md 的那一条 + K 回 0"=' + settled.ok
+          + '（' + settled.ms + 'ms）读数 K=' + st.barAttrs.pending
+          + ' · 判定用的那一条：' + (hit ? ('t=' + hit.at + 'ms') : '（窗口内没出现点名 f.md 的记录）')
+          + ' 读数：' + JSON.stringify({ added: last.added, modified: last.modified, reconnected: last.reconnected })
           + ' 逐条=' + JSON.stringify(last.reconnectedList || [])
+          /* 把窗口内出现过的**每一条**记录都摆出来：既证明判据看的是"这一次动作的那条"，
+           * 也让"后来被覆盖"这件事在证据里看得见（本批实测：第二条约 1s 后出现，把最后一条换成
+           * reconnected=0/modified=1 —— 那正是当时红掉的原因）。 */
+          + ' · 窗口内出现过的同步记录（去重）=' + JSON.stringify(seen.map((x) => x.t + 'ms:' + x.sig))
+          + ' · 最后一次读数（可能已被后来的轮次覆盖）：'
+          + JSON.stringify({ added: (st.lastSync || {}).added, modified: (st.lastSync || {}).modified,
+            reconnected: (st.lastSync || {}).reconnected })
+          + ' ｜【判别力】再写一次同内容文件逼出第二轮（touched=' + touched.ok + '）⇒ 最后一条变成 '
+          + JSON.stringify({ added: lastAfterTouch.added, modified: lastAfterTouch.modified,
+            reconnected: lastAfterTouch.reconnected })
+          + '；判据仍用前面捕获的那一条（读"最后一条"的写法到这里会红）'
           + ' · 盘上文件节点（前/后）=' + nodesBefore.length + '/' + nodesAfter.length + '：' + nodesAfter.join(' ')
           + ' · 同名节点计数=' + JSON.stringify(dup) + '（每个都必须是 1）'
           + ' · 树里节点总数（前/后）=' + allBefore + '/' + allAfter

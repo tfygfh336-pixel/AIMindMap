@@ -358,7 +358,12 @@ async function readBarsDom(ctx) {
     rows.forEach(function (r) {
       out[r.getAttribute('data-side')] = {
         heat: r.getAttribute('data-heat'), bands: r.getAttribute('data-bands'),
-        listed: r.getAttribute('data-listed'), node: r.getAttribute('data-node'), text: r.textContent
+        listed: r.getAttribute('data-listed'), node: r.getAttribute('data-node'),
+        /* data-pending 与 readGeo 的口径**同一处**（那条读法一直有这个字段）：
+         * 断言① 的条件等待要区分"行画出来了"与"行还在取数中"（后者数值还没落定）。
+         * ⚠️ 这一段在**模板字符串**里：不许出现反引号（会截断字符串，语法检查直接报错）。 */
+        pending: r.getAttribute('data-pending'),
+        text: r.textContent
       };
     });
     var st = window.MM.heatBarsState ? window.MM.heatBarsState() : null;
@@ -391,6 +396,47 @@ async function waitStableBars(ctx, pred, timeoutMs) {
       return { ok: false, text: (r && r.hostText) || (r && r.text) || '超时', dom: r };
     }
     await ctx.exec('new Promise(function (res) { setTimeout(res, 250); })');
+  }
+}
+
+/** 等**这一行真的出现在 DOM 里** —— 本批修时序病的地方。
+ *  原来是"重试 12 次"（`for (let i = 0; i < 12; i++)`）：满载时 12 轮可能**全赶在渲染前**，
+ *  最后一轮读到的就是"行还不存在"，报文于是出现 `人 undefined/undefined`（而 CLI 侧是对的）。
+ *  现在等的是一个**DOM 条件**（不是次数）：`.fd-heat-row[data-side=human]` 与 `[data-side=ai]` 两行都在、
+ *  `data-node` 就是 `nodeId`（证明这两行属于本节点，不是上一帧的残影）、且都不在 `pending` 那一档
+ *  （取数中 ⇒ 数值还没落定）。少一条就继续等；**只许看、不重开框**（重开会记一条访问 ⇒ 读数永远在变，
+ *  与 `waitStableBars` 同一条纪律）。轮询本身只读 DOM（不刷新、不点任何东西）⇒ 它不改变任何状态。
+ *  超时 ⇒ `ok:false`，并由调用方**按"时序"报**（与"数值与 CLI 不符"分开，见断言①）。
+ *  @param {number} [timeoutMs] 上限，缺省 4000（任务书给的口径就是 4s）
+ *  @returns {{ok:boolean, ms:number, tries:number, rows?:object, why?:string, domText?:string}}
+ */
+async function waitHeatRowsDrawn(ctx, nodeId, timeoutMs) {
+  const cap = timeoutMs || 4000;
+  const t0 = Date.now();
+  let tries = 0;
+  let last = null;
+  for (;;) {
+    tries++;
+    last = await readBarsDom(ctx);
+    const rows = (last && last.ok && last.rows) || {};
+    const h = rows.human, a = rows.ai;
+    const drawn = !!(h && a && h.node === nodeId && a.node === nodeId
+      && h.heat != null && a.heat != null && h.pending !== '1' && a.pending !== '1');
+    if (drawn) return { ok: true, ms: Date.now() - t0, tries: tries, rows: rows, dom: last };
+    const ms = Date.now() - t0;
+    if (ms >= cap) {
+      const keys = Object.keys(rows);
+      return {
+        ok: false, ms: ms, tries: tries, rows: rows, dom: last,
+        why: (last && last.ok)
+          ? ('DOM 里只有 ' + keys.length + ' 行' + (keys.length ? '（' + keys.join('/') + '）' : '')
+            + '，没有属于 ' + nodeId + ' 的「人 + AI」两行完整读数')
+          : ('读不到详情框或热度容器：' + ((last && last.text) || '无读数')),
+        domText: JSON.stringify(keys.length ? rows : ((last && last.text) || '无读数'))
+      };
+    }
+    // 只等一帧多一点：轮询期间**只读 DOM**（不刷新、不重开框）
+    await ctx.exec('new Promise(function (res) { setTimeout(res, 120); })');
   }
 }
 
@@ -655,19 +701,41 @@ const assertions = [
       const shown = await showNode(ctx, NODE_A);
       if (!shown.ok) return { ok: false, text: '前置失败：' + shown.text };
 
-      /** 读一次"界面上这两行"，并与 CLI 刚给出的真值对拍（返回明细）。
-       * 为什么要**循环读**（实测出来的）：进度是异步的，而且**开局那次取数可能早于探针把日志写完**
-       * —— 实测形状：界面显示 `AI 0/0（未访问）`，而 CLI 同一时刻读到 `10/10`（探针铺场时那次
-       * `get` 记下的 `ai-get` 事件还没落地就被界面读走了）。而"看热度"这件事**本身也会记一条**
-       * （人打开详情框 ⇒ `human-detail`）⇒ 两侧永远可能差一条。所以判据落成
-       * "**在多轮里达成一致**"：每轮重画一次、再对拍一次，一致即通过；
-       * 一直不一致就**如实把两侧读数报出来**（不静默判绿）。 */
+      /* ---- 读数：三步都是**条件等待**，不是"重试 N 次"（本批修的就是那个病）----
+       * 上一版是 `for (let i = 0; i < 12; i++)`：满载时 12 轮可能**全赶在渲染前**
+       * ⇒ 最后一轮读到的就是"行还不存在"，报文于是出现 `人 undefined/undefined`（实测过一次）。
+       * 更坏的是它把两种**完全不同**的红灯混成一条：
+       *   · **界面根本没画这一行**  ← 与产品无关的时序（满载 / 冷启动 / 帧被拖慢）
+       *   · **画了但数值与 CLI 不符** ← 产品问题（界面自己算了一份 / 读数过期）
+       * 现在分三步，每步只等一个**可观测的 DOM 条件**（都有上限，超时不吃掉判据）：
+       *   ① 等这一行真的出现在 DOM 里（`waitHeatRowsDrawn`）——上限 4s；
+       *   ② 出现了才与 CLI 逐字段对拍；不符就按渲染层自己的入口重取一次再对拍；
+       *   ③ 连续两份 DOM 读数**完全相同**仍不符 ⇒ **稳定不符 = 产品问题**；
+       *      行又没了 / 读数一直在变 ⇒ **时序问题**。两类都是 `ok:false`，
+       *      区别只在报文点名"该查哪一头"。
+       * ⚠️ 这一版**没有放宽判据**：判据仍是"每个字段与 CLI 逐字相同"。
+       * ⚠️ 也不许用"把 12 改成 50"那种办法救 —— 等待的**条件**变了（DOM 里真有那一行），不是次数变了。 */
+
+      /** 把"某一行某个字段"格式化成**人看得懂**的串：读不到一律写 `（没有这一行）`。
+       *  为什么单独立一个：报文里出现 `undefined` 就分不清"值真的是 0"与"根本没读到"（上一版就是这样）。 */
+      const cell = (v) => (v == null ? '（没有这一行）' : String(v));
+
+      /** 读一次"界面上这两行"，并与 CLI 刚给出的真值逐字段对拍（返回明细；**只读**，不重画）。
+       *  行不在 DOM 里时**如实**标 `rowsMissing` 并原样返回 —— 绝不拿 `undefined` 去比较/拼接。 */
       const compareOnce = async () => {
         const truthNow = cliJson(ctx, ['heat', PROJ, '--json', '--node', NODE_A, '--limit', '1']);
         const domNow = await readBarsDom(ctx);
-        if (!truthNow || !truthNow.node || !domNow.ok) return null;
-        const h = domNow.rows.human || {};
-        const a = domNow.rows.ai || {};
+        const rows = (domNow && domNow.ok && domNow.rows) || {};
+        const h = rows.human || null;
+        const a = rows.ai || null;
+        if (!truthNow || !truthNow.node) {
+          return { ok: false, why: 'CLI 读数里没有这一节', dom: domNow, truth: truthNow,
+            h: h, a: a, rowsMissing: !h || !a };
+        }
+        if (!h || !a) {
+          return { ok: false, why: 'DOM 里只有 ' + Object.keys(rows).length + ' 行', dom: domNow,
+            truth: truthNow, h: h, a: a, rowsMissing: true };
+        }
         const okHuman = h.heat === String(truthNow.node.human.heat)
           && h.bands === String(truthNow.node.human.bands)
           && h.listed === (truthNow.node.human.listed ? '1' : '0');
@@ -675,43 +743,100 @@ const assertions = [
           && a.bands === String(truthNow.node.ai.bands)
           && a.listed === (truthNow.node.ai.listed ? '1' : '0');
         const s = truthNow.node.sample || {};
-        const okSample = domNow.hostText.indexOf(String(s.nodes)) >= 0
-          && domNow.hostText.indexOf(String(s.events)) >= 0;
-        /* ⚠️ `(h.text || '')` 不是防御性写法，是**判据修正**（2026-10-25 实测）：
-         *   原来写 `h.text.indexOf(...)`，而 `h = domNow.rows.human || {}` ——
-         *   当界面**根本没画人那一行**时 `h` 是空对象 ⇒ `h.text` 是 `undefined` ⇒ **抛异常**。
-         *   抛异常在 `tally()` 里会被记成 `THREW:`，它不是"判红"，是"这次没判"。
-         *   而"CLI 说人侧已列、界面却没画那一行"**本身就是要抓的形态** ⇒
-         *   **必须判红并打印两侧读数，而不是崩掉。**
-         *   触发条件：`.visits/` 访问日志被写（今天放开了那一档）⇒ `human.listed` 翻 true，
-         *   而 DOM 那一行还没画出来 ⇒ 竞态。**根因不在这一行**（见文件头的沙箱欠账）。 */
-        const okText = truthNow.node.human.listed ? ((h.text || '').indexOf(String(truthNow.node.human.visits)) >= 0) : true;
+        const hostText = String((domNow && domNow.hostText) || '');
+        const okSample = hostText.indexOf(String(s.nodes)) >= 0
+          && hostText.indexOf(String(s.events)) >= 0;
+        /* `(h.text || '')` 不是防御性写法，是**判据修正**（2026-10-25 实测）：原来写 `h.text.indexOf(...)`，
+         * 界面**根本没画人那一行**时 `h.text` 是 `undefined` ⇒ 抛异常 ⇒ `tally()` 记成 `THREW:`，
+         * 那不是"判红"而是"这次没判"。而现在"没画出来"由 `rowsMissing` 单独表达。 */
+        const okText = truthNow.node.human.listed
+          ? (String(h.text || '').indexOf(String(truthNow.node.human.visits)) >= 0) : true;
         return { ok: okHuman && okAi && okSample && okText, okHuman: okHuman, okAi: okAi,
-          okSample: okSample, okText: okText, dom: domNow, truth: truthNow, h: h, a: a };
+          okSample: okSample, okText: okText, rowsMissing: false, dom: domNow, truth: truthNow, h: h, a: a };
       };
-      let measured = null;
-      for (let i = 0; i < 12; i++) {
-        measured = await compareOnce();
-        if (measured && measured.ok) break;
-        /* 逼它重画一次（**渲染层自己的刷新入口**，与框内重绘走的是同一条路）——
-         * 这一条与"重开详情框"不同：它不记访问，只重取读数。 */
-        await execJson(ctx, `(function () {
-          var box = window.MM.fdPrimaryNodeBox();
-          if (box && window.MM.heatBarsRefresh) window.MM.heatBarsRefresh(box, box.node);
-          return JSON.stringify({ ok: true });
-        })()`);
-        await ctx.exec(SETTLE);
+
+      /** ②③ 与 CLI 对拍，并把"稳定不符"和"还没收敛"分开。
+       *  不符时按**渲染层自己的刷新入口**重取一次读数（与框内重绘走同一条路；**不重开框** ⇒ 不记访问），
+       *  再等 `SETTLE`。判"稳定"用的是**连续两份 DOM 读数完全相同**（不是"再试几次"）。
+       *  @param {number} [capMs] 上限，缺省 4000
+       *  @returns {{status:'match'|'mismatch-stable'|'rows-gone'|'unsettled', rounds:number, ms:number, last:object}} */
+      const compareSettled = async (capMs) => {
+        const cap = capMs || 4000;
+        const t0 = Date.now();
+        let prevSig = null;
+        let last = null;
+        let rounds = 0;
+        for (;;) {
+          rounds++;
+          last = await compareOnce();
+          if (last && last.ok) return { status: 'match', rounds: rounds, ms: Date.now() - t0, last: last };
+          const sig = JSON.stringify(last && last.rowsMissing ? { rowsMissing: true } : {
+            h: last.h ? [last.h.heat, last.h.bands, last.h.listed, last.h.node] : null,
+            a: last.a ? [last.a.heat, last.a.bands, last.a.listed, last.a.node] : null,
+            sample: [last.okSample, last.okText], why: last.why || ''
+          });
+          if (prevSig !== null && sig === prevSig) {
+            return { status: last.rowsMissing ? 'rows-gone' : 'mismatch-stable',
+              rounds: rounds, ms: Date.now() - t0, last: last };
+          }
+          prevSig = sig;
+          if (Date.now() - t0 >= cap) {
+            return { status: last.rowsMissing ? 'rows-gone' : 'unsettled',
+              rounds: rounds, ms: Date.now() - t0, last: last };
+          }
+          await execJson(ctx, `(function () {
+            var box = window.MM.fdPrimaryNodeBox();
+            if (box && window.MM.heatBarsRefresh) window.MM.heatBarsRefresh(box, box.node);
+            return JSON.stringify({ ok: true });
+          })()`);
+          await ctx.exec(SETTLE);
+        }
+      };
+
+      // ---- ① 等这一行真的出现在 DOM 里（上限 4s；**不是**"重试 12 次"）----
+      const drawn = await waitHeatRowsDrawn(ctx, NODE_A, 4000);
+      if (!drawn.ok) {
+        /* 时序红灯：**顺带证明 CLI 侧是对的** —— 这是"界面没画"而不是"数不对"的关键旁证。
+         * 与上一版最重要的区别：这里不再把 CLI 的正确读数混进"逐字段相同=false"里报出去。 */
+        const truthNow = cliJson(ctx, ['heat', PROJ, '--json', '--node', NODE_A, '--limit', '1']);
+        const tn = (truthNow && truthNow.node) || {};
+        return { ok: false, text: '【时序 · 与产品无关】界面根本没画这一行：' + drawn.ms + 'ms 内轮询 '
+          + drawn.tries + ' 次，' + drawn.why
+          + ' ｜ CLI 侧读数（**对**，用来证明这不是数据问题）：人 '
+          + cell(tn.human && tn.human.heat) + '/' + cell(tn.human && tn.human.bands)
+          + ' · AI ' + cell(tn.ai && tn.ai.heat) + '/' + cell(tn.ai && tn.ai.bands)
+          + ' ｜ 最后一份 DOM 读数：' + drawn.domText
+          + ' ｜ ⚠️ 这不是"数值与 CLI 不符"，别按产品缺陷查' };
       }
-      if (!measured) return { ok: false, text: '前置失败：读数拍不到（界面上没有那两行）' };
-      return {
-        ok: measured.ok,
-        text: '人 ' + measured.h.heat + '/' + measured.h.bands
-          + '（CLI ' + measured.truth.node.human.heat + '/' + measured.truth.node.human.bands + '）'
-          + ' · AI ' + measured.a.heat + '/' + measured.a.bands
-          + '（CLI ' + measured.truth.node.ai.heat + '/' + measured.truth.node.ai.bands + '）'
-          + ' · 逐字段相同=' + (measured.okHuman && measured.okAi) + ' · 样本量在文本里=' + measured.okSample
-          + ' · 数值串含次数=' + measured.okText + ' ｜ 行文本：' + String(measured.h.text).slice(0, 60)
-      };
+
+      // ---- ②③ 出现了才逐字段对拍；不符就把"稳定不符（产品）"与"还没收敛（时序）"分开 ----
+      const measured = await compareSettled(4000);
+      const t = measured.last || {};
+      const truthNode = (t.truth && t.truth.node) || {};
+      const sideText = '人 ' + cell(t.h && t.h.heat) + '/' + cell(t.h && t.h.bands)
+        + '（CLI ' + cell(truthNode.human && truthNode.human.heat) + '/'
+        + cell(truthNode.human && truthNode.human.bands) + '）'
+        + ' · AI ' + cell(t.a && t.a.heat) + '/' + cell(t.a && t.a.bands)
+        + '（CLI ' + cell(truthNode.ai && truthNode.ai.heat) + '/'
+        + cell(truthNode.ai && truthNode.ai.bands) + '）';
+      const lineText = ' ｜ 行文本：' + String((t.h && t.h.text) || '').slice(0, 60);
+      if (measured.status === 'match') {
+        return { ok: true, text: sideText + ' · 逐字段相同=true · 样本量在文本里=' + t.okSample
+          + ' · 数值串含次数=' + t.okText + lineText
+          + ' ｜ 第①步等到这一行：' + drawn.ms + 'ms / ' + drawn.tries + ' 次轮询'
+          + ' · 对拍 ' + measured.rounds + ' 轮' };
+      }
+      if (measured.status === 'mismatch-stable') {
+        return { ok: false, text: '【产品 · 画了但数值与 CLI 不符】' + sideText
+          + ' · 逐字段相同=' + (t.okHuman && t.okAi) + ' · 样本量在文本里=' + t.okSample
+          + ' · 数值串含次数=' + t.okText
+          + ' ｜ 连续 ' + measured.rounds + ' 轮读数**完全相同**仍不符（每轮都用渲染层自己的入口重取过）'
+          + ' ⇒ 不是"还没画完"' + lineText };
+      }
+      return { ok: false, text: '【时序 · 与产品无关】' + (measured.status === 'rows-gone'
+        ? '行一度画出来又没了' : '在 ' + measured.ms + 'ms / ' + measured.rounds + ' 轮内读数一直在变（没收敛）')
+        + '：' + sideText + ' ｜ 第①步等到这一行：' + drawn.ms + 'ms / ' + drawn.tries + ' 次轮询'
+        + lineText + ' ｜ ⚠️ 这不是"数值与 CLI 不符"，别按产品缺陷查' };
     }
   },
 
