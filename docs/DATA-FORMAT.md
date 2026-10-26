@@ -137,7 +137,8 @@
 | version | - | `graph` **自己的**版本号，当前只有 `1`。**不是** `meta.formatVersion`（后者是 v2/v3 的分界，动它会让另一半数据连读都读不了） |
 | profile | - | 这份图默认用哪个剖面打开：`complex` / `mindmap` / `path` / `logic` / `module`（缺省 = `complex`）。它只是**默认值**，人可以切 |
 | direction | - | 主方向 `LR` / `TB`（缺省 = `LR`）。MS1 的渲染内核**只保存不布局**（自动布局是 MS2） |
-| grid | - | 吸附网格（1–256，缺省 8）。MS1 只在一处用它：水印沿层带中线寻找留白区时的搜索步长 |
+| grid | - | 吸附网格（1–256，缺省 8）。MS1 用它定水印的搜索步长；MS2 用它定**布线格点**（折点坐标是它的整数倍）与端口落点 |
+| gap | - | **布局可选字段**（MS2）：`{ node, rank }` 两个数——层内节点间距（0–400，缺省 24）与层间距（0–800，缺省 48）。只影响自动布局（`renderAuto`）的排布，**不影响数据的其它部分**；缺省值写在 `src/diagram/tokens.js`（`NODE_GAP_DEFAULT` / `RANK_GAP_DEFAULT`）。未知子字段判**红** |
 | layers | - | 层带（**背景分区**，画在节点之下）：`id`（唯一）/ `label` / `labelSide`（`left` 竖排 = 缺省，`top` 横排）/ `rect`（`[x,y,w,h]`，宽高 > 0）/ `fill` / `watermark`（`{text, rotate, opacity}`，`opacity` 在 0–1）。层带之间**不许重叠**；水印必须落在**留白区**（与任何节点/容器零相交），放不下就**报错**而不是叠上去 |
 | containers | - | 容器框：`id`（唯一）/ `label` / `rect` / `layout`（**必填**：`stack` 或 `free`）/ `children`（节点 id 数组，非空、不重复）/ `padding` / `gap`。`stack` 的高度**由子项算出**（子项高之和 + padding×2 + gap×(n−1)），`free` 的子项坐标就是声明值、容器高取子项包围盒 + padding |
 | edges | - | 边：`id`（唯一）/ `from` 与 `to`（`{node, port}`，`port` ∈ `n/e/s/w`，可省 = 自动选代价最小的端口）/ `route` / `style`（`solid`/`dashed`/`dotted`）/ `color`（语义色 token 或色值）/ `arrow`（`{start, end}` **两端独立布尔**）/ `label`。**`route` 的取值**：`straight` / `orthogonal` / `curve` 三档都是合法数据，但 **MS1 只实现了 `straight`** ⇒ `orthogonal`/`curve` 在渲染时**响亮拒绝**（`E_ROUTE_UNSUPPORTED`），**不会**被静默画成直线 |
@@ -151,7 +152,12 @@
 3. **窄模式保存不许抹掉整张图**：GUI 保存（`project:save`）在载荷**没带** `graph` 键时会**从磁盘取回**（唯一实现 = `src/data-store.js` 的 `prepareSavePayload`；据此实现的是 `main.js` 的 `project:save`）。载荷**带了** `graph`（全模式）就以载荷为准。
 4. **z-order 固定**（渲染内核逐字实现）：`layers` → `containers` → `nodes` → `edges` → `edgeLabels` → `annotations`。
 
-> **MS1（本批）没做的**，写在这里免得被读成"已支持"：自动布局（`C-F4-01`…）、正交/曲线布线（`C-F3-05`/`06`）、通道与交叉处理（`C-F3-16`…`19`）、交互（缩放/平移/悬停/高亮）、PNG/PDF 导出、接界面。计划与判据见 `docs/DIAGRAM-MODES.md` §7.2。
+> **MS1 没做的 / MS2 补上的**，写在这里免得被读成"已支持"：MS1 只做手写坐标（节点带 `rect`）→ SVG；
+> **MS2 补上**自动布局（`C-F4-01`…`04`：去环 / 分层 / 层内排序 / 坐标）与正交布线（`C-F3-06`、
+> `C-F3-14`…`19`：A\* / 通道 lane / 交叉 overpass / 边标签避让），并补了框内自动换行（`C-F1-03`）。
+> 触发方式：`renderAuto(doc)`（节点**不必带 `rect`**）或在 `render()` 里传 `routing:"orthogonal"`。
+> 仍未做：曲线路由（`route: "curve"`，**响亮拒绝** `E_ROUTE_UNSUPPORTED`）、交互（缩放/平移/悬停/高亮）、PNG/PDF 导出、接界面。
+> **布局类字段只有 `gap` 一个**（不新增节点字段：坐标 = 自动布局 ⊕ `meta.nodeOffsets`，`pinned` 只表达"别覆盖"）。
 > 渲染内核的输入是**一份手写坐标的图文档**（`{ graph, nodes: [{ id, type, rect, title, subtitle, badge }] }`），
 > 项目里的节点树**不带** `rect`：坐标 = 自动布局 ⊕ `meta.nodeOffsets`（设计 §6.3）。
 

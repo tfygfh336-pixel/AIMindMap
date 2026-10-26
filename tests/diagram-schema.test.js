@@ -49,7 +49,7 @@ describe('取值表是唯一的一处（文档与测试从这里取，别抄字�
     expect(GS.SHAPES).toEqual(['rect', 'round', 'diamond', 'pill', 'cylinder', 'row']);
     expect(GS.PORTS).toEqual(['n', 'e', 's', 'w']);
     expect(GS.EDGE_ROUTES).toEqual(['straight', 'orthogonal', 'curve']);
-    expect(GS.ROUTE_IMPLEMENTED).toEqual(['straight']);        // 本批只实现这一档
+    expect(GS.ROUTE_IMPLEMENTED).toEqual(['straight', 'orthogonal']);        // MS2 补上正交
     expect(GS.EDGE_STYLES).toEqual(['solid', 'dashed', 'dotted']);
     expect(GS.DASH_TOKEN).toEqual({ solid: '', dashed: '5 4', dotted: '1 3' });
     expect(GS.DIRECTIONS).toEqual(['LR', 'TB']);
@@ -57,9 +57,10 @@ describe('取值表是唯一的一处（文档与测试从这里取，别抄字�
     expect(GS.GRAPH_VERSION).toBe(1);
   });
 
-  it('graph 的字段名表与设计 §6.3 的草案对齐（顶层九项）', () => {
-    expect(GS.GRAPH_FIELDS).toEqual(['version', 'profile', 'direction', 'grid',
+  it('graph 的字段名表与设计 §6.3 草案 + MS2 的 `gap` 对齐（顶层十项）', () => {
+    expect(GS.GRAPH_FIELDS).toEqual(['version', 'profile', 'direction', 'grid', 'gap',
       'layers', 'containers', 'edges', 'annotations', 'pinned']);
+    expect(GS.GAP_FIELDS).toEqual(['node', 'rank']);
   });
 
   it('ID_RE 与 `src/schema.js` 的**逐字相同**（两处各写一份就会让同一 id 在节点上合法、在边上非法）', () => {

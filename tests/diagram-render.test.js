@@ -237,9 +237,15 @@ describe('C-F2-02 / C-F2-03 容器：stack 高度是算式，free 坐标是声�
 describe('C-F1-04 / C-F1-05 文本永不溢出（缩字号 → 加宽 → 响亮报错）', () => {
   const measurer = D.createMeasurer();
 
-  it('超宽标题先**缩字号**（逐档下调，仍 ≥ 8.5）', () => {
+  // ⚠️ **MS2 改了这三条的输入，不是改了它们要保的东西**：
+  //   阶梯从 MS1 的"缩字号 → 加宽 → 报错"变成"**换行** → 缩字号 → 加宽 → 报错"（`C-F1-03`）。
+  //   于是"能被换行救下"的长中文标题不再走缩字号 —— 那正是本批要的行为。
+  //   为了继续钉住缩字号/加宽/报错三档，这里的用例改用**不可断的词**
+  //   （ASCII 标识符：断行规则里"词内不断"，所以它只能靠缩字号/加宽/报错解决）。
+  //   "换行优先"那条判据由 `tests/diagram-wrap.test.js` 单独钉（判据 8）。
+  it('不可断的超宽标题先**缩字号**（逐档下调，仍 ≥ 8.5）', () => {
     const doc = minimalDoc();
-    doc.nodes[0].title = '一二三四五六七八九十一二三四五六七八九十';   // 20 个全角字
+    doc.nodes[0].title = 'A'.repeat(30);               // 30 个 ASCII 字符 ⇒ 14px 下 231px > 184px 可用
     const { svg, report } = D.render(doc);
     expect(report.widened.length).toBe(0);              // 这一档还没动用加宽
     expect(report.shrunk.length).toBe(1);
@@ -257,20 +263,20 @@ describe('C-F1-04 / C-F1-05 文本永不溢出（缩字号 → 加宽 → 响亮
 
   it('最小字号仍放不下 ⇒ **加宽节点**（并重排该容器），不裁字', () => {
     const doc = minimalDoc();
-    doc.nodes[0].title = '一'.repeat(60);               // 60 个全角字 ⇒ 8.5px 下 510px
+    doc.nodes[0].title = 'B'.repeat(40);               // 不可断词：8.5px 下 187px > 184px ⇒ 只能加宽
     const { svg, report } = D.render(doc);
     expect(report.widened.length).toBe(1);
     const g = groupAttrs(svg, 'node', 'n-a');
     expect(Number(g.w)).toBeGreaterThan(200);           // 声明 200，被加宽
-    expect(Number(g.w)).toBeGreaterThanOrEqual(60 * D.MIN_FONT_SIZE);
+    expect(Number(g.w)).toBeGreaterThanOrEqual(40 * 0.55 * D.MIN_FONT_SIZE);
     // 加宽后照样放得下（**不裁**：文本仍是全的）
     const body = groupBody(svg, 'node', 'n-a');
-    expect(body).toContain('一'.repeat(60));
+    expect(body).toContain('B'.repeat(40));
   });
 
   it('加宽有上界：超长文案 ⇒ 响亮报错（不许无限加宽，也不许裁字）', () => {
     const doc = minimalDoc();
-    doc.nodes[0].title = '一'.repeat(500);              // 8.5px 下 4250px > 2000px 上限
+    doc.nodes[0].title = 'C'.repeat(500);              // 8.5px 下 2337px > 2000px 上限（且词内不可断）
     let err = null;
     try { D.render(doc); } catch (e) { err = e; }
     expect(err).not.toBeNull();
@@ -401,27 +407,50 @@ describe('C-F3-02 / C-F3-04 / C-F3-07 / C-F3-08 端口、直线、两端独立�
 });
 
 describe('未实现的路由必须**响亮拒绝**（不许静默画成直线）', () => {
-  ['orthogonal', 'curve'].forEach((route) => {
-    it('route = ' + route + ' ⇒ 抛 E_ROUTE_UNSUPPORTED 并点名本批未实现', () => {
-      const doc = netfilterDoc();
-      doc.graph.edges[0].route = route;
-      let err = null;
-      let out = null;
-      try { out = D.render(doc); } catch (e) { err = e; }
-      expect(err, 'route=' + route + ' 被静默接受了').not.toBeNull();
-      expect(err.code).toBe('E_ROUTE_UNSUPPORTED');
-      expect(err.message).toContain(route);
-      expect(err.message).toMatch(/MS1|未实现/);
-      expect(out).toBeNull();                            // 不许"报错还给出图"
-      expect(err.detail.implemented).toEqual(['straight']);
-    });
+  // MS2 起 `orthogonal` 已实现（`ROUTE_IMPLEMENTED` 两项），**`curve` 仍未实现** ——
+  // 这条红线原封不动地转移到 curve 上：静默画成直线 = 把"没做"说成"做了"。
+  it('route = curve ⇒ 抛 E_ROUTE_UNSUPPORTED 并点名未实现', () => {
+    const doc = netfilterDoc();
+    doc.graph.edges[0].route = 'curve';
+    let err = null;
+    let out = null;
+    try { out = D.render(doc); } catch (e) { err = e; }
+    expect(err, 'route=curve 被静默接受了').not.toBeNull();
+    expect(err.code).toBe('E_ROUTE_UNSUPPORTED');
+    expect(err.message).toContain('curve');
+    expect(out).toBeNull();                            // 不许"报错还给出图"
+    expect(err.detail.implemented).toEqual(['straight', 'orthogonal']);
   });
 
-  it('route 缺省 = straight（不是 orthogonal）—— 否则没写 route 的数据全会报错', () => {
+  // 反过来的一半：`orthogonal` **MS2 起真的做了** ⇒ 它必须**不再**拒绝，而且真的绕线。
+  // （判定标准从"抛不抛"变成了"有没有折点/有没有 `data-points`"—— 否则"接受了但画成直线"看不出来。）
+  it('route = orthogonal ⇒ 不再拒绝，且在**给定坐标**上真的绕线（不是静默直线）', () => {
+    const doc = netfilterDoc();
+    doc.graph.edges.forEach((e) => delete e.route);      // 先全清成缺省
+    doc.graph.edges[0].route = 'orthogonal';
+    const { svg, report } = D.render(doc, { routing: 'orthogonal' });
+    expect(report.routing.enabled).toBe(true);
+    const g = svg.match(/<g data-edge="e1"[^>]*data-from-port="[^"]*"[^>]*data-points="([^"]*)"/);
+    expect(g, 'orthogonal 边没有折线数据（被画成直线了）').toBeTruthy();
+    const pts = g[1].trim().split(/\s+/).map((p) => p.split(',').map(Number));
+    expect(pts.length).toBeGreaterThanOrEqual(3);          // 直连只需 2 个点；≥3 = 真的有折点
+    // 每一段都与轴平行（手写坐标不在 8px 网格上，所以这里**不**断言网格对齐 ——
+    // 网格那条判据属于自动布局的产物，见 tests/diagram-route.test.js）
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const horizontal = Math.abs(pts[i][1] - pts[i + 1][1]) < 1e-6;
+      const vertical = Math.abs(pts[i][0] - pts[i + 1][0]) < 1e-6;
+      expect(horizontal || vertical, '第 ' + i + ' 段不是轴向: ' + JSON.stringify([pts[i], pts[i + 1]])).toBe(true);
+    }
+  });
+
+  it('route 缺省 = straight（不是 orthogonal）—— 否则没写 route 的老数据会变产物', () => {
     const doc = minimalDoc({ graph: { edges: [{ id: 'e1', from: { node: 'n-a' }, to: { node: 'n-b' } }] } });
     const { svg } = D.render(doc);
     expect(svg).toContain('data-edge="e1"');
-    expect(D.ROUTE_IMPLEMENTED).toEqual(['straight']);
+    expect(D.ROUTE_IMPLEMENTED).toEqual(['straight', 'orthogonal']);
+    // 缺省这条边仍是**一条直线**（没有折点、没有 data-points 属性）
+    expect(svg).toMatch(/<line data-edge="e1"/);
+    expect(svg).not.toContain('data-points=');
   });
 });
 
@@ -531,9 +560,13 @@ describe('报告（"没做"必须写在报告里，不许靠读者猜）', () =>
     expect(Array.isArray(report.widened)).toBe(true);
     expect(report.measure.approximate).toBe(true);
     expect(report.measure.note).toContain('近似');
-    expect(report.notImplemented).toContain('route:orthogonal');
+    // MS2 起 orthogonal 与 layout:auto 都做了 ⇒ 未实现清单只剩 curve（曲线）与界面那两档
+    expect(report.notImplemented).not.toContain('route:orthogonal');
+    expect(report.notImplemented).not.toContain('layout:auto');
     expect(report.notImplemented).toContain('route:curve');
-    expect(report.notImplemented).toContain('layout:auto');
+    // 没跑布线时，布线读数必须是"未启用"而不是"0 个交叉"（后者会被读成"查过了，没有交叉"）
+    expect(report.routing.enabled).toBe(false);
+    expect(Array.isArray(report.wrapped)).toBe(true);
   });
 
   it('注入真 measureText ⇒ 报告标 approximate:false，且宽度真的按注入值算', () => {

@@ -34,12 +34,19 @@
   const SHAPES = Object.freeze(['rect', 'round', 'diamond', 'pill', 'cylinder', 'row']);
   /** 端口锚点（`C-F3-02`）。顺序是**定序用**的：自动选边代价相等时按 `n<e<s<w` 取。 */
   const PORTS = Object.freeze(['n', 'e', 's', 'w']);
-  /** 三种路由（`C-F3-04`/`05`/`06`）。**规范里三档都存在**，但本批只实现第一档。 */
+  /** 三种路由（`C-F3-04`/`05`/`06`）。**规范里三档都存在**，但本批实现了前两档。 */
   const EDGE_ROUTES = Object.freeze(['straight', 'orthogonal', 'curve']);
-  /** **本批（MS1）实现了的路由**。`route` 缺省 = 本表第一项（直连）——
-   *  ⚠️ 与设计 `C-F3-06` 的"orthogonal 是默认"**不同**：那是 MS2 之后的默认值。
-   *  MS1 若默认 orthogonal，则任何没写 `route` 的手写 JSON 都会当场被拒（等于没法用）。 */
-  const ROUTE_IMPLEMENTED = Object.freeze(['straight']);
+  /** **已实现的路由**。`route` 缺省 = 本表第一项（直连）。
+   *
+   *  ⚠️ 两个**有据的不一致**，写在这里免得被读成"漏了"：
+   *   ① 设计 `C-F3-06` 说 orthogonal 是默认。本内核的缺省仍是 `straight` —— 因为 MS1 的
+   *      **手写坐标**数据（盘上已有的那些 JSON）没写 `route`，改缺省会让它们当场变产物
+   *      （`C-F9-02` 的逐字节基线就跑了）。**走了自动布局（`renderAuto`）时缺省才是 orthogonal**
+   *      —— 那才是 `C-F3-06` 说的场景（"正交布线是自动布局的默认路由"）。
+   *   ② `curve`（`C-F3-05`）本批**没做**：设计 §7.2 把它排在 MS3 的"交互 + 导出 + 主题"那批，
+   *      本批的判据（穿框/交叉/通道/overpass）都不依赖曲线。它仍然**响亮拒绝**
+   *      （`E_ROUTE_UNSUPPORTED`），不会静默画成直线。 */
+  const ROUTE_IMPLEMENTED = Object.freeze(['straight', 'orthogonal']);
   /** 线型三档（`C-F3-12`）；`dasharray` 是**确定值**，不许临时算 */
   const EDGE_STYLES = Object.freeze(['solid', 'dashed', 'dotted']);
   const DASH_TOKEN = Object.freeze({ solid: '', dashed: '5 4', dotted: '1 3' });
@@ -59,9 +66,12 @@
    *  直接读那份源码逐字对拍（两处各写一份就会漂；漂了的表现是"同一 id 在节点上合法、在边上非法"）。 */
   const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 
-  /** `graph` 允许的键（**封闭**：多一个就报错，见文件头口径①） */
-  const GRAPH_FIELDS = Object.freeze(['version', 'profile', 'direction', 'grid',
+  /** `graph` 允许的键（**封闭**：多一个就报错，见文件头口径①）
+   *  MS2 加了 `gap`（**布局可选字段**：节点间距 / 层间距；`C-F4-03` 的承载）。 */
+  const GRAPH_FIELDS = Object.freeze(['version', 'profile', 'direction', 'grid', 'gap',
     'layers', 'containers', 'edges', 'annotations', 'pinned']);
+  /** `graph.gap` 允许的键（两个轴各一个数；缺省见 `tokens.NODE_GAP_DEFAULT` / `RANK_GAP_DEFAULT`） */
+  const GAP_FIELDS = Object.freeze(['node', 'rank']);
   const LAYER_FIELDS = Object.freeze(['id', 'label', 'labelSide', 'rect', 'fill', 'watermark']);
   const WATERMARK_FIELDS = Object.freeze(['text', 'rotate', 'opacity']);
   const CONTAINER_FIELDS = Object.freeze(['id', 'label', 'rect', 'layout', 'children', 'padding', 'gap']);
@@ -78,6 +88,8 @@
     gridMax: 256,
     paddingMax: 200,
     gapMax: 400,
+    gapNodeMax: 400,     // `graph.gap.node`（层内节点间距）上界
+    gapRankMax: 800,     // `graph.gap.rank`（层间距）上界
     items: { layers: 64, containers: 256, edges: 2048, annotations: 512, pinned: 4096 }  // 逐类上限（防坏数据把渲染拖死）
   });
 
@@ -316,6 +328,25 @@
           + JSON.stringify(graph.grid));
       }
     }
+    if (graph.gap !== undefined) {
+      if (!isPlainObject(graph.gap)) {
+        err('graph.gap 必须是对象 { node, rank }（布局可选字段：节点间距 / 层间距；缺省 = 24 / 48）');
+      } else {
+        unknownKeys(graph.gap, GAP_FIELDS).forEach((k) => {
+          err('graph.gap 有未知字段 ' + JSON.stringify(k) + '（只认 ' + allowedText(GAP_FIELDS) + '）');
+        });
+        if (graph.gap.node !== undefined
+          && (!isFiniteNum(graph.gap.node) || graph.gap.node < 0 || graph.gap.node > LIMITS.gapNodeMax)) {
+          err('graph.gap.node 必须是 0–' + LIMITS.gapNodeMax + ' 的数字（层内节点间距，单位 px）: '
+            + JSON.stringify(graph.gap.node));
+        }
+        if (graph.gap.rank !== undefined
+          && (!isFiniteNum(graph.gap.rank) || graph.gap.rank < 0 || graph.gap.rank > LIMITS.gapRankMax)) {
+          err('graph.gap.rank 必须是 0–' + LIMITS.gapRankMax + ' 的数字（层间距，单位 px）: '
+            + JSON.stringify(graph.gap.rank));
+        }
+      }
+    }
     const arrays = ['layers', 'containers', 'edges', 'annotations', 'pinned'];
     arrays.forEach((k) => {
       if (graph[k] !== undefined && !Array.isArray(graph[k])) err('graph.' + k + ' 必须是数组');
@@ -415,7 +446,7 @@
   return {
     SHAPES, PORTS, EDGE_ROUTES, ROUTE_IMPLEMENTED, EDGE_STYLES, DASH_TOKEN, DIRECTIONS, PROFILES,
     GRAPH_VERSION, LABEL_SIDES, CONTAINER_LAYOUTS, ID_RE, LIMITS,
-    GRAPH_FIELDS, LAYER_FIELDS, WATERMARK_FIELDS, CONTAINER_FIELDS, EDGE_FIELDS,
+    GRAPH_FIELDS, GAP_FIELDS, LAYER_FIELDS, WATERMARK_FIELDS, CONTAINER_FIELDS, EDGE_FIELDS,
     ENDPOINT_FIELDS, ARROW_FIELDS, ANNOTATION_FIELDS,
     validateGraph, validateGraphRefs, validateRect, unknownKeys
   };

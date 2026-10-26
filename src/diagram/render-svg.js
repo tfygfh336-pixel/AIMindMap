@@ -1,25 +1,33 @@
 /* ============================================================
- * src/diagram/render-svg.js — **MS1 渲染内核**：手写坐标的 JSON → SVG 字符串
+ * src/diagram/render-svg.js — **图内核的渲染层**：JSON → SVG 字符串
  * ------------------------------------------------------------
- * 边界（父批 §一 的"明令不做"，做了就是越界）：
- *   ❌ 自动布局（Sugiyama / rank）  ❌ 正交布线 / 通道 / 交叉 / overpass
+ * 分工（MS2 起，一个模块一件事；见 `docs/ARCHITECTURE.md` §2.3）：
+ *   · 文本怎么放进框（含**换行**）⇒ `wrap.js`   · 节点摆在哪 ⇒ `layout.js`
+ *   · 线怎么绕（正交 / 通道 / 交叉 / 标签位）⇒ `route.js`
+ *   · **本模块只做"把已经定好的几何画成字符串"**，外加 z-order、溢出终检、报告。
+ *
+ * 边界（MS2 之后仍然不做）：
  *   ❌ 交互（缩放/平移/hover/高亮）  ❌ 导出 PNG/PDF（本模块只产 SVG 字符串）
  *   ❌ 任何 I/O（不读盘、不写盘、不碰进程、不碰 DOM）—— 吃 JSON、吐字符串
- *   ✅ 但**留接口**：`orthogonal` / `curve` **响亮拒绝**（`E_ROUTE_UNSUPPORTED`），
- *      而不是静默画成直线；布局走 `layoutOf(doc)` 的默认实现（= 直接用 JSON 里的 `rect`），
- *      MS2 换布局算法时只换它，渲染与判据不动。
+ *   ✅ 两个入口的差别只有"坐标从哪来"：`render()` 用手写 `rect`（MS1 基线，逐字节不变），
+ *      `renderAuto()`（在 `index.js`）先跑 `layout.autoLayout` 再进这里。
+ *   ✅ 未实现的路由**响亮拒绝**：`curve` ⇒ `E_ROUTE_UNSUPPORTED`（`orthogonal` 已实现，
+ *      但若声明了它却没跑布线 ⇒ `E_ROUTE_FAILED`，**不会**静默画成直线）。
  *
  * 判据出处（设计 `docs/DIAGRAM-MODES.md` §2 的编号，改渲染前先对一遍）：
- *   `C-F1-01` 六形状 · `C-F1-02` 三段式 · `C-F1-04` 缩字号（下限 8.5）·
+ *   `C-F1-01` 六形状 · `C-F1-02` 三段式 · `C-F1-03` 换行 · `C-F1-04` 缩字号（下限 8.5）·
  *   `C-F1-05`【必备】文本永不溢出 · `C-F2-01`…`C-F2-06` 容器/层带 · `C-F3-02` 端口锚点 ·
- *   `C-F3-04` 路由 straight · `C-F3-07`/`C-F3-08` 箭头两端独立 · `C-F9-02` SVG 结构稳定
+ *   `C-F3-04` 路由 straight · `C-F3-06` 正交 · `C-F3-07`/`08` 箭头两端独立 ·
+ *   `C-F3-14`…`19` 标签/交叉/overpass/lane · `C-F9-02` SVG 结构稳定
  *
  * 三条**可量**的判据口径（"看起来像一张图"不算证据，父批 §七 第 1 条）：
  *   ① **z-order 判的是 SVG 里元素的顺序**（6 个 `g[data-z]` 逐字）：
  *      `layers, containers, nodes, edges, edgeLabels, annotations`；
  *   ② **容器 stack 的高度是算式**：子项高之和 + padding×2 + gap×（n−1），不是"看着差不多"；
- *   ③ **溢出前后的读取值**：每个文本元素都带 `data-font-size`，节点只要放过缩字号/加宽，
- *      报告里就有 `shrunk[] / widened[]` 的**前后读数**；溢出计数恒为 0（否则**响亮报错**）。
+ *   ③ **溢出前后的读取值**：每个文本元素都带 `data-font-size`，节点只要放过缩字号/加宽/换行，
+ *      报告里就有 `shrunk[] / widened[] / wrapped[]` 的**前后读数**；溢出计数恒为 0（否则**响亮报错**）。
+ *   ④ **布线档的产物自带"可复算的三样"**：`data-points`（理想折线，交叉数由它独立复算）、
+ *      `data-seg`（实际画出的段，4px 缺口可量）、`data-halo`（白描，逐点 overpass）。
  *
  * 确定性（`C-F9-02` / `C-F4-04`）：零时钟、零随机、零 `Map` 迭代顺序依赖（一律按数据数组序；
  * 而且节点顺序被打乱时坐标不变 —— 坐标来自**按 id 的查表**，不来自"第几个"）。
@@ -27,54 +35,53 @@
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./measure.js'), require('./schema.js'));
+    module.exports = factory(require('./measure.js'), require('./schema.js'),
+      require('./tokens.js'), require('./wrap.js'), require('./route.js'));
   } else {
-    root.MMDiagramRender = factory(root.MMDiagramMeasure, root.MMDiagramSchema);
+    root.MMDiagramRender = factory(root.MMDiagramMeasure, root.MMDiagramSchema,
+      root.MMDiagramTokens, root.MMDiagramWrap, root.MMDiagramRoute);
   }
-})(typeof self !== 'undefined' ? self : this, function (measure, diagramSchema) {
+})(typeof self !== 'undefined' ? self : this, function (measure, diagramSchema, tokens, wrap, route) {
   'use strict';
 
   /* ==================================================================
    * 取值表（**唯一一处**：几何 token、字号阶梯、z-order 都只在这里定义）
+   * ------------------------------------------------------------------
+   * MS2 起，文本/布局/布线的数都搬到了 `tokens.js`（四个模块共用一份），
+   * 本模块只**引用**、不再各写一套 —— 同一件事两处表达会漂，那是本工程反复治过的病。
    * ================================================================== */
 
   /** z-order **逐字**（父批 §一 第 7 条给的就是这一串，别改写法）。
    *  判据：SVG 里这 6 个 `g[data-z]` 的**元素顺序**必须与它逐字相同。 */
   const Z_ORDER = Object.freeze(['layers', 'containers', 'nodes', 'edges', 'edgeLabels', 'annotations']);
 
-  /** 字号阶梯：三段**各自独立**（`C-F1-02`）。缩小只能发生在这三个阶段内的"逐档下调"。 */
-  const FONT = Object.freeze({ family: 'system-ui, sans-serif', title: 14, subtitle: 11, badge: 10 });
-  /** 缩字号下限（`C-F1-04`："字号 ≥ 8.5"是**任何情况**下的硬下界） */
-  const MIN_FONT_SIZE = 8.5;
-  /** 每一档调多少（1px 一档；最后一档直接落到 8.5 ⇒ 阶梯闭合） */
-  const FONT_STEP = 1;
-  /** 三段的行间距（固定值 ⇒ 缺任一段时其余两段的位置**不变**，`C-F1-02` 的"不塌陷"） */
-  const LINE_GAP = 4;
-
-  /** 节点内边距 */
-  const NODE_PAD = 8;
-  /** 圆角 token（`C-F1-01`："圆角半径按类型取固定 token"）：`round` = 8，`pill` = 高的一半 */
-  const RADIUS_ROUND = 8;
-  /** 圆柱两端的椭圆高度占比与上限（固定 ⇒ 可复算） */
-  const CYLINDER_CAP_RATIO = 0.2;
-  const CYLINDER_CAP_MAX = 16;
-  /** 容器内边距与子项间距的缺省值（数据可覆盖；写在这里是为了"缺省也是确定的"） */
+  const FONT = tokens.FONT;
+  const MIN_FONT_SIZE = tokens.MIN_FONT_SIZE;
+  const LINE_GAP = tokens.LINE_GAP;
+  const LINE_LEAD = tokens.LINE_LEAD;
+  const PARTS = tokens.PARTS;
+  const MAX_LINES = tokens.MAX_LINES;
+  const MAX_NODE_W = tokens.MAX_NODE_W;
+  const MAX_FIT_ROUNDS = tokens.MAX_FIT_ROUNDS;
+  const NODE_PAD = tokens.NODE_PAD;
+  const RADIUS_ROUND = tokens.RADIUS_ROUND;
+  const CYLINDER_CAP_RATIO = tokens.CYLINDER_CAP_RATIO;
+  const CYLINDER_CAP_MAX = tokens.CYLINDER_CAP_MAX;
   const CONTAINER_PAD = 12;
   const CONTAINER_GAP = 8;
-  /** 箭头三角（末端指向路径末点）：长度与半宽 */
   const ARROW_LEN = 10;
   const ARROW_HALF = 4.5;
-  /** 画布外扩（viewBox 用；固定值 ⇒ 同输入同 viewBox） */
   const CANVAS_MARGIN = 16;
-  /** 浮点比较容差（只在"放得下吗"这一处用，**不参与输出**） */
-  const EPS = 1e-9;
-  /** 几何自检最多重排几轮（与 `C-A-07` 的"≤3 轮"同口径：轮数是个可判的数） */
-  const MAX_FIT_ROUNDS = 3;
-  /** 单个节点的**外接框宽度上限**。为什么要有它：没有上限时"加宽节点"这个兜底**永远成功**
-   *  ⇒ `E_TEXT_OVERFLOW`（父批 §一 第 9 条要求的"再不行就响亮报错"）就成了**不可达的死路**，
-   *  而"写了却不可达"正是本工程反复治的"判据在空转"。2000px 是个可判的数：一个节点宽到 2000
-   *  已经不是"一张图里的一个框"了 —— 到这里就该让人改数据，而不是让渲染器默默画一条两里长的框。 */
-  const MAX_NODE_W = 2000;
+  const EPS = tokens.EPS;
+  const GAP_HALF = tokens.GAP_HALF;
+  const HALO_WIDTH = tokens.HALO_WIDTH;
+
+  /** 几何 helper 全部来自 `wrap.js`（形状内接 / 外接换算 / 字号阶梯 / 三段基线） */
+  const shapeInset = wrap.shapeInset;
+  const requiredInnerHeight = wrap.requiredInnerHeight;
+  const outerSizeFor = wrap.outerSizeFor;
+  const fontLadder = wrap.fontLadder;
+  const fitPart = wrap.fitPartInBox;
 
   /** 缺省配色（本批不接主题：`C-F6-*` 是 MS3 的事；这里给确定的常量，不引外部 CSS） */
   const THEME = Object.freeze({
@@ -92,15 +99,9 @@
     annotation: '#7a5c00'
   });
 
-  /** 报错的**唯一**类型（带 `code`：调用方按码判，不按文案判 —— 与工程的错误码口径一致） */
-  class MMDiagramError extends Error {
-    constructor(code, message, detail) {
-      super(message);
-      this.name = 'MMDiagramError';
-      this.code = code;
-      this.detail = detail || {};
-    }
-  }
+  /** 报错的**唯一**类型（带 `code`：调用方按码判，不按文案判 —— 与工程的错误码口径一致）。
+   *  MS2 起这个类住在 `tokens.js`（`layout`/`route` 也要抛），这里只引用同一个类对象。 */
+  const MMDiagramError = tokens.MMDiagramError;
 
   /* ==================================================================
    * 小工具（纯函数）
@@ -140,78 +141,6 @@
   function rectIntersects(a, b) {
     return a.x < b.x + b.w - EPS && b.x < a.x + a.w - EPS
       && a.y < b.y + b.h - EPS && b.y < a.y + a.h - EPS;
-  }
-
-  /** 字号阶梯：从 base 逐档下调，**最后一档恒为 8.5**（不是"刚好碰到"）。 */
-  function fontLadder(base) {
-    const out = [];
-    for (let s = base; s > MIN_FONT_SIZE + EPS; s -= FONT_STEP) out.push(Math.round(s * 10) / 10);
-    if (Math.abs(out[out.length - 1] - MIN_FONT_SIZE) > EPS) out.push(MIN_FONT_SIZE);
-    return out;
-  }
-
-  /**
-   * 单段文本的"塞进 maxW"求解（`C-F1-04` 的阶梯 + `C-F1-05` 的判据都在这里）。
-   * 返回 `overflow`（>0 = 已经在最小字号下仍放不下 ⇒ 调用方必须加宽或响亮报错）。
-   */
-  function fitPart(text, baseSize, maxW, measurer) {
-    const ladder = fontLadder(baseSize);
-    for (let i = 0; i < ladder.length; i++) {
-      const size = ladder[i];
-      const w = measurer.widthOf(text, size, FONT.family);
-      if (w <= maxW + EPS) return { size: size, width: w, shrunk: size !== baseSize, overflow: 0 };
-    }
-    const w = measurer.widthOf(text, MIN_FONT_SIZE, FONT.family);
-    return { size: MIN_FONT_SIZE, width: w, shrunk: MIN_FONT_SIZE !== baseSize, overflow: w - maxW };
-  }
-
-  /* ==================================================================
-   * 形状几何（`C-F1-01`）：**六种**，圆角 token 固定，内接文本区一并算出来
-   * ================================================================== */
-
-  /**
-   * 形状的"文字可用区"（inset）。
-   * 为什么要按形状算而不是一律 `rect − padding`：`diamond` 的内接矩形只有一半宽高、
-   * `cylinder` 的两端是椭圆盖 ⇒ 用同一个 padding 会让字压在斜边/弧上（"看着没出框"但**出了形**）。
-   */
-  function shapeInset(rect, type) {
-    const x = rect.x;
-    const y = rect.y;
-    const w = rect.w;
-    const h = rect.h;
-    if (type === 'diamond') {
-      // 菱形（四个顶点 = 四边中点）的最大内接轴对齐矩形 = 半宽 × 半高，居中
-      return { x: x + w / 4, y: y + h / 4, w: w / 2, h: h / 2, kind: 'diamond' };
-    }
-    if (type === 'cylinder') {
-      const cap = Math.min(h * CYLINDER_CAP_RATIO, CYLINDER_CAP_MAX);
-      return { x: x + NODE_PAD, y: y + cap, w: w - 2 * NODE_PAD, h: h - 2 * cap, cap: cap, kind: 'cylinder' };
-    }
-    if (type === 'row') {
-      // 表行：左右到底（表行本来就是"框到框"），上下留半个 padding
-      return { x: x + NODE_PAD, y: y + NODE_PAD / 2, w: w - 2 * NODE_PAD, h: h - NODE_PAD, kind: 'row' };
-    }
-    return { x: x + NODE_PAD, y: y + NODE_PAD, w: w - 2 * NODE_PAD, h: h - 2 * NODE_PAD, kind: type };
-  }
-
-  /** 三段式需要的最小内接高度（**三段槽位恒定预留** ⇒ 缺一段时其他段不塌陷，`C-F1-02`） */
-  function requiredInnerHeight() {
-    return FONT.title + LINE_GAP + FONT.subtitle + LINE_GAP + FONT.badge;
-  }
-
-  /** 内接尺寸 → 外形尺寸（缩字号/加宽之后要把"要多大内接框"翻回"要多大外形框"）。
-   *  ⚠️ `cylinder` 必须**解出来**而不是迭代试：cap 随 h 变化 ⇒ 迭代会撞上"每轮都差一点点"，
-   *  于是 `MAX_FIT_ROUNDS` 用完还差 —— 那是把算式问题伪装成不收敛。闭式解：
-   *  h·(1−2·ratio) ≥ innerH（cap 未到上限时）或 h = innerH + 2·capMax（cap 封顶后）。 */
-  function outerSizeFor(type, innerW, innerH) {
-    if (type === 'diamond') return { w: innerW * 2, h: innerH * 2 };
-    if (type === 'cylinder') {
-      const hUncapped = innerH / (1 - 2 * CYLINDER_CAP_RATIO);
-      const capCapH = CYLINDER_CAP_MAX / CYLINDER_CAP_RATIO;       // cap 刚好封顶时的高度（16 / 0.2 = 80）
-      return { w: innerW + 2 * NODE_PAD, h: hUncapped <= capCapH ? hUncapped : innerH + 2 * CYLINDER_CAP_MAX };
-    }
-    if (type === 'row') return { w: innerW + 2 * NODE_PAD, h: innerH + NODE_PAD };
-    return { w: innerW + 2 * NODE_PAD, h: innerH + 2 * NODE_PAD };
   }
 
   /* ==================================================================
@@ -327,14 +256,19 @@
    * ================================================================== */
 
   /**
-   * 给一个节点定稿：先按声明 rect 试排 → 放不下就缩字号（下限 8.5）→ 还不行就**加宽/加高**
-   * → 仍不行 **响亮报错**（`E_TEXT_OVERFLOW`）。**任何情况下不裁字、不叠字**。
-   * @returns {{rect:object, inset:object, parts:object, widened:boolean, shrunk:Array}}
+   * 给一个节点定稿（MS2：阶梯里**多了换行这一档**，且它排在缩字号**之前**）。
+   *
+   * 顺序（与 `wrap.js` 头注释里那张表逐条对上）：
+   *   ① 单行放得下 → 基准字号；② 换行放得下 → 基准字号 + 多行；③ 行数超上限 → 缩字号再试；
+   *   ④ 最小字号仍放不下 → **加宽/加高**；⑤ 加宽超 `MAX_NODE_W` → 响亮报错（不裁字、不叠字）。
+   *
+   * @returns {{rect:object, inset:object, parts:object, widened:boolean, shrunk:Array, wrapped:Array}}
    */
   function fitNode(node, measurer) {
     let rect = { x: node.rect.x, y: node.rect.y, w: node.rect.w, h: node.rect.h };
     let widened = false;
     let shrunk = [];
+    let wrapped = [];
     let parts = null;
     let inset = null;
 
@@ -342,29 +276,26 @@
       inset = shapeInset(rect, node.type);
       // 宽高都不许为负（形状内接区可能被声明得比 padding 还小 ⇒ 那不是"排版问题"，是数据问题）
       const availW = Math.max(0, inset.w);
-      const fitted = {};
+      const fitted = wrap.measureParts(node, availW, measurer);
       const roundShrunk = [];
-      let overflowW = 0;
-      ['title', 'subtitle', 'badge'].forEach((key) => {
-        const text = node[key];
-        if (typeof text !== 'string' || !text) return;          // 缺省 ⇒ 不画，但槽位仍预留
-        const base = key === 'title' ? FONT.title : (key === 'subtitle' ? FONT.subtitle : FONT.badge);
-        const r = fitPart(text, base, availW, measurer);
-        fitted[key] = r;
-        if (r.overflow > overflowW) overflowW = r.overflow;
-        if (r.shrunk && r.overflow <= 0) roundShrunk.push({ part: key, from: base, to: r.size });
+      const roundWrapped = [];
+      PARTS.forEach((key) => {
+        const r = fitted[key];
+        if (r.shrunk) roundShrunk.push({ part: key, from: tokens.BASE_SIZE[key], to: r.size });
+        if (r.wrapped) roundWrapped.push({ part: key, lines: r.lines.length, size: r.size });
       });
-      // 高度：三段槽位恒定预留 ⇒ 内接高不够就长高（这是"不裁字"的另一半）
-      const needH = requiredInnerHeight();
-      const needW = overflowW > 0 ? availW + overflowW : availW;
-      const outer = outerSizeFor(node.type, Math.max(needW, 1), Math.max(needH, 1));
+      // 高度：三段槽位恒定预留（空段 = 1 行）⇒ 换行后按行数长高（这是"不裁字"的另一半）
+      const needH = wrap.innerHeightOf(fitted);
+      const needW = Math.max(1, wrap.innerWidthOf(fitted));
+      const outer = outerSizeFor(node.type, needW, Math.max(needH, 1));
       if (outer.w > MAX_NODE_W + EPS) {
         // 加宽这个兜底也有上界：到这儿就是"文案太长"，不是"排版放不下" —— 响亮说不出来路
         throw new MMDiagramError('E_TEXT_OVERFLOW',
           '节点 ' + node.id + ' 的文本在最小字号 ' + MIN_FONT_SIZE + 'px 下需要 ' + fmt(outer.w)
           + 'px 宽，超过单节点上限 ' + MAX_NODE_W + 'px —— 本内核**不裁字、也不无限加宽**：'
           + '缩短文案，或把它拆成多个节点（裁决见 tests/diagram-render.test.js 的溢出用例）',
-          { node: node.id, part: 'width', width: outer.w, maxNodeW: MAX_NODE_W, minFont: MIN_FONT_SIZE });
+          { object: { node: node.id, part: 'width', width: outer.w }, maxNodeW: MAX_NODE_W,
+            minFont: MIN_FONT_SIZE, fixes: ['缩短文案', '拆成多个节点', '显式给更大的 rect'] });
       }
       const grownW = Math.max(rect.w, outer.w);
       const grownH = Math.max(rect.h, outer.h);
@@ -376,12 +307,18 @@
       }
       parts = fitted;
       shrunk = roundShrunk;
-      // 终局自检（渲染后那一道）：宽放得下 + 高放得下。两条都过才算"没溢出"（`C-F1-05`）
+      wrapped = roundWrapped;
+      // 终局自检（渲染后那一道）：**每一行**都放得下 + 内接高放得下（`C-F1-05` 的判据是逐行的）
       let bad = null;
-      ['title', 'subtitle', 'badge'].forEach((key) => {
+      PARTS.forEach((key) => {
         const r = fitted[key];
-        if (!r || bad) return;
-        if (r.width > Math.max(0, inset.w) + EPS) bad = { part: key, width: r.width, avail: inset.w };
+        if (!r || bad || !r.lines.length) return;
+        r.lines.forEach((line, li) => {
+          if (!bad && line.width > Math.max(0, inset.w) + EPS) {
+            bad = { part: key, line: li, width: line.width, avail: inset.w };
+          }
+        });
+        if (!bad && r.overflow > 0) bad = { part: key, width: r.needW, avail: inset.w };
       });
       if (!bad && inset.h + EPS < needH) {
         // 形状的内接高没跟上（`diamond`/`cylinder` 的内接高由外形定）⇒ 那是几何算错了，不是数据错
@@ -392,13 +329,14 @@
           '节点 ' + node.id + ' 的 ' + bad.part + ' 在最小字号 ' + MIN_FONT_SIZE + 'px 下仍放不下（需 '
           + fmt(bad.width) + 'px，可用 ' + fmt(bad.avail) + 'px）—— 本内核**不裁字**：'
           + '要么改数据里的 rect，要么缩短文案（裁决见 tests/diagram-render.test.js 的溢出用例）',
-          { node: node.id, part: bad.part, width: bad.width, avail: bad.avail, minFont: MIN_FONT_SIZE });
+          { object: { node: node.id, part: bad.part, width: bad.width, avail: bad.avail },
+            minFont: MIN_FONT_SIZE, fixes: ['改 rect', '缩短文案', '拆成多个节点'] });
       }
-      return { rect: rect, inset: inset, parts: fitted, widened: widened, shrunk: shrunk };
+      return { rect: rect, inset: inset, parts: fitted, widened: widened, shrunk: shrunk, wrapped: wrapped };
     }
     throw new MMDiagramError('E_TEXT_FIT_ROUNDS',
       '节点 ' + node.id + ' 在 ' + MAX_FIT_ROUNDS + ' 轮重排后仍未定稿（排版不收敛 ⇒ 不写出一份"看着对"的图）',
-      { node: node.id });
+      { object: { node: node.id }, fixes: ['检查 rect 与文本长度'] });
   }
 
   /* ==================================================================
@@ -513,72 +451,68 @@
    * 端口与边（`C-F3-02` / `C-F3-04` / `C-F3-07` / `C-F3-08`）
    * ================================================================== */
 
-  /** 端口坐标（未给自定义坐标时按矩形四边中点；给定 `ports` 时用声明值，±0.5px 判据就靠它） */
-  function portPoint(node, port) {
-    const custom = node.ports && node.ports[port];
-    if (custom) return { x: custom[0], y: custom[1] };
-    const r = node.rect;
-    if (port === 'n') return { x: r.x + r.w / 2, y: r.y };
-    if (port === 's') return { x: r.x + r.w / 2, y: r.y + r.h };
-    if (port === 'e') return { x: r.x + r.w, y: r.y + r.h / 2 };
-    return { x: r.x, y: r.y + r.h / 2 };                             // 'w'
-  }
+  /* 端口 / 自动选边 / 箭头三角：实现在 `route.js`（布线阶段要用**同一份**几何，
+   * 两处各写一份必然漂 —— MS1 时它们在这里，MS2 搬走，判据两处共用） */
+  const portPoint = route.portPoint;
+  const autoPorts = route.autoPorts;
+  const arrowPolygon = route.arrowPolygon;
 
-  /** 自动选边（`C-F3-03`）：4×4 个端口组合里取代价（欧氏距离）最小的一对；
-   *  相等时按 `n<e<s<w` **定序**（先到先得 ⇒ 同输入同结果，不靠对象键序）。
-   *
-   *  `fixedFrom` / `fixedTo`：**一端已经指定了端口**时，另一端只在剩下的 4 个里挑
-   *  —— 不能拿"两端都自动"的那一对去替换用户指定端（那样指定的端口会被静默改掉）。
-   */
-  function autoPorts(fromNode, toNode, fixedFrom, fixedTo) {
-    const order = diagramSchema.PORTS;
-    const fromCand = fixedFrom ? [fixedFrom] : order;
-    const toCand = fixedTo ? [fixedTo] : order;
-    let best = null;
-    fromCand.forEach((pf) => {
-      toCand.forEach((pt) => {
-        const a = portPoint(fromNode, pf);
-        const b = portPoint(toNode, pt);
-        const d = Math.hypot(b.x - a.x, b.y - a.y);
-        if (!best || d < best.d - EPS) best = { pf: pf, pt: pt, d: d };
-      });
-    });
-    return { from: best.pf, to: best.pt };
-  }
-
-  /** 箭头三角（**不用 `<marker>`**：marker 要写 `url(#id)`，而"0 个外链"的判据里 `url(` 是被扫的
-   *  —— 内部引用虽然不算外链，但让判据需要"分辨两种 url(" 是给自己找麻烦。多边形没有这个问题） */
-  function arrowPolygon(x1, y1, x2, y2) {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const len = Math.hypot(dx, dy);
-    if (len < EPS) return null;                                     // 零长边不画箭头（也不编一个方向）
-    const ux = dx / len;
-    const uy = dy / len;
-    const bx = x2 - ux * ARROW_LEN;
-    const by = y2 - uy * ARROW_LEN;
-    const px = -uy * ARROW_HALF;
-    const py = ux * ARROW_HALF;
-    return [[x2, y2], [bx + px, by + py], [bx - px, by - py]];
-  }
 
   /**
-   * 一条边的几何（**只实现 `straight`**；`orthogonal`/`curve` **响亮拒绝**）。
-   * ⚠️ 这是本批第二条红线（父批 §七 第 2 条）：静默画成直线 = 把"没做"说成"做了"，
-   *    用户会在真机上发现线全是斜的。
+   * 一条边的几何。
+   *
+   * 三档（MS2 起）：
+   *   · route 缺省 = `ROUTE_IMPLEMENTED[0]`（`straight`）⇒ 与 MS1 **逐字节相同**的那条路；
+   *   · `orthogonal` ⇒ 由**布线阶段**（`route.routeAll`）给的折线，这里只做"取几何 + 接线型"；
+   *   · `curve` ⇒ 仍**响亮拒绝**（`E_ROUTE_UNSUPPORTED`；本批不做曲线，设计 §7.2 把它留在 MS3）。
+   * ⚠️ 红线：`orthogonal` 若拿不到折线，**不许**静默画成直线 —— 那会把"没绕线"说成"绕了"。
    */
-  function resolveEdge(edge, views) {
-    const route = edge.route === undefined ? diagramSchema.ROUTE_IMPLEMENTED[0] : edge.route;
-    if (diagramSchema.ROUTE_IMPLEMENTED.indexOf(route) < 0) {
+  function resolveEdge(edge, views, routed) {
+    const routeName = edge.route === undefined ? diagramSchema.ROUTE_IMPLEMENTED[0] : edge.route;
+    if (diagramSchema.ROUTE_IMPLEMENTED.indexOf(routeName) < 0) {
       throw new MMDiagramError('E_ROUTE_UNSUPPORTED',
-        '边 ' + edge.id + ' 的 route = ' + JSON.stringify(route) + '：**本批（MS1）未实现**'
-        + '（只实现了 ' + diagramSchema.ROUTE_IMPLEMENTED.join(' / ') + '）。'
-        + '按设计 §7.2 这三档路由属 MS2；本内核**不会**把它静默画成直线 —— '
-        + '要么把数据改成 "straight"，要么等 MS2',
-        { edge: edge.id, route: route, implemented: diagramSchema.ROUTE_IMPLEMENTED.slice() });
+        '边 ' + edge.id + ' 的 route = ' + JSON.stringify(routeName) + '：**本批未实现**'
+        + '（实现了 ' + diagramSchema.ROUTE_IMPLEMENTED.join(' / ') + '）。'
+        + '本内核**不会**把它静默画成直线 —— 要么把数据改成已实现的取值，要么等对应批次',
+        { object: { edge: edge.id, route: routeName },
+          implemented: diagramSchema.ROUTE_IMPLEMENTED.slice(),
+          fixes: ['改成 ' + diagramSchema.ROUTE_IMPLEMENTED.join(' 或 '), '去掉 route 用缺省'] });
     }
     const fromNode = views.get(edge.from.node);
     const toNode = views.get(edge.to.node);
+    const arrow = edge.arrow || {};
+    const start = arrow.start === true;
+    const end = arrow.end === undefined ? true : arrow.end === true;   // 缺省：末端有箭头、起点没有（`C-F3-07`）
+    const style = edge.style === undefined ? 'solid' : edge.style;
+    const base = {
+      id: edge.id, start: start, end: end, style: style,
+      from: edge.from.node, to: edge.to.node,
+      dash: diagramSchema.DASH_TOKEN[style] || '',
+      color: edge.color || THEME.edge,
+      label: edge.label
+    };
+
+    // ① 布线阶段已经给了折线 ⇒ 用它（端口名、路径、断开后的段、标签位全在那边算好了）
+    const g = routed && routed.edges ? routed.edges[edge.id] : null;
+    if (g) {
+      const pts = g.points || [];
+      const first = pts[0] || [0, 0];
+      const last = pts[pts.length - 1] || first;
+      return Object.assign(base, {
+        fromPort: g.fromPort, toPort: g.toPort, route: g.route,
+        x1: first[0], y1: first[1], x2: last[0], y2: last[1],
+        points: pts, runs: g.runs || [], cuts: g.cuts || 0, fallback: g.fallback === true,
+        routedLabel: g.label || null
+      });
+    }
+    if (routeName === 'orthogonal') {
+      throw new MMDiagramError('E_ROUTE_FAILED',
+        '边 ' + edge.id + ' 声明了 route: "orthogonal"，但这次渲染没有跑布线（拿不到折线）—— '
+        + '本内核**不会**把它静默画成直线：用 `renderAuto()`（自动布局 + 正交布线），'
+        + '或在 `render()` 里传 `routing: "orthogonal"`',
+        { object: { edge: edge.id }, fixes: ['用 renderAuto()', '传 opts.routing: "orthogonal"', '改成 route: "straight"'] });
+    }
+
     const ports = (edge.from.port && edge.to.port)
       ? { from: edge.from.port, to: edge.to.port }
       : autoPorts(fromNode, toNode, edge.from.port, edge.to.port);
@@ -586,18 +520,11 @@
     const toPort = edge.to.port || ports.to;
     const a = portPoint(fromNode, fromPort);
     const b = portPoint(toNode, toPort);
-    const arrow = edge.arrow || {};
-    const start = arrow.start === true;
-    const end = arrow.end === undefined ? true : arrow.end === true;   // 缺省：末端有箭头、起点没有（`C-F3-07`）
-    const style = edge.style === undefined ? 'solid' : edge.style;
-    return {
-      id: edge.id, fromPort: fromPort, toPort: toPort,
+    return Object.assign(base, {
+      fromPort: fromPort, toPort: toPort, route: 'straight',
       x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-      start: start, end: end, style: style,
-      dash: diagramSchema.DASH_TOKEN[style] || '',
-      color: edge.color || THEME.edge,
-      label: edge.label
-    };
+      points: [[a.x, a.y], [b.x, b.y]], runs: [], routedLabel: null
+    });
   }
 
   /* ==================================================================
@@ -635,6 +562,7 @@
     const fit = new Map();
     const shrunkReport = [];
     const widenedReport = [];
+    const wrappedReport = [];
     nd.nodes.forEach((n) => {
       const before = nodeRects.get(n.id);
       const f = fitNode(Object.assign({}, n, { rect: before }), measurer);
@@ -644,6 +572,7 @@
         widenedReport.push({ id: n.id, from: { w: before.w, h: before.h }, to: { w: f.rect.w, h: f.rect.h } });
       }
       f.shrunk.forEach((s) => shrunkReport.push({ id: n.id, part: s.part, from: s.from, to: s.to }));
+      f.wrapped.forEach((s) => wrappedReport.push({ id: n.id, part: s.part, lines: s.lines, size: s.size }));
     });
 
     /* ---- ③ 容器：摆位置 + 定高（stack 的算式在这里，不在别处）---- */
@@ -677,10 +606,24 @@
       );
     });
 
-    /* ---- ⑥ 边：只 straight；端口 + 两端独立箭头 ---- */
+    /* ---- ⑥ 边：straight 直连；正交 ⇒ **整图布线**（`route.js`），端口/通道/交叉/标签都在那边算 ---- */
     const edgesIn = Array.isArray(graph.edges) ? graph.edges : [];
+    const gridPx = isFiniteNum(graph.grid) ? graph.grid : 8;
+    const wantRouting = o.routing === 'orthogonal' || o.routing === true
+      || edgesIn.some((e) => isPlainObject(e) && e.route === 'orthogonal');
     // 端口坐标要吃**容器摆过之后**的 rect ⇒ `views` 里装的就是最终 rect（上面 ④ 造的）
-    const edges = edgesIn.map((e) => resolveEdge(e, views));
+    let routed = null;
+    if (wantRouting && edgesIn.length) {
+      routed = route.routeAll({
+        nodes: nd.nodes.map((n) => ({ id: n.id, rect: nodeRects.get(n.id), ports: n.ports })),
+        edges: edgesIn.map((e) => ({ id: e.id, from: e.from, to: e.to, route: e.route, label: e.label })),
+        direction: graph.direction, grid: gridPx, measurer: measurer,
+        penalty: o.routePenalty,
+        // 回边清单（来自布局的去环）：交叉的"预期/非预期"分类要用它（判据 2 的口径在 `route.js`）
+        reversed: Array.isArray(o.reversedEdgeIds) ? o.reversedEdgeIds : []
+      });
+    }
+    const edges = edgesIn.map((e) => resolveEdge(e, views, routed));
 
     /* ---- ⑦ 注释 ---- */
     const annotationsIn = Array.isArray(graph.annotations) ? graph.annotations : [];
@@ -701,8 +644,17 @@
     layers.forEach((l) => eat(l.rect));
     containers.forEach((c) => eat(c.rect));
     nd.nodes.forEach((n) => eat(nodeRects.get(n.id)));
-    edges.forEach((e) => eat({ x: Math.min(e.x1, e.x2), y: Math.min(e.y1, e.y2),
-      w: Math.abs(e.x2 - e.x1), h: Math.abs(e.y2 - e.y1) }));
+    edges.forEach((e) => {
+      if (e.points && e.points.length > 1) {
+        // 布线的折线：包围盒按**全部折点**吃（只吃两端会把绕出去的那一段漏出画布）
+        e.points.forEach((p) => eat({ x: p[0], y: p[1], w: 0, h: 0 }));
+      } else {
+        eat({ x: Math.min(e.x1, e.x2), y: Math.min(e.y1, e.y2),
+          w: Math.abs(e.x2 - e.x1), h: Math.abs(e.y2 - e.y1) });
+      }
+      if (e.routedLabel) eat({ x: e.routedLabel.x - e.routedLabel.w / 2, y: e.routedLabel.y - e.routedLabel.h / 2,
+        w: e.routedLabel.w, h: e.routedLabel.h });
+    });
     if (!Number.isFinite(minX)) { minX = 0; minY = 0; maxX = 1; maxY = 1; }
     const vb = {
       x: minX - CANVAS_MARGIN, y: minY - CANVAS_MARGIN,
@@ -783,53 +735,89 @@
       out.push('<g data-node="' + esc(n.id) + '" data-shape="' + esc(n.type) + '" data-x="' + fmt(r.x)
         + '" data-y="' + fmt(r.y) + '" data-w="' + fmt(r.w) + '" data-h="' + fmt(r.h) + '">');
       out.push(shapeMarkup(n.type, r, fill, stroke));
-      const sizes = {
-        title: (f.parts.title && f.parts.title.size) || FONT.title,
-        subtitle: (f.parts.subtitle && f.parts.subtitle.size) || FONT.subtitle,
-        badge: (f.parts.badge && f.parts.badge.size) || FONT.badge
-      };
-      // 三段基线：**互不相等且顺序固定**（槽位恒定预留 ⇒ 缺段不塌陷）
-      const yTitle = inset.y + sizes.title;
-      const ySub = yTitle + LINE_GAP + sizes.subtitle;
-      const yBadge = ySub + LINE_GAP + sizes.badge;
-      if (f.parts.title) {
-        out.push('<text class="mm-node-title" x="' + fmt(inset.x) + '" y="' + fmt(yTitle) + '"'
-          + ' font-family="' + esc(FONT.family) + '" font-size="' + fmt(sizes.title) + '" fill="' + esc(textColor)
-          + '" data-text="title" data-font-size="' + fmt(sizes.title) + '">' + esc(n.title) + '</text>');
-      }
-      if (f.parts.subtitle) {
-        out.push('<text class="mm-node-subtitle" x="' + fmt(inset.x) + '" y="' + fmt(ySub) + '"'
-          + ' font-family="' + esc(FONT.family) + '" font-size="' + fmt(sizes.subtitle) + '" fill="' + esc(textColor)
-          + '" data-text="subtitle" data-font-size="' + fmt(sizes.subtitle) + '">' + esc(n.subtitle) + '</text>');
-      }
-      if (f.parts.badge) {
-        const bw = f.parts.badge.width;
-        const chipH = sizes.badge + 4;
-        out.push('<rect class="mm-badge-chip" x="' + fmt(inset.x) + '" y="' + fmt(yBadge - sizes.badge - 2)
-          + '" width="' + fmt(bw + 10) + '" height="' + fmt(chipH) + '" rx="' + fmt(chipH / 2)
-          + '" fill="none" stroke="' + esc(stroke) + '" data-badge-chip="' + esc(n.id) + '"/>');
-        out.push('<text class="mm-node-badge" x="' + fmt(inset.x + 5) + '" y="' + fmt(yBadge) + '"'
-          + ' font-family="' + esc(FONT.family) + '" font-size="' + fmt(sizes.badge) + '" fill="' + esc(textColor)
-          + '" data-text="badge" data-font-size="' + fmt(sizes.badge) + '">' + esc(n.badge) + '</text>');
-      }
+      // 三段基线：**互不相等且顺序固定**（槽位恒定预留 ⇒ 缺段不塌陷）；
+      // MS2 起每段可能是**多行** ⇒ 基线由 `wrap.partBaselines` 逐行给（单行时与 MS1 逐字相同）
+      const baseYs = wrap.partBaselines(f.parts, inset.y);
+      PARTS.forEach((key) => {
+        const part = f.parts[key];
+        if (!part || !part.lines.length) return;                 // 该段没有文本 ⇒ 不画（槽位仍占）
+        const cls = 'mm-node-' + key;
+        part.lines.forEach((line, li) => {
+          const y = baseYs[key][li];
+          const multi = part.lines.length > 1 ? ' data-line="' + li + '/' + part.lines.length + '"' : '';
+          if (key === 'badge') {
+            const chipH = part.size + 4;
+            out.push('<rect class="mm-badge-chip" x="' + fmt(inset.x) + '" y="' + fmt(y - part.size - 2)
+              + '" width="' + fmt(part.width + 10) + '" height="' + fmt(chipH) + '" rx="' + fmt(chipH / 2)
+              + '" fill="none" stroke="' + esc(stroke) + '" data-badge-chip="' + esc(n.id) + '"/>');
+            out.push('<text class="' + cls + '" x="' + fmt(inset.x + 5) + '" y="' + fmt(y) + '"'
+              + ' font-family="' + esc(FONT.family) + '" font-size="' + fmt(part.size) + '" fill="' + esc(textColor)
+              + '" data-text="' + key + '" data-font-size="' + fmt(part.size) + '"' + multi
+              + '>' + esc(line.text) + '</text>');
+            return;
+          }
+          out.push('<text class="' + cls + '" x="' + fmt(inset.x) + '" y="' + fmt(y) + '"'
+            + ' font-family="' + esc(FONT.family) + '" font-size="' + fmt(part.size) + '" fill="' + esc(textColor)
+            + '" data-text="' + key + '" data-font-size="' + fmt(part.size) + '"' + multi
+            + '>' + esc(line.text) + '</text>');
+        });
+      });
       out.push('</g>');
     });
     out.push('</g>');
 
     // ---- edges ----
     out.push('<g data-z="edges">');
+    // overpass 的白色描边**先画**（它要在所有线之下、又在底色之上）：只给高优先级线画，
+    // 低优先级线在交点处已经断了 4px ⇒ 任何一条线在交叉点都**不被另一条线盖住**。
+    if (routed && routed.halos && routed.halos.length) {
+      out.push('<g data-haloes="1">');
+      routed.halos.forEach((h) => {
+        out.push('<line data-halo="1" data-edge="' + esc(h.edge) + '" x1="' + fmt(h.x1) + '" y1="' + fmt(h.y1)
+          + '" x2="' + fmt(h.x2) + '" y2="' + fmt(h.y2) + '" stroke="#ffffff" stroke-width="' + HALO_WIDTH
+          + '" stroke-linecap="butt"/>');
+      });
+      out.push('</g>');
+    }
     edges.forEach((e) => {
-      out.push('<line data-edge="' + esc(e.id) + '" data-from-port="' + esc(e.fromPort) + '" data-to-port="'
-        + esc(e.toPort) + '" x1="' + fmt(e.x1) + '" y1="' + fmt(e.y1) + '" x2="' + fmt(e.x2) + '" y2="'
-        + fmt(e.y2) + '" stroke="' + esc(e.color) + '" stroke-width="1.5"'
-        + (e.dash ? ' stroke-dasharray="' + esc(e.dash) + '"' : '') + '/>');
+      if (!routed) {
+        // **MS1 的那一行，逐字不变**（没有布线 ⇒ 产物与 MS1 一致，这是"同输入同输出"的基线）
+        out.push('<line data-edge="' + esc(e.id) + '" data-from-port="' + esc(e.fromPort) + '" data-to-port="'
+          + esc(e.toPort) + '" x1="' + fmt(e.x1) + '" y1="' + fmt(e.y1) + '" x2="' + fmt(e.x2) + '" y2="'
+          + fmt(e.y2) + '" stroke="' + esc(e.color) + '" stroke-width="1.5"'
+          + (e.dash ? ' stroke-dasharray="' + esc(e.dash) + '"' : '') + '/>');
+      } else {
+        // 布线档：一条边 = 一个分组，**承载三样可复算的东西**：
+        //   `data-points`（理想折线，交叉数由它独立复算）、`data-seg`（实际画出的段，缺口可量）、
+        //   `data-from/data-to`（判"这个交叉是不是共享端点带来的"）
+        const pts = e.points || [];
+        const ptsAttr = pts.map((p) => fmt(p[0]) + ',' + fmt(p[1])).join(' ');
+        out.push('<g data-edge="' + esc(e.id) + '" data-route="' + esc(e.route || 'orthogonal')
+          + '" data-from="' + esc(e.from || '') + '" data-to="' + esc(e.to || '') + '" data-from-port="'
+          + esc(e.fromPort) + '" data-to-port="' + esc(e.toPort) + '" data-points="' + ptsAttr
+          + '" data-cuts="' + fmt(e.cuts || 0) + '">');
+        const runs = (e.runs && e.runs.length) ? e.runs : [[[e.x1, e.y1], [e.x2, e.y2]]];
+        runs.forEach((r, ri) => {
+          out.push('<line data-edge="' + esc(e.id) + '" data-seg="' + ri + '" x1="' + fmt(r[0][0])
+            + '" y1="' + fmt(r[0][1]) + '" x2="' + fmt(r[1][0]) + '" y2="' + fmt(r[1][1])
+            + '" stroke="' + esc(e.color) + '" stroke-width="1.5"'
+            + (e.dash ? ' stroke-dasharray="' + esc(e.dash) + '"' : '') + '/>');
+        });
+        out.push('</g>');
+      }
+      // 箭头尖端 = 折线末点；方向取最后一个有长度的段（MS1 的直线也走这条：方向 = 两端连线）
+      const ptsAll = (e.points && e.points.length) ? e.points : [[e.x1, e.y1], [e.x2, e.y2]];
       if (e.end) {
-        const tri = arrowPolygon(e.x1, e.y1, e.x2, e.y2);
+        const tip = ptsAll[ptsAll.length - 1];
+        const prev = ptsAll[ptsAll.length - 2] || tip;
+        const tri = arrowPolygon(prev[0], prev[1], tip[0], tip[1]);
         if (tri) out.push('<polygon data-arrow="end" data-edge="' + esc(e.id) + '" points="'
           + tri.map((p) => fmt(p[0]) + ',' + fmt(p[1])).join(' ') + '" fill="' + esc(e.color) + '"/>');
       }
       if (e.start) {
-        const tri = arrowPolygon(e.x2, e.y2, e.x1, e.y1);   // 反向：起点箭头
+        const tip = ptsAll[0];
+        const next = ptsAll[1] || tip;
+        const tri = arrowPolygon(next[0], next[1], tip[0], tip[1]);   // 反向：起点箭头
         if (tri) out.push('<polygon data-arrow="start" data-edge="' + esc(e.id) + '" points="'
           + tri.map((p) => fmt(p[0]) + ',' + fmt(p[1])).join(' ') + '" fill="' + esc(e.color) + '"/>');
       }
@@ -840,11 +828,22 @@
     out.push('<g data-z="edgeLabels">');
     edges.forEach((e) => {
       if (typeof e.label !== 'string' || !e.label) return;
-      const mx = (e.x1 + e.x2) / 2;
-      const my = (e.y1 + e.y2) / 2;
-      out.push('<text class="mm-edge-label" x="' + fmt(mx) + '" y="' + fmt(my - 4) + '" text-anchor="middle"'
-        + ' font-family="' + esc(FONT.family) + '" font-size="10" fill="' + THEME.edgeLabel
-        + '" data-text="edge-label" data-edge="' + esc(e.id) + '">' + esc(e.label) + '</text>');
+      if (!routed) {
+        // MS1 的行为：锚在中点、上移 4px（没有避让，本批才补 `C-F3-14`/`15`）
+        const mx = (e.x1 + e.x2) / 2;
+        const my = (e.y1 + e.y2) / 2;
+        out.push('<text class="mm-edge-label" x="' + fmt(mx) + '" y="' + fmt(my - 4) + '" text-anchor="middle"'
+          + ' font-family="' + esc(FONT.family) + '" font-size="10" fill="' + THEME.edgeLabel
+          + '" data-text="edge-label" data-edge="' + esc(e.id) + '">' + esc(e.label) + '</text>');
+        return;
+      }
+      const lb = e.routedLabel;
+      if (!lb) return;
+      // `data-box` = 标签**矩形**（判据 7 用它做碰撞：不压框、不压线、不压别的标签）
+      out.push('<text class="mm-edge-label" x="' + fmt(lb.x) + '" y="' + fmt(lb.y + lb.h / 2 - 3) + '" text-anchor="middle"'
+        + ' font-family="' + esc(FONT.family) + '" font-size="' + tokens.LABEL_FONT_SIZE + '" fill="' + THEME.edgeLabel
+        + '" data-text="edge-label" data-edge="' + esc(e.id) + '" data-box="' + fmt(lb.x - lb.w / 2) + ' '
+        + fmt(lb.y - lb.h / 2) + ' ' + fmt(lb.w) + ' ' + fmt(lb.h) + '">' + esc(e.label) + '</text>');
     });
     out.push('</g>');
 
@@ -876,10 +875,37 @@
       })),
       measure: { approximate: measurer.approximate, note: measurer.note,
         cache: measurer.stats() },
-      problems: [],
-      degraded: [],
+      // MS2：换行档的读数（哪一段换了几行、用的字号）—— 判据 8 就靠它区分"先换行"与"先缩字号"
+      wrapped: wrappedReport,
+      // MS2：布线读数（crossings 是**几何数出来的**，判据 3 会另写一份 recount 来比它）
+      routing: routed ? {
+        enabled: true,
+        direction: routed.stats ? (graph.direction === 'TB' ? 'TB' : 'LR') : null,
+        crossings: routed.stats.crossings,
+        expected: routed.stats.expected,
+        unexpected: routed.stats.unexpected,
+        unexpectedByKind: {
+          interleave: routed.crossings.filter((c) => c.why === 'interleave').length,
+          sharedEndpoint: routed.crossings.filter((c) => c.why === 'shared-endpoint').length,
+          backEdge: routed.crossings.filter((c) => c.why === 'back-edge').length
+        },
+        crossingPoints: routed.crossings.map((c) => ({ x: c.x, y: c.y, high: c.high, low: c.low,
+          expected: c.expected, why: c.why })),
+        overpasses: routed.halos.length,
+        lanes: routed.stats.lanes,
+        cost: routed.stats.cost,
+        repairRounds: routed.stats.repairRounds,
+        overlaps: routed.overlaps.length,
+        touches: routed.touches.length,
+        labels: Object.keys(routed.edges).filter((k) => routed.edges[k].label).map((k) => ({
+          edge: k, x: routed.edges[k].label.x, y: routed.edges[k].label.y,
+          w: routed.edges[k].label.w, h: routed.edges[k].label.h
+        }))
+      } : { enabled: false },
+      problems: routed ? routed.problems.slice() : [],
+      degraded: routed ? routed.degraded.slice() : [],
       // 本批**没做**的东西如实写在报告里（"没做"不许靠读者猜）
-      notImplemented: ['route:curve', 'route:orthogonal', 'layout:auto', 'interaction', 'export:png', 'export:pdf']
+      notImplemented: ['route:curve', 'interaction', 'export:png', 'export:pdf']
     };
     return { svg: out.join(''), report: report, layout: baseLayout };
   }
@@ -922,6 +948,7 @@
 
   return {
     renderDiagram: renderDiagram,
+    normalizeDoc: normalizeDoc,
     layoutOf: layoutOf,
     MMDiagramError: MMDiagramError,
     fmt: fmt,
