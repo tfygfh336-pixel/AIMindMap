@@ -217,7 +217,9 @@
             <!-- ⚠️ 热度条**不在**这里了：它在上面 `.fd-head`（标题框）里，名字与大小锁之间（改版当天搬的）。
                  正文区因此只剩标签 / 正文 / 图片 / 关联…… 顺序与从前一致（少的就是被搬走的那块）。 -->
             <div class="fd-tags"></div>
-            <!-- 本机文件夹链接（有 localPath 才显示）：点击用系统文件管理器打开该目录 -->
+            <!-- 本机链接（有 localPath 才显示）：`localPath` 是**本机文件或目录**的绝对路径，
+                 左键用系统默认程序打开（目录由系统开文件管理器；没有默认关联时系统自己弹「打开方式」）；
+                 右键这块链接出**恰好四项**（打开 / 打开方式 / 在文件资源管理器中打开 / 取消链接） -->
             <div class="fd-localpath"></div>
             <div class="fd-detail-content"></div>
             <div class="fd-images-content"></div>
@@ -296,7 +298,7 @@
         <button class="fp-zoom-btn" data-zoom="page-fit" title="整页可见">整页</button>
         <button class="fp-zoom-btn" data-zoom="100" title="原始大小">100%</button>
       </span>
-      <button id="fp-folder" style="display:none" title="用文件管理器打开该节点对应的本机文件夹">📁 文件夹</button>
+      <button id="fp-folder" style="display:none" title="用系统默认程序打开该节点对应的本机链接（文件走默认关联；没有默认关联时系统会弹「打开方式」；目录会开文件管理器）">🔗 本机</button>
       <button id="fp-open" title="用系统默认应用打开">系统打开</button>
       <button id="fp-close" title="关闭预览（Esc）">✕</button>
     </div>

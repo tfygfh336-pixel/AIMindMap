@@ -615,12 +615,15 @@ describe('S2 ⑤ 逐调用点豁免：真仓库读数', () => {
     });
   });
 
-  it('`main.js` 那 7 处里**只有 1 处**是受管资产裸写（其余 6 处判不了）—— 这是豁免面的构成', () => {
+  it('`main.js` 那 6 处里**只有 1 处**是受管资产裸写（其余 5 处判不了）—— 这是豁免面的构成', () => {
+    /* 2026-10-26 由 7 → 6：导出 PNG 那一处裸写搬进了唯一实现 `exportMapPng()`（第一实参变成形参
+     * `out`，已被 `out` 那组条目覆盖）⇒ 按"cap 只减不增、同批调小"销账（`WRITE_OUTLET_SITE_CAP`
+     * 上界 82 不动，实际豁免面 82 → 81）。判据形状没变：**仍是 1 处受管资产裸写 + 其余判不了**。 */
     const mg = r2.sites.filter((s) => s.rel === 'main.js');
     const un = r2.unresolved.filter((s) => s.rel === 'main.js');
-    expect(mg.length + un.length).toBe(7);
+    expect(mg.length + un.length).toBe(6);
     expect(mg.length).toBe(1);
-    expect(un.length).toBe(6);
+    expect(un.length).toBe(5);
   });
 });
 

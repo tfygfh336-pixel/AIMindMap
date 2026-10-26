@@ -5,8 +5,188 @@
  *
  * 由入口 scripts/smoke-assertions.js 按顺序拼接执行。
  * 本文件是对拆分前单体 smoke-assertions.js 的逐字搬运，勿改断言文案与顺序。
+ *
+ * 【2026-10-26 追加三条】本文件的**最后三条**是「编辑节点详情**真的能输入**」
+ * （用户原话「编辑节点详情功能有问题，不能输入，你的测试形同虚设」）。
+ * 它们用 `ctx.input`（真鼠标 / 真键盘）而不设 `.value`，判别力证明见
+ * `.review/20261045-编辑详情不能输入/`。为什么落在这个文件里：它跑在**主窗**上，
+ * 而用户遇到的就是主窗那个对话框（`#edit-dialog` / `#edit-detail`）；
+ * 草稿窗那份同型判据在域 56。
  * ============================================================ */
 'use strict';
+
+/* ================= 「编辑节点详情」真输入的共用零件（**唯一实现**，三条断言都调这里） =================
+ * 两条 token 都只用 ASCII 字母数字：`sendInputEvent({type:'char'})` 对 `<` `>` 这类字符
+ * 依赖键盘布局，用它们会把"判据坏"与"输入法/布局不一样"混在一起（本工程最忌讳的混淆）。
+ * 判据只看"这串字出现在哪里"，不看它在正文里的位置。 */
+const TOKEN_INPUT = 'smokeRealInputQ7';
+const TOKEN_DISK = 'smokeRealDiskQ7';
+const TOKEN_ENTER = 'smokeRealEnterQ7';
+
+/** 详情格 + 对话框 + 可用区的**一次读全**（`rect` / `elementFromPoint` / `--dsh-sidebar-width`）。
+ *  ⚠️ 只读：这里没有一处写 DOM（写只发生在调用方明确要写的时候）。 */
+const EDIT_GEO_JS = `(function () {
+  var ta = document.getElementById('edit-detail');
+  var dlg = document.getElementById('edit-dialog');
+  var box = document.querySelector('#edit-dialog .dialog-box');
+  if (!ta || !dlg || !box) return { ok: false, text: '缺 #edit-detail / #edit-dialog / .dialog-box' };
+  var r = ta.getBoundingClientRect(), br = box.getBoundingClientRect();
+  var cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+  function tagOf(el) { return el ? (el.tagName + (el.id ? '#' + el.id : '')) : 'null'; }
+  var at = cx > 0 && cy > 0 ? document.elementFromPoint(cx, cy) : null;
+  var sideRaw = (getComputedStyle(document.body).getPropertyValue('--dsh-sidebar-width') || '').trim();
+  var side = parseFloat(sideRaw) || 0;
+  var vw = window.innerWidth, vh = window.innerHeight;
+  var avail = vw - side;
+  return {
+    ok: true,
+    open: dlg.style.display === 'flex',
+    ta: { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right),
+          bottom: Math.round(r.bottom), width: Math.round(r.width), height: Math.round(r.height) },
+    box: { left: Math.round(br.left), right: Math.round(br.right), width: Math.round(br.width) },
+    vw: vw, vh: vh, sideRaw: sideRaw, side: side, avail: avail,
+    center: { x: cx, y: cy }, at: tagOf(at), atIsTa: !!(at && at.id === 'edit-detail'),
+    inWindow: r.left >= 0 && r.top >= 0 && r.right <= vw && r.bottom <= vh,
+    edgeAt: tagOf(avail - 2 > 0 ? document.elementFromPoint(Math.round(avail - 2), cy) : null),
+    farAt: tagOf(document.elementFromPoint(vw - 2, cy)),
+    readOnly: !!ta.readOnly, disabled: !!ta.disabled,
+    value: String(ta.value == null ? '' : ta.value)
+  };
+})()`;
+
+/** 焦点 + 值（真输入前后各读一次；**判据只读这两样**） */
+const READ_EDIT_STATE_JS = `(function () {
+  var ta = document.getElementById('edit-detail');
+  return {
+    value: ta ? String(ta.value == null ? '' : ta.value) : '',
+    active: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : 'none',
+    readOnly: !!(ta && ta.readOnly)
+  };
+})()`;
+
+function fmtRect(r) {
+  return '{' + r.left + ',' + r.top + ' ' + r.width + '×' + r.height + '}';
+}
+
+/** 两段文本的**插入段**（最长公共前缀 + 最长公共后缀夹出来的那一段）。
+ *  为什么需要它：真键盘的插入发生在**光标处**（点格子中心 ⇒ 经常在正文中间），
+ *  所以"末尾多了什么"根本不是这次的改动；取末尾只会读到原文的最后一个字符。 */
+function diffInserted(a, b) {
+  const A = String(a == null ? '' : a), B = String(b == null ? '' : b);
+  let p = 0;
+  while (p < A.length && p < B.length && A.charAt(p) === B.charAt(p)) p++;
+  let s = 0;
+  while (s < A.length - p && s < B.length - p
+    && A.charAt(A.length - 1 - s) === B.charAt(B.length - 1 - s)) s++;
+  return B.slice(p, B.length - s);
+}
+
+/** 确认项目开着（**只开**，不改内容）；单独跑本域时前面的域没跑 ⇒ 必须自建前置 */
+async function ensureProjectOpen(ctx) {
+  const r = await ctx.exec(`(async function () {
+    try {
+      var st = window.MMApp.getState();
+      if (st && st.project && st.jm) return { ok: true, name: st.project.name, how: 'already' };
+      if (window.MM.setConfirmStub) window.MM.setConfirmStub(function () { return true; });
+      await Promise.race([
+        Promise.resolve(window.MMApp.openProject('comnet')),
+        new Promise(function (res) { setTimeout(function () { res(null); }, 15000); })
+      ]);
+      if (window.MM.setConfirmStub) window.MM.setConfirmStub(null);
+      var now = window.MMApp.getState();
+      return { ok: !!(now && now.project && now.jm), name: (now && now.project && now.project.name) || '', how: 'opened' };
+    } catch (e) { return { ok: false, text: 'err:' + ((e && e.message) || e) }; }
+  })()`);
+  const o = (r && typeof r === 'object') ? r : { ok: false, text: String(r).slice(0, 160) };
+  o.text = '项目=' + JSON.stringify(o.name) + '（' + (o.how || '?') + '）';
+  return o;
+}
+
+/** 挑一个要编辑的节点并选中它（`tcp-handshake` 优先 —— 它是有正文的稳定样本；
+ *  没有它才退到"第一个非根节点"，**不写死 id**：样本换了也不该让判据变成假绿）。 */
+async function pickNodeForEdit(ctx) {
+  const r = await ctx.exec(`(function () {
+    var jm = window.MMApp.getState().jm;
+    if (!jm) return { ok: false, text: '没有 jm（项目没开）' };
+    var ids = Object.keys(jm.mind.nodes || {});
+    var id = '';
+    if (jm.get_node('tcp-handshake')) id = 'tcp-handshake';
+    else { for (var i = 0; i < ids.length; i++) { if (String(ids[i]) !== 'root') { id = ids[i]; break; } } }
+    if (!id) return { ok: false, text: '项目里没有非根节点' };
+    if (window.MMApp.closeAllFloatDetail) window.MMApp.closeAllFloatDetail();
+    window.MM.adapter.selectNode(jm, id);
+    var sel = window.MM.adapter.getSelected(jm);
+    var n = jm.get_node(id);
+    var st = window.MMApp.getState();
+    return { ok: !!(sel && String(sel.id) === String(id)), id: String(id),
+      topic: String((n && n.topic) || ''),
+      project: String((st && st.project && st.project.name) || '') };
+  })()`);
+  const o = (r && typeof r === 'object') ? r : { ok: false, text: String(r).slice(0, 160) };
+  if (!o.ok) o.text = o.text || ('选中没生效：' + JSON.stringify(o.id));
+  return o;
+}
+
+/** **真键盘 F2** 开编辑框（`renderer/editor.js` 的 onKey → editSelected → openEditDialog）。
+ *  ⚠️ 不是 `style.display='flex'`：判据要的是"产品自己的入口能不能把人带到能输入的状态"。 */
+async function openEditByF2(ctx) {
+  await ctx.input.pressKey('F2');
+  await ctx.input.settle();
+  const r = await ctx.exec(`(function () {
+    var d = document.getElementById('edit-dialog');
+    var t = document.getElementById('edit-dialog-title');
+    return { open: !!(d && d.style.display === 'flex'), title: t ? t.textContent : '' };
+  })()`);
+  return (r && typeof r === 'object') ? r : { open: false, title: '' };
+}
+
+/** 某个按钮的**真点坐标** + 命中测试（命中它自己才干真点，否则调用方退回 `.click()`
+ *  并在报文里如实说"没点中"）。 */
+async function editButtonPoint(ctx, id) {
+  const r = await ctx.exec(`(function () {
+    var b = document.getElementById(${JSON.stringify(id)});
+    if (!b) return { hit: false, why: '没有 #' + ${JSON.stringify(id)} };
+    var q = b.getBoundingClientRect();
+    var x = Math.round(q.left + q.width / 2), y = Math.round(q.top + q.height / 2);
+    var at = document.elementFromPoint(x, y);
+    return { x: x, y: y, hit: !!(at && (at === b || (at.closest && at.closest('button') === b))),
+      why: at ? (at.tagName + (at.id ? '#' + at.id : '')) : 'null' };
+  })()`);
+  return (r && typeof r === 'object') ? r : { hit: false, why: String(r).slice(0, 80) };
+}
+
+/** 关掉编辑框：优先真鼠标点「取消」（走产品自己的 closeEditDialog），点不中才退回 `.click()`。
+ *  收不干净会让**下一个域**被框架判"残留模态"并点名本域 ⇒ 每条断言都 finally 调它。 */
+async function closeEditReal(ctx) {
+  try {
+    const d = await ctx.exec('(function () { var d = document.getElementById("edit-dialog");'
+      + ' return !!(d && d.style.display === "flex"); })()');
+    if (!d) return false;
+    const pt = await editButtonPoint(ctx, 'edit-cancel');
+    if (ctx.input && pt.hit) { await ctx.input.click(pt); await ctx.input.settle({ delayMs: 60 }); }
+    await ctx.exec('(function () { var d = document.getElementById("edit-dialog");'
+      + ' if (d && d.style.display === "flex") document.getElementById("edit-cancel").click(); return 1; })()');
+    return true;
+  } catch (e) { return false; }
+}
+
+/** **一次真的 Enter**（三段，缺一段就不是"真按了一下 Enter"）。
+ *
+ *  ⚠️ 这一段是本批实测出来的：`ctx.input.pressKey('Return')` 只发 `keyDown` + `keyUp`，
+ *  于是产品的 keydown 处理器**看得见**这个 Enter，而**文本层什么都不会被插入** ——
+ *  Chromium 的编辑管线里，回车产生的字符来自紧随其后的那个 `char` 事件
+ *  （`scripts/smoke-input.js` 的文件头就写着「`keyDown` 不会产生字符」）。
+ *  第一次跑这条断言时读数正是这个形状：`框还开着=true`（修好了）但 `值 522 → 522`
+ *  ⇒ 只发两段的话，"Enter 真的插入了换行"这件事**永远判不出来**（判据自己会空转）。
+ *  ⇒ 三段一起发，才是"人按了一下 Enter"。 */
+async function pressEnterReal(ctx) {
+  await ctx.input.sendList([
+    { type: 'keyDown', keyCode: 'Return', modifiers: [] },
+    { type: 'char', keyCode: '\r' },
+    { type: 'keyUp', keyCode: 'Return', modifiers: [] }
+  ], 0);
+  return 3;
+}
 
 const assertions = [
   {
@@ -430,6 +610,291 @@ const assertions = [
       let ok = false, detail = chk;
       try { const o = JSON.parse(chk); ok = o.ok; detail = o.text; } catch (e) { detail = chk; }
       return { ok, text: detail };
+    }
+  },
+
+  /* ==========================================================================================
+   * 「编辑节点详情」**真的能输入**（2026-10-26 批 · 用户原话「编辑节点详情功能有问题，不能输入，
+   * 你的测试形同虚设」）
+   * ------------------------------------------------------------------------------------------
+   * ## 治的病根
+   *   域 56 过去用 `document.getElementById('edit-detail').value = X` 设值、再读回来比。
+   *   那种写法**整条绕过** Chromium 的输入管线（命中测试 / 焦点 / 键盘 / IME）⇒
+   *   那个格子就算 `readOnly`、被别的层盖住、在屏幕外、`input` 事件根本没接，**断言照样绿**。
+   *   ⇒ 本节判据一律走 `ctx.input`（`webContents.sendInputEvent`，真鼠标 / 真键盘）。
+   *
+   * ## 三条各自独立（**不许合并**）
+   *   甲 几何/命中：格子整块在**可用区**里（`窗口宽 − --dsh-sidebar-width`）、居中都对、
+   *      `document.elementFromPoint(格子中心)` 命中的**就是那个 textarea 自己**；
+   *   乙 真输入：真点进格子 → 真键盘逐字 ⇒ `.value` 真的变了、`activeElement` 是它；
+   *      再点「保存」⇒ **内存里** `node.data.detail` 真的变了；
+   *   丙 落盘：真输入 → 点「保存」→ 点工具栏「💾 保存」⇒ **CLI 从盘上读回来的 detail** 里有那串字。
+   *   ⇒ 三种注入（格子设成 `readOnly` / 弹窗滑到侧栏底下 / 「保存」改成不读那个格子）
+   *      **各自红一条**，不会互相掩护。判别力证明的逐字节还原记录见
+   *      `.review/20261045-编辑详情不能输入/`。
+   *
+   * ## ⚠️ 为什么**不用** `elementFromPoint` 判"没被原生侧栏盖住"
+   *   它做不到。侧栏是主进程的 `WebContentsView`，合成在页面**之上**，渲染层的命中测试
+   *   **完全看不见它**（本批实测：侧栏区域里 `elementFromPoint` 照样返回页面元素 ✓）。
+   *   所以"会不会滑到侧栏底下"的**可判形式**是"矩形右缘 ≤ 可用区宽 + 居中"，不是命中测试。
+   *   报文里仍然把 `elementFromPoint` 的读数打出来（中心点 / 可用区右缘 / 窗口右缘），
+   *   那是给人看的三处取证，不是判据。
+   *
+   * ## 为什么三条都"自建前置"
+   *   单独跑 `SMOKE_ONLY=04` 时前面的域没跑 ⇒ 项目没开。三条各自先确保项目开着
+   *   （只打开、内容由 CLI 读真实沙箱副本），于是都能单独跑、也不靠上位域的残留状态。
+   * ========================================================================================== */
+
+  {
+    name: '编辑节点对话框的「详情」格：整块落在**可用区**内、居中于可用区，且中心点命中它自己'
+      + '（真键盘 F2 开框；报 rect / elementFromPoint / --dsh-sidebar-width 三处读数）',
+    run: async (ctx) => {
+      if (!ctx.input) return { ok: false, text: 'ctx.input 不可用（真输入底座没起来 ⇒ 本项采不到真值，判红）' };
+      let closeIt = true;
+      try {
+        const pre = await ensureProjectOpen(ctx);
+        if (!pre.ok) return { ok: false, text: '打开项目失败：' + pre.text };
+        const node = await pickNodeForEdit(ctx);
+        if (!node.ok) return { ok: false, text: node.text };
+        const opened = await openEditByF2(ctx);
+        if (!opened.open) {
+          return { ok: false, text: '真键盘 F2 没能打开「编辑节点」框（选中=' + JSON.stringify(node.id)
+            + ' 标题=' + JSON.stringify(opened.title) + '）—— 入口本身坏了，下面的判据无从谈起' };
+        }
+        // ── 侧栏展开那一档：与 dsh-sidebar:layout 写的是**同两样东西**（body class + CSS 变量）──
+        await ctx.exec('(function () { document.body.classList.add("dsh-sidebar-on");'
+          + ' document.body.style.setProperty("--dsh-sidebar-width", "420px"); return 1; })()');
+        const g = await ctx.exec(EDIT_GEO_JS);
+        await ctx.exec('(function () { document.body.classList.remove("dsh-sidebar-on");'
+          + ' document.body.style.removeProperty("--dsh-sidebar-width"); return 1; })()');
+        closeIt = false;
+        await closeEditReal(ctx);
+        if (!g || g.ok !== true) return { ok: false, text: '读不到几何：' + JSON.stringify(g).slice(0, 200) };
+        const sideOk = Math.round(g.side) === 420;
+        const hasArea = g.ta.width > 0 && g.ta.height > 0;
+        const gapL = Math.round(g.box.left);
+        const gapR = Math.round(g.avail - g.box.right);
+        const centered = Math.abs(gapL - gapR) <= 3;
+        const inside = g.box.right <= g.avail + 1;
+        return {
+          ok: sideOk && hasArea && g.inWindow && inside && centered && g.atIsTa,
+          text: '视口 ' + g.vw + '×' + g.vh + ' · --dsh-sidebar-width=' + JSON.stringify(g.sideRaw)
+            + ' ⇒ 可用区 ' + g.avail + 'px（期望 420 ⇒ ' + sideOk + '）'
+            + ' ｜ #edit-detail rect=' + fmtRect(g.ta) + '（有面积=' + hasArea + '，整块在窗口内=' + g.inWindow + '）'
+            + ' ｜ 对话框左右留白 ' + gapL + '/' + gapR + '（居中=' + centered + '）'
+            + ' ｜ 右缘 ' + Math.round(g.box.right) + ' ≤ 可用区 ' + g.avail + ' ⇒ ' + inside
+            + ' ｜ 格子中心 ' + JSON.stringify(g.center) + ' 命中=' + g.at + '（是格子自己=' + g.atIsTa + '）'
+            + ' ｜ 取证（非判据）：可用区右缘-2 → ' + g.edgeAt + '，窗口右缘-2 → ' + g.farAt
+            + ' ｜ readOnly=' + g.readOnly + ' disabled=' + g.disabled
+        };
+      } finally {
+        if (closeIt) await closeEditReal(ctx);
+      }
+    }
+  },
+
+  {
+    name: '编辑节点对话框的「详情」格**真的能输入**：真鼠标点进格子 + 真键盘逐字 ⇒ .value 变、焦点在格子上；'
+      + '点「保存」⇒ **内存里** node.data.detail 真的变了（不是设 value 再读 value）',
+    run: async (ctx) => {
+      if (!ctx.input) return { ok: false, text: 'ctx.input 不可用（真输入底座没起来 ⇒ 本项采不到真值，判红）' };
+      try {
+        const pre = await ensureProjectOpen(ctx);
+        if (!pre.ok) return { ok: false, text: '打开项目失败：' + pre.text };
+        const node = await pickNodeForEdit(ctx);
+        if (!node.ok) return { ok: false, text: node.text };
+        const opened = await openEditByF2(ctx);
+        if (!opened.open) return { ok: false, text: '真键盘 F2 没能打开「编辑节点」框' };
+        const g = await ctx.exec(EDIT_GEO_JS);
+        if (!g || g.ok !== true) return { ok: false, text: '读不到格子几何：' + JSON.stringify(g).slice(0, 200) };
+        const before = g.value;
+        // ── 真鼠标点进格子（走 Chromium 命中测试）──
+        await ctx.input.click(g.center);
+        await ctx.input.settle();
+        const focused = await ctx.exec(READ_EDIT_STATE_JS);
+        // ── 真键盘逐字（`type:'char'` 才会进输入框；keyDown 不产生字符）──
+        await ctx.input.typeText(TOKEN_INPUT);
+        await ctx.input.settle({ delayMs: 120 });
+        const typed = await ctx.exec(READ_EDIT_STATE_JS);
+        // ── 点「保存」（真鼠标）⇒ 内存里应当变了 ──
+        const okPt = await editButtonPoint(ctx, 'edit-ok');
+        let clickOk = false;
+        if (okPt.hit) { await ctx.input.click(okPt); await ctx.input.settle(); clickOk = true; }
+        else await ctx.exec('document.getElementById("edit-ok").click()');
+        const after = await ctx.exec(`(function () {
+          var jm = window.MMApp.getState().jm;
+          var n = jm ? jm.get_node(${JSON.stringify(node.id)}) : null;
+          var d = document.getElementById('edit-dialog');
+          return { detail: String((n && n.data && n.data.detail) || ''), closed: !!d && d.style.display !== 'flex',
+            active: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : 'none' };
+        })()`);
+        const focusOk = focused.active === 'edit-detail';
+        const valueChanged = typed.value !== before;
+        const hasToken = typed.value.indexOf(TOKEN_INPUT) >= 0;
+        const memOk = String(after.detail).indexOf(TOKEN_INPUT) >= 0;
+        return {
+          ok: focusOk && valueChanged && hasToken && memOk && after.closed,
+          text: '真点中心 ' + JSON.stringify(g.center) + ' ⇒ 焦点=' + focused.active + '（期望 edit-detail ⇒ ' + focusOk + '）'
+            + ' ｜ 真键盘逐字 ' + JSON.stringify(TOKEN_INPUT) + '（' + TOKEN_INPUT.length + ' 个 char 事件）'
+            + ' ⇒ .value ' + before.length + ' 字 → ' + typed.value.length + ' 字，'
+            + '变了=' + valueChanged + '、含那串字=' + hasToken
+            + ' ｜ 点「保存」真点中=' + clickOk + ' ⇒ 内存 detail 含那串字=' + memOk
+            + '（' + String(after.detail).length + ' 字）、框已关=' + after.closed
+            + '（原正文 ' + JSON.stringify(before.slice(0, 24)) + '…）'
+        };
+      } finally {
+        await closeEditReal(ctx);
+      }
+    }
+  },
+
+  {
+    name: '编辑节点「详情」改完**真的落到盘上**：真输入 → 点「保存」→ 点工具栏「💾 保存」⇒ '
+      + 'CLI 从盘上读回来的 detail 里有那串字（内存说成功不算数）',
+    run: async (ctx) => {
+      if (!ctx.input) return { ok: false, text: 'ctx.input 不可用（真输入底座没起来 ⇒ 本项采不到真值，判红）' };
+      try {
+        const pre = await ensureProjectOpen(ctx);
+        if (!pre.ok) return { ok: false, text: '打开项目失败：' + pre.text };
+        const node = await pickNodeForEdit(ctx);
+        if (!node.ok) return { ok: false, text: node.text };
+        const proj = node.project;
+        const opened = await openEditByF2(ctx);
+        if (!opened.open) return { ok: false, text: '真键盘 F2 没能打开「编辑节点」框' };
+        const g = await ctx.exec(EDIT_GEO_JS);
+        if (!g || g.ok !== true) return { ok: false, text: '读不到格子几何：' + JSON.stringify(g).slice(0, 200) };
+        await ctx.input.click(g.center);
+        await ctx.input.settle();
+        await ctx.input.typeText(TOKEN_DISK);
+        await ctx.input.settle({ delayMs: 120 });
+        const typed = await ctx.exec(READ_EDIT_STATE_JS);
+        const okPt = await editButtonPoint(ctx, 'edit-ok');
+        if (okPt.hit) await ctx.input.click(okPt); else await ctx.exec('document.getElementById("edit-ok").click()');
+        await ctx.input.settle();
+        // ── 工具栏「💾 保存」（真鼠标）：这一步才是落盘 ──
+        const savePt = await editButtonPoint(ctx, 'btn-save');
+        let saveHit = false;
+        if (savePt.hit) { await ctx.input.click(savePt); saveHit = true; } else await ctx.exec('document.getElementById("btn-save").click()');
+        // ── 盘上真值：**CLI 读沙箱副本**（不读页面自报）──
+        let diskDetail = null, cliErr = '';
+        for (let i = 0; i < 40; i++) {
+          await new Promise((r) => setTimeout(r, 150));
+          try {
+            const flat = JSON.parse(ctx.runCli(['read', proj, '--json', '--subtree', String(node.id)]));
+            const nodes = Array.isArray(flat.nodes) ? flat.nodes : [];
+            const hit = nodes.filter((n) => String(n.id) === String(node.id))[0];
+            if (hit) diskDetail = String(hit.detail || '');
+            if (diskDetail !== null && diskDetail.indexOf(TOKEN_DISK) >= 0) break;
+          } catch (e) { cliErr = String((e && e.message) || e).slice(0, 120); }
+        }
+        const diskOk = diskDetail !== null && diskDetail.indexOf(TOKEN_DISK) >= 0;
+        const status = await ctx.exec('(function () { var s = document.getElementById("status-text"); return s ? s.textContent : ""; })()');
+        return {
+          ok: typed.value.indexOf(TOKEN_DISK) >= 0 && diskOk,
+          text: '真输入 ' + JSON.stringify(TOKEN_DISK) + ' ⇒ .value 含那串字='
+            + (typed.value.indexOf(TOKEN_DISK) >= 0)
+            + ' ｜ 点「保存」+ 点「💾 保存」（真点中=' + saveHit + '）'
+            + ' ⇒ **盘上** detail 含那串字=' + diskOk
+            + '（CLI 读 ' + proj + '/' + node.id + '：' + (diskDetail === null ? '读不到 ' + cliErr : String(diskDetail).length + ' 字') + '）'
+            + ' ｜ 状态栏=' + JSON.stringify(String(status).slice(0, 40))
+        };
+      } finally {
+        await closeEditReal(ctx);
+      }
+    }
+  },
+
+  /* ------------------------------------------------------------------------------------------
+   * 丁（**2026-10-26 复现出来的真缺陷**）：正文格里的 **Enter 必须是换行，不是"提交并关框"**
+   * ------------------------------------------------------------------------------------------
+   * 形状（`renderer/editor.js` 的 `onKey`）：只要编辑框开着，任何 `Enter`（不带 Shift）都会走
+   * `saveEditDialog()` —— 它对**单行输入**（标题/标签）是便利，对 `#edit-detail` 这个
+   * **多行 textarea** 就是"永远打不出换行"：
+   *   · 正文本身就是多行的 HTML（`<h3>…</h3>\n<ul>\n<li>…` —— 盘上那份原文就带换行），
+   *     人到框里按 Enter 想换行 ⇒ 框**直接关掉并保存**；
+   *   · 更狠的一档是**中文输入法**：选中候选词那一下就是 `Enter`（组合期），
+   *     `onKey` 没有判 `e.isComposing` ⇒ 每选一个字都可能把框关掉 —— 用户嘴里的"不能输入"。
+   * ⇒ 判据（真键盘，不是合成事件）：
+   *   ① 点进正文格 → 逐字输入 → 按 Enter ⇒ 框**还开着**，且 `.value` 里**多了换行**、长度 +1；
+   *   ② 单行输入（标题格）里按 Enter 仍应保存关框（这是既有语义，别顺手改掉它 ——
+   *      所以本条**同时判两个格子**，修法必须"只让多行框不提交"，不能一刀切关掉 Enter 提交）。
+   * ⚠️ 域 56 的旧写法（`value = X` 一次性设值）**永远不会按 Enter** ⇒ 这条缺陷在它眼里不存在，
+   *    正是用户说的"形同虚设"。
+   * ------------------------------------------------------------------------------------------ */
+  {
+    name: '编辑节点「详情」格里的 Enter 必须是**换行**（且框不关）：真键盘逐字 + Enter 后 '
+      + '框仍开着、值里多一个换行；而**标题格**里 Enter 仍照旧提交关框（两个格子都要判）',
+    run: async (ctx) => {
+      if (!ctx.input) return { ok: false, text: 'ctx.input 不可用（真输入底座没起来 ⇒ 本项采不到真值，判红）' };
+      try {
+        const pre = await ensureProjectOpen(ctx);
+        if (!pre.ok) return { ok: false, text: '打开项目失败：' + pre.text };
+        const node = await pickNodeForEdit(ctx);
+        if (!node.ok) return { ok: false, text: node.text };
+        const opened = await openEditByF2(ctx);
+        if (!opened.open) return { ok: false, text: '真键盘 F2 没能打开「编辑节点」框' };
+        const g = await ctx.exec(EDIT_GEO_JS);
+        if (!g || g.ok !== true) return { ok: false, text: '读不到格子几何：' + JSON.stringify(g).slice(0, 200) };
+        // ── 甲：正文格里打字 + Enter ──
+        await ctx.input.click(g.center);
+        await ctx.input.settle();
+        await ctx.input.typeText(TOKEN_ENTER);
+        await ctx.input.settle({ delayMs: 80 });
+        const beforeEnter = await ctx.exec(READ_EDIT_STATE_JS);
+        await pressEnterReal(ctx);
+        await ctx.input.settle({ delayMs: 150 });
+        const afterEnter = await ctx.exec(`(function () {
+          var d = document.getElementById('edit-dialog');
+          var ta = document.getElementById('edit-detail');
+          return { open: !!(d && d.style.display === 'flex'),
+            value: ta ? String(ta.value == null ? '' : ta.value) : '',
+            active: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : 'none' };
+        })()`);
+        const detailStillOpen = afterEnter.open === true;
+        const grown = afterEnter.value.length === beforeEnter.value.length + 1;
+        /* 插入的那一段 = **前后差分**（不是"取末尾一个字符"）：光标在正文中间时 —— 本断言就是
+         * 点格子**中心**进去的 —— 插入发生在中间，取末尾只会读到原文里最后那个 `>`。
+         * 第一版就是这么写错的（读数 `插入段=">" 码点=62`），差别只在"判据自己的取法"。
+         * 换行字节 `\n` / `\r` 都算：真人按 Enter 是 `\n`，本驱动的 `{type:'char', keyCode:'\r'}`
+         * 可能留 `\r`；判的是"**框没关 + 真的插进了一个换行**"，不是"字节必须是 \n"。 */
+        const ins = diffInserted(beforeEnter.value, afterEnter.value);
+        const gotNewline = ins === '\n' || ins === '\r' || ins === '\r\n';
+        const tailCodes = Array.from(ins).map((c) => c.charCodeAt(0)).join(',');
+        // ── 乙：标题格里 Enter 仍要提交关框（既有语义，别顺手改掉）──
+        await closeEditReal(ctx);
+        const opened2 = await openEditByF2(ctx);
+        if (!opened2.open) return { ok: false, text: '第二次 F2 没能打开「编辑节点」框（上一步留下的状态没清干净？）' };
+        const topicPt = await ctx.exec(`(function () {
+          var t = document.getElementById('edit-topic');
+          var r = t.getBoundingClientRect();
+          var x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+          var at = document.elementFromPoint(x, y);
+          return { x: x, y: y, hit: !!(at && (at === t || (at.id || '') === 'edit-topic')) };
+        })()`);
+        let topicHit = false;
+        if (topicPt && topicPt.hit) { await ctx.input.click({ x: topicPt.x, y: topicPt.y }); topicHit = true; }
+        await ctx.input.settle();
+        await ctx.input.pressKey('Return');
+        await ctx.input.settle({ delayMs: 200 });
+        const afterTopicEnter = await ctx.exec(`(function () {
+          var d = document.getElementById('edit-dialog');
+          return { open: !!(d && d.style.display === 'flex') };
+        })()`);
+        const topicSubmitted = afterTopicEnter.open === false;
+        return {
+          ok: detailStillOpen && grown && gotNewline && topicSubmitted,
+          text: '正文格：真键盘 ' + JSON.stringify(TOKEN_ENTER) + '（' + TOKEN_ENTER.length + ' 个 char）+ Enter ⇒ 框还开着='
+            + detailStillOpen + '、值 ' + beforeEnter.value.length + ' → ' + afterEnter.value.length + ' 字'
+            + '（+1=' + grown + '、插进去的是换行=' + gotNewline + '，插入段=' + JSON.stringify(ins)
+            + ' 码点=' + (tailCodes || '（空）') + '）、焦点=' + afterEnter.active
+            + ' ｜ 标题格：真点中=' + topicHit + ' + Enter ⇒ 关框=' + topicSubmitted
+            + '（既有语义，必须保持 true）'
+            + (detailStillOpen ? '' : ' ｜ ✗ 正文格里按 Enter 把整个编辑框关掉了 ⇒ 多行正文打不出换行，'
+              + '中文输入法选词那一下（组合期的 Enter）也会把框关掉 = 用户说的「不能输入」')
+        };
+      } finally {
+        await closeEditReal(ctx);
+      }
     }
   }
 ];

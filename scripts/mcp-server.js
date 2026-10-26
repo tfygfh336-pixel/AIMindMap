@@ -258,13 +258,13 @@ const TOOLS = [
     title: s('可选，项目标题'), dry_run: b('只预览格式/规模/前几个标题与来源指纹，不写盘（建议先跑一次）'),
     force: b('同一个来源**故意**再建一棵（默认拒绝重复导入）')
   }, ['name', 'file']),
-  T('import_dir', '**整库导入：把一个文件夹的结构镜像成一棵树**（每一级子目录 = 一个容器节点，每个文件 = 该容器下的一个文件节点，标题取文件名去扩展名）。默认导 .md/.txt/.docx/.pdf（ext 覆盖）；隐藏文件/.git/node_modules/符号链接/空目录/无读权限/不支持的扩展名**一律跳过并逐类计数**（报告里有"导入了几个 / 跳过几个（按原因分组）"）。上限：合计 64 MB + 文件数 max_files（默认 200），超限**写盘之前**就拒绝并给出路；**一次原子写**，失败不留半个项目。**幂等**：同一个目录重复导 ⇒ 整体拒绝并指名；同一个文件被别的命令导过也拒绝；确实要第二份用 force=true。**建议先 dry_run=true 预览**', {
+  T('import_dir', '**整库导入：把一个文件夹的结构镜像成一棵树**（每一级子目录 = 一个容器节点，每个文件 = 该容器下的一个文件节点，标题取文件名去扩展名）。默认导 .md/.txt/.docx/.pdf/.m3u8（ext 覆盖）；隐藏文件/.git/node_modules/符号链接/空目录/无读权限/不支持的扩展名**一律跳过并逐类计数**（报告里有"导入了几个 / 跳过几个（按原因分组）"）。**目录总量没有上限**：超过单批线只按顶层子树**分批**（不是拒绝）；唯一还存在的拒绝线是文件数 max_files（默认 200，管的是"人还能不能核对"）。视频目录：.m3u8 当**入口节点**（节点字段 localPath 指向本机那份播放列表，不内嵌不拷贝），HLS 包里的分片/密钥/索引按单独一类跳过。**一次原子写**，失败不留半个项目。**幂等**：同一个目录重复导 ⇒ 整体拒绝并指名；同一个文件被别的命令导过也拒绝；确实要第二份用 force=true。**建议先 dry_run=true 预览**', {
     name: s('新项目名'),
     dir: s('源目录路径（整库导入要的是**目录**，不是单个文件）'),
     title: s('可选，项目标题（不写就用目录名）'),
-    ext: s('可选，逗号分隔的扩展名列表（默认 md,txt,docx,pdf；只许写真的能导的：md/markdown/txt/text/docx/pdf）'),
+    ext: s('可选，逗号分隔的扩展名列表（默认 md,txt,docx,pdf,m3u8；只许写真的能导的：md/markdown/txt/text/docx/pdf/m3u8）'),
     max_files: s('可选，允许导入的文件数上限（默认 200；超了要明确写大）'),
-    dry_run: b('只出报告、**绝不写盘**（并如实报总量超限与"这个目录已经导过了"）'),
+    dry_run: b('只出报告、**绝不写盘**（并如实报"会分几批"与"这个目录已经导过了"）'),
     force: b('同一个目录/同一个文件**故意**再导一份（默认拒绝重复导入）')
   }, ['name', 'dir']),
   T('ask', '向内嵌 DSH 提**一次性问题**（stdout 即答案）：不给 id 就是项目级提问；kind=explain|ask；effort 调思考强度；dry_run=true 只打印提示词与命令行、**不调模型**（不烧额度）', {
@@ -273,6 +273,27 @@ const TOOLS = [
     effort: s('思考强度 low|medium|high|xhigh'), timeout: s('超时秒数'),
     dry_run: b('只打印提示词/思考强度/命令行，不调模型')
   }, ['project']),
+  /* ---- 【20261048】`video_summary` → CLI `video-summary`（一层透传；判定全在 CLI 侧）----
+   * 为什么**必须有**这个工具：一个用户能敲的功能，AI 也该能调到（本工程的立身之本：
+   * 人用 Electron、AI 用 CLI 或 MCP）。它进的是 `TOOLS` 而不是 `MCP_GAP_DEBT` ——
+   * 缺口册是「只减不增」的收敛账，拿它当"新命令的停车场"就等于把收敛这件事废掉。
+   * ⚠️ 参数名是 `path` 而不是 `project`：**这是本工程唯一一个不读 `projects/` 的命令**
+   * （位置参数是文件系统路径），别照着别的工具的习惯传项目名。 */
+  T('video_summary', '**视频摘要**（透传 CLI `video-summary`）：三条路（字幕解析 / ffmpeg 解码 / 两者结合）+ '
+    + '两档（coarse|detailed）+ **自动检测**（返回里的 `why` 会说清"凭什么选它"）。'
+    + '⚠️ `path` 是**文件系统路径**（一个目录，或一份 `.m3u8`），**不是项目名** —— '
+    + '这是唯一一个**不写 projects/** 的工具：不建节点、不落盘，产物只在这次返回里。'
+    + 'method=auto（默认）才会自动挑；**显式指定而不可用 ⇒ 失败并说清"现在可用的是哪条"，不会悄悄换路**。'
+    + 'level=coarse（默认）= 结构 + 时长（播放列表 `#EXTINF` 之和，**不需要 ffmpeg**）+ 分片数 + 是否加密 + '
+    + '课程/课时层级 + 一句话主题（契约禁止解码/抽帧/起进程）；level=detailed = 再加逐段要点（带时间戳）+ '
+    + '术语 + 一图读懂的层级，且**必须**有内容源（字幕或能解码且有人能读的音轨/画面）—— 没有就明确失败，'
+    + '**不拿文件名硬凑**。本批 ASR 与视觉模型**未接** ⇒ 只有"有字幕"这一条能出真内容'
+    + '（要点是**抽取式**：字幕原句按停顿切段取段首句，不是生成摘要）。', {
+    path: s('目录或 `.m3u8` 播放列表的**绝对/相对路径**（不是项目名）'),
+    method: s('可选：auto（默认，自动检测并说明为什么）| subtitle | ffmpeg | hybrid —— '
+      + '显式指定而不可用时**失败**，不会换成别的路'),
+    level: s('可选：coarse（默认，结构 + 时长 + 层级）| detailed（再加逐段要点 + 术语 + 一图层级）')
+  }, ['path']),
   // ---- 缺口补齐结束 ----
 
   /* ---- 【W21】`ask_apply`：`ask-apply` 的 MCP 透传（台账 `W21` 的"工具面"那半）----
@@ -803,6 +824,17 @@ function callTool(name, args) {
       if (a.effort) c.push('--effort', argOf('effort'));
       if (a.timeout !== undefined) c.push('--timeout', argOf('timeout'));
       if (a.dry_run) c.push('--dry-run');
+      c.push('--json');
+      return runCli(c);
+    }
+    /* ---- 【20261048】`video_summary` → CLI `video-summary`（一层透传）----
+     * 一律带 `--json`：调用方（模型）要的是 `{level, method, why, summary, plan, contract}` 这种结构化回执，
+     * 而不是一段中文。`--method` / `--level` **只在给了才转发**（不给 = 用 CLI 的默认：auto + coarse），
+     * 这样"显式指定"这条语义在两侧完全一致（不可用时 CLI 会非 0 退出并说明可用的是哪条）。 */
+    case 'video_summary': {
+      const c = ['video-summary', argOf('path')];
+      if (a.method !== undefined) c.push('--method', argOf('method'));
+      if (a.level !== undefined) c.push('--level', argOf('level'));
       c.push('--json');
       return runCli(c);
     }

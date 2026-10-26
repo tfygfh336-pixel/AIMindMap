@@ -10,6 +10,10 @@
  *      本批只把签名**多收一个可选参数** `opts.kind`，由 `EXIT_KINDS` 这张表决定按哪一档再守一道）。
  *   本模块只做 ①②；③ 在调用方（`renderer/app-media.js` / `renderer/app-detail-content.js` /
  *   `main.js` 的出口守卫），它们**一个字都不许再判一遍**。
+ *   ⚠️ **本批补了第 ③ 段的"动作选择"**（`OPEN_MODES` / `openPlan` / `openAsCommand`）：
+ *     判据决定"能不能开"，动作决定"**用哪个 API 开**"（系统默认程序 / 系统「打开方式」选择栏 /
+ *     文件资源管理器定位）。这一层**仍然是纯函数**，I/O 全在 `main.js` 的 `execOpenPlan` ——
+ *     理由见下面 `OPEN_MODES` 那张表（"打开方式被写成再打开一次"这种假实现必须能被机械判定）。
  *
  * ## 判据（**只有这一份实现**）
  *   | # | 判据 | 落法 |
@@ -40,7 +44,7 @@
  *
  * ## 为什么要有它（改动前的四处、四套判据）
  *   · `renderer/app-media.js` 的 `attachmentAbsPath` —— 只拼字符串（`base + '/' + rel`），**零校验**；
- *   · `renderer/app-media.js` 的预览头 —— 「系统打开」与「📁 文件夹」各自决定走哪条路；
+ *   · `renderer/app-media.js` 的预览头 —— 「系统打开」与「🔗 本机」各自决定走哪条路；
  *   · `renderer/app-detail-content.js` 的 `openLocalPath`（详情框链接 / 右键菜单 / 预览头共用）—— 原样交主进程；
  *   · `renderer/app-detail-content.js` 的图片区 —— `'../projects/' + name + '/' + img.file`，同样零校验。
  *   ⇒ `..` 逃逸、UNC、设备路径**全部不判**，而"打不开"在几处是**静默**的。
@@ -88,6 +92,26 @@
 
   /** `localPath` 的长度上限（`docs/DATA-FORMAT.md` §2.1 与 `src/schema.js` 同一口径） */
   const LOCAL_PATH_MAX = 500;
+
+  /* ================= 第 ③ 段的**动作表**：到了出口之后，用哪个 API 去"打开" =================
+   * 【文件链接的打开语义批】`localPath` 从"目录快捷方式"扩成"**本机文件或目录**"之后，
+   * "打开"这一个词在界面上其实是三种**不同的用户意图**（用户 2026-10-31 的裁定：左键点文件链接
+   * 要用系统默认程序开、没默认才弹"打开方式"；右键要能把"打开 / 打开方式 / 在资源管理器里打开"分开）：
+   *
+   *   | mode | 用户意图 | 用哪个 API | 关键事实 |
+   *   |------|---------|-----------|---------|
+   *   | `default` | 既有行为：先试探测到的编辑器 | `main.js` 的 `openWithEditor` | 本批**一个字不改**（既有调用方不传 mode ⇒ 走到这里）|
+   *   | `system`  | 系统默认程序打开 | `shell.openPath` | 文件：有默认关联就直接开；**没有关联时 Windows 自己弹"打开方式"选择栏**（ShellExecuteEx 的原生行为）⇒ 我们**绝不自己查默认关联**（那既是重复实现 Windows、也查不准）。目录：开文件管理器（既有行为）|
+   *   | `openAs`  | **系统"打开方式"选择栏** | `rundll32.exe shell32.dll,OpenAs_RunDLL "<路径>"` | `shell.openPath` 用的是 `open` 动词，**做不到**这件事 |
+   *   | `reveal`  | **在文件资源管理器里定位** | 文件 ⇒ `shell.showItemInFolder`（**选中**它）；目录 ⇒ `shell.openPath`（打开那个目录） | 文件若也去 `openPath`，那是"打开文件"而不是"定位它" |
+   *
+   * ⚠️ 这三档**必须真的分叉**，不许都落到 `shell.openPath`：那样"打开方式"会变成"再打开一次"、
+   *   "定位"会变成"打开" —— 两种都是**测试看着绿、用户要的东西没出现**的假实现
+   *   （判据：`tests/local-open-actions.test.js` + `scripts/smoke/16-local-path.js`，
+   *    且断言比的是**行为差异**（哪个执行器跑了 / argv 是什么），不是"有没有报错"）。
+   * ⚠️ 取值表**只有这一份**（与 `EXIT_KINDS` 同一族：那管"哪几档能到出口"，这管"到了出口做什么"）——
+   *   `main.js` 与渲染层都**不许**各列一份自己的清单。 */
+  const OPEN_MODES = ['default', 'system', 'openAs', 'reveal'];
 
   /** 相对路径类：必须落在**当前项目目录**之内 */
   const RELATIVE_KINDS = ['attachment', 'image', 'inline'];
@@ -278,11 +302,77 @@
     return pass(raw, 'system');
   }
 
+  /* ---------------- 第 ③ 段的动作（本批新增，见上面 `OPEN_MODES` 那张表） ----------------
+   * 这里是**纯函数**：不碰盘、不起进程、不读时钟 ⇒ 单测里直接把 argv 与"用哪个执行器"钉死。
+   * 真正的 I/O 全在 `main.js` 的 `execOpenPlan`（它按 `via` 去调 Electron / 起子进程）。
+   * 这样切分的理由（本工程的教训）：**"判据/动作选择"与"动作执行"混在一处时，
+   * 断言的只能是"没抛错"**；分开之后，"打开方式到底起没起 OpenAs 对话框"这件事
+   * 可以在没有 GUI、不抢焦点的前提下被机械判定。
+   */
+
+  /** Windows「打开方式」选择栏的命令（**唯一一处**构造它）。
+   *  依据：那一栏是 shell32 的 `OpenAs_RunDLL` 拉起来的，标准命令行形态就是
+   *  `rundll32.exe shell32.dll,OpenAs_RunDLL "<绝对路径>"`；Electron **没有**暴露等价 API
+   *  （`shell.openPath` 固定用 `open` 动词 ⇒ 有默认关联就直接开，压根不弹选择栏）。
+   *  ⚠️ 返回的是 **argv 数组**，调用方必须 `spawn(file, args)` —— **不拼命令行字符串**
+   *    （与 `main.js` 的 `launchDetached` 同一条纪律：注入面为 0，含空格/中文的路径不会被引号吃掉）。
+   * @param {string} target 已经由 `decide()` 放行过的绝对路径
+   * @returns {{file:string, args:string[]}} */
+  function openAsCommand(target) {
+    return { file: 'rundll32.exe', args: ['shell32.dll,OpenAs_RunDLL', String(target)] };
+  }
+
+  /**
+   * 打开动作 → **用哪个执行器**（`OPEN_MODES` 那张表的唯一实现）。
+   *
+   * @param {string} mode   `OPEN_MODES` 之一；`undefined` / `null` / `''` 按 `'default'`（= 既有行为）
+   * @param {string} target 已由 `decide()` 放行的绝对路径
+   * @param {boolean|null} isDir **打开那一刻** `statSync` 的结论（`null` = 没探 / 探不到）。
+   *   ⚠️ 它**只在这里用一次**，绝不写进数据（`docs/DATA-FORMAT.md` §2.1：`localPath` 不校验存在性；
+   *      真把它写进数据就等于"点过才知道类型"变成了"数据里多一个会过期的字段"）。
+   * @returns {{ok:true, mode:string, target:string, isDir:boolean|null, via:string,
+   *            openPath:boolean, showItemInFolder:boolean, spawn:{file:string,args:string[]}|null}
+   *          |{ok:false, code:string, reason:string}}
+   *   `via` ∈ `['editor'|'openPath'|'openAs'|'reveal']`（执行器名，见 `main.js` 的 `execOpenPlan`）。
+   */
+  function openPlan(mode, target, isDir) {
+    const m = (mode === undefined || mode === null || mode === '') ? 'default' : String(mode);
+    if (OPEN_MODES.indexOf(m) < 0) {
+      return { ok: false, code: 'open-bad-mode',
+        reason: '未知的打开方式（mode 不在 src/path-chain.js 的 OPEN_MODES 内）：' + m };
+    }
+    if (!isString(target) || !target.trim()) {
+      return { ok: false, code: 'open-no-target', reason: '打开目标为空（拿不到要打开的路径）' };
+    }
+    const dir = (isDir === true) ? true : ((isDir === false) ? false : null);
+    const plan = {
+      ok: true, mode: m, target: target, isDir: dir, via: 'editor',
+      openPath: false, showItemInFolder: false, spawn: null
+    };
+    if (m === 'default') return plan;                                  // 既有行为（编辑器档）
+    if (m === 'system') {                                              // 系统默认程序（目录 = 文件管理器）
+      plan.via = 'openPath'; plan.openPath = true; return plan;
+    }
+    if (m === 'openAs') {                                              // 系统「打开方式」选择栏
+      plan.via = 'openAs'; plan.spawn = openAsCommand(target); return plan;
+    }
+    /* reveal：「在文件资源管理器里打开」——
+     *   文件 ⇒ `showItemInFolder`（**在资源管理器里选中它**，不是"打开它"）；
+     *   目录 ⇒ `openPath`（打开那个目录本身；对目录 `showItemInFolder` 只会跳到**它的父目录**
+     *         并选中它，那不是"打开这个目录"）。
+     * `isDir === null`（没探到类型）⇒ 按**文件**处理：执行前 `main.js` 已经因为 stat 失败而
+     * 响亮报"文件不在了"，走不到这里；万一走到，"定位一个文件"也比"打开它"更接近用户点的那一项。 */
+    if (dir === true) { plan.via = 'openPath'; plan.openPath = true; return plan; }
+    plan.via = 'reveal'; plan.showItemInFolder = true; return plan;
+  }
+
   return {
     // 契约面
     decide: decide,
     KINDS: KINDS, ACTIONS: ACTIONS, PREVIEW_EXTS: PREVIEW_EXTS, RELATIVE_KINDS: RELATIVE_KINDS,
     ABSOLUTE_KINDS: ABSOLUTE_KINDS, LOCAL_PATH_MAX: LOCAL_PATH_MAX,
+    // 出口动作面（本批）：取值表 + 纯函数（I/O 在 main.js 的 execOpenPlan）
+    OPEN_MODES: OPEN_MODES, openPlan: openPlan, openAsCommand: openAsCommand,
     // 出口面（**"哪几档能到出口"只有这一份表**；`main.js` 收 `opts.kind` 时用它过滤）
     EXIT_KINDS: EXIT_KINDS, ALLOWED_URL_PROTOCOLS: ALLOWED_URL_PROTOCOLS,
     // 文案与纯函数（读数脚本与单测直接用；**调用方显示 reason，不许自拼报文**）

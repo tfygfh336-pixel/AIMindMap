@@ -514,6 +514,41 @@
       return true;
     }
 
+    /** Enter 算不算"提交这次编辑"？（**唯一实现**，判定点在 `onKey` 一处）
+     *
+     *  两条都必须为假才提交 —— 这两条各治一个真缺陷，别把它们"优化"掉：
+     *
+     *  ① **多行控件里 Enter 是换行，不是提交**。
+     *     `#edit-detail` 是 `<textarea rows="8">`，而正文本身就是多行的 HTML
+     *     （盘上那份原文就带 `\n`，如 `<h3>…</h3>\n<ul>\n<li>…`）。
+     *     改前这里只有"Enter 就 `saveEditDialog()`"一条 ⇒ **多行正文永远打不出换行**：
+     *     人到框里按一下 Enter，框**直接关掉并保存**。用户 2026-10-26 的原话是
+     *     「编辑节点详情功能有问题，**不能输入**」—— 这就是那个形状。
+     *     ⚠️ 它活到当天的原因**不是难发现**，而是**判据永远不按 Enter**：
+     *     `scripts/smoke/56-草稿图编辑.js` 当年用 `document.getElementById('edit-detail').value = X`
+     *     一次性设值、再读回来比 —— 那种写法整条绕过输入管线，**永远不产生 keydown**
+     *     ⇒ 断言恒绿。现在域 04 有一条**真键盘**判据专门守这一条
+     *     （`.review/20261045-编辑详情不能输入/`）。
+     *
+     *  ② **输入法组合期（IME）里的一切按键都不算提交**。
+     *     中文输入法"选中候选词/上屏"那一下就是 `Enter`（`keydown` 带 `isComposing: true`，
+     *     部分平台只剩 `keyCode === 229`）。改前没判它 ⇒ 每上屏一个字都可能把框关掉
+     *     ⇒ 中文用户看到的就是"打不进去字"。这也是"不能输入"的另一半。
+     *
+     *  单行输入（`#edit-topic` / `#edit-tags`）里 Enter 仍然提交 —— 那是既有语义，
+     *  改这一条时**不许**一刀切把 Enter 提交关掉（域 04 的真键盘判据同时判着两个格子）。
+     *
+     *  @param {KeyboardEvent} e
+     *  @returns {boolean} true = 这次 Enter 是"提交"
+     */
+    function enterSubmits(e) {
+      if (!e) return false;
+      if (e.isComposing || e.keyCode === 229) return false;   // ② 输入法组合期
+      const t = e.target;
+      if (t && String(t.tagName || '').toUpperCase() === 'TEXTAREA') return false;   // ① 多行控件
+      return true;
+    }
+
     function onKey(e) {
       if (anyDialogOpen()) {
         if (e.key === 'Escape') {
@@ -521,7 +556,8 @@
           const im = $('#image-dialog'); if (im) im.style.display = 'none';
           const fm = $('#file-dialog'); if (fm) fm.style.display = 'none';
         }
-        if (e.key === 'Enter' && !e.shiftKey && dialogOpen('edit')) { saveEditDialog(); }
+        // Enter 提交：见 enterSubmits 的两条理由（多行正文 / 输入法组合期都不许提交）
+        if (e.key === 'Enter' && !e.shiftKey && dialogOpen('edit') && enterSubmits(e)) { saveEditDialog(); }
         return;
       }
       const mod = e.ctrlKey || e.metaKey;

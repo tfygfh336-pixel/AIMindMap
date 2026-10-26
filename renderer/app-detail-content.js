@@ -297,10 +297,11 @@
       });
       tc.appendChild(chip);
     });
-    // 本机文件夹链接（可选字段 localPath，见 docs/DATA-FORMAT.md §2.5）：
-    // 点击 → 主进程 `shell.openPath` → 系统文件管理器打开该目录。
-    // 复用**既有的** `app:open-file` 通道（它本来就是 shell.openPath；目录同样适用），
-    // 不新造一条 IPC —— 同一件事一种写法（工程规矩）。
+    // 本机链接（可选字段 localPath，见 docs/DATA-FORMAT.md §2.1）：
+    // **文件或目录都可能有** ⇒ 左键一律走 `MM.openLocalPath`（交系统默认程序打开；
+    // 目录由系统开文件管理器；没有默认关联时 Windows 自己弹「打开方式」）。
+    // 右键这块链接或右键节点都出**同一份四项**（唯一实现在 renderer/contextmenu.js）。
+    // 复用**既有的** `app:open-file` 通道，不新造一条 IPC —— 同一件事一种写法（工程规矩）。
     const lpc = fdQ(box, '.fd-localpath');
     if (lpc) {
       lpc.innerHTML = '';
@@ -308,9 +309,21 @@
       if (lp) {
         const a = document.createElement('span');
         a.className = 'fd-localpath-link';
-        a.textContent = '📁 ' + lp;
-        a.title = '点击用文件管理器打开这个文件夹';
+        a.textContent = lp;
+        a.title = '点击用系统默认程序打开（文件走默认关联，没有默认关联时系统会弹「打开方式」；目录会开文件管理器）'
+          + '\n右键：打开 / 打开方式 / 在文件资源管理器中打开 / 取消链接';
         a.addEventListener('click', (e) => { e.stopPropagation(); MM.openLocalPath(lp); });
+        a.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!window.MMContextMenu || typeof window.MMContextMenu.localPathItems !== 'function') {
+            setStatus('右键菜单没加载：renderer/contextmenu.js 的 localPathItems', true);
+            return;
+          }
+          // **同一份四项**：条目由 contextmenu.js 的 `localPathItems` 给（这里不列第二份）
+          window.MMContextMenu.openMenu(e.clientX, e.clientY,
+            window.MMContextMenu.localPathItems(lp, node.id));
+        });
         lpc.appendChild(a);
       }
     }
@@ -902,19 +915,24 @@
     return MM.syncAssocRaw(r.raw);
   };
 
-  /**
-   * 用系统文件管理器打开一个**本机目录**（节点字段 `localPath`）。
+  /** 本机链接的**唯一动作入口**：详情框的左键链接、右键那四项（①打开 ②打开方式
+   *  ③在文件资源管理器中打开）、预览头的「🔗 本机」按钮 —— **四处都走它**。
    *
-   * ⭐ 判据只有一处：`src/path-chain.js`（`kind:'localPath'` 是**单独一档** —— 它本来就是
-   * 工作区外的绝对路径，`docs/DATA-FORMAT.md` §2.1 规定**只校验形状**（非空 / 无换行 / ≤500 字符）、
-   * **不校验存在性** ⇒ **不许**拿"必须在项目内"去卡它，否则今天能打开的 `localPath` 会全部打不开）。
-   * 本函数是**三处的共同入口**：详情框的 📁 链接（`renderFdBox`）、预览头的「📁 文件夹」
-   * （`renderer/app-media.js`）、右键菜单（`renderer/contextmenu.js`）⇒ 判据接在这里，三处一次覆盖。
-   * 模块存在性的守卫在 `app-media.js` 的加载期（渲染层唯一一处）；这里只调它，不再写第二份判据。
+   *  ⭐ 判据只有一处：`src/path-chain.js`（`kind:'localPath'` 是**单独一档** —— 它本来就是
+   *  工作区外的绝对路径，`docs/DATA-FORMAT.md` §2.1 规定**只校验形状**（非空 / 无换行 / ≤500 字符）、
+   *  **不校验存在性** ⇒ **不许**拿"必须在项目内"去卡它，否则今天能打开的 `localPath` 会全部打不开）。
    *
-   * 走主进程既有的 `app:open-file`（内部就是 `shell.openPath`）—— 目录同样适用，
-   * 且**失败必须让人看见**：路径不存在 / 盘没挂 / 权限不足时 `shell.openPath` 会返回错误串，
-   * 这里把它显示在状态栏（绝不"点了没反应"—— 那是本工程反复治过的"静默失效"）。
+   *  ⭐ 动作分档（用户 2026-10-31 定，取值表在 `src/path-chain.js` 的 `OPEN_MODES`，此处不列候选）：
+   *    · 缺省 / `mode:'system'` ⇒ **系统默认程序**：有默认关联就直接开（**不打扰用户**）；
+   *      没有默认关联时 **Windows 自己弹「打开方式」选择栏**（`shell.openPath` 的原生行为）——
+   *      ⚠️ 我们**不自己查默认关联**：那既重复实现了 Windows、又查不准；
+   *    · `mode:'openAs'` ⇒ **系统「打开方式」选择栏**（主进程起 `rundll32 …OpenAs_RunDLL`）；
+   *    · `mode:'reveal'` ⇒ **在文件资源管理器中打开**（文件 ⇒ 选中它；目录 ⇒ 打开该目录）。
+   *  三者**必须真的分叉**（"打开方式"若退化成"再打开一次"，界面看着没报错但用户要的东西没出现）。
+   *
+   *  走主进程既有的 `app:open-file`（签名只多收一个可选的 `mode`，**不新增 IPC 名字**），
+   *  且**失败必须让人看见**：路径不存在 / 盘没挂 / 系统说打不开时，错误串显示在状态栏
+   *  （绝不"点了没反应"—— 那是本工程反复治过的"静默失效"）。
    */
   async function openLocalPath(p, opts) {
     if (!p) return;
@@ -924,25 +942,97 @@
     }
     const d = window.MMPathChain.decide({ kind: 'localPath', raw: p, project: state.project });
     if (!d.ok) {
-      setStatus('打不开这个文件夹：' + d.reason + '｜' + p, true);
+      setStatus('打不开这个本机链接：' + d.reason + '｜' + p, true);
       return;
     }
     if (!window.MM.requestOpen) {
       setStatus('打开入口没加载：renderer/app-media.js 的 requestOpen', true);
       return;
     }
+    const mode = (opts && opts.mode) || 'system';        // 左键默认 = 系统默认程序（不打扰）
     try {
       // 【本批】走**同一条出口**（`MM.requestOpen` → 既有 IPC `app:open-file`）：它负责
-      // ① 带上"用户上次选的编辑器" ② 把"只能打开、没跳行"这类事实说出来（`note`）。
-      const r = await window.MM.requestOpen(d.abs, { line: opts && opts.line, col: opts && opts.col });
+      // ① 把 `mode` 递到主进程（哪一档由 `src/path-chain.js` 的 OPEN_MODES 定）
+      // ② 把主进程**如实回报**的结果显示出来（`err` / `note` 都来自主进程，不许自己编）。
+      const r = await window.MM.requestOpen(d.abs, {
+        line: opts && opts.line, col: opts && opts.col, mode: mode
+      });
       if (!r || r.ok === false) {
-        setStatus('打不开这个文件夹：' + ((r && r.err) || '未知原因') + '｜' + d.abs, true);
-      } else if (!r.note) {
-        setStatus('已打开：' + d.abs + (r.editor ? '（' + r.editor + (r.jumped ? ' · 已跳到第 ' + r.line + ' 行' : ' · 只打开，未跳行') + '）' : ''));
+        setStatus('打不开这个本机链接：' + ((r && r.err) || '未知原因') + '｜' + d.abs, true);
+        return;
       }
+      if (r.headless) {                        // 冒烟/无头：真的没开，如实说（不冒充成功）
+        setStatus('（冒烟/headless）没有真的打开：' + d.abs + (r.note ? '｜' + r.note : ''));
+        return;
+      }
+      /* ⚠️ **不许假成功**：这两档要的是特定的动作（弹系统「打开方式」/ 在资源管理器里定位）。
+       * 主进程若没按这一档做（例如那一档还没接线），必须**响亮**报出来 ——
+       * 静默落回"打开了一次"正是本批最容易做假的地方（界面看着成功，用户要的东西没出现）。
+       * 判据看主进程**如实回报**的 `via`（`src/path-chain.js` 的 `openPlan` 定的执行器名）。 */
+      const needVia = LP_EXPECT_VIA[mode] || null;
+      if (needVia && needVia.indexOf(r.via || '') < 0) {
+        setStatus('「' + (LP_ACTION_TEXT[mode] || mode) + '」没生效：主进程没有按 mode=' + mode
+          + ' 执行（回报 via=' + (r.via || '（无）') + '）⇒ 这一档还没接线｜' + d.abs, true);
+        return;
+      }
+      const act = LP_ACTION_TEXT[r.openMode || mode] || '已打开';
+      setStatus(act + '：' + d.abs + (r.note ? '（' + r.note + '）' : ''));
     } catch (e) {
-      setStatus('打不开这个文件夹：' + ((e && e.message) || e) + '｜' + d.abs, true);
+      setStatus('打不开这个本机链接：' + ((e && e.message) || e) + '｜' + d.abs, true);
     }
+  }
+
+  /** 「打开」这一族在状态栏上的说法（**唯一一处**；键 = `OPEN_MODES` 的那几档）。 */
+  const LP_ACTION_TEXT = {
+    default: '已打开',
+    system: '已交系统默认程序打开',
+    openAs: '已弹系统「打开方式」选择栏',
+    reveal: '已在文件资源管理器中定位'
+  };
+
+  /** 每档**必须**由哪个执行器完成（`via`；"不许假成功"那条守卫的期望值）。
+   *  `system` **不在这里**：它只要"交系统打开了"就算数 —— 主进程走 `openPath`（系统默认程序）
+   *  与目录走 `openPath`（文件管理器）本来就是同一个执行器，硬卡它只会制造假红。 */
+  const LP_EXPECT_VIA = { openAs: ['openAs'], reveal: ['reveal', 'openPath'] };
+
+  /** 「取消链接」：把节点的本机链接（`localPath`）从**数据**里删掉并落盘。
+   *
+   *  为什么必须落到数据：链接的真源是节点数据里的 `localPath`；只把界面那条链接清掉
+   *  = 下次重开又回来（判据见 `scripts/smoke/16-local-path.js`：落盘后**读盘**确认字段真的没了）。
+   *  写盘走**既有**通道（`MMApp.save()` → 主进程 `project:save` → CLI 校验闸门）——
+   *  **不新开 IPC、不新造写盘路径**（"取消"不是一条新的写口，它就是那个既有保存）。
+   *  ⚠️ 失败必须响亮（不静默）：保存没成 ⇒ 明确说"只改在内存里、按 Ctrl+S 重试"。
+   *  ⚠️ 不弹确认框（与图片/附件的「移除」同一条既有做法）：菜单里点的就是它，`localPath`
+   *     是本机快捷方式、不含笔记内容，误点最多重设一次；弹一个框反而多一次"没人应答就卡死"的面
+   *     （headless 下 `window.confirm` 会把整轮冒烟卡住，本工程实测踩过）。
+   */
+  async function clearLocalPath(nodeId) {
+    const jm = state.jm;
+    const node = jm && MM.adapter ? MM.adapter.getNode(jm, nodeId) : null;
+    if (!node) {
+      setStatus('取消链接：拿不到节点 ' + nodeId + '（树是不是刚重载过？）', true);
+      return false;
+    }
+    const before = (node.data && node.data.localPath) || node.localPath || '';
+    if (!before) { setStatus('取消链接：这个节点没有本机链接'); return false; }
+    if (node.data) delete node.data.localPath;
+    delete node.localPath;
+    /* 详情框开着 ⇒ 按**数据**重画一遍（同一个渲染入口 `renderFdBox`，不另写一份"清 DOM"的逻辑）。
+     * `serializeTree()` 只在非空时写回 `localPath`（`renderer/app-core.js`）⇒ 删掉即等于落盘时没有它。 */
+    const box = MM.fdPrimaryNodeBox ? MM.fdPrimaryNodeBox() : null;
+    if (box && box.node && box.node.id === node.id) {
+      renderFdBox(box, box.node);
+      positionFdBox(box);
+    }
+    if (!window.MMApp || typeof window.MMApp.save !== 'function') {
+      setStatus('取消链接：改动只在内存里（没有保存入口 MMApp.save）', true);
+      return false;
+    }
+    let saved = false;
+    try { saved = await window.MMApp.save(); } catch (e) { saved = false; }
+    if (saved) setStatus('已取消本机链接（localPath 已清掉并保存）：' + before);
+    else setStatus('取消链接：只改在内存里，**没有写进盘**（按 Ctrl+S 重试）：' + before, true);
+    return saved;
   }
 
   /* —— 本文件定义的东西挂到共享命名空间 —— */
@@ -951,6 +1041,7 @@
   MM.observeNodeLayer = observeNodeLayer;
   MM.renderFdBox = renderFdBox;
   MM.openLocalPath = openLocalPath;
+  MM.clearLocalPath = clearLocalPath;      // 「取消链接」（右键盘第 ④ 项）：删字段 + 走既有保存通道
   // 条目层（v3）：清单/归属/选中/复制的对外入口（冒烟断言与关联视图跳转都用这四个）
   MM.renderFdItems = renderFdItems;
   MM.fdItemsState = fdItemsState;

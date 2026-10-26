@@ -136,7 +136,7 @@ const assertions = [
   },
 
   {
-    name: '预览头：节点带 localPath 时出现「📁 文件夹」按钮，点击走 openLocalPath',
+    name: '预览头：节点带 localPath 时出现「🔗 本机」按钮，点击走 openLocalPath',
     run: async (ctx) => {
       const r = await ctx.exec(`(async () => {
         var btn = document.getElementById('fp-folder');

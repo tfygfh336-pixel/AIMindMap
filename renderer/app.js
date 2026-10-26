@@ -199,8 +199,14 @@
     //   resolveConflict('theirs') = 用磁盘上的版本（只丢冲突对象上的改动）；'mine' = 保留我的、本次不保存
     resolveConflict: (choice) => MM.resolveConflict(choice),
     hasPendingConflict: () => MM.hasPendingConflict(),
-    // 打开节点对应的本机文件夹（节点字段 localPath；详情框的链接与右键菜单都走它）
-    openLocalPath: (p) => MM.openLocalPath(p),
+    /* 本机链接（节点字段 `localPath`，**文件或目录**）：详情框的左键链接、右键那四项
+     * （①打开 ②打开方式 ③在文件资源管理器中打开）、预览头的按钮 —— **都走这两个入口**。
+     *   · `openLocalPath(p, opts)`：`opts.mode` ∈ `src/path-chain.js` 的 `OPEN_MODES`
+     *     （缺省 = `'system'` = 系统默认程序；`'openAs'` = 系统「打开方式」；
+     *       `'reveal'` = 在文件资源管理器里定位/打开目录）。**左键与右键①是同一个函数**。
+     *   · `clearLocalPath(id)`：右键④，把 `localPath` 从数据里删掉并走既有保存通道。 */
+    openLocalPath: (p, opts) => MM.openLocalPath(p, opts),
+    clearLocalPath: (id) => MM.clearLocalPath(id),
     addNode,
     addSiblingNode,
     addTopic,

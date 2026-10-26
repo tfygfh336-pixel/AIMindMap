@@ -1235,8 +1235,11 @@ const WRITE_OUTLET_DEBT = [
     // 关掉豁免才 exit 1（点名 `main.js` 里那两处）。收窄后同样的注入**直接判红**，而 7 处已知的仍豁免。
     kind: 'site',
     sites: [
-      { sig: 'res.filePath', n: 1,
-        what: '导出图片：用户在**保存对话框**里选的路径（`res` 来自 `dialog.showSaveDialog`）⇒ 仓库外' },
+      /* 2026-10-26 **销账一条**（导出 PNG 批）：原先这里登记 `{ sig: 'res.filePath', n: 1 }`
+       * （「导出图片：用户在保存对话框里选的路径」）。现在导出的那一处裸写搬进了唯一实现
+       * `exportMapPng()`，第一实参是形参 `out` ⇒ 这处调用的签名已由下面的 `out` 条目覆盖
+       * （那一组仍是 2 处：`exportMapPng` 与 `exportWindow` 各一），`res.filePath` 作为
+       * **写目标**已归零 ⇒ 按"cap 只减不增、同批调小"销账（豁免面 82 → 81，上界不动）。 */
       { sig: 'feedbackFile()', n: 1,
         what: '`<userData>/mm-feedback.jsonl`（正式档）或沙箱里的 `mm-feedback.jsonl`（冒烟档）⇒ 两支都在仓库外。'
           + '求值器追不进去的真因：`feedbackFile()` 有**两个** `return`，而 `collectZeroArgReturns` 只取第一个' },

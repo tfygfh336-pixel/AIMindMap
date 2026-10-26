@@ -118,6 +118,16 @@ const projectFile = (name) => path.join(projectsDir(), name, name + '.json');
 const readRaw = (name) => fs.readFileSync(projectFile(name), 'utf8');
 const readProject = (name) => JSON.parse(readRaw(name));
 const hasProject = (name) => fs.existsSync(projectFile(name));
+/* 【20261052】"失败要有出口"：甲 那一步没落地时，后面几条**必须说出"是因为盘上没有项目"**，
+ * 而不是抛 `ENOENT`（读文件失败会把真原因盖掉 —— 域 44 就是这样红了整整一个批次：
+ * 五条红的报文全是同一个 ENOENT，没人看得出 CLI 自己报的是 `Cannot read properties of undefined`）。
+ * 这里**不做替代读数**：没有那份 JSON 就直接判红，理由写进报文。 */
+function missingProjectResult(name, who) {
+  return { ok: false,
+    text: '⚠ 盘上没有项目 JSON：' + projectFile(name) + '（' + who + ' 依赖它）⇒ 前面那一步 '
+      + '`import-dir` **没有落地**。真原因在 甲 的「原话」里（CLI 自己那句报错）；'
+      + '本域其余判据都建立在这份 JSON 上，所以这里**不做替代读数**、直接判红。' };
+}
 const sha256 = (text) => crypto.createHash('sha256').update(String(text), 'utf8').digest('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sortNames = (arr) => arr.slice().sort();
@@ -218,7 +228,12 @@ const assertions = [
       /* 文件节点 = **带 `origin` 且来源是 `.md` 的那些**（项目根自己也带 origin，但它不是文件节点 ⇒
        * 用 `origin.src` 的扩展名分辨；`.bindings` 之类旁路文件不进树） */
       const fileNodes = nodes.filter((e) => e.node.origin && /\.md$/i.test(String(e.node.origin.src)));
-      const rootId = readProject(P).data.id;
+      // 【20261052】没有项目时**不抛**（`readProject` 会 ENOENT ⇒ 报文被"读文件失败"盖掉）：留一个显式读数
+      const rootId = hasProject(P) ? readProject(P).data.id : '（没有项目）';
+      /* 【20261052】"失败要有出口"：命令**内部异常**（例如 `Cannot read properties of undefined`）
+       * 过去只在下游表现为 ENOENT。这条判据把"CLI 自己那句话说没说清"也钉住 ——
+       * 正常档必须 exit 0，且原文里**不许**出现内部异常的样子。 */
+      const internalCrash = /Cannot read propert|is not a function|undefined \(reading/.test(String(r.out) + String(r.error));
       // 层级：每个文件节点的父节点必须是它所在的那个**目录容器**（或根）
       const expectParent = {
         '索引.md': '', '甲.md': '',
@@ -241,6 +256,7 @@ const assertions = [
           && fileNodes.length === EXPECT.files
           && dirNodes.length === EXPECT.dirs
           && parentOk === true && collapsedOk === true
+          && internalCrash === false
           && topics.indexOf('索引') >= 0 && topics.indexOf('乙') >= 0
           && /Obsidian 直进/.test(String(r.out)) && /--vault/.test(String(r.out))
           && raw.length > 0 && nodes.length > EXPECT.files,
@@ -250,6 +266,7 @@ const assertions = [
           + '、节点合计 ' + nodes.length + '（根 id=' + rootId + '）'
           + ' ｜ 层级对拍（每个文件挂在它所在目录的容器下）=' + parentOk
           + ' ｜ 文件节点全折叠=' + collapsedOk
+          + ' ｜ 原文里有没有**命令内部异常**=' + internalCrash + '（必须 false）'
           + ' ｜ 顶层主题=[' + sortNames(topics.slice(0, 14)).join(' ') + ']'
           + ' ｜ 报告里那一行=「' + String(r.out).split('\n').filter((l) => /Obsidian 直进/.test(l)).join('') + '」'
           + ' ｜ 原话=「' + String(r.error || '').slice(0, 300) + '」'
@@ -261,6 +278,7 @@ const assertions = [
   {
     name: '乙 wiki 链接接成了**关联**：盘上 `links[]` 的条数 = 源码里 `[[…]]` 个数**现算**对拍（含 `[[页|别名]]` 与 `[[页#标题]]` 落标题节点两档），并用**既有读命令** backlinks --json 反向对拍（反向可查 ⇒ 边真的在库里）；判定依据：项目 JSON 原文现算 + 既有命令输出',
     run: async (ctx) => {
+      if (!hasProject(P)) return missingProjectResult(P, '乙（links 对拍）');
       const links = allLinks(P);
       const wikiTotal = EXPECT.wikiTotal;
       const bySameProject = links.filter((l) => l.project === P);
@@ -305,6 +323,7 @@ const assertions = [
   {
     name: '丙 坏条目**逐条点名** + 好的照进（判据④：一个坏东西不拖垮整批）：源里"顶着 .md 名字的目录"进跳过清单、指向两篇同名笔记的 `[[同名]]`**不猜**（同类两条都点名）且一条边都没写；判定依据：CLI 报告原文 + 盘上 links 现算',
     run: async (ctx) => {
+      if (!hasProject(P)) return missingProjectResult(P, '丙（坏条目点名）');
       const r = cliJson(ctx, ['import-dir', P + '-dry', SRC, '--vault', '--dry-run', '--json']);
       const rep = r.ok ? r.json : null;
       const v = rep && rep.vault ? rep.vault : null;
@@ -321,6 +340,14 @@ const assertions = [
         && allNodes(P).length > EXPECT.files;
       // 坏条目的**正文**没被丢（它压根不是文件）：同名那一条的正文也照旧在里面
       const keptRaw = JSON.stringify(readProject(P)).indexOf('同名多篇') >= 0;
+      /* 【20261052】分批读数必须**如实**：vault 那一路是 `applyVault` → `buildDirImportTree` 的
+       * **一次建完** ⇒ 报告里 `batching.count` 只能是 1、那一批的名字要写明"一次建完"。
+       * 为什么把它钉在这里：这条报告块曾经直接读 `built.batches.length`（分批那条链才有的字段）
+       * ⇒ 抛 `TypeError` ⇒ **整条命令在写盘前死掉**、项目一个字节都没落地，而下游只看到读文件 ENOENT。
+       * 判据写在这里而不是新加一条断言：域 44 的断言条数是别处的真值，不在本批改它。 */
+      const bat = rep && rep.batching ? rep.batching : null;
+      const batOk = !!(bat && bat.count === 1 && Array.isArray(bat.batches) && bat.batches.length === 1
+        && /一次建完/.test(String(bat.batches[0].name)));
       return {
         ok: r.ok === true && !!v
           && v.danglingTotal === EXPECT.dangling && dangling.length === EXPECT.dangling
@@ -331,6 +358,7 @@ const assertions = [
           && goodStillImported === true
           && keptRaw === true
           && v.linked === links.length
+          && batOk === true
           && rep.files === EXPECT.files,
         text: 'dry-run exit=' + r.code + ' ｜ 报告：文件 ' + rep.files + '（期望 ' + EXPECT.files + '）'
           + '、vault 链接 ' + (v && v.linkTotal) + ' 条 / 接上 ' + (v && v.linked) + ' 条（期望 ' + EXPECT.linked + '）'
@@ -341,6 +369,8 @@ const assertions = [
           + '、同名 ' + ambig.length + ' 条' + (ambig[0] ? '（' + ambig[0].rel + '「' + ambig[0].message + '」）' : '')
           + ' ｜ 盘上有没有同名边=' + hasAmbiguousEdge + '（必须 false）、坏条目边=' + hasBadEdge + '（必须 false）'
           + ' ｜ 好的照进=' + goodStillImported + '（盘上 links=' + links.length + '）'
+          + ' ｜ 分批读数如实（vault 一次建完 ⇒ count=1、名字写明）=' + batOk
+          + (bat ? '〔count=' + bat.count + ' 名字=' + ((bat.batches[0] || {}).name || '（无）') + '〕' : '〔报告里没有 batching〕')
           + ' ｜ 正文里那句还在=' + keptRaw
           + (r.ok ? '' : ' ｜ ⚠ 报告读不出来：' + r.error)
       };
@@ -350,6 +380,7 @@ const assertions = [
   {
     name: '丁 frontmatter 标签进了**既有**标签机制：`tags:` 与 `tag:` 两篇都落到各自的文件节点 `tags` 上，且能被既有 `search --tag` 命中（同一套字段与检索口径）；判定依据：项目 JSON 现读 + 既有命令输出',
     run: async (ctx) => {
+      if (!hasProject(P)) return missingProjectResult(P, '丁（frontmatter 标签）');
       /* ⚠️ 标签落在**文件节点**上（`origin.src` 认它）；`nodeByTopic('索引')` 命中的是**文档自己的标题节点**
        * 「索引正文」（那也是 tag 那一步之前就有的老行为）⇒ 用 `fileNodeBy` 取对节点。 */
       const idx = fileNodeBy(P, '索引.md');
@@ -446,7 +477,8 @@ const assertions = [
       const vv = pv && pv.vault ? pv.vault : null;
       const shaAfter = sha256(readRaw(P_STUB));
       // 预览读数与**盘上现算**对拍（同一次导入的两个独立来源）
-      const onDiskLinks = allLinks(P).length;
+      // 【20261052】`甲` 没落地时这里**不抛 ENOENT**：给 -1 并在报文里点名（判据照样红）
+      const onDiskLinks = hasProject(P) ? allLinks(P).length : -1;
       cleanupSandbox();                       // 收尾：唯一临时根（本域最后一个断言；此前这里漏了这一步）
       return {
         ok: dup.code !== 0 && dupNamed === true && noNewProject === true
@@ -462,6 +494,7 @@ const assertions = [
             dangling: vv.danglingTotal, tagged: vv.taggedFiles, tags: vv.tags })
           + ' ｜ 对拍：盘上现算 links=' + onDiskLinks + '（期望 = 源码 ' + EXPECT.wikiTotal + ' − 断链 ' + EXPECT.dangling
           + ' − 同名 ' + EXPECT.ambiguous + ' = ' + EXPECT.linked + '）'
+          + (hasProject(P) ? '' : ' ｜ ⚠ 盘上没有 `' + P + '` ⇒ -1：甲 的真导没有落地，见 甲 的「原话」')
           + ' ｜ 演练副本=' + JSON.stringify(pr.copy)
           + ' ｜ 预览期间沙箱项目 JSON 逐字节不变=' + (shaBefore === shaAfter) + '（SHA ' + shaBefore.slice(0, 12) + '）'
           + (pr.ok ? '' : ' ｜ ⚠ 预览失败：' + pr.error)

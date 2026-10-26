@@ -503,6 +503,76 @@ function runSandboxWorker() {
     out.libEmptyDir = go(['import-dir', 'lib6', path.join(LIB, '空目录')]);
     out.libProjectsAfterErrors = projectNames();
     out.dirImportProjectNow = go(['import-project', 'imp-dir2', LIB]);        // 单文件命令拿到目录
+    /* ── F.【20261043】视频目录整库导入：`.m3u8` = **视频入口**、分片/密钥/索引跳过、**目录总量无上限** ──
+     * 现场形状（用户的课程目录）：`<课时>/学习中心.m3u8/index.m3u8` 是"视频打开链接"，
+     * 同目录下 `index/*.ts`（分片）与 `extk0/*.key`（密钥）**没有导入的意义**。
+     * 三条判据都在这一组里：① 入口节点 + `localPath` 指向真实文件；② `video-part` 单独一类计数；
+     * ③ 66 MB 的目录**不再被"合计超 64 MB"整个拒掉**（这条是用户报的那个缺陷的正面判据）。 */
+    const VID = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-vid-'));
+    const vw = (rel, text) => {
+      const p = path.join(VID, rel);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, text, 'utf8');
+      return p;
+    };
+    vw('课/第一节/学习中心.m3u8/index.m3u8',
+      '#EXTM3U\n#EXTINF:10.0,\nindex/0.ts\n#EXTINF:20.5,\nindex/1.ts\n#EXT-X-ENDLIST\n');
+    vw('课/第一节/学习中心.m3u8/index/0.ts', 'x');
+    vw('课/第一节/学习中心.m3u8/index/1.ts', 'x');
+    vw('课/第一节/学习中心.m3u8/extk0/A.key', 'k');
+    vw('课/第一节/课程简介.txt', '第一节简介\n');
+    vw('资料/源码.ts', 'export const a = 1;\n');              // ← **包外**的 .ts：不许被当成分片
+    /* 大体量目录：一份 66 MB 的播放列表（**稀疏文件**，不真占盘）⇒ 老实现的
+     * "这个目录里的可导入文件合计约 66 MB，超过整库导入上限 64 MB" 会把它整个拒掉。
+     * ⚠️ 它必须是**独立目录**（不能放进 VID 里）：放进 VID 就会被上面 `vid1` 那次导入先占下文件级来源指纹，
+     * 于是 `vid2` 会因为**重复导入**被拒（`wouldRefuse:true`）—— 那与"体量闸门"混在一起，判据就分不清了。 */
+    const VIDBIG = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-vidbig-'));
+    fs.mkdirSync(path.join(VIDBIG, '视频.m3u8'), { recursive: true });
+    const bigPlaylist = path.join(VIDBIG, '视频.m3u8', 'index.m3u8');
+    fs.writeFileSync(bigPlaylist, '#EXTM3U\n#EXTINF:10.0,\nindex/0.ts\n', 'utf8');
+    fs.truncateSync(bigPlaylist, 66 * 1024 * 1024);
+    out.vidDir = VID;
+    out.vidBigDir = VIDBIG;
+    out.vidDry = J(go(['import-dir', 'vid1', VID, '--dry-run', '--json']));
+    out.vidReal = go(['import-dir', 'vid1', VID]);
+    out.vidFull = J(go(['read', 'vid1', '--json']));            // 全量：要看 localPath
+    out.vidBig = J(go(['import-dir', 'vid2', VIDBIG, '--dry-run', '--json']));
+    /* ── H.【20261048】视频摘要：三条路 + 两档 + 自动检测 ──
+     * 这一组的**特殊之处**：`video-summary` 是本工程**唯一一个不写 `projects/` 的命令**（位置参数是路径），
+     * 所以这里既不需要建项目，也不该在项目列表里留下任何痕迹 —— 下面同时取"跑之前/跑之后"的项目名快照，
+     * 那条"一个项目都没多"就是它的对外承诺的机械判据。
+     * 三条判据（父代理点名要覆盖的）：① 命令能被列举、`--help` 打印支持集；② 三个 `--method` 的**显式分支
+     * 在缺前提时报错而不是静默回退**；③ `--json` 的输出形状（+ 两跑逐字节相同）。
+     * 夹具照真实课程目录的形状：`<课时>/<名字>.m3u8/index.m3u8`，**先没有字幕**（两样都没有 ⇒ 只能粗档），
+     * 再补一份 `.vtt`（详细档第一次真的能出内容）。 */
+    const VSUM = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-vsum-'));
+    const sw = (rel, text) => {
+      const p = path.join(VSUM, rel);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, text, 'utf8');
+      return p;
+    };
+    sw('课/第一节/学习中心.m3u8/index.m3u8',
+      '#EXTM3U\n#EXTINF:10.0,\nindex/0.ts\n#EXTINF:20.0,\nindex/1.ts\n#EXT-X-ENDLIST\n');
+    out.vsumDir = VSUM;
+    out.vsumProjectsBefore = projectNames();
+    out.vsumCoarse1 = go(['video-summary', VSUM, '--json']);
+    out.vsumCoarse2 = go(['video-summary', VSUM, '--json']);     // 两跑逐字节（父进程比 out 字符串）
+    out.vsumCoarseJson = J(out.vsumCoarse1);
+    out.vsumCoarseText = go(['video-summary', VSUM]);
+    out.vsumMethodSub = go(['video-summary', VSUM, '--method', 'subtitle', '--level', 'detailed']);
+    out.vsumMethodFf = go(['video-summary', VSUM, '--method', 'ffmpeg', '--level', 'detailed']);
+    out.vsumMethodHy = go(['video-summary', VSUM, '--method', 'hybrid', '--level', 'detailed']);
+    out.vsumDetailedNoSource = go(['video-summary', VSUM, '--level', 'detailed']);
+    out.vsumBadLevel = go(['video-summary', VSUM, '--level', 'fine']);
+    out.vsumBareMethod = go(['video-summary', VSUM, '--method']);
+    // 补一份字幕 ⇒ 详细档第一次能真出内容（抽取式要点 + 术语 + 一图层级）
+    sw('课/第一节/学习中心.m3u8/index.vtt',
+      'WEBVTT\n\nNOTE 注释块不是台词\n\n'
+      + '1\n00:00:01.000 --> 00:00:04.000\n第一句讲 RAG 的召回。\n\n'
+      + '2\n00:00:09.000 --> 00:00:12.000\n第二句：召回率与精度要一起看。\n');
+    out.vsumWithSub = J(go(['video-summary', VSUM, '--level', 'detailed', '--json']));
+    out.vsumProjectsAfter = projectNames();
     /* ── G.【20261022】导入三缺陷的端到端夹具（判定在父进程里判，这里只如实回报读数）──
      * 为什么放在**最末尾**：上面 `projectsAfterMissing` 那条断言比的是**写死的项目名列表**，
      * 在它之前建项目会把它打红（那不是它要守的事，是断言写死的代价）。
@@ -1767,6 +1837,115 @@ check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已�
         && SBJ.libProjectsAfterErrors.join(',') === 'imp-a,imp-b,imp-d,legacy,lib1'),
       has(SBJ.libProjectsAfterErrors) ? '项目列表=[' + SBJ.libProjectsAfterErrors.join(' ') + ']' : sbFailDetail);
 
+    // （批5-E）【20261043】视频目录：`video-part` 单独一类 + 入口节点 + **目录总量无上限**
+    check('★★【20261043】视频目录的**分档读数**：`.m3u8` 计入 `video.entries`、包内 5 项（3 个文件 + `index/` 与 `extk0/` 两个只剩分片的子目录）计入 `video-part`，'
+      + '而**包外的 `.ts` 记"扩展名不支持"**（不许被分片规则吞掉）',
+      has(SBJ.vidDry && SBJ.vidDry.video && SBJ.vidDry.video.entries === 1
+        && SBJ.vidDry.video.parts === 5
+        && SBJ.vidDry.skippedByReason && SBJ.vidDry.skippedByReason['video-part'] === 5
+        && SBJ.vidDry.skippedByReason['unsupported-ext'] === 1),
+      has(SBJ.vidDry) ? ('video=' + JSON.stringify(SBJ.vidDry.video)
+        + ' 跳过=' + JSON.stringify(SBJ.vidDry.skippedByReason)) : sbFailDetail);
+    check('★★【20261043】`.m3u8` 落成**视频入口节点**：`localPath` 指向真实播放列表（点开交给系统默认程序，**不内嵌不拷贝**），'
+      + '标题取包名去 `.m3u8`（不是 `index`）',
+      has(SBJ.vidFull && (SBJ.vidFull.nodes || []).some((n) => n.localPath
+        && /学习中心\.m3u8[\\/]index\.m3u8$/.test(n.localPath) && n.topic === '学习中心'
+        && fs.existsSync(n.localPath))),
+      has(SBJ.vidFull) ? ((SBJ.vidFull.nodes || []).filter((n) => n.localPath).slice(0, 3)
+        .map((n) => n.topic + '→' + n.localPath).join(' | ') || '（没有带 localPath 的节点）') : sbFailDetail);
+    check('★★【20261043】真导的文本回档里**看得见**分批与视频分档（不许静默）',
+      has(SBJ.vidReal && SBJ.vidReal.code === 0
+        // 顶层只有 `课` 这一批（`资料/` 里只有一份 `.ts`，一个可导入文件都没有 ⇒ 不进树、也不产生批）
+        && /分批转换：1 批/.test(SBJ.vidReal.out) && /视频：1 个播放列表/.test(SBJ.vidReal.out)
+        && /树里落成 1 个视频节点/.test(SBJ.vidReal.out) && /视频分片\/密钥\/索引/.test(SBJ.vidReal.out)),
+      has(SBJ.vidReal) ? String(SBJ.vidReal.out).slice(0, 300) : sbFailDetail);
+    check('★★★【20261043】**目录总量 66 MB 不再被拒**（用户报的那条缺陷的正面判据）：'
+      + '`size.mb > 64` 而 `wouldRefuse === false`，旧报文"超过整库导入上限 64 MB"彻底消失',
+      has(SBJ.vidBig && SBJ.vidBig.size && SBJ.vidBig.size.mb > 64
+        && SBJ.vidBig.size.over === true && SBJ.vidBig.wouldRefuse === false
+        && SBJ.vidBig.files === 1 && SBJ.vidBig.converted === true
+        && SBJ.vidBig.batching && SBJ.vidBig.batching.count === 1),
+      has(SBJ.vidBig) ? ('size=' + JSON.stringify(SBJ.vidBig.size) + ' wouldRefuse=' + SBJ.vidBig.wouldRefuse
+        + ' files=' + SBJ.vidBig.files) : sbFailDetail);
+
+    /* ---- 【20261048】视频摘要：三条路 + 两档 + 自动检测 -------------------------------
+     * 父代理点名要覆盖的三件事都在这组里：① 命令能被列举、`--help` 打印支持集；
+     * ② 三个 `--method` 的**显式分支在缺前提时报错而不是静默回退**（本批最重要的一条）；
+     * ③ `--json` 的输出形状（外加"两跑逐字节相同"与"绝不写 projects/"两条硬承诺）。 */
+    const vsumOk = has(SBJ) && SBJ.vsumCoarseJson && SBJ.vsumCoarseJson.ok === true;
+    /* `--help` 这一条在**父进程**当场跑一次（走同一个 `run`，与单独执行完全同一条路）：
+     * 它要证明的是"用户在命令行里敲得到这条命令"，而不是"worker 里恰好调通了一次"。 */
+    const vsumHelp = run(['video-summary', '--help']);
+    check('★★【20261048】视频摘要在 registry 里，且 `--help` 把 `--method` / `--level` 都打出来',
+      vsumHelp.code === 0 && /--method/.test(vsumHelp.out) && /--level/.test(vsumHelp.out)
+        && /video-summary/.test(vsumHelp.out),
+      String(vsumHelp.out).split('\n').slice(0, 3).join(' | '));
+    check('★★【20261048】粗档 `--json` 的形状：`{ok,noWrite,level,method,why,plan,summary,contract}` 且 `contract.ok`',
+      has(vsumOk && SBJ.vsumCoarseJson.noWrite === true && SBJ.vsumCoarseJson.level === 'coarse'
+        && typeof SBJ.vsumCoarseJson.why === 'string' && SBJ.vsumCoarseJson.why.length > 20
+        && SBJ.vsumCoarseJson.plan && SBJ.vsumCoarseJson.plan.decodes === false
+        && SBJ.vsumCoarseJson.summary && SBJ.vsumCoarseJson.contract && SBJ.vsumCoarseJson.contract.ok === true),
+      has(SBJ && SBJ.vsumCoarseJson)
+        ? ('level=' + SBJ.vsumCoarseJson.level + ' method=' + SBJ.vsumCoarseJson.method
+          + ' decodes=' + (SBJ.vsumCoarseJson.plan || {}).decodes
+          + ' contract=' + JSON.stringify(SBJ.vsumCoarseJson.contract && SBJ.vsumCoarseJson.contract.missing))
+        : sbFailDetail);
+    check('★★【20261048】时长 = 播放列表 `#EXTINF` 之和（10+20=30 秒）：**算出来的，不是硬编码**',
+      has(vsumOk && SBJ.vsumCoarseJson.summary.durationSeconds === 30
+        && SBJ.vsumCoarseJson.summary.durationText === '0:30'
+        && SBJ.vsumCoarseJson.summary.segments === 2),
+      has(vsumOk) ? ('duration=' + SBJ.vsumCoarseJson.summary.durationText + ' segments='
+        + SBJ.vsumCoarseJson.summary.segments) : sbFailDetail);
+    check('★★【20261048】自动检测说清了"凭什么"：`method=coarse-only` 且 `why` 点名缺什么（字幕/ffmpeg）',
+      has(vsumOk && SBJ.vsumCoarseJson.method === 'coarse-only'
+        && /字幕/.test(SBJ.vsumCoarseJson.why) && /ffmpeg/.test(SBJ.vsumCoarseJson.why)),
+      has(vsumOk) ? String(SBJ.vsumCoarseJson.method + '｜' + SBJ.vsumCoarseJson.why).slice(0, 200) : sbFailDetail);
+    check('★★【20261048】`--json` **两跑逐字节相同**（无时间戳、列表一律码点序）',
+      has(SBJ && SBJ.vsumCoarse1 && SBJ.vsumCoarse2 && SBJ.vsumCoarse1.out === SBJ.vsumCoarse2.out),
+      has(SBJ && SBJ.vsumCoarse1) ? String(SBJ.vsumCoarse1.out).length + ' 字节 vs '
+        + String((SBJ.vsumCoarse2 || {}).out).length + ' 字节' : sbFailDetail);
+    check('★★★【20261048】`--method subtitle` 而**没有字幕** ⇒ 非 0 + `error:` + **"不会退回"**'
+      + '（本批最不能犯的错就是静默回退到别的路）',
+      has(SBJ.vsumMethodSub && SBJ.vsumMethodSub.code !== 0 && /^error:/.test(SBJ.vsumMethodSub.out.trim())
+        && /不会退回/.test(SBJ.vsumMethodSub.out) && /现在可用的是/.test(SBJ.vsumMethodSub.out)),
+      has(SBJ.vsumMethodSub) ? SBJ.vsumMethodSub.out.slice(0, 220) : sbFailDetail);
+    check('★★★【20261048】`--method ffmpeg` 而**本机没有 ffmpeg** ⇒ 非 0 + 点名"没有 ffmpeg" + 给三条出路',
+      has(SBJ.vsumMethodFf && SBJ.vsumMethodFf.code !== 0 && /没有 ffmpeg/.test(SBJ.vsumMethodFf.out)
+        && /装 ffmpeg/.test(SBJ.vsumMethodFf.out) && /--method subtitle/.test(SBJ.vsumMethodFf.out)),
+      has(SBJ.vsumMethodFf) ? SBJ.vsumMethodFf.out.slice(0, 220) : sbFailDetail);
+    check('★★【20261048】`--method hybrid` 缺任何一边 ⇒ 非 0 + **点名缺哪边**（不换路）',
+      has(SBJ.vsumMethodHy && SBJ.vsumMethodHy.code !== 0 && /hybrid/.test(SBJ.vsumMethodHy.out)
+        && /不会退回/.test(SBJ.vsumMethodHy.out) && /缺/.test(SBJ.vsumMethodHy.out)),
+      has(SBJ.vsumMethodHy) ? SBJ.vsumMethodHy.out.slice(0, 220) : sbFailDetail);
+    check('★★★【20261048】`--level detailed` 而**没有任何内容源** ⇒ 非 0 + "详细档做不到"（**不拿文件名硬凑**）',
+      has(SBJ.vsumDetailedNoSource && SBJ.vsumDetailedNoSource.code !== 0
+        && /详细档做不到/.test(SBJ.vsumDetailedNoSource.out)
+        && /不拿文件名/.test(SBJ.vsumDetailedNoSource.out)),
+      has(SBJ.vsumDetailedNoSource) ? SBJ.vsumDetailedNoSource.out.slice(0, 240) : sbFailDetail);
+    check('★★【20261048】补一份 `.vtt` 之后**详细档第一次能真出内容**：`highlights` 2 段带时间戳 + '
+      + '`extractive:true` + 术语非空 + `outline` 有 level:0 那一行',
+      has(SBJ.vsumWithSub && SBJ.vsumWithSub.ok === true && SBJ.vsumWithSub.level === 'detailed'
+        && SBJ.vsumWithSub.method === 'subtitle'
+        && Array.isArray(SBJ.vsumWithSub.summary.highlights) && SBJ.vsumWithSub.summary.highlights.length === 2
+        && SBJ.vsumWithSub.summary.highlights[0].atText === '0:01'
+        && SBJ.vsumWithSub.summary.extractive === true
+        && Array.isArray(SBJ.vsumWithSub.summary.terms) && SBJ.vsumWithSub.summary.terms.length > 0
+        && Array.isArray(SBJ.vsumWithSub.summary.outline) && SBJ.vsumWithSub.summary.outline[0].level === 0),
+      has(SBJ.vsumWithSub) ? ('method=' + SBJ.vsumWithSub.method + ' highlights='
+        + JSON.stringify((SBJ.vsumWithSub.summary || {}).highlights && SBJ.vsumWithSub.summary.highlights.length)
+        + ' terms=' + JSON.stringify(((SBJ.vsumWithSub.summary || {}).terms || []).map((t) => t.term))) : sbFailDetail);
+    check('【20261048】非法 `--level` 与裸 `--method`（没给值）都是非 0 并列出允许值（不静默落默认值）',
+      has(SBJ.vsumBadLevel && SBJ.vsumBadLevel.code !== 0 && /coarse/.test(SBJ.vsumBadLevel.out)
+        && /detailed/.test(SBJ.vsumBadLevel.out)
+        && SBJ.vsumBareMethod && SBJ.vsumBareMethod.code !== 0 && /auto/.test(SBJ.vsumBareMethod.out)),
+      has(SBJ.vsumBadLevel) ? (SBJ.vsumBadLevel.out.slice(0, 120) + ' ｜bare='
+        + String((SBJ.vsumBareMethod || {}).out).slice(0, 80)) : sbFailDetail);
+    check('★★【20261048】`video-summary` **一个项目都没建**（本命令不写 `projects/`：跑前跑后项目列表逐字相同）',
+      has(SBJ && Array.isArray(SBJ.vsumProjectsBefore) && Array.isArray(SBJ.vsumProjectsAfter)
+        && SBJ.vsumProjectsBefore.join(',') === SBJ.vsumProjectsAfter.join(',')),
+      has(SBJ && SBJ.vsumProjectsBefore) ? ('前=[' + SBJ.vsumProjectsBefore.join(' ') + '] 后=['
+        + (SBJ.vsumProjectsAfter || []).join(' ') + ']') : sbFailDetail);
+
     // 收尾：整库夹具目录自己删掉（**自建自删**是本工程对探针的一贯要求 ✓）
     const libGone = (() => {
       try {
@@ -1777,6 +1956,16 @@ check('import-project 项目名已存在 ⇒ 非 0 且点名（不许覆盖已�
     })();
     check('整库夹具目录已删（探针自建自删，不给系统临时目录攒垃圾）', libGone,
       SBJ ? String(SBJ.libDir) : sbFailDetail);
+    // 【20261043】视频夹具同样自建自删
+    const vidGone = (() => {
+      try {
+        if (!SBJ || !SBJ.vidDir) return false;
+        fs.rmSync(SBJ.vidDir, { recursive: true, force: true });
+        return !fs.existsSync(SBJ.vidDir);
+      } catch (e) { return false; }
+    })();
+    check('【20261043】视频夹具目录已删（同上：探针自建自删）', vidGone,
+      SBJ ? String(SBJ.vidDir) : sbFailDetail);
   }
 
   // 收尾：沙箱子进程、它造的工作目录、以及**项目根沙箱**一起清掉（真实 projects/ 全程零接触）
@@ -5068,8 +5257,10 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
    *  【2026-10-20 台账 `W21`】51 → **52**：`ask_apply`（`ask-apply` 的 MCP 透传）是那一批唯一新增的工具。
    *  【2026-10-20 任务 `I-1`】52 → **53**：`features`（产品名册查询，只读）—— `S2` 的 `mcp-gap`
    *  **反向**断言第一次跑就点到它，而同一天 `W18` 量出"CLI 有而 MCP 无"是 25 条真缺口 ⇒ 补工具而不是加进缺口册。
-   *  本段的判据仍是"**全库档没有新增工具**"（53 是现值的写死真值，不是"W1 当时那一版的工具数"）。 */
-  const W1_TOOLS = 53;
+   *  【2026-10-26 `20261048`】53 → **54**：`video_summary`（`video-summary` 的只读透传）——
+   *  同一批给 registry 加了 1 条命令，而缺口册 `MCP_GAP_DEBT` 只减不增 ⇒ 工具**必须**补一个（不是往册上记一条）。
+   *  本段的判据仍是"**全库档没有新增工具**"（54 是现值的写死真值，不是"W1 当时那一版的工具数"）。 */
+  const W1_TOOLS = 54;
   const W1TAG = Date.now().toString(36);
   const W1A = 'it-probe-w1-a-' + W1TAG;
   const W1B = 'it-probe-w1-b-' + W1TAG;
@@ -8688,9 +8879,11 @@ K8B = 'it-k8-dst-' + Date.now().toString(36);   // 同上
      * 选项登记的判据归 `tests/cli-options.test.js`（那是它的唯一职责），不在这里重复。 */
 
     const w21ask = w21mcp.TOOLS.filter((t) => t.name === 'ask_apply')[0];
-    check('W21·E MCP 侧：工具数 = 53（写死真值；`I-1` 的 `features` 之后）+ `ask_apply` 存在、必填只有 project·id、挂了 dry_run'
+    /* 【2026-10-26 `20261048`】53 → 54：`video_summary`（`video-summary` 的只读透传）。
+     * 写死工具数在这里是**故意的**（"本批没新增工具"是那几批的判据）；本批**新增了**一个，所以同批改这一格。 */
+    check('W21·E MCP 侧：工具数 = 54（写死真值；`I-1` 的 `features` + `20261048` 的 `video_summary`）+ `ask_apply` 存在、必填只有 project·id、挂了 dry_run'
       + '（它是**写类**，不挂就等于把"先审再写"从 MCP 侧抽掉）',
-      w21mcp.TOOLS.length === 53 && !!w21ask
+      w21mcp.TOOLS.length === 54 && !!w21ask
         && JSON.stringify(w21ask.inputSchema.required) === JSON.stringify(['project', 'id'])
         && !!w21ask.inputSchema.properties.dry_run
         && w21mcp.DRY_RUN_TOOL_CMD.ask_apply === 'ask-apply',

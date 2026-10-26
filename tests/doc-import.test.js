@@ -543,6 +543,24 @@ describe('doc-import：体量闸门（上限只有一份常量 + 报文说准原
     } finally { fsx2.unlinkSync(f); }
   });
 
+  it('★【20261043】`.pdf` **不吃**这道闸（判据在扩展名上）：83 MB 的 PDF 以前被拒 ⇒ 现在放行，同体量 .txt 照旧拦', () => {
+    /* 为什么 pdf 该豁免：它的正文**不在本进程解析** —— 起子进程（`scripts/pdf-outline-helper.mjs`），
+     * 本进程只收提纲文本（边界是 `MAX_OUTLINE_BUF_MB` 32 MB + `PDF_HELPER_TIMEOUT_MS` 60 s）。
+     * 源文件多大不是本进程的内存旋钮 ⇒ 拿 64 MB 拒一份 83 MB 的 PDF 是量错了对象。
+     * 实测：用户那份 83.35 MB 的 PDF 转换 2.5 s、本进程 maxRSS 59 MB（`.review/20261043-视频目录导入/out-pdf.json`）。 */
+    const f = pathx.join(osx.tmpdir(), 'mm-bigpdf-' + Date.now() + '.pdf');
+    fsx.writeFileSync(f, '%PDF-1.4\n', 'utf8');
+    fsx.truncateSync(f, di.MAX_SOURCE_BYTES + 1024);          // 稀疏文件 ⇒ 不真占盘
+    try {
+      expect(di.describeOversizeSource(f)).toBe(null);        // ★ 放行（旧行为：拒）
+      // 闸门本身没被拆掉：同体量的 .txt 仍然拦
+      const t = pathx.join(osx.tmpdir(), 'mm-bigtxt-' + Date.now() + '.txt');
+      fsx.writeFileSync(t, 'x', 'utf8');
+      fsx.truncateSync(t, di.MAX_SOURCE_BYTES + 1024);
+      try { expect(di.describeOversizeSource(t)).not.toBe(null); } finally { fsx.unlinkSync(t); }
+    } finally { fsx.unlinkSync(f); }
+  });
+
   it('`docToOutline` 真在**读之前**判：给一个超限文件 ⇒ 抛错且报文就是体量报文（不是 readFileSync 的错）', () => {
     const f = pathx.join(osx.tmpdir(), 'mm-big-' + Date.now() + '.md');
     // 稀疏文件：不真的占盘（writeFileSync 只写 1 字节，再用 truncate 撑到上限以上）
@@ -759,12 +777,27 @@ describe('doc-import：整库导入 —— 目录走查、跳过分类、容器�
     expect(bad.reason).toContain('py');
     expect(bad.reason).toContain('.md');                 // 支持集整份打出来
     expect(di.normalizeExtList('').ok).toBe(false);       // 裸写 `--ext`（没给值）
-    expect(di.IMPORT_EXT_DEFAULT).toEqual(['.md', '.txt', '.docx', '.pdf']);
+    /* 【20261043】默认集合多了 `.m3u8`：视频目录里的**播放列表就是"视频打开链接"**，
+     * 不默认导它，用户那份课程目录就只剩 6 个 txt（135 个视频一个进不来）。 */
+    expect(di.IMPORT_EXT_DEFAULT).toEqual(['.md', '.txt', '.docx', '.pdf', '.m3u8']);
     // 默认集合必须是"真的导得进来"的子集（否则默认就会把文件全判成读失败）
     di.IMPORT_EXT_DEFAULT.forEach((e) => expect(di.IMPORTABLE_EXT).toContain(e));
   });
 
-  it('★ 上限报文：**说准哪个上限 + 给出路**（不是"文件坏了/内存不够"），且体量上限与单文件**共用一份常量**', () => {
+  it('★【20261043】"目录总量超限"**不再是拒绝**：报文改口成"自动分批"，且不许再说"超过上限/没有读它们"', () => {
+    /* 旧报文是"这个目录里的可导入文件合计约 167 MB，超过整库导入上限 64 MB ⇒ 没有读它们"
+     * ⇒ 用户那份 7.85 GB 的课程目录（可导入面 168 MB）被整个拒掉。现在同一份判据换了含义：
+     * 超过"单批线"只**分批**。这条断言守的就是"别再退回成拒绝"。 */
+    const big = di.describeDirOversize('D:/lib', (di.MAX_IMPORT_BATCH_MB + 40) * 1048576, di.MAX_IMPORT_BATCH_BYTES);
+    expect(big).toContain('不拒绝，自动分批');
+    expect(big).toContain('没有总量上限');
+    expect(big).not.toContain('超过整库导入上限');           // ★ 旧的拒绝措辞不许回来
+    expect(big).not.toContain('没有读它们');                 // ★ 也别再说"没读"（它真会读，只是分批）
+    expect(big).toMatch(new RegExp(String(di.MAX_IMPORT_BATCH_MB)));   // 数字来自常量本身，文档不另抄
+    expect(big).toContain('import-dir');
+  });
+
+  it('★ 上限报文（**唯一还存在的拒绝线：文件数**）：说准哪个上限 + 给出路（不是"文件坏了/内存不够"）', () => {
     const many = di.describeTooManyFiles(9999, 200, 'D:/lib');
     expect(many).toContain('超过整库导入上限');
     expect(many).toContain('9999');
@@ -773,11 +806,9 @@ describe('doc-import：整库导入 —— 目录走查、跳过分类、容器�
     expect(many).toContain('--max-files');            // 出路必须可执行
     expect(many).toContain('--ext md');
     expect(many).not.toMatch(/坏了|损坏|内存不足/);
-    const big = di.describeDirOversize('D:/lib', (di.MAX_SOURCE_MB + 40) * 1048576, di.MAX_SOURCE_BYTES);
-    expect(big).toContain('超过整库导入上限');
-    expect(big).toContain('没有读它们');
-    expect(big).toMatch(new RegExp(String(di.MAX_SOURCE_MB)));   // 数字来自常量本身，文档不另抄一份
-    expect(big).toContain('import-dir');
+    // 【20261043】这条上限的**理由**必须说成"人还能不能核对"，不许再说成"内存界"（那是量错了维度）
+    expect(many).toContain('核对');
+    expect(many).toContain('不是');
   });
 
   it('目录里没有可导入的文件 ⇒ 响亮拒绝 + 把逐类计数摆出来 + 给出路（**不建空项目**）', () => {

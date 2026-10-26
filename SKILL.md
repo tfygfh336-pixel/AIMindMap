@@ -154,7 +154,9 @@ AI 助手。你本身就是运行中的 AI agent（本机场景下正是 DSH）�
 | 写笔记内容（节点怎么切、detail/caption 怎么写） | `docs/AI-GUIDE.md` **§3 笔记内容规范** |
 | **改数据格式（加字段 / 改结构）** | `docs/DATA-FORMAT.md`（契约）+ `docs/ARCHITECTURE.md` **§6**（四步：读→改→跑→更新） |
 | 改代码（加功能 / 改渲染 / 动侧栏与 DSH 运行包） | `docs/ARCHITECTURE.md` **§6 每任务四步** + `docs/EXTENSIONS.md` |
+| **动「画图模式 / 图能力」（能力编号 `C-*`、哪个模式开哪条能力、全模式渲染器、`graph` 落点）** | `docs/DIAGRAM-MODES.md`（唯一能力目录 + 剖面矩阵 + 与 jsMind 的关系结论 + `MS1`–`MS5` 计划） |
 | **动内置 DSH（换运行包 / 导插件 / 改侧栏注入）** | `docs/DSH-EMBEDDED.md`（三层划分 + 每项改动升级后会不会丢 + 重建/核对办法）；执行用 skill `embedded-dsh-maintain`（换包/维护）或 `dsh-migrate-in`（**一次单向导入**：本机迁移 / 给别人的电脑打包 + 首次运行导入 / 回滚） |
+| **动「视频转笔记」（三条路 + 一条折中、16 格选路矩阵、按知识点时间点抽帧、加密 HLS 能不能直接吃、成本量级）** | `docs/VIDEO-NOTES.md`（设计与接口；判据实现在 `src/video-summary.js` 与 `src/video-summary-probe.js`） |
 
 **⑥ 记录层 · 发生过什么、要去哪**
 

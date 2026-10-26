@@ -672,12 +672,14 @@ describe('W8-F 与既有机制的关系', () => {
     expect(after.version).toBe(before.version);
   });
 
-  it('F3 MCP 面：工具数 53、`dry_run` 只挂在写类工具上（30 个）且 `import_json` 没有它', () => {
+  it('F3 MCP 面：工具数 54、`dry_run` 只挂在写类工具上（30 个）且 `import_json` 没有它', () => {
     // 2026-10-20（W21）：51 → 52 是 `ask_apply`（`ask-apply` 的透传），29 → 30 是它挂上了 `dry_run`
     // —— 它**是写类**（一次 `ctx.mutate`），不挂就等于把"先审再写"那条出路从 MCP 侧抽掉。
     // 2026-10-20（`I-1`）：52 → 53 是 `features`（只读名册查询，**不挂** `dry_run` ⇒ 带 flag 的仍是 30 个）。
-    expect(mcp.TOOLS.length).toBe(53);
-    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(53);
+    // 2026-10-26（`20261048` 视频摘要）：53 → 54 是 `video_summary`（只读、**不写 projects/**，
+    // 所以同样**不挂** `dry_run` ⇒ 带 flag 的仍是 30 个）。
+    expect(mcp.TOOLS.length).toBe(54);
+    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(54);
     const withFlag = mcp.TOOLS.filter((t) => t.inputSchema.properties && t.inputSchema.properties.dry_run);
     expect(withFlag.length).toBe(30);
     const importJson = mcp.TOOLS.filter((t) => t.name === 'import_json')[0];

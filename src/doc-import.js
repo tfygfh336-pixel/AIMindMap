@@ -185,8 +185,22 @@ function describeImportSourceProblem(filePath) {
  *
  * 上限口径（不是性能目标，是"诚实边界"）：**这个数要足够大到正常文档全都过得去**，
  * 又要小到"读进来不会把机器拖垮"。取 **64 MB**：一份纯文本 md/txt 到这个量级已是几千页；
- * docx/pdf 是压缩/分页格式，正文远小于此。超限**响亮拒绝**并给三条出路（不是静默截断 ✗、
- * 不是"读一半"✗）。**常量只有这一份**：CLI（import-md）与 docToOutline 各调同一个判据。 */
+ * docx 是压缩/分页格式，正文远小于此。超限**响亮拒绝**并给三条出路（不是静默截断 ✗、
+ * 不是"读一半"✗）。**常量只有这一份**：CLI（import-md）与 docToOutline 各调同一个判据。
+ *
+ * ⚠️ **它只管"单文件"，从来不是"目录总量"的闸门**（2026-10-43 更正）。
+ *   旧实现让 `import-dir` 拿同一个数去卡**整个目录的合计体量**（`describeDirOversize`），
+ *   理由是"整棵树在内存里建好"—— **那个理由是错的**：占内存的是**节点对象**（与标题数成正比），
+ *   源文件内容是**逐文件转换、每轮即弃**的（`buildDirImportTree` 里一个 `conv` 出了当轮就没人引用）。
+ *   实测后果是"一个 167 MB 的课程目录（2 份 83 MB 的 PDF + 6 份简介）被整个拒掉"，
+ *   而它其实只有 143 个可导入文件、约 150 个节点 —— 闸门量错了维度 ✗。
+ *   ⇒ 目录现在**没有总量上限**；超过 `MAX_IMPORT_BATCH_MB` 只是**分批**（见下面 ⓪⁸）。
+ *
+ * ⚠️ **pdf 不吃这道闸**（`describeOversizeSource` 里对 `.pdf` 直接放行）：pdf 的正文
+ *   根本不在本进程解析 —— 它起子进程（`scripts/pdf-outline-helper.mjs`），本进程只收
+ *   一份**提纲文本**，边界是 `MAX_OUTLINE_BUF_MB`（32 MB 输出）+ `PDF_HELPER_TIMEOUT_MS`（60 s）。
+ *   源文件多大，不是本进程的内存旋钮 ⇒ 拿 64 MB 去拒一份 83 MB 的 PDF 是**量错了对象**。
+ *   （实测：旧实现在 `.pdf` 上还要先 `fs.readFileSync` 83 MB 只是为了嗅探格式头 —— 那才是真浪费。） */
 const MAX_SOURCE_MB = 64;
 const MAX_SOURCE_BYTES = MAX_SOURCE_MB * 1024 * 1024;
 
@@ -232,9 +246,12 @@ const MAX_OUTLINE_BUF_MB = 32;
 const PDF_HELPER_TIMEOUT_MS = 60 * 1000;
 
 /** 超限时的报文：**说准原因 + 给出路**（与 ⓪ 的目录报文同一风格）。
- *  `{ code:'too-big', message, sizeMB }`；没超限/取不到大小（stat 失败由 ⓪ 负责报）⇒ null。 */
+ *  `{ code:'too-big', message, sizeMB }`；没超限/取不到大小（stat 失败由 ⓪ 负责报）⇒ null。
+ *  ⚠️ `.pdf` **恒放行**：它的正文不在本进程里解析，体量旋钮不是这个数（见 ⓪′ 末两段）。
+ *     判据在**扩展名**上：`.pdf` 走 `pdfOutlineViaHelper`（子进程 + 32 MB 提纲上限 + 60 s 超时）。 */
 function describeOversizeSource(filePath) {
   const p = String(filePath);
+  if (String(path.extname(p)).toLowerCase() === '.pdf') return null;   // 见 ⓪′：pdf 的边界在子进程那一侧
   let st = null;
   try { st = fs.statSync(p); } catch (e) { return null; }   // 不存在/没权限的报错归 ⓪，别在这里双重报
   if (!st.isFile() || st.size <= MAX_SOURCE_BYTES) return null;
@@ -546,6 +563,15 @@ function docxToOutline(paras) {
  */
 function docToOutline(filePath, opts) {
   const o = opts || {};
+  /* ⚠️ `.pdf` 先判**扩展名**并短路（2026-10-43）：pdf 的正文不在本进程解析（起子进程收提纲），
+   *   旧实现为了 `detectFormat` 嗅探格式头会 `fs.readFileSync` **整份**源文件 —— 一份 83 MB 的 PDF
+   *   在本进程白占 83 MB Buffer，还顺手被 64 MB 文本闸门拒掉（量错了对象，见 ⓪′ 末两段）。
+   *   现在：扩展名是 `.pdf` ⇒ 直接把路径交给子进程（边界是提纲缓冲 32 MB + 60 s 超时）。
+   *   没有扩展名/扩展名说谎的文件仍走下面的"读进来嗅探"那条老路（`detectFormat` 认 `%PDF-`）。 */
+  if (!o.buf && String(path.extname(String(filePath || ''))).toLowerCase() === '.pdf') {
+    const rp = pdfOutlineViaHelper(filePath);
+    return finishOutline('pdf', normalizeOutline(rp.md), rp.pages, { source: rp.pdfSource, notes: rp.notes });
+  }
   // 体量闸门（见 ⓪′）：在**读之前**判大小 ⇒ 几百 MB 的文件不会被整份读进内存。
   // 被喂了 `opts.buf` 时同样判（调用方可能已经读完了，但那也不能让它继续往下走）。
   const tooBig = o.buf ? describeOversizeBuffer(o.buf, filePath) : describeOversizeSource(filePath);
@@ -714,18 +740,48 @@ function pdfOutlineViaHelper(filePath) {
  */
 
 /** 默认导入的扩展名。**只有这一份**：CLI 的默认值、`--ext` 的校验集、扫描判据都从这里取 */
-const IMPORT_EXT_DEFAULT = ['.md', '.txt', '.docx', '.pdf'];
-/** **真的导得进来**的扩展名（= `detectFormat` 认识的那几个）。`--ext` 只许在这些里选 ——
- *  否则 `.py` 会被接受、然后每个文件都落到"读/转换失败"，等于把"不支持"伪装成"这个文件坏了" ✗ */
-const IMPORTABLE_EXT = ['.md', '.markdown', '.txt', '.text', '.docx', '.pdf'];
+const IMPORT_EXT_DEFAULT = ['.md', '.txt', '.docx', '.pdf', '.m3u8'];
+/** **真的导得进来**的扩展名。`--ext` 只许在这些里选 —— 否则 `.py` 会被接受、然后每个文件都落到
+ *  "读/转换失败"，等于把"不支持"伪装成"这个文件坏了" ✗。
+ *  = `detectFormat` 认识的那几个（`.md/.markdown/.txt/.text/.docx/.pdf`）**∪** 视频入口（`.m3u8`）。
+ *  ⚠️ `.m3u8` **不走** `docToOutline`（它不是文档，是播放列表）：它在 `buildDirImportTree` 里
+ *  走**视频入口**那一支（节点 + `localPath` + 一句"大概的详情"），见 ⓪⁹。 */
+const IMPORTABLE_EXT = ['.md', '.markdown', '.txt', '.text', '.docx', '.pdf', '.m3u8'];
 /** 一律跳过的目录名：依赖/构建缓存目录（里面几乎不可能是笔记）。
  *  隐藏目录（`.git`/`.svn`/`.obsidian`…）由"名字以 `.` 开头"那条规则统一覆盖，不在这里列 ✓ */
 const SKIP_DIR_NAMES = ['node_modules', '__pycache__', 'bower_components'];
 /** 整库导入的默认**文件数**上限（`--max-files` 可覆盖）。
- *  为什么除了体积还要管条数：整库导入是**一次原子写**（整棵树先在内存里建好再落盘），
- *  而且导完 200 个文件之后人已经很难核对结果了。取 200 —— 一份个人笔记库的常见量级过得去，
- *  再多就明确要求调用方**自己说**要多少（`--max-files`），而不是我们偷偷放宽 ✗。 */
+ *  为什么除了体积还要管条数：这不是内存界（内存界由"逐文件转换 + 分批"承担，见 ⓪⁸），
+ *  而是**人可核对性**的界 —— 一次导完几百个文件之后人已经很难核对结果了。取 200 ——
+ *  一份个人笔记库的常见量级过得去，再多就明确要求调用方**自己说**要多少（`--max-files`），
+ *  而不是我们偷偷放宽 ✗。 */
 const MAX_IMPORT_FILES_DEFAULT = 200;
+
+/* ---------------- ⓪⁸ 整库导入的**分批线**（不是拒绝线） ----------------
+ * 为什么要它（2026-10-43，真实现场）：用户把一个 **7.85 GB / 14989 个文件 / 570 个目录**的视频课程目录
+ *   丢进 `import-dir`，旧实现拿"单文件 64 MB"去卡**整个目录的合计体量** ⇒ 直接拒（报文说 167 MB 超限）。
+ *   那个上限的理由写的是"整棵树先在内存里建好，再一次性写盘"—— **量错了维度**（见 ⓪′ 末两段：
+ *   占内存的是节点对象，不是源文件内容）。
+ *
+ * ⇒ 目录现在**没有总量上限**。越过下面两条线只触发一件事：**分批转换**。
+ *   · 一批 = 一棵**顶层子树**（顶层子目录，或根下的一组文件）；一批自己还超线就**继续往下拆**，
+ *     拆到一个文件都不能再拆为止（**单个文件永远独占一批，绝不因为"太大"被丢掉** ✗）；
+ *   · 每一批打完一行进度（`--dry-run` 与真导都打）⇒ 几十分钟的导入不会变成"什么都没打印"。
+ *   ⇒ 取值：**64 MB / 32 个文件**。64 与单文件闸门同量级（一批本来就不该比"一份大文档"更重）；
+ *     32 是"人还能一眼核对"的量级，也是"进程真挂了最多白做多少"的量级。
+ *
+ * ⚠️ **为什么"分批"不等于"每批写一次盘"**（这条要改前先读完，别顺手改成 N 次写）：
+ *   项目数据是**一个 JSON**（`<项目>/<项目>.json`）。每写一次就要把整棵树重新读进来再序列化一次
+ *   ⇒ N 批 = N 次全量读写（O(N²)），而且会把既有硬保证「**一次原子写，失败不留半个项目**」
+ *   降级成"半份项目 + 用户自己判断要不要删"✗。两害相权，本工程的取舍是：
+ *   **分批转换（每批的工作集出了这批就没人引用）+ 每批进度 + 一次原子写**。
+ *   ⇒ 内存峰值因此**由最大的那一个文件决定，不随目录总量线性涨** —— 这一条是实测的读数，
+ *     不是推断：`.review/20261043-视频目录导入/out-rss.json`（总量 160 MB / 480 MB / 1.6 GB
+ *     三档，maxRSS 三档相同）。线本身**不需要**被实测校准：它量的是"批多大"，不是"内存墙在哪"。
+ */
+const MAX_IMPORT_BATCH_MB = 64;
+const MAX_IMPORT_BATCH_BYTES = MAX_IMPORT_BATCH_MB * 1024 * 1024;
+const MAX_IMPORT_BATCH_FILES = 32;
 
 /** 跳过原因 → 一句人话（报告按它分组打印；**每一类都必须能说出"为什么"**，不许静默 ✗） */
 const SKIP_LABEL = {
@@ -739,6 +795,9 @@ const SKIP_LABEL = {
   'empty-file': '空文件（0 字节或没有任何可导入的内容）',
   'read-failed': '读/转换失败（原因见条目）',
   'not-regular-file': '不是普通文件（设备/命名管道/特殊节点）',
+  // ---- 【20261043】视频目录：**分片 / 密钥 / 索引**没有导入的意义（单独一类，不许混进"扩展名不支持"）----
+  'video-part': '视频分片 / 密钥 / 索引（HLS 包里除播放列表以外的文件 —— 它们只对播放器有意义，'
+    + '打开播放列表就够了；**没有导入**）',
   // ---- 【W12】`--vault` 专用的三类（**都算"没进树/没接上"** ⇒ 必须逐条点名，绝不静默 ✗）----
   'vault-dangling': 'wiki 链接没接上（目标笔记不存在 / 名字认不出 —— 正文原样保留，没有写悬空链接）',
   'vault-ambiguous': 'wiki 链接同名多篇（不猜是哪一篇 ⇒ 没有写这条边，请自己确认）',
@@ -750,8 +809,58 @@ const SKIP_SHORT = {
   hidden: '隐藏', 'skip-dir': '依赖目录', symlink: '符号链接', unreadable: '无读权限',
   'unsupported-ext': '扩展名不支持', 'empty-dir': '空目录', 'no-importable': '无可导入文件',
   'empty-file': '空文件', 'read-failed': '读/转换失败', 'not-regular-file': '非普通文件',
+  'video-part': '视频分片/密钥/索引',
   'vault-dangling': 'wiki 断链', 'vault-ambiguous': 'wiki 同名多篇', 'vault-resource': '附件没落成'
 };
+
+/* ---------------- ⓪⁹ 视频目录：`.m3u8` = **入口**（导入），分片/密钥/索引 = **没有意义**（跳过） ----------------
+ * 现场形状（用户的课程目录，一个课时一份）：
+ *   `<课时>/学习中心.m3u8/index.m3u8`       ← **这一份才是"视频打开链接"**（HLS 播放列表）
+ *   `<课时>/学习中心.m3u8/index.m3u8.bak`   ← 播放列表的备份
+ *   `<课时>/学习中心.m3u8/index/N.ts`       ← 分片（14476 个 / 7.68 GB）
+ *   `<课时>/学习中心.m3u8/extk0/XXXX.key`   ← AES 解密密钥（135 个 / 0 MB）
+ * ⇒ 只有播放列表有导入价值：它是"打开这个视频"的入口（点节点 → `localPath` → 播放器）。
+ *   分片与密钥是**播放器的中间文件**：导进来既不能读、又占 7.68 GB 的扫描账单 ⇒ 单独记 `video-part`。
+ *
+ * ⚠️ **`.ts` 有歧义**（TypeScript 也是 `.ts`）⇒ **禁止按扩展名一刀切**，判据必须**两侧都成立**：
+ *   ① **名字像分片**：扩展名在 `VIDEO_PART_EXT` 里（`.ts` / `.m4s` / `.aac` / `.vtt`），
+ *      或是 `.key`（HLS 的 AES 密钥），或是播放列表的备份（`index.m3u8.bak`）；
+ *   ② **上下文是 HLS 包**：它所在目录里有 `.m3u8`，或某个祖先目录名以 `.m3u8`/`.m3u` 结尾
+ *      （`<课时>/学习中心.m3u8/` 正是后者）。
+ *   ⇒ 两侧都成立 ⇒ `video-part`（跳过）。
+ *   ⇒ 只成立 ①（例如工程里的 `src/foo.ts`）⇒ **不碰**：按原有规则走（`unsupported-ext` / `--ext` 那套），
+ *     绝不会被说成"视频分片" —— 这条是"不许吞掉真的 TypeScript 文件"的判据，两侧各有单测。
+ */
+const VIDEO_ENTRY_EXT = ['.m3u8', '.m3u'];
+/** 只对"HLS 包"里的文件生效的分片类扩展名（见上面两侧判据 ②；单看扩展名什么都不判 ⇒ 调用方必须先判上下文） */
+const VIDEO_PART_EXT = ['.ts', '.m4s', '.m4v', '.aac', '.vtt', '.key'];
+/** 播放列表的备份（`index.m3u8.bak`）—— 同属分片类，同样要两侧成立 */
+const RE_VIDEO_PLAYLIST_BACKUP = /\.(m3u8|m3u)\.(bak|old|tmp|orig)$/i;
+
+/** 这个文件名是不是**视频入口**（播放列表）：扩展名 `.m3u8` / `.m3u` ⇒ 是（大小写不敏感） */
+function isVideoEntryName(name) {
+  return VIDEO_ENTRY_EXT.indexOf(String(path.extname(String(name || ''))).toLowerCase()) >= 0;
+}
+
+/** 这个**目录名**是不是一个 HLS 包（下载器常把包建成 `<名字>.m3u8/`）：名字以 `.m3u8`/`.m3u` 结尾 */
+function isVideoBundleName(name) {
+  return isVideoEntryName(name);
+}
+
+/** 判据本体（**纯函数**：只看名字 + 调用方给的上下文，不碰磁盘 ⇒ 可直接单测）。
+ *  @param {string} rel  相对路径（或任何带目录的文件名：只需要它的目录段）
+ *  @param {boolean} inBundle 调用方是否已判定"它在 HLS 包里"（同目录有 `.m3u8` / 祖先目录名以 `.m3u8` 结尾）
+ *  @returns {'video-part'|null} */
+function classifyVideoPart(rel, inBundle) {
+  const name = String(rel || '').split('/').pop();
+  if (!name) return null;
+  if (isVideoEntryName(name)) return null;                  // 播放列表自己是入口，不是分片
+  if (!inBundle) return null;                               // 判据 ② 不成立 ⇒ 一律不当分片（见上面那条 ⚠️）
+  const ext = String(path.extname(name)).toLowerCase();
+  if (VIDEO_PART_EXT.indexOf(ext) >= 0) return 'video-part';
+  if (RE_VIDEO_PLAYLIST_BACKUP.test(name)) return 'video-part';
+  return null;
+}
 
 /** **一个目录项要不要跳过**（纯函数：只看名字与形态，不碰磁盘）—— 返回 `null` = 收下它继续走。
  *  跳过判据**只有这一处**：目录走查、报告分组、单测都调它 ⇒ 不会出现"走查跳过一类、报告说另一类"。
@@ -795,23 +904,24 @@ function normalizeExtList(raw) {
 /** 文件数超限的报文：说准原因 + 给出路（**在写盘之前**；与体量闸门同一形状） */
 function describeTooManyFiles(count, maxFiles, dir) {
   return '这个目录里有 ' + count + ' 个可导入文件，超过整库导入上限 ' + maxFiles + ' 个: ' + String(dir)
-    + '。**没有读它们**（整库导入要把整棵树先建在内存里、再一次性原子写 ⇒ 一次导入必须有上界；'
-    + '而且一次导这么多之后人已经很难核对结果了 ✗）。出路（三选一）：'
+    + '。**没有读它们**（这条上限管的是**人还能不能核对结果**：一次导完几百个文件之后，'
+    + '谁都看不出漏了哪一份；它**不是**内存界 —— 内存由"逐文件转换 + 分批"承担，见 ⓪⁸）。出路（三选一）：'
     + '① 明确接受这个量：加 `--max-files ' + count + '`；'
     + '② 分批：按子目录分别导（`import-dir <新项目名> "<目录>\\某个子目录>"`）；'
     + '③ 缩小范围：`--ext md`（先只导文本，docx/pdf 另批处理）或把不需要的部分移出这个目录。';
 }
 
-/** 目录总量超限的报文（同一份 `MAX_SOURCE_MB`：与单文件闸门共用一处常量 ✓） */
+/** **总量超过"单批线"的提示**（注意：**不是拒绝**）。
+ *  旧实现这里是"目录合计体量超 64 MB ⇒ 整个拒掉"，而那个 64 MB 本来是**单文件**的闸门
+ *  （理由与实测反例见 ⓪′ 末两段 / ⓪⁸）⇒ 现在同一份判据换了含义：超过就**分批**，照样导完。
+ *  ⚠️ 报文必须说清"没有拒绝你"：使用者看到 MB 数大于 64 时会以为又要被拒 ✗。 */
 function describeDirOversize(dir, totalBytes, limitBytes) {
   const sizeMB = Math.round(Number(totalBytes || 0) / 1048576);
   const limitMB = Math.round(Number(limitBytes || 0) / 1048576);
-  return '这个目录里的可导入文件合计约 ' + sizeMB + ' MB，超过整库导入上限 ' + limitMB + ' MB: ' + String(dir)
-    + '。**没有读它们**（整库导入要先把整棵树建在内存里再一次性写盘 ⇒ 总有一个瞬间它全在内存里；'
-    + '硬读进来正是"命令莫名退出、什么都没打印"的成因 ✗）。出路（三选一）：'
-    + '① 分批：按子目录分别导（`import-dir <新项目名> "<目录>\\某个子目录>"`）；'
-    + '② 缩小范围：`--ext md`（先只导文本，docx/pdf 这类大文件另批处理）；'
-    + '③ 先转成体量小得多的格式（docx/pdf 是压缩/分页的），或把不需要的部分移出这个目录。';
+  return '这个目录里可导入的文件合计约 ' + sizeMB + ' MB，超过**单批** ' + limitMB + ' MB: ' + String(dir)
+    + '。⇒ **不拒绝，自动分批**（每批一棵顶层子树；一批打完打一行进度；一个文件本身就超线时它独占一批）。'
+    + '整库导入**没有总量上限**：剩下的只有"一次导多少个文件"（`--max-files`，管的是人能不能核对）。'
+    + '若要更快看到结果，也可以按子目录分开导（`import-dir <新项目名> "目录/子目录"`）。';
 }
 
 /**
@@ -838,21 +948,28 @@ function scanImportDir(dir, opts) {
     counts: {},
     // 被 `--ext` 排除、但**本来是能导的**扩展名计数（报告里给一句"想一起导就加 --ext …"）
     otherImportableExt: {},
-    totals: { files: 0, bytes: 0 }
+    totals: { files: 0, bytes: 0 },
+    /** 视频入口（播放列表）的读数：`entries` = 会被导入的 `.m3u8` 个数、`parts` = 因"是分片/密钥/索引"被跳过的个数 */
+    video: { entries: 0, parts: 0 }
   };
   const push = (rel, reason, message) => {
     out.skipped.push({ rel: rel, reason: reason, label: SKIP_SHORT[reason] || reason, message: message || null });
     out.counts[reason] = (out.counts[reason] || 0) + 1;
+    if (reason === 'video-part') out.video.parts += 1;
   };
 
-  /** 递归走查。返回 'kept' | 'empty' | 'unreadable' | 'nothing' —— 由调用方决定怎么计数 ✓ */
-  const walk = (absDir, relDir, node) => {
+  /** 递归走查。返回 'kept' | 'empty' | 'unreadable' | 'nothing' —— 由调用方决定怎么计数 ✓
+   *  @param {boolean} inBundle 本目录是否在**HLS 包**里（见 ⓪⁹ 判定②：祖先目录名以 `.m3u8` 结尾，
+   *         或本目录里直接有一个 `.m3u8`）—— 它是 `.ts`/`.key` 那条判据的**上下文一侧** */
+  const walk = (absDir, relDir, node, inBundle) => {
     let entries;
     try { entries = fs.readdirSync(absDir, { withFileTypes: true }); }
     catch (e) { return { code: 'unreadable', detail: (e && e.code) || (e && e.message) || '未说明原因' }; }
     if (!entries.length) return { code: 'empty' };
     // 排序：同输入两次产出**逐字节相同**的树（readdir 的顺序不保证稳定）✓
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    // 上下文判据②：**本目录里直接有播放列表** ⇒ 这一层里的 `.ts`/`.key` 是分片（见 ⓪⁹）
+    const bundleHere = inBundle || entries.some((x) => x.isFile() && isVideoEntryName(x.name));
 
     for (const e of entries) {
       const rel = (relDir ? relDir + '/' : '') + e.name;
@@ -865,17 +982,29 @@ function scanImportDir(dir, opts) {
         // `--vault`：`assets/` / `attachments/` 这类**附件库**目录不建容器（只装资源；附件属 P1）。
         // 判据只有这一处（`VAULT_SKIP_DIRS`），报告那一笔在函数末尾（`skippedDirs`）。
         if (o.vault && VAULT_SKIP_DIRS.indexOf(e.name.toLowerCase()) >= 0) { continue; }
-        const child = { name: e.name, rel: rel, dirs: [], files: [] };
-        const r = walk(abs, rel, child);
+        // `abs` 随目录节点一起带下去：建树时**容器节点的 `localPath`** 要用它（见 ⓪⁹ 的 U4）
+        const child = { name: e.name, rel: rel, abs: abs, dirs: [], files: [] };
+        const r = walk(abs, rel, child, bundleHere || isVideoBundleName(e.name));
         if (r.code === 'kept') { node.dirs.push(child); continue; }
         if (r.code === 'empty') push(rel, 'empty-dir', null);
         else if (r.code === 'unreadable') push(rel, 'unreadable', '读不了这个目录：' + r.detail);
+        else if (bundleHere || isVideoBundleName(e.name)) {
+          /* HLS 包里的子目录（`index/` 分片、`extk0/` 密钥）里一个可导文件都没有、全是分片 ⇒
+           * 记 `video-part` 而不是 `no-importable`：后者会说成"这个目录里没有可导入的文件"，
+           * 而真相是"这里只有分片"（原因必须准确，否则使用者会去找一个不存在的格式问题 ✗）。 */
+          push(rel, 'video-part', null);
+        }
         else push(rel, 'no-importable', null);
         continue;
       }
       if (why) { push(rel, why); continue; }
       if (!e.isFile()) { push(rel, 'not-regular-file'); continue; }
       const extName = path.extname(e.name).toLowerCase();
+      /* ⓪⁹ 分片/密钥/索引：**两侧判据都成立**才跳过（只看扩展名会吞掉真的 `.ts` 源码）——
+       * 位置在"扩展名白名单"**之前**：否则 `.ts` 会先被记成 `unsupported-ext`，
+       * 于是"因为是视频分片而跳过"这件事在报告里根本看不出来（而它正是用户要的那条读数 ✗）。 */
+      const partWhy = classifyVideoPart(rel, bundleHere);
+      if (partWhy) { push(rel, partWhy, extName ? ('扩展名 ' + extName) : '播放列表的备份'); continue; }
       if (ext.indexOf(extName) < 0) {
         push(rel, 'unsupported-ext', extName ? ('扩展名 ' + extName) : '没有扩展名');
         // 可导但被本次 `--ext` 排除 ⇒ 单独记一笔（报告里告诉它怎么放开）
@@ -893,11 +1022,12 @@ function scanImportDir(dir, opts) {
        * ⚠️ 它**用不上**"逐字节可复现"那类判据（那是 `tree`/`entries` 的事）⇒ 不再 stat 第二次：
        *    这里已经是同一个 `statSync` 的结果，多问一次只会多一个不一致的来源。 */
       node.files.push({ name: e.name, rel: rel, abs: abs, ext: extName, size: st.size, mtimeMs: st.mtimeMs });
+      if (isVideoEntryName(e.name)) out.video.entries += 1;
     }
     return { code: (node.dirs.length || node.files.length) ? 'kept' : 'nothing' };
   };
 
-  const r = walk(rootAbs, '', out.tree);
+  const r = walk(rootAbs, '', out.tree, false);
   /* 根目录自己要不要计一笔？**只计"真的读不了/真的空"这两种**：
    *   · `nothing`（有条目但一个都没导成）时**不再补一笔** —— 那些条目已经各计一笔了，
    *     再补一笔根目录等于同一次跳过数两遍（`counts` 是"逐条路径的跳过原因"，不是"原因种类"）✗；
@@ -921,6 +1051,83 @@ function scanImportDir(dir, opts) {
     });
   }
   return out;
+}
+
+/**
+ * **分批计划**（纯函数：只吃 `scanImportDir` 的清单，不碰磁盘）—— 整库导入用它把
+ * "一次全导"切成若干批。
+ *
+ * 为什么要切成批（而不是干脆不限量一路导下去）：见 ⓪⁸。一句话 —— 目录没有总量上限了，
+ * 但**几十分钟的导入不能一声不响**：批是**进度单位**（每批打完打一行）。
+ *
+ * ⚠️ **批的粒度只能是"顶层条目"**（顶层子目录 / 根下的一组文件），**不许往里钻** ——
+ *   这是结构正确性，不是偷懒：钻进去就得把祖先容器（比如「01-AGIC超级个体必修课」）复制到
+ *   每一批里，于是同一个目录会在树里出现**多个同名容器节点**；要修就得在拼装时按 rel 合并，
+ *   那是给"镜像文件夹"这个唯一卖点加一层易错逻辑。⇒ 取舍：**一批 = 一棵完整顶层子树**；
+ *   单个顶层子树很大（比如用户那份 7.8 GB 的课程目录：6 个顶层课程，最大 2.4 GB）⇒ 它自己就是一批，
+ *   内部**不再拆**，改由逐文件进度（`buildDirImportTree` 的 `onFile`）保证"看得见它在动"。
+ *   ⚠️ 所以 `MAX_IMPORT_BATCH_MB` / `MAX_IMPORT_BATCH_FILES` 是**"批应该在多大"的说明性线**：
+ *   超过它只会在报告里标一句 `over`，**既不拆批也不拒绝**（拒绝线只有 `--max-files` 那条）。
+ *
+ * 三条硬性质（单测逐条钉住）：
+ *   ① **配平**：每个可导入文件**恰好**落在一批里（既不丢、也不重复）；
+ *   ② **可复现**：同一份 scan ⇒ 同一份批计划（目录在前、文件在后，各自按名字码位排序，
+ *      与 `scanImportDir` 的排序同一口径）；
+ *   ③ **顺序即树的顺序**：按批拼装出来的 `children` 与"不分批一次建完"**逐字节同序**。
+ * @param {object} scan `scanImportDir` 的结果
+ * @param {{maxBytes?:number, maxFiles?:number}} [opts] 缺省 = `MAX_IMPORT_BATCH_BYTES` / `MAX_IMPORT_BATCH_FILES`
+ * @returns {Array<{rel:string, name:string, bytes:number, files:number, over:boolean,
+ *                  dirs:Array, fileList:Array, roots:Array}>}
+ *   `dirs` / `fileList` = 这一批要建树的**子树切片**（交给 `buildDirImportTree` 的那一份 `scan.tree`）；
+ *   `roots` = 这一批在最终树里的顶层主题名（回显用，不含 id）；`over` = 超过说明性线（只用于报告）。
+ */
+function planImportBatches(scan, opts) {
+  const o = opts || {};
+  const maxBytes = (typeof o.maxBytes === 'number' && o.maxBytes > 0) ? o.maxBytes : MAX_IMPORT_BATCH_BYTES;
+  const maxFiles = (typeof o.maxFiles === 'number' && o.maxFiles > 0) ? o.maxFiles : MAX_IMPORT_BATCH_FILES;
+  const tree = (scan && scan.tree) || { dirs: [], files: [] };
+  const bytesOf = (f) => (f && f.size) || 0;
+  /** 一个子树（含所有后代）的合计 */
+  const sumOf = (node) => {
+    let bytes = 0, files = 0;
+    const walk2 = (n) => {
+      n.files.forEach((f) => { bytes += bytesOf(f); files += 1; });
+      n.dirs.forEach(walk2);
+    };
+    walk2(node);
+    return { bytes: bytes, files: files };
+  };
+  /** 收成一批（`dirs` / `fileList` 就是 `buildDirImportTree` 认的那份切片） */
+  const asBatch = (rel, name, dirs, fileList) => {
+    let bytes = 0, files = 0;
+    fileList.forEach((f) => { bytes += bytesOf(f); files += 1; });
+    dirs.forEach((d) => { const s = sumOf(d); bytes += s.bytes; files += s.files; });
+    return {
+      rel: rel, name: name, bytes: bytes, files: files,
+      over: (bytes > maxBytes || files > maxFiles),          // **只是标记**（不拆批、不拒绝）
+      dirs: dirs, fileList: fileList,
+      roots: dirs.map((d) => d.name).concat(fileList.map((f) => f.name.replace(/\.[^.]+$/, '')))
+    };
+  };
+  const out = [];
+  // ① 每个**顶层子目录**一批（完整子树，绝不往里钻 —— 理由见上面 ⚠️）
+  tree.dirs.forEach((d) => {
+    const b = asBatch(d.rel || d.name, d.name, [d], []);
+    if (b.files) out.push(b);            // 没有可导入文件的子树在 scan 里本来就已经被剔掉了（防空批）
+  });
+  // ② **根下的文件**合成一批（它们本来就是树的最后一段，顺序与"不分批"一致）
+  if (tree.files.length) out.push(asBatch('', '', [], tree.files));
+  return out;
+}
+
+/** 一批 → 交给 `buildDirImportTree` 的那份 **scan 形状**（只换树，别的一律沿用：ext / root / 计数基线）。
+ *  为什么要有这个薄包装：`buildDirImportTree` 的唯一入口是"吃 scan、吐子树"，
+ *  批切片必须还是那个形状 ⇒ 不新造第二条建树路（见 ⓪‴ 的"建树唯一入口"）。 */
+function scanSliceOf(scan, batch) {
+  const b = batch || {};
+  return Object.assign({}, scan, {
+    tree: { name: (scan && scan.tree && scan.tree.name) || '', rel: '', dirs: b.dirs || [], files: b.fileList || [] }
+  });
 }
 
 /** **目录清单指纹**：把"这个目录里导了哪些文件、每个内容是什么"收敛成一个 sha256。
@@ -951,9 +1158,66 @@ function uniqueIdGen() {
   };
 }
 
+/* ---------------- ⓪⁹b 视频节点："通过链接指向文件"，不内嵌、不拷贝 ----------------
+ * 节点只做三件事：① 标题（这一节课的视频叫什么）② `localPath` = 本机 `.m3u8` 的绝对路径
+ * （点它就用系统播放器打开 —— `localPath` 本来就是本格式里**唯一**的绝对路径字段，
+ * 见 `docs/DATA-FORMAT.md` §2.5；**不新造字段**：新造一个就是同一件事的第二种表达 ✗）
+ * ③ 一句"大概的详情"（**不是正文**：.m3u8 本身是播放器脚本，粘进详情没有意义）。
+ *
+ * `localPath` 的长度上限与 `src/path-chain.js` / `src/schema.js` 同一口径（500）；超长就不挂
+ * （挂上去会让**整次写盘**被 schema 拒掉 ⇒ 一份超长路径会毁掉整个导入，那是把小概率变成全灭 ✗），
+ * 并计一笔 `localPathSkipped` 如实报出来。
+ */
+const LOCAL_PATH_MAX = 500;
+
+/** 播放列表里**便宜读得到**的事实（纯函数）：分片数 / 时长（按 `#EXTINF` 累加）/ 是否加密 */
+function videoPlaylistFacts(text) {
+  const s = String(text || '');
+  const segs = s.match(/#EXTINF\s*:\s*([0-9.]+)/g) || [];
+  let seconds = 0;
+  segs.forEach((m) => {
+    const v = parseFloat(m.replace(/#EXTINF\s*:\s*/, ''));
+    if (isFinite(v) && v > 0) seconds += v;
+  });
+  const keyLine = /#EXT-X-KEY\s*:\s*(.+)/.exec(s);
+  return {
+    segments: segs.length,
+    seconds: Math.round(seconds),
+    encrypted: !!(keyLine && !/METHOD\s*=\s*NONE/i.test(keyLine[1]))
+  };
+}
+
+/** 秒 → `mm:ss` / `h:mm:ss` */
+function formatDuration(sec) {
+  const n = Math.max(0, Math.round(Number(sec) || 0));
+  const h = Math.floor(n / 3600), m = Math.floor((n % 3600) / 60), s = n % 60;
+  const pad = (x) => (x < 10 ? '0' + x : String(x));
+  return (h ? (h + ':' + pad(m)) : String(m)) + ':' + pad(s);
+}
+
+/** 视频节点的"大概的详情"（Markdown 片段；由调用方交给**同一个** `markdownToHtml` 转换） */
+function videoDetailMd(facts, fileLabel) {
+  const f = facts || { segments: 0, seconds: 0, encrypted: false };
+  const lines = [];
+  lines.push('**视频（HLS 播放列表）**：`' + String(fileLabel || '.m3u8') + '`。'
+    + '它不是文档 ⇒ 树里只放"打开它的入口"（节点字段 `localPath` 指向本机的这一份）。');
+  if (f.segments > 0) {
+    lines.push('分片 ' + f.segments + ' 个（合计时长约 **' + formatDuration(f.seconds) + '**，按播放列表的 `#EXTINF` 累加）。');
+  } else {
+    lines.push('没读到 `#EXTINF` ⇒ 可能不是标准 HLS 播放列表，或这份下载没下完（**文件本身在，点开仍由播放器判断**）。');
+  }
+  if (f.encrypted) lines.push('这份播放列表带 `EXT-X-KEY`（AES 加密）：密钥文件按"没有意义"跳过了，播放器会自己按播放列表去取。');
+  lines.push('同类文件里的**分片 / 密钥 / 索引**（`index/` 下的 `.ts`、`extk0/` 下的 `.key`）**没有导入**：'
+    + '它们只对播放器有意义（见报告里的 `视频分片/密钥/索引` 计数）。');
+  lines.push('打开：右键节点「打开文件夹」，或用详情里的本机路径链接（交给系统默认程序）。');
+  return lines.join('\n\n');
+}
+
 /**
  * 目录 → 容器树（**建树唯一入口**：每个文件都走 `docToOutline`，每棵子树都由 `markdownToTree` 建）。
  * 整棵树在**内存里**建好再交给调用方一次性落盘 ⇒ 中途失败不会留下半个项目 ✓
+ * ⚠️ **分批**在调用方（`cli/commands/project.js` 的 `importDir` 按 `planImportBatches` 逐批调本函数、
+ *    再把子树拼起来）—— 本函数永远只看"给它的那一份 scan"，所以一份 scan 切片 = 一批 ✓
  *
  * @param {object} scan `scanImportDir` 的结果
  * @param {{genId?:Function, at?:string, tool?:string,
@@ -990,20 +1254,82 @@ function buildDirImportTree(scan, opts) {
   const built = {
     children: [], nodes: 0, containers: 0, files: 0, entries: [], skipped: [], preambles: 0,
     refTargets: [],
+    /** 视频入口节点数（`.m3u8`：节点 + `localPath`，**不走** docToOutline） */
+    videos: 0,
+    /** 因为路径超过 `LOCAL_PATH_MAX` 而**没有挂** `localPath` 的节点数（如实报，不静默丢 ✗） */
+    localPathSkipped: 0,
     /* **这一趟真的读/转换了几个文件**（`only` 之外的那些不算）—— 判据用它量"增量"：
      * 增量性**只看树是判不出来的**（全量重建之后树的最终状态一个字都不差，差别只在"读了几个文件"），
      * 所以读数必须交出去；绑定的同步计划把它转成 `plan.readFiles`（见那里的注释与 B2/B2b 两条判据）。 */
     readFiles: 0
   };
 
+  /** 给节点挂**本机路径**（U4："通过链接指向文件"，不内嵌不拷贝）—— 见 ⓪⁹b 的长度口径 */
+  const setLocalPath = (node, p) => {
+    const s = String(p || '');
+    if (!s) return false;
+    if (s.length > LOCAL_PATH_MAX) { built.localPathSkipped += 1; return false; }
+    node.localPath = s;
+    return true;
+  };
+
+  /** **视频入口**（`.m3u8`）→ 节点 + 目录项。⚠️ 它**不走** `docToOutline`（播放列表不是文档）：
+   *  节点 = 标题 + `localPath`（本机文件）+ 一句"大概的详情"。 */
+  const buildVideoNode = (f, topicWanted) => {
+    built.readFiles++;
+    // 逐文件进度（命令层用它防"长时间一声不响"；**不进落盘数据**）
+    if (typeof o.onFile === 'function') o.onFile({ rel: f.rel, index: built.readFiles, format: 'video' });
+    let text = '';
+    try { text = fs.readFileSync(f.abs, 'utf8'); }
+    catch (e) {
+      built.skipped.push({ rel: f.rel, reason: 'read-failed', label: SKIP_SHORT['read-failed'],
+        message: String((e && e.message) || e) });
+      return null;
+    }
+    const topic = String(topicWanted || f.name.replace(/\.[^.]+$/, ''));
+    const node = {
+      id: genId(topic), topic: topic, expanded: false, children: [],
+      detail: convert.markdownToHtml(videoDetailMd(videoPlaylistFacts(text), f.name)),
+      /* 来源指纹：与文档节点**同一个**入口（`src` + 内容 sha256）⇒ "这份播放列表导过没有"
+       * 在**文件**一级同样答得出来，重复导入照样被闸门拦住 ✓ */
+      origin: makeOrigin({ file: f.abs, md: text, at: at, tool: tool })
+    };
+    setLocalPath(node, f.abs);
+    built.nodes++; built.files++; built.videos++;
+    built.entries.push({
+      rel: f.rel, name: f.name, id: node.id, topic: topic,
+      sha256: node.origin.sha256, origin: node.origin, format: 'video',
+      abs: f.abs, node: node
+    });
+    if (typeof o.collect === 'function') o.collect({ rel: f.rel, node: node, format: 'video' });
+    return node;
+  };
+
   const walk = (node, depth) => {
     const children = [];
     // 目录在前、文件在后（与资源管理器同序），两层各自按名字排 ⇒ 结构稳定可复现 ✓
     node.dirs.forEach((sub) => {
+      /* ⓪⁹ **视频包折叠**：下载器把一节课建成了一个名叫 `<名字>.m3u8/` 的目录，
+       * 里面只有一个播放列表（`index.m3u8`），其余全是分片/密钥（扫描阶段已跳成 video-part）。
+       * ⇒ 不为它单画一层容器（否则树上会出现 `学习中心(学习中心)` 这种同名的两层），
+       * 直接把它做成父节点下的**一个视频节点**，标题取目录名去掉 `.m3u8`。
+       * 判据：目录名是视频包 + 里面**恰好一个**可导入的播放列表 + 没有别的子目录
+       * （多播放列表 / 还有别的子目录 ⇒ 不折叠，照常建容器，宁可不漂亮也不丢东西 ✗）。 */
+      if (isVideoBundleName(sub.name)) {
+        const playlists = sub.files.filter((x) => wanted(x) && isVideoEntryName(x.name));
+        if (playlists.length === 1 && !sub.dirs.length) {
+          const vn = buildVideoNode(playlists[0], sub.name.replace(/\.[^.]+$/, ''));
+          if (vn) children.push(vn);
+          return;
+        }
+      }
       // 【折叠默认】容器节点是新节点 ⇒ 显式 `expanded:false`（原来 `depth+1<=2` = 前两层展开）。
       // 规则的落点说明见 `src/markdown.js` 的 openNode：只有"根"保持展开，而根是**调用方那棵树**
       // 的根（`cli/commands/project.js` 建项目时写的），本函数造出来的一律折叠 ✓
       const container = { id: genId(sub.name), topic: sub.name, expanded: false, children: [] };
+      // U4：容器节点也指向**真实目录**（点开就是资源管理器里的那个文件夹）——
+      // 这正是 `docs/DATA-FORMAT.md` §2.5 给 `localPath` 写的那个用处（示例就是一个目录）✓
+      setLocalPath(container, sub.abs);
       container.children = walk(sub, depth + 1);
       // 子目录里所有文件都在转换阶段失败了 ⇒ **不画空容器**（那些失败已逐条计入 read-failed ✓）
       if (!container.children.length) return;
@@ -1012,7 +1338,14 @@ function buildDirImportTree(scan, opts) {
     });
     node.files.forEach((f) => {
       if (!wanted(f)) return;                       // 增量：不在本次范围内的文件不读取、不建子树
+      // ⓪⁹ 视频入口：节点 + localPath（**不解析正文**）—— 放在 docToOutline 之前，别让它去当文档读
+      if (isVideoEntryName(f.name)) {
+        const vnode = buildVideoNode(f, null);
+        if (vnode) children.push(vnode);
+        return;
+      }
       built.readFiles++;                            // 读数：这一趟真读的文件（增量判据的唯一依据）
+      if (typeof o.onFile === 'function') o.onFile({ rel: f.rel, index: built.readFiles, format: null });
       let conv = null;
       try { conv = docToOutline(f.abs); }
       catch (e) {
@@ -1029,6 +1362,9 @@ function buildDirImportTree(scan, opts) {
         //（别的命令把同一个文件导到别处时，闸门也认得出）
         origin: makeOrigin({ file: f.abs, md: md, at: at, tool: tool })
       };
+      /* U4：**文档节点也指向真实文件**（"通过链接指向文件即可"）—— 内容照样进了树（正文/详情），
+       * `localPath` 只是"这一份是哪台机器上的哪个文件"的入口，不是替代品。 */
+      setLocalPath(fileNode, f.abs);
       const sub = markdown.markdownToTree(md, fileNode.id, genId);
       fileNode.children = (sub.data && sub.data.children) || [];
       /* ⚠️ 兜底：**没有一个标题**的提纲（纯 .txt 笔记最常见）产出 0 个子节点（`markdownToTree` 里没有任何
@@ -1072,6 +1408,60 @@ function buildDirImportTree(scan, opts) {
 
   built.children = walk(scan.tree, 0);
   return built;
+}
+
+/**
+ * **分批建树**（整库导入的正式入口）：按 `planImportBatches` 逐批调 `buildDirImportTree`，
+ * 再把各批的子树 / 目录项 / 跳过 / 引用落点**按批序拼起来**。
+ *
+ * 为什么要有它（而不是让命令层自己 for 循环）：拼装有**四条不变量**，每条都能安静地弄坏结果 ——
+ *   ① **id 生成器跨批共用**（每批各摇一个 ⇒ 批与批之间可能撞 id，而 schema 判"全树 id 唯一" ⇒ 整次导入失败）；
+ *   ② **`at` 共用一份**（同一次导入的来源时间应该一致；每批各取一次 `now` 会让同一棵树里出现几十个不同时刻）；
+ *   ③ **顺序 = 不分批时的顺序**（目录在前、文件在后；批按 `planImportBatches` 的稳定序）；
+ *   ④ **计数要累加而不是覆盖**（`nodes` / `containers` / `files` / `readFiles` / `videos` / `preambles` …）。
+ * ⇒ 这四条写在这里一次，命令层只负责打印与写盘（它要是自己拼，就变成"同一件事两处算" ✗）。
+ *
+ * @param {object} scan `scanImportDir` 的结果
+ * @param {object} [opts] 透传给 `buildDirImportTree`（`tool` / `transform` / `collect` / `only` …）
+ *   · `plan`     = 复用一份已算好的批计划（命令层要拿它做预览，免得算两遍）
+ *   · `onBatch`  = `(info, index, total)` 每批结束回调（进度行用它；**不进落盘数据**）
+ *   · `onFile`   = `(info)` 透传给 `buildDirImportTree` 的逐文件进度
+ *   · `builder`  = **只给判据用的缝**：缺省就是 `buildDirImportTree`。存在的唯一理由是把
+ *     "**每批一次**建树、且每批只拿到自己那批文件"这条性质变成**可断言**的东西
+ *     （模块内部的函数调用骗不过 `vi.spyOn`，只能靠注入；没有这条缝，这条性质就只能靠读代码）。
+ *     生产路径**不传**它 ⇒ 走的就是默认那个函数 ✓
+ * @returns 与 `buildDirImportTree` **同形状**的对象，另加 `batches: Array<{name,files,bytes,nodes,containers,over,ms}>`
+ */
+function buildDirImportTreeBatched(scan, opts) {
+  const o = opts || {};
+  const plan = (Array.isArray(o.plan) && o.plan.length) ? o.plan : planImportBatches(scan, o);
+  const genId = o.genId || uniqueIdGen();                 // ① 跨批共用（见上）
+  const at = o.at || new Date().toISOString();            // ② 共用一份（见上）
+  const builder = (typeof o.builder === 'function') ? o.builder : buildDirImportTree;   // 见 `builder` 那条说明
+  const merged = {
+    children: [], nodes: 0, containers: 0, files: 0, entries: [], skipped: [], preambles: 0,
+    refTargets: [], videos: 0, localPathSkipped: 0, readFiles: 0, batches: []
+  };
+  plan.forEach((b, i) => {
+    const t0 = Date.now();
+    const one = builder(scanSliceOf(scan, b), Object.assign({}, o, { genId: genId, at: at, builder: undefined }));
+    // ③ 顺序：按批序 concat（plan 的序已是"目录在前、文件在后"，与不分批同一口径）
+    merged.children = merged.children.concat(one.children);
+    merged.entries = merged.entries.concat(one.entries);
+    merged.skipped = merged.skipped.concat(one.skipped);
+    merged.refTargets = merged.refTargets.concat(one.refTargets);
+    // ④ 计数累加
+    merged.nodes += one.nodes; merged.containers += one.containers; merged.files += one.files;
+    merged.preambles += one.preambles; merged.videos += one.videos;
+    merged.localPathSkipped += one.localPathSkipped; merged.readFiles += one.readFiles;
+    const info = {
+      name: b.name || '（根下的文件）', files: one.files, nodes: one.nodes,
+      bytes: b.bytes, containers: one.containers, over: !!b.over, ms: Date.now() - t0
+    };
+    merged.batches.push(info);
+    if (typeof o.onBatch === 'function') o.onBatch(info, i, plan.length);
+  });
+  return merged;
 }
 
 /** "这个目录里没有可导入的文件"（空目录 / 全被跳过 / `--ext` 把可导的都排除了）——
@@ -2586,6 +2976,15 @@ return {
   SKIP_LABEL, SKIP_SHORT, entrySkipReason, normalizeExtList, scanImportDir, buildDirImportTree, uniqueIdGen,
   dirManifestSha256, makeDirOrigin, describeTooManyFiles, describeDirOversize, describeNoImportableFiles,
   skippedTotal, groupSkips, originKey,
+  // ⓪⁸ 分批线（**不是拒绝线**）+ 分批计划：整库导入按它逐批建树（进度与内存都挂在这条上）
+  MAX_IMPORT_BATCH_MB, MAX_IMPORT_BATCH_BYTES, MAX_IMPORT_BATCH_FILES, planImportBatches, scanSliceOf,
+  buildDirImportTreeBatched,
+  // ⓪⁹ 视频目录：`.m3u8` 是入口（导入），分片/密钥/索引跳过（**两侧判据**，不许按扩展名一刀切）
+  VIDEO_ENTRY_EXT, VIDEO_PART_EXT, isVideoEntryName, isVideoBundleName, classifyVideoPart,
+  videoPlaylistFacts, videoDetailMd, LOCAL_PATH_MAX,
+  // ⓪⁹c 【20261048】秒 → `mm:ss` 的**唯一实现**（播放列表时长与字幕时间戳同一种写法）：
+  //   `src/video-summary.js` 的 `formatStamp` 是它的薄包装 —— 别在摘要那一侧再写第二份格式化 ✗
+  formatDuration,
   // ⓪⁶ Obsidian 直进（W12 P0）：**识别 + 解析 + 落点 + 逐条点名**一处实现（目录/建树/资源/写盘仍全走既有那些）
   VAULT_TAG_KEYS, VAULT_ALIAS_KEYS, VAULT_SKIP_DIRS, normalizeVaultTags,
   parseFrontmatter, fieldList, dedupe, convertWikiSyntax, parseWikiInner, isVaultDir, applyVault,

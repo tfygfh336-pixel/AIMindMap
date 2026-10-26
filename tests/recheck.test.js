@@ -878,13 +878,15 @@ describe('S4-F MCP：条目层扩参 + 六个新工具（只透传，参数名 �
       .forEach((c) => expect(cmds).toContain(c));
   });
 
-  it('工具数：45 → 51 → 52 → 53（+ 六个条目层工具；+ W21 的 `ask_apply`；+ `I-1` 的 `features`；改参数不计入工具数）', () => {
+  it('工具数：45 → 51 → 52 → 53 → 54（+ 六个条目层工具；+ W21 的 `ask_apply`；+ `I-1` 的 `features`；+ 20261048 的 `video_summary`；改参数不计入工具数）', () => {
     // 写死一个数字是**故意**的：它是交付里"工具数 N→M"的判据（docs/VERIFY.md 由整合流跑
     // `doc-facts --write` 同步；这里钉住"确实是 +6 / +1"，而不是"没变"）。
     // 2026-10-20（W21）：51 → 52 —— 补上 `ask_apply`（`ask-apply` 的 MCP 透传，本批的唯一新工具）。
     // 2026-10-20（`I-1`）：52 → 53 —— 补上 `features`（产品名册查询，只读；`S2` 的 `mcp-gap` 反向断言点到它）。
-    expect(mcp.TOOLS.length).toBe(53);
-    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(53);   // 名字不重
+    // 2026-10-26（`20261048` 视频摘要）：53 → 54 —— 补上 `video_summary`（一条新 CLI 命令就该有一个 MCP 工具：
+    //   进 `TOOLS` 而不是 `MCP_GAP_DEBT`，缺口册只减不增）。
+    expect(mcp.TOOLS.length).toBe(54);
+    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(54);   // 名字不重
   });
 
   it('不复制业务逻辑：MCP 侧只有 `runCli([...])` 的拼参数，没有第二条判定路径', () => {

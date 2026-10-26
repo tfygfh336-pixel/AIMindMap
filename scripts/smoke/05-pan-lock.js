@@ -798,6 +798,36 @@ const assertions = [
              function inRect(px, py) {
                return px >= cr.left - 1 && px <= cr.right + 1 && py >= cr.top - 1 && py <= cr.bottom + 1;
              }
+             /* 父端 y **必须按产品的分散口径算**：同一父同侧的多个孩子各自落在父侧边框的**等分点**上
+              * （renderer/app-view.js 的 lineParentPoints：按上下序名次 rank ⇒ y = top + h*rank/(n+1)），
+              * 不是共用侧边中点。上一版这里按"父侧边中点"搭取样曲线，于是"算出来的曲线"与"画出来的
+              * 曲线"在父端附近越差越远 —— 实测宽面板（侧栏收起、1423px）下 4 条线的 8 个取样点读到
+              * 层内墨=0，而 21x21 窗口里有 76–123 滴墨、最近墨距取样点只有 5 个位图像素（≈2.5 CSS px）
+              * ⇒ 那是"线画在窗口外面一点"，不是"线没画"。取样点必须落在**真画出来的那条曲线**上。
+              * ⚠️ 这不是把判据做松：端点落没落在"允许的等分点族"里，由本文件最后那条独立断言判；
+              *   本条只负责"沿产品那条曲线数墨"，9x9 / 墨>=3 / 丢失必须 0 的口径一字未改。
+              * ⚠️ 这里**不许**去读产品的 lineParentPoints / __mmLineEndpoints：那是 jsMind 布局坐标，
+              *   与 getBoundingClientRect 的屏幕坐标不同空间（实测直接混用 ⇒ 几何 bad=539/885）。
+              *   所以名次与等分点全部在**屏幕坐标**里独立算一遍（与产品公式同式，不共用读数）。 */
+             var __grp = {}, __rank = {}, __fanN = {};
+             for (var gid in jm.mind.nodes) {
+               var gt = jm.mind.nodes[gid];
+               if (gt.isroot || !gt.parent || !jm.layout.is_visible(gt)) continue;
+               if (hideRoot && gt.parent.isroot) continue;
+               var gpel = document.querySelector('jmnode[nodeid="' + gt.parent.id + '"]');
+               var gcel = document.querySelector('jmnode[nodeid="' + gt.id + '"]');
+               if (!gpel || !gcel) continue;
+               var gpr = gpel.getBoundingClientRect(), gcr = gcel.getBoundingClientRect();
+               var gside = (gcr.left + gcr.width / 2 < gpr.left + gpr.width / 2) ? 'left' : 'right';
+               var gkey = gt.parent.id + '#' + gside;
+               (__grp[gkey] = __grp[gkey] || []).push({ id: gt.id,
+                 cy: gcr.top + gcr.height / 2, index: (typeof gt.index === 'number' ? gt.index : 0) });
+             }
+             for (var gk in __grp) {
+               var gl = __grp[gk].sort(function (a, b) { return (a.cy - b.cy) || (a.index - b.index); });
+               __fanN[gk] = gl.length;
+               for (var gi2 = 0; gi2 < gl.length; gi2++) __rank[gk + '|' + gl[gi2].id] = gi2 + 1;
+             }
              for (var id in jm.mind.nodes) {
                var t = jm.mind.nodes[id];
                if (t.isroot || !jm.layout.is_visible(t) || !t.parent) continue;
@@ -807,11 +837,16 @@ const assertions = [
                if (!pe || !ce) continue;
                var pr = pe.getBoundingClientRect(), tr = ce.getBoundingClientRect();
                var p1, p2;
-               if (tr.left + tr.width / 2 < pr.left + pr.width / 2) { // 子在父左
-                 p1 = { x: pr.left, y: pr.top + pr.height / 2 };
+               var pSide = (tr.left + tr.width / 2 < pr.left + pr.width / 2) ? 'left' : 'right';
+               var pKey = t.parent.id + '#' + pSide;
+               var pRank = __rank[pKey + '|' + t.id] || 0;
+               var pFan = __fanN[pKey] || 1;
+               var pY = (pFan > 1 && pRank > 0) ? (pr.top + pr.height * pRank / (pFan + 1)) : (pr.top + pr.height / 2);
+               if (pSide === 'left') {
+                 p1 = { x: pr.left, y: pY };
                  p2 = { x: tr.right, y: tr.top + tr.height / 2 };
                } else {
-                 p1 = { x: pr.right, y: pr.top + pr.height / 2 };
+                 p1 = { x: pr.right, y: pY };
                  p2 = { x: tr.left, y: tr.top + tr.height / 2 };
                }
                checked++;
@@ -825,10 +860,25 @@ const assertions = [
                var dx = p2.x - p1.x, dy = p2.y - p1.y;
                var len = Math.sqrt(dx * dx + dy * dy);
                if (!(len >= 8)) { short++; continue; }       // 太短的连线没有"两端内缩"空间
-               var ux = dx / len, uy = dy / len;
                var D = Math.min(6, len / 4);
-               var q1 = { x: p1.x + ux * D, y: p1.y + uy * D };
-               var q2 = { x: p2.x - ux * D, y: p2.y - uy * D };
+               /* 端点窗口的取样点**必须落在真那条曲线上**：上一版是"沿弦内缩 D 像素"，而这条曲线在两端
+                * 的切向是**水平**的（控制点带 child.y / parent.y）⇒ 对"父子几乎垂直"的长线，沿弦内缩
+                * 得到的那一点会离开曲线好几像素，9x9 窗口就数不到墨（实测 s-5-7 端点长期 2/3，
+                * 而同一位置 21x21 窗口里墨很多）。改法只是**怎么取那一点**：沿曲线从该端朝另一端走
+                * 同样的 D 距离；判据（离该端 6px 的窗口里墨 >=3）一字未改。 */
+               var along = curvePoints(p1, p2);
+               function endSample(fromU, towardU, dist) {
+                 var e0 = along(fromU);
+                 for (var kk = 1; kk <= 80; kk++) {
+                   var uu = fromU + (towardU - fromU) * (kk / 80);
+                   var pp0 = along(uu);
+                   var dd0 = Math.sqrt((pp0.x - e0.x) * (pp0.x - e0.x) + (pp0.y - e0.y) * (pp0.y - e0.y));
+                   if (dd0 >= dist) return pp0;
+                 }
+                 return along(towardU);
+               }
+               var q1 = endSample(1, 0, D);
+               var q2 = endSample(0, 1, D);
                var v1 = inVis(q1), v2 = inVis(q2);
                if (!v1 && !v2) { offscreen++; continue; }
                if (!v1 || !v2) oneEndIn++;
@@ -838,7 +888,7 @@ const assertions = [
                if (v2) ends.push({ x: q2.x, y: q2.y, layer: layerInk(q2.x, q2.y), top: topIsMap(q2.x, q2.y) });
                // ② 沿线多点（**曲线上**的点，两端各取）：光一个端点窗口说不清"是这条线还是别的墨"，
                //    沿线多点都数得到层内墨，才是"这条线真的画出来了"的几何一致证据 ✓
-               var along = curvePoints(p1, p2);
+               /* along（同一条曲线）已在端点取样处建好，这里不再建第二份 */
                var curve = [];
                for (var ui = 0; ui < CURVE_U.length; ui++) {
                  for (var half2 = 0; half2 < 2; half2++) {

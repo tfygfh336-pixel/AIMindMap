@@ -558,6 +558,32 @@ function countCopies(hay, needle) {
   return c;
 }
 
+/** 假输入框内容的归一化（与产品那份 `norm()` **同口径**：清零宽/BOM、nbsp→空格、只剪尾随空白）。
+ *  ⚠️ 不把中间的空行压掉：空行是"分段有没有生效"的**唯一读数**，压掉就等于把 mangled 判据废掉。 */
+function normBox(v) {
+  return String(v == null ? '' : v)
+    .replace(/\u200b/g, '').replace(/\ufeff/g, '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\s+$/, '');
+}
+
+/** **追加语义的独立判据**（不看回执，只看写前/写后两份 DOM 文本）：
+ *  `before` 必须原样是 `after` 的前缀，且"减掉前缀再剪掉分隔空白"之后恰好是 `added`。
+ *  ⇒ 这条判据一旦通过，"第二批把第一批顶掉"就是**不可能**的（前缀已经不在）。
+ *  @returns {{prefixKept:boolean, tail:string, tailOk:boolean, tailLines:number}} */
+function appendedOf(before, after, added) {
+  const b = normBox(before), a = normBox(after), w = normBox(added);
+  const prefixKept = a.indexOf(b) === 0;
+  const tail = prefixKept ? a.slice(b.length).replace(/^[\s\u00a0]+/, '') : '';
+  return {
+    prefixKept: prefixKept,
+    tail: tail,
+    tailOk: prefixKept && normBox(tail) === w,
+    tailLines: tail === '' ? 0 : tail.split('\n').filter((ln) => ln.trim() !== '').length
+  };
+}
+
 
 module.exports = [
   {
@@ -1979,18 +2005,27 @@ module.exports = [
         + ' · 调用序列=' + JSON.stringify((A && A.steps) || [])
         + ' · 现场 innerText 一致=' + (String(aState.text) === MARK_A) + (aOk ? ' ✓' : ' ✗'));
       // ── B：目标 + 无关 plain textarea（DOM 里排前面；挑走它就红）
+      /* ⚠️ 2026-10-54：目标框必须**从空开始**。上一版直接复用 A 那一格留下的同一个框，
+       * 而产品自 2026-10-42 起是**追加**语义（用户原话：「先拉了两个过去，然后又选了两个过去，
+       * 就会覆盖掉第一次的两个」）⇒ 框里带着 A 的文案时，B 的写入必然变成"A 的文案 + B 的文案"，
+       * 于是"目标里一致=MARK_B"这条判据**在正确实现下也过不了**（假红，与产品无关）。
+       * 判据一个字没改，改的是**把现场摆成"框是空的"**，并把"框确实是空的"变成一条明写的断言。 */
+      const mkB0 = await mk('target');
+      if (!mkB0 || !mkB0.ok) { ok = false; rows.push('B：重建空目标框失败 ✗ ｜ ' + JSON.stringify(mkB0)); }
       const mkB = await mk('plain');
       if (!mkB || !mkB.ok) { ok = false; rows.push('B：造不出无关 textarea ✗'); }
       else {
+        const preB = await composerState(wc);   // 写前现场：目标框必须是空的（否则"只写进这一批"无从判）
         const B1 = await runPrefill(MARK_B);
         const bState = await wcExec('(function () { var ta = document.getElementById("__mm_mock_plain");'
           + ' var ed = document.getElementById("__mm_mock_composer");'
           + ' return JSON.stringify({ ok: true, taValue: ta ? String(ta.value || "") : "<没了>",'
           + '   edText: ed ? String(ed.innerText || "") : "<没了>" }); })()');
-        const bOk = !!(B1 && B1.ok === true && B1.tag !== 'TEXTAREA' && String(B1.readBack || '') === MARK_B
+        const bOk = !!(String(preB.edText || '') === '' && B1 && B1.ok === true && B1.tag !== 'TEXTAREA' && String(B1.readBack || '') === MARK_B
           && String(bState.taValue || '') === '' && String(bState.edText || '') === MARK_B);
         if (!bOk) ok = false;
-        rows.push('B·目标 + 无关 textarea（DOM 排前面）⇒ 挑中=' + (B1 && B1.tag) + '（不许是 TEXTAREA）· 回执 ok=' + (B1 && B1.ok)
+        rows.push('B·目标 + 无关 textarea（DOM 排前面）⇒ 写前目标框=' + JSON.stringify(String(preB.edText || ''))
+          + '（应为空 —— 追加语义下带着上一批就必然不止这一批）· 挑中=' + (B1 && B1.tag) + '（不许是 TEXTAREA）· 回执 ok=' + (B1 && B1.ok)
           + ' · 无关框里=' + JSON.stringify(bState.taValue) + '（应 ""）· 目标里一致=' + (String(bState.edText) === MARK_B)
           + (bOk ? ' ✓' : ' ✗'));
       }
@@ -2073,56 +2108,62 @@ module.exports = [
     }
   },
   {
-    name: 'N3-⑦ 幂等：**一次投喂 ⇒ 输入框里恰好 1 份**（受控编辑器 + 框里已有同一段 ⇒ 写一次必须只剩 1 份；份数 >1 必须判红，且回执要点名份数）',
+    name: 'N3-⑦ **追加**（2026-10-42 改口径）：框里已有上一批 ⇒ 再投一批必须**接在后面**（旧内容一个字都不许少、新内容逐字在后、这份只多 1 份），且回执点名"写前多长 / 新增多长"',
     run: async (ctx) => {
       /* 判据口径（为什么必须用"受控编辑器"这个现场）：
-       *   用户 2026-10-39 看到「同一段在输入框里出现了多次」。写侧的老写法是
-       *   **insertText 在光标处插入** ⇒ 空框 1 份、已有内容就追加 ⇒ 天然不幂等。
-       *   但"追加"在**普通 contenteditable** 上抓不到：那条 `el.textContent = text` 兜底会把
+       *   用户 2026-10-39 看到「同一段模板在输入框里出现了多次」；2026-10-42 又看到
+       *   「先拉了两个过去，然后又选了两个过去，就会覆盖掉第一次的两个」——
+       *   前者是**写多了**，后者是**把前面顶掉了**，两个病必须各有判据。
+       *   而"追加"在**普通 contenteditable** 上抓不准：那条 `textContent = 文本` 兜底会把
        *   追加**伪装成 1 份**（假绿 ✗）。真机上那一步是**无效**的（编辑器由模型驱动，
        *   DOM 赋值下一帧就被自己的渲染覆盖）⇒ 现场必须把这个事实建出来，否则这条断言是空转。
        * 两侧：
-       *   · 该绿：现场里已有 SEED（= 同一段），跑一次产品那份注入串 ⇒
-       *     回执 `ok:true` + `copies:1` + 现场 innerText **恰好等于** SEED（断言侧再独立数一遍份数）；
-       *   · 该红：把"全选"那一步去掉（注入档）⇒ 变成追加 ⇒ 回执 `ok:false / bucket:'duplicated'
-       *     / copies:2`，且现场确实是 2 份 —— 证明这条断言分得清"替换"与"追加"，不是恒真。 */
+       *   · 该绿：现场里已有 SEED（上一批），再投一批 NEW ⇒
+       *     回执 `ok:true` + `bucket:'ok'` + `beforeLen>0` + `copiesBefore:0 / copiesAfter:1`；
+       *     现场 = **SEED 原样 + 分隔 + NEW**（断言侧用 `appendedOf` **独立**算一遍，不信回执）；
+       *   · 该红（下一条 N3-⑨）：把"清空"（全选+delete）注入回去 ⇒ 必须 `bucket:'clobbered'`。 */
       if (!sidebarWasVisible()) { try { sidebar.show(); } catch (e) { /* 下面靠读数红 */ } g5ShowedSidebar = true; }
       await sleep(900);
       const wc = sidebarWc();
-      if (!wc) return { ok: false, text: '侧栏视图的 webContents 拿不到 ⇒ 幂等无从判 ✗' };
+      if (!wc) return { ok: false, text: '侧栏视图的 webContents 拿不到 ⇒ 追加语义无从判 ✗' };
       const js = sidebar.COMPOSER_PREFILL_JS;
       if (typeof js !== 'string' || js.indexOf('function (text)') < 0) {
         return { ok: false, text: '产品没导出 COMPOSER_PREFILL_JS（或形态变了）⇒ 本条判不了，按红处理 ✗' };
       }
-      /* 2026-10-40：SEED 去掉 `@`（那是 composer 的引用触发符，真机上会把前缀改写/重复）。
-       * ⚠️ 本条只钉"替换 ⇒ 恰好 1 份 + 行数对"；**"去掉清空会变成 2 份"那一侧**在下一条 N3-⑨
-       * 用变异体证明（那里 seed 带尾随换行，才数得出"追加了一份"）。 */
-      const SEED = 'sb-幂等/甲\nsb-幂等/乙';
+      /* 两批文案都**不含 @**（那是 composer 的引用触发符，真机上会被改写） */
+      const SEED = 'sb-追加/甲\nsb-追加/乙';
+      const NEW = 'sb-追加/丙\nsb-追加/丁';
       const mkR = await composerMock(wc, 'controlled', SEED);
       if (!mkR || !mkR.ok) {
         if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
-        return { ok: false, text: '造不出"受控编辑器 + 已有同一段"这个现场 ⇒ 前提不成立 ✗ ｜ ' + JSON.stringify(mkR) };
+        return { ok: false, text: '造不出"受控编辑器 + 已有上一批"这个现场 ⇒ 前提不成立 ✗ ｜ ' + JSON.stringify(mkR) };
       }
       const before = await composerState(wc);
-      const r = await composerPrefill(wc, js, SEED);
+      const r = await composerPrefill(wc, js, NEW);
       const after = await composerState(wc);
-      const copiesReceipt = Number(r && r.copies);
-      const copiesBrake = countCopies(after.edText, SEED);       // ★ 判据侧**独立**数一遍
-      const wantLinesR = SEED.split('\n').length;
-      const linesBrake = String(after.edText || '').split('\n').length;   // ★ 行数也独立数一遍
-      const ok = !!(r && r.ok === true && r.bucket === 'ok' && copiesReceipt === 1 && copiesBrake === 1
-        && String(after.edText || '') === SEED && r.selMode !== 'none'
-        && Number(r.lines) === wantLinesR && linesBrake === wantLinesR
-        && String(r.cleared || '').indexOf('deleted') === 0);
+      const ap = appendedOf(before.edText, after.edText, NEW);
+      const copiesSeed = countCopies(normBox(after.edText), SEED);        // ★ 独立数：上一批**还在**
+      const copiesNew = countCopies(normBox(after.edText), NEW);
+      const wantLinesNew = NEW.split('\n').length;
+      const rBeforeLen = Number(r && r.beforeLen);
+      const ok = !!(r && r.ok === true && r.bucket === 'ok'
+        && rBeforeLen > 0 && rBeforeLen === normBox(before.edText).length
+        && Number(r.copiesBefore) === 0 && Number(r.copiesAfter) === 1
+        && Number(r.addedLines) === wantLinesNew
+        && String(r.added || '') === NEW
+        && ap.prefixKept === true && ap.tailOk === true
+        && copiesSeed === 1 && copiesNew === 1
+        && normBox(after.edText).length > normBox(before.edText).length);
       await composerTeardown(wc);
       if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
-      return { ok: ok, text: '受控编辑器（写前已有同一段 ' + JSON.stringify(before.edText) + '，赋值被吞 '
-        + before.swallowed + '→' + after.swallowed + ' 次）⇒ 回执=' + JSON.stringify({ ok: r && r.ok, bucket: r && r.bucket, mode: r && r.mode, selMode: r && r.selMode, copies: r && r.copies, cleared: r && r.cleared })
-        + ' · 写后内容=' + JSON.stringify(after.edText) + '（应恰好 == 原文）'
-        + ' · 份数：回执=' + copiesReceipt + ' / 断言侧独立数=' + copiesBrake + '（都应 1）'
-        + ' · 行数：回执=' + (r && r.lines) + ' / 断言侧独立数=' + linesBrake + '（都应 ' + wantLinesR + '）'
-        + ' · 清空读数=' + JSON.stringify(r && r.cleared) + '（应 deleted:*）'
-        + (ok ? ' ✓' : ' ✗') + (r && r.bucket === 'duplicated' ? '〔写成追加了 ⇒ 清空那一步没生效〕' : '') };
+      return { ok: ok, text: '受控编辑器（写前已有上一批 ' + JSON.stringify(before.edText) + '，赋值被吞 '
+        + before.swallowed + '→' + after.swallowed + ' 次）⇒ 回执=' + JSON.stringify({ ok: r && r.ok, bucket: r && r.bucket, mode: r && r.mode, caret: r && r.caret, sep: r && r.sep, beforeLen: r && r.beforeLen, addedLines: r && r.addedLines, copies: [r && r.copiesBefore, r && r.copiesAfter] })
+        + ' · 写后内容=' + JSON.stringify(after.edText) + '（应 = 上一批 + 这一批）'
+        + ' · 写前长度：回执=' + rBeforeLen + ' / 断言侧独立数=' + normBox(before.edText).length + '（应相等且 > 0）'
+        + ' · 前缀保留=' + ap.prefixKept + '（应 true）· 新增那段逐字相等=' + ap.tailOk
+        + ' · 新增行数=' + ap.tailLines + '（应 ' + wantLinesNew + '）'
+        + ' · 独立数份数：上一批=' + copiesSeed + ' / 这一批=' + copiesNew + '（都应 1）'
+        + (ok ? ' ✓' : ' ✗') };
     }
   },
   {
@@ -2192,7 +2233,9 @@ module.exports = [
       const atRefused = !!(atBack && atBack.ok === false && atBack.bucket === 'mangled'
         && String(stAt.edText || '') === '');
       const ok = !!(shapeOk && noAtInText && noTriggerLead && boxOk && noTemplate
-        && r && r.ok === true && r.copies === 1 && Number(r.lines) === nodes.length
+        /* 2026-10-42：空框写第一批 ⇒ 旧口径 `copies===1` 换成"写前 0 份、写后 1 份 + 新增行数对" */
+        && r && r.ok === true && Number(r.copiesBefore) === 0 && Number(r.copiesAfter) === 1
+        && Number(r.addedLines) === nodes.length && Number(r.beforeLen) === 0
         && atRefused);
       await composerTeardown(wc);
       await ctx.exec('(function () { if (window.MM.clearSelection) window.MM.clearSelection(); return 1; })()');
@@ -2210,20 +2253,22 @@ module.exports = [
     }
   },
   {
-    name: 'N3-⑨ 换行与幂等的**判别力**（把产品注入串做两个变异体：去掉清空 ⇒ 必须复现"叠一份"；去掉行间换行 ⇒ 必须复现"标题粘连"，且两样都判红）',
+    name: 'N3-⑨ 追加语义的**判别力**（把产品注入串做两个变异体：**把清空加回去** ⇒ 必须复现"只剩这一批"（clobbered）；去掉行间换行 ⇒ 必须复现"标题粘连"（mangled）；两样都判红）',
     run: async (ctx) => {
       /* 为什么要有这一条（本批最容易做假的地方）：
-       *   上一批 `copies===1` 在**假 composer** 上是绿的，真机上却叠了三遍 ⇒ 绿必须能**证伪**。
-       *   本条不新造一套写入逻辑，而是把**产品那一份注入串**做**源码级变异**再跑一遍：
-       *     变异 A：`cleared = await clearDraft();` 换成常量（= **只去掉清空**，逐行写入原样保留）
-       *             ＋ 光标放到框末（模拟"框里已有内容"）⇒ 这次写入必然变成**追加**
-       *             ⇒ 判据必须给出 `ok:false / bucket:'duplicated' / copies===2`；
+       *   用户在 2026-10-42 的原话是「先拉了两个过去，然后又选了两个过去，就会覆盖掉第一次的两个」
+       *   ⇒ 病根就是上一版"全选 + delete 换幂等"。**删掉清空不等于修好**：还得有判据能证明
+       *   "清空一旦回来，断言立刻红"，否则下一个人（或下一个我）加回去时没人发现。
+       * 本条不新造一套写入逻辑，而是把**产品那一份注入串**做**源码级变异**再跑一遍：
+       *     变异 A：在"读完写前基线"之后注入 `selectAll + delete`（= 恢复上一版的清空）
+       *             ⇒ 判据必须给出 `ok:false / bucket:'clobbered'`，且现场只剩这一批；
        *     变异 B：删掉行间 `paraBreak()`（= 换行没成分段）⇒ 两行粘成一行
-       *             ⇒ 判据必须给出 `ok:false / bucket:'mangled' / lines===1`。
+       *             ⇒ 判据必须给出 `ok:false / bucket:'mangled' / addedLines===1`。
        *   两个变异体都先**验证变异真的落地了**（字符串没变 ⇒ 本格直接红，绝不静默）。
-       * ⚠️ 边界（如实）：这仍是**假现场**（plain/受控 contenteditable），它能证明"判据不是恒真"，
+       * ⚠️ 绿侧（未变异）也要在同一条里验一次：同一份"多段现场"跑产品 ⇒ 必须 `ok` 且是**追加**。
+       * ⚠️ 边界（如实）：这仍是**假现场**（受控 contenteditable），它能证明"判据不是恒真"，
        *   但**不能**证明"真 Lexical 会怎么吃 @ 与 \n" —— 那一条只能由用户真机拖一次
-       *   （见 .review/20261040-@触发与换行/ 的报告：哪条验了、哪条没验）。 */
+       *   （见 .review/20261040-@触发与换行/ 与 .review/20261042-追加语义/ 的报告）。 */
       if (!sidebarWasVisible()) { try { sidebar.show(); } catch (e) { /* 下面靠读数红 */ } g5ShowedSidebar = true; }
       await sleep(900);
       const wc = sidebarWc();
@@ -2237,70 +2282,100 @@ module.exports = [
       const L1 = 'sb-变异/甲';
       const L2 = 'sb-变异/乙';
       const NEEDLE = L1 + '\n' + L2;
+      /* ⚠️ 红侧 A 必须投**另一批**文案（REDA），不能复用 NEEDLE：
+       * 产品的分档是 `!prefixKept ? (旧内容还在 ? misplaced : clobbered)`，而 NEEDLE 与 seed
+       * **逐字相同** ⇒ 哪怕清空真的回来了，"旧内容还在不在"也永远为 true ⇒ 只会得到 misplaced，
+       * 于是"只剩这一批（clobbered）"这一档**根本不可观测**（上一版就是这样恒红的）。
+       * 用户真机那次的两次投喂本来就是**两批不同的**（「先拉了两个，然后又选了两个」）⇒ 用两批不同的
+       * 文案才复现得出真实场景，判据反而更硬：旧那批必须**一份都不剩**、新那批必须**恰好一份**。 */
+      const REDA = 'sb-变异/丙\nsb-变异/丁';
       const seedParas = () => composerMockParas(wc, [L1, L2]);
-      /* ── 变异 A：**只去掉清空**（其余一字不动 —— 最小变异，改得越少越能说明"就是这一步在起作用"） ──
-       * ⚠️ 为什么不顺带改成"一次 insertText 灌整段"：那样一来红侧的成因就有两个（没有清空 **且**
-       *   换行不成分段），判据分不清是谁在起作用；"一次灌整段"被禁这件事由
-       *   `tests/composer-prefill-contract.test.js` 的负判据守着（那里是纯字符串，不需要现场）。 */
-      const mutA = js.replace(/cleared = await clearDraft\(\);/, "cleared = 'mutant:no-clear';");
-      const mutALanded = mutA !== js && mutA.indexOf('mutant:no-clear') >= 0
+      /* ── 变异 A：**把清空加回去**（最小变异：只注入两条命令，其余一字不动） ──
+       * ⚠️ 注入点在"读完写前基线之后"：这样页面自己"看得到被清掉了" ⇒ 产品判据必须当场红。
+       *   （更刁的"清空在读基线之前"那一版由主进程台账的 minBefore 兜住，见单测 ⑮ 的最后一格。） */
+      const CLEAR = "document.execCommand('selectAll', false, null); document.execCommand('delete', false, null);";
+      const mutA = js.replace('beforeN = norm(readBack());', 'beforeN = norm(readBack()); ' + CLEAR);
+      const mutALanded = mutA !== js && mutA.indexOf("execCommand('selectAll'") >= 0
         && mutA.indexOf('wantLines[li]') >= 0;      // 逐行循环必须还在 ⇒ 只变异了"清空"这一步
       /* ── 变异 B：删掉行间换行 ── */
-      const mutB = js.replace('{ paraBreak(); await frame(); }', '{ await frame(); }');
-      const mutBLanded = mutB !== js && mutB.indexOf('paraBreak(); await frame();') < 0;
+      /* ⚠️ 2026-10-54：判"变异落地了吗"**不许用裸串** —— `paraBreak(); await frame();` 在产品注入串里
+       * 出现**两次**：① 行间换行 `{ paraBreak(); await frame(); }`（本次要删的那一处）；
+       * ② 给非空框补一个分隔段 `sep = 'para:' + paraBreak(); await frame(); }`（**不许动**）。
+       * 上一版用裸串判 ⇒ 变异后仍然命中 ② ⇒ 恒判"没落地" ⇒ 本条在当前产品代码下**永远红**
+       * （与产品无关：A 侧那条"把清空加回去"一直是好的）。现在判**带花括号那个形态**的**份数**：
+       * 变异前必须恰好 1 份、变异后必须 0 份；份数不对 ⇒ 本条照旧响亮判红（不许静默变绿）。 */
+      const BRACE_BREAK = '{ paraBreak(); await frame(); }';
+      const countBrace = (hay) => String(hay).split(BRACE_BREAK).length - 1;
+      const braceBefore = countBrace(js);
+      const mutB = js.replace(BRACE_BREAK, '{ await frame(); }');
+      const braceAfter = countBrace(mutB);
+      const mutBLanded = braceBefore === 1 && braceAfter === 0 && mutB !== js;
       const rows = [];
       let ok = true;
       if (!mutALanded || !mutBLanded) {
         await composerTeardown(wc);
         if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
-        return { ok: false, text: '变异没落地（A=' + mutALanded + ' B=' + mutBLanded + '）⇒ 本条判不了，按红处理 ✗'
+        return { ok: false, text: '变异没落地（A=' + mutALanded + ' B=' + mutBLanded
+          + '；行间换行那个形态出现 ' + braceBefore + '→' + braceAfter + ' 次，应 1→0）⇒ 本条判不了，按红处理 ✗'
           + '（产品注入串的锚点变了就要同步改本条，不许让它静默变绿）' };
       }
-      /* ── 绿侧：同一份"多段 + 末尾空段"现场，跑**未变异**的产品 ⇒ 必须 ok 且恰好 1 份 ── */
+      /* ── 绿侧：同一份"多段 + 末尾空段"现场，跑**未变异**的产品 ⇒ 必须 ok，且是**追加** ── */
       const mk0 = await seedParas();
       if (!mk0 || !mk0.ok) {
         await composerTeardown(wc);
         if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
         return { ok: false, text: '造不出"多段 + 末尾空段"现场 ⇒ 前提不成立 ✗ ｜ ' + JSON.stringify(mk0) };
       }
+      const beforeSeed = String(mk0.text || '');
       const r0 = await composerPrefill(wc, js, NEEDLE);
       const st0 = await composerState(wc);
-      const copies0 = countCopies(String(st0.edText || '').replace(/\s+$/, ''), NEEDLE);
-      const greenOk = !!(r0 && r0.ok === true && r0.bucket === 'ok' && copies0 === 1
-        && String(st0.edText || '').replace(/\s+$/, '') === NEEDLE);
+      const ap0 = appendedOf(beforeSeed, st0.edText, NEEDLE);
+      const copies0 = countCopies(normBox(st0.edText), NEEDLE);
+      const greenOk = !!(r0 && r0.ok === true && r0.bucket === 'ok' && copies0 === 2
+        && Number(r0.copiesBefore) === 1 && Number(r0.copiesAfter) === 2
+        && ap0.prefixKept === true && ap0.tailOk === true);
       if (!greenOk) ok = false;
-      rows.push('绿侧·未变异 ⇒ 回执=' + JSON.stringify({ ok: r0 && r0.ok, bucket: r0 && r0.bucket, copies: r0 && r0.copies, lines: r0 && r0.lines })
-        + ' · 框里=' + JSON.stringify(String(st0.edText || '')) + ' · 独立数份数=' + copies0 + '（应 1）' + (greenOk ? ' ✓' : ' ✗'));
-      /* ── 红侧 A：去掉清空 ⇒ 必须复现"叠一份"（框里原有那份 + 又追加一份） ── */
+      rows.push('绿侧·未变异 ⇒ 回执=' + JSON.stringify({ ok: r0 && r0.ok, bucket: r0 && r0.bucket, copies: [r0 && r0.copiesBefore, r0 && r0.copiesAfter], addedLines: r0 && r0.addedLines })
+        + ' · 框里=' + JSON.stringify(String(st0.edText || '')) + ' · 独立数份数=' + copies0 + '（应 2 = 原有 1 + 新增 1）'
+        + ' · 前缀保留=' + ap0.prefixKept + ' · 新增那段对=' + ap0.tailOk + (greenOk ? ' ✓' : ' ✗'));
+      /* ── 红侧 A：把清空加回去 ⇒ 必须复现"只剩这一批"（clobbered） ── */
       const mkA = await seedParas();
       if (!mkA || !mkA.ok) {
         ok = false;
         rows.push('红侧A：造不出现场 ✗ ｜ ' + JSON.stringify(mkA));
       } else {
-        const rA = await composerPrefill(wc, mutA, NEEDLE);
+        const beforeA = String(mkA.text || '');
+        const rA = await composerPrefill(wc, mutA, REDA);
         const stA = await composerState(wc);
-        const copiesA = countCopies(String(stA.edText || '').replace(/\s+$/, ''), NEEDLE);
-        const redAOk = !!(rA && rA.ok === false && rA.bucket === 'duplicated'
-          && Number(rA.copies) === 2 && copiesA === 2);
+        const apA = appendedOf(beforeA, stA.edText, REDA);
+        const copiesOldA = countCopies(normBox(stA.edText), normBox(beforeA));
+        const copiesNewA = countCopies(normBox(stA.edText), REDA);
+        const redAOk = !!(rA && rA.ok === false && rA.bucket === 'clobbered'
+          && apA.prefixKept === false
+          && copiesOldA === 0            // 上一批**一份都不剩** = 被顶掉了
+          && copiesNewA === 1);          // 这一批恰好一份
         if (!redAOk) ok = false;
-        rows.push('红侧A·去掉清空 ⇒ 回执=' + JSON.stringify({ ok: rA && rA.ok, bucket: rA && rA.bucket, copies: rA && rA.copies })
-          + ' · 框里=' + JSON.stringify(String(stA.edText || '')) + ' · 独立数份数=' + copiesA
-          + '（应 duplicated / 2 / 2）' + (redAOk ? ' ✓' : ' ✗'));
+        rows.push('红侧A·把清空加回去（投**另一批** ' + JSON.stringify(REDA) + '）⇒ 回执='
+          + JSON.stringify({ ok: rA && rA.ok, bucket: rA && rA.bucket })
+          + ' · 框里=' + JSON.stringify(String(stA.edText)) + ' · 前缀保留=' + apA.prefixKept
+          + '（应 false）· 上一批还剩份数=' + copiesOldA + '（应 0）· 这一批份数=' + copiesNewA + '（应 1）'
+          + (redAOk ? ' ✓' : ' ✗'));
       }
       /* ── 红侧 B：去掉行间换行 ⇒ 必须复现"标题粘连" ── */
       await composerMock(wc, 'target', '');
       const rB = await composerPrefill(wc, mutB, NEEDLE);
       const stB = await composerState(wc);
-      const linesB = String(stB.edText || '').split('\n').length;
+      const linesB = normBox(stB.edText).split('\n').filter((ln) => ln.trim() !== '').length;
       const redBOk = !!(rB && rB.ok === false && rB.bucket === 'mangled'
-        && Number(rB.lines) === 1 && linesB === 1 && String(stB.edText || '').indexOf('\n') < 0);
+        && Number(rB.addedLines) === 1 && linesB === 1 && String(stB.edText || '').indexOf('\n') < 0);
       if (!redBOk) ok = false;
-      rows.push('红侧B·去掉行间换行 ⇒ 回执=' + JSON.stringify({ ok: rB && rB.ok, bucket: rB && rB.bucket, lines: rB && rB.lines, reason: (rB && rB.reason || '').slice(0, 60) })
+      rows.push('红侧B·去掉行间换行 ⇒ 回执=' + JSON.stringify({ ok: rB && rB.ok, bucket: rB && rB.bucket, addedLines: rB && rB.addedLines, reason: (rB && rB.reason || '').slice(0, 60) })
         + ' · 框里=' + JSON.stringify(String(stB.edText || '')) + ' · 独立数行数=' + linesB
         + '（应 mangled / 1 / 1，即两标题粘成一行）' + (redBOk ? ' ✓' : ' ✗'));
       await composerTeardown(wc);
       if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
-      return { ok: ok, text: '变异落地：A=' + mutALanded + ' B=' + mutBLanded + ' ｜ ' + rows.join(' ｜ ') };
+      return { ok: ok, text: '变异落地：A=' + mutALanded + ' B=' + mutBLanded
+        + '（行间换行形态 ' + braceBefore + '→' + braceAfter + ' 次，应 1→0）｜ ' + rows.join(' ｜ ') };
     }
   },
   {
@@ -2342,15 +2417,29 @@ module.exports = [
         + ' if (!api || !api.buildSidebarText) return JSON.stringify({ ok: false, text: "页面上没有 MMSidebarContext" });'
         + ' return JSON.stringify({ ok: true, text: api.buildSidebarText(' + JSON.stringify(project.name || '') + ', nodes) }); })()');
       const body = String((built && built.text) || '');
-      const payload = sidebar.chipPayloadFor(body);
+      /* 2026-10-42：载荷多了一个**必填**字段 `seq`（幂等的依据）⇒ 这里给一个明确的序号，
+       * 并断言"没有 seq 就不许走 chip"（那一格是新增的，见 ①b）。 */
+      const SEQ = 7001;
+      const payload = sidebar.chipPayloadFor(body, SEQ);
       const wantLines = body.split('\n');
-      const shapeOk = !!(payload && Array.isArray(payload.items) && payload.items.length === wantLines.length
+      const shapeOk = !!(payload && payload.seq === SEQ && Array.isArray(payload.items)
+        && payload.items.length === wantLines.length
         && payload.items.every((it, i) => it.ref === wantLines[i] && it.clipboardText === wantLines[i]));
       const prose = ['【来自 AI MindMap 的对话】', '我：你好', 'AI：在的'].join('\n');
-      const proseRejected = sidebar.chipPayloadFor(prose) === null;
+      const proseRejected = sidebar.chipPayloadFor(prose, SEQ + 1) === null;
+      const noSeqRejected = sidebar.chipPayloadFor(body) === null;
       if (!shapeOk || !proseRejected) ok = false;
       rows.push('① 单元形状：文案=' + JSON.stringify(body) + ' ⇒ ' + (payload ? payload.items.length : 0) + ' 个单元（应 ' + wantLines.length + '）形状对=' + shapeOk
-        + ' ｜ 散文文案 ⇒ chipPayloadFor=' + String(sidebar.chipPayloadFor(prose)) + '（应 null，即**不许**变成 chip）' + ((shapeOk && proseRejected) ? ' ✓' : ' ✗'));
+        + ' · 载荷带 seq=' + (payload && payload.seq) + '（应 ' + SEQ + '）'
+        + ' ｜ 散文文案 ⇒ chipPayloadFor=' + String(sidebar.chipPayloadFor(prose, SEQ + 1)) + '（应 null，即**不许**变成 chip）' + ((shapeOk && proseRejected) ? ' ✓' : ' ✗'));
+      /* ①b 没有 seq ⇒ 不许走 chip（幂等没有依据时，宁可降级成纯文本；降级必须可见） */
+      const noSeqOk = noSeqRejected && (await (async () => {
+        const r = await sidebar.tryChipInsert(body);
+        return !!(r && r.ok === false && r.reason === 'no-seq');
+      })());
+      if (!noSeqOk) ok = false;
+      rows.push('①b 没有 seq ⇒ chipPayloadFor=null、tryChipInsert 回 no-seq=' + noSeqOk
+        + '（不许在没有幂等依据时往输入框里插东西）' + (noSeqOk ? ' ✓' : ' ✗'));
 
       /* ② 页面侧降级语义：这个页面上**没有**插件 ⇒ 必须回 plugin-absent（不许 undefined、不许抛） */
       const inline = await (async () => {
@@ -2372,7 +2461,7 @@ module.exports = [
         catch (e) { return { ok: false, text: String((e && e.message) || e) }; }
       })();
       let chipRed = { ok: false, reason: 'handle-not-installed' };
-      if (fakeHandle && fakeHandle.ok) chipRed = await sidebar.tryChipInsert(body);
+      if (fakeHandle && fakeHandle.ok) chipRed = await sidebar.tryChipInsert(body, SEQ);
       const redOk = !!(chipRed && chipRed.ok === false && String(chipRed.reason || '').length > 0);
       if (!redOk) ok = false;
       rows.push('③ 假 source ⇒ tryChipInsert=' + JSON.stringify({ ok: chipRed && chipRed.ok, reason: (chipRed && chipRed.reason || '').slice(0, 80), occurrences: chipRed && chipRed.occurrences })
@@ -2388,18 +2477,92 @@ module.exports = [
         if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
         return { ok: false, text: '造不出目标框现场 ✗ ｜ ' + JSON.stringify(mk) + ' ｜ ' + rows.join(' ｜ ') };
       }
-      const fb = await sidebar.prefillComposerTextPath(body, { ok: false, reason: 'smoke:plugin-absent' });
+      const fb = await sidebar.prefillComposerTextPath(body, { ok: false, reason: 'smoke:plugin-absent' }, SEQ + 10);
       const st = await composerState(wc);
       const inBox = String(st.edText || '');
       const last = sidebar.getStatus().lastPrefill || {};
       const fallbackOk = !!(fb && fb.ok === true && inBox === body
-        && fb.chipMode === 'text' && last.chipMode === 'text' && !!last.chipReason);
+        && fb.chipMode === 'text' && last.chipMode === 'text' && !!last.chipReason
+        && fb.seq === SEQ + 10 && Number(fb.landed) === body.split('\n').length);
       if (!fallbackOk) ok = false;
-      rows.push('④ 降级：兜底回执=' + JSON.stringify({ ok: fb && fb.ok, chipMode: fb && fb.chipMode, chipReason: fb && fb.chipReason })
+      rows.push('④ 降级：兜底回执=' + JSON.stringify({ ok: fb && fb.ok, chipMode: fb && fb.chipMode, chipReason: fb && fb.chipReason, seq: fb && fb.seq, landed: fb && fb.landed })
         + ' · 框里=' + JSON.stringify(inBox) + '（应与文案逐字相等）'
         + ' · lastPrefill=' + JSON.stringify({ chipMode: last.chipMode, chipReason: last.chipReason })
         + '（必须 text + 有原因 ⇒ **降级可见**）' + (fallbackOk ? ' ✓' : ' ✗'));
 
+      await composerTeardown(wc);
+      await ctx.exec('(function () { if (window.MM.clearSelection) window.MM.clearSelection(); return 1; })()');
+      if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
+      return { ok: ok, text: rows.join(' ｜ ') };
+    }
+  },
+  {
+    name: 'N3-⑪ **两次投喂必须累计**（用户 2026-10-42 真机：「先拉了两个过去，然后又选了两个过去，就会覆盖掉第一次的两个」）：拖 A（2 行）再拖 B（2 行）⇒ 输入框里 4 行；**同一 seq** 再投一次 ⇒ 仍是 4 行（不是 6）；换新 seq 再投 ⇒ 6 行（证明"不叠加"确实来自 seq 去重，不是判据恒绿）',
+    run: async (ctx) => {
+      /* 这一条是本批的**主线判据**（用户的真机抱怨就是它），所以两侧都要：
+       *   · 绿：两批不同 seq ⇒ 4 行（A 在前、B 在后，A 一个字都没少）；
+       *   · 幂等：同一个 seq 再投 ⇒ 4 行（"同一次投喂只生效一次"）；
+       *   · 判别力：换一个**新** seq 再投同一批 ⇒ 6 行 —— 如果这一格也是 4，
+       *     说明上面那条"不叠加"不是 seq 起的作用（判据空转 ✗），必须当场红。
+       * ⚠️ 这一格走的是**文本兜底路径**（`prefillComposerTextPath`，冒烟环境没有真 DSH 插件）；
+       *    chip 路径的"4 个块"由 `tests/dsh-chip-feed.test.js` ⑮ 用假内核的 occurrences 判
+       *    （真值口径一致：块数 == 已应用批次累计的节点数）。 */
+      if (!sidebarWasVisible()) { try { sidebar.show(); } catch (e) { /* 下面靠读数红 */ } g5ShowedSidebar = true; }
+      await sleep(900);
+      const wc = sidebarWc();
+      if (!wc) return { ok: false, text: '侧栏视图的 webContents 拿不到 ⇒ 追加语义无从判 ✗' };
+      const A = 'sb-两批/甲\nsb-两批/乙';
+      const B = 'sb-两批/丙\nsb-两批/丁';
+      const SEQ_A = 8101, SEQ_B = 8102;
+      const mk = await composerMock(wc, 'target', '');
+      if (!mk || !mk.ok) {
+        if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
+        return { ok: false, text: '造不出目标框现场 ⇒ 前提不成立 ✗ ｜ ' + JSON.stringify(mk) };
+      }
+      const chipInfo = { ok: false, reason: 'smoke:no-plugin' };
+      const rows = [];
+      let ok = true;
+      const ra = await sidebar.prefillComposerTextPath(A, chipInfo, SEQ_A);
+      const sa = await composerState(wc);
+      const aOk = !!(ra && ra.ok === true && ra.already !== true);
+      if (!aOk) ok = false;
+      rows.push('A（2 行，seq=' + SEQ_A + '）⇒ ' + JSON.stringify({ ok: ra && ra.ok, landed: ra && ra.landed, already: ra && ra.already }) + (aOk ? ' ✓' : ' ✗'));
+      const rb = await sidebar.prefillComposerTextPath(B, chipInfo, SEQ_B);
+      const sb2 = await composerState(wc);
+      const apB = appendedOf(sa.edText, sb2.edText, B);
+      const lines2 = normBox(sb2.edText).split('\n').filter((ln) => ln.trim() !== '').length;
+      const bOk = !!(rb && rb.ok === true && Number(rb.landed) === 2
+        && apB.prefixKept === true && apB.tailOk === true && lines2 === 4
+        && countCopies(normBox(sb2.edText), A) === 1 && countCopies(normBox(sb2.edText), B) === 1);
+      if (!bOk) ok = false;
+      rows.push('B（2 行，seq=' + SEQ_B + '）⇒ 回执=' + JSON.stringify({ ok: rb && rb.ok, landed: rb && rb.landed, seq: rb && rb.seq })
+        + ' · 框里=' + JSON.stringify(String(sb2.edText || '')) + ' · 非空行数=' + lines2 + '（**应 4**）'
+        + ' · A 还在=' + (countCopies(normBox(sb2.edText), A) === 1) + ' · 前缀保留=' + apB.prefixKept
+        + ' · 新增加对了=' + apB.tailOk + (bOk ? ' ✓' : ' ✗'));
+      /* 幂等：同一个 seq（SEQ_B）再投一次 ⇒ 一个字都不许再写 */
+      const rb2 = await sidebar.prefillComposerTextPath(B, chipInfo, SEQ_B);
+      const sb3 = await composerState(wc);
+      const lines3 = normBox(sb3.edText).split('\n').filter((ln) => ln.trim() !== '').length;
+      const idemOk = !!(rb2 && rb2.ok === true && rb2.already === true && Number(rb2.landed) === 0
+        && lines3 === 4 && normBox(sb3.edText) === normBox(sb2.edText));
+      if (!idemOk) ok = false;
+      rows.push('同一 seq（' + SEQ_B + '）再投一次 ⇒ 回执=' + JSON.stringify({ ok: rb2 && rb2.ok, already: rb2 && rb2.already, landed: rb2 && rb2.landed })
+        + ' · 非空行数=' + lines3 + '（**应仍为 4**，不是 6）· 框里没变=' + (normBox(sb3.edText) === normBox(sb2.edText))
+        + (idemOk ? ' ✓' : ' ✗'));
+      /* ★ 判别力：换**新** seq 投同一批 ⇒ 必须变成 6（证明"不叠加"来自 seq 去重） */
+      const rb3 = await sidebar.prefillComposerTextPath(B, chipInfo, SEQ_B + 1);
+      const sb4 = await composerState(wc);
+      const lines4 = normBox(sb4.edText).split('\n').filter((ln) => ln.trim() !== '').length;
+      const discOk = !!(rb3 && rb3.ok === true && rb3.already !== true && lines4 === 6);
+      if (!discOk) ok = false;
+      rows.push('判别力·换新 seq（' + (SEQ_B + 1) + '）投同一批 ⇒ 非空行数=' + lines4
+        + '（**应 6** —— 这一格若也是 4，说明上一格的"不叠加"不是 seq 起的作用，判据空转 ✗）' + (discOk ? ' ✓' : ' ✗'));
+      const ledger = sidebar.feedLedgerView();
+      const ledgerOk = !!(ledger && Array.isArray(ledger.seqs) && ledger.seqs.indexOf(SEQ_A) > -1
+        && ledger.seqs.indexOf(SEQ_B) > -1 && ledger.total >= 6);
+      if (!ledgerOk) ok = false;
+      rows.push('投喂台账=' + JSON.stringify(ledger) + '（必须含 ' + SEQ_A + '/' + SEQ_B
+        + ' 且累计 ≥ 6 ⇒ 幂等有账可查）' + (ledgerOk ? ' ✓' : ' ✗'));
       await composerTeardown(wc);
       await ctx.exec('(function () { if (window.MM.clearSelection) window.MM.clearSelection(); return 1; })()');
       if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }

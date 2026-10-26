@@ -417,10 +417,12 @@ describe('⑤ MCP `search_nodes`：不给 project ⇒ 全库档（一层透传�
     expect(j.hits.some((h) => h.project !== undefined)).toBe(false);   // 单项目档不加那个字段
   });
 
-  it('5.4 工具数是**真的没变**：本件不新增工具（真值 = 53，`I-1` 的 `features` 之后）、名字唯一、没有第二个"全库"工具', () => {
-    expect(mcp.TOOLS).toHaveLength(53);
+  it('5.4 工具数是**真的没变**：本件不新增工具（真值 = 54，`I-1` 的 `features` + `20261048` 的 `video_summary` 之后）、名字唯一、没有第二个"全库"工具', () => {
+    // 2026-10-26（`20261048` 视频摘要）：53 → 54 —— 那不是本件加的（本件只给 `search_nodes` 加 `scope` 参数），
+    // 而是同一天另一批新增了 `video_summary` 工具 ⇒ 这个写死真值跟着事实走（它钉的是"工具数没被本件改大"）。
+    expect(mcp.TOOLS).toHaveLength(54);
     const names = mcp.TOOLS.map((t) => t.name);
-    expect(new Set(names).size).toBe(53);
+    expect(new Set(names).size).toBe(54);
     expect(names.filter((n) => n === 'search_nodes')).toHaveLength(1);
     // 全库档是**既有工具的一个模式**：schema 里给的是参数，不是新工具
     const tool = mcp.TOOLS.filter((t) => t.name === 'search_nodes')[0];

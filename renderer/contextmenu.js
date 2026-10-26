@@ -5,6 +5,10 @@
  *   - 双击节点      → 有子节点 = 展开/收起；无子节点（叶子 / 只连边的节点）= 打开详情框（R5-3）
  *   - 右键节点      → 编辑 / 新增子节点 / 新增同级 / 删除 /
  *                     展开 / 收起 / 添加图片
+ *                    ＋ 节点带**本机链接**（`localPath`）时**恰好四项**：
+ *                      打开 / 打开方式 / 在文件资源管理器中打开 / 取消链接
+ *                      （用户 2026-10-31 的裁定；唯一实现在本文件的 `localPathItems`，
+ *                        详情框里那条链接的右键也用它 —— 两处一份，别各写一遍）
  *   - 右键空白背景  → 新建子节点（根下）/ 展开全部 / 收起全部 /
  *                     导入 MD / 导出 MD
  * 节点判定：jsMind 节点 DOM 为自定义元素 <jmnode nodeid="...">，
@@ -68,6 +72,10 @@
       const el = document.createElement('div');
       el.className = 'ctx-item' + (it.danger ? ' ctx-danger' : '');
       el.textContent = it.label;
+      /* 悬停说明（可选）：本机链接那四项用它带上**完整路径** ——
+       * 标签必须逐字是"打开 / 打开方式 / 在文件资源管理器中打开 / 取消链接"
+       * （用户原话的那四项），长路径塞进标签会把菜单横向撑爆，所以走 title。 */
+      if (it.title) el.title = it.title;
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         closeMenu();
@@ -179,6 +187,50 @@
     ];
   }
 
+  /* ---------------- 本机链接（节点字段 `localPath`）的右键四项 ----------------
+   * 用户 2026-10-31 的原话：「右键文件链接的时候右键内容**只需要**打开、打开方式、
+   * 文件资源管理器中打开、取消链接四个功能」。
+   * ⇒ **恰好四项**，顺序照用户写的那个顺序；**不许**再多第五项（"复制路径"之类确实有用，
+   *   但用户说的是"只需要" ⇒ 要加先问，别自己加）。
+   * ⇒ 这一族**只有这一份**：节点右键（`nodeMenu`）与详情框里那条链接的右键
+   *   （`renderer/app-detail-content.js` 的 `.fd-localpath-link`）都调它 ——
+   *   两处各写一遍 = 下一个改这四项的人只会改到一处。
+   * ⇒ 四项**各自真的做那件事**：
+   *   ① 打开      = **与左键同一个函数**（`MM.openLocalPath`，缺省 mode ⇒ 系统默认程序；
+   *                  没有默认关联时 Windows 自己弹「打开方式」）
+   *   ② 打开方式  = `mode:'openAs'` ⇒ 主进程起 `rundll32 shell32.dll,OpenAs_RunDLL`
+   *                  （**不是**"再打开一次"—— 那件事 `shell.openPath` 做不到）
+   *   ③ 在文件资源管理器中打开 = `mode:'reveal'` ⇒ 文件走 `showItemInFolder`（选中它）、
+   *                  目录走 `openPath`（打开该目录）
+   *   ④ 取消链接  = 把 `localPath` 从**数据**里删掉并走既有保存通道（`MM.clearLocalPath`）
+   * 标签**逐字**就是用户说的那四个（不加 emoji、不把路径拼进标签 —— 标签变了就不再是
+   * "用户说的那四项"）；完整路径放在 `title` 上（悬停可见，菜单宽度也不会被长路径撑爆）。
+   * @param {string} lp 本机绝对路径（节点数据里的 localPath，已由 path-chain 判过形状）
+   * @param {string} nodeId 这个链接属于哪个节点（④ 要用它定位数据）
+   * @returns {Array<object>} 恰好四项（可直接交给 `openMenu`）
+   */
+  function localPathItems(lp, nodeId) {
+    const app = () => window.MMApp;
+    const run = (mode) => () => {
+      if (!app().openLocalPath) { app().setStatus('打开入口没接线：MMApp.openLocalPath', true); return; }
+      app().openLocalPath(lp, mode ? { mode: mode } : undefined);
+    };
+    return [
+      { label: '打开', title: lp, action: run('') },
+      { label: '打开方式', title: '用系统「打开方式」选择栏打开：' + lp, action: run('openAs') },
+      { label: '在文件资源管理器中打开', title: lp, action: run('reveal') },
+      {
+        label: '取消链接',
+        title: '把这个节点的本机路径（localPath）清掉并保存',
+        danger: true,
+        action: () => {
+          if (!app().clearLocalPath) { app().setStatus('取消链接没接线：MMApp.clearLocalPath', true); return; }
+          app().clearLocalPath(nodeId);
+        }
+      }
+    ];
+  }
+
   function nodeMenu(nodeId) {
     const app = () => window.MMApp;
     const jm = app().getState().jm;
@@ -199,13 +251,15 @@
       { label: '添加图片…', action: () => window.MMEditor && window.MMEditor.openImageDialog(nodeId) },
       { label: '添加附件文件…', action: () => window.MMEditor && window.MMEditor.openFileDialog(nodeId) }
     ];
-    // 本机文件夹（节点字段 localPath，见 docs/DATA-FORMAT.md §2.5）：有才显示这一项。
-    // 标签只放**末级目录名**（完整路径在详情框里，菜单项太长会横向撑爆）。
+    /* 本机链接（节点字段 `localPath`，见 `docs/DATA-FORMAT.md` §2.1）：有才显示，
+     * 且**恰好四项**（打开 / 打开方式 / 在文件资源管理器中打开 / 取消链接）——
+     * 用户 2026-10-31 明确说"只需要"这四个。
+     * ⚠️ 这里**不是**第五项：改前的「📁 打开文件夹：<末级名>」已被这四项**取代**
+     *   （它是"打开"那一个动作的旧说法，不是另一件事）。 */
     const lp = (node.data && node.data.localPath) || '';
     if (lp) {
-      const leaf = String(lp).split(/[\\/]/).filter(Boolean).pop() || lp;
       items.push('---');
-      items.push({ label: '📁 打开文件夹：' + leaf, action: () => app().openLocalPath(lp) });
+      localPathItems(lp, nodeId).forEach((it) => items.push(it));
     }
     if (!isRoot) items.push({ label: '删除节点', danger: true, action: () => app().deleteNode(nodeId) });
     // 手工位置的"清回去" + 顶层主题的左右分侧（这两条都不是拖动模式的入口 ✓）
@@ -409,7 +463,7 @@
     });
     document.addEventListener('wheel', closeMenu, { passive: true });
     window.addEventListener('blur', closeMenu);
-    window.MMContextMenu = { openMenu, closeMenu, isNodeEl, getBindedNodeId };
+    window.MMContextMenu = { openMenu, closeMenu, isNodeEl, getBindedNodeId, localPathItems };
   }
 
   if (document.readyState === 'loading') {

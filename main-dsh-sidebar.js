@@ -187,6 +187,16 @@ const state = {
   // 测试接缝：让结算读到的"视图事实"可注入（见 setStatusPageSettleFactsForTest 的注释）。
   // 产品路径永远是 null ⇒ 读真实 state。
   statusPageSettleFactsForTest: null,
+  // ── 投喂台账（2026-10-42「追加语义」批）────────────────────────────────────────
+  //   feedLedger —— 已**应用过**的投喂批次：`[{seq, n, mode, route, at}]`，FIFO 上限 FEED_LEDGER_MAX。
+  //     它和 `seq` 一起构成投喂幂等的**唯一**依据（旧版靠 `setDraft('')` 清空草稿 —— 那等于用
+  //     "覆盖"换"幂等"，第二次投喂把第一次的块全抹掉，正是用户真机报的那个缺陷）。
+  //     为什么是 FIFO 集合而不是"高水位 seq > lastSeq"：调用方给的 seq 不保证单调
+  //     （控制通道 token / 重放 / 将来跨进程序号都可能更小），高水位会把一次**合法的追加**
+  //     静默吞掉（用户丢了块还不报错）；集合只吞同一个 seq，永不吞别的。
+  //   feedSeqNo  —— 本进程的序号发号器（只有"调用方没给 seq"时才用）。
+  feedLedger: [],
+  feedSeqNo: 0,
   shuttingDown: false
 };
 
@@ -2799,43 +2809,91 @@ const CHIP_INSERT_JS = `(function (payloadJson) {
   }
 })`;
 
+/* ── 投喂台账：`seq` 幂等的**唯一**依据（本文件里只有这一份实现）─────────────────────
+ * 用户真机 2026-10-42（逐字）：「是块了，但是我先拉了两个过去，然后又选了两个过去，就会覆盖掉
+ *   第一次的两个」⇒ 要的是**追加**；而"同一次投喂被重试"又不许变成两遍（= 幂等）。
+ * ⇒ 幂等的正确含义是"同一 seq 只生效一次"，**不是**"清空重来"（上一版就是拿 `setDraft('')`
+ *   换幂等 —— 那正是覆盖的病根：两件事被混成了一件）。
+ * 两个入口都要过这一道：`prefillComposer` 在**碰页面之前**短路（重试连 chip 都不试）；
+ *   `prefillComposerTextPath` 是兜底入口（冒烟与桩脚本会直接调它）⇒ 它自己也得判一次，
+ *   否则"重试"就变成两次追加。
+ * 上界 FIFO 淘汰：为什么不用"高水位 seq > lastSeq"见 state.feedLedger 的注释（seq 不保证单调）。 */
+const FEED_LEDGER_MAX = 64;
+function feedSeqNext() { state.feedSeqNo += 1; return state.feedSeqNo; }
+/** 取这次投喂的 seq：调用方给了合法 seq（重试 / 重放）就沿用它，否则发一个新的。 */
+function feedSeqFor(opts) {
+  const s = Number(opts && opts.seq);
+  return (Number.isFinite(s) && s > 0) ? Math.floor(s) : feedSeqNext();
+}
+function feedLedgerGet(seq) {
+  const l = Array.isArray(state.feedLedger) ? state.feedLedger : [];
+  for (const e of l) if (e.seq === seq) return e;
+  return null;
+}
+/** 记账：`n` = 这一批**真的落了**几个块（失败但落了几个也要记 —— 否则重试会再插一遍）。 */
+function feedLedgerMark(seq, n, mode, route) {
+  if (!Array.isArray(state.feedLedger)) state.feedLedger = [];
+  if (feedLedgerGet(seq)) return state.feedLedger;
+  state.feedLedger.push({ seq: seq, n: Number(n) || 0, mode: mode || null, route: route || null, at: Date.now() });
+  while (state.feedLedger.length > FEED_LEDGER_MAX) state.feedLedger.shift();
+  return state.feedLedger;
+}
+/** 已应用批次的**累计节点数**（判据侧的独立读数：页面上的块数不该比它少）。 */
+function feedLedgerTotal() {
+  const l = Array.isArray(state.feedLedger) ? state.feedLedger : [];
+  return l.reduce((s, e) => s + (Number(e.n) || 0), 0);
+}
+function feedLedgerView() {
+  const l = Array.isArray(state.feedLedger) ? state.feedLedger : [];
+  return { seqs: l.map((e) => e.seq), total: feedLedgerTotal(), max: FEED_LEDGER_MAX };
+}
+
 /** 这段文案该不该走 chip（判定在 `src/dsh-chip-feed.js` 的纯函数里，那是**唯一一份**规则）。
  *  ⚠️ **插入前**的第一道死 chip 闸：`chipFeed.SOURCE` 必须仍是内置 `reference`。
  *     为什么把这条放在"发请求之前"而不是等回执：一旦有人把常量改成假 source，
  *     插进去的 chip 在提交时才会被 `serializeReference` 拒（整条发送被拒、不会退化成文本）
  *     ⇒ 那种 chip 一旦落进输入框就是**用户按发送才炸**的死 chip。宁可**连试都不试**，
- *     直接走纯文本（纯文本至少发得出去）。这一条有单测与冒烟两侧钉着。 */
-function chipPayloadFor(text) {
+ *     直接走纯文本（纯文本至少发得出去）。这一条有单测与冒烟两侧钉着。
+ *  ⚠️ `seq` 是**必填**（2026-10-42）：没有它就没有"同一次投喂只生效一次"的依据 ⇒ 不许走 chip
+ *     （返回 null 让调用方降级成纯文本，并把原因 `no-seq` 记进 lastPrefill —— 降级必须可见）。 */
+function chipPayloadFor(text, seq) {
   if (chipFeed.SOURCE !== 'reference') return null;   // 死 chip 红线：常量被改成假 source ⇒ 不许进输入框
+  const s = Number(seq);
+  if (!Number.isFinite(s) || s <= 0) return null;     // 没有 seq ⇒ 幂等无从成立 ⇒ 不走 chip
   const units = chipFeed.chipUnitsFromText(text);
   if (!units) return null;
-  return { v: 1, items: units.items };
+  return { v: 2, seq: Math.floor(s), items: units.items };
 }
 
 /**
  * 试一次 chip 通道。**任何**不成立（插件不在位 / 插件报失败 / 回执形状不对 / 超时 / 页面没就绪）
  * 都只是 `{ok:false, reason}` —— 由调用方降级成纯文本，绝不阻断投喂。
  * @param {string} body 要投喂的整段文案
+ * @param {number} seq 这次投喂的序号（幂等依据）
  * @returns {Promise<{ok:boolean, reason:(string|null), occurrences:number, route:(string|null),
- *                    items:number, pluginPresent:boolean}>}
+ *                    items:number, pluginPresent:boolean, already:boolean, added:number, seq:number}>}
  */
-function tryChipInsert(body) {
-  const payload = chipPayloadFor(body);
+function tryChipInsert(body, seq) {
+  const s = Number(seq);
   const miss = (reason, extra) => Object.assign({
-    ok: false, reason: reason, occurrences: 0, route: null,
-    items: payload ? payload.items.length : 0,
-    pluginPresent: reason !== 'plugin-absent'
+    ok: false, reason: reason, occurrences: 0, route: null, items: 0,
+    pluginPresent: reason !== 'plugin-absent', already: false, added: 0,
+    seq: (Number.isFinite(s) && s > 0) ? Math.floor(s) : null
   }, extra || {});
-  if (!payload) return Promise.resolve(miss('not-chip-shaped', { pluginPresent: false }));
-  if (!state.view || !state.view.webContents) return Promise.resolve(miss('no-view', { pluginPresent: false }));
-  if (state.view.isDestroyed && state.view.isDestroyed()) return Promise.resolve(miss('view-destroyed', { pluginPresent: false }));
+  if (!Number.isFinite(s) || s <= 0) return Promise.resolve(miss('no-seq'));
+  const payload = chipPayloadFor(body, s);
+  if (!payload) return Promise.resolve(miss('not-chip-shaped'));
+  if (!state.view || !state.view.webContents) return Promise.resolve(miss('no-view', { items: payload.items.length }));
+  if (state.view.isDestroyed && state.view.isDestroyed()) return Promise.resolve(miss('view-destroyed', { items: payload.items.length }));
   if (state.view.webContents.isDestroyed && state.view.webContents.isDestroyed()) {
-    return Promise.resolve(miss('view-destroyed', { pluginPresent: false }));
+    return Promise.resolve(miss('view-destroyed', { items: payload.items.length }));
   }
   const payloadJson = JSON.stringify(payload);
   const code = '(' + CHIP_INSERT_JS + ')(' + JSON.stringify(payloadJson) + ')';
   /* 超时保护与文本路径同源（内核页面加载中时 executeJavaScript 可能永不返回 ✗ —— 本模块踩过两次）。
-   * 这里给 4s：chip 通道是**增强**，不该让"投喂"多等太久；等不到就当插件不在位、走文本。 */
+   * 这里给 4s：chip 通道是**增强**，不该让"投喂"多等太久；等不到就当插件不在位、走文本。
+   * ⚠️ 超时**不代表没插进去**（页面可能只是回执慢）⇒ 那一档下面用 `probeChipApplied` 再问一句，
+   *    确认落过就**绝不**降级写文本（否则同一批投喂变两遍）。 */
   let settled = false;
   const timeout = new Promise((resolve) => setTimeout(() => {
     if (!settled) resolve({ ok: false, reason: 'chip-timeout' });
@@ -2849,16 +2907,71 @@ function tryChipInsert(body) {
     })
     .catch((e) => { settled = true; return { ok: false, reason: 'threw: ' + ((e && e.message) || String(e)) }; });
   return Promise.race([run, timeout]).then((r) => {
-    const judged = chipFeed.judgeInsertResult(r, payload.items);
-    return {
+    /* `minBefore` = 台账里已经投喂过的累计块数：一条**单向**硬闸（页面比台账少 ⇒ 之前的块被清掉了）。 */
+    const judged = chipFeed.judgeInsertResult(r, payload.items, { minBefore: feedLedgerTotal() });
+    const out = {
       ok: judged.ok === true,
       reason: judged.ok ? null : judged.reason,
       occurrences: Array.isArray(judged.occurrences) ? judged.occurrences.length : 0,
       route: (r && typeof r.route === 'string' && r.route) ? r.route : null,
       items: payload.items.length,
-      pluginPresent: !(r && r.reason === 'plugin-absent')
+      pluginPresent: !(r && r.reason === 'plugin-absent'),
+      already: judged.already === true,
+      added: Number(judged.added) || 0,
+      landed: judged.ok === true ? payload.items.length : (Number(judged.added) || 0),
+      recovered: null,
+      seq: payload.seq,
+      caret: (r && typeof r.caret === 'string') ? r.caret : null
     };
+    if (out.ok) return out;
+    /* ── 超时 / 抛错 / 回执不可解析 ⇒ **先问一句"到底落没落"**，再决定要不要写文本 ──────────
+     * 这是"同一批投喂绝不变两遍"的关键一步：`executeJavaScript` 超时**不代表**页面没执行
+     * （内核页面加载时会迟迟不回）。落过 ⇒ 当成功（already），绝不降级写文本；没落 ⇒ 照常降级。 */
+    const ambiguous = ['chip-timeout', 'threw', 'unparsable'].some((k) => String(out.reason || '').indexOf(k) === 0);
+    if (!ambiguous) return out;
+    return probeChipApplied(payload.seq).then((p) => {
+      if (p && p.applied === true) {
+        return Object.assign({}, out, {
+          ok: true, already: true, reason: null, recovered: 'probe-applied',
+          landed: payload.items.length, occurrences: p.occurrences, route: 'probe'
+        });
+      }
+      return Object.assign({}, out, { recovered: 'probe-not-applied' });
+    });
   });
+}
+
+/** 只读探针：问插件"这个 seq 应用过没有"（**一个字都不写**）。
+ *  用在 chip 通道超时/抛错之后 —— 那一档分不清"页面没执行"与"执行了但回执慢"，
+ *  而两种处置完全相反（后者若再写文本 = 同一批投喂两遍）。
+ *  @param {number} seq
+ *  @returns {Promise<{applied:boolean, occurrences:number}>} 探不到一律 `applied:false`（保守：宁可信没落）
+ *     —— 但**不**静默：探针自身的失败原因会随 `recovered:'probe-…'` 一起进回执。 */
+function probeChipApplied(seq) {
+  const s = Number(seq);
+  if (!Number.isFinite(s) || s <= 0) return Promise.resolve({ applied: false, occurrences: 0, reason: 'no-seq' });
+  if (!state.view || !state.view.webContents
+      || (state.view.webContents.isDestroyed && state.view.webContents.isDestroyed())) {
+    return Promise.resolve({ applied: false, occurrences: 0, reason: 'no-view' });
+  }
+  const payload = { v: 2, seq: Math.floor(s), probe: true, items: [] };
+  const code = '(' + CHIP_INSERT_JS + ')(' + JSON.stringify(JSON.stringify(payload)) + ')';
+  let settled = false;
+  const timeout = new Promise((resolve) => setTimeout(() => {
+    if (!settled) resolve({ applied: false, occurrences: 0, reason: 'probe-timeout' });
+  }, 1200));
+  const run = Promise.resolve()
+    .then(() => state.view.webContents.executeJavaScript(code, true))
+    .then((raw) => {
+      settled = true;
+      let r = null;
+      try { r = JSON.parse(String(raw)); } catch (e) { return { applied: false, occurrences: 0, reason: 'probe-unparsable' }; }
+      const occ = Array.isArray(r && r.occurrences)
+        ? r.occurrences.filter((o) => o && o.source === chipFeed.SOURCE).length : 0;
+      return { applied: !!(r && r.ok === true && r.already === true), occurrences: occ, reason: null };
+    })
+    .catch((e) => { settled = true; return { applied: false, occurrences: 0, reason: 'probe-threw: ' + ((e && e.message) || String(e)) }; });
+  return Promise.race([run, timeout]);
 }
 
 /** 插件载荷的**静态**在位读数（内容级，不读页面）。给 `dsh-status` 用；5s 缓存避免状态广播里反复读盘。 */
@@ -2950,12 +3063,16 @@ function chipFeedStatus() {
  *          判据 = `copies === 1` 且行数对，任何一项不成立一律 `ok:false`
  *          （新增一档 `mangled`：回读里冒出 @ / 行数不符 = 标题粘连）。 */
 const COMPOSER_PREFILL_JS = `(async function (text) {
-  /* ── 本注入串的契约（2026-10-40 重写）─────────────────────────────────────────
-   * 往 **Lexical 富文本 composer** 里写"N 行纯文本、并替换掉框里原有内容"，三条判据：
-   *   ① 行数 == 文案行数（每行一个投喂单位；标题**不许粘在一起**）
-   *   ② 份数 == 1（一次投喂恒等于一份；原有那份必须被**替换**）
-   *   ③ 回读 == 原文（逐字）
-   *   任何一条不成立 ⇒ ok:false + 分档 + 原因（**绝不静默成功**）。
+  /* ── 本注入串的契约（**2026-10-42 改成追加**；上一版是"替换"）───────────────────
+   * 往 **Lexical 富文本 composer** 里**追加**"N 行纯文本"（原来框里有什么，一个字都不许动）。
+   * 判据四句话（任何一条不成立 ⇒ ok:false + 分档 + 原因，**绝不静默成功**）：
+   *   ① **前缀不许被动**：写前读到的内容必须原样是写后内容的**前缀**（prefixKept）
+   *      —— 这一条就是"谁把全选+delete 加回来，判据当场红"的那一格（分档 clobbered）；
+   *   ② **末尾恰好多了这一批**：写后内容减掉前缀（去掉分隔空白）= 这次的文案，逐字相等（addedOk）
+   *      且**行数 == 文案行数**（addedLines；标题不许粘在一起）；
+   *   ③ **同一批只应用一次**：全文里这份文案的出现次数 == 写前次数 **+ 1**（copiesBefore/copiesAfter）
+   *      —— 这才是"幂等"的真身（旧口径 copies === 1 在追加语义下必然假红）；
+   *   ④ 回读里没有冒出 @（出现了 = 被 composer 改写成引用实体）。
    *
    * ── 为什么"逐行 insertText + 行间 insertParagraph"，而不是一次 insertText ─────────
    *   Lexical 的 RangeSelection.insertText 把整串**原样塞进一个 TextNode**
@@ -2967,28 +3084,36 @@ const COMPOSER_PREFILL_JS = `(async function (text) {
    *   inputType=insertText 且 data 恰为单个换行则映到 INSERT_LINE_BREAK（第 5492 行）
    *   ⇒ 后者是这个编辑器自带的兜底换行，两条都留着（insertParagraph 优先）。
    *
-   * ── 为什么清空之后要**等一帧**再写 ────────────────────────────────────────────
-   *   Lexical 的模型选区是从 DOM 选区经 document 的 selectionchange **异步**同步的
-   *   （第 5339 行注册 selectionchange 监听）。上一版把 selectAll 与 insertText 放在**同一
-   *   tick** ⇒ 模型选区还没更新 ⇒ insertText 落在旧光标处 = **追加** ⇒ 真机上看到三份。
-   *   等一帧再写，替换语义才成立 ✓（这是本批真正的修法，不是"更聪明的写入代码"）。
+   * ── 为什么写入前要**把光标移到末尾**再写 ──────────────────────────────────────
+   *   insertText 落在**光标处**。上一版拿"全选 + delete"换幂等（先清空再写）—— 那让第二次投喂
+   *   把第一次的块全抹掉（用户真机：「先拉了两个过去，然后又选了两个过去，就会覆盖掉第一次的
+   *   两个」）。现在**不清空**，改成"把光标折叠到末尾再逐行写"⇒ 天然追加。
+   *   ⚠️ 光标必须在**写入之前**移好并**等一帧**：Lexical 的模型选区是从 DOM 选区经
+   *   document 的 selectionchange **异步**同步的（第 5339 行注册 selectionchange 监听）
+   *   ⇒ 同一 tick 里移光标再写，写到的还是旧光标处（上一版"叠三份"的同一个病因）。
+   *
+   * ── 为什么追加到**非空**框时要先补一个分段 ────────────────────────────────────
+   *   不补就会把两批粘成一行（甲/乙丙/丁）—— 那在模型看来就是一个标题，用户看到的"4 个块"
+   *   会变成 3 行。补一个空段只影响**文本路径**（chip 路径由内核补空格，见 src/dsh-chip-feed.js）。
    *
    * ── 为什么文案里一个 @ 都不许有 ────────────────────────────────────────────────
    *   @名字/ 在"行首或空白之后"命中 vendor 第 12633 行的 FOLDER_REF_RE
    *   （第 12632 TEXT_REF_RE 同理处理 /名字）⇒ 会被 registerTextRefDecoration（第 12749）
    *   改造成 TextRefNode 实体（第 12688）⇒ 真机上就是"前缀重复 / 神隐改写"的来源。
    *   ⇒ 本串对含 @ 的文案**就地拒绝**（mangled，一个字都不写），护栏在 src/sidebar-context.js。
+   *   ⚠️ 这道闸**与本批的追加改动无关，必须留着**（去掉它 = 把用户 2026-10-40 报的那个缺陷放回来）。
    * ======================================================================= */
   function txt(v) { return String(v == null ? '' : v); }
   var ALL = txt(text);
   var steps = [];
   var wantLines = ALL.split('\\n');
+  var wantN = wantLines.length;
   if (ALL.indexOf('@') >= 0) {
     return JSON.stringify({ ok: false, bucket: 'mangled',
       reason: '文案里有 @（这个输入框里 @ 是引用触发符，composer 会把它改写成引用实体，'
         + '导致前缀重复/标题粘连）—— 一个字都没写。回读前 80 字（此处是文案本身）：' + ALL.slice(0, 80),
-      copies: 0, lines: 0, wantLines: wantLines.length, selMode: 'none', mode: 'refused',
-      cleared: 'refused', textLen: ALL.length, readBack: '', steps: ['refused:at-char'], census: [] });
+      copiesBefore: 0, copiesAfter: 0, lines: 0, wantLines: wantLines.length, mode: 'refused',
+      caret: 'refused', beforeLen: 0, textLen: ALL.length, readBack: '', steps: ['refused:at-char'], census: [] });
   }
   var SEL = 'textarea, input, [contenteditable], [contenteditable=""], [contenteditable="true"],'
     + ' [contenteditable="plaintext-only"], [role="textbox"], [data-composer-input]';
@@ -3122,45 +3247,31 @@ const COMPOSER_PREFILL_JS = `(async function (text) {
       } catch (e) { setTimeout(go, 4); }
     });
   }
-  /** 把**整个编辑器内容**选上。两条腿：DOM Range（引擎无关）+ 编辑器自己的 selectAll 命令
-   *  （Slate/Lexical/ProseMirror 更认这一条）。返回用的是哪条（回执里可见 ⇒ 真机可定位）。 */
-  function selectAllIn() {
-    var sel = null, ranged = false;
-    try { sel = window.getSelection ? window.getSelection() : null; } catch (e0) { sel = null; }
+  /** 把光标**折叠到编辑器末尾**（返回走的是哪条腿：dom-range / textarea / live）。
+   *  为什么必须先移末尾：insertText 落在**光标处**；上一版靠"全选 + delete"清空来保幂等，
+   *  而那正是"第二次投喂把第一批抹掉"的病根（2026-10-42 用户真机）。现在不清空，
+   *  改成"把光标放到末尾再逐行写" ⇒ 天然追加。 */
+  function caretToEnd() {
+    var mode = 'live';
+    try { el.focus(); } catch (e0) {}
     try {
-      if (sel && document.createRange) {
-        var rg = document.createRange();
-        rg.selectNodeContents(el);
-        sel.removeAllRanges();
-        sel.addRange(rg);
-        ranged = true;
+      if (!pick.ed.rich && (pick.ed.isArea || pick.ed.isInput)) {
+        var n = txt(el.value).length;
+        if (typeof el.setSelectionRange === 'function') { el.setSelectionRange(n, n); mode = 'textarea'; }
+      } else {
+        var sel = window.getSelection ? window.getSelection() : null;
+        if (sel && document.createRange) {
+          var rg = document.createRange();
+          rg.selectNodeContents(el);
+          rg.collapse(false);          /* 折叠到内容**末尾**（不是元素边界点：那会让插入落偏） */
+          sel.removeAllRanges();
+          sel.addRange(rg);
+          mode = 'dom-range';
+        }
       }
-    } catch (e1) { /* 落到下面那条命令兜底 */ }
-    var cmd = false;
-    try { cmd = !!(document.execCommand && document.execCommand('selectAll', false, null)); } catch (e2) { cmd = false; }
-    if (ranged && cmd) return 'range+cmd';
-    return ranged ? 'range' : (cmd ? 'cmd' : 'none');
-  }
-  var selMode = 'none';
-  /** 清空：全选 → **等一帧**（让模型选区跟上）→ delete → 等一帧 → 回读确认。
-   *  为什么要 delete 而不是赋 textContent：真机 Lexical 是**模型驱动**的，
-   *  DOM 赋值下一帧就被它自己的渲染覆盖回去 ⇒ 那一步在真机上是**空的**（上一批假绿就在这）。
-   *  参考：vendor 第 5535-5537 行 inputType=deleteContent ⇒ INSERT/DELETE 命令。 */
-  async function clearDraft() {
-    var last = 'none';
-    for (var attempt = 0; attempt < 2; attempt++) {
-      var how = selectAllIn();
-      steps.push('selectAll:' + how);
-      if (how !== 'none') last = how;
-      await frame();
-      var del = false;
-      try { del = !!(document.execCommand && document.execCommand('delete', false, null)); } catch (e1) { del = false; }
-      steps.push('delete:' + del);
-      await frame();
-      if (!norm(readBack())) { selMode = last; return 'deleted:' + last; }
-    }
-    selMode = last;
-    return 'failed:' + last;
+    } catch (e1) { mode = 'live'; }
+    steps.push('caretToEnd:' + mode);
+    return mode;
   }
   function insertLine(line) {
     var done = false;
@@ -3178,23 +3289,35 @@ const COMPOSER_PREFILL_JS = `(async function (text) {
     steps.push('lineBreak-fallback:' + fb);
     return fb;
   }
-  var mode = 'none', cleared = 'skipped';
+  /* 写入前的真值：**判"追加"的基线**（前缀不许被动 / 份数只许 +1 全靠它）。
+   * ⚠️ 必须在 focus + 移光标**之后**读（focus 可能让编辑器补一个空段）。 */
+  var beforeN = '';
+  var caret = 'skipped';
+  var mode = 'none';
+  var sep = 'none';
   if (pick.ed.rich) {
-    cleared = await clearDraft();
-    mode = 'lines:' + cleared;
+    caret = caretToEnd();
+    await frame();                       /* 等模型选区跟上（selectionchange 是异步的） */
+    beforeN = norm(readBack());
+    mode = 'lines:append';
+    /* 追加到**非空**框：先补一个分段，否则两批会粘成一行（用户看到的"4 块"变成 3 行） */
+    if (beforeN !== '') { sep = 'para:' + paraBreak(); await frame(); }
     for (var li = 0; li < wantLines.length; li++) {
       insertLine(wantLines[li]);
       await frame();
       if (li < wantLines.length - 1) { paraBreak(); await frame(); }
     }
+  } else {
+    beforeN = norm(readBack());
+    caret = caretToEnd();
   }
   /* ③ 兜底：编辑器一个字都没吃（不是 Lexical、也不是任何认 execCommand 的编辑器）⇒
-   *   退回"直接赋值 + 派发输入事件"。**只在读到空的时候用** —— 否则会和上面的写入叠加成多份 ✗ */
-  if (!norm(readBack())) {
+   *   退回"直接赋值 + 派发输入事件"。**只在"写前 == 写后"时用** —— 否则会和上面的写入叠加成多份 ✗ */
+  if (norm(readBack()) === beforeN) {
     try {
       if (pick.ed.rich) {
         mode = (mode === 'none') ? 'input-event' : (mode + '+input-event');
-        el.textContent = ALL;
+        el.textContent = beforeN === '' ? ALL : (beforeN + '\\n' + ALL);
         try { el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: ALL })); } catch (e2) {}
         try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ALL })); }
         catch (e3) { try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e4) {} }
@@ -3202,7 +3325,8 @@ const COMPOSER_PREFILL_JS = `(async function (text) {
         mode = 'native-setter';
         var proto = pick.ed.isArea ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         var desc = Object.getOwnPropertyDescriptor(proto, 'value');
-        if (desc && desc.set) desc.set.call(el, ALL); else el.value = ALL;
+        var next = beforeN === '' ? ALL : (beforeN + '\\n' + ALL);
+        if (desc && desc.set) desc.set.call(el, next); else el.value = next;
         try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ALL })); }
         catch (e5) { try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e6) {} }
       }
@@ -3210,61 +3334,126 @@ const COMPOSER_PREFILL_JS = `(async function (text) {
   }
   try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e8) {}
   var got = readBack();
+  /* verbatim 留着当**诊断读数**（整段回读 == 本次文案；只对空框成立），判据不再用它。 */
   var verbatim = same(readBack(), text);
-  var copies = copiesOf(norm(got), ALL);
-  var gotLines = lineCountOf(got);
-  var wantN = wantLines.length;
-  var linesOk = (gotLines === wantN);
-  var noAt = norm(got).indexOf('@') < 0;
-  /* 判据 = 逐字相等 **且** 恰好 1 份 **且** 行数对 **且** 没有 @ 冒出来。
-   * 三样缺一都不算成功 —— 这正是"一次投喂 = N 行、每行一个单位"的那条不变量。 */
-  var ok = verbatim && copies === 1 && linesOk && noAt;
+  var afterN = norm(got);
+  /* ① 前缀不许被动：写前那份必须原样是写后的前缀 */
+  var prefixKept = afterN.indexOf(beforeN) === 0;
+  /* 写前那份**还在不在**（在所有位置找）：用来把两种红灯分开 ——
+   *   beforeStillThere === false ⇒ 真的被清空/被替换了（clobbered，本批要抓的那个病）；
+   *   beforeStillThere === true  ⇒ 旧内容还在，只是**新内容插到了中间**（misplaced：光标没到末尾）。
+   *   为什么必须分开：两种成因的修法完全不同（一个是"别清空"，一个是"光标没移对"），
+   *   合成一个"覆盖了"的红灯会把下一个人带偏（本工程治过很多次的"原因指错方向"）。 */
+  var beforeStillThere = (beforeN === '') || (afterN.indexOf(beforeN) >= 0);
+  /* ② 末尾恰好多了这一批：减掉前缀 + 去掉分隔空白，剩下的必须逐字就是这次的文案 */
+  var added = prefixKept ? afterN.slice(beforeN.length).replace(/^[\\s\\u00a0]+/, '') : '';
+  var addedOk = prefixKept && (norm(added) === norm(ALL));
+  var addedLines = lineCountOf(added);
+  /* ③ 同一批只应用一次：出现次数必须恰好 +1（旧口径 copies === 1 在追加下必然假红） */
+  var copiesBefore = copiesOf(beforeN, ALL);
+  var copiesAfter = copiesOf(afterN, ALL);
+  var copiesOk = (copiesAfter === copiesBefore + 1);
+  var noAt = afterN.indexOf('@') < 0;
+  /* ── 判据（2026-10-42 追加语义；**旧的三句全部重写，不是删掉**）──────────────────
+   *  绿 = 前缀没被动 ∧ 末尾恰好多了这一批（逐字 + 行数对）∧ 这批只多了 1 份 ∧ 没冒出 @。
+   *  ⚠️ 旧口径 copies === 1 在追加下**必然假红**（框里本来就有上一批）⇒ 换成"份数恰好 +1"。 */
+  var ok = prefixKept && addedOk && (addedLines === wantN) && copiesOk && noAt;
+  /* 分档的**先后**是有讲究的（否则原因会指错方向）：
+   *   旧内容没了（clobbered）⇒ 旧内容还在但新内容插偏了（misplaced）⇒ 一个字都没写（rejected）
+   *   ⇒ 多份（duplicated）⇒ 形状（粘连/@）⇒ 内容不符。 */
   var bucket = ok ? 'ok'
-    : (copies > 1 ? 'duplicated'
-      : (!norm(got) ? 'rejected'
-        : ((!linesOk || !noAt) ? 'mangled' : 'readback-mismatch')));
+    : (!prefixKept ? (beforeStillThere ? 'misplaced' : 'clobbered')
+      : (added === '' ? 'rejected'
+        : (copiesAfter > copiesBefore + 1 ? 'duplicated'
+          : ((addedLines !== wantN || !noAt) ? 'mangled' : 'readback-mismatch'))));
   var reason = ok ? null
-    : (bucket === 'duplicated'
-      ? '输入框里出现了 ' + copies + ' 份（应恰好 1 份）—— 清空那一步没生效，这次写入变成了追加。'
-        + '回读前 80 字：' + norm(got).slice(0, 80)
-      : (bucket === 'mangled'
-        ? '写进去了但形状被改（行数 ' + gotLines + '，应 ' + wantN + (noAt ? '' : '；回读里又冒出 @') + '）'
-          + ' —— 标题可能粘在一起，或 @ 被改写成引用实体。回读前 80 字：' + norm(got).slice(0, 80)
-        : (bucket === 'readback-mismatch'
-          ? '写进去了但回读不一致（回读前 60 字：' + norm(got).slice(0, 60) + '）'
-          : '编辑器不接受 execCommand，且 InputEvent 也无效（读到空）')));
-  return JSON.stringify({ ok: ok, bucket: bucket, reason: reason, mode: mode, selMode: selMode,
-    cleared: cleared, copies: copies, lines: gotLines, wantLines: wantN, steps: steps,
+    : (bucket === 'clobbered'
+      ? '把输入框里原有的内容弄丢了（写前 ' + beforeN.length + ' 字，写后**找不到**它了）——'
+        + ' 投喂必须是**追加**（清空/全选+delete 那一步不许回来）。写后前 80 字：' + afterN.slice(0, 80)
+      : (bucket === 'misplaced'
+        ? '旧内容还在，但新内容**插到了中间**（写后不再以写前那份开头）—— 光标没有移到末尾。'
+          + '回读前 80 字：' + afterN.slice(0, 80)
+        : (bucket === 'duplicated'
+          ? '这一批在框里出现了 ' + copiesAfter + ' 份（写前 ' + copiesBefore + ' 份，应恰好 +1）——'
+            + ' 同一批投喂被应用了不止一次。回读前 80 字：' + afterN.slice(0, 80)
+          : (bucket === 'mangled'
+            ? '写进去了但形状被改（新增这段行数 ' + addedLines + '，应 ' + wantN
+              + (noAt ? '' : '；回读里又冒出 @') + '）'
+              + ' —— 标题可能粘在一起，或 @ 被改写成引用实体。回读前 80 字：' + afterN.slice(0, 80)
+            : (bucket === 'readback-mismatch'
+              ? '写进去了但回读不一致（回读前 60 字：' + afterN.slice(0, 60) + '）'
+              : '编辑器不接受 execCommand，且 InputEvent 也无效（读到空）')))));
+  return JSON.stringify({ ok: ok, bucket: bucket, reason: reason, mode: mode,
+    caret: caret, sep: sep, prefixKept: prefixKept, beforeStillThere: beforeStillThere,
+    added: added, addedLines: addedLines,
+    copiesBefore: copiesBefore, copiesAfter: copiesAfter,
+    lines: addedLines, wantLines: wantN, verbatim: verbatim, steps: steps,
     tag: txt(el.tagName), rich: pick.ed.rich, score: pick.s,
-    w: pick.r.w, h: pick.r.h, textLen: txt(text).length, readBack: norm(got).slice(0, 80),
-    census: census.slice(0, 10) });
+    w: pick.r.w, h: pick.r.h, textLen: txt(text).length, beforeLen: beforeN.length,
+    readBack: afterN.slice(0, 80), census: census.slice(0, 10) });
 })`;
 
-/** 纯文本路径（**原样保留**，是本批的兜底）：把 N 行文本写进 composer。
+/** 纯文本路径（兜底）：把 N 行文本**追加**进 composer。
+ *
+ *  ── 2026-10-42 改语义（**追加**，不再是"替换"）────────────────────────────────
+ *    上一版是"全选 → 等一帧 → delete → 逐行插入"，为的是幂等（"一次投喂恒等于一份"）。
+ *    ⇒ 那让第二次投喂把第一次的内容全抹掉（用户真机：「先拉了两个过去，然后又选了两个过去，
+ *      就会覆盖掉第一次的两个」）。现在**去掉全选/delete**，改成"光标移末尾 → 逐行插入"；
+ *    幂等改由 `seq` 去重保证（主进程台账 `feedLedger` 判，**不在页面侧猜**）。
+ *    ⇒ 两个入口（本函数与 `prefillComposer`）都过同一道台账检查（同一份实现，见 feedLedgerGet）。
+ *
  *  @param {string} body 整段文案
  *  @param {object|null} chip 刚才 chip 通道的读数（只为把"为什么没用 chip"记进状态）
- *  @returns {Promise<object>} 与旧版**逐字段相同**的回执（多两个 chip* 字段，旧调用方不受影响） */
-function prefillComposerTextPath(body, chip) {
+ *  @param {number} [seq] 这次投喂的序号；不给就发一个新的（调用方不该依赖"不给"）
+ *  @returns {Promise<object>} 页面回执 + chip* 字段 + `{seq, already, appliedTotal}`
+ */
+function prefillComposerTextPath(body, chip, seq) {
+  const s = feedSeqFor({ seq: seq });
   const chipInfo = {
     chipMode: 'text',
     chipReason: (chip && chip.reason) || 'not-attempted',
     chipRoute: null,
     occurrences: 0
   };
+  /* 幂等（文本路径这一半）：同一个 seq 已经应用过 ⇒ **一个字都不写**。
+   * 这就是"同一次投喂被重试两次不许变成两遍"在兜底路径上的落地（主进程侧判，页面不参与）。 */
+  const done = feedLedgerGet(s);
+  if (done) {
+    state.lastPrefill = Object.assign({
+      ok: true, already: true, reason: null, at: Date.now(), len: body.length,
+      seq: s, appliedTotal: feedLedgerTotal()
+    }, chipInfo, { chipReason: null });
+    return Promise.resolve(Object.assign({
+      ok: true, already: true, reason: null, textLen: body.length, seq: s,
+      appliedTotal: feedLedgerTotal(), landed: 0
+    }, chipInfo, { chipReason: null }));
+  }
+  if (!state.view || !state.view.webContents) {
+    return Promise.resolve(Object.assign({ ok: false, reason: '侧栏视图不可用（重开侧栏再试）', seq: s }, chipInfo));
+  }
   // 超时保护：内核页面加载中时 executeJavaScript 可能永不返回 ✗（本模块踩过同一个坑 ✓）
-  let done = false;
-  const timeout = new Promise((r) => setTimeout(() => { if (!done) r({ ok: false, reason: '执行超时（6s）—— 页面可能没加载完' }); }, 6000));
+  let finished = false;
+  const timeout = new Promise((r) => setTimeout(() => {
+    if (!finished) r({ ok: false, reason: '执行超时（6s）—— 页面可能没加载完' });
+  }, 6000));
   const run = state.view.webContents.executeJavaScript('(' + COMPOSER_PREFILL_JS + ')('
     + JSON.stringify(body) + ')', true).then((raw) => {
-    done = true;
+    finished = true;
     try { return JSON.parse(raw); } catch (e) { return { ok: false, reason: '返回无法解析：' + String(raw).slice(0, 80) }; }
-  }).catch((e) => { done = true; return { ok: false, reason: (e && e.message) || String(e) }; });
+  }).catch((e) => { finished = true; return { ok: false, reason: (e && e.message) || String(e) }; });
   return Promise.race([run, timeout]).then((r) => {
+    const ok = !!(r && r.ok === true);
+    const lines = Array.isArray(body.split('\n')) ? body.split('\n').length : 0;
+    /* 只有**真的写进去了**才记账（失败不记 ⇒ 重试才有机会成功）。 */
+    if (ok) feedLedgerMark(s, lines, 'text', 'composer-prefill');
     // 4b：失败只记状态、不阻断，但**必须留原因** ✓（自检/状态里看得见 ✓）
     state.lastPrefill = Object.assign({
-      ok: !!r.ok, reason: r.reason || null, at: Date.now(), len: body.length
+      ok: ok, reason: (r && r.reason) || null, at: Date.now(), len: body.length,
+      seq: s, appliedTotal: feedLedgerTotal(), landed: ok ? lines : 0
     }, chipInfo);
-    return Object.assign({}, r, chipInfo);
+    return Object.assign({}, r, chipInfo, {
+      seq: s, already: false, appliedTotal: feedLedgerTotal(), landed: ok ? lines : 0
+    });
   });
 }
 
@@ -3272,22 +3461,36 @@ function prefillComposerTextPath(body, chip) {
  * ⑩ 唯一出口：把一段文本投喂进侧栏输入框（**不代替用户发送** ✗）。
  *
  * 两个形态，**先增强后兜底**：
- *   ① **chip**（插件在位时）：调页面全局 `__AIMM_CHIP_INSERT__` ⇒ 里面走
- *      `setDraft('')` + `insertReference(source='reference')` ⇒ 输入框里是 N 个"块"；
- *   ② **纯文本**（插件不在位 / 插件报失败 / 不是 chip 形状 / 超时）：原样走 `COMPOSER_PREFILL_JS`。
+ *   ① **chip**（插件在位时）：调页面全局 `__AIMM_CHIP_INSERT__` ⇒ 里面**追加** N 个"块"
+ *      （光标先移到末尾 → `addFiles` / `insertReference`；**不再清空草稿**）；
+ *   ② **纯文本**（插件不在位 / 插件报失败 / 不是 chip 形状 / 超时）：走 `COMPOSER_PREFILL_JS`
+ *      （同样是**追加**）。
  * 两者的**模型输入逐行相同**（chip 的 ref 就是那行字）；差别只在输入框里的样子，
  * 以及连接符（文本用 `\n`；chip 由内核补空格 —— 见 src/dsh-chip-feed.js 文件头）。
+ *
+ * ── 幂等（2026-10-42）：`seq` 去重，**不是**清空 ─────────────────────────────────
+ *   · `seq` 默认由本模块发号（`feedSeqNext`）；调用方**重试同一次投喂时必须传同一个 seq**
+ *     （`opts.seq`）—— 那是"同一次投喂只生效一次"的唯一依据；
+ *   · 台账里已有这个 seq ⇒ 直接回 `{ok:true, already:true}`（**一个块都不插、一个字都不写**）；
+ *   · 台账 FIFO 上限 64（`FEED_LEDGER_MAX`）：为什么不用"高水位 seq"见 state.feedLedger 注释。
+ *
+ * ── 半途落地时**不再降级写文本** ────────────────────────────────────────────────
+ *   若 chip 通道落了几个块却形状不全（`chip.landed > 0`），这里**不**走文本兜底 ——
+ *   再写一遍就是同一批投喂变两遍（本批要治的正是这个）。失败原因照样可见。
  *
  * ⚠️ **降级必须可见**：不管走哪条，`lastPrefill.chipMode` 都写 'plugin' 或 'text'，
  *    失败原因写 `chipReason`。**绝不允许"静默什么都没做"**（那是本批最反对的失败形态）。
  * @param {string} text
+ * @param {{seq?:number}} [opts] `seq` = 这次投喂的身份（重试时沿用同一个）
  * @returns {Promise<{ok:boolean, reason:(string|null), textLen:number, chipMode:('plugin'|'text'),
- *                    chipRoute:(string|null), occurrences:number}>}
+ *                    chipRoute:(string|null), occurrences:number, seq:number,
+ *                    already:boolean, appliedTotal:number}>}
  */
-function prefillComposer(text) {
+function prefillComposer(text, opts) {
   const body = String(text == null ? '' : text);
-  if (!body.trim()) return Promise.resolve({ ok: false, reason: '没有要送过去的内容' });
-  if (!state.view) return Promise.resolve({ ok: false, reason: '侧栏还没创建（先打开侧边栏）' });
+  const seq = feedSeqFor(opts);
+  if (!body.trim()) return Promise.resolve({ ok: false, reason: '没有要送过去的内容', seq: seq });
+  if (!state.view) return Promise.resolve({ ok: false, reason: '侧栏还没创建（先打开侧边栏）', seq: seq });
   // ⚠️ 已销毁的 view **必须在这里挡住** ✗ —— 本机事故：冒烟链内 G5 三次红、9 条断言同时
   //    `THREW: Object has been destroyed`、视觉断言 0/0（窗口中途死掉）。机制：对已销毁的
   //    webContents 调 executeJavaScript 会**同步抛**，而 `.then/.catch` 接不到同步异常 ⇒
@@ -3296,30 +3499,60 @@ function prefillComposer(text) {
   if ((state.view.isDestroyed && state.view.isDestroyed()) || !state.view.webContents
       || (state.view.webContents.isDestroyed && state.view.webContents.isDestroyed())) {
     const why = '侧栏视图已销毁或不可用（重开侧栏再试）';
-    state.lastPrefill = { ok: false, reason: why, at: Date.now(), len: body.length,
-      chipMode: 'text', chipReason: 'view-destroyed', chipRoute: null, occurrences: 0 };
-    return Promise.resolve({ ok: false, reason: why, chipMode: 'text', chipReason: 'view-destroyed' });
+    state.lastPrefill = { ok: false, reason: why, at: Date.now(), len: body.length, seq: seq,
+      chipMode: 'text', chipReason: 'view-destroyed', chipRoute: null, occurrences: 0, appliedTotal: feedLedgerTotal() };
+    return Promise.resolve({ ok: false, reason: why, chipMode: 'text', chipReason: 'view-destroyed', seq: seq });
   }
   if (state.status !== 'running') {
     state.lastPrefill = { ok: false, reason: '侧栏服务没在运行（状态 ' + state.status + '）', at: Date.now(),
-      len: body.length, chipMode: 'text', chipReason: 'no-service', chipRoute: null, occurrences: 0 };
+      len: body.length, seq: seq, chipMode: 'text', chipReason: 'no-service', chipRoute: null,
+      occurrences: 0, appliedTotal: feedLedgerTotal() };
     return Promise.resolve({ ok: false, reason: '侧栏服务没在运行（状态 ' + state.status + '）',
-      chipMode: 'text', chipReason: 'no-service' });
+      chipMode: 'text', chipReason: 'no-service', seq: seq });
   }
-  return tryChipInsert(body).then((chip) => {
+  /* ⓪ 幂等（**在碰页面之前**短路）：同一个 seq 已经应用过 ⇒ 连 chip 都不试、一个字都不写。
+   *    这正是"同一次投喂被重试两遍"与"用户又拖了一批"的分界线：seq 相同 = 同一次。 */
+  const seen = feedLedgerGet(seq);
+  if (seen) {
+    const info = {
+      ok: true, already: true, reason: null, textLen: body.length, seq: seq,
+      chipMode: seen.mode || 'text', chipRoute: seen.route || null, occurrences: 0,
+      items: 0, landed: 0, appliedTotal: feedLedgerTotal()
+    };
+    state.lastPrefill = Object.assign({ at: Date.now(), len: body.length, chipReason: null }, info);
+    return Promise.resolve(info);
+  }
+  return tryChipInsert(body, seq).then((chip) => {
     if (chip.ok) {
+      /* 记账：`already` 也记（页面说这批早在框里了 ⇒ 它占的块数照样算已投喂）。 */
+      feedLedgerMark(seq, chip.items, 'plugin', chip.route);
       state.lastPrefill = {
-        ok: true, reason: null, at: Date.now(), len: body.length,
-        chipMode: 'plugin', chipReason: null, chipRoute: chip.route, occurrences: chip.occurrences
+        ok: true, already: chip.already === true, reason: null, at: Date.now(), len: body.length,
+        seq: seq, chipMode: 'plugin', chipReason: null, chipRoute: chip.route,
+        occurrences: chip.occurrences, appliedTotal: feedLedgerTotal()
       };
-      /* 回执形状：保留旧的 textLen（渲染层用它报"送进去几个字"），新增 chip 三读数。
+      /* 回执形状：保留旧的 textLen（渲染层用它报"送进去几个字"），新增 chip 三读数 + seq 读数。
        * ⚠️ 这里**不报**"已发送" —— 本工程铁律：谁按发送谁负责（我们不代替用户发送）。 */
       return {
-        ok: true, reason: null, textLen: body.length,
-        chipMode: 'plugin', chipRoute: chip.route, occurrences: chip.occurrences, items: chip.items
+        ok: true, already: chip.already === true, reason: null, textLen: body.length, seq: seq,
+        chipMode: 'plugin', chipRoute: chip.route, occurrences: chip.occurrences, items: chip.items,
+        landed: chip.items, appliedTotal: feedLedgerTotal()
       };
     }
-    return prefillComposerTextPath(body, chip);
+    /* ⚠️ **落了块就不许再写文本**：再写一遍 = 同一批投喂变两遍（本批要治的就是这个）。
+     *    失败仍然**可见**（ok:false + reason），绝不静默。 */
+    if (chip.landed > 0) {
+      feedLedgerMark(seq, chip.landed, 'plugin', chip.route);
+      const info = {
+        ok: false, already: false, reason: chip.reason, textLen: body.length, seq: seq,
+        chipMode: 'plugin', chipReason: chip.reason, chipRoute: chip.route,
+        occurrences: chip.occurrences, items: chip.items, landed: chip.landed,
+        appliedTotal: feedLedgerTotal()
+      };
+      state.lastPrefill = Object.assign({ at: Date.now(), len: body.length }, info);
+      return info;
+    }
+    return prefillComposerTextPath(body, chip, seq);
   });
 }
 
@@ -3367,16 +3600,19 @@ module.exports = {
   // 测试专用（读数接缝：见 setMeasureProbeForTest 的注释 —— 冒烟环境页面视口不重排，
   // 不换读数这条闭环在门禁里跑不到 ⇒ 会变成"永远不判"的空转 ✗）
   __setMeasureProbeForTest: setMeasureProbeForTest,
-  // ⑩ 把对话预填进侧栏输入框（不代替用户发送）
+  // ⑩ 把对话预填进侧栏输入框（不代替用户发送）。`prefillComposer(text, {seq})` ——
+  //   `seq` 是**这次投喂的身份**（重试时沿用同一个才能"只生效一次"），不给就发一个新的。
   prefillComposer, COMPOSER_PREFILL_JS,
-  // ⑩-b 「拖节点 ⇒ 真 chip」（2026-10-41）：这四样导出给**冒烟域 30** 与自检读，
-  //   —— 断言验的是**同一份实现**（不另写"测试用的第二条通道"）：
+  // ⑩-b 「拖节点 ⇒ 真 chip」（2026-10-41，2026-10-42 改**追加 + seq 去重**）：这些导出给**冒烟域 30**
+  //   与自检读 —— 断言验的是**同一份实现**（不另写"测试用的第二条通道"）：
   //     · CHIP_INSERT_JS   —— 页面侧那一小段（取全局句柄 → 调 → 回 JSON 字符串）
-  //     · chipPayloadFor   —— 文案 ⇒ chip 载荷（纯逻辑在 src/dsh-chip-feed.js，这里只是壳）
+  //     · chipPayloadFor   —— 文案 + seq ⇒ chip 载荷（纯逻辑在 src/dsh-chip-feed.js，这里只是壳）
   //     · tryChipInsert    —— 一次 chip 尝试（失败只返回结构化原因，绝不阻断）
   //     · chipFeedStatus   —— 载荷在位读数（内容级；5s 缓存）
+  //     · feedLedgerView   —— 投喂台账读数（seq 列表 + 累计块数；幂等的**唯一**依据，只读）
   CHIP_INSERT_JS, chipPayloadFor, tryChipInsert, chipFeedStatus,
-  // 兜底路径也导出：冒烟域 30 要证明"chip 不成立时**真的把文本写进去了**且 chipMode='text' 可见"
+  feedLedgerView, feedLedgerTotal, FEED_LEDGER_MAX,
+  // 兜底路径也导出：冒烟域 30 要证明"chip 不成立时**真的把文本追加进去了**且 chipMode='text' 可见"
   //   —— 那一格不许另写一份文本写入（复制品会把断言变成自证）。
   prefillComposerTextPath,
   // 加载失败判定（r12 收口批）—— 三样都是**产品路径本体**，导出只为让门禁与探针走同一份实现

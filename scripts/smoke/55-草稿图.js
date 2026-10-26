@@ -40,6 +40,51 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+/* ── 判别力证明的注入开关（照域 39 的 clip-env-up / clip-env-down 先例）─────────────
+ * 本机锁屏时"窗口置顶这件事能不能测"这个前提拿不到 ⇒ 只能把探针结论打桩补出来。
+ * 打桩档**只改探针的结论**，产品那一半照样真读 ⇒ "环境说可用、产品没置顶"仍然判红。 */
+const INJECT = process.env.MM_SMOKE_INJECT || '';
+const MY_KEY = (k) => INJECT.split(',').indexOf('55-' + k) >= 0;
+
+/** 【独立环境探针】这个会话能不能给窗口置顶（topmost）？
+ *  为什么需要它（2026-10-26 实测，不是推测）：域 55 第 1 条要判"草稿窗置顶"，而**裸窗口**都拿不到 ——
+ *    `new BrowserWindow({ show:false, alwaysOnTop:true }).isAlwaysOnTop()` ⇒ `false`，
+ *    `setAlwaysOnTop(true)` 之后仍 `false`；同期 `LogonUI.exe` 自 18:54:11 起在跑（会话被锁），
+ *    锁屏/安全桌面上拿不到 `WS_EX_TOPMOST`。⇒ 那是**环境**，不是产品。
+ *  ⇒ 探针不可用 ⇒ 这一档记**未验证**（第三态，口径见 scripts/smoke-assertions.js 顶部）；
+ *    探针可用而产品窗口不是置顶 ⇒ **照样判红**（丙：第三态不许把产品那半弱化）。
+ *  ⚠️ 探针窗口一律 `show:false` + `focusable:false`，量完**立刻 destroy**（不碰用户的桌面）。 */
+async function aotEnvProbe() {
+  if (MY_KEY('aot-env-down')) {
+    return { available: false, measured: false, created: '打桩', afterSet: '打桩',
+      how: '（注入：探针被打桩成不可用）',
+      reason: '注入 MM_SMOKE_INJECT=55-aot-env-down（判别力证明：第三态确实会亮、且不计入红）' };
+  }
+  if (MY_KEY('aot-env-up')) {
+    return { available: true, measured: false, created: '打桩', afterSet: '打桩',
+      how: '（注入：探针被打桩成可用）',
+      reason: '注入 MM_SMOKE_INJECT=55-aot-env-up（判别力证明：环境说可用时，产品那半照样真判）' };
+  }
+  let BW = null;
+  try { BW = require('electron').BrowserWindow; } catch (e) { BW = null; }
+  if (!BW) return { available: false, measured: true, how: '主进程拿不到 electron.BrowserWindow',
+    reason: '拿不到 BrowserWindow ⇒ 窗口属性根本判不了' };
+  let w = null, created = null, afterSet = null, vis = null, threw = '';
+  try {
+    w = new BW({ show: false, focusable: false, skipTaskbar: true, width: 320, height: 200, alwaysOnTop: true });
+    try { created = w.isAlwaysOnTop(); } catch (e) { created = 'threw:' + ((e && e.message) || e); }
+    try { w.setAlwaysOnTop(true); afterSet = w.isAlwaysOnTop(); } catch (e) { afterSet = 'threw:' + ((e && e.message) || e); }
+    try { vis = w.isVisible(); } catch (e) { vis = 'threw'; }
+  } catch (e) { threw = String((e && e.message) || e); }
+  try { if (w && !w.isDestroyed()) w.destroy(); } catch (e) { /* 已没了就忽略 */ }
+  const available = created === true && afterSet === true;
+  return { available: available, measured: true, created: created, afterSet: afterSet, visible: vis, threw: threw,
+    how: '裸 BrowserWindow（show:false/focusable:false）按选项置顶 + setAlwaysOnTop(true) 后各读一次 isAlwaysOnTop()',
+    reason: available ? '' : ('裸窗口拿不到 topmost（创建时 isAlwaysOnTop=' + JSON.stringify(created)
+      + '，setAlwaysOnTop(true) 之后=' + JSON.stringify(afterSet) + (threw ? '，创建抛错=' + threw : '')
+      + '，窗口可见=' + JSON.stringify(vis) + '）⇒ 这个会话**测不了**窗口置顶属性（锁屏/安全桌面的已知行为）') };
+}
+
 /** 本域的样本项目（小树：89 个节点 ⇒ 内容尺寸不会被屏幕工作区夹住） */
 const PROJ = 'book-wifi7';
 
@@ -256,13 +301,31 @@ const assertions = [
           + ' 命中元素=' + (at ? (at.tagName + '.' + (at.className || '')) : 'null')
           + ' rect=' + Math.round(r.width) + 'x' + Math.round(r.height) });
       })()`);
-      const okProps = w.alwaysOnTop === true && w.parentWindow === false;
+      /* 这条判**三件互不重叠的事**，第三态只能覆盖其中**真的测不了**的那一件：
+       *   ① 置顶（isAlwaysOnTop）—— 需要环境能拿 topmost 才判得了；
+       *   ② 无父窗（getParentWindow()===null）—— 与置顶无关，任何环境都判得了；
+       *   ③ 页面真画出来了（根节点标题 + elementFromPoint 命中自身）—— 与窗口属性无关。
+       * ⇒ 环境不可用时**只**把 ① 降级成"未验证"，②③ 照旧真判（fail-safe：任何一半红 ⇒ 本条红）。 */
+      const env = await aotEnvProbe();
+      const topOk = w.alwaysOnTop === true;
+      const noParentOk = w.parentWindow === false;
+      const coreOk = page.rootTopic === SMALL.topic && hit.ok;
+      const propText = '置顶=' + w.alwaysOnTop + ' 有父窗=' + w.parentWindow;
+      const tail = ' ｜ 子树=' + SMALL.id + '(' + SMALL.size + ' 节点) 页面根标题=' + JSON.stringify(page.rootTopic)
+        + ' 对上=' + (page.rootTopic === SMALL.topic) + ' 页面节点=' + page.rendered
+        + ' ｜ ' + hit.text;
+      if (noParentOk && coreOk && !topOk && env.available === false) {
+        return { ok: true,
+          unverified: '窗口置顶（isAlwaysOnTop）在本机测不了：' + env.reason,
+          text: propText + ' ｜ 环境探针=' + env.how
+            + ' · 裸窗口读数=' + JSON.stringify({ created: env.created, afterSet: env.afterSet, visible: env.visible })
+            + ' ⇒ **未验证**（环境不可用 ⇒ 不当产品红；第三态口径见 scripts/smoke-assertions.js 顶部）'
+            + ' ｜ 另外两半**仍然真判且为绿**：无父窗=' + noParentOk + tail };
+      }
       return {
-        ok: okProps && page.rootTopic === SMALL.topic && hit.ok,
-        text: '置顶=' + w.alwaysOnTop + ' 有父窗=' + w.parentWindow
-          + ' ｜ 子树=' + SMALL.id + '(' + SMALL.size + ' 节点) 页面根标题=' + JSON.stringify(page.rootTopic)
-          + ' 对上=' + (page.rootTopic === SMALL.topic) + ' 页面节点=' + page.rendered
-          + ' ｜ ' + hit.text
+        ok: topOk && noParentOk && coreOk,
+        text: propText + (env.available ? '（环境探针：可判 ⇒ 置顶那半真判）'
+          : '（环境探针：不可用 ⇒ 置顶那半照样真读，不许当绿；裸窗口读数 ' + JSON.stringify({ created: env.created, afterSet: env.afterSet }) + '）') + tail
       };
     }
   },

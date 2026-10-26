@@ -36,6 +36,52 @@ let SNAP0 = null;
 let FP = '';                    // 草稿窗指纹（**编辑会改内容 ⇒ 指纹会变**，每次现问主进程要）
 let BASE_NODES = 0;             // 开窗时主进程那份的节点数
 let BASE_TOPIC = '';
+/** 真键盘打进草稿窗正文的那串字（纯 ASCII 字母数字：`char` 事件对 `<` `>` 依赖键盘布局，
+ *  用它们会把"判据坏"与"输入法/布局不一样"混在一起） */
+const TOKEN56 = 'draftRealDetailQ7';
+
+/** 草稿窗那个 **BrowserWindow**（真输入要它：`ctx.input` 绑的是主窗）。
+ *  `ctx.draft` 只给读数/执行口，不给窗口句柄 ⇒ 从 `BrowserWindow.getAllWindows()` 里认；
+ *  认不出来就返回 null，由调用方**响亮判红**（不许静默退化成"设 value"）。 */
+function draftWindowOf(ctx) {
+  let BrowserWindow = null;
+  try { BrowserWindow = require('electron').BrowserWindow; } catch (e) { return null; }
+  if (!BrowserWindow || typeof BrowserWindow.getAllWindows !== 'function') return null;
+  const others = BrowserWindow.getAllWindows().filter((w) => w && !w.isDestroyed() && w !== ctx.win);
+  const titled = others.filter((w) => {
+    try { return /草稿图/.test(String(w.getTitle() || '')); } catch (e) { return false; }
+  });
+  return titled[0] || others[0] || null;
+}
+
+/** 用**同一个** `scripts/smoke-input.js` 给草稿窗造一个真输入驱动（不新写第二套实现）。
+ *  `isSmoke` 从主窗那个驱动**继承**（不硬编码 true）：非冒烟路径下这里必须抛。 */
+function draftInputDriver(ctx) {
+  const win = draftWindowOf(ctx);
+  if (!win) return { ok: false, text: '拿不到草稿窗的 BrowserWindow（ctx.draft.list() 有 '
+    + ctx.draft.list().length + ' 张）⇒ 真输入无从发起，判红' };
+  try {
+    const driver = require('../smoke-input.js').createDriver({
+      isSmoke: !!(ctx.input && ctx.input.isSmoke === true),
+      win: win
+    });
+    return { ok: true, driver: driver };
+  } catch (e) {
+    return { ok: false, text: '造草稿窗真输入驱动失败：' + ((e && e.message) || e) };
+  }
+}
+
+/** 两段文本的**插入段**（最长公共前缀 + 最长公共后缀夹出来的那一段）。
+ *  真键盘插在**光标处**（点格子中心 ⇒ 常在正文中间），"末尾多了什么"不是这次的改动。 */
+function draftDiffInserted(a, b) {
+  const A = String(a == null ? '' : a), B = String(b == null ? '' : b);
+  let p = 0;
+  while (p < A.length && p < B.length && A.charAt(p) === B.charAt(p)) p++;
+  let s = 0;
+  while (s < A.length - p && s < B.length - p
+    && A.charAt(A.length - 1 - s) === B.charAt(B.length - 1 - s)) s++;
+  return B.slice(p, B.length - s);
+}
 
 function execJson(ctx, js) {
   return ctx.exec(js).then((raw) => {
@@ -311,11 +357,26 @@ const assertions = [
     }
   },
   {
-    name: '草稿窗能改正文：改 detail → 保存 ⇒ 主进程那条导出路径写出的 json 里有这段正文（不读页面自报）',
+    name: '草稿窗能改正文：**真键盘**逐字打进「详情」格（不是设 value）⇒ 焦点在格子上、.value 真的变、'
+      + 'Enter 是**换行**不是关框 ⇒ 保存后主进程那条导出路径写出的 json 里有这段正文（不读页面自报）',
     run: async (ctx) => {
       if (!FP) return { ok: false, text: '上一条没开出草稿窗（顺序依赖）' };
       await closeDialogs(ctx);
-      // 选一个非根节点（更像真人操作；根也能改，但不该只测根）
+      /* ⚠️ 本条是 2026-10-26 改的，改的是**判据本身**，理由在用户原话里：
+       *   「编辑节点详情功能有问题，不能输入，**你的测试形同虚设**」。
+       * 改前这里是 `document.getElementById('edit-detail').value = X` 一次性设值、再读回来比 ——
+       * 那种写法**整条绕过** Chromium 的输入管线（命中测试 / 焦点 / 键盘 / 输入法）：
+       *   格子是 readOnly、被别的层盖住、在屏幕外、`input` 事件根本没接，断言**照样绿**。
+       * 实测证据（本批注入实验）：给 `#edit-detail` 加 `readonly` 之后，
+       *   · `focus()` **仍然成功**、`elementFromPoint` **仍然命中它自己**、
+       *   · 只有"真键盘打字"会让 `.value` 不动 ⇒ `value = X` 那套判据**永远发现不了**。
+       * ⇒ 现在走 `webContents.sendInputEvent`（真鼠标 / 真键盘），并额外钉住 **Enter 的语义**：
+       *   正文格里的 Enter 必须是换行（改前它会把整个框关掉并保存 ⇒ 多行正文永远打不出来，
+       *   中文输入法"选词上屏"那一下也是 Enter ⇒ 用户看到的"不能输入"）。
+       * ⚠️ 草稿窗是**另一个 BrowserWindow**，`ctx.input` 绑的是主窗 ⇒ 这里用
+       *   `BrowserWindow.getAllWindows()` 找到它，再用**同一个** `scripts/smoke-input.js`
+       *   造一个驱动（不新写第二套真输入实现）。 */
+      // 选一个非根节点（更像真人操作；根也能改，但不该只测根）⇒ 点「编辑节点」开框
       const sel = await draftJson(ctx, `(function () {
         var flat = window.MM.draftEditor().nodesFlat;
         var rid = window.MM.draftEditor().rootId;
@@ -327,35 +388,103 @@ const assertions = [
         el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
         document.getElementById('btn-edit').click();
         return JSON.stringify({ ok: document.getElementById('edit-dialog').style.display === 'flex',
-          id: other.id, topic: other.topic, before: document.getElementById('edit-detail').value });
+          id: other.id, topic: other.topic });
       })()`);
       if (!sel.ok) return { ok: false, text: '打不开第二个节点的编辑框：' + JSON.stringify(sel).slice(0, 200) };
-      const detail = '<p>草稿窗改的正文 <strong>56</strong></p>';
-      await draftJson(ctx, `(function () {
-        document.getElementById('edit-detail').value = ${JSON.stringify(detail)};
-        document.getElementById('edit-ok').click();
-        return JSON.stringify({ ok: true });
+      if (!ctx.input) return { ok: false, text: 'ctx.input 不可用（真输入底座没起来 ⇒ 采不到真值，判红）' };
+      const drv = draftInputDriver(ctx);
+      if (!drv.ok) return { ok: false, text: drv.text };
+      // ── 格子的几何 + 命中（真点之前先证明"这个点此刻压的就是它"）──
+      const g = await draftJson(ctx, `(function () {
+        var ta = document.getElementById('edit-detail');
+        if (!ta) return JSON.stringify({ ok: false, text: '没有 #edit-detail' });
+        var r = ta.getBoundingClientRect();
+        var x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+        var at = document.elementFromPoint(x, y);
+        return JSON.stringify({ ok: true, x: x, y: y, w: Math.round(r.width), h: Math.round(r.height),
+          at: at ? (at.tagName + (at.id ? '#' + at.id : '')) : 'null', hit: !!(at && at.id === 'edit-detail'),
+          readOnly: !!ta.readOnly, before: String(ta.value == null ? '' : ta.value) });
       })()`);
+      if (!g.ok) return { ok: false, text: g.text || JSON.stringify(g).slice(0, 200) };
+      if (!g.hit) return { ok: false, text: '正文格中心命中=' + g.at + '（不是格子自己 ⇒ 被别的层盖住 / 不在屏上）' };
+      // ── 真鼠标点进格子 + 真键盘逐字 ──
+      await drv.driver.click({ x: g.x, y: g.y });
+      await drv.driver.settle();
+      const focused = await draftJson(ctx, '(function () { var a = document.activeElement;'
+        + ' return JSON.stringify({ ok: true, active: a ? (a.id || a.tagName) : "none" }); })()');
+      await drv.driver.typeText(TOKEN56);
+      await drv.driver.settle({ delayMs: 120 });
+      const typed = await draftJson(ctx, '(function () { var ta = document.getElementById("edit-detail");'
+        + ' return JSON.stringify({ ok: true, value: String(ta.value == null ? "" : ta.value) }); })()');
+      // ── 真的按一下 Enter（三段：keyDown + char + keyUp，缺一段字符层什么都不插）──
+      await drv.driver.sendList([
+        { type: 'keyDown', keyCode: 'Return', modifiers: [] },
+        { type: 'char', keyCode: '\r' },
+        { type: 'keyUp', keyCode: 'Return', modifiers: [] }
+      ], 0);
+      await drv.driver.settle({ delayMs: 150 });
+      const afterEnter = await draftJson(ctx, '(function () {'
+        + ' var d = document.getElementById("edit-dialog"); var ta = document.getElementById("edit-detail");'
+        + ' return JSON.stringify({ ok: true, open: !!(d && d.style.display === "flex"),'
+        + ' value: String(ta.value == null ? "" : ta.value),'
+        + ' active: (document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : "none") }); })()');
+      // ── 点「保存」（真鼠标；点不中才退回 .click()）──
+      /* ⚠️ 草稿窗的尺寸由**内容 bbox** 决定（`w11 a：不记忆位置大小、按内容定`），
+       * 而编辑框比那张小窗高（实测：视口 805×251 / 按钮矩形 t=290 h=33 ⇒ 落在视口**外**）。
+       * ⇒ 真点之前得先把按钮**滚进视口**（`.mm-ed-box` 是 `max-height:88vh; overflow:auto`，
+       * 是它自己在滚）。这不是给判据放水：滚完仍然要求 `elementFromPoint` **命中按钮自己**
+       * 才发真鼠标；命不中才退回 `.click()` 并在报文里如实写"没点中"。 */
+      const saveBtnPoint = () => draftJson(ctx, '(function () { var b = document.getElementById("edit-ok");'
+        + ' var r = b.getBoundingClientRect(); var x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);'
+        + ' var at = document.elementFromPoint(x, y);'
+        + ' return JSON.stringify({ x: x, y: y, hit: !!(at && (at === b || (at.closest && at.closest("button") === b))),'
+        + '   at: at ? (at.tagName + (at.id ? "#" + at.id : "") + (at.className ? "." + at.className : "")) : "null",'
+        + '   rect: { l: Math.round(r.left), t: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },'
+        + '   vw: window.innerWidth, vh: window.innerHeight }); })()');
+      let okPt = await saveBtnPoint();
+      let clickOk = false, scrolled = false;
+      if (okPt.hit) { await drv.driver.click({ x: okPt.x, y: okPt.y }); await drv.driver.settle(); clickOk = true; }
+      else {
+        await draftExec(ctx, '(function () { var b = document.getElementById("edit-ok");'
+          + ' if (b && b.scrollIntoView) b.scrollIntoView({ block: "center" }); return 1; })()');
+        await new Promise((r) => setTimeout(r, 160));
+        okPt = await saveBtnPoint();
+        scrolled = true;
+        if (okPt.hit) { await drv.driver.click({ x: okPt.x, y: okPt.y }); await drv.driver.settle(); clickOk = true; }
+      }
+      if (!clickOk) await draftExec(ctx, '(function () { document.getElementById("edit-ok").click(); return 1; })()');
       const page = await waitDraft(ctx, `(function () {
         var t = window.MM.draftPageTree();
         var hit = null;
         (function walk(n) { if (!n || hit) return; if (String(n.topic) === ${JSON.stringify(sel.topic)}) { hit = n; return; } (n.children || []).forEach(walk); })(t);
-        return JSON.stringify({ ok: !!(hit && String(hit.detail || '').indexOf('草稿窗改的正文') >= 0),
+        return JSON.stringify({ ok: !!(hit && String(hit.detail || '').indexOf(${JSON.stringify(TOKEN56)}) >= 0),
           detail: hit ? String(hit.detail || '') : '(没找到那个节点)' });
       })()`, 60);
       const ex = exportJson(ctx);
       if (!ex.ok) return { ok: false, text: ex.text };
       const node = findInTree(ex.tree, sel.topic);
-      const inExport = !!(node && String(node.detail || '').indexOf('草稿窗改的正文') >= 0);
+      const inExport = !!(node && String(node.detail || '').indexOf(TOKEN56) >= 0);
       const auth = authoritative(ctx);
       const nodesMatch = auth.nodes === BASE_NODES;
+      const focusOk = focused.active === 'edit-detail';
+      const valueChanged = typed.value !== g.before;
+      const hasToken = typed.value.indexOf(TOKEN56) >= 0;
+      const ins = draftDiffInserted(typed.value, afterEnter.value);
+      const newlineOk = ins === '\n' || ins === '\r' || ins === '\r\n';
+      const stillOpen = afterEnter.open === true;
       return {
-        ok: page.ok && inExport && nodesMatch,
-        text: '页面认出正文=' + page.ok + '（' + String(page.detail).slice(0, 56) + '）'
-          + ' ｜ 主进程导出 json 里有这段=' + inExport
-          + '（导出节点数=' + countNodes(ex.tree) + ' / 主进程 nodes=' + auth.nodes + '）'
-          + ' ｜ 改正文不增删节点=' + nodesMatch
-          + ' ｜ 原正文=' + JSON.stringify(String(sel.before).slice(0, 40))
+        ok: focusOk && valueChanged && hasToken && stillOpen && newlineOk && clickOk && page.ok && inExport && nodesMatch,
+        text: '真点中心 {' + g.x + ',' + g.y + '}（' + g.w + '×' + g.h + '，命中=' + g.at + '）⇒ 焦点=' + focused.active
+          + '（期望 edit-detail ⇒ ' + focusOk + '）'
+          + ' ｜ 真键盘 ' + JSON.stringify(TOKEN56) + '（' + TOKEN56.length + ' 个 char）⇒ .value '
+          + g.before.length + ' → ' + typed.value.length + ' 字（变了=' + valueChanged + '、含那串字=' + hasToken + '）'
+          + ' ｜ 再按 Enter ⇒ 框还开着=' + stillOpen + '、插进的是换行=' + newlineOk + '（插入段=' + JSON.stringify(ins) + '）'
+          + ' ｜ 点「保存」真点中=' + clickOk + (scrolled ? '（先滚进视口）' : '')
+          + '（点=' + JSON.stringify({ x: okPt.x, y: okPt.y })
+          + ' 命中=' + okPt.at + ' 按钮矩形=' + JSON.stringify(okPt.rect) + ' 视口=' + okPt.vw + '×' + okPt.vh + '）'
+          + ' ｜ 页面树认出正文=' + page.ok + '（' + String(page.detail).slice(0, 40) + '…）'
+          + ' ｜ 主进程导出 json 里有那串字=' + inExport + ' ｜ 不增删节点=' + nodesMatch
+          + '（旧判据是 `value = X` 再读回来比 —— 那种写法在 `readonly` 下照样绿，见本条的注释）'
       };
     }
   },

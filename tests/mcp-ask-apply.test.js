@@ -79,10 +79,12 @@ const tool = (name) => mcp.TOOLS.filter((t) => t.name === name)[0];
  * 一、工具面：存在 / 形状 / 三处同源
  * ========================================================================== */
 describe('W21-M1 工具存在且形状对（必填只有 project/id：答案是否为空由 CLI 判）', () => {
-  it('M1.1 工具数 53、名字唯一、`ask_apply` 在里面（写死值是交付判据，见文件头）', () => {
+  it('M1.1 工具数 54、名字唯一、`ask_apply` 在里面（写死值是交付判据，见文件头）', () => {
     // 2026-10-20（`I-1`）：52 → 53 —— 新增 `features`（`features` 的只读 MCP 透传）。
-    expect(mcp.TOOLS.length).toBe(53);
-    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(53);
+    // 2026-10-26（`20261048` 视频摘要）：53 → 54 —— 新增 `video_summary`（`video-summary` 的只读透传；
+    //   同一批给 registry 加了 1 条命令 ⇒ `MCP_GAP_DEBT` 不动、上限不抬，工具就**必须**补一个）。
+    expect(mcp.TOOLS.length).toBe(54);
+    expect(new Set(mcp.TOOLS.map((t) => t.name)).size).toBe(54);
     expect(tool('ask_apply')).toBeTruthy();
   });
 

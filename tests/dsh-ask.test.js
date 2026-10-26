@@ -141,7 +141,8 @@ describe('子进程参数与环境', () => {
   });
 
   it('运行包不可用 ⇒ **响亮抛错**（不返回一个半成品路径让子进程"失败得莫名其妙"）', () => {
-    expect(() => dshAsk.resolveAskRuntime({ repoRoot: 'X:\\nope', userDataPath: 'Y:\\nope', verifyHashes: false })).toThrow();
+    // 夹具纪律：别用映射网络盘做"不可用"夹具 —— 盘不可达时 fs.existsSync 一次要 9s+（X: 实测 9303ms、复测 21067ms，2026-10-15，对照本地路径 <1ms）⇒ resolveRuntime 的多次存在性探测被放大成链内超时；一律用快速失败的本地不存在路径（Z: 已被映射也不许用，见 docs/INCIDENTS.md 事故三）。
+    expect(() => dshAsk.resolveAskRuntime({ repoRoot: 'C:\\__definitely_not_exist_dsh_ask_fixture__\\nope', userDataPath: 'C:\\__definitely_not_exist_dsh_ask_fixture__\\nope2', verifyHashes: false })).toThrow();
   });
 
   it('真仓库里解析到的就是 vendor/dsh 那一份（单一真源，不自己拼路径）', () => {

@@ -6,7 +6,7 @@
  * 由冒烟断言发现；这里用单测固化，不需要 Electron 即可回归。
  * ============================================================ */
 import { describe, it, expect } from 'vitest';
-import { fuzzyScore, rankPalette, DEFAULT_LIMIT } from '../src/palette-rank.js';
+import { fuzzyMatch, fuzzyScore, rankPalette, DEFAULT_LIMIT } from '../src/palette-rank.js';
 
 const NODES = [
   { kind: 'node', id: 'a', label: 'TCP 连接管理' },
@@ -93,10 +93,31 @@ describe('palette-rank.rankPalette', () => {
     expect(r[0].label).toBe('TCP 连接管理');                     // 且开头的排前面
   });
 
-  it('有查询时过滤掉不匹配项', () => {
+  it('有查询时过滤掉不匹配项（口径 = 引擎自己的 fuzzyMatch，不是「含该串」）', () => {
     const r = rankPalette(ALL, 'TCP', 500);
-    expect(r.every((x) => /tcp/i.test(x.label))).toBe(true);
+    // ⚠️ 旧写法是 `r.every((x) => /tcp/i.test(x.label))` —— 那是**由实现决定的口径**里最窄的一种：
+    // 引擎是**子序列**匹配（fuzzyMatch 的注释：任何子串都是子序列，反之不然）⇒ 一旦 fixture 里出现
+    // "子序列命中、但不含连续 tcp"的标签，旧断言就会把**正确结果判成错** ✗。本 fixture 恰好只含子串，
+    // 所以它一直绿 —— 这正是"绿得没有判别力"。现在期望**现算**：同一个谓词 + 同一批候选。
+    const hits = ALL.filter((x) => fuzzyMatch('TCP', x.label) !== null);
+    expect(r.map((x) => x.label).sort()).toEqual(hits.map((x) => x.label).sort());  // 集合相等（顺序由排序用例管）
+    expect(r.every((x) => fuzzyMatch('TCP', x.label) !== null)).toBe(true);        // 逐条都在命中集里
     expect(r.some((x) => x.label === 'DNS 域名系统')).toBe(false);
+  });
+
+  it('命中口径是**子序列**、不是「含该串」（真例：标签里没有连续的 tcp 也算命中）', () => {
+    // 真例来源：comnet 889 节点里搜 TCP 共 15 条命中，其中 2 条标签根本不含连续的 "tcp"
+    // （id `5-1-sp-strict-priority-…`、`3-8-openwrt-etc-passwd-…`）—— 旧口径会把它们判成错 ✗。
+    // 这就是本轮改掉 palette 那两条断言时用的同一批事实（域 08 的"现算期望"断言同口径 ✓）。
+    const entries = [
+      { kind: 'node', id: 'strict', label: 'strict priority 严格优先级' },   // t…c…p 子序列命中（无连续子串）
+      { kind: 'node', id: 'passwd', label: 'openwrt /etc/passwd 详解' },     // 同上
+      { kind: 'node', id: 'dns', label: 'DNS 域名系统' }                     // 不命中
+    ];
+    const r = rankPalette(entries, 'TCP', 500);
+    expect(r.map((x) => x.label)).toEqual(['strict priority 严格优先级', 'openwrt /etc/passwd 详解']);
+    expect(r.every((x) => !/tcp/i.test(x.label))).toBe(true);   // 两条都不是子串命中 ⇒ 旧口径必红 ✓
+    expect(fuzzyMatch('TCP', 'DNS 域名系统')).toBeNull();
   });
 
   it('同分时命令优先于节点（有查询）', () => {

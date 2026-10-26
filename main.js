@@ -37,6 +37,18 @@ const PROCESS_T0 = Date.now();
 /** 冒烟模式下的**出口调用账**（`ctx.openFileLog()` 交给断言）：见 `app:open-file` handler 里的说明。
  *  非冒烟模式下这个数组**永远是空的**（每次 push 都在 `if (isSmoke)` 里）⇒ 不产生任何行为差异 ✓。 */
 const SMOKE_OPEN_FILE_LOG = [];
+/* 【文件链接的打开语义批】出口那一跳的**可换实现**（默认 = 真的 Electron API / 真的 `spawn`）。
+ * 为什么要有这个缝（不是"顺手加的测试钩子"）：本批新增的两档动作，"做对了"与"做假了"在
+ * **无头环境里看起来一样** ——
+ *   · 「打开方式」若被写成"再打开一次"，调的是 `shell.openPath`：不报错、界面没有异常，
+ *     用户要的那一栏却根本没出现；真要弹一次，就会在跑验证的这台机器上**抢焦点**
+ *     （本工程的 headless 纪律：门禁里绝不弹系统对话框 / 文件管理器）；
+ *   · 「打开」那一跳的失败原因是 `shell.openPath` 的**返回值**（非空串 = 打不开）。
+ *     "把返回值吞掉"这种假实现只能靠**把那个返回值造出来**才抓得住。
+ * ⇒ 三个执行器（`openPath` / `reveal` / 起进程）只在 `--smoke` 下可换：换掉之后**真的执行器是谁、
+ *   拿到什么 argv、把什么结果带回去**都成为主进程侧可观测的事实（账见 `ctx.openFileLog`），
+ *   而生产路径（非冒烟）拿不到这条缝 —— 它一行都不读（`smokeImplOf()` 里第一句就是 isSmoke 判断）。 */
+const OPEN_IMPL = { openPath: null, reveal: null, spawn: null };
 /* 选区拖拽/虚影的**读出口 + 脚本化指针注入通道**（2026-10-33 批3）。
  * 为什么需要：虚影的判据只能是**主进程侧的原生读数**（`ghost.getVisible()/getBounds()`、
  * `contentView.children` 的构成），而冒烟里**没有真光标**（`screen.getCursorScreenPoint()` 取到的是
@@ -604,7 +616,10 @@ const uiState = require('./src/ui-state.js');
 // （上限/去重/失败口径只有一处：src/heat-sensor.js），不另起一套写盘逻辑。
 const heatSensor = require('./src/heat-sensor.js');
 
-// --export-image <项目> <输出.png>：离屏渲染整树并截图导出（headless 可测）
+// --export-image <项目> <输出.png>：离屏渲染**整棵树**并导出 PNG（headless 可测）。
+// 实现只有一份：本模式与菜单项「导出当前导图为 PNG…」都调 `exportMapPng`（见该函数头注释）。
+// ⚠️ 与 `--export-window` 的分工：本模式 = **只出导图**（整树包围盒，侧栏本来就不在 capturePage 里）；
+//    `--export-window` = **整窗合成**（主页面 + 原生侧栏 view），用来"看见侧栏"。两者不是一件事。
 const exportImageArgs = (() => {
   const i = process.argv.indexOf('--export-image');
   if (i >= 0) return { project: process.argv[i + 1], out: process.argv[i + 2] };
@@ -614,6 +629,7 @@ const exportImageArgs = (() => {
 // --export-window <输出.png>：整窗截图（主页面 + **原生侧栏 view** 合成），尺寸取窗口实际大小。
 // 为什么需要：侧栏是原生 WebContentsView，主页面 capturePage() 里没有它 ✗ —— 想"看到侧栏"
 // 只能分别截图再合成（scripts/vision/window-shot.js）。本模式会**接管驻留服务**（不孵化、不收割）。
+// 与 `--export-image` 的区别见上一条注释（那条只出导图，不带侧栏）。
 const exportWindowArgs = (() => {
   const i = process.argv.indexOf('--export-window');
   if (i >= 0) return { out: process.argv[i + 1] };
@@ -1301,28 +1317,397 @@ async function importJsonDialog(win) {
   } catch (e) { toast(win, '导入失败: ' + e.message, true); }
 }
 
+/* ============================================================
+ * 导出导图 PNG —— **唯一实现**（两个入口都调它）
+ * ------------------------------------------------------------
+ * 用户原话（2026-10-26）：「**导出当前导图为 png 功能也有问题，它是直接截图窗口而不是渲染导图**」。
+ *
+ * 病根（代码可证，改前）：菜单项 `exportImageDialog` 与 `--export-image` 模式**各写了一份**
+ * 同一段代码：`expand_to_depth(999)` → 等 1.5s → `captureRetry(win)`。
+ * 而 `captureRetry` 里是 **`win.webContents.capturePage()`（不带 rect）** ⇒
+ * 只截**窗口可视区域**。于是"先展开全树、再只截窗口那么大一块" —— 一棵高 20000px 的导图，
+ * 导出后只有窗口那么高，**下面全丢**。两条入口一起错（本条顺便纠正一个流传中的说法：
+ * `--export-image` 当时**并不是**好的那条，它与菜单项逐字同病）。
+ *
+ * 现在怎么算"渲染导图"（每步都有读数）：
+ *   ① **量**：渲染层把**整棵树的包围盒**（所有 `jmnode` 的 `getBoundingClientRect` 并集）
+ *      与**面板矩形**（`jm.view.e_panel`）报上来 —— 包围盒是"导图到底占多大"的唯一来源；
+ *   ② **定范围**：交付范围 = 包围盒 + 四周留白（宽高**都算**；只按高度算 ⇒ 宽树照样被裁）；
+ *   ③ **切片**：窗口**永远只撑到一片大**（`SLICE_W × SLICE_H`），靠平移把不同的块挪进面板逐片拍。
+ *      为什么非切不可：离屏窗口本身有合成上限 —— 实测 11720px 高的窗口截得出来、19700px 会
+ *      抛 `UnknownVizError`（重试 3 次全失败）⇒ "窗口高 = 树高"在 20k 这一档**必红**；
+ *   ④ **摆**：每一片用统一视图变换（`window.MM.setViewTransform`）把该片的左上角摆到面板左上角。
+ *      ⚠️ 这一步不能省：**窗口变大不会触发 jsMind 重排**（渲染层没有 resize 监听 —— 查过），
+ *      节点的布局坐标不动，包围盒里落在负坐标那一侧的部分，光把窗口撑大**永远截不到**；
+ *   ⑤ **裁**：每片 `capturePage()` 取整页 → 按面板矩形裁掉工具条（裁剪在内存里做）；
+ *   ⑥ **拼**：全部切片按坐标写进同一块位图 → 一次性 `toPNG()` 落盘。
+ *      （所以导出的图里**只有导图**：没有工具条、没有状态栏、也没有原生侧栏。）
+ *
+ * 两条入口（同一份实现，别再各写一份 —— 本工程文案/几何基准都栽过"两份实现只改一边"）：
+ *   · 菜单：`exportImageDialog` → 弹保存框 → **导出前先落盘**（离屏窗口读盘渲染）→ 本函数
+ *   · 离屏：`runExportImage`（`--export-image <项目> <输出.png>`，无盘上改动、自带 90 s 守卫）
+ *
+ * 为什么菜单那条**不动用户的窗口**：可见窗口的尺寸受 OS 轨道限制（本机未验），而且撑大再还原
+ * 会闪一下、异常路径还可能把用户的窗口留成巨幅。所以**一律在离屏窗口里渲染**（菜单那条自己开
+ * 一个、用完 destroy；`--export-image` 那个本来就离屏）⇒ 用户窗口的 `getBounds()` 从始至终没变过
+ * （判据：`scripts/smoke/57-export-png.js` 的前后对拍）。
+ *
+ * ⚠️ 与 `--export-window` 的分工（**别混**，两者不是一件事）：
+ *   · `--export-window`（下面 `runExportWindow`）= **整窗合成**（主页面 + 原生侧栏 `WebContentsView`
+ *     分别截图再按 bounds 贴回），目的是"**看见侧栏**"，尺寸 = 窗口实际大小；
+ *   · 本函数 = **只出导图**，侧栏是原生视图、`capturePage()` 本来就没有它 —— 那是**好事**
+ *     （导出导图不该带侧栏），不是缺陷。
+ *
+ * 上限与降级：
+ *   · 90 s 守卫的报文 `EXPORT-IMAGE GUARD TIMEOUT` **原样保留**（它是"守卫还在"的唯一可判据字符串）；
+ *     超时时离屏模式 `exit(1)`，菜单那条**只报错、不退出**（菜单跑在用户的进程里，不能把人家的应用关掉）。
+ *   · 上限两条：单边 `MAX_SIDE` 与像素总量 `MAX_PIXELS`。超了就**按上限截断**并在读数里标
+ *     `clipped: true`（宁可交一张"有上限"的图，也不静默 OOM 或静默丢内容）。
+ *   · 分片数 = `ceil(宽/SLICE_W) × ceil(高/SLICE_H)`：20k 高 ≈ 5 片；每片一次 `capturePage`。
+ * ============================================================ */
+const EXPORT_PNG = {
+  PAD: 24,            // 树四周留白（CSS px）：判据"PNG ≥ 包围盒"靠它兜住四舍五入
+  MAX_SIDE: 20000,    // 单边上限（实测口径见上面注释，别凭感觉改）
+  MAX_PIXELS: 40000000, // 像素总量上限（= 160 MB 位图）。20k×20k 会是 1.6 GB ⇒ 整机卡死，不是"导出失败"
+  SLICE_W: 6000,      // 分片宽（CSS px）：**离屏窗口本身也有合成上限**，见下一条注释
+  SLICE_H: 4000,      // 分片高。为什么必须切：实测同一台机器、同一条代码路径上，
+                      //   `11720px` 高的窗口能截（成功），`19700px` 会抛 `UnknownVizError`（3 次重试全失败）。
+                      //   读数见 `.review/20261044-导出PNG/`。⇒ "窗口高 = 树高"的写法在 20k 这档必红；
+                      //   改成"窗口永远只有一片大、靠平移分片拍、内存里拼成整张"。
+  SETTLE_MS: 1500     // 展开全树后的静置（与改前同一个数：字体/连线都要时间）
+};
+
+/** 等两帧（隐藏窗口的 `capturePage` 可能给上一帧 —— 见 `scripts/smoke-input.js` 的记录） */
+const pngWait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function pngWaitFrames(win) {
+  try {
+    await win.webContents.executeJavaScript(
+      '(async () => { await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); return true; })()');
+  } catch (e) { await pngWait(120); }
+}
+
+/** 渲染层侧：量「整树包围盒 + 面板矩形 + 最低/最右节点」。**返回 null 表示页面还没就绪**。
+ *  为什么最低/最右要单独报：判据要能**点名**是哪两个节点落在图上，而不是只说"尺寸够大"。 */
+function exportMeasureScript() {
+  return `(function () {
+    const MMApp = window.MMApp;
+    const st = MMApp && MMApp.getState ? MMApp.getState() : null;
+    const jm = st && st.jm;
+    if (!jm || !jm.view || !jm.view.e_panel) return { ok: false, reason: '导图还没渲染（jm/e_panel 缺失）' };
+    const panel = jm.view.e_panel;
+    const pr = panel.getBoundingClientRect();
+    const all = panel.querySelectorAll('jmnode');
+    const rects = [];
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      if (!el.getClientRects().length) continue;              // 主题模式里被隐藏的容器根不算
+      const r = el.getBoundingClientRect();
+      if (!r.width && !r.height) continue;
+      rects.push({ id: el.getAttribute('nodeid') || '', topic: String(el.textContent || '').slice(0, 60),
+                   x: r.left, y: r.top, w: r.width, h: r.height });
+      if (r.left < x1) x1 = r.left;
+      if (r.top < y1) y1 = r.top;
+      if (r.right > x2) x2 = r.right;
+      if (r.bottom > y2) y2 = r.bottom;
+    }
+    if (!rects.length) return { ok: false, reason: '面板里没有可见节点' };
+    let bottom = rects[0], right = rects[0];
+    for (const t of rects) {
+      if (t.y + t.h > bottom.y + bottom.h) bottom = t;
+      if (t.x + t.w > right.x + right.w) right = t;
+    }
+    const pan = (window.MM && window.MM.getPanState) ? window.MM.getPanState() : null;
+    return {
+      ok: true,
+      inner: { w: window.innerWidth, h: window.innerHeight },
+      panel: { x: pr.left, y: pr.top, w: pr.width, h: pr.height },
+      bbox: { x: x1, y: y1, w: x2 - x1, h: y2 - y1 },
+      n: rects.length, bottom: bottom, right: right,
+      zoom: pan ? pan.s : 1
+    };
+  })()`;
+}
+
+/** 一张位图里某块矩形的「非白像素占比」—— 像素证据：证"这一段真的画了东西"，而不只是"尺寸够大"。
+ *  底色是面板底色（`#mindmap-container` 的 #fff）；裁不到/越界一律返回 `{ ok:false }`，绝不假装 0。 */
+function exportInkRatio(img, rect) {
+  try {
+    const x = Math.max(0, Math.round(rect.x));
+    const y = Math.max(0, Math.round(rect.y));
+    const w = Math.max(1, Math.round(rect.w));
+    const h = Math.max(1, Math.round(rect.h));
+    const c = img.crop({ x: x, y: y, width: w, height: h });
+    const size = c.getSize();
+    if (!size.width || !size.height) return { ok: false, reason: '裁出来是空图（矩形越界？）' };
+    const bmp = c.toBitmap();                                  // BGRA
+    let ink = 0;
+    for (let i = 0; i + 3 < bmp.length; i += 4) {
+      if (bmp[i] < 250 || bmp[i + 1] < 250 || bmp[i + 2] < 250) ink++;
+    }
+    const total = size.width * size.height;
+    return { ok: true, ink: total ? ink / total : 0, w: size.width, h: size.height };
+  } catch (e) { return { ok: false, reason: String((e && e.message) || e) }; }
+}
+
+/** 读 PNG 的 IHDR 尺寸（不引第三方库：前 24 字节就够；判据要的是**文件里真实写着**的尺寸） */
+function pngHeaderSize(file) {
+  try {
+    const b = fs.readFileSync(file);
+    if (b.length < 24 || b.readUInt32BE(0) !== 0x89504e47) return null;
+    return { width: b.readUInt32BE(16), height: b.readUInt32BE(20), bytes: b.length };
+  } catch (e) { return null; }
+}
+
+/** 等渲染层的 `window.MMApp` 就位（新建的离屏窗口刚 `did-finish-load` 时它可能还没挂上） */
+async function pngWaitRendererApp(win, timeoutMs) {
+  const until = Date.now() + (timeoutMs || 8000);
+  for (;;) {
+    let ok = false;
+    try { ok = await win.webContents.executeJavaScript('!!(window.MMApp && window.MMApp.getState)'); }
+    catch (e) { ok = false; }
+    if (ok) return true;
+    if (Date.now() > until) return false;
+    await pngWait(150);
+  }
+}
+
+/** 导出整棵导图为 PNG。**这是唯一实现** —— 菜单项与 `--export-image` 都走它。
+ *  @param {{project?:string, out:string, win?:object, guardMs?:number, onGuardTimeout?:Function}} opts
+ *    `win` 传进来就复用（`--export-image` 那个离屏窗口），不传则自己开一个离屏窗口用完 destroy。
+ *  @returns {Promise<object>} 读数：`{ ok, reason?, width, height, bytes, ms, bbox, panel, nodes,
+ *    bottom:{id,topic,ink}, right:{...}, outsideInk, clipped }` */
+async function exportMapPng(opts) {
+  const o = opts || {};
+  const out = o.out;
+  if (!out) return { ok: false, reason: '没有输出路径' };
+  const t0 = Date.now();
+  let guardFired = false;
+  const guard = setTimeout(() => {
+    guardFired = true;
+    console.log('EXPORT-IMAGE GUARD TIMEOUT');           // ← 报文与改前**逐字相同**，别改
+    if (typeof o.onGuardTimeout === 'function') { try { o.onGuardTimeout(); } catch (e) { /* 退出钩子自己负责 */ } }
+  }, o.guardMs || 90000);
+  const ownWin = !o.win;
+  let win = o.win || null;
+  let savedContent = null;
+  try {
+    if (!win) {
+      win = createWindow({ show: false, width: 1200, height: 800 });
+      await new Promise((resolve, reject) => {
+        win.webContents.once('did-finish-load', resolve);
+        win.webContents.once('did-fail-load', (e, code, desc) => reject(new Error('导出窗口加载失败: ' + desc)));
+      });
+    }
+    if (!(await pngWaitRendererApp(win))) throw new Error('渲染层未就绪（window.MMApp 缺失）');
+    savedContent = win.getContentBounds();
+    // ① 打开项目：菜单入口传"当前项目"；离屏入口必须自己开（与改前同一条语义）
+    if (o.project) {
+      const opened = await win.webContents.executeJavaScript('window.MMApp.openProject(' + JSON.stringify(o.project) + ')');
+      if (!opened) throw new Error('openProject failed: ' + o.project);
+    }
+    // ② 展开全树 + 复位视图（100% 缩放、根居中）⇒ 导出内容与"界面上谁收起了谁"无关、且可重复
+    await win.webContents.executeJavaScript(`(async () => {
+      const st = window.MMApp.getState();
+      const jm = st && st.jm;
+      if (jm && jm.expand_to_depth) jm.expand_to_depth(999);
+      if (window.MMApp.resetView) window.MMApp.resetView();
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return true;
+    })()`);
+    await pngWait(EXPORT_PNG.SETTLE_MS);
+
+    // ③ 量整树包围盒 + 外框（工具条）
+    let m = await win.webContents.executeJavaScript(exportMeasureScript());
+    if (!m || !m.ok) throw new Error('量包围盒失败：' + ((m && m.reason) || '未知'));
+    const chromeW = Math.max(0, m.inner.w - m.panel.w);   // 面板外的横向外框（正常为 0；侧栏是原生视图，不占页内宽度）
+    const chromeH = Math.max(0, m.inner.h - m.panel.h);   // 面板外的纵向外框（工具条那一条）
+    /* 交付范围 = 包围盒 + 四周留白。`MAX_SIDE` 之外**按上限截断并如实标 clipped**（不静默 OOM）：
+     * 像素总量还有一条独立上限 —— 20k×20k 会是 1.6 GB 的位图，那不是"导出失败"，是整机卡死 ✗ */
+    let box = {
+      x: m.bbox.x - EXPORT_PNG.PAD, y: m.bbox.y - EXPORT_PNG.PAD,
+      w: Math.ceil(m.bbox.w) + EXPORT_PNG.PAD * 2, h: Math.ceil(m.bbox.h) + EXPORT_PNG.PAD * 2
+    };
+    let clipped = false;
+    if (box.w > EXPORT_PNG.MAX_SIDE || box.h > EXPORT_PNG.MAX_SIDE) {
+      clipped = true;
+      box.w = Math.min(box.w, EXPORT_PNG.MAX_SIDE);
+      box.h = Math.min(box.h, EXPORT_PNG.MAX_SIDE);
+    }
+    if (box.w * box.h > EXPORT_PNG.MAX_PIXELS) {
+      clipped = true;
+      box.h = Math.max(1, Math.floor(EXPORT_PNG.MAX_PIXELS / box.w));
+    }
+
+    // ④ 分片渲染：窗口**只改一次**大小（= 一片大），之后每一片只靠平移把该块挪进面板。
+    //    ⚠️ 不在每片里 resize：resize 与"摆位后立刻截图"之间有一拍的竞态（实测分片会整体错位
+    //    1000+ px，底部节点的框里因此是白的）。固定窗口后，"摆位 → 等帧 → 截图"才稳定。
+    const winW = Math.max(480, Math.round(Math.min(box.w, EXPORT_PNG.SLICE_W) + chromeW));
+    const winH = Math.max(360, Math.round(Math.min(box.h, EXPORT_PNG.SLICE_H) + chromeH));
+    {
+      const cur = win.getContentBounds();
+      if (cur.width !== winW || cur.height !== winH) {
+        win.setContentSize(winW, winH);
+        await pngWaitFrames(win);
+        await pngWait(250);        // 让面板把新尺寸吃完（jsMind 不重排，但工具条/面板要重排一次）
+      }
+    }
+    const measure = async (tagStr) => {
+      const r = await win.webContents.executeJavaScript(exportMeasureScript());
+      if (!r || !r.ok) throw new Error('量包围盒失败（' + tagStr + '）：' + ((r && r.reason) || '未知'));
+      return r;
+    };
+    /** 把「交付范围里的 (tx,ty) 点」摆到面板左上角。**闭环**：量→算差→平移→再量，
+     *  最多 4 轮（真值来自测量，不靠对 transform 语义的假设 —— 上一版就是栽在"算一次就信"）。 */
+    const placePoint = async (tx, ty, tagStr) => {
+      let m2 = null;
+      for (let k = 0; k < 4; k++) {
+        m2 = await measure(tagStr + '·摆位第 ' + (k + 1) + ' 轮');
+        const wantX = m2.panel.x - (tx - box.x);
+        const wantY = m2.panel.y - (ty - box.y);
+        const dx = wantX - m2.bbox.x;
+        const dy = wantY - m2.bbox.y;
+        if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) return m2;
+        await win.webContents.executeJavaScript(`(function () {
+          const p = window.MM.getPanState();
+          window.MM.setViewTransform({ s: p.s, x: p.x + (${dx}), y: p.y + (${dy}) });
+          return true;
+        })()`);
+        await pngWaitFrames(win);
+        await pngWait(60);
+      }
+      throw new Error('分片摆位没有收敛（' + tagStr + '，还差 ' + Math.round(m2.bbox.x) + ',' + Math.round(m2.bbox.y) + '）');
+    };
+
+    const nx = Math.max(1, Math.ceil(box.w / EXPORT_PNG.SLICE_W));
+    const ny = Math.max(1, Math.ceil(box.h / EXPORT_PNG.SLICE_H));
+    const pieces = [];
+    let scale = 1;
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const tileW = Math.min(EXPORT_PNG.SLICE_W, box.w - i * EXPORT_PNG.SLICE_W);
+        const tileH = Math.min(EXPORT_PNG.SLICE_H, box.h - j * EXPORT_PNG.SLICE_H);
+        const targetX = box.x + i * EXPORT_PNG.SLICE_W;
+        const targetY = box.y + j * EXPORT_PNG.SLICE_H;
+        const mm2 = await placePoint(targetX, targetY, '分片 ' + (j * nx + i + 1) + '/' + (nx * ny));
+        const page = await captureRetry(win);
+        const pageSize = page.getSize();
+        scale = mm2.inner.w ? pageSize.width / mm2.inner.w : 1;   // 位图 ÷ CSS px（deviceScaleFactor 可能 >1）
+        const cropW = Math.max(1, Math.min(Math.round(tileW * scale), pageSize.width));
+        const cropH = Math.max(1, Math.min(Math.round(tileH * scale), pageSize.height));
+        const pieceImg = page.crop({
+          x: Math.round(mm2.panel.x * scale), y: Math.round(mm2.panel.y * scale),
+          width: cropW, height: cropH
+        });
+        pieces.push({
+          x: Math.round(i * EXPORT_PNG.SLICE_W * scale),
+          y: Math.round(j * EXPORT_PNG.SLICE_H * scale),
+          img: pieceImg
+        });
+      }
+    }
+    // ⑤ 拼成整张（全在内存里做：不再截第二次窗口，也没有第二份渲染路径）
+    const fullW = Math.max(1, Math.round(box.w * scale));
+    const fullH = Math.max(1, Math.round(box.h * scale));
+    const canvas = Buffer.alloc(fullW * fullH * 4);
+    const { nativeImage } = require('electron');
+    for (const p of pieces) {
+      const s = p.img.getSize();
+      const bmp = p.img.toBitmap();
+      if (bmp.length !== s.width * s.height * 4) {
+        throw new Error('位图字节数与尺寸对不上（' + bmp.length + ' vs ' + (s.width * s.height * 4) + '），拒绝拼图');
+      }
+      const rowBytes = s.width * 4;
+      for (let row = 0; row < s.height; row++) {
+        const dyRow = p.y + row;
+        if (dyRow < 0 || dyRow >= fullH) continue;
+        const dstOff = (dyRow * fullW + p.x) * 4;
+        if (p.x < 0 || p.x + s.width > fullW) continue;
+        bmp.copy(canvas, dstOff, row * rowBytes, (row + 1) * rowBytes);
+      }
+    }
+    const img = nativeImage.createFromBitmap(canvas, { width: fullW, height: fullH });
+    fs.writeFileSync(out, img.toPNG());
+
+    // ⑥ 证据（不是判据，是读数）：最低节点的框里有没有墨、树底之外是不是空白。
+    //    坐标一律相对**交付范围**左上角（`box`）—— 拼出来的图就以它为原点。
+    const toImg = (r) => ({
+      x: (r.x - box.x) * scale, y: (r.y - box.y) * scale, w: r.w * scale, h: r.h * scale
+    });
+    const bottomInk = exportInkRatio(img, toImg(m.bottom));
+    const rightInk = exportInkRatio(img, toImg(m.right));
+    const belowBbox = exportInkRatio(img, {
+      x: (m.bbox.x - box.x) * scale,
+      y: (m.bbox.y + m.bbox.h - box.y) * scale + 6 * scale,
+      w: Math.min(200, m.bbox.w) * scale, h: 12 * scale
+    });
+    clearTimeout(guard);
+    const header = pngHeaderSize(out);
+    return {
+      ok: true, out: out, ms: Date.now() - t0,
+      width: img.getSize().width, height: img.getSize().height,
+      // 判据要的是**文件里**写的尺寸（内存图对、落盘错也能抓住）
+      fileSize: header || null,
+      bytes: (header && header.bytes) || 0,
+      scale: scale, slices: pieces.length, grid: nx + '×' + ny,
+      bbox: { w: Math.round(m.bbox.w), h: Math.round(m.bbox.h) },
+      panel: { w: Math.round(m.panel.w), h: Math.round(m.panel.h) },
+      inner: m.inner, nodes: m.n, zoom: m.zoom, clipped: clipped,
+      bottom: { id: m.bottom.id, topic: m.bottom.topic, x: Math.round(toImg(m.bottom).x),
+        y: Math.round(toImg(m.bottom).y), w: Math.round(toImg(m.bottom).w), h: Math.round(toImg(m.bottom).h),
+        ink: bottomInk },
+      right: { id: m.right.id, topic: m.right.topic, x: Math.round(toImg(m.right).x),
+        y: Math.round(toImg(m.right).y), w: Math.round(toImg(m.right).w), h: Math.round(toImg(m.right).h),
+        ink: rightInk },
+      outsideInk: belowBbox,
+      guardFired: guardFired
+    };
+  } catch (err) {
+    clearTimeout(guard);
+    return { ok: false, reason: String((err && err.message) || err), ms: Date.now() - t0, guardFired: guardFired };
+  } finally {
+    // 还原：自己开的窗口直接销毁；别人给的窗口把内容尺寸放回去（异常路径也走这里）
+    try {
+      if (ownWin && win && !win.isDestroyed()) win.destroy();
+      else if (win && !win.isDestroyed() && savedContent) win.setContentSize(savedContent.width, savedContent.height);
+    } catch (e) { /* 还原失败不该盖住真正的失败原因 */ }
+  }
+}
+
+/* ---------------- 菜单入口：导出当前导图为 PNG ----------------
+ * 与 `--export-image` **逐条差异**（改后的分工，别再各写一份 —— 抽成同一个 `exportMapPng`）：
+ *   · 本项目从**界面当前打开的项目**来（离屏模式从命令行参数来）；
+ *   · 先弹保存框（离屏模式直接写参数路径）；
+ *   · **导出前先落盘**：PNG 是离屏窗口按盘上那棵树渲染的 ⇒ 界面里有未保存改动时不先存，
+ *     导出的是"上一次保存时"的树（用户看到的是新的、图是旧的 ⇒ 最坑的那种不一致）。
+ *     `MMApp.save()` 就是用户可见的那一条"已保存"路径，不新开写盘口；存不下（冲突/失败）就**不导**。
+ *   · 失败只 toast、**不退出**（用户在用的进程不能被一次导出关掉）；离屏模式则 exit(1)。
+ */
 async function exportImageDialog(win) {
   const project = await getCurrentProjectName(win);
   if (!project) { toast(win, '请先打开一个项目', true); return; }
   const res = await dialog.showSaveDialog(win, {
-    title: '导出当前导图为 PNG 图片',
+    title: '导出当前导图为 PNG 图片（整棵树）',
     defaultPath: project + '.png',
     filters: [{ name: 'PNG 图片', extensions: ['png'] }]
   });
   if (res.canceled || !res.filePath) return;
+  // 未保存改动 → 先落盘（理由见函数头；headless 下 save() 不弹模态框，见 app-actions.js）
   try {
-    // 展开全树并等渲染稳定（约 1.5s），再截取整窗
-    await win.webContents.executeJavaScript(
-      `(async () => {
-        const jm = window.MMApp && window.MMApp.getState() && window.MMApp.getState().jm;
-        if (jm) jm.expand_to_depth(999);
-        await new Promise(r => setTimeout(r, 1500));
-      })()`
-    );
-    const img = await captureRetry(win);
-    fs.writeFileSync(res.filePath, img.toPNG());
-    toast(win, '图片已导出: ' + res.filePath);
-  } catch (e) { toast(win, '导出失败: ' + e.message, true); }
+    const dirty = await win.webContents.executeJavaScript('!!(window.MMApp && window.MMApp.isDirty && window.MMApp.isDirty())');
+    if (dirty) {
+      const saved = await win.webContents.executeJavaScript('(window.MMApp.save ? window.MMApp.save() : false)');
+      if (!saved) { toast(win, '导出前保存失败（有并发冲突或写盘错误）：先处理再导出', true); return; }
+    }
+  } catch (e) { /* 判定不了就按盘上那份导（不因为探测失败挡住导出） */ }
+  toast(win, '正在渲染整棵树…');
+  const r = await exportMapPng({ project: project, out: res.filePath });
+  if (!r.ok) { toast(win, '导出失败: ' + r.reason, true); return; }
+  toast(win, '图片已导出: ' + r.out + '（' + r.width + '×' + r.height + '，' + r.nodes + ' 个节点）'
+    + (r.clipped ? '  ⚠️ 已按上限截断（整树 ' + r.bbox.w + '×' + r.bbox.h + '，上限：单边 '
+      + EXPORT_PNG.MAX_SIDE + 'px / ' + Math.round(EXPORT_PNG.MAX_PIXELS / 1000000)
+      + 'M 像素）—— 底部/右侧会有缺失' : ''),
+    !!r.clipped);
 }
 
 /* ---------------- 菜单 ----------------
@@ -2511,14 +2896,20 @@ function registerIpc() {
     } catch (err) { /* 偏好存不下不致命：下次再问一遍 ✓ */ }
   }
 
-  /** 起一个**分离**的子进程并给"早期失败"一个读数窗口；不阻塞主进程。 */
-  function launchDetached(file, args) {
+  /** 起一个**分离**的子进程并给"早期失败"一个读数窗口；不阻塞主进程。
+   *  @param {string} file  可执行文件（argv 形态，**从不拼命令行字符串**）
+   *  @param {string[]} args
+   *  @param {Function} [spawnImpl] 仅冒烟用来替换"起进程"那一跳（默认 = `child_process.spawn`）。
+   *    用途：证明「打开方式」真的走到了 `spawn(rundll32.exe, ['shell32.dll,OpenAs_RunDLL', 路径])`
+   *    这一行，而不是"又打开了一次"；同时**不真的弹系统对话框**（headless 纪律）。 */
+  function launchDetached(file, args, spawnImpl) {
+    const sp = spawnImpl || spawn;
     return new Promise((resolve) => {
       let settled = false;
       const done = (r) => { if (!settled) { settled = true; resolve(r); } };
       let child;
       try {
-        child = spawn(file, args, { detached: true, stdio: 'ignore', windowsHide: true });
+        child = sp(file, args, { detached: true, stdio: 'ignore', windowsHide: true });
       } catch (err) {
         return done({ ok: false, err: (err && err.message) || String(err) });
       }
@@ -2650,6 +3041,66 @@ function registerIpc() {
     }
   }
 
+  /* ---------------- 【文件链接的打开语义批】执行一条「打开计划」（**唯一一处**） ----------------
+   * 计划由 `src/path-chain.js` 的 `openPlan()` 给出（**纯函数**：mode → 用哪个执行器）。
+   * ⚠️ 本函数**只管非默认那三档**（`openPath` / `openAs` / `reveal`）：
+   *   `default`（= 既有调用方的编辑器档）**直连既有 `openWithEditor`**，压根不经过这里 ——
+   *   `app:open-file` 是热路径（`renderer/app.js:202` 就在用），为了"汇到同一个函数"多一跳
+   *   换不来任何收益，只多一份风险（用户批 2026-10-31 的裁决）。所以这里**没有** `editor` 分支：
+   *   三档各自都有一个**生产调用点**，不存在"看起来在用其实没人走"的死支。
+   *   · `openPath` ⇒ `shell.openPath`：文件 = 系统默认程序（**没有默认关联时 Windows 自己弹"打开方式"
+   *                  选择栏**，那是 ShellExecuteEx 的原生行为）；目录 = 文件管理器（既有行为）
+   *   · `openAs`   ⇒ 起 `rundll32.exe shell32.dll,OpenAs_RunDLL "<路径>"` = 系统「打开方式」选择栏
+   *   · `reveal`   ⇒ `shell.showItemInFolder`：在资源管理器里**选中**那个文件
+   * ⭐ 两条纪律（都是本工程反复栽过的形态）：
+   *   ① **`shell.openPath` 的返回值原样带回**（空串 = 成功；非空串 = 失败原因）——
+   *      吞掉它等于"点开失败了但界面说打开了"；
+   *   ② **`openAs` 起不来就如实报错，绝不偷偷降级成 `openPath`** —— 那会让"打开方式"变成
+   *      "再打开一次"，而测试只看得到"没报错"（那正是本批最容易做假的地方）。
+   * @param {object} plan `pathChain.openPlan()` 的产物（`via` ∈ `openPath|openAs|reveal`）
+   * @param {{headless?:boolean}} io `headless` = 冒烟/无头（此时**绝不真的打开**，见各档的守卫）
+   */
+  async function execOpenPlan(plan, io) {
+    const i = io || {};
+    const headless = i.headless === true;
+    /** 仅冒烟可换的执行器（生产路径恒为 null ⇒ 用真的那个） */
+    const stubOf = (k) => ((isSmoke && OPEN_IMPL[k]) ? OPEN_IMPL[k] : null);
+    if (plan.via === 'openPath') {
+      const stub = stubOf('openPath');
+      if (headless && !stub) {
+        return { ok: true, exec: 'none', headless: true, note: '冒烟/headless：没有真的交系统打开' };
+      }
+      const call = stub || ((p) => shell.openPath(p));
+      try {
+        const r = await call(plan.target);
+        return { ok: !r, err: r || null, exec: 'openPath' };   // 非空串 = 失败原因（原样带回）
+      } catch (err) { return { ok: false, err: err.message, exec: 'openPath' }; }
+    }
+    if (plan.via === 'openAs') {
+      const stub = stubOf('spawn');
+      if (headless && !stub) {
+        return { ok: true, exec: 'none', headless: true, note: '冒烟/headless：没有真的弹系统「打开方式」' };
+      }
+      const r = await launchDetached(plan.spawn.file, plan.spawn.args, stub);
+      return {
+        ok: r.ok, err: r.ok ? null : ('起「打开方式」失败：' + r.err),
+        exec: 'openAs', argv: plan.spawn.args.slice()
+      };
+    }
+    // reveal
+    const stub = stubOf('reveal');
+    if (headless && !stub) {
+      return { ok: true, exec: 'none', headless: true, note: '冒烟/headless：没有真的在资源管理器里定位' };
+    }
+    const call = stub || ((p) => shell.showItemInFolder(p));
+    try {
+      call(plan.target);
+      /* `showItemInFolder` 没有返回值 ⇒ **没有失败信号可报**（如实记，不假装有）。
+       * 它是同步调用，抛错才是"没做成"的唯一迹象。 */
+      return { ok: true, exec: 'showItemInFolder' };
+    } catch (err) { return { ok: false, err: err.message, exec: 'showItemInFolder' }; }
+  }
+
   ipcMain.handle('app:open-file', async (e, absPath, opts) => {
     /* ⭐ 签名只**多收一个可选参数**（`opts = {line, col, editor, kind}`）——**不新开 IPC 名字**，
      *   既有调用方（一个参数）行为逐字不变。为什么把"打开方式"挤进这一处而不是新开通道：
@@ -2670,9 +3121,24 @@ function registerIpc() {
      * 本批给这条账**多了三个字段**（`line` / `editor` / `mode`）：跳行与"用户点了哪个编辑器"同样只在主进程侧可见 ✓。
      * 【外部链接出口批】再**多一个 `kind`**：出口那一侧现在有两条腿（交系统关联 / 交系统浏览器），
      *   "点 http 链接到底走的是哪条腿"必须能在账里看见 —— 否则断言只能证明"调了出口"、证不了"调对了腿" ✓。 */
-    if (isSmoke) SMOKE_OPEN_FILE_LOG.push({ raw: String(absPath), ok: decision.ok === true,
-      abs: decision.abs, code: decision.code || '', kind: exitKind,
-      line: editorCandidates.normalizeLine(o.line), editor: o.editor || '', mode: 'headless' });
+    /* 【文件链接的打开语义批】再**多一个 `opts.mode`**（取值表在 `src/path-chain.js` 的 `OPEN_MODES`，
+     * 本文件**不列**自己的清单）：它决定"**用哪个 API 打开**"，而不是"能不能打开"——
+     * 能不能开仍然只由上面的 `decide()` 判。缺省 ⇒ `'default'`（= 既有行为：编辑器档），
+     * 所以既有调用方传不传它，行为逐字不变 ✓。 */
+    /* 账**一条都得记全**（含 plan 与真实执行器）：断言比的就是这两样。
+     * 顺序说明：入口就记（连被判据拒掉的那次也记 —— "判据在出口之前就拒"那条判据要能看见账没长）。 */
+    let openLed = null;
+    if (isSmoke) {
+      openLed = {
+        raw: String(absPath), ok: decision.ok === true,
+        abs: decision.abs, code: decision.code || '', kind: exitKind,
+        line: editorCandidates.normalizeLine(o.line), editor: o.editor || '', mode: 'headless',
+        /* 本批加的五样：**计划**与"到底哪个执行器真的跑了"。后者是判据的关键 ——
+         * 只记计划的话，"plan 说 openAs、执行时却调了 openPath"这种假实现抓不住。 */
+        openMode: '', via: '', argv: [], openPath: false, showItemInFolder: false, isDir: null, exec: ''
+      };
+      SMOKE_OPEN_FILE_LOG.push(openLed);
+    }
     if (!decision.ok) {
       return { ok: false, err: (exitKind === 'externalUrl' ? '网址不允许打开：' : '路径不允许打开：') + decision.reason };
     }
@@ -2694,12 +3160,61 @@ function registerIpc() {
           note: '已交系统默认浏览器打开' };
       } catch (err) { return { ok: false, err: '交系统浏览器失败：' + err.message }; }
     }
+    /* ---------------- 【文件链接的打开语义批】非 default 档：文件链接的三种"打开"意图 ----------------
+     * 走到这里的只有显式带 `opts.mode` 的调用方（渲染层的本机链接：左键 / 右键那三项）。
+     * 三件事按这个顺序做，顺序本身就是判据：
+     *   ① **解析动作**（`pathChain.openPlan`，纯函数）—— 未知 mode ⇒ 响亮拒绝（不静默落回某档）；
+     *   ② **此刻**探一次文件/目录（`statSync`）—— 只在打开这一瞬间做，**绝不写进数据**
+     *      （`docs/DATA-FORMAT.md` §2.1：`localPath` 不校验存在性；写成数据等于多一个会过期的字段）。
+     *      探不到 ⇒ **响亮报"不在了"**（不许"点了没反应"），而不是把不存在的路径交给系统；
+     *   ③ **执行**（`execOpenPlan`）并如实带回结果（含 `shell.openPath` 的失败原因）。
+     * ⚠️ `default` 档**完全不走这里**（下面的既有分支一个字没动）。 */
+    const wantMode = (o.mode === undefined || o.mode === null || o.mode === '') ? 'default' : o.mode;
+    if (wantMode !== 'default') {
+      let isDir = null;
+      let statErr = null;
+      try { isDir = fs.statSync(target).isDirectory(); }
+      catch (err) { statErr = err; }
+      const plan = pathChain.openPlan(wantMode, target, isDir);
+      if (openLed) {
+        Object.assign(openLed, {
+          openMode: plan.ok ? plan.mode : String(wantMode),
+          via: plan.ok ? plan.via : 'reject',
+          argv: (plan.ok && plan.spawn) ? plan.spawn.args.slice() : [],
+          openPath: !!(plan.ok && plan.openPath),
+          showItemInFolder: !!(plan.ok && plan.showItemInFolder),
+          isDir: isDir
+        });
+      }
+      if (!plan.ok) return { ok: false, openMode: String(wantMode), err: plan.reason };
+      if (statErr) {
+        /* 路径不存在 / 盘没挂 / 没权限：**响亮**说清是哪一个文件不在了（这是本批的硬要求之一：
+         * 静默什么都不做 = 用户以为点坏了）。走不到 `shell.openPath` 也不会去弹系统对话框。 */
+        if (openLed) openLed.exec = 'none:stat-failed';
+        return {
+          ok: false, openMode: plan.mode, via: plan.via, isDir: null,
+          err: '文件不在了（' + (statErr.code || statErr.message) + '）：' + target
+        };
+      }
+      let r;
+      try {
+        r = await execOpenPlan(plan, {
+          o: o, win: BrowserWindow.fromWebContents(e.sender), headless: isSmoke
+        });
+      } catch (err) {
+        if (openLed) openLed.exec = 'throw';
+        return { ok: false, openMode: plan.mode, via: plan.via, err: err.message };
+      }
+      if (openLed) openLed.exec = r.exec || '';
+      return Object.assign({ openMode: plan.mode, via: plan.via, isDir: isDir }, r);
+    }
     // ⚠️ headless（--smoke / 导出图）下**绝不真的打开**：那会在跑验证的机器上弹出文件管理器/默认应用，
     // 每跑一次 verify 弹一次窗。但**判据照走**（路径可访问性），并把 headless 明确回报 ——
     // 这不是"静默降级"：调用方拿到 headless:true 就知道"校验过了、只是没开"。
     // ⚠️ 同一条纪律**也管编辑器档**：headless 下**不探测、不弹选择框、不起编辑器** ——
     //   探测要起子进程跑 `--help`（实测 1–2 秒/个），那是"门禁里做重活"，且会抢焦点 ✗。
     if (isSmoke) {
+      if (openLed) openLed.exec = 'none:headless';
       try {
         const st = fs.statSync(target);
         return { ok: true, headless: true, kind: st.isDirectory() ? 'dir' : 'file',
@@ -2708,7 +3223,11 @@ function registerIpc() {
         return { ok: false, headless: true, err: '路径不可访问：' + err.message };
       }
     }
+    /* `default` 档（= 所有既有调用方，含 `renderer/app.js:202` 的热路径）**直连既有实现**：
+     * 这里**不出现 `openPlan` / `execOpenPlan`** —— 不是"多一跳也无所谓"，而是这一跳换不来任何收益，
+     * 只多一份风险（用户批 2026-10-31 的裁决；"default 不走 openPlan"因此是**字面可判**的结构事实）。 */
     try {
+      if (openLed) openLed.exec = 'editor';
       return await openWithEditor(target, o, BrowserWindow.fromWebContents(e.sender));
     } catch (err) { return { ok: false, err: err.message }; }
   });
@@ -4436,6 +4955,10 @@ async function runSmoke(win) {
   // 只能由 AI/CLI 写入）。`runCli` 在冒烟模式下已把项目根指向临时副本
   // （AI_MINDMAP_PROJECTS_DIR），所以断言用它是安全的 —— 绝不碰真实数据。
   const ctx = { exec, win, runCli: (args) => runCli(args) };
+  /* 【导出 PNG】把**同一个** `exportMapPng` 交给断言（不是第二份实现）：
+   * 菜单项与 `--export-image` 走的都是这个函数 ⇒ 域 57 验的就是产品那条路径。
+   * 只在冒烟进程里挂（产品路径不读 ctx），断言因此不需要开新 IPC 通道（同 ctx.input 的先例）。 */
+  ctx.exportMapPng = exportMapPng;
   /* 【第 2 批 a76bab32】「AI 改了哪些文件」清单的**主进程侧读数与显式驱动**：
    * 域 22 用它把"面板真的画了几行"与"清单里真的有几条"对拍 ——
    * 两个数来自**不同来源**（页面 DOM 自报 vs 主进程 store），对拍才有判别力。
@@ -4445,6 +4968,23 @@ async function runSmoke(win) {
    * 断言用"点之前/点之后各读一次"来判"这一跳有没有走唯一出口、走的是哪条绝对路径"。 */
   ctx.openFileLog = () => SMOKE_OPEN_FILE_LOG.map((x) => Object.assign({}, x));
   ctx.openFileLogClear = () => { const n = SMOKE_OPEN_FILE_LOG.length; SMOKE_OPEN_FILE_LOG.length = 0; return n; };
+  /* 【文件链接的打开语义批】出口那一跳的三个执行器**可换**（见 `OPEN_IMPL` 的声明处）。
+   * 断言靠它把"动作真的分叉了"变成可观测事实：
+   *   · `spawn(fn)`    —— "打开方式"真的走到起 `rundll32 …OpenAs_RunDLL` 那一行（拿到 argv）；
+   *   · `openPath(fn)` —— 系统默认程序那一跳，可以把 `shell.openPath` 的**失败原因造出来**
+   *                       （证明主进程没有把返回值吞掉）；
+   *   · `reveal(fn)`   —— "在资源管理器里定位"真的调了 `showItemInFolder`（不是 `openPath`）。
+   * 三者都只在 `--smoke` 生效（`execOpenPlan` 里 `isSmoke && OPEN_IMPL[k]`）⇒ 生产路径拿不到。
+   * 为什么挂在 ctx 上而不是加 IPC：断言就跑在主进程里（`ctx.exec` 只是主→渲染的桥），
+   * 而 IPC 面（preload 的 key 集合）**一字不能动** ⇒ 同 ctx.input / ctx.draft 的先例。 */
+  ctx.openImpl = {
+    set: (kind, fn) => {
+      if (['spawn', 'openPath', 'reveal'].indexOf(kind) < 0) return { ok: false, reason: '未知的执行器：' + kind };
+      OPEN_IMPL[kind] = (typeof fn === 'function') ? fn : null;
+      return { ok: true, kind: kind, installed: !!OPEN_IMPL[kind] };
+    },
+    reset: () => { OPEN_IMPL.spawn = null; OPEN_IMPL.openPath = null; OPEN_IMPL.reveal = null; return true; }
+  };
   /* 选区拖拽 / 拖动虚影的读出口 + 脚本化指针（见 `SEL_DRAG_PROBE` 的声明处）。
    * 为什么挂在 ctx 上而不是加 IPC：断言就跑在主进程里（`ctx.exec` 只是主→渲染的桥），
    * 而 IPC 面（preload 的 `dsh` key 集合）**一字不能动** ⇒ 同 ctx.draft / ctx.changeLog 的先例。 */
@@ -5057,31 +5597,28 @@ async function runSmoke(win) {
 }
 
 /* ---------------- 离屏导出 PNG（--export-image <项目> <输出.png>） ----------------
- * 加载 → 打开项目 → 展开全树 → 等渲染稳定 → capturePage → 保存 → 退出。
+ * 只是**同一个实现**（`exportMapPng`，见文件前部「导出导图 PNG —— 唯一实现」）的离屏外壳：
+ *   · 与菜单项的差异只有三处：项目/输出从命令行来、失败 exit(1)、成功 exit(0)；
+ *   · **不再自己展开/自己截图** —— 那段曾经是菜单项的第二份副本（用户 2026-10-26 报的
+ *     "截图窗口而不是渲染导图"两条入口一起中招，根因就在"有两份实现"）。
+ *   · 90 s 守卫随实现一起搬进 `exportMapPng`，报文 `EXPORT-IMAGE GUARD TIMEOUT` 逐字未变；
+ *     超时时这里 `exit(1)`（离屏进程没有用户窗口要保）。
  * headless 可测（AI 迭代验证用），也是 UI「导出 PNG」的 CLI 形态。
  */
 async function runExportImage(win, { project, out }) {
-  const guard = setTimeout(() => { console.log('EXPORT-IMAGE GUARD TIMEOUT'); app.exit(1); }, 90000);
-  try {
-    await win.webContents.executeJavaScript(
-      `(async () => {
-        const ok = await window.MMApp.openProject(${JSON.stringify(project)});
-        if (!ok) throw new Error('openProject failed: ' + ${JSON.stringify(project)});
-        const jm = window.MMApp.getState().jm;
-        if (jm) jm.expand_to_depth(999);
-        await new Promise(r => setTimeout(r, 1500));
-      })()`
-    );
-    const img = await captureRetry(win);
-    fs.writeFileSync(out, img.toPNG());
-    clearTimeout(guard);
-    console.log('已导出图片: ' + out);
-    app.exit(0);
-  } catch (err) {
-    clearTimeout(guard);
-    console.log('EXPORT-IMAGE FAILED: ' + ((err && err.stack) || err));
+  const r = await exportMapPng({ project: project, out: out, win: win, onGuardTimeout: () => app.exit(1) });
+  if (!r.ok) {
+    console.log('EXPORT-IMAGE FAILED: ' + r.reason);
     app.exit(1);
+    return;
   }
+  console.log('已导出图片: ' + out + '  ' + r.width + '×' + r.height
+    + '（树 ' + r.bbox.w + '×' + r.bbox.h + ' · ' + r.nodes + ' 节点'
+    + (r.clipped ? ' · ⚠️ 已按单边上限 ' + EXPORT_PNG.MAX_SIDE + 'px 截断' : '') + '）'
+    + '  ' + r.bytes + ' B  ' + r.ms + ' ms'
+    + '｜最低节点「' + r.bottom.topic + '」框内墨占比 ' + (r.bottom.ink && r.bottom.ink.ok ? r.bottom.ink.ink.toFixed(3) : 'n/a')
+    + '｜树底之外 ' + (r.outsideInk && r.outsideInk.ok ? r.outsideInk.ink.toFixed(3) : 'n/a'));
+  app.exit(0);
 }
 
 /* ---------------- 整窗截图（--export-window <输出.png>） ----------------

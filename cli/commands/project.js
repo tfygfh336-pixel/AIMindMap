@@ -1538,18 +1538,28 @@ module.exports = {
       ? { ok: true, ext: docImport.IMPORT_EXT_DEFAULT.slice() }
       : docImport.normalizeExtList(ctx.args.ext);
     if (!extRes.ok) ctx.error('--ext ' + extRes.reason);
-    const maxFiles = ctx.intOption('maxFiles', { min: 1, max: 100000, def: docImport.MAX_IMPORT_FILES_DEFAULT });
     // ③ 扫描（**只读**：走查目录、逐类计数跳过、算总量；不读文件内容、不写盘、不建树）
     const scan = docImport.scanImportDir(dir, { ext: extRes.ext, vault: vault });
     if (!scan.totals.files) ctx.error(docImport.describeNoImportableFiles(scan.root, scan));
+    /* 【20261043】闸门只剩**文件数**这一道（`--max-files`，管"人还能不能核对"）。
+     * 目录**总量不再是一道拒绝线**：以前拿单文件的 64 MB 去卡整个目录（"合计约 167 MB 超过上限 64 MB"），
+     * 那是量错了维度 —— 占内存的是**节点对象**（与标题数成正比），源文件内容是逐文件转换、每轮即弃的。
+     * 实测反例：用户的课程目录 7.85 GB / 14989 个文件，可导入面其实只有 143 个文件 / 168 MB / 约 150 个节点。
+     * ⇒ 现在超过"单批线"只**分批**（`docImport.planImportBatches` / ⓪⁸），拒绝线只有 `--max-files`。 */
+    const maxFiles = ctx.intOption('maxFiles', { min: 1, max: 100000, def: docImport.MAX_IMPORT_FILES_DEFAULT });
     const overFiles = scan.totals.files > maxFiles;
-    const overSize = !overFiles && scan.totals.bytes > docImport.MAX_SOURCE_BYTES;
+    const overBatch = scan.totals.bytes > docImport.MAX_IMPORT_BATCH_BYTES;
+    const batchNote = overBatch
+      ? docImport.describeDirOversize(scan.root, scan.totals.bytes, docImport.MAX_IMPORT_BATCH_BYTES) : null;
     const limitMsg = overFiles
-      ? docImport.describeTooManyFiles(scan.totals.files, maxFiles, scan.root)
-      : overSize ? docImport.describeDirOversize(scan.root, scan.totals.bytes, docImport.MAX_SOURCE_BYTES) : null;
+      ? docImport.describeTooManyFiles(scan.totals.files, maxFiles, scan.root) : null;
+    /* 分批计划（纯函数：只吃扫描清单）—— 预览要用它报"分几批"，真导再用**同一份**去建树
+     * （算两遍会漂移：报告说 6 批、实际按 7 批建，是最难查的那类 ✗）。 */
+    const plan = docImport.planImportBatches(scan);
 
-    // ④ 转换 + 建树（**整棵树在内存里建好**）。超限时**不转换** —— 反正马上要拒，
-    //    没必要把几十 MB 读进内存（那正是体量闸门要防的事 ✗）
+    // ④ 转换 + 建树：**逐批转换**（一批 = 一棵完整顶层子树，见 ⓪⁸），最后**一次原子写**。
+    //    为什么不是"每批写一次盘"：项目是一个 JSON，N 次写 = N 次全量重读（O(N²)），
+    //    而且会把"失败不留半个项目"降级成"半份项目"。理由与实测见 ⓪⁸。 */
     /* 【W12】vault 那一路走 `applyVault`（**同一个 `buildDirImportTree`**，只是带了正文转换与 wiki 解析）：
      * 资源引用的落点也一并交给它 —— 它内部调的是**同一个** `resolveDirImportRefs`（唯一实现），
      * 只是位置挪到"wiki 解析之后"（`![[图]]` 是 wiki 语法，得先变成资源行才轮到既有那一步）✓ */
@@ -1565,7 +1575,28 @@ module.exports = {
         return rows.length ? rows[0].rep : null;
       }
     });
-    const built = vaultRes ? vaultRes.built : (limitMsg ? null : docImport.buildDirImportTree(scan, { tool: 'import-dir' }));
+    /* 进度行只在**非 `--json`** 时打（`--json` 的 stdout 必须是那份 JSON，多一行就解析不了 ✗）。
+     * 为什么必须有：真导一个 7.8 GB 的目录要几十分钟，中间一声不响 = 使用者以为又"莫名退出"了。 */
+    const showProgress = !ctx.args.json && !vaultRes;
+    if (showProgress && !limitMsg) {
+      ctx.out('分批转换：' + plan.length + ' 批 / ' + scan.totals.files + ' 个文件 / '
+        + (scan.totals.bytes / 1048576).toFixed(2) + ' MB'
+        + (overBatch ? '（超过单批 ' + docImport.MAX_IMPORT_BATCH_MB + ' MB ⇒ 按顶层子树分批，**不拒绝**）' : ''));
+    }
+    const built = vaultRes ? vaultRes.built : (limitMsg ? null : docImport.buildDirImportTreeBatched(scan, {
+      tool: 'import-dir',
+      plan: plan,
+      onBatch: (info, i, total) => {
+        if (!showProgress) return;
+        ctx.out('  批 ' + (i + 1) + '/' + total + '：' + info.name + ' —— ' + info.files + ' 个文件 → '
+          + info.nodes + ' 个节点（' + (info.bytes / 1048576).toFixed(2) + ' MB / ' + info.ms + ' ms）'
+          + (info.over ? '　⚠ 超过单批线 ' + docImport.MAX_IMPORT_BATCH_MB + ' MB：**不拆也不拒绝**（见 ⓪⁸）' : ''));
+      },
+      onFile: (info) => {
+        if (!showProgress || info.index % 25 !== 0) return;
+        ctx.out('    …已处理 ' + info.index + '/' + scan.totals.files + ' 个文件：' + info.rel);
+      }
+    }));
     const vaultReport = vaultRes ? vaultRes.vault : null;
     /* vault 报告里两类"没接上"的条目要并入**同一份**跳过清单（"逐条点名"只走这一条渲染路，
      * 免得同一个地方出现两套 ✗）。⚠️ 资源那一类**不在这里列**：它已经由既有 `printDirRefReport`
@@ -1584,7 +1615,7 @@ module.exports = {
       ctx.error(docImport.describeNoImportableFiles(scan.root,
         Object.assign({}, scan, { skipped: skipped, counts: counts })));
     }
-    const byFormat = { md: 0, txt: 0, docx: 0, pdf: 0 };
+    const byFormat = { md: 0, txt: 0, docx: 0, pdf: 0, video: 0 };
     if (built) built.entries.forEach((e) => { if (byFormat[e.format] !== undefined) byFormat[e.format]++; });
     const manifest = docImport.makeDirOrigin({ dir: scan.root, entries: built ? built.entries : [] });
     // ⑤ 幂等闸门（写盘之前，两档一起看）：
@@ -1634,9 +1665,20 @@ module.exports = {
       }
     };
     const printLimit = (out) => {
-      if (!limitMsg) return;
-      out('⚠ 总量超限：' + (overFiles ? '可导入文件 ' + scan.totals.files + ' 个 > 上限 ' + maxFiles + ' 个'
-        : '合计 ' + Math.round(scan.totals.bytes / 1048576 * 100) / 100 + ' MB > 上限 ' + docImport.MAX_SOURCE_MB + ' MB'));
+      if (limitMsg) {
+        out('⚠ 文件数超限：可导入文件 ' + scan.totals.files + ' 个 > 上限 ' + maxFiles + ' 个（`--max-files` 可放开）');
+        if (vaultRefusalNote) out('　' + vaultRefusalNote);
+        return;
+      }
+      // 【20261043】**目录总量不是拒绝线**：超过单批线只打印"会自动分批"这一条（措辞在 src 里，一处）
+      if (batchNote) out('ℹ ' + batchNote);
+      /* 【20261052】vault 那一路**不按批切**（`applyVault` 一次建完：全库索引要先建好才轮到解析链接）。
+       * 不说这一句的后果：读者看到"自动分批"会以为它按批走，而它的内存曲线是**一整批**的。
+       * 只在 vault 档追加 ⇒ `--no-vault` 的输出与从前逐字节相同 ✓ */
+      if (batchNote && vault) {
+        out('　⚠ `--vault` 那一路是**一次建完**（链接要在全库索引建好之后才解析）⇒ 它不按上面的批切，'
+          + '体量很大时内存占用会高于默认档。');
+      }
     };
     const topBrief = '顶层 ' + scan.tree.dirs.length + ' 个目录 / ' + scan.tree.files.length + ' 个文件'
       + (topLevel.length ? '：' + topLevel.slice(0, 12).map((t) => t.topic + (t.kind === 'dir' ? '/' : '')).join(' ') : '');
@@ -1666,11 +1708,54 @@ module.exports = {
       if (vaultReport.links.length > 20) out('  · …另有 ' + (vaultReport.links.length - 20) + ' 条（`--json` 里有全部）');
     };
 
+    /* 【20261043】视频分档的读数（⓪⁹）：**入口**与**分片**分开说 —— 这是用户要的那条判据
+     * （"因为它是视频分片/密钥/索引而跳过"必须能看见，不许混进"扩展名不支持"）。 */
+    const printVideo = (out) => {
+      const v = scan.video || { entries: 0, parts: 0 };
+      if (!v.entries && !v.parts) return;
+      out('视频：' + v.entries + ' 个播放列表（.m3u8）按**入口节点**处理 —— 节点字段 `localPath` 指向本机那份文件'
+        + '（点开交给系统默认程序；**不内嵌、不拷贝**）'
+        + (v.parts ? '；另 ' + v.parts + ' 个分片/密钥/索引按"没有意义"跳过'
+          + '（清单里的 `视频分片/密钥/索引` 一类）' : ''));
+      if (built && (built.videos || built.localPathSkipped)) {
+        out('     树里落成 ' + built.videos + ' 个视频节点'
+          + (built.localPathSkipped
+            ? '（⚠ ' + built.localPathSkipped + ' 个节点的路径超过 ' + docImport.LOCAL_PATH_MAX
+              + ' 字符 ⇒ 没有写 `localPath`，见 `docs/DATA-FORMAT.md` §2.5）' : ''));
+      }
+    };
+
     /** 【W12】vault 那一路的引用读数 → `printDirRefReport` 认的那份形状（`[{rel, rep}]`）。
      *  `applyVault` 交回来的是 `Map<rel, rep>`；这里只做**搬运**（不重新解析、也不重新复制 ——
      *  落地那一步已经在 `applyVault` 里真的做过了，调的是同一个 `resolveImportRefs`）。 */
     const vaultDirRefs = () => Array.from(vaultRes.refs.entries())
       .map(([rel, rep]) => ({ rel: rel || name, rep: rep }));
+
+    /* 【20261052】"**实际**建了几批"只能问 `built` —— 而 `built.batches` **只有分批那条链才有**
+     * （`buildDirImportTreeBatched`）。vault 那一路是 `applyVault` → `buildDirImportTree` 的
+     * **一次建完** ⇒ 它的 `built` 里**没有** `batches`。
+     * ⚠️ 这里曾经直接读 `built.batches.length` ⇒ 抛 `TypeError: Cannot read properties of undefined
+     * (reading 'length')` ⇒ 整条命令在 `ctx.write` **之前**就死掉 ⇒ 项目一个字节都没落地，
+     * 而下游（冒烟域 44 的 5 条断言）只看到"读项目 JSON ⇒ ENOENT"——**失败没有出口**，
+     * 于是这个缺陷潜伏了整整一个批次（域 44 单跑 9/14 才暴露）。实测读数见
+     * `.review/20261052-vault不落盘/`：同一次运行里 `--no-vault` 走分批链 ⇒ 有 `batches` ⇒ 绿。
+     * 口径：没有 `batches` 的那条链就是**一批**（如实报，不假装分了批）；`built` 为 null 时
+     * （`--dry-run` 预览 / 文件数超限被挡）退回 `plan` —— 那是"会怎么分"的预览，两种输出共用这一份。 */
+    const builtBatches = (built && Array.isArray(built.batches) && built.batches.length)
+      ? built.batches
+      : (built ? [{
+        name: '（整个目录：一次建完，不分批）', files: built.files, nodes: built.nodes,
+        bytes: scan.totals.bytes, over: overBatch
+      }] : null);
+    /* 【20261052】被拒时必须**说清连带没做的事**：vault 那一路的 wiki 解析 / frontmatter 标签 /
+     * 附件落点全在**建树之后** ⇒ 建树没发生，它们一步都没执行（报告里的 `vault` 也是 null）。
+     * 从前被拒只报一句"文件数超限"，读者会以为"少导了一部分"，而真相是**整批没导**。 */
+    const vaultRefusalNote = vault
+      ? '（`--vault` 那一路**整批都没导**：wiki 解析 / frontmatter 标签 / 附件落点都在建树之后，一步没执行）'
+      : '';
+    /* 【20261052】"分批数"只有一个来源：**建过就问 `built`，没建才退回计划**（预览）。
+     * 预览文本里那句"本次 N 批"也用它 —— 否则 vault 档会出现"报告 count=1、正文说 4 批"的自相矛盾。 */
+    const batchCount = built ? builtBatches.length : plan.length;
 
     const report = {
       ok: true, dryRun: !!ctx.dryRun, project: name, dir: dir, dirRef: dirRef, title: title,
@@ -1680,8 +1765,27 @@ module.exports = {
       skippedCount: skipped.length, skippedByReason: counts, skippedDetail: skipped.slice(0, 200),
       size: {
         bytes: scan.totals.bytes, mb: Math.round(scan.totals.bytes / 1048576 * 100) / 100,
-        limitMB: docImport.MAX_SOURCE_MB, over: scan.totals.bytes > docImport.MAX_SOURCE_BYTES
+        /* 【20261043】`over` 现在读作"**超过单批线 ⇒ 会分批**"（**不是**超限拒绝：目录总量没有上限）。
+         * 字段名沿用 `over` 是为了不动 `--json` 的既有形状（`size.over` 一直是"这一项会不会绊住导入"）。 */
+        batchMB: docImport.MAX_IMPORT_BATCH_MB, over: overBatch
       },
+      /* 分批读数（⓪⁸）：`count` = **实际**建了几批（建过 ⇒ 从 `built` 读；没建 ⇒ 退回计划里的分批数，
+       * 那是预览）；`batches` 逐批给名字/文件数/体量/节点数（`ms` 不进 JSON —— 它会逐跑变 ✗）。
+       * vault 那一路是**一次建完** ⇒ `count` = 1、那一批的名字写明"一次建完，不分批"（见 `builtBatches` 那段）。
+       * ⚠️ 字段形状与前一样（`name/files/nodes/bytes/over`），**没有**为 vault 新增字段 ——
+       * 默认档的 `--json` 因此与从前逐字节相同 ✓ */
+      batching: {
+        batchMB: docImport.MAX_IMPORT_BATCH_MB, batchFiles: docImport.MAX_IMPORT_BATCH_FILES,
+        count: batchCount, over: overBatch,
+        batches: (built ? builtBatches : plan.map((b) => ({
+          name: b.name || '（根下的文件）', files: b.files, nodes: null, bytes: b.bytes, over: !!b.over
+        }))).map((b) => ({ name: b.name, files: b.files, nodes: (b.nodes === undefined ? null : b.nodes),
+          bytes: b.bytes, over: !!b.over }))
+      },
+      /* 视频分档（⓪⁹）：`entries` = 当"入口节点"导入的播放列表数；`parts` = 按"没有意义"跳过的分片/密钥/索引数。
+       * 两个数**分开报**就是用户要的那条读数（"因为它是分片而跳过"必须看得见，不许混进"扩展名不支持"）。 */
+      video: { entries: scan.video ? scan.video.entries : 0, parts: scan.video ? scan.video.parts : 0,
+        nodes: built ? built.videos : 0, localPathSkipped: built ? built.localPathSkipped : 0 },
       fileCount: { count: scan.totals.files, limit: maxFiles, over: overFiles },
       origin: manifest,
       entries: built ? built.entries.map((e) => ({
@@ -1691,7 +1795,7 @@ module.exports = {
       collisions: collisions.slice(0, 50),
       converted: !!built,
       wouldRefuse: refused || !!limitMsg,
-      refuseReason: limitMsg ? (overFiles ? 'over-max-files' : 'over-size')
+      refuseReason: limitMsg ? 'over-max-files'
         : (dup ? 'duplicate-dir' : (collisions.length ? 'duplicate-file' : null)),
       forced: forced,
       // 【W12】vault 那一路的读数（没开 ⇒ `null`：**默认档报告与从前逐字节相同** ✓）
@@ -1730,19 +1834,21 @@ module.exports = {
         + '与真导用同一份判据，不各算一套）');
       ctx.out('整库导入：' + dirRef + '  →  新项目「' + name + '」（标题：' + title + '）');
       ctx.out('范围：' + scan.ext.join(' / ') + '（`--ext` 可覆盖）│ 文件数上限 ' + maxFiles
-        + '（`--max-files` 可覆盖）│ 体量上限 ' + docImport.MAX_SOURCE_MB + ' MB（与单文件共用一份常量）');
+        + '（`--max-files` 可覆盖）│ **目录总量没有上限**（超过单批 ' + docImport.MAX_IMPORT_BATCH_MB
+        + ' MB 只按顶层子树分批：本次 ' + batchCount + ' 批）');
       ctx.out('将建：' + containers + ' 个容器节点（目录）'
         + (built ? ' / ' + filesImported + ' 个文件子树 / 合计 ' + nodes + ' 个节点'
-          : ' / ' + scan.totals.files + ' 个文件候选（**超限 ⇒ 没有转换**）'));
+          : ' / ' + scan.totals.files + ' 个文件候选（**文件数超限 ⇒ 没有转换**）'));
       ctx.out('体量：' + report.size.mb + ' MB（' + scan.totals.bytes + ' 字节）'
-        + (report.size.over ? ' —— ⚠ **超限**' : ' —— 未超限 ✓'));
+        + (report.size.over ? ' —— 超过单批线 ⇒ **自动分批，不拒绝**' : ' —— 一批就装得下 ✓'));
       ctx.out('格式分布：' + Object.keys(byFormat).filter((k) => byFormat[k]).map((k) => k + ' ' + byFormat[k]).join(' / ')
         + (Object.keys(byFormat).some((k) => byFormat[k]) ? '' : '（还没转换）'));
       printLimit(ctx.out);
       printVault(ctx.out);
       printSkips(ctx.out);
+      printVideo(ctx.out);
       if (built) printDirRefReport(ctx.out, dirRefs, true);
-      else ctx.out('资源引用：（超限 ⇒ 没有转换，本次不解析引用）');
+      else ctx.out('资源引用：（文件数超限 ⇒ 没有转换，本次不解析引用）');
       if (built && built.preambles) {
         ctx.out('前导正文：' + built.preambles + ' 个文件的"第一个标题之前的正文"已并入各自**文件节点的详情开头**');
       }
@@ -1761,7 +1867,9 @@ module.exports = {
     }
 
     // ---- 真导：闸门全部在写盘之前 ----
-    if (limitMsg) { ctx.error(limitMsg); return; }
+    /* 【20261052】拒绝时**逐条说清没做的事**（`limitMsg` 自己已经说了原因与三条出路）：
+     * vault 那一路的解析/标签/附件落点都在**建树之后** ⇒ 建树没发生，它们一步没执行。 */
+    if (limitMsg) { ctx.error(limitMsg + (vaultRefusalNote ? ' ' + vaultRefusalNote : '')); return; }
     if (refused) {
       const head = dup
         ? duplicateOriginError('项目 ' + dup.project + ' 的节点 ' + dup.node.id, dup.node.origin) : '';
@@ -1799,6 +1907,13 @@ module.exports = {
       + (forced && (dup || collisions.length) ? '（--force：这是同一个来源的第 2 份）' : ''));
     printVault(ctx.out);
     printSkips(ctx.out);
+    printVideo(ctx.out);
+    // 【20261043】分批读数：一批一行（上面已打进度），收口时报总数（**目录总量没有上限**）
+    // 【20261052】读 `builtBatches` 而不是 `built.batches`：后者只有分批那条链才有（vault 那一路没有）。
+    if (built && builtBatches.length > 1) {
+      ctx.out('分批：' + builtBatches.length + ' 批已全部转换（目录总量**没有上限**；写盘仍是**一次原子写** ⇒ '
+        + '不会留下半个项目）');
+    }
     // 【批6】资源回显（如实报告）：复制了什么、哪条已在项目内、哪条远程/坏引用被按正文保留
     printDirRefReport(ctx.out, dirRefs, false);
     if (built && built.preambles) {
@@ -2739,6 +2854,144 @@ module.exports = {
       return cur;
     });
     ctx.out('已设置主题布局: ' + JSON.stringify(written || {}));
+  },
+
+  /**
+   * 【20261048】**视频摘要**：三条路（字幕解析 / ffmpeg 解码 / 两者结合）+ 两档（coarse|detailed）
+   * + **自动检测**（说清凭什么选它）。
+   *
+   * ⚠️ **这是本工程唯一一个不写 `projects/` 的命令**：位置参数是**文件系统路径**（目录或一份 `.m3u8`），
+   *    不是项目名。所以它没有 `ctx.read()` / `ctx.write()` / `ctx.mutate()` —— 想把它接进项目的人先读这句：
+   *    视频摘要的产物**不落盘**（要留就由调用方自己把 `--json` 的结果写进笔记）。
+   *
+   * 本函数**只做三件事**（判据一律不在这里，否则就会出现第二份会漂的答案）：
+   *   ① 探 —— `src/video-summary-probe.js`（副作用面：探字幕 / 探 ffmpeg / 读播放列表，全部可注入）；
+   *   ② 出计划 —— `src/video-summary.js` 的 `planStrategy`（**唯一决策处**：选路 + 档位 + 拒绝）；
+   *   ③ 按计划取素材并合成 —— `collectSubtitleTexts`（**只有详细档才会调**）+ `buildSummary`（自带结构自查）。
+   *
+   * 三条不许犯的错（改这个命令之前先读）：
+   *   · **`--method` 显式指定却回退到别的路** ⇒ 用户明确选了方法，回退等于骗他（拒绝由 `planStrategy` 出）；
+   *   · **`--level detailed` 在"无字幕 + 无 ffmpeg"时拿文件名硬凑** ⇒ `planStrategy` 直接
+   *     `{ok:false, code:'no-content-source'}`，连合成都不进；
+   *   · **粗档偷读字幕/偷解码** ⇒ 计划里根本没有那两步，而且 `checkSummary` 会判红（结构判据）。
+   */
+  videoSummary(ctx) {
+    const vs = require('../../src/video-summary.js');
+    const probe = require('../../src/video-summary-probe.js');
+    const target = ctx.projectName;                     // = 第一个位置参数（路径，不是项目名）
+    if (!target) {
+      ctx.error('缺少目标：给一个目录或一份 `.m3u8` 的路径。'
+        + '（本命令**不读 projects/**，位置参数是文件系统路径：`video-summary E:\\课程目录 --json`）');
+    }
+    const method = ctx.args.method === undefined ? vs.DEFAULT_METHOD : String(ctx.args.method);
+    const level = ctx.args.level === undefined ? vs.DEFAULT_LEVEL : String(ctx.args.level);
+
+    // ---- ① 探（只读；分片/密钥一个都不碰）----
+    const facts = probe.probeVideo(target);
+    if (!facts.ok) ctx.error(facts.message);
+
+    // ---- ② 计划（选路 + 档位；不可用/做不到 ⇒ 响亮拒绝，**绝不回退**）----
+    const plan = vs.planStrategy(facts, { method: method, level: level });
+    if (!plan.ok) ctx.error(plan.message);
+
+    // ---- ③ 素材：**只有计划里有 read-subtitle 这一步**才去读字幕正文（粗档拿不到内容）----
+    const material = { facts: facts };
+    const wantsSubtitle = (plan.steps || []).some((s) => s.kind === 'read-subtitle');
+    if (wantsSubtitle) {
+      const got = probe.collectSubtitleTexts(facts);
+      material.subtitleTexts = got.texts;
+      if (got.gaps && got.gaps.length) facts.gaps = (facts.gaps || []).concat(got.gaps);
+    }
+    const built = vs.buildSummary(plan, material);
+    if (!built.ok) ctx.error(built.message);
+
+    const sum = built.summary;
+    if (ctx.args.json) {
+      ctx.outJson({
+        ok: true,
+        command: 'video-summary',
+        /* 对外承诺的机器可读那一半：本命令**不写 `projects/`**（见函数头第一句）。
+         * 写成常量而不是"算出来"，因为它是**契约**而不是读数 —— 哪天有人给它加了写盘，
+         * 这一行会立刻变成假话，而 `tests/video-summary.test.js` 的 H7 会红（跑前跑后项目列表逐字相同）。 */
+        noWrite: true,
+        target: facts.target,
+        kind: facts.kind,
+        level: sum.level,
+        method: sum.method,
+        why: sum.why,
+        degraded: sum.degraded === true,
+        degradedFrom: sum.degradedFrom || null,
+        degradedTo: sum.degradedTo || null,
+        degradedWhy: sum.degradedWhy || null,
+        caps: plan.caps,
+        plan: {
+          method: plan.method, level: plan.level, decodes: plan.decodes === true,
+          steps: (plan.steps || []).map((s) => ({ kind: s.kind, what: s.what }))
+        },
+        summary: sum,
+        contract: built.contract,
+        gaps: facts.gaps || [],
+        warnings: built.warnings || []
+      });
+      return;
+    }
+
+    // ---- 文本档（人读的那一份；每一行都是**读数**，不是套话）----
+    const caps = plan.caps;
+    ctx.out('视频摘要 · ' + (sum.level === 'detailed' ? 'detailed（详细档）' : 'coarse（粗档）'));
+    ctx.out('目标：' + facts.target);
+    ctx.out('视频：' + sum.playlistCount + ' 份播放列表 · 合计 ' + sum.durationText
+      + ' · 分片 ' + sum.segments + ' 个' + (sum.encrypted ? ' · AES 加密（EXT-X-KEY）' : ' · 未加密')
+      + '（时长 = `#EXTINF` 之和，**不需要 ffmpeg** 就算得出）');
+    ctx.out('字幕：' + caps.subtitleCount + ' 份'
+      + (caps.subtitleFiles && caps.subtitleFiles.length ? '（' + caps.subtitleFiles.slice(0, 3).join('、') + '）' : '（.vtt / .srt）'));
+    ctx.out('可用：ffmpeg ' + (caps.hasFfmpeg ? caps.ffmpegPath : '未安装（PATH 上找不到）')
+      + ' · ASR ' + (caps.hasAsr ? caps.asrName : '没接')
+      + ' · 视觉模型 ' + (caps.hasVision ? caps.visionName : '没接'));
+    ctx.out('选路：' + method + ' ⇒ ' + plan.method);
+    ctx.out('为什么：' + sum.why);
+    if (sum.degraded) ctx.out('降级：' + sum.degradedFrom + ' ⇒ ' + sum.degradedTo + ' —— ' + sum.degradedWhy);
+    if (sum.structure && sum.structure.length) {
+      ctx.out('层级（课程 / 课时）：');
+      sum.structure.forEach((s) => {
+        ctx.out('  ' + '  '.repeat(s.depth) + s.name + '（' + s.videos + ' 份 / '
+          + vs.formatStamp(s.seconds) + (s.encryptedAny ? ' / 加密' : '') + '）');
+      });
+    }
+    if (sum.level === 'detailed') {
+      ctx.out('逐段要点（' + sum.segCount + ' 段 / ' + sum.cues + ' 句 / ' + sum.chars + ' 字，'
+        + '**抽取式**：要点是字幕原句，不是生成摘要）：');
+      (sum.highlights || []).forEach((h) => {
+        ctx.out('  ' + h.atText + '–' + h.endText + '  ' + h.text);
+      });
+      ctx.out('关键概念/术语（单条字幕里反复出现的片段；一条只出现一次的不算）：'
+        + ((sum.terms || []).length
+          ? (sum.terms || []).map((t) => t.term + '(' + t.segments + ' 段)').join(' · ')
+          : '（没有重复出现的片段 —— 这次不编术语）'));
+      ctx.out('层级（一图读懂用的那一份）：');
+      (sum.outline || []).forEach((o) => {
+        ctx.out('  ' + '  '.repeat(o.level) + (o.level === 0 ? '● ' : '- ') + o.title
+          + (o.atText ? '  [' + o.atText + ']' : ''));
+      });
+    } else {
+      ctx.out('主题：' + sum.topic + '（一句话主题 = 播放列表/目录名，本档**没有读任何内容**）');
+      ctx.out('提示：本档只读播放列表文本（**不解码、不抽帧、不起进程、不读字幕正文**）；'
+        + '要逐段要点：`--level detailed`（需要字幕或 ffmpeg）');
+    }
+    if ((facts.gaps || []).length) {
+      ctx.out('⚠ 没读成的（逐条点名，不静默）：');
+      (facts.gaps || []).slice(0, 10).forEach((g) => {
+        ctx.out('  · ' + (g.rel || '?') + ' —— ' + g.reason + (g.message ? '：' + g.message : ''));
+      });
+    }
+    if ((built.warnings || []).length) {
+      ctx.out('⚠ 字幕里解析不了的行（不静默丢）：');
+      (built.warnings || []).slice(0, 10).forEach((w) => {
+        ctx.out('  · ' + (w.src ? w.src + ' ' : '') + '第 ' + (w.line === undefined ? '?' : w.line)
+          + ' 行 ' + w.kind + (w.raw ? '：' + w.raw : ''));
+      });
+    }
+    ctx.out('（本命令不写 `projects/`：产物只在这次输出里）');
   },
 
   validate(ctx) {

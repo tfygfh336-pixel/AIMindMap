@@ -83,33 +83,87 @@ const assertions = [
   {
     name: 'DSH 侧边栏：布局让位事件 → body class + main margin 生效',
     run: async (ctx) => {
-      // 直接驱动渲染层的 layout 处理链路：模拟主进程事件（渲染层监听的是
-      // dsh-sidebar:layout；冒烟下主进程不会发，这里经 IPC 事件回调真实触发）
-      const r = await ctx.exec(`(async () => {
-        const main = document.getElementById('main');
-        const tick = () => new Promise((res) => setTimeout(res, 30));
-        // ⚠️ 判据是**契约**，不是某个具体数字：
-        //   让位宽度必须等于**侧栏实际占宽**（实时读 status()），off 时归 0。
-        //   原先写死 '420px' —— 那是很久以前的默认宽度 ✗；宽度会随用户偏好/上限变化
-        //   （实测已到 720、上限提到 900 后还可能是 900），写死必然假红 ✓。
-        const st = await window.desktop.dsh.status();
-        const actual = st && typeof st.actualWidth === 'number' ? st.actualWidth : null;
-        document.body.classList.add('dsh-sidebar-on');
-        await tick();
-        const onMargin = getComputedStyle(main).marginRight;
-        const onPad = getComputedStyle(document.getElementById('toolbar')).paddingRight;
-        document.body.classList.remove('dsh-sidebar-on');
-        await tick();
-        const offMargin = getComputedStyle(main).marginRight;
-        const offPad = getComputedStyle(document.getElementById('toolbar')).paddingRight;
-        const onPx = parseInt(onMargin, 10);
-        return { onMargin, offMargin, onPad, offPad, actual,
-          ok: onPx > 0 && (actual === null || Math.abs(onPx - actual) <= 2)
-            && offMargin === '0px'
-            && parseInt(onPad, 10) >= onPx + 8 && parseInt(offPad, 10) < 20 };
-      })()`);
-      return { ok: !!r.ok, text: 'margin on/off ' + r.onMargin + ' / ' + r.offMargin
-        + '（侧栏实际占宽 ' + r.actual + '；toolbar paddingRight on/off ' + r.onPad + ' / ' + r.offPad + '）' };
+      /* 判据是**契约**，不是某个具体数字：让位宽度必须等于**侧栏实际占宽**
+       * （status() 的 actualWidth，来自原生 view 的真实 bounds），收起时归 0。
+       * ⚠️ 2026-10-54 修（这条曾恒红，且**与产品无关**）：上一版在断言里自己
+       *   document.body.classList.add('dsh-sidebar-on') —— 而 --dsh-sidebar-width 的权威
+       *   写入点**只有一处**：renderer/app-core.js 的 applyLayout()（只在收到
+       *   dsh-sidebar:layout 时写）。自己加 class 只会碰到 renderer/style.css 的兜底 420px；
+       *   只要那个变量被上游域清掉（域 04 收尾就 removeProperty），本条就在
+       *   "侧栏实际 694 / 读到 420" 上恒红 ✗。
+       * ⇒ 现在**走产品真实路径**，断言只读回副作用：
+       *   ① setGeometry({}) → relayout() → notifyRenderer() → 渲染层 dsh-sidebar:layout
+       *      → applyLayout()（body class 与 CSS 变量都由产品写，断言一个都不自己写）；
+       *   ② 收起档由产品的 hide() 产生（visible=false ⇒ 变量 0px、class 摘掉）；
+       *   ③ 期望值一律来自 status()，**不许**写成 420 / 694 这类具体宽度。 */
+      const readJs = '(function () {'
+        + ' var main = document.getElementById("main");'
+        + ' var tb = document.getElementById("toolbar");'
+        + ' var last = window.__dshLayoutLast || null;'
+        + ' return { cls: document.body.classList.contains("dsh-sidebar-on"),'
+        + '   margin: getComputedStyle(main).marginRight,'
+        + '   pad: getComputedStyle(tb).paddingRight,'
+        + '   varv: (getComputedStyle(document.body).getPropertyValue("--dsh-sidebar-width") || "").trim(),'
+        + '   at: (last && last.at) || 0 }; })()';
+      const read = async () => { const r = await ctx.exec(readJs); return (r && typeof r === 'object') ? r : {}; };
+      const st0 = sidebar.getStatus();
+      const wasVisible = st0.visible === true;
+      /* 前提：视图真的建着（否则"该让出多少"没有真值）。走产品 show()，等它报出 actualWidth。 */
+      if (!wasVisible || !st0.actualWidth) {
+        try { sidebar.show(); } catch (e) { /* 下面靠读数红 */ }
+        for (let i = 0; i < 40; i++) {
+          await sleep(200);
+          const s = sidebar.getStatus();
+          if (s.visible && s.actualWidth) break;
+        }
+      }
+      const stOn = sidebar.getStatus();
+      const actual = stOn.actualWidth;
+      if (!stOn.visible || !actual) {
+        return { ok: false, text: '侧栏视图建不起来（visible=' + stOn.visible + ' actualWidth=' + actual
+          + '）⇒「页面该让出多少」没有真值，本条判不了，按红处理 ✗' };
+      }
+      const before = await read();
+      /* ① 让产品把**当前**布局再发一次（净零改动：setGeometry({}) 只走 relayout，宽度不变） */
+      let emitErr = '';
+      try { sidebar.setGeometry({}); } catch (e) { emitErr = String((e && e.message) || e); }
+      const evtOn = await waitTrue(ctx, '(function () { var l = window.__dshLayoutLast; return !!(l && l.at > '
+        + Number(before.at || 0) + '); })()', 4000);
+      const on = await read();
+      /* ② 收起档：产品的 hide() ⇒ 让位带归 0（变量 0px、class 摘掉、margin 0） */
+      let hideErr = '';
+      try { sidebar.hide(); } catch (e) { hideErr = String((e && e.message) || e); }
+      const evtOff = await waitTrue(ctx, '(function () {'
+        + ' var main = document.getElementById("main");'
+        + ' return !document.body.classList.contains("dsh-sidebar-on")'
+        + '   && getComputedStyle(main).marginRight === "0px"; })()', 4000);
+      const off = await read();
+      /* ③ 净零还原：原来可见 ⇒ 用产品路径收回可见态（不留一个被改过的现场） */
+      let restored = !wasVisible;
+      if (wasVisible) {
+        try { sidebar.show(); } catch (e) { /* 下面靠读数红 */ }
+        const back = await waitTrue(ctx, '(function () { return document.body.classList.contains("dsh-sidebar-on"); })()', 4000);
+        restored = back.ok;
+      }
+      const onPx = parseInt(on.margin, 10);
+      const offPadPx = parseInt(off.pad, 10);
+      const onOk = evtOn.ok && on.cls === true && Number.isFinite(onPx)
+        && Math.abs(onPx - actual) <= 2 && String(on.varv) === actual + 'px';
+      const offOk = evtOff.ok && off.cls === false && String(off.margin) === '0px'
+        && offPadPx < 20 && String(off.varv) === '0px';
+      return {
+        ok: emitErr === '' && hideErr === '' && onOk && offOk && restored === true,
+        text: '产品路径重发布局（无异常=' + (emitErr === '') + '）⇒ margin=' + on.margin
+          + '（status().actualWidth=' + actual + '，应相等±2）· CSS 变量=' + JSON.stringify(on.varv)
+          + ' · body.dsh-sidebar-on=' + on.cls + ' · toolbar paddingRight=' + on.pad
+          + '（应 >= ' + (actual + 8) + '）'
+          + ' ｜ 产品 hide() 后（无异常=' + (hideErr === '') + '）⇒ margin=' + off.margin
+          + '（应 0px）· CSS 变量=' + JSON.stringify(off.varv) + '（应 0px）· class=' + off.cls
+          + '（应 false）· toolbar paddingRight=' + off.pad + '（应 < 20）'
+          + ' ｜ 事件真的送达（at 递增）=' + (evtOn.ok && evtOff.ok) + ' · 现场还原=' + restored
+          + ((emitErr || hideErr) ? ' ｜ 异常=' + (emitErr || hideErr) : '')
+          + ((onOk && offOk && restored) ? ' ✓' : ' ✗')
+      };
     }
   },
 

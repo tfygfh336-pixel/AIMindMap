@@ -200,7 +200,9 @@
     $('#fp-open').onclick = null;
     // 「系统打开」= 调用方**明确**要交系统（force）⇒ 判据照走，只把 preview 改判成 system（压不过 reject）
     $('#fp-open').onclick = () => { openByChain({ kind: 'attachment', raw: rel, force: 'system' }); };
-    // 节点带本机文件夹（localPath）时给一个直达按钮 —— 把"附件预览"与"文件夹链接"两件事接起来
+    // 节点带本机链接（localPath：**文件或目录**）时给一个直达按钮 —— 把"附件预览"与"本机链接"接起来。
+    // 动作与详情框那条链接、右键①**同一个**（`MM.openLocalPath`，缺省 mode ⇒ 系统默认程序；
+    // 目录由系统开文件管理器；没有默认关联时 Windows 自己弹「打开方式」）。
     const lp = node.localPath || (node.data && node.data.localPath) || '';
     const fbtn = $('#fp-folder');
     if (fbtn) {

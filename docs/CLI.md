@@ -37,6 +37,7 @@
 | `source-chain` | source-chain <项目> <id> [--json] [--depth N] [--reverse] |
 | `ask` | ask <项目> [<节点id>] [--nodes a,b,c] [--question "..."] [--kind explain|ask] [--effort low|medium|high|xhigh] [--json] [--timeout 秒] [--dry-run] |
 | `theme-layout` | theme-layout <项目> [--left a,b] [--right c,d] [--clear] [--dry-run] |
+| `video-summary` | video-summary <目录|.m3u8> [--method auto|subtitle|ffmpeg|hybrid] [--level coarse|detailed] [--json] |
 | `add` | add <项目> <父id> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] [--dry-run] |
 | `add-root` | add-root <项目> --topic 标题 [--id id] [--detail html | --detail-md markdown] [--local-path 绝对路径] [--expanded true|false] [--force] [--dry-run] |
 | `edit` | edit <项目> <id> [--topic 标题] [--detail html | --detail-md markdown] [--clear-detail] [--tags a,b] [--clear-tags] [--local-path 绝对路径 | --clear-local-path] [--expanded true|false] [--dry-run] |
@@ -218,6 +219,14 @@ node cli/mm-cli.js ask <项目> [<节点id>] [--nodes a,b,c] [--question "..."] 
 node cli/mm-cli.js theme-layout <项目> [--left a,b] [--right c,d] [--clear] [--dry-run]
 ```
 
+### video-summary
+
+**视频摘要**（三条路 + 两档 + 自动检测）。⚠️ 位置参数是**文件系统路径**（目录或一份 `.m3u8`），**不是项目名** —— 这是本工程**唯一一个不写 `projects/` 的命令**：它不建节点、不落盘，产物只在这次输出里（要留就自己把 `--json` 的结果写进笔记）。**三条路**（`--method`）：`subtitle` = 读 `.vtt`/`.srt` 解析成带时间戳的 cue（**纯文本，本机现在就能真做**）；`ffmpeg` = 抽音轨给 ASR / 抽帧给视觉模型（**执行器已做成可注入的骨架**：没装 ffmpeg ⇒ `{ok:false, reason:"ffmpeg-missing"}`，装不装是用户的决定）；`hybrid` = 两者拼（字幕给逐句，抽帧补画面里的字；任一段失败 ⇒ **如实降级**并标 `degraded`/`degradedFrom`/`degradedTo`）。`auto`（默认）= **自动检测**：有字幕+有 ffmpeg ⇒ hybrid；无字幕+有 ffmpeg ⇒ ffmpeg；有字幕+无 ffmpeg ⇒ subtitle；两样都没有 ⇒ 只能粗档。`why` 是**人话**且必须提到判据依据（例如"没有 .vtt/.srt 字幕 + 本机没有 ffmpeg ⇒ 只能粗档"）——`why="hybrid"` 这种等于没说的答案会被判据判红。**显式指定方法时绝不静默回退**：要的那条不可用 ⇒ 非 0 退出 + 说清"现在可用的是哪条"（`--method subtitle` 而没字幕 / `--method ffmpeg` 而没 ffmpeg / `--method hybrid` 缺任何一边，各有独立报文）。**两档**（`--level`，默认 `coarse`）：`coarse` = 结构 + 时长（播放列表 `#EXTINF` 之和，**不需要 ffmpeg**）+ 分片数 + 是否加密 + 课程/课时层级 + 一句话主题 —— 契约**禁止解码/抽帧/起进程/读字幕正文**（结构判据，偷偷加一步就红）；`detailed` = 上面全部 + 逐段要点（带时间戳）+ 关键概念/术语 + 一图读懂的层级结构，且**必须如实标 `extractive:true`**（本工程没有生成式摘要：要点是字幕原句按停顿切段后取段首句，术语是"反复出现的片段"）。**没有内容源时 `detailed` 是明确失败**（`no-content-source` / `no-content-reader`），**不拿文件名硬凑**。**如实边界**：ASR 与视觉模型本批**未接**（只留接口位）⇒ 只有"有字幕"这一条能出真内容；分片（`.ts`）/密钥（`.key`）**一个都不读**（真实课程目录里那是 7.68 GB，摘要用不到）；符号链接不跟随、隐藏项与依赖目录跳过（判据与导入命令**同一份** `entrySkipReason`）。`--json` **两跑逐字节相同**（无时间戳、列表一律码点序）
+
+```
+node cli/mm-cli.js video-summary <目录|.m3u8> [--method auto|subtitle|ffmpeg|hybrid] [--level coarse|detailed] [--json]
+```
+
 ### add
 
 在父节点下新增子节点（--detail 为 HTML；--detail-md 为 Markdown，命令内转 HTML；--local-path 记录本机文件夹，界面点击即打开）。**新节点默认折叠**（不给 --expanded 就显式写 expanded:false —— 缺键等于展开，靠省略折不起来）
@@ -388,7 +397,7 @@ node cli/mm-cli.js import-project <新项目名> <文件.md|.txt|.docx|.pdf> [--
 
 ### import-dir
 
-批 5：**整库导入 —— 把一个文件夹的结构镜像成一棵树**（每一级子目录 = 一个容器节点，每个文件 = 该容器下的一个文件节点，标题取**文件名去扩展名**，文档自己的标题在它下面）。默认导 `.md/.txt/.docx/.pdf`（`--ext` 覆盖，只许写真的能导的扩展名）；隐藏文件/`.git`/`node_modules`/符号链接/空目录/无读权限/不支持的扩展名**一律跳过并逐类计数**（报告给"导入了 N 个文件 / 跳过 M 个（按原因分组）"，**不许静默**）；上限：合计 `MAX_SOURCE_MB`（与单文件闸门共用一份常量）+ 文件数 `--max-files`（默认 200），**超限在写盘之前响亮拒绝并给出路**；**一次原子写**，失败不留半个项目；`--dry-run` 只出报告、绝不写盘（并如实报超限与"这个目录已经导过了"）；**幂等**：项目根记**目录清单指纹**（同一个目录重复导 ⇒ **整体拒绝**并指名）、每个文件节点记自己的来源指纹（同一个文件被别的命令导过也拒绝）—— 确实要第二份就加 `--force`。【W12】**Obsidian 库直进**：目录里有 `.obsidian/`（或显式给 `--vault`）时多走一段**本地解析（零 LLM、零 token）** —— ① `[[页]]` / `[[页|别名]]` / `[[页#标题]]` 三类 wiki 链接接成**关联**：落点就是既有的 `links[]`（`{ project: <本次项目>, id: <目标节点> }`，带 `#标题` 时指到那篇笔记里**对应的标题节点**，`caption` 记原样写法与别名）；`![[图.png]]` 这类附件/图片嵌入走**既有资源管线**（与 `add-image` 同一处）。② frontmatter 的 `tags` / `tag`（含 `#a` 写法）落到**该笔记文件节点的 `tags`**（与 `--tags` 同一套标签机制），`aliases` / `alias` 参与**链接解析**（`[[别名]]` 能指到那篇笔记）。③ **断链 / 同名多篇 / 附件没落成**一律**逐条点名**（并入跳过清单），**绝不写悬空链接**。④ 附件目录 `assets/`、`attachments/` 按 P0 边界不导（附件本身属 P1）。`--no-vault` = **显式关掉**（库目录里也只想拿结构时用）⇒ 与从前**逐字节相同**。**不做**：笔记嵌入的正文合并（transclusion）、反向同步（本工程 → Obsidian）、daily notes 与插件语法；`[[页#^块引用]]` 这类认得出但转不了的按"逐条点名"处理。
+批 5：**整库导入 —— 把一个文件夹的结构镜像成一棵树**（每一级子目录 = 一个容器节点，每个文件 = 该容器下的一个文件节点，标题取**文件名去扩展名**，文档自己的标题在它下面）。默认导 `.md/.txt/.docx/.pdf/.m3u8`（`--ext` 覆盖，只许写真的能导的扩展名）；隐藏文件/`.git`/`node_modules`/符号链接/空目录/无读权限/不支持的扩展名**一律跳过并逐类计数**（报告给"导入了 N 个文件 / 跳过 M 个（按原因分组）"，**不许静默**）；**【20261043】目录总量没有上限**：超过**单批线**（`MAX_IMPORT_BATCH_MB` / `MAX_IMPORT_BATCH_FILES`，数值见常量）只**按顶层子树分批**（每批一行进度 + `--json` 的 `batching`），**不是拒绝**；拒绝线只剩文件数 `--max-files`（默认 200，管的是"人还能不能核对结果"）。**视频目录**：`.m3u8` 当**视频入口** —— 节点 + 字段 `localPath` 指向本机那份播放列表（点开交给系统默认程序，**不内嵌、不拷贝**）+ 一句大概的详情（分片数/时长）；HLS 包里的**分片/密钥/索引**（`.ts`/`.key`/`*.m3u8.bak`）按「视频分片/密钥/索引」一类跳过 —— 判据**两侧都成立**才算分片（名字像 + 在 HLS 包里），所以工程里真的 `.ts` 源码绝不会被吞掉；目录节点与文档节点同样带 `localPath`（指向真实目录/文件）；**一次原子写**，失败不留半个项目；`--dry-run` 只出报告、绝不写盘（并如实报"会分几批"与"这个目录已经导过了"）；**幂等**：项目根记**目录清单指纹**（同一个目录重复导 ⇒ **整体拒绝**并指名）、每个文件节点记自己的来源指纹（同一个文件被别的命令导过也拒绝）—— 确实要第二份就加 `--force`。【W12】**Obsidian 库直进**：目录里有 `.obsidian/`（或显式给 `--vault`）时多走一段**本地解析（零 LLM、零 token）** —— ① `[[页]]` / `[[页|别名]]` / `[[页#标题]]` 三类 wiki 链接接成**关联**：落点就是既有的 `links[]`（`{ project: <本次项目>, id: <目标节点> }`，带 `#标题` 时指到那篇笔记里**对应的标题节点**，`caption` 记原样写法与别名）；`![[图.png]]` 这类附件/图片嵌入走**既有资源管线**（与 `add-image` 同一处）。② frontmatter 的 `tags` / `tag`（含 `#a` 写法）落到**该笔记文件节点的 `tags`**（与 `--tags` 同一套标签机制），`aliases` / `alias` 参与**链接解析**（`[[别名]]` 能指到那篇笔记）。③ **断链 / 同名多篇 / 附件没落成**一律**逐条点名**（并入跳过清单），**绝不写悬空链接**。④ 附件目录 `assets/`、`attachments/` 按 P0 边界不导（附件本身属 P1）。`--no-vault` = **显式关掉**（库目录里也只想拿结构时用）⇒ 与从前**逐字节相同**。**不做**：笔记嵌入的正文合并（transclusion）、反向同步（本工程 → Obsidian）、daily notes 与插件语法；`[[页#^块引用]]` 这类认得出但转不了的按"逐条点名"处理。
 
 ```
 node cli/mm-cli.js import-dir <新项目名> <目录> [--title 标题] [--ext md,txt] [--max-files N] [--vault|--no-vault] [--dry-run] [--json] [--force]
