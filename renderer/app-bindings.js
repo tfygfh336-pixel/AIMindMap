@@ -37,8 +37,20 @@
   /* ---------------- 只存"要显示的东西"（判定不在这里） ---------------- */
   let probe = null;            // 最近一次**只读探针**（`--dry-run` 的整份报告：bindings[] / sync[]）
   let probeSeq = 0;            // 探针序号：迟到的旧结果不许覆盖新的（切项目时尤其明显）
-  let lastSync = null;         // 最近一次**真的同步过**的那一行（自动的 / 人点的）
+  /* 【20261059】两个槽，**故意分开**（"最后的" ≠ "最后有内容的"）：
+   *   · `lastSync` —— 最近一次**有实质动作**的轮（added / modified / reconnected 有数，或引擎标了 `synced`）。
+   *     状态条上的「+N 改 M」与「♻ 接回原节点 K 个」**只读它**：一轮真的什么都没做的轮不许把它顶掉
+   *     （旧形状是单槽 —— 一次"内容没变却被判成改了"的假轮就会把"♻ 接回 1 个"整句抹掉，
+   *     人再也看不到"其实接回了"；实测见 `.review/20261059-mtime与lastSync/probe-两个缺陷.log`）；
+   *   · `lastRun` —— 最近一次**跑过**的轮（含 no-change / 只确认删除 / 被挡住的轮）。它只作读数与
+   *     判别力：状态条据此说"最近一轮无变化"，而不是拿上一轮的数冒充"本次"。
+   * 两个槽都带**项目名**：读数只属于产生它的那个项目（切项目后不许显示上一个项目的 +N改M / 接回）。 */
+  let lastSync = null;         // 最近一次**有实质动作**的同步行（自动的 / 人点的）
   let lastSyncWhy = '';        // 那次同步是谁引起的（fs.watch / sweep / manual）
+  let lastSyncProject = '';    // 那一行是哪个项目的读数（串页的唯一防线）
+  let lastRun = null;          // 最近一次**跑过**的轮（可能什么都没做）
+  let lastRunWhy = '';
+  let lastRunProject = '';
   let lastReadings = null;     // 主进程算的"这次动了哪些对象"（键 + 人话名；见 runBindSyncCli）
   let busy = '';               // 正在跑的动作（防重复点击；也是可读读数）
   let lastError = '';          // 最近一次失败的**原话**（不吞）
@@ -83,12 +95,39 @@
       + (withdrawn ? '；其中 ' + withdrawn + ' 条待确认提议已撤回（那个文件回来了）' : '');
   }
 
+  /* 【20261059】② 的两个判据（**唯一实现**，别在 renderBar / bindState / 播报里各写一遍） */
+
+  /** 这一行算不算"有实质动作"？
+   *  · 引擎标了 `synced`（= 真改过树：added/modified/containers 至少一个非零）⇒ 是；
+   *  · 或者三个**数**里有一个非零（老报告/将来的字段形态没有 status 时也认得出）⇒ 是；
+   *  · 其余（no-change / 只处理了确认删除 / 被挡住 / 三个数全零）⇒ **否**，不许更新那个"有意义"的槽。
+   *  ⚠️ 别改成"任何一轮都算"：那等于退回单槽 ⇒ 一轮 no-change 就把「♻ 接回 1 个」顶掉（②-a 当场红）。 */
+  function substantialReading(row) {
+    if (!row) return false;
+    const n = (v) => (typeof v === 'number' && isFinite(v) ? v : (Number(v) || 0));
+    if (row.status === 'synced') return true;
+    return n(row.added) > 0 || n(row.modified) > 0 || n(row.reconnected) > 0;
+  }
+  /** 这两个槽只对**产生它们的那个项目**有意义（切项目 ⇒ 读不到；读数不串页） */
+  const inProject = (p) => (String(p || '') === currentProject());
+  const lastSyncHere = () => (inProject(lastSyncProject) ? lastSync : null);
+  const lastRunHere = () => (inProject(lastRunProject) ? lastRun : null);
+  /** "最近跑过的那一轮"该怎么一句话说明（只在它**不是**那条有动作的记录时才用得上） */
+  function runNoteOf(row) {
+    const st = String((row && row.status) || '');
+    if (st === 'confirmed') return '（最近一轮：只处理了确认删除）';
+    if (st === 'blocked-dirty' || st === 'dir-missing') return '（最近一轮被挡住了，没有写盘）';
+    return '（最近一轮无变化）';
+  }
+
   /* ================= ② 状态区（唯一渲染入口） ================= */
   /**
    * 把状态条画出来。**每一个数都从 CLI 报告里直接取**：
    *   · `bindings[0]`：`active/status`（守护中/已暂停，判定在 CLI）、`files`、`pending`（待确认删）、
    *     `unconverted`、`lastSyncAt`、`note`（引擎给的"为什么停住了"原话）；
-   *   · `lastSync`（最近一次真同步那一行）：`added / modified` ⇒ "本次 +N 改 M"。
+   *   · `lastSync`（**最近一次有实质动作**的那一行，【20261059】与"最近跑过的那一轮" `lastRun` 分开）：
+   *     `added / modified` ⇒ "本次 +N 改 M"；`reconnected` ⇒ "♻ 接回原节点 K 个"。
+   *     一轮 no-change 不会把它顶掉，只让状态条补一句"最近一轮无变化"。
    * 没有任何绑定 ⇒ **整条 `display:none`**（不占布局、不进命中测试 ⇒ 未绑定时界面零噪声 ✓）。
    */
   function renderBar() {
@@ -111,6 +150,11 @@
       if (btnUnbind) { btnUnbind.style.display = 'none'; }
       const bp = $('bind-btn-pending');
       if (bp) { bp.style.display = 'none'; bp.setAttribute('data-bind-pending-count', '0'); }
+      /* 【20261059】没有绑定行 ⇒ **读数一个都不许留着**：这些属性是"这批数属于当前这一行"的证据，
+       * 留着上一次的值会让"切项目/解绑之后"还读得到上一个项目的 +N改M / 接回（机器可读面在撒谎）。 */
+      ['data-bind-added', 'data-bind-modified', 'data-bind-reconnected', 'data-bind-last-run']
+        .forEach((k) => bar.setAttribute(k, ''));
+      bar.setAttribute('data-bind-readings', 'none');
       if (pendingOpen) closePending();
       return { shown: false, count: 0 };
     }
@@ -122,19 +166,29 @@
      *   确认流在这个状态下也会**拒绝执行**（CLI 侧 fail closed），界面把原话照转。 */
     const probeRow = (probe && Array.isArray(probe.sync) && probe.sync[0]) ? probe.sync[0] : null;
     const unreadable = (probeRow && probeRow.snapshotUnreadable) || '';
+    /* 【20261059】状态条上的数取**"最近一次有实质动作的那一轮"**（`lastSync`），而"最近跑过的那一轮"
+     * 另存一槽（`lastRun`）⇒ 两件事才分得开：
+     *   · 一轮 no-change / 被挡住 / 只确认删除 ⇒ 这三个读数**不动**（「♻ 接回 1 个」不会凭空消失）；
+     *   · 但它不等于"什么都没发生过" ⇒ 补一句"最近一轮无变化"，而且不再用「本次」冒充上一轮。 */
+    const meaningful = lastSyncHere();
+    const latest = lastRunHere();
+    const stale = !!(meaningful && latest && latest !== meaningful);
     const parts = [
       '「' + baseNameOf(b.dir) + '」',
       state,
       '已收录 ' + b.files + ' 个文件',
       '上次同步 ' + (b.lastSyncAt ? hms(b.lastSyncAt) : '还没同步过'),
-      '本次 ' + (lastSync ? ('+' + lastSync.added + ' 改 ' + lastSync.modified) : '—'),
+      (stale ? '上次有动作 ' : '本次 ')
+        + (meaningful ? ('+' + meaningful.added + ' 改 ' + meaningful.modified) : '—'),
       unreadable ? '待确认删 ?（**提议读不到**）' : ('待确认删 ' + b.pending),
       '未转换 ' + b.unconverted
     ];
+    if (stale) parts.push(runNoteOf(latest));
     /* 「认回来」的读数（引擎逐条点名的那几个文件）：快照丢了 / 提议删过的文件又回来时会 >0。
-     * 它必须**看得见** —— 否则用户只看到"节点没变多"，说不出为什么没多。 */
-    if (lastSync && lastSync.reconnected) {
-      parts.push('本次 ♻ 接回原节点 ' + lastSync.reconnected + ' 个');
+     * 它必须**看得见** —— 否则用户只看到"节点没变多"，说不出为什么没多。
+     * 它同样**只读那条有动作的记录**：后面的 no-change 轮不许把它顶掉。 */
+    if (meaningful && meaningful.reconnected) {
+      parts.push((stale ? '' : '本次 ') + '♻ 接回原节点 ' + meaningful.reconnected + ' 个');
     }
     if (unreadable) parts.push('⚠️ ' + unreadable + ' ⇒ 确认流**拒绝执行**（先修好/恢复这份旁路快照；或按引擎给的两条出路走）');
     if (b.note) parts.push('（' + b.note + '）');
@@ -152,10 +206,14 @@
     bar.setAttribute('data-bind-last-sync', b.lastSyncAt || '');
     bar.setAttribute('data-bind-binding', b.binding || '');
     bar.setAttribute('data-bind-dir', b.dir || '');
-    bar.setAttribute('data-bind-added', String(lastSync ? lastSync.added : ''));
-    bar.setAttribute('data-bind-modified', String(lastSync ? lastSync.modified : ''));
+    bar.setAttribute('data-bind-added', String(meaningful ? meaningful.added : ''));
+    bar.setAttribute('data-bind-modified', String(meaningful ? meaningful.modified : ''));
     // 「认回来」的读数（同上：与界面文字**同一批读数**，给断言/排查用）
-    bar.setAttribute('data-bind-reconnected', String(lastSync ? (lastSync.reconnected || 0) : ''));
+    bar.setAttribute('data-bind-reconnected', String(meaningful ? (meaningful.reconnected || 0) : ''));
+    /* 【20261059】两个槽的**机器可读面**（"最后的" vs "最后有内容的"，判据就靠这两个属性区分）：
+     *   `readings` = 状态条上这批数是不是"最近一轮"的；`last-run` = 最近跑过的那一轮的状态名。 */
+    bar.setAttribute('data-bind-readings', stale ? 'stale' : (meaningful ? 'fresh' : 'none'));
+    bar.setAttribute('data-bind-last-run', latest ? String(latest.status || '') : '');
     if (btnToggle) {
       btnToggle.style.display = '';
       btnToggle.textContent = b.active ? '暂停' : '继续';
@@ -450,7 +508,7 @@
     const added = nodeKeys(read.added);
     const modified = nodeKeys(read.modified);
     const removed = nodeKeys(read.removed);
-    const synced = lastSync;
+    const synced = lastSyncHere();
     const noNodes = !added.length && !modified.length && !removed.length;
     if (!synced && noNodes) {
       if (MM.setStatus) MM.setStatus('这次同步没有节点级变化可看（可能只是记录了同步时间）');
@@ -492,8 +550,19 @@
     const report = res && res.report;
     if (report && Array.isArray(report.bindings)) probe = report;      // 报告自带最新 bindings[] ⇒ 同一批读数
     const rows = (report && Array.isArray(report.sync)) ? report.sync : [];
+    /* 【20261059】先记"最近跑过的那一轮"（含 no-change / 只确认删除 / 被挡住的轮），
+     * **再**单独判"这一轮有没有实质动作"—— 只有后者才更新状态条读的那个槽。
+     * 旧形状只认 `status === 'synced'` 的单槽：它确实挡住了"一路 no-change"的轮，但挡不住
+     * "内容没变却被判成 modified 的假轮"（那轮的 status 就是 'synced'）⇒ 「♻ 接回 1 个」被一句
+     * `modified:1 / reconnected:0` 顶掉（实测读数见 `.review/20261059-mtime与lastSync/probe-两个缺陷.log`）。
+     * ⇒ 判据改成**看数**（`substantialReading`），不再只是个状态名。 */
+    const latest = rows[0] || null;
+    if (latest) { lastRun = latest; lastRunWhy = why; lastRunProject = currentProject(); }
     const synced = rows.filter((r) => r && r.status === 'synced')[0] || null;
-    if (synced) { lastSync = synced; lastSyncWhy = why; }
+    /* 有实质动作的那一行 = 今天这条判据（`substantialReading`）说了算；`status==='synced'` 那条老口径
+     * 只作为**兜底**（老报告没有数、或将来状态名变了）—— 它挡不住假 modified 轮，所以不能只靠它。 */
+    const pick = rows.filter((r) => substantialReading(r))[0] || synced;
+    if (pick) { lastSync = pick; lastSyncWhy = why; lastSyncProject = currentProject(); }
     lastReadings = {
       keys: (res && res.changedKeys) || [],
       added: (res && res.addedKeys) || [],
@@ -862,11 +931,23 @@
         lastSyncAt: bar.getAttribute('data-bind-last-sync'),
         binding: bar.getAttribute('data-bind-binding'),
         added: bar.getAttribute('data-bind-added'),
-        modified: bar.getAttribute('data-bind-modified')
+        modified: bar.getAttribute('data-bind-modified'),
+        /* 【20261059】「认回来」的读数 + 两个槽的区分（断言读的机器可读面，与界面文字同一批数）：
+         * `reconnected` = 那条"有实质动作"的记录里接回了几个；`readings` = 这批数是最近一轮的还是
+         * 上次有动作的（`fresh` / `stale` / `none`）；`lastRun` = 最近跑过的那一轮的状态名。 */
+        reconnected: bar.getAttribute('data-bind-reconnected'),
+        readings: bar.getAttribute('data-bind-readings'),
+        lastRun: bar.getAttribute('data-bind-last-run')
       } : null,
       probe: probe ? { project: probe.project, dryRun: probe.dryRun === true, bindings: probe.bindings || [], sync: probe.sync || [] } : null,
       lastSync: lastSync,
       lastSyncWhy: lastSyncWhy,
+      /* 【20261059】"最近跑过的那一轮"（含什么都没做的轮）：与 `lastSync` **是两个槽**，
+       * 断言据此分辨"最后的"与"最后有内容的"；状态条只读 `lastSync`。 */
+      lastRun: lastRun,
+      lastRunWhy: lastRunWhy,
+      lastSyncProject: lastSyncProject,
+      lastRunProject: lastRunProject,
       readings: lastReadings,
       banner: { shown: bindBannerShown(), text: bannerText },
       preview: {

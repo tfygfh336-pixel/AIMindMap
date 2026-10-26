@@ -2363,36 +2363,104 @@ function bindingSnapshotOf(projectData, dir) {
 }
 
 /**
+ * **内容指纹**：判"内容有没有变"的唯一依据（唯一实现）。
+ *
+ * 算的是**建树真正吃进去的那份文本**：与 `normalizeOutline` 同一份规范化（CRLF/CR → LF、剥 BOM）
+ * ⇒ "换行风格 / 带不带 BOM"不算内容变化（建出来的树**逐节点相同**），而"改一个字节就变" ✓。
+ * 非文本（UTF-8 解码**有损**的：docx/zip/pdf 那些字节）⇒ 退回**原始字节**的 sha256 ——
+ *   否则两个不同的二进制文件可能解码成同一串替换字符（U+FFFD）而得同一个指纹 ⇒ 假"没变" ✗。
+ * @param {string} abs 绝对路径
+ * @returns {string} 64 位小写十六进制；读不了/算不了 ⇒ `''`（调用方按"证明不了没变"处理）
+ */
+function bindingContentDigest(abs) {
+  let buf = null;
+  try { buf = fs.readFileSync(String(abs)); } catch (e) { return ''; }     // 不传 encoding ⇒ Buffer
+  try {
+    const text = buf.toString('utf8');
+    /* 逐字节回写一致 ⇒ 这次 utf8 解码是**无损**的（有损时替换字符会顶掉原字节）。 */
+    if (Buffer.from(text, 'utf8').equals(buf)) {
+      return crypto.createHash('sha256').update(normalizeOutline(text), 'utf8').digest('hex');
+    }
+    return crypto.createHash('sha256').update(buf).digest('hex');
+  } catch (e) { return ''; }                                              // 浏览器端 / 算不了 ⇒ 交给调用方保守处理
+}
+
+/**
  * **比**：当前盘上的文件 vs 上次的快照 ⇒ 三类变化（这是"增量"的全部判定，别在别处再判一遍）。
  *
- * 口径：
+ * ## 判据链（【20261059】修：mtime 只是"快速否定"，**不是**"肯定"）
  *   · `added`    —— 快照里没有、现在有；
- *   · `modified` —— 快照里有、现在**mtime 或大小变了**（mtime 是**文件系统**给的，比较**只比数字**：
- *                   两边都来自 `statSync().mtimeMs`，不经过任何字符串化 ⇒ 不会因为精度/格式漂移）；
+ *   · `modified` —— 快照里有、且**内容真的变了**（或"证明不了没变"，见下）；
  *   · `deleted`  —— 快照里有、现在没有了 **且当前仍在 include/ignore 范围内**。
  *     为什么要有最后那半句：把一个文件**移出** include（或加进 ignore）是人明确的动作 ⇒
  *     那不该被报成"文件被删了，要不要删节点"（那是两种意图混成一条提议 ✗）。
  *     被排除掉的文件**留在快照里**（`stillIncluded` 交出去）⇒ 它重新被纳入时判成 `modified`，
  *     不会因为"离开过视野"而多建一个节点 ✓。
- * @returns {{added:string[], modified:string[], deleted:string[], stillIncluded:string[], unchanged:number}}
+ *
+ * ## 为什么不能只比 `mtimeMs` / `size`（本批实测的缺陷，代价不是"多跑一次"）
+ *   同内容**再写一次**（mtime 变、size 不变）⇒ 旧实现判成 `modified` ⇒ 整轮真跑：读文件、重跑转换、
+ *   **把那棵子树的节点 id 全换掉**（`applyBindingPlan` 是"就地替换" ⇒ 新子树是新 id）⇒ 指向它内部节点
+ *   的跨项目链接/选中态一起断，而绑定记录的 `lastSyncAt` 也被白推一格。实测读数见
+ *   `.review/20261059-mtime与lastSync/probe-两个缺陷.log`（第 1 轮 id 与第 2 轮 id 逐项不同）。
+ *   而且 mtime 精度**不可依赖**：NTFS 是 100 ns，FAT / 网络盘 / 整秒取整的文件系统上不同内容可以
+ *   得到同一个 `mtimeMs` ⇒ "两个数相等"永远不能单独用来证明"没变"。
+ *
+ * ## 成本取舍（**不许**把内容比对做成"每次都读全文"）
+ *   ① 两个 stat 数**都没变** ⇒ 直接判"没变"，**一个字节都不读**（绝大多数文件每一轮都走这条）；
+ *   ② stat 变了 ⇒ **候选**，才读一次算内容指纹：与快照里的 `contentSha` 相同 ⇒ 内容没变 ⇒
+ *      不算 modified，只把快照里的 stat 刷新（`refreshed`），下一轮回到 ①；
+ *   ③ 指纹不同 / 快照里没有基线（老版本快照、读不了、非文本）⇒ 保守判 `modified`（一次）。
+ *   ⇒ 读盘成本 = **"这一轮被碰过的文件"**，不是"这个文件夹"。新增/修改的文件本来就要被转换读一遍，
+ *     这里多读的那一遍通常命中页缓存（同一轮、同一个文件、刚被读过）。
+ *   ⚠️ 基线只在**新增/修改/核对过**这三种情形下写（`contentSha`），所以老快照升级后的**第一次**
+ *     "只改 mtime"仍会保守判成 modified 一次 —— 之后就有基线了；不这样做就得"每次全读"。
+ *   ⚠️ 还有一条**实测代价**（`.review/20261059-mtime与lastSync/probe-修好之后.log` 第②段）：刷新的 stat
+ *     只有**写快照**才记得住，而"这一轮没有任何真改动"时命令层**不写快照**（`bindingPlanChangesTree` 为
+ *     false ⇒ 连项目文件都不动）⇒ 那个被反复重写同内容的文件，每一轮都要再核对一次内容（**按文件数**算，
+ *     不是按目录）。同一轮里只要还有任何别的真改动，快照会被写一次 ⇒ 这些 stat 一起记住 ⇒ 之后回到 0 读。
+ *     （要彻底消掉这一档，得让"零改动轮"也写旁路快照 —— 那要动命令层，本批改动面不含 `cli/`，如实登记。）
+ *
+ * @param {object} snapshot 旁路快照（`files[rel]` = `{mtimeMs,size,contentSha,…}`）
+ * @param {{files:Array<{rel,abs,size,mtimeMs,include,ignore}>}} list `listBindingFiles` 的结果
+ * @returns {{added:string[], modified:string[], deleted:string[], stillIncluded:string[],
+ *            refreshed:string[], unchanged:number, contentSha:Object<string,(string|null)>}}
+ *   `refreshed` = 内容没变但 stat 变了的那几个（快照要刷新它们的 `mtimeMs`/`size`，树一个字节都不动）；
+ *   `contentSha` = 本轮**真读过**的那些文件的新基线（`null` = 这一轮证明不了，别把旧值带过去）。
  */
 function bindingFileDiff(snapshot, list) {
   const snapFiles = (snapshot && snapshot.files && typeof snapshot.files === 'object') ? snapshot.files : {};
   const cur = new Map((list && list.files ? list.files : []).map((f) => [f.rel, f]));
-  const added = [], modified = [], deleted = [], stillIncluded = [];
+  const added = [], modified = [], deleted = [], stillIncluded = [], refreshed = [];
+  const contentSha = {};
   let unchanged = 0;
   Object.keys(snapFiles).forEach((rel) => {
     const curF = cur.get(rel);
     const inScope = !!(curF && curF.include && !curF.ignore);
     const known = snapFiles[rel] || {};
     if (!curF || !inScope) { stillIncluded.push(rel); return; }       // 看不见了/被排除了 ⇒ 不算删除
-    if (known.mtimeMs !== curF.mtimeMs || known.size !== curF.size) modified.push(rel);
-    else unchanged++;
+    /* ① 快速否定（零读取）：两个数都没变 ⇒ 肯定没变。只在这个方向成立（注释见函数头）。 */
+    if (known.mtimeMs === curF.mtimeMs && known.size === curF.size) { unchanged++; return; }
+    /* ② 慢路径：stat 变了只是**候选**，要内容才能定。 */
+    const now = bindingContentDigest(curF.abs);
+    if (now && known.contentSha && known.contentSha === now) {
+      unchanged++;
+      refreshed.push(rel);                                          // 内容没变：只刷新快照的 stat
+      contentSha[rel] = now;
+      return;
+    }
+    /* ③ 内容变了 / 没有可比基线 ⇒ 保守判 modified；基线**跟着换成新值**（换不了就置 null，
+     *    绝不把上一份内容的旧指纹留给下一轮 —— 那会让"下次只改 mtime"假判成没变 ✗）。 */
+    modified.push(rel);
+    contentSha[rel] = now || null;
   });
   cur.forEach((f) => {
     if (!f.include || f.ignore) return;
     if (Object.prototype.hasOwnProperty.call(snapFiles, f.rel)) return;
     added.push(f.rel);
+    /* 新增文件**当场建基线**：不建的话它下一次"只改 mtime"就没有可比的东西 ⇒ 又回到"改了就重写"。
+     * 代价 = 这个文件多读一遍（同一轮里转换紧接着读它，通常命中页缓存）；换来的是"每个进过快照的
+     * 文件都有一条内容基线"这条不变量 —— 少了它 ① 那条快速否定在第二轮就不成立。 */
+    contentSha[f.rel] = bindingContentDigest(f.abs) || null;
   });
   /* 提议"删旧"的那一类：曾经同步过、现在**盘上没有了**（且没被 include/ignore 排除）。
    * 已经提过的不再重复（去重靠快照里的 `pendingDeletions`）—— 提案是**清单**不是流水。 */
@@ -2405,7 +2473,8 @@ function bindingFileDiff(snapshot, list) {
   });
   return {
     added: added.sort(), modified: modified.sort(), deleted: deleted.sort(),
-    stillIncluded: stillIncluded.sort(), unchanged: unchanged
+    stillIncluded: stillIncluded.sort(), refreshed: refreshed.sort(), unchanged: unchanged,
+    contentSha: contentSha
   };
 }
 
@@ -2505,6 +2574,14 @@ function planBindingSync(args) {
      * 提议读不到"判别力证明就是改坏这一处）。 */
     pendingAll: [],
     nodes: 0, preambles: 0, unchanged: diff.unchanged,
+    /* 【20261059】"内容没变、只是 stat 变了"的那几个文件（`bindingFileDiff` 的读数，判据全在那里）：
+     * 它们**不进** added/modified（子树一个字节都不动），只让 `snapshotAfterBindingPlan` 把快照里的
+     * `mtimeMs`/`size` 刷新成扫描那一刻的读数 —— 少了这一步，同一个文件每一轮都会被重新读一遍去核对内容
+     * （功能没错，只是白花读盘；见 `bindingFileDiff` 的"成本取舍"）。 */
+    refreshed: diff.refreshed,
+    /* 【20261059】本轮**真读过**的那些文件的内容基线（新增/修改/核对过没变）——
+     * `snapshotAfterBindingPlan` 只认它，不许自己在别处再算一份指纹。 */
+    contentSha: diff.contentSha,
     /* **这一轮真的读了几个文件**（增量性**唯一可机器判定的读数**）。
      * 为什么要它：只比"树变了没有"是**判不出增量**的 —— 把 `only` 去掉（每次都全量重建）之后
      * 树的最终状态**一个字都不差**，差别只在"读了几个文件、花了多少 CPU"。
@@ -2825,6 +2902,9 @@ function findParentOfBinding(root, id) {
  *      与树里那份 `origin` 同源同值 ✓）；
  *   ② 本轮**没变**的文件 ⇒ 沿用旧条目（`keep` 传的就是它们）。**少了这一步会让每次同步都全量重建** —
  *      因为 `files` 会被清空 ⇒ 下一轮所有文件都是"新增"✗（这条是实现里最容易漏、后果最重的一处）；
+ *      其中【20261059】"内容没变、只是 stat 变了"的那几个（`plan.refreshed`）**只刷 stat**、不碰树；
+ *   ②′ 每个进过快照的文件都带一条**内容基线** `contentSha`（`plan.contentSha`，判据在 `bindingFileDiff`）
+ *      —— 没有它，下一轮"只改了 mtime"的同一个文件就没有可比的东西，只能保守判 modified；
  *   ③ 转不了的 ⇒ 进 `unconverted`（**点名**）且**不进 `files`** ⇒ 下一次还会再试；
  *   ④ 这次提议删的 ⇒ 进 `pendingDeletions`（去重），并从 `files` 里移走 ——
  *      移走是关键：不移走它下一次还会被算成"盘上没有了"⇒ 每轮都重复报同一条提议。
@@ -2844,11 +2924,30 @@ function findParentOfBinding(root, id) {
 function snapshotAfterBindingPlan(snapshot, plan, at, keep) {
   const base = snapshot || emptyBindingSnapshot(plan && plan.binding, plan && plan.dir);
   const stats = (plan && plan.stats) || {};
+  /* 【20261059】内容基线：**只认 `bindingFileDiff` 交上来的那一份**（`plan.contentSha`），
+   * 这里不重算、也不在别处另判一次"内容变了没有"。`null` 是**有意义的读数**（"这一轮证明不了"），
+   * 所以判"有没有这个键"用 `hasOwnProperty`，不能用真值判断。 */
+  const digests = (plan && plan.contentSha) || {};
+  const digestOf = (rel, prev) => (Object.prototype.hasOwnProperty.call(digests, rel)
+    ? digests[rel] : ((prev && prev.contentSha) || null));
   const files = {};
-  // ② 本轮没变的：旧条目原样带过去（否则下一轮会被判成全量新增）
+  /* ② 本轮没变的：旧条目带过去（否则下一轮会被判成全量新增）。
+   *    ⚠️ 【20261059】其中"内容没变、只是 stat 变了"的那几个（`plan.refreshed`）要**把 stat 换掉**：
+   *    留着旧 mtime ⇒ 下一轮又得读一遍文件去核对内容（功能对、纯白花读盘）。只刷 `refreshed` 这一档
+   *    —— 被 include/ignore 排除掉的（`stillIncluded`）**不许**刷：它们的内容这一轮**没核对过**，
+   *    刷了就等于"没看过却记下了一个新的 stat" ⇒ 它回到范围内时会被误判成没变 ✗。 */
+  const refreshedSet = new Set((plan && plan.refreshed) || []);
   (keep || []).forEach((rel) => {
     const old = (base.files || {})[rel];
-    if (old) files[rel] = Object.assign({}, old);
+    if (!old) return;
+    const next = Object.assign({}, old);
+    if (refreshedSet.has(rel)) {
+      const st = stats[toRelSlash(rel)] || {};
+      if (typeof st.mtimeMs === 'number') next.mtimeMs = st.mtimeMs;
+      if (typeof st.size === 'number') next.size = st.size;
+    }
+    if (Object.prototype.hasOwnProperty.call(digests, rel)) next.contentSha = digests[rel];
+    files[rel] = next;
   });
   const entryOf = new Map();
   ((plan && plan.entries) || []).forEach((e) => entryOf.set(toRelSlash(e.rel), e));
@@ -2861,7 +2960,8 @@ function snapshotAfterBindingPlan(snapshot, plan, at, keep) {
       sha256: (e && e.sha256) || (prev && prev.sha256) || null,
       format: (e && e.format) || (prev && prev.format) || null,
       nodeId: nodeId || (e && e.id) || (prev && prev.nodeId) || null,
-      topic: topic || (prev && prev.topic) || null
+      topic: topic || (prev && prev.topic) || null,
+      contentSha: digestOf(rel, prev)                                        // 【20261059】
     });
   };
   ((plan && plan.added) || []).forEach((it) => {
@@ -2935,6 +3035,9 @@ function serializeBindingSnapshot(snapshot) {
       mtimeMs: f.mtimeMs === undefined ? null : f.mtimeMs,
       size: f.size === undefined ? null : f.size,
       sha256: f.sha256 === undefined ? null : f.sha256,
+      /* 【20261059】内容基线（"建树吃进去的那份文本"的指纹，见 `bindingContentDigest`）：
+       * 它是 `bindingFileDiff` 判"内容有没有变"的唯一依据 ⇒ 必须落进快照，否则每一轮都得重算/保守判 modified。 */
+      contentSha: f.contentSha === undefined ? null : f.contentSha,
       format: f.format === undefined ? null : f.format,
       nodeId: f.nodeId === undefined ? null : f.nodeId,
       topic: f.topic === undefined ? null : f.topic
@@ -2999,6 +3102,8 @@ return {
   BINDING_STATE_VERSION, BINDING_STATE_FILE, BINDING_EXT_DEFAULT, BINDING_IGNORE_DEFAULTS,
   toRelSlash, relBaseName, bindingIncludeHit, bindingIgnoreHit, listBindingFiles,
   emptyBindingSnapshot, normalizeBindingSnapshot, bindingSnapshotOf, bindingFileDiff,
+  // 【20261059】内容基线（"建树吃进去的那份文本"的指纹）：判"内容有没有变"的唯一实现，判据要能直接核它
+  bindingContentDigest,
   planBindingSync, bindingPlanChangesTree, applyBindingPlan, snapshotAfterBindingPlan,
   bindingStatusOf, serializeBindingSnapshot, parseBindingSnapshot
 };

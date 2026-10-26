@@ -835,20 +835,27 @@ const assertions = [
       const settled = { ok: !!hit && pendingZero, ms: Date.now() - t0 };
       const last = hit ? hit.rec : ((st && st.lastSync) || {});
       const rc = hit ? hit.rc : null;
-      /* ---- 【补断言 · 判别力】把"后来的轮次覆盖掉最后一条"这件事**逼出来**，不靠满载碰运气 ----
-       * 再写一次同一个文件（**内容不变、新 mtime**）：`bindingFileDiff` 只比 `mtimeMs / size`
-       * ⇒ 又跑一轮真同步，它的记录是 `{reconnected:0, modified:1}`（= 任务书里那次红的读数，
-       * 本批实测一模一样）。这一步**不进 `ok`** —— 它验的不是产品行为，而是"**判据读的是
-       * 这一次动作的那条记录**"；它是**有牙的**：谁把判据改回"读最后一条"，在**无负载**下也会当场红
-       * （否则那条判据只能等满载才红 = 一直在睡觉）。
-       * 上限 4s：若哪天引擎改成"按内容判变化"（mtime-only 不再算 modified），这一步什么都不做、也不假红。 */
+      /* ---- 【20261059】同内容再写一次：**内容没变就不许再跑一轮真同步**（缺陷①的现场）----
+       * 旧行为（本批修掉）：`bindingFileDiff` 只比 `mtimeMs / size` ⇒ 同一个文件被再写一次
+       * （内容一字不差、只是 mtime 变了）也算 `modified` ⇒ 又跑一轮真同步，它的记录是
+       * `{reconnected:0, modified:1}` —— 那正是把「♻ 接回 1 个」顶掉的那一轮（实测读数见
+       * `.review/20261059-mtime与lastSync/probe-两个缺陷.log`）。
+       * 新行为：内容指纹相同 ⇒ 判 no-change ⇒ **不写盘、不发事件** ⇒ 状态条那批读数一个都不动。
+       * 三条判据（都进 `ok`，都是产品行为，不是"判据的判据"）：
+       *   ① 界面：窗口内**不出现** `{modified>=1, reconnected:0}` 的第二轮（否定判据 ⇒ 窗口 2.5s：
+       *      fs.watch + 800ms 防抖足够跑完一整轮；配合下面两条确定性读数一起才成立）；
+       *   ② 界面：状态条上"♻ 接回 1 个"**还在**（`data-bind-reconnected` 仍是 1）；
+       *   ③ 盘上：项目 JSON 逐字节不变 + CLI `--dry-run` 报 `modified=0`（子树没被重写）。 */
+      const shaSettled = sha256(readRaw(P));
       fs.writeFileSync(path.join(SRC_DIR, 'f.md'), F_MD, 'utf8');
-      const touched = await waitUntil(async () => {
+      const touchedAgain = await waitUntil(async () => {
         const s2 = await bindState(ctx);
         const r2 = (s2 && s2.lastSync) || null;
         return !!(r2 && Number(r2.reconnected) === 0 && Number(r2.modified) >= 1);
-      }, 4000);
-      const lastAfterTouch = ((await bindState(ctx)) || {}).lastSync || {};
+      }, 2500);
+      const stAfterTouch = ((await bindState(ctx)) || {});
+      const lastAfterTouch = stAfterTouch.lastSync || {};
+      const probeAfterTouch = JSON.parse(ctx.runCli(['bind-sync', P, '--dry-run', '--json']));
       const nodesAfter = fileNodes(P).map((n) => n.id + ':' + n.topic).sort();
       const allAfter = allNodes(P).length;
       const snapAfter = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
@@ -871,6 +878,13 @@ const assertions = [
           && Object.keys(dup).every((t) => dup[t] === 1)
           /* 提议撤回（快照里也没了）——不是"删了节点"，是这条提议作废 */
           && snapAfter.pendingDeletions.length === 0 && probe.pending === 0
+          /* 【20261059】同内容再写一次：没有第二轮真同步、接回读数没被顶掉、子树没被重写 */
+          && touchedAgain.ok === false
+          && Number(lastAfterTouch.reconnected) === 1
+          && stAfterTouch.barAttrs.reconnected === '1'
+          && probeAfterTouch.sync[0].modified === 0 && probeAfterTouch.sync[0].added === 0
+          && stAfterTouch.barAttrs.pending === '0'
+          && sha256(readRaw(P)) === shaSettled
           /* 盘上零删除：放回之前那些文件一个都没少（放回的这个是**我加的那个**，不是被删出来的） */
           && srcBefore.every((f) => fs.readdirSync(SRC_DIR).indexOf(f) >= 0),
         text: '前置：快照里的提议=' + JSON.stringify(snapBefore.pendingDeletions.map((p) => [p.rel, p.nodeId]))
@@ -884,13 +898,14 @@ const assertions = [
            * 也让"后来被覆盖"这件事在证据里看得见（本批实测：第二条约 1s 后出现，把最后一条换成
            * reconnected=0/modified=1 —— 那正是当时红掉的原因）。 */
           + ' · 窗口内出现过的同步记录（去重）=' + JSON.stringify(seen.map((x) => x.t + 'ms:' + x.sig))
-          + ' · 最后一次读数（可能已被后来的轮次覆盖）：'
-          + JSON.stringify({ added: (st.lastSync || {}).added, modified: (st.lastSync || {}).modified,
-            reconnected: (st.lastSync || {}).reconnected })
-          + ' ｜【判别力】再写一次同内容文件逼出第二轮（touched=' + touched.ok + '）⇒ 最后一条变成 '
+          /* 【20261059】判别力：同内容再写一次 ⇒ **不该**再出现"modified 轮"。
+           * 旧实现这里会多一条 reconnected=0/modified=1 的记录（于是最后一条被顶掉）。 */
+          + ' ｜【20261059】再写一次同内容文件 ⇒ 出现"第二轮真同步"了吗=' + touchedAgain.ok
+          + '（判据要求 false）· 那之后状态条读数='
           + JSON.stringify({ added: lastAfterTouch.added, modified: lastAfterTouch.modified,
-            reconnected: lastAfterTouch.reconnected })
-          + '；判据仍用前面捕获的那一条（读"最后一条"的写法到这里会红）'
+            reconnected: lastAfterTouch.reconnected, barReconnected: stAfterTouch.barAttrs.reconnected })
+          + ' · CLI 对拍：modified=' + probeAfterTouch.sync[0].modified + ' added=' + probeAfterTouch.sync[0].added
+          + ' · 项目 JSON 逐字节不变=' + (sha256(readRaw(P)) === shaSettled)
           + ' · 盘上文件节点（前/后）=' + nodesBefore.length + '/' + nodesAfter.length + '：' + nodesAfter.join(' ')
           + ' · 同名节点计数=' + JSON.stringify(dup) + '（每个都必须是 1）'
           + ' · 树里节点总数（前/后）=' + allBefore + '/' + allAfter
