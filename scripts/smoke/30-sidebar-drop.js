@@ -2302,5 +2302,108 @@ module.exports = [
       if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
       return { ok: ok, text: '变异落地：A=' + mutALanded + ' B=' + mutBLanded + ' ｜ ' + rows.join(' ｜ ') };
     }
+  },
+  {
+    name: 'N3-⑩ 真 chip 通道（用户 2026-10-41：「没有像 cursor 那样是一"块"东西」）：文案 ⇒ N 个 chip 单元；插件不在位/编了假 source ⇒ **必须判红并降级成纯文本**，且 `lastPrefill.chipMode` **留痕**（text + 原因，不许静默）',
+    run: async (ctx) => {
+      /* ── 本条能验什么、不能验什么（**写在这里防做假**）───────────────────────────
+       * 能验（本机主进程 + 侧栏页，都是真的）：
+       *   ① **单元形状**：拖节点那段文案 ⇒ `chipPayloadFor` 给 N 个单元（ref 与文本逐行相同），
+       *      而「把对话送进侧栏」那种散文 ⇒ 必须 `null`（不许变成一片垃圾 chip）；
+       *   ② **页面侧那段代码的降级语义**：`CHIP_INSERT_JS` 打到一个**没有插件**的页面上 ⇒
+       *      必须回 `{ok:false, reason:'plugin-absent'}`（这是"插件不在位"的唯一判据，不许靠猜）；
+       *   ③ **假 source 必须在插入前就被拒**：装一个"回错 source"的假句柄 ⇒ `tryChipInsert` 必须判红
+       *      （真值口径是 `InputState.occurrences`；这里只验"我们核对它、且容不下非 reference"）；
+       *   ④ **降级可见且真的写了**：走兜底路径 ⇒ 假对话框里是那 N 行文本、`lastPrefill.chipMode === 'text'`
+       *      且有 `chipReason`。**静默什么都不做**必须让本条红。
+       * ✗ **不能验**（不许写成"chip 已实现"）：真 `ReferenceChipNode` 是否真的出现在输入框里。
+       *   真值是 `InputState.occurrences`，只有「真服务 + 真装插件 + 真 session」才有 ——
+       *   而插件要**重启应用**才装配（本批不许动用户的进程）⇒ 那一档在报告里标"未验"。 */
+      if (!sidebarWasVisible()) { try { sidebar.show(); } catch (e) { /* 下面靠读数红 */ } g5ShowedSidebar = true; }
+      await sleep(900);
+      const wc = sidebarWc();
+      if (!wc) return { ok: false, text: '侧栏视图的 webContents 拿不到 ⇒ chip 通道无从判 ✗' };
+      const rows = [];
+      let ok = true;
+
+      /* ① 单元形状（两侧）：一条来自**产品纯函数**的文案 → N 个单元；散文 → null */
+      const prep = await pickNodes(ctx, 2);
+      if (!prep.ok) {
+        if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
+        return { ok: false, text: prep.text };
+      }
+      const nodes = prep.nodes.slice(0, 2);
+      const project = await execJson(ctx, '(function () {'
+        + ' var st = (window.MMApp && window.MMApp.getState) ? window.MMApp.getState() : null;'
+        + ' return JSON.stringify({ ok: true, name: String((st && st.project && st.project.name) || "") }); })()');
+      const built = await execJson(ctx, '(function () {'
+        + ' var nodes = ' + JSON.stringify(nodes.map((n) => ({ topic: n.topic }))) + ';'
+        + ' var api = window.MMSidebarContext;'
+        + ' if (!api || !api.buildSidebarText) return JSON.stringify({ ok: false, text: "页面上没有 MMSidebarContext" });'
+        + ' return JSON.stringify({ ok: true, text: api.buildSidebarText(' + JSON.stringify(project.name || '') + ', nodes) }); })()');
+      const body = String((built && built.text) || '');
+      const payload = sidebar.chipPayloadFor(body);
+      const wantLines = body.split('\n');
+      const shapeOk = !!(payload && Array.isArray(payload.items) && payload.items.length === wantLines.length
+        && payload.items.every((it, i) => it.ref === wantLines[i] && it.clipboardText === wantLines[i]));
+      const prose = ['【来自 AI MindMap 的对话】', '我：你好', 'AI：在的'].join('\n');
+      const proseRejected = sidebar.chipPayloadFor(prose) === null;
+      if (!shapeOk || !proseRejected) ok = false;
+      rows.push('① 单元形状：文案=' + JSON.stringify(body) + ' ⇒ ' + (payload ? payload.items.length : 0) + ' 个单元（应 ' + wantLines.length + '）形状对=' + shapeOk
+        + ' ｜ 散文文案 ⇒ chipPayloadFor=' + String(sidebar.chipPayloadFor(prose)) + '（应 null，即**不许**变成 chip）' + ((shapeOk && proseRejected) ? ' ✓' : ' ✗'));
+
+      /* ② 页面侧降级语义：这个页面上**没有**插件 ⇒ 必须回 plugin-absent（不许 undefined、不许抛） */
+      const inline = await (async () => {
+        try { return JSON.parse(await wc.executeJavaScript('(' + sidebar.CHIP_INSERT_JS + ')(' + JSON.stringify(JSON.stringify(payload)) + ')', true)); }
+        catch (e) { return { ok: false, reason: 'threw: ' + ((e && e.message) || e) }; }
+      })();
+      const absentOk = !!(inline && inline.ok === false && inline.reason === 'plugin-absent');
+      if (!absentOk) ok = false;
+      rows.push('② 插件不在位 ⇒ 页面侧回执=' + JSON.stringify(inline) + '（应 ok:false / plugin-absent）' + (absentOk ? ' ✓' : ' ✗'));
+
+      /* ③ 假 source 必须在**插入前**被拒：装一个"回错 source"的假句柄（模拟内核把 source 换掉/我们写错常量） */
+      const fakeHandle = await (async () => {
+        const js = '(function (json) {'
+          + ' window.__AIMM_CHIP_INSERT__ = function () { return Promise.resolve({ ok: true, route: "insertReference",'
+          + '   occurrences: JSON.parse(json).items.map(function (it) {'
+          + '     return { source: "aimm-made-up", appearance: "file", ref: it.ref, clipboardText: it.clipboardText, label: it.label }; }) }); };'
+          + ' return JSON.stringify({ ok: true }); })(' + JSON.stringify(JSON.stringify(payload)) + ')';
+        try { return JSON.parse(await wc.executeJavaScript(js, true)); }
+        catch (e) { return { ok: false, text: String((e && e.message) || e) }; }
+      })();
+      let chipRed = { ok: false, reason: 'handle-not-installed' };
+      if (fakeHandle && fakeHandle.ok) chipRed = await sidebar.tryChipInsert(body);
+      const redOk = !!(chipRed && chipRed.ok === false && String(chipRed.reason || '').length > 0);
+      if (!redOk) ok = false;
+      rows.push('③ 假 source ⇒ tryChipInsert=' + JSON.stringify({ ok: chipRed && chipRed.ok, reason: (chipRed && chipRed.reason || '').slice(0, 80), occurrences: chipRed && chipRed.occurrences })
+        + '（必须 ok:false 且有原因 —— 死 chip 不许进输入框）' + (redOk ? ' ✓' : ' ✗'));
+      /* 把假句柄拆掉（不许给后面的域留一个假插件 ✗） */
+      await (async () => {
+        try { await wc.executeJavaScript('(function () { delete window.__AIMM_CHIP_INSERT__; return 1; })()', true); } catch (e) { /* ignore */ }
+      })();
+
+      /* ④ 降级可见且真的写了：兜底路径（产品那一份）⇒ 框里是 N 行文本 + lastPrefill 报 text */
+      const mk = await composerMock(wc, 'target', '');
+      if (!mk || !mk.ok) {
+        if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
+        return { ok: false, text: '造不出目标框现场 ✗ ｜ ' + JSON.stringify(mk) + ' ｜ ' + rows.join(' ｜ ') };
+      }
+      const fb = await sidebar.prefillComposerTextPath(body, { ok: false, reason: 'smoke:plugin-absent' });
+      const st = await composerState(wc);
+      const inBox = String(st.edText || '');
+      const last = sidebar.getStatus().lastPrefill || {};
+      const fallbackOk = !!(fb && fb.ok === true && inBox === body
+        && fb.chipMode === 'text' && last.chipMode === 'text' && !!last.chipReason);
+      if (!fallbackOk) ok = false;
+      rows.push('④ 降级：兜底回执=' + JSON.stringify({ ok: fb && fb.ok, chipMode: fb && fb.chipMode, chipReason: fb && fb.chipReason })
+        + ' · 框里=' + JSON.stringify(inBox) + '（应与文案逐字相等）'
+        + ' · lastPrefill=' + JSON.stringify({ chipMode: last.chipMode, chipReason: last.chipReason })
+        + '（必须 text + 有原因 ⇒ **降级可见**）' + (fallbackOk ? ' ✓' : ' ✗'));
+
+      await composerTeardown(wc);
+      await ctx.exec('(function () { if (window.MM.clearSelection) window.MM.clearSelection(); return 1; })()');
+      if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
+      return { ok: ok, text: rows.join(' ｜ ') };
+    }
   }
 ];

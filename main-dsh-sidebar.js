@@ -54,6 +54,8 @@ const sidebarSkill = require('./src/dsh-sidebar-skill.js');
 const panelGeometry = require('./src/panel-geometry.js');
 // 第 4 面板的**页面本体**（唯一实现；本文件只把它包成 data: URL —— 理由见 dockPanelPageHtml 的注释）
 const dockPanelPage = require('./src/dock-panel-page.js');
+// 「拖节点 ⇒ 真 chip」的客户端插件载荷 + 纯逻辑（唯一真源；装卸/核对也在这里，见 docs/DSH-EMBEDDED.md A7）
+const chipFeed = require('./src/dsh-chip-feed.js');
 
 const SIDEBAR_WIDTH = 420;
 const MIN_WIDTH = 280;
@@ -2247,6 +2249,11 @@ function getStatus() {
     rightbarWatcher: state.rightbarWatcher || null,
     // ⑩ 最近一次"把对话预填进侧栏"的结果（4b：失败也要看得见原因 ✓ 不阻断 ✗）
     lastPrefill: state.lastPrefill || null,
+    // ⑩-b 「拖节点 ⇒ 真 chip」的**在位读数**（2026-10-41）：载荷装没装（内容级核对）+ 最近一次投喂
+    //   走的是哪条路（`chipMode: 'plugin' | 'text'`）。**降级必须可见** —— 静默退回文字是本批禁止的失败形态。
+    //   ⚠️ `installed/payloadOk` 只说明"载荷在盘上且没漂移"，**不说明**"这次真的插出了 chip"；
+    //      后者看 `mode === 'plugin'`（每次投喂的现场读数），而"页面里真的是 N 个块"只有真机看得见。
+    chipFeed: chipFeedStatus(),
     // 状态页/侧栏页**加载失败**的判定读数（r12 收口批）：`aborted` 出现过几次 `-3`、
     //   `absorbed` 其中几次被"随后加载成功"证明无害、`reported` 报过几条真失败、`lastFailure` 是哪一条。
     //   为什么必须进状态出口：日志里不再有良性的 `-3`，但"它发生过"这件事**不能没有出口**
@@ -2736,6 +2743,147 @@ function restoreWindow() {
   state.win.focus();
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * 「拖节点 ⇒ 一块（真 chip）」的**唯一一条通道**（2026-10-41 批）
+ * ──────────────────────────────────────────────────────────────────────────────
+ * 用户第三轮原话（逐字）：「现在虽然不重复但是没有像我想的 cursor 那样是一"块"东西。
+ *   包括一次复制很多文本进对话框，cursor 的处理也是一块东西，能不能给内置 dsh 也加上这个」
+ *
+ * ── 为什么这件事**只能**由客户端插件做（不是我们不肯写）────────────────────────
+ *   真 chip 是 Lexical 的 `ReferenceChipNode`（原子 decorator，`{source,ref,label,appearance,clipboardText}`）。
+ *   它只能由**已注册的 inputTriggers source** 的插入通道创建，而插入动词（`insertReference` /
+ *   `addFiles` / `setDraft`）长在 `SessionInput` 上，`SessionInput` 只能从 **session 作用域的 cordis ctx** 取：
+ *       const actx = ctx.sessions.scope(sessionId);        // ISessions.scope（公开面）
+ *       const input = ctx.conversation.input.for(actx);    // SessionInputResolver.for（契约面）
+ *   页面侧 `executeJavaScript` **拿不到**那个 ctx（web boot 只把 `__DSH_BOOT__` / `__ModuleLoader__` /
+ *   `__DSH_TRANSPORT__` 放 global）⇒ 必须给内置实例投一个**客户端 cordis 插件**。
+ *   §一 的逐行取证见 `.review/20261041-真chip/收口报告.md`（读完剩下的就是这一条结论）。
+ *
+ * ── 通道形态：**一个页面全局句柄**（不做轮询、不做 ack 协议）────────────────────
+ *   插件在 `apply()` 里把 `globalThis.__AIMM_CHIP_INSERT__` 装成一个函数（载荷见 src/dsh-chip-feed.js）。
+ *   主进程这一侧只做一件事：`executeJavaScript` 去**调它**。
+ *   ⇒ 「插件在不在位」= 那个全局是不是函数 ⇒ **一次同步判定**，没有"等多久算超时"的猜测。
+ *   ⇒ 插件不在位 ⇒ 立刻退回**纯文本**路径（`COMPOSER_PREFILL_JS`，一行没改）并让 `chipMode:'text'` 可见。
+ *      **降级必须可见**：静默什么都不做是本批明令禁止的失败形态。
+ *
+ * ── ⚠️ 死 chip 红线（载荷里也写了一遍，`src/dsh-chip-feed.js` 与单测都钉着）────────
+ *   提交时每个 chip 走 `serializeReference(source, ref)`；source 未注册/无 codec ⇒ **reject**，
+ *   而失败分支 = **整条发送被拒**（不会退化成文本）⇒ 编一个 source 名 = 用户按发送才炸的死 chip。
+ *   **只许用内置 `reference`**（它的 codec 是恒等函数 ⇒ 模型收到的就是 ref 本身）。
+ * ══════════════════════════════════════════════════════════════════════════════ */
+
+/** 页面侧那一小段：取句柄 → 调它 → 把结果**序列化成 JSON 字符串**回来。
+ *  为什么要序列化：`executeJavaScript` 的返回值要跨进程复制，字符串最不容易出岔子；
+ *  并且"抛异常"也要变成一个**结构化失败**（不许变成静默的 undefined）。
+ *  ⚠️ 句柄名**从这里插进去**（`${chipFeed.HANDLE}`）—— 不在第二个地方再写一遍字符串
+ *     （"同一件事两处表达"正是本工程反复治过的病：改一处漏一处，插件与注入悄悄对不上）。 */
+const CHIP_INSERT_JS = `(function (payloadJson) {
+  var g = (typeof globalThis !== 'undefined') ? globalThis : null;
+  var h = g ? g.${chipFeed.HANDLE} : null;
+  if (typeof h !== 'function') return JSON.stringify({ ok: false, reason: 'plugin-absent' });
+  var payload;
+  try { payload = JSON.parse(String(payloadJson)); }
+  catch (e) { return JSON.stringify({ ok: false, reason: 'bad-payload' }); }
+  var done = function (r) {
+    try { return JSON.stringify(r || { ok: false, reason: 'empty-result' }); }
+    catch (e2) { return JSON.stringify({ ok: false, reason: 'unserializable-result' }); }
+  };
+  try {
+    var out = h(payload);
+    if (out && typeof out.then === 'function') {
+      return out.then(done, function (e) { return JSON.stringify({ ok: false, reason: 'threw: ' + ((e && e.message) || e) }); });
+    }
+    return done(out);
+  } catch (e3) {
+    return JSON.stringify({ ok: false, reason: 'threw: ' + ((e3 && e3.message) || e3) });
+  }
+})`;
+
+/** 这段文案该不该走 chip（判定在 `src/dsh-chip-feed.js` 的纯函数里，那是**唯一一份**规则）。
+ *  ⚠️ **插入前**的第一道死 chip 闸：`chipFeed.SOURCE` 必须仍是内置 `reference`。
+ *     为什么把这条放在"发请求之前"而不是等回执：一旦有人把常量改成假 source，
+ *     插进去的 chip 在提交时才会被 `serializeReference` 拒（整条发送被拒、不会退化成文本）
+ *     ⇒ 那种 chip 一旦落进输入框就是**用户按发送才炸**的死 chip。宁可**连试都不试**，
+ *     直接走纯文本（纯文本至少发得出去）。这一条有单测与冒烟两侧钉着。 */
+function chipPayloadFor(text) {
+  if (chipFeed.SOURCE !== 'reference') return null;   // 死 chip 红线：常量被改成假 source ⇒ 不许进输入框
+  const units = chipFeed.chipUnitsFromText(text);
+  if (!units) return null;
+  return { v: 1, items: units.items };
+}
+
+/**
+ * 试一次 chip 通道。**任何**不成立（插件不在位 / 插件报失败 / 回执形状不对 / 超时 / 页面没就绪）
+ * 都只是 `{ok:false, reason}` —— 由调用方降级成纯文本，绝不阻断投喂。
+ * @param {string} body 要投喂的整段文案
+ * @returns {Promise<{ok:boolean, reason:(string|null), occurrences:number, route:(string|null),
+ *                    items:number, pluginPresent:boolean}>}
+ */
+function tryChipInsert(body) {
+  const payload = chipPayloadFor(body);
+  const miss = (reason, extra) => Object.assign({
+    ok: false, reason: reason, occurrences: 0, route: null,
+    items: payload ? payload.items.length : 0,
+    pluginPresent: reason !== 'plugin-absent'
+  }, extra || {});
+  if (!payload) return Promise.resolve(miss('not-chip-shaped', { pluginPresent: false }));
+  if (!state.view || !state.view.webContents) return Promise.resolve(miss('no-view', { pluginPresent: false }));
+  if (state.view.isDestroyed && state.view.isDestroyed()) return Promise.resolve(miss('view-destroyed', { pluginPresent: false }));
+  if (state.view.webContents.isDestroyed && state.view.webContents.isDestroyed()) {
+    return Promise.resolve(miss('view-destroyed', { pluginPresent: false }));
+  }
+  const payloadJson = JSON.stringify(payload);
+  const code = '(' + CHIP_INSERT_JS + ')(' + JSON.stringify(payloadJson) + ')';
+  /* 超时保护与文本路径同源（内核页面加载中时 executeJavaScript 可能永不返回 ✗ —— 本模块踩过两次）。
+   * 这里给 4s：chip 通道是**增强**，不该让"投喂"多等太久；等不到就当插件不在位、走文本。 */
+  let settled = false;
+  const timeout = new Promise((resolve) => setTimeout(() => {
+    if (!settled) resolve({ ok: false, reason: 'chip-timeout' });
+  }, 4000));
+  const run = Promise.resolve()
+    .then(() => state.view.webContents.executeJavaScript(code, true))
+    .then((raw) => {
+      settled = true;
+      try { return JSON.parse(String(raw)); }
+      catch (e) { return { ok: false, reason: 'unparsable: ' + String(raw).slice(0, 80) }; }
+    })
+    .catch((e) => { settled = true; return { ok: false, reason: 'threw: ' + ((e && e.message) || String(e)) }; });
+  return Promise.race([run, timeout]).then((r) => {
+    const judged = chipFeed.judgeInsertResult(r, payload.items);
+    return {
+      ok: judged.ok === true,
+      reason: judged.ok ? null : judged.reason,
+      occurrences: Array.isArray(judged.occurrences) ? judged.occurrences.length : 0,
+      route: (r && typeof r.route === 'string' && r.route) ? r.route : null,
+      items: payload.items.length,
+      pluginPresent: !(r && r.reason === 'plugin-absent')
+    };
+  });
+}
+
+/** 插件载荷的**静态**在位读数（内容级，不读页面）。给 `dsh-status` 用；5s 缓存避免状态广播里反复读盘。 */
+function chipFeedStatus() {
+  const now = Date.now();
+  if (state.chipFeedCache && (now - state.chipFeedCache.at) < 5000) return state.chipFeedCache.value;
+  let v;
+  try {
+    const r = chipFeed.verify(dshHome());
+    v = {
+      plugin: chipFeed.PLUGIN_NAME, rowId: chipFeed.ROW_ID, source: chipFeed.SOURCE,
+      installed: r.installed, payloadOk: r.payloadOk, bundlesEntry: r.bundlesEntry,
+      drift: r.drift, missing: r.missing,
+      // 「装了」≠「这次真的用上了」—— 后者看 lastPrefill.chipMode（每次投喂的现场读数）
+      mode: (state.lastPrefill && state.lastPrefill.chipMode) || null
+    };
+  } catch (e) {
+    v = { plugin: chipFeed.PLUGIN_NAME, rowId: chipFeed.ROW_ID, source: chipFeed.SOURCE,
+      installed: false, payloadOk: false, bundlesEntry: false,
+      drift: [], missing: [], mode: null, error: (e && e.message) || String(e) };
+  }
+  state.chipFeedCache = { at: now, value: v };
+  return v;
+}
+
 /** ⑩「在侧边栏打开」：把一段文本**预填**进侧栏的输入框（不代替用户发送 ✗ —— 谁按发送谁负责 ✓）。
  *  内核事实（易腐，复核命令见 docs/DSH-EMBEDDED.md 的注入一节）：DSH 页面的输入框是
  *  `textarea` 或 `[contenteditable]`，用**内容特征 + 弱选择器**定位（4a ✓），不绑会被改名的类名 ✓。
@@ -3092,6 +3240,50 @@ const COMPOSER_PREFILL_JS = `(async function (text) {
     census: census.slice(0, 10) });
 })`;
 
+/** 纯文本路径（**原样保留**，是本批的兜底）：把 N 行文本写进 composer。
+ *  @param {string} body 整段文案
+ *  @param {object|null} chip 刚才 chip 通道的读数（只为把"为什么没用 chip"记进状态）
+ *  @returns {Promise<object>} 与旧版**逐字段相同**的回执（多两个 chip* 字段，旧调用方不受影响） */
+function prefillComposerTextPath(body, chip) {
+  const chipInfo = {
+    chipMode: 'text',
+    chipReason: (chip && chip.reason) || 'not-attempted',
+    chipRoute: null,
+    occurrences: 0
+  };
+  // 超时保护：内核页面加载中时 executeJavaScript 可能永不返回 ✗（本模块踩过同一个坑 ✓）
+  let done = false;
+  const timeout = new Promise((r) => setTimeout(() => { if (!done) r({ ok: false, reason: '执行超时（6s）—— 页面可能没加载完' }); }, 6000));
+  const run = state.view.webContents.executeJavaScript('(' + COMPOSER_PREFILL_JS + ')('
+    + JSON.stringify(body) + ')', true).then((raw) => {
+    done = true;
+    try { return JSON.parse(raw); } catch (e) { return { ok: false, reason: '返回无法解析：' + String(raw).slice(0, 80) }; }
+  }).catch((e) => { done = true; return { ok: false, reason: (e && e.message) || String(e) }; });
+  return Promise.race([run, timeout]).then((r) => {
+    // 4b：失败只记状态、不阻断，但**必须留原因** ✓（自检/状态里看得见 ✓）
+    state.lastPrefill = Object.assign({
+      ok: !!r.ok, reason: r.reason || null, at: Date.now(), len: body.length
+    }, chipInfo);
+    return Object.assign({}, r, chipInfo);
+  });
+}
+
+/**
+ * ⑩ 唯一出口：把一段文本投喂进侧栏输入框（**不代替用户发送** ✗）。
+ *
+ * 两个形态，**先增强后兜底**：
+ *   ① **chip**（插件在位时）：调页面全局 `__AIMM_CHIP_INSERT__` ⇒ 里面走
+ *      `setDraft('')` + `insertReference(source='reference')` ⇒ 输入框里是 N 个"块"；
+ *   ② **纯文本**（插件不在位 / 插件报失败 / 不是 chip 形状 / 超时）：原样走 `COMPOSER_PREFILL_JS`。
+ * 两者的**模型输入逐行相同**（chip 的 ref 就是那行字）；差别只在输入框里的样子，
+ * 以及连接符（文本用 `\n`；chip 由内核补空格 —— 见 src/dsh-chip-feed.js 文件头）。
+ *
+ * ⚠️ **降级必须可见**：不管走哪条，`lastPrefill.chipMode` 都写 'plugin' 或 'text'，
+ *    失败原因写 `chipReason`。**绝不允许"静默什么都没做"**（那是本批最反对的失败形态）。
+ * @param {string} text
+ * @returns {Promise<{ok:boolean, reason:(string|null), textLen:number, chipMode:('plugin'|'text'),
+ *                    chipRoute:(string|null), occurrences:number}>}
+ */
 function prefillComposer(text) {
   const body = String(text == null ? '' : text);
   if (!body.trim()) return Promise.resolve({ ok: false, reason: '没有要送过去的内容' });
@@ -3104,24 +3296,30 @@ function prefillComposer(text) {
   if ((state.view.isDestroyed && state.view.isDestroyed()) || !state.view.webContents
       || (state.view.webContents.isDestroyed && state.view.webContents.isDestroyed())) {
     const why = '侧栏视图已销毁或不可用（重开侧栏再试）';
-    state.lastPrefill = { ok: false, reason: why, at: Date.now(), len: body.length };
-    return Promise.resolve({ ok: false, reason: why });
+    state.lastPrefill = { ok: false, reason: why, at: Date.now(), len: body.length,
+      chipMode: 'text', chipReason: 'view-destroyed', chipRoute: null, occurrences: 0 };
+    return Promise.resolve({ ok: false, reason: why, chipMode: 'text', chipReason: 'view-destroyed' });
   }
   if (state.status !== 'running') {
-    return Promise.resolve({ ok: false, reason: '侧栏服务没在运行（状态 ' + state.status + '）' });
+    state.lastPrefill = { ok: false, reason: '侧栏服务没在运行（状态 ' + state.status + '）', at: Date.now(),
+      len: body.length, chipMode: 'text', chipReason: 'no-service', chipRoute: null, occurrences: 0 };
+    return Promise.resolve({ ok: false, reason: '侧栏服务没在运行（状态 ' + state.status + '）',
+      chipMode: 'text', chipReason: 'no-service' });
   }
-  // 超时保护：内核页面加载中时 executeJavaScript 可能永不返回 ✗（本模块踩过同一个坑 ✓）
-  let done = false;
-  const timeout = new Promise((r) => setTimeout(() => { if (!done) r({ ok: false, reason: '执行超时（6s）—— 页面可能没加载完' }); }, 6000));
-  const run = state.view.webContents.executeJavaScript('(' + COMPOSER_PREFILL_JS + ')('
-    + JSON.stringify(body) + ')', true).then((raw) => {
-    done = true;
-    try { return JSON.parse(raw); } catch (e) { return { ok: false, reason: '返回无法解析：' + String(raw).slice(0, 80) }; }
-  }).catch((e) => { done = true; return { ok: false, reason: (e && e.message) || String(e) }; });
-  return Promise.race([run, timeout]).then((r) => {
-    // 4b：失败只记状态、不阻断，但**必须留原因** ✓（自检/状态里看得见 ✓）
-    state.lastPrefill = { ok: !!r.ok, reason: r.reason || null, at: Date.now(), len: body.length };
-    return r;
+  return tryChipInsert(body).then((chip) => {
+    if (chip.ok) {
+      state.lastPrefill = {
+        ok: true, reason: null, at: Date.now(), len: body.length,
+        chipMode: 'plugin', chipReason: null, chipRoute: chip.route, occurrences: chip.occurrences
+      };
+      /* 回执形状：保留旧的 textLen（渲染层用它报"送进去几个字"），新增 chip 三读数。
+       * ⚠️ 这里**不报**"已发送" —— 本工程铁律：谁按发送谁负责（我们不代替用户发送）。 */
+      return {
+        ok: true, reason: null, textLen: body.length,
+        chipMode: 'plugin', chipRoute: chip.route, occurrences: chip.occurrences, items: chip.items
+      };
+    }
+    return prefillComposerTextPath(body, chip);
   });
 }
 
@@ -3171,6 +3369,16 @@ module.exports = {
   __setMeasureProbeForTest: setMeasureProbeForTest,
   // ⑩ 把对话预填进侧栏输入框（不代替用户发送）
   prefillComposer, COMPOSER_PREFILL_JS,
+  // ⑩-b 「拖节点 ⇒ 真 chip」（2026-10-41）：这四样导出给**冒烟域 30** 与自检读，
+  //   —— 断言验的是**同一份实现**（不另写"测试用的第二条通道"）：
+  //     · CHIP_INSERT_JS   —— 页面侧那一小段（取全局句柄 → 调 → 回 JSON 字符串）
+  //     · chipPayloadFor   —— 文案 ⇒ chip 载荷（纯逻辑在 src/dsh-chip-feed.js，这里只是壳）
+  //     · tryChipInsert    —— 一次 chip 尝试（失败只返回结构化原因，绝不阻断）
+  //     · chipFeedStatus   —— 载荷在位读数（内容级；5s 缓存）
+  CHIP_INSERT_JS, chipPayloadFor, tryChipInsert, chipFeedStatus,
+  // 兜底路径也导出：冒烟域 30 要证明"chip 不成立时**真的把文本写进去了**且 chipMode='text' 可见"
+  //   —— 那一格不许另写一份文本写入（复制品会把断言变成自证）。
+  prefillComposerTextPath,
   // 加载失败判定（r12 收口批）—— 三样都是**产品路径本体**，导出只为让门禁与探针走同一份实现
   //   （不另写一条"测试用的判定"，那种第二份实现正是本工程反复治过的病）：
   //   · attachLoadDiagnostics —— `ensureView()` 用的**唯一挂载处**（单测拿 EventEmitter 打它、
