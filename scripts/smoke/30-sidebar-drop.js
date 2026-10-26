@@ -502,8 +502,38 @@ async function composerMock(wc, kind, seed) {
     + ' })(' + JSON.stringify(kind) + ', ' + JSON.stringify(seed == null ? '' : String(seed)) + ')');
 }
 
-/** 读回现场（假对话框的 innerText / 无关 textarea 的 value / 受控编辑器吞了几次赋值）。 */
-async function composerState(wc) {
+/** 造"**多段 + 末尾空段**"的富文本现场（= 真人用回车分段之后 DOM 的样子），光标放进末尾空段。
+ *  为什么需要这一种（2026-10-40 实测踩出来的）：只有光标处在一个**段落的开头**时，"追加"才会产生
+ *  "完整的一份又一份"；用 `selectNodeContents+collapse(false)` 得到的元素边界点，Chrome 会把插入
+ *  落到别处（实测写成 `甲\n乙甲\n\n乙`）⇒ `copies` 数不出 2 来，红侧就失去了判别力 ✗。
+ *  ⚠️ 它仍然只是**假现场**：能不能数出两份靠的是 DOM 语义，不是真 Lexical 的模型语义。 */
+async function composerMockParas(wc, lines) {
+  return composerExec(wc, '(function (lines) {'
+    + ' var host = document.getElementById("__mm_mock_host");'
+    + ' if (!host) { host = document.createElement("div"); host.id = "__mm_mock_host";'
+    + '   host.style.cssText = "position:fixed;left:0;bottom:0;width:100%;height:180px;z-index:2147483647;background:#f5f5f5";'
+    + '   document.body.appendChild(host); }'
+    + ' var old = document.getElementById("__mm_mock_composer"); if (old && old.parentNode) old.parentNode.removeChild(old);'
+    + ' var ed = document.createElement("div"); ed.id = "__mm_mock_composer";'
+    + ' ed.setAttribute("contenteditable", "true"); ed.setAttribute("role", "textbox");'
+    + ' ed.setAttribute("data-placeholder", "描述你想要构建的内容，/ 调用指令，@ 文件或对话");'
+    + ' ed.setAttribute("aria-label", "描述你想要构建的内容，/ 调用指令，@ 文件或对话");'
+    + ' ed.style.cssText = "position:fixed;left:4%;bottom:44px;width:88%;height:120px;box-sizing:border-box;'
+    + 'border:1px solid #ccc;border-radius:14px;background:#fff;padding:10px;overflow:auto;white-space:pre-wrap;color:#111";'
+    + ' for (var i = 0; i < lines.length; i++) { var d = document.createElement("div"); d.textContent = lines[i]; ed.appendChild(d); }'
+    + ' var tail = document.createElement("div"); tail.appendChild(document.createElement("br")); ed.appendChild(tail);'
+    + ' host.appendChild(ed);'
+    + ' ed.focus();'
+    + ' var rg = document.createRange(); rg.selectNodeContents(tail); rg.collapse(true);'
+    + ' var s = window.getSelection(); s.removeAllRanges(); s.addRange(rg);'
+    + ' var r = ed.getBoundingClientRect();'
+    + ' return JSON.stringify({ ok: true, tag: ed.tagName, rich: ed.isContentEditable === true,'
+    + '   w: Math.round(r.width), h: Math.round(r.height), ratio: Math.round(r.width / r.height * 10) / 10,'
+    + '   text: String(ed.innerText || "") });'
+    + ' })(' + JSON.stringify((lines || []).map((v) => String(v))) + ')');
+}
+
+/** 读回现场（假对话框的 innerText / 无关 textarea 的 value / 受控编辑器吞了几次赋值）。 */async function composerState(wc) {
   return composerExec(wc, '(function () {'
     + ' var ed = document.getElementById("__mm_mock_composer");'
     + ' var ta = document.getElementById("__mm_mock_plain");'
@@ -1936,11 +1966,17 @@ module.exports = [
         + ' return JSON.stringify({ ok: true, text: ed ? String(ed.innerText || "") : "<没了>",'
         + '   offsetParentNull: ed ? ed.offsetParent === null : null }); })()');
       const aOk = !!(A && A.ok === true && A.rich === true && A.bucket === 'ok'
-        && String(A.readBack || '') === MARK_A && String(aState.text || '') === MARK_A);
+        && String(A.readBack || '') === MARK_A && String(aState.text || '') === MARK_A
+        /* 2026-10-40：行数也是判据（1 行文本 ⇒ 回读必须 **1 行**；换行有没有成分段靠这个读数）
+         * 且回执里必须能看见"真的逐行 insertText 了"（`steps` 是调用序列） */
+        && A.lines === 1 && A.wantLines === 1
+        && String(A.steps || '').indexOf('insertText:true') >= 0);
       if (!aOk) ok = false;
       rows.push('A·只有目标（' + mkA.w + '×' + mkA.h + ' 比例=' + mkA.ratio + '，offsetParent=null=' + mkA.offsetParentNull
         + '）⇒ 回执=' + JSON.stringify({ ok: A && A.ok, bucket: A && A.bucket, mode: A && A.mode, tag: A && A.tag, rich: A && A.rich, score: A && A.score })
         + ' · 回读一致=' + (String(A && A.readBack) === MARK_A)
+        + ' · 行数=' + (A && A.lines) + '/' + (A && A.wantLines) + '（应 1/1）'
+        + ' · 调用序列=' + JSON.stringify((A && A.steps) || [])
         + ' · 现场 innerText 一致=' + (String(aState.text) === MARK_A) + (aOk ? ' ✓' : ' ✗'));
       // ── B：目标 + 无关 plain textarea（DOM 里排前面；挑走它就红）
       const mkB = await mk('plain');
@@ -2058,7 +2094,10 @@ module.exports = [
       if (typeof js !== 'string' || js.indexOf('function (text)') < 0) {
         return { ok: false, text: '产品没导出 COMPOSER_PREFILL_JS（或形态变了）⇒ 本条判不了，按红处理 ✗' };
       }
-      const SEED = '@p-幂等/甲\n@p-幂等/乙';
+      /* 2026-10-40：SEED 去掉 `@`（那是 composer 的引用触发符，真机上会把前缀改写/重复）。
+       * ⚠️ 本条只钉"替换 ⇒ 恰好 1 份 + 行数对"；**"去掉清空会变成 2 份"那一侧**在下一条 N3-⑨
+       * 用变异体证明（那里 seed 带尾随换行，才数得出"追加了一份"）。 */
+      const SEED = 'sb-幂等/甲\nsb-幂等/乙';
       const mkR = await composerMock(wc, 'controlled', SEED);
       if (!mkR || !mkR.ok) {
         if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
@@ -2069,15 +2108,21 @@ module.exports = [
       const after = await composerState(wc);
       const copiesReceipt = Number(r && r.copies);
       const copiesBrake = countCopies(after.edText, SEED);       // ★ 判据侧**独立**数一遍
+      const wantLinesR = SEED.split('\n').length;
+      const linesBrake = String(after.edText || '').split('\n').length;   // ★ 行数也独立数一遍
       const ok = !!(r && r.ok === true && r.bucket === 'ok' && copiesReceipt === 1 && copiesBrake === 1
-        && String(after.edText || '') === SEED && r.selMode !== 'none');
+        && String(after.edText || '') === SEED && r.selMode !== 'none'
+        && Number(r.lines) === wantLinesR && linesBrake === wantLinesR
+        && String(r.cleared || '').indexOf('deleted') === 0);
       await composerTeardown(wc);
       if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
       return { ok: ok, text: '受控编辑器（写前已有同一段 ' + JSON.stringify(before.edText) + '，赋值被吞 '
-        + before.swallowed + '→' + after.swallowed + ' 次）⇒ 回执=' + JSON.stringify({ ok: r && r.ok, bucket: r && r.bucket, mode: r && r.mode, selMode: r && r.selMode, copies: r && r.copies })
+        + before.swallowed + '→' + after.swallowed + ' 次）⇒ 回执=' + JSON.stringify({ ok: r && r.ok, bucket: r && r.bucket, mode: r && r.mode, selMode: r && r.selMode, copies: r && r.copies, cleared: r && r.cleared })
         + ' · 写后内容=' + JSON.stringify(after.edText) + '（应恰好 == 原文）'
         + ' · 份数：回执=' + copiesReceipt + ' / 断言侧独立数=' + copiesBrake + '（都应 1）'
-        + (ok ? ' ✓' : ' ✗') + (r && r.bucket === 'duplicated' ? '〔写成追加了 ⇒ 全选那一步没生效〕' : '') };
+        + ' · 行数：回执=' + (r && r.lines) + ' / 断言侧独立数=' + linesBrake + '（都应 ' + wantLinesR + '）'
+        + ' · 清空读数=' + JSON.stringify(r && r.cleared) + '（应 deleted:*）'
+        + (ok ? ' ✓' : ' ✗') + (r && r.bucket === 'duplicated' ? '〔写成追加了 ⇒ 清空那一步没生效〕' : '') };
     }
   },
   {
@@ -2114,10 +2159,16 @@ module.exports = [
       }
       const wantText = String(built.text || '');
       const lines = wantText.split('\n');
-      /* 形状：行数 == 节点数，且**每行 == `@<项目>/<标题>`**（独立按规格算，不抄产品实现）。 */
-      const wantLines = nodes.map((n) => '@' + (project.name ? (project.name + '/') : '')
-        + String(n.topic || '').replace(/\s+/g, ' ').trim());
+      /* 形状：行数 == 节点数，且**每行 == `<项目>/<标题>`**（独立按规格算，不抄产品实现）。
+       * ⚠️ 2026-10-40：前缀**不再是 `@`** —— `@名字/` 正好命中 composer 的 FOLDER_REF_RE
+       *   （`vendor/dsh` 只读源码 `…/ui-conversation/lib/client.js:12633`），真机上会被改写成
+       *   引用实体 ⇒ 前缀重复 + 标题粘连 + 叠三份。这一格的期望值改的是**规格**，不是"迁就实现"。 */
+      const wantLines = nodes.map((n) => (project.name ? (project.name + '/') : '')
+        + String(n.topic || '').replace(/\s+/g, ' ').replace(/@/g, '').trim());
       const shapeOk = lines.length === nodes.length && lines.every((ln, i) => ln === wantLines[i]);
+      /* 文案侧的护栏（本条的一半判别力在这）：一个 `@` 都不许有、行首不许是 `/` 或 `@` */
+      const noAtInText = wantText.indexOf('@') < 0;
+      const noTriggerLead = lines.every((ln) => !/^[@/]/.test(ln));
       const mkR2 = await composerMock(wc, 'target', '');
       if (!mkR2 || !mkR2.ok) {
         if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
@@ -2129,18 +2180,127 @@ module.exports = [
       const boxLines = inBox.split('\n');
       const noTemplate = inBox.indexOf('这些是我这边的上下文') < 0
         && inBox.indexOf('【来自 AI MindMap') < 0 && inBox.indexOf('你按需回答即可') < 0;
-      const boxOk = inBox === wantText && boxLines.length === nodes.length && boxLines.every((ln) => /^@\S/.test(ln));
-      const ok = !!(shapeOk && boxOk && noTemplate && r && r.ok === true && r.copies === 1);
+      const boxOk = inBox === wantText && boxLines.length === nodes.length
+        && boxLines.every((ln) => !/^[@/]/.test(ln) && ln.trim() !== '')
+        && inBox.indexOf('@') < 0;
+      /* ── 红侧（**护栏的判别力证明**）：把 `@` 加回去 ⇒ 产品必须**拒绝**（mangled + 一个字都不写）。
+       * 为什么放在这里：用户 2026-10-40 的真机缺陷就是"`@` 被 composer 改写"，而文案侧修好之后
+       * 下一个人完全可能又把它加回来（上一版就是这么写的）⇒ 这一格让"加回来"当场红。 */
+      await composerMock(wc, 'target', '');
+      const atBack = await composerPrefill(wc, js, '@' + wantText);
+      const stAt = await composerState(wc);
+      const atRefused = !!(atBack && atBack.ok === false && atBack.bucket === 'mangled'
+        && String(stAt.edText || '') === '');
+      const ok = !!(shapeOk && noAtInText && noTriggerLead && boxOk && noTemplate
+        && r && r.ok === true && r.copies === 1 && Number(r.lines) === nodes.length
+        && atRefused);
       await composerTeardown(wc);
       await ctx.exec('(function () { if (window.MM.clearSelection) window.MM.clearSelection(); return 1; })()');
       if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
       return { ok: ok, text: '项目=' + JSON.stringify(project.name) + ' 节点=' + JSON.stringify(nodes.map((n) => n.topic))
-        + ' ⇒ 文案=' + JSON.stringify(wantText) + '（应 ' + nodes.length + ' 行、每行以 @ 开头）'
+        + ' ⇒ 文案=' + JSON.stringify(wantText) + '（应 ' + nodes.length + ' 行、**每行不含 @、不以 / 开头**）'
         + ' · 行数=' + lines.length + '/' + nodes.length + ' 形状对=' + shapeOk
+        + ' · 文案无 @=' + noAtInText + '（应 true）· 行首无触发符=' + noTriggerLead + '（应 true）'
         + ' · 写进输入框后=' + JSON.stringify(inBox)
         + ' · 输入框行数=' + boxLines.length + '（应 ' + nodes.length + '）· 与文案逐字相等=' + (inBox === wantText)
         + ' · **不含旧模板句**=' + noTemplate + '（判的是「这些是我这边的上下文」等三句）'
+        + ' · 红侧（把 @ 加回去）⇒ 回执=' + JSON.stringify({ ok: atBack && atBack.ok, bucket: atBack && atBack.bucket })
+        + ' · 框里=' + JSON.stringify(String(stAt.edText || '')) + '（应 "" —— 一个字都不许写）· 拒绝对=' + atRefused
         + (ok ? ' ✓' : ' ✗') };
+    }
+  },
+  {
+    name: 'N3-⑨ 换行与幂等的**判别力**（把产品注入串做两个变异体：去掉清空 ⇒ 必须复现"叠一份"；去掉行间换行 ⇒ 必须复现"标题粘连"，且两样都判红）',
+    run: async (ctx) => {
+      /* 为什么要有这一条（本批最容易做假的地方）：
+       *   上一批 `copies===1` 在**假 composer** 上是绿的，真机上却叠了三遍 ⇒ 绿必须能**证伪**。
+       *   本条不新造一套写入逻辑，而是把**产品那一份注入串**做**源码级变异**再跑一遍：
+       *     变异 A：`cleared = await clearDraft();` 换成常量（= **只去掉清空**，逐行写入原样保留）
+       *             ＋ 光标放到框末（模拟"框里已有内容"）⇒ 这次写入必然变成**追加**
+       *             ⇒ 判据必须给出 `ok:false / bucket:'duplicated' / copies===2`；
+       *     变异 B：删掉行间 `paraBreak()`（= 换行没成分段）⇒ 两行粘成一行
+       *             ⇒ 判据必须给出 `ok:false / bucket:'mangled' / lines===1`。
+       *   两个变异体都先**验证变异真的落地了**（字符串没变 ⇒ 本格直接红，绝不静默）。
+       * ⚠️ 边界（如实）：这仍是**假现场**（plain/受控 contenteditable），它能证明"判据不是恒真"，
+       *   但**不能**证明"真 Lexical 会怎么吃 @ 与 \n" —— 那一条只能由用户真机拖一次
+       *   （见 .review/20261040-@触发与换行/ 的报告：哪条验了、哪条没验）。 */
+      if (!sidebarWasVisible()) { try { sidebar.show(); } catch (e) { /* 下面靠读数红 */ } g5ShowedSidebar = true; }
+      await sleep(900);
+      const wc = sidebarWc();
+      if (!wc) return { ok: false, text: '侧栏视图的 webContents 拿不到 ⇒ 判别力无从判 ✗' };
+      const js = sidebar.COMPOSER_PREFILL_JS;
+      if (typeof js !== 'string') return { ok: false, text: '产品没导出 COMPOSER_PREFILL_JS ⇒ 本条判不了 ✗' };
+      /* 两行文案 + **末尾留一个空段**（= 真人回车分段后的 DOM 形状）：
+       * 只在"光标处在一个段落的开头"时，追加才会产生"完整的一份又一份" ⇒ `copies` 数得出 2。
+       * 用 `selectNodeContents+collapse(false)` 那种元素边界点，Chrome 会把插入落到别处
+       * （实测写成 `甲\n乙甲\n\n乙`），`copies` 仍是 1 ⇒ 红侧就失去判别力 ✗。 */
+      const L1 = 'sb-变异/甲';
+      const L2 = 'sb-变异/乙';
+      const NEEDLE = L1 + '\n' + L2;
+      const seedParas = () => composerMockParas(wc, [L1, L2]);
+      /* ── 变异 A：**只去掉清空**（其余一字不动 —— 最小变异，改得越少越能说明"就是这一步在起作用"） ──
+       * ⚠️ 为什么不顺带改成"一次 insertText 灌整段"：那样一来红侧的成因就有两个（没有清空 **且**
+       *   换行不成分段），判据分不清是谁在起作用；"一次灌整段"被禁这件事由
+       *   `tests/composer-prefill-contract.test.js` 的负判据守着（那里是纯字符串，不需要现场）。 */
+      const mutA = js.replace(/cleared = await clearDraft\(\);/, "cleared = 'mutant:no-clear';");
+      const mutALanded = mutA !== js && mutA.indexOf('mutant:no-clear') >= 0
+        && mutA.indexOf('wantLines[li]') >= 0;      // 逐行循环必须还在 ⇒ 只变异了"清空"这一步
+      /* ── 变异 B：删掉行间换行 ── */
+      const mutB = js.replace('{ paraBreak(); await frame(); }', '{ await frame(); }');
+      const mutBLanded = mutB !== js && mutB.indexOf('paraBreak(); await frame();') < 0;
+      const rows = [];
+      let ok = true;
+      if (!mutALanded || !mutBLanded) {
+        await composerTeardown(wc);
+        if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
+        return { ok: false, text: '变异没落地（A=' + mutALanded + ' B=' + mutBLanded + '）⇒ 本条判不了，按红处理 ✗'
+          + '（产品注入串的锚点变了就要同步改本条，不许让它静默变绿）' };
+      }
+      /* ── 绿侧：同一份"多段 + 末尾空段"现场，跑**未变异**的产品 ⇒ 必须 ok 且恰好 1 份 ── */
+      const mk0 = await seedParas();
+      if (!mk0 || !mk0.ok) {
+        await composerTeardown(wc);
+        if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
+        return { ok: false, text: '造不出"多段 + 末尾空段"现场 ⇒ 前提不成立 ✗ ｜ ' + JSON.stringify(mk0) };
+      }
+      const r0 = await composerPrefill(wc, js, NEEDLE);
+      const st0 = await composerState(wc);
+      const copies0 = countCopies(String(st0.edText || '').replace(/\s+$/, ''), NEEDLE);
+      const greenOk = !!(r0 && r0.ok === true && r0.bucket === 'ok' && copies0 === 1
+        && String(st0.edText || '').replace(/\s+$/, '') === NEEDLE);
+      if (!greenOk) ok = false;
+      rows.push('绿侧·未变异 ⇒ 回执=' + JSON.stringify({ ok: r0 && r0.ok, bucket: r0 && r0.bucket, copies: r0 && r0.copies, lines: r0 && r0.lines })
+        + ' · 框里=' + JSON.stringify(String(st0.edText || '')) + ' · 独立数份数=' + copies0 + '（应 1）' + (greenOk ? ' ✓' : ' ✗'));
+      /* ── 红侧 A：去掉清空 ⇒ 必须复现"叠一份"（框里原有那份 + 又追加一份） ── */
+      const mkA = await seedParas();
+      if (!mkA || !mkA.ok) {
+        ok = false;
+        rows.push('红侧A：造不出现场 ✗ ｜ ' + JSON.stringify(mkA));
+      } else {
+        const rA = await composerPrefill(wc, mutA, NEEDLE);
+        const stA = await composerState(wc);
+        const copiesA = countCopies(String(stA.edText || '').replace(/\s+$/, ''), NEEDLE);
+        const redAOk = !!(rA && rA.ok === false && rA.bucket === 'duplicated'
+          && Number(rA.copies) === 2 && copiesA === 2);
+        if (!redAOk) ok = false;
+        rows.push('红侧A·去掉清空 ⇒ 回执=' + JSON.stringify({ ok: rA && rA.ok, bucket: rA && rA.bucket, copies: rA && rA.copies })
+          + ' · 框里=' + JSON.stringify(String(stA.edText || '')) + ' · 独立数份数=' + copiesA
+          + '（应 duplicated / 2 / 2）' + (redAOk ? ' ✓' : ' ✗'));
+      }
+      /* ── 红侧 B：去掉行间换行 ⇒ 必须复现"标题粘连" ── */
+      await composerMock(wc, 'target', '');
+      const rB = await composerPrefill(wc, mutB, NEEDLE);
+      const stB = await composerState(wc);
+      const linesB = String(stB.edText || '').split('\n').length;
+      const redBOk = !!(rB && rB.ok === false && rB.bucket === 'mangled'
+        && Number(rB.lines) === 1 && linesB === 1 && String(stB.edText || '').indexOf('\n') < 0);
+      if (!redBOk) ok = false;
+      rows.push('红侧B·去掉行间换行 ⇒ 回执=' + JSON.stringify({ ok: rB && rB.ok, bucket: rB && rB.bucket, lines: rB && rB.lines, reason: (rB && rB.reason || '').slice(0, 60) })
+        + ' · 框里=' + JSON.stringify(String(stB.edText || '')) + ' · 独立数行数=' + linesB
+        + '（应 mangled / 1 / 1，即两标题粘成一行）' + (redBOk ? ' ✓' : ' ✗'));
+      await composerTeardown(wc);
+      if (g5ShowedSidebar) { try { sidebar.hide(); } catch (e) { /* ignore */ } g5ShowedSidebar = false; }
+      return { ok: ok, text: '变异落地：A=' + mutALanded + ' B=' + mutBLanded + ' ｜ ' + rows.join(' ｜ ') };
     }
   }
 ];

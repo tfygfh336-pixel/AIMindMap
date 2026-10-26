@@ -2785,13 +2785,67 @@ function restoreWindow() {
  *         （原因里点名份数，**不静默**）；
  *       · 回执新增两个读数：`copies`（回读里有几份）、`selMode`（全选是 range / cmd / none 铺的）
  *         —— 真机再出问题，一行读数就能分"写歪了"与"插了多份"。
- *     判据：同文件的 N3-⑦（受控编辑器 + 框里已有同一段 ⇒ 写一次必须恰好剩 1 份）。 */
-const COMPOSER_PREFILL_JS = `(function (text) {
+ *     判据：同文件的 N3-⑦（受控编辑器 + 框里已有同一段 ⇒ 写一次必须恰好剩 1 份）。
+ *
+ * ── 2026-10-40 第五轮（**@ 是触发符 · 换行要分段 · 幂等要真成立**）────────────────────
+ *     用户真机截图（逐字）：2 个节点拖进去，框里变成 ——
+ *       @book-80211-guide/@book-80211-guide/ 全书概览与使用说明
+ *       @book-80211-guide/ 第一章 无线网络导论 @book-80211-guide/全书概览与使用说明
+ *       @book-80211-guide/ 第一章 无线网络导论全书概览与使用说明 @book-80211-guide/第一章 无线网络导论
+ *     = 前缀重复 + 两标题粘成一行（换行丢了）+ 整段叠三遍。而上一版在这里是**绿**的
+ *     —— 因为假现场（plain contenteditable）验不出真 Lexical 怎么吃 `@` 与 `\n`。
+ *     本轮三件事，各有判据（实现见下方 COMPOSER_PREFILL_JS 的文件头；
+ *     取证与"哪些只能用户真机验"见 `.review/20261040-@触发与换行/`）：
+ *       ① 文案里**一个 @ 都不留**（真源在 `src/sidebar-context.js`；本文件那条拒绝是第二道闸）；
+ *       ② 写入改成**逐行 insertText + 行间 insertParagraph**；判据 = 回读行数 == 文案行数；
+ *       ③ 清空改成 全选 → **等一帧**（Lexical 的模型选区是异步同步的）→ delete；
+ *          判据 = `copies === 1` 且行数对，任何一项不成立一律 `ok:false`
+ *          （新增一档 `mangled`：回读里冒出 @ / 行数不符 = 标题粘连）。 */
+const COMPOSER_PREFILL_JS = `(async function (text) {
+  /* ── 本注入串的契约（2026-10-40 重写）─────────────────────────────────────────
+   * 往 **Lexical 富文本 composer** 里写"N 行纯文本、并替换掉框里原有内容"，三条判据：
+   *   ① 行数 == 文案行数（每行一个投喂单位；标题**不许粘在一起**）
+   *   ② 份数 == 1（一次投喂恒等于一份；原有那份必须被**替换**）
+   *   ③ 回读 == 原文（逐字）
+   *   任何一条不成立 ⇒ ok:false + 分档 + 原因（**绝不静默成功**）。
+   *
+   * ── 为什么"逐行 insertText + 行间 insertParagraph"，而不是一次 insertText ─────────
+   *   Lexical 的 RangeSelection.insertText 把整串**原样塞进一个 TextNode**
+   *   （vendor 只读源码：vendor/dsh/app/node_modules/@deepseek-ai/dsh-client-ui-conversation
+   *     /lib/client.js 第 7042-7089 行；全程没有按换行分段。对照第 13236 setDraft 与第
+   *     13382 restoreDraft 都是**显式** split ⇒ 分段只发生在显式 split 的地方）
+   *   ⇒ 一次 insertText 里带换行 **不等于**分段：模型里仍是 1 段，回读行数对不上。
+   *   而 inputType=insertParagraph 在 Lexical 里映到 INSERT_PARAGRAPH_COMMAND（第 5517 行）；
+   *   inputType=insertText 且 data 恰为单个换行则映到 INSERT_LINE_BREAK（第 5492 行）
+   *   ⇒ 后者是这个编辑器自带的兜底换行，两条都留着（insertParagraph 优先）。
+   *
+   * ── 为什么清空之后要**等一帧**再写 ────────────────────────────────────────────
+   *   Lexical 的模型选区是从 DOM 选区经 document 的 selectionchange **异步**同步的
+   *   （第 5339 行注册 selectionchange 监听）。上一版把 selectAll 与 insertText 放在**同一
+   *   tick** ⇒ 模型选区还没更新 ⇒ insertText 落在旧光标处 = **追加** ⇒ 真机上看到三份。
+   *   等一帧再写，替换语义才成立 ✓（这是本批真正的修法，不是"更聪明的写入代码"）。
+   *
+   * ── 为什么文案里一个 @ 都不许有 ────────────────────────────────────────────────
+   *   @名字/ 在"行首或空白之后"命中 vendor 第 12633 行的 FOLDER_REF_RE
+   *   （第 12632 TEXT_REF_RE 同理处理 /名字）⇒ 会被 registerTextRefDecoration（第 12749）
+   *   改造成 TextRefNode 实体（第 12688）⇒ 真机上就是"前缀重复 / 神隐改写"的来源。
+   *   ⇒ 本串对含 @ 的文案**就地拒绝**（mangled，一个字都不写），护栏在 src/sidebar-context.js。
+   * ======================================================================= */
+  function txt(v) { return String(v == null ? '' : v); }
+  var ALL = txt(text);
+  var steps = [];
+  var wantLines = ALL.split('\\n');
+  if (ALL.indexOf('@') >= 0) {
+    return JSON.stringify({ ok: false, bucket: 'mangled',
+      reason: '文案里有 @（这个输入框里 @ 是引用触发符，composer 会把它改写成引用实体，'
+        + '导致前缀重复/标题粘连）—— 一个字都没写。回读前 80 字（此处是文案本身）：' + ALL.slice(0, 80),
+      copies: 0, lines: 0, wantLines: wantLines.length, selMode: 'none', mode: 'refused',
+      cleared: 'refused', textLen: ALL.length, readBack: '', steps: ['refused:at-char'], census: [] });
+  }
   var SEL = 'textarea, input, [contenteditable], [contenteditable=""], [contenteditable="true"],'
-    + ' [contenteditable="plaintext-only"], [role="textbox"]';
+    + ' [contenteditable="plaintext-only"], [role="textbox"], [data-composer-input]';
   var all = [];
   try { all = Array.prototype.slice.call(document.querySelectorAll(SEL)); } catch (e) { all = []; }
-  function txt(v) { return String(v == null ? '' : v); }
   function rectOf(el) { try { var r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; } catch (e) { return { w: 0, h: 0 }; } }
   function visible(el) {
     var r = rectOf(el);
@@ -2805,7 +2859,8 @@ const COMPOSER_PREFILL_JS = `(function (text) {
   }
   function attr(el, k) { try { return el.getAttribute ? txt(el.getAttribute(k)) : ''; } catch (e) { return ''; } }
   /** 占位/标签线索：**把所有可能的来源都读一遍**（富文本编辑器的 placeholder 常在 data-placeholder
-   *  或父元素的 data-placeholder 上，而空职的内层文字本身就是占位） */
+   *  或父元素的 data-placeholder 上；DSH 的 composer 就是自己带 data-placeholder + aria-label，
+   *  vendor 第 16547-16548 行 ⇒ 今天这条仍在，但不依赖它） */
   function hintOf(el) {
     var parts = [];
     ['placeholder', 'aria-label', 'aria-placeholder', 'data-placeholder', 'title', 'name', 'id'].forEach(function (k) {
@@ -2829,11 +2884,11 @@ const COMPOSER_PREFILL_JS = `(function (text) {
   var census = [];
   var scored = [];
   for (var i = 0; i < all.length; i++) {
-    var el = all[i];
-    var r = rectOf(el);
-    var vis = visible(el);
-    var ed = isEditable(el);
-    var hint = hintOf(el);
+    var el0 = all[i];
+    var r = rectOf(el0);
+    var vis = visible(el0);
+    var ed = isEditable(el0);
+    var hint = hintOf(el0);
     var ratio = r.h > 0 ? (r.w / r.h) : 0;
     var s = 0;
     if (!vis) s -= 100;
@@ -2844,13 +2899,17 @@ const COMPOSER_PREFILL_JS = `(function (text) {
     if (/描述|构建|指令|提及|输入|提问|询问|对话|ask|describe|message|prompt/i.test(hint)) s += 25;
     if (ratio >= 3 && ratio <= 12) s += 20;      // 宽而扁（截图 738:129 ≈ 5.7）
     if (ed.rich) s += 20;                        // 富文本编辑器优先（/ 指令 + @ 提及几乎必然是它）
+    /* +15：vendor 的 composer 自己带 data-composer-input / data-lexical-editor 这类**语义**属性
+     * （第 16494 / 9278 行）—— 它们比类名稳，但**只是加分项**：身份仍由上面的特征门槛决定，
+     * 不把"抓到某个属性"当成"抓对了框"（上一版假绿的教训）。 */
+    if (attr(el0, 'data-composer-input') !== '' || attr(el0, 'data-lexical-editor') === 'true') s += 15;
     if (ed.isArea) s -= 25;                      // plain textarea 让位
     if (r.w < 160) s -= 20;
-    census.push({ tag: txt(el.tagName), role: ed.role, rich: ed.rich, w: r.w, h: r.h,
+    census.push({ tag: txt(el0.tagName), role: ed.role, rich: ed.rich, w: r.w, h: r.h,
       ratio: Math.round(ratio * 10) / 10, visible: vis, score: s,
-      placeholder: attr(el, 'placeholder'), ariaLabel: attr(el, 'aria-label'),
-      fixed: (function () { try { return el.offsetParent === null; } catch (e) { return null; } })() });
-    if (vis && ed.editorish) scored.push({ el: el, s: s, r: r, ed: ed });
+      placeholder: attr(el0, 'placeholder'), ariaLabel: attr(el0, 'aria-label'),
+      fixed: (function () { try { return el0.offsetParent === null; } catch (e) { return null; } })() });
+    if (vis && ed.editorish) scored.push({ el: el0, s: s, r: r, ed: ed });
   }
   var THRESHOLD = 40;
   scored.sort(function (a, b) {
@@ -2863,6 +2922,7 @@ const COMPOSER_PREFILL_JS = `(function (text) {
     return JSON.stringify({ ok: false, bucket: 'not-found',
       reason: '没找到对话输入框（普查 ' + all.length + ' 个候选，最高分 ' + (best ? best.s : 0)
         + '，门槛 ' + THRESHOLD + '）—— 不退回、不硬写别的框',
+      copies: 0, lines: 0, wantLines: wantLines.length, steps: steps, textLen: ALL.length,
       census: census.slice(0, 10) });
   }
   var el = pick.el;
@@ -2872,31 +2932,52 @@ const COMPOSER_PREFILL_JS = `(function (text) {
   if (!focused) {
     return JSON.stringify({ ok: false, bucket: 'focus-failed',
       reason: '找到对话输入框了（' + txt(el.tagName) + '）但焦点进不去',
+      copies: 0, lines: 0, wantLines: wantLines.length, steps: steps, textLen: ALL.length,
       tag: txt(el.tagName), score: pick.s, census: census.slice(0, 10) });
   }
   function readBack() {
     try { return pick.ed.rich ? txt(el.innerText || el.textContent) : txt(el.value); } catch (e) { return ''; }
   }
-  function norm(v) { return txt(v).replace(/[\\s\\u00a0]+$/, ''); }
+  /** 归一化：只剪**尾随**空白，并清掉编辑器自己塞的零宽/不换行空格（否则回读永远差一两个字符） */
+  function norm(v) {
+    return txt(v)
+      .replace(/\\u200b/g, '').replace(/\\ufeff/g, '')
+      .replace(/\\u00a0/g, ' ')
+      .replace(/[\\s\\u00a0]+$/, '');
+  }
   function same(a, b) { return norm(a) === norm(b); }
   /** 回读里这段文本出现了**几份**（幂等判据：一次投喂必须恰好 1 份）。
    *  为什么要有这个读数：用户 2026-10-39 的真机现象就是"同一段出现了多次"，
    *  而"回读 == 原文"只能说明**整段相等**，说不出"到底几份" ⇒ 把份数当成回执字段报出来，
    *  下一次真机出问题，一行读数就能分辨"插了多份"与"写掉了/写歪了"✓。 */
   function copiesOf(hay, needle) {
-    var h = txt(hay), n = txt(needle), c = 0, i = 0;
+    var h = txt(hay), n = txt(needle), c = 0, at2 = 0;
     if (!n) return 0;
-    while ((i = h.indexOf(n, i)) >= 0) { c++; i = i + n.length; }
+    while ((at2 = h.indexOf(n, at2)) >= 0) { c++; at2 = at2 + n.length; }
     return c;
   }
-  /** 把编辑面的选区**铺满整个编辑器内容**（替换语义的前提）。
-   *  为什么必须"先全选"：insertText 是**在光标处插入**，而光标位置由上一次编辑/焦点决定
-   *  ⇒ 同一个动作在"空框"上是 1 份、在"已有内容"上就变成**追加**（2 份、3 份……）。
-   *  用户要的"一次拖拽 = 两个节点链接"只有在**替换**语义下才恒成立 ✓（顺带也满足"同一次 drop 只许插一次"）。
-   *  ⚠️ 两种铺法都要试：DOM Range 是引擎无关的确定性做法；selectAll 命令是编辑器自己
-   *     （Slate/Lexical/ProseMirror）更认的做法 —— 谁让后面的 insertText 生效就用谁，回读说了算。 */
+  /** 回读的**行数**（判"换行有没有真的成分段"的唯一读数） */
+  function lineCountOf(v) {
+    var t = norm(v);
+    if (!t) return 0;
+    return t.split('\\n').length;
+  }
+  /** 等一帧：Lexical 的 DOM 选区 → 模型选区 的同步是异步的（vendor 第 5339 行）。
+   *  两条腿（rAF + 定时器）取先到的 —— 窗口被遮挡时 rAF 可能不跑，定时器兜住。 */
+  function frame() {
+    return new Promise(function (done) {
+      var fin = false;
+      function go() { if (!fin) { fin = true; done(1); } }
+      try {
+        if (typeof requestAnimationFrame === 'function') { requestAnimationFrame(go); setTimeout(go, 32); }
+        else setTimeout(go, 4);
+      } catch (e) { setTimeout(go, 4); }
+    });
+  }
+  /** 把**整个编辑器内容**选上。两条腿：DOM Range（引擎无关）+ 编辑器自己的 selectAll 命令
+   *  （Slate/Lexical/ProseMirror 更认这一条）。返回用的是哪条（回执里可见 ⇒ 真机可定位）。 */
   function selectAllIn() {
-    var sel = null;
+    var sel = null, ranged = false;
     try { sel = window.getSelection ? window.getSelection() : null; } catch (e0) { sel = null; }
     try {
       if (sel && document.createRange) {
@@ -2904,66 +2985,110 @@ const COMPOSER_PREFILL_JS = `(function (text) {
         rg.selectNodeContents(el);
         sel.removeAllRanges();
         sel.addRange(rg);
-        return 'range';
+        ranged = true;
       }
     } catch (e1) { /* 落到下面那条命令兜底 */ }
-    try { if (document.execCommand && document.execCommand('selectAll', false, null)) return 'cmd'; } catch (e2) { /* 都失败 ⇒ none */ }
-    return 'none';
+    var cmd = false;
+    try { cmd = !!(document.execCommand && document.execCommand('selectAll', false, null)); } catch (e2) { cmd = false; }
+    if (ranged && cmd) return 'range+cmd';
+    return ranged ? 'range' : (cmd ? 'cmd' : 'none');
   }
-  var mode = 'none', selMode = 'none';
-  // ① 富文本编辑器：**全选 → insertText**（走它自己的输入管线：Slate/Lexical/ProseMirror 都吃这一口）
+  var selMode = 'none';
+  /** 清空：全选 → **等一帧**（让模型选区跟上）→ delete → 等一帧 → 回读确认。
+   *  为什么要 delete 而不是赋 textContent：真机 Lexical 是**模型驱动**的，
+   *  DOM 赋值下一帧就被它自己的渲染覆盖回去 ⇒ 那一步在真机上是**空的**（上一批假绿就在这）。
+   *  参考：vendor 第 5535-5537 行 inputType=deleteContent ⇒ INSERT/DELETE 命令。 */
+  async function clearDraft() {
+    var last = 'none';
+    for (var attempt = 0; attempt < 2; attempt++) {
+      var how = selectAllIn();
+      steps.push('selectAll:' + how);
+      if (how !== 'none') last = how;
+      await frame();
+      var del = false;
+      try { del = !!(document.execCommand && document.execCommand('delete', false, null)); } catch (e1) { del = false; }
+      steps.push('delete:' + del);
+      await frame();
+      if (!norm(readBack())) { selMode = last; return 'deleted:' + last; }
+    }
+    selMode = last;
+    return 'failed:' + last;
+  }
+  function insertLine(line) {
+    var done = false;
+    try { done = !!(document.execCommand && document.execCommand('insertText', false, line)); } catch (e) { done = false; }
+    steps.push('insertText:' + done);
+    return done;
+  }
+  /** 行间换行：insertParagraph 优先；不被认就用编辑器自带的"单个换行"（Lexical: INSERT_LINE_BREAK） */
+  function paraBreak() {
+    var done = false;
+    try { done = !!(document.execCommand && document.execCommand('insertParagraph', false, null)); } catch (e) { done = false; }
+    if (done) { steps.push('insertParagraph:true'); return true; }
+    var fb = false;
+    try { fb = !!(document.execCommand && document.execCommand('insertText', false, '\\n')); } catch (e2) { fb = false; }
+    steps.push('lineBreak-fallback:' + fb);
+    return fb;
+  }
+  var mode = 'none', cleared = 'skipped';
   if (pick.ed.rich) {
-    selMode = selectAllIn();
-    try {
-      if (document.execCommand) { mode = 'replace:' + selMode; document.execCommand('insertText', false, text); }
-    } catch (e1) { mode = 'replace-threw:' + selMode; }
+    cleared = await clearDraft();
+    mode = 'lines:' + cleared;
+    for (var li = 0; li < wantLines.length; li++) {
+      insertLine(wantLines[li]);
+      await frame();
+      if (li < wantLines.length - 1) { paraBreak(); await frame(); }
+    }
   }
-  // ② 回读不是"恰好这段" ⇒ 换编辑器自己的 selectAll 再来一次（有的受控编辑器只认这条命令）
-  if (!same(readBack(), text)) {
-    try {
-      if (pick.ed.rich && document.execCommand && document.execCommand('selectAll', false, null)) {
-        selMode = selMode + '+cmd';
-        mode = mode + '+selectAll-cmd';
-        document.execCommand('insertText', false, text);
-      }
-    } catch (e9) { mode = mode + '+cmd-threw'; }
-  }
-  // ③ 仍不一致 ⇒ 退回"直接赋值 + 派发输入事件"（受控编辑器会吞掉赋值 ⇒ **回读说了算**）
-  if (!same(readBack(), text)) {
+  /* ③ 兜底：编辑器一个字都没吃（不是 Lexical、也不是任何认 execCommand 的编辑器）⇒
+   *   退回"直接赋值 + 派发输入事件"。**只在读到空的时候用** —— 否则会和上面的写入叠加成多份 ✗ */
+  if (!norm(readBack())) {
     try {
       if (pick.ed.rich) {
         mode = (mode === 'none') ? 'input-event' : (mode + '+input-event');
-        el.textContent = text;
-        try { el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text })); } catch (e2) {}
-        try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })); }
+        el.textContent = ALL;
+        try { el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: ALL })); } catch (e2) {}
+        try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ALL })); }
         catch (e3) { try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e4) {} }
       } else {
         mode = 'native-setter';
         var proto = pick.ed.isArea ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         var desc = Object.getOwnPropertyDescriptor(proto, 'value');
-        if (desc && desc.set) desc.set.call(el, text); else el.value = text;
-        try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })); }
+        if (desc && desc.set) desc.set.call(el, ALL); else el.value = ALL;
+        try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ALL })); }
         catch (e5) { try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e6) {} }
       }
     } catch (e7) { mode = mode + '+threw'; }
   }
   try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e8) {}
   var got = readBack();
-  var copies = copiesOf(got, text);
-  // 判据 = **整段相等**（等价于"恰好一份"）。copies 不等于 1 再钉一次：多份一定不算成功
-  // —— 这正是"同一次投喂只许插一次"的那条不变量（多份 ⇒ 红，且原因里点名份数 ✗ 不静默）✓。
-  var ok = same(got, text) && copies === 1;
-  var bucket = ok ? 'ok' : (copies > 1 ? 'duplicated' : (norm(got) ? 'readback-mismatch' : 'rejected'));
+  var verbatim = same(readBack(), text);
+  var copies = copiesOf(norm(got), ALL);
+  var gotLines = lineCountOf(got);
+  var wantN = wantLines.length;
+  var linesOk = (gotLines === wantN);
+  var noAt = norm(got).indexOf('@') < 0;
+  /* 判据 = 逐字相等 **且** 恰好 1 份 **且** 行数对 **且** 没有 @ 冒出来。
+   * 三样缺一都不算成功 —— 这正是"一次投喂 = N 行、每行一个单位"的那条不变量。 */
+  var ok = verbatim && copies === 1 && linesOk && noAt;
+  var bucket = ok ? 'ok'
+    : (copies > 1 ? 'duplicated'
+      : (!norm(got) ? 'rejected'
+        : ((!linesOk || !noAt) ? 'mangled' : 'readback-mismatch')));
   var reason = ok ? null
-    : (copies > 1
-      ? '输入框里出现了 ' + copies + ' 份（应恰好 1 份）—— 全选那一步没生效，这次写入变成了追加'
-      : (norm(got)
-        ? '写进去了但回读不一致（回读前 60 字：' + norm(got).slice(0, 60) + '）'
-        : '编辑器不接受 execCommand，且 InputEvent 也无效（读到空）'));
+    : (bucket === 'duplicated'
+      ? '输入框里出现了 ' + copies + ' 份（应恰好 1 份）—— 清空那一步没生效，这次写入变成了追加。'
+        + '回读前 80 字：' + norm(got).slice(0, 80)
+      : (bucket === 'mangled'
+        ? '写进去了但形状被改（行数 ' + gotLines + '，应 ' + wantN + (noAt ? '' : '；回读里又冒出 @') + '）'
+          + ' —— 标题可能粘在一起，或 @ 被改写成引用实体。回读前 80 字：' + norm(got).slice(0, 80)
+        : (bucket === 'readback-mismatch'
+          ? '写进去了但回读不一致（回读前 60 字：' + norm(got).slice(0, 60) + '）'
+          : '编辑器不接受 execCommand，且 InputEvent 也无效（读到空）')));
   return JSON.stringify({ ok: ok, bucket: bucket, reason: reason, mode: mode, selMode: selMode,
-    copies: copies,
+    cleared: cleared, copies: copies, lines: gotLines, wantLines: wantN, steps: steps,
     tag: txt(el.tagName), rich: pick.ed.rich, score: pick.s,
-    w: pick.r.w, h: pick.r.h, textLen: txt(text).length, readBack: norm(got).slice(0, 60),
+    w: pick.r.w, h: pick.r.h, textLen: txt(text).length, readBack: norm(got).slice(0, 80),
     census: census.slice(0, 10) });
 })`;
 
