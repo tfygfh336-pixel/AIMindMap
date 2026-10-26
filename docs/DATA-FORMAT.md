@@ -41,6 +41,8 @@
 
 `bindings` 也是**项目级可选集合**（同上：与 `data` 平级、**不在节点树里**），见 §1.5。
 
+`graph` 是**项目级可选对象**（同上：与 `data` 平级、**不在节点树里**；缺省 = 无附加结构），见 §1.6。
+
 ### 1.5 bindings：工作区文件夹绑定（可选；缺省 = 未绑定）
 
 > 一句话：**这个项目盯着本机的哪个文件夹**，以及"同步进来时按什么规则转"。
@@ -101,7 +103,57 @@
 | data | ✓ | 根节点（id 固定 `root`） |
 | assoc | - | **关联笔记**（N 元关联实体）集合，与 `data` 平级、**不属于节点树**。缺省 = 该项目没有任何关联（合法）。见 §2.6 |
 | bindings | - | **工作区文件夹绑定**（R4）集合，与 `data` 平级、**不属于节点树**。**缺省 = 未绑定**（合法，且老项目不写这个键时语义与从前**完全一致**）。见 §1.5 |
+| graph | - | **图附加层**（层带 / 容器 / 边 / 注释 / 方向 / 网格 / `pinned`），与 `data` 平级、**不属于节点树**。**缺省 = 无附加结构**（合法，老项目零迁移、`formatVersion` 不升）。见 §1.6 |
 
+
+### 1.6 graph：图附加层（可选；缺省 = 无附加结构）
+
+> 一句话：**同一份项目能被"窄模式"（思维导图）与"全模式"（复杂结构图）同时打开**，靠的就是这一层 ——
+> 层带 / 容器 / 边 / 注释这些"图才有的东西"放在这里，**节点字段一个都不加**
+> （理由与实测证据见 `docs/DIAGRAM-MODES.md` §6：节点上多出来的键会被界面整树保存**静默抹掉**）。
+
+```json
+{
+  "graph": {
+    "version": 1,
+    "profile": "complex",
+    "direction": "LR",
+    "grid": 8,
+    "layers": [{ "id": "l-core", "label": "Core", "labelSide": "top", "rect": [0, 0, 600, 300],
+                 "fill": "#eef4fb", "watermark": { "text": "CORE", "rotate": -90, "opacity": 0.3 } }],
+    "containers": [{ "id": "c-box", "label": "盒子", "rect": [10, 10, 200, 80],
+                     "layout": "stack", "children": ["n-a"], "padding": 12, "gap": 8 }],
+    "edges": [{ "id": "e-ab", "from": { "node": "n-a", "port": "e" }, "to": { "node": "n-b", "port": "w" },
+                "route": "straight", "style": "dashed", "color": "blue",
+                "arrow": { "start": true, "end": true }, "label": "状态" }],
+    "annotations": [{ "text": "一句注释", "at": [12, 40], "style": "note-blue" }],
+    "pinned": ["n-a"]
+  }
+}
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| version | - | `graph` **自己的**版本号，当前只有 `1`。**不是** `meta.formatVersion`（后者是 v2/v3 的分界，动它会让另一半数据连读都读不了） |
+| profile | - | 这份图默认用哪个剖面打开：`complex` / `mindmap` / `path` / `logic` / `module`（缺省 = `complex`）。它只是**默认值**，人可以切 |
+| direction | - | 主方向 `LR` / `TB`（缺省 = `LR`）。MS1 的渲染内核**只保存不布局**（自动布局是 MS2） |
+| grid | - | 吸附网格（1–256，缺省 8）。MS1 只在一处用它：水印沿层带中线寻找留白区时的搜索步长 |
+| layers | - | 层带（**背景分区**，画在节点之下）：`id`（唯一）/ `label` / `labelSide`（`left` 竖排 = 缺省，`top` 横排）/ `rect`（`[x,y,w,h]`，宽高 > 0）/ `fill` / `watermark`（`{text, rotate, opacity}`，`opacity` 在 0–1）。层带之间**不许重叠**；水印必须落在**留白区**（与任何节点/容器零相交），放不下就**报错**而不是叠上去 |
+| containers | - | 容器框：`id`（唯一）/ `label` / `rect` / `layout`（**必填**：`stack` 或 `free`）/ `children`（节点 id 数组，非空、不重复）/ `padding` / `gap`。`stack` 的高度**由子项算出**（子项高之和 + padding×2 + gap×(n−1)），`free` 的子项坐标就是声明值、容器高取子项包围盒 + padding |
+| edges | - | 边：`id`（唯一）/ `from` 与 `to`（`{node, port}`，`port` ∈ `n/e/s/w`，可省 = 自动选代价最小的端口）/ `route` / `style`（`solid`/`dashed`/`dotted`）/ `color`（语义色 token 或色值）/ `arrow`（`{start, end}` **两端独立布尔**）/ `label`。**`route` 的取值**：`straight` / `orthogonal` / `curve` 三档都是合法数据，但 **MS1 只实现了 `straight`** ⇒ `orthogonal`/`curve` 在渲染时**响亮拒绝**（`E_ROUTE_UNSUPPORTED`），**不会**被静默画成直线 |
+| annotations | - | 文字注释（画在**最上层**）：`text` / `at`（`[x,y]`）/ `style`（样式 token）/ `id`（可选） |
+| pinned | - | 重排时**不许覆盖其偏移**的节点 id（偏移本身仍在 `meta.nodeOffsets`；设计 §6.3） |
+
+**四条落地纪律**（判据在 `src/schema.js` + `src/diagram/schema.js`，两处共用**同一份**形状校验）：
+
+1. **引用只按 id**：`containers[].children[]` / `edges[].from.node` / `edges[].to.node` / `pinned[]` 指向不存在的节点 ⇒ `validate` **判红并点名**（与 `links[]` 的悬挂检测同型）。
+2. **未知键分两档**：`graph` **内部**的未知字段 ⇒ **错误**（它是新造的一层、盘上零存量，判红零成本；坏形态正是"写了个没人渲染的键"）；**顶层**与**节点上的**未知键 ⇒ **警告**（`validate --json` 的 `warnings[]` 里看得见，`ok` 不变 —— 老数据里可能有别人的历史键，判红会让昨天合法的项目今天不可写）。
+3. **窄模式保存不许抹掉整张图**：GUI 保存（`project:save`）在载荷**没带** `graph` 键时会**从磁盘取回**（唯一实现 = `src/data-store.js` 的 `prepareSavePayload`；据此实现的是 `main.js` 的 `project:save`）。载荷**带了** `graph`（全模式）就以载荷为准。
+4. **z-order 固定**（渲染内核逐字实现）：`layers` → `containers` → `nodes` → `edges` → `edgeLabels` → `annotations`。
+
+> **MS1（本批）没做的**，写在这里免得被读成"已支持"：自动布局（`C-F4-01`…）、正交/曲线布线（`C-F3-05`/`06`）、通道与交叉处理（`C-F3-16`…`19`）、交互（缩放/平移/悬停/高亮）、PNG/PDF 导出、接界面。计划与判据见 `docs/DIAGRAM-MODES.md` §7.2。
+> 渲染内核的输入是**一份手写坐标的图文档**（`{ graph, nodes: [{ id, type, rect, title, subtitle, badge }] }`），
+> 项目里的节点树**不带** `rect`：坐标 = 自动布局 ⊕ `meta.nodeOffsets`（设计 §6.3）。
 
 ## 2. 节点
 

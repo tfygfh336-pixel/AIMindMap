@@ -2704,13 +2704,17 @@ function registerIpc() {
     //   ② AI/CLI 在界面打开期间新写的笔记，渲染层根本没见过 → 写回时被抹掉。
     // 故规则是：**磁盘有 assoc 就一律以磁盘为准**（不是"只有载荷没带时才取回"）；
     // 仅当磁盘没有 assoc 时才用载荷那份作兜底（例如磁盘尚未有过笔记）。
+    // —— 图附加层（`graph`）的归属说明（本批新增，20261056-MS1）——
+    // `graph` 与 assoc 同族：**只由全模式/AI 写**，渲染层（窄模式）的内存拷贝里没有它。
+    // 直接整份写回 ⇒ 盘上整张图（层带/容器/边/注释）被**静默抹掉**，而那时数据已经没了、回不来。
+    // 两档规则不同、判据只有一份：**唯一实现 = `src/data-store.js` 的 `prepareSavePayload`**
+    // （assoc 磁盘优先；graph 载荷没带才取回）。这里只调它，不写第二份规则。
+    // ⚠️ 不新增顶层 require 行是本段的纪律：本批只被授权动这一段与下面的 merge base 那一行。
     let payload = data;
     if (data && file && fs.existsSync(file)) {
       try {
         const cur = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
-        if (Array.isArray(cur.assoc) && cur.assoc.length) {
-          payload = Object.assign({}, data, { assoc: cur.assoc });
-        }
+        payload = require('./src/data-store.js').prepareSavePayload(data, cur);
       } catch (err) { /* 读不回来就按原样保存（不要因为这点失败挡住保存） */ }
     }
 
@@ -2745,7 +2749,11 @@ function registerIpc() {
           + '处理办法：重新打开该项目（会丢弃界面里未保存的改动），或按 Ctrl+Z 撤销本次改动后再保存。');
       }
       const cur = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
-      const baseForMerge = Object.assign({}, base, { assoc: cur.assoc });
+      // `graph` 与 assoc 同一条口径：盘上那一份是基线的一部分（合并输出是 `clone(theirs)`，
+      // 所以盘上的 graph 本来就会留下；钉住 base 是让"我读到的那一版里 graph 是什么"在**输入侧**
+      // 也说得一致 —— 否则将来指纹收进 graph 时，界面会被误判成"改了 graph"）。
+      const baseForMerge = Object.assign({}, base, { assoc: cur.assoc },
+        cur.graph === undefined ? {} : { graph: cur.graph });
       const mr = concurrency.mergeTrees(baseForMerge, payload, cur,
         { onConflict: (opts && opts.onConflict) || 'refuse' });
       if (!mr.ok) {

@@ -510,6 +510,11 @@ const SCHEMA_FIELDS = [
   ['detail', true, 'DATA-FORMAT'], ['images', true, 'DATA-FORMAT'], ['files', true, 'DATA-FORMAT'],
   ['links', true, 'DATA-FORMAT'], ['tags', true, 'DATA-FORMAT'], ['localPath', true, 'DATA-FORMAT'],
   ['qa', true, 'DATA-FORMAT'], ['origin', true, 'DATA-FORMAT'], ['background', false, 'DATA-FORMAT'],
+  /* 图附加层（MS1，`docs/DATA-FORMAT.md` §1.6）：**项目级**可选对象，与 `data` 平级、**不在节点树里**
+   * （`src/schema.js` 的 `PROJECT_TOP_LEVEL_FIELDS` 有它、`NODE_FIELDS` 没有 —— 所以第二列是 true，
+   * 判据走 `\bgraph\b` 而不是 `\bnode\.graph\b`）。缺这一条时：`docs/DATA-FORMAT.md` 的契约表里
+   * 写着 `| graph |`，而本门禁的表里没有它 ⇒ 契约覆盖判据【扫不到】它，删行/改名/漂移都不会红。 */
+  ['graph', true, 'DATA-FORMAT'],
   // 条目层（v3）：`items` 与 `detailMode` 都是契约字段，但**权威契约不在 DATA-FORMAT 的契约表里**：
   //   `items` 在 `docs/ITEM-MODEL.md` §7「终态定位 / 冻结点」那张表里有 `items[]` 行（DATA-FORMAT 只有散文指针）；
   //   `detailMode` 全文件只有散文（"显式二选一"），没有表行 —— 故标 prose 并在册，不拿它去撞表行判据。

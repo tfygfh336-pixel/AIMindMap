@@ -29,14 +29,14 @@
     //    （数字要与盘上事实一致：**补丁前 130 条 / 补丁后 131 条** —— 多出的那一条
     //      **就是本补丁引入的** `require('./relations.js')` 这条同层边）
     module.exports = factory(require('fs'), require('path'), require('./assoc.js'), require('./item-model.js'),
-      require('./relations.js'));
+      require('./relations.js'), require('./diagram/schema.js'));
   } else {
     // 浏览器不校验；assoc / itemModel / relations 都可能未加载，下方各有守卫
     // （没有 itemModel 时条目层只判形状，不判 `detail` 一致性 —— 那条判据要求"唯一的渲染实现"，
     //  不能在别处再写一份；没有 relations 时**跳过**条目级悬挂 —— 门禁在 CI 侧，那里一定有）
-    root.MMSchema = factory(null, null, root.MMAssoc, root.MMItemModel, root.MMRelations);
+    root.MMSchema = factory(null, null, root.MMAssoc, root.MMItemModel, root.MMRelations, root.MMDiagramSchema);
   }
-})(typeof self !== 'undefined' ? self : this, function (fs, path, assoc, itemModel, relations) {
+})(typeof self !== 'undefined' ? self : this, function (fs, path, assoc, itemModel, relations, diagramSchema) {
   'use strict';
 
   const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -217,17 +217,26 @@
     if (!projectsRoot || !fs || !path) return inPlace;      // 与拆分前的守卫逐字对应
     const cross = validateCrossRefs(data, makeProjectReader(projectsRoot), selfProject, opts);
     const errors = inPlace.errors.concat(cross.errors);
-    return { ok: errors.length === 0, errors: errors };
+    // ⚠️ `warnings` 是**新的第三个字段**（`ok`/`errors` 语义一个字没改）：它承载"未知键"这一类
+    // **不判红但必须可见**的读数。合并顺序同 errors（上半截在前）⇒ `--json` 两跑逐字节相同。
+    const warnings = (inPlace.warnings || []).concat(cross.warnings || []);
+    return { ok: errors.length === 0, errors: errors, warnings: warnings };
   }
 
   /** 一条错误进数组的**唯一一处**（`[节点id] 说明` 的形状只在这里拼）
-   *  —— 上半截与下半截共用它，所以两段的报文不可能各长一样。 */
+   *  —— 上半截与下半截共用它，所以两段的报文不可能各长一样。
+   *  `warn` 与 `err` 的分工：`err` → `ok:false`（写盘闸门拦住）；`warn` → `ok` 不变，但**必须可见**
+   *  （`validate --json` 的 `warnings[]`）。两档都不静默，理由见 `PROJECT_TOP_LEVEL_FIELDS` 上方。 */
   function makeCollector() {
     const errors = [];
+    const warnings = [];
     const err = (msg, nodeId) => {
       errors.push(nodeId ? '[' + nodeId + '] ' + msg : msg);
     };
-    return { errors: errors, err: err };
+    const warn = (msg, nodeId) => {
+      warnings.push(nodeId ? '[' + nodeId + '] ' + msg : msg);
+    };
+    return { errors: errors, warnings: warnings, err: err, warn: warn };
   }
 
   /**
@@ -244,8 +253,22 @@
   function validateInPlace(data) {
     const c = makeCollector();
     const errors = c.errors;
+    const warnings = c.warnings;
     const err = c.err;
-    if (!data || typeof data !== 'object') { err('顶层必须是对象'); return { ok: false, errors }; }
+    const warn = c.warn;
+    if (!data || typeof data !== 'object') {
+      err('顶层必须是对象');
+      return { ok: false, errors, warnings };
+    }
+    /* ---- 未知顶层键（本批补的判据 ①：从"静默通过"改成"报出来"）----
+     * 口径见 `PROJECT_TOP_LEVEL_FIELDS` 上方：顶层是**警告**档（老数据里可能有别人的历史键），
+     * 但**必须可见** —— 否则"校验通过"就还是"字段被支持"的假证明。 */
+    Object.keys(data).sort().forEach((k) => {
+      if (PROJECT_TOP_LEVEL_NAMES.indexOf(k) >= 0) return;
+      warn('未知顶层键 ' + JSON.stringify(k) + '（顶层只认 ' + PROJECT_TOP_LEVEL_NAMES.join(' / ')
+        + '）—— 校验不会因为它判红，但**没有任何写盘路径会保留它**：'
+        + '写进契约（docs/DATA-FORMAT.md + NODE_FIELDS/GRAPH_FIELDS）之前，它读不到、画不出、也没人守');
+    });
     if (!data.meta || typeof data.meta !== 'object') err('缺少 meta');
     else {
       if (typeof data.meta.name !== 'string' || !data.meta.name.trim()) err('meta.name 必填');
@@ -346,6 +369,31 @@
       }
     }
     if (data.format !== 'node_tree') err('format 必须为 "node_tree"');
+
+    /* ---- 图附加层 `graph`（顶层可选；本批新增，**形状判据在 src/diagram/schema.js**）----
+     * 三条口径：
+     *   ① 它是**可选**键（缺省 = 无附加结构）⇒ 老项目零迁移、`formatVersion` 不升（设计 §6.4 第 3 条）；
+     *   ② 形状校验只有**一份实现**（`src/diagram/schema.js`，渲染内核用的是同一个函数）——
+     *      在这里再写一份"字段合不合法"必然与渲染漂；
+     *   ③ 引用存在性（`edges[].from.node` / `containers[].children[]` / `pinned[]` 指向的节点在不在）
+     *      必须传 id 全集 ⇒ 用 `flatten(data.data)`。设计 §6.3：与 `links[]` 的悬挂检测**同型**。 */
+    if (data.graph !== undefined) {
+      if (!diagramSchema || typeof diagramSchema.validateGraph !== 'function') {
+        // 浏览器端可能没加载那个模块。**不许**因为"看不见"就放过（那正是本批修的病）
+        err('graph 需要 src/diagram/schema.js 才能校验（当前环境未加载它）—— 校验器不能"看不见就放过"');
+      } else {
+        const gv = diagramSchema.validateGraph(data.graph);
+        gv.errors.forEach((e) => err(e));
+        if (gv.ok && data.data) {
+          const ids = new Set();
+          flatten(data.data).forEach((n) => {
+            if (n && typeof n.id === 'string') ids.add(n.id);
+          });
+          const rv = diagramSchema.validateGraphRefs(data.graph, ids);
+          rv.errors.forEach((e) => err(e));
+        }
+      }
+    }
     if (!data.data) err('缺少 data（根节点）');
     else {
       // 先迭代检测环：递归 validateNode 遇环会栈溢出，必须先拦截
@@ -366,6 +414,11 @@
         // 同一处重复 id 按祖先层数被**重复报多次**（3 层嵌套报 3 次，实测）。
         validateNode(data.data, err);
         checkIdsAndCycles(data.data, err);
+        // 节点上的**未知字段**（本批补的判据 ① 的另一半）：从"静默通过"改成"报出来"。
+        // 档位是**警告**（理由见 PROJECT_TOP_LEVEL_FIELDS 上方）：节点字段可能已经有历史键，
+        // 判红会让整个项目不可写；但这条病曾经四次造成**静默丢数据**（qa / localPath / origin / items
+        // 被 serializeTree 的手挑白名单抹掉），所以它必须有可读的读数。
+        checkUnknownNodeFields(data.data, warn);
         // 条目 id 的**全项目唯一性**（契约 §5.1）。放在这里与 checkIdsAndCycles 并列：
         // 两者都是"必须看整棵树"的判据，节点形状校验管不了它们。
         checkItemIds(data.data, err);
@@ -378,7 +431,7 @@
       const assocCheck = assoc.validateAll(data.assoc);
       if (!assocCheck.ok) assocCheck.errors.forEach((e) => err(e));
     }
-    return { ok: errors.length === 0, errors: errors };
+    return { ok: errors.length === 0, errors: errors, warnings: warnings };
   }
 
   /**
@@ -795,6 +848,45 @@
     return out;
   }
 
+  /**
+   * 节点上的**未知字段**（本批补的判据 ①）。
+   *
+   * 为什么它是**警告**而不是错误：`NODE_FIELDS` 是"哪些字段存在"的权威表，但盘上数据可能带着
+   * 别的工具写的历史键；把它判红 = 让昨天合法的项目**今天不可写**（`validate` 同时是写盘闸门），
+   * 那是把"字段认不认识"伪装成"数据坏没坏"。
+   * 为什么它**必须报出来**：本工程五次栽在同一形态 —— 手挑字段清单漏一个 ⇒ 那个字段被**静默抹掉**
+   * （`qa` → `localPath` → `origin` → 界面的 `items`/`detailMode` → `clone` 的深拷贝）。
+   * 四次事故的共同点不是"没有人写校验"，而是**"校验通过"被当成了"字段被支持"**。
+   *
+   * 口径：每种未知字段**只报一次**（首次出现的节点 id 一起点名），按字段名字典序输出
+   * ⇒ 报文与遍历顺序无关（`C-F9-02` 的"同输入同输出"对 `--json` 输出同样成立）。
+   * @param {object} root 根节点
+   * @param {Function} warn 收警告的函数
+   */
+  function checkUnknownNodeFields(root, warn) {
+    if (typeof warn !== 'function') return;
+    const known = new Set(NODE_FIELD_NAMES);
+    const firstAt = new Map();                      // 字段名 → 首次出现的节点 id
+    const stack = [root];
+    const seenNodes = new Set();
+    while (stack.length) {
+      const n = stack.pop();
+      if (!n || typeof n !== 'object' || seenNodes.has(n)) continue;
+      seenNodes.add(n);
+      Object.keys(n).forEach((k) => {
+        if (known.has(k) || firstAt.has(k)) return;
+        firstAt.set(k, typeof n.id === 'string' ? n.id : '(无 id)');
+      });
+      (n.children || []).forEach((c) => stack.push(c));
+    }
+    Array.from(firstAt.keys()).sort().forEach((k) => {
+      warn('节点上有未知字段 ' + JSON.stringify(k) + '（首次出现于节点 ' + firstAt.get(k) + '；节点字段只认 '
+        + NODE_FIELD_NAMES.join(' / ') + '）—— 界面整树保存是**手挑字段白名单**'
+        + '（renderer/app-core.js 的 walk()），这个键下一次保存就会消失；'
+        + '要长期保留，先进契约（docs/DATA-FORMAT.md §2 的字段表 + 本文件的 NODE_FIELDS）');
+    });
+  }
+
   /* ==========================================================================
    * 契约字段表（**「节点上有哪些字段」的唯一权威副本**）+ 节点复制写回的加注解析器
    * --------------------------------------------------------------------------
@@ -859,6 +951,32 @@
     NODE_FIELDS.forEach((f) => { o[f.name] = f.desc; });
     return o;
   })());
+
+  /* ==========================================================================
+   * **项目级顶层键**表（`NODE_FIELDS` 只管节点那一层；这张管"整份项目 JSON 的顶层"）
+   * --------------------------------------------------------------------------
+   * 为什么要有它（本批实测的缺陷 ①）：在干净项目上依次加 `graph` 键、再给节点加 `rect`，
+   * `validate` **两档都是 exit 0** ⇒ 【"校验通过"不能证明"字段被支持"】。没有这张表就没有
+   * "哪些顶层键是认识的"这一判据，于是"未知键静默通过"永远抓不到。
+   *
+   * ⚠️ 未知键的处理是**分层**的（这是有意的两个档，别拍平）：
+   *   · **顶层 / 节点上的未知键 ⇒ 警告**（`warnings[]`，`ok` 不变）。理由：这两处可能已经有
+   *     别人（其它工具/旧版本）写下的历史键；把它判红 = 让昨天合法的项目**今天不可写**
+   *     （`validate` 同时是写盘闸门），那是把"字段认不认识"伪装成"数据坏没坏"。
+   *   · **`graph` 内部的未知键 ⇒ 错误**。理由：`graph` 是本工程**新造**的一层、盘上零存量
+   *     ⇒ 判红零成本；而它的坏形态正是"写了一个没人渲染的键"（静默丢语义）。
+   *   两档都**不静默**：顶层/节点的未知键进 `warnings[]`，`validate --json` 能看见（人和 AI 两条腿）。
+   * ======================================================================== */
+  const PROJECT_TOP_LEVEL_FIELDS = Object.freeze([
+    { name: 'meta', status: 'required', desc: '项目元信息（名称 / formatVersion / 主题布局 / 树偏移）' },
+    { name: 'format', status: 'required', desc: '格式标识（必须是 node_tree）' },
+    { name: 'data', status: 'required', desc: '根节点（节点树的根）' },
+    { name: 'assoc', status: 'optional', desc: '关联笔记（N 元关联实体；契约 docs/ITEM-MODEL.md）' },
+    { name: 'bindings', status: 'optional', desc: '工作区文件夹绑定（契约 docs/DATA-FORMAT.md §1.5）' },
+    { name: 'graph', status: 'optional', desc: '图附加层：layers/containers/edges/annotations/direction/grid/pinned（契约 docs/DATA-FORMAT.md）' }
+  ]);
+  /** 顶层键名（按契约表序）—— 判据与测试从这里取，**不要手抄一份** */
+  const PROJECT_TOP_LEVEL_NAMES = Object.freeze(PROJECT_TOP_LEVEL_FIELDS.map((f) => f.name));
 
   /* ---------------------------------------------------------------
    * 加注解析器（两种写回现场、一个解析器）
@@ -949,13 +1067,14 @@
   }
 
   return {
-    validateProject, validateNode, checkIdsAndCycles, checkItemIds, flatten, ID_RE,
+    validateProject, validateNode, checkIdsAndCycles, checkItemIds, checkUnknownNodeFields, flatten, ID_RE,
     // G-15 下沉：`validateProject` 拆出的两个**纯核心** + 读盘注入点的默认实现。
     // `validateInPlace(data)`  —— 纯：字段/节点/条目/环路/offset/绑定/assoc 结构（喂对象就够）
     // `validateCrossRefs(data, readProject, selfProject, opts)` —— 纯：跨项目引用，readProject 注入
     // `makeProjectReader(projectsRoot)` —— 默认读盘实现（生产用；测试不传它）
     validateInPlace, validateCrossRefs, makeProjectReader,
     NODE_FIELDS, NODE_FIELD_NAMES, NODE_FIELDS_REQUIRED, NODE_FIELDS_OPTIONAL, NODE_FIELD_DESC,
+    PROJECT_TOP_LEVEL_FIELDS, PROJECT_TOP_LEVEL_NAMES,
     parseFieldLines, analyzeCloneFieldCopy,
     // 工作区文件夹绑定（R4）的取值表 + 迁移（**唯一一处**；消费方从这里取，别抄字面量）
     BINDING_MODES, BINDING_MODE_DEFAULT, BINDING_DELETIONS,

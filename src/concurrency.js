@@ -95,6 +95,12 @@
     const d = data || {};
     fp.meta = hash(d.meta);
     fp.format = hash(d.format);
+    /* 图附加层（`graph`，`docs/DATA-FORMAT.md` §1.6）：**项目级**一层，与 `data` 平级、不在节点树里。
+     * ⚠️ 它必须进指纹，否则「两边的图不同」这件事**根本不构成冲突** —— 而 `mergeTrees` 的输出是
+     * `clone(theirs)`，于是我的图会被**静默丢掉**（MS1 实测：当时能"侥幸保住"只因为对方那侧没动它，
+     * 不是判据在守）。`undefined` 时不建键：这样"我删掉了整层图"与"我没有意见"能分辨
+     * （与下面逐条 `assoc:` 键同形）。 */
+    if (d.graph !== undefined) fp.graph = hash(d.graph);
     (function walk(node) {
       if (!node || typeof node !== 'object') return;
       if (node.id) {
@@ -237,6 +243,7 @@
       nodes, childIds, assoc, items, itemIds,
       meta: data ? data.meta : undefined,
       format: data ? data.format : undefined,
+      graph: data ? data.graph : undefined,   // 图附加层（项目级，整层取用；指纹键 `graph`）
       rootId: data && data.data ? data.data.id : null
     };
   }
@@ -258,6 +265,7 @@
     return keys.map((k) => {
       if (k === 'meta') return '项目元信息（meta）';
       if (k === 'format') return '数据格式标记（format）';
+      if (k === 'graph') return '图附加层（graph：层带 / 容器 / 边 / 注释）';
       let m = /^node:(.+)$/.exec(k);
       if (m) { const n = F.nodes.get(m[1]); return '节点「' + ((n && n.topic) || m[1]) + '」'; }
       m = /^children:(.+)$/.exec(k);
@@ -304,6 +312,7 @@
     const F = flattenProject(data);
     if (key === 'meta') return F.meta;
     if (key === 'format') return F.format;
+    if (key === 'graph') return F.graph;
     let m = /^node:(.+)$/.exec(key);
     if (m) return F.nodes.get(m[1]);
     m = /^children:(.+)$/.exec(key);
@@ -417,6 +426,17 @@
 
     if (useMine('meta')) out.meta = clone(mineN.meta);
     if (useMine('format')) out.format = clone(mineN.format);
+    /* ---- 图附加层 `graph`（项目级一层，整层挑来源；不拆到层带/容器/边那一级）----
+     * 为什么不拆细：`graph` 是一份**手写坐标的图文档**，层带与容器互相引用、边指向节点 id ——
+     * 逐对象合并会造出"几何互不相容"的图（层带重叠、容器里的子项被挪走），而那类坏形态
+     * 面板上看不出来、G2 却可能判红。整层挑来源的代价是"两边都动了图 ⇒ 判冲突"，
+     * 而这正是本判据要的：**不许静默丢一边的图**（缺口成因见 `fingerprint` 里那段注释）。
+     * `useMine('graph')` 为真只可能是"我改了、对方没改"（相交的键要么在 refuse 档已被拒绝，
+     * 要么在 theirs 档里被 `conflictSet` 排除）—— 两种档位都由上面的 `conflicts` 决定。 */
+    if (useMine('graph')) {
+      if (mineN.graph === undefined) delete out.graph;   // 我删掉了整层 ⇒ 合并后也不该留
+      else out.graph = clone(mineN.graph);
+    }
 
     /* ---- assoc：逐条目（按 id，不看数组顺序） ---- */
     const outAssoc = [];

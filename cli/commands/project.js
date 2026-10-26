@@ -3026,9 +3026,18 @@ module.exports = {
      *   `assoc-prune [--dry-run]` **总是报告**；界面侧画坏引用态。三段都不静默。 */
     const v = ctx.schema.validateProject(data, ctx.PROJECTS_DIR, selfProject,
       { checkAnchors: ctx.args.anchors === true });
-    if (ctx.args.json) ctx.outJson({ ok: v.ok, errors: v.errors });
-    else if (v.ok) ctx.out('校验通过: ' + target);
-    else ctx.out('error: 校验失败: ' + v.errors.join('; '));
+    /* `warnings[]`（本批新增）：**不判红但必须可见**的那一档（未知顶层键 / 节点上的未知字段）。
+     * 为什么两条腿都要：`validate` 同时是给**人**和给 **AI** 用的 ——
+     *   人看文本模式的 `⚠ 警告:` 行；AI 读 `--json` 的 `warnings[]`。
+     * 只打 stderr / 只打文本，都等于"AI 那条腿看不见"（那会重演"校验通过 = 字段被支持"的误判）。
+     * ⚠️ 输出形状只**增**一个键（`ok` / `errors` 语义一字未改）⇒ 既有消费者的判据不受影响；
+     *   两跑的字节稳定性也要保住：空数组照样输出（不是"有时有、有时没"）。 */
+    const warnings = Array.isArray(v.warnings) ? v.warnings : [];
+    if (ctx.args.json) ctx.outJson({ ok: v.ok, errors: v.errors, warnings: warnings });
+    else if (v.ok) {
+      ctx.out('校验通过: ' + target);
+      warnings.forEach((w) => ctx.out('⚠ 警告: ' + w));
+    } else ctx.out('error: 校验失败: ' + v.errors.join('; '));
     // --json 分支此前**不设退出码** —— 于是 validate --json 遇到坏数据也返回 0，
     // 与文本分支行为不一致。退出码必须由"校验结果"决定，与输出格式无关。
     if (!v.ok) process.exitCode = 1;
@@ -3037,13 +3046,20 @@ module.exports = {
   validateAll(ctx) {
     const list = ctx.store.list();
     let bad = 0;
+    let warned = 0;
     list.forEach((p) => {
       const data = JSON.parse(fs.readFileSync(p.file, 'utf8'));
       const v = ctx.schema.validateProject(data, ctx.PROJECTS_DIR, p.name);
       if (!v.ok) { bad++; ctx.out('FAIL ' + p.name + ': ' + v.errors.join('; ')); }
-      else ctx.out('OK   ' + p.name);
+      else {
+        ctx.out('OK   ' + p.name);
+        // 与 `validate` 同一条口径：警告不判红，但**逐条点名**（真实数据里通常没有 ⇒ 输出逐字节不变）
+        const ws = Array.isArray(v.warnings) ? v.warnings : [];
+        if (ws.length) { warned++; ws.forEach((w) => ctx.out('WARN ' + p.name + ': ' + w)); }
+      }
     });
-    ctx.out(bad ? bad + ' 个项目校验失败' : '全部 ' + list.length + ' 个项目校验通过');
+    ctx.out(bad ? bad + ' 个项目校验失败' : '全部 ' + list.length + ' 个项目校验通过'
+      + (warned ? '（' + warned + ' 个项目有警告，见上面的 WARN 行）' : ''));
     if (bad) process.exitCode = 1;
   },
 

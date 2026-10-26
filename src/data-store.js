@@ -787,11 +787,51 @@
     };
   }
 
+  /* ==========================================================================
+   * 「载荷没带就从磁盘取回」—— `project:save` 的**数据安全那一层**（唯一实现）
+   * --------------------------------------------------------------------------
+   * 为什么必须有（本批实测的缺陷 ②）：GUI 保存的载荷是渲染层手里那份**整棵树的拷贝**，
+   * 它只带"渲染层自己拥有的东西"。凡是**只由 AI/CLI 写**的项目级键，渲染层的内存里只是
+   * "上次读到的一份拷贝" —— 直接整份写回就会把它们**静默抹掉**（`assoc` 当年正是这么坏的：
+   * 实测两条路径 —— 内存里是某节点的子集时写回删掉其它笔记；AI 在界面打开期间写的笔记从未被见过）。
+   *
+   * 两档规则**不同**，别拍平（拍平必错，两条的理由不一样）：
+   *   · `assoc`：**磁盘有非空 assoc 就一律以磁盘为准**（界面从不改它 ⇒ 内存那份永远不该赢）；
+   *   · `graph`：**载荷没带这个键才取回**（全模式会写它 ⇒ 载荷带了就必须用载荷的）。
+   *
+   * 放在本文件而不是 `main.js` 里内联：这里能被 node 直接跑（单测 / 判别力注入都不需要起 Electron），
+   * 而 `main.js` 起不来 Electron 就连 require 都失败 ⇒ 判据会退化成"读源码 grep"（那证明不了它真的保护了）。
+   * `main.js` 的 `project:save` 只调它，不再自己写第二份规则。
+   *
+   * @param {object} payload 即将落盘的载荷（渲染层/调用方给的那份；**只读**，不修改入参）
+   * @param {object} diskData 盘上现有一份（读不回来时传 null）
+   * @returns {object} 取回之后的载荷（可能是原对象；调用方负责序列化）
+   */
+  function prepareSavePayload(payload, diskData) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    const disk = (diskData && typeof diskData === 'object' && !Array.isArray(diskData)) ? diskData : null;
+    if (!disk) return payload;
+    let out = payload;
+    // 档一：assoc（磁盘优先 —— 与历史上那条行为**逐字一致**，改动只是把规则搬到一处）
+    if (Array.isArray(disk.assoc) && disk.assoc.length) {
+      out = Object.assign({}, out, { assoc: disk.assoc });
+    }
+    // 档二：graph（**载荷没带才取回**）。判据是"这个键在不在"，不是"它等不等于空"
+    // —— `graph: {}` 与"没有 graph"在语义上不同（前者是"我明确说这张图没有附加结构"）。
+    const hasOwnGraph = Object.prototype.hasOwnProperty.call(payload, 'graph');
+    if (!hasOwnGraph && disk.graph !== undefined) {
+      out = Object.assign({}, out, { graph: disk.graph });
+    }
+    return out;
+  }
+
   return {
     createStore, writeFileAtomic, parseProjectJson, versionOf, versionOfText,
     createProjectValidator,
     // 并发版本闸门的**唯一**比较/报错实现 + 整文件受管文档的读写对（`cli/commands/release.js` 用）
     versionGate, readManagedText, writeManagedText,
+    // 「载荷没带就从磁盘取回」（GUI 保存的数据安全那一层；唯一实现，见函数头）
+    prepareSavePayload,
     // 本批（数据安全）：声明上限 + 盘上状态三档 + 三个错误码。
     // `MAX_PROJECT_FILE_MB` 导出是为了让**判据**读它而不是抄一份（抄一份就是同一事实的第二处表达）。
     MAX_PROJECT_FILE_MB, inspectOnDisk, describeOnDisk, assertWithinCap, verifyOnDisk,
