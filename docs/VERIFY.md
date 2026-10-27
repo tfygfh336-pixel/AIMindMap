@@ -17,7 +17,7 @@
 |------|----|------|
 | CLI 命令数 | 81 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 54 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 3899 用例 / 177 文件 | `tests/*.test.js`（vitest） |
+| 单元测试 | 3914 用例 / 178 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 685 | `scripts/cli-integration.js` |
 | 冒烟断言 | 402 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
@@ -45,7 +45,7 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 | 8 | S3 | `node scripts/determinism-check.js` | 10s | **确定性产物**（判据 `A-08`）：产物登记表（声明面 = `docs/ARCHITECTURE.md` §5.2，双向闭包）里**真值比**的产物必须"同一状态**连续两次**重算逐字节相同"（含时钟 / 随机 / 顺序 / 工作区四类扰动，差异来源可分类）；**允许不确定**的产物必须在生成器里**点名标注**"非确定性、不得当真值"；自述是生成物却没进表的一律判红。**乙档上线**：被当证据真值用、但判定尚不存在的那些住在**门禁侧的封闭欠账册**里（`--debt` 现场取，只减不增，修好忘销账或册上对象不存在都判红） |
 | 9 | S4 | `node scripts/doc-facts.js --vocab` | 10s | **标签词表契约**：`docs/TAGS.md` 的「适用范围」清单（**扫描面的唯一来源**）↔ 真实 `projects/` —— 三条判据照 `docs/TAGS.md` §8 ① 与 §4，**不新造**：**闭集**（出现的标签必须都在 §4 的词表里）· **落点下限**（≥5 个节点，或 ≥3 且 §4 该行写明「门面特性」）· **词表空转**（§4 有、扫描面 0 落点）。**范围之外的项目一律不判**（实测：`comnet` 用的那套标签 —— `协议`/`机制`/`概念`… —— 是**另一份词表**，不是越界）⇒ 这是本步与"扫全库"判据的**全部区别**。它**判不了**"标签打得对不对" |
 | 10 | S5 | `node scripts/vitest-timeout-check.js` | 10s | **单测超时口径单源**：`vitest.config.mjs:67-68` 是 `testTimeout` / `hookTimeout` 的**唯一真源**，`tests/` 里不许再各写一份 per-test 超时（实测清掉了 `doc-import.test.js:222`/`:245` 两处 `}, 30000);`）。**判据不是 grep，是真 tokenizer**（注释 / 字符串 / 模板 / 正则 / 括号配平），只认 `it`/`test` 的**第三位置参数**、`{ timeout }` 选项、`vi.setConfig({ testTimeout })`。**三档** = 判红 / 只报告（子进程 `timeout:` —— 那是「**子进程最多活多久**」，与「vitest 等多久」是两个维度、**没有换算关系**，宽泛匹配会 6 处假红）/ 在册 `PER_TEST_DEBT`（**上限 2，只减不增**）。它**判不了**「某个用例是不是该拆」 |
-| 11 | G3 | `npm test`（附加 JSON reporter 把用例数交给 G6，省一次 vitest 重跑） | 69s | 共享核心 `src/` 各模块（含 data-store 原子写、BOM 容错与并发版本闸门） |
+| 11 | G3 | `npm test`（附加 JSON reporter 把用例数交给 G6，省一次 vitest 重跑） | 90s | 共享核心 `src/` 各模块（含 data-store 原子写、BOM 容错与并发版本闸门） |
 | 12 | G6 | `node scripts/doc-facts.js --check` | 20s | 文档数字与真值一致（含**第一屏 `SKILL.md` 自报的验证链步骤数** == `STEPS.length`）、版本号四处一致 |
 | 13 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |
 | 14 | G4 | `node scripts/cli-integration.js` | 60s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |

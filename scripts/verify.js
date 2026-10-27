@@ -636,27 +636,45 @@ const STEPS = [
     //    连带把同机其它界面拖卡/拖崩）。
     //    选 4 而不是 2 是**实测拐点**（同一棵树、独占、2026-10-20 三次现跑）：
     //      默认 16 worker → **39.4 s**；`--maxWorkers=4` → **42.6 s**（+3.2 s，+8%）；
-    //      `--maxWorkers=2` → **70.8 s** ⇒ **已超 69 s 预算**，不能用。
-    //    ⇒ 多花 3.2 s 换约 1/4 的 worker 内存；且 42.6 s 距预算仍有 26 s 余量。
-    //    ⚠️ 若将来 G3 在**代码不变**时又逼近 69 s，先查是不是并行批次在跑（`R7`），
+    //      `--maxWorkers=2` → **70.8 s**（"代码不变、只换 worker 数"就涨 66% 的那一档 ⇒ 不取它）。
+    //    ⇒ 多花 3.2 s 换约 1/4 的 worker 内存。⚠️ 2026-10-27 本批抬线到 90s 之后，70.8s **落在预算内**，
+    //       所以"选 4"的理由现在**只剩内存**这一条（时间那一条不再区分）—— 如实记下来，别让它看起来像还有两条。
+    //    ⚠️ 若将来 G3 在**代码不变**时又逼近 90 s，先查是不是并行批次在跑（`R7`），
     //       **不要**因为这一段变慢就回退 `--maxWorkers`（回退等于把内存问题还给整机）。
     cmd: 'node node_modules/vitest/vitest.mjs run --pool=threads --maxWorkers=4 --reporter=default '
       + '--reporter=json --outputFile=' + TEST_RESULTS,
     shown: '`npm test`（附加 JSON reporter 把用例数交给 G6，省一次 vitest 重跑）',
     covers: '共享核心 `src/` 各模块（含 data-store 原子写、BOM 容错与并发版本闸门）',
-    /* 60s → **69s**（2026-10-17，外部链接出口批）。依据是**现算**、不抄数字：
-     *   窗口（最近 10 次成功全链）G3 = 30954 / 40783 / 41469 / 31905 / 31203 / 31434 / 33622 / 31782 / 41293 / **54987**，
-     *   Max = 54987ms ⇒ `tests/verify-budget.test.js` 的口径「预算 ≥ 1.25 × 窗口内**最大**耗时」要求 ≥ **68734ms**
-     *   ⇒ 取整 69000（69000/54987 = **1.2549** ✓）。
-     * ⚠️ **这不是"承认 G3 变慢了"**：54987 那一次的代码与上两次（41293 / 41469）**完全相同**，
-     *   是负载浮动（同一次运行里 G5 也一起到了 994459ms）⇒ 抬预算抬的是**容错**，不是性能目标。
-     * ⚠️ **升级触发条件（写给下一次）**：若在**代码不变**的情况下 G3 再出现 > 50s，**先查负载/并发**
-     *   （同时段 G5、同机其它 Electron/vitest），**不要继续抬预算** —— 否则 1.25× 只是把红灯推迟，
-     *   预算会一路漂上去而没人再看它。
-     * ⚠️ 连带：各步预算之和 1535000 → **1544000** ≤ `TOTAL_BUDGET_MS` **1600000** ✓（余量 65000 → 56000）；
-     *   `docs/VERIFY.md` 是生成物 ⇒ 同一批里 `npm run facts:write` 重生成（G6 的口径）。
-     *   本步的用量守卫**不需要**改：`tests/verify-budget.test.js` 是 `require` 现读 `STEPS` 的、不抄数字。 */
-    budgetMs: 69000,
+    /* 预算依据（**为什么是 90s**；每次改都带现算读数，绝不写"这次刚好过"）：
+     *   · 60s → **69s**（2026-10-17，外部链接出口批）：当时口径是「1.25 × 窗口**最大**」，最大 54987ms ⇒ 68734。
+     *   · 69s → **90s**（2026-10-27，收口批「修两条体系欠账」的乙）。为什么不是 72–75s：
+     *     **那两档在本机的当前负载下一抬上去就当场红**（本批实测，见下面 ②）—— 那是最坏的一种抬线：
+     *     抬了却仍然随机红，等于把"随机红灯"这件事又续了一期。
+     *   ① 守卫下界（`tests/verify-budget.test.js` 的口径，**一个字没动**）：
+     *      1.25 × 窗口（最近 10 条成功全链）median = 1.25 × **53074ms** = 66343ms ≤ 90000 ✓
+     *      （90000 / 53074 = **1.696**；G4 的历史判例就是这么定的：慢档 29.5s 时取 60s = 2.0×）。
+     *   ② 要盖住**实测的最慢读数**。窗口内 10 条 G3：49.4 / 52.5 / 49.4 / 53.5 / 52.7 / 49.5 / 65.4 / 56.3 / 66.4 / 63.8（秒），
+     *      而本批**同一台机器**上另测到 4 个更大的读数：链内 **76.1s**、单跑 **81.1 / 80.9 / 80.0s**
+     *      （读数的时间、命令、CPU 负载都记在 `.review/20261063-verify欠账/`）
+     *      ⇒ 90000 / 81111（最慢一次）= **1.110**、90000 / 76100（链内最慢）= **1.183**。
+     *      同一天还有两次**红掉**的（失败门禁都是 G5，不是 G3）：2026-10-26T05:59Z 的 G3 = **69.382s**
+     *      （69000/69382 = 0.9945 ⇒ 那次 G3 已越过 69s，只因先红在 G5，G3 的超出只打了读数）、
+     *      2026-10-27T06:47Z 的 G3 = **68.664s**（距 69s 只剩 0.336s）。
+     *   ③ 这批 80s 的读数是**负载、不是工作量**（如实分辨，方法见 G5 那段"同向同量级"指纹）：
+     *      同一时段有**另一个会话的 CPU 密集 node 进程**在跑（`Get-Process` 现查：某 node 进程自 11:30 起
+     *      累计 ~25700s CPU），采样到的 CPU 负载 29–91%；而本步的廉价门禁（G1/G8/G9/S2…）读数基本不变
+     *      （3.5 / 1.1 / 0.6 / 1.7s，与上一条历史同档）⇒ 差异集中在"多 worker + 重 CPU"的这一种步骤上。
+     *      ⇒ 90s 是给**这一档负载**留的容错，不是把 G3 的性能目标降到 90s。
+     *   ④ 合法上界：其余各步之和 = **1495s** ⇒ G3 的上界 = 1770 − 1495 = **275s**，90s 离它很远；
+     *      各步预算之和 1564s → **1585s** ≤ `TOTAL_BUDGET_MS` 1770s ✓（1770 / 1585 = 1.117）。
+     *   ⚠️ **守卫口径一个字没动**（仍是 1.25 × 窗口 median；它是 2026-10-19 从 max→P90→median **收紧**来的）
+     *      —— 抬的只有本行这一个数，理由全在上面 ①②③④ 里（放宽口径会把这条止涨线的牙拔掉 ✗）。
+     *   ⚠️ 升级触发条件（写给下一次）：若 **median** 涨到 ≥ 66343ms（= 90000/1.25 之外的下一道信号）
+     *      或 G3 又逼近 90s，**先查负载/并发**（`R7`、同机其它会话的 vitest/Electron），
+     *      **不要**继续抬线；真回到 53–66s 那一档时，**应当把这条线降回去**（降线要带逐窗口回溯读数）。
+     *   ⚠️ 连带：`docs/VERIFY.md` 是生成物 ⇒ 同一批里 `node scripts/doc-facts.js --write` 重生成（G6 的口径）；
+     *      本步的用量守卫**不需要**改：`tests/verify-budget.test.js` 是 `require` 现读 `STEPS` 的、不抄数字。 */
+    budgetMs: 90000,
     resultsFile: TEST_RESULTS
   },
   {
@@ -1005,7 +1023,13 @@ const STEPS = [
  *  + G5 1300 = 1544s），仍 ≤ 1770s ⇒ "合计不抢在单步前面报红"继续成立 ✓（1770 / 1544 = **1.146** 倍）。
  *  ⚠️ 这一批**第一次出现"预算往下走"**：抬线不是不可逆的 —— 统计量换对之后，多付的那 50s 就该还回去，
  *  但**必须同批给出"降了之后逐窗口回溯历史全绿"的读数**（`.review/20261019-预算统计量/lowered-budget.js`），
- *  否则降预算就是在制造随机红灯 ✗。 */
+ *  否则降预算就是在制造随机红灯 ✗。
+ *  2026-10-27（收口批 · 修两条体系欠账的乙）：**1770s 不动** ✓ —— G3 预算 69→**90s**（69s 已真的越线过；
+ *  为什么不是 72–75s：那两档在本机当前负载下**一抬上去就红**，读数与依据见上面 G3 那一段）。
+ *  各步预算之和从 **1564s** 变成 **1585s**（从 `STEPS` **现算**：10×10 + G3 90 + G6 20 + G4 60 + G2 15
+ *  + G5 1300 = 1585s），仍 ≤ 1770s ⇒ "合计不抢在单步前面报红"继续成立 ✓（1770 / 1585 = **1.117** 倍）。
+ *  ⚠️ 合计**没有**跟着抬：这一步只多 21s，1585 仍在 1770 之内（余量 185s）；合计是"整条链慢了"的最后一道线，
+ *  没有实测依据就不许为了"看着宽一点"而抬 ✗。 */
 const TOTAL_BUDGET_MS = 1770000;
 
 const fmt = (ms) => (ms / 1000).toFixed(1) + 's';
@@ -1054,9 +1078,148 @@ function printOverBudget(chk, opts) {
   return true;
 }
 
+/* ================================================================
+ * G5 的**证据留存**（2026-10-27，收口批「修两条体系欠账」的甲）
+ * ----------------------------------------------------------------
+ * 它修的是什么：`G5` 是全链唯一真起 Electron 的一步（全量档 1000 s 量级），而本脚本原先
+ * 对它用的是 `stdio: 'inherit'`（**文件头 ① 的硬约束：不许用管道** —— 受限环境禁止管道 stdio，
+ * 用管道收集输出会让整条链假失败）。inherit 的代价是**跑完什么都不剩**：
+ * 全链红在 G5 时终端只有一句「验证失败：步骤 16（G5）退出码 1」，`[FAIL]` 行早已滚出/被截断
+ * ⇒ 想知道红在哪，只能**再跑一遍全量冒烟**（实测为这一类白跑 5 次，见 `.review/20261063-verify欠账/`）。
+ *
+ * 做法（**只加证据，一个字节都不动判定**）：把 G5 的 stdout + stderr **直接重定向到文件**
+ * ——`stdio: ['inherit', fd, fd]` 交的是**文件描述符，不是管道**，所以文件头 ① 那条约束不受影响；
+ * 失败时把 `<日志路径>` + **全文里的每一条 `[FAIL]` 行** + **末尾 80 行**打到终端。
+ * 判定仍然只看子进程的**退出码**（`r.status`）—— 与 `R1c`「只认 exit code」同口径。
+ *
+ * ⚠️ 为什么"只打末尾"不够（这是本节的**实测**依据，不是假设）：拿一份真实的全量冒烟日志
+ * （`.review/20261018-预算口径/full-verify.log`，1028 s）现算 —— 整份 365 KB / 两万余行里
+ * `[FAIL]` 只有 **1 行**，而它离结尾还有很远 ⇒ 只打末尾会**漏掉唯一的那条失败**。
+ * ⇒ 必须**全文按行扫** `[FAIL]`（另含 `FAILED` / `THREW`），尾巴只回答"最后跑到哪、计数对不对"。
+ *
+ * 落盘位置：**`.review/` 根下的一份平铺文件**（`g5-<档位>-<时间戳>.log`）—— `.review/` 是工程既定的
+ * 工作产物区（已 gitignore、可整目录删、不进 G6 数字扫描、G8 豁免），且它**不是**"工作目录"。
+ *  ⚠️ 为什么**不**建一个 `.review/verify-logs/` 子目录（本批第一版就是那样，被两道门禁当场抓住 ——
+ *  两道都是真判据，不是误伤，故改设计而不是改判据）：
+ *    · **G8 第九条**：`.review/` 的每个直接子目录都必须有 `README.md` 且正文含状态词
+ *      （`在飞` / `已收口` / `已废弃` / `已完成`）⇒ 建子目录就得有一份 README，而 G8 是**第 2 步**、
+ *      G5 是**第 16 步**（"删掉 `.review/` 后下一轮建目录、再下一轮被判红"这个鸡生蛋解不掉）；
+ *    · **S2 写盘出口**：写那份 README 的 `fs.writeFileSync(…)` 目标判不了，而 `scripts/verify.js`
+ *      提得到受管资产名 ⇒ 它会被判"可能在写受管资产"。
+ *  ⇒ 平铺之后：**目录不用建、README 不用写、判据一条都不用动**，落盘位置仍然是"可整目录删"的工作产物区。
+ * ================================================================ */
+const G5_LOG_ROOT = '.review';        // 工作产物区（不是工作**目录** ⇒ 不触发 G8 第九条）
+const G5_LOG_PREFIX = G5_LOG_ROOT + '/g5-';
+const G5_LOG_TAIL_LINES = 80;    // 失败时打印的末尾行数（够看出"最后跑到哪个域、计数对不对"）
+const G5_LOG_FAIL_LINES = 30;    // 失败时打印的 `[FAIL]` 行上限（实测一份全量日志里通常只有个位数）
+const G5_LOG_LINE_MAX = 800;     // 单行截断（实测 `[FAIL]` 行带读数时可达 1000+ 字符；全文仍在日志里）
+const G5_LOG_KEEP = 8;           // 只留最近 K 份（全量档一份可达数百 KB ⇒ 不留就等于让 .review/ 无限长）
+
+/** G5 日志的相对路径（**纯函数**：只由档位与时刻决定 ⇒ 可单测、文件名带时刻便于与历史对齐） */
+function g5LogRel(tier, nowMs) {
+  const d = new Date(Number.isFinite(nowMs) ? nowMs : Date.now());
+  const p2 = (n) => String(n).padStart(2, '0');
+  const stamp = '' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate())
+    + '-' + p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
+  const t = G5_TIERS.indexOf(tier) >= 0 ? tier : (tier === 'subset' ? 'subset' : 'full');
+  return G5_LOG_PREFIX + t + '-' + stamp + '.log';
+}
+
+/**
+ * 从一份 G5 输出文本里摘出**证据**（纯函数）。
+ * 返回 `{ lines, failCount, fails, tail }`：
+ *   · `lines` 非空行数（报"日志有多大"）；· `failCount` / `fails` = **全文**里带失败标记的行（封顶 `fail` 条）；
+ *   · `tail` = 末尾 `tail` 条非空行。
+ * ⚠️ `fails` 取**全文**而不是尾巴：见上面那段实测（唯一的 `[FAIL]` 往往不在末尾）。
+ * @param {string} text 日志原文
+ * @param {{tail?:number, fail?:number, lineMax?:number}} [opts] 上限（默认取模块常量）
+ */
+function g5Evidence(text, opts) {
+  const o = opts || {};
+  const tailN = Number.isFinite(o.tail) && o.tail > 0 ? o.tail : G5_LOG_TAIL_LINES;
+  const failN = Number.isFinite(o.fail) && o.fail > 0 ? o.fail : G5_LOG_FAIL_LINES;
+  const lineMax = Number.isFinite(o.lineMax) && o.lineMax > 0 ? o.lineMax : G5_LOG_LINE_MAX;
+  const body = String(typeof text === 'string' ? text : '').split(/\r?\n/).filter((l) => l.trim() !== '');
+  const clip = (l) => (l.length > lineMax ? l.slice(0, lineMax) + '…（行被截断，全文见日志文件）' : l);
+  const all = body.filter((l) => l.indexOf('[FAIL]') >= 0 || l.indexOf('FAILED') >= 0 || l.indexOf('THREW') >= 0);
+  return {
+    lines: body.length,
+    failCount: all.length,
+    fails: all.slice(0, failN).map(clip),
+    tail: body.slice(-tailN).map(clip)
+  };
+}
+
+/** 字节数的可读形式（纯函数；日志里报"有多大"就是为了让人一眼判断"是不是整份都落了"） */
+function formatBytes(n) {
+  const v = Number.isFinite(n) ? n : 0;
+  if (v < 1024) return v + ' 字节';
+  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB';
+  return (v / 1048576).toFixed(2) + ' MB';
+}
+
+/**
+ * G5 失败时的**完整打印块**（纯函数 —— 便于单测"路径一定出现、`[FAIL]` 一定出现、复跑命令一定出现"）。
+ * @param {{rel:string, bytes:number, code:number, evidence:{lines:number,failCount:number,fails:string[],tail:string[]}}} info
+ * @returns {string[]} 逐行（调用方 `forEach(console.error)`）
+ */
+function g5EvidenceLines(info) {
+  const ev = (info && info.evidence) || { lines: 0, failCount: 0, fails: [], tail: [] };
+  const out = [
+    '',
+    '== G5 失败证据（退出码 ' + (info ? info.code : '?') + '）==',
+    '  stdout + stderr 全文：' + (info ? info.rel : '（未知）') + '（' + formatBytes(info ? info.bytes : 0)
+      + ' / ' + ev.lines + ' 行）',
+    '  [FAIL] 共 ' + ev.failCount + ' 行'
+      + (ev.failCount > ev.fails.length ? '（只打印前 ' + ev.fails.length + ' 行，其余见日志）' : '') + '：'
+  ];
+  if (!ev.failCount) {
+    out.push('   （全文里**一条** `[FAIL]` 都没有 ⇒ 红的来源不是断言失败：看下面的末尾行 —— '
+      + '常见是启动/装载失败、守卫超时、或"真实数据被写"那条闸门）');
+  } else {
+    for (const l of ev.fails) out.push('   · ' + l);
+  }
+  out.push('  末尾 ' + ev.tail.length + ' 行：');
+  for (const l of ev.tail) out.push('   │ ' + l);
+  out.push('  ⇒ 复跑单个域（**不必再跑全链**）：');
+  out.push("     ① 直接单域复跑（输出刷屏，看得最全）：$env:SMOKE_ONLY='<域号>'; npm run smoke");
+  out.push('        ⚠️ PowerShell 用 `SMOKE_ONLY` 环境变量，**不要**写 `--smoke-only=01,02`（逗号会被分词打散）');
+  out.push('     ② 经 `verify` 复跑（同一套证据留存）：node scripts/verify.js --for <改动面> --domains <域号>');
+  out.push('        ⚠️ 这里**必须**用 `--domains`：直接 `$env:SMOKE_ONLY` 会被 fast 档的 core 域清单覆盖');
+  return out;
+}
+
+/** 失败报文里那一行（纯函数：**路径与复跑入口必须在报文里**，否则等于没落盘） */
+function g5FailureNote(info) {
+  const rel = (info && info.rel) || '（未知）';
+  return 'G5 的完整输出（stdout + stderr）已落盘：' + rel + '（' + formatBytes(info ? info.bytes : 0)
+    + '）—— 上面的 `[FAIL]` 行与末尾就是从它摘出来的；只复跑某个域见那段末尾的两条命令 ✓';
+}
+
+/** 只留最近 `keep` 份 G5 日志（`.review/` 可以整目录删，但没人会记得删 ⇒ 这里自己兜住）。
+ *  **只清 `g5-*.log`**（`.review/` 根下还有 `last-verify.json` / `verify-history.jsonl` 等，一个都不许碰）。
+ *  文件名自带时间戳 ⇒ **显式 `sort()`**，不依赖 `readdirSync` 的返回次序（`S3` 的确定性口径）。
+ *  @param {number} [keep] 保留份数（默认 `G5_LOG_KEEP`）
+ *  @param {string} [dirAbs] **只给单测用**：把清理目标指向别处（默认 = 工程的 `.review/`）
+ *  永不抛：删不掉只是"少清一份日志"，不许反过来打断验证。 */
+function pruneG5Logs(keep, dirAbs) {
+  const k = Number.isFinite(keep) && keep > 0 ? keep : G5_LOG_KEEP;
+  const abs = dirAbs || path.join(ROOT, G5_LOG_ROOT);
+  let names;
+  try { names = fs.readdirSync(abs); } catch (e) { return []; }   // 目录还不存在 ⇒ 没有可清的
+  const logs = names.filter((n) => /^g5-.*\.log$/.test(n)).sort();
+  const gone = [];
+  for (const n of logs.slice(0, Math.max(0, logs.length - k))) {
+    try { fs.unlinkSync(path.join(abs, n)); gone.push(n); } catch (e) { /* 删不掉不影响本次验证 */ }
+  }
+  return gone;
+}
+
 function main() {
   const results = [];
   let failed = null;
+  /* G5 的证据（失败报文要用它：路径 + 末尾行）。null = 本轮没有留下日志（打不开 / 没跑 G5） */
+  let g5EvidenceInfo = null;
   let unitTestsFromChain = null; // G3 产出、交给 G6（省一次 vitest 重跑）
 
   console.log('== 验证链（npm run verify）==');
@@ -1331,8 +1494,37 @@ function main() {
       }
       console.log(envAdmittedLine(admission, smokeLib.ENV_ADMISSION.minVar));
     }
+    /* ── G5 的 stdout/stderr **落盘**（见上面「G5 的证据留存」那一节）────────────────────
+     * 交的是**打开的文件描述符**（`stdio: ['inherit', fd, fd]`），不是 `'pipe'` ——
+     * 文件头 ① 那条"受限环境禁止管道 stdio"的约束因此一个字节都没破（G1 也不受影响：这是运行时产物）。
+     * ⚠️ 打不开日志 ⇒ **退回 inherit**（宁可没有证据，也绝不许因为旁证设施把 G5 判成红 ✗）。 */
+    let g5LogFd = null;
+    let g5LogAt = null;       // 相对路径（报文里要打印它）
+    if (s.gate === 'G5') {
+      try {
+        pruneG5Logs(G5_LOG_KEEP);
+        g5LogAt = g5LogRel(g5RunTier, Date.now());
+        const absLog = path.join(ROOT, g5LogAt);
+        fs.mkdirSync(path.dirname(absLog), { recursive: true });
+        g5LogFd = fs.openSync(absLog, 'w');
+        opts.stdio = ['inherit', g5LogFd, g5LogFd];
+        console.log('   G5 的输出**改为落盘**（不刷屏）：' + g5LogAt + '  —— 失败时本脚本会把 `[FAIL]` 行与末尾摘出来；'
+          + '想边跑边看就另开一个终端：`Get-Content ' + g5LogAt + ' -Wait`');
+      } catch (e) {
+        if (g5LogFd !== null) { try { fs.closeSync(g5LogFd); } catch (e2) { /* 已关 */ } }
+        g5LogFd = null; g5LogAt = null;
+        console.log('   ⚠️ G5 的日志打不开（' + String((e && e.message) || e) + '）⇒ 本轮退回"输出直接刷屏"'
+          + '（**判定不受影响**：仍然只看退出码）');
+      }
+    }
     const r = spawnSync(s.cmd, opts);
     const ms = Date.now() - t0;
+    /* G5 的日志句柄**必须在这里关**（子进程已退出 ⇒ 内容已落盘）；关不掉也不能改判定 */
+    let g5LogBytes = 0;
+    if (g5LogAt !== null) {
+      if (g5LogFd !== null) { try { fs.closeSync(g5LogFd); } catch (e) { /* 已关 */ } g5LogFd = null; }
+      try { g5LogBytes = fs.statSync(path.join(ROOT, g5LogAt)).size; } catch (e) { g5LogBytes = 0; }
+    }
     const code = r.status === null ? 1 : r.status;
     // G5 的预算**按档取**：快档有独立的止涨线（`G5_FAST_BUDGET_MS`），全量档沿用 STEPS 里那条线。
     // ⚠️ 两条线都不许为了"过"而抬 —— 抬线要按 `tests/verify-budget.test.js` 的口径说明理由。
@@ -1340,6 +1532,21 @@ function main() {
     const row = { step: s.step, gate: s.gate, label: s.label, ms, code, budgetMs: effBudget };
     if (s.gate === 'G5') { row.tier = g5RunTier; if (g5SmokeOnly) row.smokeOnly = g5SmokeOnly.slice(); }
     results.push(row);
+
+    /* ── G5：把日志变成**当场可见的证据**（这条就是本批要修的那件事）──────────────
+     * 失败 ⇒ 打印日志路径 + 全文里的每一条 `[FAIL]` + 末尾行（**判定仍是退出码**，这里只印证据）；
+     * 通过 ⇒ 只报一行"输出在哪、多大"（留痕但不刷屏）。证据收进 `g5EvidenceInfo`，失败报文还要用它。 */
+    if (s.gate === 'G5' && g5LogAt !== null) {
+      if (code !== 0) {
+        let text = '';
+        try { text = fs.readFileSync(path.join(ROOT, g5LogAt), 'utf8'); }
+        catch (e) { text = ''; }   // 读不出来也要把路径与字节数报出来（"采不到真值"不许静默）
+        g5EvidenceInfo = { rel: g5LogAt, bytes: g5LogBytes, code, evidence: g5Evidence(text) };
+        g5EvidenceLines(g5EvidenceInfo).forEach((l) => console.error(l));
+      } else {
+        console.log('   G5 全绿；stdout + stderr 全文留在 ' + g5LogAt + '（' + formatBytes(g5LogBytes) + '）');
+      }
+    }
 
     if (resFile) {
       unitTestsFromChain = readUnitTests(resFile);
@@ -1427,6 +1634,13 @@ function main() {
     } else {
       console.error((partial ? '部分验证失败（' + (planLabel || '--changed') + '）' : '验证失败')
         + '：步骤 ' + failed.step.step + '（' + failed.step.gate + '）退出码 ' + failed.code);
+    }
+    /* 甲的收口：**G5 的失败报文里必须有日志路径**（没有它就等于没落盘 —— 读者仍然只能重跑全链）。
+     * 两条分支都要说话：留了日志 ⇒ 给路径；没留 ⇒ 响亮说明"这次没有证据"，不许让人以为日志忘了找。 */
+    if (failed.step.gate === 'G5' && !refusedRow) {
+      console.error(g5EvidenceInfo ? g5FailureNote(g5EvidenceInfo)
+        : '⚠️ 本轮**没有**留下 G5 的日志（日志文件打不开 ⇒ 已退回直接刷屏）：'
+          + '只能靠终端里已经滚过去的那部分输出 —— 重跑请看 `scripts/verify.js` 的 G5 证据留存那一节。');
     }
     /* 批 J 的账（批 G 实测）：这里原先紧接着就走记录与 return ⇒ **失败步骤抢先返回，预算判定
      * 整段不执行** ✗ —— 而"失败"与"变慢"常常同源（跑到被守卫掐 / 超时 / 真挂死），
@@ -1555,7 +1769,10 @@ module.exports = {
   // `--changed`：取改动清单、部分验证的独立记录位
   changedFiles, writeLastVerifyChanged, readLastVerifyChanged, LAST_VERIFY_CHANGED,
   // 兜底提示的两半：取数（I/O）与组文（纯函数）分开，便于单测组文那一半
-  gitCommitCount, backupHintText
+  gitCommitCount, backupHintText,
+  // G5 的证据留存（2026-10-27）：路径 / 摘证据 / 组报文 / 打印块 / 清理 —— 全是纯函数或薄 I/O，可单测
+  G5_LOG_ROOT, G5_LOG_PREFIX, G5_LOG_TAIL_LINES, G5_LOG_FAIL_LINES, G5_LOG_KEEP,
+  g5LogRel, g5Evidence, g5EvidenceLines, g5FailureNote, formatBytes, pruneG5Logs
 };
 
 if (require.main === module) main();

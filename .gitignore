@@ -84,3 +84,9 @@ projects/.writers/
 # 工作产物区（AI 的分析稿/评审稿/读图记录/探针脚本；可随时整目录删除，不入库）
 # 落盘规矩的唯一杂物区 —— 见 SKILL.md 顶部「落盘规矩」与 docs/ARCHITECTURE.md §5
 .review/
+
+# G5 的 stdout/stderr 证据留存（`scripts/verify.js` 的 `G5_LOG_PREFIX`：`.review/g5-<档位>-<时间戳>.log`）
+# **已被上面那条 `.review/` 覆盖**；显式写出来是因为它是"每次验证都新建一份"的产物
+#（全量档一份可达数百 KB），需要一条**可 grep、可单测**的"它确实被忽略"的判据 —— 见
+# `tests/verify-g5-evidence.test.js` 的同名用例（判据不许只写在注释里）
+.review/g5-*.log
