@@ -44,6 +44,9 @@
   const LABEL_HEIGHT = tokens.LABEL_HEIGHT;
   const LABEL_CLEARANCE = tokens.LABEL_CLEARANCE;
   const LABEL_PATH_CLEARANCE = tokens.LABEL_PATH_CLEARANCE;
+  const CURVE_MIN_K = tokens.CURVE_MIN_K;
+  const CURVE_K_DIV = tokens.CURVE_K_DIV;
+  const CURVE_SAMPLES = tokens.CURVE_SAMPLES;
   const MMDiagramError = tokens.MMDiagramError;
   const EPS = tokens.EPS;
 
@@ -100,6 +103,54 @@
     const px = -uy * 4.5;
     const py = ux * 4.5;
     return [[x2, y2], [bx + px, by + py], [bx - px, by - py]];
+  }
+
+  /* ==================================================================
+   * 二½、曲线路由（`C-F3-05`）：三次贝塞尔，控制点**由端口法向导出**
+   * ================================================================== */
+
+  /** 端口的外法向（曲线控制点必须落在这条射线上 ⇒ "沿着端口方向进出"） */
+  const SIDE_NORMAL = Object.freeze({
+    n: [0, -1], s: [0, 1], e: [1, 0], w: [-1, 0]
+  });
+
+  /**
+   * 一条曲线边的控制点。**纯函数**（判据要按同一个式子独立复算一遍，见
+   * `tests/diagram-curve.test.js` 的 `recountCurve`）：
+   *   `k  = max(CURVE_MIN_K, |p3 − p0| / CURVE_K_DIV)`
+   *   `c1 = p0 + normal(sideFrom) · k`
+   *   `c2 = p3 + normal(sideTo)   · k`
+   * 零随机、零时钟、零拟合 ⇒ 同输入同控制点。
+   */
+  function curveControl(p0, sideFrom, p3, sideTo) {
+    const k = Math.max(CURVE_MIN_K, Math.hypot(p3[0] - p0[0], p3[1] - p0[1]) / CURVE_K_DIV);
+    const n0 = SIDE_NORMAL[sideFrom] || [1, 0];
+    const n3 = SIDE_NORMAL[sideTo] || [-1, 0];
+    return { c1: [p0[0] + n0[0] * k, p0[1] + n0[1] * k], c2: [p3[0] + n3[0] * k, p3[1] + n3[1] * k], k: k };
+  }
+
+  /** 三次贝塞尔的**固定采样**（t = i/n，i = 0..n）：曲线参与"可量"的判据（交叉/穿框/标签）时用它。
+   *  ⚠️ 采样只用于**判据侧的量**；画出来的是 `C` 命令（矢量、不抖），两者共用同一组控制点。 */
+  function flattenCubic(p0, c1, c2, p3, n) {
+    const count = Math.max(2, n || CURVE_SAMPLES);
+    const out = [];
+    for (let i = 0; i <= count; i++) {
+      const t = i / count;
+      const u = 1 - t;
+      const x = u * u * u * p0[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t * t * t * p3[0];
+      const y = u * u * u * p0[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t * t * t * p3[1];
+      out.push([x, y]);
+    }
+    return out;
+  }
+
+  /** 三次贝塞尔在参数 t 处的点（判据复算控制点用；也用于白描的切向） */
+  function cubicAt(p0, c1, c2, p3, t) {
+    const u = 1 - t;
+    return [
+      u * u * u * p0[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t * t * t * p3[0],
+      u * u * u * p0[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t * t * t * p3[1]
+    ];
   }
 
   /* ==================================================================
@@ -498,6 +549,7 @@
     }
 
     const polylines = new Map();
+    const curves = new Map();          // edgeId → { p0, c1, c2, p3, samples }（曲线边的控制点：判据可复算）
     let costSum = { length: 0, bends: 0, crossings: 0, hugs: 0 };
 
     edges.forEach((e) => {
@@ -522,6 +574,18 @@
         const pts = [[from.x, from.y], [to.x, to.y]];
         polylines.set(e.id, pts);
         result.edges[e.id] = { route: 'straight', fromPort: from.side, toPort: to.side, points: pts };
+        return;
+      }
+      if (e.route === 'curve') {
+        // 曲线（`C-F3-05`）：控制点由两端端口法向导出；折线 = 固定采样（只给判据量，画的是 `C` 命令）
+        const p0 = [from.x, from.y];
+        const p3 = [to.x, to.y];
+        const cv = curveControl(p0, from.side, p3, to.side);
+        const pts = flattenCubic(p0, cv.c1, cv.c2, p3, CURVE_SAMPLES);
+        polylines.set(e.id, pts);
+        const curve = { p0: p0, c1: cv.c1, c2: cv.c2, p3: p3, k: cv.k, samples: CURVE_SAMPLES };
+        curves.set(e.id, curve);
+        result.edges[e.id] = { route: 'curve', fromPort: from.side, toPort: to.side, points: pts, curve: curve };
         return;
       }
       const s = outward(from, grid);
@@ -592,6 +656,7 @@
       // 收集落在该带内的"主方向段"（LR = 竖段；TB = 横段）
       const items = [];
       edges.forEach((e) => {
+        if (curves.has(e.id)) return;                          // 曲线不参与通道分道（它的几何由控制点定死）
         const pts = polylines.get(e.id);
         for (let i = 0; i + 1 < pts.length; i++) {
           if (i === 0 || i === pts.length - 2) continue;      // 端口段**不许平移**（会改掉端点锚点）
@@ -698,6 +763,8 @@
       for (let i = 0; i < segs.length; i++) {
         for (let j = i + 1; j < segs.length; j++) {
           if (segs[i].edgeId === segs[j].edgeId) continue;
+          // 曲线段**不许被平移**：平移一个采样点会把 `C` 命令的几何改坏（控制点才是曲线的真身）
+          if (curves.has(segs[i].edgeId) || curves.has(segs[j].edgeId)) continue;
           const a = segs[i].seg;
           const b = segs[j].seg;
           const ha = isHorizontal(a);
@@ -764,6 +831,7 @@
     /* ---- ③¾ 正交性保险：平移/回退之后若有段不再是轴向，就地拆成两段（绝不留斜线） ---- */
     let skewFixed = 0;
     edges.forEach((e) => {
+      if (curves.has(e.id)) return;                  // 曲线的采样段**本来就是斜的**（拆它就不是曲线了）
       const pts = polylines.get(e.id);
       if (!pts || pts.length < 2) return;
       const out = [pts[0]];
@@ -829,8 +897,18 @@
             let high = ea.id;
             let low = eb.id;
             if (B.len > A.len + EPS || (Math.abs(B.len - A.len) < EPS && byId(eb.id, ea.id) < 0)) { high = eb.id; low = ea.id; }
+            // **曲线永远不做"被断开"的那一方**：断开一条贝塞尔要按参数切分（de Casteljau），
+            // 而"作者显式声明了一条平滑弧线"这件事本身说明他不接受它被切成一截一截。
+            // ⇒ 曲线参与交叉时优先当高优先级（画白描、保持连续），正交线让路。
+            // ⚠️ 两条都是曲线时无路可让：只给更长的那条画白描，**不断开任何一方**，
+            //    在读数里单列 `curveUncut`（`C-F3-18` 的判据对这类点只要求"高优先级侧有白描"）。
+            const ca = curves.has(ea.id);
+            const cb = curves.has(eb.id);
+            let noCut = false;
+            if (ca !== cb) { high = ca ? ea.id : eb.id; low = ca ? eb.id : ea.id; }
+            else if (ca && cb) { noCut = true; }
             crossings.push({ x: pt.x, y: pt.y, high: high, low: low, expected: why !== 'interleave',
-              why: why, edges: [ea.id, eb.id] });
+              why: why, edges: [ea.id, eb.id], curvePair: noCut });
           }
         }
         // T 型接触（一条线端点落在另一条线段内部）：单独计数，不混进 crossings
@@ -872,18 +950,57 @@
     result.stats.lanes = laneReport;
     result.stats.cost = { length: costSum.length, bends: costSum.bends, crossings: costSum.crossings, hugs: costSum.hugs };
     result.stats.repairRounds = repairRounds;
+    // 曲线边的清单（判据要知道"这张图里哪些边是曲线"，别去猜 route 字符串）
+    result.stats.curveEdges = Array.from(curves.keys()).sort(byId);
+
+    /* ---- ④½ 容器框：不是障碍，但不许"沿着边框跑" ---- */
+    if (Array.isArray(inp.frames) && inp.frames.length) {
+      const byEdge = {};
+      edges.forEach((e) => { const pts = polylines.get(e.id); if (pts) byEdge[e.id] = pts; });
+      result.frameBorders = frameBorderRuns(byEdge, inp.frames);
+      result.frameBorders.forEach((b) => {
+        degraded.push('E_ROUTE_ON_BORDER: 边 ' + b.edge + ' 的第 ' + b.segIndex + ' 段沿着容器框 #' + b.frame
+          + ' 的 ' + b.side + ' 边共线跑了 ' + b.overlap + 'px（重叠区间 ' + b.from + '…' + b.to + '）—— '
+          + '容器是**背景框架**：连可以垂直穿过它、可以在顶点相触，但"贴着边框跑"会被读成"边框就是这条线"');
+      });
+    } else {
+      result.frameBorders = [];
+    }
 
     /* ---- ⑤ overpass：低优先级断开 4px，高优先级画白色描边（**逐点**） ---- */
     const cutsByEdge = new Map();
+    let curveUncut = 0;
     crossOut.forEach((c) => {
+      if (curves.has(c.low)) { curveUncut++; return; }        // 曲线不被断开（理由见上面那段）
       if (!cutsByEdge.has(c.low)) cutsByEdge.set(c.low, []);
       cutsByEdge.get(c.low).push(c);
     });
+    result.stats.curveUncut = curveUncut;
     const halos = [];
     crossOut.forEach((c) => {
-      // 高优先级线在交点处的那一小段（沿它自己的线段方向各外扩 GAP_HALF + 2）
       const hp = polylines.get(c.high);
       if (!hp) return;
+      const ext = GAP_HALF + 2;
+      if (curves.has(c.high)) {
+        // 曲线上的白描：取离交点最近的那个采样段，沿它的切向画一小段（不假装它是轴向的）
+        let best = -1;
+        let bestD = Infinity;
+        for (let i = 0; i + 1 < hp.length; i++) {
+          const d = distPointSeg([c.x, c.y], hp[i], hp[i + 1]);
+          if (d < bestD - EPS) { bestD = d; best = i; }
+        }
+        if (best < 0) return;
+        const a = hp[best];
+        const b = hp[best + 1];
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (len < EPS) return;
+        const ux = (b[0] - a[0]) / len;
+        const uy = (b[1] - a[1]) / len;
+        halos.push({ edge: c.high, x1: c.x - ux * ext, y1: c.y - uy * ext,
+          x2: c.x + ux * ext, y2: c.y + uy * ext, curve: true });
+        return;
+      }
+      // 高优先级线在交点处的那一小段（沿它自己的线段方向各外扩 GAP_HALF + 2）
       const hs = segmentsOf(hp);
       for (let i = 0; i < hs.length; i++) {
         const seg = hs[i];
@@ -901,7 +1018,6 @@
           const hi = Math.max(seg[0][1], seg[1][1]);
           if (c.y <= lo + EPS || c.y >= hi - EPS) continue;
         }
-        const ext = GAP_HALF + 2;
         halos.push(h
           ? { edge: c.high, x1: c.x - ext, y1: c.y, x2: c.x + ext, y2: c.y }
           : { edge: c.high, x1: c.x, y1: c.y - ext, x2: c.x, y2: c.y + ext });
@@ -913,6 +1029,12 @@
     // 把中间折线换成"被断开之后"的若干段（每段是 [[x,y],[x,y]]）
     edges.forEach((e) => {
       const pts = polylines.get(e.id);
+      if (curves.has(e.id)) {
+        // 曲线：**不切段**（画的是 `C` 命令；切段要按参数 de Casteljau，那是另一件事）
+        result.edges[e.id].runs = [];
+        result.edges[e.id].cuts = 0;
+        return;
+      }
       const cuts = cutsByEdge.get(e.id) || [];
       const runs = cutPolyline(pts, cuts);
       result.edges[e.id].runs = runs;
@@ -950,6 +1072,219 @@
     });
     result.labels = labelBoxes;
     return result;
+  }
+
+  /* ==================================================================
+   * 五½、直连边的 overpass（`C-F3-18` 的"手写坐标"那一档）
+   * ------------------------------------------------------------------
+   * 为什么单独一个函数、而不是让 `routeAll` 顺手做：`routeAll` 是"自动布局之后布线"，
+   * 它同时管端口展开 / A* / 通道 / 标签；而**手写坐标**那一档（MS1 入口）根本没有这些步骤，
+   * 它只有"一条线段"。硬塞进 `routeAll` 会让 MS1 的产物跟着变（逐字节基线就跑了）。
+   *
+   * 本函数**只做三件事**：数交叉（任意方向，斜线也算）、按优先级断线、给高优先级线出白描。
+   * 它不碰任何坐标、不改任何边 —— 除了"把一条线段切成两段（中间留 4px）"。
+   * ================================================================== */
+
+  /** 一条折线的长度（优先级排序用：与 `routeAll` 里同一个口径 —— **长的当高优先级**） */
+  function polylineLength(points) {
+    let len = 0;
+    for (let i = 0; i + 1 < points.length; i++) {
+      len += Math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1]);
+    }
+    return len;
+  }
+
+  /**
+   * 直连边的 overpass。
+   *
+   * @param {Array<{id:string, points:Array<[number,number]>}>} geoms 边的折线（直连 ⇒ 每条只有一段）
+   * @returns {{crossings:Array, halos:Array, runs:Object<string,Array>, edgesCut:string[], cost:object}}
+   */
+  function overpassOf(geoms) {
+    const list = (geoms || []).filter((g) => g && typeof g.id === 'string'
+      && Array.isArray(g.points) && g.points.length >= 2);
+    const geomById = new Map();
+    list.forEach((g) => geomById.set(g.id, g));
+    const lenOf = (id) => polylineLength(geomById.get(id).points);
+
+    const segs = [];
+    list.slice().sort((a, b) => byId(a.id, b.id)).forEach((g) => {
+      segmentsOf(g.points).forEach((s, i) => segs.push({ edge: g.id, i: i, seg: s }));
+    });
+
+    const found = [];
+    for (let i = 0; i < segs.length; i++) {
+      for (let j = i + 1; j < segs.length; j++) {
+        if (segs[i].edge === segs[j].edge) continue;
+        const pt = properCross(segs[i].seg, segs[j].seg);
+        if (!pt) continue;
+        const ea = segs[i].edge;
+        const eb = segs[j].edge;
+        // 优先级：**长的当高优先级**（与 `routeAll` 同一条规则：长线连续、短线断开）
+        let high = ea;
+        let low = eb;
+        const la = lenOf(ea);
+        const lb = lenOf(eb);
+        if (lb > la + EPS || (Math.abs(lb - la) < EPS && byId(eb, ea) < 0)) { high = eb; low = ea; }
+        found.push({ x: pt.x, y: pt.y, high: high, low: low, edges: [ea, eb],
+          highSeg: high === ea ? segs[i] : segs[j] });
+      }
+    }
+    // 去重（同一交点可能被同一对边发现多次）
+    const seen = new Set();
+    const crossings = found.filter((c) => {
+      const k = c.x.toFixed(6) + ',' + c.y.toFixed(6) + ',' + c.high + ',' + c.low;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    }).sort((a, b) => (a.x - b.x) || (a.y - b.y) || byId(a.low, b.low));
+
+    /* 白描：在高优先级线的**自己的方向**上取 ±(GAP_HALF+2) —— 斜线也要对（不许只画轴向的） */
+    const halos = [];
+    crossings.forEach((c) => {
+      const seg = c.highSeg.seg;
+      const dx = seg[1][0] - seg[0][0];
+      const dy = seg[1][1] - seg[0][1];
+      const len = Math.hypot(dx, dy);
+      if (len < EPS) return;
+      const ux = dx / len;
+      const uy = dy / len;
+      const ext = GAP_HALF + 2;
+      halos.push({ edge: c.high, x1: c.x - ux * ext, y1: c.y - uy * ext,
+        x2: c.x + ux * ext, y2: c.y + uy * ext });
+    });
+
+    /* 断开：低优先级线在交点两侧各退 GAP_HALF（**沿它自己的方向退**，所以斜线也对） */
+    const cutsByEdge = new Map();
+    crossings.forEach((c) => {
+      if (!cutsByEdge.has(c.low)) cutsByEdge.set(c.low, []);
+      cutsByEdge.get(c.low).push(c);
+    });
+    const runs = {};
+    const edgesCut = [];
+    list.forEach((g) => {
+      const cuts = cutsByEdge.get(g.id) || [];
+      if (cuts.length) edgesCut.push(g.id);
+      runs[g.id] = cutPolylineGeneric(g.points, cuts);
+    });
+    edgesCut.sort(byId);
+
+    return {
+      crossings: crossings, halos: halos, runs: runs, edgesCut: edgesCut,
+      cost: { crossings: crossings.length, overpasses: halos.length, cuts: crossings.length }
+    };
+  }
+
+  /**
+   * 任意方向折线的断开（斜线也算）。
+   * 与 `cutPolyline` 的分工：那个只处理轴向段（正交布线的产物全是轴向）；
+   * 直连边的段可能是斜的 ⇒ 按**参数投影**在段上找交点，退 `half` 像素留下缺口。
+   */
+  function cutPolylineGeneric(points, cuts) {
+    if (!points || points.length < 2) return [];
+    const out = [];
+    for (let i = 0; i + 1 < points.length; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const len = Math.hypot(dx, dy);
+      if (len < EPS) continue;
+      const ux = dx / len;
+      const uy = dy / len;
+      // 落在本段上的交点（参数 t ∈ (0,1)），按 t 排序
+      const ts = [];
+      cuts.forEach((c) => {
+        const t = ((c.x - a[0]) * ux + (c.y - a[1]) * uy) / len;
+        if (t <= EPS || t >= 1 - EPS) return;
+        const px = a[0] + dx * t;
+        const py = a[1] + dy * t;
+        if (Math.hypot(px - c.x, py - c.y) > 1e-6) return;      // 这交点不在本段上（在延长线上）
+        ts.push(t);
+      });
+      if (!ts.length) { out.push([[a[0], a[1]], [b[0], b[1]]]); continue; }
+      ts.sort((p, q) => p - q);
+      let cursor = 0;                                            // 参数 0 = a
+      const at = (t) => [a[0] + dx * t, a[1] + dy * t];
+      ts.forEach((t) => {
+        const gap = GAP_HALF / len;                              // 4px 缺口的一半，换算成参数
+        const end = t - gap;
+        if (end - cursor > EPS) out.push([at(cursor), at(end)]);
+        cursor = t + gap;
+      });
+      if (1 - cursor > EPS) out.push([at(cursor), at(1)]);
+    }
+    return out;
+  }
+
+  /* ==================================================================
+   * 五¾、容器框的语义（`C-F2-01` 的"框"那半）
+   * ------------------------------------------------------------------
+   * **定案：容器是"框架"，不是"障碍"。** 理由（三条，任一条成立就够了）：
+   *   ① 容器的用途是**框住一组节点**；组内节点与组外节点之间必然有连线，那条线**必须**穿框
+   *      ⇒ 把容器当障碍 = 这类边永远无解（或被迫绕一个巨大的外圈，读起来像"没有关系"）。
+   *   ② 分层布局已经把节点排成"层"，容器框与层带在几何上是**背景**（z-order 里也在节点之下）
+   *      ⇒ 让背景参与避障，等于让"画框"改变"图画"：框一改，整张图重排。
+   *   ③ 外部证据（archify 的 Clear Container Corridor）：权威口径是"连线可以**垂直穿过**框架、
+   *      可以在顶点相触，但**不许沿着边框共线跑**" —— 前两条放开、第三条禁止，正好是"框架"的语义。
+   * ⇒ 所以本内核：**容器不参与避障**（`blocked` 里只有节点矩形），但**沿着边框跑**要被点名。
+   *    "沿边框跑"的判据：线与某条边框**共线**且**投影重叠 > 1px**（只碰一个点不算，垂直穿过不算）。
+   * ================================================================== */
+
+  /** "沿边框跑"的最小重叠长度：>1px 才算跑（只擦一下、只碰顶点都不算 —— 判据是"跑"，不是"擦"）
+   *  1px 这个数不是随手取的：它是本工程几何判据里最小的可辨量（`C-F1-01` 的 ±0.5px 是半个）。 */
+  const MIN_BORDER_RUN = 1;
+
+  /** 一条线段是否沿着某个矩形框的某条边"共线跑"（返回重叠长度；null = 没有） */
+  function borderOverlap(seg, frame) {
+    const h = isHorizontal(seg);
+    const v = isVertical(seg);
+    const sides = [
+      { side: 'top', y: frame.y, x0: frame.x, x1: frame.x + frame.w, horizontal: true },
+      { side: 'bottom', y: frame.y + frame.h, x0: frame.x, x1: frame.x + frame.w, horizontal: true },
+      { side: 'left', x: frame.x, y0: frame.y, y1: frame.y + frame.h, horizontal: false },
+      { side: 'right', x: frame.x + frame.w, y0: frame.y, y1: frame.y + frame.h, horizontal: false }
+    ];
+    for (let i = 0; i < sides.length; i++) {
+      const s = sides[i];
+      if (s.horizontal) {
+        if (!h || Math.abs(seg[0][1] - s.y) > EPS) continue;
+        const lo = Math.max(Math.min(seg[0][0], seg[1][0]), s.x0);
+        const hi = Math.min(Math.max(seg[0][0], seg[1][0]), s.x1);
+        if (hi - lo > MIN_BORDER_RUN) return { side: s.side, overlap: hi - lo, from: lo, to: hi };
+      } else {
+        if (!v || Math.abs(seg[0][0] - s.x) > EPS) continue;
+        const lo = Math.max(Math.min(seg[0][1], seg[1][1]), s.y0);
+        const hi = Math.min(Math.max(seg[0][1], seg[1][1]), s.y1);
+        if (hi - lo > MIN_BORDER_RUN) return { side: s.side, overlap: hi - lo, from: lo, to: hi };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 逐边 × 逐框架：找出"沿着边框共线跑"的段。
+   * @param {Object<string, Array<[number,number]>>} polylinesById
+   * @param {Array<{x:number,y:number,w:number,h:number}>} frames
+   * @returns {Array<{edge:string, frame:number, side:string, overlap:number, from:number, to:number}>}
+   */
+  function frameBorderRuns(polylinesById, frames) {
+    const out = [];
+    const ids = Object.keys(polylinesById || {}).sort(byId);
+    ids.forEach((id) => {
+      const pts = polylinesById[id];
+      if (!Array.isArray(pts) || pts.length < 2) return;
+      segmentsOf(pts).forEach((seg, si) => {
+        (frames || []).forEach((f, fi) => {
+          const hit = borderOverlap(seg, f);
+          if (!hit) return;
+          out.push({ edge: id, segIndex: si, frame: fi, side: hit.side,
+            overlap: hit.overlap, from: hit.from, to: hit.to });
+        });
+      });
+    });
+    out.sort((a, b) => byId(a.edge, b.edge) || (a.frame - b.frame) || byId(a.side, b.side));
+    return out;
   }
 
   /** 按交叉点把折线切成若干段（低优先级线在交点两侧各留 GAP_HALF 的缺口 ⇒ 缺口合计 4px） */
@@ -992,6 +1327,17 @@
 
   function rectsHit(a, b) {
     return a.x < b.x + b.w - EPS && b.x < a.x + a.w - EPS && a.y < b.y + b.h - EPS && b.y < a.y + a.h - EPS;
+  }
+
+  /** 点到线段的距离（任向；曲线的白描取"离交点最近的采样段"靠它） */
+  function distPointSeg(p, a, b) {
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    if (len2 < EPS) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+    let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
   }
 
   /** 标签矩形到一条线段的**最短距离**（净空判据用；轴对齐线段有闭式解） */
@@ -1116,11 +1462,21 @@
     portPoint: portPoint,
     autoPorts: autoPorts,
     arrowPolygon: arrowPolygon,
+    curveControl: curveControl,
+    flattenCubic: flattenCubic,
+    cubicAt: cubicAt,
+    SIDE_NORMAL: SIDE_NORMAL,
+    distPointSeg: distPointSeg,
     simplify: simplify,
     segmentsOf: segmentsOf,
     properCross: properCross,
     parallelOverlap: parallelOverlap,
     cutPolyline: cutPolyline,
+    cutPolylineGeneric: cutPolylineGeneric,
+    overpassOf: overpassOf,
+    polylineLength: polylineLength,
+    borderOverlap: borderOverlap,
+    frameBorderRuns: frameBorderRuns,
     placeLabel: placeLabel,
     countCrossings: countCrossings,
     emptyBands: emptyBands,

@@ -34,11 +34,16 @@
   const LAYER_PAD = 16;
   /** 重心法的固定轮数（固定 ⇒ 同输入同结果；不是"跑到收敛为止"—— 那会让耗时随输入漂） */
   const ORDER_ITERS = 8;
+  /** 副轴对齐（`C-A-04` 的"父节点居中于其子节点"）的固定轮数：
+   *  一上一下算一轮，固定 6 轮 ⇒ 同输入同结果（与重心法同一个口径：**不跑到收敛为止**）。 */
+  const ALIGN_ITERS = 6;
+  /** `pinned` 与自动区域的重叠避免最多推几轮（推不动就如实登记，不无限循环） */
+  const PIN_ITERS = 8;
 
   function isPlain(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
   function isNum(v) { return typeof v === 'number' && Number.isFinite(v); }
   function byId(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }
-  function roundTo(v, q) { return Math.round(v / q) * q; }
+  function roundTo(v, q) { const r = Math.round(v / q) * q; return r === 0 ? 0 : r; }   // `-0` 归一成 `0`
   function upTo(v, q) { return Math.ceil(v / q) * q; }
 
   /** 间距：数据（`graph.gap`）> 调用方 `opts.gap` > 缺省 */
@@ -258,6 +263,133 @@
     return lanes;
   }
 
+  /* ---------------- 副轴对齐（`C-A-04` 的"父节点居中于其子节点"） ----------------
+   *
+   * ⚠️ 与"坐标取到 8 的整数倍"的**算术互斥**（这一节存在的理由，别删）：
+   *   子节点中心都在 8 的整数倍上（`y % 8 == 0` 且 `h % 16 == 0` ⇒ 中心 ≡ y mod 8）。
+   *   k 个子节点中心的均值 = 8·(Σaᵢ)/k —— **k ∤ Σaᵢ 时不在 8 的网格上**
+   *   （例：k=2、a={0,1} ⇒ 均值 4）。要让父节点中心落回 8 的网格，误差必然 ≈ 半个步长 = 4px。
+   *   ⇒ 所以本实现的判据是：
+   *     · 单子（唯一邻接邻居）：目标中心**本身在网格上** ⇒ 误差 **=== 0**（硬判，注入挪 1px 必红）；
+   *     · 多子：误差 ≤ `COORD_QUANTUM / 2`（= 4px，量化误差的理论上界），并逐节点报原值；
+   *     · `report.centering[]` 里 `exact` 的节点数 ≥ 1（不许"一个都没居中"也算过）。
+   *   **不做**的事：为了 ±0.5 把副轴量化降到 1px —— 那会连带打红「坐标 %8==0」与
+   *   「折点都是 grid 的整数倍」两条既有判据（它们是端口落网格的前提）。
+   */
+
+  /** 一个节点在副轴上的"中心" = off + 主尺寸/2（主尺寸 = 该节点沿副轴的长度） */
+  function centerOfOff(off, s, direction) {
+    return off + (direction === 'LR' ? s.h : s.w) / 2;
+  }
+
+  /**
+   * 副轴对齐 pass（确定性：固定轮数、层序固定、层内按**当前顺序**、上下轮换）。
+   *
+   * 每层做的是"带排序与最小间距约束的一维松弛"（不是"逐个节点夹一下"）：
+   *   ① 每个节点算一个**期望位置**（邻层真实邻居中心的均值）；
+   *   ② **前推**：`pos[i] = max(desired[i], pos[i-1] + size[i-1] + gap)`（保住次序与间距）；
+   *   ③ **回拉**：从右往左 `pos[i] = min(pos[i], pos[i+1] - size[i] - gap)`（有富余就往期望靠）；
+   *   ④ 再按网格量化并重跑一次前推（量化不许破坏 ② 的约束）；
+   * ②③ 两遍是"把整层往期望挤"的关键：只做②（我第一版就是）会让整层**单向右漂**，
+   * 于是"居中"在判据上永远差一段（实测 n-hook 差 96px），那不是算法不稳定，是**只有一遍**。
+   *
+   * @param {object} ctx
+   *   `{ layers, sizeOf, direction, gapNode, sub, up, down }`
+   *   `sub` = Map id → 当前 off（会被原地改写）
+   * @returns {{moved:number, iterations:number}}
+   */
+  function alignSubAxis(ctx) {
+    const layers = ctx.layers;
+    const sizeOf = ctx.sizeOf;
+    const direction = ctx.direction;
+    const gapNode = ctx.gapNode;
+    const sub = ctx.sub;
+    const up = ctx.up;
+    const down = ctx.down;
+    const Q = COORD_QUANTUM;
+    let moved = 0;
+    let iterations = 0;
+
+    const lenOf = (id) => {
+      const s = sizeOf.get(id);
+      return direction === 'LR' ? s.h : s.w;
+    };
+    const quantUp = (v) => Math.ceil(v / Q - 1e-9) * Q;
+
+    /** 一层的一次松弛。`dirUp=true` ⇒ 期望取自上一层（父），否则取自下一层（子）。
+     *
+     *  算法 = **交替投影**（保次序/最小间距是硬约束，居中是最小二乘目标）：
+     *    ① 每个节点取"期望位置"（邻层真实邻居中心的均值）；
+     *    ② 内层若干轮：先朝期望走一半，再投影回可行域（前推保下界、回拉保上界、>=0）；
+     *    ③ 整块平移，把这一层的**均值误差**消掉（均匀平移不破坏任何间距）；
+     *    ④ 量化到 8px 网格，再前推一遍（量化不许破坏最小间距）。
+     *  ⚠️ ② 的"回拉"只能**保上界**（`pos ≤ next − len − gap`），不能直接 `pos = want` ——
+     *  直接赋值会把整层向左挤塌（我第一版就是这样：三层全被挤到 0，误差反而更大）。
+     */
+    const relaxLayer = (ids, dirUp) => {
+      if (!ids.length) return;
+      const want = ids.map((id) => {
+        const list = (dirUp ? up.get(id) : down.get(id)) || [];
+        let sum = 0;
+        let n = 0;
+        list.forEach((nid) => {
+          if (!sizeOf.has(nid)) return;
+          sum += centerOfOff(sub.get(nid), sizeOf.get(nid), direction);
+          n++;
+        });
+        if (!n) return null;                                  // 没邻居 ⇒ 不动（不编一个位置）
+        return sum / n - lenOf(id) / 2;
+      });
+      const pos = ids.map((id) => sub.get(id));
+      const lowerOf = (i) => (i > 0 ? pos[i - 1] + lenOf(ids[i - 1]) + gapNode : 0);
+      const upperOf = (i) => (i + 1 < ids.length ? pos[i + 1] - gapNode - lenOf(ids[i]) : Infinity);
+      for (let it = 0; it < 12; it++) {
+        for (let i = 0; i < ids.length; i++) {
+          if (want[i] === null) continue;
+          pos[i] += (want[i] - pos[i]) * 0.6;                  // 朝期望走一半多一点
+        }
+        for (let i = 0; i < ids.length; i++) pos[i] = Math.max(pos[i], lowerOf(i));
+        for (let i = ids.length - 1; i >= 0; i--) pos[i] = Math.min(pos[i], upperOf(i));
+        for (let i = 0; i < ids.length; i++) if (pos[i] < 0) pos[i] = 0;
+      }
+      // ③ 整块平移：把"有期望的节点"的平均误差消掉（没有期望的节点不参与）
+      let dsum = 0;
+      let dn = 0;
+      ids.forEach((id, i) => { if (want[i] !== null) { dsum += want[i] - pos[i]; dn++; } });
+      if (dn) {
+        const minPos = pos.reduce((m, v) => Math.min(m, v), Infinity);
+        let shift = Math.round((dsum / dn) / Q) * Q;
+        if (shift < 0) shift = Math.max(shift, -Math.round(minPos / Q) * Q);   // 不许推出负区
+        if (shift) for (let i = 0; i < ids.length; i++) pos[i] += shift;
+      }
+      // ④ 量化 + 前推（保住最小间距）
+      for (let i = 0; i < ids.length; i++) {
+        let q = Math.round(pos[i] / Q) * Q;
+        if (i > 0) {
+          const lo = pos[i - 1] + lenOf(ids[i - 1]) + gapNode;
+          if (q < lo - 1e-9) q = quantUp(lo);
+        }
+        pos[i] = q < 0 ? 0 : q;
+      }
+      ids.forEach((id, i) => {
+        if (sub.get(id) !== pos[i]) { sub.set(id, pos[i]); moved++; }
+      });
+    };
+
+    for (let it = 0; it < ALIGN_ITERS; it++) {
+      iterations++;
+      const before = moved;
+      const dirUp = it % 2 === 0;
+      if (dirUp) {
+        for (let r = 1; r < layers.length; r++) relaxLayer(layers[r].filter((id) => sizeOf.has(id)), true);
+      } else {
+        for (let r = layers.length - 2; r >= 0; r--) relaxLayer(layers[r].filter((id) => sizeOf.has(id)), false);
+      }
+      if (moved === before) break;                            // 一轮没动 ⇒ 已稳定（不改变结果，只省时间）
+    }
+    return { moved: moved, iterations: iterations };
+  }
+
   /**
    * 分层布局主函数。
    *
@@ -372,9 +504,10 @@
       layerMain.push(Math.max(m, 1));
     }
 
-    // 层内堆叠（副轴）
+    // 层内堆叠（副轴）：先给一个**居中到同一跨度**的初值（重心不同也不歪），再跑对齐 pass
     const pos = new Map();
     const layerSpan = [];
+    const sub = new Map();                   // id → 副轴起点（对齐 pass 原地改写）
     for (let r = 0; r <= maxRank; r++) {
       let cursor = 0;
       const real = layers[r].filter((id) => sizeOf.has(id));
@@ -388,6 +521,34 @@
       layerSpan.push(cursor);
     }
     const maxSpan = layerSpan.reduce((m, v) => Math.max(m, v), 0);
+    for (let r = 0; r <= maxRank; r++) {
+      layers[r].forEach((id) => {
+        if (!sizeOf.has(id)) return;
+        const off = pos.get(id).off + (maxSpan - layerSpan[r]) / 2;
+        sub.set(id, roundTo(Math.max(0, off), COORD_QUANTUM));   // 初值也必须在网格上
+      });
+    }
+
+    /* ---- 副轴对齐（`C-A-04` 的"父节点居中于其子节点"）：一上一下、固定轮数 ---- */
+    // 邻接表只用**真实节点**（虚拟节点是分层用的占位，不占地方 ⇒ 它不该拉偏中心）。
+    // ⚠️ 上下要按 **rank 大小**判，不能按边的方向判：去环只反转"回边"，剩下的边里仍可能有
+    //    `from` 的 rank 比 `to` 大（DFS 的访问次序决定哪条被反转）。按方向判会让"父/子"标反，
+    //    于是对齐把节点往反方向推（实测：n-hook 的目标被算成 96px 之外，越对齐越歪）。
+    const up = new Map();
+    const down = new Map();
+    uniqIds.forEach((id) => { up.set(id, []); down.set(id, []); });
+    removed.out.forEach((e) => {
+      if (!sizeOf.has(e.from) || !sizeOf.has(e.to)) return;
+      const rf = rank.get(e.from);
+      const rt = rank.get(e.to);
+      if (!isNum(rf) || !isNum(rt) || Math.abs(rt - rf) !== 1) return;      // 只对齐相邻层
+      if (rf < rt) { down.get(e.from).push(e.to); up.get(e.to).push(e.from); }
+      else { up.get(e.from).push(e.to); down.get(e.to).push(e.from); }
+    });
+    const aligned = alignSubAxis({
+      layers: layers, sizeOf: sizeOf, direction: direction, gapNode: gap.node,
+      sub: sub, up: up, down: down
+    });
 
     // 主轴坐标：逐层累加（带宽按 lane 数预留）
     const mainOf = [];
@@ -403,17 +564,43 @@
       layers[r].forEach((id) => {
         const s = sizeOf.get(id);
         if (!s) return;
-        const p = pos.get(id);
         const w = s.w;
         const h = s.h;
         const main = mainOf[r];
-        const off = p.off + (maxSpan - layerSpan[r]) / 2;    // 各层副轴居中（重心不同也不歪）
-        const x = direction === 'LR' ? main : roundTo(off, COORD_QUANTUM);
-        const y = direction === 'LR' ? roundTo(off, COORD_QUANTUM) : main;
+        const off = sub.get(id);
+        const x = direction === 'LR' ? main : off;
+        const y = direction === 'LR' ? off : main;
         rects[id] = { x: roundTo(x, COORD_QUANTUM), y: roundTo(y, COORD_QUANTUM), w: w, h: h };
         rankOut[id] = r;
       });
     }
+
+    /* ---- 居中的**读数**（判据自己另写一份复算：见 tests/diagram-align.test.js） ---- */
+    const centering = [];
+    uniqIds.forEach((id) => {
+      const s = sizeOf.get(id);
+      if (!s) return;
+      const ups = up.get(id) || [];
+      const downs = down.get(id) || [];
+      const list = ups.length ? ups : downs;                 // 有父看父，否则看子
+      if (!list.length) return;
+      let sum = 0;
+      let n = 0;
+      list.forEach((nid) => {
+        const ns = sizeOf.get(nid);
+        if (!ns) return;
+        sum += centerOfOff(sub.get(nid), ns, direction);
+        n++;
+      });
+      if (!n) return;
+      const target = sum / n;
+      const actual = centerOfOff(sub.get(id), s, direction);
+      const errorPx = Math.abs(actual - target);
+      centering.push({ id: id, neighbors: list.slice().sort(byId), target: target, actual: actual,
+        errorPx: errorPx, exact: errorPx < 1e-9 });
+    });
+    centering.sort((a, b) => byId(a.id, b.id));
+
 
     /* ---- 显式意图：pinned + 带 rect 的节点位置不被覆盖 ---- */
     const pinned = Array.isArray(graph.pinned) ? graph.pinned.filter((x) => typeof x === 'string') : [];
@@ -430,6 +617,78 @@
       rects[n.id] = { x: box.x, y: box.y, w: box.w, h: box.h };
       explicit.push({ id: n.id, rect: box, why: 'pinned+rect' });
     });
+
+    /* ---- `pinned` 与自动区域的**重叠避免** ----
+     * 为什么需要这一节：`pinned` 的语义是"这个节点的位置是作者的"，自动布局原先只负责**其余节点**
+     * （它一开始根本不知道那些框在哪）⇒ 钉住的框会与自动摆的框叠在一起，而两条判据都不会红
+     * （`C-F4-05` 只看"钉住的没被覆盖"、重叠检测 `C-A-06` 是 MS2 独立读数）。
+     * 做法：**只推自动节点，不动钉住的**（钉住的是作者的意图，推它等于把显式意图降级成建议）；
+     * 方向取副轴（±），距离取最小的 8px 整数量，同距时取 +（确定性）；推不动就如实登记。
+     */
+    const problems = [];
+    const degraded = [];
+    const pinnedIds = explicit.map((e) => e.id);
+    const autoIds = uniqIds.filter((id) => pinnedIds.indexOf(id) < 0 && sizeOf.has(id));
+    const intersects = (a, b) => a.x < b.x + b.w - 1e-9 && b.x < a.x + a.w - 1e-9
+      && a.y < b.y + b.h - 1e-9 && b.y < a.y + a.h - 1e-9;
+    const pinnedAvoid = [];
+    let pinRounds = 0;
+    if (pinnedIds.length && autoIds.length) {
+      for (let round = 0; round < PIN_ITERS; round++) {
+        let fixed = 0;
+        autoIds.forEach((id) => {
+          const own = rects[id];
+          if (!own) return;
+          const hits = pinnedIds.filter((pid) => rects[pid] && intersects(own, rects[pid]));
+          if (!hits.length) return;
+          const hitsOther = () => autoIds.some((oid) => oid !== id && rects[oid] && intersects(rects[oid], rects[id]));
+          // 沿副轴推：求出"要清掉全部撞上的钉住框"的最小位移（两个方向各算一次，取小的）
+          const centerOfRect = (r) => (direction === 'LR' ? r.y + r.h / 2 : r.x + r.w / 2);
+          const halfOf = (r) => (direction === 'LR' ? r.h / 2 : r.w / 2);
+          const cands = [];
+          [1, -1].forEach((sign) => {
+            let need = 0;
+            hits.forEach((pid) => {
+              const pr = rects[pid];
+              const delta = sign > 0
+                ? (centerOfRect(pr) + halfOf(pr)) - (centerOfRect(own) - halfOf(own)) + gap.node
+                : (centerOfRect(pr) - halfOf(pr)) - (centerOfRect(own) + halfOf(own)) - gap.node;
+              // sign>0：把自己挪到钉住框的"后面"；sign<0：挪到"前面"
+              const mag = Math.abs(delta);
+              if (mag > need) need = mag;
+            });
+            const step = Math.ceil(need / COORD_QUANTUM) * COORD_QUANTUM;
+            cands.push({ sign: sign, delta: sign * step });
+          });
+          cands.sort((a, b) => (Math.abs(a.delta) - Math.abs(b.delta)) || (b.sign - a.sign));
+          let applied = false;
+          for (let i = 0; i < cands.length && !applied; i++) {
+            const d = cands[i].delta;
+            const moved = direction === 'LR'
+              ? { x: own.x, y: own.y + d, w: own.w, h: own.h }
+              : { x: own.x + d, y: own.y, w: own.w, h: own.h };
+            if (moved.x < 0 || moved.y < 0) continue;                 // 不许推出画布负区（与初值同口径）
+            const backup = { x: own.x, y: own.y };
+            rects[id] = moved;
+            const stillHit = pinnedIds.some((pid) => rects[pid] && intersects(moved, rects[pid]));
+            if (stillHit || hitsOther()) { rects[id] = { x: backup.x, y: backup.y, w: own.w, h: own.h }; continue; }
+            if (direction === 'LR') sub.set(id, moved.y); else sub.set(id, moved.x);
+            pinnedAvoid.push({ id: id, awayFrom: hits.slice().sort(byId), axis: direction === 'LR' ? 'y' : 'x', delta: d });
+            fixed++;
+            applied = true;
+          }
+          if (!applied) {
+            degraded.push('E_PIN_CROWDED: 节点 ' + id + ' 与钉住的 ' + hits.join('/')
+              + ' 重叠，两个方向都推不开（会撞别的自动节点或推出负区）—— 已保持原位并如实登记');
+          }
+        });
+        if (!fixed) break;
+        pinRounds++;                                  // 只算**真的推动了**的轮数（0 = 一次都没撞上）
+      }
+    }
+    pinnedAvoid.sort((a, b) => byId(a.id, b.id));
+    if (degraded.length) degraded.forEach((d) => problems.push(d));
+
 
     /* ---- 报告 ---- */
     const rankPairs = uniqIds.map((id) => [id, rank.get(id)]).sort((a, b) => byId(a[0], b[0]));
@@ -462,10 +721,17 @@
         selfLoops: selfLoops,
         explicit: explicit,
         pinned: pinned.slice().sort(byId),
+        // `C-A-04` 的居中读数（原值：目标中心 / 实际中心 / 误差 px / 是否精确）——
+        // 判据不许读这里来自证：`tests/diagram-align.test.js` 从 rects + ranks + 夹具**另算一份**
+        centering: centering,
+        align: { iterations: aligned.iterations, moved: aligned.moved },
+        // `pinned` 与自动区域的重叠避免读数（谁被推了、往哪个轴、推了多少）
+        pinnedAvoid: pinnedAvoid,
+        pinRounds: pinRounds,
         nodeCount: uniqIds.length,
         edgeCount: edges.length,
-        problems: [],
-        degraded: []
+        problems: problems,
+        degraded: degraded
       }
     };
   }
@@ -478,7 +744,9 @@
     totalCrossings: totalCrossings,
     countLayerCrossings: countLayerCrossings,
     hopsPerBoundary: hopsPerBoundary,
+    alignSubAxis: alignSubAxis,
     resolveGap: resolveGap,
-    ORDER_ITERS: ORDER_ITERS
+    ORDER_ITERS: ORDER_ITERS,
+    ALIGN_ITERS: ALIGN_ITERS
   };
 });

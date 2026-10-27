@@ -49,7 +49,7 @@ describe('取值表是唯一的一处（文档与测试从这里取，别抄字�
     expect(GS.SHAPES).toEqual(['rect', 'round', 'diamond', 'pill', 'cylinder', 'row']);
     expect(GS.PORTS).toEqual(['n', 'e', 's', 'w']);
     expect(GS.EDGE_ROUTES).toEqual(['straight', 'orthogonal', 'curve']);
-    expect(GS.ROUTE_IMPLEMENTED).toEqual(['straight', 'orthogonal']);        // MS2 补上正交
+    expect(GS.ROUTE_IMPLEMENTED).toEqual(['straight', 'orthogonal', 'curve']);   // MS2 补正交、2026-10-26 补曲线
     expect(GS.EDGE_STYLES).toEqual(['solid', 'dashed', 'dotted']);
     expect(GS.DASH_TOKEN).toEqual({ solid: '', dashed: '5 4', dotted: '1 3' });
     expect(GS.DIRECTIONS).toEqual(['LR', 'TB']);

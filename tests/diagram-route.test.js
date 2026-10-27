@@ -493,3 +493,66 @@ describe('C-A-05：四项代价可读 + 调高拐弯惩罚折点数不增', () =
     expect(readNodeTextLines(svg).length).toBeGreaterThanOrEqual(6); // 两个节点 × 三段
   });
 });
+
+/* ==================================================================
+ * 判据 2 的"逐点"那半**必须有自己的靶子**（2026-10-26 补）
+ * ------------------------------------------------------------------
+ * 起因是一次**真的失灵**：副轴对齐改了布局之后，基准图里每条被断的边只剩 1 个交叉点，
+ * 于是"只断第一处"这条注入从红变绿 —— 判据本身没错，但它**没有靶子了**（统计上永远成立）。
+ * 所以这里造一张**几何可控**的图：一条**短竖边同时穿过两条长横边** ⇒ 它必然被断**两处**。
+ * 判据三件：
+ *   ① 交叉 2 处、断 2 处、段 3 段（两处缺口都真的存在）；
+ *   ② 两处缺口都 = 2×GAP_HALF（沿边自己的方向量）；
+ *   ③ `data-cuts` == 该边作为 low 的交叉点数（"逐点"是**等式**，不是"≥1"）。
+ * ================================================================== */
+describe('判据 2（逐点）：一条边被断**两处**时，两处都得断（不只第一处）', () => {
+  /** 短竖边 v1 穿过两条长横边 h1 / h2（长 ⇒ 高优先级 ⇒ 被断的是 v1，正好两次） */
+  function twoCrossDoc() {
+    return {
+      graph: { version: 1, direction: 'LR', grid: 8,
+        edges: [
+          { id: 'h1', from: { node: 'a', port: 'e' }, to: { node: 'b', port: 'w' } },
+          { id: 'h2', from: { node: 'c', port: 'e' }, to: { node: 'd', port: 'w' } },
+          { id: 'v1', from: { node: 'e', port: 's' }, to: { node: 'f', port: 'n' } }
+        ] },
+      nodes: [
+        { id: 'a', type: 'rect', rect: [0, 88, 64, 32], title: 'A' },
+        { id: 'b', type: 'rect', rect: [400, 88, 64, 32], title: 'B' },
+        { id: 'c', type: 'rect', rect: [0, 184, 64, 32], title: 'C' },
+        { id: 'd', type: 'rect', rect: [400, 184, 64, 32], title: 'D' },
+        { id: 'e', type: 'rect', rect: [192, 0, 64, 32], title: 'E' },
+        { id: 'f', type: 'rect', rect: [192, 280, 64, 32], title: 'F' }
+      ]
+    };
+  }
+
+  it('① 这张图真的有"一条边两处交叉"（否则下面两条是空转）', () => {
+    const { report } = D.render(twoCrossDoc(), { routing: 'orthogonal' });
+    const lows = report.routing.crossingPoints.filter((c) => c.low === 'v1');
+    expect(lows.length, 'v1 作为低优先级的交叉点数').toBe(2);
+    expect(report.routing.crossings).toBe(2);
+  });
+
+  it('② + ③ 两处缺口都在、且 `data-cuts` == 交叉点数（逐点是等式，不是 ≥1）', () => {
+    const { svg, report } = D.render(twoCrossDoc(), { routing: 'orthogonal' });
+    const m = svg.match(/<g data-edge="v1"[^>]*data-cuts="(\d+)"/);
+    expect(m, 'v1 没有 data-cuts').toBeTruthy();
+    const lowCount = report.routing.crossingPoints.filter((c) => c.low === 'v1').length;
+    expect(Number(m[1]), 'v1 的 data-cuts 与"它是低优先级的交叉点数"不一致').toBe(lowCount);
+    // v1 被两处缺口切成 3 段
+    const segs = (svg.match(/<line data-edge="v1" data-seg="\d+"/g) || []).length;
+    expect(segs, 'v1 只被断了一处（段数 = ' + segs + '，两处缺口应为 3 段）').toBe(3);
+    // 沿 y（v1 是竖的）量：每段之间的空白 = 2×GAP_HALF
+    const ys = [];
+    const re = /<line data-edge="v1" data-seg="\d+" x1="[-\d.]+" y1="([-\d.]+)" x2="[-\d.]+" y2="([-\d.]+)"/g;
+    let g;
+    while ((g = re.exec(svg)) !== null) ys.push([Number(g[1]), Number(g[2])]);
+    ys.sort((p, q) => p[0] - q[0]);
+    const gaps = [];
+    for (let i = 0; i + 1 < ys.length; i++) gaps.push(Math.abs(ys[i + 1][0] - ys[i][1]));
+    expect(gaps.length).toBe(2);
+    gaps.forEach((gap, i) => {
+      expect(Math.abs(gap - 2 * D.GAP_HALF), '第 ' + i + ' 处缺口 = ' + gap + 'px').toBeLessThanOrEqual(0.5);
+    });
+  });
+});

@@ -34,19 +34,19 @@
   const SHAPES = Object.freeze(['rect', 'round', 'diamond', 'pill', 'cylinder', 'row']);
   /** 端口锚点（`C-F3-02`）。顺序是**定序用**的：自动选边代价相等时按 `n<e<s<w` 取。 */
   const PORTS = Object.freeze(['n', 'e', 's', 'w']);
-  /** 三种路由（`C-F3-04`/`05`/`06`）。**规范里三档都存在**，但本批实现了前两档。 */
+  /** 三种路由（`C-F3-04`/`05`/`06`）。**三档都实现了**（`curve` 是 MS3 补上的）。 */
   const EDGE_ROUTES = Object.freeze(['straight', 'orthogonal', 'curve']);
   /** **已实现的路由**。`route` 缺省 = 本表第一项（直连）。
    *
-   *  ⚠️ 两个**有据的不一致**，写在这里免得被读成"漏了"：
+   *  ⚠️ 一处**有据的不一致**，写在这里免得被读成"漏了"：
    *   ① 设计 `C-F3-06` 说 orthogonal 是默认。本内核的缺省仍是 `straight` —— 因为 MS1 的
    *      **手写坐标**数据（盘上已有的那些 JSON）没写 `route`，改缺省会让它们当场变产物
    *      （`C-F9-02` 的逐字节基线就跑了）。**走了自动布局（`renderAuto`）时缺省才是 orthogonal**
    *      —— 那才是 `C-F3-06` 说的场景（"正交布线是自动布局的默认路由"）。
-   *   ② `curve`（`C-F3-05`）本批**没做**：设计 §7.2 把它排在 MS3 的"交互 + 导出 + 主题"那批，
-   *      本批的判据（穿框/交叉/通道/overpass）都不依赖曲线。它仍然**响亮拒绝**
-   *      （`E_ROUTE_UNSUPPORTED`），不会静默画成直线。 */
-  const ROUTE_IMPLEMENTED = Object.freeze(['straight', 'orthogonal']);
+   *   ② `curve`（`C-F3-05`）2026-10-26 补上：控制点由两端端口法向导出
+   *      （`route.curveControl`，判据按同一式子逐值复算），**不再**抛 `E_ROUTE_UNSUPPORTED`。
+   *      未实现的取值仍然**响亮拒绝**（`E_ROUTE_UNSUPPORTED`），不会静默画成直线。 */
+  const ROUTE_IMPLEMENTED = Object.freeze(['straight', 'orthogonal', 'curve']);
   /** 线型三档（`C-F3-12`）；`dasharray` 是**确定值**，不许临时算 */
   const EDGE_STYLES = Object.freeze(['solid', 'dashed', 'dotted']);
   const DASH_TOKEN = Object.freeze({ solid: '', dashed: '5 4', dotted: '1 3' });

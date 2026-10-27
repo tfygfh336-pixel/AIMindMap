@@ -193,10 +193,16 @@ describe('新域 56 的登记面（domain 56 一旦漏登记，断言就"哪一�
     expect(renderer.domains).toContain('56');
   });
 
-  it('本域的 7 条断言都真的存在（数量变动要同批改文档真值）', () => {
+  /* 【2026-10-27 UI 优化批】7 → **9**：本批给域 56 补了两条**新**断言（只增不删）——
+   *   ①「草稿窗编辑框的『保存』始终在可见区内」（撑高正文造溢出 ⇒ 滚到顶/滚到底都不出框，含 elementFromPoint 命中测试）
+   *   ②「草稿窗：报错 200ms 后仍在屏幕上」（写一句灰色例行提示后 `#err-toast` 仍留着报错原文）
+   * 为什么这两条必须落在域 56 而不是别处：它们判的正是**草稿窗**（按内容定大小、实测 805×251 视口）
+   * 那两个既有缺陷 —— 保存按钮在视口外、报错被下一句灰字盖掉。改完实跑 9 条全绿（见
+   * `.review/20261062-UI优化/对照.md`）。⇒ 数量改动要同批改这里的真值，别让它悄悄漂。 */
+  it('本域的 9 条断言都真的存在（数量变动要同批改文档真值）', () => {
     const list = require('../scripts/smoke/56-草稿图编辑.js');
     expect(Array.isArray(list)).toBe(true);
-    expect(list.length).toBe(7);
+    expect(list.length).toBe(9);
     list.forEach((a) => {
       expect(typeof a.name).toBe('string');
       expect(typeof a.run).toBe('function');

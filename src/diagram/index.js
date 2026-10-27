@@ -23,13 +23,15 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(
       require('./schema.js'), require('./measure.js'), require('./render-svg.js'),
-      require('./tokens.js'), require('./wrap.js'), require('./layout.js'), require('./route.js')
+      require('./tokens.js'), require('./wrap.js'), require('./layout.js'), require('./route.js'),
+      require('./export-svg.js'), require('./profiles.js')
     );
   } else {
     root.MMDiagram = factory(root.MMDiagramSchema, root.MMDiagramMeasure, root.MMDiagramRender,
-      root.MMDiagramTokens, root.MMDiagramWrap, root.MMDiagramLayout, root.MMDiagramRoute);
+      root.MMDiagramTokens, root.MMDiagramWrap, root.MMDiagramLayout, root.MMDiagramRoute,
+      root.MMDiagramExport, root.MMDiagramProfiles);
   }
-})(typeof self !== 'undefined' ? self : this, function (schema, measure, render, tokens, wrap, layout, route) {
+})(typeof self !== 'undefined' ? self : this, function (schema, measure, render, tokens, wrap, layout, route, exporter, profiles) {
   'use strict';
 
   /** 本内核的接口版本（**不是** `graph.version`、也不是 `meta.formatVersion`）：
@@ -80,8 +82,7 @@
   }
 
   /** 只算布局，不渲染（判据 6"rank 不变"直接读它，不必从 SVG 里反推） */
-  function layoutOfDoc(doc, opts) {
-    const o = opts || {};
+  function layoutOfDoc(doc, opts) {    const o = opts || {};
     const measurer = measure.createMeasurer({ measureText: o.measureText });
     return layout.autoLayout(doc, { measurer: measurer, gap: o.gap, contentMaxW: o.contentMaxW });
   }
@@ -100,8 +101,40 @@
     renderAuto: renderAuto,
     /** 布局接口的**默认实现**（= 直接用 JSON 里的 `rect`）；自动布局是 `layoutOfDoc` */
     layoutOf: render.layoutOf,
+    /** 单条边的几何定稿（**纯函数**：判据可以直接喂一条非法 route 验"响亮拒绝"那条守门） */
+    resolveEdge: render.resolveEdge,
     layoutOfDoc: layoutOfDoc,
     routeEdges: routeEdges,
+    // ---- 导出（**只有 SVG 这一档**；PNG/PDF 的能力清单如实给 `ok:false` + 缺什么）----
+    exportSVG: exporter.exportSVG,
+    /** 自动布局那一档的导出：与 `exportSVG` **共用同一份交付自检**（两条坐标来源不许两套口径） */
+    exportAuto: function (doc, opts) { return exporter.exportOf(renderAuto(doc, opts)); },
+    exportOf: exporter.exportOf,
+    exportCapabilities: exporter.exportCapabilities,
+    checkStandalone: exporter.checkStandalone,
+    utf8Bytes: exporter.utf8Bytes,
+    // ---- 主题（`C-F6-01`…`C-F6-04`）：两套 token、对比度、语义类解析 ----
+    THEMES: tokens.THEMES,
+    THEME_NAMES: tokens.THEME_NAMES,
+    THEME_PAIRS: tokens.THEME_PAIRS,
+    SEMANTIC_CLASSES: tokens.SEMANTIC_CLASSES,
+    SEMANTIC_COLORS: tokens.SEMANTIC_COLORS,
+    contrastRatio: tokens.contrastRatio,
+    contrastReport: tokens.contrastReport,
+    themeKeyDiff: tokens.themeKeyDiff,
+    resolveSemantic: tokens.resolveSemantic,
+    // ---- 剖面（MS4 的纯逻辑那一半）：能力集合展开 + 控件面契约 ----
+    PROFILES: profiles.PROFILES,
+    PROFILES_REQUIRED: profiles.REQUIRED,
+    PROFILES_MARKS: profiles.MARKS,
+    expandProfile: profiles.expandProfile,
+    profileSupports: profiles.supports,
+    profileMark: profiles.markOf,
+    controlsFor: profiles.controlsFor,
+    profileIssues: profiles.profileIssues,
+    profileCapabilities: profiles.allCapabilities,
+    capabilityCount: profiles.capabilityCount,
+    ProfileError: profiles.ProfileError,
     // ---- 校验（`src/schema.js` 也用这一份，判据不分叉）----
     validateGraph: schema.validateGraph,
     validateGraphRefs: schema.validateGraphRefs,
@@ -120,7 +153,20 @@
     assignRanks: layout.assignRanks,
     orderLayers: layout.orderLayers,
     totalCrossings: layout.totalCrossings,
+    alignSubAxis: layout.alignSubAxis,
     simplifyPolyline: route.simplify,
+    // ---- 曲线（`C-F3-05`）：控制点算式与采样都是公开的纯函数（判据按同一式子复算）----
+    curveControl: route.curveControl,
+    flattenCubic: route.flattenCubic,
+    cubicAt: route.cubicAt,
+    SIDE_NORMAL: route.SIDE_NORMAL,
+    // ---- 容器框的语义（框架 ≠ 障碍）：判据要能直接喂折线验"沿边框跑" ---- 
+    frameBorderRuns: route.frameBorderRuns,
+    borderOverlap: route.borderOverlap,
+    overpassOf: route.overpassOf,
+    CURVE_MIN_K: tokens.CURVE_MIN_K,
+    CURVE_K_DIV: tokens.CURVE_K_DIV,
+    CURVE_SAMPLES: tokens.CURVE_SAMPLES,
     // ---- 报错类型（调用方按 `code` 判，不按文案判）----
     MMDiagramError: render.MMDiagramError,
     ERROR_CODES: tokens.ERROR_CODES,

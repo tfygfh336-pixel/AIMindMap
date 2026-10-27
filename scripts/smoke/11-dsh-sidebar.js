@@ -622,6 +622,96 @@ const assertions = [
           + ' ｜ 收掉的模态=' + sealed.n + '，收尾关掉=' + closed2.n
       };
     }
+  },
+
+  /* ==========================================================================================
+   * 【2026-10-27 UI 优化】两条**结构性**判据，钉住本批最容易做假的两种改法：
+   *
+   * 甲 **token 层真的生效**：`renderer/tokens.css` 由 `style.css` 的 `@import` 牵进来，
+   *    所以 `getComputedStyle(document.body).getPropertyValue('--ink-3')` 必须读得到真值。
+   *    为什么这条重要：本批把 86 个硬编码色值收敛成 token，一旦 `@import` 被删/路径写错，
+   *    **整张表的颜色会静默回落**（CSS 变量取不到就 invalid at computed-value time），
+   *    肉眼看起来"变素了"但没有任何报错 —— 这正是本工程最怕的"改了却没生效"。
+   *
+   * 乙 **新加的浮层同样让位给原生侧栏**：`#err-toast` 的右缘必须 ≤ 可用区宽
+   *    （= `innerWidth − --dsh-sidebar-width`）。`.overlay` 当年就是栽在这件事上
+   *    （`inset:0` 按整窗居中 ⇒ 右缘伸到 WebContentsView 底下被吃掉）。
+   *    判据用**几何**（右缘 ≤ 可用区），不用 `elementFromPoint` —— 原生视图在合成层之上，
+   *    渲染层的命中测试**看不见它**（本文件上游那条断言的长注释已写明）。
+   * ========================================================================================== */
+  {
+    name: '【UI 优化】token 层真的生效：tokens.css 经 @import 进来了（--ink / --ink-3 / --hit-min 读得到真值）',
+    run: async (ctx) => {
+      const r = await ctx.exec(`(function () {
+        var cs = getComputedStyle(document.body);
+        return {
+          ink: (cs.getPropertyValue('--ink') || '').trim(),
+          ink3: (cs.getPropertyValue('--ink-3') || '').trim(),
+          accent: (cs.getPropertyValue('--accent') || '').trim(),
+          hitMin: (cs.getPropertyValue('--hit-min') || '').trim(),
+          fsBody: (cs.getPropertyValue('--fs-body') || '').trim(),
+          rCard: (cs.getPropertyValue('--r-card') || '').trim(),
+          bodyFs: cs.fontSize
+        };
+      })()`);
+      const ok = r.ink === '#1f2329' && r.ink3 === '#68707d' && r.accent === '#1664ff'
+        && r.hitMin === '32px' && r.fsBody === '14px' && r.rCard === '8px';
+      return {
+        ok,
+        text: '--ink=' + JSON.stringify(r.ink) + ' --ink-3=' + JSON.stringify(r.ink3)
+          + ' --accent=' + JSON.stringify(r.accent) + ' --hit-min=' + JSON.stringify(r.hitMin)
+          + ' --fs-body=' + JSON.stringify(r.fsBody) + ' --r-card=' + JSON.stringify(r.rCard)
+          + ' ｜ body font-size=' + r.bodyFs + '（应由 --fs-body 决定）'
+      };
+    }
+  },
+
+  {
+    name: '【UI 优化】`#err-toast` 让位给原生侧栏：右缘 ≤ 可用区宽（侧栏开 0 / 420 两档各量一次）',
+    run: async (ctx) => {
+      const measure = `(function () {
+        var b = document.getElementById('err-toast');
+        if (!b) return { ok: false, why: '没有 #err-toast' };
+        b.hidden = false;
+        b.style.visibility = 'hidden';           /* 只为量几何：不闪、不抢命中 */
+        var r = b.getBoundingClientRect();
+        var raw = (getComputedStyle(document.body).getPropertyValue('--dsh-sidebar-width') || '').trim();
+        var side = parseFloat(raw) || 0;
+        var vw = window.innerWidth;
+        b.style.visibility = '';
+        return { ok: true, right: Math.round(r.right), left: Math.round(r.left), width: Math.round(r.width),
+                 side: side, vw: vw, avail: vw - side };
+      })()`;
+      const restore = `(function () {
+        var b = document.getElementById('err-toast');
+        if (b) { b.hidden = true; b.style.visibility = ''; }
+        document.body.classList.remove('dsh-sidebar-on');
+        document.body.style.removeProperty('--dsh-sidebar-width');
+        return 1;
+      })()`;
+      try {
+        // 档① 侧栏开：可用区 = innerWidth − 420
+        await ctx.exec('(function () { document.body.classList.add("dsh-sidebar-on");'
+          + ' document.body.style.setProperty("--dsh-sidebar-width", "420px"); return 1; })()');
+        const on = await ctx.exec(measure);
+        // 档② 侧栏关：可用区 = innerWidth
+        await ctx.exec('(function () { document.body.classList.remove("dsh-sidebar-on");'
+          + ' document.body.style.removeProperty("--dsh-sidebar-width"); return 1; })()');
+        const off = await ctx.exec(measure);
+        const okA = on && on.ok && on.side === 420 && on.right <= on.avail + 1 && on.width > 0;
+        const okB = off && off.ok && off.side === 0 && off.right <= off.avail + 1;
+        return {
+          ok: okA && okB,
+          text: '侧栏开（--dsh-sidebar-width=' + (on && on.side) + '）⇒ 错误条 right=' + (on && on.right)
+            + ' ≤ 可用区 ' + (on && on.avail) + ' ⇒ ' + okA
+            + ' ｜ 侧栏关（=' + (off && off.side) + '）⇒ right=' + (off && off.right)
+            + ' ≤ 可用区 ' + (off && off.avail) + ' ⇒ ' + okB
+            + '（视口宽 ' + (on && on.vw) + '；量的时候临时把 visibility 藏起来，不闪）'
+        };
+      } finally {
+        await ctx.exec(restore);
+      }
+    }
   }
 ];
 

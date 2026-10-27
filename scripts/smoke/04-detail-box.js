@@ -896,6 +896,163 @@ const assertions = [
         await closeEditReal(ctx);
       }
     }
+  },
+
+  /* ==========================================================================================
+   * 【2026-10-27 UI 优化】「保存」按钮必须**始终在视口 / 对话框可见区内**
+   * ------------------------------------------------------------------------------------------
+   * ## 治的病
+   *   `.dialog-box` 是 `max-height:85vh; overflow-y:auto`，而 `.dialog-actions` 是它的**最后一个
+   *   子元素** ⇒ 内容一高（草稿窗实测视口只有 805×251），动作行就被滚出视口，用户得先自己往下滚
+   *   才点得到「保存」。草稿窗那边靠 `editor.js` 的 `scrollIntoView` 兜着，主窗连兜都没有。
+   *
+   * ## 修法
+   *   动作行 `position: sticky; bottom: 0`（纯 CSS，不改 DOM 骨架）⇒ 滚动到任何位置，它都贴在
+   *   对话框可见区的底部。同一处口径在 `style.css` 的 `.dialog-actions` 与 `draft-map.html` 的
+   *   `.mm-ed-actions` 上各一份（两个页面各一张表）。
+   *
+   * ## 判据为什么"自己把内容撑高"
+   *   主窗 1424×900 时编辑框**本来就不溢出**（sticky 在这里插不上手 ⇒ 断言恒绿 = 空转）。
+   *   所以先把 `#edit-detail` 撑到 1200px 人为制造溢出（读的是**产品自己的样式**，不是伪造 DOM），
+   *   然后在 **scrollTop=0** 与 **scrollTop=max** 两个位置各量一次：
+   *     ① 「保存」矩形整块落在对话框**可见区**内；② 整块落在**视口**内。
+   *   没有 sticky 时，scrollTop=0 那一次读到的是 y≈1200（视口外）⇒ 必红。
+   * ========================================================================================== */
+  {
+    name: '编辑对话框的「保存」始终在可见区内：把正文撑高制造溢出后，滚到顶 / 滚到底都不许出框'
+      + '（粘底动作行；纯 CSS，不靠 scrollIntoView）',
+    run: async (ctx) => {
+      let stretched = false;
+      try {
+        const pre = await ensureProjectOpen(ctx);
+        if (!pre.ok) return { ok: false, text: '打开项目失败：' + pre.text };
+        const node = await pickNodeForEdit(ctx);
+        if (!node.ok) return { ok: false, text: node.text };
+        const opened = await openEditByF2(ctx);
+        if (!opened.open) return { ok: false, text: '真键盘 F2 没能打开「编辑节点」框' };
+        // 制造溢出：把正文格撑到 1200px（只改**这一个实例的 height**，不改任何产品规则）
+        const made = await ctx.exec(`(function () {
+          var ta = document.getElementById('edit-detail');
+          var box = document.querySelector('#edit-dialog .dialog-box');
+          if (!ta || !box) return { ok: false, why: '缺 #edit-detail 或 .dialog-box' };
+          ta.style.height = '1200px';
+          box.scrollTop = 0;
+          return { ok: true, overflow: box.scrollHeight > box.clientHeight + 8,
+                   scrollHeight: box.scrollHeight, clientHeight: box.clientHeight };
+        })()`);
+        stretched = true;
+        const measure = `(function () {
+          var btn = document.getElementById('edit-ok');
+          var box = document.querySelector('#edit-dialog .dialog-box');
+          if (!btn || !box) return { ok: false, why: '缺 #edit-ok 或 .dialog-box' };
+          var b = btn.getBoundingClientRect(), q = box.getBoundingClientRect();
+          var vh = window.innerHeight, vw = window.innerWidth;
+          /* 真判据（不是几何）：对按钮**中心**做命中测试 —— 被 sticky 动作行/遮罩/父层裁掉时
+           * rect 读数与正常显示**完全一样**，只有 elementFromPoint 与真帧像素能分辨
+           * （门禁 V1 visibility-judge-check 就是为此存在的）。 */
+          var cx = Math.round(b.left + b.width / 2), cy = Math.round(b.top + b.height / 2);
+          var at = document.elementFromPoint(cx, cy);
+          var hit = !!(at && (at === btn || (at.closest && at.closest('button') === btn)));
+          return { ok: true,
+            btn: { top: Math.round(b.top), bottom: Math.round(b.bottom), left: Math.round(b.left), right: Math.round(b.right) },
+            box: { top: Math.round(q.top), bottom: Math.round(q.bottom) },
+            vh: vh, vw: vw, scrollTop: Math.round(box.scrollTop),
+            center: { x: cx, y: cy }, at: at ? (at.tagName + (at.id ? '#' + at.id : '')) : 'null', hit: hit,
+            inBox: b.top >= q.top - 1 && b.bottom <= q.bottom + 1,
+            inView: b.top >= -1 && b.bottom <= vh + 1 && b.left >= -1 && b.right <= vw + 1 };
+        })()`;
+        const top = await ctx.exec(measure);
+        await ctx.exec('(function () { var box = document.querySelector("#edit-dialog .dialog-box");'
+          + ' box.scrollTop = box.scrollHeight; return 1; })()');
+        const bottom = await ctx.exec(measure);
+        const ok = !!(made && made.ok && made.overflow && top && top.ok && bottom && bottom.ok
+          && top.inBox && top.inView && top.hit && bottom.inBox && bottom.inView && bottom.hit);
+        return {
+          ok,
+          text: '把正文撑到 1200px ⇒ 对话框溢出=' + (made && made.overflow)
+            + '（scrollHeight ' + (made && made.scrollHeight) + ' > clientHeight ' + (made && made.clientHeight) + '）'
+            + ' ｜ 滚到顶 scrollTop=' + (top && top.scrollTop) + ' ⇒ 「保存」rect=' + JSON.stringify(top && top.btn)
+            + ' 在框内=' + (top && top.inBox) + ' 在视口内=' + (top && top.inView)
+            + ' 中心命中自己=' + (top && top.hit) + '（命中=' + (top && top.at) + '）'
+            + ' ｜ 滚到底 scrollTop=' + (bottom && bottom.scrollTop) + ' ⇒ rect=' + JSON.stringify(bottom && bottom.btn)
+            + ' 在框内=' + (bottom && bottom.inBox) + ' 在视口内=' + (bottom && bottom.inView)
+            + ' 中心命中自己=' + (bottom && bottom.hit) + '（命中=' + (bottom && bottom.at) + '）'
+            + '（视口 ' + (top && top.vw) + '×' + (top && top.vh) + '）'
+        };
+      } finally {
+        if (stretched) {
+          await ctx.exec('(function () { var ta = document.getElementById("edit-detail");'
+            + ' if (ta) ta.style.height = ""; return 1; })()');
+        }
+        await closeEditReal(ctx);
+      }
+    }
+  },
+
+  /* ==========================================================================================
+   * 【2026-10-27 UI 优化】可点区台账的**实测**一档（声明台账在 `tests/ui-tokens.test.js`）
+   * ------------------------------------------------------------------------------------------
+   * 改版前实测：工具栏按钮 **25.6px** 高（font 13×1.2 + padding 4×2 + border 2）、详情框标题栏
+   * 微钮 **≈18px** —— `app-screens.md` §9.4 给的控件高区间是 27–40（median 34）。
+   * 现在：工具栏/对话框 ≥32（`--hit-min`）、详情框标题栏微钮 ≥28（**登记的唯一例外**：那一行 33px
+   * 高是域 40 热度条判据⑪的几何前提，32 放不下）、孤立手势圆钮 ≥44（`--hit-gesture`）。
+   * 判据读的是**真实矩形**，不是声明。
+   * ========================================================================================== */
+  {
+    name: '可点区实测：工具栏按钮 ≥32、详情框标题栏微钮 ≥24、重展开圆钮 ≥44（读真实 getBoundingClientRect）',
+    run: async (ctx) => {
+      try {
+        const pre = await ensureProjectOpen(ctx);
+        if (!pre.ok) return { ok: false, text: '打开项目失败：' + pre.text };
+        const node = await pickNodeForEdit(ctx);
+        if (!node.ok) return { ok: false, text: node.text };
+        // 开一个详情框（`.fd-head-btns` 只在框里；用产品自己的入口 MM.showDetail）
+        const openedBox = await ctx.exec(`(function () {
+          var app = window.MMApp, st = app.getState ? app.getState() : null;
+          var jm = st && st.jm;
+          if (!jm) return { ok: false, why: '没有 jm' };
+          var n = jm.get_node(${JSON.stringify(node.id)});
+          if (!n) return { ok: false, why: '拿不到节点 ' + ${JSON.stringify(node.id)} };
+          try { app.closeAllFloatDetail(); } catch (e) {}
+          window.MM.showDetail(n);
+          return { ok: true };
+        })()`);
+        await ctx.exec('new Promise(function (res) { setTimeout(res, 250); })');
+        const r = await ctx.exec(`(function () {
+          function sizes(sel) {
+            var out = [];
+            Array.prototype.slice.call(document.querySelectorAll(sel)).forEach(function (el) {
+              var q = el.getBoundingClientRect();
+              var cs = getComputedStyle(el);
+              if (cs.display === 'none' || cs.visibility === 'hidden') return;
+              if (!q.width && !q.height) return;
+              out.push({ w: Math.round(q.width), h: Math.round(q.height) });
+            });
+            return out;
+          }
+          return { tb: sizes('#toolbar button'), fd: sizes('.float-detail .fd-head-btns button'),
+                   fab: sizes('#dsh-restore-fab'), dlg: sizes('.dialog-actions button') };
+        })()`);
+        const minH = (arr) => (arr.length ? Math.min.apply(null, arr.map((x) => x.h)) : null);
+        const tb = minH(r.tb), fd = minH(r.fd), fab = minH(r.fab);
+        const tbOk = tb !== null && tb >= 32;
+        const fdOk = fd !== null && fd >= 24;
+        /* 重展开圆钮只在"侧栏折叠"时可见；采不到就**如实报未采到**，不当通过也不当失败
+         * （它是另一条独立判据的对象，见域 11；这里只做"采到就查"）。 */
+        const fabOk = fab === null ? null : fab >= 44;
+        const ok = tbOk && fdOk && (fabOk === null || fabOk);
+        return {
+          ok,
+          text: '开详情框=' + (openedBox && openedBox.ok ? 'ok' : JSON.stringify(openedBox))
+            + ' ｜ 工具栏按钮 ' + r.tb.length + ' 个，最矮 ' + tb + 'px（≥32 ⇒ ' + tbOk + '）'
+            + ' ｜ 详情框标题栏微钮 ' + r.fd.length + ' 个，最矮 ' + fd + 'px（≥24（登记例外：标题框 33px 是域 40 的硬契约）⇒ ' + fdOk + '）'
+            + ' ｜ 重展开圆钮 ' + (r.fab.length ? (fab + 'px（≥44 ⇒ ' + fabOk + '）') : '不可见 ⇒ 本档未采到')
+            + ' ｜ 对话框动作按钮 ' + r.dlg.length + ' 个'
+        };
+      } finally {
+        await ctx.exec('(function () { try { if (window.MMApp && MMApp.closeAllFloatDetail) MMApp.closeAllFloatDetail(); } catch (e) {} return 1; })()');
+      }
+    }
   }
 ];
 

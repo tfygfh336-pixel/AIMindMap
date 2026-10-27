@@ -113,10 +113,24 @@
   const ROUTE_MAX_STATES = 900000;
 
   /* ------------------------------------------------------------------
+   * 三½、曲线路由（`C-F3-05`）：控制点**由两端端口法向导出**（没有随机、没有拟合）
+   * ------------------------------------------------------------------ */
+
+  /** 控制点到端点的距离 = `max(CURVE_MIN_K, |p0−p3| / CURVE_K_DIV)`。
+   *  为什么是这个式子：三次贝塞尔在 t=0 处的切向就是 `c1−p0` ⇒ 控制点落在**端口法向**上，
+   *  曲线才会"沿着端口方向出、沿着端口方向进"（这正是 `C-F3-05` 的判据原文）。
+   *  两个数都是常量 ⇒ 控制点可被判据**逐值复算**（不许"看起来像曲线"就算）。 */
+  const CURVE_MIN_K = 16;
+  const CURVE_K_DIV = 3;
+  /** 曲线采样段数：曲线在判据里要能"量"（交叉/标签/穿框都走折线），
+   *  所以给一个**固定**的采样数（固定 ⇒ 同输入同输出；与"画得多顺滑"无关）。 */
+  const CURVE_SAMPLES = 16;
+
+  /* ------------------------------------------------------------------
    * 四、边标签（`C-F3-14` / `C-F3-15`）
    * ------------------------------------------------------------------ */
 
-  const LABEL_FONT_SIZE = 10;
+  /** 边标签字号与净空 */  const LABEL_FONT_SIZE = 10;
   /** 标签矩形的高度（字号 + 上下各 2px 的呼吸） */
   const LABEL_HEIGHT = 14;
   /** 标签底边到所属线段的**净空**（0 就是"贴着线"，判据允许的最紧一档） */
@@ -126,7 +140,149 @@
   const LABEL_PATH_CLEARANCE = 4;
 
   /* ------------------------------------------------------------------
-   * 五、错误类型（**唯一**；调用方按 `code` 判，不按文案判）
+   * 五、主题（`C-F6-02` / `C-F6-03`）与语义 classDef（`C-F6-01`）
+   * ------------------------------------------------------------------
+   * 三条纪律（每一条都有判据盯着，见 `tests/diagram-theme.test.js`）：
+   *   ① **两套 token 的键集逐键相同**（缺一个就报错）—— 换皮不是"少一个键就用默认"；
+   *   ② 每套都要算得出 **对比度 ≥ 4.5:1**（`THEME_PAIRS` 里逐对现算，不写死"看起来挺清楚"）；
+   *   ③ 语义类**十个**，未知语义类 ⇒ 报错并列出合法取值（不静默退化成默认色）。
+   * 导出的产物里样式全在**元素属性**上（`fill=` / `stroke=`），没有 `<link>`、没有 `@import`
+   * ⇒ `C-F6-04` 的判据是"0 个外链"，不是"我们打算内联"。
+   */
+
+  /** 语义 classDef 的十个类（`C-F6-01`；顺序固定 ⇒ 报错文案与产物都可复跑） */
+  const SEMANTIC_CLASSES = Object.freeze([
+    'link', 'hook', 'mangle', 'nat', 'filter', 'security', 'conntrack', 'decision', 'app', 'proto'
+  ]);
+
+  /** 两套 token。**键集必须逐键相同**（缺键由 `themeKeyDiff()` 报出来） */
+  const THEMES = Object.freeze({
+    light: Object.freeze({
+      canvas: '#ffffff',
+      nodeFill: '#f7f9fc',
+      nodeStroke: '#33415c',
+      nodeText: '#1b2430',
+      containerFill: 'none',
+      containerStroke: '#8a94a6',
+      containerText: '#4a5568',
+      layerFill: '#eef2f7',
+      layerText: '#4a5568',
+      watermark: '#8a94a6',
+      edge: '#33415c',
+      edgeLabel: '#33415c',
+      annotation: '#7a5c00'
+    }),
+    dark: Object.freeze({
+      canvas: '#0b1220',
+      nodeFill: '#1a2233',
+      nodeStroke: '#7d8ca6',
+      nodeText: '#e8eef7',
+      containerFill: 'none',
+      containerStroke: '#6b7a91',
+      containerText: '#b9c4d4',
+      layerFill: '#131c2b',
+      layerText: '#b9c4d4',
+      watermark: '#6b7a91',
+      edge: '#94a3b8',
+      edgeLabel: '#cbd5e1',
+      annotation: '#f0c674'
+    })
+  });
+
+  /** 语义类 → 每套主题的取值（`C-F6-01`：十个类各解析到一个 token） */
+  const SEMANTIC_COLORS = Object.freeze({
+    light: Object.freeze({
+      link: '#1f6feb', hook: '#8250df', mangle: '#bc4c00', nat: '#1a7f37', filter: '#0a7ea4',
+      security: '#cf222e', conntrack: '#7d4e00', decision: '#6639ba', app: '#0b7285', proto: '#57606a'
+    }),
+    dark: Object.freeze({
+      link: '#6cb6ff', hook: '#d2a8ff', mangle: '#ffa657', nat: '#56d364', filter: '#56d4dd',
+      security: '#ff7b72', conntrack: '#e3b341', decision: '#bc8cff', app: '#4dd0c8', proto: '#adbac7'
+    })
+  });
+
+  /** 判"正文可读"用的 (前景, 背景) 对（`C-F6-02` / `C-F6-03` 的 4.5:1 逐对现算）。
+   *  ⚠️ 水印不在里面：它是**装饰**（本来就带 opacity < 1），把它算进"正文对比度"是把判据用错地方。 */
+  const THEME_PAIRS = Object.freeze([
+    ['nodeText', 'nodeFill'],
+    ['nodeText', 'canvas'],
+    ['edgeLabel', 'canvas'],
+    ['containerText', 'canvas'],
+    ['layerText', 'layerFill'],
+    ['annotation', 'canvas']
+  ]);
+
+  /** 主题名（`opts.theme` 的合法取值；缺省 light ⇒ 既有产物逐字节不变） */
+  const THEME_NAMES = Object.freeze(['light', 'dark']);
+
+  /** sRGB 相对亮度（WCAG 2.x） */
+  function relativeLuminance(hex) {
+    const h = String(hex || '').replace('#', '');
+    if (h.length !== 6) return NaN;
+    const ch = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+    // 断点取 sRGB 标准里那个四位小数的分界（WCAG 文档的旧近似与它差 < 0.001）
+    const lin = ch.map((c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+  }
+
+  /** 对比度（前景 vs 背景）；任一不是 `#rrggbb` 或背景是 `none` ⇒ NaN（调用方必须显式处理） */
+  function contrastRatio(fg, bg) {
+    const a = relativeLuminance(fg);
+    const b = relativeLuminance(bg);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return NaN;
+    const hi = Math.max(a, b);
+    const lo = Math.min(a, b);
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  /** 两套 token 的键集差异（空数组 = 逐键相同，`C-F6-03` 的判据） */
+  function themeKeyDiff() {
+    const a = Object.keys(THEMES.light).sort();
+    const b = Object.keys(THEMES.dark).sort();
+    return {
+      missingInDark: a.filter((k) => b.indexOf(k) < 0),
+      missingInLight: b.filter((k) => a.indexOf(k) < 0),
+      keys: a.length
+    };
+  }
+
+  /** 逐对算对比度（`C-F6-02`/`03` 的读数；低于 `min` 的那些会被判据点名） */
+  function contrastReport(themeName, min) {
+    const t = THEMES[themeName] || THEMES.light;
+    const floor = isNum(min) ? min : 4.5;
+    return THEME_PAIRS.map((p) => {
+      const ratio = contrastRatio(t[p[0]], t[p[1]]);
+      return { theme: themeName, fg: p[0], bg: p[1], ratio: ratio, ok: ratio >= floor };
+    });
+  }
+
+  function isNum(v) { return typeof v === 'number' && Number.isFinite(v); }
+
+  /**
+   * 语义名 → 颜色。`C-F6-01` 的判据："十个语义类各能解析到一个 token；未知语义类 ⇒ 报错并
+   * 列出合法取值（**不静默退化成默认色**）"。
+   * ⚠️ 同时接受字面 `#rrggbb`（后向兼容：既有数据的 `color` 是十六进制直写，不是语义类）——
+   * 但**其余字符串一律报错**，不猜。
+   */
+  function resolveSemantic(name, themeName) {
+    const theme = THEMES[themeName] ? themeName : 'light';
+    if (typeof name !== 'string' || !name) {
+      throw new MMDiagramError('E_THEME_CLASS',
+        '颜色取值必须是语义类（' + SEMANTIC_CLASSES.join(' / ') + '）或 #rrggbb（收到 '
+        + JSON.stringify(name) + '）—— 不静默退化成默认色',
+        { object: { color: name }, allowed: SEMANTIC_CLASSES.slice() });
+    }
+    if (/^#[0-9a-fA-F]{6}$/.test(name)) return name;
+    const hit = SEMANTIC_COLORS[theme][name];
+    if (hit) return hit;
+    throw new MMDiagramError('E_THEME_CLASS',
+      '未知语义类 ' + JSON.stringify(name) + '：合法取值是 ' + SEMANTIC_CLASSES.join(' / ')
+      + '，或直接给 #rrggbb —— 本内核**不**把未知语义退化成默认色（那会让"写错了"看起来像"生效了"）',
+      { object: { color: name }, allowed: SEMANTIC_CLASSES.slice(), theme: theme });
+  }
+
+  /* ------------------------------------------------------------------
+   * 六、错误类型（**唯一**；调用方按 `code` 判，不按文案判）
    * ------------------------------------------------------------------ */
 
   /** 稳定规则码（新增拒绝路径**必须**在这里登记：码是给机器判的，文案是给人读的） */
@@ -135,7 +291,8 @@
     'E_ROUTE_UNSUPPORTED', 'E_TEXT_OVERFLOW', 'E_TEXT_FIT_ROUNDS',
     'E_LAYER_OVERLAP', 'E_WATERMARK_NO_ROOM',
     'E_ROUTE_FAILED', 'E_ROUTE_MARGIN', 'E_LANE_OVERFLOW',
-    'E_LABEL_NO_ROOM', 'E_LAYOUT_CYCLE', 'E_LAYOUT_CROWDED'
+    'E_LABEL_NO_ROOM', 'E_LAYOUT_CYCLE', 'E_LAYOUT_CROWDED',
+    'E_ROUTE_ON_BORDER', 'E_PIN_CROWDED', 'E_THEME_CLASS', 'E_THEME_UNKNOWN'
   ]);
 
   class MMDiagramError extends Error {
@@ -161,10 +318,15 @@
     NODE_GAP_DEFAULT, RANK_GAP_DEFAULT, GAP_NODE_MAX, GAP_RANK_MAX, SIZE_QUANTUM, COORD_QUANTUM,
     // 布线
     LANE_GAP, LANE_MARGIN, FANOUT_GAP, GAP_HALF, HALO_WIDTH,
+    // 曲线（`C-F3-05`）
+    CURVE_MIN_K, CURVE_K_DIV, CURVE_SAMPLES,
     STEP_COST, BEND_PENALTY, CROSS_PENALTY, HUG_PENALTY, HUG_RANGE_CELLS, OVERLAP_PENALTY,
     ROUTE_MARGIN, ROUTE_MAX_STATES,
     // 标签
     LABEL_FONT_SIZE, LABEL_HEIGHT, LABEL_CLEARANCE, LABEL_PATH_CLEARANCE,
+    // 主题与语义色（`C-F6-01`…`C-F6-04`）
+    THEMES, THEME_PAIRS, THEME_NAMES, SEMANTIC_CLASSES, SEMANTIC_COLORS,
+    relativeLuminance, contrastRatio, themeKeyDiff, contrastReport, resolveSemantic,
     // 错误
     ERROR_CODES, MMDiagramError
   };

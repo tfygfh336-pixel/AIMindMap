@@ -14,10 +14,15 @@
 <body>
   <!-- 顶部工具栏（flex-wrap：拖宽侧栏压缩空间时按钮自动换行，不被遮挡） -->
   <div id="toolbar">
-    <span id="app-title">AI MindMap</span>
+    <!-- 页面标题 = 全页**唯一**的 `h1`（`app-screens.md` §4.3「Every screen has one h1；
+         没有 h1 的屏被 inspector 直接判 fail」）。改版前这里是 `<span>` ⇒ 整个界面没有一级标题。
+         样式仍由 `style.css` 的 `#app-title` 决定（id 选择器与标签无关），所以换标签不改外观。
+         按钮文案去掉 emoji（`tells.md` §1「Emoji as icons or bullets — banned」）：图标不承载
+         任何信息，而"保存"两个字承载了全部。 -->
+    <h1 id="app-title">AI MindMap</h1>
     <select id="project-select" title="切换笔记项目"></select>
     <input id="search-box" type="text" placeholder="全文搜索节点（Enter 搜索）" title="全文搜索：标题/详情/图片备注/标签">
-    <button id="btn-save" title="保存到磁盘（Ctrl+S）。未保存时标题栏会显示 ● —— 关闭窗口或切换项目前请先保存">💾 保存</button>
+    <button id="btn-save" title="保存到磁盘（Ctrl+S）。未保存时标题栏会显示 ● —— 关闭窗口或切换项目前请先保存">保存</button>
     <span class="spacer"></span>
     <button id="btn-undo" title="撤销（Ctrl+Z）">↶</button>
     <button id="btn-redo" title="重做（Ctrl+Y）">↷</button>
@@ -39,7 +44,10 @@
        本次 +N 改 M · 待确认删 K · 未转换 K —— 界面一个数都不自己算（判定在 CLI 侧）。
        按钮各打在 `bind-sync` 的一个既有开关上：暂停/继续 · 立即同步 · 解绑（解绑保留已导入内容）。 -->
   <div id="bind-bar" style="display:none">
-    <span id="bind-bar-icon" aria-hidden="true">📁</span>
+    <!-- 这里原来有个 `📁` emoji 图标（`tells.md` §1「Emoji as icons or bullets — banned」）。
+         文案本身就是"已收录 N 文件 · 上次同步 …"，图标一个信息都不多带 ⇒ 去掉，`aria-hidden` 元素
+         也随之不需要了（`app-bindings.js` 仍按 id 取它，取不到就不写，行为不变）。 -->
+    <span id="bind-bar-icon" aria-hidden="true"></span>
     <span id="bind-bar-text"></span>
     <span id="bind-bar-btns">
       <!-- 【R4 第⑥步】只有**真的有提议**时才出现（`display:none` ⇒ 没有提议时与从前逐字节相同）：
@@ -255,6 +263,33 @@
           <button id="tag-view-close" type="button" title="关闭（Esc）">✕</button>
         </div>
         <div id="tag-view-body"></div>
+      </div>
+
+      <!-- ============================================================
+           持久错误条（`#err-toast`）—— 2026-10-27 UI 优化
+           ------------------------------------------------------------
+           守的那件事：**报错不许被下一句灰色提示盖掉**。
+           `MM.setStatus(text, true)` 原来是**唯一**的错误出口（`app-core.js` 的 setStatus 只有 5 行：
+           写 textContent + 改 color），所以错误只活到"下一次状态写入"为止 —— 实测只活 35ms 就被
+           `已加载：…` 之类的例行提示覆盖；而且 `#status-text` 固定 280px + ellipsis，长报文本来也只剩
+           前 ~23 个汉字。`app-screens.md` §11「Error … one sentence saying what failed」要求错误**留在
+           屏幕上**。
+           形态与纪律（四条，每条都对应一个实测代价）：
+             · **不在工具栏里**：加进工具栏会改它的宽度 ⇒ 可能多挤一行（+33px），而"工具栏行数 =
+                    f(窗口宽, 侧栏宽)"是域 37 的既存几何契约 ✗；
+             · **不覆盖 `#status-text`**：状态栏文案是既有判据的读取对象（域 40 直接读 `style.color`），
+                    所以这里是**并列的第二个载体**，不是替换；
+             · **住在 `#main` 里面（绝对定位）、不是 body 级的 fixed**：body 级的 `bottom:12px` 会压在
+                    `#msg-bar`（消息栏）上 —— 实测代价：域 28 的"输入框那块深色像素"读数被它盖成 0
+                    （打字读回正确、可命中=true，但**像素证据没了**）。住进 `#main` 之后它只可能盖画布，
+                    永远进不了消息栏与工具栏；
+             · `pointer-events:none`（只有 ✕ 打开）：浮在画布上，不许挡拖拽/框选/命中测试。
+           ⚠️ 必须排在**脚本之前**：`app-core.js` 在加载期就把 ✕ 接上（`#err-toast-close`）。
+           判据：域 16「报错 200ms 后仍在屏幕上」+ 域 11（右缘让位）+ 域 28（不盖消息栏）+ 域 56。
+           ============================================================ -->
+      <div id="err-toast" role="alert" aria-live="assertive" hidden>
+        <span id="err-toast-text"></span>
+        <button id="err-toast-close" type="button" title="收起这条报错（报错原文仍留在状态栏）">✕</button>
       </div>
     </div>
   </div>

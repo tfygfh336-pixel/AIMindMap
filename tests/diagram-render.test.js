@@ -406,20 +406,48 @@ describe('C-F3-02 / C-F3-04 / C-F3-07 / C-F3-08 端口、直线、两端独立�
   });
 });
 
-describe('未实现的路由必须**响亮拒绝**（不许静默画成直线）', () => {
-  // MS2 起 `orthogonal` 已实现（`ROUTE_IMPLEMENTED` 两项），**`curve` 仍未实现** ——
-  // 这条红线原封不动地转移到 curve 上：静默画成直线 = 把"没做"说成"做了"。
-  it('route = curve ⇒ 抛 E_ROUTE_UNSUPPORTED 并点名未实现', () => {
+describe('路由三档：`curve` 已实现，未实现的取值仍**响亮拒绝**', () => {
+  // 2026-10-26：`curve` 补上（`C-F3-05`）。这条用例因此从"必须抛"翻成"必须**真的画出曲线**"，
+  // 但**红线没变**：静默画成直线 = 把"没做"说成"做了"，所以判据是"产物里有 `C` 命令 + 控制点"。
+  it('route = curve ⇒ 真的画三次贝塞尔（`C` 命令 + data-c1/data-c2），不是直线', () => {
     const doc = netfilterDoc();
     doc.graph.edges[0].route = 'curve';
+    const { svg, report } = D.render(doc);
+    const g = svg.match(/<g data-edge="e1"[^>]*data-route="curve"[^>]*data-c1="([^"]+)" data-c2="([^"]+)"/);
+    expect(g, 'route=curve 的边没有控制点属性').toBeTruthy();
+    const path = svg.match(/<path data-curve="1" data-edge="e1" d="M ([^"]+)"/);
+    expect(path, 'route=curve 的边没有画成 path').toBeTruthy();
+    expect(path[1]).toContain('C');                        // 三次贝塞尔命令
+    expect(svg).not.toMatch(/<line data-edge="e1"/);       // 不许退化成直线
+    expect(report.notImplemented).not.toContain('route:curve');
+  });
+
+  it('未实现的取值（`spline`）⇒ 数据层**判红**（`E_GRAPH`，报错文案列出合法三档）', () => {
+    // ⚠️ 分两层判，别混：**数据非法**由 `validateGraph` 挡（`E_GRAPH`）；
+    //    `E_ROUTE_UNSUPPORTED` 是"规范里有、这批没实现"那一档（今天规范与实现相等 ⇒ 走不到），
+    //    它是**守门员**，下面一条用例直接喂给它验 —— 否则那不是判据，是死代码。
+    const doc = netfilterDoc();
+    doc.graph.edges[0].route = 'spline';
     let err = null;
     let out = null;
     try { out = D.render(doc); } catch (e) { err = e; }
-    expect(err, 'route=curve 被静默接受了').not.toBeNull();
-    expect(err.code).toBe('E_ROUTE_UNSUPPORTED');
-    expect(err.message).toContain('curve');
+    expect(err, 'route=spline 被静默接受了').not.toBeNull();
+    expect(err.code).toBe('E_GRAPH');
+    expect(err.message).toContain('spline');
     expect(out).toBeNull();                            // 不许"报错还给出图"
-    expect(err.detail.implemented).toEqual(['straight', 'orthogonal']);
+  });
+
+  it('守门员：`resolveEdge` 遇到未实现的 route ⇒ `E_ROUTE_UNSUPPORTED`，并列出已实现的三档', () => {
+    const views = new Map([['n-a', { rect: { x: 0, y: 0, w: 80, h: 40 } }],
+      ['n-b', { rect: { x: 200, y: 0, w: 80, h: 40 } }]]);
+    let err = null;
+    try {
+      D.resolveEdge({ id: 'ex', from: { node: 'n-a' }, to: { node: 'n-b' }, route: 'bspline' }, views, null);
+    } catch (e) { err = e; }
+    expect(err, '守门员没拦住').not.toBeNull();
+    expect(err.code).toBe('E_ROUTE_UNSUPPORTED');
+    expect(err.detail.implemented).toEqual(['straight', 'orthogonal', 'curve']);
+    expect(err.message).toContain('bspline');
   });
 
   // 反过来的一半：`orthogonal` **MS2 起真的做了** ⇒ 它必须**不再**拒绝，而且真的绕线。
@@ -447,7 +475,7 @@ describe('未实现的路由必须**响亮拒绝**（不许静默画成直线）
     const doc = minimalDoc({ graph: { edges: [{ id: 'e1', from: { node: 'n-a' }, to: { node: 'n-b' } }] } });
     const { svg } = D.render(doc);
     expect(svg).toContain('data-edge="e1"');
-    expect(D.ROUTE_IMPLEMENTED).toEqual(['straight', 'orthogonal']);
+    expect(D.ROUTE_IMPLEMENTED).toEqual(['straight', 'orthogonal', 'curve']);
     // 缺省这条边仍是**一条直线**（没有折点、没有 data-points 属性）
     expect(svg).toMatch(/<line data-edge="e1"/);
     expect(svg).not.toContain('data-points=');
@@ -563,7 +591,7 @@ describe('报告（"没做"必须写在报告里，不许靠读者猜）', () =>
     // MS2 起 orthogonal 与 layout:auto 都做了 ⇒ 未实现清单只剩 curve（曲线）与界面那两档
     expect(report.notImplemented).not.toContain('route:orthogonal');
     expect(report.notImplemented).not.toContain('layout:auto');
-    expect(report.notImplemented).toContain('route:curve');
+    expect(report.notImplemented).not.toContain('route:curve');   // 2026-10-26 补上了
     // 没跑布线时，布线读数必须是"未启用"而不是"0 个交叉"（后者会被读成"查过了，没有交叉"）
     expect(report.routing.enabled).toBe(false);
     expect(Array.isArray(report.wrapped)).toBe(true);

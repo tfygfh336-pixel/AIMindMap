@@ -14,6 +14,70 @@
 
 ## [Unreleased]
 
+### 界面优化（参考 taste-skill · 15 项刻度）
+
+> 参考 `Leonxlnx/taste-skill`（`SKILL.md` 542 行 + `references/{tells,critique,app-screens}.md`）。
+> 先定性：本工程属 **app screen**（不是 marketing page）⇒ 用 app-screens 的 house rules，**不套**页面的 hero/图片下限/滚动场景。
+
+- **新增 `renderer/tokens.css` 作单一登记处**（36 色 / 6 档字号 / 4 档圆角 / 7 档间距；
+  `style.css` 用 `@import`、草稿窗用 `<link>`，同一份）。
+- **15 项刻度（改前 → 改后）**：
+  字号 13 档 → **6 档且 0 处 px 字面量** · 色值 86 → **36 且只在 tokens.css 一处** ·
+  正文对比度 **3.24 → 5.00**（不合格规则 12 → 0）· 间距非 4 倍数 **173 → 0** · 圆角 10 → 4 ·
+  静止投影 2 → 0 · 强调色 2 蓝 + 1 紫 → **1** · 控件 25.6/18 → **32/24**（圆钮 44）·
+  草稿窗「💾 保存」**在视口内** · 报错**有了持久载体 `#err-toast`**（此前只活 35ms）·
+  `h1` 0 → 1 · 可见焦点环 · emoji 0。
+- **判据**：`tests/ui-tokens.test.js` 25 例（字号集合 / 4 网格 / **WCAG 现算** / 圆角 / 裸 hex /
+  可点区台账 / 动作行分离 / 错误条），**每条都带判别力注入**；冒烟 **+7 条**（域 04/11/16/56，一条没删）。
+- **三条回归的定位与修法（都是本批自己改动引起的，判据一处未放宽）**：
+  ① `#err-toast` 原为 **body 级 `fixed; bottom:12px`** ⇒ 正好压在 `#msg-bar` 上，且按设计不自动消失，
+     全量链路里被前面报错点亮后一直留着 ⇒ 输入框「字在里面、像素没了」。修法：**挪进 `#main`**（`#main` 加
+     `position:relative`、toast 改 `absolute`）⇒ **几何上再也进不了工具栏/消息栏**。
+  ② 星标抬到 32×32 后 5 颗 = 176px + 两个落盘按钮 **超过详情框内宽** ⇒ 第 4/5 颗被 `.fd-scroll` 真裁掉
+     ⇒ 加 `flex-wrap: wrap`（命中区没缩）。
+  ③ 域 03 双击② **不是 R1 回归** —— 坏的是**后面那次正向对照单击**；二分钉在 `.mm-tb`（节点悬浮工具条）
+     的 `padding 3→4`：它的 padding 环压到节点上，**吞掉了单击**（命中工具条，进不了节点）⇒ `padding: 0`。
+- **新增定位手法 `revert-block.js`**：不用 `git`，把改后 CSS **按规则块**逐步退回改前、每步重跑目标域，
+  二分收敛到唯一一条规则（本次据此排除了头栏/星标/画布高度/错误条等 5 个嫌疑）。
+- **两条判据的边界被踩过、按原意守住**：
+  · 标题框 **33px 是域 40 判据⑬ 的硬契约** ⇒ 微钮抬到 28px 会让框头 45px 当场红；
+    修法是**重算账**（纵向 padding 8→4、按钮 24 ⇒ `4+4+24+1=33`），**不是放松判据**。
+  · `MM.setStatus` 的 `#f53f3f` **不许换 token** —— 域 40 用 `/245,\s*63,\s*63|f53f3f/i` 匹配 `style.color`，
+    换成 `var()` 后读回 `rgb(196,36,42)` 会**假红**；对比度补救放在第二个载体 `#err-toast`（5.78:1）。
+- **连带修好**：工具栏纵向 padding 8→4（按钮抬到 32 后顶栏 46→52 会让画布少 6px；收到 4 后 41px，反而多 5px）；
+  顶栏多 6px 曾让 `#mindmap-container` 底边与详情框下缘**齐平**（判据要 2px 余量）⇒ 收 4px 后余量恢复。
+- **如实登记 11 条「需真机肉眼」单独成节、不算完成**（`对照.md` §6）；自评 5.75 → 7.6。
+
+### 图能力补齐（MS2 未做项 + MS3/MS4 纯逻辑 · 参考 archify / graphify）
+
+> 参考 `tt-a1i/archify`（含 `DESIGN.md` / `archify/SKILL.md`）与 `Graphify-Labs/graphify`（含 `ARCHITECTURE.md`）。
+> 提取清单逐条对上 `C-*` 编号，设计外条目单列并写明「为什么不采纳」。
+
+- **`C-A-04` 副轴居中定案**：原判据「±0.5px」与「坐标落在 8px 网格」**算术互斥** ——
+  k 个子节点中心都在 8 的倍数上 ⇒ 均值 = 8·(Σaᵢ)/k，k ∤ Σaᵢ 时不在网格上（k=2、a={0,1} ⇒ 均值 4）
+  ⇒ 误差下界 = 半步长 = 4px。改成：单子误差 `=== 0` 硬判；多子 `≤4px` 且 `report.centering[]` 报原值。
+  实测：基准图 **exact 6/8、误差均值 0.0**；共享父的三兄弟 −96 / 0 / +96（和 = 0，对称是唯一最优解）。
+- **`curve` 路由实现**：`k = max(16, |p3−p0|/3)`，控制点由端口法向导出；从 SVG 的 `data-c1/data-c2` 可复算
+  （一致到 ≤2e-3）；矢量 `C` 命令而非采样折线；交叉时曲线当高优先级（`curveUncut` 原值报出）。
+  ⇒ `ROUTE_IMPLEMENTED` 变为 `straight / orthogonal / curve` 三项。
+- **直连边 overpass**：`render(doc, {overpass:true})` 才开，**缺省逐字节 = MS1**；
+  基线证明不是“抄自己”——用 `git show 9037c4b:src/diagram/…` 取 **MS1 提交当时源码**到 `%TEMP%` 渲染同三份夹具，
+  `SAME netfilter 12203B / SAME sixShapes 5442B / SAME minimal 1844B`，三条 sha256 写死进测试。
+- **容器语义定案 = 框架不是障碍**：可垂直穿过、可在顶点相触，**不许沿边框共线跑**（重叠 >1px ⇒ `E_ROUTE_ON_BORDER`）。
+- **`pinned` 与自动区域的重叠避免**：只推自动节点不动钉住的；`pinnedAvoid` 点名「谁被推 / 哪个轴 / 推多少」。
+- **主题**：浅/深两套 token（13 键逐键相同）、十语义 `classDef`、**对比度现算 ≥4.5:1**；导出零外链。
+- **`src/diagram/export-svg.js`**：结构稳定、两跑 sha256 相同（**隔 5ms**）。
+  ⚠️ **PNG / PDF 是缺口不是功能**：仓里零光栅器（依赖只有 electron / jsmind / vitest / pdfjs-dist 解析器 / system-ocr），
+  缺的是字形轮廓解析 ⇒ `exportCapabilities()` 报 `png.ok=false` / `pdf.ok=false` 并带 `needs[]` + `reason`，
+  另配**反向用例**：把 `png.ok` 改成 true ⇒ 必红（防“假装做了”）。
+- **`src/diagram/profiles.js`**：**76 条能力 × 5 剖面**展开 + `controlsFor` 控件面契约；
+  `complex` 零 ✗、窄剖面拒绝集非空、✓∩✗=∅、**与 `docs/DIAGRAM-MODES.md` §3.2 逐格对拍**。
+- **抓到一次真事故**：副轴对齐后每条被断的边只剩 1 个交叉点 ⇒ MS2「只断第一处」的注入**从红变绿** ——
+  判据没坏，是**没靶子**了。造「短竖边穿两条长横边」的几何靶子（`data-cuts == 交叉点数` 是等式）后复跑 MS2 **11/11 全红**。
+  ⇒ 已写进 `docs/DIAGRAM-MODES.md` §7.5：**判据全绿 ≠ 每条判据还有靶子**。
+- 越界两处（门禁强制，已追认）：`docs/ARCHITECTURE.md §2.3` 登记两个新模块（不登记 G8 红）；
+  `docs/DATA-FORMAT.md` 的 `edges.route` 原文「MS1 只实现 straight ⇒ curve 响亮拒绝」**已成假话**，已改。
+
 ### 十批收口（2026-10-26）
 
 > 本段是十批并行开发的合并记录。全链 `exit 0`（15 步 / 16 条 / 1280.5 s，预算 1770 s），

@@ -483,6 +483,69 @@ const assertions = [
   },
 
   {
+    /* 【2026-10-27 UI 优化】报错**不许**被下一句灰色提示盖掉。
+     * 由来（实测，本文件开头 ① 段的注释也记着同一件事）：`#status-text` 上**有好几个写者**
+     * ——文件监听 36ms 后就会把它盖成一句例行提示；而 `MM.setStatus(err)` 原来只写
+     * `textContent + color` 两样，**没有任何持久化** ⇒ 报错的实际寿命只有"到下一次写入"，
+     * 父批实测 **35ms**。而 `#status-text` 还固定 280px + ellipsis（长报文只剩前 ~23 汉字）。
+     *
+     * 修法：加**第二个载体** `#err-toast`（`index.html` 里有长注释说明它为什么不在工具栏、
+     * 为什么让位给原生侧栏）。它不是替换 —— 状态栏照旧报"最近一次动作"，所以下面同时判两件事：
+     *   ① 写一句**灰色**例行提示后，等 250ms，`#err-toast` 仍然可见且**仍含报错原文**；
+     *   ② `#status-text` 确实被那句灰字更新了（证明"没被盖"不是因为没人写灰字 ——
+     *      否则本断言会在"灰字根本没来"的情况下假绿）。
+     * 判别力注入：把 `app-core.js` 里 `showErrToast(msg)` 那一行删掉 ⇒ ① 必红。 */
+    name: '【UI 优化】报错 200ms 后仍在屏幕上：再写一句灰色例行提示，`#err-toast` 仍留着报错原文'
+      + '（状态栏照旧报最新动作 —— 两个载体，不是替换）',
+    run: async (ctx) => {
+      if (!ctx.openImpl) return { ok: false, text: '采不到真值：冒烟底座没有 ctx.openImpl ⇒ 判红' };
+      const projFile = await ctx.exec('window.MMApp.getState().project.file');
+      const gone = path.join(path.dirname(projFile), 'no-such-file-ui-toast-16.aimmtest');
+      const openSpy = openPathSpy(ctx, '');
+      const readToast = `(function () {
+        var b = document.getElementById('err-toast');
+        var t = document.getElementById('err-toast-text');
+        var s = document.getElementById('status-text');
+        return { has: !!b, hidden: !b || b.hidden,
+          toast: t ? String(t.textContent) : '',
+          status: s ? String(s.textContent) : '',
+          statusColor: (s && s.style && s.style.color) ? s.style.color : '' };
+      })()`;
+      try {
+        ctx.openFileLogClear();
+        await ctx.exec(REC_ARM);
+        await ctx.exec(clickAndWait(gone, gone));
+        const first = await ctx.exec(readToast);
+        // ── 这一手正是"把报错盖掉"：再写一句**不报错**的例行提示 ──
+        await ctx.exec("(function () { window.MM.setStatus('例行提示：本句来自 UI 优化批的探针'); return 1; })()");
+        await ctx.exec('new Promise(function (res) { setTimeout(res, 250); })');
+        const after = await ctx.exec(readToast);
+        await ctx.exec(REC_TAKE);
+        const toastHadErr = !!first && first.hidden === false && String(first.toast).indexOf(CAUSE_MISSING) >= 0;
+        const toastStillThere = !!after && after.hidden === false
+          && String(after.toast).indexOf(CAUSE_MISSING) >= 0
+          && String(after.toast) === String(first.toast);
+        const statusMovedOn = !!after && String(after.status).indexOf('例行提示') >= 0;
+        const ok = toastHadErr && toastStillThere && statusMovedOn && openSpy.calls.length === 0;
+        return {
+          ok,
+          text: '点了不存在的路径 ⇒ 错误条出现并含「' + CAUSE_MISSING + '」=' + toastHadErr
+            + '（隐藏=' + (first && first.hidden) + ' 原文=' + JSON.stringify(String(first && first.toast).slice(0, 46)) + '）'
+            + ' ｜ 再写一句灰色例行提示 + 等 250ms ⇒ 错误条仍在=' + toastStillThere
+            + '（隐藏=' + (after && after.hidden) + ' 原文=' + JSON.stringify(String(after && after.toast).slice(0, 46)) + '）'
+            + ' ｜ 状态栏已变成那句灰字=' + statusMovedOn
+            + '（' + JSON.stringify(String(after && after.status).slice(0, 30)) + '，color=' + (after && after.statusColor) + '）'
+            + ' ｜ 真的去打开的次数=' + openSpy.calls.length
+        };
+      } finally {
+        try { await ctx.exec('(function () { if (window.MM.hideErrToast) window.MM.hideErrToast(); return 1; })()'); } catch (e) { /* 页面没了：不影响判定 */ }
+        try { await ctx.exec(REC_TAKE); } catch (e) { /* 已卸过 */ }
+        resetImpl(ctx);
+      }
+    }
+  },
+
+  {
     name: '本机链接：右键那条链接 ⇒ 菜单**恰好四项**（打开 / 打开方式 / 在文件资源管理器中打开 / 取消链接）',
     run: async (ctx) => {
       const projFile = await ctx.exec('window.MMApp.getState().project.file');

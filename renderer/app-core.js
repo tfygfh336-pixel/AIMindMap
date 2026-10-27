@@ -500,12 +500,61 @@
       });
     }
   }
-  /* ================= 状态栏（本文件定义，其他模块经 MM 转发调用） ================= */
+  /* ================= 状态栏 + 持久错误条（本文件定义，其他模块经 MM 转发调用） =================
+   *
+   * 【2026-10-27 UI 优化】改版前这一档只有两行：写 textContent + 改 color。两个后果都实测过：
+   *   ① **报错只活到"下一次状态写入"**（实测 35ms 就被 `已加载：…` 之类覆盖）——
+   *      `app-screens.md` §11 要求错误留在屏幕上、说清什么失败了；
+   *   ② `#status-text` 固定 280px + ellipsis ⇒ 长报文只剩前 ~23 个汉字。
+   *
+   * 修法（**并列第二个载体**，不是替换 —— 状态栏的语义与既有判据一个字都不动）：
+   *   · 状态栏照旧只报"最近一次动作"（域 40 直接读 `style.color` 判失败态，见下面那条注释）；
+   *   · 新加 `#err-toast`（`index.html` 里有一段长注释说明它为什么不在工具栏、为什么让位给侧栏）：
+   *     报错写进去后**一直留着**，直到用户点 ✕ 或下一条报错替换它。不做"几秒后自动消失"——
+   *     那只是把"被灰字盖掉"换成"被计时器删掉"，同样是静默。
+   *   · 非报错状态把 color 交还给 CSS（`var(--ink-3)` = 4.62:1），不再写死 `#86909c`（3.24:1）。
+   */
   function setStatus(text, isErr) {
     const el = $('#status-text');
-    el.textContent = text;
-    el.style.color = isErr ? '#f53f3f' : '#86909c';
+    if (!el) return;
+    const msg = (text === undefined || text === null) ? '' : String(text);
+    el.textContent = msg;
+    if (isErr) {
+      /* ⚠️ 这个字面量**不许**换成 token / var()：域 40 按 `style.color` 判失败态
+       * （`scripts/smoke/40-heat-bars.js` 用 /245,\s*63,\s*63|f53f3f/i 匹配读回来的值），
+       * 换成 var(--danger-ink) 会读出 rgb(196,36,42) ⇒ 该域假红。理由与取舍见
+       * `.review/20261062-UI优化/诊断.md` §4「与三条硬约束的对照」。
+       * 对比度补救在**持久载体**上：`#err-toast` 用的是 5.78:1 的 `--danger-ink`。 */
+      el.style.color = '#f53f3f';
+      el.title = msg;                 // 状态栏会省略，原文挂 title（悬停可看全）
+      showErrToast(msg);
+    } else {
+      el.style.color = '';            // 交还 CSS：var(--ink-3)，4.62:1
+      el.title = '最近操作状态';
+    }
   }
+
+  /** 把报错写进持久错误条（`#err-toast`）。缺元素时静默返回 —— 状态栏那一手已经报了，不许抛。 */
+  function showErrToast(msg) {
+    const box = $('#err-toast');
+    const txt = $('#err-toast-text');
+    if (!box || !txt) return;
+    txt.textContent = msg;
+    box.hidden = false;
+  }
+
+  /** 收起持久错误条（用户点 ✕）。报错原文仍留在状态栏 —— 收起的只是这条浮层。 */
+  function hideErrToast() {
+    const box = $('#err-toast');
+    if (box) box.hidden = true;
+  }
+
+  /* 持久错误条的 ✕（`#err-toast` 排在脚本之前 ⇒ 加载期就能取到，不需要等 DOMContentLoaded）。
+   * 取不到就什么都不做：草稿窗有自己的一份（`draft-map.js`），主窗缺元素也不许抛。 */
+  (function bindErrToastClose() {
+    const btn = $('#err-toast-close');
+    if (btn) btn.addEventListener('click', () => hideErrToast());
+  })();
 
   /* —— 只转发「定义在其他文件」的函数（其他模块后加载，故用包装函数而非解构）—— */
   const fdIsThemeMode = (data) => MM.fdIsThemeMode(data);
@@ -538,5 +587,6 @@
   MM.nodeImages = nodeImages;
   MM.nodeFiles = nodeFiles;
   MM.setStatus = setStatus;
+  MM.hideErrToast = hideErrToast;   // 收持久错误条（冒烟域也用它复位，别让上一条报错串到下一档）
   MM.bindDshSidebar = bindDshSidebar;
 })();

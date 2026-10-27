@@ -395,6 +395,23 @@ const assertions = [
       const drv = draftInputDriver(ctx);
       if (!drv.ok) return { ok: false, text: drv.text };
       // ── 格子的几何 + 命中（真点之前先证明"这个点此刻压的就是它"）──
+      /* 【2026-10-27 UI 优化】量之前先把这个格子滚进可见区 —— 与下面"点『保存』之前先滚"**同一条理由、
+       * 同一个口径**（那段注释早就写着"这不是给判据放水：滚完仍然要求 elementFromPoint 命中它自己"）：
+       * 草稿窗按内容定大小（实测 772×257），而 `.mm-ed-box` 现在是 flex 列
+       * （h3 固定 + `.mm-ed-body` 滚 + 动作行固定）⇒ 正文格在**小窗里本来就在折叠线以下**，
+       * 真人也要先滚才能点到它。判据要求的东西一个字没少：滚完必须命中格子自己、
+       * 必须真点、真键盘逐字、Enter 必须是换行。
+       * ⚠️ 改前是"整框滚、动作行被滚出去"，那时正文格中心恰好在可见区内 —— 但代价是「保存」点不到。
+       * 两者在 251px 高的窗口里不可能同时成立，本批选了「主操作永远可见」。 */
+      const scrolledInto = await draftJson(ctx, `(function () {
+        var ta = document.getElementById('edit-detail');
+        var body = document.querySelector('#edit-dialog .mm-ed-body');
+        if (!ta) return JSON.stringify({ ok: false, text: '没有 #edit-detail' });
+        try { ta.scrollIntoView({ block: 'center' }); } catch (e) {}
+        var r = ta.getBoundingClientRect();
+        return JSON.stringify({ ok: true, scroller: body ? Math.round(body.clientHeight) : null,
+          top: Math.round(r.top), bottom: Math.round(r.bottom), vh: window.innerHeight });
+      })()`);
       const g = await draftJson(ctx, `(function () {
         var ta = document.getElementById('edit-detail');
         if (!ta) return JSON.stringify({ ok: false, text: '没有 #edit-detail' });
@@ -406,7 +423,11 @@ const assertions = [
           readOnly: !!ta.readOnly, before: String(ta.value == null ? '' : ta.value) });
       })()`);
       if (!g.ok) return { ok: false, text: g.text || JSON.stringify(g).slice(0, 200) };
-      if (!g.hit) return { ok: false, text: '正文格中心命中=' + g.at + '（不是格子自己 ⇒ 被别的层盖住 / 不在屏上）' };
+      if (!g.hit) {
+        return { ok: false, text: '正文格中心命中=' + g.at + '（不是格子自己 ⇒ 被别的层盖住 / 不在屏上）'
+          + ' ｜ 滚进可见区后 rect=' + JSON.stringify({ top: scrolledInto.top, bottom: scrolledInto.bottom })
+          + ' 视口高=' + scrolledInto.vh + ' 正文区高=' + scrolledInto.scroller };
+      }
       // ── 真鼠标点进格子 + 真键盘逐字 ──
       await drv.driver.click({ x: g.x, y: g.y });
       await drv.driver.settle();
@@ -798,6 +819,210 @@ const assertions = [
           + ' ｜ 还原项目=' + restored
           + (filesSame ? '' : ' ｜ 清单差异：' + JSON.stringify({ before: SNAP0.files, after: now.files }).slice(0, 240))
       };
+    }
+  },
+
+  /* ==========================================================================================
+   * 【2026-10-27 UI 优化 · 草稿窗的「保存」必须始终在视口内】
+   * ------------------------------------------------------------------------------------------
+   * ## 治的病（实测，不是猜）
+   *   草稿窗是按内容定大小的（`main-dsh-sidebar.js` 那边的 `setContentSize`），实测出现过
+   *   **805×251** 的视口；而编辑框 `.mm-ed-box` 是 `max-height:88vh; overflow:auto`
+   *   ⇒ 88vh = 221px，比内容矮 ⇒ 动作行（含「保存」）被滚出视口，只能靠 `editor.js` 的
+   *   `scrollIntoView` 兜着 —— 那是"碰巧还在"，不是"保证了在"。
+   *
+   * ## 判据（与域 04 同一口径，两个页面各一份样式各判一次）
+   *   把「详情」格撑到 900px 人为制造溢出 ⇒ 在 **scrollTop=0** 和 **scrollTop=max** 各量一次：
+   *   「保存」矩形必须同时 ① 在**对话框可见区**内 ② 在**视口**内。
+   *   没有 `position: sticky` 时，scrollTop=0 那一次读到的是 y≈900（视口外）⇒ 必红。
+   *
+   * ## 为什么本域先开一张草稿窗
+   *   草稿窗的尺寸依赖主窗状态；单独跑 `SMOKE_ONLY=56` 时前面域没跑 ⇒ 这条自己铺场
+   *   （照本域既有的"自建前置"写法：切项目 → 挑子树 → 菜单新建草稿窗）。
+   * ========================================================================================== */
+  {
+    name: '【UI 优化】草稿窗编辑框的「保存」始终在可见区内：把正文撑到 900px 制造溢出后，'
+      + '滚到顶 / 滚到底都不许出框（粘底动作行；视口可能只有 251px 高）',
+    run: async (ctx) => {
+      if (!ctx.draft) return { ok: false, text: 'ctx.draft 不可用' };
+      let opened = false;
+      try {
+        const cur = await execJson(ctx, '(function(){var p=window.MMApp.getState().project;return JSON.stringify({name:p?p.name:""});})()');
+        if ((cur.name || '') !== PROJ) {
+          const o = await openProject(ctx, PROJ);
+          if (!o.ok) return { ok: false, text: '切不到 ' + PROJ + '：' + JSON.stringify(o) };
+        }
+        const picked = await execJson(ctx, pickSubtreeJs(1, 3));
+        if (!picked.ok || !picked.selOk) return { ok: false, text: '挑不到 ≤3 节点的子树：' + JSON.stringify(picked) };
+        const clicked = clickNewDraftMenu();
+        if (!clicked.ok) return { ok: false, text: clicked.text };
+        const list = await waitDraftCount(ctx, 1);
+        if (!list.length) return { ok: false, text: '草稿窗一个都没开出来（现有 ' + ctx.draft.list().length + ' 张）' };
+        opened = true;
+        const ready = await waitDraft(ctx, '(function () { var s = window.MM.draftEditor ? window.MM.draftEditor() : null;'
+          + ' return JSON.stringify({ ok: !!(s && s.dialog) }); })()', 60);
+        if (!ready.ok) return { ok: false, text: '草稿页没有 draftEditor 读数口：' + JSON.stringify(ready).slice(0, 160) };
+
+        // 开编辑框（与"草稿窗能改标题"那条同一条路径：选中根 → 点「编辑节点」）
+        const openDlg = await draftJson(ctx, `(function () {
+          var rid = window.MM.draftEditor().rootId;
+          var root = document.querySelector('jmnode[nodeid="' + rid + '"]');
+          if (!root) return JSON.stringify({ ok: false, text: '页面上找不到根节点 ' + rid });
+          root.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          document.getElementById('btn-edit').click();
+          return JSON.stringify({ ok: !!window.MM.draftEditor().dialog.open });
+        })()`);
+        if (!openDlg.ok) return { ok: false, text: '点了「编辑节点」但框没开' };
+
+        const made = await draftJson(ctx, `(function () {
+          var ta = document.getElementById('edit-detail');
+          var box = document.querySelector('#edit-dialog .mm-ed-box');
+          var body = document.querySelector('#edit-dialog .mm-ed-body');
+          if (!ta || !box || !body) return JSON.stringify({ ok: false, why: '缺 #edit-detail / .mm-ed-box / .mm-ed-body' });
+          ta.style.height = '900px';
+          body.scrollTop = 0;
+          return JSON.stringify({ ok: true, overflow: body.scrollHeight > body.clientHeight + 8,
+            scrollHeight: body.scrollHeight, clientHeight: body.clientHeight,
+            vh: window.innerHeight, vw: window.innerWidth });
+        })()`);
+        const measure = `(function () {
+          var btn = document.getElementById('edit-ok');
+          var box = document.querySelector('#edit-dialog .mm-ed-box');
+          var body = document.querySelector('#edit-dialog .mm-ed-body');
+          if (!btn || !box) return JSON.stringify({ ok: false, why: '缺 #edit-ok 或 .mm-ed-box' });
+          var b = btn.getBoundingClientRect(), q = box.getBoundingClientRect();
+          var vh = window.innerHeight, vw = window.innerWidth;
+          /* 真判据（不是几何）：对按钮**中心**做命中测试。被裁掉 / 被压住时 rect 读数与正常显示
+           * 一样，只有命中测试能分辨（门禁 V1 就是为此存在的）。 */
+          var cx = Math.round(b.left + b.width / 2), cy = Math.round(b.top + b.height / 2);
+          var at = document.elementFromPoint(cx, cy);
+          var hit = !!(at && (at === btn || (at.closest && at.closest('button') === btn)));
+          return JSON.stringify({ ok: true,
+            btn: { top: Math.round(b.top), bottom: Math.round(b.bottom) },
+            inBox: b.top >= q.top - 1 && b.bottom <= q.bottom + 1,
+            inView: b.top >= -1 && b.bottom <= vh + 1 && b.left >= -1 && b.right <= vw + 1,
+            center: { x: cx, y: cy }, at: at ? (at.tagName + (at.id ? '#' + at.id : '')) : 'null', hit: hit,
+            scrollTop: Math.round((body || box).scrollTop) });
+        })()`;
+        const top = JSON.parse(await draftExec(ctx, measure));
+        await draftExec(ctx, '(function () { var body = document.querySelector("#edit-dialog .mm-ed-body");'
+          + ' if (body) body.scrollTop = body.scrollHeight; return 1; })()');
+        const bottom = JSON.parse(await draftExec(ctx, measure));
+        // 收尾：还原格子高度并关框（别把草稿窗留在模态里影响后面的域）
+        await draftExec(ctx, '(function () { var ta = document.getElementById("edit-detail");'
+          + ' if (ta) ta.style.height = ""; var b = document.getElementById("edit-cancel"); if (b) b.click(); return 1; })()');
+        opened = false;
+        const ok = !!(made && made.ok && made.overflow && top && top.ok && bottom && bottom.ok
+          && top.inBox && top.inView && top.hit && bottom.inBox && bottom.inView && bottom.hit);
+        return {
+          ok,
+          text: '草稿窗视口 ' + (made && made.vw) + '×' + (made && made.vh)
+            + ' ｜ 正文撑到 900px ⇒ 溢出=' + (made && made.overflow)
+            + '（scrollHeight ' + (made && made.scrollHeight) + ' > clientHeight ' + (made && made.clientHeight) + '）'
+            + ' ｜ 滚到顶 scrollTop=' + (top && top.scrollTop) + ' ⇒ 「保存」rect=' + JSON.stringify(top && top.btn)
+            + ' 在框内=' + (top && top.inBox) + ' 在视口内=' + (top && top.inView)
+            + ' 中心命中自己=' + (top && top.hit) + '（命中=' + (top && top.at) + '）'
+            + ' ｜ 滚到底 scrollTop=' + (bottom && bottom.scrollTop) + ' ⇒ rect=' + JSON.stringify(bottom && bottom.btn)
+            + ' 在框内=' + (bottom && bottom.inBox) + ' 在视口内=' + (bottom && bottom.inView)
+            + ' 中心命中自己=' + (bottom && bottom.hit) + '（命中=' + (bottom && bottom.at) + '）'
+        };
+      } finally {
+        try {
+          await draftExec(ctx, '(function () { var ta = document.getElementById("edit-detail");'
+            + ' if (ta) ta.style.height = ""; var b = document.getElementById("edit-cancel"); if (b) b.click(); return 1; })()');
+        } catch (e) { /* 窗口没了：不影响判定 */ }
+        try { await closeDialogs(ctx); } catch (e) { /* 同上 */ }
+        if (opened) { try { ctx.draft.closeAll(); } catch (e) { /* 同上 */ } }
+        /* 还原入口项目：本域末尾的沙箱清理（%TEMP% 那份副本）与后面的域都指望它。
+         * 不还就会读到「临时项目目录收尾 EPERM / 剩余 1 条 book-wifi7」⇒ 整跑 exit 1
+         * （产品侧没问题：是探针把项目切走了又没切回来）。 */
+        if (ENTRY_PROJECT && ENTRY_PROJECT !== PROJ) { try { await openProject(ctx, ENTRY_PROJECT); } catch (e) { /* 同上 */ } }
+      }
+    }
+  },
+
+  /* ==========================================================================================
+   * 【2026-10-27 UI 优化 · 草稿窗的报错也不许被下一句灰字盖掉】
+   * 与主窗域 16 同一口径（那里有完整的长注释）。本页 `#status` 是**一行 + ellipsis**，
+   * 而窗口只有 251px 高 ⇒ 报错更容易连看都看不清。
+   * 判据：制造一句真报错（点「编辑节点」但没选中节点 = 产品自己的分支）
+   *       → 再写一句灰色例行提示 → 等 250ms ⇒ `#err-toast` 仍在且仍是报错原文。
+   * ========================================================================================== */
+  {
+    name: '【UI 优化】草稿窗：报错 200ms 后仍在屏幕上（写一句灰色例行提示后 `#err-toast` 仍留着原文）',
+    run: async (ctx) => {
+      if (!ctx.draft) return { ok: false, text: 'ctx.draft 不可用' };
+      let opened = false;
+      try {
+        const cur = await execJson(ctx, '(function(){var p=window.MMApp.getState().project;return JSON.stringify({name:p?p.name:""});})()');
+        if ((cur.name || '') !== PROJ) {
+          const o = await openProject(ctx, PROJ);
+          if (!o.ok) return { ok: false, text: '切不到 ' + PROJ + '：' + JSON.stringify(o) };
+        }
+        const picked = await execJson(ctx, pickSubtreeJs(1, 3));
+        if (!picked.ok || !picked.selOk) return { ok: false, text: '挑不到 ≤3 节点的子树：' + JSON.stringify(picked) };
+        const clicked = clickNewDraftMenu();
+        if (!clicked.ok) return { ok: false, text: clicked.text };
+        const list = await waitDraftCount(ctx, 1);
+        if (!list.length) return { ok: false, text: '草稿窗一个都没开出来' };
+        opened = true;
+        await waitDraft(ctx, '(function () { var s = window.MM.draftEditor ? window.MM.draftEditor() : null;'
+          + ' return JSON.stringify({ ok: !!(s && s.dialog) }); })()', 60);
+
+        const readToast = `(function () {
+          var b = document.getElementById('err-toast');
+          var t = document.getElementById('err-toast-text');
+          var s = document.getElementById('status');
+          return JSON.stringify({ hidden: !b || b.hidden, toast: t ? String(t.textContent) : '',
+            status: s ? String(s.textContent) : '' });
+        })()`;
+        /* 制造报错，两档（**先用产品自己的分支**，用不上才退回页面自己的状态口）：
+         *   档① 刚开出来的草稿窗 `selectedId` 是空的（`draft-map.js:45`）⇒ 点「编辑节点」会走
+         *        `withSelection` 的"没选中"分支，写一条 `isErr=true` 的报错 = 真产品路径；
+         *   档② 万一那时已经有选中（上一个域留下的），就调 `MM.draftSetStatus(msg, true)` ——
+         *        那是本页**自己的**状态口（`draft-map.js` 里转发给同一个 setStatus），
+         *        判据要验的是"载体"（写进去之后留不留得住），不是"哪一条产品分支先触发"。
+         * 两档都在报文里如实说用了哪一档。 */
+        const errMade = await draftJson(ctx, `(function () {
+          document.getElementById('btn-edit').click();
+          var s = document.getElementById('status');
+          var t = String(s ? s.textContent : '');
+          var how = 'product';
+          if (t.indexOf('请先在图上点一个节点') < 0) {
+            how = 'draftSetStatus';
+            try { window.MM.draftSetStatus('请先在图上点一个节点（探针直调状态口）', true); } catch (e) {}
+            t = String((document.getElementById('status') || {}).textContent || '');
+          }
+          return JSON.stringify({ status: t, how: how });
+        })()`);
+        const first = JSON.parse(await draftExec(ctx, readToast));
+        await draftExec(ctx, '(function () { window.MM.draftSetStatus'
+          + " ? window.MM.draftSetStatus('例行提示：本句来自 UI 优化批的探针', false) : 0; return 1; })()");
+        await draftExec(ctx, 'new Promise(function (res) { setTimeout(res, 250); })');
+        const after = JSON.parse(await draftExec(ctx, readToast));
+        const errWentToStatus = String(errMade.status || '').indexOf('请先在图上点一个节点') >= 0;
+        const toastHadErr = first.hidden === false && String(first.toast).indexOf('请先在图上点一个节点') >= 0;
+        const stillThere = after.hidden === false && String(after.toast) === String(first.toast)
+          && String(after.toast).indexOf('请先在图上点一个节点') >= 0;
+        const statusMoved = String(after.status).indexOf('例行提示') >= 0;
+        return {
+          ok: errWentToStatus && toastHadErr && stillThere && statusMoved,
+          text: '报错来源=' + (errMade.how || '?') + '（状态栏=' + JSON.stringify(String(errMade.status).slice(0, 34)) + '）'
+            + ' ⇒ 报出了=' + errWentToStatus
+            + ' ｜ 错误条出现并含原文=' + toastHadErr + '（隐藏=' + first.hidden + '）'
+            + ' ｜ 再写灰字 + 等 250ms ⇒ 错误条仍在且原文未变=' + stillThere
+            + '（隐藏=' + after.hidden + ' 原文=' + JSON.stringify(String(after.toast).slice(0, 34)) + '）'
+            + ' ｜ 状态栏已变成那句灰字=' + statusMoved
+            + '（' + JSON.stringify(String(after.status).slice(0, 28)) + '）'
+        };
+      } finally {
+        try { await draftExec(ctx, '(function () { if (window.MM.draftHideErrToast) window.MM.draftHideErrToast();'
+          + ' var b = document.getElementById("err-toast"); if (b) b.hidden = true; return 1; })()'); } catch (e) { /* 窗口没了 */ }
+        try { await closeDialogs(ctx); } catch (e) { /* 同上 */ }
+        if (opened) { try { ctx.draft.closeAll(); } catch (e) { /* 同上 */ } }
+        /* 还原入口项目（同上一条的理由）：不还 ⇒ 沙箱清理 EPERM ⇒ 整跑 exit 1。 */
+        if (ENTRY_PROJECT && ENTRY_PROJECT !== PROJ) { try { await openProject(ctx, ENTRY_PROJECT); } catch (e) { /* 同上 */ } }
+      }
     }
   }
 ];

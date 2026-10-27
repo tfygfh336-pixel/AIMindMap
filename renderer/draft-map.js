@@ -48,11 +48,26 @@
 
   function $(id) { return document.getElementById(id); }
 
+  /* 状态栏 + 持久错误条（与主窗 `app-core.js` 的 setStatus **同一口径**，理由见那里的注释）：
+   *   · 状态栏 `#status` 照旧只报"最近一次动作"（域 56 有判据读它的文案）；
+   *   · 报错额外写进 `#err-toast` 并**一直留着**（点 ✕ 或下一条报错才换）。
+   * 为什么要这一手：本页窗口小（实测 805×251），状态栏一行还会被 ellipsis 截；
+   * 一条"没法并入"的原因只活到下一句「正在取落点候选…」为止，等于没报。 */
   function setStatus(text, isErr) {
     const el = $('status');
     if (!el) return;
-    el.textContent = String(text === undefined || text === null ? '' : text);
+    const msg = (text === undefined || text === null) ? '' : String(text);
+    el.textContent = msg;
     el.className = isErr ? 'err' : '';
+    const box = $('err-toast');
+    const txt = $('err-toast-text');
+    if (isErr && box && txt) { txt.textContent = msg; box.hidden = false; }
+  }
+
+  /** 收起持久错误条（点 ✕）。报错原文仍留在 `#status`。 */
+  function hideErrToast() {
+    const box = $('err-toast');
+    if (box) box.hidden = true;
   }
 
   function api() {
@@ -479,6 +494,10 @@
       setStatus('已取消移动（草稿还在）');
     });
 
+    /* 持久错误条的 ✕（元素在 `draft-map.html` 里，脚本之前 ⇒ 这里取得到） */
+    const errClose = $('err-toast-close');
+    if (errClose) errClose.addEventListener('click', () => hideErrToast());
+
     /* 选中：**自己记**（不依赖库的选中态 —— 收起/重排都会让它丢）。
      * 点节点 = 选中并开详情？草稿页没有详情框 ⇒ 只选中；双击 = 开编辑框（与主窗 F2 同义）。 */
     const cont = $('jsmind_container');
@@ -618,4 +637,12 @@
 
   /** 给断言读"页面现算的草稿树"（例如某个节点的正文到底是多少） */
   MM.draftPageTree = function draftPageTree() { return draftTree(); };
+
+  /* 【2026-10-27 UI 优化】把本页的状态栏写入**对外开放一个口**（与主窗 `MM.setStatus` 同名同义）。
+   * 为什么需要：主窗有 `MM.setStatus` 可以驱动"报错 / 灰字"两态，草稿页此前**没有出口**
+   * ⇒ 冒烟只能靠设 value 一类的假动作，或者干脆不验。给一个口，判据才是真的。
+   * ⚠️ 它只是转发：语义、持久错误条的纪律全在 `setStatus` 一处（别在这里写第二份）。 */
+  MM.draftSetStatus = function draftSetStatus(text, isErr) { setStatus(text, isErr); };
+  /** 收起持久错误条（判据复位用） */
+  MM.draftHideErrToast = function draftHideErrToast() { hideErrToast(); };
 })();

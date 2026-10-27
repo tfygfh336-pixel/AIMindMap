@@ -91,3 +91,27 @@ export function autoMinimal(extra) {
   if (e.edges) doc.graph.edges = e.edges;
   return doc;
 }
+
+/**
+ * **钉住的框正好压在自动区域内**的夹具（`pinned` 与自动区域的重叠避免）。
+ * 判据：钉住的那个框位置**逐值不变**，自动节点被推到不重叠处（且仍在 8px 网格上），
+ * 且 `report.pinnedAvoid[]` 逐条点名"谁被推了、往哪个轴、推了多少"。
+ * ⚠️ 这份夹具**必须真的会撞**（否则判据空转）：`n-b` 钉在 (0,0)，而 `n-a` 的自动位置就在那一带。
+ */
+export function pinnedCollideDoc() {
+  const doc = pinnedDoc();
+  doc.nodes.forEach((n) => { if (n.id === 'n-b') n.rect = [0, 0, 208, 96]; });
+  return doc;
+}
+
+/** 一条**长链**（a→b→c→d→e）：每层只有一个节点 ⇒ 副轴可以精确居中（误差必须 === 0） */
+export function chainDoc(n) {
+  const count = n || 5;
+  const nodes = [];
+  const edges = [];
+  for (let i = 0; i < count; i++) {
+    nodes.push({ id: 'k' + i, type: 'rect', title: '第' + (i + 1) + '步', subtitle: 's' + i, badge: 'S' });
+    if (i > 0) edges.push({ id: 'c' + i, from: { node: 'k' + (i - 1) }, to: { node: 'k' + i } });
+  }
+  return { graph: { version: 1, direction: 'LR', grid: 8, edges: edges }, nodes: nodes };
+}

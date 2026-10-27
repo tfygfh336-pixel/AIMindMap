@@ -63,37 +63,49 @@
   /* ================= 对话框骨架 =================
    * adopt-or-create：主窗（`index.html` 静态带骨架）走 adopt —— **一个字节都不改**；
    * 草稿页走 create —— 用**同一套 id**（于是模块内部只有一套 id 常量，没有第二份 DOM 契约）。
-   * 类名用 `mm-ed-*`：草稿页自己给它写样式（草稿页**不引用** `style.css`，那是主图那张表）。 */
+   * 类名用 `mm-ed-*`：草稿页自己给它写样式（草稿页**不引用** `style.css`，那是主图那张表）。
+   *
+   * 【2026-10-27 UI 优化】create 这一支多了一层 `.mm-ed-body`：
+   *   草稿窗是按内容定大小的（实测出现过 **805×251** 的视口），而 `#edit-detail` 是 `rows="8"` 的
+   *   textarea ⇒ 编辑框内容必然比视口高。改前动作行（含「保存」）是最后一个子元素 ⇒ 被滚出视口
+   *   （只靠 `scrollIntoView` 兜着，且**框的中心点还会压到动作行底下**：域 56 实测"正文格中心命中的是 DIV"）。
+   *   现在：`.mm-ed-box` 是 flex 列 → `.mm-ed-body` 自己滚（`overflow:auto`）→ `.mm-ed-actions`
+   *   是**不动的一行**。于是"保存"永远在视口内，而且**不会压在正文格上**（不是 sticky 那种覆盖式方案）。
+   *   ⚠️ 只有 create 这一支（草稿页）用得到它；主窗走 adopt，`index.html` 的骨架依旧逐字未改。 */
   const MARKUP = {
     edit: '<div id="edit-dialog" class="mm-ed-overlay" style="display:none">'
       + '<div class="mm-ed-box">'
       + '<h3 id="edit-dialog-title">编辑节点</h3>'
+      + '<div class="mm-ed-body">'
       + '<label class="mm-ed-row" data-field="topic">标题 <input id="edit-topic" type="text"></label>'
       + '<label class="mm-ed-row" data-field="tags">标签（可选，逗号分隔）'
       + ' <input id="edit-tags" type="text" placeholder="标签1,标签2"></label>'
       + '<label class="mm-ed-row" data-field="detail">正文（HTML 片段，如 &lt;p&gt; &lt;b&gt; &lt;ul&gt;）'
-      + ' <textarea id="edit-detail" rows="8"></textarea></label>'
+      + ' <textarea id="edit-detail" rows="5"></textarea></label>'
       + '<label class="mm-ed-row mm-ed-chk" data-field="expanded">'
       + ' <input id="edit-expanded" type="checkbox"> 展开</label>'
+      + '</div>'
       + '<div class="mm-ed-actions">'
       + '<button id="edit-cancel">取消</button>'
       + '<button id="edit-ok" class="mm-ed-primary">保存</button>'
       + '</div></div></div>',
     image: '<div id="image-dialog" class="mm-ed-overlay" style="display:none">'
-      + '<div class="mm-ed-box"><h3>添加图片</h3>'
+      + '<div class="mm-ed-box"><h3>添加图片</h3><div class="mm-ed-body">'
       + '<label class="mm-ed-row">图片文件 <input id="image-file" type="file" accept="image/*"></label>'
       + '<label class="mm-ed-row">内容备注（AI 阅读时凭此理解图片）'
       + '<textarea id="image-caption" rows="3"></textarea></label>'
       + '<label class="mm-ed-row">出处（可选）<input id="image-source" type="text"></label>'
       + '<label class="mm-ed-row">标签（可选，逗号分隔）<input id="image-tags" type="text"></label>'
+      + '</div>'
       + '<div class="mm-ed-actions"><button id="image-cancel">取消</button>'
       + '<button id="image-ok" class="mm-ed-primary">添加</button></div></div></div>',
     file: '<div id="file-dialog" class="mm-ed-overlay" style="display:none">'
-      + '<div class="mm-ed-box"><h3>添加附件</h3>'
+      + '<div class="mm-ed-box"><h3>添加附件</h3><div class="mm-ed-body">'
       + '<label class="mm-ed-row">文件 <input id="file-file" type="file"></label>'
       + '<label class="mm-ed-row">内容备注（AI 阅读时凭此理解附件用途）'
       + '<textarea id="file-caption" rows="3"></textarea></label>'
       + '<label class="mm-ed-row">出处（可选）<input id="file-source" type="text"></label>'
+      + '</div>'
       + '<div class="mm-ed-actions"><button id="file-cancel">取消</button>'
       + '<button id="file-ok" class="mm-ed-primary">添加</button></div></div></div>'
   };

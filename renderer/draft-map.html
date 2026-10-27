@@ -28,48 +28,71 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data:; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: https:; script-src 'self' file:">
 <title>草稿图 · AI MindMap</title>
 <link rel="stylesheet" href="vendor/jsmind.css">
+<!-- token 层：与主窗 `style.css` 引用的是**同一份** `tokens.css`（单一登记处，见那里的文件头）。
+     本页仍然不引用 `style.css`（那张表全是主图的布局前提），但色值/字号/间距/圆角不许各写一份。 -->
+<link rel="stylesheet" href="tokens.css">
 <style>
   html, body { height: 100%; margin: 0; }
   body {
     display: flex; flex-direction: column;
     font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
-    font-size: 13px; color: #1d2129; background: #f7f8fa;
+    font-size: var(--fs-control); color: var(--ink); background: var(--panel);
     overflow: hidden;
   }
   #bar, #editbar {
     flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-    padding: 6px 10px; background: #fff; border-bottom: 1px solid #e5e6eb;
+    padding: 4px 8px; background: var(--surface); border-bottom: 1px solid var(--border);
     white-space: nowrap; overflow: hidden;
   }
-  #editbar { background: #fafbfc; padding-top: 4px; padding-bottom: 4px; }
+  #editbar { background: var(--panel); padding-top: 4px; padding-bottom: 4px; }
   #bar #title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-  #bar #src { font-weight: 400; color: #4e5969; }
-  #bar #stat { color: #4e5969; }
-  #bar #dropped { color: #d25f00; font-size: 12px; }
-  #bar #note { color: #d25f00; font-size: 12px; }
-  #editbar #sel { color: #1664ff; font-size: 12px; min-width: 12ch; }
+  #bar #src { font-weight: 400; color: var(--ink-2); }
+  #bar #stat { color: var(--ink-2); }
+  #bar #dropped { color: var(--warn-ink); font-size: var(--fs-meta); }
+  #bar #note { color: var(--warn-ink); font-size: var(--fs-meta); }
+  #editbar #sel { color: var(--accent); font-size: var(--fs-meta); min-width: 12ch; }
   #bar .spacer, #editbar .spacer { flex: 1 1 auto; }
   #bar button, #editbar button, #pick button, #move button {
-    padding: 4px 10px; font-size: 12px; cursor: pointer;
-    border: 1px solid #d5d9e0; border-radius: 5px; background: #fff; color: #1664ff;
+    padding: 4px 8px; font-size: var(--fs-meta); cursor: pointer;
+    border: 1px solid var(--control); border-radius: var(--r-control); background: var(--surface); color: var(--accent);
+    min-height: var(--hit-min);   /* 可点区（app-screens §9.4 控件高 27-40、median 34） */
   }
-  #bar button:hover:not(:disabled), #editbar button:hover:not(:disabled) { border-color: #1664ff; background: #f2f7ff; }
-  #bar button:disabled, #editbar button:disabled { color: #86909c; cursor: default; }
-  #bar button.danger { color: #d93026; }
+  #bar button:hover:not(:disabled), #editbar button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-bg); }
+  #bar button:disabled, #editbar button:disabled { color: var(--ink-3); cursor: default; }
+  #bar button.danger { color: var(--danger-ink); }
   #pick, #move {
     flex: 0 0 auto; display: none; align-items: center; gap: 8px;
-    padding: 6px 10px; background: #fff7e8; border-bottom: 1px solid #ffd591;
+    padding: 4px 8px; background: var(--warn-bg); border-bottom: 1px solid var(--warn-border);
   }
   #pick.on, #move.on { display: flex; }
-  #pick select, #move select { max-width: 60ch; font-size: 12px; padding: 2px 4px; }
-  #stage { flex: 1 1 auto; position: relative; overflow: hidden; background: #f7f8fa; }
+  #pick select, #move select { max-width: 60ch; font-size: var(--fs-meta); padding: 4px 4px; }
+  #stage { flex: 1 1 auto; position: relative; overflow: hidden; background: var(--panel); }
   #jsmind_container { position: absolute; inset: 0; overflow: auto; }
   #status {
-    flex: 0 0 auto; padding: 4px 10px; background: #fff; border-top: 1px solid #e5e6eb;
-    color: #4e5969; font-size: 12px; min-height: 18px;
+    flex: 0 0 auto; padding: 4px 8px; background: var(--surface); border-top: 1px solid var(--border);
+    color: var(--ink-2); font-size: var(--fs-meta); min-height: 18px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  #status.err { color: #d93026; }
+  #status.err { color: var(--danger-ink); }
+  /* 持久错误条（见 body 里那段注释）：**浮在画布上、不挡操作**，只有 ✕ 可点。
+     位置在左下、避开顶部两条按钮条与底部状态栏；210px 高的窗口里它也只占 44px。 */
+  #err-toast {
+    position: fixed; left: 8px; bottom: 32px; z-index: 90;
+    display: flex; align-items: flex-start; gap: 8px;
+    max-width: min(520px, calc(100vw - 16px)); max-height: 50vh; overflow: auto;
+    padding: 8px 8px 8px 12px; border-radius: var(--r-card);
+    background: var(--danger-bg); border: 1px solid var(--danger-border); color: var(--danger-ink);
+    font-size: var(--fs-meta); line-height: 1.5; word-break: break-word;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);   /* 它真的浮着 —— house rules 允许浮层有投影 */
+    pointer-events: none;
+  }
+  #err-toast[hidden] { display: none; }   /* 必须排在 #err-toast 之后（同特异度，后写的赢） */
+  #err-toast button {
+    flex: 0 0 auto; pointer-events: auto; cursor: pointer;
+    border: 1px solid var(--danger-border); background: var(--surface); color: var(--danger-ink);
+    border-radius: var(--r-chip); font-size: var(--fs-meta); line-height: 1;
+    min-width: 28px; min-height: 28px;
+  }
   /* 节点不可 inline 编辑（编辑走共用编辑器的对话框）；双击会开那个框 */
   jmnode { cursor: pointer; }
 
@@ -83,25 +106,45 @@
     background: rgba(0, 0, 0, .35);
   }
   .mm-ed-box {
-    background: #fff; border-radius: 8px; padding: 16px 18px;
-    width: min(640px, 92vw); max-height: 88vh; overflow: auto;
+    background: var(--surface); border-radius: var(--r-card); padding: 16px 16px;
+    width: min(640px, 92vw); max-height: 88vh;
+    /* 【2026-10-27 UI 优化】flex 列 + 内部滚动：动作行是**不动的一行**，正文区自己滚。
+     * 为什么不是 sticky（主窗那一种是 sticky）：本页视口实测只有 251px 高，sticky 的动作行会
+     * **压在**滚到它底下的内容上 —— 域 56 实测过这个副作用（"正文格中心命中的是 DIV"）。
+     * flex 列不覆盖任何东西：动作行占它自己那一行位置，正文区在它上面滚。 */
+    display: flex; flex-direction: column; overflow: hidden;
     box-shadow: 0 10px 30px rgba(0, 0, 0, .22);
   }
-  .mm-ed-box h3 { margin: 0 0 12px; font-size: 15px; }
-  .mm-ed-row { display: block; margin-bottom: 10px; font-size: 12px; color: #4e5969; }
+  .mm-ed-box h3 { margin: 0 0 12px; font-size: var(--fs-title); flex: 0 0 auto; }
+  /* 正文区：唯一会滚的那一块（min-height:0 是 flex 列里"允许收缩到比内容小"的必要条件） */
+  .mm-ed-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  .mm-ed-row { display: block; margin-bottom: 8px; font-size: var(--fs-meta); color: var(--ink-2); }
   .mm-ed-row input[type="text"], .mm-ed-row textarea {
     display: block; width: 100%; margin-top: 4px; box-sizing: border-box;
-    padding: 6px 8px; font-size: 13px; color: #1d2129;
-    border: 1px solid #d5d9e0; border-radius: 5px; font-family: inherit;
+    padding: 4px 8px; font-size: var(--fs-control); color: var(--ink);
+    border: 1px solid var(--control); border-radius: var(--r-control); font-family: inherit;
   }
   .mm-ed-row textarea { resize: vertical; }
-  .mm-ed-chk { display: flex; align-items: center; gap: 6px; }
-  .mm-ed-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-  .mm-ed-actions button {
-    padding: 6px 14px; font-size: 13px; cursor: pointer;
-    border: 1px solid #d5d9e0; border-radius: 5px; background: #fff; color: #1d2129;
+  .mm-ed-chk { display: flex; align-items: center; gap: 4px; }
+  /* 【2026-10-27 UI 优化 · 「保存」必须始终在视口内】
+   * 由来（实测）：本页窗口是**按内容定大小**的，实测出现过 805×251 的视口；而
+   * `.mm-ed-box` 是 `max-height:88vh; overflow:auto` ⇒ 88vh = 221px，比编辑框内容矮
+   * ⇒ 动作行（含「保存」）被滚出视口，用户得先自己往下滚才能点到保存。
+   * 修法 = `.mm-ed-box` 改 flex 列 + `.mm-ed-body` 自己滚（见上面那条规则），动作行是
+   * **不动的 flex 项**（`flex: 0 0 auto`）⇒ 永远在框的可见区内，且不覆盖正文。
+   * 这是纯 CSS 的，不改 `editor.js` 现造的任何 id/DOM 契约（只多了一层 `.mm-ed-body` 包裹，
+   * 骨架仍只有一套 —— `tests/editor-reuse` 不受影响）。 */
+  .mm-ed-actions {
+    display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; flex: 0 0 auto;
+    padding-top: 8px; padding-bottom: 4px;
+    background: var(--surface); border-top: 1px solid var(--rule);
   }
-  .mm-ed-actions button.mm-ed-primary { background: #1664ff; border-color: #1664ff; color: #fff; }
+  .mm-ed-actions button {
+    min-height: var(--hit-min);
+    padding: 4px 12px; font-size: var(--fs-control); cursor: pointer;
+    border: 1px solid var(--control); border-radius: var(--r-control); background: var(--surface); color: var(--ink);
+  }
+  .mm-ed-actions button.mm-ed-primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
 </style>
 </head>
 <body>
@@ -143,6 +186,13 @@
   </div>
   <div id="stage"><div id="jsmind_container"></div></div>
   <div id="status"></div>
+  <!-- 持久错误条：与主窗 `index.html` 的 `#err-toast` **同一形态、同一纪律**（那里有一段长注释
+       说明为什么放在工具栏/状态栏之外）。本页没有原生侧栏 ⇒ 不需要让位变量。
+       判据：`scripts/smoke/56-草稿图编辑.js`（报错 200ms 后仍在屏幕上）。 -->
+  <div id="err-toast" role="alert" aria-live="assertive" hidden>
+    <span id="err-toast-text"></span>
+    <button id="err-toast-close" type="button" title="收起这条报错（报错原文仍留在状态栏）">✕</button>
+  </div>
 
   <script src="vendor/jsmind.js"></script>
   <script src="../src/convert.js"></script>

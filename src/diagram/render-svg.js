@@ -83,21 +83,12 @@
   const fontLadder = wrap.fontLadder;
   const fitPart = wrap.fitPartInBox;
 
-  /** 缺省配色（本批不接主题：`C-F6-*` 是 MS3 的事；这里给确定的常量，不引外部 CSS） */
-  const THEME = Object.freeze({
-    nodeFill: '#f7f9fc',
-    nodeStroke: '#33415c',
-    nodeText: '#1b2430',
-    containerFill: 'none',
-    containerStroke: '#8a94a6',
-    containerText: '#4a5568',
-    layerFill: '#eef2f7',
-    layerText: '#4a5568',
-    watermark: '#8a94a6',
-    edge: '#33415c',
-    edgeLabel: '#33415c',
-    annotation: '#7a5c00'
-  });
+  /** 缺省配色 = **light 那一套**（表在 `tokens.THEMES`：两套键集逐键相同，判据在 `tests/diagram-theme.test.js`）
+   *  ⚠️ 缺省必须与 MS1 的字节一致 ⇒ `light` 的取值就是当初那 13 个常量，一个都没改。 */
+  const THEMES = tokens.THEMES;
+  const tokenTheme = tokens;                 // 主题相关的纯函数都在 tokens 里（对比度/键集/语义类）
+  const DEFAULT_THEME = tokens.THEME_NAMES[0];
+  const THEME = THEMES[DEFAULT_THEME];   // 后向兼容的导出（老消费者读 `render.THEME`）
 
   /** 报错的**唯一**类型（带 `code`：调用方按码判，不按文案判 —— 与工程的错误码口径一致）。
    *  MS2 起这个类住在 `tokens.js`（`layout`/`route` 也要抛），这里只引用同一个类对象。 */
@@ -461,13 +452,17 @@
   /**
    * 一条边的几何。
    *
-   * 三档（MS2 起）：
+   * 三档（2026-10-26 起三档都实现）：
    *   · route 缺省 = `ROUTE_IMPLEMENTED[0]`（`straight`）⇒ 与 MS1 **逐字节相同**的那条路；
    *   · `orthogonal` ⇒ 由**布线阶段**（`route.routeAll`）给的折线，这里只做"取几何 + 接线型"；
-   *   · `curve` ⇒ 仍**响亮拒绝**（`E_ROUTE_UNSUPPORTED`；本批不做曲线，设计 §7.2 把它留在 MS3）。
+   *   · `curve`（`C-F3-05`）⇒ 三次贝塞尔；**控制点由端口法向导出**（`route.curveControl`），
+   *     `data-c1` / `data-c2` 把控制点写进产物 ⇒ 判据可以从 SVG **逐值复算**，不必读实现内部。
    * ⚠️ 红线：`orthogonal` 若拿不到折线，**不许**静默画成直线 —— 那会把"没绕线"说成"绕了"。
    */
-  function resolveEdge(edge, views, routed) {
+  function resolveEdge(edge, views, routed, themeName) {
+    // `themeName` 决定语义类解析成哪个色值（`C-F6-01`）；缺省 light ⇒ 与 MS1 的字节一致
+    const theme = tokens.THEMES[themeName] ? themeName : DEFAULT_THEME;
+    const T = tokens.THEMES[theme];
     const routeName = edge.route === undefined ? diagramSchema.ROUTE_IMPLEMENTED[0] : edge.route;
     if (diagramSchema.ROUTE_IMPLEMENTED.indexOf(routeName) < 0) {
       throw new MMDiagramError('E_ROUTE_UNSUPPORTED',
@@ -488,7 +483,8 @@
       id: edge.id, start: start, end: end, style: style,
       from: edge.from.node, to: edge.to.node,
       dash: diagramSchema.DASH_TOKEN[style] || '',
-      color: edge.color || THEME.edge,
+      // 颜色：语义类（十个，`C-F6-01`）或字面 `#rrggbb`；未知语义 ⇒ **报错**，不退化成默认色
+      color: edge.color === undefined ? T.edge : tokens.resolveSemantic(edge.color, theme),
       label: edge.label
     };
 
@@ -502,7 +498,7 @@
         fromPort: g.fromPort, toPort: g.toPort, route: g.route,
         x1: first[0], y1: first[1], x2: last[0], y2: last[1],
         points: pts, runs: g.runs || [], cuts: g.cuts || 0, fallback: g.fallback === true,
-        routedLabel: g.label || null
+        curve: g.curve || null, routedLabel: g.label || null
       });
     }
     if (routeName === 'orthogonal') {
@@ -520,10 +516,22 @@
     const toPort = edge.to.port || ports.to;
     const a = portPoint(fromNode, fromPort);
     const b = portPoint(toNode, toPort);
+    if (routeName === 'curve') {
+      // 手写坐标这套入口也要能画曲线（否则"实现了 curve"只对手写坐标以外成立 —— 那是个假能力）
+      const p0 = [a.x, a.y];
+      const p3 = [b.x, b.y];
+      const cv = route.curveControl(p0, fromPort, p3, toPort);
+      const pts = route.flattenCubic(p0, cv.c1, cv.c2, p3, tokens.CURVE_SAMPLES);
+      return Object.assign(base, {
+        fromPort: fromPort, toPort: toPort, route: 'curve',
+        x1: a.x, y1: a.y, x2: b.x, y2: b.y, points: pts, runs: [], routedLabel: null,
+        curve: { p0: p0, c1: cv.c1, c2: cv.c2, p3: p3, k: cv.k, samples: tokens.CURVE_SAMPLES }
+      });
+    }
     return Object.assign(base, {
       fromPort: fromPort, toPort: toPort, route: 'straight',
       x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-      points: [[a.x, a.y], [b.x, b.y]], runs: [], routedLabel: null
+      points: [[a.x, a.y], [b.x, b.y]], runs: [], routedLabel: null, curve: null
     });
   }
 
@@ -542,6 +550,15 @@
    */
   function renderDiagram(doc, opts) {
     const o = opts || {};
+    // 主题（`C-F6-02`/`03`）：缺省 = light（= MS1 的字节）；未知取值 ⇒ 响亮拒绝，不静默退回浅色
+    if (o.theme !== undefined && tokens.THEME_NAMES.indexOf(o.theme) < 0) {
+      throw new MMDiagramError('E_THEME_UNKNOWN',
+        'theme 只能是 ' + tokens.THEME_NAMES.join(' / ') + '（收到 ' + JSON.stringify(o.theme) + '）—— '
+        + '未知主题**不静默退回浅色**：那会让"写错了"看起来像"生效了"',
+        { object: { theme: o.theme }, allowed: tokens.THEME_NAMES.slice() });
+    }
+    const themeName = o.theme === undefined ? DEFAULT_THEME : o.theme;
+    const T = THEMES[themeName];
     const measurer = measure.createMeasurer({ measureText: o.measureText });
     const nd = normalizeDoc(doc);
     const graph = nd.graph;
@@ -592,7 +609,7 @@
     /* ---- ⑤ 层带：几何 + 水印落点（必须在节点/容器定稿之后，障碍物才是真的）---- */
     const layersIn = Array.isArray(graph.layers) ? graph.layers : [];
     const layers = layersIn.map((l) => ({ id: l.id, label: l.label, labelSide: l.labelSide || 'left',
-      fill: l.fill || THEME.layerFill, rect: { x: l.rect[0], y: l.rect[1], w: l.rect[2], h: l.rect[3] },
+      fill: l.fill || T.layerFill, rect: { x: l.rect[0], y: l.rect[1], w: l.rect[2], h: l.rect[3] },
       watermark: l.watermark }));
     checkLayerOverlap(layers);
     const obstacles = [];
@@ -619,11 +636,39 @@
         edges: edgesIn.map((e) => ({ id: e.id, from: e.from, to: e.to, route: e.route, label: e.label })),
         direction: graph.direction, grid: gridPx, measurer: measurer,
         penalty: o.routePenalty,
+        // 容器框 = **框架**（不是障碍）：布线要能垂直穿过它，但不许沿着它的边框共线跑。
+        // 语义与理由写在 `route.js` 的"五¾"那一节（三条理由，别只记结论）。
+        frames: containers.map((c) => c.rect),
         // 回边清单（来自布局的去环）：交叉的"预期/非预期"分类要用它（判据 2 的口径在 `route.js`）
         reversed: Array.isArray(o.reversedEdgeIds) ? o.reversedEdgeIds : []
       });
     }
-    const edges = edgesIn.map((e) => resolveEdge(e, views, routed));
+    const edges = edgesIn.map((e) => resolveEdge(e, views, routed, themeName));
+
+    /* ---- ⑥½ 直连边的 overpass（`C-F3-18` 的"手写坐标"那一档；**默认关**）----
+     * 为什么默认关：MS1 的"手写坐标"产物是**逐字节契约**（`C-F9-02` 的基线就是它）。
+     * 给这个入口默认加白描/断线 = 改基线 ⇒ 所有拿 MS1 产物做基准的东西全得重录。
+     * 所以做成**显式开关** `opts.overpass: true`：
+     *   · 关（缺省）⇒ 产物与 MS1 **逐字节相同**（有判据盯着，见 tests/diagram-overpass-straight.test.js）；
+     *   · 开 ⇒ 直连边也走"逐点断开 4px + 高优先级白描"，与自动布线那一档同一套语义。
+     * 两条都要，是因为"补上 overpass"与"别动基线"本来是两个要求，缺一个就假。
+     */
+    let straightOverpass = null;
+    if (!routed && o.overpass === true && edges.length) {
+      straightOverpass = route.overpassOf(edges.map((e) => ({ id: e.id, points: e.points })));
+    }
+    const halos = routed ? (routed.halos || []) : (straightOverpass ? straightOverpass.halos : []);
+    const runsOf = (e) => {
+      if (routed) return e.runs || [];
+      if (straightOverpass) return straightOverpass.runs[e.id] || [];
+      return [];
+    };
+    const cutsOf = (e) => {
+      if (routed) return e.cuts || 0;
+      if (straightOverpass) return (straightOverpass.runs[e.id] || []).length > 1 ? 1 : 0;
+      return 0;
+    };
+    const segmented = !!routed || !!straightOverpass;
 
     /* ---- ⑦ 注释 ---- */
     const annotationsIn = Array.isArray(graph.annotations) ? graph.annotations : [];
@@ -669,6 +714,13 @@
 
     // ---- layers（最底）----
     out.push('<g data-z="layers">');
+    // 深色主题必须自带**底色**：SVG 在默认白页上打开，浅色文字会看不见（`C-F6-03` 的"深底可读"）。
+    // 放在 layers 组里**第一件事**，所以 z-order 那 6 个 `g[data-z]` 的顺序**一个字都没动**。
+    // 浅色主题不画（画了就等于改 MS1 的逐字节基线）。
+    if (themeName !== 'light') {
+      out.push('<rect data-canvas="1" x="' + fmt(vb.x) + '" y="' + fmt(vb.y) + '" width="' + fmt(vb.w)
+        + '" height="' + fmt(vb.h) + '" fill="' + esc(T.canvas) + '" stroke="none"/>');
+    }
     layers.forEach((l) => {
       out.push('<g data-layer="' + esc(l.id) + '" data-x="' + fmt(l.rect.x) + '" data-y="' + fmt(l.rect.y)
         + '" data-w="' + fmt(l.rect.w) + '" data-h="' + fmt(l.rect.h) + '">');
@@ -677,7 +729,7 @@
       if (l.label) {
         if (l.labelSide === 'top') {
           out.push('<text class="mm-layer-label" x="' + fmt(l.rect.x + 8) + '" y="' + fmt(l.rect.y + 14)
-            + '" font-family="' + esc(FONT.family) + '" font-size="11" fill="' + THEME.layerText
+            + '" font-family="' + esc(FONT.family) + '" font-size="11" fill="' + T.layerText
             + '" data-text="layer-label">' + esc(l.label) + '</text>');
         } else {
           const cx = l.rect.x + 14;
@@ -685,7 +737,7 @@
           out.push('<text class="mm-layer-label" x="' + fmt(cx) + '" y="' + fmt(cy)
             + '" transform="rotate(' + fmt(-90) + ' ' + fmt(cx) + ' ' + fmt(cy) + ')"'
             + ' text-anchor="middle" font-family="' + esc(FONT.family) + '" font-size="11" fill="'
-            + THEME.layerText + '" data-text="layer-label">' + esc(l.label) + '</text>');
+            + T.layerText + '" data-text="layer-label">' + esc(l.label) + '</text>');
         }
       }
       if (l.watermarkBox) {
@@ -696,7 +748,7 @@
         out.push('<text class="mm-watermark" x="' + fmt(cx) + '" y="' + fmt(cy) + '"'
           + ' transform="rotate(' + fmt(wb.rotate) + ' ' + fmt(cx) + ' ' + fmt(cy) + ')"'
           + ' text-anchor="middle" font-family="' + esc(FONT.family) + '" font-size="' + fmt(wb.size) + '"'
-          + ' fill="' + THEME.watermark + '" fill-opacity="' + fmt(opacity) + '"'
+          + ' fill="' + T.watermark + '" fill-opacity="' + fmt(opacity) + '"'
           + ' data-watermark="' + esc(l.id) + '" data-box="' + fmt(wb.x) + ' ' + fmt(wb.y) + ' '
           + fmt(wb.w) + ' ' + fmt(wb.h) + '">' + esc(l.watermark.text) + '</text>');
       }
@@ -711,12 +763,12 @@
         + fmt(c.rect.x) + '" data-y="' + fmt(c.rect.y) + '" data-w="' + fmt(c.rect.w) + '" data-h="'
         + fmt(c.rect.h) + '" data-pad="' + fmt(c.pad) + '" data-gap="' + fmt(c.gap) + '">');
       out.push('<rect x="' + fmt(c.rect.x) + '" y="' + fmt(c.rect.y) + '" width="' + fmt(c.rect.w)
-        + '" height="' + fmt(c.rect.h) + '" rx="' + RADIUS_ROUND + '" fill="' + THEME.containerFill
-        + '" stroke="' + THEME.containerStroke + '" stroke-dasharray="4 4"/>');
+        + '" height="' + fmt(c.rect.h) + '" rx="' + RADIUS_ROUND + '" fill="' + T.containerFill
+        + '" stroke="' + T.containerStroke + '" stroke-dasharray="4 4"/>');
       if (c.label) {
         out.push('<text class="mm-container-label" x="' + fmt(c.rect.x + c.pad) + '" y="'
           + fmt(c.rect.y + 14) + '" font-family="' + esc(FONT.family) + '" font-size="11" fill="'
-          + THEME.containerText + '" data-text="container-label">' + esc(c.label) + '</text>');
+          + T.containerText + '" data-text="container-label">' + esc(c.label) + '</text>');
       }
       out.push('</g>');
     });
@@ -729,9 +781,9 @@
       const f = fit.get(n.id);
       const inset = f.inset;
       const style = n.style || {};
-      const fill = style.fill || THEME.nodeFill;
-      const stroke = style.stroke || THEME.nodeStroke;
-      const textColor = style.text || THEME.nodeText;
+      const fill = style.fill || T.nodeFill;
+      const stroke = style.stroke || T.nodeStroke;
+      const textColor = style.text || T.nodeText;
       out.push('<g data-node="' + esc(n.id) + '" data-shape="' + esc(n.type) + '" data-x="' + fmt(r.x)
         + '" data-y="' + fmt(r.y) + '" data-w="' + fmt(r.w) + '" data-h="' + fmt(r.h) + '">');
       out.push(shapeMarkup(n.type, r, fill, stroke));
@@ -770,9 +822,9 @@
     out.push('<g data-z="edges">');
     // overpass 的白色描边**先画**（它要在所有线之下、又在底色之上）：只给高优先级线画，
     // 低优先级线在交点处已经断了 4px ⇒ 任何一条线在交叉点都**不被另一条线盖住**。
-    if (routed && routed.halos && routed.halos.length) {
+    if (halos.length) {
       out.push('<g data-haloes="1">');
-      routed.halos.forEach((h) => {
+      halos.forEach((h) => {
         out.push('<line data-halo="1" data-edge="' + esc(h.edge) + '" x1="' + fmt(h.x1) + '" y1="' + fmt(h.y1)
           + '" x2="' + fmt(h.x2) + '" y2="' + fmt(h.y2) + '" stroke="#ffffff" stroke-width="' + HALO_WIDTH
           + '" stroke-linecap="butt"/>');
@@ -780,14 +832,33 @@
       out.push('</g>');
     }
     edges.forEach((e) => {
-      if (!routed) {
+      if (e.curve) {
+        // 曲线（`C-F3-05`）：画的是**矢量 `C` 命令**，不是采样折线（采样只给判据量）。
+        // 控制点写进 `data-c1`/`data-c2` ⇒ 判据能从产物里**逐值复算**"控制点由端口法向导出"
+        // 这条要求，不必相信实现。`data-points` 仍给（交叉/标签/包围盒的独立复算都吃它）。
+        const c = e.curve;
+        const pts = e.points || [];
+        const ptsAttr = pts.map((p) => fmt(p[0]) + ',' + fmt(p[1])).join(' ');
+        const d = 'M ' + fmt(c.p0[0]) + ' ' + fmt(c.p0[1])
+          + ' C ' + fmt(c.c1[0]) + ' ' + fmt(c.c1[1]) + ' ' + fmt(c.c2[0]) + ' ' + fmt(c.c2[1])
+          + ' ' + fmt(c.p3[0]) + ' ' + fmt(c.p3[1]);
+        out.push('<g data-edge="' + esc(e.id) + '" data-route="curve" data-from="' + esc(e.from || '')
+          + '" data-to="' + esc(e.to || '') + '" data-from-port="' + esc(e.fromPort)
+          + '" data-to-port="' + esc(e.toPort) + '" data-points="' + ptsAttr
+          + '" data-c1="' + fmt(c.c1[0]) + ',' + fmt(c.c1[1]) + '" data-c2="'
+          + fmt(c.c2[0]) + ',' + fmt(c.c2[1]) + '" data-curve-k="' + fmt(c.k) + '"'
+          + ' data-curve-samples="' + fmt(c.samples) + '" data-cuts="0">');
+        out.push('<path data-curve="1" data-edge="' + esc(e.id) + '" d="' + d + '" fill="none" stroke="'
+          + esc(e.color) + '" stroke-width="1.5"' + (e.dash ? ' stroke-dasharray="' + esc(e.dash) + '"' : '') + '/>');
+        out.push('</g>');
+      } else if (!segmented) {
         // **MS1 的那一行，逐字不变**（没有布线 ⇒ 产物与 MS1 一致，这是"同输入同输出"的基线）
         out.push('<line data-edge="' + esc(e.id) + '" data-from-port="' + esc(e.fromPort) + '" data-to-port="'
           + esc(e.toPort) + '" x1="' + fmt(e.x1) + '" y1="' + fmt(e.y1) + '" x2="' + fmt(e.x2) + '" y2="'
           + fmt(e.y2) + '" stroke="' + esc(e.color) + '" stroke-width="1.5"'
           + (e.dash ? ' stroke-dasharray="' + esc(e.dash) + '"' : '') + '/>');
       } else {
-        // 布线档：一条边 = 一个分组，**承载三样可复算的东西**：
+        // 布线档 / 直连 overpass 档：一条边 = 一个分组，**承载三样可复算的东西**：
         //   `data-points`（理想折线，交叉数由它独立复算）、`data-seg`（实际画出的段，缺口可量）、
         //   `data-from/data-to`（判"这个交叉是不是共享端点带来的"）
         const pts = e.points || [];
@@ -795,8 +866,8 @@
         out.push('<g data-edge="' + esc(e.id) + '" data-route="' + esc(e.route || 'orthogonal')
           + '" data-from="' + esc(e.from || '') + '" data-to="' + esc(e.to || '') + '" data-from-port="'
           + esc(e.fromPort) + '" data-to-port="' + esc(e.toPort) + '" data-points="' + ptsAttr
-          + '" data-cuts="' + fmt(e.cuts || 0) + '">');
-        const runs = (e.runs && e.runs.length) ? e.runs : [[[e.x1, e.y1], [e.x2, e.y2]]];
+          + '" data-cuts="' + fmt(cutsOf(e)) + '">');
+        const runs = runsOf(e).length ? runsOf(e) : [[[e.x1, e.y1], [e.x2, e.y2]]];
         runs.forEach((r, ri) => {
           out.push('<line data-edge="' + esc(e.id) + '" data-seg="' + ri + '" x1="' + fmt(r[0][0])
             + '" y1="' + fmt(r[0][1]) + '" x2="' + fmt(r[1][0]) + '" y2="' + fmt(r[1][1])
@@ -833,7 +904,7 @@
         const mx = (e.x1 + e.x2) / 2;
         const my = (e.y1 + e.y2) / 2;
         out.push('<text class="mm-edge-label" x="' + fmt(mx) + '" y="' + fmt(my - 4) + '" text-anchor="middle"'
-          + ' font-family="' + esc(FONT.family) + '" font-size="10" fill="' + THEME.edgeLabel
+          + ' font-family="' + esc(FONT.family) + '" font-size="10" fill="' + T.edgeLabel
           + '" data-text="edge-label" data-edge="' + esc(e.id) + '">' + esc(e.label) + '</text>');
         return;
       }
@@ -841,7 +912,7 @@
       if (!lb) return;
       // `data-box` = 标签**矩形**（判据 7 用它做碰撞：不压框、不压线、不压别的标签）
       out.push('<text class="mm-edge-label" x="' + fmt(lb.x) + '" y="' + fmt(lb.y + lb.h / 2 - 3) + '" text-anchor="middle"'
-        + ' font-family="' + esc(FONT.family) + '" font-size="' + tokens.LABEL_FONT_SIZE + '" fill="' + THEME.edgeLabel
+        + ' font-family="' + esc(FONT.family) + '" font-size="' + tokens.LABEL_FONT_SIZE + '" fill="' + T.edgeLabel
         + '" data-text="edge-label" data-edge="' + esc(e.id) + '" data-box="' + fmt(lb.x - lb.w / 2) + ' '
         + fmt(lb.y - lb.h / 2) + ' ' + fmt(lb.w) + ' ' + fmt(lb.h) + '">' + esc(e.label) + '</text>');
     });
@@ -852,7 +923,7 @@
     annotations.forEach((a) => {
       out.push('<text class="mm-annotation" data-annotation="' + esc(a.id) + '" data-style="' + esc(a.style)
         + '" x="' + fmt(a.x) + '" y="' + fmt(a.y) + '" font-family="' + esc(FONT.family)
-        + '" font-size="10" fill="' + THEME.annotation + '" data-text="annotation">' + esc(a.text) + '</text>');
+        + '" font-size="10" fill="' + T.annotation + '" data-text="annotation">' + esc(a.text) + '</text>');
     });
     out.push('</g>');
 
@@ -892,11 +963,21 @@
         crossingPoints: routed.crossings.map((c) => ({ x: c.x, y: c.y, high: c.high, low: c.low,
           expected: c.expected, why: c.why })),
         overpasses: routed.halos.length,
+        // `C-F3-05` 的读数：哪些边是曲线、有几处"两条曲线相交"（那种点不断开，只画白描）
+        curveEdges: (routed.stats.curveEdges || []).slice(),
+        curveUncut: routed.stats.curveUncut || 0,
+        curveControlPoints: (routed.stats.curveEdges || []).sort().map((id) => {
+          const c = routed.edges[id] && routed.edges[id].curve;
+          return c ? { edge: id, c1: c.c1.slice(), c2: c.c2.slice(), k: c.k } : null;
+        }).filter(Boolean),
         lanes: routed.stats.lanes,
         cost: routed.stats.cost,
         repairRounds: routed.stats.repairRounds,
         overlaps: routed.overlaps.length,
         touches: routed.touches.length,
+        // 容器框的语义读数：0 = 没有边沿着边框跑（框架当背景，不当障碍）
+        frameBorders: (routed.frameBorders || []).map((b) => ({ edge: b.edge, frame: b.frame,
+          side: b.side, overlap: b.overlap })),
         labels: Object.keys(routed.edges).filter((k) => routed.edges[k].label).map((k) => ({
           edge: k, x: routed.edges[k].label.x, y: routed.edges[k].label.y,
           w: routed.edges[k].label.w, h: routed.edges[k].label.h
@@ -904,8 +985,27 @@
       } : { enabled: false },
       problems: routed ? routed.problems.slice() : [],
       degraded: routed ? routed.degraded.slice() : [],
+      // 直连边的 overpass 读数（**关的时候也报**：`enabled:false` 是"没有"，不是"没说"）
+      overpass: straightOverpass ? {
+        enabled: true,
+        crossings: straightOverpass.crossings.length,
+        overpasses: straightOverpass.halos.length,
+        edgesCut: straightOverpass.edgesCut.slice(),
+        crossingPoints: straightOverpass.crossings.map((c) => ({ x: c.x, y: c.y, high: c.high, low: c.low }))
+      } : { enabled: false },
+      // 主题读数（`C-F6-02`/`03`/`04`）：**原值**交出去，判据自己算 WCAG 对比度
+      theme: {
+        name: themeName,
+        canvas: tokenTheme.canvas,
+        // 每个"正文对"的对比度（判据要求 ≥ 4.5；这里只是把它算出来，不替判据下结论）
+        contrast: tokenTheme.contrastReport(themeName),
+        // 两套 token 的键集差异（空 = 逐键相同）
+        keyDiff: tokenTheme.themeKeyDiff(),
+        semanticClasses: tokenTheme.SEMANTIC_CLASSES.slice(),
+        semantic: themeName
+      },
       // 本批**没做**的东西如实写在报告里（"没做"不许靠读者猜）
-      notImplemented: ['route:curve', 'interaction', 'export:png', 'export:pdf']
+      notImplemented: ['interaction', 'export:png', 'export:pdf']
     };
     return { svg: out.join(''), report: report, layout: baseLayout };
   }
