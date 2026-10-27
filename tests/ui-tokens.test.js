@@ -335,6 +335,10 @@ export const HIT_LEDGER = [
   { sel: /^\.ask-stars \.ask-star/, floor: 32, why: '五星评价（孤立手势）' },
   { sel: /^#msg-send/, floor: 32, why: '消息栏发送' },
   { sel: /^#bind-bar-btns button/, floor: 32, why: '绑定状态条按钮' },
+  /* 【MS4 断层批】剖面条（`#profile-bar`）—— 页脚那条工具条里的选择器与剖面生成的控件：
+   * 与工具栏同一档（密集行），高度必须够点；它是域 58 判据的判读对象（`[data-cap]` 集合）之一，
+   * 尺寸变了会让"控件看得见"那条 `elementFromPoint` 判据不再落在控件自己身上。 */
+  { sel: /^#profile-bar (select|button)/, floor: 32, why: '剖面条选择器与剖面生成的控件（密集行）' },
   { sel: /^\.mm-banner-btn/, floor: 32, why: '播报条按钮' },
   { sel: /^\.audit-link-btn/, floor: 32, why: '审计面板「建链接」' },
   { sel: /^\.assoc-edit-btn/, floor: 32, why: '关联笔记「编辑」' },

@@ -246,6 +246,17 @@
     state.assoc = (data && Array.isArray(data.assoc)) ? data.assoc : [];
     // 主题布局随项目数据进来并持有（序列化时写回，防止界面保存丢失方向配置）
     state.metaLayout = (data && data.meta && data.meta.layout) || null;
+    /* 图附加层（`graph`）：**只读**捕获一份（就为了在界面上说清"本项目带图附加层、本剖面不显示"）。
+     * 两条口径：
+     *   · **绝不写回** —— `serializeTree` 的字段白名单里没有它，盘上那份由主进程
+     *     `prepareSavePayload`（载荷没带这个键才从磁盘取回）保住（§6.4 纪律②/§6.5 判据①）；
+     *   · 只在"从盘上载入一份新数据"这一档更新（撤销/重做传的是 `{collapseToRoot:false}`）——
+     *     快照里没有 `graph`（`serializeTree` 不产这个键）⇒ 不设这道闸，按一次 Ctrl+Z
+     *     就会把"本项目带图附加层"那句提示抹掉，而盘上那份图一个字节都没变。 */
+    if (collapseToRoot) {
+      capGraph = (data && data.graph && typeof data.graph === 'object' && !Array.isArray(data.graph))
+        ? data.graph : null;
+    }
     // 载入时那份 `meta.formatVersion`（载入时没有 ⇒ 2）—— serializeTree 据此写回，
     // 不许写死（见 metaFormatVersion 的说明）。这里是打开项目与 undo/redo 的共同入口 ✓。
     metaFormatVersion = (data && data.meta && Number.isInteger(data.meta.formatVersion))
@@ -342,6 +353,10 @@
 
     window.__mindReady = true;
     setStatus('已加载：' + (data.meta ? data.meta.name : ''));
+    /* 载入之后重算"本项目带图附加层"那句（`graph` 只在这一刻刚被捕获）。
+     * 剖面本身**不在这里改**：它是会话级的选择，切项目不重置（否则"两剖面交替打开同一个项目"
+     * 这条判据根本没法验 —— 每次打开都被重置回缺省档）。 */
+    refreshProfileNote();
   }
 
   function rebuildFromJson(json) {
@@ -556,6 +571,275 @@
     if (btn) btn.addEventListener('click', () => hideErrToast());
   })();
 
+  /* ================= 剖面（profile）轴：**控件面由剖面生成**（MS4 · docs/DIAGRAM-MODES.md §4.3） =================
+   *
+   * 这条轴要回答的唯一问题：**这个剖面在界面上有哪些控件**。
+   * 判据（§4.3 第 3 条，五个剖面各跑一次）：切成某剖面后
+   *   `document.querySelectorAll('[data-cap]')` 的属性集合 **===** 该剖面展开的集合（双向：多一个少一个都红）。
+   *
+   * ⚠️ 三条"不许"（每一条都对应一次本工程踩过的坑）：
+   *   ① **不许在渲染层按剖面名写分支**（形如"剖面变量 === 某个剖面名"的三元/switch）——
+   *      那是把同一份矩阵抄第二遍，抄完必然漂。本文件里**一次剖面名都不出现**（判据见冒烟域 58 的
+   *      静态扫描：五个剖面名在**剖面轴的两处代码**（本文件 + `app.js`）与 `index.html` 里
+   *      作为字符串字面量的出现次数必须 **=== 0**；剖面名只从 `PROFILES` 里来）。
+   *   ② **不许给每个控件写死"它在哪个剖面出现"**。清单只声明 `{id, cap}`（我是哪条能力），
+   *      出不出**由 `controlsFor(profile, 清单)` 算**（唯一过滤点 ⇒ 想手写一份"恰好相等"的名单，
+   *      就只能再加一个过滤点，而那会被"唯一过滤点"那条结构判据抓住）。
+   *   ③ **不许把剖面写进数据**。它是**会话级**的视图选择（与 `app-view.js` 里那条"结构轴"的会话级
+   *      读数同一条口径）：切剖面**零序列化写入**（盘上 sha256 不变、`isDirty()` 不变）——
+   *      否则"窄剖面保存一次"就会顺手把 `meta` 改出一个新键，而那正是 §6.2 禁令要防的那类静默漂移。
+   *      ⚠️ 这条注释刻意**不写那条结构轴的变量名**：域 51 的结构判据会数它在哪些文件里出现，
+   *      而本工程的注释剥除器对**这个文件**会失步（见 `.review/20261064-MS4剖面开关/probe-strip.js`）
+   *      ⇒ 注释里写它等于在代码里写它（实测：写了那条判据就红）。
+   *
+   * 两档记号怎么落到界面上（与数学矩阵的三档记号一一对应，见 `src/diagram/profiles.js`）：
+   *   · ✓ = 支持且默认开 ⇒ 控件**在**、可交互（`data-cap` + `data-cap-on="1"`）；
+   *   · ○ = 支持但默认关 ⇒ 控件**在**、**按不动**（`data-cap` + `data-cap-on="0"` + `disabled`，
+   *     §3.5 给了"什么条件下才开"；条件由将来的产品路径触发，不由这里拍脑袋打开）；
+   *   · ✗ = 本剖面不出现 ⇒ 控件**摘掉 `data-cap` 并藏起来**（`data-cap-off`）。
+   *     ⚠️ 摘掉属性而不是只藏起来：判据读的是 `[data-cap]` 的**集合**，
+   *     藏起来但属性还在 ⇒ 那一集合就不再等于剖面展开集合（判据当场变红，且红得对 ——
+   *     因为"声明了却不在面上"与"在面上"在读数上分不开）。
+   */
+
+  /** 受剖面管的控件清单 —— **本工程唯一的控件面声明**（`docs/DIAGRAM-MODES.md` §4.3 第 1 条：
+   *  每个控件必须说清自己是哪条能力；没有归属的控件 = 不受剖面管 = 一定会漏）。
+   *
+   *  两个字段就够：`id`（稳定标识，判据按它点名）+ `cap`（能力编号，**必须**在能力目录里，
+   *  否则 `controlsFor` 会响亮抛 `E_PROFILE_CAP`）。
+   *  两种挂载方式（区别只在"元素本来就有"还是"由本文件生成"）：
+   *   · `target: '#…'` —— 界面上**既有**的控件（工具栏按钮/搜索框）：只给它挂/摘 `data-cap` 与禁用态，
+   *     元素本身不动（它的点击行为早就接线在 `app.js`，这里**不重复接一遍**）；
+   *   · `mount: true` + `label/run` —— 剖面控件面**自己生成**的控件（挂在 `#cap-bar`）：
+   *     不显示时**从 DOM 移除**（不是藏起来）—— 生成物就该随剖面来去。
+   *  ⚠️ 清单里**不许**出现"哪个剖面"这三个字以上的信息：出不出由 `controlsFor` 算。
+   */
+  const CAP_CONTROLS = Object.freeze([
+    /* 折叠/展开（`C-F7-05`）：缺省 ✓ 于 complex / mindmap / path，✗ 于 logic / module
+     *（那两处"隐藏节点会让路径/依赖断成一截且看不出来"，理由在文档 §3.3.4 / §3.3.5） */
+    { id: 'fold-expand', cap: 'C-F7-05', target: '#btn-expand' },
+    { id: 'fold-collapse', cap: 'C-F7-05', target: '#btn-collapse' },
+    /* 搜索定位（`C-F7-04`）：mindmap 是 ○（"只有用户抱怨面板找不到树里的位置时才补画布内定位"）
+     * ⇒ 那一档里搜索框**看得见但按不动**，不是消失。 */
+    { id: 'search-locate', cap: 'C-F7-04', target: '#search-box' },
+    /* 缩放与平移（`C-F7-01`）：五个剖面全 ✓（唯一的"哪一档都在"的那条）⇒ 这条是控件面判据的
+     * **恒在项**：任何剖面里它都该在（少了它就说明过滤逻辑整个坏了，而不是某个剖面特别）。 */
+    { id: 'view-reset', cap: 'C-F7-01', target: '#btn-reset-view' },
+    /* 手工拖动写回 + 微调（`C-F4-05`）：✓ complex / module，○ logic，✗ mindmap / path
+     *（那一档"位置是布局的输出，不是人的输入"⇒ 连"清掉手工位置"这件事都不该存在）。 */
+    { id: 'offsets-clear', cap: 'C-F4-05', mount: true, label: '回到自动布局',
+      title: '把所有手工拖动过的位置清掉，全部回到自动布局（保存后生效）',
+      run: function () {
+        const themes = (MM.getTreeOffsets && MM.getTreeOffsets()) || {};
+        const nodes = (MM.getNodeOffsets && MM.getNodeOffsets()) || {};
+        const n = Object.keys(themes).length + Object.keys(nodes).length;
+        if (MM.clearTreeOffsets) MM.clearTreeOffsets();          // 不传参 = 全清（唯一实现，app-view.js）
+        setStatus(n ? ('已回到自动布局：清掉 ' + n + ' 处手工位置（保存后生效）')
+          : '本来就在自动布局上：没有手工位置要清');
+      } }
+  ]);
+
+  /** 当前剖面（会话级；`null` = 还没应用过 ⇒ 用"全开剖面"当缺省）。**绝不进序列化产物**。 */
+  let capProfileName = null;
+  /** 载入时那份 `graph`（**只读**：只为了在界面上说清"本项目带图附加层、本剖面不显示"）。
+   *  ⚠️ 它**不写回**：`serializeTree` 的字段白名单里没有 `graph`（§6.2 禁令），
+   *  盘上那份由主进程 `prepareSavePayload`（载荷没带才取回）保住 —— 这正是 §6.5 判据①验的那条。 */
+  let capGraph = null;
+
+  /** 能力矩阵模块（`src/diagram/profiles.js`，UMD ⇒ 挂在 window 上） */
+  function profilesModule() { return (typeof window !== 'undefined' && window.MMDiagramProfiles) || null; }
+
+  /** **全开剖面** = 拒绝集为空的那一个（D1 的定义本身，不写死名字）。
+   *  为什么按性质找而不是按名字找：① 本文件里一个剖面名都不许出现（见上面 ①）；
+   *  ② "全开"这件事的判据就是"零 ✗"（`profileIssues()` 的不变量①），按性质找与按名字找同源同义。 */
+  function fullProfile() {
+    const P = profilesModule();
+    if (!P) return null;
+    for (let i = 0; i < P.PROFILES.length; i++) {
+      if (P.expandProfile(P.PROFILES[i]).rejected.length === 0) return P.PROFILES[i];
+    }
+    return null;   // 数据本身坏了（没有零 ✗ 的剖面）⇒ 交给 applyCapSurface 响亮报
+  }
+
+  /** 当前剖面读数（没应用过 ⇒ 全开剖面） */
+  function capProfile() { return capProfileName || fullProfile(); }
+
+  /** 摘掉一个既有控件身上的剖面痕迹（不见的时候走这一支） */
+  function hideCapTarget(el) {
+    el.removeAttribute('data-cap');
+    el.removeAttribute('data-cap-on');
+    el.setAttribute('data-cap-off', '1');
+    // 只撤销**我们自己**加的禁用（`data-cap-disabled` 是"这一支是我按下去的"的记号）
+    if (el.getAttribute('data-cap-disabled') === '1') {
+      el.disabled = false;
+      el.removeAttribute('data-cap-disabled');
+    }
+  }
+
+  /** 给一个既有控件挂上剖面痕迹（在面上的时候走这一支） */
+  function showCapTarget(el, entry, isOn) {
+    el.removeAttribute('data-cap-off');
+    el.setAttribute('data-cap', entry.cap);          // ← 判据读的就是这一个属性
+    el.setAttribute('data-cap-on', isOn ? '1' : '0');
+    if (isOn) {
+      if (el.getAttribute('data-cap-disabled') === '1') {
+        el.disabled = false;
+        el.removeAttribute('data-cap-disabled');
+      }
+    } else if (!el.disabled) {
+      el.disabled = true;
+      el.setAttribute('data-cap-disabled', '1');
+    }
+  }
+
+  /** 生成式控件：挂到 `#cap-bar`（同一个 id 只挂一次；已被摘掉的会重建） */
+  function mountCapControl(entry, isOn) {
+    const bar = document.getElementById('cap-bar');
+    if (!bar) return null;
+    let el = bar.querySelector('[data-cap-ctl="' + entry.id + '"]');
+    if (!el) {
+      el = document.createElement('button');
+      el.type = 'button';
+      el.setAttribute('data-cap-ctl', entry.id);
+      el.textContent = entry.label || entry.id;
+      el.addEventListener('click', function () { if (entry.run) entry.run(); });
+      bar.appendChild(el);
+    }
+    el.title = entry.title || '';
+    showCapTarget(el, entry, isOn);
+    return el;
+  }
+
+  /** 生成式控件：不显示就**从 DOM 移除**（生成物不留在面上，免得"看得见但没接线"） */
+  function unmountCapControl(entry) {
+    const bar = document.getElementById('cap-bar');
+    if (!bar) return;
+    const el = bar.querySelector('[data-cap-ctl="' + entry.id + '"]');
+    if (el) el.remove();
+  }
+
+  /**
+   * **把某个剖面落到界面上**（本批的核心动作；唯一过滤点就在下面那一次 `controlsFor` 调用）。
+   * @param {string} profile 剖面标识符（必须 ∈ `PROFILES`；未知剖面**响亮拒绝**，不静默当全开）
+   * @returns {{ok:boolean, profile:(string|null), shown:number, optional:number, reason:string}}
+   */
+  function applyCapSurface(profile) {
+    const P = profilesModule();
+    if (!P) {
+      setStatus('剖面模块没加载（src/diagram/profiles.js 缺了）⇒ 控件面生成不了', true);
+      return { ok: false, profile: null, shown: 0, optional: 0, reason: '没有 MMDiagramProfiles 模块' };
+    }
+    if (P.PROFILES.indexOf(profile) < 0) {
+      const why = '未知剖面 ' + JSON.stringify(profile) + '（合法取值：' + P.PROFILES.join(' / ') + '）'
+        + ' —— 未知剖面**不静默当成全开剖面**';
+      setStatus('切剖面失败：' + why, true);
+      return { ok: false, profile: capProfileName, shown: 0, optional: 0, reason: why };
+    }
+    let res;
+    try {
+      res = P.controlsFor(profile, CAP_CONTROLS);   // ← 唯一的过滤点（别在别处再算一次）
+    } catch (err) {
+      /* 剖面数据坏了（能力编号不在目录里 / 控件没声明 cap）⇒ **整块清空**并响亮报。
+       * 为什么清空而不是"跳过坏的那一条"：留一半会让界面看起来"剖面生效了"，
+       * 而实际上面上少了一个控件、没人知道 —— 那正是"没做却看不出没做"。 */
+      CAP_CONTROLS.forEach(function (c) { if (c.mount) unmountCapControl(c); });
+      const targets = document.querySelectorAll('[data-cap]');
+      Array.prototype.forEach.call(targets, hideCapTarget);
+      setStatus('剖面数据有毛病（控件面已清空）：' + ((err && err.message) || err), true);
+      return { ok: false, profile: capProfileName, shown: 0, optional: 0, reason: String((err && err.message) || err) };
+    }
+    capProfileName = profile;
+    const shownIds = new Set(res.shown.map(function (c) { return c.id; }));
+    let nShown = 0, nOptional = 0;
+    CAP_CONTROLS.forEach(function (c) {
+      const inSurface = shownIds.has(c.id);
+      const isOn = inSurface && P.markOf(profile, c.cap) === P.ENABLED;
+      if (inSurface) { nShown++; if (!isOn) nOptional++; }
+      if (c.mount) {
+        if (inSurface) mountCapControl(c, isOn); else unmountCapControl(c);
+        return;
+      }
+      const el = document.querySelector(c.target);
+      if (!el) return;               // 这个窗口没有该控件（草稿窗等）⇒ 不是错误，也不是"漏了"
+      if (inSurface) showCapTarget(el, c, isOn); else hideCapTarget(el);
+    });
+    refreshProfileNote();            // 剖面变了 ⇒ "本项目带图附加层"那句的措辞跟着变
+    const sel = document.getElementById('profile-select');
+    if (sel && sel.value !== profile) sel.value = profile;
+    return { ok: true, profile: profile, shown: nShown, optional: nOptional, reason: '' };
+  }
+
+  /** 读数出口（冒烟只拿它读"当前是什么"，判据本身一律读 DOM/盘上字节 —— 不拿这个自证） */
+  function capSurfaceRead() {
+    const on = [];
+    const all = [];
+    document.querySelectorAll('[data-cap]').forEach(function (el) {
+      const rec = {
+        cap: el.getAttribute('data-cap'),
+        on: el.getAttribute('data-cap-on') === '1',
+        id: el.id || el.getAttribute('data-cap-ctl') || '',
+        rendered: el.getClientRects().length > 0
+      };
+      all.push(rec);
+      if (rec.on) on.push(rec.cap);
+    });
+    const noteEl = document.getElementById('profile-note-text');
+    return {
+      profile: capProfile(),
+      controls: all,
+      enabledCaps: on,
+      note: noteEl ? noteEl.textContent : '',
+      graph: capGraph ? {
+        layers: countOf(capGraph.layers), containers: countOf(capGraph.containers),
+        edges: countOf(capGraph.edges), annotations: countOf(capGraph.annotations)
+      } : null
+    };
+  }
+
+  function countOf(v) { return Array.isArray(v) ? v.length : 0; }
+
+  /** 「本项目带图附加层 …，本剖面不显示」那一条（`docs/DIAGRAM-MODES.md` §6.5 判据①的可判形式之一：
+   *  **看得见地说明** + 一个"切到全开剖面"的入口）。
+   *
+   *  三档措辞，逐档都有出处，别在这里自由发挥：
+   *   · 没有 `graph`（或它是个空壳）⇒ **一个字都不说**（默认档零噪声：老项目界面与从前逐字节相同）；
+   *   · 有 `graph` 且当前不是全开剖面 ⇒ 报四类计数 + "**本剖面不显示**" + "数据原样保留，保存不会抹掉"
+   *     （后半句是判据①验的那件事：窄剖面保存一次 `graph` 逐字节不变）；
+   *   · 有 `graph` 且当前是全开剖面 ⇒ 同样报计数，但如实说"图形渲染尚未接界面"。
+   *     ⚠️ 这一档**不许**写成"本剖面会画它"—— 今天的渲染器只画树（MS1/MS2 的产物在 `src/diagram/`，
+   *     接界面是 MS3 的活）；把没做的事说成做了，比不说更坏。
+   */
+  function refreshProfileNote() {
+    const textEl = document.getElementById('profile-note-text');
+    const btn = document.getElementById('profile-switch-full');
+    if (!textEl) return;
+    const g = capGraph;
+    const nLayers = g ? countOf(g.layers) : 0;
+    const nContainers = g ? countOf(g.containers) : 0;
+    const nEdges = g ? countOf(g.edges) : 0;
+    const nAnn = g ? countOf(g.annotations) : 0;
+    const total = nLayers + nContainers + nEdges + nAnn;
+    if (!total) {                                  // 没有图附加层 ⇒ 这一格是空的（零噪声）
+      textEl.textContent = '';
+      textEl.removeAttribute('title');
+      if (btn) btn.style.display = 'none';
+      return;
+    }
+    const full = fullProfile();
+    const isFull = capProfile() === full;
+    const counts = nLayers + ' 条层带 · ' + nContainers + ' 个容器 · ' + nEdges + ' 条边'
+      + (nAnn ? ' · ' + nAnn + ' 条注释' : '');
+    const tail = isFull
+      ? '全开剖面：图形渲染尚未接界面（数据原样保留，保存不会抹掉）'
+      : '本剖面不显示它们（数据原样保留，保存不会抹掉）';
+    textEl.textContent = '本项目带图附加层：' + counts + ' —— ' + tail;
+    textEl.title = textEl.textContent;
+    if (btn) {
+      btn.style.display = isFull ? 'none' : '';
+      btn.hidden = isFull;
+    }
+  }
+
   /* —— 只转发「定义在其他文件」的函数（其他模块后加载，故用包装函数而非解构）—— */
   const fdIsThemeMode = (data) => MM.fdIsThemeMode(data);
   const installRootLineOverride = (jm) => MM.installRootLineOverride(jm);
@@ -588,5 +872,15 @@
   MM.nodeFiles = nodeFiles;
   MM.setStatus = setStatus;
   MM.hideErrToast = hideErrToast;   // 收持久错误条（冒烟域也用它复位，别让上一条报错串到下一档）
+  /* —— 剖面（profile）轴：控件面由 `src/diagram/profiles.js` 生成 ——
+   * `CAP_CONTROLS` 也导出（只读引用）：**判据要用它对齐"清单里有哪几个 id"**，
+   * 但"出不出"一律由 `applyCapSurface` 里那一次 `controlsFor` 算，不许调用方再算一次。 */
+  MM.CAP_CONTROLS = CAP_CONTROLS;
+  MM.capProfile = capProfile;
+  MM.applyCapSurface = applyCapSurface;
+  MM.refreshProfileNote = refreshProfileNote;
+  MM.capSurfaceRead = capSurfaceRead;
+  /** 切剖面（唯一入口）：校验 + 落界面 + 人话回执。未知剖面**响亮拒绝**（不静默当全开）。 */
+  MM.setCapProfile = function (profile) { return applyCapSurface(profile); };
   MM.bindDshSidebar = bindDshSidebar;
 })();

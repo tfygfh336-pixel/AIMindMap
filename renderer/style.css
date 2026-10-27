@@ -973,6 +973,46 @@ jmnode.mm-tag-dim { opacity: 0.30; }
   color: var(--accent); font-size: var(--fs-title); font-weight: 600;
   text-shadow: 0 1px 0 var(--surface);
 }
+/* ---------------- 剖面条 + 剖面生成的控件面（MS4 · docs/DIAGRAM-MODES.md §4.3） ----------------
+ * 位置：`#main` 之后、`#msg-bar` 之前（body 的 flex 列里）—— 理由写在 `index.html` 那段注释里，
+ * 三条硬约束是：不改 `#main` 顶边（域 42）、不遮画布（域 36/37/47）、**切剖面不改高度**
+ * （高度固定 = `min-height: var(--hit-min)`；控件增减只改这一行的**内容**，不改布局）。
+ * `[data-cap-off]` 的那一条是本条唯一的"隐藏机制"：被剖面判为 ✗ 的控件**摘掉 data-cap 并藏起来**
+ * （收 `data-cap` 是为了让 `document.querySelectorAll('[data-cap]')` 的集合字面等于剖面展开集合，
+ *  不需要调用方再去过滤可见性 —— 判据越简单，越不容易空转）。 */
+#profile-bar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-2);
+  padding: 0 var(--sp-3); min-height: var(--hit-min);
+  background: var(--panel); border-top: 1px solid var(--border);
+  font-size: var(--fs-control); color: var(--ink-2);   /* 6.72:1 on --panel ✓ */
+}
+#profile-label { color: var(--ink-3); white-space: nowrap; }
+#profile-bar select, #profile-bar button {
+  min-height: var(--hit-min);   /* 可点区台账（tests/ui-tokens.test.js 的 HIT_LEDGER 有一行） */
+  font-size: var(--fs-control); padding: 4px 8px;
+  border: 1px solid var(--control); border-radius: var(--r-control);
+  background: var(--surface); color: var(--ink); cursor: pointer;
+}
+#profile-bar button:hover:not(:disabled) { background: var(--hover); border-color: var(--accent); color: var(--accent-ink); }
+#profile-bar button:disabled { cursor: default; color: var(--ink-3); background: var(--sunken); }
+#profile-bar select:disabled { cursor: default; color: var(--ink-3); }
+/* 控件面里"支持但默认关"（○）的那一档：**看得见但按不动**（§3.5 的条件未满足） */
+#profile-bar [data-cap-on="0"] { opacity: .55; }
+/* 被剖面判为 ✗ 的控件：**藏起来**。
+ * ⚠️ 这一条**不许**收窄成 `#profile-bar [data-cap-off]` —— 剖面管的控件有一多半在**工具栏**里
+ * （展开/收起/搜索/还原视图）。实测踩过：收窄作用域之后工具栏那两个按钮被摘了 `data-cap`、
+ * 却照样渲染 ⇒ 冒烟域 58 的"判 ✗ 的必须真的不渲染"当场红（而那正是它该红的地方）。 */
+[data-cap-off] { display: none !important; }
+#cap-bar { display: flex; align-items: center; gap: var(--sp-2); }
+#profile-note {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: var(--sp-2);
+  color: var(--ink-3);   /* 4.70:1 on --panel ✓ */
+}
+#profile-note-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 让位给原生 DSH 侧栏（与 `#bind-bar` / `#err-toast` 同一条口径：不让位就会伸到 WebContentsView 底下） */
+body.dsh-sidebar-on #profile-bar { padding-right: calc(var(--dsh-sidebar-width) + 8px); }
+body.dsh-only #profile-bar { display: none !important; }
+
 /* ---------------- 下方消息栏（app-ask.js，功能 5a 入口③） ----------------
  * 位置：主视图底部（导图区下方的一条固定条）——**在 `#main` 之外、body 的 flex 列里**，
  * 由 flex 布局**顶在导图区之上**（`#main` 是 `flex:1`、min-height:0 ⇒ 消息栏占多高，导图区就少多高），

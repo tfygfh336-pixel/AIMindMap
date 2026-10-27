@@ -107,6 +107,48 @@
 
     // 审计面板与命令面板（内容由各自模块渲染；入口 = 菜单/快捷键/命令面板）
     $('#btn-palette').addEventListener('click', () => openPalette());
+    // 【MS4】剖面条：下拉选项与控件面**都由 `src/diagram/profiles.js` 生成**（本文件不写剖面名）。
+    //   为什么是"现生成选项"而不是写死 5 个 `<option>`：剖面名是**单一真源**里的数据
+    //   （`PROFILES`；改序/加剖面只改那一处），抄到 HTML 里就是第二份，必然漂。
+    //   为什么这里只做**接线**不做过滤：过滤只有一处（`app-core.js` 的 `applyCapSurface`
+    //   里那一次 `controlsFor` 调用）—— 再加一处就是"同一个判定两处实现"。
+    (() => {
+      const sel = $('#profile-select');
+      if (!sel) return;
+      const P = window.MMDiagramProfiles;
+      if (!P) {
+        sel.disabled = true;
+        sel.title = '剖面模块没加载（src/diagram/profiles.js 缺了）⇒ 控件面生成不了';
+        return;
+      }
+      sel.innerHTML = '';   // 选项全部现生成（HTML 里一个剖面名都没有）
+      P.PROFILES.forEach((p) => {
+        const opt = document.createElement('option');
+        opt.value = p;
+        opt.textContent = p;
+        sel.appendChild(opt);
+      });
+      sel.addEventListener('change', () => {
+        const r = MM.setCapProfile(sel.value);
+        if (r && r.ok) {
+          setStatus('剖面已切到 ' + r.profile + '：本次显示 ' + r.shown + ' 个控件'
+            + (r.optional ? '（其中 ' + r.optional + ' 个按本剖面默认关）' : '') + '（切换不写盘）');
+        }
+        // 失败时不回退下拉框：让它停在用户选的那个，同时状态栏/错误条已经说了为什么 —— 静默回退
+        // 会让人以为"点了没反应"。
+      });
+      // 「切到全开剖面」入口（§6.5 判据①要求窄剖面要给一个切回去的入口）：
+      // 它调的是**同一个** setCapProfile（不另写一条切剖面的路）。
+      const btn = $('#profile-switch-full');
+      if (btn) {
+        btn.addEventListener('click', () => {
+          const full = P.PROFILES.filter((p) => P.expandProfile(p).rejected.length === 0)[0];
+          const r = MM.setCapProfile(full);
+          if (!r || !r.ok) setStatus('切到全开剖面失败：' + ((r && r.reason) || '未知原因'), true);
+        });
+      }
+      MM.setCapProfile(MM.capProfile());   // 缺省 = 全开剖面（零 ✗ 的那一个）
+    })();
     bindAudit();
     bindPalette();
     bindAssocDialog();   // 关联笔记编辑对话框（二级页面内）
@@ -260,6 +302,13 @@
     // 【R5 · R2 期 5】结构轴：现状读数 + 切换（菜单项与冒烟断言都走这两个）
     structureMode,
     setStructureMode,
+    /* 【MS4】剖面轴（控件面由剖面生成）：读数 + 切换 + 现状读数。
+     * 这三个入口只是 `app-core.js` 那一份实现的转发 —— 界面里不存在第二条切剖面的路。
+     * ⚠️ 判据**不许**拿 `capSurfaceRead()` 自证（那是被测实现自己的读数）；
+     * 它只用来读"当前是哪个剖面"，控件集合一律读 DOM 的 `[data-cap]`、盘上字节一律读文件。 */
+    capProfile: () => MM.capProfile(),
+    setCapProfile: (p) => MM.setCapProfile(p),
+    capSurfaceRead: () => MM.capSurfaceRead(),
     isThemeMode,
     editNode,
     deleteNode,

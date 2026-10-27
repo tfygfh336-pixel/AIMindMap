@@ -294,6 +294,45 @@
     </div>
   </div>
 
+  <!-- ============================================================
+       剖面（profile）条 + **由剖面生成的控件面**（MS4 · docs/DIAGRAM-MODES.md §4.3）
+       ------------------------------------------------------------
+       一句话：这里**不写任何控件**。控件集合由 `src/diagram/profiles.js` 的
+       `controlsFor(profile, 清单)` 生成（清单 = `renderer/app-core.js` 的 `CAP_CONTROLS`），
+       本文件里**一个剖面属性都不写**（属性全部由 `renderer/app-core.js` 生成）—— 这条是
+       "不许手写 if (mode === …)"的可判形式：界面上那批剖面属性的集合逐条等于该剖面展开的集合
+       （双向，五个剖面各判一次）。
+       ⚠️ 判据（冒烟域 58 的乙）扫的是**这个文件里该属性名出现 0 次**，注释里的字也算 ——
+       所以这段注释刻意不写那个属性名（写出来就等于自己撞自己的判据）。
+
+       为什么这一条在**页脚**（`#main` 与 `#msg-bar` 之间），不在工具栏里：
+         · 工具栏的宽度预算已经到顶 —— 再加一个控件会被挤成两行（+33px），而
+           "工具栏行数 = f(窗口宽, 侧栏宽)"是域 37 的既存几何契约（见上面第 33–38 行与
+           `#err-toast` 那段"不在工具栏里"的理由）；
+         · `#main` 的顶边 == 工具栏底边 是域 42 的判据（`|mainTop - toolbarBottom| <= 1`）
+           ⇒ 任何新条**不能**插在这两者之间；
+         · 这条是 body 的 flex 项 ⇒ 只从 `#main` 的高度里拿 32px，**不遮画布**
+           （画布命中测试的判据在域 36/37/47），也不改 `mainTop`；
+         · 高度固定（`min-height: var(--hit-min)`）⇒ **切剖面不改布局** ——
+           否则"切前/切后比绝对坐标"的判据会漂。
+       ⚠️ 显示名：中文名待用户拍板（`docs/FEATURES.md` §2 第 3/6 条：新名字要用户点头）
+       ⇒ 下拉选项由 `PROFILES` **现生成**，文字就是剖面标识符本身，本文件里不写死任何一个。
+       ============================================================ -->
+  <div id="profile-bar">
+    <span id="profile-label" title="当前剖面决定界面上出现哪些控件（能力矩阵见 docs/DIAGRAM-MODES.md §3.2）">剖面</span>
+    <!-- 选项由 app.js 从 `MMDiagramProfiles.PROFILES` 现生成（本文件不写剖面名） -->
+    <select id="profile-select" title="选当前剖面：每个剖面开哪些能力由 docs/DIAGRAM-MODES.md §3.2 的矩阵决定；切剖面**不写盘**"></select>
+    <!-- 剖面生成的控件挂载点（`renderer/app-core.js` 的 applyCapSurface 往这里 append/remove） -->
+    <span id="cap-bar"></span>
+    <!-- 图附加层提示（§6.5 判据①：窄剖面打开带 graph 的项目要**看得见**地说清"本剖面不显示"）
+         —— 文字由 app-core.js 按盘上数据现算；没有 graph 时这一个元素是空的（零噪声） -->
+    <span id="profile-note">
+      <span id="profile-note-text"></span>
+      <button id="profile-switch-full" type="button" style="display:none"
+              title="切到全开剖面（零 ✗ 的那个剖面）看它的图附加层">切到全开剖面</button>
+    </span>
+  </div>
+
   <!-- 下方消息栏（功能 5a 入口③）：上面的虚体字是给使用者的**提示**，输入即视为向内嵌 AI 发提示词，
        情境（当前项目、可用 CLI / 没选中节点这件事）由 CLI 侧自动补齐（见 src/dsh-ask.js）✓
        ⚠️ 位置在 `#main` **之外**（body 的 flex 列里、`#main` 之后）—— 这是"不永久遮挡地图"的实现本身：
@@ -449,6 +488,12 @@
   <script src="../src/item-model.js"></script>
   <script src="../src/concurrency.js"></script>
   <!-- 应用模块（拆分自原 app.js，共享 window.MM；app-core.js 必须最先、app.js 必须最后） -->
+  <!-- 剖面（profile）的能力矩阵：`src/diagram/profiles.js` 是**唯一能力真源**（76 条 × 5 剖面，
+       与 docs/DIAGRAM-MODES.md §3.2 逐格对拍由 tests/diagram-profiles.test.js 守）。
+       渲染层的控件面**只读它**（`controlsFor`）：控件集合由剖面生成，不在渲染层手写第二份清单。
+       ⚠️ 必须在 app-core.js 之前加载：那个文件在**加载期**不取它，但**第一次应用剖面**要用到它
+       （缺了它 `applyCapSurface` 会**响亮**报错并保持"一个剖面控件都不显示"，不静默降级）。 -->
+  <script src="../src/diagram/profiles.js"></script>
   <!-- 适配层：对渲染库（jsMind）**公共 API** 的调用全走这里 —— 换库只改这一个文件 -->
   <script src="mindmap-adapter.js"></script>
   <script src="app-core.js"></script>
