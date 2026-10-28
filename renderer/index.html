@@ -199,6 +199,17 @@
   <div id="main">
     <div id="mindmap-container">
       <div id="jsmind_container"></div>
+      <!-- 图渲染层（MS3）：**图形剖面**（把"边端点"那条能力判为支持的那几档）**不用 jsMind** ——
+           同一份树数据交给 `src/diagram/` 的 SVG 内核画（层带 / 容器 / 六种形状 / 正交绕线 /
+           逐点 overpass）。哪几档算"图形剖面"由 `src/diagram/profiles.js` 的能力矩阵**现算**
+           （`renderer/app-core.js` 的 `capDrawsGraph`），本文件里一个剖面名都不出现。
+           两套渲染器**不同时显示**：图在 ⇒ `#jsmind_container` 藏起来；图走 ⇒ 这一层整个被移除
+           （判据：切回树形剖面后 `svg` 数 === 0，不留残影）。内容**全部**由 `renderer/app-core.js`
+           生成：本文件里**一个剖面属性都不写**（域 58 的乙 就是数这个属性名在本文件里出现几次，
+           要求 0 —— 所以上面这几行连它的名字都不写，写了就等于自己撞自己的判据）。
+           位置：`#mindmap-container` 的**绝对定位子元素** ⇒ 不插在 `#main` 与工具栏之间（域 42 的
+           `|mainTop − toolbarBottom| <= 1`）、不进工具栏（域 37 的绝对坐标判据）。 -->
+      <div id="diagram-host" hidden></div>
       <div id="empty-hint" style="display:none">（暂无项目 — 在工具栏选择或导入）</div>
       <!-- 浮动详情框模板：可同时存在多个（未锁定的被复用、小锁/屏幕锁的保留），拖动即自动上小锁。
            由 app.js 克隆后挂在 #mindmap-container 内；尺寸随导图缩放同步缩放。 -->
@@ -494,6 +505,24 @@
        ⚠️ 必须在 app-core.js 之前加载：那个文件在**加载期**不取它，但**第一次应用剖面**要用到它
        （缺了它 `applyCapSurface` 会**响亮**报错并保持"一个剖面控件都不显示"，不静默降级）。 -->
   <script src="../src/diagram/profiles.js"></script>
+  <!-- 图渲染内核（MS3 · 接界面）：`src/diagram/` 的模块**全是 UMD 纯逻辑**（零 I/O / 零 DOM / 零时钟），
+       浏览器里挂成 `window.MMDiagram*` 一族；`index.js` 是**唯一入口**（接线方只认 `window.MMDiagram`，
+       不逐个认实现模块 —— 模块拆分是实现细节，`src/diagram/index.js` 头注释里写明）。
+       加载顺序 = 依赖序（每个只依赖它前面那些）：schema / measure / tokens 无依赖 ⇒ 打头；wrap 依赖
+       measure+tokens；layout / route 依赖 tokens+wrap；render-svg 依赖 measure+schema+wrap+tokens；
+       export-svg 依赖 render-svg+tokens；index 依赖全部。
+       ⚠️ 为什么是 10 个 `<script>` 而不是新建 `renderer/diagram-*.js`：`renderer/` 里新建文件要被
+       `docs/ARCHITECTURE.md` §5 登记（G8 的模块覆盖判据），而本轮边界不许改 `docs/**`
+       ⇒ 接线 / 派生 / 交互全部写进**既有**的 `renderer/app-core.js`（与剖面轴同一处，见那里的注释）。 -->
+  <script src="../src/diagram/schema.js"></script>
+  <script src="../src/diagram/measure.js"></script>
+  <script src="../src/diagram/tokens.js"></script>
+  <script src="../src/diagram/wrap.js"></script>
+  <script src="../src/diagram/layout.js"></script>
+  <script src="../src/diagram/route.js"></script>
+  <script src="../src/diagram/render-svg.js"></script>
+  <script src="../src/diagram/export-svg.js"></script>
+  <script src="../src/diagram/index.js"></script>
   <!-- 适配层：对渲染库（jsMind）**公共 API** 的调用全走这里 —— 换库只改这一个文件 -->
   <script src="mindmap-adapter.js"></script>
   <script src="app-core.js"></script>

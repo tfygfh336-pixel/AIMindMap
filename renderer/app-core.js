@@ -357,6 +357,10 @@
      * 剖面本身**不在这里改**：它是会话级的选择，切项目不重置（否则"两剖面交替打开同一个项目"
      * 这条判据根本没法验 —— 每次打开都被重置回缺省档）。 */
     refreshProfileNote();
+    /* 【MS3】画布渲染器跟着数据走：打开项目 / 撤销 / 重做都从这一处过 ⇒ 图形档要重画一次
+     * （树形档这一跳是 no-op：`refreshDiagram` 先按能力判，判不是图就只清一层空壳）。
+     * ⚠️ 它**只读** `serializeTree()`：派生结果不落盘，所以"重画"不会让 `isDirty()` 变 true。 */
+    refreshDiagram();
   }
 
   function rebuildFromJson(json) {
@@ -625,6 +629,13 @@
     /* 缩放与平移（`C-F7-01`）：五个剖面全 ✓（唯一的"哪一档都在"的那条）⇒ 这条是控件面判据的
      * **恒在项**：任何剖面里它都该在（少了它就说明过滤逻辑整个坏了，而不是某个剖面特别）。 */
     { id: 'view-reset', cap: 'C-F7-01', target: '#btn-reset-view' },
+    /* 缩放的两颗按钮（`C-F7-01`）：**同一能力**，所以哪个剖面都在、都按得动 ——
+     * 树视图走既有 `zoomViewAt`（那套视图变换的唯一实现），图形档走图渲染层（`diagramZoomBy`）。
+     * 为什么不各给一条能力：缩放与平移本来就是一条（矩阵里也是）⇒ 拆成两条等于改矩阵。 */
+    { id: 'zoom-out', cap: 'C-F7-01', mount: true, label: '缩小',
+      title: '缩小画布（Ctrl+滚轮也行）', run: function () { canvasZoom(-1); } },
+    { id: 'zoom-in', cap: 'C-F7-01', mount: true, label: '放大',
+      title: '放大画布（Ctrl+滚轮也行）', run: function () { canvasZoom(1); } },
     /* 手工拖动写回 + 微调（`C-F4-05`）：✓ complex / module，○ logic，✗ mindmap / path
      *（那一档"位置是布局的输出，不是人的输入"⇒ 连"清掉手工位置"这件事都不该存在）。 */
     { id: 'offsets-clear', cap: 'C-F4-05', mount: true, label: '回到自动布局',
@@ -661,8 +672,11 @@
     return null;   // 数据本身坏了（没有零 ✗ 的剖面）⇒ 交给 applyCapSurface 响亮报
   }
 
-  /** 当前剖面读数（没应用过 ⇒ 全开剖面） */
-  function capProfile() { return capProfileName || fullProfile(); }
+  /** 当前剖面读数（没应用过 ⇒ **缺省剖面**）。
+   *  ⚠️ 缺省**不是**"全开剖面"：全开剖面开的是**图渲染器**（MS3 起），而升级前每个人打开项目
+   *  看到的是树 ⇒ 缺省取"第一个不用图渲染器的剖面"（`defaultCapProfile` 的函数注释里有全文）。
+   *  `fullProfile()` 仍在用：它是「切到全开剖面」那个入口与提示文案的落点。 */
+  function capProfile() { return capProfileName || defaultCapProfile(); }
 
   /** 摘掉一个既有控件身上的剖面痕迹（不见的时候走这一支） */
   function hideCapTarget(el) {
@@ -763,7 +777,10 @@
       if (!el) return;               // 这个窗口没有该控件（草稿窗等）⇒ 不是错误，也不是"漏了"
       if (inSurface) showCapTarget(el, c, isOn); else hideCapTarget(el);
     });
-    refreshProfileNote();            // 剖面变了 ⇒ "本项目带图附加层"那句的措辞跟着变
+    /* 换渲染器（MS3）：**唯一**的切换点 —— 上面那一次 `controlsFor` 决定"有哪些控件"，
+     * 这里决定"画布用哪套渲染器"。判决**按能力**算（`capDrawsGraph`），不按剖面名。 */
+    syncCanvasRenderer(profile);
+    refreshProfileNote();            // 剖面变了 ⇒ 提示文案跟着变（画图档/树档两套措辞）
     const sel = document.getElementById('profile-select');
     if (sel && sel.value !== profile) sel.value = profile;
     return { ok: true, profile: profile, shown: nShown, optional: nOptional, reason: '' };
@@ -798,21 +815,44 @@
 
   function countOf(v) { return Array.isArray(v) ? v.length : 0; }
 
-  /** 「本项目带图附加层 …，本剖面不显示」那一条（`docs/DIAGRAM-MODES.md` §6.5 判据①的可判形式之一：
-   *  **看得见地说明** + 一个"切到全开剖面"的入口）。
+  /** 剖面条那一行提示（`docs/DIAGRAM-MODES.md` §6.5 判据①的可判形式之一：**看得见地说明**
+   *  + 一个「切到全开剖面」的入口）。
    *
-   *  三档措辞，逐档都有出处，别在这里自由发挥：
-   *   · 没有 `graph`（或它是个空壳）⇒ **一个字都不说**（默认档零噪声：老项目界面与从前逐字节相同）；
-   *   · 有 `graph` 且当前不是全开剖面 ⇒ 报四类计数 + "**本剖面不显示**" + "数据原样保留，保存不会抹掉"
-   *     （后半句是判据①验的那件事：窄剖面保存一次 `graph` 逐字节不变）；
-   *   · 有 `graph` 且当前是全开剖面 ⇒ 同样报计数，但如实说"图形渲染尚未接界面"。
-   *     ⚠️ 这一档**不许**写成"本剖面会画它"—— 今天的渲染器只画树（MS1/MS2 的产物在 `src/diagram/`，
-   *     接界面是 MS3 的活）；把没做的事说成做了，比不说更坏。
+   *  **三档措辞，逐档都有出处，别在这里自由发挥**：
+   *   · **画图档**（`capDrawsGraph` 真 —— 这一档真的把同一份树数据交给图渲染器）⇒
+   *     报"画的是什么"（节点/边/层带/容器的**现算**读数）+ **逐个点名仍然缺的那一档导出**
+   *     （PNG 今天没有光栅器，见 §10.3）。⚠️ 这一档**不许**只剩一句"支持图渲染" —— 没做的那条
+   *     要能被读的人看见，含糊就是假。
+   *   · 树形剖面 + 盘上**有** `graph` ⇒ 报四类计数 + "**本剖面不显示**" + "数据原样保留，保存不会抹掉"
+   *     （后半句就是判据①验的那件事：窄剖面保存一次 `graph` 逐字节不变）；
+   *   · 树形剖面 + 盘上**没有** `graph` ⇒ **一个字都不说**（默认档零噪声：与从前逐字节相同）。
+   *
+   *  ⚠️ 旧措辞里的那句「图形渲染尚未接界面」**已经删掉**：MS3 之后它是假的（三个图剖面真的在画）。
+   *  说假话比不说更坏 —— 这条注释就是防下一个人把它写回去。
    */
   function refreshProfileNote() {
     const textEl = document.getElementById('profile-note-text');
     const btn = document.getElementById('profile-switch-full');
     if (!textEl) return;
+    const drawing = capDrawsGraph(capProfile());
+    /* ---- 画图档：这一档真的在画图（说清画了什么 + 点名仍缺的导出） ---- */
+    if (drawing) {
+      const f = diagramState.facts;
+      const shapeText = f && f.shapes
+        ? Object.keys(f.shapes).sort().map(function (k) { return k + '×' + f.shapes[k]; }).join(' ')
+        : '';
+      const body = f
+        ? ('同一份树数据的图：' + f.nodes + ' 个节点 · ' + f.edges + ' 条边 · ' + f.layers + ' 条层带 · '
+          + f.containers + ' 个容器（形状 ' + shapeText + '；交叉 ' + f.crossing + ' 处、overpass '
+          + f.overpasses + ' 处）')
+        : ('这一档要用图渲染器，但这次没画成 —— ' + (diagramState.reason || '原因未知') + '；已退回树视图');
+      textEl.textContent = body + '。导出：SVG 可用；PNG 导出仍是缺口（仓里没有光栅器）'
+        + '；PDF 导出仍是缺口（§10.3）';
+      textEl.title = textEl.textContent;
+      if (btn) { btn.style.display = 'none'; btn.hidden = true; }
+      return;
+    }
+    /* ---- 树形档：只在盘上真带图附加层时说话 ---- */
     const g = capGraph;
     const nLayers = g ? countOf(g.layers) : 0;
     const nContainers = g ? countOf(g.containers) : 0;
@@ -822,22 +862,701 @@
     if (!total) {                                  // 没有图附加层 ⇒ 这一格是空的（零噪声）
       textEl.textContent = '';
       textEl.removeAttribute('title');
-      if (btn) btn.style.display = 'none';
+      if (btn) { btn.style.display = 'none'; btn.hidden = true; }
       return;
     }
     const full = fullProfile();
     const isFull = capProfile() === full;
     const counts = nLayers + ' 条层带 · ' + nContainers + ' 个容器 · ' + nEdges + ' 条边'
       + (nAnn ? ' · ' + nAnn + ' 条注释' : '');
-    const tail = isFull
-      ? '全开剖面：图形渲染尚未接界面（数据原样保留，保存不会抹掉）'
-      : '本剖面不显示它们（数据原样保留，保存不会抹掉）';
-    textEl.textContent = '本项目带图附加层：' + counts + ' —— ' + tail;
+    textEl.textContent = '本项目带图附加层：' + counts + ' —— 本剖面不显示它们'
+      + '（数据原样保留，保存不会抹掉；要用图渲染器看 ⇒ 切到全开剖面）';
     textEl.title = textEl.textContent;
     if (btn) {
       btn.style.display = isFull ? 'none' : '';
       btn.hidden = isFull;
     }
+  }
+
+  /* ================= 图渲染层（MS3）：剖面决定"画布用哪套渲染器"，数据只有一份 =================
+   *
+   * 用户在界面上能看到的差别（结论在 `docs/DIAGRAM-MODES.md` §5.1）：
+   *   · **树形剖面**（把 `C-F3-01` 判 ✗ 的那些）⇒ 画布仍是 jsMind 的节点树，一行都不动它；
+   *   · **图形剖面**（`C-F3-01` 支持的）⇒ 把**同一份**节点树交给 `src/diagram/` 的 SVG 内核
+   *     （层带 / 容器 / 六种形状 / 正交绕线 / 逐点 overpass / 双向箭头都在那边算）。
+   * 两套渲染器**不同时显示**；数据**只有一份**（`serializeTree()` 现读现画，派生结果不落盘）。
+   *
+   * ⚠️ 六条纪律（每条都对应一个会被判据抓住的坏结果）：
+   *   ① **不许在渲染层按剖面名分支**：选哪套渲染器由 `capDrawsGraph(profile)` **按能力**算
+   *      （`C-F3-01` = "图"这件事的最小单元）。本文件 + `app.js` + `index.html` 里五个剖面名的
+   *      字符串字面量 **=== 0**（域 58 的乙 静态扫描；本文件连注释里都不写）。
+   *   ② **切剖面零写入**：这里**只读** `serializeTree()`；派生结果一个字节都不进盘
+   *      ⇒ 切 N 次剖面 `isDirty()` 仍 false、盘上 sha256 不变（判据 5）。
+   *   ③ **派生结果不落盘**：盘上 `graph` 只在导入/显式编辑时才有；这里是**现算**（§6.5 判据②）。
+   *   ④ **jsMind 一个字节都不动**（判据 9）：只是把它的容器 `display:none`，不碰它的内部与样式。
+   *   ⑤ **画不出就响亮说、并退回树视图**：内核的 `E_TEXT_OVERFLOW` 一类错误**不许**吞掉
+   *      （"没画出来"与"画出来了"在屏幕上必须分得开）。
+   *   ⑥ **id 过桥**：内核的 id 规范是 `/^[a-z0-9][a-z0-9-]*$/`（与 `src/schema.js` 同一套），而项目
+   *      节点 id 是任意字符串 ⇒ 派生层做一次 `n000/n001/…` 映射，反向映射挂到 DOM 的 `data-tree-id`
+   *      （点节点开详情、`meta.nodeOffsets` 都靠它）。零填充 ⇒ 字典序 == 数字序，与内核"按 id 排序"
+   *      的确定性口径一致。
+   */
+
+  /** 缩放档（`C-F7-01`：80%–280%，到边界就夹住 —— 不给"再放大一点"） */
+  const DIAGRAM_ZOOM = Object.freeze({ min: 0.8, max: 2.8 });
+  /** 层带外扩 / 层带顶部留给标签的净空 / 容器外扩（都是渲染层的口径，不改内核） */
+  const DIAGRAM_LAYER_PAD = 8;
+  const DIAGRAM_LAYER_HEAD = 22;
+  const DIAGRAM_CONTAINER_PAD = 12;
+  /** 判据 1 要的"元素种类齐全"里，`subtitle` 那一档取详情正文的前若干字（纯预览，不改数据） */
+  const DIAGRAM_SUBTITLE_MAX = 48;
+
+  /** 图渲染内核（`src/diagram/index.js`，UMD ⇒ `window.MMDiagram`） */
+  function diagramModule() { return (typeof window !== 'undefined' && window.MMDiagram) || null; }
+
+  /** 这一档剖面要不要用**图渲染器** —— 按**能力**判，绝不按剖面名判（见纪律①）。
+   *  判据：它支持"边端点"（`C-F3-01`）—— 那是"图"这件事的最小单元；树形剖面把
+   *  `C-F3-01`…`C-F3-19` 整组判 ✗（`docs/DIAGRAM-MODES.md` §3.3.2 / §3.3.3）。 */
+  function capDrawsGraph(profile) {
+    const P = profilesModule();
+    return !!P && !!profile && P.supports(profile, 'C-F3-01');
+  }
+
+  /** **缺省剖面** = `PROFILES` 里第一个**不用图渲染器**的（按性质找，不写死名字）。
+   *
+   *  为什么缺省不是"全开剖面"（MS4 当初的取值）：全开剖面开的是**图渲染器**，而升级前每个人
+   *  打开项目看到的是**树**。把缺省留成全开剖面 ⇒ 升级后所有项目一打开就变成一张自动布局的图
+   *  —— 那不是"把内核接进画布"，那是"换掉默认视图"（另需逐项重新验收，不是本批的事）。
+   *  ⇒ **缺省取树**：升级前后默认体验一致；图由人主动切过去，而 `#profile-note` 那条提示里
+   *  本来就带着「切到全开剖面」的入口（§6.5 判据①）。 */
+  function defaultCapProfile() {
+    const P = profilesModule();
+    if (!P) return null;
+    for (let i = 0; i < P.PROFILES.length; i++) {
+      if (!capDrawsGraph(P.PROFILES[i])) return P.PROFILES[i];
+    }
+    return P.PROFILES[0];
+  }
+
+  /** 真测量（`C-F5-01`：同一串中文在两种字体下宽度不同 ⇒ 必须**按字体量**，不许按字数估）。
+   *  内核的 `createMeasurer({ measureText })` 会按 (文本, 字号, 字体, 字重) 缓存（`C-F5-02`）——
+   *  ⇒ 这里是唯一一处 canvas 调用，缓存不许在这里再写一份。 */
+  let diagramMeasureCtx = null;
+  function canvasMeasureText(text, o) {
+    const opt = o || {};
+    if (!diagramMeasureCtx) {
+      const cv = document.createElement('canvas');
+      diagramMeasureCtx = cv.getContext('2d');
+    }
+    if (!diagramMeasureCtx) throw new Error('画布拿不到 2D context ⇒ 量不出文字宽度（不许静默按字数估）');
+    diagramMeasureCtx.font = (opt.fontWeight || 400) + ' ' + (opt.fontSize || 14) + 'px '
+      + (opt.fontFamily || 'sans-serif');
+    return diagramMeasureCtx.measureText(String(text === undefined || text === null ? '' : text)).width;
+  }
+
+  /** 图形档的画布状态（**会话级**：缩放/平移/派生读数 —— 一个字节都不进序列化产物） */
+  let diagramState = { on: false, profile: null, zoom: 1, tx: 0, ty: 0, facts: null, reason: '' };
+  let diagramBound = false;
+  let diagramPan = null;
+  let diagramPanMoved = false;
+
+  const numOr = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
+
+  function diagramHostEl() { return document.getElementById('diagram-host'); }
+  function diagramStageEl() { return document.getElementById('diagram-stage'); }
+  function diagramContainerEl() { return document.getElementById('mindmap-container'); }
+
+  /** 节点标题 / 正文的**纯文本**：复用 `src/convert.js` 的 `stripHtml`（先剥标签后解实体，
+   *  有单测守着；不许在这里写第二份）。 */
+  function diagramPlainText(html) {
+    const C = (typeof window !== 'undefined' && window.MMConvert) || null;
+    if (C && typeof C.stripHtml === 'function') return C.stripHtml(html);
+    return String(html === undefined || html === null ? '' : html).replace(/<[^>]*>/g, '').trim();
+  }
+
+  /** 一个树节点 ⇒ 图里的一行（三段式 + 形状）。
+   *  **形状派生规则**（六种形状的唯一真源就在这里）：
+   *    · 根                     ⇒ `cylinder`（汇总 / 数据源）
+   *    · 有条目层（`items[]`）    ⇒ `row`（它本身就是"逐条清单"，画成行卡）
+   *    · 带标签（`tags[]`）       ⇒ `pill`
+   *    · 带 AI 问答（`qa[]`）     ⇒ `diamond`（"这里是个待判断的问题"）
+   *    · 有子节点                ⇒ `round`
+   *    · 其余（叶子）             ⇒ `rect`
+   *  三段式（`C-F1-02`）：主标题 = 节点标题；副标题 = 详情正文的前几十字；徽标 = 子节点数。 */
+  function diagramNodeOf(n, depth) {
+    const kids = Array.isArray(n.children) ? n.children : [];
+    let type = 'rect';
+    if (depth === 0) type = 'cylinder';
+    else if (Array.isArray(n.items)) type = 'row';
+    else if (Array.isArray(n.tags) && n.tags.length) type = 'pill';
+    else if (Array.isArray(n.qa) && n.qa.length) type = 'diamond';
+    else if (kids.length) type = 'round';
+    const row = { id: '', type: type, title: diagramPlainText(n.topic) };
+    const sub = diagramPlainText(String(n.detail || '').slice(0, 400));
+    if (sub) row.subtitle = sub.length > DIAGRAM_SUBTITLE_MAX ? (sub.slice(0, DIAGRAM_SUBTITLE_MAX) + '…') : sub;
+    if (kids.length) row.badge = String(kids.length);
+    return row;
+  }
+
+  /** 层带（`C-F2-04`）：**每个 rank 一条**，LR 时是竖带、TB 时是横带；标签在顶部预留的净空里。
+   *  rank 由内核的 `assignRanks`（Sugiyama 第②步）从**边集**算 —— 而派生边集就是父子关系
+   *  ⇒ 树的 rank == 深度。层带只是把"同一 rank"这件事画成背景分区，**不参与避障**。 */
+  function diagramDeriveLayers(nodes, info, rects, direction, treeIdOf) {
+    const depths = [];
+    nodes.forEach(function (row) {
+      const d = info.get(treeIdOf.get(row.id)).depth;
+      if (depths.indexOf(d) < 0) depths.push(d);
+    });
+    depths.sort(function (a, b) { return a - b; });
+    let subMin = Infinity, subMax = -Infinity;
+    nodes.forEach(function (row) {
+      const r = rects[row.id];
+      if (!r) return;
+      if (direction === 'LR') { subMin = Math.min(subMin, r.y); subMax = Math.max(subMax, r.y + r.h); }
+      else { subMin = Math.min(subMin, r.x); subMax = Math.max(subMax, r.x + r.w); }
+    });
+    if (!isFinite(subMin) || !isFinite(subMax)) return [];
+    const out = [];
+    depths.forEach(function (d) {
+      let mMin = Infinity, mMax = -Infinity;
+      nodes.forEach(function (row) {
+        if (info.get(treeIdOf.get(row.id)).depth !== d) return;
+        const r = rects[row.id];
+        if (!r) return;
+        const a = direction === 'LR' ? r.x : r.y;
+        const b = direction === 'LR' ? r.x + r.w : r.y + r.h;
+        mMin = Math.min(mMin, a); mMax = Math.max(mMax, b);
+      });
+      if (!isFinite(mMin)) return;
+      const subLen = subMax - subMin;
+      out.push({
+        id: 'layer-' + d,
+        label: '第 ' + (d + 1) + ' 层',
+        labelSide: 'top',
+        rect: direction === 'LR'
+          ? [mMin - DIAGRAM_LAYER_PAD, subMin - DIAGRAM_LAYER_PAD - DIAGRAM_LAYER_HEAD,
+            (mMax - mMin) + 2 * DIAGRAM_LAYER_PAD, subLen + 2 * DIAGRAM_LAYER_PAD + DIAGRAM_LAYER_HEAD]
+          : [subMin - DIAGRAM_LAYER_PAD, mMin - DIAGRAM_LAYER_PAD - DIAGRAM_LAYER_HEAD,
+            subLen + 2 * DIAGRAM_LAYER_PAD, (mMax - mMin) + 2 * DIAGRAM_LAYER_PAD + DIAGRAM_LAYER_HEAD]
+      });
+    });
+    return out;
+  }
+
+  /** 容器（`C-F2-01`）：**每个顶层主题的子树一个框**（`layout:'free'`，子项用自己的坐标）。
+   *  这是"分组"在树上的自然对应物：分组 = 一棵子树（§3.3.2「关掉后它在哪表达」那一栏）。
+   *  框 = 子项包围盒 + `CONTAINER_PAD`，顶部再留一点给标题（否则标题压在第一个子项上）。 */
+  function diagramDeriveContainers(nodes, info, rects, treeIdOf, dIdOf) {
+    const out = [];
+    const isUnder = function (treeId, rootId) {
+      let cur = treeId;
+      while (cur) {
+        const rec = info.get(cur);
+        if (!rec) return false;
+        if (rec.parent === rootId) return true;
+        cur = rec.parent;
+      }
+      return false;
+    };
+    nodes.forEach(function (row) {
+      const treeId = treeIdOf.get(row.id);
+      const rec = info.get(treeId);
+      if (!rec || rec.depth !== 1) return;
+      const kids = [];
+      nodes.forEach(function (other) {
+        const ot = treeIdOf.get(other.id);
+        if (ot === treeId) return;
+        if (isUnder(ot, treeId)) kids.push(other.id);
+      });
+      if (!kids.length) return;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      kids.forEach(function (id) {
+        const r = rects[id];
+        if (!r) return;
+        minX = Math.min(minX, r.x); minY = Math.min(minY, r.y);
+        maxX = Math.max(maxX, r.x + r.w); maxY = Math.max(maxY, r.y + r.h);
+      });
+      if (!isFinite(minX)) return;
+      const pad = DIAGRAM_CONTAINER_PAD;
+      out.push({
+        id: 'ct-' + treeId.replace(/[^a-z0-9-]/gi, '').slice(0, 24) || ('k' + out.length),
+        label: diagramPlainText(row.title),
+        layout: 'free',
+        rect: [minX - pad, minY - pad - 14, (maxX - minX) + 2 * pad, (maxY - minY) + 2 * pad + 14],
+        children: kids
+      });
+    });
+    return out;
+  }
+
+  /** 数据里那份 `graph`（导入 / 显式编辑时才存在）⇒ 只挑**内核认的**字段（未知键会被响亮拒绝）。 */
+  function diagramPickStoredParts(stored, dIdOf) {
+    const parts = { edges: [], layers: [], containers: [], annotations: [], grid: null, gap: null };
+    if (!stored) return parts;
+    if (typeof stored.grid === 'number' && isFinite(stored.grid)) parts.grid = stored.grid;
+    if (stored.gap && typeof stored.gap === 'object' && !Array.isArray(stored.gap)) {
+      const g = {};
+      if (numOr(stored.gap.node) !== null) g.node = stored.gap.node;
+      if (numOr(stored.gap.rank) !== null) g.rank = stored.gap.rank;
+      if (Object.keys(g).length) parts.gap = g;
+    }
+    (Array.isArray(stored.layers) ? stored.layers : []).forEach(function (l) {
+      if (!l || !Array.isArray(l.rect) || l.rect.length !== 4) return;
+      if (!l.rect.every(function (v) { return numOr(v) !== null; })) return;
+      const one = { id: 'layer-s' + parts.layers.length, rect: l.rect.slice() };
+      if (typeof l.label === 'string') one.label = l.label;
+      if (l.labelSide === 'left' || l.labelSide === 'top') one.labelSide = l.labelSide;
+      if (typeof l.fill === 'string' && l.fill) one.fill = l.fill;
+      parts.layers.push(one);
+    });
+    (Array.isArray(stored.containers) ? stored.containers : []).forEach(function (c) {
+      if (!c || !Array.isArray(c.rect) || c.rect.length !== 4) return;
+      if (!c.rect.every(function (v) { return numOr(v) !== null; })) return;
+      const kids = (Array.isArray(c.children) ? c.children : [])
+        .map(function (id) { return dIdOf.get(id); }).filter(Boolean);
+      if (!kids.length) return;                     // 子项全被折叠掉 ⇒ 这个框没有对象
+      parts.containers.push({
+        id: 'ct-s' + parts.containers.length,
+        label: typeof c.label === 'string' ? c.label : '',
+        layout: c.layout === 'stack' ? 'stack' : 'free',
+        rect: c.rect.slice(), children: kids
+      });
+    });
+    (Array.isArray(stored.annotations) ? stored.annotations : []).forEach(function (a) {
+      if (!a || typeof a.text !== 'string' || !a.text) return;
+      if (!Array.isArray(a.at) || a.at.length !== 2) return;
+      if (numOr(a.at[0]) === null || numOr(a.at[1]) === null) return;
+      const one = { id: 'note-' + parts.annotations.length, text: a.text, at: [a.at[0], a.at[1]] };
+      if (typeof a.style === 'string' && a.style) one.style = a.style;
+      parts.annotations.push(one);
+    });
+    return parts;
+  }
+
+  /**
+   * **树 → 图**（派生规则的唯一实现；**纯读**，不写盘）。
+   *
+   * 七条规则（照着读就能自己复算一遍）：
+   *   ① **节点集** = 树的前序；`expanded === false` 的后代**不进图**（与 jsMind 的可见性同一条语义
+   *      ⇒ 切渲染器不会突然把 900 个节点全摊开）。
+   *   ② **边** = 每条父子关系一条 `orthogonal` 边（父 `e`→子 `w`；TB 时 `s`→`n`），单向 end 箭头。
+   *      盘上有 `graph.edges` ⇒ **按数据画**（导入/显式编辑的图；双向箭头 `arrow.start` 只从数据来）。
+   *   ③ **分层** = 内核的 Sugiyama 四步（`layoutOfDoc` 的 `assignRanks`），输入就是②那张边集。
+   *   ④ **层带** = 每个 rank 一条（仅当该剖面 `C-F2-04` ✓）；**容器** = 每个顶层主题的子树一个
+   *      （仅当 `C-F2-01` ✓）—— 剖面判 ✗ 的那条**一条都不进 doc**（同一份数据、不同剖面看不同东西）。
+   *   ⑤ **形状/三段式** 见 `diagramNodeOf`。
+   *   ⑥ **人工位置**：`meta.themeOffsets` + `meta.nodeOffsets`（**同一份键域**，不新造坐标）
+   *      叠加到自动布局的坐标上 —— 两个渲染器共用这一份偏移。
+   *   ⑦ **一帧都不写盘**：返回的 doc 只活在内存里，下一个人要的就是这个。
+   *
+   * @param {object} json `serializeTree()` 的产物（`{meta, data, graph?}`）
+   * @param {string} profile 剖面标识符
+   * @returns {{graph:object, nodes:Array, rects:object, maps:object}|null}
+   */
+  function deriveDiagramDoc(json, profile) {
+    const D = diagramModule();
+    const P = profilesModule();
+    if (!D) throw new Error('图渲染内核没加载（window.MMDiagram 缺 —— src/diagram/index.js 的 10 个 script）');
+    const tree = json && json.data;
+    if (!tree || typeof tree.id !== 'string' || !tree.id) return null;
+    const meta = (json && json.meta) || {};
+    const manual = {};
+    [meta.themeOffsets, meta.nodeOffsets].forEach(function (bucket) {
+      if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) return;
+      Object.keys(bucket).forEach(function (k) {
+        const v = bucket[k];
+        if (v && numOr(v.x) !== null && numOr(v.y) !== null) manual[k] = { x: v.x, y: v.y };
+      });
+    });
+    /* 盘上那份 `graph`（导入 / 显式编辑时才存在）。
+     * ⚠️ 它**不在** `serializeTree()` 的产物里（那是有意的：`graph` 不在字段白名单，§6.2 禁令），
+     * 所以这里读的是 `renderMind` 在"载入一份新数据"那一刻捕获的**只读副本** `capGraph`
+     * （`json.graph` 优先 —— 撤销/重做传进来的快照里若带了它也照用）。 */
+    const storedSrc = (json.graph && typeof json.graph === 'object' && !Array.isArray(json.graph))
+      ? json.graph : capGraph;
+    const stored = (storedSrc && typeof storedSrc === 'object' && !Array.isArray(storedSrc)) ? storedSrc : null;
+    const direction = (stored && stored.direction === 'TB') ? 'TB' : 'LR';
+
+    /* ① 节点集 + id 过桥（见文件头纪律⑥） */
+    const nodes = [];
+    const info = new Map();       // 树 id → { depth, parent, kids: [树 id] }
+    const dIdOf = new Map();      // 树 id → 图 id
+    const treeIdOf = new Map();   // 图 id → 树 id
+    (function walk(n, depth, parentTreeId) {
+      if (!n || typeof n.id !== 'string' || !n.id) return;
+      const treeId = n.id;
+      if (dIdOf.has(treeId)) return;                     // 同一 id 出现两次：第一次为准（不重复画）
+      const kids = Array.isArray(n.children)
+        ? n.children.filter(function (k) { return k && typeof k.id === 'string' && k.id; }) : [];
+      const did = 'n' + String(nodes.length).padStart(3, '0');
+      const row = diagramNodeOf(n, depth);
+      row.id = did;
+      nodes.push(row);
+      dIdOf.set(treeId, did);
+      treeIdOf.set(did, treeId);
+      info.set(treeId, { depth: depth, parent: parentTreeId, kids: [] });
+      if (parentTreeId && info.has(parentTreeId)) info.get(parentTreeId).kids.push(treeId);
+      if (n.expanded === false) return;                   // 折叠：后代不进图
+      kids.forEach(function (k) { walk(k, depth + 1, treeId); });
+    })(tree, 0, null);
+    if (!nodes.length) return null;
+
+    /* ② 边：数据优先，否则按父子关系派生 */
+    const parts = diagramPickStoredParts(stored, dIdOf);
+    const edges = [];
+    if (parts.edges.length) {
+      parts.edges.forEach(function (e, i) { edges.push(e); });
+    } else if (stored && Array.isArray(stored.edges) && stored.edges.length) {
+      stored.edges.forEach(function (e) {
+        if (!e || !e.from || !e.to) return;
+        const f = dIdOf.get(e.from.node);
+        const t = dIdOf.get(e.to.node);
+        if (!f || !t) return;                             // 端点被折叠掉 ⇒ 这条边不画（不静默补一条）
+        const one = { id: 'e' + String(edges.length).padStart(3, '0'), from: { node: f }, to: { node: t },
+          route: (e.route === 'straight' || e.route === 'curve') ? e.route : 'orthogonal' };
+        if (e.from.port) one.from.port = e.from.port;
+        if (e.to.port) one.to.port = e.to.port;
+        if (e.style === 'dashed' || e.style === 'dotted' || e.style === 'solid') one.style = e.style;
+        if (typeof e.color === 'string' && e.color) one.color = e.color;
+        if (typeof e.label === 'string' && e.label) one.label = e.label;
+        if (e.arrow && typeof e.arrow === 'object') {
+          one.arrow = { start: !!e.arrow.start, end: e.arrow.end !== false };
+        }
+        edges.push(one);
+      });
+    } else {
+      nodes.forEach(function (row) {
+        const rec = info.get(treeIdOf.get(row.id));
+        if (!rec || !rec.parent) return;
+        const pid = dIdOf.get(rec.parent);
+        if (!pid) return;
+        edges.push({
+          id: 'e' + String(edges.length).padStart(3, '0'),
+          from: { node: pid, port: direction === 'LR' ? 'e' : 's' },
+          to: { node: row.id, port: direction === 'LR' ? 'w' : 'n' },
+          route: 'orthogonal',
+          arrow: { start: false, end: true }
+        });
+      });
+    }
+
+    /* ③ 布局（Sugiyama 四步）—— 只算坐标，不画 */
+    const lay = D.layoutOfDoc({ graph: { direction: direction, edges: edges }, nodes: nodes },
+      { measureText: canvasMeasureText });
+
+    /* ⑥ 人工位置：叠加到自动布局的坐标上（两个渲染器共用同一份偏移） */
+    const rects = {};
+    nodes.forEach(function (row) {
+      const r = lay.rects[row.id];
+      if (!r) return;
+      const off = manual[treeIdOf.get(row.id)];
+      rects[row.id] = { x: r.x + (off ? off.x : 0), y: r.y + (off ? off.y : 0), w: r.w, h: r.h };
+      row.rect = [rects[row.id].x, rects[row.id].y, rects[row.id].w, rects[row.id].h];
+    });
+
+    /* ④ 层带 / 容器：**能力开没开由剖面决定**（判 ✗ 的一条都不进 doc） */
+    const supports = function (cap) { return !!P && P.markOf(profile, cap) === P.ENABLED; };
+    const layers = supports('C-F2-04')
+      ? (parts.layers.length ? parts.layers : diagramDeriveLayers(nodes, info, rects, direction, treeIdOf))
+      : [];
+    const containers = supports('C-F2-01')
+      ? (parts.containers.length ? parts.containers
+        : diagramDeriveContainers(nodes, info, rects, treeIdOf, dIdOf))
+      : [];
+
+    const graph = {
+      version: 1,
+      profile: profile,
+      direction: direction,
+      grid: parts.grid === null ? 8 : parts.grid,
+      edges: edges,
+      layers: layers,
+      containers: containers
+    };
+    if (parts.gap) graph.gap = parts.gap;
+    if (parts.annotations.length) graph.annotations = parts.annotations;
+    return { graph: graph, nodes: nodes, rects: rects, maps: { dIdOf: dIdOf, treeIdOf: treeIdOf } };
+  }
+
+  /** 把 stage 的 transform 落到 DOM 上（**一个 transform** —— 与 jsMind 那套同一手法，
+   *  两套坐标系是"放大后显示不全"的老病因），同时把读数挂成 `data-*` 供判据读取。 */
+  function diagramApplyTransform() {
+    const st = diagramStageEl();
+    const host = diagramHostEl();
+    if (!st) return;
+    const s = diagramState.zoom;
+    st.style.transform = 'translate(' + diagramState.tx + 'px,' + diagramState.ty + 'px) scale(' + s + ')';
+    if (host) {
+      host.setAttribute('data-zoom', String(s));
+      host.setAttribute('data-tx', String(Math.round(diagramState.tx)));
+      host.setAttribute('data-ty', String(Math.round(diagramState.ty)));
+    }
+  }
+
+  /** 让整幅图**居中**进视口（只动平移，不改缩放） */
+  function diagramCenter() {
+    const host = diagramHostEl();
+    const st = diagramStageEl();
+    if (!host || !st) return;
+    const svg = st.querySelector('svg');
+    if (!svg) return;
+    const hr = host.getBoundingClientRect();
+    const w = svg.width && svg.width.baseVal ? svg.width.baseVal.value : st.offsetWidth;
+    const h = svg.height && svg.height.baseVal ? svg.height.baseVal.value : st.offsetHeight;
+    if (!w || !h || !hr.width || !hr.height) return;
+    diagramState.tx = Math.round((hr.width - w * diagramState.zoom) / 2);
+    diagramState.ty = Math.round((hr.height - h * diagramState.zoom) / 2);
+    diagramApplyTransform();
+  }
+
+  /** 围绕视口内某点缩放（`C-F7-01`）：夹在 0.8–2.8；锚点下那一块内容不许动 */
+  function diagramZoomAt(factor, px, py) {
+    const s0 = diagramState.zoom;
+    const s1 = Math.max(DIAGRAM_ZOOM.min, Math.min(DIAGRAM_ZOOM.max, s0 * factor));
+    if (s1 === s0) return s1;
+    const k = s1 / s0;
+    diagramState.tx = px - (px - diagramState.tx) * k;
+    diagramState.ty = py - (py - diagramState.ty) * k;
+    diagramState.zoom = s1;
+    diagramApplyTransform();
+    return s1;
+  }
+
+  /** 缩一档（工具栏/页脚按钮的入口；树视图走既有 `zoomViewAt`，图形档走这里） */
+  function diagramZoomBy(dir) {
+    if (!diagramState.on) return null;
+    const host = diagramHostEl();
+    const hr = host ? host.getBoundingClientRect() : null;
+    const f = dir > 0 ? 1.15 : (1 / 1.15);
+    return diagramZoomAt(f, hr ? hr.width / 2 : 0, hr ? hr.height / 2 : 0);
+  }
+
+  /** 事实读数（**只给"提示文案"与调试用**；判据一律读 DOM 与 SVG 几何，不拿它自证） */
+  function diagramRead() {
+    return {
+      on: !!diagramState.on, profile: diagramState.profile, zoom: diagramState.zoom,
+      tx: Math.round(diagramState.tx), ty: Math.round(diagramState.ty),
+      facts: diagramState.facts, reason: diagramState.reason,
+      svg: !!(diagramHostEl() && diagramHostEl().querySelector('svg'))
+    };
+  }
+
+  /** 把图**移除**（树视图那边原样恢复）——判据 2 的"不留残影"就是这一句：`innerHTML = ''` */
+  function clearDiagramLayer() {
+    const host = diagramHostEl();
+    if (host) {
+      host.hidden = true;
+      host.innerHTML = '';
+      host.removeAttribute('data-zoom');
+      host.removeAttribute('data-tx');
+      host.removeAttribute('data-ty');
+      host.removeAttribute('data-nodes');
+      host.removeAttribute('data-edges');
+    }
+    const cont = diagramContainerEl();
+    if (cont) cont.classList.remove('mm-diagram-on');
+    diagramState.on = false;
+    diagramState.facts = null;
+    diagramApplyTransform();
+  }
+
+  /** 树视图（jsMind）重新露出来：图形档挂上时把它自己藏起来的那一步撤回 */
+  function showTreeCanvas() {
+    const cont = diagramContainerEl();
+    if (cont) cont.classList.remove('mm-diagram-on');
+  }
+
+  /**
+   * 建图并挂进画布（**唯一**的挂载点）。失败 ⇒ 退回树视图 + 状态栏响亮说（纪律⑤）。
+   * @returns {{ok:boolean, active:boolean, reason:string}}
+   */
+  function renderDiagramLayer(profile) {
+    const D = diagramModule();
+    const host = diagramHostEl();
+    if (!D) {
+      clearDiagramLayer();
+      return { ok: false, active: false, reason: '图渲染内核没加载（window.MMDiagram）' };
+    }
+    if (!host) {
+      return { ok: false, active: false, reason: '画布容器里没有 #diagram-host（index.html 缺）' };
+    }
+    let json = null;
+    try { json = MM.serializeTree(); } catch (e) { json = null; }
+    if (!json || !json.data) {                       // 没有项目 ⇒ 这一层不出现（零噪声）
+      clearDiagramLayer();
+      diagramState.reason = '没有打开的项目';
+      return { ok: true, active: false, reason: diagramState.reason };
+    }
+    let doc = null;
+    try {
+      doc = deriveDiagramDoc(json, profile);
+    } catch (err) {
+      return diagramFail(err);
+    }
+    if (!doc) { clearDiagramLayer(); return { ok: true, active: false, reason: '树是空的' }; }
+    let res = null;
+    try {
+      res = D.render(doc, {
+        layout: function () { return doc.rects; },
+        routing: 'orthogonal',
+        theme: 'light',
+        measureText: canvasMeasureText
+      });
+    } catch (err) {
+      return diagramFail(err);
+    }
+    const alreadyOn = diagramState.on && diagramState.profile === profile;
+    const zoom = alreadyOn ? diagramState.zoom : 1;
+    const tx = alreadyOn ? diagramState.tx : 0;
+    const ty = alreadyOn ? diagramState.ty : 0;
+    host.innerHTML = '<div id="diagram-stage"></div>';
+    const stage = host.firstChild;
+    if (!stage) { return diagramFail(new Error('建不出 #diagram-stage（DOM 没插进去）')); }
+    stage.innerHTML = res.svg;                       // 内核的产物：所有文本都过 esc()（属性里也转义引号）
+    // id 过桥：`data-node` 是图 id，`data-tree-id` 是项目里的真 id（点节点开详情靠它）
+    const gs = stage.querySelectorAll('g[data-node]');
+    Array.prototype.forEach.call(gs, function (g) {
+      const did = g.getAttribute('data-node');
+      const treeId = doc.maps.treeIdOf.get(did);
+      if (treeId) g.setAttribute('data-tree-id', treeId);
+    });
+    host.hidden = false;
+    host.setAttribute('data-nodes', String(doc.nodes.length));
+    host.setAttribute('data-edges', String(doc.graph.edges.length));
+    const cont = diagramContainerEl();
+    if (cont) cont.classList.add('mm-diagram-on');    // jsMind 那一层整个藏起来（不是"透明"）
+    diagramState = {
+      on: true, profile: profile, zoom: zoom, tx: tx, ty: ty,
+      facts: {
+        nodes: doc.nodes.length,
+        edges: doc.graph.edges.length,
+        layers: doc.graph.layers.length,
+        containers: doc.graph.containers.length,
+        shapes: (function () {
+          const m = {};
+          doc.nodes.forEach(function (n) { m[n.type] = (m[n.type] || 0) + 1; });
+          return m;
+        })(),
+        crossing: res.report && res.report.routing ? res.report.routing.crossings : 0,
+        overpasses: res.report && res.report.routing ? res.report.routing.overpasses : 0
+      },
+      reason: ''
+    };
+    bindDiagramControls();
+    if (!alreadyOn) diagramCenter(); else diagramApplyTransform();
+    return { ok: true, active: true, reason: '' };
+  }
+
+  /** 内核响亮拒绝时的收口：**不静默** —— 退回树视图 + 状态栏点名原因 + 提示文案跟着改 */
+  function diagramFail(err) {
+    const code = (err && err.code) || 'E_DIAGRAM';
+    const msg = String((err && err.message) || err || '未知错误');
+    diagramState = {
+      on: false, profile: diagramState.profile, zoom: 1, tx: 0, ty: 0, facts: null,
+      reason: code + '：' + msg.slice(0, 160)
+    };
+    clearDiagramLayer();
+    showTreeCanvas();
+    diagramState.reason = code + '：' + msg.slice(0, 160);
+    setStatus('这一档剖面画不出这张图（' + diagramState.reason + '）—— 已退回树视图', true);
+    refreshProfileNote();
+    return { ok: false, active: false, reason: diagramState.reason };
+  }
+
+  /** 数据或剖面变了 ⇒ 重画（打开项目 / 撤销重做 / 折叠展开 / 切剖面都走这一处） */
+  function refreshDiagram() {
+    const profile = capProfile();
+    if (!capDrawsGraph(profile)) {
+      clearDiagramLayer();
+      showTreeCanvas();
+      refreshProfileNote();
+      return { ok: true, active: false, reason: '当前剖面用树渲染器' };
+    }
+    const r = renderDiagramLayer(profile);
+    refreshProfileNote();
+    return r;
+  }
+
+  /** 切剖面时换渲染器（`applyCapSurface` 的最后一跳，**唯一**的切换点） */
+  function syncCanvasRenderer(profile) {
+    if (capDrawsGraph(profile)) return renderDiagramLayer(profile);
+    clearDiagramLayer();
+    showTreeCanvas();
+    return { ok: true, active: false, reason: '' };
+  }
+
+  /** 指针/滚轮接线（**全局只绑一次**：`#diagram-host` 是常驻元素，内容随剖面换） */
+  function bindDiagramControls() {
+    if (diagramBound) return;
+    const host = diagramHostEl();
+    if (!host) return;
+    diagramBound = true;
+
+    /* 点节点 ⇒ 打开**既有**详情框（唯一入口 `MM.showDetail`；节点对象取自 jsMind 那份树
+     * ⇒ 详情框、条目层、热度采样全都走原来那条路，本文件不新开第二条开详情的路） */
+    host.addEventListener('click', function (e) {
+      if (diagramPanMoved) { diagramPanMoved = false; return; }
+      const g = e.target && e.target.closest ? e.target.closest('g[data-node]') : null;
+      if (!g) return;
+      const treeId = g.getAttribute('data-tree-id');
+      const jm = state.jm;
+      if (!treeId || !jm || !MM.adapter || !MM.adapter.available(jm)) return;
+      const node = MM.adapter.getNode ? MM.adapter.getNode(jm, treeId) : null;
+      if (!node) {
+        setStatus('图里的节点在树里找不到（' + treeId + '）⇒ 详情框打不开', true);   // 不静默
+        return;
+      }
+      if (MM.adapter.selectNode) MM.adapter.selectNode(jm, treeId);
+      if (typeof MM.showDetail === 'function') MM.showDetail(node);
+    });
+
+    /* 缩放：Ctrl/⌘ + 滚轮（与既有画布的滚轮缩放同一手势；不按修饰键的滚轮不动，留给页面） */
+    host.addEventListener('wheel', function (e) {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const hr = host.getBoundingClientRect();
+      diagramZoomAt(e.deltaY > 0 ? (1 / 1.1) : 1.1, e.clientX - hr.left, e.clientY - hr.top);
+    }, { passive: false });
+
+    /* 平移：在**空白处**按下拖动（按在节点上是"点我开详情"，不是拖画布） */
+    host.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0) return;
+      if (e.target && e.target.closest && e.target.closest('g[data-node]')) return;
+      diagramPan = { x: e.clientX, y: e.clientY, tx: diagramState.tx, ty: diagramState.ty, id: e.pointerId };
+      diagramPanMoved = false;
+      host.classList.add('mm-diagram-panning');
+      if (host.setPointerCapture && e.pointerId !== undefined) {
+        try { host.setPointerCapture(e.pointerId); } catch (err) { /* 捕获失败不影响拖动 */ }
+      }
+    });
+    host.addEventListener('pointermove', function (e) {
+      if (!diagramPan || e.pointerId !== diagramPan.id) return;
+      const dx = e.clientX - diagramPan.x;
+      const dy = e.clientY - diagramPan.y;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) diagramPanMoved = true;
+      diagramState.tx = diagramPan.tx + dx;
+      diagramState.ty = diagramPan.ty + dy;
+      diagramApplyTransform();
+    });
+    const endPan = function (e) {
+      if (!diagramPan) return;
+      if (e && e.pointerId !== undefined && e.pointerId !== diagramPan.id) return;
+      diagramPan = null;
+      host.classList.remove('mm-diagram-panning');
+    };
+    host.addEventListener('pointerup', endPan);
+    host.addEventListener('pointercancel', endPan);
+  }
+
+  /** 页面那两颗缩放按钮的**唯一实现**：图形档走图渲染层，树视图走**既有** `zoomViewAt`
+   *  （那套视图变换的唯一实现，`jm.view.set_zoom` 也转它）—— 不新造第二套坐标系。 */
+  function canvasZoom(dir) {
+    if (diagramState.on) return diagramZoomBy(dir);
+    const cont = diagramContainerEl();
+    if (!cont) return null;
+    const r = cont.getBoundingClientRect();
+    zoomViewAt(r.width / 2, r.height / 2, dir > 0 ? 1.15 : (1 / 1.15), 0.15, 4);
+    return null;
   }
 
   /* —— 只转发「定义在其他文件」的函数（其他模块后加载，故用包装函数而非解构）—— */
@@ -877,10 +1596,21 @@
    * 但"出不出"一律由 `applyCapSurface` 里那一次 `controlsFor` 算，不许调用方再算一次。 */
   MM.CAP_CONTROLS = CAP_CONTROLS;
   MM.capProfile = capProfile;
+  MM.defaultCapProfile = defaultCapProfile;   // 缺省剖面（= 第一个不用图渲染器的）；按性质算，不写死
   MM.applyCapSurface = applyCapSurface;
   MM.refreshProfileNote = refreshProfileNote;
   MM.capSurfaceRead = capSurfaceRead;
   /** 切剖面（唯一入口）：校验 + 落界面 + 人话回执。未知剖面**响亮拒绝**（不静默当全开）。 */
   MM.setCapProfile = function (profile) { return applyCapSurface(profile); };
+  /* —— 图渲染层（MS3）：**按能力选渲染器** + 派生 + 交互三件（缩放/平移/点节点开详情） ——
+   * 出口只给"接线"与"读数"用；判据一律读 DOM / SVG 几何 / 盘上字节（不拿这些自证）。 */
+  MM.capDrawsGraph = capDrawsGraph;           // 这一档剖面要不要用图渲染器（按 C-F3-01 算）
+  MM.refreshDiagram = refreshDiagram;         // 数据/剖面变了 ⇒ 重画（树形档是 no-op）
+  MM.diagramActive = function () { return !!diagramState.on; };
+  MM.diagramZoomBy = diagramZoomBy;
+  MM.diagramZoomAt = diagramZoomAt;
+  MM.diagramCenter = diagramCenter;
+  MM.diagramRead = diagramRead;
+  MM.deriveDiagramDoc = deriveDiagramDoc;     // 派生规则的唯一实现（纯读；冒烟可拿它复算一遍）
   MM.bindDshSidebar = bindDshSidebar;
 })();

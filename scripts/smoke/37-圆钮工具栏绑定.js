@@ -409,6 +409,18 @@ module.exports = [
         await new Promise((r) => setTimeout(r, 120));
       }
       if (!sat || !sat.box || !sat.box.boxId) return { ok: false, text: '前置失败：没有可见的节点详情框' };
+      /* ⚠️ 2026-10-29（MS3 批）：读数前**必须**等"框 + 卫星"落定 —— 这是本域文件头那条
+       * "链内时序假红修复"的既有口径，本条以前漏了它。
+       * 实测症状：框的**异步增高**（热度条 / 相关知识点经 IPC 回来后才长高）会把
+       * `条顶−框底` 读成 **−11 / −23px**（`barBandOk` 要求 below 档恰好 6）⇒ 当场红。
+       * 那不是产品错：真窗 60fps 下 `syncFdSatellites` 一跳（16ms）就补上；而**离屏窗口的 rAF 被
+       * 节流到 ~0.5fps**（同一批实测：`ctx.input.settle` 单次 ≈ 2 s 也是这个原因）⇒ 滞后被放大到
+       * 秒级，判据读在了框长高的半路。
+       * ⇒ 用本域既有的 `waitStableSat`（连续三次同一签名）等落定，**判据一个字没放松**：
+       * 稳定之后仍然必须 `dyBelow === 6`。 */
+      await waitStableSat(ctx);
+      sat = await execJson(ctx, SAT_JS);
+      if (!sat || !sat.box || !sat.box.boxId) return { ok: false, text: '前置失败：落定后拿不到可见的节点详情框' };
       const barCx = sat.bar.left + sat.bar.width / 2;
       const boxCx = sat.box.left + sat.box.width / 2;
       const dxCenter = Math.round(barCx - boxCx);

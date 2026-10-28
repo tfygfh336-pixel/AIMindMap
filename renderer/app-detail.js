@@ -113,6 +113,28 @@
     fdQ(box, '.fd-lock-screen').classList.toggle('active', box.lock === FD_LOCK.SCREEN);
   }
 
+  /** 详情框要"钉"的那个节点元素（**两套渲染器共用这一个取数点**）。
+   *
+   *  为什么必须有它（MS3）：图形档的画布是 SVG（`renderer/app-core.js` 的图渲染层），jsMind 的
+   *  `jmnode` 那一刻是 `display:none`（几何全 0）—— 只认 `jmnode` 的话，在图形档里点节点开详情，
+   *  框会钉到左上角去（"点了一个节点，详情框出现在别处"）。
+   *  两档的取法：树档取 `jmnode[nodeid]`（**原样，一个字节都没改**）；图档取
+   *  `svg g[data-node]` 里 `data-tree-id` 对上的那一个（`data-tree-id` 是图 id → 项目 id 的过桥）。
+   *  ⚠️ 顺序不能反：树档必须先取 jmnode —— 域 04/37 的几何判据都是照它量的。 */
+  function fdNodeEl(container, nodeId) {
+    if (!container || !nodeId) return null;
+    const treeEl = container.querySelector('jmnode[nodeid="' + nodeId + '"]');
+    if (treeEl && treeEl.getClientRects().length) return treeEl;
+    const host = container.querySelector('#diagram-host');
+    if (host && host.getAttribute('hidden') === null) {
+      const gs = host.querySelectorAll('g[data-node][data-tree-id]');
+      for (let i = 0; i < gs.length; i++) {
+        if (gs[i].getAttribute('data-tree-id') === nodeId && gs[i].getClientRects().length) return gs[i];
+      }
+    }
+    return treeEl || null;
+  }
+
   /** 记录小锁锚点。
    *  · dx/dy —— 详情框左上角相对**所属节点框左上角**的偏移（除以当前缩放换算成节点自身坐标，
    *             因此与缩放无关，这正是"相对导图某点被锁死"的含义）；
@@ -129,7 +151,7 @@
       sLeft: left + (panel ? panel.scrollLeft : 0),
       sTop: top + (panel ? panel.scrollTop : 0)
     };
-    const nodeEl = (box.node && container) ? container.querySelector('jmnode[nodeid="' + box.node.id + '"]') : null;
+    const nodeEl = box.node ? fdNodeEl(container, box.node.id) : null;
     if (nodeEl && container) {
       const nr = nodeEl.getBoundingClientRect();
       const cr = container.getBoundingClientRect();
@@ -149,7 +171,7 @@
     const container = document.getElementById('mindmap-container');
     if (!container) return;
     const S = fdZoom() || 1;
-    const nodeEl = (box.node && a.hasNode) ? container.querySelector('jmnode[nodeid="' + box.node.id + '"]') : null;
+    const nodeEl = (box.node && a.hasNode) ? fdNodeEl(container, box.node.id) : null;
     if (nodeEl) {
       const nr = nodeEl.getBoundingClientRect();
       const cr = container.getBoundingClientRect();
@@ -307,7 +329,7 @@
     if (!box.node) return;
     const S = fdZoom();
     const w = el.offsetWidth * S;
-    const nodeEl = container.querySelector('jmnode[nodeid="' + box.node.id + '"]');
+    const nodeEl = fdNodeEl(container, box.node.id);
     if (!nodeEl) return;
     const nRect = nodeEl.getBoundingClientRect();
     const cRect = container.getBoundingClientRect();

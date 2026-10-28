@@ -364,6 +364,27 @@ jmnode[isroot="false"] ~ jmexpander { border-color: var(--accent); }
 #mindmap-container .jsmind-inner::-webkit-scrollbar { width: 0; height: 0; display: none; }
 #empty-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--ink-3); }
 
+/* ---------------- 图渲染层（MS3）：`src/diagram` 的 SVG 画布 ----------------
+ * 两套渲染器**不同时显示**（`#diagram-host` 在 ⇒ `#jsmind_container` 藏起来，反向亦然）。
+ * 这一层是 `#mindmap-container` 的**绝对定位子元素** ⇒ 不参与 body 的 flex 列，所以
+ * `#main` 顶边一个像素都不动（域 42 判据）、也不进工具栏（域 37 的绝对坐标判据）。
+ * `z-index: 1` 压在 jsMind 节点层之上、又在角标（30）/ 详情框（50）之下 ⇒ 详情框仍然盖得住。
+ * 平移 = 这一层的 pointer 拖动；缩放 = `#diagram-stage` 上的 `scale(k)` —— **只用一个 transform**，
+ * 与 jsMind 那套（也是单 transform）同一手法：两套坐标系是"放大后显示不全"的老病因。 */
+#diagram-host {
+  position: absolute; inset: 0; z-index: 1;
+  overflow: hidden; background: var(--surface);
+  cursor: grab;
+}
+#diagram-host[hidden] { display: none; }
+#diagram-host.mm-diagram-panning { cursor: grabbing; }
+#diagram-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+#diagram-stage > svg { display: block; }
+/* 节点可点（打开**既有**详情框的唯一入口 `MM.showDetail`）；连线/层带/容器不吃指针 */
+#diagram-stage g[data-node] { cursor: pointer; }
+/* 图渲染层在的时候，jsMind 那一套容器整个藏起来（不是"透明"：透明仍然吃命中测试） */
+#mindmap-container.mm-diagram-on > #jsmind_container { display: none; }
+
 /* 主题模式：隐藏"容器根"节点（jsMind 是单根树，把根当容器用），
  * 它的标题改以左上角角标显示，于是各顶层分支看起来是互不相连的独立主题。 */
 jmnode.mm-container-root { visibility: hidden !important; }

@@ -2286,7 +2286,14 @@
     setStatus('已还原视图：100% 缩放，根节点居中');
   }
 
-  function expandAll() { const jm = state.jm; if (jm) { MM.adapter.expandAll(jm); setStatus('已全部展开'); } }
+  /** 全部展开。⚠️ 【MS3】图形档的画布是 SVG（节点可见性由 `expanded` 现算）⇒ 展开/收起之后要
+   *  让图渲染层重画一次（树形档 `MM.refreshDiagram` 是 no-op：它先按能力判）。
+   *  这一句**不写盘**（只读序列化产物）；`expanded` 的落盘仍走既有保存路径，语义一个字没变。 */
+  function expandAll() {
+    const jm = state.jm;
+    if (jm) { MM.adapter.expandAll(jm); setStatus('已全部展开'); }
+    if (MM.refreshDiagram) MM.refreshDiagram();
+  }
   /** 收起（v0.16.2 修复）：jm.collapse_all() 会把 root 也折叠 → 容器根隐藏后
    *  什么都看不到（用户实测）。改为只收起**顶层主题**（root 保持展开），
    *  即"收起到树根"：主题的孙辈及以下全部收进主题节点。 */
@@ -2302,6 +2309,7 @@
       }
     });
     setStatus(n ? '已收起到树根（' + n + ' 个主题）' : '没有可收起的主题');
+    if (MM.refreshDiagram) MM.refreshDiagram();   // 【MS3】图形档跟着收起（见 expandAll 的注释）
   }
 
   /* —— 只转发「定义在其他文件」的函数（其他模块后加载，故用包装函数而非解构）—— */

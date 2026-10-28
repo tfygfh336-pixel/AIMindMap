@@ -45,6 +45,15 @@
  *
  *  己 收尾：剖面回全开 / 清偏移 / 开回进来时那个项目 / 删两个夹具（自证不存在）/ 收模态 / 复位确认桩。
  *
+ * ⚠️ **【MS3 接上内核之后本域被改了两条判据（丁/戊），一条断言都没删】**：
+ *   MS3 起"全开剖面"用的是 **SVG 渲染器**（`renderer/app-core.js` 的图渲染层），而本域 丁/戊 原来是
+ *   照 `jmnode` 量的 ⇒ 那一刻 jmnode 是 `display:none`（几何全 0），原判据会把"画得好好的"判成红。
+ *   改法是**把判据变成渲染器无关**（不是放宽）：
+ *     · 丁 的"可见节点"改成**两套渲染器取大者**，并**新加**一条"两套不同时可见"（双渲染器最怕的坏结果）；
+ *     · 戊 从"两套渲染器里量同一个绝对坐标"改成"**同一份 `meta.nodeOffsets` 在两套里各自位移都恰好
+ *       等于偏移值**"（清掉/加回各重画一次对比）—— 比原来那版**更强**：它证明的是"同一份数据驱动
+ *       两个渲染器"，而原来那版只证明了"两个读数相等"。
+ *
  * 判别力证明（"临时改产品代码那一轮"，每次都记 SHA-256 + 字节数并用**原始 Buffer** 逐字节还原）：
  *   ① 把 `applyCapSurface` 的 `controlsFor(...)` 换成一份**手写的 shown 名单** ⇒ 甲 必红；
  *   ② 在 `app-core.js` 里写一句"剖面变量 === 某个剖面名"的分支 ⇒ 乙 必红；
@@ -226,9 +235,43 @@ function relToRoot(ctx, id) {
     + '})()');
 }
 
+/** 图渲染器里某节点的**画布坐标**（读 SVG 的 `data-x`/`data-y`：用户单位，与缩放/平移无关）。
+ *  相对根取位移 ⇒ 平移不变量（与 `relToRoot` 同一口径，只是换了一套渲染器）。
+ *  ⚠️ 拿不到 ⇒ 回 null，调用方必须判红 —— 不许当成"没挪"（本域第一版就在这上面空转过一次）。 */
+function svgRelToRoot(ctx, id, rootId) {
+  return ctx.exec('(function () {'
+    + ' var h = document.getElementById("diagram-host");'
+    + ' if (!h) return null;'
+    + ' var a = h.querySelector(\'g[data-node][data-tree-id="' + id + '"]\');'
+    + ' if (!a) return null;'
+    + ' var r = h.querySelector(\'g[data-node][data-tree-id="' + rootId + '"]\');'
+    + ' var ax = parseFloat(a.getAttribute("data-x")), ay = parseFloat(a.getAttribute("data-y"));'
+    + ' var rx = r ? parseFloat(r.getAttribute("data-x")) : 0;'
+    + ' var ry = r ? parseFloat(r.getAttribute("data-y")) : 0;'
+    + ' return { dx: Math.round(ax - rx), dy: Math.round(ay - ry),'
+    + '   w: parseFloat(a.getAttribute("data-w")), h: parseFloat(a.getAttribute("data-h")) };'
+    + '})()');
+}
+
+/** 画布上一共有几个节点**真有几何**（**两套渲染器取大者** —— MS3 之后"全开剖面"用的是
+ *  SVG 渲染器，jmnode 那一刻是 `display:none`（几何全 0），只数 jmnode 会把"画得好好的"判成红。
+ *  同时回"哪一套在画"：两套渲染器**不许同时在画**（同屏两棵树 = 双渲染器最常见的坏结果）。 */
+const NODE_GEOM = `(function () {
+  var svgNodes = document.querySelectorAll('#diagram-host svg[data-mm="diagram"] g[data-node]');
+  var jm = document.querySelectorAll('jmnode[nodeid]');
+  var svgDrawn = 0, jmDrawn = 0;
+  svgNodes.forEach(function (el) { var b = el.getBoundingClientRect(); if (b.width > 0 && b.height > 0) svgDrawn++; });
+  jm.forEach(function (el) { var b = el.getBoundingClientRect(); if (b.width > 0 && b.height > 0) jmDrawn++; });
+  return { jmCount: jm.length, svgCount: svgNodes.length, svgDrawn: svgDrawn, jmDrawn: jmDrawn,
+    drawn: Math.max(svgDrawn, jmDrawn),
+    renderer: svgNodes.length ? 'diagram' : 'tree',
+    bothVisible: svgDrawn > 0 && jmDrawn > 0 };
+})()`;
+
 /** 把整棵树展开（偏移要落在**渲染出来的**节点上量，否则量到的是 0 —— 见 relToRoot 的说明） */
 async function expandAll(ctx) {
   await ctx.exec('(function () { var jm = window.MMApp.getState().jm; if (jm) jm.expand_all(); return true; })()');
+  await ctx.exec('(function () { if (window.MM.refreshDiagram) window.MM.refreshDiagram(); return true; })()');
   await ctx.input.settle(PAINT);
 }
 
@@ -563,8 +606,9 @@ const assertions = [
   },
 
   {
-    name: '丁 全开剖面打开**纯树**项目：派生布局在（每个节点都有非零矩形）、盘上 sha256 不变、isDirty 仍 false、'
-      + '序列化产物里**没有** graph 键（派生布局不写盘）；剖面来回切也不写盘、不新增键',
+    name: '丁 全开剖面打开**纯树**项目：派生布局在（画布上真有非零几何的节点 ≥3，**渲染器无关** —— '
+      + 'MS3 起全开剖面用的是 SVG 渲染器，只数 jmnode 会把"画得好好的"判成红）、两套渲染器**不同时可见**、'
+      + '盘上 sha256 不变、isDirty 仍 false、序列化产物里**没有** graph 键；剖面来回切也不写盘、不新增键',
     run: async (ctx) => {
       if (!ctx.input) return { ok: false, text: '没有 ctx.input（不是 --smoke 路径）' };
       const doc = docMatrix();
@@ -577,17 +621,11 @@ const assertions = [
       const keySets = (t) => { const o = JSON.parse(t); return { top: Object.keys(o).sort(), meta: Object.keys(o.meta || {}).sort() }; };
       const keysBefore = keySets(beforeText);
       const opened = await openProject(ctx, P_TREE);
-      const geom = await ctx.exec('(function () {'
-        + ' var nodes = document.querySelectorAll(\'jmnode[nodeid]\');'
-        + ' var drawn = 0;'
-        + ' nodes.forEach(function (el) { var b = el.getBoundingClientRect();'
-        + '   if (b.width > 0 && b.height > 0) drawn++; });'
-        + ' var ser = window.MMApp.serializeTree();'
-        + ' return { count: nodes.length, drawn: drawn,'
-        + '   hasGraphKey: Object.prototype.hasOwnProperty.call(ser, "graph"),'
+      const geom = await ctx.exec(NODE_GEOM + ';');
+      const ser = await ctx.exec('(function () { var s = window.MMApp.serializeTree();'
+        + ' return { hasGraphKey: Object.prototype.hasOwnProperty.call(s, "graph"),'
         + '   dirty: window.MMApp.isDirty(),'
-        + '   topKeys: Object.keys(ser).sort(), metaKeys: Object.keys(ser.meta || {}).sort() };'
-        + '})()');
+        + '   topKeys: Object.keys(s).sort(), metaKeys: Object.keys(s.meta || {}).sort() }; })()');
       // 剖面来回切（窄 → 全）：切剖面是**视图选择**，不许改数据
       await setProfile(ctx, narrow);
       await ctx.input.settle({ delayMs: 60 });
@@ -597,19 +635,22 @@ const assertions = [
       const keysAfter = keySets(readRaw(P_TREE));
       const expectTop = keysBefore.top.filter((k) => k !== 'graph');
       /* "派生布局在"的判据：**画面上真渲染出来的那些节点**都有非零矩形（布局给了每一下坐标），
-       * 且节点全套（含折叠着的）都在 DOM 里 —— ⚠️ **不能**要求"每个 jmnode 都有矩形"：
+       * 且节点全套（含折叠着的）都在 DOM 里 —— ⚠️ **不能**要求"每个节点都有矩形"：
        * 折叠着的节点本来就没有几何（`display:none`），那是正确状态，把它判红就是假红。
-       * （第一版就是那么写的，实测：打开只展开根 ⇒ 7 个节点里只有 3 个有矩形。） */
+       * （第一版就是那么写的，实测：打开只展开根 ⇒ 7 个节点里只有 3 个有矩形。）
+       * ⚠️ MS3 起"全开剖面"用 SVG 渲染器 ⇒ 几何**取两套渲染器的大者**（jmnode 那一刻是隐藏的），
+       * 并另判"两套不同时可见"——那是双渲染器最容易出的坏结果。 */
       return {
-        ok: !!opened && geom.count >= 7 && geom.drawn >= 3
-          && geom.hasGraphKey === false && geom.dirty === false
+        ok: !!opened && geom.jmCount >= 7 && geom.drawn >= 3 && geom.bothVisible === false
+          && ser.hasGraphKey === false && ser.dirty === false
           && beforeSha === afterSha
           && same(keysBefore.top, keysAfter.top) && same(keysBefore.meta, keysAfter.meta)
-          && same(geom.topKeys, expectTop) && same(geom.metaKeys, keysBefore.meta),
-        text: '剖面=' + full + ' · 节点=' + geom.count + '（布局给出的可见节点 ' + geom.drawn + ' 个，均非零矩形='
-          + (geom.drawn >= 3) + '；其余是折叠着的，本来就没有几何）'
-          + ' · 序列化产物有 graph 键=' + geom.hasGraphKey + '（必须 false：渲染层不管图附加层）'
-          + ' · isDirty=' + geom.dirty
+          && same(ser.topKeys, expectTop) && same(ser.metaKeys, keysBefore.meta),
+        text: '剖面=' + full + ' · 树里的节点=' + geom.jmCount + ' · 当前在画的是 **' + geom.renderer
+          + '** 渲染器，可见节点 ' + geom.drawn + ' 个（jmnode ' + geom.jmDrawn + ' / SVG ' + geom.svgDrawn
+          + '；其余是折叠着的，本来就没有几何）· 两套同时可见=' + geom.bothVisible + '（必须 false）'
+          + ' · 序列化产物有 graph 键=' + ser.hasGraphKey + '（必须 false：渲染层不管图附加层）'
+          + ' · isDirty=' + ser.dirty
           + ' · 盘上 sha256 ' + beforeSha.slice(0, 8) + '→' + afterSha.slice(0, 8) + '（不变=' + (beforeSha === afterSha) + '）'
           + ' · 顶层键 ' + JSON.stringify(keysBefore.top) + ' / meta 键 ' + JSON.stringify(keysBefore.meta)
           + '（切剖面后逐项相同=' + (same(keysBefore.top, keysAfter.top) && same(keysBefore.meta, keysAfter.meta)) + '）'
@@ -618,15 +659,19 @@ const assertions = [
   },
 
   {
-    name: '戊 两剖面交替打开同一项目：`meta.nodeOffsets` 是**共用的** —— 窄剖面里写一条偏移并落盘 ⇒'
-      + '切到全开剖面（不重开）/ 重开项目各量一次，那个节点相对根的位移**逐项相同**；偏移桶只有一项、'
-      + '盘上不冒出第二个坐标键',
+    name: '戊 两剖面交替打开同一项目：`meta.nodeOffsets` 是**共用的** —— 树渲染器里写一条偏移（落盘）⇒'
+      + '切到全开剖面（**图渲染器**，不重开）后，同一个节点在**画布坐标**里的位移 === 偏移值'
+      + '（清掉偏移/加回偏移各重画一次对比）；重开项目后仍在；偏移桶只有一项、盘上不冒出第二个坐标键',
     run: async (ctx) => {
       if (!ctx.input) return { ok: false, text: '没有 ctx.input（不是 --smoke 路径）⇒ 真鼠标判据跑不了' };
       const doc = docMatrix();
       const full = fullProfileOf(doc);
       const narrow = narrowProfileOf(doc);
       const OFFSET = { x: 24, y: 32 };
+      const applyOffsets = () => ctx.exec('(function () { return window.MMApp.setTreeOffsets(null, '
+        + JSON.stringify({ [DEEP]: OFFSET }) + '); })()');
+      const clearOffsets = () => ctx.exec('(function () { if (window.MM.clearTreeOffsets) window.MM.clearTreeOffsets();'
+        + ' return true; })()');
       writeFixtures();                         // 丙 之后可能已被删（幂等重写）
       await setProfile(ctx, narrow);
       await ctx.input.settle({ delayMs: 60 });
@@ -640,32 +685,43 @@ const assertions = [
         return { ok: false, text: DEEP + ' 没有几何（w=' + base.w + ' h=' + base.h + '）⇒ '
           + '它的"位移"量不到，本判据会空转 —— 必须先让它渲染出来（展开那棵子树）' };
       }
-      const applied = await ctx.exec('(function () { return window.MMApp.setTreeOffsets(null, '
-        + JSON.stringify({ [DEEP]: OFFSET }) + '); })()');
+      const applied = await applyOffsets();
       await ctx.input.settle(PAINT);
       const offsetRect = await relToRoot(ctx, DEEP);
+      /* ---- ① 树渲染器里的位移 === 偏移值（不是"至少挪了 8px"，是**逐轴相等**） ---- */
+      const treeShift = { dx: offsetRect.dx - base.dx, dy: offsetRect.dy - base.dy };
+      const treeOk = treeShift.dx === OFFSET.x && treeShift.dy === OFFSET.y;
+      /* ---- 落盘（真鼠标点保存）：盘上只有一个偏移桶 ---- */
       await clickEl(ctx, '#btn-save', '工具栏「保存」');
       await ctx.input.settle({ delayMs: 300 });
       const stAfterSave = await statusText(ctx);
       const disk1 = readRaw(P_TREE);
       const o1 = JSON.parse(disk1);
       const offs1 = (o1.meta && o1.meta.nodeOffsets) || null;
-      await setProfile(ctx, full);             // 切到全开剖面（**不重开项目**）
+      /* ---- ② 切到全开剖面（**图渲染器**，不重开）⇒ 同一份偏移在 SVG 画布坐标里也生效 ---- */
+      await setProfile(ctx, full);
       await ctx.input.settle(PAINT);
-      const rectInFull = await relToRoot(ctx, DEEP);
-      await openProject(ctx, P_TREE);          // 全开剖面下重开同一个项目
-      await expandAll(ctx);                    // 重开又收起了 ⇒ 再展开一次才量得到（同 base 那条理由）
-      const rectReopened = await relToRoot(ctx, DEEP);
+      const svgWith = await svgRelToRoot(ctx, DEEP, 'root');
+      await clearOffsets();
+      await setProfile(ctx, narrow);            // 回树再进图 = 一次重画（剖面切换就是"数据变了"的入口）
+      await ctx.input.settle({ delayMs: 60 });
+      await setProfile(ctx, full);
+      await ctx.input.settle(PAINT);
+      const svgWithout = await svgRelToRoot(ctx, DEEP, 'root');
+      const svgShift = (svgWith && svgWithout)
+        ? { dx: svgWith.dx - svgWithout.dx, dy: svgWith.dy - svgWithout.dy } : null;
+      const svgOk = !!svgShift && svgShift.dx === OFFSET.x && svgShift.dy === OFFSET.y;
+      await applyOffsets();                     // 把内存里的偏移加回去（盘上那份一直没动过）
+      /* ---- ③ 重开项目（全开剖面）⇒ 偏移仍在（内存 + 画布坐标逐项相同） ---- */
+      await openProject(ctx, P_TREE);
+      await expandAll(ctx);                     // 重开又收起了 ⇒ 再展开一次才量得到（同 base 那条理由）
+      const rectReopened = await svgRelToRoot(ctx, DEEP, 'root');
       const offsetsAfterReopen = await ctx.exec('window.MMApp.getNodeOffsets()');
       const disk2 = readRaw(P_TREE);
       const o2 = JSON.parse(disk2);
-      const moved = !!offsetRect && Math.abs(offsetRect.dx - base.dx) >= 8 && Math.abs(offsetRect.dy - base.dy) >= 8;
-      /* 三次测量必须**都量到了真几何**（w/h > 0），否则"逐项相同"可能是"三个 0 彼此相同"——
-       * 那是本域第一版真踩到的空转形态（见 relToRoot 的说明）。 */
       const hasGeom = (r) => !!r && r.w > 0 && r.h > 0;
-      const sameAcross = hasGeom(offsetRect) && hasGeom(rectInFull) && hasGeom(rectReopened)
-        && rectInFull.dx === offsetRect.dx && rectInFull.dy === offsetRect.dy
-        && rectReopened.dx === offsetRect.dx && rectReopened.dy === offsetRect.dy;
+      const sameAfterReopen = hasGeom(svgWith) && hasGeom(rectReopened)
+        && rectReopened.dx === svgWith.dx && rectReopened.dy === svgWith.dy;
       const oneBucket = !!offs1 && Object.keys(offs1).length === 1
         && !!offs1[DEEP] && offs1[DEEP].x === OFFSET.x && offs1[DEEP].y === OFFSET.y;
       const keptInMemory = !!offsetsAfterReopen && !!offsetsAfterReopen[DEEP]
@@ -674,12 +730,13 @@ const assertions = [
         && same(Object.keys(o2.meta || {}).sort(), Object.keys(o1.meta || {}).sort())
         && sha256(disk1) === sha256(disk2);
       return {
-        ok: !!applied && moved && oneBucket && keptInMemory && sameAcross && noSecondStore
-          && /^已保存/.test(String(stAfterSave || '')),
-        text: '剖面 ' + narrow + '→' + full + ' · 相对根的位移：原=' + JSON.stringify(base)
-          + ' 加偏移后=' + JSON.stringify(offsetRect) + '（真的挪了=' + moved + '，落盘 ' + applied + ' 条）'
-          + ' · 切剖面后=' + JSON.stringify(rectInFull) + ' 重开后=' + JSON.stringify(rectReopened)
-          + '（逐项相同=' + sameAcross + '）'
+        ok: !!applied && hasGeom(offsetRect) && treeOk && oneBucket && svgOk && sameAfterReopen
+          && keptInMemory && noSecondStore && /^已保存/.test(String(stAfterSave || '')),
+        text: '剖面 ' + narrow + '→' + full + ' · **树渲染器**里位移=' + JSON.stringify(treeShift)
+          + '（应 === ' + JSON.stringify(OFFSET) + ' ⇒ ' + treeOk + '；落盘 ' + applied + ' 条）'
+          + ' · **图渲染器**画布坐标：带偏移=' + JSON.stringify(svgWith) + ' 清掉后=' + JSON.stringify(svgWithout)
+          + ' ⇒ 位移=' + JSON.stringify(svgShift) + '（应 === ' + JSON.stringify(OFFSET) + ' ⇒ ' + svgOk + '）'
+          + ' · 重开后=' + JSON.stringify(rectReopened) + '（与带偏移那次逐项相同=' + sameAfterReopen + '）'
           + ' · 盘上 meta.nodeOffsets=' + JSON.stringify(offs1) + '（只有一项=' + oneBucket + '）'
           + ' · 重开后内存里仍有它=' + keptInMemory
           + ' · 盘上没有第二个坐标键=' + noSecondStore + ' · 保存后状态栏="' + String(stAfterSave || '').slice(0, 16) + '"'
@@ -711,7 +768,8 @@ const assertions = [
           && (PROJECT_WHEN_ENTERED ? restored === true : true),
         text: '剖面=' + profile + '（=全开）· 夹具删除=' + removed.removed + '（自证不存在=' + removed.gone + '）'
           + ' · 收模态 ' + cleaned.n + ' 个 · 开回项目=' + JSON.stringify(PROJECT_WHEN_ENTERED)
-          + '（' + restored + '）· 收尾后提示="' + String(noteAfter || '') + '"（应为空：真实项目没有 graph）'
+          + '（' + restored + '）· 收尾后提示="' + String(noteAfter || '').slice(0, 60) + '"'
+          + '（全开剖面会说"这一档在画图 + PNG 导出仍是缺口"；没有 graph 的**树形**剖面才是空的）'
       };
     }
   }
