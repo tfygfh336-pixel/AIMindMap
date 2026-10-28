@@ -14,8 +14,10 @@
  *     免得变成一团毛线）。
  *
  * 三条实现纪律（都来自本工程踩过的坑）：
- *   ① **坐标只认一个真源**：端点一律用 `MM.nodeBorderRect()`（e_panel 逻辑坐标，已含 view offset
- *      与树偏移）⇒ 与父节点连线同一个坐标系，缩放/平移靠变换层，**不自己算第二套坐标**；
+ *   ① **坐标只认一个真源**：节点矩形一律用 `MM.nodeBorderRect()`（e_panel 逻辑坐标，已含 view
+ *      offset 与树偏移）。「矩形」与「端点」是两件事：矩形由这里给，**端点规则在内核里**
+ *      （`MMDiagram.relationsOf` ⇒ 端点落在矩形边界上，与图渲染器同一套；见下面 `relPathOf`）；
+ *      缩放/平移靠变换层，**不自己算第二套坐标**；
  *   ② **高亮只写类，不写内联样式**：jsMind 的 `_reset_node_custom_style()` 会在每次 show_nodes
  *      重写内联的 background/color ⇒ 用类（CSS）才是稳的（本文件已有一个先例：`mm-rubber-hit`）；
  *   ③ **关系层挂进 `fdViewEls()`**：它跟着同一个 translate+scale 走 ⇒ 平移缩放**零重算**
@@ -136,6 +138,43 @@
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
+  /** **端点规则**（本文件唯一一处"线从哪出发、到哪结束"的决定点）
+   *
+   * 口径（2026-10-30 收口批定案，`docs/DIAGRAM-MODES.md` §7.6）：关系线的端点**落在节点矩形
+   * 边界上**，用的是**图渲染器同一套规则** —— `MMDiagram.relationsOf()`（内部 = `route.autoPorts`
+   * + `route.portPoint`，与图里每条直连边的端点同一个函数）。判据：端点对节点矩形的偏差
+   * **≤ 1px**（读数在 `.review/20261068-图能力收尾/读数.md`）。
+   *
+   * 改前是**中心到中心**（`M ra.cx,ra.cy L rb.cx,rb.cy`）⇒ 端点根本不在边界上，偏差 = 中心到
+   * 边界沿线距离（本工程夹具上是 20–84px）。为什么那时看着"没毛病"：线挂在节点层**下面**
+   * （z-index 1 < 节点的 2），多出来的那截被节点自己盖住了 —— 一旦节点半透明/换主题/导出成图，
+   * 端点就露在外面。所以这次不是美化，是**把规则统一到可判的那一条**。
+   *
+   * ⚠️ 两条纪律：
+   *   · **规则只有一份**（内核里）。这里不许再写第二份边界求交 —— 两套算式就是两套坐标。
+   *   · 内核没加载 ⇒ **退回旧的中心规则并在状态栏说清**（不静默、也不假装"已统一"）。
+   */
+  let warnedNoKernel = false;
+  function relPathOf(ra, rb, a, b) {
+    const D = typeof window !== 'undefined' ? window.MMDiagram : null;
+    if (D && typeof D.relationsOf === 'function') {
+      const boxOf = (r) => ({ x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top });
+      const one = D.relationsOf({
+        nodes: [{ id: a, rect: boxOf(ra) }, { id: b, rect: boxOf(rb) }],
+        relations: [{ from: a, to: b }]
+      });
+      if (one.lines.length) return one.lines[0].d;
+    } else if (!warnedNoKernel) {
+      warnedNoKernel = true;
+      if (MM.setStatus) {
+        MM.setStatus('关系层端点仍按「节点中心到中心」画（图内核 relationsOf 没加载 —— '
+          + '检查 index.html 的 src/diagram/*.js）', true);
+      }
+    }
+    // 退回旧规则（**只为不静默失败**：它不是设计口径，端点不在边界上）
+    return 'M' + ra.cx + ',' + ra.cy + ' L' + rb.cx + ',' + rb.cy;
+  }
+
   /** 重画所有线（端点现取 ⇒ 树被拖动/重排后依然贴合）。
    *  同时维护**两层**：视觉层（节点下面）+ 命中层（节点上面，见 ensureHitLayer 的说明）✓ */
   function redrawLines() {
@@ -149,7 +188,7 @@
     for (const e of active.edges) {
       const ra = rectOf(e.a), rb = rectOf(e.b);
       if (!ra || !rb) continue;                       // 端点不在树上（折叠/跨项目）⇒ 不画
-      const d = 'M' + ra.cx + ',' + ra.cy + ' L' + rb.cx + ',' + rb.cy;
+      const d = relPathOf(ra, rb, e.a, e.b);
       const line = document.createElementNS(SVG_NS, 'path');
       line.setAttribute('d', d);
       line.setAttribute('class', 'mm-rel-line mm-rel-line--' + e.kind);

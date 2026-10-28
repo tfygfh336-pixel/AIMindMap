@@ -15,8 +15,9 @@
  *   · **间距可调**（`C-F4-03`）：`graph.gap.node` / `graph.gap.rank`（或 `opts.gap`）只影响
  *     各自那条轴；节点数、拓扑、分层结果不变。
  *   · **显式意图优先**（外部证据 archify 的"用布局判断代替通用自动布局"）：
- *     `graph.pinned[]` 里且在数据里带 `rect` 的节点**位置不被覆盖**（自动布局只负责其余节点）。
- *     留这个入口是为了将来接"作者给布局意图"时不用推翻本模块。
+ *     `graph.pinned[]` 命中者的坐标**优先于**自动布局，来源只有两个（见"显式意图"那一节）：
+ *     `nodes[].rect`（绝对）或 `opts.offsets[id]`（= 既有的 `meta.nodeOffsets` 键域，相对偏移）。
+ *     两个都没有 ⇒ `degraded[]` 里点名 `E_PIN_NO_COORD`（**不静默忽略**）。
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./tokens.js'), require('./wrap.js'));
@@ -404,9 +405,14 @@
     const gap = resolveGap(graph, o.gap);
     const contentMaxW = isNum(o.contentMaxW) ? o.contentMaxW : tokens.CONTENT_MAX_W;
     const measurer = o.measurer;
+    /* 人工位置（`meta.nodeOffsets` / `meta.themeOffsets` 的同一份键域；**只用于 pinned 节点**，
+     * 见下面"显式意图"那一节的纪律）—— 非 pinned 节点的偏移仍由调用方在布局之后叠加。 */
+    const offsets = isPlain(o.offsets) ? o.offsets : null;
 
     const nodesIn = Array.isArray(doc && doc.nodes) ? doc.nodes : [];
     const nodes = nodesIn.filter((n) => isPlain(n) && typeof n.id === 'string');
+    const nodeById = new Map();
+    nodes.forEach((n) => { if (!nodeById.has(n.id)) nodeById.set(n.id, n); });
     const ids = nodes.map((n) => n.id).sort(byId);
     const seen = new Set();
     const uniqIds = ids.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
@@ -602,20 +608,56 @@
     centering.sort((a, b) => byId(a.id, b.id));
 
 
-    /* ---- 显式意图：pinned + 带 rect 的节点位置不被覆盖 ---- */
+    /* ---- 显式意图：`graph.pinned` 的坐标**求解**（优先级高于自动布局）----
+     *
+     * 语义（设计 `docs/DIAGRAM-MODES.md` §6.3）：`pinned` **只表达"别覆盖"，不表达"在哪"**。
+     * 坐标有两个来源，按下面的顺序取，**取到谁就逐值用它**（不再量化、不再挪动）：
+     *   ① `nodes[].rect`（作者直接给的绝对坐标）⇒ `why: 'pinned+rect'`；
+     *   ② `opts.offsets[id]`（= `meta.nodeOffsets` / `meta.themeOffsets` 的同一份键域，
+     *      相对**自动布局位置**的偏移）⇒ 坐标 = 自动布局位置 ⊕ 偏移，`why: 'pinned+offset'`。
+     *      ⇒ 这就是"人工位置"的既有家（§6.2 的实测：位置类信息已经在那里，不新造坐标）。
+     *   ③ 两个都没有 ⇒ **钉住的意图无法兑现**：按自动布局放置，并在 `degraded[]` 里
+     *      **逐条点名** `E_PIN_NO_COORD`（原先这里是静默忽略 —— 那正是"pinned 没用上"的真身：
+     *      写了 `pinned` 与没写 `pinned` 得到一模一样的结果，且**报告里一个字都没有**）。
+     *
+     * ⚠️ 两条纪律：
+     *   · **只对 pinned 命中者用 `offsets`**：非 pinned 节点的偏移仍由调用方在布局之后叠加
+     *     （既有行为，两个渲染器共用同一份）。内核要是也叠一次，就会**双重叠加**。
+     *   · 解析出来的框一律进 `explicit[]` ⇒ 后面的 `pinnedAvoid` 只推自动节点、**绝不推它们**
+     *     （钉住的是作者的意图，推它等于把显式意图降级成建议）。
+     */
     const pinned = Array.isArray(graph.pinned) ? graph.pinned.filter((x) => typeof x === 'string') : [];
+    const offsetsIn = isPlain(offsets) ? offsets : {};
     const explicit = [];
-    nodes.forEach((n) => {
-      if (pinned.indexOf(n.id) < 0) return;
-      const r = n.rect;
+    const pinnedUnresolved = [];
+    pinned.slice().sort(byId).forEach((id) => {
+      if (!sizeOf.has(id)) {                                  // 指向不存在的节点：schema 已判红，这里不重复判
+        pinnedUnresolved.push({ id: id, why: 'no-node' });
+        return;
+      }
+      const n = nodeById.get(id);
+      const r = n ? n.rect : undefined;
       const ok = Array.isArray(r) ? (r.length === 4 && r.every(isNum))
         : (isPlain(r) && isNum(r.x) && isNum(r.y) && isNum(r.w) && isNum(r.h));
-      if (!ok) return;
-      const box = Array.isArray(r)
-        ? { x: r[0], y: r[1], w: r[2], h: r[3] }
-        : { x: r.x, y: r.y, w: r.w, h: r.h };
-      rects[n.id] = { x: box.x, y: box.y, w: box.w, h: box.h };
-      explicit.push({ id: n.id, rect: box, why: 'pinned+rect' });
+      if (ok) {
+        const box = Array.isArray(r)
+          ? { x: r[0], y: r[1], w: r[2], h: r[3] }
+          : { x: r.x, y: r.y, w: r.w, h: r.h };
+        rects[id] = { x: box.x, y: box.y, w: box.w, h: box.h };
+        explicit.push({ id: id, rect: box, why: 'pinned+rect' });
+        return;
+      }
+      const off = offsetsIn[id];
+      if (isPlain(off) && isNum(off.x) && isNum(off.y)) {
+        const base = rects[id];
+        if (!base) { pinnedUnresolved.push({ id: id, why: 'no-base' }); return; }
+        const box = { x: base.x + off.x, y: base.y + off.y, w: base.w, h: base.h };
+        rects[id] = box;
+        explicit.push({ id: id, rect: box, why: 'pinned+offset',
+          base: { x: base.x, y: base.y }, offset: { x: off.x, y: off.y } });
+        return;
+      }
+      pinnedUnresolved.push({ id: id, why: 'no-coord' });
     });
 
     /* ---- `pinned` 与自动区域的**重叠避免** ----
@@ -687,6 +729,13 @@
       }
     }
     pinnedAvoid.sort((a, b) => byId(a.id, b.id));
+    /* `pinned` 命中却没有坐标 ⇒ **点名，不静默**（原先这里是"忽略，报告里一个字都没有"） */
+    pinnedUnresolved.forEach((u) => {
+      degraded.push('E_PIN_NO_COORD: 节点 ' + u.id + ' 被 `graph.pinned` 钉住，但**没有坐标**'
+        + '（既没有 `nodes[].rect`，也没有 `opts.offsets[' + u.id + ']`）⇒ 钉住的意图无法兑现：'
+        + '已按自动布局放置。修法：给该节点 `rect`，或在 `opts.offsets` 里给 `{' + u.id + '": {x, y}}`'
+        + '（= 既有的 `meta.nodeOffsets` 键域）');
+    });
     if (degraded.length) degraded.forEach((d) => problems.push(d));
 
 
@@ -721,6 +770,8 @@
         selfLoops: selfLoops,
         explicit: explicit,
         pinned: pinned.slice().sort(byId),
+        // `pinned` 里**兑现不了**的那些（无坐标 / 无基点 / 无节点）：每条都同时进 `degraded[]`
+        pinnedUnresolved: pinnedUnresolved.slice().sort((a, b) => byId(a.id, b.id)),
         // `C-A-04` 的居中读数（原值：目标中心 / 实际中心 / 误差 px / 是否精确）——
         // 判据不许读这里来自证：`tests/diagram-align.test.js` 从 rects + ranks + 夹具**另算一份**
         centering: centering,

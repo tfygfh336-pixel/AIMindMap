@@ -1,10 +1,11 @@
 /* ============================================================
  * src/diagram/profiles.js — **剖面（profile）的纯逻辑那一半**（MS4 的数据侧）
  * ------------------------------------------------------------
- * 它只回答三个问题（不碰 renderer、不碰 DOM、零 I/O、零时钟、零随机）：
+ * 它只回答四个问题（不碰 renderer、不碰 DOM、零 I/O、零时钟、零随机）：
  *   ① 某个剖面**开哪些能力**（✓）/ 支持但默认关（○）/ 根本不出现（✗）；
  *   ② 某个控件（带 `cap` 声明）在这个剖面里**出不出**（`controlsFor`）；
- *   ③ 这份表**自己有没有毛病**（`profileIssues`：complex 零 ✗ / 【必备】全 ✓ / ✓∩✗ = ∅）。
+ *   ③ 同一条能力在这个剖面里的**取值收窄**（§4.2；本批落地的是六种形状 ⇒ `shapesFor` / `narrowShape`）；
+ *   ④ 这份表**自己有没有毛病**（`profileIssues`：complex 零 ✗ / 【必备】全 ✓ / ✓∩✗ = ∅）。
  *
  * ⚠️ 这份矩阵**不是**本文件自创：它是 `docs/DIAGRAM-MODES.md` §3.2 那张表的**逐格抄本**
  *   （一次性从文档生成）。抄本的**权威仍然是文档**：`tests/diagram-profiles.test.js` 每次跑
@@ -30,6 +31,46 @@
 
   /** 【必备】四条（`C-F1-05` / `C-F4-04` / `C-F5-04` / `C-I-04`）：它们在**任何**剖面都必须 ✓ */
   const REQUIRED = Object.freeze(['C-F1-05', 'C-F4-04', 'C-F5-04', 'C-I-04']);
+
+  /* ==================================================================
+   * §4.2 取值收窄（本文件的第二件事，与"开哪些能力"是**两条轴**）
+   * ==================================================================
+   * 设计原文（`docs/DIAGRAM-MODES.md` §4.2）：`logic` 只给 `rect` / `round` / `diamond`
+   * （环节 / 起止 / 判断），其余三型不给。
+   *
+   * ⚠️ 三条口径（改之前先读，否则会把"收窄"做成"关能力"或"静默接受"）：
+   *   ① **收窄 ≠ 关能力**：`C-F1-01` 在 `logic` 列是 ✓（六种形状的**几何能力**在），
+   *      收窄的是**可用取值**。所以这里不许把 `logic` 的形状能力判 ✗（那是改矩阵，属设计批）。
+   *   ② **降级必须逐条点名**：降级的形状会在图上**换一种画法** ⇒ 报告里必须有
+   *      `{id, from, to}` 原值，否则"悄悄换了个形状"就是本工程四次同型事故的第 N 次。
+   *   ③ **收窄表按剖面给全**（不是只给 `logic` 一格）：`complex` / `module` 六型全给
+   *      （§4.2 只收窄 `logic`；`module` 没有收窄的设计依据 ⇒ 不收，**不许替用户发明规则**）；
+   *      `mindmap` / `path` 是**空集** —— 这两档把 `C-F1-01` 判 ✗（§3.2），
+   *      形状这条能力在它们那里**不出现**，那不是"收窄"，所以内核遇到它们要**拒绝**（见 `narrowShape`）。
+   * ------------------------------------------------------------------ */
+
+  /** 六种形状的**全集**（顺序 = `schema.SHAPES` 的次序；判据会逐字对拍） */
+  const ALL_SHAPES = Object.freeze(['rect', 'round', 'diamond', 'pill', 'cylinder', 'row']);
+
+  /** 剖面 → **允许的画法形状**（§4.2） */
+  const SHAPES_BY_PROFILE = Object.freeze({
+    complex: ALL_SHAPES,
+    logic: Object.freeze(['rect', 'round', 'diamond']),
+    module: ALL_SHAPES,
+    mindmap: Object.freeze([]),
+    path: Object.freeze([])
+  });
+
+  /** 降级映射：不在允许集里的型 ⇒ 降到**语义最近且该剖面允许**的那一型。
+   *  每条都能说清为什么（不是随手挑一个）：
+   *   · `cylinder`（汇总 / 数据源）⇒ `round`：`logic` 里它扮演的是"起止"，
+   *     而 §4.2 把 `round` 定为"起止"；柱体在逻辑链路里没有承载（没有"存储"这个语义）。
+   *   · `row`（条目行卡）⇒ `rect`：`logic` 的 `rect` 是"环节"；条目层在 `logic` 列是 ✗
+   *     （`C-I-01`…`C-I-03`），所以行卡本来就该退回普通环节框。
+   *   · `pill`（带标签）⇒ `round`：标签在 `logic` 列是 ✗（`C-I-02`），`pill` 的圆角在 `round` 上还在。 */
+  const SHAPE_FALLBACK = Object.freeze({ cylinder: 'round', row: 'rect', pill: 'round' });
+
+  const SHAPE_POLICIES = Object.freeze(['report', 'degrade', 'reject']);
 
   /** 矩阵（逐格抄自 `docs/DIAGRAM-MODES.md` §3.2；顺序 = 文档 §2 的行序） */
   const MATRIX_ROWS = Object.freeze([
@@ -176,6 +217,52 @@
   }
 
   /**
+   * 某剖面**允许的画法形状**（§4.2 的取值收窄；顺序 = `ALL_SHAPES` 的相对序）。
+   * @param {string} profile
+   * @returns {string[]}  `mindmap` / `path` ⇒ `[]`（这两档根本没有形状这条能力）
+   */
+  function shapesFor(profile) {
+    assertProfile(profile);
+    return SHAPES_BY_PROFILE[profile].slice();
+  }
+
+  /**
+   * **单个形状**按剖面收窄（纯函数；判据直接喂一个越界的型就能验，不必起渲染）。
+   *
+   * @param {string} profile
+   * @param {string|undefined} type 数据里的 `nodes[].type`（缺省 = `rect`，与渲染侧的缺省一致）
+   * @returns {{from:string, to:(string|null), allowed:string[], narrowed:boolean,
+   *            rejected:boolean, policy?:string, why?:string}}
+   *   `rejected:true` ⇒ 这个剖面**不该有形状**（`C-F1-01` 判 ✗）⇒ 内核要**响亮拒绝**，不是降级。
+   */
+  function narrowShape(profile, type) {
+    assertProfile(profile);
+    const allowed = SHAPES_BY_PROFILE[profile];
+    const from = type === undefined ? 'rect' : type;
+    if (ALL_SHAPES.indexOf(from) < 0) {
+      // 非法型由 `schema.SHAPES` 那一层判（这里不重复判，也不猜）；原样交回去
+      return { from: from, to: from, allowed: allowed.slice(), narrowed: false, rejected: false };
+    }
+    if (!allowed.length) {
+      return {
+        from: from, to: null, allowed: [], narrowed: false, rejected: true,
+        why: '剖面 ' + profile + ' 把 `C-F1-01`（六形状几何）判 ✗ ⇒ 形状这条能力在它那里**不出现**：'
+          + '这不是"取值收窄"，所以不降级 —— 要么换剖面，要么把这份数据交给树渲染器'
+      };
+    }
+    if (allowed.indexOf(from) >= 0) {
+      return { from: from, to: from, allowed: allowed.slice(), narrowed: false, rejected: false };
+    }
+    const to = SHAPE_FALLBACK[from];
+    const target = (to && allowed.indexOf(to) >= 0) ? to : allowed[0];
+    return {
+      from: from, to: target, allowed: allowed.slice(), narrowed: true, rejected: false,
+      why: '剖面 ' + profile + ' 的允许形状是 ' + allowed.join(' / ') + '（设计 §4.2），'
+        + '`' + from + '` 不在其中 ⇒ 降到 `' + target + '`（语义最近且允许的那一型）'
+    };
+  }
+
+  /**
    * **控件面契约**（`docs/DIAGRAM-MODES.md` §4.3 第 1/2 条）：
    *   · 每个控件**必须**声明 `cap`（它是哪条能力）—— 没声明 ⇒ 报错（没有归属的控件一定会漏）；
    *   · 控件集合由剖面**生成**（filter 一次），不许在 N 处写 `if (mode === …)`。
@@ -290,6 +377,13 @@
     controlsFor: controlsFor,
     profileIssues: profileIssues,
     allCapabilities: allCapabilities,
-    capabilityCount: capabilityCount
+    capabilityCount: capabilityCount,
+    // ---- §4.2 取值收窄（形状）----
+    ALL_SHAPES: ALL_SHAPES,
+    SHAPES_BY_PROFILE: SHAPES_BY_PROFILE,
+    SHAPE_FALLBACK: SHAPE_FALLBACK,
+    SHAPE_POLICIES: SHAPE_POLICIES,
+    shapesFor: shapesFor,
+    narrowShape: narrowShape
   };
 });

@@ -292,7 +292,14 @@
     'E_LAYER_OVERLAP', 'E_WATERMARK_NO_ROOM',
     'E_ROUTE_FAILED', 'E_ROUTE_MARGIN', 'E_LANE_OVERFLOW',
     'E_LABEL_NO_ROOM', 'E_LAYOUT_CYCLE', 'E_LAYOUT_CROWDED',
-    'E_ROUTE_ON_BORDER', 'E_PIN_CROWDED', 'E_THEME_CLASS', 'E_THEME_UNKNOWN'
+    'E_ROUTE_ON_BORDER', 'E_PIN_CROWDED', 'E_THEME_CLASS', 'E_THEME_UNKNOWN',
+    // 收口批新增的三条拒绝路径（§4.2 形状收窄 / 关系层几何）：
+    //   `E_PROFILE_SHAPE` = 形状不在该剖面允许集里（`reject` 档）或该剖面根本没有形状能力
+    //   `E_SHAPE_POLICY`  = `opts.shapePolicy` 取值非法（未知处置**不静默当降级**）
+    //   `E_RELATION_REF`  = 关系层端点指向不存在的节点 / 矩形不合法（**不静默丢线**）
+    'E_PROFILE_SHAPE', 'E_SHAPE_POLICY', 'E_RELATION_REF',
+    // `pinned` 的坐标缺失（既没有 `rect` 也没有 `opts.offsets`）：降级＋点名，不是静默忽略
+    'E_PIN_NO_COORD'
   ]);
 
   class MMDiagramError extends Error {

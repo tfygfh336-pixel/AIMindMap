@@ -1254,16 +1254,32 @@
       });
     }
 
-    /* ③ 布局（Sugiyama 四步）—— 只算坐标，不画 */
-    const lay = D.layoutOfDoc({ graph: { direction: direction, edges: edges }, nodes: nodes },
-      { measureText: canvasMeasureText });
+    /* ③ 布局（Sugiyama 四步）—— 只算坐标，不画
+     *
+     * **`graph.pinned` 在这里第一次真的被读**（收口批 · 乙）：盘上的 `pinned[]`（树 id）过桥成图 id
+     * 交给内核，并把「人工位置」当成 `offsets` 一起传下去 —— 于是"钉住"的语义在内核里成立：
+     * 被钉住的节点坐标 = 自动布局位置 ⊕ 偏移，**且它不参与 `pinnedAvoid` 的推挤**
+     * （原先的顺序是"先布局、布局器完全不知道 pinned，再在外面把偏移加上去" ⇒ pinned 一个字节都没被读）。
+     * `offsets` 的键域 = `meta.themeOffsets` + `meta.nodeOffsets` 的同一份（§6.1：不新造坐标）。 */
+    const pinnedTree = (stored && Array.isArray(stored.pinned)) ? stored.pinned : [];
+    const pinnedDid = pinnedTree.map(function (id) { return dIdOf.get(id); }).filter(Boolean);
+    const manualDid = {};
+    nodes.forEach(function (row) {
+      const off = manual[treeIdOf.get(row.id)];
+      if (off) manualDid[row.id] = off;
+    });
+    const lay = D.layoutOfDoc({ graph: { direction: direction, edges: edges, pinned: pinnedDid }, nodes: nodes },
+      { measureText: canvasMeasureText, offsets: manualDid });
 
-    /* ⑥ 人工位置：叠加到自动布局的坐标上（两个渲染器共用同一份偏移） */
+    /* ⑥ 人工位置：**内核已经解过 pinned 的那些不再叠第二次**（否则双重叠加）；
+     *    其余节点的偏移照旧在布局结果上叠加（既有行为，两个渲染器共用同一份偏移）。 */
+    const resolved = {};
+    ((lay.report && lay.report.explicit) || []).forEach(function (e) { resolved[e.id] = true; });
     const rects = {};
     nodes.forEach(function (row) {
       const r = lay.rects[row.id];
       if (!r) return;
-      const off = manual[treeIdOf.get(row.id)];
+      const off = resolved[row.id] ? null : manual[treeIdOf.get(row.id)];
       rects[row.id] = { x: r.x + (off ? off.x : 0), y: r.y + (off ? off.y : 0), w: r.w, h: r.h };
       row.rect = [rects[row.id].x, rects[row.id].y, rects[row.id].w, rects[row.id].h];
     });
