@@ -395,19 +395,22 @@ const assertions = [
       const drv = draftInputDriver(ctx);
       if (!drv.ok) return { ok: false, text: drv.text };
       // ── 格子的几何 + 命中（真点之前先证明"这个点此刻压的就是它"）──
-      /* 【2026-10-27 UI 优化】量之前先把这个格子滚进可见区 —— 与下面"点『保存』之前先滚"**同一条理由、
-       * 同一个口径**（那段注释早就写着"这不是给判据放水：滚完仍然要求 elementFromPoint 命中它自己"）：
-       * 草稿窗按内容定大小（实测 772×257），而 `.mm-ed-box` 现在是 flex 列
-       * （h3 固定 + `.mm-ed-body` 滚 + 动作行固定）⇒ 正文格在**小窗里本来就在折叠线以下**，
-       * 真人也要先滚才能点到它。判据要求的东西一个字没少：滚完必须命中格子自己、
-       * 必须真点、真键盘逐字、Enter 必须是换行。
-       * ⚠️ 改前是"整框滚、动作行被滚出去"，那时正文格中心恰好在可见区内 —— 但代价是「保存」点不到。
-       * 两者在 251px 高的窗口里不可能同时成立，本批选了「主操作永远可见」。 */
-      const scrolledInto = await draftJson(ctx, `(function () {
+      /* 【2026-10-28 本批：这一处 `scrollIntoView` 降级也删了 —— 与「保存」那一跳同一条纪律】
+       * 原来量之前先 `ta.scrollIntoView({ block: 'center' })` 把正文格滚进可见区，当时的理由是
+       * 「小窗里正文格本来就在折叠线以下，真人也要先滚」。现在动作行改成**固定底栏**
+       * （`.mm-ed-box` 是 flex 列：h3 固定 + `.mm-ed-body` 滚 + 动作行固定）之后，这个理由不成立了：
+       *
+       *   实测（本批 SMOKE_ONLY=56 的两次读数，同一份代码只差这一行）：
+       *     · 滚过：中心 {379,129} —— `elementFromPoint` 命中 `TEXTAREA#edit-detail`
+       *     · 不滚：中心 {395,171} —— **同样命中**（视口 805×257，格子 625×95 ⇒ 打开时就整块在视口内）
+       *   ⇒ 那次滚动买到的东西是 **0**，而它让判据量的是"滚过之后的某个状态"而不是
+       *     "打开编辑框之后的自然状态"。删掉之后判据更直接，一个字都没少：
+       *     必须命中格子自己、必须真点、真键盘逐字、Enter 必须是换行。
+       * （同一条纪律见「保存」那一跳：**用断言证明它在视口内，而不是先滚一滚再断言**。） */
+      const taGeom = await draftJson(ctx, `(function () {
         var ta = document.getElementById('edit-detail');
         var body = document.querySelector('#edit-dialog .mm-ed-body');
         if (!ta) return JSON.stringify({ ok: false, text: '没有 #edit-detail' });
-        try { ta.scrollIntoView({ block: 'center' }); } catch (e) {}
         var r = ta.getBoundingClientRect();
         return JSON.stringify({ ok: true, scroller: body ? Math.round(body.clientHeight) : null,
           top: Math.round(r.top), bottom: Math.round(r.bottom), vh: window.innerHeight });
@@ -425,8 +428,8 @@ const assertions = [
       if (!g.ok) return { ok: false, text: g.text || JSON.stringify(g).slice(0, 200) };
       if (!g.hit) {
         return { ok: false, text: '正文格中心命中=' + g.at + '（不是格子自己 ⇒ 被别的层盖住 / 不在屏上）'
-          + ' ｜ 滚进可见区后 rect=' + JSON.stringify({ top: scrolledInto.top, bottom: scrolledInto.bottom })
-          + ' 视口高=' + scrolledInto.vh + ' 正文区高=' + scrolledInto.scroller };
+          + ' ｜ 未滚动时的 rect=' + JSON.stringify({ top: taGeom.top, bottom: taGeom.bottom })
+          + ' 视口高=' + taGeom.vh + ' 正文区高=' + taGeom.scroller };
       }
       // ── 真鼠标点进格子 + 真键盘逐字 ──
       await drv.driver.click({ x: g.x, y: g.y });
@@ -449,31 +452,40 @@ const assertions = [
         + ' return JSON.stringify({ ok: true, open: !!(d && d.style.display === "flex"),'
         + ' value: String(ta.value == null ? "" : ta.value),'
         + ' active: (document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : "none") }); })()');
-      // ── 点「保存」（真鼠标；点不中才退回 .click()）──
-      /* ⚠️ 草稿窗的尺寸由**内容 bbox** 决定（`w11 a：不记忆位置大小、按内容定`），
-       * 而编辑框比那张小窗高（实测：视口 805×251 / 按钮矩形 t=290 h=33 ⇒ 落在视口**外**）。
-       * ⇒ 真点之前得先把按钮**滚进视口**（`.mm-ed-box` 是 `max-height:88vh; overflow:auto`，
-       * 是它自己在滚）。这不是给判据放水：滚完仍然要求 `elementFromPoint` **命中按钮自己**
-       * 才发真鼠标；命不中才退回 `.click()` 并在报文里如实写"没点中"。 */
+      // ── 点「保存」：**先证明它在视口内**，再真点（滚动兜底已删 —— 见下面这段）──
+      /* 【ROADMAP 第 73 行的落点 · 2026-10-28 本批】
+       * UI 批已把草稿窗的动作行改成**始终在视口内**（`.mm-ed-box` 现在是 flex 列：
+       * h3 固定 + `.mm-ed-body` 滚 + 动作行固定；`renderer/draft-map.html` 里那条注释为证）——
+       * 所以冒烟里那次「点不中就 `scrollIntoView` 把按钮**滚进视口**再点」的**降级必须删掉**：
+       * 留着它，"碰巧还在"与"保证了在"在断言上**分不出来**，而那正是 ROADMAP 那一条要治的东西。
+       *
+       * 现在这一跳的判据是**直接断言几何**，两条都要（缺一条都不算合格）：
+       *   ① `edit-ok` 的矩形**完全落在视口矩形内**（left/top ≥ 0 且 right/bottom ≤ 视口宽高）；
+       *   ② 真点之前仍然对按钮中心做命中测试（H2：rect 对"被裁掉 / 被压住"是盲的）。
+       * ⚠️ 依据（改前的实测，不是猜）：草稿窗按内容定尺寸，视口只有 **805×251** 量级，
+       *    按钮矩形曾落在 t=290 ⇒ **视口外**。删掉兜底后这里若判红，**不是判据太严，
+       *    是草稿窗布局真的没修好**（`renderer/draft-map.html` 不在本批边界 ⇒ 只如实报告）。 */
       const saveBtnPoint = () => draftJson(ctx, '(function () { var b = document.getElementById("edit-ok");'
-        + ' var r = b.getBoundingClientRect(); var x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);'
+        + ' if (!b) return JSON.stringify({ err: "没有 #edit-ok" });'
+        + ' var r = b.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;'
+        + ' var x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);'
         + ' var at = document.elementFromPoint(x, y);'
-        + ' return JSON.stringify({ x: x, y: y, hit: !!(at && (at === b || (at.closest && at.closest("button") === b))),'
+        + ' var inView = r.left >= 0 && r.top >= 0 && r.right <= vw && r.bottom <= vh;'
+        + ' return JSON.stringify({ x: x, y: y, inView: inView,'
+        + '   hit: !!(at && (at === b || (at.closest && at.closest("button") === b))),'
         + '   at: at ? (at.tagName + (at.id ? "#" + at.id : "") + (at.className ? "." + at.className : "")) : "null",'
         + '   rect: { l: Math.round(r.left), t: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },'
-        + '   vw: window.innerWidth, vh: window.innerHeight }); })()');
-      let okPt = await saveBtnPoint();
-      let clickOk = false, scrolled = false;
-      if (okPt.hit) { await drv.driver.click({ x: okPt.x, y: okPt.y }); await drv.driver.settle(); clickOk = true; }
-      else {
-        await draftExec(ctx, '(function () { var b = document.getElementById("edit-ok");'
-          + ' if (b && b.scrollIntoView) b.scrollIntoView({ block: "center" }); return 1; })()');
-        await new Promise((r) => setTimeout(r, 160));
-        okPt = await saveBtnPoint();
-        scrolled = true;
-        if (okPt.hit) { await drv.driver.click({ x: okPt.x, y: okPt.y }); await drv.driver.settle(); clickOk = true; }
-      }
-      if (!clickOk) await draftExec(ctx, '(function () { document.getElementById("edit-ok").click(); return 1; })()');
+        + '   vw: vw, vh: vh }); })()');
+      const okPt = await saveBtnPoint();
+      /* 真鼠标只在**几何与命中都成立**时发：几何不成立时那个坐标可能压着别的控件，
+       * 盲点下去会制造与判据无关的副作用（甚至误触别的按钮）。 */
+      const realClick = !!(okPt && okPt.inView && okPt.hit);
+      if (realClick) { await drv.driver.click({ x: okPt.x, y: okPt.y }); await drv.driver.settle(); }
+      /* 兜底只剩**一条**，而且它不是"点的兜底"：真点没成立时用 `el.click()` 把这一跳走完，
+       * 好让后面的判据（页面树 / 导出 / 权威副本）仍然跑出读数 —— 报文里写清"真点没成立"，
+       * `realClick` 在最终 `ok` 的合取里 ⇒ 这一条照样红。
+       * 为什么**不留**滚动兜底：那等于把"保证在视口内"换成"滚一滚总能点到"，契约就没了 ✗。 */
+      if (!realClick) await draftExec(ctx, '(function () { document.getElementById("edit-ok").click(); return 1; })()');
       const page = await waitDraft(ctx, `(function () {
         var t = window.MM.draftPageTree();
         var hit = null;
@@ -494,13 +506,13 @@ const assertions = [
       const newlineOk = ins === '\n' || ins === '\r' || ins === '\r\n';
       const stillOpen = afterEnter.open === true;
       return {
-        ok: focusOk && valueChanged && hasToken && stillOpen && newlineOk && clickOk && page.ok && inExport && nodesMatch,
+        ok: focusOk && valueChanged && hasToken && stillOpen && newlineOk && realClick && page.ok && inExport && nodesMatch,
         text: '真点中心 {' + g.x + ',' + g.y + '}（' + g.w + '×' + g.h + '，命中=' + g.at + '）⇒ 焦点=' + focused.active
           + '（期望 edit-detail ⇒ ' + focusOk + '）'
           + ' ｜ 真键盘 ' + JSON.stringify(TOKEN56) + '（' + TOKEN56.length + ' 个 char）⇒ .value '
           + g.before.length + ' → ' + typed.value.length + ' 字（变了=' + valueChanged + '、含那串字=' + hasToken + '）'
           + ' ｜ 再按 Enter ⇒ 框还开着=' + stillOpen + '、插进的是换行=' + newlineOk + '（插入段=' + JSON.stringify(ins) + '）'
-          + ' ｜ 点「保存」真点中=' + clickOk + (scrolled ? '（先滚进视口）' : '')
+          + ' ｜ 点「保存」在视口内=' + okPt.inView + '、真点中=' + realClick
           + '（点=' + JSON.stringify({ x: okPt.x, y: okPt.y })
           + ' 命中=' + okPt.at + ' 按钮矩形=' + JSON.stringify(okPt.rect) + ' 视口=' + okPt.vw + '×' + okPt.vh + '）'
           + ' ｜ 页面树认出正文=' + page.ok + '（' + String(page.detail).slice(0, 40) + '…）'
@@ -830,6 +842,15 @@ const assertions = [
    *   **805×251** 的视口；而编辑框 `.mm-ed-box` 是 `max-height:88vh; overflow:auto`
    *   ⇒ 88vh = 221px，比内容矮 ⇒ 动作行（含「保存」）被滚出视口，只能靠 `editor.js` 的
    *   `scrollIntoView` 兜着 —— 那是"碰巧还在"，不是"保证了在"。
+   *
+   * ## 那个兜底**已经删掉**（2026-10-28 本批，ROADMAP 第 73 行的收口）
+   *   动作行改成固定底栏之后（`.mm-ed-box` = flex 列：h3 固定 + 正文滚 + 动作行固定），
+   *   冒烟里那次「点不中就 `scrollIntoView` 把「保存」滚进视口再点」的降级按 ROADMAP 的要求
+   *   **删掉**了（不是留着）：现在那一跳的判据是**直接断言几何**
+   *   —— `edit-ok` 矩形完全落在视口矩形内 + 中心命中它自己，两条都成立才发真鼠标。
+   *   实测（本批 SMOKE_ONLY=56）：滚到顶与滚到底，按钮 rect 都是 `{"top":206,"bottom":238}`、
+   *   视口 805×257 ⇒ 两种滚动位置都在视口内且都命中自己 ✓。
+   *   ⚠️ 留在这里的这条断言**就是**那个契约的唯一守卫：删掉兜底之后若它红，说明布局又退回去了。
    *
    * ## 判据（与域 04 同一口径，两个页面各一份样式各判一次）
    *   把「详情」格撑到 900px 人为制造溢出 ⇒ 在 **scrollTop=0** 和 **scrollTop=max** 各量一次：

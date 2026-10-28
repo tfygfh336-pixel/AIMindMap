@@ -427,9 +427,52 @@ function readLastFullG5() {
 }
 
 
+/** **合计**能不能与上次那条记录比（纯函数，便于单测）。三类不可比，`why` 直接进打印口径：
+ *   ① **G5 档不同**（`fast` = core 域 / `full` = 全部域）—— 两者差一个数量级：
+ *      `396.5s → 1296.1s` 被报成「比上次慢了 +893.4s（超过 15%）」是**假警报**，
+ *      而且它会把读者训练成"这条警告不用看"（本函数存在的直接原因）；
+ *   ② **本次或上次是部分验证**（`--changed` / `--for`）—— 参与合计的步骤根本不是同一批；
+ *   ③ **本次 G5 没跑**（skipped）而上次跑了 —— 合计少一大块，比出来的差同样是假的。
+ *  ⚠️ 与上面那段**逐门禁**比较不是同一件事：那一列比的是「同一步」的耗时（G5 那行已有跨档口径），
+ *  这里比的是**整链合计**。两者各自判、各自打印，不许互相顶替。
+ *  @returns {{comparable:boolean, why:string}} */
+function totalComparable(prev, results, opts) {
+  const o = opts || {};
+  if (o.partial === true) {
+    return { comparable: false,
+      why: '本次是**部分验证**（' + (o.planLabel || '--changed') + '），合计与全链不是同一件事' };
+  }
+  const cur = (results || []).filter((r) => r && r.gate === 'G5')[0] || null;
+  if (!cur) return { comparable: true, why: '' };      // 本次记录里没有 G5 这一步 ⇒ 无从谈档（维持老行为）
+  /* "没跑"只认**显式**信号（`skipped:true` / `code === null`）：`code` 缺字段在真实记录里不会出现，
+   * 而轻量夹具（单测里那种只写 `{gate, ms}` 的 step）会缺它 —— 把"缺字段"当"没跑"会造**假红**。 */
+  if (cur.skipped === true || cur.code === null) {
+    return { comparable: false,
+      why: '本次 G5 **没跑**（与上一步共用一次调用 / 被跳过），而上次跑了 ⇒ 合计少一大块' };
+  }
+  const prevG5 = ((prev && prev.steps) || []).filter((s) => s && s.gate === 'G5')[0] || null;
+  if (prevG5 && (prevG5.skipped === true || prevG5.code === null)) {
+    return { comparable: false,
+      why: '上次 G5 **没跑**（与上一步共用一次调用 / 被跳过）⇒ 上次合计少一大块，差是假的' };
+  }
+  /* 档：`null` = 这条记录里**没有声明**（分层之前的老记录）。只有**两边都声明了**且不同才拦 ——
+   * 与上面逐门禁那一列（G5 的 `tier !== undefined` 那一跳）**同一口径**，不许两处各自为政。
+   * 为什么不是"缺字段就当 full"：那条（缺字段=full）是 `readLastFullG5()` 的**时钟**口径
+   * （回答"该轮到全量了没有"）；这里是**判断两次运行能不能比**，没声明就不能断言"它们不同"
+   * （宁可给差，也不制造假红）。 */
+  const curTier = (cur.tier === undefined || cur.tier === null) ? null : String(cur.tier);
+  const prevTier = (!prevG5 || prevG5.tier === undefined || prevG5.tier === null)
+    ? null : String(prevG5.tier);
+  if (curTier !== null && prevTier !== null && curTier !== prevTier) {
+    return { comparable: false, why: '档不同（上次 ' + prevTier + ' / 本次 ' + curTier + '）' };
+  }
+  return { comparable: true, why: '' };
+}
+
 /** 与上一条历史逐门禁比较（纯函数，便于单测）。
- *  `skipped` 的步骤（与上一步共用一次调用）不参与比较 —— 它的 ms 是 0，比出来是假信号 ✗ */
-function historyDelta(prev, results, currentTotalMs) {
+ *  `skipped` 的步骤（与上一步共用一次调用）不参与比较 —— 它的 ms 是 0，比出来是假信号 ✗
+ *  `opts.partial` / `opts.planLabel` 只影响**合计**那一格（见 `totalComparable`）。 */
+function historyDelta(prev, results, currentTotalMs, opts) {
   if (!prev || !Array.isArray(prev.steps)) return null;
   const byGate = {};
   for (const s of prev.steps) if (s && s.gate) byGate[s.gate] = s;
@@ -447,7 +490,10 @@ function historyDelta(prev, results, currentTotalMs) {
     out.byGate[r.gate] = { ms: p.ms, deltaMs: r.ms - p.ms };
   }
   if (typeof prev.totalMs === 'number' && typeof currentTotalMs === 'number') {
-    out.total = { ms: prev.totalMs, deltaMs: currentTotalMs - prev.totalMs };
+    const tc = totalComparable(prev, results, opts);
+    out.total = tc.comparable
+      ? { ms: prev.totalMs, deltaMs: currentTotalMs - prev.totalMs }
+      : { ms: prev.totalMs, deltaMs: null, why: tc.why };
   }
   return out;
 }
@@ -457,6 +503,23 @@ function fmtDelta(ms) {
   if (typeof ms !== 'number' || !isFinite(ms)) return '—';
   const s = ms / 1000;
   return (s > 0 ? '+' : s < 0 ? '-' : '±') + Math.abs(s).toFixed(1) + 's';
+}
+
+/** 「比上次慢了超过 15%」那句话的**判据**（纯函数 ⇒ 可单测、可注入）。
+ *  **只在同档/同粒度时说话**：`delta.total.deltaMs === null` 表示"合计不可比"（换档 / 部分验证），
+ *  那时一律返回 `null` —— 这正是本批要治的假警报（`fast 396.5s → full 1296.1s` 曾被报成
+ *  "比上次慢了 +893.4s（超过 15%）"，而脚本自己在旁边标着"（档不同）"）。
+ *  @param {{total?:{ms:number, deltaMs:number|null}}} delta `historyDelta()` 的返回
+ *  @returns {string|null} 要打印的那一行；`null` = 不该说话
+ */
+function slowWarningText(delta) {
+  if (!delta || !delta.total) return null;
+  const t = delta.total;
+  if (typeof t.deltaMs !== 'number' || typeof t.ms !== 'number') return null;   // 不可比 / 没有读数
+  if (t.deltaMs <= 0 || !(t.ms > 0)) return null;                               // 没变慢（或变快）
+  if (t.deltaMs / t.ms <= 0.15) return null;                                    // 涨幅没到 15%
+  return '  ⚠ 比上次慢了 ' + fmtDelta(t.deltaMs) + '（超过上次的 15%）—— 看上面是哪一步涨的；'
+    + '急涨先怀疑负载，稳涨要查根因 ✗';
 }
 
 /* ---------------- 兜底备份的新鲜度（只提示，不判红） ----------------
@@ -947,7 +1010,21 @@ const STEPS = [
     //     ⑥ 判据一条都没砍（本批不碰任何冒烟域文件，断言数不变）。
     //     配套不变式：`main.js` 冒烟守卫 **1560s 不动**（1560 > 1300 ✓）；
     //        各步预算之和 **1594s→1544s ≤ `TOTAL_BUDGET_MS` 1770s** ✓（1770/1544 = 1.146 ⇒ 单步仍先发声）。
-    budgetMs: 1300000   // 2026-10-19（本批）：1350s→**1300s**；统计量换成 median（理由见上一条 ①–⑥）
+    /* 【2026-10-28 本批 · 验证链三件】1300000 → **1340000**（现算，不是估）：
+     * 依据 = `tests/verify-budget.test.js` 的余量守卫（口径不变：**预算 ≥ 1.25 × 窗口 median**）：
+     *   `recentFullG5(10).median` = **1 068 204ms** ⇒ 1.25× = **1 335 255ms** > 1300000 ⇒ 判红（实测报错原文）。
+     *   取 1 340 000（= 1.25×median 的**最小合法值**，只多了 4 745ms 的零头，不额外放松）。
+     * 两条配套不变式**都仍然成立**（现算）：
+     *   ① `main.js` 的 `SMOKE_GUARD_MS` = 1 560 000 > 1 340 000 ✓（余量 220 000ms > 注释要求的 120s，
+     *      "预算先发声、守卫只拦真挂死"这条顺序没变）；
+     *   ② 各步预算之和 = 8×10 + G3 90 + G6 20 + G4 60 + G2 15 + G5 1340 = **1625s** ≤ `TOTAL_BUDGET_MS`
+     *      1770s ✓（1770/1625 = 1.089 ⇒ 合计仍然不会抢在单步前面报红）。
+     * ⚠️ 为什么必须抬（别把这条读成"为过而抬线"）：这个 median 里**全是等待方式改造之前**的读数
+     *   （改造那批把 G5 从 1296s 压到 **694.8s**，但 median 要窗口里 **6 条**读数变快才动）。
+     *   ⇒ 等 6 条改造后的全量读数进窗口后，median 会掉到 **~700–800s 级**，那时这条线应回落到 **~900s**
+     *   （= 1.25 × 720 附近，届时按当时的 `recentFullG5(10).median` **现算**，不许照这里抄）。
+     *   在那之前抬到 1.25×median 是**守卫自己要求的**：不抬就是长期假红，而假红的终点是被无视。 */
+    budgetMs: 1340000
   }
 ];
 
@@ -1584,7 +1661,10 @@ function main() {
   // 基线要在**写本次记录之前**读（下面 writeVerifyHistory 才追加）✓
   // 且只认"最后一次**成功**的验证"：失败/中断的那次步骤没跑完，拿来比是假信号 ✗（实测踩过）
   const prevRun = readHistoryBaseline();
-  const delta = historyDelta(prevRun, results, chk.totalMs);
+  /* `partial` 在下面（失败分支）还要用；这里先算出来喂给"合计能不能比"——
+   * 部分验证的合计与全链的合计不是同一件事（见 `totalComparable`）。 */
+  const partialRun = !!(plan && !plan.full);
+  const delta = historyDelta(prevRun, results, chk.totalMs, { partial: partialRun, planLabel: planLabel });
   console.log('== 耗时 ==' + (delta
     ? '（对比对象：' + (prevRun.at ? String(prevRun.at).replace('T', ' ').slice(0, 19) : '上一次成功验证')
       + '；若它不是紧邻的那次，说明中间有失败/中断的验证 ✓）'
@@ -1612,16 +1692,24 @@ function main() {
   console.log('  ' + '合计'.padEnd(9) + fmt(chk.totalMs).padEnd(9) + fmt(chk.totalBudgetMs).padEnd(9)
     + (chk.overTotal ? '⚠ 超出' : fmt(chk.totalBudgetMs - chk.totalMs)).padEnd(10)
     + (delta && delta.total ? fmt(delta.total.ms) : '—').padEnd(10)
-    + (delta && delta.total ? fmtDelta(delta.total.deltaMs) : '—'));
-  // 只提示不判红：耗时受负载影响（同一份代码实测能差 20%+），判红交给预算 ✓
-  if (delta && delta.total && delta.total.deltaMs > 0 && delta.total.ms > 0
-    && delta.total.deltaMs / delta.total.ms > 0.15) {
-    console.log('  ⚠ 比上次慢了 ' + fmtDelta(delta.total.deltaMs) + '（超过上次的 15%）—— 看上面是哪一步涨的；'
-      + '急涨先怀疑负载，稳涨要查根因 ✗');
+    + (delta && delta.total
+      ? (delta.total.deltaMs === null ? '（不可比）' : fmtDelta(delta.total.deltaMs))
+      : '—'));
+  /* 合计这一格**分档/分粒度**判：G5 换档（fast 38 域 ↔ full 56 域）、或这次是部分验证时，
+   * 两个合计根本不是同一件事 ⇒ **不做增速判定**，但要**明说**（否则读者以为自己看的是趋势）。
+   * 这就是"那条 +893.4s 的假警报"的收口：警告不再发，而"为什么没有差"当场印出来。 */
+  if (delta && delta.total && delta.total.deltaMs === null) {
+    console.log('  ⇄ 本次换档，不做增速判定：' + (delta.total.why || '（跨档/跨粒度）')
+      + ' —— 合计那一格是**上一次的读数**，不是差；要比就等下一次同档运行 ✓');
   }
+  // 只提示不判红：耗时受负载影响（同一份代码实测能差 20%+），判红交给预算 ✓
+  // ⚠️ 只在**同档/同粒度**（`deltaMs` 是数）时才谈"慢了"：跨档的差是假信号，见上面那条 ⇄。
+  //   判据抽在 `slowWarningText()`（纯函数）⇒ 它自己也能被单测钉住（本批：`tests/verify-tier-delta.test.js`）。
+  const slowLine = slowWarningText(delta);
+  if (slowLine) console.log(slowLine);
   console.log('');
 
-  const partial = !!(plan && !plan.full);
+  const partial = partialRun;
   if (failed) {
     /* **环境准入拒绝**与"产品真红"必须当场分开说：两者的下一步完全相反
      * （前者去清环境、后者去查代码），而它们在 `ok:false / failedGate:'G5'` 上长得一模一样 ✗。 */
@@ -1765,7 +1853,9 @@ module.exports = {
   // 环境准入（2026-10-20）：三件纯函数（报文 / 结果行形状）+ 判据在 smoke-assertions.js
   envAdmittedLine, envRefusalLines, envRefusedRow,
   // 度量列：与上一次**成功**的验证比较（纯函数 + 一个读取口，便于单测）
-  pickHistoryBaseline, readHistoryBaseline, historyDelta, fmtDelta,
+  // `totalComparable` / `slowWarningText` 是"合计那一格要不要谈增速"的两条判据（本批：按档比）
+  pickHistoryBaseline, readHistoryBaseline, historyDelta, fmtDelta, totalComparable,
+  slowWarningText,
   // `--changed`：取改动清单、部分验证的独立记录位
   changedFiles, writeLastVerifyChanged, readLastVerifyChanged, LAST_VERIFY_CHANGED,
   // 兜底提示的两半：取数（I/O）与组文（纯函数）分开，便于单测组文那一半
