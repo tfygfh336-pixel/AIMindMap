@@ -615,6 +615,12 @@ const uiState = require('./src/ui-state.js');
 // 热度条（第三件·A）：界面那次"人打开详情框"的采样 —— 用的是与 CLI 埋点**同一个**记录实现
 // （上限/去重/失败口径只有一处：src/heat-sensor.js），不另起一套写盘逻辑。
 const heatSensor = require('./src/heat-sensor.js');
+/* 剖面能力矩阵（`src/diagram/profiles.js`，UMD ⇒ 主进程 require 与渲染层拿到的是**同一份纯逻辑**）。
+ * 为什么主进程要它：「界面与命令里都不出现」这条（`docs/DIAGRAM-MODES.md` §4.3）此前只做了一半 ——
+ * 工具栏按钮会随剖面消失，而**原生菜单**照旧可用 ⇒ 用户能从菜单绕过剖面限制。
+ * 判据只按**能力**（`supports(profile, cap)`），`main.js` 里一个剖面名字面量都没有
+ * （冒烟域 58 乙 的静态扫描把本文件也算进"剖面轴"）。 */
+const diagramProfiles = require('./src/diagram/profiles.js');
 
 // --export-image <项目> <输出.png>：离屏渲染**整棵树**并导出 PNG（headless 可测）。
 // 实现只有一份：本模式与菜单项「导出当前导图为 PNG…」都调 `exportMapPng`（见该函数头注释）。
@@ -1361,8 +1367,11 @@ async function importJsonDialog(win) {
  * 上限与降级：
  *   · 90 s 守卫的报文 `EXPORT-IMAGE GUARD TIMEOUT` **原样保留**（它是"守卫还在"的唯一可判据字符串）；
  *     超时时离屏模式 `exit(1)`，菜单那条**只报错、不退出**（菜单跑在用户的进程里，不能把人家的应用关掉）。
- *   · 上限两条：单边 `MAX_SIDE` 与像素总量 `MAX_PIXELS`。超了就**按上限截断**并在读数里标
- *     `clipped: true`（宁可交一张"有上限"的图，也不静默 OOM 或静默丢内容）。
+ *   · 上限两条：单边 `MAX_SIDE` 与像素总量 `MAX_PIXELS`。**超了先按比例缩小整张**（`exportFitScale`：
+ *     `s = min(1, 单边/宽, 单边/高, sqrt(像素/(宽×高)))` ⇒ 两条上限都变成"缩放线"），
+ *     只有缩不动（s 低于视图下界）或收敛失败时才回到"按上限截断"并如实标 `clipped: true`
+ *     （宁可交一张"有上限"的图，也不静默 OOM 或静默丢内容）。实测 comnet：截断真因是**像素上限**
+ *     （floor(40M/3133)=12767），不是单边 20000 ⇒ 缩放后两条都不越界、clipped 消失。
  *   · 分片数 = `ceil(宽/SLICE_W) × ceil(高/SLICE_H)`：20k 高 ≈ 5 片；每片一次 `capturePage`。
  * ============================================================ */
 const EXPORT_PNG = {
@@ -1376,6 +1385,54 @@ const EXPORT_PNG = {
                       //   改成"窗口永远只有一片大、靠平移分片拍、内存里拼成整张"。
   SETTLE_MS: 1500     // 展开全树后的静置（与改前同一个数：字体/连线都要时间）
 };
+
+/* ---------------- 交付范围的「按比例缩小」（唯一实现，纯函数优先） ----------------
+ * 用户 2026-10-67 收口的那一条：旧口径是"超上限就**截断**并标 clipped"，
+ * 实测 comnet 整树 3084×34200 ⇒ 只导到 **3133×12767**（丢 63% 高度），
+ * 而且触发它的**不是单边 20000，是像素总量那一步**：floor(40M/3133) = 12767。
+ * ⇒ 现在超上限就**先等比缩小视图再渲染整张**（两条上限从"截断线"变成"缩放线"）。
+ * 判据（冒烟域 57 真跑）：大树 clipped 消失且 PNG 两条上限内、底部节点框内有墨；
+ * 小树 s === 1 **一步都不动视图** ⇒ 产物与改前逐字节相同。 */
+const EXPORT_VIEW_MIN_SCALE = 0.15;   // 与 renderer/app-view.js 的 setViewTransform 夹取下界同源
+
+/** 交付范围 = 包围盒 + 四周留白。**唯一一处**：初量与"缩完再量"都走它
+ *  （一处 ceil 一处不 ceil 会把"逐字节相同"的判据搅成假红）。 */
+function exportBoxOf(bbox) {
+  return {
+    x: bbox.x - EXPORT_PNG.PAD, y: bbox.y - EXPORT_PNG.PAD,
+    w: Math.ceil(bbox.w) + EXPORT_PNG.PAD * 2, h: Math.ceil(bbox.h) + EXPORT_PNG.PAD * 2
+  };
+}
+
+/** 这份交付范围超没超两条上限（缩放后复核与"只剩截断"的兜底都读它） */
+function exportBoxOverCaps(box, caps) {
+  const c = caps || EXPORT_PNG;
+  return box.w > c.MAX_SIDE || box.h > c.MAX_SIDE || box.w * box.h > c.MAX_PIXELS;
+}
+
+/**
+ * **按比例缩小的系数**（纯函数）。`s = min(1, 单边上限/宽, 单边上限/高, sqrt(像素上限/(宽×高)))`。
+ * 两个实现细节都是两条上限本身的形状决定的，不是花样：
+ *   · 留白 `PAD` 是**屏幕 px、不随 s 缩** ⇒ 单边那条要先让出 2×PAD；
+ *   · 像素上限对 s 是**二次**的 ⇒ 取解析解（"猜一个再试"试出来的数不能当判据）。
+ * s === 1 ⇒ 调用方**一步都不动视图**（小树产物与改前逐字节相同）。
+ * @returns {{s:number, sSide:number, sPix:number, reason:string}}
+ */
+function exportFitScale(w, h, caps) {
+  const c = caps || EXPORT_PNG;
+  const W = Number(w), H = Number(h);
+  if (!(W > 0) || !(H > 0)) return { s: 1, sSide: 1, sPix: 1, reason: '没有有效的包围盒' };
+  const pad2 = c.PAD * 2;
+  const avail = Math.max(1, c.MAX_SIDE - pad2);
+  const sSide = Math.min(1, avail / W, avail / H);
+  // (s·W + 2P)(s·H + 2P) ≤ MAX_PIXELS ⇒ A·s² + B·s + C ≤ 0
+  const A = W * H, B = pad2 * (W + H), C = pad2 * pad2 - c.MAX_PIXELS;
+  const disc = B * B - 4 * A * C;
+  const sPix = disc >= 0 ? (-B + Math.sqrt(disc)) / (2 * A) : 0;
+  const s = Math.max(0, Math.min(1, sSide, sPix));
+  const why = sSide <= sPix ? '单边上限' : '像素总量上限';
+  return { s: s, sSide: sSide, sPix: sPix, reason: s < 1 ? ('受' + why + '约束') : '不需要缩' };
+}
 
 /** 等两帧（隐藏窗口的 `capturePage` 可能给上一帧 —— 见 `scripts/smoke-input.js` 的记录） */
 const pngWait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1518,25 +1575,62 @@ async function exportMapPng(opts) {
     await pngWait(EXPORT_PNG.SETTLE_MS);
 
     // ③ 量整树包围盒 + 外框（工具条）
-    let m = await win.webContents.executeJavaScript(exportMeasureScript());
-    if (!m || !m.ok) throw new Error('量包围盒失败：' + ((m && m.reason) || '未知'));
+    const measure = async (tagStr) => {
+      const r = await win.webContents.executeJavaScript(exportMeasureScript());
+      if (!r || !r.ok) throw new Error('量包围盒失败（' + tagStr + '）：' + ((r && r.reason) || '未知'));
+      return r;
+    };
+    let m = await measure('初始');
     const chromeW = Math.max(0, m.inner.w - m.panel.w);   // 面板外的横向外框（正常为 0；侧栏是原生视图，不占页内宽度）
     const chromeH = Math.max(0, m.inner.h - m.panel.h);   // 面板外的纵向外框（工具条那一条）
-    /* 交付范围 = 包围盒 + 四周留白。`MAX_SIDE` 之外**按上限截断并如实标 clipped**（不静默 OOM）：
-     * 像素总量还有一条独立上限 —— 20k×20k 会是 1.6 GB 的位图，那不是"导出失败"，是整机卡死 ✗ */
-    let box = {
-      x: m.bbox.x - EXPORT_PNG.PAD, y: m.bbox.y - EXPORT_PNG.PAD,
-      w: Math.ceil(m.bbox.w) + EXPORT_PNG.PAD * 2, h: Math.ceil(m.bbox.h) + EXPORT_PNG.PAD * 2
+    const zoom0 = (typeof m.zoom === 'number' && m.zoom > 0) ? m.zoom : 1;
+    let box = exportBoxOf(m.bbox);
+    /* ③b 超上限 ⇒ **先等比缩小视图，再渲染整张**（用户 2026-10-67；截断打的是像素上限，不是单边 20000）。
+     * 留白不随 s 缩 ⇒ 系数由纯函数 `exportFitScale` 算（含像素上限的解析解）。
+     * s === 1（小树）时这里**一行都不进** ⇒ 视图、坐标、产物与改前逐字节相同（冒烟域 57 现判）。 */
+    let fit = exportFitScale(m.bbox.w, m.bbox.h);
+    let scaled = false;
+    /** 把视图的缩放**乘以** k（平移不动）：缩放只改视图变换，不改布局坐标 —— 所以"缩完再量"是唯一真值 */
+    const applyScale = async (k) => {
+      await win.webContents.executeJavaScript(`(function () {
+        const p = window.MM.getPanState();
+        window.MM.setViewTransform({ s: Math.max(${EXPORT_VIEW_MIN_SCALE}, p.s * (${k})), x: p.x, y: p.y });
+        return true;
+      })()`);
+      await pngWaitFrames(win);
+      await pngWait(120);
     };
-    let clipped = false;
-    if (box.w > EXPORT_PNG.MAX_SIDE || box.h > EXPORT_PNG.MAX_SIDE) {
-      clipped = true;
-      box.w = Math.min(box.w, EXPORT_PNG.MAX_SIDE);
-      box.h = Math.min(box.h, EXPORT_PNG.MAX_SIDE);
+    if (fit.s < 1 && fit.s >= EXPORT_VIEW_MIN_SCALE) {
+      await applyScale(fit.s);
+      m = await measure('缩放到上限内');
+      box = exportBoxOf(m.bbox);
+      scaled = true;
+      /* 收敛安全网：ceil/round 与小窗口外框会让"算出来的 s"差几个 px（实测缩完可能多 20px）⇒
+       * 真值来自测量，最多再收 3 轮（每轮都是"量→算→缩→再量"，与 placePoint 同一条纪律）。 */
+      for (let k = 0; k < 3 && exportBoxOverCaps(box); k++) {
+        const again = exportFitScale(m.bbox.w, m.bbox.h).s;
+        if (!(again > 0) || again >= 1) break;
+        await applyScale(again);
+        m = await measure('缩放到上限内·收敛第 ' + (k + 1) + ' 轮');
+        box = exportBoxOf(m.bbox);
+      }
+      fit = Object.assign({}, fit, { s: (m.zoom / zoom0) });
+    } else if (fit.s < 1) {
+      // s 低于视图缩放下限：缩不动 ⇒ 交给下面的截断兜底，并**如实说原因**（不假装缩成功了）
+      fit = Object.assign({}, fit, { reason: 's=' + fit.s.toFixed(4) + ' 低于视图缩放下限 ' + EXPORT_VIEW_MIN_SCALE });
     }
-    if (box.w * box.h > EXPORT_PNG.MAX_PIXELS) {
+    /* ③c 兜底：只有"缩不动/收敛失败"才回到改前的截断口径并标 clipped —— 宁可交一张有上限的图，
+     * 也不静默 OOM（20k×20k 的位图是 1.6 GB，那不是"导出失败"，是整机卡死 ✗）。 */
+    let clipped = false;
+    if (exportBoxOverCaps(box)) {
       clipped = true;
-      box.h = Math.max(1, Math.floor(EXPORT_PNG.MAX_PIXELS / box.w));
+      if (box.w > EXPORT_PNG.MAX_SIDE || box.h > EXPORT_PNG.MAX_SIDE) {
+        box.w = Math.min(box.w, EXPORT_PNG.MAX_SIDE);
+        box.h = Math.min(box.h, EXPORT_PNG.MAX_SIDE);
+      }
+      if (box.w * box.h > EXPORT_PNG.MAX_PIXELS) {
+        box.h = Math.max(1, Math.floor(EXPORT_PNG.MAX_PIXELS / box.w));
+      }
     }
 
     // ④ 分片渲染：窗口**只改一次**大小（= 一片大），之后每一片只靠平移把该块挪进面板。
@@ -1552,11 +1646,6 @@ async function exportMapPng(opts) {
         await pngWait(250);        // 让面板把新尺寸吃完（jsMind 不重排，但工具条/面板要重排一次）
       }
     }
-    const measure = async (tagStr) => {
-      const r = await win.webContents.executeJavaScript(exportMeasureScript());
-      if (!r || !r.ok) throw new Error('量包围盒失败（' + tagStr + '）：' + ((r && r.reason) || '未知'));
-      return r;
-    };
     /** 把「交付范围里的 (tx,ty) 点」摆到面板左上角。**闭环**：量→算差→平移→再量，
      *  最多 4 轮（真值来自测量，不靠对 transform 语义的假设 —— 上一版就是栽在"算一次就信"）。 */
     const placePoint = async (tx, ty, tagStr) => {
@@ -1630,17 +1719,35 @@ async function exportMapPng(opts) {
     fs.writeFileSync(out, img.toPNG());
 
     // ⑥ 证据（不是判据，是读数）：最低节点的框里有没有墨、树底之外是不是空白。
-    //    坐标一律相对**交付范围**左上角（`box`）—— 拼出来的图就以它为原点。
+    /* 坐标映射：图像原点 = **包围盒原点**，不是 `box` 原点。
+     * 为什么（实测证据，别再按直觉改回去）：切片摆位是 `wantX = panel.x - (tx - box.x)`，
+     * 收敛后 bbox 左上角落在面板左上角 ⇒ 图上每一点 = 内容点 − **bbox 原点**。
+     * comnet 那张 1848×20000 的实测：第一行墨在 y=0、最后一行墨在 y=19952 = ceil(bbox.h)，
+     * 而 `box` 原点比它高/左 `PAD`(24) px。上一版这里按 `box` 减 ⇒ **所有**框内墨读数都往
+     * 下/右偏 24px（comnet 底部节点的框整个落到节点下方 ⇒ 读成 0.000，而像素里明明有墨）——
+     * 那是"判据在空转"，不是产品坏；这条与本批的比例缩小一起修掉（同一处证据层）。
+     * ⚠️ 只改**证据映射**，不改切片摆位：摆位一改，小树的产物就不再"与改前逐字节相同"（硬判据）。 */
+    const originX = box.x + EXPORT_PNG.PAD;
+    const originY = box.y + EXPORT_PNG.PAD;
     const toImg = (r) => ({
-      x: (r.x - box.x) * scale, y: (r.y - box.y) * scale, w: r.w * scale, h: r.h * scale
+      x: (r.x - originX) * scale, y: (r.y - originY) * scale, w: r.w * scale, h: r.h * scale
     });
+    /** 这个框是不是**完整落在图里**（"底部节点仍在框内"要用它，不只看墨） */
+    const inFrame = (r) => {
+      const t = toImg(r);
+      const W = img.getSize().width, H = img.getSize().height;
+      const ok = t.x >= 0 && t.y >= 0 && t.x + t.w <= W && t.y + t.h <= H;
+      return { ok: ok, right: W - (t.x + t.w), bottom: H - (t.y + t.h) };
+    };
     const bottomInk = exportInkRatio(img, toImg(m.bottom));
     const rightInk = exportInkRatio(img, toImg(m.right));
     const belowBbox = exportInkRatio(img, {
-      x: (m.bbox.x - box.x) * scale,
-      y: (m.bbox.y + m.bbox.h - box.y) * scale + 6 * scale,
+      x: (m.bbox.x - originX) * scale,
+      y: (m.bbox.y + m.bbox.h - originY) * scale + 6 * scale,
       w: Math.min(200, m.bbox.w) * scale, h: 12 * scale
     });
+    const bottomFrame = inFrame(m.bottom);
+    const rightFrame = inFrame(m.right);
     clearTimeout(guard);
     const header = pngHeaderSize(out);
     return {
@@ -1653,11 +1760,18 @@ async function exportMapPng(opts) {
       bbox: { w: Math.round(m.bbox.w), h: Math.round(m.bbox.h) },
       panel: { w: Math.round(m.panel.w), h: Math.round(m.panel.h) },
       inner: m.inner, nodes: m.n, zoom: m.zoom, clipped: clipped,
+      /* 比例缩小那一半的读数（判据用它分辨"缩了"与"没缩"；s === 1 表示**一步都没动视图**）：
+       *   s      —— 实际生效的视图缩放比（= 缩完再量的 zoom / 初始 zoom；不是"算出来的"那个数）
+       *   applied—— 这次到底动没动视图（s === 1 时恒 false ⇒ 小树产物与改前逐字节相同） */
+      fit: { s: Number((fit.s || 1).toFixed(6)), applied: scaled, reason: fit.reason || null,
+        sSide: Number((fit.sSide || 1).toFixed(6)), sPix: Number((fit.sPix || 1).toFixed(6)) },
       bottom: { id: m.bottom.id, topic: m.bottom.topic, x: Math.round(toImg(m.bottom).x),
         y: Math.round(toImg(m.bottom).y), w: Math.round(toImg(m.bottom).w), h: Math.round(toImg(m.bottom).h),
+        inFrame: bottomFrame.ok, margin: { right: Math.round(bottomFrame.right), bottom: Math.round(bottomFrame.bottom) },
         ink: bottomInk },
       right: { id: m.right.id, topic: m.right.topic, x: Math.round(toImg(m.right).x),
         y: Math.round(toImg(m.right).y), w: Math.round(toImg(m.right).w), h: Math.round(toImg(m.right).h),
+        inFrame: rightFrame.ok, margin: { right: Math.round(rightFrame.right), bottom: Math.round(rightFrame.bottom) },
         ink: rightInk },
       outsideInk: belowBbox,
       guardFired: guardFired
@@ -1704,6 +1818,9 @@ async function exportImageDialog(win) {
   const r = await exportMapPng({ project: project, out: res.filePath });
   if (!r.ok) { toast(win, '导出失败: ' + r.reason, true); return; }
   toast(win, '图片已导出: ' + r.out + '（' + r.width + '×' + r.height + '，' + r.nodes + ' 个节点）'
+    + (r.fit && r.fit.applied
+      ? '  · 整树超过上限 ⇒ 已等比缩小到 s=' + r.fit.s.toFixed(3) + '（原树 ' + r.bbox.w + '×' + r.bbox.h + '）'
+      : '')
     + (r.clipped ? '  ⚠️ 已按上限截断（整树 ' + r.bbox.w + '×' + r.bbox.h + '，上限：单边 '
       + EXPORT_PNG.MAX_SIDE + 'px / ' + Math.round(EXPORT_PNG.MAX_PIXELS / 1000000)
       + 'M 像素）—— 底部/右侧会有缺失' : ''),
@@ -1733,6 +1850,109 @@ const MAP_PAGE_MENU_IDS = [
 ];
 const MAP_PAGE_ITEM_IDS = { close: 'map-menu-close-page', open: 'map-menu-open-page' };
 
+/* ---------------- 原生菜单的「剖面」那一半（20261067 收口） ----------------
+ * 设计稿 `docs/DIAGRAM-MODES.md` §4.3 要求「**界面与命令**里都不出现」——
+ * 上一批只做到界面（工具栏按钮随剖面摘掉），而原生菜单照旧可用 ⇒ 用户能从菜单绕过剖面限制。
+ * 这一节补的就是"命令面"，三条纪律：
+ *   ① **按能力判，不按剖面名判**：`diagramProfiles.supports(profile, cap)` 是唯一判据；
+ *      本文件里五个剖面名作为字符串字面量出现次数 === 0（冒烟域 58 乙 把本文件也算进剖面轴）。
+ *   ② **只声明归属**：下面这张表只说"哪条菜单项属于哪条能力"，不写"它在哪个剖面出现"。
+ *   ③ **刷新时机是事件驱动的**（不轮询 —— 轮询会在"切完剖面"与"菜单变灰"之间留一拍，
+ *      而那一拍正好是判据要抓的"还能从菜单绕过"）：
+ *        · 渲染层切剖面 → IPC `app:capProfile` → `syncCapMenu()`；
+ *        · 导图页关闭/重开 → `setMapPageMenuEnabled()`（内部也过同一道能力闸）；
+ *        · 启动建菜单 → `buildMenu()` 末尾（此刻剖面未知，按"不擅自收紧"处理）。
+ * 能力表只有一处；菜单项的 `click` 另有一道**运行时闸**（`sendIfCap`）：即使快捷键把一条
+ * 已置灰的项触发起来，命令也不会发进渲染层，并给用户一句可见的原因（不静默无反应）。 */
+const CAP_MENU_ITEMS = Object.freeze([
+  { id: 'map-menu-expand-all', cap: 'C-F7-05', label: '展开全部' },
+  { id: 'map-menu-collapse-all', cap: 'C-F7-05', label: '收起全部' }
+]);
+/** id → 能力（从上面那张表派生，别另写一份） */
+const CAP_BY_MENU_ID = (() => {
+  const m = {};
+  CAP_MENU_ITEMS.forEach((x) => { m[x.id] = x.cap; });
+  return m;
+})();
+/** 渲染层最近上报的剖面（`null` = 还不知道 ⇒ 不擅自收紧；渲染层起来就会报一次） */
+let capMenuProfile = null;
+/** "点下去被能力闸拦掉"的次数（诊断与冒烟读数用；产品路径只增不减） */
+let capMenuBlocked = 0;
+
+/** 当前剖面**能不能**用这条能力（按能力判）。未知剖面/未知能力一律 **false**（不静默放开）。 */
+function capMenuAllows(capId) {
+  if (!capMenuProfile) return true;                    // 还不知道剖面：不擅自收紧
+  try { return diagramProfiles.supports(String(capMenuProfile), String(capId)); }
+  catch (e) { return false; }
+}
+
+/** 一条菜单项此刻该不该可用 = 导图页在 **且** 当前剖面支持它那条能力 */
+function menuItemWantedEnabled(id, pageOpen) {
+  const cap = CAP_BY_MENU_ID[id];
+  if (!cap) return !!pageOpen;
+  return !!pageOpen && capMenuAllows(cap);
+}
+
+/** 主窗口（导图页就在它里面）。⚠️ 菜单回调里**不能**用模块级的 `win` ——
+ *  `win` 在 main.js 里只是各处的参数/局部变量，在菜单回调的闭包里根本没有它
+ *  （同一条教训，文件里另一处也写着：写成 `win.webContents.send` ⇒ ReferenceError）。
+ *  `DRAFT.mainWin` 是主窗口句柄的唯一模块级引用（`buildMenu` 之前就赋好了）。 */
+function mapWindow() {
+  const w = DRAFT.mainWin;
+  return (w && !w.isDestroyed()) ? w : null;
+}
+
+/** 往导图页发一条消息。返回 **false = 没发出去**（窗口已经没了）——
+ *  调用方要能知道"没发"，否则菜单项点下去悄无声息（本批要消灭的正是那种表现）。 */
+function sendToMap(channel, ...args) {
+  const w = mapWindow();
+  if (!w) return false;
+  try { w.webContents.send(channel, ...args); return true; } catch (e) { return false; }
+}
+
+/** 把"当前剖面"落到原生菜单上（幂等；返回改动了几项）。
+ *  ⚠️ 日志里那个 `实测 enabled=` 是**从菜单项读回来的** `it.enabled`，不是算出来的 `want` ——
+ *     本批验收靠这句话当读数；写成 `want` 就变成拿"我以为的值"自证（判据空转）。 */
+function syncCapMenu() {
+  const menu = Menu.getApplicationMenu();
+  if (!menu) return 0;
+  const pageOpen = !((dshSidebar.getStatus() || {}).mapPageClosed);
+  let n = 0;
+  const readback = {};
+  CAP_MENU_ITEMS.forEach((x) => {
+    const it = menu.getMenuItemById(x.id);
+    if (!it) { readback[x.id] = null; return; }
+    const want = menuItemWantedEnabled(x.id, pageOpen);
+    if (it.enabled !== want) { it.enabled = want; n++; }
+    readback[x.id] = !!it.enabled;
+  });
+  console.log('[menu] 剖面=' + capMenuProfile + ' ⇒ 展开/收起可用性已同步，变了 ' + n + ' 项'
+    + (CAP_MENU_ITEMS.some((x) => !menuItemWantedEnabled(x.id, pageOpen)) ? '（当前剖面不支持）' : '')
+    + ' 实测 enabled=' + JSON.stringify(readback));
+  return n;
+}
+
+/** 一条"受能力管"的命令的 click：先过能力闸，再过菜单 → 渲染层的那一跳。
+ *  只传菜单项 id 与通道：**能力编号与中文名都从 `CAP_MENU_ITEMS` 那一张表来**
+ *  （在这里再写一遍 `'C-F7-05'` 就是第二份名单，表改了它会悄悄不跟着改）。 */
+function sendIfCap(menuId, channel) {
+  const cap = CAP_BY_MENU_ID[menuId];
+  const row = CAP_MENU_ITEMS.filter((x) => x.id === menuId)[0] || {};
+  const label = row.label || menuId;
+  return () => {
+    if (!capMenuAllows(cap)) {
+      capMenuBlocked++;
+      console.log('[menu] 当前剖面不支持「' + label + '」（能力 ' + cap + '）⇒ 命令不发进渲染层');
+      // 不静默：菜单项虽已置灰，快捷键仍可能触发到这条回调 ⇒ 给一句人话
+      sendToMap('app:toast', '当前剖面不支持「' + label + '」（菜单项已置灰；切到支持的剖面再用）');
+      return;
+    }
+    if (!sendToMap(channel)) {
+      console.log('[menu] 「' + label + '」的命令没发出去：导图页不在（主窗口已销毁）');
+    }
+  };
+}
+
 /** 导图页在/不在 ⇒ 菜单项启用/置灰（幂等；返回改动了几项，便于日志与断言） */
 function setMapPageMenuEnabled(enabled) {
   const menu = Menu.getApplicationMenu();
@@ -1740,7 +1960,11 @@ function setMapPageMenuEnabled(enabled) {
   let n = 0;
   for (const id of MAP_PAGE_MENU_IDS) {
     const it = menu.getMenuItemById(id);
-    if (it && it.enabled !== enabled) { it.enabled = enabled; n++; }
+    /* ⚠️ 不是 `= enabled`：这份清单里有几条同时受**能力闸**管（`CAP_MENU_ITEMS`）——
+     *  导图页重开时若直接置 true，就等于"重开一次就把剖面的限制绕过去了"。
+     *  所以统一问 `menuItemWantedEnabled`（= 页面在 **且** 当前剖面支持）。 */
+    const want = menuItemWantedEnabled(id, enabled);
+    if (it && it.enabled !== want) { it.enabled = want; n++; }
   }
   const closeIt = menu.getMenuItemById(MAP_PAGE_ITEM_IDS.close);
   const openIt = menu.getMenuItemById(MAP_PAGE_ITEM_IDS.open);
@@ -1801,8 +2025,10 @@ function buildMenu(win) {
       { id: 'map-menu-edit-node', label: '编辑节点', accelerator: 'F2', click: () => send('menu:edit-node') },
       { id: 'map-menu-delete-node', label: '删除节点', accelerator: 'Delete', click: () => send('menu:delete-node') },
       { type: 'separator' },
-      { id: 'map-menu-expand-all', label: '展开全部', accelerator: 'CmdOrCtrl+Shift+E', click: () => send('menu:expand-all') },
-      { id: 'map-menu-collapse-all', label: '收起全部', accelerator: 'CmdOrCtrl+Shift+C', click: () => send('menu:collapse-all') },
+      { id: 'map-menu-expand-all', label: '展开全部', accelerator: 'CmdOrCtrl+Shift+E',
+        click: sendIfCap('map-menu-expand-all', 'menu:expand-all') },
+      { id: 'map-menu-collapse-all', label: '收起全部', accelerator: 'CmdOrCtrl+Shift+C',
+        click: sendIfCap('map-menu-collapse-all', 'menu:collapse-all') },
       { type: 'separator' },
       // 命令面板与关系审计放在菜单里：菜单快捷键比渲染层 keydown 更可靠
       // （不受输入框焦点影响），渲染层仍保留 keydown 兜底。
@@ -1876,6 +2102,9 @@ function buildMenu(win) {
   // 放在这里而不是各个入口：关闭入口有四个（工具栏 ✕ / 菜单 / 侧栏「⤢」/ CLI），分散去调必然漏一处。
   dshSidebar.setMapPageListener((closed) => setMapPageMenuEnabled(!closed));
   setMapPageMenuEnabled(!dshSidebar.getStatus().mapPageClosed);
+  /* ③ 启动这一拍：此刻剖面还未知（`capMenuProfile === null`）⇒ 按"不擅自收紧"处理。
+   *    渲染层起来后会在第一次 `applyCapSurface` 里经 `app:capProfile` 报一次 ✓ */
+  syncCapMenu();
 }
 
 /* ---------------- IPC ---------------- */
@@ -1887,7 +2116,7 @@ function buildMenu(win) {
  * 接管/启动服务 ✓，所以「先 show、等到 running、再投喂」就够了。
  * ⚠️ 冒烟（isSmoke）不这么做：冒烟跑在 setNoSpawn 下，起真服务会把 G5 从 11s 拖回 170s ✗。
  * 也不静默：show 失败/超时都照样去 prefill，让 prefillComposer 给出它自己的原因 ✓。 */
-async function prefillAfterEnsureOpen(text) {
+async function prefillAfterEnsureOpen(text, opts) {
   if (!isSmoke) {
     try {
       const st0 = dshSidebar.getStatus() || {};
@@ -1918,7 +2147,7 @@ async function prefillAfterEnsureOpen(text) {
     } catch (e3) { /* 加宽失败也照样试投喂 ✓ 让它给出自己的原因 ✗ */ }
   }
 
-  return dshSidebar.prefillComposer(text);
+  return dshSidebar.prefillComposer(text, opts);
 }
 
 /* ----------------【R6 五星评价 · 反馈库】两个唯一的实现（路径 + 白名单） ----------------
@@ -4762,6 +4991,25 @@ function registerIpc() {
     writeUiStateFile(String(p.project || ''), !!p.dirty,
       typeof p.seenVersion === 'string' ? p.seenVersion : undefined);
   });
+  /* 渲染层切剖面 ⇒ 原生菜单那条限制的**唯一订阅者**（事件驱动，不轮询 —— 理由见
+   * `CAP_MENU_ITEMS` 上面那节的三条纪律②：轮询会在"切完剖面"与"菜单变灰"之间留一拍，
+   * 而那一拍正好是"还能从菜单绕过"）。
+   * 载荷是**剖面标识符本身**，不是"哪些菜单项该灰"：哪条能力属于哪个剖面只在
+   * `src/diagram/profiles.js` 说，这里按能力判（`capMenuAllows` ⇒ `supports`），
+   * 未知剖面一律 false（不静默放开）。
+   * 非字符串/空串 ⇒ **当作没收到**（保留上一个已知值）：宁可维持"还不知道"（不收紧），
+   * 也不拿垃圾值去关菜单 —— 关错了人看到的是"菜单项无故变灰"。 */
+  ipcMain.on('app:capProfile', (_e, profile) => {
+    const name = (typeof profile === 'string') ? profile.trim() : '';
+    if (!name) {
+      console.log('[menu] app:capProfile 收到非字符串剖面（' + (profile === null ? 'null' : typeof profile)
+        + '）⇒ 忽略，菜单维持原状');
+      return;
+    }
+    capMenuProfile = name;
+    const changed = syncCapMenu();
+    console.log('[menu] app:capProfile 上报剖面=' + name + '（本次改了 ' + changed + ' 项）');
+  });
   // 应用退出：界面不再持有任何未保存编辑（否则崩溃/退出前的 dirty=true 会永久吓住 AI）
   app.on('will-quit', () => {
     // 【R4】绑定守护也要收干净：监听句柄与兜底定时器都是进程级的（留着会拖住退出/留孤儿）
@@ -5614,17 +5862,49 @@ async function runSmoke(win) {
  * headless 可测（AI 迭代验证用），也是 UI「导出 PNG」的 CLI 形态。
  */
 async function runExportImage(win, { project, out }) {
+  /* 不可见自查（本批硬约束：探针/离屏窗口一律不可见）。窗口是 `show:false` 建的，但"建的时候
+   * 关着"与"全程没露出过"是两件事 ⇒ 1s 后把**所有**窗口的 isVisible() 实测一遍，只要有一个 true
+   * 就 exit(2)（亮红：宁可这一次导出失败，也不许在别人的桌面上闪一个窗口/抢一次焦点）。
+   * 放 1s 是因为这时窗口已建完、导出刚开始（单面 10s 量级），既来得及拦，也不误伤正常的假阴性。 */
+  setTimeout(() => {
+    let vis = [];
+    try {
+      vis = BrowserWindow.getAllWindows().filter((w) => {
+        try { return w.isVisible(); } catch (e) { return false; }
+      });
+    } catch (e) { vis = []; }
+    if (vis.length) {
+      console.log('EXPORT-IMAGE VISIBLE WINDOW — 离屏导出期间出现了 ' + vis.length
+        + ' 个可见窗口（headless 口径要求全部 isVisible() === false）');
+      app.exit(2);
+    }
+  }, 1000);
   const r = await exportMapPng({ project: project, out: out, win: win, onGuardTimeout: () => app.exit(1) });
   if (!r.ok) {
     console.log('EXPORT-IMAGE FAILED: ' + r.reason);
     app.exit(1);
     return;
   }
+  /* 读数（不是判据，是**可复核的证据**）：除了尺寸/墨迹，还印出来两条上限各自的系数
+   * `sSide` / `sPix` 与生效的那个 `s` —— 否则"像素上限那一条是不是装饰"根本无从判断
+   * （实际生效的 s 一定等于 min(sSide, sPix)，印出来就能当场对拍）。 */
+  const fit = r.fit || {};
   console.log('已导出图片: ' + out + '  ' + r.width + '×' + r.height
     + '（树 ' + r.bbox.w + '×' + r.bbox.h + ' · ' + r.nodes + ' 节点'
-    + (r.clipped ? ' · ⚠️ 已按单边上限 ' + EXPORT_PNG.MAX_SIDE + 'px 截断' : '') + '）'
+    + ' · clipped=' + (r.clipped ? 'true' : 'false')
+    + ' · s=' + Number(fit.s || 1).toFixed(4) + '（sSide=' + Number(fit.sSide || 1).toFixed(4)
+    + ' sPix=' + Number(fit.sPix || 1).toFixed(4) + ' 生效=' + (fit.reason || '-')
+    + ' applied=' + (fit.applied ? 'true' : 'false') + '）'
+    + ' · 上限 ' + EXPORT_PNG.MAX_SIDE + 'px / '
+    + Math.round(EXPORT_PNG.MAX_PIXELS / 1000000) + 'M 像素）'
     + '  ' + r.bytes + ' B  ' + r.ms + ' ms'
-    + '｜最低节点「' + r.bottom.topic + '」框内墨占比 ' + (r.bottom.ink && r.bottom.ink.ok ? r.bottom.ink.ink.toFixed(3) : 'n/a')
+    + '｜最低节点「' + r.bottom.topic + '」框 @' + r.bottom.x + ',' + r.bottom.y + ' ' + r.bottom.w + '×' + r.bottom.h
+    + ' inFrame=' + r.bottom.inFrame + ' 余量=' + JSON.stringify(r.bottom.margin)
+    + ' 墨占比 ' + (r.bottom.ink && r.bottom.ink.ok ? r.bottom.ink.ink.toFixed(3) : 'n/a')
+    + '｜最右节点「' + r.right.topic + '」框 @' + r.right.x + ',' + r.right.y + ' ' + r.right.w + '×' + r.right.h
+    + ' inFrame=' + r.right.inFrame
+    + ' 墨占比 ' + (r.right.ink && r.right.ink.ok ? r.right.ink.ink.toFixed(3) : 'n/a')
+    + '｜图像 ' + r.width + '×' + r.height
     + '｜树底之外 ' + (r.outsideInk && r.outsideInk.ok ? r.outsideInk.ink.toFixed(3) : 'n/a'));
   app.exit(0);
 }
@@ -5715,7 +5995,12 @@ function startControlChannel() {
     //   dsh-status  —— 只读：读侧栏实况（可见性/总占宽/窄宽模式/是否横向溢出/视图在不在）
     //   dsh-prefill —— 把文本送进侧栏输入框（⑩；**不代替用户发送** ✗）
     if (cmd.cmd === 'dsh-prefill') {
-      return prefillAfterEnsureOpen(cmd.text || '').then((r) => {
+      /* ⚠️ `token` **必须**带上（2026-10-70 收口）：它是"这条命令"的身份，台账靠它把
+       * "同一条命令被派发两次"收成一次追加。不带 ⇒ 每次都由侧栏模块发新号 ⇒ 重试就是两遍。
+       * 注意 token 是**字符串**，`feedSeqFor` 的合法域是有限正整数 ⇒ 由侧栏模块的
+       * `feedSeqByToken` 做恒等映射（直接当 seq 传会被判非法并静默退回发新号）。
+       * 这是**唯一**会带 token 的入口：渲染层点一次「在侧边栏打开」= 一次新意图 ⇒ 不带（发新号）。 */
+      return prefillAfterEnsureOpen(cmd.text || '', { token: cmd.token }).then((r) => {
         reply({ cmd: 'dsh-prefill', ok: !!r.ok, result: r, err: r.reason || null });
       });
     }

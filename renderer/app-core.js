@@ -783,6 +783,20 @@
     refreshProfileNote();            // 剖面变了 ⇒ 提示文案跟着变（画图档/树档两套措辞）
     const sel = document.getElementById('profile-select');
     if (sel && sel.value !== profile) sel.value = profile;
+    /* 【20261070】剖面落地的**最后一拍**：把这个剖面报给主进程。
+     * 为什么在这里、而不是在各个切剖面入口：入口有四个（下拉框 / 「切到全开剖面」按钮 /
+     * 启动缺省 / 将来的命令面），都调 `applyCapSurface` ⇒ 只挂在入口上必然漏一处；
+     * 这里是"剖面真的落到界面上"的唯一位置。
+     * 为什么是事件驱动而不是定时器/轮询：轮询会在"切完剖面"与"菜单变灰"之间留一拍，
+     * 而那一拍正好是还能从原生菜单绕过剖面限制的窗口（本批要消灭的就是这个空窗）。
+     * 发的内容是**剖面标识符**本身：哪条能力属于哪个剖面只在 `src/diagram/profiles.js` 说，
+     * 这里与主进程都不许各自再算一份"哪些菜单项该灰"。
+     * 失败**不阻断**：没接线（浏览器直开 / 老 preload）就静默跳过 —— 剖面已经落地了。 */
+    try {
+      if (window.desktop && window.desktop.app && window.desktop.app.capProfile) {
+        window.desktop.app.capProfile(profile);
+      }
+    } catch (e) { /* 通知失败不改结论：界面上的剖面已经切好了 */ }
     return { ok: true, profile: profile, shown: nShown, optional: nOptional, reason: '' };
   }
 

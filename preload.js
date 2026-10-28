@@ -38,6 +38,10 @@
  *                                        "复制 节点id#条目id"走的就是它（渲染层的浏览器通道
  *                                        在无焦点的隐藏窗口里被拒/自报成功却什么都没写 ✗）
  *   desktop.app.version()              → 版本号
+ *   desktop.app.capProfile(name)       → **上报当前剖面**（单向下行 send，无回执）：
+ *                                        主进程据此按能力置灰/恢复原生菜单里那几条
+ *                                        （「展开全部 / 收起全部」）。切完剖面**立刻**发 ⇒
+ *                                        菜单状态与剖面同一拍，没有"等一秒"的空窗
  *   desktop.app.ask(name, nodeId, opts) → 向内嵌 AI 问一个节点（功能 1 后端；opts={kind:'explain'|'ask',
  *                                        question}）。**异步**、实测 20+ 秒；冒烟/`MM_ASK_STUB=1` 时返回
  *                                        `stub:true` 的桩（绝不冒充真答案）。走 `cli ask` ⇒
@@ -170,6 +174,16 @@ contextBridge.exposeInMainWorld('desktop', {
     importPreview: (projectName, plan) => ipcRenderer.invoke('app:import-preview', projectName, plan),
     importApply: (projectName, plan) => ipcRenderer.invoke('app:import-apply', projectName, plan),
     version: () => ipcRenderer.invoke('app:version'),
+    /* 【20261070】剖面 → 原生菜单的**唯一上报口**（IPC 面多出来的 key 就是这一个：`app:capProfile`）。
+     * 三条纪律：
+     *   ① **单向下行** `send`（不是 invoke）：主进程不需要回执，渲染层也不该等它 ——
+     *      切剖面是"界面自己的事"，一条通知失败不该让切剖面失败；
+     *   ② **事件驱动**：只有"剖面真的落地了"那一行才发（见 `renderer/app-core.js`
+     *      的 `applyCapSurface` 末尾），没有定时器、没有轮询 —— 轮询会在"切完剖面"与
+     *      "菜单变灰"之间留一拍，那一拍正好是从菜单绕过剖面限制的窗口；
+     *   ③ 发的是**剖面标识符**本身：哪条能力属于哪个剖面只在 `src/diagram/profiles.js` 说，
+     *      渲染层与主进程都不许各自再算一份"哪些菜单项该灰"。 */
+    capProfile: (profile) => ipcRenderer.send('app:capProfile', profile),
     /* 【R6 五星评价 · 反馈库】两个**纯透传**（业务与路径判定全在主进程 ✗ 这里不做任何语义 ✗✓）：
      *  · feedbackAppend(record) → app:feedback-append：一条反馈记录只追加成 JSONL 的一行
      *    （记录走主进程的字段白名单；**不传、也不被采信任何路径** —— 路径由主进程独占推导 ✓）；

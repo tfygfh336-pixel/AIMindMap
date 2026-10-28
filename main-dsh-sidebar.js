@@ -195,7 +195,13 @@ const state = {
   //     （控制通道 token / 重放 / 将来跨进程序号都可能更小），高水位会把一次**合法的追加**
   //     静默吞掉（用户丢了块还不报错）；集合只吞同一个 seq，永不吞别的。
   //   feedSeqNo  —— 本进程的序号发号器（只有"调用方没给 seq"时才用）。
+  //   feedSeqByToken —— **命令身份 → seq** 的恒等映射（2026-10-70 收口）：
+  //     控制通道的命令身份是字符串 `token`（`cmd-<pid>-<time>-<seq>-<hex>`），而 seq 的合法域
+  //     是**有限正整数** ⇒ 直接拿 token 当 seq 会被判非法、退回发新号（"看起来接上了，
+  //     其实一行都没生效"）。这张映射把同一 token 恒等换到同一个号：重试被台账吞掉，
+  //     不同命令的号一定不同（见 `feedSeqByToken` 的注释：为什么不用哈希取模）。
   feedLedger: [],
+  feedSeqByToken: new Map(),
   feedSeqNo: 0,
   shuttingDown: false
 };
@@ -2820,10 +2826,44 @@ const CHIP_INSERT_JS = `(function (payloadJson) {
  * 上界 FIFO 淘汰：为什么不用"高水位 seq > lastSeq"见 state.feedLedger 的注释（seq 不保证单调）。 */
 const FEED_LEDGER_MAX = 64;
 function feedSeqNext() { state.feedSeqNo += 1; return state.feedSeqNo; }
-/** 取这次投喂的 seq：调用方给了合法 seq（重试 / 重放）就沿用它，否则发一个新的。 */
+/* ── 2026-10-70 收口：调用方给的**身份**必须能落成 seq ────────────────────────────────
+ * 缺陷（代码可证，不是猜）：台账幂等早就实现了，而这里的注释写着"只有调用方没给 seq 时才发号"，
+ *   可**调用方从来没给过**（`main.js` 的两个入口都是 `prefillComposer(text)`）⇒ 每次重试都由
+ *   本模块发新号 ⇒ 同一条命令被派发两次就插两遍。
+ * 陷阱（本文件实测口径）：控制通道那条命令的身份是**字符串 token**，而 seq 的合法域是
+ *   有限正整数（`feedLedgerGet` 按 `===` 认）⇒ 把 token 直接当 seq 传会被判非法、**静默退回
+ *   发新号**：接线看起来接上了，去重一次都没生效。
+ * 所以 seq 的换算收成这一处（三档优先级），token 走一张**恒等映射**：
+ *   · 同一个 token ⇒ 永远同一个号（重试被台账吞掉）；
+ *   · 不同 token ⇒ 一定不同号（两条命令各追加一次，不会被"永远只认第一个"）。
+ * 为什么不用"哈希取模"把 token 折成数字：哈希会碰撞，而碰撞的表现是**一条合法投喂被静默吞掉**
+ *   —— 那正是 `state.feedLedger` 注释里点名不许发生的事（集合只许吞同一个 seq，永不吞别的）。
+ */
+const FEED_SEQ_TOKENS_MAX = 64;
+function feedSeqByToken(token) {
+  const tok = String(token);
+  if (!(state.feedSeqByToken instanceof Map)) state.feedSeqByToken = new Map();
+  const known = state.feedSeqByToken.get(tok);
+  if (known) return known;
+  const fresh = feedSeqNext();
+  state.feedSeqByToken.set(tok, fresh);
+  // FIFO 上界：与台账同一个量级（老的 token 早有回执了，留着只会长内存）
+  while (state.feedSeqByToken.size > FEED_SEQ_TOKENS_MAX) {
+    state.feedSeqByToken.delete(state.feedSeqByToken.keys().next().value);
+  }
+  return fresh;
+}
+/** 取这次投喂的 seq。三档，优先级从高到低：
+ *  ① `opts.seq` —— 调用方自己给的有限正整数（最明确的身份；重试/重放**沿用同一个**）；
+ *  ② `opts.token` —— 命令身份（字符串）⇒ 经恒等映射换成同一个号（见上面那张映射的说明）；
+ *  ③ 都没有 ⇒ 本模块发新号（界面点一次 = 一次新意图）。
+ *  ⚠️ 三档都只返回**有限正整数**：`feedLedgerGet` 是按 `===` 认的，类型一旦漂了就永远不命中。 */
 function feedSeqFor(opts) {
   const s = Number(opts && opts.seq);
-  return (Number.isFinite(s) && s > 0) ? Math.floor(s) : feedSeqNext();
+  if (Number.isFinite(s) && s > 0) return Math.floor(s);
+  const tok = (opts && typeof opts.token === 'string') ? opts.token : '';
+  if (tok) return feedSeqByToken(tok);
+  return feedSeqNext();
 }
 function feedLedgerGet(seq) {
   const l = Array.isArray(state.feedLedger) ? state.feedLedger : [];
@@ -3404,11 +3444,13 @@ const COMPOSER_PREFILL_JS = `(async function (text) {
  *
  *  @param {string} body 整段文案
  *  @param {object|null} chip 刚才 chip 通道的读数（只为把"为什么没用 chip"记进状态）
- *  @param {number} [seq] 这次投喂的序号；不给就发一个新的（调用方不该依赖"不给"）
+ *  @param {number|{seq?:number, token?:string}} [seqOrOpts] 这次投喂的**身份**：
+ *         数字 = 直接给的序号（老调用方逐字不变）；对象 = `{seq}` 或 `{token}`（命令身份，
+ *         见 `feedSeqFor` 的三档）；都不给就发一个新的（调用方不该依赖"不给"）。
  *  @returns {Promise<object>} 页面回执 + chip* 字段 + `{seq, already, appliedTotal}`
  */
-function prefillComposerTextPath(body, chip, seq) {
-  const s = feedSeqFor({ seq: seq });
+function prefillComposerTextPath(body, chip, seqOrOpts) {
+  const s = feedSeqFor((seqOrOpts && typeof seqOrOpts === 'object') ? seqOrOpts : { seq: seqOrOpts });
   const chipInfo = {
     chipMode: 'text',
     chipReason: (chip && chip.reason) || 'not-attempted',
@@ -3481,7 +3523,9 @@ function prefillComposerTextPath(body, chip, seq) {
  * ⚠️ **降级必须可见**：不管走哪条，`lastPrefill.chipMode` 都写 'plugin' 或 'text'，
  *    失败原因写 `chipReason`。**绝不允许"静默什么都没做"**（那是本批最反对的失败形态）。
  * @param {string} text
- * @param {{seq?:number}} [opts] `seq` = 这次投喂的身份（重试时沿用同一个）
+ * @param {{seq?:number, token?:string}} [opts] 这次投喂的**身份**（重试时必须沿用同一个）：
+ *   `seq` = 直接给的有限正整数；`token` = 命令身份（字符串，控制通道那条路用它 ——
+ *   经 `feedSeqFor` 的恒等映射换成 seq）。两个都不给 = 本模块发新号（= 一次新意图）。
  * @returns {Promise<{ok:boolean, reason:(string|null), textLen:number, chipMode:('plugin'|'text'),
  *                    chipRoute:(string|null), occurrences:number, seq:number,
  *                    already:boolean, appliedTotal:number}>}
@@ -3556,6 +3600,25 @@ function prefillComposer(text, opts) {
   });
 }
 
+/* ── 投喂台账的**测试接缝**（2026-10-70）────────────────────────────────────────────
+ * 为什么需要：`prefillComposer` 在 `!state.view` / `status !== 'running'` 时**先于台账**短路
+ *   ⇒ "同一条命令派发两次只追加一次"这条判据在单测里根本走不到台账那一行（会退化成空转）。
+ * 生产路径永不调用这两个：产品的 view 只来自 `ensureView()`，status 只来自服务生命周期。
+ * `__resetFeedStateForTest` 连 seq 映射一起清 —— 否则上一条用例的 token 会串到下一条（判据假绿）。
+ */
+function __setFeedViewForTest(view, status) {
+  state.view = view || null;
+  if (status) state.status = status;
+  return state.status;
+}
+function __resetFeedStateForTest() {
+  state.feedLedger = [];
+  state.feedSeqByToken = new Map();
+  state.feedSeqNo = 0;
+  state.lastPrefill = null;
+  return true;
+}
+
 module.exports = {
   init, reattach, toggle, show, hide, isVisible, getStatus,
   // 工程根（= 侧栏 AI 会话的 cwd）。**导出给 main.js 采样「AI 改了哪些文件」用** ——
@@ -3612,6 +3675,12 @@ module.exports = {
   //     · feedLedgerView   —— 投喂台账读数（seq 列表 + 累计块数；幂等的**唯一**依据，只读）
   CHIP_INSERT_JS, chipPayloadFor, tryChipInsert, chipFeedStatus,
   feedLedgerView, feedLedgerTotal, FEED_LEDGER_MAX,
+  // 台账的"身份 → seq"换算（2026-10-70 收口）：`feedSeqFor` 是**唯一**实现（三档优先级），
+  //   `feedSeqByToken` 是 token 那一档的恒等映射。导出给单测直接打这两条 ——
+  //   判据要能分别证明"同一条命令派发两次只追加一次"与"两条不同命令各追加一次"，
+  //   两条都读同一份实现（不另写"测试用的第二套去重"）。
+  feedSeqFor, feedSeqByToken, feedLedgerGet,
+  __setFeedViewForTest, __resetFeedStateForTest,
   // 兜底路径也导出：冒烟域 30 要证明"chip 不成立时**真的把文本追加进去了**且 chipMode='text' 可见"
   //   —— 那一格不许另写一份文本写入（复制品会把断言变成自证）。
   prefillComposerTextPath,
