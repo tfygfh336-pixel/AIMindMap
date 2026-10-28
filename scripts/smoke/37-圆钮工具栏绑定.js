@@ -50,6 +50,7 @@ const fs = require('fs');
 const path = require('path');
 const frameStats = require('../vision/frame-stats.js');
 const { waitStableView } = require('./view-stability.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /** 截图证据目录（本域自己的，**不写进别的域**的目录；`.review/` 整目录 gitignore ⇒ 图片不进版本库 ✓） */
 const SHOT_DIR = path.join(__dirname, '..', '..', '.review', '20261009-圆钮工具栏绑定', 'shots');
@@ -352,7 +353,7 @@ module.exports = [
         var box = document.querySelector('.rel-show-btn');
         return JSON.stringify({ ok: !!box, text: '同 tick 有圆钮=' + !!box });
       })()`);
-      await ctx.input.settle({ delayMs: 260 });
+      await WAIT.frames(ctx, { delayMs: 260 });
       // ② 注入（判别力证明）：分别演"DOM 在、画面没有"与"旧缺陷（圆钮在框里被裁）"
       const injA = await inject(ctx, 'btn-invisible', `(function () {
         var b = document.querySelector('.rel-show-btn'); if (b) b.style.visibility = 'hidden'; return 1;
@@ -450,7 +451,7 @@ module.exports = [
       await ctx.exec(`(function () {
         window.MMApp.showDetail(window.MMApp.getState().jm.get_node(${JSON.stringify(pick.node.id)})); return 1;
       })()`);
-      await ctx.input.settle({ delayMs: 320 });
+      await WAIT.frames(ctx, { delayMs: 320 });
       await waitStableSat(ctx);   // 基线取在所有会改视图的交互之后（链内时序假红修复，见文件头）
       const before = await execJson(ctx, SAT_JS);
       if (!before.boxFound || !before.btn.found) return { ok: false, text: '前置失败：没有框或没有圆钮' };
@@ -481,7 +482,7 @@ module.exports = [
         return 1;
       })()`);
       await ctx.input.click({ x: lockPt.x, y: lockPt.y });
-      await ctx.input.settle({ delayMs: 320 });
+      await WAIT.frames(ctx, { delayMs: 320 });
       await waitStableSat(ctx);   // 读数前等"pan+框+卫星"落定（判据不改：锁后几何逐项对比照旧 ✗ 不容忍平移）
       const after = await execJson(ctx, SAT_JS);
       const same = (a, b) => a && b && Math.abs(a - b) <= 1;
@@ -520,7 +521,7 @@ module.exports = [
         MM.setFdBoxLock(box, MM.FD_LOCK.SCREEN);   // 先上锁（走唯一入口 ⇒ 与点按钮同一条路）
         return 1;
       })()`);
-      await ctx.input.settle({ delayMs: 300 });
+      await WAIT.frames(ctx, { delayMs: 300 });
       const locked = await execJson(ctx, SAT_JS);
       const inj = await inject(ctx, 'no-unlock-restore', `(function () {
         var MM = window.MM;
@@ -544,7 +545,7 @@ module.exports = [
         if (box) box.querySelector('.fd-lock-screen').click();     // 再点一次 = 解除（既有交互 ✓）
         return 1;
       })()`);
-      await ctx.input.settle({ delayMs: 320 });
+      await WAIT.frames(ctx, { delayMs: 320 });
       const after = await execJson(ctx, SAT_JS);
       const dxCenter = after.bar.visible ? Math.round((after.bar.left + after.bar.width / 2) - (after.box.left + after.box.width / 2)) : null;
       const ok = locked.bar.visible === false && after.box && after.box.lock === 'follow'
@@ -570,7 +571,7 @@ module.exports = [
       await ctx.exec(`(function () {
         window.MMApp.showDetail(window.MMApp.getState().jm.get_node(${JSON.stringify(pick.node.id)})); return 1;
       })()`);
-      await ctx.input.settle({ delayMs: 260 });
+      await WAIT.frames(ctx, { delayMs: 260 });
       // 铺场：把框**缩到一个小尺寸**（与改大小把手同一套写入：解开 maxHeight/maxWidth + 定宽高 ✓）——
       // 本断言判的是"框能完整放下时，两颗卫星相对框的坐标恒定"，用一个确定的小框才有判别力 ✓
       await ctx.exec(`(function () {
@@ -586,7 +587,7 @@ module.exports = [
         if (window.MM.syncFdSatellites) window.MM.syncFdSatellites();
         return 1;
       })()`);
-      await ctx.input.settle({ delayMs: 300 });
+      await WAIT.frames(ctx, { delayMs: 300 });
       await waitStableSat(ctx);   // 基线取在铺场（缩框）之后、拖动之前（链内时序假红修复，见文件头）
       const before = await execJson(ctx, SAT_JS);
       if (!before.btn.found || !before.bar.visible) return { ok: false, text: '前置失败：圆钮或工具栏没出现' };
@@ -633,7 +634,7 @@ module.exports = [
       })()`);
       const DX = head.dx, DY = head.dy;
       await ctx.input.drag({ x: head.x, y: head.y }, { x: head.x + DX, y: head.y + DY }, null, { steps: 4, stepDelayMs: 60 });
-      await ctx.input.settle({ delayMs: 320 });
+      await WAIT.frames(ctx, { delayMs: 320 });
       await waitStableSat(ctx);   // 读数前等视图落定（相对位移口径照旧 ✗ 不把整幅平移容忍成通过）
       const after = await execJson(ctx, SAT_JS);
       const r0 = relToBox(before), r1 = relToBox(after);
@@ -724,7 +725,7 @@ module.exports = [
       await ctx.exec(`(function () {
         window.MMApp.showDetail(window.MMApp.getState().jm.get_node(${JSON.stringify(pick.node.id)})); return 1;
       })()`);
-      await ctx.input.settle({ delayMs: 320 });
+      await WAIT.frames(ctx, { delayMs: 320 });
       const before = await execJson(ctx, SAT_JS);
       if (!before.btn.found || !before.btn.inPanel) return { ok: false, text: '前置失败：圆钮不在面板内' };
       // 注入（判别力）：把"卫星是不是框的 UI"这条判据**打假** ⇒ 圆钮被当成"点空白" ⇒ 框被关掉 ⇒ 必红
@@ -738,7 +739,7 @@ module.exports = [
         return 1;
       })()`);
       await ctx.input.click({ x: before.btn.center.x, y: before.btn.center.y });
-      await ctx.input.settle({ delayMs: 400 });
+      await WAIT.frames(ctx, { delayMs: 400 });
       const after = await execJson(ctx, SAT_JS);
       const related = await execJson(ctx, `(function () {
         return JSON.stringify({ ok: true, on: !!(window.MM.isRelatedActive && window.MM.isRelatedActive()) });

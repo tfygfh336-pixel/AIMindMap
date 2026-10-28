@@ -54,6 +54,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { stripComments } = require('../../scripts/dep-direction-check.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /* ---------------- 夹具 ---------------- */
 const P = 'zz-r2-reparent';
@@ -194,7 +195,7 @@ function parseExec(v) {
 }
 async function openProject(ctx, name) {
   const ok = await ctx.exec('window.MMApp.openProject(' + JSON.stringify(name) + ')');
-  await ctx.input.settle({ delayMs: 160 });
+  await WAIT.frames(ctx, { delayMs: 160 });
   return ok;
 }
 /** 打开项目后**展开全部**（openProject 的视图归一 = 只展开根 ⇒ 深层节点 display:none、
@@ -202,7 +203,7 @@ async function openProject(ctx, name) {
  *  真实布局上做 ⇒ 与域 48 同一步骤。展开态是视图操作（数据不动、盘上零写入）。 */
 async function expandAllForDrag(ctx) {
   await stepExec(ctx, '展开全部', '(function () { window.MMApp.getState().jm.expand_all(); return true; })()');
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
 }
 /** 确认桩：记录每一次确认框的文案（= 落位预览带回来的 CLI 回执），按 answer 应答。 */
 async function stubConfirm(ctx, answer) {
@@ -222,7 +223,7 @@ async function waitForStatus(ctx, re, timeoutMs) {
   while (Date.now() < deadline) {
     text = String(await ctx.exec('(function () { var el = document.getElementById("status-text"); return el ? el.textContent : ""; })()'));
     if (re.test(text)) return text;
-    await ctx.input.settle({ delayMs: 300 });
+    await WAIT.frames(ctx, { delayMs: 300 });
   }
   return text;
 }
@@ -260,11 +261,11 @@ async function menuItemOf(ctx, nodeId, labelPart) {
       + '   rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] }); })()'));
     if (!hitTest || hitTest.self !== true) {
       last = { miss: '右键前命中预检不过（压着 ' + (hitTest && (hitTest.at + (hitTest.id ? '#' + hitTest.id : '') + (hitTest.cls ? '.' + String(hitTest.cls).split(' ')[0] : ''))) + ' · 节点矩形=' + JSON.stringify(hitTest && hitTest.rect) + ')' };
-      await ctx.input.settle({ delayMs: 250 });
+      await WAIT.frames(ctx, { delayMs: 250 });
       continue;
     }
     await ctx.input.drag(pt, pt, undefined, { button: 'right', stepDelayMs: 0 });
-    await ctx.input.settle({ delayMs: 220 });
+    await WAIT.frames(ctx, { delayMs: 220 });
     const hit = parseExec(await stepExec(ctx, '量菜单项命中', '(function () { var m = document.getElementById("ctx-menu");'
       + ' if (!m || m.style.display === "none") return { miss: "菜单没弹出来" }; var t = null;'
       + ' Array.prototype.slice.call(m.querySelectorAll(".ctx-item")).forEach(function (e) {'
@@ -276,7 +277,7 @@ async function menuItemOf(ctx, nodeId, labelPart) {
     last = hit;
     if (!hit.miss) return hit;
     await ctx.exec('(function () { if (window.MMContextMenu) window.MMContextMenu.closeMenu(); return 1; })()');
-    await ctx.input.settle({ delayMs: 250 });
+    await WAIT.frames(ctx, { delayMs: 250 });
   }
   return last;
 }
@@ -292,7 +293,7 @@ async function centerNode(ctx, id) {
     + ' window.MM.setViewTransform({ x: pan.x + (wantX - (r.left + r.width / 2)),'
     + '   y: pan.y + (wantY - (r.top + r.height / 2)), s: pan.s });'
     + ' return true; })()');
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
 }
 
 const assertions = [
@@ -332,7 +333,7 @@ const assertions = [
           + ' ⇒ **未验证**：' + JSON.stringify(entry).slice(0, 160) };
       }
       await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(A) + ', { mode: "reparent" }); 1');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const kind = await stepExec(ctx, '读拖动档位', 'window.MMApp.dragModeKind()');
       // —— 第一次拖放：桩返回 false（取消）—— 预览跑过（文案被捕获）但零写入 ——
       await ctx.exec('window.__mmConfirmMsgs = []; 1');
@@ -347,16 +348,16 @@ const assertions = [
       await stubConfirm(ctx, false);
       const ghostDuring = await (async () => {
         await ctx.input.mouseDown(ptA);
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
         await ctx.input.moveTo(ptB);
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
         const g = await stepExec(ctx, '读拖动现状', 'JSON.stringify({ st: window.MMApp.reparentState(), ghost: !!document.getElementById("tree-reorder-ghost") })');
         // 拖动期间：盘上零写入 + 序列化逐字节不变（构造性：这一档一个偏移桶都不写）
         const hDrag = sha256(readRaw(P));
         const textDrag = await stepExec(ctx, '读拖动中的序列化文本', 'JSON.stringify(window.MMApp.serializeTree())');
         const bucketsDrag = await stepExec(ctx, '读拖动中的偏移两桶', '(function () { return JSON.stringify({ t: window.MMApp.getTreeOffsets(), n: window.MMApp.getNodeOffsets() }); })()');
         await ctx.input.mouseUp(ptB);
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
         const statusCancel = await waitForStatus(ctx, /取消|没生效|没有写入/, 12000);   // 预览是 CLI 子进程（约 0.6s）+ 取消收尾
         return { reading: parseExec(g), hDrag: hDrag, textDrag: textDrag, bucketsDrag: bucketsDrag, statusCancel: statusCancel };
       })();
@@ -390,23 +391,26 @@ const assertions = [
       const entry2Gone = String(entry2.miss || '').indexOf('菜单里没有那一条') >= 0;
       if (!entry2Gone) return { ok: false, text: '第二次入口失败（菜单里读不到）：' + JSON.stringify(entry2).slice(0, 120) + ' ⇒ **未验证**' };
       await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(A) + ', { mode: "reparent" }); 1');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const ptA2 = await pointOf(ctx, A);
       const ptB2 = await pointOf(ctx, B);
       await ctx.input.mouseDown(ptA2);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       await ctx.input.moveTo(ptB2);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       await ctx.input.mouseUp(ptB2);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       // 等写通道真的回来（留痕在写完那一刻记账 ⇒ 轮询它，比猜总时长稳）；再给重建+状态栏一拍
       const callsDeadline = Date.now() + 25000;
       let callsLen = 0;
       while (Date.now() < callsDeadline) {
         callsLen = parseExec(await stepExec(ctx, '读留痕长度', 'JSON.stringify((window.MM.__reparentCalls || []).length)'));
         if (callsLen >= 1) break;
-        await ctx.input.settle({ delayMs: 300 });
+        await WAIT.frames(ctx, { delayMs: 300 });
       }
+      /* ★ 名单里的第二处（见 `_wait.js` 头部第 5 条）：这 2000ms 等的是**真实墙钟** ——
+       *   重挂写盘走 `IPC → CLI 子进程（约 0.6–1.5s）→ 回读重建`，那条链的时长不由帧决定，
+       *   换 `frames()` 只会把"等写盘"换成"等两个被逼出来的帧 + 2s 睡眠"的同一个数，不加保证。 */
       await ctx.input.settle({ delayMs: 2000 });
       const hAfter = sha256(readRaw(P));
       const rawAfter = JSON.parse(readRaw(P));
@@ -539,7 +543,7 @@ const assertions = [
         + JSON.stringify(A) + ',' + JSON.stringify(C) + ');'
         + ' return JSON.stringify({ ok: r.ok, parent: r.parent, text: String(r.text || "").slice(0, 60) }); })()');
       const goodR = (function () { try { return parseExec(good); } catch (e) { return null; } })();
-      await ctx.input.settle({ delayMs: 500 });
+      await WAIT.frames(ctx, { delayMs: 500 });
       const hGood = sha256(readRaw(P));
       const rawGood = JSON.parse(readRaw(P));
       const parentsGood = parentsOf(rawGood);
@@ -601,14 +605,17 @@ const assertions = [
         return { ok: false, text: '入口前置失败：菜单里读不到 ⇒ **未验证**：' + JSON.stringify(entry).slice(0, 120) };
       }
       await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(A) + ', { mode: "reparent" }); 1');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const ptA = await pointOf(ctx, A);
       const ptB = await pointOf(ctx, B);
       await ctx.input.mouseDown(ptA);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       await ctx.input.moveTo(ptB);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       await ctx.input.mouseUp(ptB);
+      /* ★ 名单里的第一处（见 `_wait.js` 头部第 5 条）：判据是**负向**的 ——
+       *   "取消之后那次晚到的写**必须没有发生**"。它只能靠"越过那次晚到写的墙钟窗口"来证明，
+       *   窗口长短由 CLI 子进程的调度决定，与帧无关 ⇒ 这里必须留真实睡眠。 */
       await ctx.input.settle({ delayMs: 3500 });
       const hCancel = sha256(readRaw(P));
       const msgs = parseExec(await stepExec(ctx, '读确认框文案捕获', 'JSON.stringify(window.__mmConfirmMsgs || [])'));

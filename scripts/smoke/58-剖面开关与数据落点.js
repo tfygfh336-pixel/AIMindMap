@@ -76,6 +76,7 @@ const mm = require('../smoke-assertions.js');
  *      而 S2 的判定 ④ 是"文件提到受管资产名 + 有判不了目标的裸写 ⇒ 当作可能在写受管资产"。
  *      改走出口后这一处不再是裸写，判定④ 的前提自然不成立（不是把它登记成欠账 —— 那要抬 cap）。 */
 const { writeFileAtomic } = require('../../src/data-store.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const DOC = path.join(ROOT, 'docs', 'DIAGRAM-MODES.md');
@@ -161,7 +162,7 @@ const PAINT = { delayMs: 160 };
 
 async function openProject(ctx, name) {
   const ok = await ctx.exec('window.MMApp.openProject(' + JSON.stringify(name) + ')');
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
   return ok;
 }
 
@@ -176,7 +177,7 @@ async function clickEl(ctx, sel, why) {
     + '})()');
   if (!pt) throw new Error('点不到 ' + sel + '（' + (why || '') + '）：元素不在或没有几何');
   await ctx.input.click(pt);
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
   return pt;
 }
 
@@ -272,7 +273,7 @@ const NODE_GEOM = `(function () {
 async function expandAll(ctx) {
   await ctx.exec('(function () { var jm = window.MMApp.getState().jm; if (jm) jm.expand_all(); return true; })()');
   await ctx.exec('(function () { if (window.MM.refreshDiagram) window.MM.refreshDiagram(); return true; })()');
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
 }
 
 /* ================= 夹具的写 / 删 ================= */
@@ -459,7 +460,7 @@ const assertions = [
       if (rejectedPairs < 1) fails.push('控件面声明的那几条能力在所有剖面里都是"支持" ⇒ 控件集合不可能随剖面变化（判据空转）');
       for (const p of doc.profiles) {
         const set = await setProfile(ctx, p);
-        await ctx.input.settle({ delayMs: 60 });
+        await WAIT.frames(ctx, { delayMs: 60 });
         if (!set || !set.ok) { fails.push(p + ' 切剖面失败：' + ((set && set.reason) || '未知')); continue; }
         const surf = await ctx.exec(SURFACE);
         const shownCaps = uniqSorted(surf.shown.map((s) => s.cap));
@@ -491,7 +492,7 @@ const assertions = [
           + '"控件集合随剖面变化"这件事没有真的发生');
       }
       await setProfile(ctx, fullProfileOf(doc));
-      await ctx.input.settle({ delayMs: 60 });
+      await WAIT.frames(ctx, { delayMs: 60 });
       return {
         ok: fails.length === 0,
         text: (fails.length ? '✗ ' + fails.join(' ｜ ') + ' ｜ ' : '') + '五剖面读数：' + rows.join(' · ')
@@ -539,7 +540,7 @@ const assertions = [
       const narrow = narrowProfileOf(doc);
       const full = fullProfileOf(doc);
       await setProfile(ctx, narrow);
-      await ctx.input.settle({ delayMs: 60 });
+      await WAIT.frames(ctx, { delayMs: 60 });
       const opened = await openProject(ctx, P_GRAPH);
       const view = await ctx.exec('(function () {'
         + ' var nodes = document.querySelectorAll(\'jmnode[nodeid]\');'
@@ -575,12 +576,12 @@ const assertions = [
       const switchWorks = afterSwitch === full;
       // 切回窄剖面，再**真的改点东西**（展开全部 ⇒ 序列化产物变 ⇒ 保存必须真写盘）
       await setProfile(ctx, narrow);
-      await ctx.input.settle({ delayMs: 60 });
+      await WAIT.frames(ctx, { delayMs: 60 });
       await ctx.exec('(function () { var jm = window.MMApp.getState().jm; if (jm) jm.expand_all(); return true; })()');
-      await ctx.input.settle({ delayMs: 80 });
+      await WAIT.frames(ctx, { delayMs: 80 });
       const dirtyBefore = await isDirty(ctx);
       await clickEl(ctx, '#btn-save', '工具栏「保存」');
-      await ctx.input.settle({ delayMs: 300 });
+      await WAIT.frames(ctx, { delayMs: 300 });
       const st = await statusText(ctx);
       const dirtyAfter = await isDirty(ctx);
       const savedOk = /^已保存/.test(String(st || '')) && dirtyAfter === false;
@@ -615,7 +616,7 @@ const assertions = [
       const full = fullProfileOf(doc);
       const narrow = narrowProfileOf(doc);
       await setProfile(ctx, full);
-      await ctx.input.settle({ delayMs: 60 });
+      await WAIT.frames(ctx, { delayMs: 60 });
       const beforeText = readRaw(P_TREE);
       const beforeSha = sha256(beforeText);
       const keySets = (t) => { const o = JSON.parse(t); return { top: Object.keys(o).sort(), meta: Object.keys(o.meta || {}).sort() }; };
@@ -628,9 +629,9 @@ const assertions = [
         + '   topKeys: Object.keys(s).sort(), metaKeys: Object.keys(s.meta || {}).sort() }; })()');
       // 剖面来回切（窄 → 全）：切剖面是**视图选择**，不许改数据
       await setProfile(ctx, narrow);
-      await ctx.input.settle({ delayMs: 60 });
+      await WAIT.frames(ctx, { delayMs: 60 });
       await setProfile(ctx, full);
-      await ctx.input.settle({ delayMs: 60 });
+      await WAIT.frames(ctx, { delayMs: 60 });
       const afterSha = sha256(readRaw(P_TREE));
       const keysAfter = keySets(readRaw(P_TREE));
       const expectTop = keysBefore.top.filter((k) => k !== 'graph');
@@ -674,7 +675,7 @@ const assertions = [
         + ' return true; })()');
       writeFixtures();                         // 丙 之后可能已被删（幂等重写）
       await setProfile(ctx, narrow);
-      await ctx.input.settle({ delayMs: 60 });
+      await WAIT.frames(ctx, { delayMs: 60 });
       await openProject(ctx, P_TREE);
       /* 先展开整棵树再量：`d1` 在 t1 → p1 下面，而"打开只展开根"的归一让整棵子树收起
        * ⇒ 折叠着的 jmnode 没有几何，位移前后都会量到同一个常数（判据空转，实测踩过）。 */
@@ -686,27 +687,27 @@ const assertions = [
           + '它的"位移"量不到，本判据会空转 —— 必须先让它渲染出来（展开那棵子树）' };
       }
       const applied = await applyOffsets();
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const offsetRect = await relToRoot(ctx, DEEP);
       /* ---- ① 树渲染器里的位移 === 偏移值（不是"至少挪了 8px"，是**逐轴相等**） ---- */
       const treeShift = { dx: offsetRect.dx - base.dx, dy: offsetRect.dy - base.dy };
       const treeOk = treeShift.dx === OFFSET.x && treeShift.dy === OFFSET.y;
       /* ---- 落盘（真鼠标点保存）：盘上只有一个偏移桶 ---- */
       await clickEl(ctx, '#btn-save', '工具栏「保存」');
-      await ctx.input.settle({ delayMs: 300 });
+      await WAIT.frames(ctx, { delayMs: 300 });
       const stAfterSave = await statusText(ctx);
       const disk1 = readRaw(P_TREE);
       const o1 = JSON.parse(disk1);
       const offs1 = (o1.meta && o1.meta.nodeOffsets) || null;
       /* ---- ② 切到全开剖面（**图渲染器**，不重开）⇒ 同一份偏移在 SVG 画布坐标里也生效 ---- */
       await setProfile(ctx, full);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const svgWith = await svgRelToRoot(ctx, DEEP, 'root');
       await clearOffsets();
       await setProfile(ctx, narrow);            // 回树再进图 = 一次重画（剖面切换就是"数据变了"的入口）
-      await ctx.input.settle({ delayMs: 60 });
+      await WAIT.frames(ctx, { delayMs: 60 });
       await setProfile(ctx, full);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const svgWithout = await svgRelToRoot(ctx, DEEP, 'root');
       const svgShift = (svgWith && svgWithout)
         ? { dx: svgWith.dx - svgWithout.dx, dy: svgWith.dy - svgWithout.dy } : null;
@@ -751,7 +752,7 @@ const assertions = [
       const doc = docMatrix();
       const full = fullProfileOf(doc);
       await setProfile(ctx, full);
-      await ctx.input.settle({ delayMs: 60 });
+      await WAIT.frames(ctx, { delayMs: 60 });
       await ctx.exec('(function () { if (window.MM.clearTreeOffsets) window.MM.clearTreeOffsets(); return true; })()');
       const cleaned = await mm.closeDialogs(ctx);
       const profile = await profileNow(ctx);

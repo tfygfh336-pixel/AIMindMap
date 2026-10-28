@@ -15,6 +15,7 @@
 
 // 真帧像素判据（"仍可见"那半）：像素统计的唯一实现 + 阈值单源
 const frameStats = require('../vision/frame-stats.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 const VTH = frameStats.THRESHOLDS;
 
 /** 渲染层返回 JSON 的取回口（迁移后的断言多处复用 ✓） */
@@ -142,7 +143,7 @@ const assertions = [
           hitWhat: at ? (at.id ? ('#' + at.id) : (String(at.className || at.tagName).slice(0, 30))) : null });
       })()`);
       if (!geo.ok) return { ok: false, text: geo.text || '铺场失败' };
-      await ctx.input.settle({ delayMs: 150 });
+      await WAIT.frames(ctx, { delayMs: 150 });
       // ② 真帧像素：按钮矩形里数非背景像素（"这块到底画出来没有"）
       const img = await ctx.input.capture();
       const dpr = geo.dpr || 1;
@@ -151,7 +152,7 @@ const assertions = [
       { predicate: frameStats.nonBackgroundPredicate() });
       // ③ 真输入点击（真命中测试）+ ④ 还原铺场（本域后面的断言不该看到"侧栏被拖宽"）
       await ctx.input.click(geo.save.center);
-      await ctx.input.settle({ delayMs: 150 });
+      await WAIT.frames(ctx, { delayMs: 150 });
       const probe = await execJson(ctx, `(function () {
         var p = window.__mmSaveProbe;
         var cov = document.getElementById('mm-save-cover-probe');
@@ -161,7 +162,7 @@ const assertions = [
         window.dispatchEvent(new Event('resize'));
         return JSON.stringify({ ok: true, probe: p });
       })()`);
-      await ctx.input.settle({ delayMs: 60 });
+      await WAIT.frames(ctx, { delayMs: 60 });
       const pr = probe.probe;
       // 几何那半：按钮不得伸进"给侧栏让出的那一条带"（内容框右缘 = toolbar 右缘 − padding-right）
       const contentRight = geo.tb.right - geo.padRight;

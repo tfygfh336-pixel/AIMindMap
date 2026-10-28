@@ -69,6 +69,7 @@ const mm = require('../smoke-assertions.js');
 /* 唯一写盘出口（`src/data-store.js` 的 `writeFileAtomic`）：本域有两处写盘（夹具 assets/probe.txt 与真帧 PNG），
  * 一律走它 —— 裸 `fs.writeFileSync` 会被 S2 的 [write-outlet] 判定抓（本批实测抓到过，见那两处的注释）。 */
 const DATA_STORE = require('../../src/data-store.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
@@ -315,14 +316,14 @@ async function captureUntil(ctx, expr, judge, tries) {
     const img = await ctx.input.capture();
     const after = await execJson(ctx, expr);
     if (!after || !after.ok || JSON.stringify(after.rects) !== JSON.stringify(before.rects)) {
-      await ctx.input.settle({ delayMs: 200 });
+      await WAIT.frames(ctx, { delayMs: 200 });
       last = { ok: false, attempts: i + 1, text: '取景不稳（同一读数的两次几何不一致）' };
       continue;
     }
     const judged = judge(before, img);
     last = { ok: true, rects: before, img: img, judged: judged, attempts: i + 1 };
     if (judged && judged.pass) return last;
-    await ctx.input.settle({ delayMs: 260 });
+    await WAIT.frames(ctx, { delayMs: 260 });
   }
   return last;
 }
@@ -840,7 +841,7 @@ const assertions = [
       if (!pre.pt) return { ok: false, text: '前置失败：summary 上找不到一个 elementFromPoint 能命中它的点' };
       await ctx.exec(`(function(){ var s = window.MM.fdPrimaryNodeBox().el.querySelector('.fd-detail-content summary');
         if (s && s.scrollIntoView) { try { s.scrollIntoView({ block: 'nearest' }); } catch (e) {} } return 1; })()`);
-      await ctx.input.settle({ delayMs: 120 });
+      await WAIT.frames(ctx, { delayMs: 120 });
       const pt2 = await execJson(ctx, `(function () {
         var s = window.MM.fdPrimaryNodeBox().el.querySelector('.fd-detail-content summary');
         ${hitPointExpr}
@@ -848,7 +849,7 @@ const assertions = [
       })()`);
       if (!pt2.pt) return { ok: false, text: '前置失败：滚动后 summary 上没有可点坐标' };
       await ctx.input.click(pt2.pt, []);
-      await ctx.input.settle({ delayMs: 320 });
+      await WAIT.frames(ctx, { delayMs: 320 });
 
       const expr = `(function () {
         var box = window.MM.fdPrimaryNodeBox();
@@ -1072,7 +1073,7 @@ const assertions = [
         })()`);
         if (!pt.ok || !pt.pt) return pt;
         await ctx.input.click(pt.pt, []);
-        await ctx.input.settle({ delayMs: 260 });
+        await WAIT.frames(ctx, { delayMs: 260 });
         return pt;
       };
 
@@ -1183,7 +1184,7 @@ const assertions = [
       if (!pt.ok || !pt.pt) return { ok: false, text: '前置失败：站内链接不可点（' + (pt.text || '无坐标') + '）' };
 
       await ctx.input.click(pt.pt, []);
-      await ctx.input.settle({ delayMs: 360 });
+      await WAIT.frames(ctx, { delayMs: 360 });
 
       const after = await execJson(ctx, `(function () {
         var MM = window.MM, st = window.MMApp.getState();
@@ -1282,7 +1283,7 @@ const assertions = [
       if (!stk.pt) return { ok: false, text: '前置失败：锚点链接上没有可点坐标：' + JSON.stringify(stk) };
 
       await ctx.input.click(stk.pt, []);
-      await ctx.input.settle({ delayMs: 420 });
+      await WAIT.frames(ctx, { delayMs: 420 });
 
       const after = await execJson(ctx, `(function () {
         var boxes = Array.prototype.slice.call(document.querySelectorAll('.float-detail'));
@@ -1844,7 +1845,7 @@ const assertions = [
           + (thrown.length ? ' · 抛错点名：' + JSON.stringify(thrown.slice(0, 3)) : '')
           + ' ｜ 真帧前置失败：' + pinned.text
       };
-      await ctx.input.settle({ delayMs: 220 });
+      await WAIT.frames(ctx, { delayMs: 220 });
       const frameExpr = `(function () {
         ${hitPointExpr}
         var box = window.MM.fdPrimaryNodeBox ? window.MM.fdPrimaryNodeBox() : null;

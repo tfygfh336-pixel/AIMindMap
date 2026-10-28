@@ -38,6 +38,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const tempRunRoot = require('./temp-run-root.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /** 沙箱源目录（**不属于 projects/ 真实数据**；本域收尾时删干净）。
  *  ⚠️ 唯一段写在**父目录**上（`RUN.root`），基名保持 `zz-bind-ui-src` 不变 —— 见 temp-run-root.js 头注：
@@ -128,7 +129,14 @@ async function clickSel(ctx, sel) {
   if (!h.self) return { ok: false, err: '命中的不是它（命中 ' + JSON.stringify(h.at) + '）', hit: h };
   if (!ctx.input) return { ok: false, err: '没有真输入底座（ctx.input 缺失）', hit: h };
   await ctx.input.click({ x: Math.round(h.cx), y: Math.round(h.cy) });
-  await ctx.input.settle();
+  /* ★ 这一处**刻意把原墙钟补回来**（本批实测的读数，不是猜）：
+   *   换成本域的调用点之前，`ctx.input.settle()` 在离屏窗口里恒为「2 帧 ≈ 2016ms + 默认 200ms」≈ 2.2s；
+   *   而本域点完这两个按钮之后的那条链（命令面板 → 绑定 / 暂停-继续 → CLI `--watch-dirs` 守护子进程
+   *   重新武装 + 4s 防抖窗口）**吃的就是这段墙钟**：把等待压到 200ms 后，丙/丁/庚/辛/壬/癸 六条一起红
+   *   （实测 2/2 复现；同一份文件改回来就 19/19 绿）。
+   *   ⇒ 这里按**原口径的墙钟**传 delayMs（N 仍是 2 个真帧，`_wait.js` 的默认值一个字没动），
+   *     不缩短窗口、也不假装"帧来了就等于这件事做完了"。 */
+  await WAIT.frames(ctx, { delayMs: 2200 });
   return { ok: true, hit: h };
 }
 async function waitUntil(fn, ms, stepMs) {
@@ -199,7 +207,9 @@ async function openBindEntryByPalette(ctx) {
   if (!row.self) return { ok: false, err: '那一行在这一点上看不见（命中 ' + row.at + '）', row: row };
   if (!ctx.input) return { ok: false, err: '没有真输入底座（ctx.input 缺失）', row: row };
   await ctx.input.click({ x: row.cx, y: row.cy });
-  await ctx.input.settle();
+  /* ★ 与 `clickSel` 里那一处同一个理由（见那里的注释）：点完「绑定工作区文件夹…」之后
+   *   要等的是**守护子进程武装 + 预览 dry-run 那一跳的真实墙钟** ⇒ delayMs 按原口径给（≈2.2s）。 */
+  await WAIT.frames(ctx, { delayMs: 2200 });
   return { ok: true, row: row };
 }
 /** 原生菜单里那**唯一**的入口（主进程侧读；导图页在 ⇒ 启用、不在 ⇒ 置灰，由既有机制统一管） */

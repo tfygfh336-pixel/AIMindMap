@@ -176,6 +176,7 @@ const { execFile } = require('child_process');
 
 // 冒烟共用工具（收尾纪律与用法见 scripts/smoke-assertions.js 顶部）：动了 addNode 就要收模态
 const mm = require('../smoke-assertions.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /** 主进程的系统剪贴板（断言④用它验证"复制值真的进了剪贴板"，而不是只看自报） */
 let electronClipboard = null;
@@ -933,7 +934,7 @@ const assertions = [
       if (!geo.ok) return { ok: false, text: '取景失败：' + geo.text };
       // 真鼠标点"清单第 1 行"（**环境无关**的那一半：命中 + 选中态 ⇒ 任何环境下都按判据判 ✓）
       await ctx.input.click(geo.rowPt);
-      await ctx.input.settle();
+      await WAIT.frames(ctx);
       const afterRow = await execJson(ctx, `(function () {
         var box = window.MM.fdPrimaryNodeBox();
         var st = window.MM.fdItemsState(box);
@@ -995,7 +996,7 @@ const assertions = [
           })()`);
         }
         await ctx.input.click(geo.copyPt);         // ③ 真鼠标点 ⧉（两档都点：环境坏也要把这一跳的读数如实记下来）
-        await ctx.input.settle();
+        await WAIT.frames(ctx);
         // 等这一跳落地：旧的 `execCommand` 是渲染层**同步**动作，而现在剪贴板由**主进程**写
         // ⇒ 多一次 IPC 往返，只等固定时长会变成**偶发**红/绿（判据必须确定性 ✓）。
         landed = await waitCopyLanded(ctx, expectCopy);
@@ -1239,7 +1240,7 @@ const assertions = [
       })()`);
       const es = await editAndSave(ctx, 'root');            // 一次真实改动（撤销的靶子）
       await ctx.input.pressKey('Z', ['control']);           // 真键盘：Ctrl+Z（editor.js 的 keydown 接住）
-      await ctx.input.settle();
+      await WAIT.frames(ctx);
       const after = await execJson(ctx, `(function () {
         var MM = window.MM, app = window.MMApp, jm = app.getState().jm;
         var n = MM.adapter.getNode(jm, ${JSON.stringify(NODE_ITEMIZED)});

@@ -44,6 +44,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 // 剥注释的唯一实现（复用 S1 门禁那一份，不另写一套）：结构断言的输入必须是**代码**，不是散文
 const { stripComments } = require('../../scripts/dep-direction-check.js');
 
@@ -82,7 +83,7 @@ const PAINT = { delayMs: 120 };
  *  （全量跑里实测踩到：其余节点齐刷刷 dy=+33）。 */
 async function openProject(ctx, name) {
   const ok = await ctx.exec('window.MMApp.openProject(' + JSON.stringify(name) + ')');
-  await ctx.input.settle({ delayMs: 160 });
+  await WAIT.frames(ctx, { delayMs: 160 });
   return ok;
 }
 
@@ -182,7 +183,7 @@ async function openNodeMenu(ctx, id) {
     + ' return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()');
   if (!pt) return { items: [], why: '找不到节点元素 ' + id };
   await ctx.input.drag(pt, pt, undefined, { button: 'right', stepDelayMs: 0 });   // 真右键（down+moves+up 同点）
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
   return ctx.exec(`(function () { var m = document.getElementById('ctx-menu');`
     + ' if (!m || m.style.display === "none") return { items: [], why: "菜单没弹出来" };'
     + ' return { items: Array.prototype.slice.call(m.querySelectorAll(".ctx-item"))'
@@ -208,7 +209,7 @@ async function clickMenuItem(ctx, needle) {
     return { ok: false, why: r && r.miss ? ('菜单里没有含「' + needle + '」的项') : ('那一点被别的东西占着：' + JSON.stringify(r)) };
   }
   await ctx.input.click({ x: r.x, y: r.y });
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
   return { ok: true, at: r.x + ',' + r.y };
 }
 
@@ -255,7 +256,7 @@ async function waitStableView(ctx) {
   for (let i = 0; i < 12; i++) {
     const st = await ctx.exec('JSON.stringify(window.MMApp.getPanState())');
     if (st === last) { same++; if (same >= 2) return st; } else { same = 0; last = st; }
-    await ctx.input.settle({ delayMs: 70 });
+    await WAIT.frames(ctx, { delayMs: 70 });
   }
   return last;
 }
@@ -383,7 +384,7 @@ const assertions = [
         && !has(deepMenu.items, '摆到左侧') && !has(deepMenu.items, '摆到右侧');
       await closeMenu(ctx);      // 读完就关：改前是点菜单项顺手关的，现在没人关它（会挡在画布上 ✗）
       await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(TARGET) + '); 1');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const entered = await ctx.exec('(function () { return { on: window.MMApp.dragModeActive(),'
         + ' root: window.MMApp.getDragTreeRoot() }; })()');
       /* ⚠️ 几何基线**必须取在"按下"之后**（本行以下用的都是 `base2`）—— 这是改前那条假红的真因：
@@ -401,7 +402,7 @@ const assertions = [
       const from0 = (pressR.rects && pressR.rects[TARGET])
         ? { x: pressR.rects[TARGET].cx, y: pressR.rects[TARGET].cy } : plan.from;
       await ctx.input.mouseDown(from0);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       await waitStableView(ctx);      // 等"按下即选中"引起的那次画布补偿落定（见 waitStableView 的说明）
       const base2 = await ctx.exec(RADAR);
       const baseRects = (base2 && base2.rects && Object.keys(base2.rects).length) ? base2.rects : before.rects;
@@ -410,9 +411,9 @@ const assertions = [
       // ② 真鼠标拖动：按住不放 → 移到"按下点 + 位移"→ 松手（位移 = 指针位移 ✓）
       const land = { x: from0.x + planUse.dx, y: from0.y + planUse.dy };
       await ctx.input.moveTo(land);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       await ctx.input.mouseUp(land);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const after = await ctx.exec(RADAR);
       const dirtyAfterDrag = await isDirty(ctx);
       const dataAfter = await ctx.exec('JSON.stringify(window.MMApp.serializeTree().data)');
@@ -537,6 +538,9 @@ const assertions = [
       const cx = (id) => ctx.exec('(function () { var el = document.querySelector(\'jmnode[nodeid="' + id + '"]\');'
         + ' if (!el) return null; var r = el.getBoundingClientRect(); return Math.round(r.left + r.width / 2); })()');
       const clickedLeft = await clickMenuItem(ctx, '摆到左侧');
+      /* ★ 名单里的第一处（见 `_wait.js` 头部第 5 条）：这 900ms 等的是**真实墙钟** ——
+       *   「摆到左侧」要 `IPC → CLI 子进程写盘 → 回读重建`，紧接着就读**盘上**的 `layout.left`；
+       *   写盘时长由子进程调度决定，与帧无关 ⇒ 必须留真实睡眠。 */
       await ctx.input.settle({ delayMs: 900 });             // 等它 rebuild + save 落地
       const rootCx = await cx('root');
       const t1CxLeft = await cx(TOP_THEME);
@@ -546,6 +550,8 @@ const assertions = [
       const lifted2 = await liftNode(ctx, TOP_THEME);      // 摆侧会重建视图 ⇒ 再抬一次
       const topMenu2 = await openNodeMenu(ctx, TOP_THEME);
       const clickedRight = await clickMenuItem(ctx, '摆到右侧');
+      /* ★ 名单里的第二处（同第 5 条）：与上一处同一条写盘链（反向对照那一次），
+       *   判据同样落在"盘上 / 冲突状态"上 ⇒ 真实墙钟。 */
       await ctx.input.settle({ delayMs: 900 });
       const conflict = await ctx.exec('window.MMApp.hasPendingConflict()');
       const sideRight = await ctx.exec('window.MMApp.themeSideOf("' + TOP_THEME + '")');

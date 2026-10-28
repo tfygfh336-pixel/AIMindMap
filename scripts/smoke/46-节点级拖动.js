@@ -58,6 +58,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /** 沙箱夹具项目：顶层主题 t1/t2；t1 下 na → n1 → {n1a(含 n1a1/n1a2), n1b}；t2 下 nc（共 11 个节点） */
 const P = 'zz-r2-drag';
@@ -88,7 +89,7 @@ const PAINT = { delayMs: 120 };
 
 async function openProject(ctx, name) {
   const ok = await ctx.exec('window.MMApp.openProject(' + JSON.stringify(name) + ')');
-  await ctx.input.settle({ delayMs: 160 });
+  await WAIT.frames(ctx, { delayMs: 160 });
   return ok;
 }
 
@@ -186,7 +187,7 @@ async function openNodeMenu(ctx, id) {
   })()`);
   if (!pt) return { items: [], why: '找不到节点元素 ' + id };
   await ctx.input.drag(pt, pt, undefined, { button: 'right', stepDelayMs: 0 });
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
   return ctx.exec(`(function () {
     var m = document.getElementById('ctx-menu');
     if (!m || m.style.display === 'none') return { items: [], why: '菜单没弹出来' };
@@ -225,7 +226,7 @@ async function clickMenuItem(ctx, needle) {
     return { ok: false, why: r && r.miss ? ('菜单里没有含「' + needle + '」的项') : ('那一点被别的东西占着：' + JSON.stringify(r)) };
   }
   await ctx.input.click({ x: r.x, y: r.y });
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
   return { ok: true, at: r.x + ',' + r.y };
 }
 
@@ -241,7 +242,7 @@ async function waitStableView(ctx) {
   for (let i = 0; i < 12; i++) {
     const st = await ctx.exec('JSON.stringify(window.MMApp.getPanState())');
     if (st === last) { same++; if (same >= 2) return st; } else { same = 0; last = st; }
-    await ctx.input.settle({ delayMs: 70 });
+    await WAIT.frames(ctx, { delayMs: 70 });
   }
   return last;
 }
@@ -381,7 +382,7 @@ async function openFixture(ctx, opts) {
   const dirtyAfterOpen = await isDirty(ctx);
   if (o.expand) {
     await ctx.exec('(function () { window.MMApp.getState().jm.expand_all(); return true; })()');
-    await ctx.input.settle(STEP);
+    await WAIT.frames(ctx, STEP);
     // 展开后目标必须在屏上（采不到真值 = 红，不静默跳过）
     const vis = await ctx.exec(`(function () {
       var el = document.querySelector('jmnode[nodeid=${JSON.stringify(o.target)}]');
@@ -391,7 +392,7 @@ async function openFixture(ctx, opts) {
     })()`);
     if (vis !== 1) {
       await ctx.exec('(function () { window.MMApp.getState().jm.expand_all(); return true; })()');
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
     }
   }
   const h0 = sha256(readRaw(P));
@@ -477,10 +478,10 @@ async function step(ctx, label, js) {
 async function settleStaleWrite(ctx) {
   const before = await seqNow(ctx);
   for (let i = 0; i < 12; i++) {
-    await ctx.input.settle({ delayMs: 120 });
+    await WAIT.frames(ctx, { delayMs: 120 });
     const d = await lastDisk(ctx);
     if (d && d.seq > before) {
-      await ctx.input.settle({ delayMs: 200 });   // 再等一拍：让那次重渲染与它延迟的居中做完
+      await WAIT.frames(ctx, { delayMs: 200 });   // 再等一拍：让那次重渲染与它延迟的居中做完
       return d;
     }
   }
@@ -499,7 +500,7 @@ const lastDisk = (ctx) => ctx.exec('var __l = window.MM.getLastDiskChange ? wind
 async function waitDiskChangeKind(ctx, seqBefore, want) {
   let last = null;
   for (let i = 0; i < 30; i++) {
-    await ctx.input.settle({ delayMs: 120 });
+    await WAIT.frames(ctx, { delayMs: 120 });
     const d = await lastDisk(ctx);
     if (!d || !(d.seq > seqBefore)) continue;
     last = d;
@@ -587,7 +588,7 @@ const assertions = [
        * ⇒ 进模式直接从 API 走（`setDragMode` 那一族**一行没删**）。这一跳与改前**等价**：
        * 改前点的那条菜单项，它的 action 就只是 `MMApp.setDragMode(true, 目标节点)`。 */
       await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(TARGET) + '); 1');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const entered = await ctx.exec('(function () { return { on: window.MMApp.dragModeActive(), root: window.MMApp.getDragTreeRoot() }; })()');
       /* ⚠️ 几何基线取在**所有会改视图的交互之后**：右键选中节点会让 jsMind 重排一次，而本工程
        * 的「重排锚点保持」（app-view.js 的 wrapLayoutAnchor）会为了"被操作的节点原地不动"
@@ -612,28 +613,28 @@ const assertions = [
       const outPt = outCands[0] || null;
       // —— 真鼠标：按住不放，沿途量六处 ——
       await ctx.input.mouseDown(plan.from);
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const stDown = await snap(ctx, 'down', cfg, radar1.rects, h0);
       const mid = { x: plan.from.x + Math.round(plan.dx * 0.35), y: plan.from.y + Math.round(plan.dy * 0.35) };
       await ctx.input.moveTo(mid);
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const stMid = await snap(ctx, 'mid', cfg, radar1.rects, h0);
       const serMid = await serializeVsBaseline(ctx, base.text, 'nodeOffsets');
       let stOut = null;
       if (outPt) {
         await ctx.input.moveTo(outPt);
-        await ctx.input.settle(STEP);
+        await WAIT.frames(ctx, STEP);
         stOut = await snap(ctx, 'out', cfg, radar1.rects, h0);
       }
       await ctx.input.moveTo(plan.from);                     // 拖回**原地**（净位移 0）
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const stHome = await snap(ctx, 'home', cfg, radar1.rects, h0);
       const land = { x: plan.from.x + plan.dx, y: plan.from.y + plan.dy };
       await ctx.input.moveTo(land);
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const stLand = await snap(ctx, 'land', cfg, radar1.rects, h0);
       await ctx.input.mouseUp(land);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const stUp = await snap(ctx, 'up', cfg, radar1.rects, h0);
       await ctx.exec('window.MMApp.setDragMode(false); 1');
       // 显式保存 ⇒ 盘上才出现 nodeOffsets（== 屏幕位移）
@@ -740,7 +741,7 @@ const assertions = [
       const baseData = await ctx.exec('JSON.stringify(window.MMApp.serializeTree().data)');
       // 顶层主题的手工位置：走**打开项目时那条恢复路径**（setTreeOffsets = renderMind 里同一处实现）
       const back = await ctx.exec('window.MMApp.setTreeOffsets({ ' + JSON.stringify(TOP_THEME) + ': { x: -140, y: -60 } }, null)');
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       await centerNode(ctx, TARGET, 0.42, 0.42);
       await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(TARGET) + ')');
       await waitStableView(ctx);          // 基线取在所有会改视图的交互之后（见甲的说明）
@@ -758,12 +759,12 @@ const assertions = [
       const entered = await ctx.exec('(function () { return window.MMApp.dragModeActive()'
         + ' && window.MMApp.getDragTreeRoot() === ' + JSON.stringify(TARGET) + '; })()');
       await ctx.input.mouseDown(plan.from);
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       await ctx.input.moveTo({ x: plan.from.x + plan.dx, y: plan.from.y + plan.dy });
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const st = await snap(ctx, 'land', cfg, radar1.rects, base.h0);
       await ctx.input.mouseUp({ x: plan.from.x + plan.dx, y: plan.from.y + plan.dy });
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       await ctx.exec('window.MMApp.setDragMode(false); 1');
       const num = (tf) => {
         const m = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(String(tf));
@@ -821,7 +822,7 @@ const assertions = [
       const OFF = { x: -240, y: 0 };
       const put = await ctx.exec('window.MMApp.setTreeOffsets(null, { ' + JSON.stringify(TARGET)
         + ': { x: ' + OFF.x + ', y: ' + OFF.y + ' } })');
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       // 挪到面板下部（0.86 高）：这一档正是改前"最后几条点不到"的位置
       await centerNode(ctx, TARGET, 0.5, 0.86);
       await waitStableView(ctx);
@@ -914,25 +915,25 @@ const assertions = [
         { x: Math.max(6, Math.round(pl.left - 90)), y: Math.round((pl.top + pl.bottom) / 2) }
       ].filter((c) => c.x > 2 && c.x < win.w - 2 && c.y > 2 && c.y < win.h - 2)[0] || null;
       await ctx.input.mouseDown(plan.from);
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const stDown = await snap(ctx, 'down', cfg, radar1.rects, base.h0);
       let stOut = null;
       if (outPt) {
         await ctx.input.moveTo(outPt);
-        await ctx.input.settle(STEP);
+        await WAIT.frames(ctx, STEP);
         stOut = await snap(ctx, 'out', cfg, radar1.rects, base.h0);
         stOut.serOut = await serializeVsBaseline(ctx, base.text, 'themeOffsets');
       }
       await ctx.input.moveTo(plan.from);                     // 拖回**原地**
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const stHome = await snap(ctx, 'home', cfg, radar1.rects, base.h0);
       const serHome = await serializeVsBaseline(ctx, base.text, null);
       await ctx.input.moveTo({ x: plan.from.x + plan.dx, y: plan.from.y + plan.dy });
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const stLand = await snap(ctx, 'land', cfg, radar1.rects, base.h0);
       const serLand = await serializeVsBaseline(ctx, base.text, 'themeOffsets');
       await ctx.input.mouseUp({ x: plan.from.x + plan.dx, y: plan.from.y + plan.dy });
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const stUp = await snap(ctx, 'up', cfg, radar1.rects, base.h0);
       await ctx.exec('window.MMApp.setDragMode(false); 1');
       const saved = await save(ctx);
@@ -1022,11 +1023,11 @@ const assertions = [
       }
       const land = { x: plan.from.x + plan.dx, y: plan.from.y + plan.dy };
       await ctx.input.mouseDown(plan.from);
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       await ctx.input.moveTo(land);
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       await ctx.input.mouseUp(land);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       await ctx.exec('window.MMApp.setDragMode(false); 1');
       await waitStableView(ctx);          // 落定之后再取"保存前"那一份读数（见甲关于延后居中的说明）
       const dirtyBeforeSave = await isDirty(ctx);
@@ -1089,21 +1090,21 @@ const assertions = [
         p.data.children = (p.data.children || []).concat([{ id: 'ext-a', topic: '外部加的（无脏档）', expanded: true }]);
       });
       const lastA = await waitDiskChangeKind(ctx, seq1, 'adopted');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const diskA = readRaw(P);
       const visA = await step(ctx, '无脏档·量外部新节点', VIS_ONE('ext-a'));
       const dirtyA = await isDirty(ctx);
       // —— 有脏 + 外部改：先造一个未保存改动（展开顶层主题：打开项目时它被归一成折叠），再外部改盘 ——
       await step(ctx, '脏档·造一个未保存改动', '(function () { window.MMApp.getState().jm.expand_node('
         + JSON.stringify(TOP_THEME) + '); return true; })()');
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const dirtyBefore = await isDirty(ctx);
       const seq2 = await seqNow(ctx);
       const writtenB = externalWrite((p) => {
         p.data.children = (p.data.children || []).concat([{ id: 'ext-b', topic: '外部加的（脏档）', expanded: true }]);
       });
       const lastB = await waitDiskChangeKind(ctx, seq2, 'dirty');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const diskB = readRaw(P);
       const banner = await step(ctx, '脏档·量 banner', BANNER_JS);
       const mem = await step(ctx, '脏档·量内存里的节点', '(function () { var jm = window.MMApp.getState().jm;'
@@ -1147,10 +1148,10 @@ const assertions = [
       await stubConfirm(ctx, true);
       const base = await openFixture(ctx, { expand: false, target: TARGET });
       if (base.opened !== true) return { ok: false, text: '打不开夹具项目 ⇒ **未验证**：' + JSON.stringify(base) };
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       // —— 自动合并：界面改**别处**（顶层主题的展开态），外部改**根的孩子**（两者不相交）——
       await ctx.exec('(function () { window.MMApp.getState().jm.expand_node(' + JSON.stringify(TOP_THEME) + '); return true; })()');
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const dirtyBefore = await isDirty(ctx);
       externalWrite((p) => {
         p.data.children = (p.data.children || []).concat([{ id: 'mg-a', topic: '外部加的（合并档）', expanded: true }]);
@@ -1161,14 +1162,14 @@ const assertions = [
       const mgOnDisk = !!findNode(disk3, 'mg-a');
       const themeExpandedOnDisk = (findNode(disk3, TOP_THEME) || {}).expanded === true;
       const lastMerge = await waitDiskChangeKind(ctx, seq3, 'adopted');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const visMerge = await ctx.exec(VIS_ONE('mg-a'));
       // —— 经主进程 CLI 的写入（AI 落盘那条路）：它会推闸门基线 ⇒ 这一档专治"拿基线当判据"的实现 ——
       const seq4 = await seqNow(ctx);
       ctx.runCli(['add', P, 'root', '--topic', '外来的（经主进程 CLI）', '--id', 'ext-c']);
       await ctx.exec('(async function () { if (window.MM.requestReread) await window.MM.requestReread(); return true; })()');
       const lastCli = await waitDiskChangeKind(ctx, seq4, 'adopted');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const visCli = await ctx.exec(VIS_ONE('ext-c'));
       const dirtyEnd = await isDirty(ctx);
       const checks = [

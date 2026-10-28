@@ -85,9 +85,12 @@ describe('域 08 · 关系审计面板可关闭：判据的形状没被放宽（
     expect(n).toBeGreaterThan(0);
     expect(n).toBeLessThanOrEqual(20);            // 上界是"有限次"，不是"很多次"
     expect(src).toContain('for (let i = 1; i <= MAX_FRAME_TRIES; i++)');
-    // 每轮之间要"等重绘"（不是忙等）：走底座的 settle（≥2 帧 rAF + 一拍）
+    // 每轮之间要"等重绘"（不是忙等）：走 `scripts/smoke/_wait.js` 的 frames（= 2 个真帧 + 一拍，与旧
+    // `ctx.input.settle(FRAME_TICK)` **同语义**，只是把"等被节流的帧时钟"换成"截图逼帧"）。
+    // 口径见 `_wait.js` 头部：227 处 settle 已全量替换，只剩 6 处"判据依赖真实墙钟"的名单，
+    // 域 08 不属名单（它的 220ms 是"等重绘"而不是"等一个真实墙钟窗口"）。
     expect(src).toMatch(/const FRAME_TICK = \{ delayMs: \d+ \};/);
-    expect(src).toContain('await ctx.input.settle(FRAME_TICK);');
+    expect(src).toMatch(/(?:wait|WAIT)\.frames\(ctx, FRAME_TICK\)/);
   });
 
   it('报文里必须出现「第 N 次取帧」并**点名是哪一项没过**（同帧到上界也要能看出来）', () => {

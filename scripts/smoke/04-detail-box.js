@@ -14,6 +14,7 @@
  * 草稿窗那份同型判据在域 56。
  * ============================================================ */
 'use strict';
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /* ================= 「编辑节点详情」真输入的共用零件（**唯一实现**，三条断言都调这里） =================
  * 两条 token 都只用 ASCII 字母数字：`sendInputEvent({type:'char'})` 对 `<` `>` 这类字符
@@ -131,7 +132,7 @@ async function pickNodeForEdit(ctx) {
  *  ⚠️ 不是 `style.display='flex'`：判据要的是"产品自己的入口能不能把人带到能输入的状态"。 */
 async function openEditByF2(ctx) {
   await ctx.input.pressKey('F2');
-  await ctx.input.settle();
+  await WAIT.frames(ctx);
   const r = await ctx.exec(`(function () {
     var d = document.getElementById('edit-dialog');
     var t = document.getElementById('edit-dialog-title');
@@ -163,7 +164,7 @@ async function closeEditReal(ctx) {
       + ' return !!(d && d.style.display === "flex"); })()');
     if (!d) return false;
     const pt = await editButtonPoint(ctx, 'edit-cancel');
-    if (ctx.input && pt.hit) { await ctx.input.click(pt); await ctx.input.settle({ delayMs: 60 }); }
+    if (ctx.input && pt.hit) { await ctx.input.click(pt); await WAIT.frames(ctx, { delayMs: 60 }); }
     await ctx.exec('(function () { var d = document.getElementById("edit-dialog");'
       + ' if (d && d.style.display === "flex") document.getElementById("edit-cancel").click(); return 1; })()');
     return true;
@@ -710,16 +711,16 @@ const assertions = [
         const before = g.value;
         // ── 真鼠标点进格子（走 Chromium 命中测试）──
         await ctx.input.click(g.center);
-        await ctx.input.settle();
+        await WAIT.frames(ctx);
         const focused = await ctx.exec(READ_EDIT_STATE_JS);
         // ── 真键盘逐字（`type:'char'` 才会进输入框；keyDown 不产生字符）──
         await ctx.input.typeText(TOKEN_INPUT);
-        await ctx.input.settle({ delayMs: 120 });
+        await WAIT.frames(ctx, { delayMs: 120 });
         const typed = await ctx.exec(READ_EDIT_STATE_JS);
         // ── 点「保存」（真鼠标）⇒ 内存里应当变了 ──
         const okPt = await editButtonPoint(ctx, 'edit-ok');
         let clickOk = false;
-        if (okPt.hit) { await ctx.input.click(okPt); await ctx.input.settle(); clickOk = true; }
+        if (okPt.hit) { await ctx.input.click(okPt); await WAIT.frames(ctx); clickOk = true; }
         else await ctx.exec('document.getElementById("edit-ok").click()');
         const after = await ctx.exec(`(function () {
           var jm = window.MMApp.getState().jm;
@@ -764,13 +765,13 @@ const assertions = [
         const g = await ctx.exec(EDIT_GEO_JS);
         if (!g || g.ok !== true) return { ok: false, text: '读不到格子几何：' + JSON.stringify(g).slice(0, 200) };
         await ctx.input.click(g.center);
-        await ctx.input.settle();
+        await WAIT.frames(ctx);
         await ctx.input.typeText(TOKEN_DISK);
-        await ctx.input.settle({ delayMs: 120 });
+        await WAIT.frames(ctx, { delayMs: 120 });
         const typed = await ctx.exec(READ_EDIT_STATE_JS);
         const okPt = await editButtonPoint(ctx, 'edit-ok');
         if (okPt.hit) await ctx.input.click(okPt); else await ctx.exec('document.getElementById("edit-ok").click()');
-        await ctx.input.settle();
+        await WAIT.frames(ctx);
         // ── 工具栏「💾 保存」（真鼠标）：这一步才是落盘 ──
         const savePt = await editButtonPoint(ctx, 'btn-save');
         let saveHit = false;
@@ -837,12 +838,12 @@ const assertions = [
         if (!g || g.ok !== true) return { ok: false, text: '读不到格子几何：' + JSON.stringify(g).slice(0, 200) };
         // ── 甲：正文格里打字 + Enter ──
         await ctx.input.click(g.center);
-        await ctx.input.settle();
+        await WAIT.frames(ctx);
         await ctx.input.typeText(TOKEN_ENTER);
-        await ctx.input.settle({ delayMs: 80 });
+        await WAIT.frames(ctx, { delayMs: 80 });
         const beforeEnter = await ctx.exec(READ_EDIT_STATE_JS);
         await pressEnterReal(ctx);
-        await ctx.input.settle({ delayMs: 150 });
+        await WAIT.frames(ctx, { delayMs: 150 });
         const afterEnter = await ctx.exec(`(function () {
           var d = document.getElementById('edit-dialog');
           var ta = document.getElementById('edit-detail');
@@ -873,9 +874,9 @@ const assertions = [
         })()`);
         let topicHit = false;
         if (topicPt && topicPt.hit) { await ctx.input.click({ x: topicPt.x, y: topicPt.y }); topicHit = true; }
-        await ctx.input.settle();
+        await WAIT.frames(ctx);
         await ctx.input.pressKey('Return');
-        await ctx.input.settle({ delayMs: 200 });
+        await WAIT.frames(ctx, { delayMs: 200 });
         const afterTopicEnter = await ctx.exec(`(function () {
           var d = document.getElementById('edit-dialog');
           return { open: !!(d && d.style.display === 'flex') };

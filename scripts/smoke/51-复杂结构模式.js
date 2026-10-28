@@ -58,6 +58,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { stripComments } = require('../../scripts/dep-direction-check.js');
 const mm = require('../smoke-assertions.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /** 沙箱夹具项目（主）：顶层主题 t1/t2；t1 下 pa（**折叠着**，有两个孩子）→ pa1/pa2；
  *  pb → pb1 → pb1a（**第 4 层**，拖动目标）→ pb1a1；t2 下 qa + m1…m9（大成员数那一篇的成员） */
@@ -96,7 +97,7 @@ const PAINT = { delayMs: 140 };
 
 async function openProject(ctx, name) {
   const ok = await ctx.exec('window.MMApp.openProject(' + JSON.stringify(name) + ')');
-  await ctx.input.settle({ delayMs: 160 });
+  await WAIT.frames(ctx, { delayMs: 160 });
   return ok;
 }
 
@@ -166,7 +167,7 @@ async function waitStableView(ctx) {
   for (let i = 0; i < 12; i++) {
     const st = await ctx.exec('JSON.stringify(window.MMApp.getPanState())');
     if (st === last) { same++; if (same >= 2) return st; } else { same = 0; last = st; }
-    await ctx.input.settle({ delayMs: 70 });
+    await WAIT.frames(ctx, { delayMs: 70 });
   }
   return last;
 }
@@ -222,7 +223,7 @@ async function realDoubleClick(ctx, id) {
     { type: 'mouseDown', x: hp.pt.x, y: hp.pt.y, button: 'left', clickCount: 2, modifiers: [] },
     { type: 'mouseUp', x: hp.pt.x, y: hp.pt.y, button: 'left', clickCount: 2, modifiers: [] }
   ], 90);
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
   return { ok: true, pt: hp.pt };
 }
 
@@ -324,7 +325,7 @@ function rmFixtures() {
 async function setMode(ctx, mode) {
   const r = await ctx.exec('(async function () { return await window.MMApp.setStructureMode('
     + JSON.stringify(mode) + '); })()');
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
   return r;
 }
 const modeNow = (ctx) => ctx.exec('window.MMApp.structureMode()');
@@ -416,7 +417,7 @@ async function waitBarEdges(ctx, minCount) {
       + ' ? window.MM.relatedEditBarEdges() : { out: [], in: [] };'
       + ' return (b.out || []).length + (b.in || []).length; })()');
     if (n >= minCount) return { ok: true, n: n };
-    await ctx.input.settle({ delayMs: 150 });
+    await WAIT.frames(ctx, { delayMs: 150 });
   }
   return { ok: false, n: -1 };
 }
@@ -426,13 +427,13 @@ async function waitBarEdges(ctx, minCount) {
  *  而那一红不是关系层的缺陷（域 46 的"浮层盖住点"是同一类）。 */
 async function relatedRound(ctx, centerId) {
   await ctx.exec('(async function () { await window.MMApp.closeAllFloatDetail(); return 1; })()');
-  await ctx.input.settle(STEP);
+  await WAIT.frames(ctx, STEP);
   await clearRelated(ctx);
   await setMode(ctx, 'tree');
   const sel = await selectNode(ctx, centerId);
   if (sel !== centerId) return { ok: false, text: '选中中心节点失败：期望 ' + centerId + '，实际 ' + sel };
   const sw = await setMode(ctx, 'complex');
-  await ctx.input.settle(PAINT);
+  await WAIT.frames(ctx, PAINT);
   const read = await relatedRead(ctx, centerId);
   read.switchResult = sw;
   return read;
@@ -458,9 +459,9 @@ const assertions = [
       // ⚠️ **不要** expand_all：那会把 pa 一起展开，而判据①要的正是"一个折叠着的有子节点"。
       await ctx.exec('(function () { var jm = window.MMApp.getState().jm;'
         + ' jm.expand_node("root"); jm.expand_node("t1"); return true; })()');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       await ctx.exec('(async function () { await window.MMApp.closeAllFloatDetail(); return 1; })()');
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const before = await clickState(ctx);
       const paVisible0 = await ctx.exec(nodeVisible(PA1));
 
@@ -470,12 +471,12 @@ const assertions = [
       const afterParent = await clickState(ctx);
       const serAfterParent = await serText(ctx);
       const paExpanded = expandedOf(serAfterParent, PA);
-      await ctx.input.settle(STEP);           // 展开会触发一次重排 ⇒ 再等一拍再量几何
+      await WAIT.frames(ctx, STEP);           // 展开会触发一次重排 ⇒ 再等一拍再量几何
       const pa1Visible1 = await ctx.exec(nodeVisible(PA1));
 
       // —— 对照二：叶子 pa2（数据里标 expanded:true）双击 ⇒ 开详情、expanded 不动 ——
       await ctx.exec('(async function () { await window.MMApp.closeAllFloatDetail(); return 1; })()');
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const serBeforeLeaf = await serText(ctx);
       const dc2 = await realDoubleClick(ctx, PA2);
       if (!dc2.ok) return { ok: false, text: '双击 pa2 取点失败：' + dc2.text };
@@ -487,7 +488,7 @@ const assertions = [
 
       // —— 对照三：叶子 pa1（数据里标 expanded:false，comnet 那 210 个的形状）—— 
       await ctx.exec('(async function () { await window.MMApp.closeAllFloatDetail(); return 1; })()');
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const dc3 = await realDoubleClick(ctx, PA1);
       if (!dc3.ok) return { ok: false, text: '双击 pa1 取点失败：' + dc3.text };
       const afterLeaf2 = await clickState(ctx);
@@ -501,7 +502,7 @@ const assertions = [
       // 收口：把这一档改出来的展开态落盘 ⇒ 后面那一档（模式开关）从**干净基线**（isDirty=false）起，
       // 否则"切模式没产生未保存改动"那条判据会被本档的展开改动顶成恒真（域 46 文件头记过同一件事）。
       const savedForNext = await save(ctx);
-      await ctx.input.settle({ delayMs: 160 });
+      await WAIT.frames(ctx, { delayMs: 160 });
       const checks = [
         ['前置：pa 一开始是收着的（它的孩子 pa1 没有几何）—— 采不到就红', paVisible0 === false],
         ['① 折叠着的父节点双击 ⇒ 它的子节点出现在屏上（真的展开了）',
@@ -574,7 +575,7 @@ const assertions = [
       await setMode(ctx, 'complex');
       const modeBeforeReopen = await modeNow(ctx);
       await openProject(ctx, P);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const modeAfterReopen = await modeNow(ctx);
       const h3 = sha256(readRaw(P));
 
@@ -692,13 +693,13 @@ const assertions = [
       await setMode(ctx, 'tree');
       await ctx.exec('window.MMApp.resetView(); 1');       // 100% 缩放 + 根居中 + 清偏移（干净基线）
       await expandAll(ctx);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       // 前置：把**第 4 层**的目标节点挪进视野（与用户平移画布同一个出口 `MM.setViewTransform`，
       // 照域 46 的 centerNode）。为什么必须有：resetView 把**根**居中，而深层节点可能落在面板外
       // ⇒ 连"判的对象"都没进视野（本域第一版实测：命中 = BODY，那一红不是产品缺陷 ✗）。
       await centerNode(ctx, TARGET, 0.5, 0.5);
       await waitStableView(ctx);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       // 前置：右键菜单里对**第 4 层**节点**已经没有**「拖动此子树」这一条（2026-10-33 批4 摘入口；
       // 判据用**真右键**（走 Chromium 命中测试）拿菜单，读完条目立刻关掉）。
       // ⚠️ 这条改写成"没有"而不是删掉：改前它判"入口不受层约束"，现在同一句话变成
@@ -706,19 +707,19 @@ const assertions = [
       const hp0 = await hitPoint(ctx, TARGET);
       if (!hp0.ok) return { ok: false, text: '前置失败：目标节点取不到命中点 —— ' + hp0.text };
       await ctx.input.drag(hp0.pt, hp0.pt, undefined, { button: 'right', stepDelayMs: 0 });
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const menuItems = await ctx.exec('(function () { var m = document.getElementById("ctx-menu");'
         + ' var items = m ? Array.prototype.map.call(m.querySelectorAll(".ctx-item"), function (x) { return x.textContent; }) : [];'
         + ' if (window.MMContextMenu) window.MMContextMenu.closeMenu();'
         + ' return items; })()');
       const menuShown = Array.isArray(menuItems) && menuItems.length > 0;
       const noSubDrag = menuShown && !menuItems.some((t) => t.indexOf('拖动此子树') >= 0);
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       // —— 基线：先**保存一次**，让盘上那份进入"界面整树写回"的规范形态（否则后面那条
       //    "除偏移键外其余字节不变"会被保存本身带来的规范化 —— 如 meta.version 由夹具的
       //    0.0.0 变成产品版本 —— 打成假红 ✗；那不是拖动造成的差异）——
       const normSaved = await save(ctx);
-      await ctx.input.settle({ delayMs: 160 });
+      await WAIT.frames(ctx, { delayMs: 160 });
       await waitStableView(ctx);
       const baseData = await ctx.exec('JSON.stringify(window.MMApp.serializeTree().data)');
       const baseDiskRaw = readRaw(P);                 // 拖前的盘上原文（白名单判据的基线）
@@ -727,7 +728,7 @@ const assertions = [
 
       // —— 进入拖动模式（2026-10-33 批4：菜单里那一条入口已摘 ⇒ 直接调 API；它才是"模式还在"的证据）——
       await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(TARGET) + '); 1');
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       await waitStableView(ctx);
       const entered = await ctx.exec('(function () { return { on: window.MMApp.dragModeActive(),'
         + ' root: window.MMApp.getDragTreeRoot() }; })()');
@@ -777,14 +778,14 @@ const assertions = [
       }
 
       await ctx.input.mouseDown(plan.from);
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       await ctx.input.moveTo({ x: plan.from.x + Math.round(plan.dx / 2), y: plan.from.y + Math.round(plan.dy / 2) });
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       await ctx.input.moveTo(plan.land);
-      await ctx.input.settle(STEP);
+      await WAIT.frames(ctx, STEP);
       const hMid = sha256(readRaw(P));      // 拖动**期间**（还没松手、没保存）
       await ctx.input.mouseUp(plan.land);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       await ctx.exec('window.MMApp.setDragMode(false); 1');
       const radar1 = await ctx.exec(RADAR);
       const afterData = await ctx.exec('JSON.stringify(window.MMApp.serializeTree().data)');
@@ -794,7 +795,7 @@ const assertions = [
 
       // 显式保存 ⇒ 盘上才出现偏移（条件写回：没拖过的项目一个键都不写）
       const saved = await save(ctx);
-      await ctx.input.settle({ delayMs: 160 });
+      await WAIT.frames(ctx, { delayMs: 160 });
       const diskAfter = readRaw(P);
       const hAfterSave = sha256(diskAfter);
       const parsedAfter = JSON.parse(diskAfter);
@@ -851,7 +852,7 @@ const assertions = [
     run: async (ctx) => {
       if (!ctx.input) return { ok: false, text: '没有真输入底座（ctx.input）⇒ 判红' };
       await expandAll(ctx);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
 
       // —— 第一轮：中心 pa（成员 3 个 <= 上限 ⇒ 团边要画；另有 1 条跨项目边）——
       const ra = await relatedRound(ctx, PA);
@@ -877,7 +878,7 @@ const assertions = [
 
       // —— 第三：切回树结构 ⇒ 关系层清空 ——
       await setMode(ctx, 'tree');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const off = await ctx.exec('(function () { var svg = document.getElementById("mm-rel-layer");'
         + ' return { lines: svg ? svg.querySelectorAll(\'path[data-role="relation-line"]\').length : 0,'
         + ' active: window.MM.isRelatedActive ? window.MM.isRelatedActive() : null }; })()');

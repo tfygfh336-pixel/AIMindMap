@@ -184,6 +184,7 @@
 const fs = require('fs');
 const path = require('path');
 const frameStats = require('../vision/frame-stats.js');   // 真帧像素（判据⑧）：与 36/37 域同一套底座 ✓
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 const PROJ = 'smoke-heat-40';
 const NODE_A = 'sh40-a';      // 被访问过（人 + AI 都有）
@@ -664,7 +665,7 @@ async function mouseAway(ctx) {
   const p = await execJson(ctx, 'JSON.stringify({ ok: true, x: 40, y: Math.round(window.innerHeight * 0.62) })');
   if (!p || !p.ok) return false;
   await ctx.input.moveTo({ x: p.x, y: p.y });
-  await ctx.input.settle({ delayMs: 220 });
+  await WAIT.frames(ctx, { delayMs: 220 });
   return true;
 }
 
@@ -1309,7 +1310,7 @@ const assertions = [
         && Math.abs(h.track[2] - a.track[2]) <= 1
         && a.track[1] >= h.track[1] + h.track[3] - 0.5;         // 第二根的顶 ≥ 第一根的底 ⇒ 上下叠
       if (!ctx.input) return { ok: false, text: '没有真输入底座（ctx.input 缺失）⇒ 真帧采不到真值 = 红' };
-      await ctx.input.settle({ delayMs: 200 });
+      await WAIT.frames(ctx, { delayMs: 200 });
       const img = await ctx.input.capture();
       const info = frameStats.bitmapInfo(img);
       const ph = pickPixel(info, h.fill, g.dpr);
@@ -1488,7 +1489,7 @@ const assertions = [
       const base = frameStats.bitmapInfo(await ctx.input.capture());
       // (1) 真鼠标停到**第一根条**上
       await ctx.input.moveTo(center(h0));
-      await ctx.input.settle({ delayMs: 260 });
+      await WAIT.frames(ctx, { delayMs: 260 });
       const g1 = await readGeo(ctx);
       const h1 = g1.rows.filter((r) => r.side === 'human')[0];
       const a1 = g1.rows.filter((r) => r.side === 'ai')[0];
@@ -1498,7 +1499,7 @@ const assertions = [
         && a1.tipHitSelf === false && !!d1 && d1.diff >= 100;
       // (2) 换到**第二根条**：可见的浮层应换成 AI 那一根（文案以另一个量开头）
       await ctx.input.moveTo(center(a0));
-      await ctx.input.settle({ delayMs: 260 });
+      await WAIT.frames(ctx, { delayMs: 260 });
       const g2 = await readGeo(ctx);
       const h2 = g2.rows.filter((r) => r.side === 'human')[0];
       const a2 = g2.rows.filter((r) => r.side === 'ai')[0];
@@ -1554,7 +1555,7 @@ const assertions = [
       const h0 = g0.rows.filter((r) => r.side === 'human')[0];
       // 真鼠标停在**第一根条**上，再读那一刻的浮层文本与同一快照里的读数
       await ctx.input.moveTo({ x: Math.round(h0.track[0] + h0.track[2] / 2), y: Math.round(h0.track[1] + h0.track[3] / 2) });
-      await ctx.input.settle({ delayMs: 260 });
+      await WAIT.frames(ctx, { delayMs: 260 });
       const g = await readGeo(ctx);
       if (!g.payload || !g.payload.node) return { ok: false, text: '前置失败：读不到画 DOM 用的那份载荷' };
       const prof = g.payload.node;

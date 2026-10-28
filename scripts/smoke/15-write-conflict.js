@@ -27,6 +27,7 @@ const fs = require('fs');
 
 // 冒烟共用工具（收尾纪律与用法见 scripts/smoke-assertions.js 顶部）：动了 addNode 就要收模态
 const mm = require('../smoke-assertions.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 const PROBE_ID = 'cc-probe-1';        // 外部写入者加在**根**下的节点（与界面的改动不同父 ⇒ 不相交）
 const PROBE_ID2 = 'cc-probe-2';       // 外部写入者加在 **overview** 下的节点（与界面的改动同父 ⇒ 相交）
@@ -306,7 +307,7 @@ const assertions = [
       })()`);
       // 截图前先等渲染稳定（≥2 帧 + 400ms）：隐藏窗口的 capturePage 可能给**旧帧**
       //（scripts/smoke-input.js 实测记录过"拍到的还是上一个项目的画面"）⇒ 不等就直接拍会留下假证据 ✗
-      await ctx.input.settle({ delayMs: 400 });
+      await WAIT.frames(ctx, { delayMs: 400 });
       const shot = await ctx.input.shot('15-conc-conflict-panel.png');
 
       const row = (panel.rows || []).filter((r) => r.key === 'children:overview')[0] || null;
@@ -329,7 +330,7 @@ const assertions = [
       let after = null, theirsWon = false, mineKept = false, probeThere = false;
       if (btnTheirs && btnTheirs.hitSelf) {
         await ctx.input.click(btnTheirs.pt);
-        await ctx.input.settle();
+        await WAIT.frames(ctx);
         after = readProj(projFile);
         theirsWon = childCount(after, 'overview') === overviewBefore + 1;   // 只有外部那个探针（我的被丢弃）
         mineKept = childCount(after, 'root') === rootBefore + 1;            // 我别的改动照常落盘

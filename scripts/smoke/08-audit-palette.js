@@ -15,6 +15,7 @@
 
 // 真帧像素判据（"不再遮挡"那半）：像素统计的唯一实现 + 阈值单源
 const frameStats = require('../vision/frame-stats.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 const VTH = frameStats.THRESHOLDS;
 
 /** 渲染层返回 JSON 的取回口（本域原为内联 `ctx.exec` + 手动 JSON.parse；迁移后多处复用 ✓） */
@@ -193,7 +194,7 @@ module.exports = [
       // ROI 在**几何拿到之后**就定下来（原先定在两帧之后）：重取帧那一层要拿它逐次比对
       const roi = { x: (open.p2.x - 4) * dpr, y: (open.p2.y - 4) * dpr, width: 9 * dpr, height: 9 * dpr };
       // ① 关面板**之前**那一帧（取样点此刻压在 `.overlay` 的暗遮罩上）
-      await ctx.input.settle(FRAME_TICK);
+      await WAIT.frames(ctx, FRAME_TICK);
       const imgBefore = await ctx.input.capture();
       const stBefore = frameStats.analyzeRegion(imgBefore, roi);
       // ② 关掉面板（注入档 `08-keep-open` = 空操作 ⇒ 判别力证明）
@@ -216,7 +217,7 @@ module.exports = [
       const means = [];          // 每次取帧的 ROI mean（写进报文：旧帧长什么样一眼看得见）
       let stAfter = null, frameTry = 0, frameChanged = false;
       for (let i = 1; i <= MAX_FRAME_TRIES; i++) {
-        await ctx.input.settle(FRAME_TICK);
+        await WAIT.frames(ctx, FRAME_TICK);
         /* 判别力证明（`MM_SMOKE_INJECT=08-stale-frame`）：让**第一次**取帧拿到"旧帧"
          *  —— 直接把关前那一帧的统计当成这一次的结果，复刻全链实测的那次 FAIL
          *  （`mean 129.6 → 129.6`、变亮 `0.0`）。有重取 ⇒ 第 2 次就变、判据照旧 PASS；

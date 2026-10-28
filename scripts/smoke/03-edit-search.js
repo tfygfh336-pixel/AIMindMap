@@ -32,6 +32,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fs = require('fs');
 const path = require('path');
 const frameStats = require('../vision/frame-stats.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /** 冒烟的项目（域 01 起就用它）与访问日志的**真位置**
  *  （`<项目根>/.visits/<项目名>.jsonl`，在项目目录**之外**；路径推导与产品同口径：
@@ -89,7 +90,7 @@ async function r1CloseBoxes(ctx) {
     if (MM.paintRawSelection) MM.paintRawSelection();
     return 1;
   })()`);
-  await ctx.input.settle({ delayMs: 220 });
+  await WAIT.frames(ctx, { delayMs: 220 });
 }
 
 /** 渲染层：把"第一个符合 kind 的节点"摆到面板里**点得中**的位置：
@@ -224,10 +225,10 @@ async function r1Prep(ctx, kind) {
     return JSON.stringify({ ok: true, text: '铺场：收成两层 + 关浮框 + 清选区' });
   })()`);
   if (!prep.ok) return prep;
-  await ctx.input.settle({ delayMs: 320 });          // jsMind 重排要留几百 ms（域 36 实测）
+  await WAIT.frames(ctx, { delayMs: 320 });          // jsMind 重排要留几百 ms（域 36 实测）
   const center = await r1ExecJson(ctx, r1CenterTargetJs(kind));
   if (!center.ok) return { ok: false, text: '居中目标节点失败：' + center.text };
-  await ctx.input.settle({ delayMs: 320 });
+  await WAIT.frames(ctx, { delayMs: 320 });
   return { ok: true, text: prep.text + '；居中 ' + center.id + ' Δ(' + center.dx + ',' + center.dy + ') s=' + center.s };
 }
 
@@ -235,7 +236,7 @@ async function r1PickHittable(ctx, kind) {
   for (let i = 0; i < 3; i++) {
     const r = await r1ExecJson(ctx, r1PickNodeJs(kind));
     if (r.ok) return r;
-    if (i < 2) { await ctx.input.settle({ delayMs: 260 }); }
+    if (i < 2) { await WAIT.frames(ctx, { delayMs: 260 }); }
     else return { ok: false, text: '三次都没找到"点得中"的候选：' + (r.text || '') };
   }
   return { ok: false, text: '三次都没找到"点得中"的候选' };
@@ -246,7 +247,7 @@ async function r1PickHittable(ctx, kind) {
  *  否则"hover 引起的变化"会被算成"框冒出来了" ✗（假红的方向，但它会让人误判判据的实现）。 */
 async function r1Hover(ctx, pt) {
   await ctx.input.sendList([{ type: 'mouseMove', x: pt.x, y: pt.y, modifiers: [] }], 0);
-  await ctx.input.settle({ delayMs: 320 });
+  await WAIT.frames(ctx, { delayMs: 320 });
 }
 
 /** 一次**真双击**（不含 mouseMove —— 见 `r1Hover`）：两条 down/up，第二条带 `clickCount: 2`。
@@ -826,9 +827,9 @@ const assertions = [
       if (!fresh.ok) return { ok: false, text: '双击前取不到点得中的坐标：' + fresh.text };
       await r1Hover(ctx, fresh.pt);
       await r1DoubleClick(ctx, fresh.pt);
-      await ctx.input.settle({ delayMs: 150 });
+      await WAIT.frames(ctx, { delayMs: 150 });
       const afterT1 = await r1ExecJson(ctx, stateJs);     // 双击刚落下（判别窗口还没过）的读数
-      await ctx.input.settle({ delayMs: 550 });
+      await WAIT.frames(ctx, { delayMs: 550 });
       const probeStr = await ctx.exec(R1_PROBE_OFF);
       const dblCounts = r1Counts(await ctx.exec(R1_COUNT_OFF));
       const after = await r1ExecJson(ctx, stateJs);
@@ -924,7 +925,7 @@ const assertions = [
       await ctx.exec(R1_PROBE_ON);
       await ctx.exec(R1_COUNT_ON);                      // 数 showDetail / recordHumanOpen（只包测试侧，不改产品）
       await r1DoubleClick(ctx, fresh.pt);
-      await ctx.input.settle({ delayMs: 700 });
+      await WAIT.frames(ctx, { delayMs: 700 });
       const probeStr = await ctx.exec(R1_PROBE_OFF);
       const dblCounts = r1Counts(await ctx.exec(R1_COUNT_OFF));
       const openAfterDbl = await ctx.exec(R1_OPEN_BOXES_JS);
@@ -942,7 +943,7 @@ const assertions = [
       await ctx.input.click(fresh.pt);
       let openAfterClick = [], scanClick = scanDbl, controlOk = false;
       for (let i = 0; i < 4; i++) {
-        await ctx.input.settle({ delayMs: 420 });
+        await WAIT.frames(ctx, { delayMs: 420 });
         openAfterClick = await ctx.exec(R1_OPEN_BOXES_JS);
         scanClick = r1Scan(await ctx.input.capture(), dev);
         if (Array.isArray(openAfterClick) && openAfterClick.length === 1
@@ -1004,7 +1005,7 @@ const assertions = [
       const probeStr = await ctx.exec(R1_PROBE_OFF);
       let open = [], after = before;
       for (let i = 0; i < 4; i++) {
-        await ctx.input.settle({ delayMs: 420 });
+        await WAIT.frames(ctx, { delayMs: 420 });
         open = await ctx.exec(R1_OPEN_BOXES_JS);
         after = await r1ExecJson(ctx, stateJs);
         if (Array.isArray(open) && open.length >= 1 && after && after.sel === id) break;

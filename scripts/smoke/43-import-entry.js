@@ -43,6 +43,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const tempRunRoot = require('./temp-run-root.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /** 两条源目录（**不属于 projects/ 真实数据**；本域收尾时删干净）。
  *  ⚠️ 唯一段写在**父目录**上（`RUN.root`），两条基名保持 `zz-imp-src` / `zz-imp-lib` 不变 ——
@@ -178,7 +179,7 @@ async function clickSel(ctx, sel) {
   if (!h.self) return { ok: false, err: '命中的不是它（命中 ' + JSON.stringify(h.at) + '）', hit: h };
   if (!ctx.input) return { ok: false, err: '没有真输入底座（ctx.input 缺失）', hit: h };
   await ctx.input.click({ x: Math.round(h.cx), y: Math.round(h.cy) });
-  await ctx.input.settle();
+  await WAIT.frames(ctx);
   return { ok: true, hit: h };
 }
 /** 真鼠标点画布上的一个节点（先确认这一点上命中的就是它自己） */
@@ -283,7 +284,7 @@ async function openPaletteRow(ctx, contains) {
   if (!row.self) return { ok: false, err: '那一行在这一点上看不见（命中 ' + row.at + '）', row: row };
   if (!ctx.input) return { ok: false, err: '没有真输入底座（ctx.input 缺失）', row: row };
   await ctx.input.click({ x: row.cx, y: row.cy });
-  await ctx.input.settle();
+  await WAIT.frames(ctx);
   return { ok: true, row: row };
 }
 

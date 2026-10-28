@@ -53,6 +53,7 @@ const crypto = require('crypto');
 const frameStats = require('../vision/frame-stats.js');
 const convert = require('../../src/convert.js');
 const mm = require('../smoke-assertions.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
@@ -247,14 +248,14 @@ async function captureUntil(ctx, expr, judge, tries) {
     const img = await ctx.input.capture();
     const after = await execJson(ctx, expr);
     if (!after || !after.ok || JSON.stringify(after.rects) !== JSON.stringify(before.rects)) {
-      await ctx.input.settle({ delayMs: 200 });
+      await WAIT.frames(ctx, { delayMs: 200 });
       last = { ok: false, attempts: i + 1, text: '取景不稳（同一读数的两次几何不一致）' };
       continue;
     }
     const judged = judge(before, img);
     last = { ok: true, rects: before, img: img, judged: judged, attempts: i + 1 };
     if (judged && judged.pass) return last;
-    await ctx.input.settle({ delayMs: 260 });
+    await WAIT.frames(ctx, { delayMs: 260 });
   }
   return last;
 }
@@ -441,7 +442,7 @@ const assertions = [
       if (!rowHit.ok) return { ok: false, text: '前置失败：' + rowHit.text + '（' + String(rowHit.html || '').slice(0, 160) + '）' };
 
       await ctx.input.click(rowHit.pt, []);
-      await ctx.input.settle({ delayMs: 320 });
+      await WAIT.frames(ctx, { delayMs: 320 });
 
       const after = await execJson(ctx, `(function () {
         var MM = window.MM, st = window.MMApp.getState();
@@ -465,7 +466,7 @@ const assertions = [
           panel: pr, target: nr, inside: inside, hit: hit, hasEl: !!el,
           boxes: document.querySelectorAll('.float-detail').length });
       })()`);
-      await ctx.input.settle({ delayMs: 150 });
+      await WAIT.frames(ctx, { delayMs: 150 });
       // 真帧证据（框已关掉 ⇒ 判据与证据是同一张图 ✓）
       const cap = await captureUntil(ctx, `(function () {
         var panel = window.MM.fdPanel ? window.MM.fdPanel() : null;

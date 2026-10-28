@@ -21,6 +21,7 @@
 'use strict';
 
 const frameStats = require('../vision/frame-stats.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /** 判别力证明开关（默认空 ⇒ 正常跑完全不生效 ✓；可逗号分隔多键，照域 05/37 的先例）。
  *  `28-bar-over-map`：把消息栏**搬回** `#mindmap-container` 里并恢复原绝对定位样式
@@ -230,7 +231,7 @@ module.exports = [
       })()`);
 
       await setVal('');
-      await ctx.input.settle({ delayMs: 120 });
+      await WAIT.frames(ctx, { delayMs: 120 });
       const geo = await readGeo();
       if (!geo || !geo.ok) return { ok: false, text: '取几何失败：' + JSON.stringify(geo).slice(0, 200) };
       const frame0 = await ctx.input.capture();
@@ -252,9 +253,9 @@ module.exports = [
       await ctx.input.moveTo(ic);
       await ctx.input.mouseDown(ic);
       await ctx.input.mouseUp(ic);
-      await ctx.input.settle({ delayMs: 120 });
+      await WAIT.frames(ctx, { delayMs: 120 });
       await ctx.input.typeText(TEXT);
-      await ctx.input.settle({ delayMs: 200 });
+      await WAIT.frames(ctx, { delayMs: 200 });
       const back = await execJson(ctx, `(function () {
         var input = document.getElementById('msg-input');
         var ir = input.getBoundingClientRect();
@@ -263,7 +264,7 @@ module.exports = [
           hittable: !!(el && (el === input || (el.closest && el.closest('#msg-input') === input))),
           focused: document.activeElement === input, top: el ? (el.tagName + (el.id ? '#' + el.id : '')) : 'null' });
       })()`);
-      await ctx.input.settle({ delayMs: 120 });
+      await WAIT.frames(ctx, { delayMs: 120 });
       const frame1 = await ctx.input.capture();
       const hit1 = frameStats.scanRegion(frame1, rect, { predicate: frameStats.nonBackgroundPredicate() });
       const ink1 = frameStats.scanRegion(frame1, inRect, { predicate: darkInk });

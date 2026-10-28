@@ -49,6 +49,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const frameStats = require('../vision/frame-stats.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /** 沙箱夹具：root → t1 → { nf（**8 个叶子**的父，专给 d 的交叉数判据用）+ n1,n2,n3,n4（4 个同级，
  *  给 e 的重排留出"拖到第 k 位"的空间）} ；t2 → m1（独子，用来判"独子 ⇒ 父端仍是侧边中点，
@@ -95,7 +96,7 @@ const SETTLE = 'new Promise(function (r) { requestAnimationFrame(function () { r
 
 async function openProject(ctx, name) {
   const ok = await ctx.exec('window.MMApp.openProject(' + JSON.stringify(name) + ')');
-  await ctx.input.settle({ delayMs: 160 });
+  await WAIT.frames(ctx, { delayMs: 160 });
   return ok;
 }
 async function stubConfirm(ctx, answer) {
@@ -425,7 +426,7 @@ const assertions = [
       if (opened !== true) return { ok: false, text: '打不开夹具项目 ⇒ **未验证**（不是通过）' };
       const jm = 'window.MMApp.getState().jm';
       await ctx.exec('(function () { ' + jm + '.expand_all(); ' + jm + '.view.show_lines(); return true; })()');
-      await ctx.input.settle(SETTLE);
+      await WAIT.frames(ctx, SETTLE);
       // —— ① 端点逐条一致（产品读数 vs 独立重算）——
       const r1raw = await ctx.exec(ENDPOINTS_JS);
       const r1 = JSON.parse(r1raw);
@@ -522,7 +523,7 @@ const assertions = [
       const opened = await stepExec(ctx, '打开夹具', 'window.MMApp.openProject(' + JSON.stringify(P) + ')');
       if (opened !== true) return { ok: false, text: '打不开夹具项目 ⇒ **未验证**（不是通过）' };
       await stepExec(ctx, '展开全部', '(function () { window.MMApp.getState().jm.expand_all(); return true; })()');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const rawBefore = JSON.parse(readRaw(P));
       const h0 = sha256(readRaw(P));
       const orderBefore = childrenIds(rawBefore, SIB_PARENT);
@@ -545,7 +546,7 @@ const assertions = [
         + ' window.MM.setViewTransform({ x: pan.x + (wantX - (r.left + r.width / 2)),'
         + '   y: pan.y + (wantY - (r.top + r.height / 2)), s: pan.s });'
         + ' return true; })()');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const pt = await pointOf(ctx, MOVE_ID);
       if (!pt) return { ok: false, text: '目标节点不在屏上（' + MOVE_ID + '）⇒ **未验证**：面板/展开状态不对' };
       const hittable = await stepExec(ctx, '目标中心命中测试',
@@ -555,7 +556,7 @@ const assertions = [
         + ' return JSON.stringify({ self: !!top && (top === el || el.contains(top)), at: !!top,'
         + '   rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] }); })()');
       await ctx.input.drag(pt, pt, undefined, { button: 'right', stepDelayMs: 0 });
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const menu = await stepExec(ctx, '读右键菜单', '(function () { var m = document.getElementById("ctx-menu");'
         + ' if (!m || m.style.display === "none") return { items: [], why: "菜单没弹出来" };'
         + ' return { items: Array.prototype.slice.call(m.querySelectorAll(".ctx-item")).map(function (e) { return e.textContent; }) }; })()');
@@ -569,7 +570,7 @@ const assertions = [
        * 两者合起来比改前更强：改前只能证明"点得到"，证明不了"入口有没有别处还开着"。 */
       await stepExec(ctx, '直接调 API 进重排档',
         'window.MMApp.setDragMode(true, ' + JSON.stringify(MOVE_ID) + ', { mode: "reorder" }); 1');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       // —— 拖动：从 n1 往列表外面拖（clamp 的两端各一次；落点见下面那段 ⚠️）——
       const ptN1 = await pointOf(ctx, MOVE_ID);
       if (!ptN1) return { ok: false, text: '目标节点不在屏上（' + MOVE_ID + '）⇒ **未验证**：面板/展开状态不对' };
@@ -584,7 +585,7 @@ const assertions = [
        *  （这不是"迁就测试"：用户看到的也正是"按下去那一刻整屏会重新落位"，落点当然按**那一刻**的
        *    位置算 ✓） */
       await ctx.input.mouseDown(ptN1);
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const sibCyBefore = JSON.parse(await stepExec(ctx, '读兄弟屏幕位置（按下之后）', ORDER_JS(T1_KIDS)));
       const cys = Object.keys(sibCyBefore).map((k) => sibCyBefore[k]).filter((v) => typeof v === 'number');
       const ptTop = (ptN1 && cys.length) ? { x: ptN1.x, y: Math.min.apply(null, cys) - 120 } : null;
@@ -594,7 +595,7 @@ const assertions = [
       if (ptN1 && ptBottom) {
         // ① 拖到**最下面那条之下** ⇒ k == 上界（贴到最后）
         await ctx.input.moveTo(ptBottom);
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
         dragState = await reorderState(ctx);
         const sibCyMid = await stepExec(ctx, '读兄弟屏幕位置（拖动中）', ORDER_JS(T1_KIDS));
         dragState = Object.assign({}, dragState, { pointerY: ptBottom.y, sibCy: JSON.parse(sibCyMid) });
@@ -609,7 +610,10 @@ const assertions = [
         dragState = Object.assign({}, dragState, { diskSame: hDrag === h0, textSame: textDrag === textBefore,
           bucketsSame: bucketsDrag === bucketsBefore });
         await ctx.input.mouseUp(ptBottom);
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
+        /* ★ 名单里的第一处（见 `_wait.js` 头部第 5 条）：这 900ms 等的是**真实墙钟** ——
+         *   重排要 `IPC → CLI 子进程把顺序写进盘 → 回读重建`，那段时长与帧无关；
+         *   紧接着就是"盘上顺序"这条判据的读数，提前读会把"还没写"读成"没改"✗ */
         await ctx.input.settle({ delayMs: 900 });     // 等 IPC → CLI 写盘 → 回读重建落定
         // 第一次重排**真的落了盘**的那一份（白名单/点名/渲染顺序都对着它判 —— 见下面那一段说明）
         rawMid = JSON.parse(readRaw(P));
@@ -618,7 +622,7 @@ const assertions = [
         //    "再拖一次"就得再点一次那一条菜单项），再把它摆回面板中部，落点按按下前现量的兄弟 cy 算。
         await stepExec(ctx, '第二次拖动前·重新进重排档',
           'window.MMApp.setDragMode(true, ' + JSON.stringify(MOVE_ID) + ', { mode: "reorder" })');
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
         await stepExec(ctx, '把目标重新摆进面板中部', '(function () {'
           + ' var el = document.querySelector(\'jmnode[nodeid="' + MOVE_ID + '"]\');'
           + ' if (!el) return false;'
@@ -629,7 +633,7 @@ const assertions = [
           + ' window.MM.setViewTransform({ x: pan.x + (wantX - (r.left + r.width / 2)),'
           + '   y: pan.y + (wantY - (r.top + r.height / 2)), s: pan.s });'
           + ' return true; })()');
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
         const ptN1c = await pointOf(ctx, MOVE_ID);
         const sibCy2 = JSON.parse(await stepExec(ctx, '读兄弟屏幕位置（第二次拖动前）', ORDER_JS(T1_KIDS)));
         const cys2 = Object.keys(sibCy2).map((k) => sibCy2[k]).filter((v) => typeof v === 'number');
@@ -649,17 +653,17 @@ const assertions = [
         if (ptN1c && cys2.length) {
           const top2 = { x: ptN1c.x, y: Math.min.apply(null, cys2) - 120 };
           await ctx.input.mouseDown(ptN1c);
-          await ctx.input.settle(PAINT);
+          await WAIT.frames(ctx, PAINT);
           const sibCy3 = JSON.parse(await stepExec(ctx, '读兄弟屏幕位置（第二次按下之后）', ORDER_JS(T1_KIDS)));
           const cys3 = Object.keys(sibCy3).map((k) => sibCy3[k]).filter((v) => typeof v === 'number');
           const top2b = { x: ptN1c.x, y: (cys3.length ? Math.min.apply(null, cys3) : top2.y) - 120 };
           await ctx.input.moveTo(top2b);
-          await ctx.input.settle(PAINT);
+          await WAIT.frames(ctx, PAINT);
           clampDown = await reorderState(ctx);
           clampDown = Object.assign({}, clampDown, { selfHit: hit2, panelHit: hit0, panel: panel2,
             pointerY: top2b.y, sibCy: sibCy3, pt: ptN1c });
           await ctx.input.mouseUp(top2b);
-          await ctx.input.settle({ delayMs: 900 });
+          await WAIT.frames(ctx, { delayMs: 900 });
         }
       }
       const hAfter = sha256(readRaw(P));
@@ -776,29 +780,31 @@ const assertions = [
         + JSON.stringify(MOVE_ID) + ',' + JSON.stringify(SIB_PARENT) + ', 3);'
         + ' return JSON.stringify({ ok: r.ok, order: r.order, text: String(r.text || "").slice(0, 60) }); })()');
       const goodR = (function () { try { return JSON.parse(good); } catch (e) { return null; } })();
+      /* ★ 名单里的第二处（见 `_wait.js` 头部第 5 条）：判据直接读**盘上顺序**，
+       *   而 `reorderNodeChild` 的写盘是 CLI 子进程那一段真实墙钟（约 0.3–0.6s，与帧无关）。 */
       await ctx.input.settle({ delayMs: 500 });
       const rawAfter = JSON.parse(readRaw(P));
       const orderAfter = childrenIds(rawAfter, SIB_PARENT);
       // ③ 渲染层 clamp 的**拖动那一半**：把进度条拖到列表上方 4000px ⇒ k 必须是 [0, 上界] 里的整数
       await ctx.exec('(function () { window.MMApp.getState().jm.expand_all(); return true; })()');
-      await ctx.input.settle(PAINT);
+      await WAIT.frames(ctx, PAINT);
       const pp = await pointOf(ctx, MOVE_ID);
       let st = null, ghostAtFar = null, hCancel = null, afterCancelOrder = null;
       if (pp) {
         await ctx.exec('window.MMApp.setDragMode(true, ' + JSON.stringify(MOVE_ID) + ', { mode: "reorder" }); 1');
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
         const far = { x: pp.x, y: Math.max(4, pp.y - 4000) };
         await ctx.input.mouseDown(pp);
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
         await ctx.input.moveTo(far);
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
         st = await reorderState(ctx);
         ghostAtFar = await ctx.exec('(function () { var g = document.getElementById("tree-reorder-ghost");'
           + ' if (!g) return null; var r = g.getBoundingClientRect();'
           + ' return { top: Math.round(r.top), height: Math.round(r.height) }; })()');
         await ctx.exec('window.MMApp.reorderCancel(); window.MMApp.setDragMode(false); 1');   // 取消（不写盘）
         await ctx.input.mouseUp(far);
-        await ctx.input.settle(PAINT);
+        await WAIT.frames(ctx, PAINT);
         hCancel = sha256(readRaw(P));
         afterCancelOrder = childrenIds(JSON.parse(readRaw(P)), SIB_PARENT);
       }

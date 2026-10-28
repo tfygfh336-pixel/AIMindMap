@@ -24,6 +24,7 @@ const dataStore = require(path.join(__dirname, '..', '..', 'src', 'data-store.js
 const frameStats = require(path.join(__dirname, '..', 'vision', 'frame-stats.js'));
 // 冒烟共用工具（收尾纪律与用法见 scripts/smoke-assertions.js 顶部）：动了 addNode 就要收模态
 const mm = require('../smoke-assertions.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -393,7 +394,7 @@ const assertions = [
 
       // ⑤ **真鼠标点击**（sendInputEvent：走 Chromium 命中测试，不是 dispatchEvent 合成事件）→ 打开只读面板
       await ctx.input.click(hit.pt);
-      await ctx.input.settle({ delayMs: 400 });
+      await WAIT.frames(ctx, { delayMs: 400 });
       // 判定帧 = 落盘帧（**同源**：同一次采集，判据与证据不许是两张图 ✓，照 H1b ③）
       const frame = await ctx.input.capture();
       const shot = await ctx.input.shot('11-conc-banner-panel.png', frame);

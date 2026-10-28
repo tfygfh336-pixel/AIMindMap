@@ -14,6 +14,7 @@
 
 // 真帧像素判据（"看得见"那半）：像素统计的唯一实现 + 阈值单源
 const frameStats = require('../vision/frame-stats.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 const VTH = frameStats.THRESHOLDS;
 
 async function execJson(ctx, js) {
@@ -146,7 +147,7 @@ module.exports = [
       const rounds = [];
       for (let i = 0; i < seq.length; i++) {
         await ctx.exec(`(function () { var n = window.MMApp.getState().jm.get_node(${JSON.stringify(seq[i])}); if (n) window.MMApp.showDetail(n); return 1; })()`);
-        await ctx.input.settle({ delayMs: 140 });     // ≥2 帧 + 覆盖过渡 ⇒ 抓到的帧才是"现在的画面" ✓
+        await WAIT.frames(ctx, { delayMs: 140 });     // ≥2 帧 + 覆盖过渡 ⇒ 抓到的帧才是"现在的画面" ✓
         // —— 判别力证明（`MM_SMOKE_INJECT=34-clip-btn`）：注入①（复刻事故现场，见 CLIP_BTN_JS）——
         //    注入后 `visible`/`outsideBox`/`radius` 三个几何读数**全都还是好的**，只有
         //    命中测试与真帧像素判得出来 ⇒ 这正是本次迁移要保住的那条纪律 ✓
@@ -334,7 +335,7 @@ module.exports = [
         return JSON.stringify({ ok: true, id: id });
       })()`);
       if (!pick.ok) return { ok: false, text: pick.text };
-      await ctx.input.settle({ delayMs: 200 });
+      await WAIT.frames(ctx, { delayMs: 200 });
       // —— 判别力证明（`MM_SMOKE_INJECT=34-btn-covered`）：把浮层盖在圆钮上 ——
       //    `insidePanel` / rect **全都还是 true**（旧判据完全看不见这件事），只有命中测试判得出来 ✓
       const injectCover = MY_KEY('btn-covered');

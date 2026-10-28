@@ -46,6 +46,7 @@
 
 const frameStats = require('../vision/frame-stats.js');
 const TH = require('../vision/thresholds.js');
+const WAIT = require('./_wait.js');   // 等真帧/等条件：理由见该文件头部第 5 条
 
 /** 判别力证明开关（见文件头；默认空 ⇒ 正常跑完全不生效 ✓） */
 const INJECT = process.env.MM_SMOKE_INJECT || '';
@@ -94,7 +95,7 @@ async function prep(ctx) {
     if (st.jm.expand_to_depth) st.jm.expand_to_depth(2);
     return JSON.stringify({ ok: true, text: '铺场完成（项目 ' + (st.project && st.project.name) + '）' });
   })()`);
-  await ctx.input.settle({ delayMs: 320 });   // 展开/居中后等 jsMind 重排（实测要留几百 ms）
+  await WAIT.frames(ctx, { delayMs: 320 });   // 展开/居中后等 jsMind 重排（实测要留几百 ms）
   return r;
 }
 
@@ -288,7 +289,7 @@ async function chooseTriple(ctx) {
     return { ok: false, text: tri.text + extra };
   }
   // 展开一个主题会触发一次 jsMind 重排（并被"重排锚点保持"补偿一次视图）⇒ 先让它落定再取景 ✓
-  await ctx.input.settle({ delayMs: 420 });
+  await WAIT.frames(ctx, { delayMs: 420 });
   // ②′ 布局本身会动（侧栏后建把面板从 1424x789 改成 729x714）⇒ 等它稳下来再取景 ✓
   const stab = await waitPanelStable(ctx);
   if (!stab.ok) return stab;
@@ -348,7 +349,7 @@ async function chooseTriple(ctx) {
         + Math.round(c2 ? c2.y : -1) + ')，面板中心 (' + Math.round(tx) + ',' + Math.round(ty) + ')' });
   })()`);
   if (!fit.ok) return fit;
-  await ctx.input.settle({ delayMs: 380 });
+  await WAIT.frames(ctx, { delayMs: 380 });
   ver = await verifyPoints(ctx, tri.ids);
   if (ver.ok) break;
   }
@@ -589,10 +590,10 @@ async function boxPixelDiff(ctx, dpr, overlays, ids, shotName) {
     + JSON.stringify(ids || []) + ', { hideBox: ' + (hide ? 'true' : 'false') + ' }); return 1; })()');
   const cur = await ctx.input.capture();
   await sel(true);
-  await ctx.input.settle({ delayMs: 150 });
+  await WAIT.frames(ctx, { delayMs: 150 });
   const off = await ctx.input.capture();
   await sel(false);
-  await ctx.input.settle({ delayMs: 150 });
+  await WAIT.frames(ctx, { delayMs: 150 });
   const on = await ctx.input.capture();
   /* 框的 rect 只在**画着**的时候有意义（display:none 时 getBoundingClientRect 全是 0）⇒
    * 位置与"对照档到底画出来没有"一起在这一刻读；顺带把**这一刻**的浮层矩形也取回来并进挖除名单
@@ -619,7 +620,7 @@ async function boxPixelDiff(ctx, dpr, overlays, ids, shotName) {
   const rec = shotName ? await ctx.input.shot(shotName, on) : null;
   await ctx.exec('(function () { window.MM.applySelection([], [], { hideBox: true });'
     + ' if (window.MM.paintRawSelection) window.MM.paintRawSelection(); return 1; })()');
-  await ctx.input.settle({ delayMs: 150 });
+  await WAIT.frames(ctx, { delayMs: 150 });
   // 对照档必须**真的**把框画出来了：画不出来 ⇒ 这条判据没有可判的对象 ⇒ 按红计（不许当通过）
   if (!geo || !geo.ok || geo.display !== 'block' || !(geo.rect.width >= 1 && geo.rect.height >= 1)) {
     return { ok: false, sig: null, drift: null,
@@ -687,7 +688,7 @@ async function cleanup(ctx) {
     if (MM.hideNodeToolbar) MM.hideNodeToolbar();
     return 1;
   })()`);
-  await ctx.input.settle({ delayMs: 200 });
+  await WAIT.frames(ctx, { delayMs: 200 });
 }
 
 /** 底座可用性：没有 `ctx.input` 时**必须红**（不许跳过再宣称通过 ✗） */
@@ -702,7 +703,7 @@ async function ctrlClickAll(ctx, ids, stepLog) {
     const pt = await pointFor(ctx, id);
     if (!pt.ok) return { ok: false, text: '点不到 ' + id + '：' + pt.text };
     await ctx.input.click(pt.pt, ['control']);
-    await ctx.input.settle({ delayMs: 150 });
+    await WAIT.frames(ctx, { delayMs: 150 });
     if (stepLog) {
       const s = await snapshot(ctx, []);
       stepLog.push('Ctrl+点 ' + id + '(' + pt.pt.x + ',' + pt.pt.y + ') ⇒ raw=' + idLine(s.raw) + ' 描边='
@@ -736,7 +737,7 @@ module.exports = [
       const clickPt = INJECT === 'miss-click'
         ? { x: Math.max(4, pt.pt.x - 60), y: pt.pt.y } : pt.pt;
       await ctx.input.click(clickPt, []);
-      await ctx.input.settle();
+      await WAIT.frames(ctx);
       const after = JSON.parse(await waitFor(ctx, `(function () {
         var st = window.MM.getFloatDetailState ? window.MM.getFloatDetailState() : null;
         if (!st) return JSON.stringify({ ok: false, text: '没有 getFloatDetailState' });
@@ -772,7 +773,7 @@ module.exports = [
       let controlOk = true;
       if (blank.ok) {
         await ctx.input.click(blank.pt, []);
-        await ctx.input.settle();
+        await WAIT.frames(ctx);
         const c = await execJson(ctx, `(function () {
           var st = window.MM.getFloatDetailState ? window.MM.getFloatDetailState() : null;
           if (!st) return JSON.stringify({ ok: true, boxes: -1, hasT: false });
@@ -825,14 +826,14 @@ module.exports = [
       if (INJECT === 'big-box') {
         await ctx.exec('(function () { var r = window.MM.getSelectionRaw();'
           + ' window.MM.applySelection(r, r); return 1; })()');
-        await ctx.input.settle({ delayMs: 150 });
+        await WAIT.frames(ctx, { delayMs: 150 });
       }
       // 判别力证明：invisible-outline ⇒ DOM/计算样式全绿、**像素没了**
       if (INJECT === 'invisible-outline') {
         await ctx.exec("(function () { var cls = window.MM.rawSelectionClass ? window.MM.rawSelectionClass() : 'mm-sel-raw';"
           + " document.querySelectorAll('jmnode.' + cls).forEach(function (el) { el.style.outlineColor = 'transparent'; });"
           + ' return 1; })()');
-        await ctx.input.settle({ delayMs: 150 });
+        await WAIT.frames(ctx, { delayMs: 150 });
       }
       const s1 = await snapshot(ctx, ids);
       const cap1 = await captureUntil(ctx, (img) => ({
@@ -908,7 +909,7 @@ module.exports = [
       const ptC = await pointFor(ctx, pick.C.id);
       if (!ptC.ok) { await cleanup(ctx); return { ok: false, text: '点不到子节点：' + ptC.text }; }
       await ctx.input.click(ptC.pt, ['control']);
-      await ctx.input.settle({ delayMs: 150 });
+      await WAIT.frames(ctx, { delayMs: 150 });
       await waitFor(ctx, `(function () {
         var raw = window.MM.getSelectionRaw ? window.MM.getSelectionRaw() : [];
         return JSON.stringify({ ok: raw.indexOf(${JSON.stringify(pick.C.id)}) < 0 });
@@ -960,7 +961,7 @@ module.exports = [
       if (INJECT === 'ask-count') {
         await ctx.exec("(function () { var b = document.getElementById('mm-node-toolbar');"
           + " if (b) b.querySelector('.mm-tb-ask').textContent = '💬 问这 9 个'; return 1; })()");
-        await ctx.input.settle({ delayMs: 120 });
+        await WAIT.frames(ctx, { delayMs: 120 });
         s = await snapshot(ctx, ids);
       }
       const labelN = countInLabel(s.askText);
@@ -978,7 +979,7 @@ module.exports = [
       })()`);
       if (!btn.ok) { await cleanup(ctx); return { ok: false, text: '按钮不可点：' + btn.text }; }
       await ctx.input.click(btn.pt, []);
-      await ctx.input.settle();
+      await WAIT.frames(ctx);
       const box = JSON.parse(await waitFor(ctx, `(function () {
         var bs = Array.prototype.slice.call(document.querySelectorAll('.fd-ask-box'));
         if (!bs.length) return JSON.stringify({ ok: false, text: '点了没有出问答浮窗' });
@@ -1059,12 +1060,12 @@ module.exports = [
       const blank = await pickBlankPoint(ctx, s1.nodes.filter((n) => n.rect).map((n) => n.rect));
       if (!blank.ok) { await cleanup(ctx); return { ok: false, text: blank.text }; }
       await ctx.input.click(blank.pt, []);
-      await ctx.input.settle({ delayMs: 150 });
+      await WAIT.frames(ctx, { delayMs: 150 });
       // 判别力证明：stale-raw ⇒ 造出旧缺陷态（原始集还留着、描边还画着，而裁剪集已空）
       if (INJECT === 'stale-raw') {
         await ctx.exec('(function () { var r = ' + JSON.stringify(oldRaw)
           + '; window.MM.applySelection([], r, { hideBox: true }); return 1; })()');
-        await ctx.input.settle({ delayMs: 150 });
+        await WAIT.frames(ctx, { delayMs: 150 });
       }
       const s2 = await snapshot(ctx, ids);
       // ⚠️ 这一档只判"**描边**有没有消失" ⇒ 判据必须是**差分**（`after ≤ before − minHits`）：
