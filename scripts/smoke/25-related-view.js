@@ -223,13 +223,13 @@ module.exports = [
           var s1 = toScreen(m[1], m[2]), s2 = toScreen(m[3], m[4]);
           var r1 = a.getBoundingClientRect(), r2 = b.getBoundingClientRect();
           /* 端点该落在**节点矩形的边界上**（2026-10-30 收口批的口径订正 —— 原判据把旧行为写死了）：
-           *   关系线端点已统一成内核的端点规则（`MMDiagram.relationsOf` = `route.autoPorts` +
-           *   `route.portPoint`，与图里每条直连边同一个函数）⇒ 落在节点框**边界**上，**不是**中心。
+           *   关系线端点已统一成内核的端点规则（MMDiagram.relationsOf = route.autoPorts +
+           *   route.portPoint，与图里每条直连边同一个函数）⇒ 落在节点框**边界**上，**不是**中心。
            * 原来判"端点 ≈ 节点中心（≤6px）"：真实项目 24 对实测，改前 48/48 个端点离边界 32–56px，
            * 改后 0/48（到矩形距离 0.00px）⇒ 那条判据钉的是旧的错误行为，不是"端点该在哪"。
            * ⇒ 现在判两件：① 端点到**节点矩形**的距离 ≤ 6px；② 端点落在该矩形内/边界上（±1px）。
-           * 判别力**没变松**：线没挂进 `fdViewEls()` 时端点整体错位 `ox*(1-s)`、张冠李戴时端点在别的节点旁
-           * ⇒ ①和②都爆炸（本域收尾注释里给了"把 s 换成 1 必须红"的白盒自证）。 */
+           * 判别力**没变松**：线没挂进 fdViewEls() 时端点整体错位 ox*(1-s)、张冠李戴时端点在别的节点旁
+           * ⇒ ①和②都爆炸（本目录的 inject-smoke.js 真跑过：端点整体偏 30px ⇒ 本断言红）。 */
           function toRectDist(p, r) {
             var dx = Math.max(r.left - p.x, p.x - r.right, 0);
             var dy = Math.max(r.top - p.y, p.y - r.bottom, 0);

@@ -49,14 +49,11 @@
    * 并把"谁被换了、从什么换成什么"逐条交出去。**不改数据**（返回的是副本）。
    *
    * 三种处置（`opts.shapePolicy`）：
-   *   · `'report'`（**缺省**）：**画法不动**，但把每个越界节点逐条记进
-   *     `report.profileShapes.outOfProfile[]` 与 `report.degraded[]`（`W_SHAPE_OUT_OF_PROFILE`）。
-   *     为什么缺省是"只登记不改画法"：§4.2 的收窄是**取值收窄**，落点是"这个剖面**可用**哪些取值"
-   *     （派生/控件面/数据入口），不是"渲染时把别人的画法换掉"。而画布的真实派生
-   *     （`renderer/app-core.js` 的 `diagramNodeOf`）**每次都**会派生 `cylinder`/`row`/`pill`
-   *     ⇒ 缺省换成"降级"就等于**每张图都换画法**（那是改渲染语义，不是收窄）。
-   *     ⚠️ 这条缺省**不是静默**：越界节点逐条点名 + 稳定码；要"真动手"的调用方显式选下面两档。
-   *   · `'degrade'`：不在允许集 ⇒ 降到语义最近且允许的那一型，报告里**逐条点名** `W_SHAPE_NARROWED`。
+   *   · `'degrade'`（**缺省**）：不在允许集 ⇒ 降到语义最近且允许的那一型，报告里**逐条点名**
+   *     `W_SHAPE_NARROWED`。为什么缺省是它：用户要的是"**每种模式只提供它需要的功能**"，
+   *     不是"画出来但嘴上提醒" ⇒ 收窄要真的落到画法上。
+   *   · `'report'`：**画法不动**，但把每个越界节点逐条记进 `report.profileShapes.outOfProfile[]`
+   *     与 `report.degraded[]`（`W_SHAPE_OUT_OF_PROFILE`）。给"想看见全部、但要知道越界"的调用方留着。
    *   · `'reject'`：不在允许集 ⇒ 抛 `E_PROFILE_SHAPE`（稳定码 + `allowed` + `fixes`）。
    *     给"宁可画不出也不许换画法"的调用方（导出门禁、AI 生成前的自检）用。
    *   · 例外：剖面把 `C-F1-01` 判 ✗（`mindmap` / `path`）⇒ **无论 policy 都抛** ——
@@ -74,7 +71,7 @@
     const graphIn = src.graph && typeof src.graph === 'object' ? src.graph : {};
     const profile = typeof o.profile === 'string' ? o.profile
       : (typeof graphIn.profile === 'string' ? graphIn.profile : null);
-    const policy = o.shapePolicy === undefined ? 'report' : o.shapePolicy;
+    const policy = o.shapePolicy === undefined ? 'degrade' : o.shapePolicy;
     if (profiles.SHAPE_POLICIES.indexOf(policy) < 0) {
       throw new render.MMDiagramError('E_SHAPE_POLICY',
         'opts.shapePolicy 只能是 ' + profiles.SHAPE_POLICIES.join(' / ') + '（收到 '

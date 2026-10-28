@@ -124,8 +124,8 @@ describe('§4.2 该绿：`logic` 下只用允许的形状 ⇒ 正常渲染、零
 describe('§4.2 该红：`logic` 下用不允许的形状 ⇒ **不许静默接受**', () => {
   const BAD = shapeDoc('logic', ['cylinder', 'row', 'pill', 'rect']);
 
-  it('缺省档（degrade）：逐节点点名"从什么换成什么"，且 SVG 里真的换了形状', () => {
-    const res = D.renderAuto(BAD, { shapePolicy: 'degrade' });
+  it('**缺省档 = degrade**：逐节点点名"从什么换成什么"，且 SVG 里真的换了形状', () => {
+    const res = D.renderAuto(BAD);                       // 不传 shapePolicy ⇒ 走缺省
     expect(res.report.profileShapes.policy).toBe('degrade');
     const narrowed = res.report.profileShapes.narrowed;
     expect(narrowed.length).toBe(3);
@@ -169,8 +169,8 @@ describe('§4.2 该红：`logic` 下用不允许的形状 ⇒ **不许静默接�
     expect(err.detail.allowed).toEqual(['report', 'degrade', 'reject']);
   });
 
-  it('**缺省档 = report**：画法不动，但每个越界节点逐条登记（缺省也不许静默）', () => {
-    const res = D.renderAuto(BAD);
+  it('`report` 档（保留，不是缺省）：画法不动，但每个越界节点逐条登记', () => {
+    const res = D.renderAuto(BAD, { shapePolicy: 'report' });
     expect(res.report.profileShapes.policy).toBe('report');
     expect(res.report.profileShapes.outOfProfile.map((x) => x.id).sort()).toEqual(['n-0', 'n-1', 'n-2']);
     expect(res.report.profileShapes.narrowed).toEqual([]);          // 没换画法
@@ -183,14 +183,15 @@ describe('§4.2 该红：`logic` 下用不允许的形状 ⇒ **不许静默接�
     expect(shapes.indexOf('pill')).toBeGreaterThanOrEqual(0);
   });
 
-  it('**非声明形状一律不放过**：三个越界节点在缺省档下**逐个**有 `outOfProfile` 条目（不是只数个数）', () => {
-    const res = D.renderAuto(BAD);
+  it('`report` 档**逐条**给 `outOfProfile`（不是只数个数），且三种档位都还在', () => {
+    const res = D.renderAuto(BAD, { shapePolicy: 'report' });
     const ids = res.report.profileShapes.outOfProfile.map((x) => x.id).sort();
     expect(ids).toEqual(['n-0', 'n-1', 'n-2']);
     res.report.profileShapes.outOfProfile.forEach((x) => {
       expect(x.allowed).toEqual(['rect', 'round', 'diamond']);
       expect(x.from).not.toBe('rect');
     });
+    expect(D.SHAPE_POLICIES).toEqual(['report', 'degrade', 'reject']);   // 三档都不许删
   });
 
   it('`mindmap` / `path` 遇到任何形状 ⇒ **两种档位都拒绝**（那不是收窄，是"没有形状能力"）', () => {
@@ -211,16 +212,17 @@ describe('§4.2 该红：`logic` 下用不允许的形状 ⇒ **不许静默接�
       { id: 'n-0', type: 'cylinder', title: '根', rect: [0, 0, 160, 64] },
       { id: 'n-1', type: 'rect', title: '环节', rect: [240, 0, 160, 64] }
     ] });
-    // 缺省档（report）：登记而不换画法 —— 两个入口同一套
-    expect(byDefault.report.profileShapes.policy).toBe('report');
-    expect(byDefault.report.profileShapes.narrowed).toEqual([]);
-    expect(byDefault.report.profileShapes.outOfProfile).toEqual([
-      { id: 'n-0', from: 'cylinder', allowed: ['rect', 'round', 'diamond'] }]);
-    const degraded = D.render({ graph: { version: 1, profile: 'logic' }, nodes: [
+    // 缺省档（degrade）：换画法 —— 两个入口同一套
+    expect(byDefault.report.profileShapes.policy).toBe('degrade');
+    expect(byDefault.report.profileShapes.narrowed).toEqual([{ id: 'n-0', from: 'cylinder', to: 'round' }]);
+    expect(byDefault.report.profileShapes.outOfProfile).toEqual([]);
+    const reported = D.render({ graph: { version: 1, profile: 'logic' }, nodes: [
       { id: 'n-0', type: 'cylinder', title: '根', rect: [0, 0, 160, 64] },
       { id: 'n-1', type: 'rect', title: '环节', rect: [240, 0, 160, 64] }
-    ] }, { shapePolicy: 'degrade' });
-    expect(degraded.report.profileShapes.narrowed).toEqual([{ id: 'n-0', from: 'cylinder', to: 'round' }]);
+    ] }, { shapePolicy: 'report' });
+    expect(reported.report.profileShapes.narrowed).toEqual([]);
+    expect(reported.report.profileShapes.outOfProfile).toEqual([
+      { id: 'n-0', from: 'cylinder', allowed: ['rect', 'round', 'diamond'] }]);
     let err = null;
     try {
       D.render({ graph: { version: 1, profile: 'logic' }, nodes: [
