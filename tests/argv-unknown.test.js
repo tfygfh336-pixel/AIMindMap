@@ -151,16 +151,32 @@ describe('命令行参数：单一来源 + 未知参数必红（参数层判据�
 
   it('③ 现存合法参数逐个试：真实档**不因未知参数退出**（6 例各自独立进程）', async () => {
     /* 覆盖登记表四条腿里的每一条：两条无值开关 / 两条带位置参数的 / 一条 `=` 形态 /
-     * 三个 passthrough（含 `--user-data-dir=` 这种带值的）。 */
+     * 三个 passthrough（含 `--user-data-dir=` 这种带值的）。
+     *
+     * ⚠️ 2026-10-28 订正：`--smoke-only=14` **不能单独出现**。它的唯一消费者是冒烟那条路
+     * （`const isSmoke = ARGV.smoke`），单独给它 ⇒ 参数层"认识"但整段被跳过 ⇒ 应用会按普通模式
+     * 起一次，**在桌面上开一个可见窗口**（实测：`electron . --smoke-only=01` ⇒ `[main] window created`
+     * / `isSmoke=false`，窗口活了约 5 分钟）。原来这一例把"不判未知"当成了"合法"，
+     * 于是**只证明了'没被门禁拦'、没证明'它做了什么'** —— 那是一条空转的绿。
+     * ⇒ 现在这一例改成真正有意义的组合 `--smoke --smoke-only=14`，另外单列一档"该红"钉住孤立用法。 */
     const CASES = [
       ['--smoke'],
       ['--headless-control'],
-      ['--smoke-only=14'],
+      ['--smoke', '--smoke-only=14'],
       ['--export-image', 'comnet', 'out.png'],
       ['--export-window', 'win.png'],
       ['--smoke', '--disable-gpu', '--in-process-gpu', '--no-sandbox', '--user-data-dir=C:/tmp/mm-x']
     ];
     await mapLimit(CASES, 4, (args) => assertNotRejected(args));
+  });
+
+  it('③b `--smoke-only` 孤立出现 ⇒ **必须**被判用法错（否则会按普通模式起应用、桌面弹可见窗口）', async () => {
+    for (const args of [['--smoke-only=14'], ['--smoke-only=14,15']]) {
+      const r = await runMain(args);
+      expect(r.status, '孤立的 ' + args.join(' ') + ' 没被拦（它会起一个可见窗口）').toBe(2);
+      expect(r.text, '报文没点名 --smoke-only').toContain('--smoke-only');
+      expect(r.text, '报文没说明"必须与 --smoke 一起用"').toContain('--smoke');
+    }
   });
 
   it('④ 一遍过所有参数：审计档 plan 逐字段对（含 passthrough 的收集与位置参数落位）', async () => {
