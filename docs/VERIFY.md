@@ -17,7 +17,7 @@
 |------|----|------|
 | CLI 命令数 | 81 | `cli/registry.js`（`registry.list().length`） |
 | MCP 工具数 | 54 | `scripts/mcp-server.js`（导出的 `TOOLS.length`） |
-| 单元测试 | 3941 用例 / 182 文件 | `tests/*.test.js`（vitest） |
+| 单元测试 | 3993 用例 / 186 文件 | `tests/*.test.js`（vitest） |
 | CLI 集成断言 | 685 | `scripts/cli-integration.js` |
 | 冒烟断言 | 417 | `scripts/smoke-assertions.js` |
 | 视觉断言（L2 关键区域） | 2 | `scripts/vision/roi-assertions.js`（`ROIS.length`） |
@@ -50,7 +50,7 @@ npm run verify    # 编码完整性 → 文档登记与家门 → 规则文件�
 | 13 | G7 | 同上（重算比对） | （与 G6 同一次调用） | 生成物是否过期（`docs/CLI.md` 与 registry 一致） |
 | 14 | G4 | `node scripts/cli-integration.js` | 60s | 全部 CLI 命令端到端（**进程内调用**，临时项目，自动清理） |
 | 15 | G2 | `node cli/mm-cli.js validate-all` | 15s | 全部项目结构 + 悬挂链接 + 环 |
-| 16 | G5 | `npm run smoke` | 1300s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**；**分两档**（定档 = `scripts/verify.js` 的 `decideG5Tier`；名单与域数/断言数的**现算值** = `scripts/smoke-assertions.js` 的 `TIERS` / `tierSummary()`，每次冒烟都会打印）：`fast` = 只跑 `core` 域（**不产**截图 / 取景记录 / 视觉断言）、`full` = 全部域 + 视觉断言 + 取景记录；**必须 full 的条件（可判定）**：`--release` 放行点 / `--g5=full` / 历史里没有全量档 / 上次全量档是红的 / 距上次成功全量档 ≥ 24h / 取不到改动清单 / 改动命中 `scripts/smoke/**`·`scripts/smoke-*.js`·`main.js`。每次运行都打印**逐域耗时排行**（`summarizeTiming`），G5 预算按档取（快档 = `G5_FAST_BUDGET_MS`） |
+| 16 | G5 | `npm run smoke` | 1340s | 渲染层（Electron 无头，含监听器泄漏回归）+ **真实数据隔离**；**分两档**（定档 = `scripts/verify.js` 的 `decideG5Tier`；名单与域数/断言数的**现算值** = `scripts/smoke-assertions.js` 的 `TIERS` / `tierSummary()`，每次冒烟都会打印）：`fast` = 只跑 `core` 域（**不产**截图 / 取景记录 / 视觉断言）、`full` = 全部域 + 视觉断言 + 取景记录；**必须 full 的条件（可判定）**：`--release` 放行点 / `--g5=full` / 历史里没有全量档 / 上次全量档是红的 / 距上次成功全量档 ≥ 24h / 取不到改动清单 / 改动命中 `scripts/smoke/**`·`scripts/smoke-*.js`·`main.js`。每次运行都打印**逐域耗时排行**（`summarizeTiming`），G5 预算按档取（快档 = `G5_FAST_BUDGET_MS`） |
 
 > **只改了某一条冒烟断言时不必跑全链**：`SMOKE_ONLY=<文件前缀> npm run smoke`
 > （等价写法 `electron . --smoke-only=<文件前缀>`）只跑选中的那几个断言文件，

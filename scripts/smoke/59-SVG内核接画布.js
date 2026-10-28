@@ -10,12 +10,14 @@
  *     对**设计稿矩阵里 `C-F3-01` 判 ✓ 的三个剖面**各跑一次（期望值从 §3.2 的矩阵**现解析**，
  *     不从 `src/diagram/profiles.js` 取 —— 那是被测实现，拿它当期望就是恒等假绿）：
  *       · 画布里出现 `svg[data-mm="diagram"]` 且**真有几何**（宽高 > 0）；
- *       · **元素种类齐全**：`path` / `rect` / `text` / `polygon` 各 ≥ 1；
+ *       · **`text` ≥ 1**，且**每种"出现的形状"都有对应元素**（`cylinder→path`、`diamond→polygon`、其余 `→rect`）；
  *       · **jsMind 的节点一个都不可见**（`jmnode` 的 `getClientRects()` 全空）—— "换了渲染器"
  *         不是"叠了一层"；
  *       · `g[data-node]` 的个数 === 夹具里**展开可见**的节点数（现算）—— 抓"只画了根"这类假图；
- *       · **六种形状各至少一个**（`cylinder/round/pill/row/diamond/rect`，由夹具的
- *         tags / items / qa / 子节点 四处分别触发）⇒ 这是 `C-F1-01` 的可判形式；
+ *       · **形状按 §4.2 的允许集判两面**（允许集从 §4.2 的 `C-F1-01` 那一行**现解析**）：
+ *         ① 实际形状 ⊆ 该剖面允许集（收窄真的收住）；② 允许集内每种至少出现一次（收窄没砍过头）。
+ *         另：`complex`（唯一全开剖面）**单独**要求"六种形状各至少一个" —— `C-F1-01` 的
+ *         **内核能力**挂在这档上验，不挂到别的剖面上（见 `docShapeLimits` 的注释：这条口径订正过）；
  *       · **层带/容器按剖面矩阵开**：`C-F2-04` 判 ✗ 的剖面（逻辑链路）`g[data-z="layers"]` 里 0 条，
  *         判 ✓ 的（架构图/全开）≥ 1 条 —— 同一份数据、不同剖面看到不同东西；
  *       · **双向箭头来自数据**（第二份夹具带 `graph.edges[].arrow.start`）⇒ `polygon[data-arrow="start"]`
@@ -154,6 +156,54 @@ function markOf(doc, profile, cap) {
   if (!row) throw new Error('矩阵里没有能力 ' + cap + '（判据的前提不成立）');
   return row.marks[doc.profiles.indexOf(profile)];
 }
+
+/* ================= 取值收窄的期望值：也从**设计稿**解析（§4.2） =================
+ *
+ * 为什么需要它（2026-10-30 收口批的口径订正，原判据错了，记在这里防复发）：
+ *   本域甲原先断言"**每个**图形剖面里六种形状各至少一个"。那条把**内核能力**（C-F1-01 真有六种几何）
+ *   挂在了**某个剖面**上 —— 而 §4.2 明写 `logic` 只给 `rect/round/diamond`（其余三型不给）。
+ *   ⇒ 一旦真按 §4.2 收窄，`logic` 必然缺 `cylinder/pill/row`（而且 `path` 元素也没了：
+ *     六型里只有 `cylinder` 画成 `<path>`），于是**判据把"按设计收窄"判成了"能力缺失"**。
+ *   ⇒ 正确口径（本域现在这一版）：
+ *     · **内核能力**挂在 `complex` 上验（它是唯一全开剖面，§3.4 不变量①）⇒ 六型各至少一个；
+ *     · **剖面收窄**验"形状 ⊆ 该剖面允许集，且允许集内每种至少出现一次"。
+ *   允许集**从 §4.2 的 `C-F1-01` 那一行现解析**（不从 `src/diagram/profiles.js` 取 —— 那是被测实现）。
+ */
+const ALL_SHAPES = ['rect', 'round', 'diamond', 'pill', 'cylinder', 'row'];
+
+function docShapeLimits() {
+  const md = fs.readFileSync(DOC, 'utf8');
+  const sec = md.indexOf('### 4.2');
+  if (sec < 0) throw new Error('docs/DIAGRAM-MODES.md 里找不到 §4.2（取值收窄）');
+  const end = md.indexOf('\n### 4.3', sec);
+  const block = md.slice(sec, end > sec ? end : md.length);
+  const row = block.split(/\r?\n/).filter((l) => l.indexOf('`C-F1-01`') >= 0)[0];
+  if (!row) throw new Error('§4.2 里找不到 `C-F1-01`（六形状）那一行');
+  const narrowed = {};
+  const profs = [];
+  let m;
+  const reP = /`(complex|mindmap|path|logic|module)`/g;
+  while ((m = reP.exec(row))) if (profs.indexOf(m[1]) < 0) profs.push(m[1]);
+  const shapes = [];
+  const reS = /`(rect|round|diamond|pill|cylinder|row)`/g;
+  while ((m = reS.exec(row))) if (shapes.indexOf(m[1]) < 0) shapes.push(m[1]);
+  if (!profs.length || !shapes.length) {
+    throw new Error('§4.2 的 `C-F1-01` 行里读不出"哪个剖面被收窄到哪几型"：' + row.slice(0, 120));
+  }
+  profs.forEach((p) => { narrowed[p] = shapes.slice(); });     // 该行点名的剖面 = 被收窄的那几个
+  return { all: ALL_SHAPES.slice(), narrowed: narrowed };
+}
+
+/** 某剖面允许的画法形状（§4.2 收窄了就用收窄集，否则六型全给） */
+function shapeAllowOf(limits, profile) {
+  return limits.narrowed[profile] ? limits.narrowed[profile].slice() : limits.all.slice();
+}
+
+/** 形状 → 它画出来的 SVG 元素种类（`render-svg.js` 的实现口径；判据只用来验"形状有元素"） */
+const SHAPE_ELEMENT = {
+  rect: 'rect', round: 'rect', pill: 'rect', row: 'rect',
+  diamond: 'polygon', cylinder: 'path'
+};
 
 /** 图形剖面 = 矩阵里 `C-F3-01`（边端点 = "图"的最小单元）判 ✓ 的那些（按矩阵顺序） */
 const graphProfiles = (doc) => doc.profiles.filter((p) => markOf(doc, p, 'C-F3-01') === '\u2713');
@@ -426,8 +476,9 @@ const assertions = [
 
   {
     name: '甲 判据 1+6：矩阵里 C-F3-01 判 ✓ 的三个剖面**真的用 SVG 内核**（svg 有几何、'
-      + 'path/rect/text/polygon 齐全、jsMind 节点一个都不可见、g[data-node] 数 === 夹具可见节点数、'
-      + '六种形状各至少一个、层带/容器按矩阵 ✗/✓ 开关）＋ 数据里的 graph 优先（双向箭头两端都有）',
+      + 'text/需要的形状元素齐全、jsMind 节点一个都不可见、g[data-node] 数 === 夹具可见节点数、'
+      + '形状 ⊆ §4.2 该剖面允许集且允许集内每种至少出现一次（`complex` 单独保住"六种各至少一个"＝内核能力）、'
+      + '层带/容器按矩阵 ✗/✓ 开关）＋ 数据里的 graph 优先（双向箭头两端都有）',
     run: async (ctx) => {
       if (!ctx.input) return { ok: false, text: '没有 ctx.input（不是 --smoke 路径）⇒ 真鼠标判据跑不了' };
       ENTRY_PROJECT = await ctx.exec('(function () { var s = window.MMApp.getState();'
@@ -435,6 +486,7 @@ const assertions = [
       ENTRY_PROFILE = await profileNow(ctx);
       await stubConfirm(ctx, true);
       const doc = docMatrix();
+      const limits = docShapeLimits();
       const graphs = graphProfiles(doc);
       if (graphs.length !== 3) {
         return { ok: false, text: '矩阵里 C-F3-01 判 ✓ 的剖面有 ' + graphs.length + ' 个（应为 3：全开/逻辑/架构）'
@@ -457,9 +509,8 @@ const assertions = [
             continue;
           }
           const kinds = cv.kinds || {};
-          ['path', 'rect', 'text', 'polygon'].forEach((k) => {
-            if (!(kinds[k] > 0)) fails.push(p + ' 的 SVG 里没有 ' + k + '（元素种类不齐）');
-          });
+          // `text` 恒需要（每个节点都有标题）；其余元素种类由"该剖面允许的形状"推出来
+          if (!(kinds.text > 0)) fails.push(p + ' 的 SVG 里没有 text（元素种类不齐）');
           if (!(cv.w > 0 && cv.h > 0)) fails.push(p + ' 的 svg 没有几何（w/h=' + cv.w + '/' + cv.h + '）');
           if (cv.jmnodesVisible !== 0) {
             fails.push(p + ' 下 jsMind 还有 ' + cv.jmnodesVisible + ' 个节点**可见** ⇒ 那是"叠了一层"，不是换渲染器');
@@ -469,11 +520,37 @@ const assertions = [
             fails.push(p + ' 的 g[data-node] 数 = ' + nodeCount + '（夹具里有 '
               + TREE_NODE_IDS.length + ' 个展开可见的节点）⇒ 图没画全/画多了');
           }
+          /* 形状：**按 §4.2 的允许集**判两件事（缺一条就红）：
+           *   ① 子集：实际出现的形状 ⊆ 该剖面允许集（收窄必须真的收住 —— 不许再出现 `cylinder/pill/row` 在 `logic` 里）；
+           *   ② 覆盖：允许集里**每一种**至少出现一次（收窄不许顺手把该留的也砍掉 —— 这正是上一版把域打红的那类错）；
+           * 另外 `complex` **单独**保住"六种各至少一个"：它是唯一全开剖面（§3.4 不变量①），
+           *   `C-F1-01`（内核真有六种几何）这条**能力**挂在这一档上验，不挂在别的剖面上。
+           * 元素种类由"出现的形状"推出来（只有 `cylinder` 画 `<path>`、`diamond` 画 `<polygon>`）——
+           * 不再无脑要求 `path/polygon` 齐全：那等于要求每个剖面都画柱体和菱形，与 §4.2 冲突。 */
           const shapes = Array.from(new Set((cv.nodes || []).map((n) => n.shape))).sort();
-          const allShapes = ['cylinder', 'diamond', 'pill', 'rect', 'round', 'row'];
-          const missingShape = allShapes.filter((s) => shapes.indexOf(s) < 0);
-          if (missingShape.length) {
-            fails.push(p + ' 缺这几种形状：' + JSON.stringify(missingShape) + '（实际 ' + JSON.stringify(shapes) + '）');
+          const allowed = shapeAllowOf(limits, p);
+          const outside = shapes.filter((s) => allowed.indexOf(s) < 0);
+          if (outside.length) {
+            fails.push(p + ' 出现了 §4.2 **不允许**的形状：' + JSON.stringify(outside)
+              + '（允许 ' + JSON.stringify(allowed) + '，实际 ' + JSON.stringify(shapes) + '）');
+          }
+          const missing = allowed.filter((s) => shapes.indexOf(s) < 0);
+          if (missing.length) {
+            fails.push(p + ' 的允许集里有形状**一个都没画**：' + JSON.stringify(missing)
+              + '（允许 ' + JSON.stringify(allowed) + '，实际 ' + JSON.stringify(shapes) + '）');
+          }
+          shapes.forEach((s) => {
+            const el = SHAPE_ELEMENT[s];
+            if (el && !(kinds[el] > 0)) {
+              fails.push(p + ' 画了 ' + s + ' 却连一个 <' + el + '> 都没有（形状与元素对不上）');
+            }
+          });
+          if (p === 'complex') {
+            const miss6 = limits.all.filter((s) => shapes.indexOf(s) < 0);
+            if (miss6.length) {
+              fails.push('complex（全开剖面）缺这几种形状：' + JSON.stringify(miss6)
+                + '（实际 ' + JSON.stringify(shapes) + '）⇒ `C-F1-01` 六种几何的内核能力这条挂了');
+            }
           }
           // 层带/容器：**按矩阵**（判 ✗ 的那条一条都不许进 doc）
           const wantLayers = markOf(doc, p, 'C-F2-04') === '\u2713';
