@@ -10,10 +10,199 @@
  * ============================================================ */
 'use strict';
 
+/* 参数层要用 path ⇒ 这一个 require 必须在它之前（本文件其余部分仍用下面这一份 `path`）。 */
+const path = require('path');
+
+/* ================================================================
+ * 命令行参数：**唯一登记表**（`ARGV_SCHEMA`）+ 未知参数闸门
+ * ----------------------------------------------------------------
+ * 本段要防的是一起**已经发生**的事故（2026-10-71 批）：
+ *   某批验收时把 `--version` 误写进了命令。当时这一层的语义是"**没认出来就当没有**" ⇒
+ *   进程按**普通模式**起了一次应用 ⇒ 用户桌面上出现一个**可见窗口约 4 分钟**（16:17–16:21）。
+ *   事后补的那道防线（`runExportImage` 里 1s 自查 `isVisible()` ⇒ exit 2）只是**症状级**的：
+ *   它只保护"已经进了离屏模式"的进程，管不住"参数没认出来 ⇒ 当成普通启动"。
+ *   ⇒ 真正的修法在**参数解析这一层**：任何不被识别的 `--xxx`（以及多余的位置参数）
+ *     一律**立刻响亮退出**：exit 2 + **点名是哪个** + 用法摘要。绝不允许静默当成没有。
+ *
+ * 【单一来源】`ARGV_SCHEMA` 是本文件**唯一**的合法参数登记处，四条腿：
+ *   · `flags`       无值开关；
+ *   · `valueFlags`  开关 + N 个位置参数（**位置参数只允许出现在这里**）；
+ *   · `inlineFlags` `--名字=值` 形态；
+ *   · `passthrough` Electron/Chromium 自己的开关：本应用**不解释**，但**故意放行** ——
+ *                   判死它们的代价是拿掉一条既有用法（`--disable-gpu` 之类是既有验证命令的一部分），
+ *                   所以每条都写明放行理由；**新增一条必须在这里加一行**（不许用通配）。
+ * 本文件其余地方**不再直接读 `process.argv`**，只读这里解析出来的 `ARGV`
+ * （`tests/argv-unknown.test.js` 第 ③ 条钉住这一点：参数层之外再出现 `process.argv` 就判红）。
+ *
+ * 【为什么闸门必须在"任何 app.* 之前"】判据要能在**纯 node** 下取证（单测就靠它）：
+ *   纯 node 里 `require('electron')` 只返回一个可执行文件路径字符串（不抛），
+ *   但 `app.commandLine` / `app.requestSingleInstanceLock()` 一碰就炸。
+ *   ⇒ 闸门与它的审计出口都在**第一次使用 app 之前**跑完 ⇒ 判据**不需要真起应用、更不会开窗口**。
+ *   本层的位置还要更靠前：它在**主 require 块之前**（只先 require 一个 `path`）——
+ *   于是"未知参数 ⇒ exit 2"发生在**加载 electron / 侧栏 / src 一整套之前**，
+ *   单测里那条"真进程跑真文件"的判据因此只花几十毫秒（曾经因为要在主 require 之后跑，
+ *   16 次子进程在全量套件负载下**超 30 s 超时** ✗）。
+ *
+ * 【审计出口（只给单测用；生产路径一行都不读）】`AI_MINDMAP_ARGV_AUDIT_ONLY=1` 时：
+ *   闸门跑完 → 打一行 `ARGV-AUDIT {json}`（解析结果 + 登记表）→ exit 0；
+ *   判为未知时**报文与退出码逐字不变**（只是多打一行机器可读的 `ARGV-AUDIT-REJECT`）——
+ *   这一条由 `tests/argv-unknown.test.js` 第 ④ 条按"两种档位的拒绝报文必须一致"钉住。
+ *   为什么需要它："合法参数不被判死"与"未知参数必红"这两侧都要有**行为判据**，
+ *   而"合法 ⇒ 真的起一次应用"会开窗口 —— 那是本批明令禁止的动作。
+ * ================================================================ */
+const ARGV_SCHEMA = {
+  flags: [
+    { name: '--smoke', id: 'smoke',
+      brief: '冒烟自检（离屏窗口；跑 scripts/smoke/* 的断言）' },
+    { name: '--headless-control', id: 'headlessControl',
+      brief: '离屏 + 界面控制通道活着，不自动退出（由外部探针 kill）' }
+  ],
+  valueFlags: [
+    { name: '--export-image', id: 'exportImage', keys: ['project', 'out'], params: ['<项目>', '<输出.png>'],
+      brief: '离屏渲染整棵树并导出 PNG' },
+    { name: '--export-window', id: 'exportWindow', keys: ['out'], params: ['<输出.png>'],
+      brief: '整窗截图（主页面 + 原生侧栏 view 合成）' }
+  ],
+  inlineFlags: [
+    { name: '--smoke-only', id: 'smokeOnly', param: '<域号,域号>',
+      brief: '冒烟只跑选中的断言文件（等价环境变量 SMOKE_ONLY）' }
+  ],
+  passthrough: [
+    { name: '--disable-gpu', why: 'Chromium 开关；既有验证命令在用（docs/FEATURES.md 的 DM 行）' },
+    { name: '--in-process-gpu', why: 'Chromium 开关；同上（草稿图那两条验证命令成对使用）' },
+    { name: '--no-sandbox', why: 'Chromium 开关；受限环境里起 Electron 常用' },
+    { name: '--user-data-dir', value: true, why: 'Chromium 开关；换一份用户数据目录（调试/隔离）' },
+    { name: '--inspect', value: true, why: 'Electron 调试开关（写在 app 路径之后也照旧生效）' },
+    { name: '--inspect-brk', value: true, why: 'Electron 调试开关（断在第一行）' },
+    { name: '--remote-debugging-port', value: true, why: 'Electron 调试开关（CDP 端口）' }
+  ]
+};
+
+/** 把 `process.argv` 还原成"**本应用自己的**参数"（= 用户写在 app 路径之后的那一段）。
+ *  三种跑法都**实测过**（探针读数见 `.review/20261071-未知参数/argv-probe/`）：
+ *    ① 纯 node 跑本文件（`node main.js …`，单测/审计出口用）：argv[0]=node、argv[1]=本文件；
+ *    ② 打包态：`process.defaultApp` 不为 true ⇒ argv[0] 是 exe，其后即用户参数；
+ *    ③ 开发态（`electron <appDir> …`）：argv[0]=electron.exe，**Electron 自己的开关可以出现在 app 路径之前**
+ *       （实测 `electron --inspect=9229 <appDir>` ⇒ argv = [exe, '--inspect=9229', <appDir>]）
+ *       ⇒ 先定位 app 路径，它**之前**的一律不归本应用判（那是 Electron 的事）。
+ *  边界：定位不到 app 路径时退回"跳过前两个"，于是上游开关会被当成位置参数而**响亮判红**
+ *  —— 失败方向是"多报一次错"，不是"悄悄起一个窗口"。
+ *  ⚠️ `app.getAppPath()` 只在**真 Electron**（`process.defaultApp === true`）里取，而且是**自己 require**
+ *     一份 electron：本层在主 require 块之前，那里还没有 `app` 这个绑定（直接写 `app.getAppPath()`
+ *     会命中 TDZ 的 ReferenceError 被 catch 吞掉 ⇒ 变成"看起来有这条判据、其实永远走不到" ✗）。 */
+function userArgvOf(argv) {
+  const same = (a, b) => {
+    if (!a || !b) return false;
+    try { return path.resolve(a) === path.resolve(b); } catch (e) { return false; }
+  };
+  if (!process.versions.electron && argv.length > 1 && same(argv[1], __filename)) return argv.slice(2);
+  if (process.defaultApp !== true) return argv.slice(1);
+  let hint = '';
+  if (process.versions.electron) {
+    try { hint = require('electron').app.getAppPath() || ''; } catch (e) { hint = ''; }
+  }
+  const i = argv.findIndex((a, k) => k >= 1 && a.charAt(0) !== '-'
+    && (same(a, __dirname) || (!!hint && same(a, hint))));
+  if (i >= 0) return argv.slice(i + 1);
+  return argv.slice(2);
+}
+
+/** 解析 + 审计（**纯函数**：不读 process、不 print、不 exit ⇒ 可被单测直接驱动）。
+ *  @returns {{plan:Object, unknown:Array<{token:string,why:string}>, bad:Array<{token:string,why:string}>}} */
+function auditArgv(tokens, schema) {
+  const plan = {
+    smoke: false, headlessControl: false,
+    exportImage: null, exportWindow: null, smokeOnly: null,
+    passthrough: []
+  };
+  const unknown = [];
+  const bad = [];
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k];
+    const flag = schema.flags.find((f) => f.name === t);
+    if (flag) { plan[flag.id] = true; continue; }
+    const inl = schema.inlineFlags.find((f) => t.indexOf(f.name + '=') === 0);
+    if (inl) {
+      if (plan[inl.id] === null) plan[inl.id] = t.slice(inl.name.length + 1);
+      continue;
+    }
+    const pass = schema.passthrough.find((p) => p.name === t || (p.value === true && t.indexOf(p.name + '=') === 0));
+    if (pass) { plan.passthrough.push(t); continue; }
+    const vf = schema.valueFlags.find((f) => f.name === t);
+    if (vf) {
+      const got = tokens.slice(k + 1, k + 1 + vf.keys.length);
+      const enough = got.length === vf.keys.length && got.every((x) => x.charAt(0) !== '-');
+      if (enough) {
+        const obj = {};
+        vf.keys.forEach((key, n) => { obj[key] = got[n]; });
+        plan[vf.id] = obj;
+      } else {
+        bad.push({ token: t, why: '需要 ' + vf.keys.length + ' 个参数（' + vf.params.join(' ') + '），实际给了 '
+          + (got.length ? '「' + got.join(' ') + '」' : '0 个') });
+      }
+      k += got.length;
+      continue;
+    }
+    unknown.push({ token: t, why: t.charAt(0) === '-'
+      ? '不认识的开关'
+      : '多余的位置参数（本应用的位置参数只跟在 --export-image / --export-window 后面）' });
+  }
+  /* 组合约束：`--smoke-only` 只在 `--smoke` 下才有意义 —— 它的**唯一**消费者是冒烟那条路
+   * （`isSmoke` 为假时整段被跳过）。单独给它 ⇒ 参数层"认识"，但应用会按普通模式起一次，
+   * 于是**桌面上开一个可见窗口**。2026-10-28 实测发生过一次（`electron . --smoke-only=01`
+   * ⇒ `[main] window created` / `isSmoke=false`，窗口活了约 5 分钟）——
+   * 这正是"未知参数响亮退出"要防的那类事故，只是这次参数"认识但无意义"。
+   * ⇒ 判为用法错误，与未知参数同样 exit 2。 */
+  if (plan.smokeOnly !== null && plan.smoke !== true) {
+    bad.push({ token: '--smoke-only', why: '必须与 --smoke 一起用（它只被冒烟那条路消费；单独用会被忽略，'
+      + '本进程就会按普通模式起一次应用，在桌面上开一个可见窗口）' });
+  }
+  return { plan: plan, unknown: unknown, bad: bad };
+}
+
+/** 用法摘要（**从登记表现算**，不另写一份 —— 抄第二份就会漂）。 */
+function argvUsageLines(schema) {
+  const pad = (s) => s + ' '.repeat(Math.max(1, 40 - s.length));
+  const lines = ['[main] 用法：electron . [参数]'];
+  schema.flags.forEach((f) => lines.push('[main]   ' + pad(f.name) + f.brief));
+  schema.valueFlags.forEach((f) => lines.push('[main]   ' + pad([f.name].concat(f.params).join(' ')) + f.brief));
+  schema.inlineFlags.forEach((f) => lines.push('[main]   ' + pad(f.name + '=' + f.param) + f.brief));
+  if (schema.passthrough.length) {
+    lines.push('[main]   （以下为 Electron/Chromium 自己的开关：本应用**不解释**，但**放行**）');
+    schema.passthrough.forEach((p) => lines.push('[main]   ' + pad(p.name + (p.value ? '=<值>' : '')) + p.why));
+  }
+  return lines;
+}
+
+/* ---------------- 闸门本体（在任何 app.* 之前执行） ---------------- */
+const ARGV_AUDIT_ONLY = process.env.AI_MINDMAP_ARGV_AUDIT_ONLY === '1';
+const USER_ARGV = userArgvOf(process.argv);
+const ARGV_AUDIT = auditArgv(USER_ARGV, ARGV_SCHEMA);
+const ARGV = ARGV_AUDIT.plan;
+if (ARGV_AUDIT.unknown.length || ARGV_AUDIT.bad.length) {
+  ARGV_AUDIT.unknown.forEach((u) => console.log('[main] 未知参数：' + u.token + ' —— ' + u.why));
+  ARGV_AUDIT.bad.forEach((b) => console.log('[main] 参数不完整：' + b.token + ' —— ' + b.why));
+  argvUsageLines(ARGV_SCHEMA).forEach((line) => console.log(line));
+  console.log('[main] 退出码 2：参数不认识 ⇒ 立刻退出。'
+    + '**绝不**"没认出来就当没有" —— 那会让本进程按普通模式起一次应用、在用户桌面上开一个可见窗口。');
+  if (ARGV_AUDIT_ONLY) {
+    console.log('ARGV-AUDIT-REJECT ' + JSON.stringify({
+      unknown: ARGV_AUDIT.unknown.map((u) => u.token),
+      bad: ARGV_AUDIT.bad.map((b) => b.token)
+    }));
+  }
+  process.exit(2);
+}
+if (ARGV_AUDIT_ONLY) {
+  console.log('ARGV-AUDIT ' + JSON.stringify({ userArgs: USER_ARGV, plan: ARGV, schema: ARGV_SCHEMA }));
+  process.exit(0);
+}
+
+const isSmoke = ARGV.smoke;
+
 const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, screen, shell } = require('electron');
 const fs = require('fs');
 const os = require('os');
-const path = require('path');
 const { spawnSync, spawn } = require('child_process');
 const dshSidebar = require('./main-dsh-sidebar.js');
 const dropTarget = require('./src/drop-target.js');   // P7 落点判定（纯函数 ✓ 有单测 ✓ 屏幕坐标）
@@ -28,7 +217,6 @@ const ROOT = __dirname;
 const REAL_PROJECTS_DIR = path.join(ROOT, 'projects');
 const CLI = path.join(ROOT, 'cli', 'mm-cli.js');
 
-const isSmoke = process.argv.includes('--smoke');
 /* 进程起点（本文件模块加载那一刻）。**唯一用途**：把 G5 的墙钟拆成
  * 「启动 / runSmoke 前置 / 逐域 / 收尾」四段，好让"G5 为什么这么贵"有一份现算读数
  * （`scripts/verify.js` 的逐**步**耗时表只回答"G5 用了多久"，回答不了"贵在哪"）。
@@ -626,21 +814,13 @@ const diagramProfiles = require('./src/diagram/profiles.js');
 // 实现只有一份：本模式与菜单项「导出当前导图为 PNG…」都调 `exportMapPng`（见该函数头注释）。
 // ⚠️ 与 `--export-window` 的分工：本模式 = **只出导图**（整树包围盒，侧栏本来就不在 capturePage 里）；
 //    `--export-window` = **整窗合成**（主页面 + 原生侧栏 view），用来"看见侧栏"。两者不是一件事。
-const exportImageArgs = (() => {
-  const i = process.argv.indexOf('--export-image');
-  if (i >= 0) return { project: process.argv[i + 1], out: process.argv[i + 2] };
-  return null;
-})();
+const exportImageArgs = ARGV.exportImage;       // 解析在参数层（`ARGV_SCHEMA` 的 valueFlags）
 
 // --export-window <输出.png>：整窗截图（主页面 + **原生侧栏 view** 合成），尺寸取窗口实际大小。
 // 为什么需要：侧栏是原生 WebContentsView，主页面 capturePage() 里没有它 ✗ —— 想"看到侧栏"
 // 只能分别截图再合成（scripts/vision/window-shot.js）。本模式会**接管驻留服务**（不孵化、不收割）。
 // 与 `--export-image` 的区别见上一条注释（那条只出导图，不带侧栏）。
-const exportWindowArgs = (() => {
-  const i = process.argv.indexOf('--export-window');
-  if (i >= 0) return { out: process.argv[i + 1] };
-  return null;
-})();
+const exportWindowArgs = ARGV.exportWindow;     // 解析在参数层（`ARGV_SCHEMA` 的 valueFlags）
 
 // --headless-control：**离屏窗口 + 控制通道活着**、且**不自动退出**（由外部探针 kill）。
 // 为什么需要它（现成的两个离屏模式都装不下"成功分支"）：
@@ -652,7 +832,7 @@ const exportWindowArgs = (() => {
 // ⚠️ 故意**不**并入下面的 `headlessMode`（即**保留单实例锁**）：用户已经开着界面时，本次启动
 //   会照常打印"已有实例在运行"并退出 ⇒ 探测方因此判"环境不适用"，而不是把用户正在用的那个
 //   窗口悄悄接管/挤掉（那是"用测试工具劫持用户会话"，比测不出来坏得多）。
-const headlessControl = process.argv.includes('--headless-control');
+const headlessControl = ARGV.headlessControl;
 
 // 截图导出模式禁用 GPU 硬件加速：规避偶发 UnknownVizError（合成器崩溃导致截图失败）。
 // 注意：仅 export-image 模式禁用——冒烟等其他模式保持默认（实测禁用后冒烟进程崩溃）。
@@ -5088,8 +5268,7 @@ async function runSmoke(win) {
   //（实测反复跑把整机提交内存推到 80%，连带把同机其它界面拖卡/拖崩）。选择规则与"筛错名字必须响亮失败"
   // 的细节见 scripts/smoke-select.js；过滤运行**不是全量真值**，故跳过截图/视觉断言/取景记录并显著标记。
   const select = require('./scripts/smoke-select.js');
-  const specArg = process.argv.find((a) => a.indexOf('--smoke-only=') === 0);
-  const spec = specArg ? specArg.slice('--smoke-only='.length) : (process.env.SMOKE_ONLY || '');
+  const spec = ARGV.smokeOnly !== null ? ARGV.smokeOnly : (process.env.SMOKE_ONLY || '');
   let pickedFiles;
   try {
     pickedFiles = select.selectFiles(allAssertions.files || [], spec);

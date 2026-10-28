@@ -14,6 +14,40 @@
 
 ## [Unreleased]
 
+### 未知命令行参数必须响亮退出（堵住"误写参数 ⇒ 桌面弹出一个可见窗口"的根因）
+
+- **根因**：`main.js` 原来对**不认识的 `--xxx` 既不报错也不退出**，按普通模式起应用。
+  某批验收时误把 `--version` 写进命令 ⇒ 桌面上开了一个**约 4 分钟的可见窗口**（16:17–16:21），
+  违反「探针窗口必须不可见」。当时补的 `--export-image` 跑完 1s 自查 `isVisible()` 是**症状级**防线；
+  本批堵的是**参数解析**这一层：未知 `--xxx` / 多余位置参数 / 残缺开关值 ⇒ 打用法摘要 + 点名 ⇒ `process.exit(2)`。
+- **单一登记表 `ARGV_SCHEMA` + 闸门**：原来 5 处各读一遍 `process.argv` 的调用点全部改成只读解析结果 `ARGV`；
+  参数层**整体搬到主 require 块之前**（只先 require `path`）⇒ 未知参数在加载 electron / 侧栏 / `src` 之前就退出。
+- **合法参数是从代码里枚举的，不是凭记忆**：`--smoke`（无值）· `--headless-control`（无值）·
+  `--export-image`（开关 + **2** 位位置参数）· `--export-window`（开关 + **1** 位）· `--smoke-only=`（`=` 形态）·
+  以及 7 条 **passthrough（放行不解释）**：`--disable-gpu` `--in-process-gpu` `--no-sandbox` `--user-data-dir=`
+  `--inspect` `--inspect-brk` `--remote-debugging-port=` —— 它们由 Electron / Chromium 消费，
+  而 `docs/FEATURES.md:84` 与 CHANGELOG 里的草稿图验证命令真的把 `--disable-gpu --in-process-gpu` 写在 app 路径**之后**，
+  ⇒ 判死它们等于拿掉既有用法。**宁可多报一次错，也不放通配。**
+- **不能简单 `argv.slice(2)`**：实测 `electron --inspect=9229 <appDir>` ⇒ `argv=[exe, --inspect=9229, appDir]`，
+  Electron 自己的开关会出现在 **app 路径之前** ⇒ 现在按 `path.resolve(token) === __dirname || === app.getAppPath()`
+  定位 app 路径，它**之前**的一律不归本应用判（否则会把 `npm start` 判死）。探针读数在 `argv-probe/argv-truth-out.json`。
+- **判据两侧都跑，全程在参数层取证（没有一次可见窗口）**：
+  该绿 = 无参数不被判未知 · 6 组合法参数各自独立进程逐个试 · 一遍过全部参数时审计档逐字段对；
+  该红 = `--version` / `--foo-bar` / 多余位置参数 `comnet` / 裸 `--smoke-only` / `--export-image` 缺值 ⇒ 全 `exit 2` 且**点名**；
+  **真 Electron**（不是纯 node）：`electron . --version` · `electron --inspect=9229 . --version` · `electron . --foo-bar` ⇒ **3/3 exit 2**。
+- **判别力 4 条注入全红**：i1 删登记表一项 ⇒ ①②③④红 · i2 闸门钝化 ⇒ ⑤⑥⑦红 · i3 登记表被架空 ⇒ ⑤⑥⑦红 ·
+  i4 只改文案（无害对照）⇒ **仍 8/8 绿**（证明不是碰巧）。每轮从 Buffer 还原并复核 sha256 / 字节 / CR。
+- ⚠️ **一条过程错误已登记**：注入脚本第一版把"开工前底片"当成每轮起点 ⇒ **一轮就把本批改动整个抹掉**
+  （`main.js` 回到 HEAD）。已按记录逐字重写并全部复跑（`node --check` / 矩阵 25/25 / 单测 8/8 / 真 Electron 3/3 /
+  十道门禁 / 冒烟）。收工三记：`main.js` `sha256=e1dfc68f…` / `431452 B` / `CR=0`。
+- 新增单测专用环境变量 `AI_MINDMAP_ARGV_AUDIT_ONLY=1`（闸门跑完即 `exit 0`；**生产路径一行都不读**；
+  拒绝报文与生产档**逐字相同**，由单测钉住）—— 目的是让"判据能纯 node 跑到参数层"而不必真起应用。
+- **编排侧收口时补的一处组合约束（同一类事故的第二形态）**：`--smoke-only=N` 是**认识**的参数，
+  但它的唯一消费者是冒烟那条路（`isSmoke` 为假时整段跳过）⇒ 单独给它时应用会按普通模式起一次，
+  **桌面上开一个可见窗口**（2026-10-28 实测：`electron . --smoke-only=01` ⇒ `window created` / `isSmoke=false`，
+  窗口活了约 5 分钟）。`auditArgv` 里加一条组合约束 ⇒ `--smoke-only` 必须与 `--smoke` 一起用，否则同 `exit 2`；
+  而 `--smoke --smoke-only=01` 在参数层照旧放行（审计档 `plan.smoke===true` / `smokeOnly==="01"` 已核）。
+
 ### 剖面管到命令面（`app:capProfile`）· PNG 比例缩小验毕 · 投喂 `seq` 收口
 
 - **`app:capProfile` 这条 IPC 两头接通**：`preload.js` 暴露 `desktop.app.capProfile`（单向下行）+
